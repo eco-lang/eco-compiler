@@ -3,6 +3,40 @@
 
 #include <stdint.h>
 
+typedef unsigned char u16;
+typedef long long int i64;
+typedef double f64;
+typedef unsigned int u32;
+
+/** Headers are always 64-bits in size, and every heap element always has a
+header at its start. The first 5-bits contain a tag, denoting which kind of
+heap element it is.
+
+Pointers are 40 bits, allowing > 8 Terrabytes address space. This also allows
+for a tag and pointer to be fitted into a 64-bit word, and leaves space for
+other bit annotations against pointers that may be use for garbage colection.
+*/
+
+typedef enum {
+  Tag_Int,         // 0
+  Tag_Float,       // 1
+  Tag_Char,        // 2
+  Tag_String,      // 3
+  Tag_Tuple2,      // 4
+  Tag_Tuple3,      // 5
+  Tag_Cons,        // 6
+  Tag_DynCons,     // 7
+  Tag_CustomSmall, // 8
+  Tag_Custom,      // 9
+  Tag_SmallRecord, // 10
+  Tag_Record,      // 11
+  Tag_DynRecord,   // 12
+  Tag_FieldGroup,  // 13
+  Tag_Closure,     // 14
+  Tag_Process,     // 15
+  Tag_Task,        // 16
+} Tag;
+
 // Default Bit widths
 #define TAG_BITS         5
 #define SIZE_BITS       32
@@ -12,15 +46,6 @@
 #define NVAL_BITS        6
 #define MAXVAL_BITS      6
 #define UNBOXED_BITS    32
-
-/** Headers are always 64-bits in size, and every heap element always has a
-header at its start. The first 5-bits contain a tag, denoting which kind of
-heap element it is.
-
-Pointers are 40 bits, allowing > 8 Terrabytes address space. This also allows
-for a tag and pointer to be fitted into a 64-bit word, and leaves space for
-other annotations against pointers that may be necessary for a garbage colector.
-*/
 
 typedef struct {
   uint64_t tag     : TAG_BITS;
@@ -91,120 +116,131 @@ typedef struct {
 #include <assert.h>
 _Static_assert(sizeof(Header) == 8, "HeapHeader must be 64 bits");
 
-typedef uint32_t ElmPtr32;   // compressed pointer
-typedef uint64_t ElmWord;    // raw machine word
+typedef struct {
+  uint64_t ptr   : 40;
+  uint64_t _pad  : 24;       // Reserved for GC bits.
+} HPointer;
+
+typedef union {
+  HPointer p;
+  i64      i;
+  f64      f;
+  u16      c;
+} Unboxable;
 
 typedef struct {
-  Header header;     // Header_Tagged
-  double value;      // 64-bit float (fits Int32 and Float)
+  Header header;
+  f64 value;
 } ElmFloat;
 
 typedef struct {
   Header header;
-  double value;      // but Int32 fits fine as f64
+  i64 value;
 } ElmInt;
 
-// ElmChar stores a 32-bit scalar
 typedef struct {
   Header header;
-  uint32_t value;    // Unicode scalar value
-  uint32_t padding;  // pad to 8 bytes
+  u16 value;
+  u16 padding1;
+  u16 padding2;
+  u16 padding3;
 } ElmChar;
 
-typedef struct {
+// Make sure strings are properly aligned on 64-bit target.
+// Otherwise C compiler can truncate the zero padding at the end.
+#define ALIGN(X) __attribute__((aligned(X)))
+
+struct ALIGN(8) elm_string {
   Header header;
-  uint16_t words[];     // flexible array
-} ElmString;
+  u16 chars[];
+};
+typedef struct elm_string ElmString;
 
 typedef struct {
-  Header header;  // Header_UnboxedOnly
-  ElmPtr32 a;
-  ElmPtr32 b;
+  Header header;
+  Unboxable a;
+  Unboxable b;
 } ElmTuple2;
 
 typedef struct {
   Header header;
-  ElmPtr32 a;
-  ElmPtr32 b;
-  ElmPtr32 c;
+  Unboxable a;
+  Unboxable b;
+  Unboxable c;
 } ElmTuple3;
 
-
 typedef struct {
-  Header header;     // Header_SizeUnboxed
-  ElmPtr32 head;
-  ElmPtr32 tail;
+  Header header;
+  Unboxable head;
+  HPointer tail;
 } ElmCons;
 
-
 typedef struct {
-  Header header;     // Header_SizeOnly (size=2)
-  ElmPtr32 head;
-  ElmPtr32 tail;
+  Header header;
+  void* head;
+  void* tail;
 } ElmDynCons;
 
 typedef struct {
-  Header header;          // Header_Custom (size=childcount)
-  ElmPtr32 values[];      // flexible array: size children
+  Header header;
+  Unboxable values[];
 } ElmCustomSmall;
 
 typedef struct {
-  Header header;          // Header_Custom
-  ElmPtr32 values[];      // child values (maybe > 32)
+  Header header;
+  HPointer values[];
 } ElmCustom;
 
 typedef struct {
-  Header header;         // Header_SizeUnboxed
-  ElmPtr32 values[];     // one per field
+  Header header;
+  Unboxable values[];
 } ElmRecordSmall;
 
 typedef struct {
   Header header;
-  ElmPtr32 values[];    // pointers only (no unboxed scalars)
+  HPointer values[];
 } ElmRecord;
 
 typedef struct {
-  Header header;       // Header_SizeOnly
-  ElmPtr32 fieldgroup; // pointer to ElmFieldGroup
-  ElmPtr32 values[];   // dynamic field order
+  Header header;
+  HPointer fieldgroup;
+  HPointer values[];
 } ElmDynRecord;
 
 typedef struct {
-  Header header;      // Header_SizeOnly
-  uint32_t count;     // number of fields
-  uint32_t fields[];  // ElmField IDs
+  Header header;
+  uint32_t count;
+  uint32_t fields[];
 } ElmFieldGroup;
 
-typedef void *(*EvalFunction)(ElmPtr32 *args);
+typedef void* (*EvalFunction)(void*[]);
 
 typedef struct {
-  Header header;           // Header_Closure
+  Header header;
   EvalFunction evaluator;
-  ElmPtr32 values[];       // captured values (n_values)
+  Unboxable values[];
 } ElmClosure;
 
 typedef struct {
-  Header header;      // Header_Process
-  ElmPtr32 root;      // root task
-  ElmPtr32 stack;     // process stack
-  ElmPtr32 mailbox;   // queue
+  Header header;
+  HPointer root;
+  HPointer stack;
+  HPointer mailbox;
 } ElmProcess;
 
 typedef struct {
-  Header header;      // Header_Task
-  ElmPtr32 value;
-  ElmPtr32 callback;
-  ElmPtr32 kill;
-  ElmPtr32 task;
+  Header header;
+  HPointer value;
+  HPointer callback;
+  HPointer kill;
+  HPointer task;
 } ElmTask;
 
 typedef struct {
-  Header header;    // Header_GCForward
-  /* no additional payload needed */
+  Header header;
 } ElmGCForward;
 
-typedef union ElmValue {
-  Header header;
+typedef union HeapValue {
   ElmInt intval;
   ElmFloat floatval;
   ElmChar charval;
@@ -223,7 +259,22 @@ typedef union ElmValue {
   ElmProcess process;
   ElmTask task;
   ElmGCForward fwd;
-} ElmValue;
+} HeapValue;
+
+
+// STATIC CONSTANTS
+
+extern ElmCustomSmall Nil;
+extern void* pNil;
+
+extern ElmCustomSmall Unit;
+extern void* pUnit;
+
+extern ElmCustomSmall False;
+extern void* pFalse;
+
+extern ElmCustomSmall True;
+extern void* pTrue;
 
 
 #endif // ECO_RUNTIME_HEAP_H
