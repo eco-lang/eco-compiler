@@ -39,13 +39,9 @@ typedef enum {
 
 // Default Bit widths
 #define TAG_BITS         5
-#define SIZE_BITS       32
 #define CTOR_BITS       16
 #define POINTER_BITS    40
 #define ID_BITS         16
-#define NVAL_BITS        6
-#define MAXVAL_BITS      6
-#define UNBOXED_BITS    32
 
 typedef struct {
   uint64_t tag     : TAG_BITS;
@@ -54,48 +50,49 @@ typedef struct {
 typedef struct {
   uint64_t tag     : TAG_BITS;
   uint64_t unboxed : 3;
-} Header_UnboxedOnly; // ElmTuple2, ElmTuple3
+} Header_UnboxedOnly; // Tuple2, Tuple3
 
 typedef struct {
   uint64_t tag    : TAG_BITS;
-  uint64_t size   : SIZE_BITS;
-} Header_SizeOnly; // ElmDynCons, ElmString, ElmRecord, ElmDynRecord, ElmFieldGroup
+  uint64_t size   : 32;
+} Header_SizeOnly; // DynCons, ElmString, Record, DynRecord, FieldGroup
 
 typedef struct {
   uint64_t tag     : TAG_BITS;
   uint64_t size    : 27;
   uint64_t unboxed : 32;
-} Header_SizeUnboxed; // ElmCons, ElmRecordSmall
+} Header_SizeUnboxed; // Cons, RecordSmall
 
 typedef struct {
   uint64_t tag     : TAG_BITS;
   uint64_t size    : 8;
   uint64_t ctor    : CTOR_BITS;
-  uint64_t unboxed : 35; // Considered padding by ElmCustom
-} Header_Custom; // ElmCustomSmall, ElmCustom
+  uint64_t unboxed : 35; // Considered padding by Custom
+} Header_Custom; // CustomSmall, Custom
 
 typedef struct {
   uint64_t tag       : TAG_BITS;
-  uint64_t n_values  : NVAL_BITS;
-  uint64_t max_values: MAXVAL_BITS;
+  uint64_t n_values  : 6;
+  uint64_t max_values: 6;
   uint64_t unboxed   : 47;
-} Header_Closure; // ElmClosure
+} Header_Closure; // Closure
 
 typedef struct {
   uint64_t tag     : TAG_BITS;
   uint64_t id      : ID_BITS;
-} Header_Process; // ElmProcess
+} Header_Process; // Process
 
 typedef struct {
   uint64_t tag     : TAG_BITS;
   uint64_t ctor    : CTOR_BITS;
   uint64_t id      : ID_BITS;
-} Header_Task; // ElmTask
+} Header_Task; // Task
 
 typedef struct {
   uint64_t tag     : TAG_BITS;
   uint64_t pointer : POINTER_BITS;
-} Header_GCForward; // ElmGCForward
+  uint64_t padding : 19; // Spare space for GC flags
+} Header_GCForward; // GCForward
 
 typedef union {
   Header_Tagged       tagged_only;
@@ -117,8 +114,8 @@ typedef struct {
 _Static_assert(sizeof(Header) == 8, "HeapHeader must be 64 bits");
 
 typedef struct {
-  uint64_t ptr   : 40;
-  uint64_t _pad  : 24;       // Reserved for GC bits.
+  uint64_t ptr      : POINTER_BITS;
+  uint64_t padding  : 24;       // Spare space for GC bits.
 } HPointer;
 
 typedef union {
@@ -160,58 +157,58 @@ typedef struct {
   Header header;
   Unboxable a;
   Unboxable b;
-} ElmTuple2;
+} Tuple2;
 
 typedef struct {
   Header header;
   Unboxable a;
   Unboxable b;
   Unboxable c;
-} ElmTuple3;
+} Tuple3;
 
 typedef struct {
   Header header;
   Unboxable head;
   HPointer tail;
-} ElmCons;
+} Cons;
 
 typedef struct {
   Header header;
   void* head;
   void* tail;
-} ElmDynCons;
+} DynCons;
 
 typedef struct {
   Header header;
   Unboxable values[];
-} ElmCustomSmall;
+} CustomSmall;
 
 typedef struct {
   Header header;
   HPointer values[];
-} ElmCustom;
+} Custom;
 
 typedef struct {
   Header header;
   Unboxable values[];
-} ElmRecordSmall;
+} RecordSmall;
 
 typedef struct {
   Header header;
   HPointer values[];
-} ElmRecord;
+} Record;
 
 typedef struct {
   Header header;
   HPointer fieldgroup;
   HPointer values[];
-} ElmDynRecord;
+} DynRecord;
 
 typedef struct {
   Header header;
   uint32_t count;
   uint32_t fields[];
-} ElmFieldGroup;
+} FieldGroup;
 
 typedef void* (*EvalFunction)(void*[]);
 
@@ -219,14 +216,14 @@ typedef struct {
   Header header;
   EvalFunction evaluator;
   Unboxable values[];
-} ElmClosure;
+} Closure;
 
 typedef struct {
   Header header;
   HPointer root;
   HPointer stack;
   HPointer mailbox;
-} ElmProcess;
+} Process;
 
 typedef struct {
   Header header;
@@ -234,46 +231,46 @@ typedef struct {
   HPointer callback;
   HPointer kill;
   HPointer task;
-} ElmTask;
+} Task;
 
 typedef struct {
   Header header;
-} ElmGCForward;
+} GCForward;
 
 typedef union HeapValue {
   ElmInt intval;
   ElmFloat floatval;
   ElmChar charval;
-  ElmCons cons;
-  ElmDynCons dyncons;
-  ElmTuple2 tuple2;
-  ElmTuple3 tuple3;
   ElmString string;
-  ElmCustom custom;
-  ElmCustomSmall custom_small;
-  ElmRecordSmall record_small;
-  ElmRecord record;
-  ElmDynRecord dynrecord;
-  ElmFieldGroup fieldgroup;
-  ElmClosure closure;
-  ElmProcess process;
-  ElmTask task;
-  ElmGCForward fwd;
+  Tuple2 tuple2;
+  Tuple3 tuple3;
+  Cons cons;
+  DynCons dyncons;
+  CustomSmall custom_small;
+  Custom custom;
+  RecordSmall record_small;
+  Record record;
+  DynRecord dynrecord;
+  FieldGroup fieldgroup;
+  Closure closure;
+  Process process;
+  Task task;
+  GCForward fwd;
 } HeapValue;
 
 
 // STATIC CONSTANTS
 
-extern ElmCustomSmall Nil;
+extern CustomSmall Nil;
 extern void* pNil;
 
-extern ElmCustomSmall Unit;
+extern CustomSmall Unit;
 extern void* pUnit;
 
-extern ElmCustomSmall False;
+extern CustomSmall False;
 extern void* pFalse;
 
-extern ElmCustomSmall True;
+extern CustomSmall True;
 extern void* pTrue;
 
 
