@@ -44,6 +44,7 @@ typedef enum {
   Tag_Closure,     // 14
   Tag_Process,     // 15
   Tag_Task,        // 16
+// Tag_Slice - String or even List or Array or Bytes slice.
 } Tag;
 
 typedef struct {
