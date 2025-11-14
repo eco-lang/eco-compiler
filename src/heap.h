@@ -3,10 +3,13 @@
 
 #include <stdint.h>
 
+namespace Elm {
+
+typedef unsigned long long int u64;
+typedef unsigned int u32;
 typedef unsigned char u16;
 typedef long long int i64;
 typedef double f64;
-typedef unsigned int u32;
 
 /** Headers are always 64-bits in size, and every heap element always has a
 header at its start. The first 5-bits contain a tag, denoting which kind of
@@ -38,72 +41,72 @@ typedef enum {
 } Tag;
 
 // Default Bit widths
-#define TAG_BITS         5
-#define CTOR_BITS       16
-#define POINTER_BITS    40
-#define ID_BITS         16
+#define TAG_BITS 5
+#define CTOR_BITS 16
+#define POINTER_BITS 40
+#define ID_BITS 16
 
 typedef struct {
-  uint64_t tag     : TAG_BITS;
+  u64 tag : TAG_BITS;
 } Header_Tagged; // ElmInt, ElmFloat, ElmChar
 
 typedef struct {
-  uint64_t tag     : TAG_BITS;
-  uint64_t unboxed : 3;
+  u64 tag : TAG_BITS;
+  u64 unboxed : 3;
 } Header_UnboxedOnly; // Tuple2, Tuple3
 
 typedef struct {
-  uint64_t tag    : TAG_BITS;
-  uint64_t size   : 32;
+  u64 tag : TAG_BITS;
+  u64 size : 32;
 } Header_SizeOnly; // DynCons, ElmString, Record, DynRecord, FieldGroup
 
 typedef struct {
-  uint64_t tag     : TAG_BITS;
-  uint64_t size    : 27;
-  uint64_t unboxed : 32;
+  u64 tag : TAG_BITS;
+  u64 size : 27;
+  u64 unboxed : 32;
 } Header_SizeUnboxed; // Cons, RecordSmall
 
 typedef struct {
-  uint64_t tag     : TAG_BITS;
-  uint64_t size    : 8;
-  uint64_t ctor    : CTOR_BITS;
-  uint64_t unboxed : 35; // Considered padding by Custom
-} Header_Custom; // CustomSmall, Custom
+  u64 tag : TAG_BITS;
+  u64 size : 8;
+  u64 ctor : CTOR_BITS;
+  u64 unboxed : 35; // Considered padding by Custom
+} Header_Custom;    // CustomSmall, Custom
 
 typedef struct {
-  uint64_t tag       : TAG_BITS;
-  uint64_t n_values  : 6;
-  uint64_t max_values: 6;
-  uint64_t unboxed   : 47;
+  u64 tag : TAG_BITS;
+  u64 n_values : 6;
+  u64 max_values : 6;
+  u64 unboxed : 47;
 } Header_Closure; // Closure
 
 typedef struct {
-  uint64_t tag     : TAG_BITS;
-  uint64_t id      : ID_BITS;
+  u64 tag : TAG_BITS;
+  u64 id : ID_BITS;
 } Header_Process; // Process
 
 typedef struct {
-  uint64_t tag     : TAG_BITS;
-  uint64_t ctor    : CTOR_BITS;
-  uint64_t id      : ID_BITS;
+  u64 tag : TAG_BITS;
+  u64 ctor : CTOR_BITS;
+  u64 id : ID_BITS;
 } Header_Task; // Task
 
 typedef struct {
-  uint64_t tag     : TAG_BITS;
-  uint64_t pointer : POINTER_BITS;
-  uint64_t padding : 19; // Spare space for GC flags
+  u64 tag : TAG_BITS;
+  u64 pointer : POINTER_BITS;
+  u64 padding : 19; // Spare space for GC flags
 } Header_GCForward; // GCForward
 
 typedef union {
-  Header_Tagged       tagged_only;
-  Header_UnboxedOnly  unboxed_only;
-  Header_SizeOnly     size_only;
-  Header_SizeUnboxed  size_unboxed;
-  Header_Custom       custom;
-  Header_Closure      closure;
-  Header_Process      process;
-  Header_Task         task;
-  Header_GCForward    gcforward;
+  Header_Tagged tagged_only;
+  Header_UnboxedOnly unboxed_only;
+  Header_SizeOnly size_only;
+  Header_SizeUnboxed size_unboxed;
+  Header_Custom custom;
+  Header_Closure closure;
+  Header_Process process;
+  Header_Task task;
+  Header_GCForward gcforward;
 } HeaderUnion;
 
 typedef struct {
@@ -113,16 +116,18 @@ typedef struct {
 #include <assert.h>
 _Static_assert(sizeof(Header) == 8, "HeapHeader must be 64 bits");
 
+// A logical pointer into the heap.
 typedef struct {
-  uint64_t ptr      : POINTER_BITS;
-  uint64_t padding  : 24;       // Spare space for GC bits.
+  u64 ptr : POINTER_BITS;
+  u64 padding : 24; // Spare space for GC bits.
 } HPointer;
 
+// A pointer or unboxed primitive.
 typedef union {
   HPointer p;
-  i64      i;
-  f64      f;
-  u16      c;
+  i64 i;
+  f64 f;
+  u16 c;
 } Unboxable;
 
 typedef struct {
@@ -144,7 +149,7 @@ typedef struct {
 } ElmChar;
 
 // Make sure strings are properly aligned on 64-bit target.
-// Otherwise C compiler can truncate the zero padding at the end.
+// Otherwise C compiler can truncate any zero padding at the end.
 #define ALIGN(X) __attribute__((aligned(X)))
 
 struct ALIGN(8) elm_string {
@@ -174,8 +179,8 @@ typedef struct {
 
 typedef struct {
   Header header;
-  void* head;
-  void* tail;
+  void *head;
+  void *tail;
 } DynCons;
 
 typedef struct {
@@ -210,7 +215,7 @@ typedef struct {
   uint32_t fields[];
 } FieldGroup;
 
-typedef void* (*EvalFunction)(void*[]);
+typedef void *(*EvalFunction)(void *[]);
 
 typedef struct {
   Header header;
@@ -258,20 +263,19 @@ typedef union HeapValue {
   GCForward fwd;
 } HeapValue;
 
-
 // STATIC CONSTANTS
 
 extern CustomSmall Nil;
-extern void* pNil;
+extern void *pNil;
 
 extern CustomSmall Unit;
-extern void* pUnit;
+extern void *pUnit;
 
 extern CustomSmall False;
-extern void* pFalse;
+extern void *pFalse;
 
 extern CustomSmall True;
-extern void* pTrue;
-
+extern void *pTrue;
+} // namespace Elm
 
 #endif // ECO_RUNTIME_HEAP_H
