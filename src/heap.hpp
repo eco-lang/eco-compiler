@@ -1,7 +1,7 @@
-#ifndef ECO_RUNTIME_HEAP_H
-#define ECO_RUNTIME_HEAP_H
+#ifndef ECO_HEAP_H
+#define ECO_HEAP_H
 
-#include <stdint.h>
+#include <assert.h>
 
 namespace Elm {
 
@@ -19,6 +19,12 @@ Pointers are 40 bits, allowing > 8 Terrabytes address space. This also allows
 for a tag and pointer to be fitted into a 64-bit word, and leaves space for
 other bit annotations against pointers that may be use for garbage colection.
 */
+
+// Default Bit widths
+#define TAG_BITS 5
+#define CTOR_BITS 16
+#define POINTER_BITS 40
+#define ID_BITS 16
 
 typedef enum {
   Tag_Int,         // 0
@@ -40,62 +46,82 @@ typedef enum {
   Tag_Task,        // 16
 } Tag;
 
-// Default Bit widths
-#define TAG_BITS 5
-#define CTOR_BITS 16
-#define POINTER_BITS 40
-#define ID_BITS 16
-
 typedef struct {
   u64 tag : TAG_BITS;
+  u64 age : 2;
+  u64 padding : 57;
 } Header_Tagged; // ElmInt, ElmFloat, ElmChar
+static_assert(sizeof(Header_Tagged) == 8, "Header_Tagged must be 64 bits");
 
 typedef struct {
   u64 tag : TAG_BITS;
+  u64 age : 2;
   u64 unboxed : 3;
+  u64 padding : 54;
 } Header_UnboxedOnly; // Tuple2, Tuple3
+static_assert(sizeof(Header_UnboxedOnly) == 8, "Header_UnboxedOnly must be 64 bits");
 
 typedef struct {
   u64 tag : TAG_BITS;
+  u64 age : 2;
   u64 size : 32;
+  u64 padding : 25;
 } Header_SizeOnly; // DynCons, ElmString, Record, DynRecord, FieldGroup
+static_assert(sizeof(Header_SizeOnly) == 8, "Header_SizeOnly must be 64 bits");
 
 typedef struct {
   u64 tag : TAG_BITS;
-  u64 size : 27;
+  u64 age : 2;
+  u64 size : 5;
   u64 unboxed : 32;
+  u64 padding : 20;
 } Header_SizeUnboxed; // Cons, RecordSmall
+static_assert(sizeof(Header_SizeUnboxed) == 8, "Header_SizeUnboxed must be 64 bits");
 
 typedef struct {
   u64 tag : TAG_BITS;
+  u64 age : 2;
   u64 size : 8;
   u64 ctor : CTOR_BITS;
-  u64 unboxed : 35; // Considered padding by Custom
+  u64 unboxed : 32; // Considered padding by Custom
+  u64 padding : 1;
 } Header_Custom;    // CustomSmall, Custom
+static_assert(sizeof(Header_Custom) == 8, "Header_Custom must be 64 bits");
 
 typedef struct {
   u64 tag : TAG_BITS;
+  u64 age : 2;
   u64 n_values : 6;
   u64 max_values : 6;
-  u64 unboxed : 47;
+  u64 unboxed : 32;
+  u64 padding : 13;
 } Header_Closure; // Closure
+static_assert(sizeof(Header_Closure) == 8, "Header_Closure must be 64 bits");
 
 typedef struct {
   u64 tag : TAG_BITS;
+  u64 age : 2;
   u64 id : ID_BITS;
+  u64 padding : 41;
 } Header_Process; // Process
+static_assert(sizeof(Header_Process) == 8, "Header_Process must be 64 bits");
 
 typedef struct {
   u64 tag : TAG_BITS;
+  u64 age : 2;
   u64 ctor : CTOR_BITS;
   u64 id : ID_BITS;
+  u64 padding : 25;
 } Header_Task; // Task
+static_assert(sizeof(Header_Task) == 8, "Header_Task must be 64 bits");
 
 typedef struct {
   u64 tag : TAG_BITS;
+  u64 age : 2;
   u64 pointer : POINTER_BITS;
-  u64 padding : 19; // Spare space for GC flags
-} Header_GCForward; // GCForward
+  u64 padding : 17; // Spare space for more GC flags
+} Header_Forward; // Forward
+static_assert(sizeof(Header_Forward) == 8, "Header_Forward must be 64 bits");
 
 typedef union {
   Header_Tagged tagged_only;
@@ -106,21 +132,24 @@ typedef union {
   Header_Closure closure;
   Header_Process process;
   Header_Task task;
-  Header_GCForward gcforward;
+  Header_Forward Forward;
 } HeaderUnion;
 
 typedef struct {
   HeaderUnion bits;
 } Header;
-
-#include <assert.h>
-_Static_assert(sizeof(Header) == 8, "HeapHeader must be 64 bits");
+static_assert(sizeof(Header) == 8, "Header must be 64 bits");
 
 // A logical pointer into the heap.
 typedef struct {
   u64 ptr : POINTER_BITS;
-  u64 padding : 24; // Spare space for GC bits.
+  u64 color : 2;       // Black, white, grey
+  u64 pin : 1;         // Mem pinned object
+  u64 forwarding : 1;  // Nusery object forwarded
+  u64 epoch : 2;       // Concurrent marking epoch.
+  u64 padding : 18;    // Spare space for more GC bits.
 } HPointer;
+static_assert(sizeof(HPointer) == 8, "HPointer must be 64 bits");
 
 // A pointer or unboxed primitive.
 typedef union {
@@ -211,8 +240,8 @@ typedef struct {
 
 typedef struct {
   Header header;
-  uint32_t count;
-  uint32_t fields[];
+  u32 count;
+  u32 fields[];
 } FieldGroup;
 
 typedef void *(*EvalFunction)(void *[]);
@@ -240,7 +269,7 @@ typedef struct {
 
 typedef struct {
   Header header;
-} GCForward;
+} Forward;
 
 typedef union HeapValue {
   ElmInt intval;
@@ -260,7 +289,7 @@ typedef union HeapValue {
   Closure closure;
   Process process;
   Task task;
-  GCForward fwd;
+  Forward fwd;
 } HeapValue;
 
 // STATIC CONSTANTS
@@ -278,4 +307,4 @@ extern CustomSmall True;
 extern void *pTrue;
 } // namespace Elm
 
-#endif // ECO_RUNTIME_HEAP_H
+#endif // ECO_HEAP_H

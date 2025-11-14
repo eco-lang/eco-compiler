@@ -27,7 +27,8 @@ include(AddMLIR)
 # 2) Shared configuration target (inherits common settings)
 # ============================================================
 add_library(toy_common INTERFACE
-        src/heap.h)
+        src/heap.h
+        src/allocator.h.cpp)
 
 # Require C++20
 target_compile_features(toy_common INTERFACE cxx_std_20)
