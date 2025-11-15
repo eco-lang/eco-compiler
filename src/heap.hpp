@@ -28,23 +28,21 @@ such as commonly used constants.
 #define ID_BITS 16
 
 typedef enum {
-  Tag_Int,         // 0
-  Tag_Float,       // 1
-  Tag_Char,        // 2
-  Tag_String,      // 3
-  Tag_Tuple2,      // 4
-  Tag_Tuple3,      // 5
-  Tag_Cons,        // 6
-  Tag_CustomSmall, // 7
-  Tag_Custom,      // 8
-  Tag_SmallRecord, // 9
-  Tag_Record,      // 10
-  Tag_DynRecord,   // 11
-  Tag_FieldGroup,  // 12
-  Tag_Closure,     // 13
-  Tag_Process,     // 14
-  Tag_Task,        // 15
-  Tag_Forward,     // 16
+  Tag_Int,
+  Tag_Float,
+  Tag_Char,
+  Tag_String,
+  Tag_Tuple2,
+  Tag_Tuple3,
+  Tag_Cons,
+  Tag_Custom,
+  Tag_Record,
+  Tag_DynRecord,
+  Tag_FieldGroup,
+  Tag_Closure,
+  Tag_Process,
+  Tag_Task,
+  Tag_Forward,
 // Tag_ByteBuffer - Buffers of bytes or UTF-8 encoded strings.
 // Tag_Slice - String or even List or Array or Bytes slice.
 // Tag_Array - Packed arrays
@@ -144,30 +142,19 @@ typedef struct {
 typedef struct {
   Header header; // Size in bottom 6 bits of size in header, but unboxed bitset in next word.
   u64 ctor : CTOR_BITS;
-  u64 unboxed : 48;
+  u64 unboxed : 48; // First 48 fields can be unboxed, so compiler can sort primitive fields to come first.
   Unboxable values[];
-} CustomSmall;
-
-typedef struct {
-  Header header;
-  u64 ctor : CTOR_BITS;
-  u64 padding : 48;
-  HPointer values[];
 } Custom;
 
 typedef struct {
   Header header; // Size in bottom 7 bits of size in header, but unboxed bitset in next word.
-  u64 unboxed;   // Small records are up to 64 fields.
+  u64 unboxed;   // First 64 fields can be unboxed, so compiler should sort primitive fields to come first.
   Unboxable values[];
-} RecordSmall;
-
-typedef struct {
-  Header header;
-  HPointer values[];
 } Record;
 
 typedef struct {
   Header header;
+  u64 unboxed;   // First 64 fields can be unboxed, so compiler should sort primitive fields to come first.
   HPointer fieldgroup;
   HPointer values[];
 } DynRecord;
@@ -223,9 +210,7 @@ typedef union HeapValue {
   Tuple2 tuple2;
   Tuple3 tuple3;
   Cons cons;
-  CustomSmall custom_small;
   Custom custom;
-  RecordSmall record_small;
   Record record;
   DynRecord dynrecord;
   FieldGroup fieldgroup;
@@ -235,19 +220,6 @@ typedef union HeapValue {
   Forward fwd;
 } HeapValue;
 
-// STATIC CONSTANTS
-
-extern CustomSmall Nil;
-extern void *pNil;
-
-extern CustomSmall Unit;
-extern void *pUnit;
-
-extern CustomSmall False;
-extern void *pFalse;
-
-extern CustomSmall True;
-extern void *pTrue;
 } // namespace Elm
 
 #endif // ECO_HEAP_H
