@@ -6,6 +6,22 @@
 
 #include "heap.h"
 
+/** GC Design
+
+Young generation:
+
+Each thread gets its own young generation nursery space.
+Mark-and-copy copies the live set to a fresh nursery space.
+On copy the survival age of objects is incremeneted.
+Objects over a certain survival age are promoted to the old generation.
+
+Triggered on nursery full or end of update cycle.
+
+Old generation:
+
+
+
+*/
 int GC_init();
 void GC_register_root(void **root);
 void GC_init_root(void **global_permanent_ptr, void *(*init_func)());
