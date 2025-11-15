@@ -7,7 +7,7 @@ namespace Elm {
 
 typedef unsigned long long int u64;
 typedef unsigned int u32;
-typedef unsigned char u16;
+typedef unsigned short u16;
 typedef long long int i64;
 typedef double f64;
 
@@ -15,9 +15,10 @@ typedef double f64;
 header at its start. The first 5-bits contain a tag, denoting which kind of
 heap element it is.
 
-Pointers are 40 bits, allowing > 8 Terrabytes address space. This also allows
-for a tag and pointer to be fitted into a 64-bit word, and leaves space for
-other bit annotations against pointers that may be use for garbage colection.
+Pointers are 40 bits, allowing > 8 Terrabytes address space. This allows for
+a pointer to be fitted into a 64-bit word with space for other bit annotations
+against pointers that may be use for garbage colection or other optimisations,
+such as commonly used constants.
 */
 
 // Default Bit widths
@@ -43,6 +44,7 @@ typedef enum {
   Tag_Closure,     // 13
   Tag_Process,     // 14
   Tag_Task,        // 15
+  Tag_Forward,     // 16
 // Tag_ByteBuffer - Buffers of bytes or UTF-8 encoded strings.
 // Tag_Slice - String or even List or Array or Bytes slice.
 // Tag_Array - Packed arrays
@@ -54,12 +56,13 @@ typedef struct {
   u32 tag : TAG_BITS;
   u32 color : 2;       // Black, white, grey for concurrent mark and sweep.
   u32 pin : 1;         // Mem pinned object
-  u32 forwarding : 1;  // Object evacuated this cycle.
   u32 epoch : 2;       // Object marked this cycle.
   u32 age : 2;         // Survival age.
   u32 unboxed : 3;     // Unboxed flags for cons, tuple2, tuple3 only.
-  u32 size : 16;       // Size bits for smaller structures - records and custom type constructors.
-  u32 refcount;
+  u32 padding : 1;
+  u32 refcount : 16;   // 16 bits is more than needed, could be much smaller.
+                       // Benchmark to find the best saturation level.
+  u32 size;            // Size bits.
 } Header;
 static_assert(sizeof(Header) == 8, "Header must be 64 bits");
 
@@ -114,9 +117,7 @@ typedef struct {
 // Otherwise C compiler can truncate any zero padding at the end.
 #define ALIGN(X) __attribute__((aligned(X)))
 struct ALIGN(8) elm_string {
-  Header header;
-  u64 size : 40;
-  u64 padding : 24;
+  Header header; // Size in header up to 4G
   u16 chars[];
 };
 typedef struct elm_string ElmString;
@@ -141,7 +142,7 @@ typedef struct {
 } Cons;
 
 typedef struct {
-  Header header;
+  Header header; // Size in bottom 6 bits of size in header, but unboxed bitset in next word.
   u64 ctor : CTOR_BITS;
   u64 unboxed : 48;
   Unboxable values[];
@@ -155,8 +156,8 @@ typedef struct {
 } Custom;
 
 typedef struct {
-  Header header;
-  u64 unboxed;
+  Header header; // Size in bottom 7 bits of size in header, but unboxed bitset in next word.
+  u64 unboxed;   // Small records are up to 64 fields.
   Unboxable values[];
 } RecordSmall;
 
