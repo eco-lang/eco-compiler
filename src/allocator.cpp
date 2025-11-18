@@ -256,7 +256,8 @@ namespace Elm {
     // ============================================================================
 
     OldGenSpace::OldGenSpace() :
-        region_base(nullptr), region_size(0), free_list(nullptr), current_epoch(0), marking_active(false) {
+        region_base(nullptr), region_size(0), max_region_size(0),
+        free_list(nullptr), current_epoch(0), marking_active(false) {
         // Initialization happens in initialize() method
     }
 
@@ -264,11 +265,12 @@ namespace Elm {
         // No need to free memory - it's part of the main heap
     }
 
-    void OldGenSpace::initialize(char *base, size_t size) {
+    void OldGenSpace::initialize(char *base, size_t initial_size, size_t max_size) {
         region_base = base;
-        region_size = size;
+        region_size = initial_size;
+        max_region_size = max_size;
 
-        // Initialize free list with entire region
+        // Initialize free list with committed region
         FreeBlock *block = reinterpret_cast<FreeBlock *>(region_base);
         block->size = region_size;
         block->next = nullptr;
@@ -279,11 +281,36 @@ namespace Elm {
     }
 
     void OldGenSpace::addChunk(size_t size) {
-        // Old gen now operates within a fixed region from the main heap
-        // We cannot dynamically add more chunks
-        // This should not be called in the new design
-        (void) size; // Unused
-        throw std::bad_alloc(); // Out of memory
+        // Check if we can grow
+        if (region_size >= max_region_size) {
+            throw std::bad_alloc(); // Can't grow beyond max
+        }
+
+        // Calculate how much to grow (at least requested size, up to max)
+        size_t growth = std::min(size * 2, max_region_size - region_size);
+        growth = std::max(growth, size);
+
+        // Commit more memory
+        char *new_region = region_base + region_size;
+        void *result = mmap(
+            new_region,
+            growth,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+            -1, 0
+        );
+
+        if (result == MAP_FAILED) {
+            throw std::bad_alloc();
+        }
+
+        // Add new region to free list
+        FreeBlock *block = reinterpret_cast<FreeBlock *>(new_region);
+        block->size = growth;
+        block->next = free_list;
+        free_list = block;
+
+        region_size += growth;
     }
 
     void *OldGenSpace::allocate(size_t size) {
@@ -559,26 +586,83 @@ namespace Elm {
     // GarbageCollector Implementation
     // ============================================================================
 
-    GarbageCollector::GarbageCollector() {
-        // Allocate unified heap (start with 1GB, can be expanded later)
-        heap_size = 1ULL * 1024 * 1024 * 1024; // 1GB
+    GarbageCollector::GarbageCollector() :
+        heap_base(nullptr), heap_reserved(0), old_gen_committed(0),
+        nursery_offset(0), next_nursery_offset(0), initialized(false) {
+        // Initialization happens in initialize() method
+    }
 
-        heap_base = static_cast<char *>(
-                mmap(nullptr, heap_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    GarbageCollector::~GarbageCollector() {
+        if (heap_base) {
+            munmap(heap_base, heap_reserved);
+        }
+    }
+
+    void GarbageCollector::initialize(size_t max_heap_size) {
+        if (initialized) return;
+
+        heap_reserved = max_heap_size;
+
+        // Reserve address space without committing physical memory
+        heap_base = static_cast<char *>(mmap(
+            nullptr,
+            heap_reserved,
+            PROT_NONE,  // No access initially
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+            -1, 0
+        ));
+
         if (heap_base == MAP_FAILED) {
             throw std::bad_alloc();
         }
 
-        // Old gen gets first 512MB
-        old_gen_size = 512ULL * 1024 * 1024;
-        old_gen.initialize(heap_base, old_gen_size);
-
-        // Nurseries start after old gen
-        nursery_offset = old_gen_size;
+        // Nurseries start at halfway point
+        nursery_offset = heap_reserved / 2;
         next_nursery_offset = nursery_offset;
+
+        // Old gen starts at offset 0, can grow up to halfway point
+        // Commit initial 1MB for old gen
+        size_t initial_old_gen = 1 * 1024 * 1024;  // 1MB
+        size_t max_old_gen = nursery_offset;       // Can grow to halfway point
+        growOldGen(initial_old_gen);
+        old_gen.initialize(heap_base, old_gen_committed, max_old_gen);
+
+        initialized = true;
     }
 
-    GarbageCollector::~GarbageCollector() { munmap(heap_base, heap_size); }
+    void GarbageCollector::growOldGen(size_t additional_size) {
+        // Commit more memory for old gen
+        char *new_region = heap_base + old_gen_committed;
+
+        void *result = mmap(
+            new_region,
+            additional_size,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+            -1, 0
+        );
+
+        if (result == MAP_FAILED) {
+            throw std::bad_alloc();
+        }
+
+        old_gen_committed += additional_size;
+    }
+
+    void GarbageCollector::commitNursery(char *nursery_base, size_t size) {
+        // Commit memory for a nursery
+        void *result = mmap(
+            nursery_base,
+            size,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+            -1, 0
+        );
+
+        if (result == MAP_FAILED) {
+            throw std::bad_alloc();
+        }
+    }
 
     GarbageCollector &GarbageCollector::instance() {
         static GarbageCollector gc;
@@ -586,16 +670,24 @@ namespace Elm {
     }
 
     void GarbageCollector::initThread() {
+        // Ensure GC is initialized
+        if (!initialized) {
+            initialize();
+        }
+
         std::lock_guard<std::mutex> lock(nursery_mutex);
         auto tid = std::this_thread::get_id();
         if (nurseries.find(tid) == nurseries.end()) {
             // Allocate nursery from the main heap
             char *nursery_base = heap_base + next_nursery_offset;
 
-            // Check we have space
-            if (next_nursery_offset + NURSERY_SIZE > heap_size) {
+            // Check we have space in reserved address space
+            if (next_nursery_offset + NURSERY_SIZE > heap_reserved) {
                 throw std::bad_alloc(); // Out of heap space
             }
+
+            // Commit physical memory for this nursery
+            commitNursery(nursery_base, NURSERY_SIZE);
 
             auto nursery = std::make_unique<NurserySpace>();
             nursery->initialize(nursery_base, NURSERY_SIZE);

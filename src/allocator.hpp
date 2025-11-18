@@ -71,7 +71,7 @@ namespace Elm {
         ~OldGenSpace();
 
         // Initialize with assigned region from main heap
-        void initialize(char *base, size_t size);
+        void initialize(char *base, size_t initial_size, size_t max_size);
 
         // Allocate in old gen (free list allocation)
         void *allocate(size_t size);
@@ -97,7 +97,8 @@ namespace Elm {
         };
 
         char *region_base; // Base of assigned region in main heap
-        size_t region_size; // Size of assigned region
+        size_t region_size; // Current committed size
+        size_t max_region_size; // Maximum size can grow to
         std::vector<char *> chunks; // Memory chunks (within region)
         FreeBlock *free_list; // Free list for allocation
         std::mutex alloc_mutex; // Mutex for allocation
@@ -140,6 +141,9 @@ namespace Elm {
     public:
         static GarbageCollector &instance();
 
+        // Initialize GC with max heap size (default 1GB)
+        void initialize(size_t max_heap_size = 1ULL * 1024 * 1024 * 1024);
+
         // Initialize GC for a thread
         void initThread();
 
@@ -170,10 +174,11 @@ namespace Elm {
 
         // Unified heap
         char *heap_base; // Base pointer for entire heap
-        size_t heap_size; // Total heap size
-        size_t old_gen_size; // Size reserved for old gen
-        size_t nursery_offset; // Where nurseries start
+        size_t heap_reserved; // Total address space reserved
+        size_t old_gen_committed; // How much old gen memory actually committed
+        size_t nursery_offset; // Where nurseries start (halfway point)
         size_t next_nursery_offset; // Next available nursery location
+        bool initialized; // Whether initialize() has been called
 
         OldGenSpace old_gen;
         RootSet root_set;
@@ -181,6 +186,12 @@ namespace Elm {
         // Thread-local nursery spaces
         std::mutex nursery_mutex;
         std::unordered_map<std::thread::id, std::unique_ptr<NurserySpace>> nurseries;
+
+        // Commit more old gen memory
+        void growOldGen(size_t additional_size);
+
+        // Commit nursery memory
+        void commitNursery(char *nursery_base, size_t size);
     };
 
     // Helper functions for heap operations
