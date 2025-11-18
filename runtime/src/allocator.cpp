@@ -46,18 +46,39 @@ bool NurserySpace::contains(void *ptr) const {
     return (p >= memory && p < memory + NURSERY_SIZE);
 }
 
+/**
+ * Performs a minor garbage collection by evacuating all live objects out of the nursery "from space" and
+ * into new locations in either the nursery "to space" or the old generation space.
+ *
+ * All known roots and current stack roots are evacuated first. This may create an initial set of objects
+ * allocated in the to space.
+ *
+ * A scan pointer is set to the start of the to space, and is stepped over every object it encounters in the
+ * to space, evacuating any object that it finds a pointer to. If more objects are evecuated into the to space,
+ * this will bump up the allocation pointer and those objects will be created ahead of the scan pointer so will
+ * also evantually be scanned. When the scan pointer catches up to the allocation pointer, there are no more live
+ * objects left to consider.
+ *
+ * The from and to spaces are flipped over in their roles once all live objects have been removed.
+ *
+ * There is no "remembered set" of pointers from the old generation into the nursery to consider, since Elm
+ * only creates acyclic structures on the heap and immutability means that younger object only point to older
+ * ones and never the other way around. Therefore objects moved into the old generation during evacuation do
+ * not need to be scanned by Cheneys algorithm.
+ */
 void NurserySpace::minorGC(RootSet &roots, OldGenSpace &oldgen) {
-    // Reset to_space allocation
-    alloc_ptr = to_space; // CRITICAL: Reset alloc_ptr to start of to_space
+    // Reset allocation into the to_space.
+    alloc_ptr = to_space;
     scan_ptr = to_space;
     char *alloc_end = to_space;
 
-    // Evacuate roots
+    // Evacuate roots.
     for (HPointer *root: roots.getRoots()) {
         evacuate(*root, oldgen);
     }
 
-    // Process stack roots (conservative scanning)
+    // TODO: This part needs linking into LLVM to get the stack roots.
+    // Evacuate any stack roots also.
     for (auto &[stack_ptr, size]: roots.getStackRoots()) {
         HPointer *ptrs = static_cast<HPointer *>(stack_ptr);
         size_t count = size / sizeof(HPointer);
@@ -66,12 +87,7 @@ void NurserySpace::minorGC(RootSet &roots, OldGenSpace &oldgen) {
         }
     }
 
-    // No remembered set needed! Elm's immutable, acyclic heap means
-    // old generation objects can never point to young generation objects
-    // due to time stratification (objects only point backwards in time)
-
-    // Cheney's algorithm: scan copied objects
-    // Update alloc_end to reflect objects copied during root evacuation
+    // Cheney's algorithm: scan all copied objects.
     alloc_end = alloc_ptr;
 
     while (scan_ptr < alloc_end) {
@@ -152,9 +168,24 @@ void NurserySpace::minorGC(RootSet &roots, OldGenSpace &oldgen) {
     }
 
     // Flip spaces
-    flipSpaces();
+    std::swap(from_space, to_space);
+    scan_ptr = from_space;
 }
 
+/**
+ * Moves a live object in the nursery space to a new location where it will continue to be a live
+ * object and returns the address to which is was moved without any changes being made.
+ *
+ * If the object has a Tag_Forward, it has already been forwarded, in which case the forwarding address
+ * is returned.
+ *
+ * If the object has reached promotion age by surviving a number of garbage collection moves, it is moved
+ * into the old generation. Otherwise, it is moved to the nursery "to space" and its age is incremented by
+ * one.
+ *
+ * The original object in the nursery "from space" is replaced with a Tag_Forward and its forwarding address
+ * in either the old generation or the nursery to space.
+ */
 void *NurserySpace::copy(void *obj, OldGenSpace &oldgen) {
     if (!obj)
         return nullptr;
@@ -209,6 +240,7 @@ void *NurserySpace::copy(void *obj, OldGenSpace &oldgen) {
     return new_obj;
 }
 
+/*
 void *NurserySpace::forward(void *obj) {
     if (!obj)
         return nullptr;
@@ -221,6 +253,7 @@ void *NurserySpace::forward(void *obj) {
 
     return obj;
 }
+*/
 
 void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen) {
     if (ptr.constant != 0)
@@ -243,6 +276,7 @@ void NurserySpace::evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace 
     }
 }
 
+/*
 void NurserySpace::flipSpaces() {
     std::swap(from_space, to_space);
     // Don't reset alloc_ptr! It already points to the end of live objects
@@ -250,6 +284,7 @@ void NurserySpace::flipSpaces() {
     // alloc_ptr stays at its current location (end of live objects in new from_space)
     scan_ptr = from_space;
 }
+*/
 
 // ============================================================================
 // OldGenSpace Implementation

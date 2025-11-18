@@ -57,11 +57,11 @@ private:
     char *alloc_ptr; // Bump allocation pointer
     char *scan_ptr; // Scan pointer for Cheney's algorithm
 
+    //void *forward(void *obj);
     void *copy(void *obj, OldGenSpace &oldgen);
-    void *forward(void *obj);
     void evacuate(HPointer &ptr, OldGenSpace &oldgen);
     void evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace &oldgen);
-    void flipSpaces();
+    //void flipSpaces();
 };
 
 // Old generation space with concurrent mark-and-sweep
@@ -208,6 +208,11 @@ inline void *fromPointer(HPointer ptr) {
     return heap_base + byte_offset;
 }
 
+// TODO: Useful to have just this as an inline:
+//    char *heap_base = GarbageCollector::instance().getHeapBase();
+//    uintptr_t byte_offset = static_cast<uintptr_t>(fwd->pointer) << 3;
+//    return heap_base + byte_offset;
+
 inline HPointer toPointer(void *obj) {
     HPointer ptr;
     // Convert absolute address to logical offset
@@ -218,6 +223,11 @@ inline HPointer toPointer(void *obj) {
     ptr.padding = 0;
     return ptr;
 }
+
+// TODO: Useful to have just this as an inline:
+//    char *heap_base = GarbageCollector::instance().getHeapBase();
+//    uintptr_t byte_offset = static_cast<char *>(new_obj) - heap_base;
+//    fwd->pointer = byte_offset >> 3; // Store as offset in 8-byte units
 
 inline size_t getObjectSize(void *obj) {
     Header *hdr = getHeader(obj);
