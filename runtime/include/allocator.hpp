@@ -267,4 +267,4 @@ inline size_t getObjectSize(void *obj) {
 
 } // namespace Elm
 
-#endif // ECO_GC_H
+#endif // ECO_ALLOCATOR_H
