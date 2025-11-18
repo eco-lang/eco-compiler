@@ -1,19 +1,21 @@
 cmake_minimum_required(VERSION 3.20)
 project(EcoRuntime LANGUAGES CXX)
 
-add_executable(gc_test
-        src/main.cpp
-        src/allocator.cpp
+add_executable(ecor
+        runtime/src/main.cpp
+        runtime/src/allocator.cpp
+        test/generators.hpp
 )
 
-target_include_directories(gc_test PRIVATE src)
-target_compile_features(gc_test PRIVATE cxx_std_20)
+target_include_directories(ecor PRIVATE runtime/include)
+target_compile_features(ecor PRIVATE cxx_std_20)
 
 # Link RapidCheck
 find_package(rapidcheck REQUIRED)
-target_link_libraries(gc_test PRIVATE rapidcheck)
+target_link_libraries(ecor PRIVATE rapidcheck)
 
 # Add pthread for threading support
 find_package(Threads REQUIRED)
-target_link_libraries(gc_test PRIVATE Threads::Threads)
+target_link_libraries(ecor PRIVATE Threads::Threads)
 
+add_subdirectory(test)
