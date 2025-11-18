@@ -4,8 +4,8 @@
 #include <unordered_set>
 #include <vector>
 #include "allocator.hpp"
-#include "heap.hpp"
 #include "generators.hpp"
+#include "heap.hpp"
 
 using namespace Elm;
 

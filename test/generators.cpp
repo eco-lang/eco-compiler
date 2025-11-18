@@ -1,9 +1,9 @@
+#include "generators.hpp"
 #include <random>
 #include <rapidcheck.h>
 #include <vector>
-#include "heap.hpp"
 #include "allocator.hpp"
-#include "generators.hpp"
+#include "heap.hpp"
 
 using namespace Elm;
 
