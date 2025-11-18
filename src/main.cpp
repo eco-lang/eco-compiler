@@ -284,112 +284,121 @@ struct HeapSnapshot {
   }
 };
 
-// Custom RapidCheck generators for heap objects
-namespace rc {
+// Helper functions to create random heap objects
+// These are NOT RapidCheck generators - they use RNG directly
 
-// Generate a random primitive value
-Gen<void*> genPrimitive() {
-  return gen::exec([]() -> void* {
-    auto& gc = GarbageCollector::instance();
-    int type = *gen::inRange(0, 3);
+void* createRandomPrimitive(std::mt19937& rng) {
+  auto& gc = GarbageCollector::instance();
+  std::uniform_int_distribution<int> type_dist(0, 2);
+  int type = type_dist(rng);
 
+  switch (type) {
+    case 0: { // Int
+      void* obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+      ElmInt* elm_int = static_cast<ElmInt*>(obj);
+      std::uniform_int_distribution<i64> val_dist;
+      elm_int->value = val_dist(rng);
+      return obj;
+    }
+    case 1: { // Float
+      void* obj = gc.allocate(sizeof(ElmFloat), Tag_Float);
+      ElmFloat* elm_float = static_cast<ElmFloat*>(obj);
+      std::uniform_real_distribution<f64> val_dist;
+      elm_float->value = val_dist(rng);
+      return obj;
+    }
+    case 2: { // Char
+      void* obj = gc.allocate(sizeof(ElmChar), Tag_Char);
+      ElmChar* elm_char = static_cast<ElmChar*>(obj);
+      std::uniform_int_distribution<u16> val_dist(0, 0xFFFF);
+      elm_char->value = val_dist(rng);
+      return obj;
+    }
+    default:
+      return nullptr;
+  }
+}
+
+Unboxable createRandomUnboxable(std::mt19937& rng, const std::vector<void*>& existing_objects, bool& is_boxed) {
+  Unboxable val;
+  std::uniform_int_distribution<int> coin(0, 1);
+
+  // Randomly decide: boxed pointer or unboxed primitive
+  if (coin(rng) && !existing_objects.empty()) {
+    // Boxed: pointer to existing object
+    is_boxed = true;
+    std::uniform_int_distribution<size_t> idx_dist(0, existing_objects.size() - 1);
+    size_t idx = idx_dist(rng);
+    val.p = toPointer(existing_objects[idx]);
+  } else {
+    // Unboxed: primitive value
+    is_boxed = false;
+    std::uniform_int_distribution<int> type_dist(0, 2);
+    int type = type_dist(rng);
     switch (type) {
-      case 0: { // Int
-        void* obj = gc.allocate(sizeof(ElmInt), Tag_Int);
-        ElmInt* elm_int = static_cast<ElmInt*>(obj);
-        elm_int->value = *gen::arbitrary<i64>();
-        return obj;
+      case 0: {
+        std::uniform_int_distribution<i64> val_dist;
+        val.i = val_dist(rng);
+        break;
       }
-      case 1: { // Float
-        void* obj = gc.allocate(sizeof(ElmFloat), Tag_Float);
-        ElmFloat* elm_float = static_cast<ElmFloat*>(obj);
-        elm_float->value = *gen::arbitrary<f64>();
-        return obj;
+      case 1: {
+        std::uniform_real_distribution<f64> val_dist;
+        val.f = val_dist(rng);
+        break;
       }
-      case 2: { // Char
-        void* obj = gc.allocate(sizeof(ElmChar), Tag_Char);
-        ElmChar* elm_char = static_cast<ElmChar*>(obj);
-        elm_char->value = *gen::inRange<u16>(0, 0xFFFF);
-        return obj;
-      }
-      default:
-        return nullptr;
-    }
-  });
-}
-
-// Generate unboxable value (either pointer or primitive)
-Gen<Unboxable> genUnboxable(const std::vector<void*>& existing_objects, bool& is_boxed) {
-  return gen::exec([&existing_objects, &is_boxed]() -> Unboxable {
-    Unboxable val;
-
-    // Randomly decide: boxed pointer or unboxed primitive
-    if (*gen::arbitrary<bool>() && !existing_objects.empty()) {
-      // Boxed: pointer to existing object
-      is_boxed = true;
-      size_t idx = *gen::inRange<size_t>(0, existing_objects.size());
-      val.p = toPointer(existing_objects[idx]);
-    } else {
-      // Unboxed: primitive value
-      is_boxed = false;
-      int type = *gen::inRange(0, 2);
-      switch (type) {
-        case 0: val.i = *gen::arbitrary<i64>(); break;
-        case 1: val.f = *gen::arbitrary<f64>(); break;
-        default: val.c = *gen::inRange<u16>(0, 0xFFFF); break;
+      default: {
+        std::uniform_int_distribution<u16> val_dist(0, 0xFFFF);
+        val.c = val_dist(rng);
+        break;
       }
     }
+  }
 
-    return val;
-  });
+  return val;
 }
 
-// Generate a random composite object (Tuple2, Tuple3) that may reference existing objects
-Gen<void*> genComposite(const std::vector<void*>& existing_objects) {
-  return gen::exec([&existing_objects]() -> void* {
-    auto& gc = GarbageCollector::instance();
-    int type = *gen::inRange(0, 2);
+void* createRandomComposite(std::mt19937& rng, const std::vector<void*>& existing_objects) {
+  auto& gc = GarbageCollector::instance();
+  std::uniform_int_distribution<int> type_dist(0, 1);
+  int type = type_dist(rng);
 
-    switch (type) {
-      case 0: { // Tuple2
-        void* obj = gc.allocate(sizeof(Tuple2), Tag_Tuple2);
-        Tuple2* tuple = static_cast<Tuple2*>(obj);
-        Header* hdr = getHeader(obj);
+  switch (type) {
+    case 0: { // Tuple2
+      void* obj = gc.allocate(sizeof(Tuple2), Tag_Tuple2);
+      Tuple2* tuple = static_cast<Tuple2*>(obj);
+      Header* hdr = getHeader(obj);
 
-        bool a_boxed = false, b_boxed = false;
-        tuple->a = *genUnboxable(existing_objects, a_boxed);
-        tuple->b = *genUnboxable(existing_objects, b_boxed);
+      bool a_boxed = false, b_boxed = false;
+      tuple->a = createRandomUnboxable(rng, existing_objects, a_boxed);
+      tuple->b = createRandomUnboxable(rng, existing_objects, b_boxed);
 
-        hdr->unboxed = 0;
-        if (!a_boxed) hdr->unboxed |= 1;
-        if (!b_boxed) hdr->unboxed |= 2;
+      hdr->unboxed = 0;
+      if (!a_boxed) hdr->unboxed |= 1;
+      if (!b_boxed) hdr->unboxed |= 2;
 
-        return obj;
-      }
-      case 1: { // Tuple3
-        void* obj = gc.allocate(sizeof(Tuple3), Tag_Tuple3);
-        Tuple3* tuple = static_cast<Tuple3*>(obj);
-        Header* hdr = getHeader(obj);
-
-        bool a_boxed = false, b_boxed = false, c_boxed = false;
-        tuple->a = *genUnboxable(existing_objects, a_boxed);
-        tuple->b = *genUnboxable(existing_objects, b_boxed);
-        tuple->c = *genUnboxable(existing_objects, c_boxed);
-
-        hdr->unboxed = 0;
-        if (!a_boxed) hdr->unboxed |= 1;
-        if (!b_boxed) hdr->unboxed |= 2;
-        if (!c_boxed) hdr->unboxed |= 4;
-
-        return obj;
-      }
-      default:
-        return nullptr;
+      return obj;
     }
-  });
-}
+    case 1: { // Tuple3
+      void* obj = gc.allocate(sizeof(Tuple3), Tag_Tuple3);
+      Tuple3* tuple = static_cast<Tuple3*>(obj);
+      Header* hdr = getHeader(obj);
 
-} // namespace rc
+      bool a_boxed = false, b_boxed = false, c_boxed = false;
+      tuple->a = createRandomUnboxable(rng, existing_objects, a_boxed);
+      tuple->b = createRandomUnboxable(rng, existing_objects, b_boxed);
+      tuple->c = createRandomUnboxable(rng, existing_objects, c_boxed);
+
+      hdr->unboxed = 0;
+      if (!a_boxed) hdr->unboxed |= 1;
+      if (!b_boxed) hdr->unboxed |= 2;
+      if (!c_boxed) hdr->unboxed |= 4;
+
+      return obj;
+    }
+    default:
+      return nullptr;
+  }
+}
 
 // Property test: GC preserves reachable objects
 void test_gc_preserves_roots() {
@@ -398,23 +407,29 @@ void test_gc_preserves_roots() {
     auto& gc = GarbageCollector::instance();
     gc.initThread();
 
+    // Use a random seed for our custom RNG
+    std::random_device rd;
+    std::mt19937 rng(rd());
+
     // Generate random number of objects (10-100)
-    size_t num_objects = *rc::gen::inRange<size_t>(10, 100);
+    std::uniform_int_distribution<size_t> obj_count_dist(10, 100);
+    size_t num_objects = obj_count_dist(rng);
 
     std::vector<void*> allocated_objects;
     std::vector<HPointer> root_storage; // Storage for root HPointers
     std::vector<HPointer*> root_ptrs;   // Pointers to roots
 
     // Phase 1: Allocate random heap structures
+    std::uniform_int_distribution<int> coin(0, 1);
     for (size_t i = 0; i < num_objects; i++) {
       void* obj = nullptr;
 
-      if (i < 10 || *rc::gen::arbitrary<bool>()) {
+      if (i < 10 || coin(rng)) {
         // Create primitive
-        obj = *rc::genPrimitive();
+        obj = createRandomPrimitive(rng);
       } else {
         // Create composite that may reference existing objects
-        obj = *rc::genComposite(allocated_objects);
+        obj = createRandomComposite(rng, allocated_objects);
       }
 
       if (obj) {
@@ -425,14 +440,16 @@ void test_gc_preserves_roots() {
     RC_ASSERT(!allocated_objects.empty());
 
     // Phase 2: Randomly select 20-50% of objects as roots
-    size_t num_roots = *rc::gen::inRange<size_t>(
+    std::uniform_int_distribution<size_t> root_count_dist(
       allocated_objects.size() / 5,
       allocated_objects.size() / 2
     );
+    size_t num_roots = root_count_dist(rng);
 
     std::unordered_set<size_t> root_indices_set;
+    std::uniform_int_distribution<size_t> idx_dist(0, allocated_objects.size() - 1);
     for (size_t i = 0; i < num_roots; i++) {
-      size_t idx = *rc::gen::inRange<size_t>(0, allocated_objects.size());
+      size_t idx = idx_dist(rng);
       root_indices_set.insert(idx);
     }
 
@@ -471,12 +488,15 @@ void test_gc_collects_garbage() {
     gc.initThread();
     auto* nursery = gc.getNursery();
 
+    std::random_device rd;
+    std::mt19937 rng(rd());
+
     // Allocate many objects without adding to roots
     size_t initial_used = nursery->bytesAllocated();
 
     for (int i = 0; i < 50; i++) {
-      void* obj = *rc::genPrimitive();
-      RC_ASSERT(obj != nullptr);
+      void* obj = createRandomPrimitive(rng);
+      RC_ASSERT(reinterpret_cast<uintptr_t>(obj) != 0);
     }
 
     size_t used_before_gc = nursery->bytesAllocated();
@@ -498,19 +518,23 @@ void test_multiple_gc_cycles() {
     auto& gc = GarbageCollector::instance();
     gc.initThread();
 
+    std::random_device rd;
+    std::mt19937 rng(rd());
+
     // Create a long-lived root object
-    void* root_obj = *rc::genPrimitive();
+    void* root_obj = createRandomPrimitive(rng);
     HPointer root_ptr = toPointer(root_obj);
     gc.getRootSet().addRoot(&root_ptr);
 
     i64 original_value = static_cast<ElmInt*>(root_obj)->value;
 
     // Run multiple GC cycles
-    int num_cycles = *rc::gen::inRange(3, 10);
+    std::uniform_int_distribution<int> cycles_dist(3, 10);
+    int num_cycles = cycles_dist(rng);
     for (int i = 0; i < num_cycles; i++) {
       // Allocate garbage between cycles
       for (int j = 0; j < 20; j++) {
-        void* garbage = *rc::genPrimitive();
+        void* garbage = createRandomPrimitive(rng);
         (void)garbage;
       }
 
@@ -519,7 +543,7 @@ void test_multiple_gc_cycles() {
 
     // Verify root still exists and has same value
     void* final_obj = fromPointer(root_ptr);
-    RC_ASSERT(final_obj != nullptr);
+    RC_ASSERT(reinterpret_cast<uintptr_t>(final_obj) != 0);
 
     Header* hdr = getHeader(final_obj);
     RC_ASSERT(hdr->tag == Tag_Int);
