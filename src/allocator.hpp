@@ -173,7 +173,12 @@ inline void* fromPointer(HPointer ptr) {
   if (ptr.constant != 0) {
     return nullptr;  // It's a constant, not a heap pointer
   }
-  return reinterpret_cast<void*>(static_cast<uintptr_t>(ptr.ptr));
+  // Sign-extend 48-bit pointer to 64 bits (required for x86-64 canonical addresses)
+  uintptr_t ptr_val = ptr.ptr;
+  if (ptr_val & (1ULL << 47)) {  // If bit 47 is set
+    ptr_val |= 0xFFFF000000000000ULL;  // Sign-extend bits 48-63
+  }
+  return reinterpret_cast<void*>(ptr_val);
 }
 
 inline HPointer toPointer(void* obj) {

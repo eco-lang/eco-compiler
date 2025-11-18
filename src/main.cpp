@@ -164,6 +164,11 @@ struct HeapSnapshot {
 
       Header* hdr = getHeader(obj);
 
+      // Safety check: tag should be valid
+      if (hdr->tag >= Tag_Forward) {
+        return false;
+      }
+
       switch (hdr->tag) {
         case Tag_Tuple2: {
           Tuple2* t = static_cast<Tuple2*>(obj);
@@ -223,7 +228,6 @@ struct HeapSnapshot {
 
       // Verify tag is valid
       if (hdr->tag >= Tag_Forward) {
-        std::cerr << "ERROR: Invalid tag " << hdr->tag << " in reachable object" << std::endl;
         return false;
       }
 
@@ -239,7 +243,6 @@ struct HeapSnapshot {
             }
           }
           if (!found) {
-            std::cerr << "ERROR: Int value " << obj_int->value << " not found in snapshot" << std::endl;
             return false;
           }
           break;
@@ -254,7 +257,6 @@ struct HeapSnapshot {
             }
           }
           if (!found) {
-            std::cerr << "ERROR: Float value " << obj_float->value << " not found in snapshot" << std::endl;
             return false;
           }
           break;
@@ -269,7 +271,6 @@ struct HeapSnapshot {
             }
           }
           if (!found) {
-            std::cerr << "ERROR: Char value " << obj_char->value << " not found in snapshot" << std::endl;
             return false;
           }
           break;
@@ -521,17 +522,25 @@ void test_multiple_gc_cycles() {
     std::random_device rd;
     std::mt19937 rng(rd());
 
-    // Create a long-lived root object
-    void* root_obj = createRandomPrimitive(rng);
+    // Create a long-lived Int object (not random type)
+    void* root_obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+    ElmInt* elm_int = static_cast<ElmInt*>(root_obj);
+    std::uniform_int_distribution<i64> val_dist;
+    elm_int->value = val_dist(rng);
+
     HPointer root_ptr = toPointer(root_obj);
     gc.getRootSet().addRoot(&root_ptr);
 
-    i64 original_value = static_cast<ElmInt*>(root_obj)->value;
+    i64 original_value = elm_int->value;
 
     // Run multiple GC cycles
     std::uniform_int_distribution<int> cycles_dist(3, 10);
     int num_cycles = cycles_dist(rng);
     for (int i = 0; i < num_cycles; i++) {
+      // Check value before GC
+      void* current_obj = fromPointer(root_ptr);
+      i64 before_value = static_cast<ElmInt*>(current_obj)->value;
+
       // Allocate garbage between cycles
       for (int j = 0; j < 20; j++) {
         void* garbage = createRandomPrimitive(rng);
@@ -539,6 +548,12 @@ void test_multiple_gc_cycles() {
       }
 
       gc.minorGC();
+
+      // Check value after GC
+      void* after_obj = fromPointer(root_ptr);
+      i64 after_value = static_cast<ElmInt*>(after_obj)->value;
+
+      RC_ASSERT(before_value == after_value);
     }
 
     // Verify root still exists and has same value

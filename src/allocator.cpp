@@ -2,6 +2,7 @@
 #include <cstring>
 #include <algorithm>
 #include <new>
+#include <iostream>
 
 namespace Elm {
 
@@ -41,6 +42,7 @@ bool NurserySpace::contains(void* ptr) const {
 
 void NurserySpace::minorGC(RootSet& roots, OldGenSpace& oldgen) {
   // Reset to_space allocation
+  alloc_ptr = to_space;  // CRITICAL: Reset alloc_ptr to start of to_space
   scan_ptr = to_space;
   char* alloc_end = to_space;
 
@@ -63,6 +65,9 @@ void NurserySpace::minorGC(RootSet& roots, OldGenSpace& oldgen) {
   // due to time stratification (objects only point backwards in time)
 
   // Cheney's algorithm: scan copied objects
+  // Update alloc_end to reflect objects copied during root evacuation
+  alloc_end = alloc_ptr;
+
   while (scan_ptr < alloc_end) {
     void* obj = scan_ptr;
     Header* hdr = getHeader(obj);
@@ -151,7 +156,12 @@ void* NurserySpace::copy(void* obj, OldGenSpace& oldgen) {
   // Check if already forwarded
   if (hdr->tag == Tag_Forward) {
     Forward* fwd = static_cast<Forward*>(obj);
-    return reinterpret_cast<void*>(static_cast<uintptr_t>(fwd->pointer));
+    // Sign-extend 48-bit pointer to 64 bits (required for x86-64 canonical addresses)
+    uintptr_t ptr_val = fwd->pointer;
+    if (ptr_val & (1ULL << 47)) {  // If bit 47 is set
+      ptr_val |= 0xFFFF000000000000ULL;  // Sign-extend bits 48-63
+    }
+    return reinterpret_cast<void*>(ptr_val);
   }
 
   size_t size = getObjectSize(obj);
@@ -175,7 +185,10 @@ void* NurserySpace::copy(void* obj, OldGenSpace& oldgen) {
     new_obj = alloc_ptr;
     alloc_ptr += size;
 
+    // Copy the object
     std::memcpy(new_obj, obj, size);
+
+    // Update age after copying (preserves all other fields)
     Header* new_hdr = getHeader(new_obj);
     new_hdr->age++;  // Increment age
   }
@@ -221,7 +234,9 @@ void NurserySpace::evacuateUnboxable(Unboxable& val, bool is_boxed, OldGenSpace&
 
 void NurserySpace::flipSpaces() {
   std::swap(from_space, to_space);
-  alloc_ptr = from_space;
+  // Don't reset alloc_ptr! It already points to the end of live objects
+  // which are now in from_space after the swap
+  // alloc_ptr stays at its current location (end of live objects in new from_space)
   scan_ptr = from_space;
 }
 
