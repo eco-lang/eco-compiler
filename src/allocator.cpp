@@ -11,23 +11,22 @@ namespace Elm {
 // NurserySpace Implementation
 // ============================================================================
 
-NurserySpace::NurserySpace() {
-  // Use mmap with MAP_32BIT to get addresses that fit in 40 bits (with sign extension)
-  memory = static_cast<char*>(mmap(nullptr, NURSERY_SIZE,
-                                    PROT_READ | PROT_WRITE,
-                                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT,
-                                    -1, 0));
-  if (memory == MAP_FAILED) {
-    throw std::bad_alloc();
-  }
-  from_space = memory;
-  to_space = memory + (NURSERY_SIZE / 2);
-  alloc_ptr = from_space;
-  scan_ptr = from_space;
+NurserySpace::NurserySpace()
+  : memory(nullptr), from_space(nullptr), to_space(nullptr),
+    alloc_ptr(nullptr), scan_ptr(nullptr) {
+  // Initialization happens in initialize() method
 }
 
 NurserySpace::~NurserySpace() {
-  munmap(memory, NURSERY_SIZE);
+  // No need to free memory - it's part of the main heap
+}
+
+void NurserySpace::initialize(char* nursery_base, size_t size) {
+  memory = nursery_base;
+  from_space = memory;
+  to_space = memory + (size / 2);
+  alloc_ptr = from_space;
+  scan_ptr = from_space;
 }
 
 void* NurserySpace::allocate(size_t size) {
@@ -164,12 +163,10 @@ void* NurserySpace::copy(void* obj, OldGenSpace& oldgen) {
   // Check if already forwarded
   if (hdr->tag == Tag_Forward) {
     Forward* fwd = static_cast<Forward*>(obj);
-    // Sign-extend 40-bit pointer to 64 bits (required for canonical addresses)
-    uintptr_t ptr_val = fwd->pointer;
-    if (ptr_val & (1ULL << 39)) {  // If bit 39 is set
-      ptr_val |= 0xFFFFFF0000000000ULL;  // Sign-extend bits 40-63
-    }
-    return reinterpret_cast<void*>(ptr_val);
+    // fwd->pointer is a logical offset in 8-byte units
+    char* heap_base = GarbageCollector::instance().getHeapBase();
+    uintptr_t byte_offset = static_cast<uintptr_t>(fwd->pointer) << 3;
+    return heap_base + byte_offset;
   }
 
   size_t size = getObjectSize(obj);
@@ -201,10 +198,12 @@ void* NurserySpace::copy(void* obj, OldGenSpace& oldgen) {
     new_hdr->age++;  // Increment age
   }
 
-  // Leave forwarding pointer
+  // Leave forwarding pointer (as logical offset)
   Forward* fwd = static_cast<Forward*>(obj);
   fwd->header.tag = Tag_Forward;
-  fwd->pointer = reinterpret_cast<uintptr_t>(new_obj);
+  char* heap_base = GarbageCollector::instance().getHeapBase();
+  uintptr_t byte_offset = static_cast<char*>(new_obj) - heap_base;
+  fwd->pointer = byte_offset >> 3;  // Store as offset in 8-byte units
 
   return new_obj;
 }
@@ -253,33 +252,35 @@ void NurserySpace::flipSpaces() {
 // ============================================================================
 
 OldGenSpace::OldGenSpace()
-  : free_list(nullptr), current_epoch(0), marking_active(false) {
-  // Allocate initial chunk (e.g., 16MB)
-  addChunk(16 * 1024 * 1024);
+  : region_base(nullptr), region_size(0), free_list(nullptr),
+    current_epoch(0), marking_active(false) {
+  // Initialization happens in initialize() method
 }
 
 OldGenSpace::~OldGenSpace() {
-  for (char* chunk : chunks) {
-    munmap(chunk, 16 * 1024 * 1024);  // Fixed chunk size
-  }
+  // No need to free memory - it's part of the main heap
+}
+
+void OldGenSpace::initialize(char* base, size_t size) {
+  region_base = base;
+  region_size = size;
+
+  // Initialize free list with entire region
+  FreeBlock* block = reinterpret_cast<FreeBlock*>(region_base);
+  block->size = region_size;
+  block->next = nullptr;
+  free_list = block;
+
+  // Track the region as our first "chunk"
+  chunks.push_back(region_base);
 }
 
 void OldGenSpace::addChunk(size_t size) {
-  // Use mmap with MAP_32BIT to get addresses that fit in 40 bits
-  char* chunk = static_cast<char*>(mmap(nullptr, size,
-                                         PROT_READ | PROT_WRITE,
-                                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT,
-                                         -1, 0));
-  if (chunk == MAP_FAILED) {
-    throw std::bad_alloc();
-  }
-  chunks.push_back(chunk);
-
-  // Add entire chunk to free list
-  FreeBlock* block = reinterpret_cast<FreeBlock*>(chunk);
-  block->size = size;
-  block->next = free_list;
-  free_list = block;
+  // Old gen now operates within a fixed region from the main heap
+  // We cannot dynamically add more chunks
+  // This should not be called in the new design
+  (void)size;  // Unused
+  throw std::bad_alloc();  // Out of memory
 }
 
 void* OldGenSpace::allocate(size_t size) {
@@ -331,14 +332,7 @@ void* OldGenSpace::allocate(size_t size) {
 
 bool OldGenSpace::contains(void* ptr) const {
   char* p = static_cast<char*>(ptr);
-  for (char* chunk : chunks) {
-    // Chunks are fixed size, but we'd need to track that
-    // For now, do a simple check
-    if (p >= chunk && p < chunk + 16 * 1024 * 1024) {
-      return true;
-    }
-  }
-  return false;
+  return (p >= region_base && p < region_base + region_size);
 }
 
 void OldGenSpace::startConcurrentMark(RootSet& roots) {
@@ -501,35 +495,33 @@ void OldGenSpace::sweep() {
   // Rebuild free list from white (unmarked) objects
   FreeBlock* new_free_list = nullptr;
 
-  for (char* chunk : chunks) {
-    char* ptr = chunk;
-    char* end = chunk + 16 * 1024 * 1024;  // Fixed chunk size for now
+  char* ptr = region_base;
+  char* end = region_base + region_size;
 
-    while (ptr < end) {
-      Header* hdr = reinterpret_cast<Header*>(ptr);
+  while (ptr < end) {
+    Header* hdr = reinterpret_cast<Header*>(ptr);
 
-      // Check if this is a valid object
-      if (hdr->tag >= Tag_Forward) {
-        ptr += sizeof(Header);
-        continue;
-      }
-
-      size_t obj_size = sizeof(Header) + hdr->size;
-      obj_size = (obj_size + 7) & ~7;
-
-      if (hdr->color == static_cast<u32>(Color::White)) {
-        // Add to free list
-        FreeBlock* block = reinterpret_cast<FreeBlock*>(ptr);
-        block->size = obj_size;
-        block->next = new_free_list;
-        new_free_list = block;
-      } else {
-        // Reset color to white for next cycle
-        hdr->color = static_cast<u32>(Color::White);
-      }
-
-      ptr += obj_size;
+    // Check if this is a valid object
+    if (hdr->tag >= Tag_Forward) {
+      ptr += sizeof(Header);
+      continue;
     }
+
+    size_t obj_size = sizeof(Header) + hdr->size;
+    obj_size = (obj_size + 7) & ~7;
+
+    if (hdr->color == static_cast<u32>(Color::White)) {
+      // Add to free list
+      FreeBlock* block = reinterpret_cast<FreeBlock*>(ptr);
+      block->size = obj_size;
+      block->next = new_free_list;
+      new_free_list = block;
+    } else {
+      // Reset color to white for next cycle
+      hdr->color = static_cast<u32>(Color::White);
+    }
+
+    ptr += obj_size;
   }
 
   free_list = new_free_list;
@@ -563,8 +555,30 @@ void RootSet::clearStackRoots() {
 // GarbageCollector Implementation
 // ============================================================================
 
-GarbageCollector::GarbageCollector() {}
-GarbageCollector::~GarbageCollector() {}
+GarbageCollector::GarbageCollector() {
+  // Allocate unified heap (start with 1GB, can be expanded later)
+  heap_size = 1ULL * 1024 * 1024 * 1024;  // 1GB
+
+  heap_base = static_cast<char*>(mmap(nullptr, heap_size,
+                                       PROT_READ | PROT_WRITE,
+                                       MAP_PRIVATE | MAP_ANONYMOUS,
+                                       -1, 0));
+  if (heap_base == MAP_FAILED) {
+    throw std::bad_alloc();
+  }
+
+  // Old gen gets first 512MB
+  old_gen_size = 512ULL * 1024 * 1024;
+  old_gen.initialize(heap_base, old_gen_size);
+
+  // Nurseries start after old gen
+  nursery_offset = old_gen_size;
+  next_nursery_offset = nursery_offset;
+}
+
+GarbageCollector::~GarbageCollector() {
+  munmap(heap_base, heap_size);
+}
 
 GarbageCollector& GarbageCollector::instance() {
   static GarbageCollector gc;
@@ -575,7 +589,19 @@ void GarbageCollector::initThread() {
   std::lock_guard<std::mutex> lock(nursery_mutex);
   auto tid = std::this_thread::get_id();
   if (nurseries.find(tid) == nurseries.end()) {
-    nurseries[tid] = std::make_unique<NurserySpace>();
+    // Allocate nursery from the main heap
+    char* nursery_base = heap_base + next_nursery_offset;
+
+    // Check we have space
+    if (next_nursery_offset + NURSERY_SIZE > heap_size) {
+      throw std::bad_alloc();  // Out of heap space
+    }
+
+    auto nursery = std::make_unique<NurserySpace>();
+    nursery->initialize(nursery_base, NURSERY_SIZE);
+    nurseries[tid] = std::move(nursery);
+
+    next_nursery_offset += NURSERY_SIZE;
   }
 }
 

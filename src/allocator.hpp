@@ -34,6 +34,9 @@ public:
   NurserySpace();
   ~NurserySpace();
 
+  // Initialize with assigned region from main heap
+  void initialize(char* nursery_base, size_t size);
+
   // Allocate in nursery (bump allocation)
   void* allocate(size_t size);
 
@@ -67,6 +70,9 @@ public:
   OldGenSpace();
   ~OldGenSpace();
 
+  // Initialize with assigned region from main heap
+  void initialize(char* base, size_t size);
+
   // Allocate in old gen (free list allocation)
   void* allocate(size_t size);
 
@@ -90,7 +96,9 @@ private:
     FreeBlock* next;
   };
 
-  std::vector<char*> chunks;           // Memory chunks
+  char* region_base;                   // Base of assigned region in main heap
+  size_t region_size;                  // Size of assigned region
+  std::vector<char*> chunks;           // Memory chunks (within region)
   FreeBlock* free_list;                // Free list for allocation
   std::mutex alloc_mutex;              // Mutex for allocation
 
@@ -153,9 +161,19 @@ public:
   // Get old gen space
   OldGenSpace& getOldGen() { return old_gen; }
 
+  // Get heap base pointer (for logical pointer conversion)
+  char* getHeapBase() const { return heap_base; }
+
 private:
   GarbageCollector();
   ~GarbageCollector();
+
+  // Unified heap
+  char* heap_base;              // Base pointer for entire heap
+  size_t heap_size;             // Total heap size
+  size_t old_gen_size;          // Size reserved for old gen
+  size_t nursery_offset;        // Where nurseries start
+  size_t next_nursery_offset;   // Next available nursery location
 
   OldGenSpace old_gen;
   RootSet root_set;
@@ -174,17 +192,19 @@ inline void* fromPointer(HPointer ptr) {
   if (ptr.constant != 0) {
     return nullptr;  // It's a constant, not a heap pointer
   }
-  // Sign-extend 40-bit pointer to 64 bits (required for canonical addresses)
-  uintptr_t ptr_val = ptr.ptr;
-  if (ptr_val & (1ULL << 39)) {  // If bit 39 is set
-    ptr_val |= 0xFFFFFF0000000000ULL;  // Sign-extend bits 40-63
-  }
-  return reinterpret_cast<void*>(ptr_val);
+  // ptr.ptr is a logical offset in 8-byte units
+  // Convert to byte offset by shifting left 3 (multiply by 8)
+  char* heap_base = GarbageCollector::instance().getHeapBase();
+  uintptr_t byte_offset = static_cast<uintptr_t>(ptr.ptr) << 3;
+  return heap_base + byte_offset;
 }
 
 inline HPointer toPointer(void* obj) {
   HPointer ptr;
-  ptr.ptr = reinterpret_cast<uintptr_t>(obj);
+  // Convert absolute address to logical offset
+  char* heap_base = GarbageCollector::instance().getHeapBase();
+  uintptr_t byte_offset = static_cast<char*>(obj) - heap_base;
+  ptr.ptr = byte_offset >> 3;  // Divide by 8 (shift right 3)
   ptr.constant = 0;
   ptr.padding = 0;
   return ptr;
