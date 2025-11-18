@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <new>
 #include <iostream>
+#include <sys/mman.h>
 
 namespace Elm {
 
@@ -11,7 +12,14 @@ namespace Elm {
 // ============================================================================
 
 NurserySpace::NurserySpace() {
-  memory = static_cast<char*>(::operator new(NURSERY_SIZE, std::align_val_t{8}));
+  // Use mmap with MAP_32BIT to get addresses that fit in 40 bits (with sign extension)
+  memory = static_cast<char*>(mmap(nullptr, NURSERY_SIZE,
+                                    PROT_READ | PROT_WRITE,
+                                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT,
+                                    -1, 0));
+  if (memory == MAP_FAILED) {
+    throw std::bad_alloc();
+  }
   from_space = memory;
   to_space = memory + (NURSERY_SIZE / 2);
   alloc_ptr = from_space;
@@ -19,7 +27,7 @@ NurserySpace::NurserySpace() {
 }
 
 NurserySpace::~NurserySpace() {
-  ::operator delete(memory, std::align_val_t{8});
+  munmap(memory, NURSERY_SIZE);
 }
 
 void* NurserySpace::allocate(size_t size) {
@@ -156,10 +164,10 @@ void* NurserySpace::copy(void* obj, OldGenSpace& oldgen) {
   // Check if already forwarded
   if (hdr->tag == Tag_Forward) {
     Forward* fwd = static_cast<Forward*>(obj);
-    // Sign-extend 48-bit pointer to 64 bits (required for x86-64 canonical addresses)
+    // Sign-extend 40-bit pointer to 64 bits (required for canonical addresses)
     uintptr_t ptr_val = fwd->pointer;
-    if (ptr_val & (1ULL << 47)) {  // If bit 47 is set
-      ptr_val |= 0xFFFF000000000000ULL;  // Sign-extend bits 48-63
+    if (ptr_val & (1ULL << 39)) {  // If bit 39 is set
+      ptr_val |= 0xFFFFFF0000000000ULL;  // Sign-extend bits 40-63
     }
     return reinterpret_cast<void*>(ptr_val);
   }
@@ -252,12 +260,19 @@ OldGenSpace::OldGenSpace()
 
 OldGenSpace::~OldGenSpace() {
   for (char* chunk : chunks) {
-    ::operator delete(chunk, std::align_val_t{8});
+    munmap(chunk, 16 * 1024 * 1024);  // Fixed chunk size
   }
 }
 
 void OldGenSpace::addChunk(size_t size) {
-  char* chunk = static_cast<char*>(::operator new(size, std::align_val_t{8}));
+  // Use mmap with MAP_32BIT to get addresses that fit in 40 bits
+  char* chunk = static_cast<char*>(mmap(nullptr, size,
+                                         PROT_READ | PROT_WRITE,
+                                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT,
+                                         -1, 0));
+  if (chunk == MAP_FAILED) {
+    throw std::bad_alloc();
+  }
   chunks.push_back(chunk);
 
   // Add entire chunk to free list

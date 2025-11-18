@@ -24,7 +24,7 @@ such as commonly used constants.
 // Default Bit widths
 #define TAG_BITS 5
 #define CTOR_BITS 16
-#define POINTER_BITS 48
+#define POINTER_BITS 40
 #define ID_BITS 16
 
 typedef enum {
@@ -79,7 +79,7 @@ typedef enum {
 typedef struct {
   u64 ptr : POINTER_BITS;
   u64 constant : 4;  // For frequently used Elm constants.
-  u64 padding : 12;  // Spare space.
+  u64 padding : 20;  // Spare space.
 } HPointer;
 static_assert(sizeof(HPointer) == 8, "HPointer must be 64 bits");
 
@@ -199,7 +199,7 @@ typedef struct {
 typedef struct {
   Header header;
   u64 pointer : POINTER_BITS;
-  u64 padding : 16; // Spare space for more GC flags if needed.
+  u64 padding : 24; // Spare space for more GC flags if needed.
 } Forward;
 
 typedef union HeapValue {
