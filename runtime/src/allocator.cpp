@@ -661,7 +661,7 @@ void GarbageCollector::growOldGen(size_t additional_size) {
     char *new_region = heap_base + old_gen_committed;
 
     void *result =
-            mmap(new_region, additional_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+        mmap(new_region, additional_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
 
     if (result == MAP_FAILED) {
         throw std::bad_alloc();

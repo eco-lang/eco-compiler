@@ -45,7 +45,7 @@ struct HeapGraphDesc {
 // ============================================================================
 
 // Allocate objects from descriptions
-std::vector<void*> allocateHeapGraph(const std::vector<HeapObjectDesc>& nodes);
+std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes);
 
 } // namespace Elm
 
@@ -60,32 +60,19 @@ struct Arbitrary<Elm::HeapObjectDesc> {
     static Gen<Elm::HeapObjectDesc> arbitrary() {
         return gen::build<Elm::HeapObjectDesc>(
             gen::set(&Elm::HeapObjectDesc::type,
-                     gen::element(Elm::HeapObjectDesc::Int,
-                                 Elm::HeapObjectDesc::Float,
-                                 Elm::HeapObjectDesc::Char,
-                                 Elm::HeapObjectDesc::Tuple2,
-                                 Elm::HeapObjectDesc::Tuple3)),
-            gen::set(&Elm::HeapObjectDesc::int_val,
-                     gen::arbitrary<Elm::i64>()),
-            gen::set(&Elm::HeapObjectDesc::float_val,
-                     gen::arbitrary<Elm::f64>()),
-            gen::set(&Elm::HeapObjectDesc::char_val,
-                     gen::inRange<Elm::u16>(0, 0xFFFF)),
+                     gen::element(Elm::HeapObjectDesc::Int, Elm::HeapObjectDesc::Float, Elm::HeapObjectDesc::Char,
+                                  Elm::HeapObjectDesc::Tuple2, Elm::HeapObjectDesc::Tuple3)),
+            gen::set(&Elm::HeapObjectDesc::int_val, gen::arbitrary<Elm::i64>()),
+            gen::set(&Elm::HeapObjectDesc::float_val, gen::arbitrary<Elm::f64>()),
+            gen::set(&Elm::HeapObjectDesc::char_val, gen::inRange<Elm::u16>(0, 0xFFFF)),
             // Child indices - will be clamped during allocation
-            gen::set(&Elm::HeapObjectDesc::child_a,
-                     gen::arbitrary<size_t>()),
-            gen::set(&Elm::HeapObjectDesc::child_b,
-                     gen::arbitrary<size_t>()),
-            gen::set(&Elm::HeapObjectDesc::child_c,
-                     gen::arbitrary<size_t>()),
+            gen::set(&Elm::HeapObjectDesc::child_a, gen::arbitrary<size_t>()),
+            gen::set(&Elm::HeapObjectDesc::child_b, gen::arbitrary<size_t>()),
+            gen::set(&Elm::HeapObjectDesc::child_c, gen::arbitrary<size_t>()),
             // Boxing flags
-            gen::set(&Elm::HeapObjectDesc::a_boxed,
-                     gen::arbitrary<bool>()),
-            gen::set(&Elm::HeapObjectDesc::b_boxed,
-                     gen::arbitrary<bool>()),
-            gen::set(&Elm::HeapObjectDesc::c_boxed,
-                     gen::arbitrary<bool>())
-        );
+            gen::set(&Elm::HeapObjectDesc::a_boxed, gen::arbitrary<bool>()),
+            gen::set(&Elm::HeapObjectDesc::b_boxed, gen::arbitrary<bool>()),
+            gen::set(&Elm::HeapObjectDesc::c_boxed, gen::arbitrary<bool>()));
     }
 };
 
@@ -94,11 +81,8 @@ struct Arbitrary<Elm::HeapGraphDesc> {
     static Gen<Elm::HeapGraphDesc> arbitrary() {
         auto rawGen = gen::build<Elm::HeapGraphDesc>(
             gen::set(&Elm::HeapGraphDesc::nodes,
-                     gen::resize(100,
-                         gen::nonEmpty(gen::arbitrary<std::vector<Elm::HeapObjectDesc>>()))),
-            gen::set(&Elm::HeapGraphDesc::root_indices,
-                     gen::arbitrary<std::vector<size_t>>())
-        );
+                     gen::resize(100, gen::nonEmpty(gen::arbitrary<std::vector<Elm::HeapObjectDesc>>()))),
+            gen::set(&Elm::HeapGraphDesc::root_indices, gen::arbitrary<std::vector<size_t>>()));
 
         return gen::map(rawGen, [](Elm::HeapGraphDesc graph) {
             // Clamp root indices to valid range and ensure we have at least one root
@@ -119,7 +103,7 @@ struct Arbitrary<Elm::HeapGraphDesc> {
 
             // Clamp all indices and remove duplicates
             std::unordered_set<size_t> unique_roots;
-            for (size_t& idx : graph.root_indices) {
+            for (size_t &idx: graph.root_indices) {
                 idx = idx % graph.nodes.size();
                 unique_roots.insert(idx);
             }

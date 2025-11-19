@@ -57,11 +57,11 @@ private:
     char *alloc_ptr; // Bump allocation pointer
     char *scan_ptr; // Scan pointer for Cheney's algorithm
 
-    //void *forward(void *obj);
+    // void *forward(void *obj);
     void *copy(void *obj, OldGenSpace &oldgen);
     void evacuate(HPointer &ptr, OldGenSpace &oldgen);
     void evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace &oldgen);
-    //void flipSpaces();
+    // void flipSpaces();
 };
 
 // Old generation space with concurrent mark-and-sweep

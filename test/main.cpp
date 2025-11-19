@@ -292,8 +292,7 @@ struct HeapSnapshot {
 
 // Property test: GC preserves reachable objects
 void test_gc_preserves_roots() {
-    rc::check("GC preserves all reachable objects from roots",
-              [](const HeapGraphDesc& graph) {
+    rc::check("GC preserves all reachable objects from roots", [](const HeapGraphDesc &graph) {
         // Initialize GC for this thread
         auto &gc = GarbageCollector::instance();
         gc.initThread();
@@ -306,7 +305,7 @@ void test_gc_preserves_roots() {
         std::vector<HPointer> root_storage;
         std::vector<HPointer *> root_ptrs;
 
-        for (size_t idx : graph.root_indices) {
+        for (size_t idx: graph.root_indices) {
             if (idx < allocated_objects.size()) {
                 root_storage.push_back(toPointer(allocated_objects[idx]));
             }
@@ -340,8 +339,7 @@ void test_gc_preserves_roots() {
 
 // Property test: Unreachable objects are collected
 void test_gc_collects_garbage() {
-    rc::check("GC collects unreachable objects",
-              [](const std::vector<HeapObjectDesc>& objects) {
+    rc::check("GC collects unreachable objects", [](const std::vector<HeapObjectDesc> &objects) {
         auto &gc = GarbageCollector::instance();
         gc.initThread();
         auto *nursery = gc.getNursery();
@@ -352,7 +350,7 @@ void test_gc_collects_garbage() {
         // Allocate objects without adding to roots
         size_t initial_used = nursery->bytesAllocated();
 
-        std::vector<void*> allocated = allocateHeapGraph(objects);
+        std::vector<void *> allocated = allocateHeapGraph(objects);
 
         size_t used_before_gc = nursery->bytesAllocated();
         RC_ASSERT(used_before_gc > initial_used);
@@ -371,14 +369,11 @@ void test_gc_collects_garbage() {
 void test_multiple_gc_cycles() {
     rc::check("Multiple GC cycles preserve roots correctly", []() {
         // Generate proper test parameters directly using custom generator
-        auto testGen = rc::gen::tuple(
-            rc::gen::arbitrary<i64>(),  // int_value
-            rc::gen::inRange(3, 11),    // num_cycles (3-10 inclusive)
-            rc::gen::container<std::vector<std::vector<HeapObjectDesc>>>(
-                10,  // Generate exactly 10 garbage vectors (covers max cycles)
-                rc::gen::arbitrary<std::vector<HeapObjectDesc>>()
-            )
-        );
+        auto testGen = rc::gen::tuple(rc::gen::arbitrary<i64>(), // int_value
+                                      rc::gen::inRange(3, 11), // num_cycles (3-10 inclusive)
+                                      rc::gen::container<std::vector<std::vector<HeapObjectDesc>>>(
+                                          10, // Generate exactly 10 garbage vectors (covers max cycles)
+                                          rc::gen::arbitrary<std::vector<HeapObjectDesc>>()));
 
         auto params = *testGen;
         auto [int_value, num_cycles, garbage_per_cycle] = params;

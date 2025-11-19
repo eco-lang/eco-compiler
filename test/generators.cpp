@@ -1,6 +1,6 @@
 #include "generators.hpp"
-#include "allocator.hpp"
 #include <algorithm>
+#include "allocator.hpp"
 
 namespace Elm {
 
@@ -8,8 +8,8 @@ namespace Elm {
 // Allocation Implementation
 // ============================================================================
 
-static Unboxable makeUnboxable(bool is_boxed, const HeapObjectDesc& desc,
-                               const std::vector<void*>& allocated, size_t child_index) {
+static Unboxable makeUnboxable(bool is_boxed, const HeapObjectDesc &desc, const std::vector<void *> &allocated,
+                               size_t child_index) {
     Unboxable val;
 
     if (is_boxed && !allocated.empty()) {
@@ -37,41 +37,41 @@ static Unboxable makeUnboxable(bool is_boxed, const HeapObjectDesc& desc,
     return val;
 }
 
-std::vector<void*> allocateHeapGraph(const std::vector<HeapObjectDesc>& nodes) {
-    auto& gc = GarbageCollector::instance();
-    std::vector<void*> allocated;
+std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) {
+    auto &gc = GarbageCollector::instance();
+    std::vector<void *> allocated;
     allocated.reserve(nodes.size());
 
     // Allocate all objects
-    for (const auto& desc : nodes) {
-        void* obj = nullptr;
+    for (const auto &desc: nodes) {
+        void *obj = nullptr;
 
         switch (desc.type) {
             case HeapObjectDesc::Int: {
                 obj = gc.allocate(sizeof(ElmInt), Tag_Int);
-                ElmInt* elm_int = static_cast<ElmInt*>(obj);
+                ElmInt *elm_int = static_cast<ElmInt *>(obj);
                 elm_int->value = desc.int_val;
                 break;
             }
 
             case HeapObjectDesc::Float: {
                 obj = gc.allocate(sizeof(ElmFloat), Tag_Float);
-                ElmFloat* elm_float = static_cast<ElmFloat*>(obj);
+                ElmFloat *elm_float = static_cast<ElmFloat *>(obj);
                 elm_float->value = desc.float_val;
                 break;
             }
 
             case HeapObjectDesc::Char: {
                 obj = gc.allocate(sizeof(ElmChar), Tag_Char);
-                ElmChar* elm_char = static_cast<ElmChar*>(obj);
+                ElmChar *elm_char = static_cast<ElmChar *>(obj);
                 elm_char->value = desc.char_val;
                 break;
             }
 
             case HeapObjectDesc::Tuple2: {
                 obj = gc.allocate(sizeof(Tuple2), Tag_Tuple2);
-                Tuple2* tuple = static_cast<Tuple2*>(obj);
-                Header* hdr = getHeader(obj);
+                Tuple2 *tuple = static_cast<Tuple2 *>(obj);
+                Header *hdr = getHeader(obj);
 
                 // Create fields (may reference previously allocated objects)
                 tuple->a = makeUnboxable(desc.a_boxed, desc, allocated, desc.child_a);
@@ -79,15 +79,17 @@ std::vector<void*> allocateHeapGraph(const std::vector<HeapObjectDesc>& nodes) {
 
                 // Set unboxed flags
                 hdr->unboxed = 0;
-                if (!desc.a_boxed) hdr->unboxed |= 1;
-                if (!desc.b_boxed) hdr->unboxed |= 2;
+                if (!desc.a_boxed)
+                    hdr->unboxed |= 1;
+                if (!desc.b_boxed)
+                    hdr->unboxed |= 2;
                 break;
             }
 
             case HeapObjectDesc::Tuple3: {
                 obj = gc.allocate(sizeof(Tuple3), Tag_Tuple3);
-                Tuple3* tuple = static_cast<Tuple3*>(obj);
-                Header* hdr = getHeader(obj);
+                Tuple3 *tuple = static_cast<Tuple3 *>(obj);
+                Header *hdr = getHeader(obj);
 
                 // Create fields (may reference previously allocated objects)
                 tuple->a = makeUnboxable(desc.a_boxed, desc, allocated, desc.child_a);
@@ -96,9 +98,12 @@ std::vector<void*> allocateHeapGraph(const std::vector<HeapObjectDesc>& nodes) {
 
                 // Set unboxed flags
                 hdr->unboxed = 0;
-                if (!desc.a_boxed) hdr->unboxed |= 1;
-                if (!desc.b_boxed) hdr->unboxed |= 2;
-                if (!desc.c_boxed) hdr->unboxed |= 4;
+                if (!desc.a_boxed)
+                    hdr->unboxed |= 1;
+                if (!desc.b_boxed)
+                    hdr->unboxed |= 2;
+                if (!desc.c_boxed)
+                    hdr->unboxed |= 4;
                 break;
             }
         }
