@@ -11,9 +11,24 @@ namespace Elm {
 // Data Structures - Describe heap objects without side effects
 // ============================================================================
 
+// Describes a Cons cell head (for list generation)
+struct ConsHeadDesc {
+    bool head_boxed;
+    size_t child_index;  // for boxed head
+    // Primitive values for unboxed head:
+    i64 int_val;
+    f64 float_val;
+    u16 char_val;
+};
+
+// Describes a linked list (will be allocated as Cons cells terminated by Nil)
+struct ListDesc {
+    std::vector<ConsHeadDesc> elements;  // RapidCheck can shrink this vector!
+};
+
 // Describes a single heap object (before allocation)
 struct HeapObjectDesc {
-    enum Type { Int, Float, Char, Tuple2, Tuple3 };
+    enum Type { Int, Float, Char, String, Tuple2, Tuple3, Custom, Record, DynRecord, FieldGroup, Closure };
 
     Type type;
 
@@ -22,16 +37,39 @@ struct HeapObjectDesc {
     f64 float_val;
     u16 char_val;
 
-    // For composites: indices into the allocated objects array
-    // These will be clamped to valid ranges during allocation
+    // For Tuple2/Tuple3: indices into the allocated objects array
     size_t child_a;
     size_t child_b;
     size_t child_c;
 
-    // Boxing flags for composite fields
+    // Boxing flags for Tuple2/Tuple3
     bool a_boxed;
     bool b_boxed;
     bool c_boxed;
+
+    // For String
+    std::vector<u16> string_chars;
+
+    // For Custom
+    u16 ctor;
+    std::vector<bool> custom_values_boxed;
+    std::vector<size_t> custom_child_values;
+
+    // For Record
+    std::vector<bool> record_values_boxed;
+    std::vector<size_t> record_child_values;
+
+    // For DynRecord
+    size_t dynrec_child_fieldgroup;
+    std::vector<size_t> dynrec_child_values;
+
+    // For FieldGroup
+    std::vector<u32> fieldgroup_ids;
+
+    // For Closure
+    u64 closure_evaluator_dummy;
+    std::vector<bool> closure_values_boxed;
+    std::vector<size_t> closure_child_values;
 };
 
 // Describes a complete heap graph with roots
@@ -47,6 +85,10 @@ struct HeapGraphDesc {
 // Allocate objects from descriptions
 std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes);
 
+// Allocate a linked list from description
+HPointer allocateList(const ListDesc& list_desc,
+                      const std::vector<void*>& allocated);
+
 } // namespace Elm
 
 // ============================================================================
@@ -56,23 +98,85 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes);
 namespace rc {
 
 template<>
+struct Arbitrary<Elm::ConsHeadDesc> {
+    static Gen<Elm::ConsHeadDesc> arbitrary() {
+        return gen::build<Elm::ConsHeadDesc>(
+            gen::set(&Elm::ConsHeadDesc::head_boxed, gen::arbitrary<bool>()),
+            gen::set(&Elm::ConsHeadDesc::child_index, gen::arbitrary<size_t>()),
+            gen::set(&Elm::ConsHeadDesc::int_val, gen::arbitrary<Elm::i64>()),
+            gen::set(&Elm::ConsHeadDesc::float_val, gen::arbitrary<Elm::f64>()),
+            gen::set(&Elm::ConsHeadDesc::char_val, gen::inRange<Elm::u16>(0, 0xFFFF))
+        );
+    }
+};
+
+template<>
+struct Arbitrary<Elm::ListDesc> {
+    static Gen<Elm::ListDesc> arbitrary() {
+        // Generate lists with geometric-like distribution
+        // RapidCheck will automatically shrink by removing elements!
+        return gen::build<Elm::ListDesc>(
+            gen::set(&Elm::ListDesc::elements,
+                     gen::scale(0.75, gen::arbitrary<std::vector<Elm::ConsHeadDesc>>()))
+        );
+    }
+};
+
+template<>
 struct Arbitrary<Elm::HeapObjectDesc> {
     static Gen<Elm::HeapObjectDesc> arbitrary() {
         return gen::build<Elm::HeapObjectDesc>(
             gen::set(&Elm::HeapObjectDesc::type,
-                     gen::element(Elm::HeapObjectDesc::Int, Elm::HeapObjectDesc::Float, Elm::HeapObjectDesc::Char,
-                                  Elm::HeapObjectDesc::Tuple2, Elm::HeapObjectDesc::Tuple3)),
+                     gen::element(Elm::HeapObjectDesc::Int,
+                                  Elm::HeapObjectDesc::Float,
+                                  Elm::HeapObjectDesc::Char,
+                                  Elm::HeapObjectDesc::String,
+                                  Elm::HeapObjectDesc::Tuple2,
+                                  Elm::HeapObjectDesc::Tuple3,
+                                  Elm::HeapObjectDesc::Custom,
+                                  Elm::HeapObjectDesc::Record,
+                                  Elm::HeapObjectDesc::DynRecord,
+                                  Elm::HeapObjectDesc::FieldGroup,
+                                  Elm::HeapObjectDesc::Closure)),
             gen::set(&Elm::HeapObjectDesc::int_val, gen::arbitrary<Elm::i64>()),
             gen::set(&Elm::HeapObjectDesc::float_val, gen::arbitrary<Elm::f64>()),
             gen::set(&Elm::HeapObjectDesc::char_val, gen::inRange<Elm::u16>(0, 0xFFFF)),
-            // Child indices - will be clamped during allocation
+            // Child indices for Tuple2/Tuple3
             gen::set(&Elm::HeapObjectDesc::child_a, gen::arbitrary<size_t>()),
             gen::set(&Elm::HeapObjectDesc::child_b, gen::arbitrary<size_t>()),
             gen::set(&Elm::HeapObjectDesc::child_c, gen::arbitrary<size_t>()),
-            // Boxing flags
+            // Boxing flags for Tuple2/Tuple3
             gen::set(&Elm::HeapObjectDesc::a_boxed, gen::arbitrary<bool>()),
             gen::set(&Elm::HeapObjectDesc::b_boxed, gen::arbitrary<bool>()),
-            gen::set(&Elm::HeapObjectDesc::c_boxed, gen::arbitrary<bool>()));
+            gen::set(&Elm::HeapObjectDesc::c_boxed, gen::arbitrary<bool>()),
+            // String fields - ensure non-empty to avoid 8-byte objects that can't hold 16-byte forward pointers
+            gen::set(&Elm::HeapObjectDesc::string_chars,
+                     gen::resize(100, gen::nonEmpty(gen::arbitrary<std::vector<Elm::u16>>()))),
+            // Custom fields
+            gen::set(&Elm::HeapObjectDesc::ctor, gen::arbitrary<Elm::u16>()),
+            gen::set(&Elm::HeapObjectDesc::custom_values_boxed,
+                     gen::resize(20, gen::arbitrary<std::vector<bool>>())),
+            gen::set(&Elm::HeapObjectDesc::custom_child_values,
+                     gen::arbitrary<std::vector<size_t>>()),
+            // Record fields
+            gen::set(&Elm::HeapObjectDesc::record_values_boxed,
+                     gen::resize(20, gen::arbitrary<std::vector<bool>>())),
+            gen::set(&Elm::HeapObjectDesc::record_child_values,
+                     gen::arbitrary<std::vector<size_t>>()),
+            // DynRecord fields
+            gen::set(&Elm::HeapObjectDesc::dynrec_child_fieldgroup, gen::arbitrary<size_t>()),
+            gen::set(&Elm::HeapObjectDesc::dynrec_child_values,
+                     gen::arbitrary<std::vector<size_t>>()),
+            // FieldGroup fields
+            gen::set(&Elm::HeapObjectDesc::fieldgroup_ids,
+                     gen::resize(20, gen::arbitrary<std::vector<Elm::u32>>())),
+            // Closure fields
+            gen::set(&Elm::HeapObjectDesc::closure_evaluator_dummy, gen::arbitrary<Elm::u64>()),
+            gen::set(&Elm::HeapObjectDesc::closure_values_boxed,
+                     gen::resize(20, gen::arbitrary<std::vector<bool>>())),
+            gen::set(&Elm::HeapObjectDesc::closure_child_values,
+                     gen::arbitrary<std::vector<size_t>>())
+        );
     }
 };
 

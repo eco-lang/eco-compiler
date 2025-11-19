@@ -74,6 +74,7 @@ struct HeapSnapshot {
                     node.data.tuple3.unboxed = hdr->unboxed;
                     break;
                 }
+                // For other types, we just verify the tag and structure
                 default:
                     break;
             }
@@ -129,6 +130,81 @@ struct HeapSnapshot {
                     }
                     break;
                 }
+                case Tag_Cons: {
+                    Cons *cons = static_cast<Cons *>(obj);
+                    // Track head if boxed
+                    if (!(hdr->unboxed & 1) && cons->head.p.constant == 0) {
+                        void *child = fromPointer(cons->head.p);
+                        if (child && obj_to_idx.count(child)) {
+                            nodes[node_idx].children.push_back(obj_to_idx[child]);
+                        }
+                    }
+                    // Track tail (always a pointer, may be Nil)
+                    if (cons->tail.constant == 0) {
+                        void *child = fromPointer(cons->tail);
+                        if (child && obj_to_idx.count(child)) {
+                            nodes[node_idx].children.push_back(obj_to_idx[child]);
+                        }
+                    }
+                    break;
+                }
+                case Tag_Custom: {
+                    Custom *custom = static_cast<Custom *>(obj);
+                    for (size_t i = 0; i < hdr->size && i < 48; i++) {
+                        if (!(custom->unboxed & (1ULL << i)) && custom->values[i].p.constant == 0) {
+                            void *child = fromPointer(custom->values[i].p);
+                            if (child && obj_to_idx.count(child)) {
+                                nodes[node_idx].children.push_back(obj_to_idx[child]);
+                            }
+                        }
+                    }
+                    break;
+                }
+                case Tag_Record: {
+                    Record *record = static_cast<Record *>(obj);
+                    for (size_t i = 0; i < hdr->size && i < 64; i++) {
+                        if (!(record->unboxed & (1ULL << i)) && record->values[i].p.constant == 0) {
+                            void *child = fromPointer(record->values[i].p);
+                            if (child && obj_to_idx.count(child)) {
+                                nodes[node_idx].children.push_back(obj_to_idx[child]);
+                            }
+                        }
+                    }
+                    break;
+                }
+                case Tag_DynRecord: {
+                    DynRecord *dynrec = static_cast<DynRecord *>(obj);
+                    // Track fieldgroup
+                    if (dynrec->fieldgroup.constant == 0) {
+                        void *child = fromPointer(dynrec->fieldgroup);
+                        if (child && obj_to_idx.count(child)) {
+                            nodes[node_idx].children.push_back(obj_to_idx[child]);
+                        }
+                    }
+                    // Track all values (all HPointers)
+                    for (size_t i = 0; i < hdr->size; i++) {
+                        if (dynrec->values[i].constant == 0) {
+                            void *child = fromPointer(dynrec->values[i]);
+                            if (child && obj_to_idx.count(child)) {
+                                nodes[node_idx].children.push_back(obj_to_idx[child]);
+                            }
+                        }
+                    }
+                    break;
+                }
+                case Tag_Closure: {
+                    Closure *closure = static_cast<Closure *>(obj);
+                    for (size_t i = 0; i < closure->n_values && i < 52; i++) {
+                        if (!(closure->unboxed & (1ULL << i)) && closure->values[i].p.constant == 0) {
+                            void *child = fromPointer(closure->values[i].p);
+                            if (child && obj_to_idx.count(child)) {
+                                nodes[node_idx].children.push_back(obj_to_idx[child]);
+                            }
+                        }
+                    }
+                    break;
+                }
+                // String and FieldGroup have no heap pointers
                 default:
                     break;
             }
@@ -153,8 +229,9 @@ struct HeapSnapshot {
         // Build reachable set from roots
         std::vector<void *> worklist;
         for (HPointer *root: roots) {
-            if (root->constant != 0)
+            if (root->constant != 0) {
                 continue;
+            }
             void *obj = fromPointer(*root);
             if (obj) {
                 worklist.push_back(obj);
@@ -170,6 +247,7 @@ struct HeapSnapshot {
 
             // Safety check: tag should be valid
             if (hdr->tag >= Tag_Forward) {
+                std::cerr << "ERROR: Invalid tag " << hdr->tag << " found in reachable object at " << obj << std::endl;
                 return false;
             }
 
@@ -212,6 +290,76 @@ struct HeapSnapshot {
                     }
                     break;
                 }
+                case Tag_Cons: {
+                    Cons *cons = static_cast<Cons *>(obj);
+                    if (!(hdr->unboxed & 1) && cons->head.p.constant == 0) {
+                        void *child = fromPointer(cons->head.p);
+                        if (child && reachable.insert(child).second) {
+                            worklist.push_back(child);
+                        }
+                    }
+                    if (cons->tail.constant == 0) {
+                        void *child = fromPointer(cons->tail);
+                        if (child && reachable.insert(child).second) {
+                            worklist.push_back(child);
+                        }
+                    }
+                    break;
+                }
+                case Tag_Custom: {
+                    Custom *custom = static_cast<Custom *>(obj);
+                    for (size_t i = 0; i < hdr->size && i < 48; i++) {
+                        if (!(custom->unboxed & (1ULL << i)) && custom->values[i].p.constant == 0) {
+                            void *child = fromPointer(custom->values[i].p);
+                            if (child && reachable.insert(child).second) {
+                                worklist.push_back(child);
+                            }
+                        }
+                    }
+                    break;
+                }
+                case Tag_Record: {
+                    Record *record = static_cast<Record *>(obj);
+                    for (size_t i = 0; i < hdr->size && i < 64; i++) {
+                        if (!(record->unboxed & (1ULL << i)) && record->values[i].p.constant == 0) {
+                            void *child = fromPointer(record->values[i].p);
+                            if (child && reachable.insert(child).second) {
+                                worklist.push_back(child);
+                            }
+                        }
+                    }
+                    break;
+                }
+                case Tag_DynRecord: {
+                    DynRecord *dynrec = static_cast<DynRecord *>(obj);
+                    if (dynrec->fieldgroup.constant == 0) {
+                        void *child = fromPointer(dynrec->fieldgroup);
+                        if (child && reachable.insert(child).second) {
+                            worklist.push_back(child);
+                        }
+                    }
+                    for (size_t i = 0; i < hdr->size; i++) {
+                        if (dynrec->values[i].constant == 0) {
+                            void *child = fromPointer(dynrec->values[i]);
+                            if (child && reachable.insert(child).second) {
+                                worklist.push_back(child);
+                            }
+                        }
+                    }
+                    break;
+                }
+                case Tag_Closure: {
+                    Closure *closure = static_cast<Closure *>(obj);
+                    for (size_t i = 0; i < closure->n_values && i < 52; i++) {
+                        if (!(closure->unboxed & (1ULL << i)) && closure->values[i].p.constant == 0) {
+                            void *child = fromPointer(closure->values[i].p);
+                            if (child && reachable.insert(child).second) {
+                                worklist.push_back(child);
+                            }
+                        }
+                    }
+                    break;
+                }
                 default:
                     break;
             }
@@ -232,6 +380,7 @@ struct HeapSnapshot {
 
             // Verify tag is valid
             if (hdr->tag >= Tag_Forward) {
+                std::cerr << "ERROR: Invalid tag " << hdr->tag << " found in reachable object" << std::endl;
                 return false;
             }
 
@@ -247,6 +396,7 @@ struct HeapSnapshot {
                         }
                     }
                     if (!found) {
+                        std::cerr << "ERROR: Int value " << obj_int->value << " not found in snapshot" << std::endl;
                         return false;
                     }
                     break;
@@ -261,6 +411,7 @@ struct HeapSnapshot {
                         }
                     }
                     if (!found) {
+                        std::cerr << "ERROR: Float value " << obj_float->value << " not found in snapshot" << std::endl;
                         return false;
                     }
                     break;
@@ -275,6 +426,7 @@ struct HeapSnapshot {
                         }
                     }
                     if (!found) {
+                        std::cerr << "ERROR: Char value " << obj_char->value << " not found in snapshot" << std::endl;
                         return false;
                     }
                     break;
@@ -426,22 +578,12 @@ void test_multiple_gc_cycles() {
 }
 
 int main() {
-    std::cout << "=== Elm Runtime GC Property-Based Tests ===" << std::endl;
+    std::cout << "=== Eco Runtime GC Property-Based Tests ===" << std::endl;
     std::cout << std::endl;
 
-    std::cout << "Test 1: GC preserves all reachable objects from roots" << std::endl;
     test_gc_preserves_roots();
-    std::cout << "✓ PASSED" << std::endl << std::endl;
-
-    std::cout << "Test 2: GC collects unreachable objects" << std::endl;
     test_gc_collects_garbage();
-    std::cout << "✓ PASSED" << std::endl << std::endl;
-
-    std::cout << "Test 3: Multiple GC cycles preserve roots correctly" << std::endl;
     test_multiple_gc_cycles();
-    std::cout << "✓ PASSED" << std::endl << std::endl;
-
-    std::cout << "=== All tests passed! ===" << std::endl;
 
     return 0;
 }

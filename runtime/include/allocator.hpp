@@ -57,11 +57,9 @@ private:
     char *alloc_ptr; // Bump allocation pointer
     char *scan_ptr; // Scan pointer for Cheney's algorithm
 
-    // void *forward(void *obj);
-    void *copy(void *obj, OldGenSpace &oldgen);
-    void evacuate(HPointer &ptr, OldGenSpace &oldgen);
-    void evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace &oldgen);
-    // void flipSpaces();
+    void evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
+    void evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
+    void scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
 };
 
 // Old generation space with concurrent mark-and-sweep
@@ -232,47 +230,62 @@ inline HPointer toPointer(void *obj) {
 inline size_t getObjectSize(void *obj) {
     Header *hdr = getHeader(obj);
 
+    size_t size;
     switch (hdr->tag) {
         case Tag_Int:
-            return sizeof(ElmInt);
+            size = sizeof(ElmInt);
+            break;
         case Tag_Float:
-            return sizeof(ElmFloat);
+            size = sizeof(ElmFloat);
+            break;
         case Tag_Char:
-            return sizeof(ElmChar);
+            size = sizeof(ElmChar);
+            break;
         case Tag_String:
-            return sizeof(ElmString) + hdr->size * sizeof(u16);
+            size = sizeof(ElmString) + hdr->size * sizeof(u16);
+            break;
         case Tag_Tuple2:
-            return sizeof(Tuple2);
+            size = sizeof(Tuple2);
+            break;
         case Tag_Tuple3:
-            return sizeof(Tuple3);
+            size = sizeof(Tuple3);
+            break;
         case Tag_Cons:
-            return sizeof(Cons);
-        case Tag_Custom: {
-            Custom *c = static_cast<Custom *>(obj);
-            return sizeof(Custom) + hdr->size * sizeof(Unboxable);
-        }
-        case Tag_Record: {
-            return sizeof(Record) + hdr->size * sizeof(Unboxable);
-        }
-        case Tag_DynRecord: {
-            return sizeof(DynRecord) + hdr->size * sizeof(HPointer);
-        }
-        case Tag_FieldGroup: {
-            return sizeof(FieldGroup) + hdr->size * sizeof(u32);
-        }
+            size = sizeof(Cons);
+            break;
+        case Tag_Custom:
+            size = sizeof(Custom) + hdr->size * sizeof(Unboxable);
+            break;
+        case Tag_Record:
+            size = sizeof(Record) + hdr->size * sizeof(Unboxable);
+            break;
+        case Tag_DynRecord:
+            size = sizeof(DynRecord) + hdr->size * sizeof(HPointer);
+            break;
+        case Tag_FieldGroup:
+            size = sizeof(FieldGroup) + hdr->size * sizeof(u32);
+            break;
         case Tag_Closure: {
             Closure *cl = static_cast<Closure *>(obj);
-            return sizeof(Closure) + cl->n_values * sizeof(Unboxable);
+            size = sizeof(Closure) + cl->n_values * sizeof(Unboxable);
+            break;
         }
         case Tag_Process:
-            return sizeof(Process);
+            size = sizeof(Process);
+            break;
         case Tag_Task:
-            return sizeof(Task);
+            size = sizeof(Task);
+            break;
         case Tag_Forward:
-            return sizeof(Forward);
+            size = sizeof(Forward);
+            break;
         default:
-            return sizeof(Header);
+            size = sizeof(Header);
+            break;
     }
+
+    // Always return 8-byte aligned size
+    return (size + 7) & ~7;
 }
 
 } // namespace Elm

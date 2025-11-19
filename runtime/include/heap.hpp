@@ -73,6 +73,7 @@ typedef enum {
     Const_False,
     Const_Nil,
     Const_Nothing,
+    Const_EmptyString
 } Constant;
 
 // A logical pointer into the heap.
@@ -110,6 +111,10 @@ typedef struct {
     u16 padding2;
     u16 padding3;
 } ElmChar;
+
+// Note: Empty strings use Const_EmptyString constant instead of heap allocation.
+// This prevents the issue where an 8-byte empty string would be overwritten by
+// a 16-byte forward pointer, corrupting adjacent heap objects.
 
 // Make sure strings are properly aligned on 64-bit target.
 // Otherwise C compiler can truncate any zero padding at the end.

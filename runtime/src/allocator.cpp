@@ -67,14 +67,17 @@ bool NurserySpace::contains(void *ptr) const {
  * not need to be scanned by Cheneys algorithm.
  */
 void NurserySpace::minorGC(RootSet &roots, OldGenSpace &oldgen) {
-    // Reset allocation into the to_space.
+    // Reset allocation into the to_space
     alloc_ptr = to_space;
     scan_ptr = to_space;
     char *alloc_end = to_space;
 
-    // Evacuate roots.
+    // Buffer for promoted objects that need scanning
+    std::vector<void*> promoted_objects;
+
+    // Phase 1: Evacuate roots (may add to promoted_objects)
     for (HPointer *root: roots.getRoots()) {
-        evacuate(*root, oldgen);
+        evacuate(*root, oldgen, &promoted_objects);
     }
 
     // TODO: This part needs linking into LLVM to get the stack roots.
@@ -83,146 +86,116 @@ void NurserySpace::minorGC(RootSet &roots, OldGenSpace &oldgen) {
         HPointer *ptrs = static_cast<HPointer *>(stack_ptr);
         size_t count = size / sizeof(HPointer);
         for (size_t i = 0; i < count; i++) {
-            evacuate(ptrs[i], oldgen);
+            evacuate(ptrs[i], oldgen, &promoted_objects);
         }
     }
 
-    // Cheney's algorithm: scan all copied objects.
+    // Phase 2: Cheney's algorithm on to-space (may add to promoted_objects)
     alloc_end = alloc_ptr;
-
     while (scan_ptr < alloc_end) {
         void *obj = scan_ptr;
-        Header *hdr = getHeader(obj);
-
-        // Process children based on tag
-        switch (hdr->tag) {
-            case Tag_Tuple2: {
-                Tuple2 *t = static_cast<Tuple2 *>(obj);
-                evacuateUnboxable(t->a, !(hdr->unboxed & 1), oldgen);
-                evacuateUnboxable(t->b, !(hdr->unboxed & 2), oldgen);
-                break;
-            }
-            case Tag_Tuple3: {
-                Tuple3 *t = static_cast<Tuple3 *>(obj);
-                evacuateUnboxable(t->a, !(hdr->unboxed & 1), oldgen);
-                evacuateUnboxable(t->b, !(hdr->unboxed & 2), oldgen);
-                evacuateUnboxable(t->c, !(hdr->unboxed & 4), oldgen);
-                break;
-            }
-            case Tag_Cons: {
-                Cons *c = static_cast<Cons *>(obj);
-                evacuateUnboxable(c->head, !(hdr->unboxed & 1), oldgen);
-                evacuate(c->tail, oldgen);
-                break;
-            }
-            case Tag_Custom: {
-                Custom *c = static_cast<Custom *>(obj);
-                for (u32 i = 0; i < hdr->size; i++) {
-                    evacuateUnboxable(c->values[i], !(c->unboxed & (1ULL << i)), oldgen);
-                }
-                break;
-            }
-            case Tag_Record: {
-                Record *r = static_cast<Record *>(obj);
-                for (u32 i = 0; i < hdr->size; i++) {
-                    evacuateUnboxable(r->values[i], !(r->unboxed & (1ULL << i)), oldgen);
-                }
-                break;
-            }
-            case Tag_DynRecord: {
-                DynRecord *dr = static_cast<DynRecord *>(obj);
-                evacuate(dr->fieldgroup, oldgen);
-                for (u32 i = 0; i < hdr->size; i++) {
-                    evacuate(dr->values[i], oldgen);
-                }
-                break;
-            }
-            case Tag_Closure: {
-                Closure *cl = static_cast<Closure *>(obj);
-                for (u32 i = 0; i < cl->n_values; i++) {
-                    evacuateUnboxable(cl->values[i], !(cl->unboxed & (1ULL << i)), oldgen);
-                }
-                break;
-            }
-            case Tag_Process: {
-                Process *p = static_cast<Process *>(obj);
-                evacuate(p->root, oldgen);
-                evacuate(p->stack, oldgen);
-                evacuate(p->mailbox, oldgen);
-                break;
-            }
-            case Tag_Task: {
-                Task *t = static_cast<Task *>(obj);
-                evacuate(t->value, oldgen);
-                evacuate(t->callback, oldgen);
-                evacuate(t->kill, oldgen);
-                evacuate(t->task, oldgen);
-                break;
-            }
-            default:
-                break;
-        }
-
+        scanObject(obj, oldgen, &promoted_objects);
         scan_ptr += getObjectSize(obj);
-        alloc_end = alloc_ptr; // Update end in case evacuate allocated more
+        alloc_end = alloc_ptr; // Update in case scanObject caused evacuations
     }
 
-    // Flip spaces
+    // Phase 3: Process promoted objects until buffer is empty
+    // Use index-based loop since vector may grow during iteration
+    for (size_t i = 0; i < promoted_objects.size(); i++) {
+        scanObject(promoted_objects[i], oldgen, &promoted_objects);
+    }
+
+    // Phase 4: Flip spaces
     std::swap(from_space, to_space);
+    // After swap: from_space = old to_space (has live objects)
+    //             to_space = old from_space (empty)
+    //             alloc_ptr already points to end of live objects in new from_space
     scan_ptr = from_space;
 }
 
 /**
- * Moves a live object in the nursery space to a new location where it will continue to be a live
- * object and returns the address to which is was moved without any changes being made.
+ * Updates a pointer into the nursery space to a new location at which that object will located after
+ * a garbage collection cycle. The pointer MUST point to a live object that should not be garbage
+ * collected.
  *
- * If the object has a Tag_Forward, it has already been forwarded, in which case the forwarding address
- * is returned.
+ *     - If the object has already been moved, it will leave behing a forwarding pointer, and the
+ *       pointer requested will be updated to this new location.
+ *     - If the object has not already been moved, it will be copied to its new location, and the
+ *       pointer requested will be updated to this new location.
  *
  * If the object has reached promotion age by surviving a number of garbage collection moves, it is moved
  * into the old generation. Otherwise, it is moved to the nursery "to space" and its age is incremented by
  * one.
  *
  * The original object in the nursery "from space" is replaced with a Tag_Forward and its forwarding address
- * in either the old generation or the nursery to space.
+ * in either the old generation or the nursery to space, so that subsequent requests to evacuate the same
+ * pointer can be updated to its new location without repeating the move.
  */
-void *NurserySpace::copy(void *obj, OldGenSpace &oldgen) {
+void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
+    if (ptr.constant != 0)
+        return; // It's a constant
+
+    void *obj = fromPointer(ptr);
     if (!obj)
-        return nullptr;
+        return;
 
+    // First priority: Check if this location has a forward pointer
+    // This must happen BEFORE the from-space check so that pointers from
+    // old-gen objects can be updated even when pointing to from-space
     Header *hdr = getHeader(obj);
-
-    // Check if already forwarded
     if (hdr->tag == Tag_Forward) {
+        // Follow forward pointer and update ptr
         Forward *fwd = static_cast<Forward *>(obj);
-        // fwd->pointer is a logical offset in 8-byte units
         char *heap_base = GarbageCollector::instance().getHeapBase();
         uintptr_t byte_offset = static_cast<uintptr_t>(fwd->pointer) << 3;
-        return heap_base + byte_offset;
+        ptr = toPointer(heap_base + byte_offset);
+        return;
     }
+
+    // Second priority: Only evacuate if in from-space (not to-space!)
+    // This prevents creating forwarding chains by re-evacuating already-moved objects
+    char *p = static_cast<char *>(obj);
+    if (p < from_space || p >= from_space + (NURSERY_SIZE / 2))
+        return;
+
+    // Now proceed with evacuation (object is in from-space and not yet forwarded)
 
     size_t size = getObjectSize(obj);
     void *new_obj = nullptr;
+
+    bool promoted = false;
 
     // Promote to old gen if age >= PROMOTION_AGE
     if (hdr->age >= PROMOTION_AGE) {
         std::lock_guard<std::mutex> lock(oldgen.getMutex());
         new_obj = oldgen.allocate(size);
         if (new_obj) {
-            std::memcpy(new_obj, obj, size);
+            // Save color set by oldgen.allocate before memcpy overwrites it
             Header *new_hdr = getHeader(new_obj);
-            new_hdr->age = 0; // Reset age in old gen
+            u32 saved_color = new_hdr->color;
+
+            std::memcpy(new_obj, obj, size);
+
+            // Restore old-gen color and reset age
+            new_hdr = getHeader(new_obj);
+            new_hdr->color = saved_color;
+            new_hdr->age = 0;
+            promoted = true;
+
+            // Add to promoted objects buffer for later scanning
+            if (promoted_objects) {
+                promoted_objects->push_back(new_obj);
+            }
         }
     }
 
     // Copy to to_space if not promoted
     if (!new_obj) {
-        // Allocate in to_space
-        size = (size + 7) & ~7; // Align
+        // Allocate in to_space (size is already aligned from getObjectSize)
         new_obj = alloc_ptr;
         alloc_ptr += size;
 
-        // Copy the object
+        // Copy the object (size includes padding, but that's fine)
         std::memcpy(new_obj, obj, size);
 
         // Update age after copying (preserves all other fields)
@@ -231,60 +204,94 @@ void *NurserySpace::copy(void *obj, OldGenSpace &oldgen) {
     }
 
     // Leave forwarding pointer (as logical offset)
+    // IMPORTANT: Set this BEFORE evacuating children to prevent infinite recursion
     Forward *fwd = static_cast<Forward *>(obj);
     fwd->header.tag = Tag_Forward;
     char *heap_base = GarbageCollector::instance().getHeapBase();
     uintptr_t byte_offset = static_cast<char *>(new_obj) - heap_base;
     fwd->pointer = byte_offset >> 3; // Store as offset in 8-byte units
 
-    return new_obj;
+    ptr = toPointer(new_obj);
 }
 
-/*
-void *NurserySpace::forward(void *obj) {
-    if (!obj)
-        return nullptr;
-
-    Header *hdr = getHeader(obj);
-    if (hdr->tag == Tag_Forward) {
-        Forward *fwd = static_cast<Forward *>(obj);
-        return reinterpret_cast<void *>(static_cast<uintptr_t>(fwd->pointer));
-    }
-
-    return obj;
-}
-*/
-
-void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen) {
-    if (ptr.constant != 0)
-        return; // It's a constant
-
-    void *obj = fromPointer(ptr);
-    if (!obj)
-        return;
-
-    // Only evacuate if in nursery
-    if (contains(obj)) {
-        void *new_obj = copy(obj, oldgen);
-        ptr = toPointer(new_obj);
-    }
-}
-
-void NurserySpace::evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace &oldgen) {
+void NurserySpace::evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
     if (is_boxed) {
-        evacuate(val.p, oldgen);
+        evacuate(val.p, oldgen, promoted_objects);
     }
 }
 
-/*
-void NurserySpace::flipSpaces() {
-    std::swap(from_space, to_space);
-    // Don't reset alloc_ptr! It already points to the end of live objects
-    // which are now in from_space after the swap
-    // alloc_ptr stays at its current location (end of live objects in new from_space)
-    scan_ptr = from_space;
+void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
+    Header *hdr = getHeader(obj);
+
+    // Process children based on tag
+    switch (hdr->tag) {
+        case Tag_Tuple2: {
+            Tuple2 *t = static_cast<Tuple2 *>(obj);
+            evacuateUnboxable(t->a, !(hdr->unboxed & 1), oldgen, promoted_objects);
+            evacuateUnboxable(t->b, !(hdr->unboxed & 2), oldgen, promoted_objects);
+            break;
+        }
+        case Tag_Tuple3: {
+            Tuple3 *t = static_cast<Tuple3 *>(obj);
+            evacuateUnboxable(t->a, !(hdr->unboxed & 1), oldgen, promoted_objects);
+            evacuateUnboxable(t->b, !(hdr->unboxed & 2), oldgen, promoted_objects);
+            evacuateUnboxable(t->c, !(hdr->unboxed & 4), oldgen, promoted_objects);
+            break;
+        }
+        case Tag_Cons: {
+            Cons *c = static_cast<Cons *>(obj);
+            evacuateUnboxable(c->head, !(hdr->unboxed & 1), oldgen, promoted_objects);
+            evacuate(c->tail, oldgen, promoted_objects);
+            break;
+        }
+        case Tag_Custom: {
+            Custom *c = static_cast<Custom *>(obj);
+            for (u32 i = 0; i < hdr->size && i < 48; i++) {
+                evacuateUnboxable(c->values[i], !(c->unboxed & (1ULL << i)), oldgen, promoted_objects);
+            }
+            break;
+        }
+        case Tag_Record: {
+            Record *r = static_cast<Record *>(obj);
+            for (u32 i = 0; i < hdr->size && i < 64; i++) {
+                evacuateUnboxable(r->values[i], !(r->unboxed & (1ULL << i)), oldgen, promoted_objects);
+            }
+            break;
+        }
+        case Tag_DynRecord: {
+            DynRecord *dr = static_cast<DynRecord *>(obj);
+            evacuate(dr->fieldgroup, oldgen, promoted_objects);
+            for (u32 i = 0; i < hdr->size; i++) {
+                evacuate(dr->values[i], oldgen, promoted_objects);
+            }
+            break;
+        }
+        case Tag_Closure: {
+            Closure *cl = static_cast<Closure *>(obj);
+            for (u32 i = 0; i < cl->n_values; i++) {
+                evacuateUnboxable(cl->values[i], !(cl->unboxed & (1ULL << i)), oldgen, promoted_objects);
+            }
+            break;
+        }
+        case Tag_Process: {
+            Process *p = static_cast<Process *>(obj);
+            evacuate(p->root, oldgen, promoted_objects);
+            evacuate(p->stack, oldgen, promoted_objects);
+            evacuate(p->mailbox, oldgen, promoted_objects);
+            break;
+        }
+        case Tag_Task: {
+            Task *t = static_cast<Task *>(obj);
+            evacuate(t->value, oldgen, promoted_objects);
+            evacuate(t->callback, oldgen, promoted_objects);
+            evacuate(t->kill, oldgen, promoted_objects);
+            evacuate(t->task, oldgen, promoted_objects);
+            break;
+        }
+        default:
+            break;
+    }
 }
-*/
 
 // ============================================================================
 // OldGenSpace Implementation
@@ -369,8 +376,9 @@ void *OldGenSpace::allocate(size_t size) {
             // Initialize header
             Header *hdr = reinterpret_cast<Header *>(curr);
             std::memset(hdr, 0, sizeof(Header));
+
+            // Bug - if marking is in progres the object should be conservatively marked Black.
             hdr->color = static_cast<u32>(Color::White);
-            hdr->size = size - sizeof(Header);
 
             return curr;
         }
@@ -472,14 +480,14 @@ void OldGenSpace::markChildren(void *obj) {
         }
         case Tag_Custom: {
             Custom *c = static_cast<Custom *>(obj);
-            for (u32 i = 0; i < hdr->size; i++) {
+            for (u32 i = 0; i < hdr->size && i < 48; i++) {
                 markUnboxable(c->values[i], !(c->unboxed & (1ULL << i)));
             }
             break;
         }
         case Tag_Record: {
             Record *r = static_cast<Record *>(obj);
-            for (u32 i = 0; i < hdr->size; i++) {
+            for (u32 i = 0; i < hdr->size && i < 64; i++) {
                 markUnboxable(r->values[i], !(r->unboxed & (1ULL << i)));
             }
             break;
@@ -567,8 +575,8 @@ void OldGenSpace::sweep() {
             continue;
         }
 
-        size_t obj_size = sizeof(Header) + hdr->size;
-        obj_size = (obj_size + 7) & ~7;
+        // Use getObjectSize() to correctly calculate size for all object types
+        size_t obj_size = getObjectSize(ptr);
 
         if (hdr->color == static_cast<u32>(Color::White)) {
             // Add to free list
@@ -731,6 +739,31 @@ void *GarbageCollector::allocate(size_t size, Tag tag) {
             Header *hdr = getHeader(obj);
             std::memset(hdr, 0, sizeof(Header));
             hdr->tag = tag;
+            // For variable-sized types, hdr->size stores the element count
+            // For fixed-size types, it's unused (but set to total size for consistency)
+            switch (tag) {
+                case Tag_String:
+                    hdr->size = (size - sizeof(ElmString)) / sizeof(u16);
+                    break;
+                case Tag_Custom:
+                    hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);
+                    break;
+                case Tag_Record:
+                    hdr->size = (size - sizeof(Record)) / sizeof(Unboxable);
+                    break;
+                case Tag_DynRecord:
+                    hdr->size = (size - sizeof(DynRecord)) / sizeof(HPointer);
+                    break;
+                case Tag_FieldGroup:
+                    hdr->size = (size - sizeof(FieldGroup)) / sizeof(u32);
+                    break;
+                case Tag_Closure:
+                    hdr->size = (size - sizeof(Closure)) / sizeof(Unboxable);
+                    break;
+                default:
+                    hdr->size = size;
+                    break;
+            }
             return obj;
         }
 
@@ -743,6 +776,29 @@ void *GarbageCollector::allocate(size_t size, Tag tag) {
             Header *hdr = getHeader(obj);
             std::memset(hdr, 0, sizeof(Header));
             hdr->tag = tag;
+            switch (tag) {
+                case Tag_String:
+                    hdr->size = (size - sizeof(ElmString)) / sizeof(u16);
+                    break;
+                case Tag_Custom:
+                    hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);
+                    break;
+                case Tag_Record:
+                    hdr->size = (size - sizeof(Record)) / sizeof(Unboxable);
+                    break;
+                case Tag_DynRecord:
+                    hdr->size = (size - sizeof(DynRecord)) / sizeof(HPointer);
+                    break;
+                case Tag_FieldGroup:
+                    hdr->size = (size - sizeof(FieldGroup)) / sizeof(u32);
+                    break;
+                case Tag_Closure:
+                    hdr->size = (size - sizeof(Closure)) / sizeof(Unboxable);
+                    break;
+                default:
+                    hdr->size = size;
+                    break;
+            }
             return obj;
         }
     }
@@ -752,6 +808,29 @@ void *GarbageCollector::allocate(size_t size, Tag tag) {
     if (obj) {
         Header *hdr = getHeader(obj);
         hdr->tag = tag;
+        switch (tag) {
+            case Tag_String:
+                hdr->size = (size - sizeof(ElmString)) / sizeof(u16);
+                break;
+            case Tag_Custom:
+                hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);
+                break;
+            case Tag_Record:
+                hdr->size = (size - sizeof(Record)) / sizeof(Unboxable);
+                break;
+            case Tag_DynRecord:
+                hdr->size = (size - sizeof(DynRecord)) / sizeof(HPointer);
+                break;
+            case Tag_FieldGroup:
+                hdr->size = (size - sizeof(FieldGroup)) / sizeof(u32);
+                break;
+            case Tag_Closure:
+                hdr->size = (size - sizeof(Closure)) / sizeof(Unboxable);
+                break;
+            default:
+                hdr->size = size;
+                break;
+        }
     }
     return obj;
 }
