@@ -1,5 +1,4 @@
 #include <iostream>
-#include <random>
 #include <rapidcheck.h>
 #include <unordered_set>
 #include <vector>
@@ -293,63 +292,32 @@ struct HeapSnapshot {
 
 // Property test: GC preserves reachable objects
 void test_gc_preserves_roots() {
-    rc::check("GC preserves all reachable objects from roots", []() {
+    rc::check("GC preserves all reachable objects from roots",
+              [](const HeapGraphDesc& graph) {
         // Initialize GC for this thread
         auto &gc = GarbageCollector::instance();
         gc.initThread();
 
-        // Use a random seed for our custom RNG
-        std::random_device rd;
-        std::mt19937 rng(rd());
-
-        // Generate random number of objects (10-100)
-        std::uniform_int_distribution<size_t> obj_count_dist(10, 100);
-        size_t num_objects = obj_count_dist(rng);
-
-        std::vector<void *> allocated_objects;
-        std::vector<HPointer> root_storage; // Storage for root HPointers
-        std::vector<HPointer *> root_ptrs; // Pointers to roots
-
-        // Phase 1: Allocate random heap structures
-        std::uniform_int_distribution<int> coin(0, 1);
-        for (size_t i = 0; i < num_objects; i++) {
-            void *obj = nullptr;
-
-            if (i < 10 || coin(rng)) {
-                // Create primitive
-                obj = createRandomPrimitive(rng);
-            } else {
-                // Create composite that may reference existing objects
-                obj = createRandomComposite(rng, allocated_objects);
-            }
-
-            if (obj) {
-                allocated_objects.push_back(obj);
-            }
-        }
-
+        // Phase 1: Allocate heap from description (RapidCheck can shrink this!)
+        std::vector<void *> allocated_objects = allocateHeapGraph(graph.nodes);
         RC_ASSERT(!allocated_objects.empty());
 
-        // Phase 2: Randomly select 20-50% of objects as roots
-        std::uniform_int_distribution<size_t> root_count_dist(allocated_objects.size() / 5,
-                                                              allocated_objects.size() / 2);
-        size_t num_roots = root_count_dist(rng);
+        // Phase 2: Set up roots from graph description
+        std::vector<HPointer> root_storage;
+        std::vector<HPointer *> root_ptrs;
 
-        std::unordered_set<size_t> root_indices_set;
-        std::uniform_int_distribution<size_t> idx_dist(0, allocated_objects.size() - 1);
-        for (size_t i = 0; i < num_roots; i++) {
-            size_t idx = idx_dist(rng);
-            root_indices_set.insert(idx);
-        }
-
-        for (size_t idx: root_indices_set) {
-            root_storage.push_back(toPointer(allocated_objects[idx]));
+        for (size_t idx : graph.root_indices) {
+            if (idx < allocated_objects.size()) {
+                root_storage.push_back(toPointer(allocated_objects[idx]));
+            }
         }
 
         for (auto &root: root_storage) {
             root_ptrs.push_back(&root);
             gc.getRootSet().addRoot(&root);
         }
+
+        RC_ASSERT(!root_ptrs.empty());
 
         // Phase 3: Take snapshot before GC
         HeapSnapshot snapshot;
@@ -372,21 +340,19 @@ void test_gc_preserves_roots() {
 
 // Property test: Unreachable objects are collected
 void test_gc_collects_garbage() {
-    rc::check("GC collects unreachable objects", []() {
+    rc::check("GC collects unreachable objects",
+              [](const std::vector<HeapObjectDesc>& objects) {
         auto &gc = GarbageCollector::instance();
         gc.initThread();
         auto *nursery = gc.getNursery();
 
-        std::random_device rd;
-        std::mt19937 rng(rd());
+        // Need at least some objects to test collection
+        RC_PRE(!objects.empty() && objects.size() >= 10);
 
-        // Allocate many objects without adding to roots
+        // Allocate objects without adding to roots
         size_t initial_used = nursery->bytesAllocated();
 
-        for (int i = 0; i < 50; i++) {
-            void *obj = createRandomPrimitive(rng);
-            RC_ASSERT(reinterpret_cast<uintptr_t>(obj) != 0);
-        }
+        std::vector<void*> allocated = allocateHeapGraph(objects);
 
         size_t used_before_gc = nursery->bytesAllocated();
         RC_ASSERT(used_before_gc > initial_used);
@@ -404,17 +370,26 @@ void test_gc_collects_garbage() {
 // Property test: Multiple GC cycles preserve roots
 void test_multiple_gc_cycles() {
     rc::check("Multiple GC cycles preserve roots correctly", []() {
+        // Generate proper test parameters directly using custom generator
+        auto testGen = rc::gen::tuple(
+            rc::gen::arbitrary<i64>(),  // int_value
+            rc::gen::inRange(3, 11),    // num_cycles (3-10 inclusive)
+            rc::gen::container<std::vector<std::vector<HeapObjectDesc>>>(
+                10,  // Generate exactly 10 garbage vectors (covers max cycles)
+                rc::gen::arbitrary<std::vector<HeapObjectDesc>>()
+            )
+        );
+
+        auto params = *testGen;
+        auto [int_value, num_cycles, garbage_per_cycle] = params;
+
         auto &gc = GarbageCollector::instance();
         gc.initThread();
 
-        std::random_device rd;
-        std::mt19937 rng(rd());
-
-        // Create a long-lived Int object (not random type)
+        // Create a long-lived Int object as root
         void *root_obj = gc.allocate(sizeof(ElmInt), Tag_Int);
         ElmInt *elm_int = static_cast<ElmInt *>(root_obj);
-        std::uniform_int_distribution<i64> val_dist;
-        elm_int->value = val_dist(rng);
+        elm_int->value = int_value;
 
         HPointer root_ptr = toPointer(root_obj);
         gc.getRootSet().addRoot(&root_ptr);
@@ -422,17 +397,14 @@ void test_multiple_gc_cycles() {
         i64 original_value = elm_int->value;
 
         // Run multiple GC cycles
-        std::uniform_int_distribution<int> cycles_dist(3, 10);
-        int num_cycles = cycles_dist(rng);
         for (int i = 0; i < num_cycles; i++) {
             // Check value before GC
             void *current_obj = fromPointer(root_ptr);
             i64 before_value = static_cast<ElmInt *>(current_obj)->value;
 
-            // Allocate garbage between cycles
-            for (int j = 0; j < 20; j++) {
-                void *garbage = createRandomPrimitive(rng);
-                (void) garbage;
+            // Allocate garbage between cycles from generated descriptions
+            if (i < static_cast<int>(garbage_per_cycle.size())) {
+                allocateHeapGraph(garbage_per_cycle[i]);
             }
 
             gc.minorGC();
