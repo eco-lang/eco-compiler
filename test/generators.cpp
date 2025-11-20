@@ -8,6 +8,15 @@ namespace Elm {
 // Allocation Implementation
 // ============================================================================
 
+// Helper to create a constant HPointer
+static HPointer createConstant(Constant c) {
+    HPointer ptr;
+    ptr.ptr = 0;
+    ptr.constant = c;
+    ptr.padding = 0;
+    return ptr;
+}
+
 // Helper to build unboxed bitmap for variable-sized structures
 static u64 buildUnboxedBitmap(const std::vector<bool>& boxed_flags, size_t max_bits) {
     u64 bitmap = 0;
@@ -25,9 +34,43 @@ static Unboxable makeUnboxableFromConsHead(const ConsHeadDesc& head, const std::
     if (head.head_boxed && !allocated.empty()) {
         size_t idx = head.child_index % allocated.size();
         val.p = toPointer(allocated[idx]);
+    } else if (head.head_boxed && allocated.empty()) {
+        // No objects to reference, use Nil constant
+        val.p = createConstant(Const_Nil);
     } else {
-        // Use int as default for unboxed
-        val.i = head.int_val;
+        // Unboxed: use primitive value or constant based on head.unboxed
+        switch (head.unboxed) {
+            case UnboxedInt:
+                val.i = head.int_val;
+                break;
+            case UnboxedFloat:
+                val.f = head.float_val;
+                break;
+            case UnboxedChar:
+                val.c = head.char_val;
+                break;
+            case UnboxedUnit:
+                val.p = createConstant(Const_Unit);
+                break;
+            case UnboxedEmptyRec:
+                val.p = createConstant(Const_EmptyRec);
+                break;
+            case UnboxedTrue:
+                val.p = createConstant(Const_True);
+                break;
+            case UnboxedFalse:
+                val.p = createConstant(Const_False);
+                break;
+            case UnboxedNil:
+                val.p = createConstant(Const_Nil);
+                break;
+            case UnboxedNothing:
+                val.p = createConstant(Const_Nothing);
+                break;
+            case UnboxedEmptyString:
+                val.p = createConstant(Const_EmptyString);
+                break;
+        }
     }
     return val;
 }
@@ -41,19 +84,41 @@ static Unboxable makeUnboxable(bool is_boxed, const HeapObjectDesc &desc, const 
         // Clamp child_index to valid range
         size_t idx = child_index % allocated.size();
         val.p = toPointer(allocated[idx]);
+    } else if (is_boxed && allocated.empty()) {
+        // No objects to reference, use Nil constant
+        val.p = createConstant(Const_Nil);
     } else {
-        // Unboxed: use primitive value from description
-        // Choose which primitive based on type hint
-        switch (desc.type) {
-            case HeapObjectDesc::Int:
+        // Unboxed: use primitive value or constant based on desc.unboxed
+        switch (desc.unboxed) {
+            case UnboxedInt:
                 val.i = desc.int_val;
                 break;
-            case HeapObjectDesc::Float:
+            case UnboxedFloat:
                 val.f = desc.float_val;
                 break;
-            case HeapObjectDesc::Char:
-            default:
+            case UnboxedChar:
                 val.c = desc.char_val;
+                break;
+            case UnboxedUnit:
+                val.p = createConstant(Const_Unit);
+                break;
+            case UnboxedEmptyRec:
+                val.p = createConstant(Const_EmptyRec);
+                break;
+            case UnboxedTrue:
+                val.p = createConstant(Const_True);
+                break;
+            case UnboxedFalse:
+                val.p = createConstant(Const_False);
+                break;
+            case UnboxedNil:
+                val.p = createConstant(Const_Nil);
+                break;
+            case UnboxedNothing:
+                val.p = createConstant(Const_Nothing);
+                break;
+            case UnboxedEmptyString:
+                val.p = createConstant(Const_EmptyString);
                 break;
         }
     }

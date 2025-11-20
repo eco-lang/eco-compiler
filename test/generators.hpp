@@ -11,10 +11,25 @@ namespace Elm {
 // Data Structures - Describe heap objects without side effects
 // ============================================================================
 
+// Enum for unboxed value types (primitives and constants)
+enum Unboxed {
+    UnboxedInt,
+    UnboxedFloat,
+    UnboxedChar,
+    UnboxedUnit,
+    UnboxedEmptyRec,
+    UnboxedTrue,
+    UnboxedFalse,
+    UnboxedNil,
+    UnboxedNothing,
+    UnboxedEmptyString
+};
+
 // Describes a Cons cell head (for list generation)
 struct ConsHeadDesc {
     bool head_boxed;
     size_t child_index;  // for boxed head
+    Unboxed unboxed;     // Type of unboxed value (when !head_boxed)
     // Primitive values for unboxed head:
     i64 int_val;
     f64 float_val;
@@ -31,6 +46,7 @@ struct HeapObjectDesc {
     enum Type { Int, Float, Char, String, Tuple2, Tuple3, Custom, Record, DynRecord, FieldGroup, Closure };
 
     Type type;
+    Unboxed unboxed;  // Type of unboxed value (for fields marked !boxed)
 
     // Primitive values
     i64 int_val;
@@ -103,6 +119,17 @@ struct Arbitrary<Elm::ConsHeadDesc> {
         return gen::build<Elm::ConsHeadDesc>(
             gen::set(&Elm::ConsHeadDesc::head_boxed, gen::arbitrary<bool>()),
             gen::set(&Elm::ConsHeadDesc::child_index, gen::arbitrary<size_t>()),
+            gen::set(&Elm::ConsHeadDesc::unboxed,
+                     gen::element(Elm::UnboxedInt,
+                                  Elm::UnboxedFloat,
+                                  Elm::UnboxedChar,
+                                  Elm::UnboxedUnit,
+                                  Elm::UnboxedEmptyRec,
+                                  Elm::UnboxedTrue,
+                                  Elm::UnboxedFalse,
+                                  Elm::UnboxedNil,
+                                  Elm::UnboxedNothing,
+                                  Elm::UnboxedEmptyString)),
             gen::set(&Elm::ConsHeadDesc::int_val, gen::arbitrary<Elm::i64>()),
             gen::set(&Elm::ConsHeadDesc::float_val, gen::arbitrary<Elm::f64>()),
             gen::set(&Elm::ConsHeadDesc::char_val, gen::inRange<Elm::u16>(0, 0xFFFF))
@@ -138,6 +165,17 @@ struct Arbitrary<Elm::HeapObjectDesc> {
                                   Elm::HeapObjectDesc::DynRecord,
                                   Elm::HeapObjectDesc::FieldGroup,
                                   Elm::HeapObjectDesc::Closure)),
+            gen::set(&Elm::HeapObjectDesc::unboxed,
+                     gen::element(Elm::UnboxedInt,
+                                  Elm::UnboxedFloat,
+                                  Elm::UnboxedChar,
+                                  Elm::UnboxedUnit,
+                                  Elm::UnboxedEmptyRec,
+                                  Elm::UnboxedTrue,
+                                  Elm::UnboxedFalse,
+                                  Elm::UnboxedNil,
+                                  Elm::UnboxedNothing,
+                                  Elm::UnboxedEmptyString)),
             gen::set(&Elm::HeapObjectDesc::int_val, gen::arbitrary<Elm::i64>()),
             gen::set(&Elm::HeapObjectDesc::float_val, gen::arbitrary<Elm::f64>()),
             gen::set(&Elm::HeapObjectDesc::char_val, gen::inRange<Elm::u16>(0, 0xFFFF)),
