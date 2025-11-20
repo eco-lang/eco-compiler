@@ -20,7 +20,7 @@ enum class Color : u32 {
 };
 
 // Maximum age before promotion to old gen
-constexpr u32 PROMOTION_AGE = 0;
+constexpr u32 PROMOTION_AGE = 1;
 
 // Nursery size per thread (e.g., 4MB)
 constexpr size_t NURSERY_SIZE = 4 * 1024 * 1024;
