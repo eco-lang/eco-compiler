@@ -38,6 +38,9 @@ void *NurserySpace::allocate(size_t size) {
 
     void *result = alloc_ptr;
     alloc_ptr += size;
+
+    GC_STATS_RECORD_ALLOC(stats, size);
+
     return result;
 }
 
@@ -67,6 +70,12 @@ bool NurserySpace::contains(void *ptr) const {
  * not need to be scanned by Cheneys algorithm.
  */
 void NurserySpace::minorGC(RootSet &roots, OldGenSpace &oldgen) {
+#if ENABLE_GC_STATS
+    // Capture state before GC
+    size_t from_space_used = alloc_ptr - from_space;
+    auto gc_start = GC_STATS_TIMER_START();
+#endif
+
     // Reset allocation into the to_space
     alloc_ptr = to_space;
     scan_ptr = to_space;
@@ -111,6 +120,15 @@ void NurserySpace::minorGC(RootSet &roots, OldGenSpace &oldgen) {
     //             to_space = old from_space (empty)
     //             alloc_ptr already points to end of live objects in new from_space
     scan_ptr = from_space;
+
+#if ENABLE_GC_STATS
+    // Calculate what happened during this GC
+    size_t to_space_used = alloc_ptr - from_space;
+    size_t bytes_freed = from_space_used - to_space_used;
+    uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
+
+    GC_STATS_RECORD_GC_END(stats, elapsed_ns, bytes_freed);
+#endif
 }
 
 /**
@@ -186,6 +204,8 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
             if (promoted_objects) {
                 promoted_objects->push_back(new_obj);
             }
+
+            GC_STATS_INC_PROMOTED(stats);
         }
     }
 
@@ -201,6 +221,8 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         // Update age after copying (preserves all other fields)
         Header *new_hdr = getHeader(new_obj);
         new_hdr->age++; // Increment age
+
+        GC_STATS_INC_SURVIVORS(stats);
     }
 
     // Leave forwarding pointer (as logical offset)

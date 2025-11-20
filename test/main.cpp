@@ -802,5 +802,14 @@ int main(int argc, char* argv[]) {
         }
     }
 
+#if ENABLE_GC_STATS
+    // Print GC statistics after all tests complete
+    auto &gc = GarbageCollector::instance();
+    auto *nursery = gc.getNursery();
+    if (nursery) {
+        nursery->getStats().print();
+    }
+#endif
+
     return 0;
 }

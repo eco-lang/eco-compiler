@@ -4,6 +4,7 @@ add_executable(test
         main.cpp
         generators.cpp
         ../runtime/src/allocator.cpp
+        ../runtime/src/gc_stats.cpp
 )
 
 target_compile_features(test PRIVATE cxx_std_20)

@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <vector>
 #include "heap.hpp"
+#include "gc_stats.hpp"
 
 namespace Elm {
 
@@ -50,12 +51,22 @@ public:
     size_t bytesAllocated() const { return alloc_ptr - from_space; }
     size_t bytesRemaining() const { return from_space + (NURSERY_SIZE / 2) - alloc_ptr; }
 
+#if ENABLE_GC_STATS
+    // Get GC statistics
+    const GCStats& getStats() const { return stats; }
+    GCStats& getStats() { return stats; }
+#endif
+
 private:
     char *memory; // Total nursery memory (both semi-spaces)
     char *from_space; // Current allocation space
     char *to_space; // Copy target during GC
     char *alloc_ptr; // Bump allocation pointer
     char *scan_ptr; // Scan pointer for Cheney's algorithm
+
+#if ENABLE_GC_STATS
+    GCStats stats; // Performance statistics
+#endif
 
     void evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
     void evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
