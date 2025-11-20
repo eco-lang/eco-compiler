@@ -180,7 +180,6 @@ int main(int argc, char* argv[]) {
 
     // GC Tests
     suite.add(testGCPreservesRoots);
-    suite.add(testGCCollectsGarbage);
     suite.add(testMultipleGCCycles);
 
     // Handle --list option

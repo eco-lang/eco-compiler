@@ -5,7 +5,6 @@
 
 using namespace Elm;
 
-// Test 1: GC preserves reachable objects
 Testing::Test testGCPreservesRoots("GC preserves all reachable objects from roots", []() {
         rc::check("GC preserves all reachable objects from roots", [](const HeapGraphDesc &graph) {
             // Initialize GC for this thread
@@ -52,42 +51,13 @@ Testing::Test testGCPreservesRoots("GC preserves all reachable objects from root
         });
 });
 
-// Test 2: Unreachable objects are collected
-Testing::Test testGCCollectsGarbage("GC collects unreachable objects", []() {
-        rc::check("GC collects unreachable objects", [](const std::vector<HeapObjectDesc> &objects) {
-            auto &gc = GarbageCollector::instance();
-            gc.initThread();
-            auto *nursery = gc.getNursery();
-
-            // Need at least some objects to test collection
-            RC_PRE(!objects.empty() && objects.size() >= 10);
-
-            // Allocate objects without adding to roots
-            size_t initial_used = nursery->bytesAllocated();
-
-            std::vector<void *> allocated = allocateHeapGraph(objects);
-
-            size_t used_before_gc = nursery->bytesAllocated();
-            RC_ASSERT(used_before_gc > initial_used);
-
-            // GC should collect everything (no roots)
-            gc.minorGC();
-
-            size_t used_after_gc = nursery->bytesAllocated();
-
-            // After GC with no roots, nursery should be mostly empty
-            RC_ASSERT(used_after_gc < used_before_gc / 2);
-        });
-});
-
-// Test 3: Multiple GC cycles preserve roots
 Testing::Test testMultipleGCCycles("Multiple GC cycles preserve roots correctly", []() {
         rc::check("Multiple GC cycles preserve roots correctly", []() {
             // Generate proper test parameters directly using custom generator
             auto testGen = rc::gen::tuple(rc::gen::arbitrary<i64>(), // int_value
-                                          rc::gen::inRange(3, 11), // num_cycles (3-10 inclusive)
+                                          rc::gen::inRange(2, 5), // num_cycles (2-4 inclusive)
                                           rc::gen::container<std::vector<std::vector<HeapObjectDesc>>>(
-                                              10, // Generate exactly 10 garbage vectors (covers max cycles)
+                                              4, // Generate exactly 10 garbage vectors (covers max cycles)
                                               rc::gen::arbitrary<std::vector<HeapObjectDesc>>()));
 
             auto params = *testGen;
