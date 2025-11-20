@@ -36,7 +36,9 @@
       "Bash(cat:*)",
       "Bash(/home/rupert/sc/gitlab/eco-runtime/test/main.cpp)",
       "Bash(ls:*)",
-      "Bash(xargs:*)"
+      "Bash(xargs:*)",
+      "Bash(./build/test/object_pool_test)",
+      "Bash(./build/test/object_pool_simple_test:*)"
     ],
     "deny": [],
     "ask": []
