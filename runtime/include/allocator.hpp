@@ -29,6 +29,60 @@ constexpr size_t NURSERY_SIZE = 4 * 1024 * 1024;
 class OldGenSpace;
 class RootSet;
 
+// ============================================================================
+// TLAB (Thread-Local Allocation Buffer)
+// ============================================================================
+
+/**
+ * A thread-local allocation buffer for fast, lock-free allocation into old gen.
+ * Each thread gets a TLAB for promoting objects during minor GC, avoiding
+ * mutex contention on the global OldGenSpace free-list.
+ */
+class TLAB {
+public:
+    /**
+     * Create a TLAB from a memory region.
+     * @param base Start of the memory region
+     * @param size Size of the region in bytes
+     */
+    TLAB(char* base, size_t size)
+        : start(base), end(base + size), alloc_ptr(base) {}
+
+    /**
+     * Allocate from this TLAB using thread-local bump pointer.
+     * NO SYNCHRONIZATION - thread has exclusive access.
+     *
+     * @param size Number of bytes to allocate (will be 8-byte aligned)
+     * @return Pointer to allocated memory, or nullptr if TLAB exhausted
+     */
+    void* allocate(size_t size) {
+        // Align to 8 bytes
+        size = (size + 7) & ~7;
+
+        // Check if we have space
+        if (alloc_ptr + size > end) {
+            return nullptr; // TLAB exhausted
+        }
+
+        // Bump pointer allocation (thread-local, no sync!)
+        void* result = alloc_ptr;
+        alloc_ptr += size;
+        return result;
+    }
+
+    // Query methods
+    size_t bytesUsed() const { return alloc_ptr - start; }
+    size_t bytesRemaining() const { return end - alloc_ptr; }
+    size_t capacity() const { return end - start; }
+    bool isEmpty() const { return alloc_ptr == start; }
+    bool isFull() const { return alloc_ptr == end; }
+
+    // Memory region
+    char* start;      // Start of TLAB
+    char* end;        // End of TLAB
+    char* alloc_ptr;  // Current allocation pointer (thread-local)
+};
+
 // Thread-local nursery space with semi-space copying collector
 class NurserySpace {
 public:
@@ -64,6 +118,8 @@ private:
     char *alloc_ptr; // Bump allocation pointer
     char *scan_ptr; // Scan pointer for Cheney's algorithm
 
+    TLAB* promotion_tlab; // Thread-local TLAB for promotions to old gen
+
 #if ENABLE_GC_STATS
     GCStats stats; // Performance statistics
 #endif
@@ -97,6 +153,10 @@ public:
     // Check if pointer is in old gen
     bool contains(void *ptr) const;
 
+    // TLAB allocation methods
+    TLAB* allocateTLAB(size_t size);
+    void sealTLAB(TLAB* tlab);
+
     // RAII lock guard for multi-operation critical sections
     // WARNING: Use this ONLY when absolutely unavoidable!
     // Prefer creating a new public method that performs the entire operation atomically.
@@ -129,6 +189,15 @@ private:
 
     std::atomic<u32> current_epoch; // Current GC epoch
     std::atomic<bool> marking_active; // Is marking in progress?
+
+    // TLAB (Thread-Local Allocation Buffer) support
+    static constexpr size_t TLAB_DEFAULT_SIZE = 128 * 1024; // 128KB
+    static constexpr size_t TLAB_MIN_SIZE = 64 * 1024;      // 64KB minimum
+    std::atomic<char*> tlab_bump_ptr;  // Atomic bump pointer for TLAB creation
+    char* tlab_region_start;           // Start of TLAB region
+    char* tlab_region_end;             // End of TLAB region
+    std::mutex sealed_tlabs_mutex;     // Protects sealed_tlabs vector
+    std::vector<TLAB*> sealed_tlabs;   // TLABs awaiting sweep
 
     // Internal allocation without locking
     // REQUIRES: Caller must hold alloc_mutex
