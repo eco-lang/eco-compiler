@@ -3,6 +3,7 @@ include_directories(../runtime/include/)
 add_executable(test
         main.cpp
         generators.cpp
+        allocator_test.cpp
         ../runtime/src/allocator.cpp
         ../runtime/src/gc_stats.cpp
 )
