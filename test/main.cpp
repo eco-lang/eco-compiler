@@ -264,6 +264,7 @@ int main(int argc, char* argv[]) {
     // GC Tests
     suite.add(testGCPreservesRoots);
     suite.add(testMultipleGCCycles);
+    suite.add(testContinuousGarbageAllocation);
 
     // Handle --list option
     if (config.list_tests) {

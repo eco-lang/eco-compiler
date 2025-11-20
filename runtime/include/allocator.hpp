@@ -105,6 +105,14 @@ public:
     size_t bytesAllocated() const { return alloc_ptr - from_space; }
     size_t bytesRemaining() const { return from_space + (NURSERY_SIZE / 2) - alloc_ptr; }
 
+    // Check if allocation would exceed threshold (for automatic GC triggering)
+    bool wouldExceedThreshold(size_t size, float threshold = 0.9f) const {
+        size_t aligned_size = (size + 7) & ~7;
+        size_t total_capacity = NURSERY_SIZE / 2;
+        size_t usage_after = (alloc_ptr - from_space) + aligned_size;
+        return usage_after >= (size_t)(total_capacity * threshold);
+    }
+
 #if ENABLE_GC_STATS
     // Get GC statistics
     const GCStats& getStats() const { return stats; }
@@ -285,6 +293,9 @@ private:
     // Thread-local nursery spaces
     std::mutex nursery_mutex;
     std::unordered_map<std::thread::id, std::unique_ptr<NurserySpace>> nurseries;
+
+    // Flag to prevent recursive GC calls
+    thread_local static bool gc_in_progress;
 
     // Commit more old gen memory
     void growOldGen(size_t additional_size);

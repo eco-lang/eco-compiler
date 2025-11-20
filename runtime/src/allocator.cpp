@@ -7,6 +7,9 @@
 
 namespace Elm {
 
+// Define the thread_local flag for preventing recursive GC
+thread_local bool GarbageCollector::gc_in_progress = false;
+
 // ============================================================================
 // NurserySpace Implementation
 // ============================================================================
@@ -966,6 +969,14 @@ void *GarbageCollector::allocate(size_t size, Tag tag) {
     NurserySpace *nursery = getNursery();
 
     if (nursery) {
+        // Check if allocation would exceed 90% threshold - trigger GC proactively
+        // But only if GC is not already in progress (prevent recursion)
+        bool gc_triggered = false;
+        if (!gc_in_progress && nursery->wouldExceedThreshold(size, 0.9f)) {
+            minorGC();
+            gc_triggered = true;
+        }
+
         void *obj = nursery->allocate(size);
         if (obj) {
             Header *hdr = getHeader(obj);
@@ -999,10 +1010,12 @@ void *GarbageCollector::allocate(size_t size, Tag tag) {
             return obj;
         }
 
-        // Nursery full, trigger minor GC
-        minorGC();
+        // Nursery full - trigger GC only if we haven't already and if GC is not in progress
+        if (!gc_triggered && !gc_in_progress) {
+            minorGC();
+        }
 
-        // Try again
+        // Try again after GC
         obj = nursery->allocate(size);
         if (obj) {
             Header *hdr = getHeader(obj);
@@ -1068,15 +1081,37 @@ void *GarbageCollector::allocate(size_t size, Tag tag) {
 }
 
 void GarbageCollector::minorGC() {
+    // Prevent recursive GC calls
+    if (gc_in_progress) {
+        return;
+    }
+
+    // Set flag to indicate GC is in progress
+    gc_in_progress = true;
+
     NurserySpace *nursery = getNursery();
     if (nursery) {
         nursery->minorGC(root_set, old_gen);
     }
+
+    // Clear flag when done
+    gc_in_progress = false;
 }
 
 void GarbageCollector::majorGC() {
+    // Prevent recursive GC calls
+    if (gc_in_progress) {
+        return;
+    }
+
+    // Set flag to indicate GC is in progress
+    gc_in_progress = true;
+
     old_gen.startConcurrentMark(root_set);
     old_gen.finishMarkAndSweep();
+
+    // Clear flag when done
+    gc_in_progress = false;
 }
 
 } // namespace Elm
