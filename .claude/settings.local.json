@@ -26,7 +26,11 @@
       "Bash(timeout 120 ./build/test/test:*)",
       "Bash(timeout 10 gdb:*)",
       "Bash(RC_PARAMS=\"reproduce=B0yRDBCcyV2clJndlNHIhxGbgIXZhNGahJGblBybipWZjR3cgYmcv1GIy92b0NHZC0+oeQB42RmAtPqHUAudkJQ7j6BFgbHZC0+oeQB42BIgACIgACIIAcjNAAAASGQEO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4wFSQCJjISGTMBGTMBFYMBLWgxEccxEeQxEZMBFUMRFc0BFkUhFgkxETURM38CO7QjOzA\" ./build/test/test)",
-      "Bash(for:*)"
+      "Bash(for:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:www.cppstories.com)",
+      "WebFetch(domain:blog.rubenwardy.com)"
     ],
     "deny": [],
     "ask": []
