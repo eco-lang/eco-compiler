@@ -98,7 +98,10 @@ public:
     bool contains(void *ptr) const;
 
     // RAII lock guard for multi-operation critical sections
-    // Use this when you need to hold the lock across multiple operations
+    // WARNING: Use this ONLY when absolutely unavoidable!
+    // Prefer creating a new public method that performs the entire operation atomically.
+    // This class exists for rare cases where external code must coordinate multiple
+    // operations under a single lock, but such cases should be carefully reviewed.
     class ScopedLock {
     public:
         explicit ScopedLock(OldGenSpace &space)
@@ -107,8 +110,6 @@ public:
     private:
         std::lock_guard<std::recursive_mutex> lock_;
     };
-
-    std::recursive_mutex &getMutex() { return alloc_mutex; }
 
 private:
     struct FreeBlock {
@@ -129,7 +130,9 @@ private:
     std::atomic<u32> current_epoch; // Current GC epoch
     std::atomic<bool> marking_active; // Is marking in progress?
 
-    // Internal allocation without locking (caller must hold lock)
+    // Internal allocation without locking
+    // REQUIRES: Caller must hold alloc_mutex
+    // This is called by public allocate() which holds the lock, and may call itself recursively
     void *allocate_internal(size_t size);
 
     void mark(void *obj);
@@ -137,6 +140,9 @@ private:
     void markHPointer(HPointer &ptr);
     void markUnboxable(Unboxable &val, bool is_boxed);
     void sweep();
+
+    // Add a new memory chunk to the old gen space
+    // REQUIRES: Caller must hold alloc_mutex (modifies free_list)
     void addChunk(size_t size);
 
     friend class NurserySpace;

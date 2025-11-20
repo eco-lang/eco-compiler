@@ -344,6 +344,10 @@ void OldGenSpace::initialize(char *base, size_t initial_size, size_t max_size) {
     chunks.push_back(region_base);
 }
 
+/**
+ * Add a new memory chunk to the old generation space.
+ * REQUIRES: Caller must hold alloc_mutex (modifies free_list and region_size)
+ */
 void OldGenSpace::addChunk(size_t size) {
     // Check if we can grow
     if (region_size >= max_region_size) {
@@ -371,16 +375,25 @@ void OldGenSpace::addChunk(size_t size) {
     region_size += growth;
 }
 
+/**
+ * Allocate memory in the old generation space.
+ * This is the public interface - handles locking internally.
+ */
 void *OldGenSpace::allocate(size_t size) {
     std::lock_guard<std::recursive_mutex> lock(alloc_mutex);
     return allocate_internal(size);
 }
 
+/**
+ * Internal allocation implementation.
+ * REQUIRES: Caller must hold alloc_mutex
+ * This may call itself recursively if heap growth is needed.
+ */
 void *OldGenSpace::allocate_internal(size_t size) {
     size = (size + 7) & ~7; // Align
     size = std::max(size, sizeof(FreeBlock)); // Minimum size
 
-    // NOTE: Caller must hold alloc_mutex lock
+    // NOTE: Caller must hold alloc_mutex
 
     FreeBlock **prev_ptr = &free_list;
     FreeBlock *curr = free_list;
@@ -427,6 +440,10 @@ bool OldGenSpace::contains(void *ptr) const {
     return (p >= region_base && p < region_base + region_size);
 }
 
+/**
+ * Start a concurrent marking phase.
+ * This is a public method that handles its own locking.
+ */
 void OldGenSpace::startConcurrentMark(RootSet &roots) {
     std::lock_guard<std::recursive_mutex> lock(mark_mutex);
 
@@ -446,6 +463,11 @@ void OldGenSpace::startConcurrentMark(RootSet &roots) {
     }
 }
 
+/**
+ * Perform incremental marking work.
+ * This is a public method that handles its own locking.
+ * Returns true if more work remains, false if marking is complete.
+ */
 bool OldGenSpace::incrementalMark(size_t work_units) {
     std::lock_guard<std::recursive_mutex> lock(mark_mutex);
 
@@ -573,6 +595,10 @@ void OldGenSpace::markUnboxable(Unboxable &val, bool is_boxed) {
     }
 }
 
+/**
+ * Complete marking phase and perform sweep.
+ * This is a public method. It calls incrementalMark() and sweep() which handle their own locking.
+ */
 void OldGenSpace::finishMarkAndSweep() {
     // Complete any remaining marking
     while (incrementalMark(1000)) {
@@ -584,6 +610,11 @@ void OldGenSpace::finishMarkAndSweep() {
     marking_active = false;
 }
 
+/**
+ * Sweep phase - reclaim unmarked (white) objects.
+ * This is a private method but handles its own locking (alloc_mutex).
+ * Called by finishMarkAndSweep() which doesn't hold any locks.
+ */
 void OldGenSpace::sweep() {
     std::lock_guard<std::recursive_mutex> lock(alloc_mutex);
 
