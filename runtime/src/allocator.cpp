@@ -185,7 +185,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
 
     // Promote to old gen if age >= PROMOTION_AGE
     if (hdr->age >= PROMOTION_AGE) {
-        std::lock_guard<std::mutex> lock(oldgen.getMutex());
+        // allocate() handles its own locking internally, no need to lock here
         new_obj = oldgen.allocate(size);
         if (new_obj) {
             // Save color set by oldgen.allocate before memcpy overwrites it
@@ -372,10 +372,15 @@ void OldGenSpace::addChunk(size_t size) {
 }
 
 void *OldGenSpace::allocate(size_t size) {
+    std::lock_guard<std::recursive_mutex> lock(alloc_mutex);
+    return allocate_internal(size);
+}
+
+void *OldGenSpace::allocate_internal(size_t size) {
     size = (size + 7) & ~7; // Align
     size = std::max(size, sizeof(FreeBlock)); // Minimum size
 
-    std::lock_guard<std::mutex> lock(alloc_mutex);
+    // NOTE: Caller must hold alloc_mutex lock
 
     FreeBlock **prev_ptr = &free_list;
     FreeBlock *curr = free_list;
@@ -413,8 +418,8 @@ void *OldGenSpace::allocate(size_t size) {
     size_t chunk_size = std::max(size * 2, (long unsigned int) 1024 * 1024);
     addChunk(chunk_size);
 
-    // Try again
-    return allocate(size);
+    // Try again (recursive call to internal version, lock already held)
+    return allocate_internal(size);
 }
 
 bool OldGenSpace::contains(void *ptr) const {
@@ -423,7 +428,7 @@ bool OldGenSpace::contains(void *ptr) const {
 }
 
 void OldGenSpace::startConcurrentMark(RootSet &roots) {
-    std::lock_guard<std::mutex> lock(mark_mutex);
+    std::lock_guard<std::recursive_mutex> lock(mark_mutex);
 
     if (marking_active)
         return;
@@ -442,7 +447,7 @@ void OldGenSpace::startConcurrentMark(RootSet &roots) {
 }
 
 bool OldGenSpace::incrementalMark(size_t work_units) {
-    std::lock_guard<std::mutex> lock(mark_mutex);
+    std::lock_guard<std::recursive_mutex> lock(mark_mutex);
 
     if (!marking_active || mark_stack.empty()) {
         return false; // No work to do
@@ -580,7 +585,7 @@ void OldGenSpace::finishMarkAndSweep() {
 }
 
 void OldGenSpace::sweep() {
-    std::lock_guard<std::mutex> lock(alloc_mutex);
+    std::lock_guard<std::recursive_mutex> lock(alloc_mutex);
 
     // Rebuild free list from white (unmarked) objects
     FreeBlock *new_free_list = nullptr;

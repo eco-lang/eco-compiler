@@ -20,7 +20,7 @@ enum class Color : u32 {
 };
 
 // Maximum age before promotion to old gen
-constexpr u32 PROMOTION_AGE = 4;
+constexpr u32 PROMOTION_AGE = 0;
 
 // Nursery size per thread (e.g., 4MB)
 constexpr size_t NURSERY_SIZE = 4 * 1024 * 1024;
@@ -97,7 +97,18 @@ public:
     // Check if pointer is in old gen
     bool contains(void *ptr) const;
 
-    std::mutex &getMutex() { return alloc_mutex; }
+    // RAII lock guard for multi-operation critical sections
+    // Use this when you need to hold the lock across multiple operations
+    class ScopedLock {
+    public:
+        explicit ScopedLock(OldGenSpace &space)
+            : lock_(space.alloc_mutex) {}
+        // Automatic unlock on destruction via std::lock_guard
+    private:
+        std::lock_guard<std::recursive_mutex> lock_;
+    };
+
+    std::recursive_mutex &getMutex() { return alloc_mutex; }
 
 private:
     struct FreeBlock {
@@ -110,13 +121,16 @@ private:
     size_t max_region_size; // Maximum size can grow to
     std::vector<char *> chunks; // Memory chunks (within region)
     FreeBlock *free_list; // Free list for allocation
-    std::mutex alloc_mutex; // Mutex for allocation
+    std::recursive_mutex alloc_mutex; // Recursive mutex for allocation (allows re-entrant calls)
 
     std::vector<void *> mark_stack; // Stack for marking
-    std::mutex mark_mutex; // Mutex for marking operations
+    std::recursive_mutex mark_mutex; // Recursive mutex for marking operations
 
     std::atomic<u32> current_epoch; // Current GC epoch
     std::atomic<bool> marking_active; // Is marking in progress?
+
+    // Internal allocation without locking (caller must hold lock)
+    void *allocate_internal(size_t size);
 
     void mark(void *obj);
     void markChildren(void *obj);
@@ -126,6 +140,7 @@ private:
     void addChunk(size_t size);
 
     friend class NurserySpace;
+    friend class ScopedLock;
 };
 
 // Root set management

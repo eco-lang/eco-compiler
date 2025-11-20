@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmake --build:*)",
+      "Bash(c++:*)",
+      "Bash(timeout 5 ./gc_test:*)",
+      "Bash(gdb:*)",
+      "Bash(timeout 3 ./gc_test:*)",
+      "Bash(timeout 30 ./gc_test:*)",
+      "Bash(./gc_test)",
+      "Bash(1)",
+      "Bash(timeout 2 ./gc_test:*)",
+      "Bash(cmake:*)",
+      "Bash(./build/gc_test:*)",
+      "Bash(for i in {1..5})",
+      "Bash(do echo \"=== Run $i ===\")",
+      "Bash(done)",
+      "Bash(./build/test/test:*)",
+      "Bash(RC_PARAMS=\"reproduce=B0yRDBCcyV2clJndlNHIhxGbgIXZhNGahJGblBybipWZjR3cgYmcv1GIy92b0N3sUeXTwiQmLPLl31EsIk5yzS5dNBLCZu8sUeXTwiQmLDIEAwwCAAAA2RBFUQBFUQBFUQBFUQBFUQBFUQBFUQBFUQBFUQBFUQBFUQBFUQBFWcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXcxFXdQQCJsA\" ./build/test/test)",
+      "Bash(for i in {1..10})",
+      "Bash(timeout 30 ./build/test/test:*)",
+      "Bash(RC_PARAMS=\"reproduce=B0yRDBCcyV2clJndlNHIhxGbgIXZhNGahJGblBybipWZjR3cgYmcv1GIy92b0NHS3chnOAghZi0NX4pDAYYmIdzFe6AAGmJS3chnOAghZCICAsgCAAAASNxCJkQCJkQCJkQCJkQCJkQCJkQCJkQCJkQCJogCKogCKogCKogCKogCKogCKogCKogCKogCKogCKogCKogCKogCKogCKogCKogCKogCKMREYcB\" timeout 30 ./build/test/test)",
+      "Bash(timeout 10 ./build/test/test:*)",
+      "Bash(RC_PARAMS=\"reproduce=B0yRDBCcyV2clJndlNHIhxGbgIXZhNGahJGblBybipWZjR3cgYmcv1GIy92b0NHS3chnOAghZi0NX4pDAYYmIdzFe6AAGmJS3chnOAghZCICAsgCAAAASNxCJkQCJkQCJkQCJkQCJkQCJkQCJkQCJkQCJogCKogCKogCKogCKogCKogCKogCKogCKogCKogCKogCKogCKogCKogCKogCKogCKogCKMREYcB\" timeout 10 ./build/test/test)",
+      "Bash(timeout 60 ./build/test/test:*)",
+      "Bash(timeout 120 ./build/test/test:*)",
+      "Bash(timeout 10 gdb:*)",
+      "Bash(RC_PARAMS=\"reproduce=B0yRDBCcyV2clJndlNHIhxGbgIXZhNGahJGblBybipWZjR3cgYmcv1GIy92b0NHZC0+oeQB42RmAtPqHUAudkJQ7j6BFgbHZC0+oeQB42BIgACIgACIIAcjNAAAASGQEO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4gDO4wFSQCJjISGTMBGTMBFYMBLWgxEccxEeQxEZMBFUMRFc0BFkUhFgkxETURM38CO7QjOzA\" ./build/test/test)",
+      "Bash(for:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
