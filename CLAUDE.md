@@ -133,6 +133,50 @@ To enable statistics, define `ENABLE_GC_STATS` before including `gc_stats.hpp` o
 - Default heap reservation: 1GB total address space
 - Object alignment: 8 bytes
 
+## Git Workflow
+
+When developing features or fixes, follow this branch-based workflow:
+
+### Starting Work
+
+1. **Create a feature branch** with a descriptive name:
+   ```bash
+   git checkout -b <descriptive-branch-name>
+   ```
+   Name branches after the task: `fix-nursery-overflow`, `add-tlab-support`, `refactor-gc-stats`
+
+2. **Rebase onto master** to ensure you're starting from the latest code:
+   ```bash
+   git rebase master
+   ```
+
+### During Development
+
+- Make incremental changes
+- Test that changes work before committing
+
+### Completing Work
+
+1. **Ask user for confirmation** before committing - do not commit automatically
+2. **Commit with a concise, well-written message** describing the change
+3. **Rebase onto master again** in case it has changed:
+   ```bash
+   git rebase master
+   ```
+4. **Resolve any conflicts** if they occur
+5. **Merge to master**:
+   ```bash
+   git checkout master
+   git merge <branch-name>
+   ```
+
+### Important
+
+- Never commit without user confirmation
+- Never push to remote without user confirmation
+- Keep commit messages concise but descriptive
+- One logical change per commit
+
 ## Development Notes
 
 When modifying the GC:
