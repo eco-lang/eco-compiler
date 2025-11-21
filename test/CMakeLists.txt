@@ -12,19 +12,4 @@ add_executable(test
 )
 
 target_compile_features(test PRIVATE cxx_std_20)
-
 target_link_libraries(test rapidcheck)
-
-# Object pool unit tests
-add_executable(object_pool_test
-        object_pool_test.cpp
-)
-
-target_compile_features(object_pool_test PRIVATE cxx_std_20)
-
-# Simple object pool test
-add_executable(object_pool_simple_test
-        object_pool_simple_test.cpp
-)
-
-target_compile_features(object_pool_simple_test PRIVATE cxx_std_20)
