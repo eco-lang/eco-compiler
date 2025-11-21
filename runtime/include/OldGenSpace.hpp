@@ -11,7 +11,10 @@
 
 namespace Elm {
 
-// Old generation space with concurrent mark-and-sweep
+// Forward declaration for read barrier
+void* readBarrier(HPointer& ptr);
+
+// Old generation space with concurrent mark-and-sweep and compaction
 class OldGenSpace {
 public:
     OldGenSpace();
@@ -54,6 +57,14 @@ public:
     TLAB* allocateTLAB(size_t size);
     void sealTLAB(TLAB* tlab);
 
+    // Compaction methods
+    void selectCompactionSet();
+    void performCompaction();
+    void evacuateBlock(size_t block_index);
+    void reclaimEvacuatedBlocks();
+    bool isCompactionInProgress() const { return compaction_in_progress.load(); }
+    void setCompactionInProgress(bool val) { compaction_in_progress.store(val); }
+
     // RAII lock guard for multi-operation critical sections
     // WARNING: Use this ONLY when absolutely unavoidable!
     // Prefer creating a new public method that performs the entire operation atomically.
@@ -72,10 +83,29 @@ public:
     static constexpr size_t TLAB_DEFAULT_SIZE = 128 * 1024; // 128KB
     static constexpr size_t TLAB_MIN_SIZE = 64 * 1024;      // 64KB minimum
 
+    // Compaction constants
+    static constexpr size_t BLOCK_SIZE = 256 * 1024; // 256KB blocks
+    static constexpr double EVACUATION_THRESHOLD = 0.25; // Evacuate if <25% live
+
 private:
     struct FreeBlock {
         size_t size;
         FreeBlock *next;
+    };
+
+    // Block information for compaction
+    struct BlockInfo {
+        char* start;
+        char* end;
+        size_t block_size;
+        size_t live_bytes;      // Tracked during marking
+        size_t live_count;      // Number of live objects
+        bool is_evacuation_target;  // Selected for evacuation
+        bool is_evacuation_dest;    // Can receive evacuated objects
+
+        BlockInfo() : start(nullptr), end(nullptr), block_size(0),
+                     live_bytes(0), live_count(0),
+                     is_evacuation_target(false), is_evacuation_dest(false) {}
     };
 
     char *region_base; // Base of assigned region in main heap
@@ -98,6 +128,13 @@ private:
     std::mutex sealed_tlabs_mutex;     // Protects sealed_tlabs vector
     std::vector<TLAB*> sealed_tlabs;   // TLABs awaiting sweep
 
+    // Compaction state
+    std::vector<BlockInfo> blocks;     // Block metadata for compaction
+    std::atomic<bool> compaction_in_progress{false};
+    std::atomic<char*> compaction_frontier;  // Current allocation point for compaction
+    std::mutex available_tlabs_mutex;  // Protects available_tlabs vector
+    std::vector<TLAB*> available_tlabs; // TLABs reclaimed from compaction
+
     // Internal allocation without locking
     // REQUIRES: Caller must hold alloc_mutex
     // This is called by public allocate() which holds the lock, and may call itself recursively
@@ -112,6 +149,13 @@ private:
     // Add a new memory chunk to the old gen space
     // REQUIRES: Caller must hold alloc_mutex (modifies free_list)
     void addChunk(size_t size);
+
+    // Compaction helper methods
+    void evacuateObject(void* obj);
+    void* allocateForCompaction(size_t size);
+    BlockInfo* getBlockForObject(void* obj);
+    void initializeBlocks();
+    void updateBlockLiveInfo(void* obj, size_t size);
 
     friend class NurserySpace;
     friend class ScopedLock;

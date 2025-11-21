@@ -5,6 +5,9 @@
 
 namespace Elm {
 
+// Global heap base for read barrier
+char* g_heap_base = nullptr;
+
 // Define the thread_local flag for preventing recursive GC
 thread_local bool GarbageCollector::gc_in_progress = false;
 
@@ -34,6 +37,9 @@ void GarbageCollector::initialize(size_t max_heap_size) {
     if (heap_base == MAP_FAILED) {
         throw std::bad_alloc();
     }
+
+    // Set global heap_base for read barrier
+    g_heap_base = heap_base;
 
     // Nurseries start at halfway point
     nursery_offset = heap_reserved / 2;
@@ -261,8 +267,20 @@ void GarbageCollector::majorGC() {
     // Set flag to indicate GC is in progress
     gc_in_progress = true;
 
+#if ENABLE_GC_STATS
     old_gen.startConcurrentMark(root_set, major_gc_stats);
     old_gen.finishMarkAndSweep(major_gc_stats);
+#else
+    old_gen.startConcurrentMark(root_set);
+    old_gen.finishMarkAndSweep();
+#endif
+
+    // Perform compaction after marking
+    old_gen.selectCompactionSet();
+    old_gen.setCompactionInProgress(true);
+    old_gen.performCompaction();
+    old_gen.reclaimEvacuatedBlocks();
+    old_gen.setCompactionInProgress(false);
 
     // Clear flag when done
     gc_in_progress = false;

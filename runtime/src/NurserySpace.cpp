@@ -183,7 +183,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         // Follow forward pointer and update ptr
         Forward *fwd = static_cast<Forward *>(obj);
         char *heap_base = GarbageCollector::instance().getHeapBase();
-        uintptr_t byte_offset = static_cast<uintptr_t>(fwd->pointer) << 3;
+        uintptr_t byte_offset = static_cast<uintptr_t>(fwd->header.forward_ptr) << 3;
         ptr = toPointer(heap_base + byte_offset);
         return;
     }
@@ -277,7 +277,8 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     fwd->header.tag = Tag_Forward;
     char *heap_base = GarbageCollector::instance().getHeapBase();
     uintptr_t byte_offset = static_cast<char *>(new_obj) - heap_base;
-    fwd->pointer = byte_offset >> 3; // Store as offset in 8-byte units
+    fwd->header.forward_ptr = byte_offset >> 3; // Store as offset in 8-byte units
+    fwd->header.unused = 0;
 
     ptr = toPointer(new_obj);
 }

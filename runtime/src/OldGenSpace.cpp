@@ -3,8 +3,42 @@
 #include <cstring>
 #include <new>
 #include <sys/mman.h>
+#include <atomic>
 
 namespace Elm {
+
+// Declare the global heap base from GarbageCollector.cpp
+extern char* g_heap_base;
+
+// Read barrier implementation - self-healing for forwarded objects
+void* readBarrier(HPointer& ptr) {
+    // Null check (common case - embedded constants)
+    if (ptr.constant != 0) {
+        return nullptr;  // It's a constant, not a heap pointer
+    }
+
+    // Convert logical pointer to physical address
+    void* obj = g_heap_base + (ptr.ptr << 3);
+
+    // Read header (single load)
+    Header* hdr = reinterpret_cast<Header*>(obj);
+
+    // Fast path: not forwarded (common case)
+    if (hdr->tag != Tag_Forward) {
+        return obj;
+    }
+
+    // Slow path: follow forwarding pointer and self-heal
+    Forward* fwd = reinterpret_cast<Forward*>(obj);
+
+    // Calculate new location from forward_ptr
+    void* new_location = g_heap_base + (fwd->header.forward_ptr << 3);
+
+    // Self-heal: update the pointer for next access
+    ptr.ptr = fwd->header.forward_ptr;
+
+    return new_location;
+}
 
 OldGenSpace::OldGenSpace() :
     region_base(nullptr), region_size(0), max_region_size(0), free_list(nullptr), current_epoch(0),
@@ -140,41 +174,6 @@ bool OldGenSpace::contains(void *ptr) const {
     return (p >= region_base && p < region_base + region_size);
 }
 
-void OldGenSpace::reset() {
-    // Lock both mutexes to ensure thread safety
-    std::lock_guard<std::recursive_mutex> alloc_lock(alloc_mutex);
-    std::lock_guard<std::recursive_mutex> mark_lock(mark_mutex);
-
-    // Delete and clear sealed TLABs
-    {
-        std::lock_guard<std::mutex> tlab_lock(sealed_tlabs_mutex);
-        for (TLAB* tlab : sealed_tlabs) {
-            delete tlab;
-        }
-        sealed_tlabs.clear();
-    }
-
-    // Reset marking state
-    mark_stack.clear();
-    current_epoch = 0;
-    marking_active = false;
-
-    // Reset TLAB bump pointer to start of TLAB region
-    tlab_bump_ptr.store(tlab_region_start, std::memory_order_relaxed);
-
-    // Reset free list to cover all initially committed memory in free-list region
-    size_t free_list_size = max_region_size / 2;
-    size_t initial_free_list_size = std::min(region_size, free_list_size);
-    FreeBlock *block = reinterpret_cast<FreeBlock *>(region_base);
-    block->size = initial_free_list_size;
-    block->next = nullptr;
-    free_list = block;
-
-    // Note: We don't uncommit memory or reset region_size/chunks
-    // as that would require re-mapping. The memory stays committed
-    // but the free list is reset to treat it as available.
-}
-
 /**
  * Allocate a new TLAB using lock-free atomic CAS.
  *
@@ -280,6 +279,19 @@ void OldGenSpace::startConcurrentMark(RootSet &roots) {
     current_epoch++;
     mark_stack.clear();
 
+    // Initialize blocks for compaction tracking
+    if (blocks.empty()) {
+        initializeBlocks();
+    }
+
+    // Reset block live info for new marking phase
+    for (auto& block : blocks) {
+        block.live_bytes = 0;
+        block.live_count = 0;
+        block.is_evacuation_target = false;
+        block.is_evacuation_dest = false;
+    }
+
     // Push roots onto mark stack
     for (HPointer *root: roots.getRoots()) {
         void *obj = fromPointer(*root);
@@ -331,6 +343,10 @@ bool OldGenSpace::incrementalMark(size_t work_units) {
         // Mark black
         hdr->color = static_cast<u32>(Color::Black);
         hdr->epoch = current_epoch & 3;
+
+        // Track block occupancy for compaction
+        size_t obj_size = getObjectSize(obj);
+        updateBlockLiveInfo(obj, obj_size);
 
         units_done++;
     }
@@ -546,6 +562,264 @@ void OldGenSpace::sweep() {
     }
 
     free_list = new_free_list;
+}
+
+void OldGenSpace::reset() {
+    // Reset all state to initial
+    free_list = nullptr;
+    marking_active = false;
+    current_epoch = 0;
+    mark_stack.clear();
+
+    // Reset blocks
+    blocks.clear();
+    compaction_in_progress = false;
+
+    // Clear TLABs
+    {
+        std::lock_guard<std::mutex> lock(sealed_tlabs_mutex);
+        for (TLAB* tlab : sealed_tlabs) {
+            delete tlab;
+        }
+        sealed_tlabs.clear();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(available_tlabs_mutex);
+        for (TLAB* tlab : available_tlabs) {
+            delete tlab;
+        }
+        available_tlabs.clear();
+    }
+
+    // Re-initialize with original settings if needed
+    if (region_base && region_size > 0) {
+        initialize(region_base, region_size, max_region_size);
+    }
+}
+
+// ============================================================================
+// Compaction Implementation
+// ============================================================================
+
+void OldGenSpace::initializeBlocks() {
+    // Divide the free-list region into fixed-size blocks
+    blocks.clear();
+
+    char* ptr = region_base;
+    char* end = tlab_region_start; // Only up to TLAB region
+
+    while (ptr + BLOCK_SIZE <= end) {
+        BlockInfo block;
+        block.start = ptr;
+        block.end = ptr + BLOCK_SIZE;
+        block.block_size = BLOCK_SIZE;
+        block.live_bytes = 0;
+        block.live_count = 0;
+        block.is_evacuation_target = false;
+        block.is_evacuation_dest = false;
+        blocks.push_back(block);
+
+        ptr += BLOCK_SIZE;
+    }
+
+    // Handle any remaining space as a partial block
+    if (ptr < end) {
+        BlockInfo block;
+        block.start = ptr;
+        block.end = end;
+        block.block_size = end - ptr;
+        block.live_bytes = 0;
+        block.live_count = 0;
+        block.is_evacuation_target = false;
+        block.is_evacuation_dest = false;
+        blocks.push_back(block);
+    }
+}
+
+OldGenSpace::BlockInfo* OldGenSpace::getBlockForObject(void* obj) {
+    char* addr = static_cast<char*>(obj);
+
+    for (auto& block : blocks) {
+        if (addr >= block.start && addr < block.end) {
+            return &block;
+        }
+    }
+
+    return nullptr;
+}
+
+void OldGenSpace::updateBlockLiveInfo(void* obj, size_t size) {
+    BlockInfo* block = getBlockForObject(obj);
+    if (block) {
+        __atomic_add_fetch(&block->live_bytes, size, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&block->live_count, 1, __ATOMIC_RELAXED);
+    }
+}
+
+void OldGenSpace::selectCompactionSet() {
+    // Initialize blocks if not done
+    if (blocks.empty()) {
+        initializeBlocks();
+    }
+
+    // Sort blocks by occupancy
+    std::vector<BlockInfo*> candidates;
+
+    for (auto& block : blocks) {
+        double occupancy = (double)block.live_bytes / block.block_size;
+
+        if (occupancy < EVACUATION_THRESHOLD && occupancy > 0) {
+            block.is_evacuation_target = true;
+            candidates.push_back(&block);
+        } else if (occupancy < 0.75) {  // Has space to receive objects
+            block.is_evacuation_dest = true;
+        }
+    }
+
+    // Limit compaction work (e.g., max 10% of heap per cycle)
+    size_t max_evac_bytes = region_size * 0.10;
+    size_t planned_bytes = 0;
+
+    // Sort by live bytes (evacuate blocks with fewest live objects first)
+    std::sort(candidates.begin(), candidates.end(),
+              [](auto a, auto b) { return a->live_bytes < b->live_bytes; });
+
+    for (auto* block : candidates) {
+        if (planned_bytes + block->live_bytes > max_evac_bytes) {
+            block->is_evacuation_target = false;
+        } else {
+            planned_bytes += block->live_bytes;
+        }
+    }
+}
+
+void* OldGenSpace::allocateForCompaction(size_t size) {
+    // Try to allocate in a destination block
+    // For now, use regular allocation
+    return allocate_internal(size);
+}
+
+void OldGenSpace::evacuateObject(void* obj) {
+    Header* hdr = getHeader(obj);
+    size_t obj_size = getObjectSize(obj);
+
+    // Allocate destination
+    void* new_location = allocateForCompaction(obj_size);
+    if (!new_location) {
+        // Cannot evacuate - out of space
+        return;
+    }
+
+    // Copy object to new location
+    memcpy(new_location, obj, obj_size);
+
+    // Prepare forwarding header
+    Forward fwd;
+    fwd.header.tag = Tag_Forward;
+
+    // Calculate logical pointer offset
+    uintptr_t byte_offset = static_cast<char*>(new_location) - region_base;
+    fwd.header.forward_ptr = byte_offset >> 3;  // Divide by 8
+    fwd.header.unused = 0;
+
+    // Atomic 64-bit CAS to install forwarding pointer
+    u64 old_header_bits = *reinterpret_cast<u64*>(hdr);
+    u64 new_forward_bits = *reinterpret_cast<u64*>(&fwd.header);
+
+    std::atomic<u64>* atomic_hdr = reinterpret_cast<std::atomic<u64>*>(hdr);
+    if (!atomic_hdr->compare_exchange_strong(old_header_bits, new_forward_bits)) {
+        // Someone else evacuated it first, free our copy
+        // For now, we'll just leak it (will be reclaimed in next GC)
+        // In a production system, we'd have a way to free this
+    }
+}
+
+void OldGenSpace::evacuateBlock(size_t block_index) {
+    if (block_index >= blocks.size()) return;
+
+    BlockInfo& block = blocks[block_index];
+    if (!block.is_evacuation_target) return;
+
+    char* scan = block.start;
+
+    while (scan < block.end) {
+        Header* hdr = reinterpret_cast<Header*>(scan);
+
+        // Skip if already forwarded or not a valid object
+        if (hdr->tag == Tag_Forward || hdr->tag >= Tag_Forward) {
+            scan += sizeof(Header);  // Minimum advance
+            continue;
+        }
+
+        size_t obj_size = getObjectSize(scan);
+
+        // Only evacuate live objects
+        if (hdr->color == static_cast<u32>(Color::Black)) {
+            evacuateObject(scan);
+        }
+
+        scan += obj_size;
+    }
+}
+
+void OldGenSpace::performCompaction() {
+    // Evacuate all selected blocks
+    for (size_t i = 0; i < blocks.size(); i++) {
+        if (blocks[i].is_evacuation_target) {
+            evacuateBlock(i);
+        }
+    }
+}
+
+void OldGenSpace::reclaimEvacuatedBlocks() {
+    std::vector<TLAB*> new_tlabs;
+
+    for (auto& block : blocks) {
+        if (!block.is_evacuation_target) continue;
+
+        // Verify block is fully evacuated
+        bool fully_evacuated = true;
+        char* scan = block.start;
+
+        while (scan < block.end) {
+            Header* hdr = reinterpret_cast<Header*>(scan);
+
+            // Check if this is not a forwarding pointer and is live
+            if (hdr->tag != Tag_Forward && hdr->color == static_cast<u32>(Color::Black)) {
+                fully_evacuated = false;
+                break;
+            }
+
+            // Advance by object size or minimum if it's a forward
+            if (hdr->tag == Tag_Forward) {
+                scan += sizeof(Forward);
+            } else {
+                scan += getObjectSize(scan);
+            }
+        }
+
+        if (fully_evacuated) {
+            // Entire block is free - perfect for TLAB!
+            TLAB* new_tlab = new TLAB(block.start, block.block_size);
+            new_tlabs.push_back(new_tlab);
+
+            // Clear the block (helps debugging)
+            memset(block.start, 0, block.block_size);
+
+            // Reset block metadata
+            block.live_bytes = 0;
+            block.live_count = 0;
+            block.is_evacuation_target = false;
+            block.is_evacuation_dest = false;
+        }
+    }
+
+    // Add reclaimed TLABs to available pool
+    std::lock_guard<std::mutex> lock(available_tlabs_mutex);
+    for (TLAB* tlab : new_tlabs) {
+        available_tlabs.push_back(tlab);
+    }
 }
 
 } // namespace Elm

@@ -201,10 +201,16 @@ typedef struct {
     HPointer task;
 } Task;
 
+// Forward object for compaction - uses special header layout
+// The header fields are repurposed: tag identifies it as Forward,
+// and the remaining bits store the forwarding pointer
 typedef struct {
-    Header header;
-    u64 pointer : POINTER_BITS;
-    u64 padding : 24; // Spare space for more GC flags if needed.
+    struct {
+        u64 tag : TAG_BITS;           // Tag_Forward (identifies this as a forwarding pointer)
+        u64 forward_ptr : POINTER_BITS;  // Logical pointer offset to new location
+        u64 unused : 19;              // Unused bits (could store metadata if needed)
+    } header;
+    // No additional fields - this replaces the evacuated object's header
 } Forward;
 
 typedef union HeapValue {
