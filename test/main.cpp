@@ -11,6 +11,7 @@
 #include "Heap.hpp"
 #include "HeapGenerators.hpp"
 #include "HeapSnapshot.hpp"
+#include "CompactionTest.hpp"
 #include "OldGenSpaceTest.hpp"
 #include "TestSuite.hpp"
 #include "TLABTest.hpp"
@@ -280,6 +281,18 @@ int main(int argc, char* argv[]) {
     suite.add(testRootsPreservedAfterSweep);
     suite.add(testGarbageUnmarkedInIncrementalSteps);
     suite.add(testGarbageFreeListedAfterSweep);
+
+    // Compaction Tests
+    suite.add(testBlockInitialization);
+    suite.add(testBlockLiveInfoTracking);
+    suite.add(testCompactionSetSelection);
+    suite.add(testObjectEvacuationWithForwarding);
+    suite.add(testReadBarrierSelfHealing);
+    suite.add(testBlockEvacuation);
+    suite.add(testBlockReclaimToTLABs);
+    suite.add(testCompactionPreservesValues);
+    suite.add(testRootPointerUpdatesAfterCompaction);
+    suite.add(testFragmentationDefragmentation);
 
     // Handle --list option
     if (config.list_tests) {

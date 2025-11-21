@@ -6,6 +6,7 @@ add_executable(test
         GarbageCollectorTest.cpp
         TLABTest.cpp
         OldGenSpaceTest.cpp
+        CompactionTest.cpp
         ../runtime/src/RootSet.cpp
         ../runtime/src/OldGenSpace.cpp
         ../runtime/src/NurserySpace.cpp
