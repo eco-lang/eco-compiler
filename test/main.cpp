@@ -11,7 +11,9 @@
 #include "Heap.hpp"
 #include "HeapGenerators.hpp"
 #include "HeapSnapshot.hpp"
+#include "OldGenSpaceTest.hpp"
 #include "TestSuite.hpp"
+#include "TLABTest.hpp"
 
 using namespace Elm;
 
@@ -265,6 +267,19 @@ int main(int argc, char* argv[]) {
     suite.add(testGCPreservesRoots);
     suite.add(testMultipleGCCycles);
     suite.add(testContinuousGarbageAllocation);
+
+    // TLAB Tests
+    suite.add(testTLABMetricsOnEmpty);
+    suite.add(testTLABMetricsAfterAllocation);
+    suite.add(testTLABAllocationFillsCorrectly);
+
+    // OldGenSpace Tests
+    suite.add(testAllocateTLAB);
+    suite.add(testRootsMarkedAtStart);
+    suite.add(testRootsPreservedAfterIncrementalMark);
+    suite.add(testRootsPreservedAfterSweep);
+    suite.add(testGarbageUnmarkedInIncrementalSteps);
+    suite.add(testGarbageFreeListedAfterSweep);
 
     // Handle --list option
     if (config.list_tests) {

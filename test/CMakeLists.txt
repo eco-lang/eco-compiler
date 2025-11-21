@@ -4,6 +4,8 @@ add_executable(test
         main.cpp
         HeapGenerators.cpp
         GarbageCollectorTest.cpp
+        TLABTest.cpp
+        OldGenSpaceTest.cpp
         ../runtime/src/RootSet.cpp
         ../runtime/src/OldGenSpace.cpp
         ../runtime/src/NurserySpace.cpp
