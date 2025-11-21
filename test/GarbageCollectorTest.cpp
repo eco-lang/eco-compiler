@@ -1,7 +1,7 @@
-#include "allocator_test.hpp"
-#include "heap_snapshot.hpp"
-#include "generators.hpp"
+#include "GarbageCollectorTest.hpp"
 #include <rapidcheck.h>
+#include "HeapGenerators.hpp"
+#include "HeapSnapshot.hpp"
 
 using namespace Elm;
 

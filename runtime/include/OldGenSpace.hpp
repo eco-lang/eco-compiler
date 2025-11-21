@@ -4,7 +4,7 @@
 #include <atomic>
 #include <mutex>
 #include <vector>
-#include "allocator_common.hpp"
+#include "AllocatorCommon.hpp"
 #include "RootSet.hpp"
 #include "TLAB.hpp"
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "test.hpp"
+#include "TestSuite.hpp"
 
 // Allocator/GC property-based tests
 extern Testing::Test testGCPreservesRoots;

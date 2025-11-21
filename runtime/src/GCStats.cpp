@@ -1,7 +1,7 @@
-#include "gc_stats.hpp"
-#include <iostream>
-#include <iomanip>
 #include <algorithm>
+#include <iomanip>
+#include <iostream>
+#include "GCStats.hpp"
 
 namespace Elm {
 

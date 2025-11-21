@@ -5,7 +5,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
-#include "allocator_common.hpp"
+#include "AllocatorCommon.hpp"
 #include "NurserySpace.hpp"
 #include "OldGenSpace.hpp"
 #include "RootSet.hpp"

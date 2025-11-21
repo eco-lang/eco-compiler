@@ -2,8 +2,8 @@
 #define ECO_NURSERYSPACE_H
 
 #include <vector>
-#include "allocator_common.hpp"
-#include "gc_stats.hpp"
+#include "AllocatorCommon.hpp"
+#include "GCStats.hpp"
 #include "OldGenSpace.hpp"
 #include "RootSet.hpp"
 #include "TLAB.hpp"

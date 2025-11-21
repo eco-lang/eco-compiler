@@ -7,8 +7,8 @@ add_executable(ecor
         runtime/src/OldGenSpace.cpp
         runtime/src/NurserySpace.cpp
         runtime/src/GarbageCollector.cpp
-        runtime/src/gc_stats.cpp
-        test/generators.hpp
+        runtime/src/GCStats.cpp
+        test/HeapGenerators.hpp
 )
 
 target_include_directories(ecor PRIVATE runtime/include)

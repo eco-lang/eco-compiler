@@ -4,7 +4,7 @@
 #include <mutex>
 #include <utility>
 #include <vector>
-#include "heap.hpp"
+#include "Heap.hpp"
 
 namespace Elm {
 

@@ -3,7 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
-#include "heap.hpp"
+#include "Heap.hpp"
 
 namespace Elm {
 

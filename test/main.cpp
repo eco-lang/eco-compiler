@@ -1,17 +1,17 @@
+#include <chrono>
+#include <cstring>
+#include <getopt.h>
 #include <iostream>
+#include <optional>
 #include <rapidcheck.h>
 #include <unordered_set>
 #include <vector>
-#include <getopt.h>
-#include <cstring>
-#include <optional>
-#include <chrono>
 #include "GarbageCollector.hpp"
-#include "generators.hpp"
-#include "heap.hpp"
-#include "test.hpp"
-#include "heap_snapshot.hpp"
-#include "allocator_test.hpp"
+#include "GarbageCollectorTest.hpp"
+#include "Heap.hpp"
+#include "HeapGenerators.hpp"
+#include "HeapSnapshot.hpp"
+#include "TestSuite.hpp"
 
 using namespace Elm;
 

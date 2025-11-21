@@ -1,11 +1,11 @@
 #pragma once
 
 #include <iostream>
-#include <vector>
-#include <unordered_set>
 #include <unordered_map>
-#include "heap.hpp"
+#include <unordered_set>
+#include <vector>
 #include "GarbageCollector.hpp"
+#include "Heap.hpp"
 
 using namespace Elm;
 

@@ -3,7 +3,7 @@
 #include <rapidcheck.h>
 #include <unordered_set>
 #include <vector>
-#include "heap.hpp"
+#include "Heap.hpp"
 
 namespace Elm {
 

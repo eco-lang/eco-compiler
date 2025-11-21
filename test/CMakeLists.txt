@@ -2,13 +2,13 @@ include_directories(../runtime/include/)
 
 add_executable(test
         main.cpp
-        generators.cpp
-        allocator_test.cpp
+        HeapGenerators.cpp
+        GarbageCollectorTest.cpp
         ../runtime/src/RootSet.cpp
         ../runtime/src/OldGenSpace.cpp
         ../runtime/src/NurserySpace.cpp
         ../runtime/src/GarbageCollector.cpp
-        ../runtime/src/gc_stats.cpp
+        ../runtime/src/GCStats.cpp
 )
 
 target_compile_features(test PRIVATE cxx_std_20)
