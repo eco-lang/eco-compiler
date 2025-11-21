@@ -40,6 +40,9 @@ public:
         return usage_after >= (size_t)(total_capacity * threshold);
     }
 
+    // Reset to initial state (for testing)
+    void reset(OldGenSpace &oldgen);
+
 #if ENABLE_GC_STATS
     // Get GC statistics
     const GCStats& getStats() const { return stats; }

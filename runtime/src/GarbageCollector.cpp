@@ -273,4 +273,25 @@ void GarbageCollector::majorGC() {
 #endif
 }
 
+void GarbageCollector::reset() {
+    // Reset root set
+    root_set.reset();
+
+    // Reset all nurseries
+    {
+        std::lock_guard<std::mutex> lock(nursery_mutex);
+        for (auto& [tid, nursery] : nurseries) {
+            nursery->reset(old_gen);
+        }
+    }
+
+    // Reset old gen (must be after nurseries to handle any sealed TLABs)
+    old_gen.reset();
+
+    // Note: We do NOT reset GC stats here - stats accumulate across runs
+
+    // Reset thread-local GC flag
+    gc_in_progress = false;
+}
+
 } // namespace Elm

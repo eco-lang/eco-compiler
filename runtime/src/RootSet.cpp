@@ -23,4 +23,10 @@ void RootSet::clearStackRoots() {
     stack_roots.clear();
 }
 
+void RootSet::reset() {
+    std::lock_guard<std::mutex> lock(mutex);
+    roots.clear();
+    stack_roots.clear();
+}
+
 } // namespace Elm

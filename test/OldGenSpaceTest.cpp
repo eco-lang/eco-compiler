@@ -70,6 +70,7 @@ Testing::Test testAllocateTLAB("OldGenSpace allocateTLAB returns valid TLAB", []
     rc::check("allocateTLAB returns usable TLAB within OldGenSpace bounds", []() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
+        gc.reset();
         auto& oldgen = gc.getOldGen();
 
         // Allocate a TLAB
@@ -96,6 +97,7 @@ Testing::Test testRootsMarkedAtStart("Roots are pushed to mark stack at start of
     rc::check("startConcurrentMark pushes roots to mark stack", []() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
+        gc.reset();
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
@@ -169,6 +171,7 @@ Testing::Test testRootsPreservedAfterIncrementalMark("Roots preserved through in
     rc::check("Roots remain marked Black after incremental mark steps", []() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
+        gc.reset();
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
@@ -246,6 +249,7 @@ Testing::Test testRootsPreservedAfterSweep("Roots preserved after full mark-and-
     rc::check("Root objects survive full GC cycle with values intact", []() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
+        gc.reset();
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
@@ -309,6 +313,7 @@ Testing::Test testGarbageUnmarkedInIncrementalSteps("Garbage objects remain unma
     rc::check("Objects with no roots remain White after incremental marking", []() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
+        gc.reset();
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
@@ -363,6 +368,7 @@ Testing::Test testGarbageFreeListedAfterSweep("Garbage objects added to free lis
     rc::check("Unreachable objects are reclaimed by sweep", []() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
+        gc.reset();
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 

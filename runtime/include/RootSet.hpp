@@ -16,6 +16,9 @@ public:
     void addStackRoot(void *stack_ptr, size_t size);
     void clearStackRoots();
 
+    // Reset to initial empty state (for testing)
+    void reset();
+
     const std::vector<HPointer *> &getRoots() const { return roots; }
     const std::vector<std::pair<void *, size_t>> &getStackRoots() const { return stack_roots; }
 

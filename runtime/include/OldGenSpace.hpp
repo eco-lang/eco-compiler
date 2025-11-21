@@ -47,6 +47,9 @@ public:
     // Check if pointer is in old gen
     bool contains(void *ptr) const;
 
+    // Reset to initial state (for testing)
+    void reset();
+
     // TLAB allocation methods
     TLAB* allocateTLAB(size_t size);
     void sealTLAB(TLAB* tlab);

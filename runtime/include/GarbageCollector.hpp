@@ -45,6 +45,9 @@ public:
     // Get heap base pointer (for logical pointer conversion)
     char *getHeapBase() const { return heap_base; }
 
+    // Reset to initial state (for testing)
+    void reset();
+
 #if ENABLE_GC_STATS
     // Get global Major GC stats (collector thread writes, no mutex protection)
     GCStats& getMajorGCStats() { return major_gc_stats; }

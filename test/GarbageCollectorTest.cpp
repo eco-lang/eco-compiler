@@ -7,9 +7,10 @@ using namespace Elm;
 
 Testing::Test testGCPreservesRoots("GC preserves all reachable objects from roots", []() {
         rc::check("GC preserves all reachable objects from roots", [](const HeapGraphDesc &graph) {
-            // Initialize GC for this thread
+            // Initialize GC for this thread and reset to clean state
             auto &gc = GarbageCollector::instance();
             gc.initThread();
+            gc.reset();
 
             // Phase 1: Allocate heap from description (RapidCheck can shrink this!)
             std::vector<void *> allocated_objects = allocateHeapGraph(graph.nodes);
@@ -65,6 +66,7 @@ Testing::Test testMultipleGCCycles("Multiple GC cycles preserve roots correctly"
 
             auto &gc = GarbageCollector::instance();
             gc.initThread();
+            gc.reset();
 
             // Create a long-lived Int object as root
             void *root_obj = gc.allocate(sizeof(ElmInt), Tag_Int);
@@ -114,6 +116,7 @@ Testing::Test testContinuousGarbageAllocation("Continuous garbage allocation wit
         rc::check("Continuous garbage allocation triggers automatic GC and recycles space", [](const HeapGraphDesc &graph) {
             auto &gc = GarbageCollector::instance();
             gc.initThread();
+            gc.reset();
             auto *nursery = gc.getNursery();
 
             if (nursery == nullptr) {

@@ -140,6 +140,41 @@ bool OldGenSpace::contains(void *ptr) const {
     return (p >= region_base && p < region_base + region_size);
 }
 
+void OldGenSpace::reset() {
+    // Lock both mutexes to ensure thread safety
+    std::lock_guard<std::recursive_mutex> alloc_lock(alloc_mutex);
+    std::lock_guard<std::recursive_mutex> mark_lock(mark_mutex);
+
+    // Delete and clear sealed TLABs
+    {
+        std::lock_guard<std::mutex> tlab_lock(sealed_tlabs_mutex);
+        for (TLAB* tlab : sealed_tlabs) {
+            delete tlab;
+        }
+        sealed_tlabs.clear();
+    }
+
+    // Reset marking state
+    mark_stack.clear();
+    current_epoch = 0;
+    marking_active = false;
+
+    // Reset TLAB bump pointer to start of TLAB region
+    tlab_bump_ptr.store(tlab_region_start, std::memory_order_relaxed);
+
+    // Reset free list to cover all initially committed memory in free-list region
+    size_t free_list_size = max_region_size / 2;
+    size_t initial_free_list_size = std::min(region_size, free_list_size);
+    FreeBlock *block = reinterpret_cast<FreeBlock *>(region_base);
+    block->size = initial_free_list_size;
+    block->next = nullptr;
+    free_list = block;
+
+    // Note: We don't uncommit memory or reset region_size/chunks
+    // as that would require re-mapping. The memory stays committed
+    // but the free list is reset to treat it as available.
+}
+
 /**
  * Allocate a new TLAB using lock-free atomic CAS.
  *

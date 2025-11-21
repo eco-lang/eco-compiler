@@ -30,6 +30,22 @@ void NurserySpace::initialize(char *nursery_base, size_t size) {
     scan_ptr = from_space;
 }
 
+void NurserySpace::reset(OldGenSpace &oldgen) {
+    // Seal any active promotion TLAB
+    if (promotion_tlab) {
+        oldgen.sealTLAB(promotion_tlab);
+        promotion_tlab = nullptr;
+    }
+
+    // Reset allocation pointers to start of from_space
+    from_space = memory;
+    to_space = memory + (NURSERY_SIZE / 2);
+    alloc_ptr = from_space;
+    scan_ptr = from_space;
+
+    // Note: We do NOT reset GC stats here - stats accumulate across runs
+}
+
 void *NurserySpace::allocate(size_t size) {
     // Align to 8 bytes
     size = (size + 7) & ~7;
