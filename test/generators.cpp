@@ -1,6 +1,6 @@
 #include "generators.hpp"
 #include <algorithm>
-#include "allocator.hpp"
+#include "GarbageCollector.hpp"
 
 namespace Elm {
 

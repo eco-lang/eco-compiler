@@ -3,7 +3,10 @@ project(EcoRuntime LANGUAGES CXX)
 
 add_executable(ecor
         runtime/src/main.cpp
-        runtime/src/allocator.cpp
+        runtime/src/RootSet.cpp
+        runtime/src/OldGenSpace.cpp
+        runtime/src/NurserySpace.cpp
+        runtime/src/GarbageCollector.cpp
         runtime/src/gc_stats.cpp
         test/generators.hpp
 )

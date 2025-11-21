@@ -4,7 +4,10 @@ add_executable(test
         main.cpp
         generators.cpp
         allocator_test.cpp
-        ../runtime/src/allocator.cpp
+        ../runtime/src/RootSet.cpp
+        ../runtime/src/OldGenSpace.cpp
+        ../runtime/src/NurserySpace.cpp
+        ../runtime/src/GarbageCollector.cpp
         ../runtime/src/gc_stats.cpp
 )
 

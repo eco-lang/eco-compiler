@@ -6,7 +6,7 @@
 #include <cstring>
 #include <optional>
 #include <chrono>
-#include "allocator.hpp"
+#include "GarbageCollector.hpp"
 #include "generators.hpp"
 #include "heap.hpp"
 #include "test.hpp"

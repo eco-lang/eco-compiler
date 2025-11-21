@@ -5,7 +5,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include "heap.hpp"
-#include "allocator.hpp"
+#include "GarbageCollector.hpp"
 
 using namespace Elm;
 
