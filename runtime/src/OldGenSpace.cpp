@@ -231,7 +231,11 @@ void OldGenSpace::sealTLAB(TLAB* tlab) {
  * Start a concurrent marking phase.
  * This is a public method that handles its own locking.
  */
+#if ENABLE_GC_STATS
+void OldGenSpace::startConcurrentMark(RootSet &roots, GCStats &stats) {
+#else
 void OldGenSpace::startConcurrentMark(RootSet &roots) {
+#endif
     std::lock_guard<std::recursive_mutex> lock(mark_mutex);
 
     if (marking_active)
@@ -248,6 +252,10 @@ void OldGenSpace::startConcurrentMark(RootSet &roots) {
             mark_stack.push_back(obj);
         }
     }
+
+#if ENABLE_GC_STATS
+    GC_STATS_MAJOR_INC_CONCURRENT_MARK(stats);
+#endif
 }
 
 /**
@@ -255,7 +263,11 @@ void OldGenSpace::startConcurrentMark(RootSet &roots) {
  * This is a public method that handles its own locking.
  * Returns true if more work remains, false if marking is complete.
  */
+#if ENABLE_GC_STATS
+bool OldGenSpace::incrementalMark(size_t work_units, GCStats &stats) {
+#else
 bool OldGenSpace::incrementalMark(size_t work_units) {
+#endif
     std::lock_guard<std::recursive_mutex> lock(mark_mutex);
 
     if (!marking_active || mark_stack.empty()) {
@@ -287,6 +299,10 @@ bool OldGenSpace::incrementalMark(size_t work_units) {
 
         units_done++;
     }
+
+#if ENABLE_GC_STATS
+    GC_STATS_MAJOR_INC_INCREMENTAL_MARK(stats, units_done);
+#endif
 
     return !mark_stack.empty();
 }
@@ -386,6 +402,20 @@ void OldGenSpace::markUnboxable(Unboxable &val, bool is_boxed) {
  * Complete marking phase and perform sweep.
  * This is a public method. It calls incrementalMark() and sweep() which handle their own locking.
  */
+#if ENABLE_GC_STATS
+void OldGenSpace::finishMarkAndSweep(GCStats &stats) {
+    // Complete any remaining marking
+    while (incrementalMark(1000, stats)) {
+        // Keep marking
+    }
+
+    sweep();
+
+    marking_active = false;
+
+    GC_STATS_MAJOR_INC_MARK_SWEEP(stats);
+}
+#else
 void OldGenSpace::finishMarkAndSweep() {
     // Complete any remaining marking
     while (incrementalMark(1000)) {
@@ -396,6 +426,7 @@ void OldGenSpace::finishMarkAndSweep() {
 
     marking_active = false;
 }
+#endif
 
 /**
  * Sweep phase - reclaim unmarked (white) objects.

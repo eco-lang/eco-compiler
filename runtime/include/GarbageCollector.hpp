@@ -9,6 +9,7 @@
 #include "NurserySpace.hpp"
 #include "OldGenSpace.hpp"
 #include "RootSet.hpp"
+#include "GCStats.hpp"
 
 namespace Elm {
 
@@ -44,6 +45,12 @@ public:
     // Get heap base pointer (for logical pointer conversion)
     char *getHeapBase() const { return heap_base; }
 
+#if ENABLE_GC_STATS
+    // Get global Major GC stats (collector thread writes, no mutex protection)
+    GCStats& getMajorGCStats() { return major_gc_stats; }
+    const GCStats& getMajorGCStats() const { return major_gc_stats; }
+#endif
+
 private:
     GarbageCollector();
     ~GarbageCollector();
@@ -65,6 +72,11 @@ private:
 
     // Flag to prevent recursive GC calls
     thread_local static bool gc_in_progress;
+
+#if ENABLE_GC_STATS
+    // Global Major GC statistics (no mutex - single collector thread assumed)
+    GCStats major_gc_stats;
+#endif
 
     // Commit more old gen memory
     void growOldGen(size_t additional_size);

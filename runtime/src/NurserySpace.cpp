@@ -14,6 +14,9 @@ NurserySpace::~NurserySpace() {
     // Seal any active TLAB before destroying nursery
     if (promotion_tlab) {
         GarbageCollector::instance().getOldGen().sealTLAB(promotion_tlab);
+#if ENABLE_GC_STATS
+        GC_STATS_TLAB_SEALED(stats);
+#endif
         promotion_tlab = nullptr;
     }
     // No need to free memory - it's part of the main heap
@@ -38,7 +41,7 @@ void *NurserySpace::allocate(size_t size) {
     void *result = alloc_ptr;
     alloc_ptr += size;
 
-    GC_STATS_RECORD_ALLOC(stats, size);
+    GC_STATS_MINOR_RECORD_ALLOC(stats, size);
 
     return result;
 }
@@ -126,7 +129,7 @@ void NurserySpace::minorGC(RootSet &roots, OldGenSpace &oldgen) {
     size_t bytes_freed = from_space_used - to_space_used;
     uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
 
-    GC_STATS_RECORD_GC_END(stats, elapsed_ns, bytes_freed);
+    GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, bytes_freed);
 #endif
 }
 
@@ -195,6 +198,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
             if (promotion_tlab && promotion_tlab->bytesRemaining() < size) {
                 // Seal exhausted TLAB
                 oldgen.sealTLAB(promotion_tlab);
+                GC_STATS_TLAB_SEALED(stats);
                 promotion_tlab = nullptr;
             }
 
@@ -202,6 +206,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
             if (!promotion_tlab && size <= OldGenSpace::TLAB_DEFAULT_SIZE) {
                 promotion_tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
                 if (promotion_tlab) {
+                    GC_STATS_TLAB_ALLOCATED(stats);
                     new_obj = promotion_tlab->allocate(size);
                 }
             }
@@ -230,7 +235,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
                 promoted_objects->push_back(new_obj);
             }
 
-            GC_STATS_INC_PROMOTED(stats);
+            GC_STATS_MINOR_INC_PROMOTED(stats);
         }
     }
 
@@ -247,7 +252,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         Header *new_hdr = getHeader(new_obj);
         new_hdr->age++; // Increment age
 
-        GC_STATS_INC_SURVIVORS(stats);
+        GC_STATS_MINOR_INC_SURVIVORS(stats);
     }
 
     // Leave forwarding pointer (as logical offset)

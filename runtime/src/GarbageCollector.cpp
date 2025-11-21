@@ -254,14 +254,23 @@ void GarbageCollector::majorGC() {
         return;
     }
 
+#if ENABLE_GC_STATS
+    auto gc_start = GC_STATS_TIMER_START();
+#endif
+
     // Set flag to indicate GC is in progress
     gc_in_progress = true;
 
-    old_gen.startConcurrentMark(root_set);
-    old_gen.finishMarkAndSweep();
+    old_gen.startConcurrentMark(root_set, major_gc_stats);
+    old_gen.finishMarkAndSweep(major_gc_stats);
 
     // Clear flag when done
     gc_in_progress = false;
+
+#if ENABLE_GC_STATS
+    uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
+    GC_STATS_MAJOR_RECORD_GC_END(major_gc_stats, elapsed_ns);
+#endif
 }
 
 } // namespace Elm

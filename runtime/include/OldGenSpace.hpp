@@ -7,6 +7,7 @@
 #include "AllocatorCommon.hpp"
 #include "RootSet.hpp"
 #include "TLAB.hpp"
+#include "GCStats.hpp"
 
 namespace Elm {
 
@@ -23,13 +24,25 @@ public:
     void *allocate(size_t size);
 
     // Start concurrent marking phase
+#if ENABLE_GC_STATS
+    void startConcurrentMark(RootSet &roots, GCStats &stats);
+#else
     void startConcurrentMark(RootSet &roots);
+#endif
 
     // Perform incremental marking work
+#if ENABLE_GC_STATS
+    bool incrementalMark(size_t work_units, GCStats &stats);
+#else
     bool incrementalMark(size_t work_units);
+#endif
 
     // Complete marking and sweep
+#if ENABLE_GC_STATS
+    void finishMarkAndSweep(GCStats &stats);
+#else
     void finishMarkAndSweep();
+#endif
 
     // Check if pointer is in old gen
     bool contains(void *ptr) const;

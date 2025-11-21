@@ -357,10 +357,18 @@ int main(int argc, char* argv[]) {
 
 #if ENABLE_GC_STATS
     // Print GC statistics after all tests complete
+    // Combine thread-local nursery stats with global major GC stats
     auto &gc = GarbageCollector::instance();
     auto *nursery = gc.getNursery();
     if (nursery) {
-        nursery->getStats().print();
+        // Start with a copy of the nursery stats (Minor GC + TLAB)
+        GCStats combined_stats = nursery->getStats();
+
+        // Combine with global Major GC stats
+        combined_stats.combine(gc.getMajorGCStats());
+
+        // Print the combined statistics
+        combined_stats.print();
     }
 #endif
 
