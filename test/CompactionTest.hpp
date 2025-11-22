@@ -3,13 +3,13 @@
 #include "TestSuite.hpp"
 
 // Compaction tests.
-extern Testing::Test testBlockInitialization;
-extern Testing::Test testBlockLiveInfoTracking;
-extern Testing::Test testCompactionSetSelection;
-extern Testing::Test testObjectEvacuationWithForwarding;
-extern Testing::Test testReadBarrierSelfHealing;
-extern Testing::Test testBlockEvacuation;
-extern Testing::Test testBlockReclaimToTLABs;
-extern Testing::Test testCompactionPreservesValues;
-extern Testing::Test testRootPointerUpdatesAfterCompaction;
-extern Testing::Test testFragmentationDefragmentation;
+extern Testing::TestCase testBlockInitialization;
+extern Testing::TestCase testBlockLiveInfoTracking;
+extern Testing::TestCase testCompactionSetSelection;
+extern Testing::TestCase testObjectEvacuationWithForwarding;
+extern Testing::TestCase testReadBarrierSelfHealing;
+extern Testing::TestCase testBlockEvacuation;
+extern Testing::TestCase testBlockReclaimToTLABs;
+extern Testing::TestCase testCompactionPreservesValues;
+extern Testing::TestCase testRootPointerUpdatesAfterCompaction;
+extern Testing::TestCase testFragmentationDefragmentation;

@@ -5,8 +5,8 @@
 
 using namespace Elm;
 
-Testing::Test testMinorGCPreservesRoots("Minor GC preserves all reachable objects from roots", []() {
-        rc::check("Minor GC preserves all reachable objects from roots", [](const HeapGraphDesc &graph) {
+Testing::TestCase testMinorGCPreservesRoots("Minor GC preserves all reachable objects from roots", []() {
+        rc::check([](const HeapGraphDesc &graph) {
             // Initialize GC for this thread and reset to clean state
             auto &gc = GarbageCollector::instance();
             gc.initThread();
@@ -52,8 +52,8 @@ Testing::Test testMinorGCPreservesRoots("Minor GC preserves all reachable object
         });
 });
 
-Testing::Test testMultipleMinorGCCycles("Multiple minor GC cycles preserve roots correctly", []() {
-        rc::check("Multiple minor GC cycles preserve roots correctly", []() {
+Testing::TestCase testMultipleMinorGCCycles("Multiple minor GC cycles preserve roots correctly", []() {
+        rc::check([]() {
             // Generate proper test parameters directly using custom generator
             // Size-scaled: num_cycles 2-5 at size 0, up to 2-15 at size 1000
             auto testGen = rc::gen::tuple(rc::gen::arbitrary<i64>(), // int_value
@@ -111,8 +111,8 @@ Testing::Test testMultipleMinorGCCycles("Multiple minor GC cycles preserve roots
         });
 });
 
-Testing::Test testContinuousGarbageAllocation("Continuous garbage allocation with automatic GC", []() {
-        rc::check("Continuous garbage allocation triggers automatic GC and recycles space", [](const HeapGraphDesc &graph) {
+Testing::TestCase testContinuousGarbageAllocation("Continuous garbage allocation triggers automatic GC and recycles space", []() {
+        rc::check([](const HeapGraphDesc &graph) {
             auto &gc = GarbageCollector::instance();
             gc.initThread();
             gc.reset();

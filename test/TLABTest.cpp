@@ -8,8 +8,8 @@
 
 using namespace Elm;
 
-Testing::Test testTLABMetricsOnEmpty("TLAB metrics correct on empty TLAB", []() {
-    rc::check("Fresh TLAB has correct metrics", []() {
+Testing::TestCase testTLABMetricsOnEmpty("Fresh TLAB has correct metrics", []() {
+    rc::check([]() {
         // Generate a random TLAB size (64KB to 256KB, aligned to 8 bytes)
         size_t size = *rc::gen::inRange<size_t>(64 * 1024, 256 * 1024);
         size = (size + 7) & ~7;  // Align to 8 bytes
@@ -33,8 +33,8 @@ Testing::Test testTLABMetricsOnEmpty("TLAB metrics correct on empty TLAB", []() 
     });
 });
 
-Testing::Test testTLABMetricsAfterAllocation("TLAB metrics update correctly after allocations", []() {
-    rc::check("TLAB metrics track allocations correctly", []() {
+Testing::TestCase testTLABMetricsAfterAllocation("TLAB metrics track allocations correctly", []() {
+    rc::check([]() {
         // Fixed TLAB size for this test
         size_t tlab_size = 128 * 1024;  // 128KB
 
@@ -87,8 +87,8 @@ Testing::Test testTLABMetricsAfterAllocation("TLAB metrics update correctly afte
     });
 });
 
-Testing::Test testTLABAllocationFillsCorrectly("TLAB allocation fills correctly until full", []() {
-    rc::check("TLAB fills to capacity and returns nullptr when full", []() {
+Testing::TestCase testTLABAllocationFillsCorrectly("TLAB fills to capacity and returns nullptr when full", []() {
+    rc::check([]() {
         // Use a smaller TLAB for faster testing
         // Size-scaled: 1KB-8KB at size 0, up to 1KB-28KB at size 1000
         size_t tlab_size = *rc::sizedRange<size_t>(1024, 8192, 20.0);
@@ -146,8 +146,8 @@ Testing::Test testTLABAllocationFillsCorrectly("TLAB allocation fills correctly 
     });
 });
 
-Testing::Test testTLABFillAndSeal("TLAB fills and seals when capacity exhausted", []() {
-    rc::check("Promoting objects beyond TLAB capacity seals TLABs", []() {
+Testing::TestCase testTLABFillAndSeal("Promoting objects beyond TLAB capacity seals TLABs", []() {
+    rc::check([]() {
         auto &gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();

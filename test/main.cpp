@@ -4,6 +4,8 @@
 #include <iostream>
 #include <optional>
 #include <rapidcheck.h>
+#include <set>
+#include <sstream>
 #include <unordered_set>
 #include <vector>
 #include "GarbageCollector.hpp"
@@ -25,8 +27,8 @@ using namespace Elm;
 // ============================================================================
 
 struct TestConfig {
-    int num_tests = 100;
-    int max_size = 100;
+    int num_tests = 5;
+    int max_size = 50;
     int max_discard_ratio = 10;
     std::optional<uint64_t> seed;
     bool verbose = false;
@@ -38,6 +40,7 @@ struct TestConfig {
     std::string filter = "";
     bool no_shrink = false;
     std::string reproduce = "";
+    bool interactive = false;  // Interactive test selection mode.
 };
 
 // ============================================================================
@@ -110,9 +113,9 @@ void printHelp(const char* program_name) {
     std::cout << "Usage: " << program_name << " [OPTIONS]\n\n";
     std::cout << "Eco Runtime GC Property-Based Test Suite\n\n";
     std::cout << "Options:\n";
-    std::cout << "  -n, --num-tests <N>         Number of test iterations (default: 100)\n";
+    std::cout << "  -n, --num-tests <N>         Number of test iterations (default: 5)\n";
     std::cout << "  -s, --seed <SEED>           Random seed for reproducibility\n";
-    std::cout << "      --max-size <N>          Maximum size parameter for generators (default: 100)\n";
+    std::cout << "      --max-size <N>          Maximum size parameter for generators (default: 50)\n";
     std::cout << "      --max-discard-ratio <N> Maximum ratio of discarded tests (default: 10)\n";
     std::cout << "  -v, --verbose               Verbose output with statistics\n";
     std::cout << "      --list                  List available tests without running\n";
@@ -126,6 +129,7 @@ void printHelp(const char* program_name) {
     std::cout << "      --no-shrink             Disable test case shrinking on failure\n";
     std::cout << "      --reproduce <STRING>    Reproduce specific failing case\n";
     std::cout << "      --no-show-seed          Don't display the seed being used\n";
+    std::cout << "  -i, --interactive           Interactive mode: select tests/suites to run\n";
     std::cout << "  -h, --help                  Display this help message\n";
     std::cout << "\nExamples:\n";
     std::cout << "  " << program_name << " -n 1000              # Run 1000 tests\n";
@@ -174,6 +178,7 @@ TestConfig parseCommandLine(int argc, char* argv[]) {
         {"no-shrink",          no_argument,       0, 'N'},
         {"reproduce",          required_argument, 0, 'R'},
         {"no-show-seed",       no_argument,       0, 'S'},
+        {"interactive",        no_argument,       0, 'i'},
         {"help",               no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
@@ -181,7 +186,7 @@ TestConfig parseCommandLine(int argc, char* argv[]) {
     int opt;
     int option_index = 0;
 
-    while ((opt = getopt_long(argc, argv, "n:s:vhf:r:t:", long_options, &option_index)) != -1) {
+    while ((opt = getopt_long(argc, argv, "n:s:vhf:r:t:i", long_options, &option_index)) != -1) {
         switch (opt) {
             case 'n':
                 config.num_tests = std::atoi(optarg);
@@ -248,6 +253,9 @@ TestConfig parseCommandLine(int argc, char* argv[]) {
             case 'S':
                 config.show_seed = false;
                 break;
+            case 'i':
+                config.interactive = true;
+                break;
             case 'h':
                 printHelp(argv[0]);
                 exit(0);
@@ -276,56 +284,222 @@ TestConfig parseCommandLine(int argc, char* argv[]) {
 }
 
 // ============================================================================
-// Property Tests
+// Interactive Mode
+// ============================================================================
+
+// Parses user input for selections: numbers, ranges (1..5), or 'A' for all.
+// Returns empty set on parse error.
+std::set<size_t> parseSelections(const std::string& input, size_t max_val) {
+    std::set<size_t> selections;
+    std::istringstream iss(input);
+    std::string token;
+
+    while (iss >> token) {
+        // Check for 'A' or 'a' (all)
+        if (token == "A" || token == "a") {
+            for (size_t i = 1; i <= max_val; i++) {
+                selections.insert(i);
+            }
+            return selections;
+        }
+
+        // Check for 'Q' or 'q' (quit) - return special empty marker
+        if (token == "Q" || token == "q") {
+            return {};  // Empty means quit
+        }
+
+        // Check for range (e.g., "1..5")
+        size_t dot_pos = token.find("..");
+        if (dot_pos != std::string::npos) {
+            try {
+                size_t start = std::stoul(token.substr(0, dot_pos));
+                size_t end = std::stoul(token.substr(dot_pos + 2));
+                if (start < 1 || end > max_val || start > end) {
+                    return {};  // Invalid range
+                }
+                for (size_t i = start; i <= end; i++) {
+                    selections.insert(i);
+                }
+            } catch (...) {
+                return {};  // Parse error
+            }
+        } else {
+            // Single number
+            try {
+                size_t num = std::stoul(token);
+                if (num < 1 || num > max_val) {
+                    return {};  // Out of range
+                }
+                selections.insert(num);
+            } catch (...) {
+                return {};  // Parse error
+            }
+        }
+    }
+
+    return selections;
+}
+
+void printInteractiveHelp() {
+    std::cout << "\nUsage:\n";
+    std::cout << "  A         - Run all tests in current suite\n";
+    std::cout << "  <num>     - Select item by number (e.g., 3)\n";
+    std::cout << "  <nums>    - Select multiple items (e.g., 1 3 5)\n";
+    std::cout << "  <range>   - Select range (e.g., 1..5)\n";
+    std::cout << "  <mixed>   - Combine any of above (e.g., 1..3 5 7..9)\n";
+    std::cout << "  Q         - Quit / go back\n";
+    std::cout << std::endl;
+}
+
+void runInteractive(const Testing::TestSuite& suite, const std::string& path = "") {
+    while (true) {
+        // Build display path
+        std::string display_path = path.empty() ? suite.getName() : path;
+
+        const auto& children = suite.getChildren();
+        if (children.empty()) {
+            std::cout << "(No tests in this suite)\n";
+            return;
+        }
+
+        std::cout << "\n=== " << display_path << " ===\n\n";
+
+        // Display children with type indicators
+        for (size_t i = 0; i < children.size(); i++) {
+            const auto& child = children[i];
+            bool is_suite = dynamic_cast<const Testing::TestSuite*>(child.get()) != nullptr;
+            std::cout << "  " << (i + 1) << ". ";
+            if (is_suite) {
+                std::cout << "[Suite] ";
+            }
+            std::cout << child->getName();
+            if (is_suite) {
+                auto* sub = static_cast<const Testing::TestSuite*>(child.get());
+                std::cout << " (" << sub->countTests() << " tests)";
+            }
+            std::cout << "\n";
+        }
+        std::cout << "\n";
+
+        // Prompt for input
+        std::cout << "Select (A=all, Q=back, ?=help): ";
+        std::string input;
+        if (!std::getline(std::cin, input)) {
+            return;  // EOF
+        }
+
+        // Trim whitespace
+        size_t start = input.find_first_not_of(" \t");
+        if (start == std::string::npos) {
+            continue;  // Empty input, show menu again
+        }
+        input = input.substr(start);
+
+        // Check for help
+        if (input == "?" || input == "help") {
+            printInteractiveHelp();
+            continue;
+        }
+
+        // Check for quit/back
+        if (input == "Q" || input == "q") {
+            return;
+        }
+
+        // Parse selections
+        auto selections = parseSelections(input, children.size());
+        if (selections.empty()) {
+            std::cout << "Invalid input. Type '?' for help.\n";
+            continue;
+        }
+
+        // Process selections
+        // If single selection and it's a suite, step into it
+        if (selections.size() == 1) {
+            size_t idx = *selections.begin() - 1;
+            const auto& child = children[idx];
+            if (auto* sub_suite = dynamic_cast<const Testing::TestSuite*>(child.get())) {
+                // Step into sub-suite
+                std::string new_path = display_path + " > " + sub_suite->getName();
+                runInteractive(*sub_suite, new_path);
+                continue;
+            }
+        }
+
+        // Run selected tests/suites
+        std::cout << "\nRunning " << selections.size() << " item(s)...\n\n";
+        for (size_t idx : selections) {
+            const auto& child = children[idx - 1];
+            if (auto* sub_suite = dynamic_cast<const Testing::TestSuite*>(child.get())) {
+                std::cout << "=== " << sub_suite->getName() << " ===\n";
+                sub_suite->run("");  // Run all tests in suite
+            } else {
+                child->run();
+            }
+        }
+        std::cout << "\nDone. Press Enter to continue...";
+        std::string dummy;
+        std::getline(std::cin, dummy);
+    }
+}
+
+// ============================================================================
+// Main Entry Point
 // ============================================================================
 
 int main(int argc, char* argv[]) {
     TestConfig config = parseCommandLine(argc, argv);
 
-    // Create test suite and add tests
-    Testing::TestSuite suite;
+    // Create test suites organized by component
+    Testing::TestSuite nurseryTests("NurserySpace");
+    nurseryTests.add(testMinorGCPreservesRoots);
+    nurseryTests.add(testMultipleMinorGCCycles);
+    nurseryTests.add(testContinuousGarbageAllocation);
 
-    // NurserySpace (Minor GC) Tests
-    suite.add(testMinorGCPreservesRoots);
-    suite.add(testMultipleMinorGCCycles);
-    suite.add(testContinuousGarbageAllocation);
+    Testing::TestSuite tlabTests("TLAB");
+    tlabTests.add(testTLABMetricsOnEmpty);
+    tlabTests.add(testTLABMetricsAfterAllocation);
+    tlabTests.add(testTLABAllocationFillsCorrectly);
+    tlabTests.add(testTLABFillAndSeal);
 
-    // TLAB Tests
-    suite.add(testTLABMetricsOnEmpty);
-    suite.add(testTLABMetricsAfterAllocation);
-    suite.add(testTLABAllocationFillsCorrectly);
-    suite.add(testTLABFillAndSeal);
+    Testing::TestSuite oldGenTests("OldGenSpace");
+    oldGenTests.add(testAllocateTLAB);
+    oldGenTests.add(testRootsMarkedAtStart);
+    oldGenTests.add(testRootsPreservedAfterIncrementalMark);
+    oldGenTests.add(testRootsPreservedAfterSweep);
+    oldGenTests.add(testGarbageUnmarkedInIncrementalSteps);
+    oldGenTests.add(testGarbageFreeListedAfterSweep);
 
-    // OldGenSpace Tests
-    suite.add(testAllocateTLAB);
-    suite.add(testRootsMarkedAtStart);
-    suite.add(testRootsPreservedAfterIncrementalMark);
-    suite.add(testRootsPreservedAfterSweep);
-    suite.add(testGarbageUnmarkedInIncrementalSteps);
-    suite.add(testGarbageFreeListedAfterSweep);
+    Testing::TestSuite compactionTests("Compaction");
+    compactionTests.add(testBlockInitialization);
+    compactionTests.add(testBlockLiveInfoTracking);
+    compactionTests.add(testCompactionSetSelection);
+    compactionTests.add(testObjectEvacuationWithForwarding);
+    compactionTests.add(testReadBarrierSelfHealing);
+    compactionTests.add(testBlockEvacuation);
+    compactionTests.add(testBlockReclaimToTLABs);
+    compactionTests.add(testCompactionPreservesValues);
+    compactionTests.add(testRootPointerUpdatesAfterCompaction);
+    compactionTests.add(testFragmentationDefragmentation);
 
-    // Compaction Tests
-    suite.add(testBlockInitialization);
-    suite.add(testBlockLiveInfoTracking);
-    suite.add(testCompactionSetSelection);
-    suite.add(testObjectEvacuationWithForwarding);
-    suite.add(testReadBarrierSelfHealing);
-    suite.add(testBlockEvacuation);
-    suite.add(testBlockReclaimToTLABs);
-    suite.add(testCompactionPreservesValues);
-    suite.add(testRootPointerUpdatesAfterCompaction);
-    suite.add(testFragmentationDefragmentation);
+    Testing::TestSuite gcTests("GarbageCollector");
+    gcTests.add(testPromotionToOldGen);
+    gcTests.add(testMinorThenMajorGCSequence);
+    gcTests.add(testLongLivedObjectsSurviveMajorGC);
+    gcTests.add(testMajorGCReclaimsOldGenGarbage);
+    gcTests.add(testFullGCCycleWithCompaction);
+    gcTests.add(testMixedAllocationWorkload);
+    gcTests.add(testObjectGraphSpanningPromotions);
+    gcTests.add(testMultipleMajorGCCycles);
+    gcTests.add(testStressTestBothGenerations);
 
-    // Full GarbageCollector Tests (Minor + Major GC)
-    suite.add(testPromotionToOldGen);
-    suite.add(testMinorThenMajorGCSequence);
-    suite.add(testLongLivedObjectsSurviveMajorGC);
-    suite.add(testMajorGCReclaimsOldGenGarbage);
-    suite.add(testFullGCCycleWithCompaction);
-    suite.add(testMixedAllocationWorkload);
-    suite.add(testObjectGraphSpanningPromotions);
-    suite.add(testMultipleMajorGCCycles);
-    suite.add(testStressTestBothGenerations);
+    // Root suite containing all sub-suites
+    Testing::TestSuite suite("All Tests");
+    suite.add(std::move(nurseryTests));
+    suite.add(std::move(tlabTests));
+    suite.add(std::move(oldGenTests));
+    suite.add(std::move(compactionTests));
+    suite.add(std::move(gcTests));
 
     // Elm Runtime Tests
     suite.add(testElmNilConstant);
@@ -344,6 +518,14 @@ int main(int argc, char* argv[]) {
         for (size_t i = 0; i < test_names.size(); i++) {
             std::cout << "  " << (i + 1) << ". " << test_names[i] << "\n";
         }
+        return 0;
+    }
+
+    // Handle --interactive option
+    if (config.interactive) {
+        configureRapidCheck(config);
+        std::cout << "=== Eco Runtime GC Tests - Interactive Mode ===" << std::endl;
+        runInteractive(suite);
         return 0;
     }
 

@@ -189,16 +189,16 @@ using namespace Elm;
 // Tests
 // ============================================================================
 
-Testing::Test testElmNilConstant("Elm nil constant represents empty list", []() {
-    rc::check("Nil has correct constant field", []() {
+Testing::TestCase testElmNilConstant("Nil has correct constant field", []() {
+    rc::check([]() {
         HPointer nil = elm_nil();
         RC_ASSERT(nil.constant == Const_Nil);
         RC_ASSERT(elm_list_length(nil) == 0);
     });
 });
 
-Testing::Test testElmConsAllocation("Elm cons allocates a Cons cell", []() {
-    rc::check("Cons cell is allocated correctly", []() {
+Testing::TestCase testElmConsAllocation("Cons cell is allocated correctly", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -219,8 +219,8 @@ Testing::Test testElmConsAllocation("Elm cons allocates a Cons cell", []() {
     });
 });
 
-Testing::Test testElmListFromInts("Elm list created from vector of ints", []() {
-    rc::check("List from ints has correct structure", []() {
+Testing::TestCase testElmListFromInts("List from ints has correct structure", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -241,8 +241,8 @@ Testing::Test testElmListFromInts("Elm list created from vector of ints", []() {
     });
 });
 
-Testing::Test testElmReverseEmpty("Elm reverse of empty list is empty", []() {
-    rc::check("Reverse of nil is nil", []() {
+Testing::TestCase testElmReverseEmpty("Reverse of nil is nil", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -254,8 +254,8 @@ Testing::Test testElmReverseEmpty("Elm reverse of empty list is empty", []() {
     });
 });
 
-Testing::Test testElmReverseSingle("Elm reverse of single element list", []() {
-    rc::check("Reverse of [x] is [x]", []() {
+Testing::TestCase testElmReverseSingle("Reverse of [x] is [x]", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -277,8 +277,8 @@ Testing::Test testElmReverseSingle("Elm reverse of single element list", []() {
     });
 });
 
-Testing::Test testElmReverseMultiple("Elm reverse of multiple elements", []() {
-    rc::check("Reverse of [1,2,3] is [3,2,1]", []() {
+Testing::TestCase testElmReverseMultiple("Reverse of [1,2,3] is [3,2,1]", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -310,8 +310,8 @@ Testing::Test testElmReverseMultiple("Elm reverse of multiple elements", []() {
     });
 });
 
-Testing::Test testElmReverseSurvivesGC("Elm reversed list survives GC", []() {
-    rc::check("Reversed list survives minor and major GC", []() {
+Testing::TestCase testElmReverseSurvivesGC("Reversed list survives minor and major GC", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -354,8 +354,8 @@ Testing::Test testElmReverseSurvivesGC("Elm reversed list survives GC", []() {
     });
 });
 
-Testing::Test testElmReverseLargeList("Elm reverse of large list", []() {
-    rc::check("Reverse of large list is correct", []() {
+Testing::TestCase testElmReverseLargeList("Reverse of large list is correct", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();

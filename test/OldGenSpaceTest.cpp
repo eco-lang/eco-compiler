@@ -67,8 +67,8 @@ static void* allocateConsIntoTLAB(TLAB* tlab, HPointer head_ptr, HPointer tail_p
 // Tests
 // ============================================================================
 
-Testing::Test testAllocateTLAB("OldGenSpace allocateTLAB returns valid TLAB", []() {
-    rc::check("allocateTLAB returns usable TLAB within OldGenSpace bounds", []() {
+Testing::TestCase testAllocateTLAB("allocateTLAB returns usable TLAB within OldGenSpace bounds", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -94,8 +94,8 @@ Testing::Test testAllocateTLAB("OldGenSpace allocateTLAB returns valid TLAB", []
     });
 });
 
-Testing::Test testRootsMarkedAtStart("Roots are pushed to mark stack at start of concurrent mark", []() {
-    rc::check("startConcurrentMark pushes roots to mark stack", []() {
+Testing::TestCase testRootsMarkedAtStart("startConcurrentMark pushes roots to mark stack", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -168,8 +168,8 @@ Testing::Test testRootsMarkedAtStart("Roots are pushed to mark stack at start of
     });
 });
 
-Testing::Test testRootsPreservedAfterIncrementalMark("Roots preserved through incremental marking", []() {
-    rc::check("Roots remain marked Black after incremental mark steps", []() {
+Testing::TestCase testRootsPreservedAfterIncrementalMark("Roots remain marked Black after incremental mark steps", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -246,8 +246,8 @@ Testing::Test testRootsPreservedAfterIncrementalMark("Roots preserved through in
     });
 });
 
-Testing::Test testRootsPreservedAfterSweep("Roots preserved after full mark-and-sweep", []() {
-    rc::check("Root objects survive full GC cycle with values intact", []() {
+Testing::TestCase testRootsPreservedAfterSweep("Root objects survive full GC cycle with values intact", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -310,8 +310,8 @@ Testing::Test testRootsPreservedAfterSweep("Roots preserved after full mark-and-
     });
 });
 
-Testing::Test testGarbageUnmarkedInIncrementalSteps("Garbage objects remain unmarked during incremental mark", []() {
-    rc::check("Objects with no roots remain White after incremental marking", []() {
+Testing::TestCase testGarbageUnmarkedInIncrementalSteps("Objects with no roots remain White after incremental marking", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -365,8 +365,8 @@ Testing::Test testGarbageUnmarkedInIncrementalSteps("Garbage objects remain unma
     });
 });
 
-Testing::Test testGarbageFreeListedAfterSweep("Garbage objects added to free list after sweep", []() {
-    rc::check("Unreachable objects are reclaimed by sweep", []() {
+Testing::TestCase testGarbageFreeListedAfterSweep("Unreachable objects are reclaimed by sweep", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();

@@ -30,8 +30,8 @@ static bool isInNursery(GarbageCollector& gc, void* obj) {
 // Tests
 // ============================================================================
 
-Testing::Test testPromotionToOldGen("Objects are promoted to old gen after surviving minor GCs", []() {
-    rc::check("Objects surviving PROMOTION_AGE minor GCs are promoted", []() {
+Testing::TestCase testPromotionToOldGen("Objects surviving PROMOTION_AGE minor GCs are promoted", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -72,8 +72,8 @@ Testing::Test testPromotionToOldGen("Objects are promoted to old gen after survi
     });
 });
 
-Testing::Test testMinorThenMajorGCSequence("Minor GC followed by major GC preserves roots", []() {
-    rc::check("Roots survive minor then major GC sequence", []() {
+Testing::TestCase testMinorThenMajorGCSequence("Roots survive minor then major GC sequence", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -123,8 +123,8 @@ Testing::Test testMinorThenMajorGCSequence("Minor GC followed by major GC preser
     });
 });
 
-Testing::Test testLongLivedObjectsSurviveMajorGC("Long-lived objects in old gen survive major GC", []() {
-    rc::check("Promoted objects survive major GC with values intact", []() {
+Testing::TestCase testLongLivedObjectsSurviveMajorGC("Promoted objects survive major GC with values intact", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -183,8 +183,8 @@ Testing::Test testLongLivedObjectsSurviveMajorGC("Long-lived objects in old gen 
     });
 });
 
-Testing::Test testMajorGCReclaimsOldGenGarbage("Major GC reclaims garbage in old gen", []() {
-    rc::check("Unrooted objects in old gen are reclaimed by major GC", []() {
+Testing::TestCase testMajorGCReclaimsOldGenGarbage("Unrooted objects in old gen are reclaimed by major GC", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -248,8 +248,8 @@ Testing::Test testMajorGCReclaimsOldGenGarbage("Major GC reclaims garbage in old
     });
 });
 
-Testing::Test testFullGCCycleWithCompaction("Full GC cycle with compaction preserves data", []() {
-    rc::check("Objects survive full GC cycle including compaction", []() {
+Testing::TestCase testFullGCCycleWithCompaction("Objects survive full GC cycle including compaction", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -302,8 +302,8 @@ Testing::Test testFullGCCycleWithCompaction("Full GC cycle with compaction prese
     });
 });
 
-Testing::Test testMixedAllocationWorkload("Mixed allocation with minor and major GCs", []() {
-    rc::check("Roots survive mixed minor and major GC workload", []() {
+Testing::TestCase testMixedAllocationWorkload("Roots survive mixed minor and major GC workload", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -372,8 +372,8 @@ Testing::Test testMixedAllocationWorkload("Mixed allocation with minor and major
     });
 });
 
-Testing::Test testObjectGraphSpanningPromotions("Object graph survives partial promotion", []() {
-    rc::check("Linked list survives with nodes in different generations", []() {
+Testing::TestCase testObjectGraphSpanningPromotions("Linked list survives with nodes in different generations", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -457,8 +457,8 @@ Testing::Test testObjectGraphSpanningPromotions("Object graph survives partial p
     });
 });
 
-Testing::Test testMultipleMajorGCCycles("Multiple major GC cycles preserve roots", []() {
-    rc::check("Long-lived roots survive multiple major GC cycles", []() {
+Testing::TestCase testMultipleMajorGCCycles("Long-lived roots survive multiple major GC cycles", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -526,8 +526,8 @@ Testing::Test testMultipleMajorGCCycles("Multiple major GC cycles preserve roots
     });
 });
 
-Testing::Test testStressTestBothGenerations("Stress test exercises both generations", []() {
-    rc::check("High allocation rate with both minor and major GCs", []() {
+Testing::TestCase testStressTestBothGenerations("High allocation rate with both minor and major GCs", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();

@@ -81,8 +81,8 @@ static void* allocateConsInOldGen(OldGenSpace& oldgen, HPointer head_ptr, HPoint
 // Tests
 // ============================================================================
 
-Testing::Test testBlockInitialization("Compaction blocks are initialized correctly", []() {
-    rc::check("Blocks cover the free-list region with correct sizes", []() {
+Testing::TestCase testBlockInitialization("Blocks cover the free-list region with correct sizes", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -122,8 +122,8 @@ Testing::Test testBlockInitialization("Compaction blocks are initialized correct
     });
 });
 
-Testing::Test testBlockLiveInfoTracking("Live info is tracked during marking", []() {
-    rc::check("Objects marked as live update block statistics", []() {
+Testing::TestCase testBlockLiveInfoTracking("Objects marked as live update block statistics", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -185,8 +185,8 @@ Testing::Test testBlockLiveInfoTracking("Live info is tracked during marking", [
     });
 });
 
-Testing::Test testCompactionSetSelection("Compaction selects low-occupancy blocks", []() {
-    rc::check("Blocks below threshold are selected for evacuation", []() {
+Testing::TestCase testCompactionSetSelection("Blocks below threshold are selected for evacuation", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -235,8 +235,8 @@ Testing::Test testCompactionSetSelection("Compaction selects low-occupancy block
     });
 });
 
-Testing::Test testObjectEvacuationWithForwarding("Evacuated objects have forwarding pointers", []() {
-    rc::check("After evacuation, original location has forwarding pointer", []() {
+Testing::TestCase testObjectEvacuationWithForwarding("After evacuation, original location has forwarding pointer", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -294,8 +294,8 @@ Testing::Test testObjectEvacuationWithForwarding("Evacuated objects have forward
     });
 });
 
-Testing::Test testReadBarrierSelfHealing("Read barrier follows forwarding and self-heals", []() {
-    rc::check("readBarrier updates pointer to new location", []() {
+Testing::TestCase testReadBarrierSelfHealing("readBarrier updates pointer to new location", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -352,8 +352,8 @@ Testing::Test testReadBarrierSelfHealing("Read barrier follows forwarding and se
     });
 });
 
-Testing::Test testBlockEvacuation("Block evacuation moves all live objects", []() {
-    rc::check("evacuateBlock moves all Black objects from target block", []() {
+Testing::TestCase testBlockEvacuation("evacuateBlock moves all Black objects from target block", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -423,8 +423,8 @@ Testing::Test testBlockEvacuation("Block evacuation moves all live objects", [](
     });
 });
 
-Testing::Test testBlockReclaimToTLABs("Evacuated blocks become available TLABs", []() {
-    rc::check("reclaimEvacuatedBlocks adds empty blocks to TLAB pool", []() {
+Testing::TestCase testBlockReclaimToTLABs("reclaimEvacuatedBlocks adds empty blocks to TLAB pool", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -473,8 +473,8 @@ Testing::Test testBlockReclaimToTLABs("Evacuated blocks become available TLABs",
     });
 });
 
-Testing::Test testCompactionPreservesValues("Compaction preserves all object values", []() {
-    rc::check("Object data is identical after compaction", []() {
+Testing::TestCase testCompactionPreservesValues("Object data is identical after compaction", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -540,8 +540,8 @@ Testing::Test testCompactionPreservesValues("Compaction preserves all object val
     });
 });
 
-Testing::Test testRootPointerUpdatesAfterCompaction("Root pointers are valid after compaction", []() {
-    rc::check("Roots point to correct objects after compaction", []() {
+Testing::TestCase testRootPointerUpdatesAfterCompaction("Roots point to correct objects after compaction", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
@@ -628,8 +628,8 @@ Testing::Test testRootPointerUpdatesAfterCompaction("Root pointers are valid aft
     });
 });
 
-Testing::Test testFragmentationDefragmentation("Compaction consolidates fragmented heap", []() {
-    rc::check("Sparse objects are consolidated after compaction", []() {
+Testing::TestCase testFragmentationDefragmentation("Sparse objects are consolidated after compaction", []() {
+    rc::check([]() {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
         gc.reset();
