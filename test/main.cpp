@@ -7,11 +7,12 @@
 #include <unordered_set>
 #include <vector>
 #include "GarbageCollector.hpp"
-#include "GarbageCollectorTest.hpp"
+#include "NurserySpaceTest.hpp"
 #include "Heap.hpp"
 #include "HeapGenerators.hpp"
 #include "HeapSnapshot.hpp"
 #include "CompactionTest.hpp"
+#include "GarbageCollectorTest.hpp"
 #include "OldGenSpaceTest.hpp"
 #include "TestSuite.hpp"
 #include "TLABTest.hpp"
@@ -264,15 +265,16 @@ int main(int argc, char* argv[]) {
     // Create test suite and add tests
     Testing::TestSuite suite;
 
-    // GC Tests
-    suite.add(testGCPreservesRoots);
-    suite.add(testMultipleGCCycles);
+    // NurserySpace (Minor GC) Tests
+    suite.add(testMinorGCPreservesRoots);
+    suite.add(testMultipleMinorGCCycles);
     suite.add(testContinuousGarbageAllocation);
 
     // TLAB Tests
     suite.add(testTLABMetricsOnEmpty);
     suite.add(testTLABMetricsAfterAllocation);
     suite.add(testTLABAllocationFillsCorrectly);
+    suite.add(testTLABFillAndSeal);
 
     // OldGenSpace Tests
     suite.add(testAllocateTLAB);
@@ -293,6 +295,17 @@ int main(int argc, char* argv[]) {
     suite.add(testCompactionPreservesValues);
     suite.add(testRootPointerUpdatesAfterCompaction);
     suite.add(testFragmentationDefragmentation);
+
+    // Full GarbageCollector Tests (Minor + Major GC)
+    suite.add(testPromotionToOldGen);
+    suite.add(testMinorThenMajorGCSequence);
+    suite.add(testLongLivedObjectsSurviveMajorGC);
+    suite.add(testMajorGCReclaimsOldGenGarbage);
+    suite.add(testFullGCCycleWithCompaction);
+    suite.add(testMixedAllocationWorkload);
+    suite.add(testObjectGraphSpanningPromotions);
+    suite.add(testMultipleMajorGCCycles);
+    suite.add(testStressTestBothGenerations);
 
     // Handle --list option
     if (config.list_tests) {

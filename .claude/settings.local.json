@@ -39,7 +39,8 @@
       "Bash(xargs:*)",
       "Bash(./build/test/object_pool_test)",
       "Bash(./build/test/object_pool_simple_test:*)",
-      "Bash(./build/test/test)"
+      "Bash(./build/test/test)",
+      "Bash(echo:*)"
     ],
     "deny": [],
     "ask": []

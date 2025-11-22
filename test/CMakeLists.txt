@@ -3,10 +3,11 @@ include_directories(../runtime/include/)
 add_executable(test
         main.cpp
         HeapGenerators.cpp
-        GarbageCollectorTest.cpp
+        NurserySpaceTest.cpp
         TLABTest.cpp
         OldGenSpaceTest.cpp
         CompactionTest.cpp
+        GarbageCollectorTest.cpp
         ../runtime/src/RootSet.cpp
         ../runtime/src/OldGenSpace.cpp
         ../runtime/src/NurserySpace.cpp

@@ -2,7 +2,13 @@
 
 #include "TestSuite.hpp"
 
-// Allocator/GC property-based tests
-extern Testing::Test testGCPreservesRoots;
-extern Testing::Test testMultipleGCCycles;
-extern Testing::Test testContinuousGarbageAllocation;
+// Full GarbageCollector tests (minor + major GC)
+extern Testing::Test testPromotionToOldGen;
+extern Testing::Test testMinorThenMajorGCSequence;
+extern Testing::Test testLongLivedObjectsSurviveMajorGC;
+extern Testing::Test testMajorGCReclaimsOldGenGarbage;
+extern Testing::Test testFullGCCycleWithCompaction;
+extern Testing::Test testMixedAllocationWorkload;
+extern Testing::Test testObjectGraphSpanningPromotions;
+extern Testing::Test testMultipleMajorGCCycles;
+extern Testing::Test testStressTestBothGenerations;
