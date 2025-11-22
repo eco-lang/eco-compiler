@@ -8,6 +8,7 @@ add_executable(test
         OldGenSpaceTest.cpp
         CompactionTest.cpp
         GarbageCollectorTest.cpp
+        ElmTest.cpp
         ../runtime/src/RootSet.cpp
         ../runtime/src/OldGenSpace.cpp
         ../runtime/src/NurserySpace.cpp

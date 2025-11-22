@@ -44,7 +44,10 @@
       "Bash(git add:*)",
       "Bash(git commit -m \"$(cat <<''EOF''\nImprove comment style across codebase.\n\n- Add proper English sentences with periods to all comments\n- Add class/struct doc comments explaining purpose\n- Add purpose comments for all public methods\n- Add inline field comments with periods\n- Add section headings (// ========== Section ==========)\n- Fix typos: terabytes, collection, embedded, evacuated, eventually, Cheney''s, progress\n- Update STYLE.md with comprehensive comment style guidelines\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
       "Bash(tee:*)",
-      "Bash(time:*)"
+      "Bash(time:*)",
+      "Bash(/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/build/test/test:*)",
+      "Bash(RC_PARAMS=\"reproduce=BkiUlZXZyNXZkBCbpNHdgMXdyZXa2V2cg0Wau9mcgEmbkBSbhp2byByRDhvRiJz47pbw4bkYyM+e6GM+GJmMjvnuBjvRiJz47pbwEAwACAAAAAA\" /home/rupert/sc/gitlab/eco-runtime/worktrees/deep/build/test/test --filter \"Elm reversed list survives\")",
+      "Bash(RC_PARAMS=\"reproduce=BUjUv9Gdg8mYqV2Y0NHIzVnc2lmdlBiZ1xGbgc0QgMWejxWZgcXa0hGI2FGb1V2cgkmb0F2Y0ltQ1qqOO+YQZLUtqqjjPGU2CVrq644jBltQ1qqOO+YQEAwACAAAAAA\" ./build/test/test:*)"
     ],
     "deny": [],
     "ask": []

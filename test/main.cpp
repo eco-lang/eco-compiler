@@ -12,6 +12,7 @@
 #include "HeapGenerators.hpp"
 #include "HeapSnapshot.hpp"
 #include "CompactionTest.hpp"
+#include "ElmTest.hpp"
 #include "GarbageCollectorTest.hpp"
 #include "OldGenSpaceTest.hpp"
 #include "TestSuite.hpp"
@@ -325,6 +326,16 @@ int main(int argc, char* argv[]) {
     suite.add(testObjectGraphSpanningPromotions);
     suite.add(testMultipleMajorGCCycles);
     suite.add(testStressTestBothGenerations);
+
+    // Elm Runtime Tests
+    suite.add(testElmNilConstant);
+    suite.add(testElmConsAllocation);
+    suite.add(testElmListFromInts);
+    suite.add(testElmReverseEmpty);
+    suite.add(testElmReverseSingle);
+    suite.add(testElmReverseMultiple);
+    suite.add(testElmReverseSurvivesGC);
+    suite.add(testElmReverseLargeList);
 
     // Handle --list option
     if (config.list_tests) {

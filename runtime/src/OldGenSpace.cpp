@@ -556,7 +556,6 @@ void OldGenSpace::sweep() {
         // Skip objects that would extend past the sweep boundary into TLAB region.
         // This can happen when garbage data near the boundary is interpreted as an object.
         if (ptr + obj_size > end) {
-            ptr = end;  // Stop sweeping
             break;
         }
 
