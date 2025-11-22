@@ -106,8 +106,8 @@ Testing::Test testRootsMarkedAtStart("Roots are pushed to mark stack at start of
         TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
         RC_ASSERT(tlab != nullptr);
 
-        // Generate random int values
-        size_t num_values = *rc::gen::inRange<size_t>(1, 10);
+        // Generate random int values (size-scaled: 1-10 at size 0, up to 1-110 at size 1000)
+        size_t num_values = *rc::sizedRange<size_t>(1, 10, 0.1);
         auto int_values = *rc::gen::container<std::vector<i64>>(
             num_values,
             rc::gen::arbitrary<i64>()
@@ -179,8 +179,8 @@ Testing::Test testRootsPreservedAfterIncrementalMark("Roots preserved through in
         TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
         RC_ASSERT(tlab != nullptr);
 
-        // Create a linked list of objects (roots with children)
-        size_t num_nodes = *rc::gen::inRange<size_t>(2, 8);
+        // Create a linked list of objects (size-scaled: 2-8 at size 0, up to 2-108 at size 1000)
+        size_t num_nodes = *rc::sizedRange<size_t>(2, 8, 0.1);
 
         std::vector<void*> objects;
         std::vector<i64> expected_values;
@@ -218,8 +218,8 @@ Testing::Test testRootsPreservedAfterIncrementalMark("Roots preserved through in
         oldgen.startConcurrentMark(rootset);
 #endif
 
-        // Do incremental marking in small steps
-        size_t step_size = *rc::gen::inRange<size_t>(1, 5);
+        // Do incremental marking in small steps (size-scaled)
+        size_t step_size = *rc::sizedRange<size_t>(1, 5, 0.05);
         while (true) {
 #if ENABLE_GC_STATS
             bool more = oldgen.incrementalMark(step_size, stats);
@@ -257,8 +257,8 @@ Testing::Test testRootsPreservedAfterSweep("Roots preserved after full mark-and-
         TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
         RC_ASSERT(tlab != nullptr);
 
-        // Create some rooted objects
-        size_t num_values = *rc::gen::inRange<size_t>(1, 5);
+        // Create some rooted objects (size-scaled: 1-5 at size 0, up to 1-55 at size 1000)
+        size_t num_values = *rc::sizedRange<size_t>(1, 5, 0.05);
         auto int_values = *rc::gen::container<std::vector<i64>>(
             num_values,
             rc::gen::arbitrary<i64>()
@@ -321,8 +321,8 @@ Testing::Test testGarbageUnmarkedInIncrementalSteps("Garbage objects remain unma
         TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
         RC_ASSERT(tlab != nullptr);
 
-        // Create objects but DON'T root them (they're garbage)
-        size_t num_garbage = *rc::gen::inRange<size_t>(1, 10);
+        // Create objects but DON'T root them (size-scaled: 1-10 at size 0, up to 1-110 at size 1000)
+        size_t num_garbage = *rc::sizedRange<size_t>(1, 10, 0.1);
 
         std::vector<void*> garbage_objects;
         for (size_t i = 0; i < num_garbage; i++) {
@@ -376,8 +376,8 @@ Testing::Test testGarbageFreeListedAfterSweep("Garbage objects added to free lis
         TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
         RC_ASSERT(tlab != nullptr);
 
-        // Create garbage objects (not rooted)
-        size_t num_garbage = *rc::gen::inRange<size_t>(1, 10);
+        // Create garbage objects (size-scaled: 1-10 at size 0, up to 1-110 at size 1000)
+        size_t num_garbage = *rc::sizedRange<size_t>(1, 10, 0.1);
 
         std::vector<void*> garbage_objects;
         for (size_t i = 0; i < num_garbage; i++) {

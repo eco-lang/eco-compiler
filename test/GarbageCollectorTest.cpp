@@ -4,6 +4,7 @@
 #include <vector>
 #include "GarbageCollector.hpp"
 #include "Heap.hpp"
+#include "HeapGenerators.hpp"
 #include "OldGenSpace.hpp"
 
 using namespace Elm;
@@ -77,8 +78,8 @@ Testing::Test testMinorThenMajorGCSequence("Minor GC followed by major GC preser
         gc.initThread();
         gc.reset();
 
-        // Create objects with random values
-        size_t num_objects = *rc::gen::inRange<size_t>(3, 10);
+        // Create objects with random values (size-scaled: 3-10 at size 0, up to 3-110 at size 1000)
+        size_t num_objects = *rc::sizedRange<size_t>(3, 10, 0.1);
         std::vector<i64> expected_values;
         std::vector<HPointer> root_storage;
 
@@ -128,8 +129,8 @@ Testing::Test testLongLivedObjectsSurviveMajorGC("Long-lived objects in old gen 
         gc.initThread();
         gc.reset();
 
-        // Create and promote objects
-        size_t num_objects = *rc::gen::inRange<size_t>(5, 15);
+        // Create and promote objects (size-scaled: 5-15 at size 0, up to 5-115 at size 1000)
+        size_t num_objects = *rc::sizedRange<size_t>(5, 15, 0.1);
         std::vector<i64> expected_values;
         std::vector<HPointer> root_storage;
 
@@ -188,8 +189,8 @@ Testing::Test testMajorGCReclaimsOldGenGarbage("Major GC reclaims garbage in old
         gc.initThread();
         gc.reset();
 
-        // Create objects - some will be rooted, some will become garbage
-        size_t num_objects = *rc::gen::inRange<size_t>(6, 12);
+        // Create objects (size-scaled: 6-12 at size 0, up to 6-112 at size 1000)
+        size_t num_objects = *rc::sizedRange<size_t>(6, 12, 0.1);
         std::vector<HPointer> all_roots;
         std::vector<HPointer> kept_roots;
         std::vector<i64> kept_values;
@@ -253,8 +254,8 @@ Testing::Test testFullGCCycleWithCompaction("Full GC cycle with compaction prese
         gc.initThread();
         gc.reset();
 
-        // Create objects
-        size_t num_objects = *rc::gen::inRange<size_t>(5, 20);
+        // Create objects (size-scaled: 5-20 at size 0, up to 5-120 at size 1000)
+        size_t num_objects = *rc::sizedRange<size_t>(5, 20, 0.1);
         std::vector<i64> expected_values;
         std::vector<HPointer> root_storage;
 
@@ -307,8 +308,8 @@ Testing::Test testMixedAllocationWorkload("Mixed allocation with minor and major
         gc.initThread();
         gc.reset();
 
-        // Create some long-lived roots
-        size_t num_roots = *rc::gen::inRange<size_t>(3, 8);
+        // Create some long-lived roots (size-scaled: 3-8 at size 0, up to 3-108 at size 1000)
+        size_t num_roots = *rc::sizedRange<size_t>(3, 8, 0.1);
         std::vector<i64> expected_values;
         std::vector<HPointer> root_storage;
 
@@ -330,7 +331,8 @@ Testing::Test testMixedAllocationWorkload("Mixed allocation with minor and major
         }
 
         // Mixed workload: allocate garbage, trigger minor GCs, occasionally major GC
-        size_t num_iterations = *rc::gen::inRange<size_t>(5, 15);
+        // Size-scaled: 5-15 at size 0, up to 5-115 at size 1000
+        size_t num_iterations = *rc::sizedRange<size_t>(5, 15, 0.1);
 
         for (size_t iter = 0; iter < num_iterations; iter++) {
             // Allocate some garbage
@@ -376,8 +378,8 @@ Testing::Test testObjectGraphSpanningPromotions("Object graph survives partial p
         gc.initThread();
         gc.reset();
 
-        // Build a linked list
-        size_t list_length = *rc::gen::inRange<size_t>(4, 10);
+        // Build a linked list (size-scaled: 4-10 at size 0, up to 4-110 at size 1000)
+        size_t list_length = *rc::sizedRange<size_t>(4, 10, 0.1);
         std::vector<i64> expected_values;
 
         // Start with Nil
@@ -461,8 +463,8 @@ Testing::Test testMultipleMajorGCCycles("Multiple major GC cycles preserve roots
         gc.initThread();
         gc.reset();
 
-        // Create long-lived objects
-        size_t num_objects = *rc::gen::inRange<size_t>(3, 10);
+        // Create long-lived objects (size-scaled: 3-10 at size 0, up to 3-110 at size 1000)
+        size_t num_objects = *rc::sizedRange<size_t>(3, 10, 0.1);
         std::vector<i64> expected_values;
         std::vector<HPointer> root_storage;
 
@@ -488,8 +490,8 @@ Testing::Test testMultipleMajorGCCycles("Multiple major GC cycles preserve roots
             gc.minorGC();
         }
 
-        // Run multiple major GC cycles
-        size_t num_cycles = *rc::gen::inRange<size_t>(3, 7);
+        // Run multiple major GC cycles (size-scaled: 3-7 at size 0, up to 3-17 at size 1000)
+        size_t num_cycles = *rc::sizedRange<size_t>(3, 7, 0.01);
 
         for (size_t cycle = 0; cycle < num_cycles; cycle++) {
             // Allocate some garbage between cycles
@@ -530,8 +532,8 @@ Testing::Test testStressTestBothGenerations("Stress test exercises both generati
         gc.initThread();
         gc.reset();
 
-        // Create some persistent roots
-        size_t num_persistent = *rc::gen::inRange<size_t>(2, 5);
+        // Create some persistent roots (size-scaled: 2-5 at size 0, up to 2-105 at size 1000)
+        size_t num_persistent = *rc::sizedRange<size_t>(2, 5, 0.1);
         std::vector<i64> expected_values;
         std::vector<HPointer> root_storage;
 
@@ -553,8 +555,10 @@ Testing::Test testStressTestBothGenerations("Stress test exercises both generati
         }
 
         // Stress test: lots of allocation forcing many GCs
-        size_t total_allocations = *rc::gen::inRange<size_t>(500, 2000);
-        size_t major_gc_interval = *rc::gen::inRange<size_t>(100, 300);
+        // Size-scaled: 500-2000 at size 0, up to 500-5000 at size 1000
+        size_t total_allocations = *rc::sizedRange<size_t>(500, 2000, 3.0);
+        // Size-scaled: 100-300 at size 0, up to 100-500 at size 1000
+        size_t major_gc_interval = *rc::sizedRange<size_t>(100, 300, 0.2);
 
         for (size_t i = 0; i < total_allocations; i++) {
             void* obj = gc.allocate(sizeof(ElmInt), Tag_Int);

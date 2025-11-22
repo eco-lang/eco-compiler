@@ -112,6 +112,18 @@ HPointer allocateList(const ListDesc& list_desc,
 
 namespace rc {
 
+// Size-scaled range generator with minimum floor.
+// At size=0, generates in range [min_val, base_max)
+// At larger sizes, upper bound grows: [min_val, base_max + size * scale_factor)
+template<typename T>
+Gen<T> sizedRange(T min_val, T base_max, double scale_factor = 0.1) {
+    return gen::withSize([=](int size) {
+        T max_val = static_cast<T>(base_max + size * scale_factor);
+        max_val = std::max(max_val, min_val + 1);  // Ensure valid range
+        return gen::inRange<T>(min_val, max_val);
+    });
+}
+
 template<>
 struct Arbitrary<Elm::ConsHeadDesc> {
     static Gen<Elm::ConsHeadDesc> arbitrary() {
@@ -220,9 +232,11 @@ struct Arbitrary<Elm::HeapObjectDesc> {
 template<>
 struct Arbitrary<Elm::HeapGraphDesc> {
     static Gen<Elm::HeapGraphDesc> arbitrary() {
+        // Use gen::scale to allow size-sensitive growth while keeping it manageable
+        // With scale(0.1), max-size 1 gives ~1 node, max-size 1000 gives ~100 nodes
         auto rawGen = gen::build<Elm::HeapGraphDesc>(
             gen::set(&Elm::HeapGraphDesc::nodes,
-                     gen::resize(100, gen::nonEmpty(gen::arbitrary<std::vector<Elm::HeapObjectDesc>>()))),
+                     gen::scale(0.1, gen::nonEmpty(gen::arbitrary<std::vector<Elm::HeapObjectDesc>>()))),
             gen::set(&Elm::HeapGraphDesc::root_indices, gen::arbitrary<std::vector<size_t>>()));
 
         return gen::map(rawGen, [](Elm::HeapGraphDesc graph) {

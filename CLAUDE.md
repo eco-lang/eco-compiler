@@ -38,6 +38,9 @@ cmake --build build --target ecor
 # Run with specific seed (for reproducibility)
 ./build/test/test --seed 42
 
+# Control test complexity with max-size (default: 100)
+./build/test/test --max-size 500
+
 # Filter tests by name
 ./build/test/test --filter preserve
 
@@ -52,6 +55,12 @@ cmake --build build --target ecor
 ```
 
 The test suite uses RapidCheck for property-based testing. When a test fails, it will provide a reproduction string that can be used to reliably reproduce the failure.
+
+**Test complexity scaling**: The `--max-size` parameter controls the complexity of generated test inputs. Tests use size-sensitive generators that create larger heap graphs, more GC cycles, and more allocations at higher sizes:
+- `--max-size 1-10`: Minimal tests, ~30s for 10 iterations
+- `--max-size 100`: Default, moderate complexity, ~30s for 10 iterations
+- `--max-size 500`: Thorough testing, ~100s for 10 iterations
+- `--max-size 1000+`: Not recommended (excessive runtime)
 
 ## Core Architecture
 

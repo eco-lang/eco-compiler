@@ -42,7 +42,9 @@
       "Bash(./build/test/test)",
       "Bash(echo:*)",
       "Bash(git add:*)",
-      "Bash(git commit -m \"$(cat <<''EOF''\nImprove comment style across codebase.\n\n- Add proper English sentences with periods to all comments\n- Add class/struct doc comments explaining purpose\n- Add purpose comments for all public methods\n- Add inline field comments with periods\n- Add section headings (// ========== Section ==========)\n- Fix typos: terabytes, collection, embedded, evacuated, eventually, Cheney''s, progress\n- Update STYLE.md with comprehensive comment style guidelines\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
+      "Bash(git commit -m \"$(cat <<''EOF''\nImprove comment style across codebase.\n\n- Add proper English sentences with periods to all comments\n- Add class/struct doc comments explaining purpose\n- Add purpose comments for all public methods\n- Add inline field comments with periods\n- Add section headings (// ========== Section ==========)\n- Fix typos: terabytes, collection, embedded, evacuated, eventually, Cheney''s, progress\n- Update STYLE.md with comprehensive comment style guidelines\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(tee:*)",
+      "Bash(time:*)"
     ],
     "deny": [],
     "ask": []

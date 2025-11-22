@@ -55,11 +55,10 @@ Testing::Test testMinorGCPreservesRoots("Minor GC preserves all reachable object
 Testing::Test testMultipleMinorGCCycles("Multiple minor GC cycles preserve roots correctly", []() {
         rc::check("Multiple minor GC cycles preserve roots correctly", []() {
             // Generate proper test parameters directly using custom generator
+            // Size-scaled: num_cycles 2-5 at size 0, up to 2-15 at size 1000
             auto testGen = rc::gen::tuple(rc::gen::arbitrary<i64>(), // int_value
-                                          rc::gen::inRange(2, 5), // num_cycles (2-4 inclusive)
-                                          rc::gen::container<std::vector<std::vector<HeapObjectDesc>>>(
-                                              4, // Generate exactly 4 garbage vectors (covers max cycles)
-                                              rc::gen::arbitrary<std::vector<HeapObjectDesc>>()));
+                                          rc::sizedRange<int>(2, 5, 0.01), // num_cycles
+                                          rc::gen::arbitrary<std::vector<std::vector<HeapObjectDesc>>>());
 
             auto params = *testGen;
             auto [int_value, num_cycles, garbage_per_cycle] = params;

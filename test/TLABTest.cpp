@@ -1,6 +1,7 @@
 #include "TLABTest.hpp"
 #include <rapidcheck.h>
 #include <vector>
+#include "HeapGenerators.hpp"
 #include "TLAB.hpp"
 #include "GarbageCollector.hpp"
 #include "OldGenSpace.hpp"
@@ -44,10 +45,11 @@ Testing::Test testTLABMetricsAfterAllocation("TLAB metrics update correctly afte
         TLAB tlab(base, tlab_size);
 
         // Generate number of allocations and their sizes
-        size_t num_allocs = *rc::gen::inRange<size_t>(1, 20);
+        // Size-scaled: 1-20 allocs at size 0, up to 1-120 at size 1000
+        size_t num_allocs = *rc::sizedRange<size_t>(1, 20, 0.1);
         auto alloc_sizes = *rc::gen::container<std::vector<size_t>>(
             num_allocs,
-            rc::gen::inRange<size_t>(8, 512)
+            rc::sizedRange<size_t>(8, 512, 0.5)  // Size-scaled allocation sizes
         );
 
         size_t total_allocated = 0;
@@ -88,7 +90,8 @@ Testing::Test testTLABMetricsAfterAllocation("TLAB metrics update correctly afte
 Testing::Test testTLABAllocationFillsCorrectly("TLAB allocation fills correctly until full", []() {
     rc::check("TLAB fills to capacity and returns nullptr when full", []() {
         // Use a smaller TLAB for faster testing
-        size_t tlab_size = *rc::gen::inRange<size_t>(1024, 8192);
+        // Size-scaled: 1KB-8KB at size 0, up to 1KB-28KB at size 1000
+        size_t tlab_size = *rc::sizedRange<size_t>(1024, 8192, 20.0);
         tlab_size = (tlab_size + 7) & ~7;
 
         std::vector<char> backing(tlab_size);
@@ -96,8 +99,8 @@ Testing::Test testTLABAllocationFillsCorrectly("TLAB allocation fills correctly 
 
         TLAB tlab(base, tlab_size);
 
-        // Generate a fixed allocation size
-        size_t alloc_size = *rc::gen::inRange<size_t>(8, 128);
+        // Generate a fixed allocation size (size-scaled: 8-128 at size 0, up to 8-628 at size 1000)
+        size_t alloc_size = *rc::sizedRange<size_t>(8, 128, 0.5);
         size_t aligned_size = (alloc_size + 7) & ~7;
 
         std::vector<char*> allocated_ptrs;
