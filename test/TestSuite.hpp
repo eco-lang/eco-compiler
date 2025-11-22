@@ -114,6 +114,9 @@ public:
 
 /**
  * A single test case with a name and test function.
+ *
+ * This is typically a property-based test that uses rc::check() internally.
+ * The number of iterations is controlled by the -n parameter.
  */
 class TestCase : public Test {
 public:
@@ -150,6 +153,50 @@ private:
 };
 
 /**
+ * A unit test that always runs exactly once.
+ *
+ * Unlike TestCase (which wraps rc::check()), UnitTest ignores the -n parameter
+ * and runs its test function a single time. Use this for tests that don't
+ * benefit from property-based testing (fixed inputs, code path verification).
+ *
+ * Still respects --repeat and --duration (suite-level repetition).
+ */
+class UnitTest : public Test {
+public:
+    UnitTest(std::string name, std::function<void()> func)
+        : name_(std::move(name)), testFunc_(std::move(func)) {}
+
+    // Executes the test function once, printing result.
+    void run() const override {
+        std::cout << "- " << name_ << std::endl;
+        testFunc_();
+        std::cout << "OK" << std::endl;
+    }
+
+    // Returns the test name/description.
+    const std::string& getName() const override {
+        return name_;
+    }
+
+    // A unit test counts as 1.
+    size_t countTests() const override {
+        return 1;
+    }
+
+    // Adds self to output if name matches pattern.
+    void collectTests(std::vector<const Test*>& out,
+                      const std::string& pattern = "") const override {
+        if (pattern.empty() || name_.find(pattern) != std::string::npos) {
+            out.push_back(this);
+        }
+    }
+
+private:
+    std::string name_;               // Test name/description.
+    std::function<void()> testFunc_; // Test function to execute.
+};
+
+/**
  * A collection of tests that can be filtered and run together.
  *
  * Extends Test, so suites can contain other suites (composite pattern).
@@ -158,9 +205,14 @@ class TestSuite : public Test {
 public:
     explicit TestSuite(std::string name) : name_(std::move(name)) {}
 
-    // Adds a test case to the suite.
+    // Adds a property-based test case to the suite.
     void add(TestCase test) {
         children_.push_back(std::make_unique<TestCase>(std::move(test)));
+    }
+
+    // Adds a unit test to the suite.
+    void add(UnitTest test) {
+        children_.push_back(std::make_unique<UnitTest>(std::move(test)));
     }
 
     // Adds a sub-suite to the suite.

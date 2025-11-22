@@ -147,83 +147,81 @@ Testing::TestCase testTLABAllocationFillsCorrectly("TLAB fills to capacity and r
     });
 });
 
-Testing::TestCase testTLABFillAndSeal("Promoting objects beyond TLAB capacity seals TLABs", []() {
-    rc::check([]() {
-        auto &gc = initGC();
+Testing::UnitTest testTLABFillAndSeal("Promoting objects beyond TLAB capacity seals TLABs", []() {
+    auto &gc = initGC();
 
-        auto* nursery = gc.getNursery();
-        if (!nursery) {
-            RC_DISCARD("Nursery not available");
-        }
-
-#if ENABLE_GC_STATS
-        GCStats& nursery_stats = nursery->getStats();
-        uint64_t initial_sealed = nursery_stats.tlabs_sealed;
-#endif
-
-        // To seal TLABs, we need to promote enough objects to fill them.
-        // TLAB_DEFAULT_SIZE is 128KB, so we need to promote 3x that to seal at least 2.
-        size_t tlab_size = OldGenSpace::TLAB_DEFAULT_SIZE;
-        size_t target_promoted = tlab_size * 3;
-
-        size_t total_promoted = 0;
-
-        // Use a fixed-size array of roots to avoid accumulation
-        // We'll reuse these slots each batch
-        constexpr size_t MAX_BATCH_OBJECTS = 4096;
-        std::vector<HPointer> root_storage(MAX_BATCH_OBJECTS);
-        bool roots_registered = false;
-
-        while (total_promoted < target_promoted) {
-            size_t batch_size = 0;
-            size_t batch_count = 0;
-
-            // Fill a portion of nursery with objects
-            while (batch_size < tlab_size / 2 && batch_count < MAX_BATCH_OBJECTS) {
-                size_t obj_size = sizeof(ElmInt);
-
-                void* obj = gc.allocate(obj_size, Tag_Int);
-                if (!obj) {
-                    RC_FAIL("Allocation failed");
-                }
-
-                ElmInt* elm_int = static_cast<ElmInt*>(obj);
-                elm_int->value = static_cast<i64>(batch_count);
-
-                root_storage[batch_count] = toPointer(obj);
-                batch_count++;
-                batch_size += obj_size;
-            }
-
-            // Register roots only once
-            if (!roots_registered) {
-                for (size_t i = 0; i < batch_count; i++) {
-                    gc.getRootSet().addRoot(&root_storage[i]);
-                }
-                roots_registered = true;
-            }
-
-            // Run minor GC twice to promote (age 0 -> 1 -> promoted)
-            gc.minorGC();
-            gc.minorGC();
-
-            total_promoted += batch_size;
-
-            // Unregister roots after promotion so we don't accumulate
-            if (roots_registered) {
-                for (size_t i = 0; i < batch_count; i++) {
-                    gc.getRootSet().removeRoot(&root_storage[i]);
-                }
-                roots_registered = false;
-            }
-        }
+    auto* nursery = gc.getNursery();
+    if (!nursery) {
+        TEST_FAIL("Nursery not available");
+    }
 
 #if ENABLE_GC_STATS
-        uint64_t sealed_count = nursery_stats.tlabs_sealed - initial_sealed;
-        // We should have sealed at least 2 TLABs
-        RC_ASSERT(sealed_count >= 2);
+    GCStats& nursery_stats = nursery->getStats();
+    uint64_t initial_sealed = nursery_stats.tlabs_sealed;
 #endif
 
-        RC_ASSERT(total_promoted >= target_promoted);
-    });
+    // To seal TLABs, we need to promote enough objects to fill them.
+    // TLAB_DEFAULT_SIZE is 128KB, so we need to promote 3x that to seal at least 2.
+    size_t tlab_size = OldGenSpace::TLAB_DEFAULT_SIZE;
+    size_t target_promoted = tlab_size * 3;
+
+    size_t total_promoted = 0;
+
+    // Use a fixed-size array of roots to avoid accumulation.
+    // We'll reuse these slots each batch.
+    constexpr size_t MAX_BATCH_OBJECTS = 4096;
+    std::vector<HPointer> root_storage(MAX_BATCH_OBJECTS);
+    bool roots_registered = false;
+
+    while (total_promoted < target_promoted) {
+        size_t batch_size = 0;
+        size_t batch_count = 0;
+
+        // Fill a portion of nursery with objects.
+        while (batch_size < tlab_size / 2 && batch_count < MAX_BATCH_OBJECTS) {
+            size_t obj_size = sizeof(ElmInt);
+
+            void* obj = gc.allocate(obj_size, Tag_Int);
+            if (!obj) {
+                TEST_FAIL("Allocation failed");
+            }
+
+            ElmInt* elm_int = static_cast<ElmInt*>(obj);
+            elm_int->value = static_cast<i64>(batch_count);
+
+            root_storage[batch_count] = toPointer(obj);
+            batch_count++;
+            batch_size += obj_size;
+        }
+
+        // Register roots only once.
+        if (!roots_registered) {
+            for (size_t i = 0; i < batch_count; i++) {
+                gc.getRootSet().addRoot(&root_storage[i]);
+            }
+            roots_registered = true;
+        }
+
+        // Run minor GC twice to promote (age 0 -> 1 -> promoted).
+        gc.minorGC();
+        gc.minorGC();
+
+        total_promoted += batch_size;
+
+        // Unregister roots after promotion so we don't accumulate.
+        if (roots_registered) {
+            for (size_t i = 0; i < batch_count; i++) {
+                gc.getRootSet().removeRoot(&root_storage[i]);
+            }
+            roots_registered = false;
+        }
+    }
+
+#if ENABLE_GC_STATS
+    uint64_t sealed_count = nursery_stats.tlabs_sealed - initial_sealed;
+    // We should have sealed at least 2 TLABs.
+    TEST_ASSERT(sealed_count >= 2);
+#endif
+
+    TEST_ASSERT(total_promoted >= target_promoted);
 });

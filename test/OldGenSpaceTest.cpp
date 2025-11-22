@@ -13,29 +13,27 @@ using namespace Elm;
 // Tests
 // ============================================================================
 
-Testing::TestCase testAllocateTLAB("allocateTLAB returns usable TLAB within OldGenSpace bounds", []() {
-    rc::check([]() {
-        auto& gc = initGC();
-        auto& oldgen = gc.getOldGen();
+Testing::UnitTest testAllocateTLAB("allocateTLAB returns usable TLAB within OldGenSpace bounds", []() {
+    auto& gc = initGC();
+    auto& oldgen = gc.getOldGen();
 
-        // Allocate a TLAB
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
-        RC_ASSERT(tlab != nullptr);
+    // Allocate a TLAB.
+    TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+    TEST_ASSERT(tlab != nullptr);
 
-        // Verify TLAB has expected capacity
-        RC_ASSERT(tlab->capacity() >= OldGenSpace::TLAB_MIN_SIZE);
+    // Verify TLAB has expected capacity.
+    TEST_ASSERT(tlab->capacity() >= OldGenSpace::TLAB_MIN_SIZE);
 
-        // Verify TLAB memory is within OldGenSpace bounds
-        RC_ASSERT(oldgen.contains(tlab->start));
-        RC_ASSERT(oldgen.contains(tlab->end - 1));  // end-1 since end is one past
+    // Verify TLAB memory is within OldGenSpace bounds.
+    TEST_ASSERT(oldgen.contains(tlab->start));
+    TEST_ASSERT(oldgen.contains(tlab->end - 1));  // end-1 since end is one past.
 
-        // Verify TLAB is initially empty
-        RC_ASSERT(tlab->isEmpty());
-        RC_ASSERT(!tlab->isFull());
+    // Verify TLAB is initially empty.
+    TEST_ASSERT(tlab->isEmpty());
+    TEST_ASSERT(!tlab->isFull());
 
-        // Clean up - seal the TLAB
-        oldgen.sealTLAB(tlab);
-    });
+    // Clean up - seal the TLAB.
+    oldgen.sealTLAB(tlab);
 });
 
 Testing::TestCase testRootsMarkedAtStart("startConcurrentMark pushes roots to mark stack", []() {

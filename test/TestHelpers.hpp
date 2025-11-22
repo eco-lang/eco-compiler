@@ -1,12 +1,28 @@
 #pragma once
 
 #include <rapidcheck.h>
+#include <stdexcept>
 #include <vector>
 #include "GarbageCollector.hpp"
 #include "Heap.hpp"
 #include "HeapGenerators.hpp"
 #include "OldGenSpace.hpp"
 #include "TLAB.hpp"
+
+// Simple assertion for unit tests (outside rc::check).
+// Throws std::runtime_error on failure, which the test runner catches.
+#define TEST_ASSERT(cond) \
+    do { \
+        if (!(cond)) { \
+            throw std::runtime_error("Assertion failed: " #cond); \
+        } \
+    } while (0)
+
+// Fail unconditionally with a message.
+#define TEST_FAIL(msg) \
+    do { \
+        throw std::runtime_error(msg); \
+    } while (0)
 
 namespace Elm {
 namespace TestHelpers {

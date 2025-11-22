@@ -117,49 +117,51 @@ Testing::TestCase testMajorGCReclaimsOldGenGarbage("Unrooted objects in old gen 
     rc::check([]() {
         auto& gc = initGC();
 
-        // Create objects (size-scaled)
+        // Create objects with random values (size-scaled).
         size_t num_objects = *rc::sizedRange<size_t>(6, 12, 0.1);
         std::vector<HPointer> all_roots;
+        std::vector<i64> all_values;
         std::vector<HPointer> kept_roots;
         std::vector<i64> kept_values;
 
         for (size_t i = 0; i < num_objects; i++) {
-            i64 val = static_cast<i64>(i * 1000);
+            i64 val = *rc::gen::arbitrary<i64>();
             void* obj = gc.allocate(sizeof(ElmInt), Tag_Int);
             if (!obj) break;
 
             ElmInt* elm_int = static_cast<ElmInt*>(obj);
             elm_int->value = val;
             all_roots.push_back(toPointer(obj));
+            all_values.push_back(val);
         }
 
         RC_ASSERT(all_roots.size() >= 4);
 
-        // Root all objects initially
+        // Root all objects initially.
         for (auto& root : all_roots) {
             gc.getRootSet().addRoot(&root);
         }
 
-        // Promote all to old gen
+        // Promote all to old gen.
         promoteToOldGen(gc);
 
-        // Now unroot half of them (they become garbage)
+        // Now unroot half of them (they become garbage).
         for (size_t i = 0; i < all_roots.size(); i++) {
             if (i % 2 == 0) {
                 kept_roots.push_back(all_roots[i]);
-                kept_values.push_back(static_cast<i64>(i * 1000));
+                kept_values.push_back(all_values[i]);
             } else {
                 gc.getRootSet().removeRoot(&all_roots[i]);
             }
         }
 
-        // Run major GC - should reclaim the unrooted objects
+        // Run major GC - should reclaim the unrooted objects.
         gc.majorGC();
 
-        // Verify kept objects still have correct values
+        // Verify kept objects still have correct values.
         verifyIntValues(kept_roots, kept_values);
 
-        // Clean up remaining roots
+        // Clean up remaining roots.
         unregisterRoots(gc, kept_roots);
     });
 });

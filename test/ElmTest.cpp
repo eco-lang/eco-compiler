@@ -190,12 +190,10 @@ using namespace Elm;
 // Tests
 // ============================================================================
 
-Testing::TestCase testElmNilConstant("Nil has correct constant field", []() {
-    rc::check([]() {
-        HPointer nil = elm_nil();
-        RC_ASSERT(nil.constant == Const_Nil);
-        RC_ASSERT(elm_list_length(nil) == 0);
-    });
+Testing::UnitTest testElmNilConstant("Nil has correct constant field", []() {
+    HPointer nil = elm_nil();
+    TEST_ASSERT(nil.constant == Const_Nil);
+    TEST_ASSERT(elm_list_length(nil) == 0);
 });
 
 Testing::TestCase testElmConsAllocation("Cons cell is allocated correctly", []() {
@@ -239,15 +237,13 @@ Testing::TestCase testElmListFromInts("List from ints has correct structure", []
     });
 });
 
-Testing::TestCase testElmReverseEmpty("Reverse of nil is nil", []() {
-    rc::check([]() {
-        initGC();
+Testing::UnitTest testElmReverseEmpty("Reverse of nil is nil", []() {
+    initGC();
 
-        HPointer nil = elm_nil();
-        HPointer reversed = elm_reverse(nil);
+    HPointer nil = elm_nil();
+    HPointer reversed = elm_reverse(nil);
 
-        RC_ASSERT(reversed.constant == Const_Nil);
-    });
+    TEST_ASSERT(reversed.constant == Const_Nil);
 });
 
 Testing::TestCase testElmReverseSingle("Reverse of [x] is [x]", []() {
@@ -302,59 +298,56 @@ Testing::TestCase testElmReverseMultiple("Reverse of [1,2,3] is [3,2,1]", []() {
     });
 });
 
-Testing::TestCase testElmReverseSurvivesGC("Reversed list survives minor and major GC", []() {
-    rc::check([]() {
-        auto& gc = initGC();
+Testing::UnitTest testElmReverseSurvivesGC("Reversed list survives minor and major GC", []() {
+    auto& gc = initGC();
 
-        std::vector<i64> values = {1, 2, 3, 4, 5};
-        HPointer list = elm_list_from_ints(values);
+    std::vector<i64> values = {1, 2, 3, 4, 5};
+    HPointer list = elm_list_from_ints(values);
 
-        // Register original list as root during reverse.
-        HPointer root1 = list;
-        gc.getRootSet().addRoot(&root1);
+    // Register original list as root during reverse.
+    HPointer root1 = list;
+    gc.getRootSet().addRoot(&root1);
 
-        // Reverse the list (root1 keeps original alive if GC triggers).
-        HPointer reversed = elm_reverse(root1);
+    // Reverse the list (root1 keeps original alive if GC triggers).
+    HPointer reversed = elm_reverse(root1);
 
-        // Register reversed list as root.
-        HPointer root2 = reversed;
-        gc.getRootSet().addRoot(&root2);
+    // Register reversed list as root.
+    HPointer root2 = reversed;
+    gc.getRootSet().addRoot(&root2);
 
-        // Remove original root - we only need the reversed list now.
-        gc.getRootSet().removeRoot(&root1);
+    // Remove original root - we only need the reversed list now.
+    gc.getRootSet().removeRoot(&root1);
 
-        // Trigger minor GC twice to promote objects to old gen.
-        // PROMOTION_AGE=1, so after first GC age becomes 1, and on second GC they're promoted.
-        gc.minorGC();
-        gc.minorGC();
+    // Trigger minor GC twice to promote objects to old gen.
+    // PROMOTION_AGE=1, so after first GC age becomes 1, and on second GC they're promoted.
+    gc.minorGC();
+    gc.minorGC();
 
-        // Read from root2 (may have been updated by GC).
-        std::vector<i64> after_minor = elm_list_to_ints(root2);
-        std::vector<i64> expected = {5, 4, 3, 2, 1};
-        RC_ASSERT(after_minor == expected);
+    // Read from root2 (may have been updated by GC).
+    std::vector<i64> after_minor = elm_list_to_ints(root2);
+    std::vector<i64> expected = {5, 4, 3, 2, 1};
+    TEST_ASSERT(after_minor == expected);
 
-        // Now objects are in old gen, so major GC should work.
-        gc.majorGC();
+    // Now objects are in old gen, so major GC should work.
+    gc.majorGC();
 
-        // Verify list is still intact.
-        std::vector<i64> after_major = elm_list_to_ints(root2);
-        RC_ASSERT(after_major == expected);
+    // Verify list is still intact.
+    std::vector<i64> after_major = elm_list_to_ints(root2);
+    TEST_ASSERT(after_major == expected);
 
-        gc.getRootSet().removeRoot(&root2);
-    });
+    gc.getRootSet().removeRoot(&root2);
 });
 
 Testing::TestCase testElmReverseLargeList("Reverse of large list is correct", []() {
     rc::check([]() {
         auto& gc = initGC();
 
-        // Create a list with 100-500 elements.
+        // Create a list with 100-500 elements with random values.
         size_t size = *rc::gen::inRange<size_t>(100, 500);
-        std::vector<i64> values;
-        values.reserve(size);
-        for (size_t i = 0; i < size; i++) {
-            values.push_back(static_cast<i64>(i));
-        }
+        auto values = *rc::gen::container<std::vector<i64>>(
+            size,
+            rc::gen::arbitrary<i64>()
+        );
 
         HPointer list = elm_list_from_ints(values);
 
@@ -374,11 +367,13 @@ Testing::TestCase testElmReverseLargeList("Reverse of large list is correct", []
         // Verify length.
         RC_ASSERT(elm_list_length(root2) == size);
 
-        // Verify first and last elements.
+        // Verify all elements are correctly reversed.
         std::vector<i64> result = elm_list_to_ints(root2);
         RC_ASSERT(result.size() == size);
-        RC_ASSERT(result.front() == static_cast<i64>(size - 1));
-        RC_ASSERT(result.back() == 0);
+
+        std::vector<i64> expected = values;
+        std::reverse(expected.begin(), expected.end());
+        RC_ASSERT(result == expected);
 
         gc.getRootSet().removeRoot(&root2);
     });

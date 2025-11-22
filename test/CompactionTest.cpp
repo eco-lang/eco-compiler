@@ -13,34 +13,32 @@ using namespace Elm;
 // Tests
 // ============================================================================
 
-Testing::TestCase testBlockInitialization("Blocks cover the free-list region with correct sizes", []() {
-    rc::check([]() {
-        auto& gc = initGC();
-        auto& oldgen = gc.getOldGen();
+Testing::UnitTest testBlockInitialization("Blocks cover the free-list region with correct sizes", []() {
+    auto& gc = initGC();
+    auto& oldgen = gc.getOldGen();
 
-        // Allocate a TLAB to trigger block initialization during marking
-        TLAB* tlab = allocateTLABOrFail(oldgen);
+    // Allocate a TLAB to trigger block initialization during marking.
+    TLAB* tlab = allocateTLABOrFail(oldgen);
 
-        // Allocate some objects
-        void* obj = allocateIntIntoTLAB(tlab, 42);
-        if (!obj) RC_FAIL("Failed to allocate object");
+    // Allocate some objects.
+    void* obj = allocateIntIntoTLAB(tlab, 42);
+    if (!obj) TEST_FAIL("Failed to allocate object");
 
-        HPointer root = toPointer(obj);
-        gc.getRootSet().addRoot(&root);
+    HPointer root = toPointer(obj);
+    gc.getRootSet().addRoot(&root);
 
-        oldgen.sealTLAB(tlab);
+    oldgen.sealTLAB(tlab);
 
-        // Start marking - this initializes blocks
-        runMarkAndSweep(gc);
+    // Start marking - this initializes blocks.
+    runMarkAndSweep(gc);
 
-        // Now run compaction selection - blocks should be initialized
-        oldgen.selectCompactionSet();
+    // Now run compaction selection - blocks should be initialized.
+    oldgen.selectCompactionSet();
 
-        // If we got here without crash, blocks were initialized
-        // The test verifies the code path runs without errors
+    // If we got here without crash, blocks were initialized.
+    // The test verifies the code path runs without errors.
 
-        gc.getRootSet().removeRoot(&root);
-    });
+    gc.getRootSet().removeRoot(&root);
 });
 
 Testing::TestCase testBlockLiveInfoTracking("Objects marked as live update block statistics", []() {
@@ -103,38 +101,36 @@ Testing::TestCase testBlockLiveInfoTracking("Objects marked as live update block
     });
 });
 
-Testing::TestCase testCompactionSetSelection("Blocks below threshold are selected for evacuation", []() {
-    rc::check([]() {
-        auto& gc = initGC();
-        auto& oldgen = gc.getOldGen();
+Testing::UnitTest testCompactionSetSelection("Blocks below threshold are selected for evacuation", []() {
+    auto& gc = initGC();
+    auto& oldgen = gc.getOldGen();
 
-        // Allocate a small amount of live data to create low-occupancy blocks
-        TLAB* tlab = allocateTLABOrFail(oldgen);
+    // Allocate a small amount of live data to create low-occupancy blocks.
+    TLAB* tlab = allocateTLABOrFail(oldgen);
 
-        // Just a few objects - should result in very low block occupancy
-        void* obj = allocateIntIntoTLAB(tlab, 12345);
-        if (!obj) RC_FAIL("Failed to allocate object");
+    // Just a few objects - should result in very low block occupancy.
+    void* obj = allocateIntIntoTLAB(tlab, 12345);
+    if (!obj) TEST_FAIL("Failed to allocate object");
 
-        HPointer root = toPointer(obj);
-        gc.getRootSet().addRoot(&root);
+    HPointer root = toPointer(obj);
+    gc.getRootSet().addRoot(&root);
 
-        oldgen.sealTLAB(tlab);
+    oldgen.sealTLAB(tlab);
 
-        // Run full marking cycle
-        runMarkAndSweep(gc);
+    // Run full marking cycle.
+    runMarkAndSweep(gc);
 
-        // Select compaction set and run compaction
-        runCompaction(oldgen, false);
+    // Select compaction set and run compaction.
+    runCompaction(oldgen, false);
 
-        // Object should still be accessible (may have been moved)
-        void* current_obj = fromPointer(root);
-        if (!current_obj) RC_FAIL("Object not accessible after compaction");
+    // Object should still be accessible (may have been moved).
+    void* current_obj = fromPointer(root);
+    if (!current_obj) TEST_FAIL("Object not accessible after compaction");
 
-        ElmInt* elm_int = static_cast<ElmInt*>(current_obj);
-        RC_ASSERT(elm_int->value == 12345);
+    ElmInt* elm_int = static_cast<ElmInt*>(current_obj);
+    TEST_ASSERT(elm_int->value == 12345);
 
-        gc.getRootSet().removeRoot(&root);
-    });
+    gc.getRootSet().removeRoot(&root);
 });
 
 Testing::TestCase testObjectEvacuationWithForwarding("After evacuation, original location has forwarding pointer", []() {
@@ -277,38 +273,36 @@ Testing::TestCase testBlockEvacuation("evacuateBlock moves all Black objects fro
     });
 });
 
-Testing::TestCase testBlockReclaimToTLABs("reclaimEvacuatedBlocks adds empty blocks to TLAB pool", []() {
-    rc::check([]() {
-        auto& gc = initGC();
-        auto& oldgen = gc.getOldGen();
+Testing::UnitTest testBlockReclaimToTLABs("reclaimEvacuatedBlocks adds empty blocks to TLAB pool", []() {
+    auto& gc = initGC();
+    auto& oldgen = gc.getOldGen();
 
-        // Allocate a small object to create a very sparse block
-        TLAB* tlab = allocateTLABOrFail(oldgen);
+    // Allocate a small object to create a very sparse block.
+    TLAB* tlab = allocateTLABOrFail(oldgen);
 
-        void* obj = allocateIntIntoTLAB(tlab, 999);
-        if (!obj) RC_FAIL("Failed to allocate object");
+    void* obj = allocateIntIntoTLAB(tlab, 999);
+    if (!obj) TEST_FAIL("Failed to allocate object");
 
-        HPointer root = toPointer(obj);
-        gc.getRootSet().addRoot(&root);
+    HPointer root = toPointer(obj);
+    gc.getRootSet().addRoot(&root);
 
-        oldgen.sealTLAB(tlab);
+    oldgen.sealTLAB(tlab);
 
-        // Run full GC cycle with compaction
-        runMarkAndSweep(gc);
-        runCompaction(oldgen);
+    // Run full GC cycle with compaction.
+    runMarkAndSweep(gc);
+    runCompaction(oldgen);
 
-        // Object should still be valid
-        void* current = fromPointer(root);
-        if (getHeader(current)->tag == Tag_Forward) {
-            current = readBarrier(root);
-        }
-        if (!current) RC_FAIL("Current object is null");
+    // Object should still be valid.
+    void* current = fromPointer(root);
+    if (getHeader(current)->tag == Tag_Forward) {
+        current = readBarrier(root);
+    }
+    if (!current) TEST_FAIL("Current object is null");
 
-        ElmInt* elm_int = static_cast<ElmInt*>(current);
-        RC_ASSERT(elm_int->value == 999);
+    ElmInt* elm_int = static_cast<ElmInt*>(current);
+    TEST_ASSERT(elm_int->value == 999);
 
-        gc.getRootSet().removeRoot(&root);
-    });
+    gc.getRootSet().removeRoot(&root);
 });
 
 Testing::TestCase testCompactionPreservesValues("Object data is identical after compaction", []() {
@@ -428,7 +422,7 @@ Testing::TestCase testFragmentationDefragmentation("Sparse objects are consolida
         auto& gc = initGC();
         auto& oldgen = gc.getOldGen();
 
-        // Create fragmentation: allocate objects, then only root some of them
+        // Create fragmentation: allocate objects, then only root some of them.
         TLAB* tlab = allocateTLABOrFail(oldgen);
 
         size_t total_objects = *rc::gen::inRange<size_t>(10, 30);
@@ -436,7 +430,7 @@ Testing::TestCase testFragmentationDefragmentation("Sparse objects are consolida
         std::vector<i64> all_values;
 
         for (size_t i = 0; i < total_objects; i++) {
-            i64 val = static_cast<i64>(i * 1000);
+            i64 val = *rc::gen::arbitrary<i64>();
             void* obj = allocateIntIntoTLAB(tlab, val);
             if (!obj) break;
             all_objects.push_back(obj);
@@ -445,7 +439,7 @@ Testing::TestCase testFragmentationDefragmentation("Sparse objects are consolida
 
         RC_ASSERT(all_objects.size() >= 6);
 
-        // Only root every 3rd object (creates fragmentation)
+        // Only root every 3rd object (creates fragmentation).
         std::vector<HPointer> root_storage;
         std::vector<i64> rooted_values;
         for (size_t i = 0; i < all_objects.size(); i += 3) {
@@ -459,11 +453,11 @@ Testing::TestCase testFragmentationDefragmentation("Sparse objects are consolida
 
         oldgen.sealTLAB(tlab);
 
-        // Run GC and compaction
+        // Run GC and compaction.
         runMarkAndSweep(gc);
         runCompaction(oldgen);
 
-        // Verify rooted values are still accessible
+        // Verify rooted values are still accessible.
         verifyIntValues(root_storage, rooted_values);
 
         unregisterRoots(gc, root_storage);
