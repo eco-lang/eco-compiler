@@ -5,77 +5,9 @@
 #include "GarbageCollector.hpp"
 #include "Heap.hpp"
 #include "OldGenSpace.hpp"
+#include "TestHelpers.hpp"
 
 using namespace Elm;
-
-// ============================================================================
-// Helper: Create constant HPointer.
-// ============================================================================
-
-static HPointer createConstant(Constant c) {
-    HPointer ptr;
-    ptr.ptr = 0;
-    ptr.constant = c;
-    ptr.padding = 0;
-    return ptr;
-}
-
-// ============================================================================
-// Helper: Allocate a simple ElmInt into a TLAB.
-// ============================================================================
-
-static void* allocateIntIntoTLAB(TLAB* tlab, i64 value) {
-    void* obj = tlab->allocate(sizeof(ElmInt));
-    if (!obj) return nullptr;
-
-    Header* hdr = reinterpret_cast<Header*>(obj);
-    std::memset(hdr, 0, sizeof(Header));
-    hdr->tag = Tag_Int;
-    hdr->color = static_cast<u32>(Color::White);
-
-    ElmInt* elm_int = static_cast<ElmInt*>(obj);
-    elm_int->value = value;
-
-    return obj;
-}
-
-// ============================================================================
-// Helper: Allocate ElmInt directly in OldGen free-list.
-// ============================================================================
-
-static void* allocateIntInOldGen(OldGenSpace& oldgen, i64 value) {
-    void* obj = oldgen.allocate(sizeof(ElmInt));
-    if (!obj) return nullptr;
-
-    Header* hdr = reinterpret_cast<Header*>(obj);
-    hdr->tag = Tag_Int;
-    hdr->color = static_cast<u32>(Color::White);
-
-    ElmInt* elm_int = static_cast<ElmInt*>(obj);
-    elm_int->value = value;
-
-    return obj;
-}
-
-// ============================================================================
-// Helper: Allocate a Cons cell into OldGen (for building linked lists).
-// ============================================================================
-
-static void* allocateConsInOldGen(OldGenSpace& oldgen, HPointer head_ptr, HPointer tail_ptr, bool head_boxed) {
-    void* obj = oldgen.allocate(sizeof(Cons));
-    if (!obj) return nullptr;
-
-    Header* hdr = reinterpret_cast<Header*>(obj);
-    hdr->tag = Tag_Cons;
-    hdr->color = static_cast<u32>(Color::White);
-    hdr->unboxed = head_boxed ? 0 : 1;
-
-    Cons* cons = static_cast<Cons*>(obj);
-    cons->head.p = head_ptr;
-    cons->tail = tail_ptr;
-
-    return obj;
-}
 
 // ============================================================================
 // Tests
@@ -83,34 +15,23 @@ static void* allocateConsInOldGen(OldGenSpace& oldgen, HPointer head_ptr, HPoint
 
 Testing::TestCase testBlockInitialization("Blocks cover the free-list region with correct sizes", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
         auto& oldgen = gc.getOldGen();
-        auto& rootset = gc.getRootSet();
 
         // Allocate a TLAB to trigger block initialization during marking
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
-        if (!tlab) RC_FAIL("Failed to allocate TLAB");
+        TLAB* tlab = allocateTLABOrFail(oldgen);
 
         // Allocate some objects
         void* obj = allocateIntIntoTLAB(tlab, 42);
         if (!obj) RC_FAIL("Failed to allocate object");
 
         HPointer root = toPointer(obj);
-        rootset.addRoot(&root);
+        gc.getRootSet().addRoot(&root);
 
         oldgen.sealTLAB(tlab);
 
         // Start marking - this initializes blocks
-#if ENABLE_GC_STATS
-        GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
-        oldgen.finishMarkAndSweep(stats);
-#else
-        oldgen.startConcurrentMark(rootset);
-        oldgen.finishMarkAndSweep();
-#endif
+        runMarkAndSweep(gc);
 
         // Now run compaction selection - blocks should be initialized
         oldgen.selectCompactionSet();
@@ -118,21 +39,18 @@ Testing::TestCase testBlockInitialization("Blocks cover the free-list region wit
         // If we got here without crash, blocks were initialized
         // The test verifies the code path runs without errors
 
-        rootset.removeRoot(&root);
+        gc.getRootSet().removeRoot(&root);
     });
 });
 
 Testing::TestCase testBlockLiveInfoTracking("Objects marked as live update block statistics", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
         // Allocate objects in old gen via TLAB
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
-        if (!tlab) RC_FAIL("Failed to allocate TLAB");
+        TLAB* tlab = allocateTLABOrFail(oldgen);
 
         // Generate random number of objects
         size_t num_objects = *rc::gen::inRange<size_t>(5, 20);
@@ -187,42 +105,26 @@ Testing::TestCase testBlockLiveInfoTracking("Objects marked as live update block
 
 Testing::TestCase testCompactionSetSelection("Blocks below threshold are selected for evacuation", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
         auto& oldgen = gc.getOldGen();
-        auto& rootset = gc.getRootSet();
 
         // Allocate a small amount of live data to create low-occupancy blocks
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
-        if (!tlab) RC_FAIL("Failed to allocate TLAB");
+        TLAB* tlab = allocateTLABOrFail(oldgen);
 
         // Just a few objects - should result in very low block occupancy
         void* obj = allocateIntIntoTLAB(tlab, 12345);
         if (!obj) RC_FAIL("Failed to allocate object");
 
         HPointer root = toPointer(obj);
-        rootset.addRoot(&root);
+        gc.getRootSet().addRoot(&root);
 
         oldgen.sealTLAB(tlab);
 
         // Run full marking cycle
-#if ENABLE_GC_STATS
-        GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
-        oldgen.finishMarkAndSweep(stats);
-#else
-        oldgen.startConcurrentMark(rootset);
-        oldgen.finishMarkAndSweep();
-#endif
+        runMarkAndSweep(gc);
 
-        // Select compaction set - low occupancy blocks should be selected
-        oldgen.selectCompactionSet();
-
-        // Verify by running compaction (if blocks were selected, this will evacuate them)
-        oldgen.setCompactionInProgress(true);
-        oldgen.performCompaction();
-        oldgen.setCompactionInProgress(false);
+        // Select compaction set and run compaction
+        runCompaction(oldgen, false);
 
         // Object should still be accessible (may have been moved)
         void* current_obj = fromPointer(root);
@@ -231,46 +133,30 @@ Testing::TestCase testCompactionSetSelection("Blocks below threshold are selecte
         ElmInt* elm_int = static_cast<ElmInt*>(current_obj);
         RC_ASSERT(elm_int->value == 12345);
 
-        rootset.removeRoot(&root);
+        gc.getRootSet().removeRoot(&root);
     });
 });
 
 Testing::TestCase testObjectEvacuationWithForwarding("After evacuation, original location has forwarding pointer", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
         auto& oldgen = gc.getOldGen();
-        auto& rootset = gc.getRootSet();
 
         // Allocate object
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
-        if (!tlab) RC_FAIL("Failed to allocate TLAB");
+        TLAB* tlab = allocateTLABOrFail(oldgen);
 
         i64 test_value = *rc::gen::arbitrary<i64>();
         void* original_obj = allocateIntIntoTLAB(tlab, test_value);
         if (!original_obj) RC_FAIL("Failed to allocate object");
 
         HPointer root = toPointer(original_obj);
-        rootset.addRoot(&root);
+        gc.getRootSet().addRoot(&root);
 
         oldgen.sealTLAB(tlab);
 
-        // Mark the object
-#if ENABLE_GC_STATS
-        GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
-        oldgen.finishMarkAndSweep(stats);
-#else
-        oldgen.startConcurrentMark(rootset);
-        oldgen.finishMarkAndSweep();
-#endif
-
-        // Force compaction
-        oldgen.selectCompactionSet();
-        oldgen.setCompactionInProgress(true);
-        oldgen.performCompaction();
-        oldgen.setCompactionInProgress(false);
+        // Mark the object and compact
+        runMarkAndSweep(gc);
+        runCompaction(oldgen, false);
 
         // Check if object was moved (original location may have forwarding pointer)
         Header* original_hdr = getHeader(original_obj);
@@ -290,21 +176,17 @@ Testing::TestCase testObjectEvacuationWithForwarding("After evacuation, original
             RC_ASSERT(elm_int->value == test_value);
         }
 
-        rootset.removeRoot(&root);
+        gc.getRootSet().removeRoot(&root);
     });
 });
 
 Testing::TestCase testReadBarrierSelfHealing("readBarrier updates pointer to new location", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
         auto& oldgen = gc.getOldGen();
-        auto& rootset = gc.getRootSet();
 
         // Allocate and root an object
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
-        if (!tlab) RC_FAIL("Failed to allocate TLAB");
+        TLAB* tlab = allocateTLABOrFail(oldgen);
 
         i64 test_value = *rc::gen::arbitrary<i64>();
         void* obj = allocateIntIntoTLAB(tlab, test_value);
@@ -312,24 +194,13 @@ Testing::TestCase testReadBarrierSelfHealing("readBarrier updates pointer to new
 
         HPointer root = toPointer(obj);
         HPointer original_root = root;  // Keep copy of original pointer
-        rootset.addRoot(&root);
+        gc.getRootSet().addRoot(&root);
 
         oldgen.sealTLAB(tlab);
 
         // Run GC and compaction
-#if ENABLE_GC_STATS
-        GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
-        oldgen.finishMarkAndSweep(stats);
-#else
-        oldgen.startConcurrentMark(rootset);
-        oldgen.finishMarkAndSweep();
-#endif
-
-        oldgen.selectCompactionSet();
-        oldgen.setCompactionInProgress(true);
-        oldgen.performCompaction();
-        oldgen.setCompactionInProgress(false);
+        runMarkAndSweep(gc);
+        runCompaction(oldgen, false);
 
         // Use read barrier on a copy of the original pointer
         HPointer test_ptr = original_root;
@@ -348,21 +219,18 @@ Testing::TestCase testReadBarrierSelfHealing("readBarrier updates pointer to new
             }
         }
 
-        rootset.removeRoot(&root);
+        gc.getRootSet().removeRoot(&root);
     });
 });
 
 Testing::TestCase testBlockEvacuation("evacuateBlock moves all Black objects from target block", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
         // Allocate multiple objects
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
-        if (!tlab) RC_FAIL("Failed to allocate TLAB");
+        TLAB* tlab = allocateTLABOrFail(oldgen);
 
         size_t num_objects = *rc::gen::inRange<size_t>(3, 10);
         std::vector<void*> original_locations;
@@ -386,21 +254,9 @@ Testing::TestCase testBlockEvacuation("evacuateBlock moves all Black objects fro
 
         oldgen.sealTLAB(tlab);
 
-        // Mark objects
-#if ENABLE_GC_STATS
-        GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
-        oldgen.finishMarkAndSweep(stats);
-#else
-        oldgen.startConcurrentMark(rootset);
-        oldgen.finishMarkAndSweep();
-#endif
-
-        // Run compaction
-        oldgen.selectCompactionSet();
-        oldgen.setCompactionInProgress(true);
-        oldgen.performCompaction();
-        oldgen.setCompactionInProgress(false);
+        // Mark objects and compact
+        runMarkAndSweep(gc);
+        runCompaction(oldgen, false);
 
         // Verify all values are still accessible
         for (size_t i = 0; i < root_storage.size(); i++) {
@@ -417,47 +273,29 @@ Testing::TestCase testBlockEvacuation("evacuateBlock moves all Black objects fro
             RC_ASSERT(elm_int->value == expected_values[i]);
         }
 
-        for (auto& root : root_storage) {
-            rootset.removeRoot(&root);
-        }
+        unregisterRoots(gc, root_storage);
     });
 });
 
 Testing::TestCase testBlockReclaimToTLABs("reclaimEvacuatedBlocks adds empty blocks to TLAB pool", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
         auto& oldgen = gc.getOldGen();
-        auto& rootset = gc.getRootSet();
 
         // Allocate a small object to create a very sparse block
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
-        if (!tlab) RC_FAIL("Failed to allocate TLAB");
+        TLAB* tlab = allocateTLABOrFail(oldgen);
 
         void* obj = allocateIntIntoTLAB(tlab, 999);
         if (!obj) RC_FAIL("Failed to allocate object");
 
         HPointer root = toPointer(obj);
-        rootset.addRoot(&root);
+        gc.getRootSet().addRoot(&root);
 
         oldgen.sealTLAB(tlab);
 
         // Run full GC cycle with compaction
-#if ENABLE_GC_STATS
-        GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
-        oldgen.finishMarkAndSweep(stats);
-#else
-        oldgen.startConcurrentMark(rootset);
-        oldgen.finishMarkAndSweep();
-#endif
-
-        oldgen.selectCompactionSet();
-        oldgen.setCompactionInProgress(true);
-        oldgen.performCompaction();
-        oldgen.reclaimEvacuatedBlocks();
-        oldgen.setCompactionInProgress(false);
+        runMarkAndSweep(gc);
+        runCompaction(oldgen);
 
         // Object should still be valid
         void* current = fromPointer(root);
@@ -469,17 +307,14 @@ Testing::TestCase testBlockReclaimToTLABs("reclaimEvacuatedBlocks adds empty blo
         ElmInt* elm_int = static_cast<ElmInt*>(current);
         RC_ASSERT(elm_int->value == 999);
 
-        rootset.removeRoot(&root);
+        gc.getRootSet().removeRoot(&root);
     });
 });
 
 Testing::TestCase testCompactionPreservesValues("Object data is identical after compaction", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
         auto& oldgen = gc.getOldGen();
-        auto& rootset = gc.getRootSet();
 
         // Generate random test data
         size_t num_objects = *rc::gen::inRange<size_t>(5, 30);
@@ -488,8 +323,7 @@ Testing::TestCase testCompactionPreservesValues("Object data is identical after 
             rc::gen::arbitrary<i64>()
         );
 
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
-        if (!tlab) RC_FAIL("Failed to allocate TLAB");
+        TLAB* tlab = allocateTLABOrFail(oldgen);
 
         std::vector<HPointer> root_storage;
         for (i64 val : values) {
@@ -501,56 +335,29 @@ Testing::TestCase testCompactionPreservesValues("Object data is identical after 
         RC_ASSERT(!root_storage.empty());
 
         for (auto& root : root_storage) {
-            rootset.addRoot(&root);
+            gc.getRootSet().addRoot(&root);
         }
 
         oldgen.sealTLAB(tlab);
 
         // Run GC and compaction
-#if ENABLE_GC_STATS
-        GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
-        oldgen.finishMarkAndSweep(stats);
-#else
-        oldgen.startConcurrentMark(rootset);
-        oldgen.finishMarkAndSweep();
-#endif
-
-        oldgen.selectCompactionSet();
-        oldgen.setCompactionInProgress(true);
-        oldgen.performCompaction();
-        oldgen.reclaimEvacuatedBlocks();
-        oldgen.setCompactionInProgress(false);
+        runMarkAndSweep(gc);
+        runCompaction(oldgen);
 
         // Verify all values preserved
-        for (size_t i = 0; i < root_storage.size(); i++) {
-            void* obj = readBarrier(root_storage[i]);
-            if (!obj) RC_FAIL("Object is null");
+        verifyIntValues(root_storage, values);
 
-            Header* hdr = getHeader(obj);
-            RC_ASSERT(hdr->tag == Tag_Int);
-
-            ElmInt* elm_int = static_cast<ElmInt*>(obj);
-            RC_ASSERT(elm_int->value == values[i]);
-        }
-
-        for (auto& root : root_storage) {
-            rootset.removeRoot(&root);
-        }
+        unregisterRoots(gc, root_storage);
     });
 });
 
 Testing::TestCase testRootPointerUpdatesAfterCompaction("Roots point to correct objects after compaction", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
         auto& oldgen = gc.getOldGen();
-        auto& rootset = gc.getRootSet();
 
         // Build a linked list in old gen
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
-        if (!tlab) RC_FAIL("Failed to allocate TLAB");
+        TLAB* tlab = allocateTLABOrFail(oldgen);
 
         size_t list_length = *rc::gen::inRange<size_t>(3, 8);
         std::vector<i64> expected_values;
@@ -581,25 +388,13 @@ Testing::TestCase testRootPointerUpdatesAfterCompaction("Roots point to correct 
         }
 
         HPointer root = tail;
-        rootset.addRoot(&root);
+        gc.getRootSet().addRoot(&root);
 
         oldgen.sealTLAB(tlab);
 
         // Run GC and compaction
-#if ENABLE_GC_STATS
-        GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
-        oldgen.finishMarkAndSweep(stats);
-#else
-        oldgen.startConcurrentMark(rootset);
-        oldgen.finishMarkAndSweep();
-#endif
-
-        oldgen.selectCompactionSet();
-        oldgen.setCompactionInProgress(true);
-        oldgen.performCompaction();
-        oldgen.reclaimEvacuatedBlocks();
-        oldgen.setCompactionInProgress(false);
+        runMarkAndSweep(gc);
+        runCompaction(oldgen);
 
         // Walk the list and verify values (in reverse order since we built it that way)
         HPointer current = root;
@@ -624,21 +419,17 @@ Testing::TestCase testRootPointerUpdatesAfterCompaction("Roots point to correct 
             current = cons->tail;
         }
 
-        rootset.removeRoot(&root);
+        gc.getRootSet().removeRoot(&root);
     });
 });
 
 Testing::TestCase testFragmentationDefragmentation("Sparse objects are consolidated after compaction", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
         auto& oldgen = gc.getOldGen();
-        auto& rootset = gc.getRootSet();
 
         // Create fragmentation: allocate objects, then only root some of them
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
-        if (!tlab) RC_FAIL("Failed to allocate TLAB");
+        TLAB* tlab = allocateTLABOrFail(oldgen);
 
         size_t total_objects = *rc::gen::inRange<size_t>(10, 30);
         std::vector<void*> all_objects;
@@ -663,42 +454,18 @@ Testing::TestCase testFragmentationDefragmentation("Sparse objects are consolida
         }
 
         for (auto& root : root_storage) {
-            rootset.addRoot(&root);
+            gc.getRootSet().addRoot(&root);
         }
 
         oldgen.sealTLAB(tlab);
 
-        // Run GC - unrooted objects become garbage
-#if ENABLE_GC_STATS
-        GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
-        oldgen.finishMarkAndSweep(stats);
-#else
-        oldgen.startConcurrentMark(rootset);
-        oldgen.finishMarkAndSweep();
-#endif
-
-        // Run compaction
-        oldgen.selectCompactionSet();
-        oldgen.setCompactionInProgress(true);
-        oldgen.performCompaction();
-        oldgen.reclaimEvacuatedBlocks();
-        oldgen.setCompactionInProgress(false);
+        // Run GC and compaction
+        runMarkAndSweep(gc);
+        runCompaction(oldgen);
 
         // Verify rooted values are still accessible
-        for (size_t i = 0; i < root_storage.size(); i++) {
-            void* obj = readBarrier(root_storage[i]);
-            if (!obj) RC_FAIL("Object is null");
+        verifyIntValues(root_storage, rooted_values);
 
-            Header* hdr = getHeader(obj);
-            RC_ASSERT(hdr->tag == Tag_Int);
-
-            ElmInt* elm_int = static_cast<ElmInt*>(obj);
-            RC_ASSERT(elm_int->value == rooted_values[i]);
-        }
-
-        for (auto& root : root_storage) {
-            rootset.removeRoot(&root);
-        }
+        unregisterRoots(gc, root_storage);
     });
 });

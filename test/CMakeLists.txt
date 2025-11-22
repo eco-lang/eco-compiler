@@ -3,6 +3,7 @@ include_directories(../runtime/include/)
 add_executable(test
         main.cpp
         HeapGenerators.cpp
+        TestHelpers.cpp
         NurserySpaceTest.cpp
         TLABTest.cpp
         OldGenSpaceTest.cpp

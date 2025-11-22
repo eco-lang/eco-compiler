@@ -1,67 +1,13 @@
 #include "OldGenSpaceTest.hpp"
-#include <cstring>
-#include <iostream>
 #include <rapidcheck.h>
 #include <vector>
 #include "GarbageCollector.hpp"
 #include "Heap.hpp"
 #include "HeapGenerators.hpp"
-#include "HeapSnapshot.hpp"
 #include "OldGenSpace.hpp"
+#include "TestHelpers.hpp"
 
 using namespace Elm;
-
-// ============================================================================
-// Helper: Create constant HPointer.
-// ============================================================================
-
-static HPointer createConstant(Constant c) {
-    HPointer ptr;
-    ptr.ptr = 0;
-    ptr.constant = c;
-    ptr.padding = 0;
-    return ptr;
-}
-
-// ============================================================================
-// Helper: Allocate a simple ElmInt into a TLAB.
-// ============================================================================
-
-static void* allocateIntIntoTLAB(TLAB* tlab, i64 value) {
-    void* obj = tlab->allocate(sizeof(ElmInt));
-    if (!obj) return nullptr;
-
-    Header* hdr = reinterpret_cast<Header*>(obj);
-    std::memset(hdr, 0, sizeof(Header));
-    hdr->tag = Tag_Int;
-    hdr->color = static_cast<u32>(Color::White);
-
-    ElmInt* elm_int = static_cast<ElmInt*>(obj);
-    elm_int->value = value;
-
-    return obj;
-}
-
-// ============================================================================
-// Helper: Allocate a Cons cell into a TLAB (for building linked lists).
-// ============================================================================
-
-static void* allocateConsIntoTLAB(TLAB* tlab, HPointer head_ptr, HPointer tail_ptr, bool head_boxed) {
-    void* obj = tlab->allocate(sizeof(Cons));
-    if (!obj) return nullptr;
-
-    Header* hdr = reinterpret_cast<Header*>(obj);
-    std::memset(hdr, 0, sizeof(Header));
-    hdr->tag = Tag_Cons;
-    hdr->color = static_cast<u32>(Color::White);
-    hdr->unboxed = head_boxed ? 0 : 1;  // bit 0 = head unboxed flag
-
-    Cons* cons = static_cast<Cons*>(obj);
-    cons->head.p = head_ptr;
-    cons->tail = tail_ptr;
-
-    return obj;
-}
 
 // ============================================================================
 // Tests
@@ -69,9 +15,7 @@ static void* allocateConsIntoTLAB(TLAB* tlab, HPointer head_ptr, HPointer tail_p
 
 Testing::TestCase testAllocateTLAB("allocateTLAB returns usable TLAB within OldGenSpace bounds", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
         auto& oldgen = gc.getOldGen();
 
         // Allocate a TLAB
@@ -96,9 +40,7 @@ Testing::TestCase testAllocateTLAB("allocateTLAB returns usable TLAB within OldG
 
 Testing::TestCase testRootsMarkedAtStart("startConcurrentMark pushes roots to mark stack", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
@@ -170,9 +112,7 @@ Testing::TestCase testRootsMarkedAtStart("startConcurrentMark pushes roots to ma
 
 Testing::TestCase testRootsPreservedAfterIncrementalMark("Roots remain marked Black after incremental mark steps", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
@@ -248,9 +188,7 @@ Testing::TestCase testRootsPreservedAfterIncrementalMark("Roots remain marked Bl
 
 Testing::TestCase testRootsPreservedAfterSweep("Root objects survive full GC cycle with values intact", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
@@ -312,9 +250,7 @@ Testing::TestCase testRootsPreservedAfterSweep("Root objects survive full GC cyc
 
 Testing::TestCase testGarbageUnmarkedInIncrementalSteps("Objects with no roots remain White after incremental marking", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
@@ -367,9 +303,7 @@ Testing::TestCase testGarbageUnmarkedInIncrementalSteps("Objects with no roots r
 
 Testing::TestCase testGarbageFreeListedAfterSweep("Unreachable objects are reclaimed by sweep", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 

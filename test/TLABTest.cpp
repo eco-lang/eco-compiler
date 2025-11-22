@@ -5,6 +5,7 @@
 #include "TLAB.hpp"
 #include "GarbageCollector.hpp"
 #include "OldGenSpace.hpp"
+#include "TestHelpers.hpp"
 
 using namespace Elm;
 
@@ -148,9 +149,7 @@ Testing::TestCase testTLABAllocationFillsCorrectly("TLAB fills to capacity and r
 
 Testing::TestCase testTLABFillAndSeal("Promoting objects beyond TLAB capacity seals TLABs", []() {
     rc::check([]() {
-        auto &gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto &gc = initGC();
 
         auto* nursery = gc.getNursery();
         if (!nursery) {

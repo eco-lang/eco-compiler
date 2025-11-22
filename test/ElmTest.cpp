@@ -3,6 +3,7 @@
 #include <rapidcheck.h>
 #include "GarbageCollector.hpp"
 #include "OldGenSpace.hpp"
+#include "TestHelpers.hpp"
 
 namespace Elm {
 
@@ -199,9 +200,7 @@ Testing::TestCase testElmNilConstant("Nil has correct constant field", []() {
 
 Testing::TestCase testElmConsAllocation("Cons cell is allocated correctly", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
 
         i64 value = *rc::gen::inRange<i64>(-1000, 1000);
         HPointer list = elm_cons_int(value, elm_nil());
@@ -221,9 +220,8 @@ Testing::TestCase testElmConsAllocation("Cons cell is allocated correctly", []()
 
 Testing::TestCase testElmListFromInts("List from ints has correct structure", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
+        (void)gc;  // gc not used directly but needed for initialization
 
         size_t len = *rc::gen::inRange<size_t>(0, 20);
         std::vector<i64> values;
@@ -243,9 +241,7 @@ Testing::TestCase testElmListFromInts("List from ints has correct structure", []
 
 Testing::TestCase testElmReverseEmpty("Reverse of nil is nil", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        initGC();
 
         HPointer nil = elm_nil();
         HPointer reversed = elm_reverse(nil);
@@ -256,9 +252,7 @@ Testing::TestCase testElmReverseEmpty("Reverse of nil is nil", []() {
 
 Testing::TestCase testElmReverseSingle("Reverse of [x] is [x]", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
 
         i64 value = *rc::gen::inRange<i64>(-1000, 1000);
         HPointer list = elm_cons_int(value, elm_nil());
@@ -279,9 +273,7 @@ Testing::TestCase testElmReverseSingle("Reverse of [x] is [x]", []() {
 
 Testing::TestCase testElmReverseMultiple("Reverse of [1,2,3] is [3,2,1]", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
 
         size_t len = *rc::gen::inRange<size_t>(2, 10);
         std::vector<i64> values;
@@ -312,9 +304,7 @@ Testing::TestCase testElmReverseMultiple("Reverse of [1,2,3] is [3,2,1]", []() {
 
 Testing::TestCase testElmReverseSurvivesGC("Reversed list survives minor and major GC", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
 
         std::vector<i64> values = {1, 2, 3, 4, 5};
         HPointer list = elm_list_from_ints(values);
@@ -356,9 +346,7 @@ Testing::TestCase testElmReverseSurvivesGC("Reversed list survives minor and maj
 
 Testing::TestCase testElmReverseLargeList("Reverse of large list is correct", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& gc = initGC();
 
         // Create a list with 100-500 elements.
         size_t size = *rc::gen::inRange<size_t>(100, 500);

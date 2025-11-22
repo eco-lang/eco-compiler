@@ -2,52 +2,31 @@
 #include <rapidcheck.h>
 #include "HeapGenerators.hpp"
 #include "HeapSnapshot.hpp"
+#include "TestHelpers.hpp"
 
 using namespace Elm;
 
 Testing::TestCase testMinorGCPreservesRoots("Minor GC preserves all reachable objects from roots", []() {
         rc::check([](const HeapGraphDesc &graph) {
-            // Initialize GC for this thread and reset to clean state.
-            auto &gc = GarbageCollector::instance();
-            gc.initThread();
-            gc.reset();
+            auto &gc = initGC();
 
-            // Phase 1: Allocate heap from description (RapidCheck can shrink this).
+            // Allocate heap from description (RapidCheck can shrink this!)
             std::vector<void *> allocated_objects = allocateHeapGraph(graph.nodes);
             RC_ASSERT(!allocated_objects.empty());
 
-            // Phase 2: Set up roots from graph description.
-            std::vector<HPointer> root_storage;
-            std::vector<HPointer *> root_ptrs;
+            // Set up roots from graph description (RAII - auto-unregisters)
+            GraphRoots roots = setupRootsFromGraph(gc, graph, allocated_objects);
+            RC_ASSERT(!roots.empty());
 
-            for (size_t idx: graph.root_indices) {
-                if (idx < allocated_objects.size()) {
-                    root_storage.push_back(toPointer(allocated_objects[idx]));
-                }
-            }
-
-            for (auto &root: root_storage) {
-                root_ptrs.push_back(&root);
-                gc.getRootSet().addRoot(&root);
-            }
-
-            RC_ASSERT(!root_ptrs.empty());
-
-            // Phase 3: Take snapshot before GC.
+            // Take snapshot before GC
             HeapSnapshot snapshot;
-            snapshot.capture(allocated_objects, root_ptrs);
+            snapshot.capture(allocated_objects, roots.ptrs);
 
-            // Phase 4: Perform minor GC.
+            // Perform minor GC
             gc.minorGC();
 
-            // Phase 5: Verify all roots still intact and valid.
-            bool valid = snapshot.verify(root_ptrs);
-
-            // Cleanup roots.
-            for (auto *root: root_ptrs) {
-                gc.getRootSet().removeRoot(root);
-            }
-
+            // Verify all roots still intact and valid
+            bool valid = snapshot.verify(roots.ptrs);
             RC_ASSERT(valid);
         });
 });
@@ -63,9 +42,7 @@ Testing::TestCase testMultipleMinorGCCycles("Multiple minor GC cycles preserve r
             auto params = *testGen;
             auto [int_value, num_cycles, garbage_per_cycle] = params;
 
-            auto &gc = GarbageCollector::instance();
-            gc.initThread();
-            gc.reset();
+            auto &gc = initGC();
 
             // Create a long-lived Int object as root
             void *root_obj = gc.allocate(sizeof(ElmInt), Tag_Int);
@@ -113,9 +90,7 @@ Testing::TestCase testMultipleMinorGCCycles("Multiple minor GC cycles preserve r
 
 Testing::TestCase testContinuousGarbageAllocation("Continuous garbage allocation triggers automatic GC and recycles space", []() {
         rc::check([](const HeapGraphDesc &graph) {
-            auto &gc = GarbageCollector::instance();
-            gc.initThread();
-            gc.reset();
+            auto &gc = initGC();
             auto *nursery = gc.getNursery();
 
             if (nursery == nullptr) {
