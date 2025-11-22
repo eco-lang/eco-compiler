@@ -345,18 +345,20 @@ int main(int argc, char* argv[]) {
 
     // Run tests (potentially multiple times or for a duration)
     if (config.duration.has_value()) {
-        // Time-based test execution
+        // Time-based test execution with deadline
+        Testing::Deadline::set(config.duration.value());
         auto start_time = std::chrono::steady_clock::now();
-        auto end_time = start_time + config.duration.value();
         int iteration = 1;
+        size_t total_tests_run = 0;
 
         std::cout << "Running tests for " << formatDuration(config.duration.value()) << "..." << std::endl;
         std::cout << std::endl;
 
-        while (std::chrono::steady_clock::now() < end_time) {
+        while (!Testing::Deadline::expired()) {
             auto current_time = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time);
-            auto remaining = std::chrono::duration_cast<std::chrono::seconds>(end_time - current_time);
+            auto remaining = config.duration.value() - elapsed;
+            if (remaining.count() < 0) remaining = std::chrono::seconds(0);
 
             std::cout << "=== Iteration " << iteration
                       << " (Elapsed: " << formatDuration(elapsed)
@@ -364,12 +366,20 @@ int main(int argc, char* argv[]) {
             std::cout << std::endl;
 
             // Run all tests (or filtered subset)
-            suite.run(config.filter);
+            auto result = suite.run(config.filter);
+            total_tests_run += result.tests_run;
+
+            if (result.deadline_expired) {
+                std::cout << std::endl;
+                std::cout << "Deadline expired after " << result.tests_run << " of "
+                          << result.tests_total << " tests in iteration " << iteration << std::endl;
+                break;
+            }
 
             iteration++;
 
             // Check if we still have time for another iteration
-            if (std::chrono::steady_clock::now() < end_time) {
+            if (!Testing::Deadline::expired()) {
                 std::cout << std::endl;
             }
         }
@@ -377,8 +387,11 @@ int main(int argc, char* argv[]) {
         auto total_elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - start_time);
         std::cout << std::endl;
-        std::cout << "Completed " << (iteration - 1) << " iterations in "
+        std::cout << "Completed " << total_tests_run << " tests across "
+                  << iteration << " iteration(s) in "
                   << formatDuration(total_elapsed) << std::endl;
+
+        Testing::Deadline::clear();
     } else {
         // Iteration-based test execution
         for (int iteration = 1; iteration <= config.repeat; iteration++) {

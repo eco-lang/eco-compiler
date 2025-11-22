@@ -1,11 +1,69 @@
 #pragma once
 
+#include <chrono>
+#include <optional>
 #include <string>
 #include <vector>
 #include <functional>
 #include <algorithm>
 
 namespace Testing {
+
+// ============================================================================
+// Deadline - Global time limit for test runs.
+// ============================================================================
+
+/**
+ * Global deadline for limiting test execution time.
+ *
+ * Set a deadline before running tests; tests will abort when time expires.
+ */
+class Deadline {
+public:
+    // Sets the deadline to now + duration.
+    static void set(std::chrono::seconds duration) {
+        deadline_ = std::chrono::steady_clock::now() + duration;
+    }
+
+    // Clears the deadline (no time limit).
+    static void clear() {
+        deadline_ = std::nullopt;
+    }
+
+    // Returns true if a deadline is set and has expired.
+    static bool expired() {
+        if (!deadline_.has_value()) {
+            return false;
+        }
+        return std::chrono::steady_clock::now() >= deadline_.value();
+    }
+
+    // Returns true if no deadline is set or deadline has not expired.
+    static bool ok() {
+        return !expired();
+    }
+
+private:
+    static inline std::optional<std::chrono::steady_clock::time_point> deadline_;
+};
+
+// ============================================================================
+// Test Results
+// ============================================================================
+
+/**
+ * Result of running a test suite.
+ */
+struct TestSuiteResult {
+    size_t tests_run = 0;           // Number of tests executed.
+    size_t tests_total = 0;         // Total tests that would have run.
+    bool deadline_expired = false;  // True if stopped due to deadline.
+    std::chrono::milliseconds elapsed{0};  // Total elapsed time.
+};
+
+// ============================================================================
+// Test and TestSuite
+// ============================================================================
 
 /**
  * Represents a single property-based test with a name and test function.
@@ -66,11 +124,30 @@ public:
     }
 
     // Runs all tests, or only those matching the filter pattern.
-    void run(const std::string& filter = "") const {
+    // Returns result with timing and deadline status.
+    TestSuiteResult run(const std::string& filter = "") const {
+        TestSuiteResult result;
+        auto start_time = std::chrono::steady_clock::now();
+
         std::vector<Test> testsToRun = this->filter(filter);
+        result.tests_total = testsToRun.size();
+
         for (const auto& test : testsToRun) {
+            // Check deadline before each test.
+            if (Deadline::expired()) {
+                result.deadline_expired = true;
+                break;
+            }
+
             test.run();
+            result.tests_run++;
         }
+
+        auto end_time = std::chrono::steady_clock::now();
+        result.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            end_time - start_time);
+
+        return result;
     }
 
     // Returns the number of tests in the suite.
