@@ -291,6 +291,17 @@ void GarbageCollector::majorGC() {
 #endif
 }
 
+#if ENABLE_GC_STATS
+GCStats GarbageCollector::getCombinedNurseryStats() {
+    GCStats combined;
+    std::lock_guard<std::mutex> lock(nursery_mutex);
+    for (const auto& [tid, nursery] : nurseries) {
+        combined.combine(nursery->getStats());
+    }
+    return combined;
+}
+#endif
+
 void GarbageCollector::reset() {
     // Reset root set
     root_set.reset();

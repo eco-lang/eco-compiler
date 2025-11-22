@@ -58,6 +58,9 @@ public:
     // Returns the global major GC statistics.
     GCStats& getMajorGCStats() { return major_gc_stats; }
     const GCStats& getMajorGCStats() const { return major_gc_stats; }
+
+    // Returns combined statistics from all nurseries.
+    GCStats getCombinedNurseryStats();
 #endif
 
 private:
