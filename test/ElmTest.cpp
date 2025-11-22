@@ -267,7 +267,7 @@ Testing::TestCase testElmReverseSingle("Reverse of [x] is [x]", []() {
     });
 });
 
-Testing::TestCase testElmReverseMultiple("Reverse of [1,2,3] is [3,2,1]", []() {
+Testing::TestCase testElmReverseMultiple("Reverse of [1,2,3,..] is [..,3,2,1]", []() {
     rc::check([]() {
         auto& gc = initGC();
 
