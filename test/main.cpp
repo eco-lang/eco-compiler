@@ -32,7 +32,8 @@ struct TestConfig {
     bool list_tests = false;
     bool show_seed = true;
     int repeat = 1;
-    std::optional<std::chrono::seconds> duration;
+    std::optional<std::chrono::seconds> duration;  // Run repeatedly for this long.
+    std::optional<std::chrono::seconds> timeout;   // Fail if tests exceed this.
     std::string filter = "";
     bool no_shrink = false;
     std::string reproduce = "";
@@ -116,8 +117,11 @@ void printHelp(const char* program_name) {
     std::cout << "      --list                  List available tests without running\n";
     std::cout << "      --filter <PATTERN>      Run only tests matching pattern\n";
     std::cout << "      --repeat <N>            Run entire test suite N times (default: 1)\n";
-    std::cout << "  -t, --duration <TIME>       Run tests for specified duration (e.g., 30s, 5m, 2h, 1d)\n";
-    std::cout << "                              Units: s (seconds), m (minutes), h (hours), d (days)\n";
+    std::cout << "  -t, --duration <TIME>       Run tests repeatedly for specified duration (e.g., 30s, 5m, 2h)\n";
+    std::cout << "                              Tests cycle until time expires, then exit successfully\n";
+    std::cout << "      --timeout <TIME>        Maximum allowed time for test run (e.g., 5m, 1h)\n";
+    std::cout << "                              Exit with failure if tests exceed this time\n";
+    std::cout << "                              Time units: s (seconds), m (minutes), h (hours), d (days)\n";
     std::cout << "      --no-shrink             Disable test case shrinking on failure\n";
     std::cout << "      --reproduce <STRING>    Reproduce specific failing case\n";
     std::cout << "      --no-show-seed          Don't display the seed being used\n";
@@ -127,8 +131,8 @@ void printHelp(const char* program_name) {
     std::cout << "  " << program_name << " --seed 42            # Use specific seed\n";
     std::cout << "  " << program_name << " --filter preserve    # Run only 'preserve' tests\n";
     std::cout << "  " << program_name << " -n 500 --repeat 10   # Stress test (10 iterations)\n";
-    std::cout << "  " << program_name << " --duration 30s       # Run tests for 30 seconds\n";
-    std::cout << "  " << program_name << " --duration 2h        # Run tests for 2 hours\n";
+    std::cout << "  " << program_name << " --duration 30s       # Run tests repeatedly for 30 seconds\n";
+    std::cout << "  " << program_name << " --timeout 5m         # Fail if tests take longer than 5 minutes\n";
     std::cout << std::endl;
 }
 
@@ -165,6 +169,7 @@ TestConfig parseCommandLine(int argc, char* argv[]) {
         {"filter",             required_argument, 0, 'f'},
         {"repeat",             required_argument, 0, 'r'},
         {"duration",           required_argument, 0, 't'},
+        {"timeout",            required_argument, 0, 'T'},
         {"no-shrink",          no_argument,       0, 'N'},
         {"reproduce",          required_argument, 0, 'R'},
         {"no-show-seed",       no_argument,       0, 'S'},
@@ -225,6 +230,14 @@ TestConfig parseCommandLine(int argc, char* argv[]) {
                 config.duration = duration;
                 break;
             }
+            case 'T': {
+                auto timeout = parseDuration(optarg);
+                if (!timeout.has_value()) {
+                    exit(1);
+                }
+                config.timeout = timeout;
+                break;
+            }
             case 'N':
                 config.no_shrink = true;
                 break;
@@ -249,6 +262,12 @@ TestConfig parseCommandLine(int argc, char* argv[]) {
     // Validate that --repeat and --duration are not both specified
     if (config.repeat > 1 && config.duration.has_value()) {
         std::cerr << "Error: --repeat and --duration cannot be used together\n";
+        exit(1);
+    }
+
+    // --timeout can be combined with --repeat or used alone, but not with --duration
+    if (config.duration.has_value() && config.timeout.has_value()) {
+        std::cerr << "Error: --duration and --timeout cannot be used together\n";
         exit(1);
     }
 
@@ -336,6 +355,9 @@ int main(int argc, char* argv[]) {
         } else {
             std::cout << "  Repeat: " << config.repeat << std::endl;
         }
+        if (config.timeout.has_value()) {
+            std::cout << "  Timeout: " << formatDuration(config.timeout.value()) << std::endl;
+        }
         if (!config.filter.empty()) {
             std::cout << "  Filter: \"" << config.filter << "\"" << std::endl;
         }
@@ -344,9 +366,11 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
 
     // Run tests (potentially multiple times or for a duration)
+    int exit_code = 0;
+
     if (config.duration.has_value()) {
-        // Time-based test execution with deadline
-        Testing::Deadline::set(config.duration.value());
+        // Duration mode: run tests repeatedly until time expires, then exit successfully
+        Testing::Deadline::setDuration(config.duration.value());
         auto start_time = std::chrono::steady_clock::now();
         int iteration = 1;
         size_t total_tests_run = 0;
@@ -354,7 +378,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Running tests for " << formatDuration(config.duration.value()) << "..." << std::endl;
         std::cout << std::endl;
 
-        while (!Testing::Deadline::expired()) {
+        while (!Testing::Deadline::durationExpired()) {
             auto current_time = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time);
             auto remaining = config.duration.value() - elapsed;
@@ -369,17 +393,15 @@ int main(int argc, char* argv[]) {
             auto result = suite.run(config.filter);
             total_tests_run += result.tests_run;
 
-            if (result.deadline_expired) {
-                std::cout << std::endl;
-                std::cout << "Deadline expired after " << result.tests_run << " of "
-                          << result.tests_total << " tests in iteration " << iteration << std::endl;
+            if (result.duration_expired) {
+                // Duration expired mid-suite - this is fine, just stop
                 break;
             }
 
             iteration++;
 
             // Check if we still have time for another iteration
-            if (!Testing::Deadline::expired()) {
+            if (!Testing::Deadline::durationExpired()) {
                 std::cout << std::endl;
             }
         }
@@ -392,8 +414,13 @@ int main(int argc, char* argv[]) {
                   << formatDuration(total_elapsed) << std::endl;
 
         Testing::Deadline::clear();
+        // exit_code stays 0 - duration expiring is success
     } else {
-        // Iteration-based test execution
+        // Iteration-based test execution (with optional timeout)
+        if (config.timeout.has_value()) {
+            Testing::Deadline::setTimeout(config.timeout.value());
+        }
+
         for (int iteration = 1; iteration <= config.repeat; iteration++) {
             if (config.repeat > 1) {
                 std::cout << "=== Iteration " << iteration << " of " << config.repeat << " ===" << std::endl;
@@ -401,12 +428,23 @@ int main(int argc, char* argv[]) {
             }
 
             // Run all tests (or filtered subset)
-            suite.run(config.filter);
+            auto result = suite.run(config.filter);
+
+            if (result.timeout_expired) {
+                std::cerr << std::endl;
+                std::cerr << "TIMEOUT: Tests exceeded " << formatDuration(config.timeout.value())
+                          << " limit after " << result.tests_run << " of "
+                          << result.tests_total << " tests in iteration " << iteration << std::endl;
+                exit_code = 1;
+                break;
+            }
 
             if (config.repeat > 1 && iteration < config.repeat) {
                 std::cout << std::endl;
             }
         }
+
+        Testing::Deadline::clear();
     }
 
 #if ENABLE_GC_STATS
@@ -426,5 +464,5 @@ int main(int argc, char* argv[]) {
     }
 #endif
 
-    return 0;
+    return exit_code;
 }

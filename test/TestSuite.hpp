@@ -14,37 +14,59 @@ namespace Testing {
 // ============================================================================
 
 /**
- * Global deadline for limiting test execution time.
+ * Global time limits for test execution.
  *
- * Set a deadline before running tests; tests will abort when time expires.
+ * Supports two modes:
+ * - Duration: Run tests repeatedly until time expires (graceful stop).
+ * - Timeout: Maximum allowed time; exceeding is a failure.
  */
 class Deadline {
 public:
-    // Sets the deadline to now + duration.
-    static void set(std::chrono::seconds duration) {
-        deadline_ = std::chrono::steady_clock::now() + duration;
+    // Sets the duration limit (graceful stop when expired).
+    static void setDuration(std::chrono::seconds duration) {
+        duration_ = std::chrono::steady_clock::now() + duration;
     }
 
-    // Clears the deadline (no time limit).
+    // Sets the timeout limit (failure if exceeded).
+    static void setTimeout(std::chrono::seconds timeout) {
+        timeout_ = std::chrono::steady_clock::now() + timeout;
+    }
+
+    // Clears all time limits.
     static void clear() {
-        deadline_ = std::nullopt;
+        duration_ = std::nullopt;
+        timeout_ = std::nullopt;
     }
 
-    // Returns true if a deadline is set and has expired.
-    static bool expired() {
-        if (!deadline_.has_value()) {
+    // Returns true if duration limit has expired.
+    static bool durationExpired() {
+        if (!duration_.has_value()) {
             return false;
         }
-        return std::chrono::steady_clock::now() >= deadline_.value();
+        return std::chrono::steady_clock::now() >= duration_.value();
     }
 
-    // Returns true if no deadline is set or deadline has not expired.
+    // Returns true if timeout limit has expired.
+    static bool timeoutExpired() {
+        if (!timeout_.has_value()) {
+            return false;
+        }
+        return std::chrono::steady_clock::now() >= timeout_.value();
+    }
+
+    // Returns true if either limit has expired.
+    static bool expired() {
+        return durationExpired() || timeoutExpired();
+    }
+
+    // Returns true if no limits have expired.
     static bool ok() {
         return !expired();
     }
 
 private:
-    static inline std::optional<std::chrono::steady_clock::time_point> deadline_;
+    static inline std::optional<std::chrono::steady_clock::time_point> duration_;
+    static inline std::optional<std::chrono::steady_clock::time_point> timeout_;
 };
 
 // ============================================================================
@@ -57,7 +79,8 @@ private:
 struct TestSuiteResult {
     size_t tests_run = 0;           // Number of tests executed.
     size_t tests_total = 0;         // Total tests that would have run.
-    bool deadline_expired = false;  // True if stopped due to deadline.
+    bool duration_expired = false;  // True if stopped due to --duration limit.
+    bool timeout_expired = false;   // True if stopped due to --timeout limit.
     std::chrono::milliseconds elapsed{0};  // Total elapsed time.
 };
 
@@ -133,9 +156,13 @@ public:
         result.tests_total = testsToRun.size();
 
         for (const auto& test : testsToRun) {
-            // Check deadline before each test.
-            if (Deadline::expired()) {
-                result.deadline_expired = true;
+            // Check time limits before each test.
+            if (Deadline::timeoutExpired()) {
+                result.timeout_expired = true;
+                break;
+            }
+            if (Deadline::durationExpired()) {
+                result.duration_expired = true;
                 break;
             }
 
