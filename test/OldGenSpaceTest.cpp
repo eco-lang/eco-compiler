@@ -1,5 +1,6 @@
 #include "OldGenSpaceTest.hpp"
 #include <cstring>
+#include <iostream>
 #include <rapidcheck.h>
 #include <vector>
 #include "GarbageCollector.hpp"

@@ -1,6 +1,7 @@
 #include "OldGenSpace.hpp"
 #include <algorithm>
 #include <cstring>
+#include <iostream>
 #include <new>
 #include <sys/mman.h>
 #include <atomic>
@@ -42,7 +43,7 @@ void* readBarrier(HPointer& ptr) {
 
 OldGenSpace::OldGenSpace() :
     region_base(nullptr), region_size(0), max_region_size(0), free_list(nullptr), current_epoch(0),
-    marking_active(false) {
+    marking_active(false), tlab_region_start(nullptr), tlab_region_end(nullptr) {
     // Initialization happens in initialize() method
 }
 
@@ -171,7 +172,12 @@ void *OldGenSpace::allocate_internal(size_t size) {
 
 bool OldGenSpace::contains(void *ptr) const {
     char *p = static_cast<char *>(ptr);
-    return (p >= region_base && p < region_base + region_size);
+    // Check both free-list region and TLAB region.
+    // Free-list: region_base to region_base + region_size.
+    // TLAB: tlab_region_start to tlab_region_end.
+    bool in_freelist = (p >= region_base && p < region_base + region_size);
+    bool in_tlab = (p >= tlab_region_start && p < tlab_region_end);
+    return in_freelist || in_tlab;
 }
 
 /**
@@ -547,6 +553,13 @@ void OldGenSpace::sweep() {
         // Use getObjectSize() to correctly calculate size for all object types
         size_t obj_size = getObjectSize(ptr);
 
+        // Skip objects that would extend past the sweep boundary into TLAB region.
+        // This can happen when garbage data near the boundary is interpreted as an object.
+        if (ptr + obj_size > end) {
+            ptr = end;  // Stop sweeping
+            break;
+        }
+
         if (hdr->color == static_cast<u32>(Color::White)) {
             // Add to free list
             FreeBlock *block = reinterpret_cast<FreeBlock *>(ptr);
@@ -574,6 +587,9 @@ void OldGenSpace::reset() {
     // Reset blocks
     blocks.clear();
     compaction_in_progress = false;
+
+    // Clear chunks (will be re-added by initialize())
+    chunks.clear();
 
     // Clear TLABs
     {
