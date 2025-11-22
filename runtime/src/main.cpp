@@ -282,19 +282,10 @@ static void programThreadFunc() {
         gc.minorGC();
 
         // Request major GC when old gen exceeds threshold.
-        // Block if we're significantly over threshold to let GC catch up.
+        // The allocator will automatically block if memory pressure is high.
         size_t old_gen_bytes = gc.getOldGen().getAllocatedBytes();
         if (old_gen_bytes >= major_gc_threshold) {
             requestMajorGC();
-
-            // If we're way over threshold (2x), wait for GC to make progress.
-            // This prevents runaway allocation from causing OOM.
-            if (old_gen_bytes >= major_gc_threshold * 2) {
-                while (gc.getOldGen().getAllocatedBytes() >= major_gc_threshold * 2 &&
-                       !shutdown_requested.load()) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                }
-            }
         }
 
         // Brief yield to allow collector thread to run.
@@ -424,9 +415,11 @@ int main(int argc, char* argv[]) {
     // Initialize GC.
     auto& gc = GarbageCollector::instance();
     gc.initialize();
+    gc.setMemoryPressureThreshold(major_gc_threshold);
     gc.initThread();  // Main thread needs GC access too.
 
-    std::cout << "GC initialized" << std::endl;
+    std::cout << "GC initialized (memory pressure threshold: "
+              << (major_gc_threshold / (1024 * 1024)) << " MB)" << std::endl;
 
     // Start threads.
     std::thread collector_thread(collectorThreadFunc);
@@ -453,6 +446,9 @@ int main(int argc, char* argv[]) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
+
+    // Wake any blocked allocators before joining threads.
+    gc.signalShutdown();
 
     std::cout << "Waiting for threads to finish..." << std::endl;
 

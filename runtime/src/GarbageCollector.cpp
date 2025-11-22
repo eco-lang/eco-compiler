@@ -122,6 +122,12 @@ NurserySpace *GarbageCollector::getNursery() {
 }
 
 void *GarbageCollector::allocate(size_t size, Tag tag) {
+    // FAST PATH: Single relaxed atomic load to check memory pressure.
+    // This compiles to a single memory read on x86 - no CAS, no locks.
+    if (memory_pressure.load(std::memory_order_relaxed)) [[unlikely]] {
+        checkMemoryPressure();  // Slow path: may block
+    }
+
     NurserySpace *nursery = getNursery();
 
     if (nursery) {
@@ -264,6 +270,9 @@ void GarbageCollector::majorGC() {
     auto gc_start = GC_STATS_TIMER_START();
 #endif
 
+    // Update memory pressure before GC - this may block allocators.
+    updateMemoryPressure();
+
     // Set flag to indicate GC is in progress.
     gc_in_progress = true;
 
@@ -289,6 +298,52 @@ void GarbageCollector::majorGC() {
     uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
     GC_STATS_MAJOR_RECORD_GC_END(major_gc_stats, elapsed_ns);
 #endif
+
+    // Signal completion - updates pressure state and wakes blocked allocators.
+    signalGCComplete();
+}
+
+// ============================================================================
+// Memory Pressure / Backpressure Implementation
+// ============================================================================
+
+void GarbageCollector::checkMemoryPressure() {
+    // Slow path: called when memory_pressure flag is set.
+    // Block until GC makes progress and clears the flag, or shutdown.
+    std::unique_lock<std::mutex> lock(gc_wait_mutex);
+    gc_wait_cv.wait(lock, [this] {
+        return !memory_pressure.load(std::memory_order_acquire) ||
+               shutdown_flag.load(std::memory_order_acquire);
+    });
+}
+
+void GarbageCollector::updateMemoryPressure() {
+    // Check if old gen usage exceeds threshold.
+    size_t current_usage = old_gen.getAllocatedBytes();
+    bool should_pressure = (current_usage >= memory_pressure_threshold);
+
+    // Update the flag (only if changing to avoid unnecessary writes).
+    bool was_pressure = memory_pressure.load(std::memory_order_relaxed);
+    if (should_pressure != was_pressure) {
+        memory_pressure.store(should_pressure, std::memory_order_release);
+    }
+}
+
+void GarbageCollector::signalGCComplete() {
+    // Called after major GC completes.
+    // Update pressure state and wake any blocked allocators.
+    updateMemoryPressure();
+
+    // If pressure was cleared, wake all waiting threads.
+    if (!memory_pressure.load(std::memory_order_relaxed)) {
+        gc_wait_cv.notify_all();
+    }
+}
+
+void GarbageCollector::signalShutdown() {
+    // Set shutdown flag and wake all blocked allocators.
+    shutdown_flag.store(true, std::memory_order_release);
+    gc_wait_cv.notify_all();
 }
 
 #if ENABLE_GC_STATS

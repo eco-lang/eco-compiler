@@ -1,6 +1,8 @@
 #ifndef ECO_GARBAGECOLLECTOR_H
 #define ECO_GARBAGECOLLECTOR_H
 
+#include <atomic>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -54,6 +56,25 @@ public:
     // Returns the base address of the unified heap.
     char *getHeapBase() const { return heap_base; }
 
+    // ========== Memory Pressure / Backpressure ==========
+
+    // Sets the memory pressure threshold (in bytes). When old gen exceeds this,
+    // allocating threads will block until GC makes progress.
+    void setMemoryPressureThreshold(size_t threshold) {
+        memory_pressure_threshold = threshold;
+    }
+
+    // Called by collector thread after major GC completes to wake blocked allocators.
+    void signalGCComplete();
+
+    // Returns true if memory pressure is currently active.
+    bool isMemoryPressureActive() const {
+        return memory_pressure.load(std::memory_order_relaxed);
+    }
+
+    // Signals shutdown - wakes any blocked allocators.
+    void signalShutdown();
+
 #if ENABLE_GC_STATS
     // Returns the global major GC statistics.
     GCStats& getMajorGCStats() { return major_gc_stats; }
@@ -85,6 +106,20 @@ private:
     std::unordered_map<std::thread::id, std::unique_ptr<NurserySpace>> nurseries;
 
     thread_local static bool gc_in_progress; // Prevents recursive GC calls.
+
+    // ========== Memory Pressure ==========
+
+    std::atomic<bool> memory_pressure{false};      // Fast-path check flag.
+    std::atomic<bool> shutdown_flag{false};        // Set when shutting down.
+    std::mutex gc_wait_mutex;                      // Protects condition variable.
+    std::condition_variable gc_wait_cv;            // For blocking allocators.
+    size_t memory_pressure_threshold = 50 * 1024 * 1024;  // Default 50MB.
+
+    // Checks memory pressure and blocks if necessary. Called from allocate().
+    void checkMemoryPressure();
+
+    // Updates the memory pressure flag based on current heap usage.
+    void updateMemoryPressure();
 
 #if ENABLE_GC_STATS
     GCStats major_gc_stats; // Global major GC statistics.
