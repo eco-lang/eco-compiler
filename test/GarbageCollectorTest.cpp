@@ -282,15 +282,17 @@ Testing::TestCase testStressTestBothGenerations("High allocation rate with both 
     rc::check([]() {
         auto& gc = initGC();
 
-        // Create some persistent roots (size-scaled)
+        // Create some persistent roots (size-scaled).
         size_t num_persistent = *rc::sizedRange<size_t>(2, 5, 0.1);
         auto rooted = createRootedInts(gc, num_persistent);
         RC_ASSERT(!rooted.empty());
         rooted.registerRoots(gc);
 
-        // Stress test: lots of allocation forcing many GCs
+        // Stress test: lots of allocation forcing many GCs.
         size_t total_allocations = *rc::sizedRange<size_t>(500, 2000, 3.0);
         size_t major_gc_interval = *rc::sizedRange<size_t>(100, 300, 0.2);
+        // Minor GC interval is smaller than major GC interval.
+        size_t minor_gc_interval = *rc::sizedRange<size_t>(20, 50, 0.05);
 
         for (size_t i = 0; i < total_allocations; i++) {
             void* obj = gc.allocate(sizeof(ElmInt), Tag_Int);
@@ -298,16 +300,20 @@ Testing::TestCase testStressTestBothGenerations("High allocation rate with both 
                 static_cast<ElmInt*>(obj)->value = static_cast<i64>(i);
             }
 
+            // Trigger minor GC more frequently than major GC.
+            if (i > 0 && i % minor_gc_interval == 0) {
+                gc.minorGC();
+            }
             if (i > 0 && i % major_gc_interval == 0) {
                 gc.majorGC();
             }
         }
 
-        // Final GC cycle
+        // Final GC cycle.
         gc.minorGC();
         gc.majorGC();
 
-        // Verify persistent roots survived
+        // Verify persistent roots survived.
         verifyIntValues(rooted.roots, rooted.values);
 
         rooted.unregisterRoots(gc);

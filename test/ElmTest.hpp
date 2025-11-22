@@ -45,10 +45,10 @@ size_t elm_list_length(HPointer list);
 // ============================================================================
 
 extern Testing::UnitTest testElmNilConstant;
-extern Testing::TestCase testElmConsAllocation;
+extern Testing::UnitTest testElmConsAllocation;
 extern Testing::TestCase testElmListFromInts;
 extern Testing::UnitTest testElmReverseEmpty;
-extern Testing::TestCase testElmReverseSingle;
+extern Testing::UnitTest testElmReverseSingle;
 extern Testing::TestCase testElmReverseMultiple;
 extern Testing::UnitTest testElmReverseSurvivesGC;
 extern Testing::TestCase testElmReverseLargeList;

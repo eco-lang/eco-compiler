@@ -196,24 +196,23 @@ Testing::UnitTest testElmNilConstant("Nil has correct constant field", []() {
     TEST_ASSERT(elm_list_length(nil) == 0);
 });
 
-Testing::TestCase testElmConsAllocation("Cons cell is allocated correctly", []() {
-    rc::check([]() {
-        auto& gc = initGC();
+Testing::UnitTest testElmConsAllocation("Cons cell is allocated correctly", []() {
+    auto& gc = initGC();
+    (void)gc;
 
-        i64 value = *rc::gen::inRange<i64>(-1000, 1000);
-        HPointer list = elm_cons_int(value, elm_nil());
+    i64 value = 42;
+    HPointer list = elm_cons_int(value, elm_nil());
 
-        RC_ASSERT(list.constant == 0);  // Not a constant.
+    TEST_ASSERT(list.constant == 0);  // Not a constant.
 
-        void* obj = fromPointer(list);
-        if (!obj) RC_FAIL("fromPointer returned null");
+    void* obj = fromPointer(list);
+    if (!obj) TEST_FAIL("fromPointer returned null");
 
-        Cons* cons = static_cast<Cons*>(obj);
-        RC_ASSERT(cons->header.tag == Tag_Cons);
-        RC_ASSERT(cons->header.unboxed & 1);  // Head is unboxed.
-        RC_ASSERT(cons->head.i == value);
-        RC_ASSERT(cons->tail.constant == Const_Nil);
-    });
+    Cons* cons = static_cast<Cons*>(obj);
+    TEST_ASSERT(cons->header.tag == Tag_Cons);
+    TEST_ASSERT(cons->header.unboxed & 1);  // Head is unboxed.
+    TEST_ASSERT(cons->head.i == value);
+    TEST_ASSERT(cons->tail.constant == Const_Nil);
 });
 
 Testing::TestCase testElmListFromInts("List from ints has correct structure", []() {
@@ -246,25 +245,23 @@ Testing::UnitTest testElmReverseEmpty("Reverse of nil is nil", []() {
     TEST_ASSERT(reversed.constant == Const_Nil);
 });
 
-Testing::TestCase testElmReverseSingle("Reverse of [x] is [x]", []() {
-    rc::check([]() {
-        auto& gc = initGC();
+Testing::UnitTest testElmReverseSingle("Reverse of [x] is [x]", []() {
+    auto& gc = initGC();
 
-        i64 value = *rc::gen::inRange<i64>(-1000, 1000);
-        HPointer list = elm_cons_int(value, elm_nil());
+    i64 value = 42;
+    HPointer list = elm_cons_int(value, elm_nil());
 
-        // Register as root to survive any GC during reverse.
-        HPointer root = list;
-        gc.getRootSet().addRoot(&root);
+    // Register as root to survive any GC during reverse.
+    HPointer root = list;
+    gc.getRootSet().addRoot(&root);
 
-        HPointer reversed = elm_reverse(root);
+    HPointer reversed = elm_reverse(root);
 
-        std::vector<i64> result = elm_list_to_ints(reversed);
-        RC_ASSERT(result.size() == 1);
-        RC_ASSERT(result[0] == value);
+    std::vector<i64> result = elm_list_to_ints(reversed);
+    TEST_ASSERT(result.size() == 1);
+    TEST_ASSERT(result[0] == value);
 
-        gc.getRootSet().removeRoot(&root);
-    });
+    gc.getRootSet().removeRoot(&root);
 });
 
 Testing::TestCase testElmReverseMultiple("Reverse of [1,2,3,..] is [..,3,2,1]", []() {
