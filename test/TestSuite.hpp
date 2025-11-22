@@ -7,36 +7,40 @@
 
 namespace Testing {
 
-// Represents a single property-based test
+/**
+ * Represents a single property-based test with a name and test function.
+ */
 class Test {
 public:
     Test(std::string name, std::function<void()> func)
         : name_(std::move(name)), testFunc_(std::move(func)) {}
 
-    // Execute the test
+    // Executes the test function.
     void run() const {
         testFunc_();
     }
 
-    // Get the test name/description
+    // Returns the test name/description.
     const std::string& getName() const {
         return name_;
     }
 
 private:
-    std::string name_;
-    std::function<void()> testFunc_;
+    std::string name_;              // Test name/description.
+    std::function<void()> testFunc_; // Test function to execute.
 };
 
-// Represents a collection of tests
+/**
+ * A collection of tests that can be filtered and run together.
+ */
 class TestSuite {
 public:
-    // Add a test to the suite
+    // Adds a test to the suite.
     void add(Test test) {
         tests_.push_back(std::move(test));
     }
 
-    // Get all test names
+    // Returns a list of all test names.
     std::vector<std::string> listTests() const {
         std::vector<std::string> names;
         names.reserve(tests_.size());
@@ -46,10 +50,10 @@ public:
         return names;
     }
 
-    // Filter tests by name pattern (substring match)
+    // Returns tests whose names contain the given pattern.
     std::vector<Test> filter(const std::string& pattern) const {
         if (pattern.empty()) {
-            return tests_;  // No filter, return all
+            return tests_;
         }
 
         std::vector<Test> filtered;
@@ -61,7 +65,7 @@ public:
         return filtered;
     }
 
-    // Run all tests or filtered tests
+    // Runs all tests, or only those matching the filter pattern.
     void run(const std::string& filter = "") const {
         std::vector<Test> testsToRun = this->filter(filter);
         for (const auto& test : testsToRun) {
@@ -69,13 +73,13 @@ public:
         }
     }
 
-    // Get the number of tests
+    // Returns the number of tests in the suite.
     size_t size() const {
         return tests_.size();
     }
 
 private:
-    std::vector<Test> tests_;
+    std::vector<Test> tests_; // All registered tests.
 };
 
 }  // namespace Testing

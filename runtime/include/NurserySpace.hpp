@@ -10,29 +10,36 @@
 
 namespace Elm {
 
-// Thread-local nursery space with semi-space copying collector
+/**
+ * Thread-local nursery with semi-space copying collector (Cheney's algorithm).
+ *
+ * Objects are allocated via bump pointer in from_space. When full, minorGC
+ * evacuates live objects to to_space (or promotes to old gen), then swaps spaces.
+ */
 class NurserySpace {
 public:
     NurserySpace();
     ~NurserySpace();
 
-    // Initialize with assigned region from main heap
+    // Initializes this nursery with the given memory region from the main heap.
     void initialize(char *nursery_base, size_t size);
 
-    // Allocate in nursery (bump allocation)
+    // Allocates memory in the nursery using bump pointer. Returns nullptr if full.
     void *allocate(size_t size);
 
-    // Run minor GC (semi-space copy)
+    // Performs minor GC, evacuating live objects to to_space or promoting to old gen.
     void minorGC(RootSet &roots, OldGenSpace &oldgen);
 
-    // Check if pointer is in nursery
+    // Returns true if the pointer points into this nursery's memory region.
     bool contains(void *ptr) const;
 
-    // Get current allocation stats
+    // Returns the number of bytes currently allocated in the nursery.
     size_t bytesAllocated() const { return alloc_ptr - from_space; }
+
+    // Returns the number of bytes still available for allocation.
     size_t bytesRemaining() const { return from_space + (NURSERY_SIZE / 2) - alloc_ptr; }
 
-    // Check if allocation would exceed threshold (for automatic GC triggering)
+    // Returns true if the given allocation would push usage above the threshold.
     bool wouldExceedThreshold(size_t size, float threshold = 0.9f) const {
         size_t aligned_size = (size + 7) & ~7;
         size_t total_capacity = NURSERY_SIZE / 2;
@@ -40,26 +47,26 @@ public:
         return usage_after >= (size_t)(total_capacity * threshold);
     }
 
-    // Reset to initial state (for testing)
+    // Resets the nursery to initial state. Used for testing.
     void reset(OldGenSpace &oldgen);
 
 #if ENABLE_GC_STATS
-    // Get GC statistics
+    // Returns the GC statistics for this nursery.
     const GCStats& getStats() const { return stats; }
     GCStats& getStats() { return stats; }
 #endif
 
 private:
-    char *memory; // Total nursery memory (both semi-spaces)
-    char *from_space; // Current allocation space
-    char *to_space; // Copy target during GC
-    char *alloc_ptr; // Bump allocation pointer
-    char *scan_ptr; // Scan pointer for Cheney's algorithm
+    char *memory;         // Total nursery memory (both semi-spaces).
+    char *from_space;     // Current allocation space.
+    char *to_space;       // Copy target during GC.
+    char *alloc_ptr;      // Bump allocation pointer.
+    char *scan_ptr;       // Cheney scan pointer during evacuation.
 
-    TLAB* promotion_tlab; // Thread-local TLAB for promotions to old gen
+    TLAB* promotion_tlab; // TLAB for lock-free promotions to old gen.
 
 #if ENABLE_GC_STATS
-    GCStats stats; // Performance statistics
+    GCStats stats;        // Performance statistics.
 #endif
 
     void evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);

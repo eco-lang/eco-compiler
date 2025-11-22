@@ -11,17 +11,18 @@ typedef unsigned short u16;
 typedef long long int i64;
 typedef double f64;
 
-/** Headers are always 64-bits in size, and every heap element always has a
-header at its start. The first 5-bits contain a tag, denoting which kind of
-heap element it is.
+/**
+ * Headers are always 64-bits in size, and every heap element always has a
+ * header at its start. The first 5-bits contain a tag, denoting which kind of
+ * heap element it is.
+ *
+ * Pointers are 40 bits, allowing > 8 terabytes address space. This allows for
+ * a pointer to be fitted into a 64-bit word with space for other bit annotations
+ * against pointers that may be used for garbage collection or other optimizations,
+ * such as commonly used constants.
+ */
 
-Pointers are 40 bits, allowing > 8 Terrabytes address space. This allows for
-a pointer to be fitted into a 64-bit word with space for other bit annotations
-against pointers that may be use for garbage colection or other optimisations,
-such as commonly used constants.
-*/
-
-// Default Bit widths
+// Default bit widths.
 #define TAG_BITS 5
 #define CTOR_BITS 16
 #define POINTER_BITS 40
@@ -53,19 +54,18 @@ typedef enum {
 typedef struct {
     u32 tag : TAG_BITS;
     u32 color : 2; // Black, white, grey for concurrent mark and sweep.
-    u32 pin : 1; // Mem pinned object
+    u32 pin : 1; // Memory-pinned object.
     u32 epoch : 2; // Object marked this cycle.
     u32 age : 2; // Survival age.
     u32 unboxed : 3; // Unboxed flags for cons, tuple2, tuple3 only.
     u32 padding : 1;
-    u32 refcount : 16; // 16 bits is more than needed, could be much smaller.
-                       // Benchmark to find the best saturation level.
+    u32 refcount : 16; // Reference count; 16 bits is more than needed.
     u32 size; // Size bits.
 } Header;
 static_assert(sizeof(Header) == 8, "Header must be 64 bits");
 
-// Frequently used constants in Elm can be embeddede directly into HPointer, so there is no need to
-// trace a pointer to reach them.
+// Frequently used constants in Elm can be embedded directly into HPointer,
+// so there is no need to trace a pointer to reach them.
 typedef enum {
     Const_Unit,
     Const_EmptyRec,
@@ -120,7 +120,7 @@ typedef struct {
 // Otherwise C compiler can truncate any zero padding at the end.
 #define ALIGN(X) __attribute__((aligned(X)))
 struct ALIGN(8) elm_string {
-    Header header; // Size in header up to 4G
+    Header header; // Size in header, up to 4G characters.
     u16 chars[];
 };
 typedef struct elm_string ElmString;

@@ -151,7 +151,7 @@ void *OldGenSpace::allocate_internal(size_t size) {
             Header *hdr = reinterpret_cast<Header *>(curr);
             std::memset(hdr, 0, sizeof(Header));
 
-            // Bug - if marking is in progres the object should be conservatively marked Black.
+            // Bug: if marking is in progress the object should be conservatively marked Black.
             hdr->color = static_cast<u32>(Color::White);
 
             return curr;

@@ -75,9 +75,9 @@ bool NurserySpace::contains(void *ptr) const {
  * allocated in the to space.
  *
  * A scan pointer is set to the start of the to space, and is stepped over every object it encounters in the
- * to space, evacuating any object that it finds a pointer to. If more objects are evecuated into the to space,
+ * to space, evacuating any object that it finds a pointer to. If more objects are evacuated into the to space,
  * this will bump up the allocation pointer and those objects will be created ahead of the scan pointer so will
- * also evantually be scanned. When the scan pointer catches up to the allocation pointer, there are no more live
+ * also eventually be scanned. When the scan pointer catches up to the allocation pointer, there are no more live
  * objects left to consider.
  *
  * The from and to spaces are flipped over in their roles once all live objects have been removed.
@@ -85,7 +85,7 @@ bool NurserySpace::contains(void *ptr) const {
  * There is no "remembered set" of pointers from the old generation into the nursery to consider, since Elm
  * only creates acyclic structures on the heap and immutability means that younger object only point to older
  * ones and never the other way around. Therefore objects moved into the old generation during evacuation do
- * not need to be scanned by Cheneys algorithm.
+ * not need to be scanned by Cheney's algorithm.
  */
 void NurserySpace::minorGC(RootSet &roots, OldGenSpace &oldgen) {
 #if ENABLE_GC_STATS

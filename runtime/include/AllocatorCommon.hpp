@@ -7,30 +7,29 @@
 
 namespace Elm {
 
-// Forward declarations
 class GarbageCollector;
 
-// GC Color states for tri-color marking
+// Tri-color marking states for concurrent GC.
 enum class Color : u32 {
-    White = 0, // Not marked (garbage)
-    Grey = 1, // Marked but children not scanned
-    Black = 2 // Marked and children scanned
+    White = 0,   // Not yet marked (potential garbage).
+    Grey = 1,    // Marked but children not yet scanned.
+    Black = 2    // Marked and all children scanned.
 };
 
-// Maximum age before promotion to old gen
+// Objects surviving this many minor GCs are promoted to old gen.
 constexpr u32 PROMOTION_AGE = 1;
 
-// Nursery size per thread (e.g., 4MB)
+// Size of each thread-local nursery semi-space.
 constexpr size_t NURSERY_SIZE = 4 * 1024 * 1024;
 
-// Helper functions for heap operations
+// Returns the header of a heap object.
 inline Header *getHeader(void *obj) { return static_cast<Header *>(obj); }
 
-// Forward declarations for functions that need GarbageCollector
-// (implementations are in GarbageCollector.hpp after class definition)
+// Defined in GarbageCollector.hpp after the class definition.
 void *fromPointer(HPointer ptr);
 HPointer toPointer(void *obj);
 
+// Returns the size of a heap object in bytes (8-byte aligned).
 inline size_t getObjectSize(void *obj) {
     Header *hdr = getHeader(obj);
 
@@ -88,7 +87,7 @@ inline size_t getObjectSize(void *obj) {
             break;
     }
 
-    // Always return 8-byte aligned size
+    // All heap objects are 8-byte aligned.
     return (size + 7) & ~7;
 }
 

@@ -2,7 +2,7 @@
 
 #include "TestSuite.hpp"
 
-// Compaction tests
+// Compaction tests.
 extern Testing::Test testBlockInitialization;
 extern Testing::Test testBlockLiveInfoTracking;
 extern Testing::Test testCompactionSetSelection;

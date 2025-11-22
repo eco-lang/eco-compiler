@@ -2,7 +2,7 @@
 
 #include "TestSuite.hpp"
 
-// Full GarbageCollector tests (minor + major GC)
+// Full GarbageCollector tests (minor + major GC).
 extern Testing::Test testPromotionToOldGen;
 extern Testing::Test testMinorThenMajorGCSequence;
 extern Testing::Test testLongLivedObjectsSurviveMajorGC;

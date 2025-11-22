@@ -9,11 +9,17 @@
 
 using namespace Elm;
 
-// Helper to create a deep copy snapshot of heap structure for validation
+/**
+ * Captures a snapshot of heap object values before GC for validation afterward.
+ *
+ * Used in property-based tests to verify that GC preserves all reachable object
+ * values. Stores primitive values and object structure for comparison.
+ */
 struct HeapSnapshot {
+    // Represents a single object in the snapshot.
     struct SnapshotNode {
         Tag tag;
-        std::vector<size_t> children; // Indices into snapshot array
+        std::vector<size_t> children; // Indices into snapshot nodes array.
         union {
             i64 int_val;
             f64 float_val;
@@ -29,10 +35,10 @@ struct HeapSnapshot {
         } data;
     };
 
-    std::vector<SnapshotNode> nodes;
-    std::vector<size_t> root_indices;
+    std::vector<SnapshotNode> nodes;       // All captured object snapshots.
+    std::vector<size_t> root_indices;      // Indices of root objects in nodes.
 
-    // Capture the current state of objects
+    // Captures the current state of the given objects and roots.
     void capture(const std::vector<void *> &objects, const std::vector<HPointer *> &roots) {
         nodes.clear();
         root_indices.clear();
@@ -222,7 +228,7 @@ struct HeapSnapshot {
         }
     }
 
-    // Verify that the current heap matches the snapshot (after GC)
+    // Verifies that reachable objects from roots match the snapshot. Returns true if valid.
     bool verify(const std::vector<HPointer *> &roots) const {
         std::unordered_set<void *> reachable;
         std::unordered_map<void *, size_t> obj_to_snapshot_idx;

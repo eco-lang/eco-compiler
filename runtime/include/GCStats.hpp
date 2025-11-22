@@ -8,15 +8,17 @@
 // GC Statistics Configuration
 // ============================================================================
 
-// Global toggle: Set to 1 to enable stats, 0 to disable (zero overhead)
+// Global toggle: set to 1 to enable stats, 0 to disable (zero overhead).
 #define ENABLE_GC_STATS 1
 
 namespace Elm {
 
-// ============================================================================
-// GC Statistics Class
-// ============================================================================
-
+/**
+ * Collects performance metrics for garbage collection.
+ *
+ * Tracks allocation counts, GC cycle counts, timing histograms, and
+ * survival/promotion rates. Zero overhead when ENABLE_GC_STATS is 0.
+ */
 class GCStats {
 public:
     // ========== Allocation Stats (Minor GC) ==========
@@ -27,14 +29,14 @@ public:
     uint64_t minor_gc_count = 0;
     uint64_t objects_survived = 0;
     uint64_t objects_promoted = 0;
-    uint64_t bytes_freed = 0;  // Running total across all GCs
+    uint64_t bytes_freed = 0;  // Running total across all GCs.
 
     // ========== Minor GC Timing Stats ==========
     uint64_t total_minor_gc_time_ns = 0;
     uint64_t min_minor_gc_time_ns = UINT64_MAX;
     uint64_t max_minor_gc_time_ns = 0;
 
-    // Histogram: 20 buckets of 5000ns each (0-100000), + 1 overflow bucket
+    // Histogram: 20 buckets of 5000ns each (0-100000ns), plus overflow bucket.
     static constexpr int HISTOGRAM_BUCKETS = 21;
     static constexpr uint64_t MINOR_HISTOGRAM_MAX_NS = 100000;
     static constexpr uint64_t MINOR_BUCKET_SIZE_NS = MINOR_HISTOGRAM_MAX_NS / (HISTOGRAM_BUCKETS - 1);
@@ -57,18 +59,30 @@ public:
     uint64_t min_major_gc_time_ns = UINT64_MAX;
     uint64_t max_major_gc_time_ns = 0;
 
-    // Major GC histogram: larger buckets for longer GC times (0-100ms in 5ms increments)
+    // Major GC histogram: 0-100ms in 5ms increments, plus overflow bucket.
     static constexpr uint64_t MAJOR_HISTOGRAM_MAX_NS = 100000000;  // 100ms
     static constexpr uint64_t MAJOR_BUCKET_SIZE_NS = MAJOR_HISTOGRAM_MAX_NS / (HISTOGRAM_BUCKETS - 1);
 
     uint64_t major_time_histogram[HISTOGRAM_BUCKETS] = {0};
 
     // ========== Methods ==========
+
+    // Records an allocation of the given size.
     void recordAllocation(size_t bytes);
+
+    // Records completion of a minor GC cycle.
     void recordMinorGCEnd(uint64_t elapsed_ns, size_t freed);
+
+    // Records completion of a major GC cycle.
     void recordMajorGCEnd(uint64_t elapsed_ns);
+
+    // Merges statistics from another GCStats instance.
     void combine(const GCStats& other);
+
+    // Prints a formatted summary to stdout.
     void print() const;
+
+    // Resets all statistics to initial values.
     void reset();
 
 private:
@@ -126,7 +140,7 @@ private:
             std::chrono::high_resolution_clock::now() - (start)).count()
 
 #else
-    // Stats disabled - inject nothing (zero overhead)
+    // Stats disabled: all macros expand to nothing (zero overhead).
     #define GC_STATS_MINOR_RECORD_ALLOC(stats, bytes) do {} while(0)
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) do {} while(0)
     #define GC_STATS_MINOR_INC_SURVIVORS(stats) do {} while(0)

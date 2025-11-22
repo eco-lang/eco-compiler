@@ -42,17 +42,28 @@ public:
         return result;
     }
 
-    // Query methods
+    // ========== Query Methods ==========
+
+    // Returns the number of bytes allocated from this TLAB.
     size_t bytesUsed() const { return alloc_ptr - start; }
+
+    // Returns the number of bytes still available in this TLAB.
     size_t bytesRemaining() const { return end - alloc_ptr; }
+
+    // Returns the total capacity of this TLAB in bytes.
     size_t capacity() const { return end - start; }
+
+    // Returns true if no allocations have been made from this TLAB.
     bool isEmpty() const { return alloc_ptr == start; }
+
+    // Returns true if this TLAB has no remaining space.
     bool isFull() const { return alloc_ptr == end; }
 
-    // Memory region
-    char* start;      // Start of TLAB
-    char* end;        // End of TLAB
-    char* alloc_ptr;  // Current allocation pointer (thread-local)
+    // ========== Memory Region ==========
+
+    char* start;      // Start of TLAB memory region.
+    char* end;        // End of TLAB memory region (exclusive).
+    char* alloc_ptr;  // Current bump pointer for next allocation.
 };
 
 } // namespace Elm

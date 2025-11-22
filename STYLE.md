@@ -117,33 +117,110 @@ private:
 
 ### Comments
 
-#### Block Comments
+Comments should be proper English sentences ending with a period. Be accurate and concise. Only comment things that a code reader should really have brought to their attention.
 
-Use C-style block comments for multi-line documentation:
+#### What to Comment
+
+- **Class/struct purpose**: Every class and struct should have a doc comment explaining its role.
+- **Public method purpose**: Every public method should have a comment describing what it does.
+- **Field purpose**: Fields in data structures should have inline comments explaining their role.
+- **Global/constant purpose**: Explain what globals and constants represent.
+- **Non-obvious code**: Add inline comments where logic is not self-evident.
+- **Pre-conditions**: Mention when a method requires certain conditions (e.g., "Caller must hold mutex.").
+
+#### Class/Struct Documentation
+
+Use `/** */` multiline format with `*` on continuation lines:
 
 ```cpp
-/** Headers are always 64-bits in size, and every heap element always has a
-header at its start. The first 5-bits contain a tag, denoting which kind of
-heap element it is.
-*/
+/**
+ * Central GC coordinator managing nurseries and old generation.
+ *
+ * Singleton that owns the unified heap address space and coordinates GC across
+ * all threads. Each thread gets its own nursery; old gen is shared.
+ */
+class GarbageCollector {
 ```
 
-#### Inline Comments
+#### Method Comments
 
-Use C++ style `//` for single-line comments and inline annotations:
+Place a single-line `//` comment immediately before each public method:
 
 ```cpp
-// Main GC controller
-char *heap_base; // Base pointer for entire heap
+    // Returns the singleton GarbageCollector instance.
+    static GarbageCollector &instance();
+
+    // Initializes the GC with the given maximum heap size.
+    void initialize(size_t max_heap_size = 1ULL * 1024 * 1024 * 1024);
+
+    // Allocates an object. Tries nursery first, falls back to old gen.
+    void *allocate(size_t size, Tag tag);
 ```
 
-#### Section Separators
+#### Field Comments
 
-Use decorative separators in test/generator files:
+Use inline `//` comments after field declarations:
+
+```cpp
+    char *heap_base;              // Base of reserved address space.
+    size_t heap_reserved;         // Total address space reserved.
+    size_t old_gen_committed;     // Committed bytes in old gen.
+    bool initialized;             // True after initialize() has been called.
+```
+
+#### Section Headings
+
+Use `// ========== Section Name ==========` to visually delineate areas of code:
+
+```cpp
+    // ========== Initialization ==========
+
+    void initialize(char *base, size_t initial_size, size_t max_size);
+    void reset();
+
+    // ========== Allocation ==========
+
+    void *allocate(size_t size);
+    TLAB* allocateTLAB(size_t size);
+
+    // ========== Mark-and-Sweep ==========
+
+    void startConcurrentMark(RootSet &roots);
+    bool incrementalMark(size_t work_units);
+    void finishMarkAndSweep();
+```
+
+#### Enum Value Comments
+
+Add inline comments for enum values when their meaning is not obvious:
+
+```cpp
+enum class Color : u32 {
+    White = 0,   // Not yet marked (potential garbage).
+    Grey = 1,    // Marked but children not yet scanned.
+    Black = 2    // Marked and all children scanned.
+};
+```
+
+#### Pre-condition Comments
+
+Document requirements that callers must satisfy:
+
+```cpp
+    // Internal allocation. Caller must hold alloc_mutex.
+    void *allocate_internal(size_t size);
+
+    // Adds a new memory chunk. Caller must hold alloc_mutex.
+    void addChunk(size_t size);
+```
+
+#### File-Level Section Separators
+
+Use decorative separators for major file sections:
 
 ```cpp
 // ============================================================================
-// Data Structures - Describe heap objects without side effects
+// RapidCheck Generators for property-based testing.
 // ============================================================================
 ```
 
@@ -353,34 +430,14 @@ Acceptable macro uses:
 
 ### Documentation
 
-#### Class Documentation
+See the **Comments** section above for detailed guidance on writing comments. Key principles:
 
-Brief comment above class definition:
-
-```cpp
-// Main GC controller
-class GarbageCollector {
-```
-
-#### Method Documentation
-
-Comment significant methods:
-
-```cpp
-// Initialize GC with max heap size (default 1GB)
-void initialize(size_t max_heap_size = 1ULL * 1024 * 1024 * 1024);
-```
-
-#### Implementation Comments
-
-Explain non-obvious logic:
-
-```cpp
-// Prevent recursive GC calls
-if (gc_in_progress) {
-    return;
-}
-```
+- All comments are proper English sentences ending with periods.
+- Every class/struct has a `/** */` doc comment explaining its purpose.
+- Every public method has a `//` comment describing what it does.
+- Fields have inline `//` comments explaining their role.
+- Use `// ========== Section ==========` headings to organize code.
+- Document pre-conditions (e.g., "Caller must hold mutex.").
 
 ### Project-Specific Conventions
 

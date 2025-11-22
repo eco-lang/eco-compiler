@@ -8,10 +8,10 @@
 namespace Elm {
 
 // ============================================================================
-// Data Structures - Describe heap objects without side effects
+// Data Structures - Describe heap objects without side effects.
 // ============================================================================
 
-// Enum for unboxed value types (primitives and constants)
+// Unboxed value types (primitives and embedded constants).
 enum Unboxed {
     UnboxedInt,
     UnboxedFloat,
@@ -25,23 +25,22 @@ enum Unboxed {
     UnboxedEmptyString
 };
 
-// Describes a Cons cell head (for list generation)
+// Describes a Cons cell head for list generation.
 struct ConsHeadDesc {
     bool head_boxed;
-    size_t child_index;  // for boxed head
-    Unboxed unboxed;     // Type of unboxed value (when !head_boxed)
-    // Primitive values for unboxed head:
+    size_t child_index;  // Index for boxed head.
+    Unboxed unboxed;     // Type of unboxed value when !head_boxed.
     i64 int_val;
     f64 float_val;
     u16 char_val;
 };
 
-// Describes a linked list (will be allocated as Cons cells terminated by Nil)
+// Describes a linked list (allocated as Cons cells terminated by Nil).
 struct ListDesc {
-    std::vector<ConsHeadDesc> elements;  // RapidCheck can shrink this vector!
+    std::vector<ConsHeadDesc> elements;  // RapidCheck can shrink this.
 };
 
-// Describes a single heap object (before allocation)
+// Describes a single heap object before allocation.
 struct HeapObjectDesc {
     enum Type { Int, Float, Char, String, Tuple2, Tuple3, Custom, Record, DynRecord, FieldGroup, Closure };
 
@@ -88,27 +87,27 @@ struct HeapObjectDesc {
     std::vector<size_t> closure_child_values;
 };
 
-// Describes a complete heap graph with roots
+// Describes a complete heap graph with designated roots.
 struct HeapGraphDesc {
-    std::vector<HeapObjectDesc> nodes;
-    std::vector<size_t> root_indices;
+    std::vector<HeapObjectDesc> nodes;   // All objects in the graph.
+    std::vector<size_t> root_indices;    // Indices of root objects.
 };
 
 // ============================================================================
-// Allocation - Convert descriptions to actual heap objects
+// Allocation - Convert descriptions to actual heap objects.
 // ============================================================================
 
-// Allocate objects from descriptions
+// Allocates heap objects from the given descriptions.
 std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes);
 
-// Allocate a linked list from description
+// Allocates a linked list from the description.
 HPointer allocateList(const ListDesc& list_desc,
                       const std::vector<void*>& allocated);
 
 } // namespace Elm
 
 // ============================================================================
-// RapidCheck Generators
+// RapidCheck Generators for property-based testing.
 // ============================================================================
 
 namespace rc {
