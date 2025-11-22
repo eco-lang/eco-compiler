@@ -72,6 +72,12 @@ public:
     // Returns true if the pointer points into this old generation's memory.
     bool contains(void *ptr) const;
 
+    // Returns the current number of bytes allocated in old gen.
+    size_t getAllocatedBytes() const { return allocated_bytes.load(); }
+
+    // Returns the maximum size this old gen can grow to.
+    size_t getMaxSize() const { return max_region_size; }
+
     // ========== Compaction ==========
 
     // Selects sparsely-occupied blocks as candidates for evacuation.
@@ -137,6 +143,7 @@ private:
     char *region_base;            // Base of assigned region in main heap.
     size_t region_size;           // Current committed size.
     size_t max_region_size;       // Maximum size this region can grow to.
+    std::atomic<size_t> allocated_bytes{0};  // Current bytes in use.
     std::vector<char *> chunks;   // Memory chunks within the region.
     FreeBlock *free_list;         // Head of the free list.
     std::recursive_mutex alloc_mutex; // Protects free list; recursive for GC.

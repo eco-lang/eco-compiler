@@ -155,6 +155,7 @@ void *OldGenSpace::allocate_internal(size_t size) {
             // Bug: if marking is in progress the object should be conservatively marked Black.
             hdr->color = static_cast<u32>(Color::White);
 
+            allocated_bytes.fetch_add(size, std::memory_order_relaxed);
             return curr;
         }
 
@@ -261,6 +262,10 @@ void OldGenSpace::sealTLAB(TLAB* tlab) {
         delete tlab;
         return;
     }
+
+    // Track bytes used by promoted objects
+    size_t used_bytes = tlab->alloc_ptr - tlab->start;
+    allocated_bytes.fetch_add(used_bytes, std::memory_order_relaxed);
 
     // Add to sealed list for sweeping
     std::lock_guard<std::mutex> lock(sealed_tlabs_mutex);
@@ -495,6 +500,7 @@ void OldGenSpace::sweep() {
 
     // Rebuild free list from white (unmarked) objects
     FreeBlock *new_free_list = nullptr;
+    size_t bytes_freed = 0;
 
     // ========================================================================
     // Part 1: Sweep sealed TLABs
@@ -517,6 +523,7 @@ void OldGenSpace::sweep() {
                     block->size = obj_size;
                     block->next = new_free_list;
                     new_free_list = block;
+                    bytes_freed += obj_size;
                 } else {
                     // Live object - reset color for next GC cycle
                     hdr->color = static_cast<u32>(Color::White);
@@ -565,6 +572,7 @@ void OldGenSpace::sweep() {
             block->size = obj_size;
             block->next = new_free_list;
             new_free_list = block;
+            bytes_freed += obj_size;
         } else {
             // Reset color to white for next cycle
             hdr->color = static_cast<u32>(Color::White);
@@ -574,6 +582,9 @@ void OldGenSpace::sweep() {
     }
 
     free_list = new_free_list;
+
+    // Update allocated bytes counter
+    allocated_bytes.fetch_sub(bytes_freed, std::memory_order_relaxed);
 }
 
 void OldGenSpace::reset() {
@@ -582,6 +593,7 @@ void OldGenSpace::reset() {
     marking_active = false;
     current_epoch = 0;
     mark_stack.clear();
+    allocated_bytes.store(0, std::memory_order_relaxed);
 
     // Reset blocks
     blocks.clear();

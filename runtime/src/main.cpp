@@ -31,6 +31,7 @@ static std::condition_variable gc_condition;
 static size_t model_num_fields = 8;       // Number of fields in the model Record.
 static size_t list_size = 500;            // Elements per list.
 static std::chrono::seconds duration{0};  // 0 = run forever until Ctrl+C.
+static size_t major_gc_threshold = 50 * 1024 * 1024;  // Trigger major GC when old gen exceeds this (50MB default).
 
 // ============================================================================
 // Signal Handler
@@ -227,7 +228,8 @@ static void programThreadFunc() {
     gc.initThread();
 
     std::cout << "[Program] Started with " << model_num_fields
-              << " fields, list size " << list_size << std::endl;
+              << " fields, list size " << list_size
+              << ", major GC threshold " << (major_gc_threshold / (1024 * 1024)) << " MB" << std::endl;
 
     // Random number generator for selecting fields.
     std::random_device rd;
@@ -247,7 +249,6 @@ static void programThreadFunc() {
     }
 
     size_t iterations = 0;
-    size_t gc_trigger_interval = 100;  // Request GC every N iterations.
 
     while (!shutdown_requested.load()) {
         // Pick a random field to update.
@@ -267,20 +268,33 @@ static void programThreadFunc() {
         // Note: model is still a root, so old model stays alive until we update.
         HPointer new_model = updateRecordField(gc, model, field_index, reversed);
 
-        // Update root to point to new model.
-        // Old model (and unreferenced lists) become garbage.
+        // Update root set: remove old model, add new model.
+        // This simulates what a real Elm runtime would do where roots are
+        // explicitly managed rather than relying on C++ variable addresses.
+        gc.getRootSet().removeRoot(&model);
         model = new_model;
+        gc.getRootSet().addRoot(&model);
 
         iterations++;
 
-        // Trigger minor GC occasionally.
-        if (iterations % 10 == 0) {
-            gc.minorGC();
-        }
+        // Run minor GC every iteration.
+        // This works well for Elm since each update cycle produces short-lived garbage.
+        gc.minorGC();
 
-        // Request major GC periodically.
-        if (iterations % gc_trigger_interval == 0) {
+        // Request major GC when old gen exceeds threshold.
+        // Block if we're significantly over threshold to let GC catch up.
+        size_t old_gen_bytes = gc.getOldGen().getAllocatedBytes();
+        if (old_gen_bytes >= major_gc_threshold) {
             requestMajorGC();
+
+            // If we're way over threshold (2x), wait for GC to make progress.
+            // This prevents runaway allocation from causing OOM.
+            if (old_gen_bytes >= major_gc_threshold * 2) {
+                while (gc.getOldGen().getAllocatedBytes() >= major_gc_threshold * 2 &&
+                       !shutdown_requested.load()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
         }
 
         // Brief yield to allow collector thread to run.
@@ -306,6 +320,7 @@ static void printUsage(const char* prog) {
               << "  -d, --duration <time>   Run for specified duration (e.g., 30s, 5m, 1h)\n"
               << "  -f, --fields <n>        Number of fields in model record (default: 8)\n"
               << "  -l, --list-size <n>     Size of each list (default: 500)\n"
+              << "  -t, --threshold <bytes> Major GC threshold in MB (default: 50)\n"
               << "  -h, --help              Show this help message\n"
               << "\n"
               << "Press Ctrl+C to stop.\n";
@@ -344,12 +359,13 @@ static bool parseArgs(int argc, char* argv[]) {
         {"duration",   required_argument, nullptr, 'd'},
         {"fields",     required_argument, nullptr, 'f'},
         {"list-size",  required_argument, nullptr, 'l'},
+        {"threshold",  required_argument, nullptr, 't'},
         {"help",       no_argument,       nullptr, 'h'},
         {nullptr,      0,                 nullptr, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "d:f:l:h", long_options, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "d:f:l:t:h", long_options, nullptr)) != -1) {
         switch (opt) {
             case 'd': {
                 auto dur = parseDuration(optarg);
@@ -368,6 +384,13 @@ static bool parseArgs(int argc, char* argv[]) {
                 list_size = std::stoul(optarg);
                 if (list_size < 1) {
                     std::cerr << "Error: list-size must be >= 1\n";
+                    return false;
+                }
+                break;
+            case 't':
+                major_gc_threshold = std::stoul(optarg) * 1024 * 1024;  // Convert MB to bytes.
+                if (major_gc_threshold < 1024 * 1024) {
+                    std::cerr << "Error: threshold must be >= 1 MB\n";
                     return false;
                 }
                 break;
