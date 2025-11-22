@@ -16,7 +16,7 @@ using namespace Elm;
  * values. Stores primitive values and object structure for comparison.
  */
 struct HeapSnapshot {
-    // Represents a single object in the snapshot.
+    /** Represents a single object in the snapshot. */
     struct SnapshotNode {
         Tag tag;
         std::vector<size_t> children; // Indices into snapshot nodes array.
@@ -45,7 +45,7 @@ struct HeapSnapshot {
 
         std::unordered_map<void *, size_t> obj_to_idx;
 
-        // First pass: create snapshot nodes
+        // First pass: create snapshot nodes.
         for (size_t i = 0; i < objects.size(); i++) {
             void *obj = objects[i];
             if (!obj)
@@ -81,7 +81,7 @@ struct HeapSnapshot {
                     node.data.tuple3.unboxed = hdr->unboxed;
                     break;
                 }
-                // For other types, we just verify the tag and structure
+                // For other types, we just verify the tag and structure.
                 default:
                     break;
             }
@@ -89,7 +89,7 @@ struct HeapSnapshot {
             nodes.push_back(node);
         }
 
-        // Second pass: resolve pointer children
+        // Second pass: resolve pointer children.
         for (size_t i = 0; i < objects.size(); i++) {
             void *obj = objects[i];
             if (!obj)
@@ -139,14 +139,14 @@ struct HeapSnapshot {
                 }
                 case Tag_Cons: {
                     Cons *cons = static_cast<Cons *>(obj);
-                    // Track head if boxed
+                    // Track head if boxed.
                     if (!(hdr->unboxed & 1) && cons->head.p.constant == 0) {
                         void *child = fromPointer(cons->head.p);
                         if (child && obj_to_idx.count(child)) {
                             nodes[node_idx].children.push_back(obj_to_idx[child]);
                         }
                     }
-                    // Track tail (always a pointer, may be Nil)
+                    // Track tail (always a pointer, may be Nil).
                     if (cons->tail.constant == 0) {
                         void *child = fromPointer(cons->tail);
                         if (child && obj_to_idx.count(child)) {
@@ -181,14 +181,14 @@ struct HeapSnapshot {
                 }
                 case Tag_DynRecord: {
                     DynRecord *dynrec = static_cast<DynRecord *>(obj);
-                    // Track fieldgroup
+                    // Track fieldgroup.
                     if (dynrec->fieldgroup.constant == 0) {
                         void *child = fromPointer(dynrec->fieldgroup);
                         if (child && obj_to_idx.count(child)) {
                             nodes[node_idx].children.push_back(obj_to_idx[child]);
                         }
                     }
-                    // Track all values (all HPointers)
+                    // Track all values (all HPointers).
                     for (size_t i = 0; i < hdr->size; i++) {
                         if (dynrec->values[i].constant == 0) {
                             void *child = fromPointer(dynrec->values[i]);
@@ -211,13 +211,13 @@ struct HeapSnapshot {
                     }
                     break;
                 }
-                // String and FieldGroup have no heap pointers
+                // String and FieldGroup have no heap pointers.
                 default:
                     break;
             }
         }
 
-        // Record root indices
+        // Record root indices.
         for (HPointer *root: roots) {
             if (root->constant != 0)
                 continue;
@@ -233,7 +233,7 @@ struct HeapSnapshot {
         std::unordered_set<void *> reachable;
         std::unordered_map<void *, size_t> obj_to_snapshot_idx;
 
-        // Build reachable set from roots
+        // Build reachable set from roots.
         std::vector<void *> worklist;
         for (HPointer *root: roots) {
             if (root->constant != 0) {
@@ -252,7 +252,7 @@ struct HeapSnapshot {
 
             Header *hdr = getHeader(obj);
 
-            // Safety check: tag should be valid
+            // Safety check: tag should be valid.
             if (hdr->tag >= Tag_Forward) {
                 std::cerr << "ERROR: Invalid tag " << hdr->tag << " found in reachable object at " << obj << std::endl;
                 return false;
@@ -372,26 +372,26 @@ struct HeapSnapshot {
             }
         }
 
-        // Verify we have at least as many objects as root indices
+        // Verify we have at least as many objects as root indices.
         if (reachable.size() < root_indices.size()) {
             std::cerr << "ERROR: Lost objects during GC! Expected at least " << root_indices.size() << " but found "
                       << reachable.size() << std::endl;
             return false;
         }
 
-        // Verify structure and values of reachable objects
+        // Verify structure and values of reachable objects.
         std::vector<void *> reachable_vec(reachable.begin(), reachable.end());
 
         for (void *obj: reachable_vec) {
             Header *hdr = getHeader(obj);
 
-            // Verify tag is valid
+            // Verify tag is valid.
             if (hdr->tag >= Tag_Forward) {
                 std::cerr << "ERROR: Invalid tag " << hdr->tag << " found in reachable object" << std::endl;
                 return false;
             }
 
-            // Verify values match snapshot for primitive types
+            // Verify values match snapshot for primitive types.
             switch (hdr->tag) {
                 case Tag_Int: {
                     ElmInt *obj_int = static_cast<ElmInt *>(obj);
@@ -439,7 +439,7 @@ struct HeapSnapshot {
                     break;
                 }
                 default:
-                    // For complex types, we've already verified structure
+                    // For complex types, we've already verified structure.
                     break;
             }
         }

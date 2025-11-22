@@ -26,28 +26,33 @@ using namespace Elm;
 // Test Configuration
 // ============================================================================
 
+/**
+ * Configuration for the test runner.
+ *
+ * Populated from command line arguments.
+ */
 struct TestConfig {
-    int num_tests = 5;
-    int max_size = 50;
-    int max_discard_ratio = 10;
-    std::optional<uint64_t> seed;
-    bool verbose = false;
-    bool list_tests = false;
-    bool show_seed = true;
-    int repeat = 1;
+    int num_tests = 5;                             // Number of test iterations per property.
+    int max_size = 50;                             // Maximum size parameter for generators.
+    int max_discard_ratio = 10;                    // Maximum ratio of discarded tests.
+    std::optional<uint64_t> seed;                  // Random seed for reproducibility.
+    bool verbose = false;                          // Enable verbose output.
+    bool list_tests = false;                       // List tests without running.
+    bool show_seed = true;                         // Display the seed being used.
+    int repeat = 1;                                // Number of times to repeat the suite.
     std::optional<std::chrono::seconds> duration;  // Run repeatedly for this long.
     std::optional<std::chrono::seconds> timeout;   // Fail if tests exceed this.
-    std::string filter = "";
-    bool no_shrink = false;
-    std::string reproduce = "";
-    bool interactive = false;  // Interactive test selection mode.
+    std::string filter = "";                       // Filter pattern for test names.
+    bool no_shrink = false;                        // Disable test case shrinking.
+    std::string reproduce = "";                    // Reproduction string for failing test.
+    bool interactive = false;                      // Interactive test selection mode.
 };
 
 // ============================================================================
 // Command Line Parsing and Helpers
 // ============================================================================
 
-// Parse duration string like "30s", "5m", "2h", "1d"
+// Parses a duration string like "30s", "5m", "2h", "1d".
 std::optional<std::chrono::seconds> parseDuration(const std::string& str) {
     if (str.empty()) {
         return std::nullopt;
@@ -80,6 +85,7 @@ std::optional<std::chrono::seconds> parseDuration(const std::string& str) {
     }
 }
 
+// Formats a duration as a human-readable string.
 std::string formatDuration(std::chrono::seconds total_seconds) {
     long long seconds = total_seconds.count();
 
@@ -109,6 +115,7 @@ std::string formatDuration(std::chrono::seconds total_seconds) {
     }
 }
 
+// Prints usage information to stdout.
 void printHelp(const char* program_name) {
     std::cout << "Usage: " << program_name << " [OPTIONS]\n\n";
     std::cout << "Eco Runtime GC Property-Based Test Suite\n\n";
@@ -142,9 +149,10 @@ void printHelp(const char* program_name) {
 }
 
 
+// Configures RapidCheck via environment variables.
 void configureRapidCheck(const TestConfig& config) {
-    // RapidCheck's configuration is tricky to modify programmatically
-    // We'll use environment variable approach as a workaround
+    // RapidCheck's configuration is tricky to modify programmatically.
+    // We use the environment variable approach as a workaround.
     std::string rc_params = "";
 
     if (config.seed.has_value()) {
@@ -155,12 +163,13 @@ void configureRapidCheck(const TestConfig& config) {
     rc_params += " max_size=" + std::to_string(config.max_size);
     rc_params += " max_discard_ratio=" + std::to_string(config.max_discard_ratio);
 
-    // Set RC_PARAMS environment variable
+    // Set RC_PARAMS environment variable.
     setenv("RC_PARAMS", rc_params.c_str(), 1);
 
-    // Note: RapidCheck will read RC_PARAMS when check() is called
+    // Note: RapidCheck will read RC_PARAMS when check() is called.
 }
 
+// Parses command line arguments into a TestConfig.
 TestConfig parseCommandLine(int argc, char* argv[]) {
     TestConfig config;
 
@@ -288,14 +297,14 @@ TestConfig parseCommandLine(int argc, char* argv[]) {
 // ============================================================================
 
 // Parses user input for selections: numbers, ranges (1..5), or 'A' for all.
-// Returns empty set on parse error.
+// Returns empty set on parse error or quit.
 std::set<size_t> parseSelections(const std::string& input, size_t max_val) {
     std::set<size_t> selections;
     std::istringstream iss(input);
     std::string token;
 
     while (iss >> token) {
-        // Check for 'A' or 'a' (all)
+        // Check for 'A' or 'a' (all).
         if (token == "A" || token == "a") {
             for (size_t i = 1; i <= max_val; i++) {
                 selections.insert(i);
@@ -303,36 +312,36 @@ std::set<size_t> parseSelections(const std::string& input, size_t max_val) {
             return selections;
         }
 
-        // Check for 'Q' or 'q' (quit) - return special empty marker
+        // Check for 'Q' or 'q' (quit). Returns special empty marker.
         if (token == "Q" || token == "q") {
-            return {};  // Empty means quit
+            return {};
         }
 
-        // Check for range (e.g., "1..5")
+        // Check for range (e.g., "1..5").
         size_t dot_pos = token.find("..");
         if (dot_pos != std::string::npos) {
             try {
                 size_t start = std::stoul(token.substr(0, dot_pos));
                 size_t end = std::stoul(token.substr(dot_pos + 2));
                 if (start < 1 || end > max_val || start > end) {
-                    return {};  // Invalid range
+                    return {};
                 }
                 for (size_t i = start; i <= end; i++) {
                     selections.insert(i);
                 }
             } catch (...) {
-                return {};  // Parse error
+                return {};
             }
         } else {
-            // Single number
+            // Single number.
             try {
                 size_t num = std::stoul(token);
                 if (num < 1 || num > max_val) {
-                    return {};  // Out of range
+                    return {};
                 }
                 selections.insert(num);
             } catch (...) {
-                return {};  // Parse error
+                return {};
             }
         }
     }
@@ -340,6 +349,7 @@ std::set<size_t> parseSelections(const std::string& input, size_t max_val) {
     return selections;
 }
 
+// Prints help for interactive mode commands.
 void printInteractiveHelp() {
     std::cout << "\nUsage:\n";
     std::cout << "  A         - Run all tests in current suite\n";
@@ -351,9 +361,10 @@ void printInteractiveHelp() {
     std::cout << std::endl;
 }
 
+// Runs the interactive test selection loop.
 void runInteractive(const Testing::TestSuite& suite, const std::string& path = "") {
     while (true) {
-        // Build display path
+        // Build display path.
         std::string display_path = path.empty() ? suite.getName() : path;
 
         const auto& children = suite.getChildren();
@@ -364,7 +375,7 @@ void runInteractive(const Testing::TestSuite& suite, const std::string& path = "
 
         std::cout << "\n=== " << display_path << " ===\n\n";
 
-        // Display children with type indicators
+        // Display children with type indicators.
         for (size_t i = 0; i < children.size(); i++) {
             const auto& child = children[i];
             bool is_suite = dynamic_cast<const Testing::TestSuite*>(child.get()) != nullptr;
@@ -381,58 +392,58 @@ void runInteractive(const Testing::TestSuite& suite, const std::string& path = "
         }
         std::cout << "\n";
 
-        // Prompt for input
+        // Prompt for input.
         std::cout << "Select (A=all, Q=back, ?=help): ";
         std::string input;
         if (!std::getline(std::cin, input)) {
-            return;  // EOF
+            return;
         }
 
-        // Trim whitespace
+        // Trim whitespace.
         size_t start = input.find_first_not_of(" \t");
         if (start == std::string::npos) {
-            continue;  // Empty input, show menu again
+            continue;
         }
         input = input.substr(start);
 
-        // Check for help
+        // Check for help.
         if (input == "?" || input == "help") {
             printInteractiveHelp();
             continue;
         }
 
-        // Check for quit/back
+        // Check for quit/back.
         if (input == "Q" || input == "q") {
             return;
         }
 
-        // Parse selections
+        // Parse selections.
         auto selections = parseSelections(input, children.size());
         if (selections.empty()) {
             std::cout << "Invalid input. Type '?' for help.\n";
             continue;
         }
 
-        // Process selections
-        // If single selection and it's a suite, step into it
+        // Process selections.
+        // If single selection and it's a suite, step into it.
         if (selections.size() == 1) {
             size_t idx = *selections.begin() - 1;
             const auto& child = children[idx];
             if (auto* sub_suite = dynamic_cast<const Testing::TestSuite*>(child.get())) {
-                // Step into sub-suite
+                // Step into sub-suite.
                 std::string new_path = display_path + " > " + sub_suite->getName();
                 runInteractive(*sub_suite, new_path);
                 continue;
             }
         }
 
-        // Run selected tests/suites
+        // Run selected tests/suites.
         std::cout << "\nRunning " << selections.size() << " item(s)...\n\n";
         for (size_t idx : selections) {
             const auto& child = children[idx - 1];
             if (auto* sub_suite = dynamic_cast<const Testing::TestSuite*>(child.get())) {
                 std::cout << "=== " << sub_suite->getName() << " ===\n";
-                sub_suite->run("");  // Run all tests in suite
+                sub_suite->run("");
             } else {
                 child->run();
             }

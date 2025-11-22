@@ -7,16 +7,16 @@ using namespace Elm;
 
 Testing::TestCase testMinorGCPreservesRoots("Minor GC preserves all reachable objects from roots", []() {
         rc::check([](const HeapGraphDesc &graph) {
-            // Initialize GC for this thread and reset to clean state
+            // Initialize GC for this thread and reset to clean state.
             auto &gc = GarbageCollector::instance();
             gc.initThread();
             gc.reset();
 
-            // Phase 1: Allocate heap from description (RapidCheck can shrink this!)
+            // Phase 1: Allocate heap from description (RapidCheck can shrink this).
             std::vector<void *> allocated_objects = allocateHeapGraph(graph.nodes);
             RC_ASSERT(!allocated_objects.empty());
 
-            // Phase 2: Set up roots from graph description
+            // Phase 2: Set up roots from graph description.
             std::vector<HPointer> root_storage;
             std::vector<HPointer *> root_ptrs;
 
@@ -33,17 +33,17 @@ Testing::TestCase testMinorGCPreservesRoots("Minor GC preserves all reachable ob
 
             RC_ASSERT(!root_ptrs.empty());
 
-            // Phase 3: Take snapshot before GC
+            // Phase 3: Take snapshot before GC.
             HeapSnapshot snapshot;
             snapshot.capture(allocated_objects, root_ptrs);
 
-            // Phase 4: Perform minor GC
+            // Phase 4: Perform minor GC.
             gc.minorGC();
 
-            // Phase 5: Verify all roots still intact and valid
+            // Phase 5: Verify all roots still intact and valid.
             bool valid = snapshot.verify(root_ptrs);
 
-            // Cleanup roots
+            // Cleanup roots.
             for (auto *root: root_ptrs) {
                 gc.getRootSet().removeRoot(root);
             }

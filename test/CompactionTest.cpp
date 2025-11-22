@@ -9,7 +9,7 @@
 using namespace Elm;
 
 // ============================================================================
-// Helper: Create constant HPointer
+// Helper: Create constant HPointer.
 // ============================================================================
 
 static HPointer createConstant(Constant c) {
@@ -21,7 +21,7 @@ static HPointer createConstant(Constant c) {
 }
 
 // ============================================================================
-// Helper: Allocate a simple ElmInt into a TLAB
+// Helper: Allocate a simple ElmInt into a TLAB.
 // ============================================================================
 
 static void* allocateIntIntoTLAB(TLAB* tlab, i64 value) {
@@ -40,7 +40,7 @@ static void* allocateIntIntoTLAB(TLAB* tlab, i64 value) {
 }
 
 // ============================================================================
-// Helper: Allocate ElmInt directly in OldGen free-list
+// Helper: Allocate ElmInt directly in OldGen free-list.
 // ============================================================================
 
 static void* allocateIntInOldGen(OldGenSpace& oldgen, i64 value) {
@@ -58,7 +58,7 @@ static void* allocateIntInOldGen(OldGenSpace& oldgen, i64 value) {
 }
 
 // ============================================================================
-// Helper: Allocate a Cons cell into OldGen (for building linked lists)
+// Helper: Allocate a Cons cell into OldGen (for building linked lists).
 // ============================================================================
 
 static void* allocateConsInOldGen(OldGenSpace& oldgen, HPointer head_ptr, HPointer tail_ptr, bool head_boxed) {

@@ -12,7 +12,7 @@
 using namespace Elm;
 
 // ============================================================================
-// Helper: Create constant HPointer
+// Helper: Create constant HPointer.
 // ============================================================================
 
 static HPointer createConstant(Constant c) {
@@ -24,7 +24,7 @@ static HPointer createConstant(Constant c) {
 }
 
 // ============================================================================
-// Helper: Allocate a simple ElmInt into a TLAB
+// Helper: Allocate a simple ElmInt into a TLAB.
 // ============================================================================
 
 static void* allocateIntIntoTLAB(TLAB* tlab, i64 value) {
@@ -43,7 +43,7 @@ static void* allocateIntIntoTLAB(TLAB* tlab, i64 value) {
 }
 
 // ============================================================================
-// Helper: Allocate a Cons cell into a TLAB (for building linked lists)
+// Helper: Allocate a Cons cell into a TLAB (for building linked lists).
 // ============================================================================
 
 static void* allocateConsIntoTLAB(TLAB* tlab, HPointer head_ptr, HPointer tail_ptr, bool head_boxed) {

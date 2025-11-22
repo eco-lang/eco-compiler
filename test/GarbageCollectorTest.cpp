@@ -10,7 +10,7 @@
 using namespace Elm;
 
 // ============================================================================
-// Helper: Check if pointer is in old gen
+// Helper: Check if pointer is in old gen.
 // ============================================================================
 
 static bool isInOldGen(GarbageCollector& gc, void* obj) {
@@ -18,7 +18,7 @@ static bool isInOldGen(GarbageCollector& gc, void* obj) {
 }
 
 // ============================================================================
-// Helper: Check if pointer is in nursery
+// Helper: Check if pointer is in nursery.
 // ============================================================================
 
 static bool isInNursery(GarbageCollector& gc, void* obj) {

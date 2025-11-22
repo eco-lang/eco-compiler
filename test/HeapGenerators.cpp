@@ -8,7 +8,7 @@ namespace Elm {
 // Allocation Implementation
 // ============================================================================
 
-// Helper to create a constant HPointer
+// Helper to create a constant HPointer.
 static HPointer createConstant(Constant c) {
     HPointer ptr;
     ptr.ptr = 0;
@@ -17,7 +17,7 @@ static HPointer createConstant(Constant c) {
     return ptr;
 }
 
-// Helper to build unboxed bitmap for variable-sized structures
+// Helper to build unboxed bitmap for variable-sized structures.
 static u64 buildUnboxedBitmap(const std::vector<bool>& boxed_flags, size_t max_bits) {
     u64 bitmap = 0;
     for (size_t i = 0; i < std::min(boxed_flags.size(), max_bits); i++) {
@@ -28,17 +28,17 @@ static u64 buildUnboxedBitmap(const std::vector<bool>& boxed_flags, size_t max_b
     return bitmap;
 }
 
-// Helper to make Unboxable for ConsHeadDesc
+// Helper to make Unboxable for ConsHeadDesc.
 static Unboxable makeUnboxableFromConsHead(const ConsHeadDesc& head, const std::vector<void*>& allocated) {
     Unboxable val;
     if (head.head_boxed && !allocated.empty()) {
         size_t idx = head.child_index % allocated.size();
         val.p = toPointer(allocated[idx]);
     } else if (head.head_boxed && allocated.empty()) {
-        // No objects to reference, use Nil constant
+        // No objects to reference, use Nil constant.
         val.p = createConstant(Const_Nil);
     } else {
-        // Unboxed: use primitive value or constant based on head.unboxed
+        // Unboxed: use primitive value or constant based on head.unboxed.
         switch (head.unboxed) {
             case UnboxedInt:
                 val.i = head.int_val;
@@ -80,15 +80,14 @@ static Unboxable makeUnboxable(bool is_boxed, const HeapObjectDesc &desc, const 
     Unboxable val;
 
     if (is_boxed && !allocated.empty()) {
-        // Boxed: pointer to existing object
-        // Clamp child_index to valid range
+        // Boxed: pointer to existing object.
         size_t idx = child_index % allocated.size();
         val.p = toPointer(allocated[idx]);
     } else if (is_boxed && allocated.empty()) {
-        // No objects to reference, use Nil constant
+        // No objects to reference, use Nil constant.
         val.p = createConstant(Const_Nil);
     } else {
-        // Unboxed: use primitive value or constant based on desc.unboxed
+        // Unboxed: use primitive value or constant based on desc.unboxed.
         switch (desc.unboxed) {
             case UnboxedInt:
                 val.i = desc.int_val;
@@ -129,32 +128,32 @@ static Unboxable makeUnboxable(bool is_boxed, const HeapObjectDesc &desc, const 
 HPointer allocateList(const ListDesc& list_desc, const std::vector<void*>& allocated) {
     auto& gc = GarbageCollector::instance();
 
-    // Start with Nil constant
+    // Start with Nil constant.
     HPointer tail;
     tail.ptr = 0;
     tail.constant = Const_Nil;
     tail.padding = 0;
 
-    // Build list from end to beginning
+    // Build list from end to beginning.
     for (auto it = list_desc.elements.rbegin(); it != list_desc.elements.rend(); ++it) {
         void* cons_obj = gc.allocate(sizeof(Cons), Tag_Cons);
         Cons* cons = static_cast<Cons*>(cons_obj);
         Header* hdr = getHeader(cons_obj);
 
-        // Set head (boxed or unboxed)
+        // Set head (boxed or unboxed).
         cons->head = makeUnboxableFromConsHead(*it, allocated);
 
-        // Set tail to previous tail
+        // Set tail to previous tail.
         cons->tail = tail;
 
-        // Set unboxed flag in header (bit 0 = head unboxed)
+        // Set unboxed flag in header (bit 0 = head unboxed).
         hdr->unboxed = it->head_boxed ? 0 : 1;
 
-        // Update tail for next iteration
+        // Update tail for next iteration.
         tail = toPointer(cons_obj);
     }
 
-    return tail;  // Returns head of list (or Nil if empty)
+    return tail;  // Returns head of list (or Nil if empty).
 }
 
 std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) {
@@ -162,7 +161,7 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
     std::vector<void *> allocated;
     allocated.reserve(nodes.size());
 
-    // Allocate all objects
+    // Allocate all objects.
     for (const auto &desc: nodes) {
         void *obj = nullptr;
 
@@ -189,8 +188,8 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
             }
 
             case HeapObjectDesc::String: {
-                // Empty strings should use Const_EmptyString, not heap allocation
-                // Generator should prevent this, but assert for safety
+                // Empty strings should use Const_EmptyString, not heap allocation.
+                // Generator should prevent this, but assert for safety.
                 if (desc.string_chars.empty()) {
                     std::cerr << "ERROR: Empty string generated - should use Const_EmptyString" << std::endl;
                     std::abort();
@@ -210,11 +209,11 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
                 Tuple2 *tuple = static_cast<Tuple2 *>(obj);
                 Header *hdr = getHeader(obj);
 
-                // Create fields (may reference previously allocated objects)
+                // Create fields (may reference previously allocated objects).
                 tuple->a = makeUnboxable(desc.a_boxed, desc, allocated, desc.child_a);
                 tuple->b = makeUnboxable(desc.b_boxed, desc, allocated, desc.child_b);
 
-                // Set unboxed flags
+                // Set unboxed flags.
                 hdr->unboxed = 0;
                 if (!desc.a_boxed)
                     hdr->unboxed |= 1;
@@ -228,12 +227,12 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
                 Tuple3 *tuple = static_cast<Tuple3 *>(obj);
                 Header *hdr = getHeader(obj);
 
-                // Create fields (may reference previously allocated objects)
+                // Create fields (may reference previously allocated objects).
                 tuple->a = makeUnboxable(desc.a_boxed, desc, allocated, desc.child_a);
                 tuple->b = makeUnboxable(desc.b_boxed, desc, allocated, desc.child_b);
                 tuple->c = makeUnboxable(desc.c_boxed, desc, allocated, desc.child_c);
 
-                // Set unboxed flags
+                // Set unboxed flags.
                 hdr->unboxed = 0;
                 if (!desc.a_boxed)
                     hdr->unboxed |= 1;
@@ -281,13 +280,13 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
                 obj = gc.allocate(size, Tag_DynRecord);
                 DynRecord *dynrec = static_cast<DynRecord *>(obj);
 
-                dynrec->unboxed = 0;  // DynRecord values are all HPointers
+                dynrec->unboxed = 0;  // DynRecord values are all HPointers.
 
-                // Set fieldgroup reference (clamp to valid range or use default)
+                // Set fieldgroup reference (clamp to valid range or use default).
                 if (!allocated.empty() && desc.dynrec_child_fieldgroup < allocated.size()) {
                     dynrec->fieldgroup = toPointer(allocated[desc.dynrec_child_fieldgroup]);
                 } else {
-                    // Create Nil constant if no valid fieldgroup
+                    // Create Nil constant if no valid fieldgroup.
                     dynrec->fieldgroup.ptr = 0;
                     dynrec->fieldgroup.constant = Const_Nil;
                     dynrec->fieldgroup.padding = 0;
