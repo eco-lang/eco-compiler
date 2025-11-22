@@ -44,7 +44,7 @@ Testing::TestCase testMultipleMinorGCCycles("Multiple minor GC cycles preserve r
 
             auto &gc = initGC();
 
-            // Create a long-lived Int object as root
+            // Create a long-lived Int object as root.
             void *root_obj = gc.allocate(sizeof(ElmInt), Tag_Int);
             ElmInt *elm_int = static_cast<ElmInt *>(root_obj);
             elm_int->value = int_value;
@@ -54,27 +54,27 @@ Testing::TestCase testMultipleMinorGCCycles("Multiple minor GC cycles preserve r
 
             i64 original_value = elm_int->value;
 
-            // Run multiple GC cycles
+            // Run multiple GC cycles.
             for (int i = 0; i < num_cycles; i++) {
-                // Check value before GC
+                // Check value before GC.
                 void *current_obj = fromPointer(root_ptr);
                 i64 before_value = static_cast<ElmInt *>(current_obj)->value;
 
-                // Allocate garbage between cycles from generated descriptions
+                // Allocate garbage between cycles from generated descriptions.
                 if (i < static_cast<int>(garbage_per_cycle.size())) {
                     allocateHeapGraph(garbage_per_cycle[i]);
                 }
 
                 gc.minorGC();
 
-                // Check value after GC
+                // Check value after GC.
                 void *after_obj = fromPointer(root_ptr);
                 i64 after_value = static_cast<ElmInt *>(after_obj)->value;
 
                 RC_ASSERT(before_value == after_value);
             }
 
-            // Verify root still exists and has same value
+            // Verify root still exists and has same value.
             void *final_obj = fromPointer(root_ptr);
             RC_ASSERT(reinterpret_cast<uintptr_t>(final_obj) != 0);
 
@@ -97,11 +97,11 @@ Testing::TestCase testContinuousGarbageAllocation("Continuous garbage allocation
                 RC_DISCARD("Nursery not available");
             }
 
-            // Get nursery capacity for calculating target
+            // Get nursery capacity for calculating target.
             size_t nursery_capacity = NURSERY_SIZE / 2;
             size_t target_allocation = nursery_capacity * 2;
 
-            // Allocate initial rooted objects from graph description
+            // Allocate initial rooted objects from graph description.
             std::vector<void *> root_objects = allocateHeapGraph(graph.nodes);
             if (root_objects.empty()) {
                 RC_DISCARD("No objects allocated");
@@ -110,14 +110,14 @@ Testing::TestCase testContinuousGarbageAllocation("Continuous garbage allocation
             std::vector<HPointer> root_storage;
             std::vector<HPointer *> root_ptrs;
 
-            // Use graph's root indices to select roots
+            // Use graph's root indices to select roots.
             for (size_t idx : graph.root_indices) {
                 if (idx < root_objects.size()) {
                     root_storage.push_back(toPointer(root_objects[idx]));
                 }
             }
 
-            // If no valid roots from graph, use first object as root
+            // If no valid roots from graph, use first object as root.
             if (root_storage.empty()) {
                 root_storage.push_back(toPointer(root_objects[0]));
             }
@@ -127,17 +127,17 @@ Testing::TestCase testContinuousGarbageAllocation("Continuous garbage allocation
                 gc.getRootSet().addRoot(&root);
             }
 
-            // Take snapshot of root objects before continuous allocation
+            // Take snapshot of root objects before continuous allocation.
             HeapSnapshot snapshot;
             snapshot.capture(root_objects, root_ptrs);
 
-            // Continuously allocate garbage (unrooted objects) until we've allocated 2x the nursery capacity
+            // Continuously allocate garbage (unrooted objects) until we've allocated 2x the nursery capacity.
             size_t total_allocated = 0;
             size_t allocation_count = 0;
 
             while (total_allocated < target_allocation) {
-                // Allocate a garbage object (not added to roots)
-                // Allocate proper ElmInt objects to avoid uninitialized memory issues
+                // Allocate a garbage object (not added to roots).
+                // Allocate proper ElmInt objects to avoid uninitialized memory issues.
                 size_t obj_size = sizeof(ElmInt);
 
                 void *garbage = gc.allocate(obj_size, Tag_Int);
@@ -145,7 +145,7 @@ Testing::TestCase testContinuousGarbageAllocation("Continuous garbage allocation
                     RC_FAIL("Allocation failed - automatic GC should prevent this");
                 }
 
-                // Initialize the object properly
+                // Initialize the object properly.
                 ElmInt *elm_int = static_cast<ElmInt *>(garbage);
                 elm_int->value = allocation_count;
 
@@ -153,10 +153,10 @@ Testing::TestCase testContinuousGarbageAllocation("Continuous garbage allocation
                 allocation_count++;
             }
 
-            // Final verification: all roots still intact and values preserved
+            // Final verification: all roots still intact and values preserved.
             bool valid = snapshot.verify(root_ptrs);
 
-            // Cleanup roots
+            // Cleanup roots.
             for (auto *root : root_ptrs) {
                 gc.getRootSet().removeRoot(root);
             }

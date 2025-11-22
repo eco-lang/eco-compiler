@@ -6,4 +6,4 @@
 extern Testing::TestCase testTLABMetricsOnEmpty;
 extern Testing::TestCase testTLABMetricsAfterAllocation;
 extern Testing::TestCase testTLABAllocationFillsCorrectly;
-extern Testing::UnitTest testTLABFillAndSeal;
+extern Testing::TestCase testTLABFillAndSeal;

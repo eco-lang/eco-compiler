@@ -7,11 +7,11 @@ namespace Elm {
 NurserySpace::NurserySpace() :
     memory(nullptr), from_space(nullptr), to_space(nullptr), alloc_ptr(nullptr), scan_ptr(nullptr),
     promotion_tlab(nullptr) {
-    // Initialization happens in initialize() method
+    // Initialization happens in initialize() method.
 }
 
 NurserySpace::~NurserySpace() {
-    // Seal any active TLAB before destroying nursery
+    // Seal any active TLAB before destroying nursery.
     if (promotion_tlab) {
         GarbageCollector::instance().getOldGen().sealTLAB(promotion_tlab);
 #if ENABLE_GC_STATS
@@ -19,7 +19,7 @@ NurserySpace::~NurserySpace() {
 #endif
         promotion_tlab = nullptr;
     }
-    // No need to free memory - it's part of the main heap
+    // No need to free memory - it's part of the main heap.
 }
 
 void NurserySpace::initialize(char *nursery_base, size_t size) {
@@ -31,27 +31,27 @@ void NurserySpace::initialize(char *nursery_base, size_t size) {
 }
 
 void NurserySpace::reset(OldGenSpace &oldgen) {
-    // Seal any active promotion TLAB
+    // Seal any active promotion TLAB.
     if (promotion_tlab) {
         oldgen.sealTLAB(promotion_tlab);
         promotion_tlab = nullptr;
     }
 
-    // Reset allocation pointers to start of from_space
+    // Reset allocation pointers to start of from_space.
     from_space = memory;
     to_space = memory + (NURSERY_SIZE / 2);
     alloc_ptr = from_space;
     scan_ptr = from_space;
 
-    // Note: We do NOT reset GC stats here - stats accumulate across runs
+    // Note: We do NOT reset GC stats here - stats accumulate across runs.
 }
 
 void *NurserySpace::allocate(size_t size) {
-    // Align to 8 bytes
+    // Align to 8 bytes.
     size = (size + 7) & ~7;
 
     if (alloc_ptr + size > from_space + (NURSERY_SIZE / 2)) {
-        return nullptr; // Nursery full, trigger GC
+        return nullptr;  // Nursery full, trigger GC.
     }
 
     void *result = alloc_ptr;
@@ -89,20 +89,20 @@ bool NurserySpace::contains(void *ptr) const {
  */
 void NurserySpace::minorGC(RootSet &roots, OldGenSpace &oldgen) {
 #if ENABLE_GC_STATS
-    // Capture state before GC
+    // Capture state before GC.
     size_t from_space_used = alloc_ptr - from_space;
     auto gc_start = GC_STATS_TIMER_START();
 #endif
 
-    // Reset allocation into the to_space
+    // Reset allocation into the to_space.
     alloc_ptr = to_space;
     scan_ptr = to_space;
     char *alloc_end = to_space;
 
-    // Buffer for promoted objects that need scanning
+    // Buffer for promoted objects that need scanning.
     std::vector<void*> promoted_objects;
 
-    // Phase 1: Evacuate roots (may add to promoted_objects)
+    // Phase 1: Evacuate roots (may add to promoted_objects).
     for (HPointer *root: roots.getRoots()) {
         evacuate(*root, oldgen, &promoted_objects);
     }
@@ -117,30 +117,30 @@ void NurserySpace::minorGC(RootSet &roots, OldGenSpace &oldgen) {
         }
     }
 
-    // Phase 2: Cheney's algorithm on to-space (may add to promoted_objects)
+    // Phase 2: Cheney's algorithm on to-space (may add to promoted_objects).
     alloc_end = alloc_ptr;
     while (scan_ptr < alloc_end) {
         void *obj = scan_ptr;
         scanObject(obj, oldgen, &promoted_objects);
         scan_ptr += getObjectSize(obj);
-        alloc_end = alloc_ptr; // Update in case scanObject caused evacuations
+        alloc_end = alloc_ptr;  // Update in case scanObject caused evacuations.
     }
 
-    // Phase 3: Process promoted objects until buffer is empty
-    // Use index-based loop since vector may grow during iteration
+    // Phase 3: Process promoted objects until buffer is empty.
+    // Use index-based loop since vector may grow during iteration.
     for (size_t i = 0; i < promoted_objects.size(); i++) {
         scanObject(promoted_objects[i], oldgen, &promoted_objects);
     }
 
-    // Phase 4: Flip spaces
+    // Phase 4: Flip spaces.
     std::swap(from_space, to_space);
-    // After swap: from_space = old to_space (has live objects)
-    //             to_space = old from_space (empty)
-    //             alloc_ptr already points to end of live objects in new from_space
+    // After swap: from_space = old to_space (has live objects).
+    //             to_space = old from_space (empty).
+    //             alloc_ptr already points to end of live objects in new from_space.
     scan_ptr = from_space;
 
 #if ENABLE_GC_STATS
-    // Calculate what happened during this GC
+    // Calculate what happened during this GC.
     size_t to_space_used = alloc_ptr - from_space;
     size_t bytes_freed = from_space_used - to_space_used;
     uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
@@ -169,18 +169,18 @@ void NurserySpace::minorGC(RootSet &roots, OldGenSpace &oldgen) {
  */
 void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
     if (ptr.constant != 0)
-        return; // It's a constant
+        return;  // It's a constant.
 
     void *obj = fromPointer(ptr);
     if (!obj)
         return;
 
-    // First priority: Check if this location has a forward pointer
+    // First priority: Check if this location has a forward pointer.
     // This must happen BEFORE the from-space check so that pointers from
-    // old-gen objects can be updated even when pointing to from-space
+    // old-gen objects can be updated even when pointing to from-space.
     Header *hdr = getHeader(obj);
     if (hdr->tag == Tag_Forward) {
-        // Follow forward pointer and update ptr
+        // Follow forward pointer and update ptr.
         Forward *fwd = static_cast<Forward *>(obj);
         char *heap_base = GarbageCollector::instance().getHeapBase();
         uintptr_t byte_offset = static_cast<uintptr_t>(fwd->header.forward_ptr) << 3;
@@ -188,37 +188,37 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         return;
     }
 
-    // Second priority: Only evacuate if in from-space (not to-space!)
-    // This prevents creating forwarding chains by re-evacuating already-moved objects
+    // Second priority: Only evacuate if in from-space (not to-space!).
+    // This prevents creating forwarding chains by re-evacuating already-moved objects.
     char *p = static_cast<char *>(obj);
     if (p < from_space || p >= from_space + (NURSERY_SIZE / 2))
         return;
 
-    // Now proceed with evacuation (object is in from-space and not yet forwarded)
+    // Now proceed with evacuation (object is in from-space and not yet forwarded).
 
     size_t size = getObjectSize(obj);
     void *new_obj = nullptr;
 
     bool promoted = false;
 
-    // Promote to old gen if age >= PROMOTION_AGE
+    // Promote to old gen if age >= PROMOTION_AGE.
     if (hdr->age >= PROMOTION_AGE) {
-        // Try TLAB allocation first (fast path, no lock!)
+        // Try TLAB allocation first (fast path, no lock).
         if (promotion_tlab && size <= OldGenSpace::TLAB_DEFAULT_SIZE) {
             new_obj = promotion_tlab->allocate(size);
         }
 
-        // TLAB exhausted or doesn't exist?
+        // TLAB exhausted or doesn't exist.
         if (!new_obj) {
-            // Check if current TLAB is exhausted
+            // Check if current TLAB is exhausted.
             if (promotion_tlab && promotion_tlab->bytesRemaining() < size) {
-                // Seal exhausted TLAB
+                // Seal exhausted TLAB.
                 oldgen.sealTLAB(promotion_tlab);
                 GC_STATS_TLAB_SEALED(stats);
                 promotion_tlab = nullptr;
             }
 
-            // Try to get a new TLAB (lock-free CAS)
+            // Try to get a new TLAB (lock-free CAS).
             if (!promotion_tlab && size <= OldGenSpace::TLAB_DEFAULT_SIZE) {
                 promotion_tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
                 if (promotion_tlab) {
@@ -228,25 +228,25 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
             }
         }
 
-        // Fallback: Use free-list allocation (for large objects or TLAB exhaustion)
+        // Fallback: Use free-list allocation (for large objects or TLAB exhaustion).
         if (!new_obj) {
-            new_obj = oldgen.allocate(size); // Takes mutex
+            new_obj = oldgen.allocate(size);  // Takes mutex.
         }
 
         if (new_obj) {
-            // Save color set by oldgen.allocate before memcpy overwrites it
+            // Save color set by oldgen.allocate before memcpy overwrites it.
             Header *new_hdr = getHeader(new_obj);
             u32 saved_color = new_hdr->color;
 
             std::memcpy(new_obj, obj, size);
 
-            // Restore old-gen color and reset age
+            // Restore old-gen color and reset age.
             new_hdr = getHeader(new_obj);
             new_hdr->color = saved_color;
             new_hdr->age = 0;
             promoted = true;
 
-            // Add to promoted objects buffer for later scanning
+            // Add to promoted objects buffer for later scanning.
             if (promoted_objects) {
                 promoted_objects->push_back(new_obj);
             }
@@ -255,29 +255,29 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         }
     }
 
-    // Copy to to_space if not promoted
+    // Copy to to_space if not promoted.
     if (!new_obj) {
-        // Allocate in to_space (size is already aligned from getObjectSize)
+        // Allocate in to_space (size is already aligned from getObjectSize).
         new_obj = alloc_ptr;
         alloc_ptr += size;
 
-        // Copy the object (size includes padding, but that's fine)
+        // Copy the object (size includes padding, but that's fine).
         std::memcpy(new_obj, obj, size);
 
-        // Update age after copying (preserves all other fields)
+        // Update age after copying (preserves all other fields).
         Header *new_hdr = getHeader(new_obj);
-        new_hdr->age++; // Increment age
+        new_hdr->age++;  // Increment age.
 
         GC_STATS_MINOR_INC_SURVIVORS(stats);
     }
 
-    // Leave forwarding pointer (as logical offset)
-    // IMPORTANT: Set this BEFORE evacuating children to prevent infinite recursion
+    // Leave forwarding pointer (as logical offset).
+    // IMPORTANT: Set this BEFORE evacuating children to prevent infinite recursion.
     Forward *fwd = static_cast<Forward *>(obj);
     fwd->header.tag = Tag_Forward;
     char *heap_base = GarbageCollector::instance().getHeapBase();
     uintptr_t byte_offset = static_cast<char *>(new_obj) - heap_base;
-    fwd->header.forward_ptr = byte_offset >> 3; // Store as offset in 8-byte units
+    fwd->header.forward_ptr = byte_offset >> 3;  // Store as offset in 8-byte units.
     fwd->header.unused = 0;
 
     ptr = toPointer(new_obj);
@@ -292,7 +292,7 @@ void NurserySpace::evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace 
 void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
     Header *hdr = getHeader(obj);
 
-    // Process children based on tag
+    // Process children based on tag.
     switch (hdr->tag) {
         case Tag_Tuple2: {
             Tuple2 *t = static_cast<Tuple2 *>(obj);

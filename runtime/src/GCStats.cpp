@@ -15,11 +15,11 @@ void GCStats::recordMinorGCEnd(uint64_t elapsed_ns, size_t freed) {
     total_minor_gc_time_ns += elapsed_ns;
     bytes_freed += freed;
 
-    // Update min/max
+    // Update min/max.
     min_minor_gc_time_ns = std::min(min_minor_gc_time_ns, elapsed_ns);
     max_minor_gc_time_ns = std::max(max_minor_gc_time_ns, elapsed_ns);
 
-    // Record in histogram
+    // Record in histogram.
     size_t bucket = getMinorHistogramBucket(elapsed_ns);
     minor_time_histogram[bucket]++;
 }
@@ -28,41 +28,41 @@ void GCStats::recordMajorGCEnd(uint64_t elapsed_ns) {
     major_gc_count++;
     total_major_gc_time_ns += elapsed_ns;
 
-    // Update min/max
+    // Update min/max.
     min_major_gc_time_ns = std::min(min_major_gc_time_ns, elapsed_ns);
     max_major_gc_time_ns = std::max(max_major_gc_time_ns, elapsed_ns);
 
-    // Record in histogram
+    // Record in histogram.
     size_t bucket = getMajorHistogramBucket(elapsed_ns);
     major_time_histogram[bucket]++;
 }
 
 size_t GCStats::getMinorHistogramBucket(uint64_t ns) const {
     if (ns >= MINOR_HISTOGRAM_MAX_NS) {
-        return HISTOGRAM_BUCKETS - 1;  // Overflow bucket
+        return HISTOGRAM_BUCKETS - 1;  // Overflow bucket.
     }
     return ns / MINOR_BUCKET_SIZE_NS;
 }
 
 size_t GCStats::getMajorHistogramBucket(uint64_t ns) const {
     if (ns >= MAJOR_HISTOGRAM_MAX_NS) {
-        return HISTOGRAM_BUCKETS - 1;  // Overflow bucket
+        return HISTOGRAM_BUCKETS - 1;  // Overflow bucket.
     }
     return ns / MAJOR_BUCKET_SIZE_NS;
 }
 
 void GCStats::combine(const GCStats& other) {
-    // Combine allocation stats
+    // Combine allocation stats.
     objects_allocated += other.objects_allocated;
     bytes_allocated += other.bytes_allocated;
 
-    // Combine Minor GC event stats
+    // Combine Minor GC event stats.
     minor_gc_count += other.minor_gc_count;
     objects_survived += other.objects_survived;
     objects_promoted += other.objects_promoted;
     bytes_freed += other.bytes_freed;
 
-    // Combine Minor GC timing stats
+    // Combine Minor GC timing stats.
     total_minor_gc_time_ns += other.total_minor_gc_time_ns;
     if (other.min_minor_gc_time_ns < min_minor_gc_time_ns) {
         min_minor_gc_time_ns = other.min_minor_gc_time_ns;
@@ -71,22 +71,22 @@ void GCStats::combine(const GCStats& other) {
         max_minor_gc_time_ns = other.max_minor_gc_time_ns;
     }
 
-    // Combine Minor GC histogram
+    // Combine Minor GC histogram.
     for (int i = 0; i < HISTOGRAM_BUCKETS; i++) {
         minor_time_histogram[i] += other.minor_time_histogram[i];
     }
 
-    // Combine TLAB stats
+    // Combine TLAB stats.
     tlabs_allocated += other.tlabs_allocated;
     tlabs_sealed += other.tlabs_sealed;
 
-    // Combine Major GC event stats
+    // Combine Major GC event stats.
     concurrent_marks_started += other.concurrent_marks_started;
     mark_sweeps_completed += other.mark_sweeps_completed;
     incremental_mark_calls += other.incremental_mark_calls;
     total_incremental_mark_work_units += other.total_incremental_mark_work_units;
 
-    // Combine Major GC timing stats
+    // Combine Major GC timing stats.
     major_gc_count += other.major_gc_count;
     total_major_gc_time_ns += other.total_major_gc_time_ns;
     if (other.min_major_gc_time_ns < min_major_gc_time_ns) {
@@ -96,7 +96,7 @@ void GCStats::combine(const GCStats& other) {
         max_major_gc_time_ns = other.max_major_gc_time_ns;
     }
 
-    // Combine Major GC histogram
+    // Combine Major GC histogram.
     for (int i = 0; i < HISTOGRAM_BUCKETS; i++) {
         major_time_histogram[i] += other.major_time_histogram[i];
     }
@@ -164,7 +164,7 @@ void GCStats::print() const {
         // ========== Minor GC Histogram ==========
         std::cout << "Minor GC Time Histogram (nanoseconds):" << std::endl;
 
-        // Find max count for scaling
+        // Find max count for scaling.
         uint64_t max_count = 0;
         for (int i = 0; i < HISTOGRAM_BUCKETS; i++) {
             max_count = std::max(max_count, minor_time_histogram[i]);
@@ -173,9 +173,9 @@ void GCStats::print() const {
         const int BAR_WIDTH = 40;
 
         for (int i = 0; i < HISTOGRAM_BUCKETS; i++) {
-            if (minor_time_histogram[i] == 0) continue;  // Skip empty buckets
+            if (minor_time_histogram[i] == 0) continue;  // Skip empty buckets.
 
-            // Bucket range
+            // Bucket range.
             if (i < HISTOGRAM_BUCKETS - 1) {
                 uint64_t range_start = i * MINOR_BUCKET_SIZE_NS;
                 uint64_t range_end = (i + 1) * MINOR_BUCKET_SIZE_NS;
@@ -185,13 +185,13 @@ void GCStats::print() const {
                 std::cout << "  > " << std::setw(6) << MINOR_HISTOGRAM_MAX_NS << " ns: ";
             }
 
-            // Draw bar
+            // Draw bar.
             int bar_len = max_count > 0 ? (minor_time_histogram[i] * BAR_WIDTH) / max_count : 0;
             for (int j = 0; j < bar_len; j++) {
                 std::cout << "█";
             }
 
-            // Show count and percentage
+            // Show count and percentage.
             double percentage = (minor_time_histogram[i] * 100.0) / minor_gc_count;
             std::cout << " " << minor_time_histogram[i] << " (" << std::fixed << std::setprecision(1)
                       << percentage << "%)" << std::endl;
@@ -242,7 +242,7 @@ void GCStats::print() const {
         // ========== Major GC Histogram ==========
         std::cout << "Major GC Time Histogram (milliseconds):" << std::endl;
 
-        // Find max count for scaling
+        // Find max count for scaling.
         uint64_t max_count = 0;
         for (int i = 0; i < HISTOGRAM_BUCKETS; i++) {
             max_count = std::max(max_count, major_time_histogram[i]);
@@ -251,9 +251,9 @@ void GCStats::print() const {
         const int BAR_WIDTH = 40;
 
         for (int i = 0; i < HISTOGRAM_BUCKETS; i++) {
-            if (major_time_histogram[i] == 0) continue;  // Skip empty buckets
+            if (major_time_histogram[i] == 0) continue;  // Skip empty buckets.
 
-            // Bucket range (convert to milliseconds for display)
+            // Bucket range (convert to milliseconds for display).
             if (i < HISTOGRAM_BUCKETS - 1) {
                 double range_start = (i * MAJOR_BUCKET_SIZE_NS) / 1000000.0;
                 double range_end = ((i + 1) * MAJOR_BUCKET_SIZE_NS) / 1000000.0;
@@ -264,13 +264,13 @@ void GCStats::print() const {
                 std::cout << "  > " << std::setw(6) << std::fixed << std::setprecision(1) << max_ms << " ms: ";
             }
 
-            // Draw bar
+            // Draw bar.
             int bar_len = max_count > 0 ? (major_time_histogram[i] * BAR_WIDTH) / max_count : 0;
             for (int j = 0; j < bar_len; j++) {
                 std::cout << "█";
             }
 
-            // Show count and percentage
+            // Show count and percentage.
             double percentage = (major_time_histogram[i] * 100.0) / major_gc_count;
             std::cout << " " << major_time_histogram[i] << " (" << std::fixed << std::setprecision(1)
                       << percentage << "%)" << std::endl;
@@ -281,11 +281,11 @@ void GCStats::print() const {
 }
 
 void GCStats::reset() {
-    // Reset allocation stats
+    // Reset allocation stats.
     objects_allocated = 0;
     bytes_allocated = 0;
 
-    // Reset Minor GC stats
+    // Reset Minor GC stats.
     minor_gc_count = 0;
     objects_survived = 0;
     objects_promoted = 0;
@@ -298,11 +298,11 @@ void GCStats::reset() {
         minor_time_histogram[i] = 0;
     }
 
-    // Reset TLAB stats
+    // Reset TLAB stats.
     tlabs_allocated = 0;
     tlabs_sealed = 0;
 
-    // Reset Major GC stats
+    // Reset Major GC stats.
     concurrent_marks_started = 0;
     mark_sweeps_completed = 0;
     incremental_mark_calls = 0;

@@ -28,15 +28,15 @@ public:
      * @return Pointer to allocated memory, or nullptr if TLAB exhausted
      */
     void* allocate(size_t size) {
-        // Align to 8 bytes
+        // Align to 8 bytes.
         size = (size + 7) & ~7;
 
-        // Check if we have space
+        // Check if we have space.
         if (alloc_ptr + size > end) {
-            return nullptr; // TLAB exhausted
+            return nullptr;  // TLAB exhausted.
         }
 
-        // Bump pointer allocation (thread-local, no sync!)
+        // Bump pointer allocation (thread-local, no sync).
         void* result = alloc_ptr;
         alloc_ptr += size;
         return result;

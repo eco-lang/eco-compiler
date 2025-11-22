@@ -46,8 +46,8 @@ typedef enum {
     Tag_Forward,
     // Tag_ByteBuffer - Buffers of bytes or UTF-8 encoded strings.
     // Tag_Slice - String or even List or Array or Bytes slice.
-    // Tag_Array - Packed arrays
-    // Tag_Tensor - Tensors
+    // Tag_Array - Packed arrays.
+    // Tag_Tensor - Tensors.
 } Tag;
 
 // Heap header that every heap object must have.
@@ -64,8 +64,8 @@ typedef struct {
 } Header;
 static_assert(sizeof(Header) == 8, "Header must be 64 bits");
 
-// Frequently used constants in Elm can be embedded directly into HPointer,
-// so there is no need to trace a pointer to reach them.
+// Frequently used constants in Elm can be embedded directly into HPointer.
+// There is no need to trace a pointer to reach them.
 typedef enum {
     Const_Unit,
     Const_EmptyRec,
@@ -84,8 +84,8 @@ typedef struct {
 } HPointer;
 static_assert(sizeof(HPointer) == 8, "HPointer must be 64 bits");
 
-// A pointer or unboxed primitive. Used when there is an "unboxed" bitmap in a structure, describing
-// which fields are boxed or unboxed.
+// A pointer or unboxed primitive. Used when there is an "unboxed" bitmap in a structure.
+// The bitmap describes which fields are boxed or unboxed.
 typedef union {
     HPointer p;
     i64 i;
@@ -117,7 +117,7 @@ typedef struct {
 // a 16-byte forward pointer, corrupting adjacent heap objects.
 
 // Make sure strings are properly aligned on 64-bit target.
-// Otherwise C compiler can truncate any zero padding at the end.
+// Otherwise the C compiler can truncate any zero padding at the end.
 #define ALIGN(X) __attribute__((aligned(X)))
 struct ALIGN(8) elm_string {
     Header header; // Size in header, up to 4G characters.
@@ -201,16 +201,16 @@ typedef struct {
     HPointer task;
 } Task;
 
-// Forward object for compaction - uses special header layout
+// Forward object for compaction - uses special header layout.
 // The header fields are repurposed: tag identifies it as Forward,
-// and the remaining bits store the forwarding pointer
+// and the remaining bits store the forwarding pointer.
 typedef struct {
     struct {
-        u64 tag : TAG_BITS;           // Tag_Forward (identifies this as a forwarding pointer)
-        u64 forward_ptr : POINTER_BITS;  // Logical pointer offset to new location
-        u64 unused : 19;              // Unused bits (could store metadata if needed)
+        u64 tag : TAG_BITS;           // Tag_Forward (identifies this as a forwarding pointer).
+        u64 forward_ptr : POINTER_BITS;  // Logical pointer offset to new location.
+        u64 unused : 19;              // Unused bits (could store metadata if needed).
     } header;
-    // No additional fields - this replaces the evacuated object's header
+    // No additional fields - this replaces the evacuated object's header.
 } Forward;
 
 typedef union HeapValue {

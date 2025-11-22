@@ -21,7 +21,7 @@ static HPointer createConstant(Constant c) {
 static u64 buildUnboxedBitmap(const std::vector<bool>& boxed_flags, size_t max_bits) {
     u64 bitmap = 0;
     for (size_t i = 0; i < std::min(boxed_flags.size(), max_bits); i++) {
-        if (!boxed_flags[i]) {  // unboxed when flag is false
+        if (!boxed_flags[i]) {  // Unboxed when flag is false.
             bitmap |= (1ULL << i);
         }
     }

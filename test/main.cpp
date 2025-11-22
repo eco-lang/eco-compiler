@@ -269,7 +269,7 @@ TestConfig parseCommandLine(int argc, char* argv[]) {
                 printHelp(argv[0]);
                 exit(0);
             case '?':
-                // getopt_long already printed an error message
+                // getopt_long already printed an error message.
                 std::cerr << "Use -h or --help for usage information\n";
                 exit(1);
             default:
@@ -277,13 +277,13 @@ TestConfig parseCommandLine(int argc, char* argv[]) {
         }
     }
 
-    // Validate that --repeat and --duration are not both specified
+    // Validate that --repeat and --duration are not both specified.
     if (config.repeat > 1 && config.duration.has_value()) {
         std::cerr << "Error: --repeat and --duration cannot be used together\n";
         exit(1);
     }
 
-    // --timeout can be combined with --repeat or used alone, but not with --duration
+    // --timeout can be combined with --repeat or used alone, but not with --duration.
     if (config.duration.has_value() && config.timeout.has_value()) {
         std::cerr << "Error: --duration and --timeout cannot be used together\n";
         exit(1);
@@ -461,7 +461,7 @@ void runInteractive(const Testing::TestSuite& suite, const std::string& path = "
 int main(int argc, char* argv[]) {
     TestConfig config = parseCommandLine(argc, argv);
 
-    // Create test suites organized by component
+    // Create test suites organized by component.
     Testing::TestSuite nurseryTests("NurserySpace");
     nurseryTests.add(testMinorGCPreservesRoots);
     nurseryTests.add(testMultipleMinorGCCycles);
@@ -514,7 +514,7 @@ int main(int argc, char* argv[]) {
     elmTests.add(testElmReverseSurvivesGC);
     elmTests.add(testElmReverseLargeList);
 
-    // Root suite containing all sub-suites
+    // Root suite containing all sub-suites.
     Testing::TestSuite suite("All Tests");
     suite.add(std::move(nurseryTests));
     suite.add(std::move(tlabTests));
@@ -523,7 +523,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(gcTests));
     suite.add(std::move(elmTests));
 
-    // Handle --list option
+    // Handle --list option.
     if (config.list_tests) {
         std::cout << "Available tests:\n";
         auto test_names = suite.listTests();
@@ -533,7 +533,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    // Handle --interactive option
+    // Handle --interactive option.
     if (config.interactive) {
         configureRapidCheck(config);
         std::cout << "=== Eco Runtime GC Tests - Interactive Mode ===" << std::endl;
@@ -541,7 +541,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    // Configure RapidCheck with command line parameters
+    // Configure RapidCheck with command line parameters.
     configureRapidCheck(config);
 
     std::cout << "=== Eco Runtime GC Property-Based Tests ===" << std::endl;
@@ -570,11 +570,11 @@ int main(int argc, char* argv[]) {
 
     std::cout << std::endl;
 
-    // Run tests (potentially multiple times or for a duration)
+    // Run tests (potentially multiple times or for a duration).
     int exit_code = 0;
 
     if (config.duration.has_value()) {
-        // Duration mode: run tests repeatedly until time expires, then exit successfully
+        // Duration mode: run tests repeatedly until time expires, then exit successfully.
         Testing::Deadline::setDuration(config.duration.value());
         auto start_time = std::chrono::steady_clock::now();
         int iteration = 1;
@@ -594,18 +594,18 @@ int main(int argc, char* argv[]) {
                       << ", Remaining: " << formatDuration(remaining) << ") ===" << std::endl;
             std::cout << std::endl;
 
-            // Run all tests (or filtered subset)
+            // Run all tests (or filtered subset).
             auto result = suite.run(config.filter);
             total_tests_run += result.tests_run;
 
             if (result.duration_expired) {
-                // Duration expired mid-suite - this is fine, just stop
+                // Duration expired mid-suite - this is fine, just stop.
                 break;
             }
 
             iteration++;
 
-            // Check if we still have time for another iteration
+            // Check if we still have time for another iteration.
             if (!Testing::Deadline::durationExpired()) {
                 std::cout << std::endl;
             }
@@ -619,9 +619,9 @@ int main(int argc, char* argv[]) {
                   << formatDuration(total_elapsed) << std::endl;
 
         Testing::Deadline::clear();
-        // exit_code stays 0 - duration expiring is success
+        // exit_code stays 0 - duration expiring is success.
     } else {
-        // Iteration-based test execution (with optional timeout)
+        // Iteration-based test execution (with optional timeout).
         if (config.timeout.has_value()) {
             Testing::Deadline::setTimeout(config.timeout.value());
         }
@@ -632,7 +632,7 @@ int main(int argc, char* argv[]) {
                 std::cout << std::endl;
             }
 
-            // Run all tests (or filtered subset)
+            // Run all tests (or filtered subset).
             auto result = suite.run(config.filter);
 
             if (result.timeout_expired) {
@@ -653,18 +653,18 @@ int main(int argc, char* argv[]) {
     }
 
 #if ENABLE_GC_STATS
-    // Print GC statistics after all tests complete
-    // Combine thread-local nursery stats with global major GC stats
+    // Print GC statistics after all tests complete.
+    // Combine thread-local nursery stats with global major GC stats.
     auto &gc = GarbageCollector::instance();
     auto *nursery = gc.getNursery();
     if (nursery) {
-        // Start with a copy of the nursery stats (Minor GC + TLAB)
+        // Start with a copy of the nursery stats (Minor GC + TLAB).
         GCStats combined_stats = nursery->getStats();
 
-        // Combine with global Major GC stats
+        // Combine with global Major GC stats.
         combined_stats.combine(gc.getMajorGCStats());
 
-        // Print the combined statistics
+        // Print the combined statistics.
         combined_stats.print();
     }
 #endif

@@ -1,52 +1,112 @@
 #include "OldGenSpaceTest.hpp"
+#include <cstring>
+#include <iostream>
 #include <rapidcheck.h>
 #include <vector>
 #include "GarbageCollector.hpp"
 #include "Heap.hpp"
 #include "HeapGenerators.hpp"
+#include "HeapSnapshot.hpp"
 #include "OldGenSpace.hpp"
-#include "TestHelpers.hpp"
 
 using namespace Elm;
+
+// ============================================================================
+// Helper: Create constant HPointer.
+// ============================================================================
+
+static HPointer createConstant(Constant c) {
+    HPointer ptr;
+    ptr.ptr = 0;
+    ptr.constant = c;
+    ptr.padding = 0;
+    return ptr;
+}
+
+// ============================================================================
+// Helper: Allocate a simple ElmInt into a TLAB.
+// ============================================================================
+
+static void* allocateIntIntoTLAB(TLAB* tlab, i64 value) {
+    void* obj = tlab->allocate(sizeof(ElmInt));
+    if (!obj) return nullptr;
+
+    Header* hdr = reinterpret_cast<Header*>(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Int;
+    hdr->color = static_cast<u32>(Color::White);
+
+    ElmInt* elm_int = static_cast<ElmInt*>(obj);
+    elm_int->value = value;
+
+    return obj;
+}
+
+// ============================================================================
+// Helper: Allocate a Cons cell into a TLAB (for building linked lists).
+// ============================================================================
+
+static void* allocateConsIntoTLAB(TLAB* tlab, HPointer head_ptr, HPointer tail_ptr, bool head_boxed) {
+    void* obj = tlab->allocate(sizeof(Cons));
+    if (!obj) return nullptr;
+
+    Header* hdr = reinterpret_cast<Header*>(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Cons;
+    hdr->color = static_cast<u32>(Color::White);
+    hdr->unboxed = head_boxed ? 0 : 1;  // Bit 0 = head unboxed flag.
+
+    Cons* cons = static_cast<Cons*>(obj);
+    cons->head.p = head_ptr;
+    cons->tail = tail_ptr;
+
+    return obj;
+}
 
 // ============================================================================
 // Tests
 // ============================================================================
 
-Testing::UnitTest testAllocateTLAB("allocateTLAB returns usable TLAB within OldGenSpace bounds", []() {
-    auto& gc = initGC();
-    auto& oldgen = gc.getOldGen();
+Testing::TestCase testAllocateTLAB("allocateTLAB returns usable TLAB within OldGenSpace bounds", []() {
+    rc::check([]() {
+        auto& gc = GarbageCollector::instance();
+        gc.initThread();
+        gc.reset();
+        auto& oldgen = gc.getOldGen();
 
-    // Allocate a TLAB.
-    TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
-    TEST_ASSERT(tlab != nullptr);
+        // Allocate a TLAB.
+        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+        RC_ASSERT(tlab != nullptr);
 
-    // Verify TLAB has expected capacity.
-    TEST_ASSERT(tlab->capacity() >= OldGenSpace::TLAB_MIN_SIZE);
+        // Verify TLAB has expected capacity.
+        RC_ASSERT(tlab->capacity() >= OldGenSpace::TLAB_MIN_SIZE);
 
-    // Verify TLAB memory is within OldGenSpace bounds.
-    TEST_ASSERT(oldgen.contains(tlab->start));
-    TEST_ASSERT(oldgen.contains(tlab->end - 1));  // end-1 since end is one past.
+        // Verify TLAB memory is within OldGenSpace bounds.
+        RC_ASSERT(oldgen.contains(tlab->start));
+        RC_ASSERT(oldgen.contains(tlab->end - 1));  // end-1 since end is one past.
 
-    // Verify TLAB is initially empty.
-    TEST_ASSERT(tlab->isEmpty());
-    TEST_ASSERT(!tlab->isFull());
+        // Verify TLAB is initially empty.
+        RC_ASSERT(tlab->isEmpty());
+        RC_ASSERT(!tlab->isFull());
 
-    // Clean up - seal the TLAB.
-    oldgen.sealTLAB(tlab);
+        // Clean up - seal the TLAB.
+        oldgen.sealTLAB(tlab);
+    });
 });
 
 Testing::TestCase testRootsMarkedAtStart("startConcurrentMark pushes roots to mark stack", []() {
     rc::check([]() {
-        auto& gc = initGC();
+        auto& gc = GarbageCollector::instance();
+        gc.initThread();
+        gc.reset();
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
-        // Allocate a TLAB and put some objects in it
+        // Allocate a TLAB and put some objects in it.
         TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
         RC_ASSERT(tlab != nullptr);
 
-        // Generate random int values (size-scaled: 1-10 at size 0, up to 1-110 at size 1000)
+        // Generate random int values (size-scaled: 1-10 at size 0, up to 1-110 at size 1000).
         size_t num_values = *rc::sizedRange<size_t>(1, 10, 0.1);
         auto int_values = *rc::gen::container<std::vector<i64>>(
             num_values,
@@ -63,15 +123,15 @@ Testing::TestCase testRootsMarkedAtStart("startConcurrentMark pushes roots to ma
             root_storage.push_back(toPointer(obj));
         }
 
-        // Register all objects as roots
+        // Register all objects as roots.
         for (auto& root : root_storage) {
             rootset.addRoot(&root);
         }
 
-        // Seal the TLAB
+        // Seal the TLAB.
         oldgen.sealTLAB(tlab);
 
-        // Start concurrent mark
+        // Start concurrent mark.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
         oldgen.startConcurrentMark(rootset, stats);
@@ -79,27 +139,27 @@ Testing::TestCase testRootsMarkedAtStart("startConcurrentMark pushes roots to ma
         oldgen.startConcurrentMark(rootset);
 #endif
 
-        // After startConcurrentMark, roots should be on the mark stack
-        // We can verify by doing incremental mark and checking objects become Black
+        // After startConcurrentMark, roots should be on the mark stack.
+        // We can verify by doing incremental mark and checking objects become Black.
 #if ENABLE_GC_STATS
         bool more_work = oldgen.incrementalMark(1000, stats);
 #else
         bool more_work = oldgen.incrementalMark(1000);
 #endif
-        (void)more_work;  // Suppress unused warning
+        (void)more_work;  // Suppress unused warning.
 
-        // All roots should now be marked Black
+        // All roots should now be marked Black.
         for (void* obj : objects) {
             Header* hdr = getHeader(obj);
             RC_ASSERT(hdr->color == static_cast<u32>(Color::Black));
         }
 
-        // Clean up roots
+        // Clean up roots.
         for (auto& root : root_storage) {
             rootset.removeRoot(&root);
         }
 
-        // Complete the GC to reset state
+        // Complete the GC to reset state.
 #if ENABLE_GC_STATS
         oldgen.finishMarkAndSweep(stats);
 #else
@@ -110,20 +170,22 @@ Testing::TestCase testRootsMarkedAtStart("startConcurrentMark pushes roots to ma
 
 Testing::TestCase testRootsPreservedAfterIncrementalMark("Roots remain marked Black after incremental mark steps", []() {
     rc::check([]() {
-        auto& gc = initGC();
+        auto& gc = GarbageCollector::instance();
+        gc.initThread();
+        gc.reset();
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
         TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
         RC_ASSERT(tlab != nullptr);
 
-        // Create a linked list of objects (size-scaled: 2-8 at size 0, up to 2-108 at size 1000)
+        // Create a linked list of objects (size-scaled: 2-8 at size 0, up to 2-108 at size 1000).
         size_t num_nodes = *rc::sizedRange<size_t>(2, 8, 0.1);
 
         std::vector<void*> objects;
         std::vector<i64> expected_values;
 
-        // Create nodes in reverse order to build list
+        // Create nodes in reverse order to build list.
         HPointer tail = createConstant(Const_Nil);
 
         for (size_t i = 0; i < num_nodes; i++) {
@@ -142,13 +204,13 @@ Testing::TestCase testRootsPreservedAfterIncrementalMark("Roots remain marked Bl
             tail = toPointer(cons_obj);
         }
 
-        // Only root the head of the list (last cons created)
+        // Only root the head of the list (last cons created).
         HPointer root = tail;
         rootset.addRoot(&root);
 
         oldgen.sealTLAB(tlab);
 
-        // Start marking
+        // Start marking.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
         oldgen.startConcurrentMark(rootset, stats);
@@ -156,7 +218,7 @@ Testing::TestCase testRootsPreservedAfterIncrementalMark("Roots remain marked Bl
         oldgen.startConcurrentMark(rootset);
 #endif
 
-        // Do incremental marking in small steps (size-scaled)
+        // Do incremental marking in small steps (size-scaled).
         size_t step_size = *rc::sizedRange<size_t>(1, 5, 0.05);
         while (true) {
 #if ENABLE_GC_STATS
@@ -167,13 +229,13 @@ Testing::TestCase testRootsPreservedAfterIncrementalMark("Roots remain marked Bl
             if (!more) break;
         }
 
-        // All reachable objects should be Black
+        // All reachable objects should be Black.
         for (void* obj : objects) {
             Header* hdr = getHeader(obj);
             RC_ASSERT(hdr->color == static_cast<u32>(Color::Black));
         }
 
-        // Clean up
+        // Clean up.
         rootset.removeRoot(&root);
 
 #if ENABLE_GC_STATS
@@ -186,14 +248,16 @@ Testing::TestCase testRootsPreservedAfterIncrementalMark("Roots remain marked Bl
 
 Testing::TestCase testRootsPreservedAfterSweep("Root objects survive full GC cycle with values intact", []() {
     rc::check([]() {
-        auto& gc = initGC();
+        auto& gc = GarbageCollector::instance();
+        gc.initThread();
+        gc.reset();
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
         TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
         RC_ASSERT(tlab != nullptr);
 
-        // Create some rooted objects (size-scaled: 1-5 at size 0, up to 1-55 at size 1000)
+        // Create some rooted objects (size-scaled: 1-5 at size 0, up to 1-55 at size 1000).
         size_t num_values = *rc::sizedRange<size_t>(1, 5, 0.05);
         auto int_values = *rc::gen::container<std::vector<i64>>(
             num_values,
@@ -210,14 +274,14 @@ Testing::TestCase testRootsPreservedAfterSweep("Root objects survive full GC cyc
             root_storage.push_back(toPointer(obj));
         }
 
-        // Register roots
+        // Register roots.
         for (auto& root : root_storage) {
             rootset.addRoot(&root);
         }
 
         oldgen.sealTLAB(tlab);
 
-        // Run full GC
+        // Run full GC.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
         oldgen.startConcurrentMark(rootset, stats);
@@ -227,7 +291,7 @@ Testing::TestCase testRootsPreservedAfterSweep("Root objects survive full GC cyc
         oldgen.finishMarkAndSweep();
 #endif
 
-        // Verify all root values are intact
+        // Verify all root values are intact.
         for (size_t i = 0; i < objects.size(); i++) {
             void* obj = fromPointer(root_storage[i]);
             if (!obj) RC_FAIL("Root object became null after GC");
@@ -239,7 +303,7 @@ Testing::TestCase testRootsPreservedAfterSweep("Root objects survive full GC cyc
             RC_ASSERT(elm_int->value == int_values[i]);
         }
 
-        // Clean up
+        // Clean up.
         for (auto& root : root_storage) {
             rootset.removeRoot(&root);
         }
@@ -248,14 +312,16 @@ Testing::TestCase testRootsPreservedAfterSweep("Root objects survive full GC cyc
 
 Testing::TestCase testGarbageUnmarkedInIncrementalSteps("Objects with no roots remain White after incremental marking", []() {
     rc::check([]() {
-        auto& gc = initGC();
+        auto& gc = GarbageCollector::instance();
+        gc.initThread();
+        gc.reset();
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
         TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
         RC_ASSERT(tlab != nullptr);
 
-        // Create objects but DON'T root them (size-scaled: 1-10 at size 0, up to 1-110 at size 1000)
+        // Create objects but DON'T root them (size-scaled: 1-10 at size 0, up to 1-110 at size 1000).
         size_t num_garbage = *rc::sizedRange<size_t>(1, 10, 0.1);
 
         std::vector<void*> garbage_objects;
@@ -268,7 +334,7 @@ Testing::TestCase testGarbageUnmarkedInIncrementalSteps("Objects with no roots r
 
         oldgen.sealTLAB(tlab);
 
-        // Start mark with empty root set (no roots!)
+        // Start mark with empty root set (no roots!).
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
         oldgen.startConcurrentMark(rootset, stats);
@@ -276,21 +342,21 @@ Testing::TestCase testGarbageUnmarkedInIncrementalSteps("Objects with no roots r
         oldgen.startConcurrentMark(rootset);
 #endif
 
-        // Incremental mark should have nothing to do
+        // Incremental mark should have nothing to do.
 #if ENABLE_GC_STATS
         bool more_work = oldgen.incrementalMark(1000, stats);
 #else
         bool more_work = oldgen.incrementalMark(1000);
 #endif
-        RC_ASSERT(!more_work);  // No roots means no work
+        RC_ASSERT(!more_work);  // No roots means no work.
 
-        // All garbage objects should still be White (unmarked)
+        // All garbage objects should still be White (unmarked).
         for (void* obj : garbage_objects) {
             Header* hdr = getHeader(obj);
             RC_ASSERT(hdr->color == static_cast<u32>(Color::White));
         }
 
-        // Clean up by running sweep
+        // Clean up by running sweep.
 #if ENABLE_GC_STATS
         oldgen.finishMarkAndSweep(stats);
 #else
@@ -301,14 +367,16 @@ Testing::TestCase testGarbageUnmarkedInIncrementalSteps("Objects with no roots r
 
 Testing::TestCase testGarbageFreeListedAfterSweep("Unreachable objects are reclaimed by sweep", []() {
     rc::check([]() {
-        auto& gc = initGC();
+        auto& gc = GarbageCollector::instance();
+        gc.initThread();
+        gc.reset();
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
         TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
         RC_ASSERT(tlab != nullptr);
 
-        // Create garbage objects (size-scaled: 1-10 at size 0, up to 1-110 at size 1000)
+        // Create garbage objects (size-scaled: 1-10 at size 0, up to 1-110 at size 1000).
         size_t num_garbage = *rc::sizedRange<size_t>(1, 10, 0.1);
 
         std::vector<void*> garbage_objects;
@@ -324,7 +392,7 @@ Testing::TestCase testGarbageFreeListedAfterSweep("Unreachable objects are recla
 
         oldgen.sealTLAB(tlab);
 
-        // Run full GC with no roots - all should be reclaimed
+        // Run full GC with no roots - all should be reclaimed.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
         oldgen.startConcurrentMark(rootset, stats);
@@ -334,14 +402,14 @@ Testing::TestCase testGarbageFreeListedAfterSweep("Unreachable objects are recla
         oldgen.finishMarkAndSweep();
 #endif
 
-        // After sweep, the garbage memory should be on the free list
+        // After sweep, the garbage memory should be on the free list.
         // We can't directly check the free list, but we can verify by:
-        // 1. Allocating new memory and checking we get addresses in the same range
+        // 1. Allocating new memory and checking we get addresses in the same range.
         // Note: The sweep adds dead objects to free list, so subsequent allocations
-        // should be able to reuse that memory
+        // should be able to reuse that memory.
 
         // The test passes if GC completes without error - the sweep processed
-        // the sealed TLAB and added dead objects to free list
+        // the sealed TLAB and added dead objects to free list.
         RC_ASSERT(true);
     });
 });

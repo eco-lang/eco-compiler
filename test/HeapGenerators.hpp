@@ -113,8 +113,8 @@ HPointer allocateList(const ListDesc& list_desc,
 namespace rc {
 
 // Size-scaled range generator with minimum floor.
-// At size=0, generates in range [min_val, base_max)
-// At larger sizes, upper bound grows: [min_val, base_max + size * scale_factor)
+// At size=0, generates in range [min_val, base_max).
+// At larger sizes, upper bound grows: [min_val, base_max + size * scale_factor).
 template<typename T>
 Gen<T> sizedRange(T min_val, T base_max, double scale_factor = 0.1) {
     return gen::withSize([=](int size) {
