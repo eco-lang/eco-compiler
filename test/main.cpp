@@ -493,6 +493,16 @@ int main(int argc, char* argv[]) {
     gcTests.add(testMultipleMajorGCCycles);
     gcTests.add(testStressTestBothGenerations);
 
+    Testing::TestSuite elmTests("Elm");
+    elmTests.add(testElmNilConstant);
+    elmTests.add(testElmConsAllocation);
+    elmTests.add(testElmListFromInts);
+    elmTests.add(testElmReverseEmpty);
+    elmTests.add(testElmReverseSingle);
+    elmTests.add(testElmReverseMultiple);
+    elmTests.add(testElmReverseSurvivesGC);
+    elmTests.add(testElmReverseLargeList);
+
     // Root suite containing all sub-suites
     Testing::TestSuite suite("All Tests");
     suite.add(std::move(nurseryTests));
@@ -500,16 +510,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(oldGenTests));
     suite.add(std::move(compactionTests));
     suite.add(std::move(gcTests));
-
-    // Elm Runtime Tests
-    suite.add(testElmNilConstant);
-    suite.add(testElmConsAllocation);
-    suite.add(testElmListFromInts);
-    suite.add(testElmReverseEmpty);
-    suite.add(testElmReverseSingle);
-    suite.add(testElmReverseMultiple);
-    suite.add(testElmReverseSurvivesGC);
-    suite.add(testElmReverseLargeList);
+    suite.add(std::move(elmTests));
 
     // Handle --list option
     if (config.list_tests) {
