@@ -36,10 +36,17 @@ public:
     uint64_t min_minor_gc_time_ns = UINT64_MAX;
     uint64_t max_minor_gc_time_ns = 0;
 
-    // Histogram: 20 buckets of 5000ns each (0-100000ns), plus overflow bucket.
-    static constexpr int HISTOGRAM_BUCKETS = 21;
-    static constexpr uint64_t MINOR_HISTOGRAM_MAX_NS = 100000;
-    static constexpr uint64_t MINOR_BUCKET_SIZE_NS = MINOR_HISTOGRAM_MAX_NS / (HISTOGRAM_BUCKETS - 1);
+    // Histogram: Extended dynamic range
+    // - 20 buckets of 5000ns each (0-100000ns)
+    // - 18 buckets of 50000ns each (100000ns-1000000ns)
+    // - 1 overflow bucket (>1000000ns)
+    static constexpr int HISTOGRAM_BUCKETS = 39;
+    static constexpr uint64_t MINOR_HISTOGRAM_FIRST_RANGE = 100000;  // 100µs
+    static constexpr uint64_t MINOR_HISTOGRAM_SECOND_RANGE = 1000000; // 1ms
+    static constexpr uint64_t MINOR_BUCKET_SIZE_SMALL = 5000;   // 5µs for first range
+    static constexpr uint64_t MINOR_BUCKET_SIZE_LARGE = 50000;  // 50µs for second range
+    static constexpr int MINOR_BUCKETS_SMALL = 20;  // 0-100µs
+    static constexpr int MINOR_BUCKETS_LARGE = 18;  // 100µs-1ms
 
     uint64_t minor_time_histogram[HISTOGRAM_BUCKETS] = {0};
 
@@ -59,10 +66,7 @@ public:
     uint64_t min_major_gc_time_ns = UINT64_MAX;
     uint64_t max_major_gc_time_ns = 0;
 
-    // Major GC histogram: 0-100ms in 5ms increments, plus overflow bucket.
-    static constexpr uint64_t MAJOR_HISTOGRAM_MAX_NS = 100000000;  // 100ms
-    static constexpr uint64_t MAJOR_BUCKET_SIZE_NS = MAJOR_HISTOGRAM_MAX_NS / (HISTOGRAM_BUCKETS - 1);
-
+    // Major GC histogram: Using same bucket count as minor GC
     uint64_t major_time_histogram[HISTOGRAM_BUCKETS] = {0};
 
     // ========== Methods ==========

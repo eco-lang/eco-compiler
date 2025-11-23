@@ -38,17 +38,38 @@ void GCStats::recordMajorGCEnd(uint64_t elapsed_ns) {
 }
 
 size_t GCStats::getMinorHistogramBucket(uint64_t ns) const {
-    if (ns >= MINOR_HISTOGRAM_MAX_NS) {
-        return HISTOGRAM_BUCKETS - 1;  // Overflow bucket.
+    if (ns >= MINOR_HISTOGRAM_SECOND_RANGE) {
+        return HISTOGRAM_BUCKETS - 1;  // Overflow bucket >1ms.
     }
-    return ns / MINOR_BUCKET_SIZE_NS;
+    if (ns >= MINOR_HISTOGRAM_FIRST_RANGE) {
+        // Second range: 100µs-1ms with 50µs buckets
+        size_t offset = ns - MINOR_HISTOGRAM_FIRST_RANGE;
+        return MINOR_BUCKETS_SMALL + (offset / MINOR_BUCKET_SIZE_LARGE);
+    }
+    // First range: 0-100µs with 5µs buckets
+    return ns / MINOR_BUCKET_SIZE_SMALL;
 }
 
 size_t GCStats::getMajorHistogramBucket(uint64_t ns) const {
-    if (ns >= MAJOR_HISTOGRAM_MAX_NS) {
-        return HISTOGRAM_BUCKETS - 1;  // Overflow bucket.
+    // Major GC uses millisecond scale buckets
+    // - 20 buckets of 5ms each (0-100ms)
+    // - 18 buckets of 50ms each (100ms-1000ms)
+    // - 1 overflow bucket (>1000ms)
+    static constexpr uint64_t MAJOR_FIRST_RANGE = 100000000;  // 100ms
+    static constexpr uint64_t MAJOR_SECOND_RANGE = 1000000000; // 1000ms
+    static constexpr uint64_t MAJOR_BUCKET_SMALL = 5000000;   // 5ms
+    static constexpr uint64_t MAJOR_BUCKET_LARGE = 50000000;  // 50ms
+
+    if (ns >= MAJOR_SECOND_RANGE) {
+        return HISTOGRAM_BUCKETS - 1;  // Overflow bucket >1s.
     }
-    return ns / MAJOR_BUCKET_SIZE_NS;
+    if (ns >= MAJOR_FIRST_RANGE) {
+        // Second range: 100ms-1s with 50ms buckets
+        size_t offset = ns - MAJOR_FIRST_RANGE;
+        return MINOR_BUCKETS_SMALL + (offset / MAJOR_BUCKET_LARGE);
+    }
+    // First range: 0-100ms with 5ms buckets
+    return ns / MAJOR_BUCKET_SMALL;
 }
 
 void GCStats::combine(const GCStats& other) {
@@ -177,12 +198,23 @@ void GCStats::print() const {
 
             // Bucket range.
             if (i < HISTOGRAM_BUCKETS - 1) {
-                uint64_t range_start = i * MINOR_BUCKET_SIZE_NS;
-                uint64_t range_end = (i + 1) * MINOR_BUCKET_SIZE_NS;
-                std::cout << "  " << std::setw(6) << range_start << " - "
-                          << std::setw(6) << range_end << " ns: ";
+                uint64_t range_start, range_end;
+
+                if (i < MINOR_BUCKETS_SMALL) {
+                    // First range: 0-100µs with 5µs buckets
+                    range_start = i * MINOR_BUCKET_SIZE_SMALL;
+                    range_end = (i + 1) * MINOR_BUCKET_SIZE_SMALL;
+                } else {
+                    // Second range: 100µs-1ms with 50µs buckets
+                    size_t offset = i - MINOR_BUCKETS_SMALL;
+                    range_start = MINOR_HISTOGRAM_FIRST_RANGE + (offset * MINOR_BUCKET_SIZE_LARGE);
+                    range_end = MINOR_HISTOGRAM_FIRST_RANGE + ((offset + 1) * MINOR_BUCKET_SIZE_LARGE);
+                }
+
+                std::cout << "  " << std::setw(7) << range_start << " - "
+                          << std::setw(7) << range_end << " ns: ";
             } else {
-                std::cout << "  > " << std::setw(6) << MINOR_HISTOGRAM_MAX_NS << " ns: ";
+                std::cout << "  > " << std::setw(7) << MINOR_HISTOGRAM_SECOND_RANGE << " ns: ";
             }
 
             // Draw bar.
@@ -255,12 +287,29 @@ void GCStats::print() const {
 
             // Bucket range (convert to milliseconds for display).
             if (i < HISTOGRAM_BUCKETS - 1) {
-                double range_start = (i * MAJOR_BUCKET_SIZE_NS) / 1000000.0;
-                double range_end = ((i + 1) * MAJOR_BUCKET_SIZE_NS) / 1000000.0;
+                double range_start, range_end;
+
+                // Use the same constants as in getMajorHistogramBucket
+                static constexpr uint64_t MAJOR_FIRST_RANGE = 100000000;  // 100ms
+                static constexpr uint64_t MAJOR_BUCKET_SMALL = 5000000;   // 5ms
+                static constexpr uint64_t MAJOR_BUCKET_LARGE = 50000000;  // 50ms
+
+                if (i < MINOR_BUCKETS_SMALL) {
+                    // First range: 0-100ms with 5ms buckets
+                    range_start = (i * MAJOR_BUCKET_SMALL) / 1000000.0;
+                    range_end = ((i + 1) * MAJOR_BUCKET_SMALL) / 1000000.0;
+                } else {
+                    // Second range: 100ms-1s with 50ms buckets
+                    size_t offset = i - MINOR_BUCKETS_SMALL;
+                    range_start = (MAJOR_FIRST_RANGE + (offset * MAJOR_BUCKET_LARGE)) / 1000000.0;
+                    range_end = (MAJOR_FIRST_RANGE + ((offset + 1) * MAJOR_BUCKET_LARGE)) / 1000000.0;
+                }
+
                 std::cout << "  " << std::setw(6) << std::fixed << std::setprecision(1) << range_start << " - "
                           << std::setw(6) << std::fixed << std::setprecision(1) << range_end << " ms: ";
             } else {
-                double max_ms = MAJOR_HISTOGRAM_MAX_NS / 1000000.0;
+                static constexpr uint64_t MAJOR_SECOND_RANGE = 1000000000; // 1000ms
+                double max_ms = MAJOR_SECOND_RANGE / 1000000.0;
                 std::cout << "  > " << std::setw(6) << std::fixed << std::setprecision(1) << max_ms << " ms: ";
             }
 
