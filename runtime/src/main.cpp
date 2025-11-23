@@ -412,9 +412,10 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
 
-    // Initialize GC.
+    // Initialize GC with larger heap (2GB instead of default 1GB).
+    // This gives old gen 1GB max instead of 512MB.
     auto& gc = GarbageCollector::instance();
-    gc.initialize();
+    gc.initialize(2ULL * 1024 * 1024 * 1024);  // 2GB heap
     gc.setMemoryPressureThreshold(major_gc_threshold);
     gc.initThread();  // Main thread needs GC access too.
 

@@ -270,9 +270,6 @@ void GarbageCollector::majorGC() {
     auto gc_start = GC_STATS_TIMER_START();
 #endif
 
-    // Update memory pressure before GC - this may block allocators.
-    updateMemoryPressure();
-
     // Set flag to indicate GC is in progress.
     gc_in_progress = true;
 
@@ -331,13 +328,18 @@ void GarbageCollector::updateMemoryPressure() {
 
 void GarbageCollector::signalGCComplete() {
     // Called after major GC completes.
-    // Update pressure state and wake any blocked allocators.
-    updateMemoryPressure();
+    // Temporarily clear pressure to let threads retry after GC.
+    // This ensures threads get a chance to make progress even if
+    // GC didn't free enough memory. The pressure will be set again
+    // on the next allocation if we're still over threshold.
+    memory_pressure.store(false, std::memory_order_release);
 
-    // If pressure was cleared, wake all waiting threads.
-    if (!memory_pressure.load(std::memory_order_relaxed)) {
-        gc_wait_cv.notify_all();
-    }
+    // Wake all waiting threads to let them retry allocation.
+    gc_wait_cv.notify_all();
+
+    // Update the actual pressure state for the next allocation.
+    // This happens after waking threads so they get one chance to allocate.
+    updateMemoryPressure();
 }
 
 void GarbageCollector::signalShutdown() {
