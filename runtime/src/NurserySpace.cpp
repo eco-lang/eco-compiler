@@ -227,12 +227,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
                 }
             }
         }
-
-        // Fallback: Use free-list allocation (for large objects or TLAB exhaustion).
-        if (!new_obj) {
-            new_obj = oldgen.allocate(size);  // Takes mutex.
-        }
-
+        
         if (new_obj) {
             // Save color set by oldgen.allocate before memcpy overwrites it.
             Header *new_hdr = getHeader(new_obj);
