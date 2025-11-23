@@ -105,10 +105,10 @@ Testing::TestCase testBlockInitialization("Blocks cover the free-list region wit
         // Start marking - this initializes blocks.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance(), stats);
         oldgen.finishMarkAndSweep(stats);
 #else
-        oldgen.startConcurrentMark(rootset);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance());
         oldgen.finishMarkAndSweep();
 #endif
 
@@ -159,10 +159,10 @@ Testing::TestCase testBlockLiveInfoTracking("Objects marked as live update block
         // Run marking - this tracks live info per block.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance(), stats);
         while (oldgen.incrementalMark(100, stats)) {}
 #else
-        oldgen.startConcurrentMark(rootset);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance());
         while (oldgen.incrementalMark(100)) {}
 #endif
 
@@ -209,10 +209,10 @@ Testing::TestCase testCompactionSetSelection("Blocks below threshold are selecte
         // Run full marking cycle.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance(), stats);
         oldgen.finishMarkAndSweep(stats);
 #else
-        oldgen.startConcurrentMark(rootset);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance());
         oldgen.finishMarkAndSweep();
 #endif
 
@@ -259,10 +259,10 @@ Testing::TestCase testObjectEvacuationWithForwarding("After evacuation, original
         // Mark the object.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance(), stats);
         oldgen.finishMarkAndSweep(stats);
 #else
-        oldgen.startConcurrentMark(rootset);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance());
         oldgen.finishMarkAndSweep();
 #endif
 
@@ -319,10 +319,10 @@ Testing::TestCase testReadBarrierSelfHealing("readBarrier updates pointer to new
         // Run GC and compaction.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance(), stats);
         oldgen.finishMarkAndSweep(stats);
 #else
-        oldgen.startConcurrentMark(rootset);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance());
         oldgen.finishMarkAndSweep();
 #endif
 
@@ -389,10 +389,10 @@ Testing::TestCase testBlockEvacuation("evacuateBlock moves all Black objects fro
         // Mark objects.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance(), stats);
         oldgen.finishMarkAndSweep(stats);
 #else
-        oldgen.startConcurrentMark(rootset);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance());
         oldgen.finishMarkAndSweep();
 #endif
 
@@ -446,10 +446,10 @@ Testing::TestCase testBlockReclaimToTLABs("reclaimEvacuatedBlocks adds empty blo
         // Run full GC cycle with compaction.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance(), stats);
         oldgen.finishMarkAndSweep(stats);
 #else
-        oldgen.startConcurrentMark(rootset);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance());
         oldgen.finishMarkAndSweep();
 #endif
 
@@ -509,10 +509,10 @@ Testing::TestCase testCompactionPreservesValues("Object data is identical after 
         // Run GC and compaction.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance(), stats);
         oldgen.finishMarkAndSweep(stats);
 #else
-        oldgen.startConcurrentMark(rootset);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance());
         oldgen.finishMarkAndSweep();
 #endif
 
@@ -588,10 +588,10 @@ Testing::TestCase testRootPointerUpdatesAfterCompaction("Roots point to correct 
         // Run GC and compaction.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance(), stats);
         oldgen.finishMarkAndSweep(stats);
 #else
-        oldgen.startConcurrentMark(rootset);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance());
         oldgen.finishMarkAndSweep();
 #endif
 
@@ -671,10 +671,10 @@ Testing::TestCase testFragmentationDefragmentation("Sparse objects are consolida
         // Run GC - unrooted objects become garbage.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, stats);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance(), stats);
         oldgen.finishMarkAndSweep(stats);
 #else
-        oldgen.startConcurrentMark(rootset);
+        oldgen.startConcurrentMark(rootset, GarbageCollector::instance());
         oldgen.finishMarkAndSweep();
 #endif
 

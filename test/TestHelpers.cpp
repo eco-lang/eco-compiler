@@ -151,10 +151,10 @@ void runMarkAndSweep(GarbageCollector& gc) {
 
 #if ENABLE_GC_STATS
     GCStats& stats = gc.getMajorGCStats();
-    oldgen.startConcurrentMark(rootset, stats);
+    oldgen.startConcurrentMark(rootset, GarbageCollector::instance(), stats);
     oldgen.finishMarkAndSweep(stats);
 #else
-    oldgen.startConcurrentMark(rootset);
+    oldgen.startConcurrentMark(rootset, GarbageCollector::instance());
     oldgen.finishMarkAndSweep();
 #endif
 }

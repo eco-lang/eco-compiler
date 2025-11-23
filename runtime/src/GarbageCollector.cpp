@@ -121,10 +121,14 @@ NurserySpace *GarbageCollector::getNursery() {
 }
 
 void *GarbageCollector::allocate(size_t size, Tag tag) {
-    // FAST PATH: Single relaxed atomic load to check memory pressure.
-    // This compiles to a single memory read on x86 - no CAS, no locks.
+    // FAST PATH: Check STW barrier first - blocks during major GC root marking.
+    if (stw_barrier.load(std::memory_order_acquire)) [[unlikely]] {
+        waitAtSTWBarrier();
+    }
+
+    // Check memory pressure - blocks if old gen is over threshold.
     if (memory_pressure.load(std::memory_order_relaxed)) [[unlikely]] {
-        checkMemoryPressure();  // Slow path: may block
+        checkMemoryPressure();
     }
 
     NurserySpace *nursery = getNursery();
@@ -272,11 +276,25 @@ void GarbageCollector::majorGC() {
     // Set flag to indicate GC is in progress.
     gc_in_progress = true;
 
+    // Raise STW barrier - threads will block when they try to allocate.
+    // This ensures a consistent view of roots and heap during initial marking.
+    stw_barrier.store(true, std::memory_order_release);
+
+    // Start marking phase - traces through ALL objects including nursery.
 #if ENABLE_GC_STATS
-    old_gen.startConcurrentMark(root_set, major_gc_stats);
+    old_gen.startConcurrentMark(root_set, *this, major_gc_stats);
+#else
+    old_gen.startConcurrentMark(root_set, *this);
+#endif
+
+    // Lower STW barrier - threads can allocate again.
+    stw_barrier.store(false, std::memory_order_release);
+    gc_wait_cv.notify_all();
+
+    // Continue with concurrent marking and sweep.
+#if ENABLE_GC_STATS
     old_gen.finishMarkAndSweep(major_gc_stats);
 #else
-    old_gen.startConcurrentMark(root_set);
     old_gen.finishMarkAndSweep();
 #endif
 
@@ -345,6 +363,30 @@ void GarbageCollector::signalShutdown() {
     // Set shutdown flag and wake all blocked allocators.
     shutdown_flag.store(true, std::memory_order_release);
     gc_wait_cv.notify_all();
+}
+
+// ============================================================================
+// Stop-the-World Barrier Implementation
+// ============================================================================
+
+void GarbageCollector::waitAtSTWBarrier() {
+    // Block until STW barrier is lowered or shutdown is signaled.
+    std::unique_lock<std::mutex> lock(gc_wait_mutex);
+    gc_wait_cv.wait(lock, [this] {
+        return !stw_barrier.load(std::memory_order_acquire) ||
+               shutdown_flag.load(std::memory_order_acquire);
+    });
+}
+
+bool GarbageCollector::isInNursery(void *ptr) {
+    // Check if the pointer is in any thread's nursery.
+    std::lock_guard<std::mutex> lock(nursery_mutex);
+    for (const auto& [tid, nursery] : nurseries) {
+        if (nursery->contains(ptr)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 #if ENABLE_GC_STATS

@@ -1,4 +1,5 @@
 #include "OldGenSpace.hpp"
+#include "GarbageCollector.hpp"
 #include <algorithm>
 #include <cstring>
 #include <iostream>
@@ -43,7 +44,7 @@ void* readBarrier(HPointer& ptr) {
 
 OldGenSpace::OldGenSpace() :
     region_base(nullptr), region_size(0), max_region_size(0), free_list(nullptr), current_epoch(0),
-    marking_active(false), tlab_region_start(nullptr), tlab_region_end(nullptr) {
+    marking_active(false), gc_ref(nullptr), tlab_region_start(nullptr), tlab_region_end(nullptr) {
     // Initialization happens in initialize() method.
 }
 
@@ -270,11 +271,12 @@ void OldGenSpace::sealTLAB(TLAB* tlab) {
 /**
  * Start a concurrent marking phase.
  * This is a public method that handles its own locking.
+ * Takes GarbageCollector reference to check if objects are in nursery during tracing.
  */
 #if ENABLE_GC_STATS
-void OldGenSpace::startConcurrentMark(RootSet &roots, GCStats &stats) {
+void OldGenSpace::startConcurrentMark(RootSet &roots, GarbageCollector &gc, GCStats &stats) {
 #else
-void OldGenSpace::startConcurrentMark(RootSet &roots) {
+void OldGenSpace::startConcurrentMark(RootSet &roots, GarbageCollector &gc) {
 #endif
     std::lock_guard<std::recursive_mutex> lock(mark_mutex);
 
@@ -284,6 +286,9 @@ void OldGenSpace::startConcurrentMark(RootSet &roots) {
     marking_active = true;
     current_epoch++;
     mark_stack.clear();
+
+    // Store GC reference for nursery checks during marking.
+    gc_ref = &gc;
 
     // Initialize blocks for compaction tracking.
     if (blocks.empty()) {
@@ -298,10 +303,12 @@ void OldGenSpace::startConcurrentMark(RootSet &roots) {
         block.is_evacuation_dest = false;
     }
 
-    // Push roots onto mark stack.
+    // Push ALL roots onto mark stack - including nursery objects.
+    // Nursery objects will be marked (grey->black) like old gen objects.
+    // This is harmless since minor GC uses forwarding pointers, not colors.
     for (HPointer *root: roots.getRoots()) {
         void *obj = fromPointer(*root);
-        if (obj && contains(obj)) {
+        if (obj && (contains(obj) || gc_ref->isInNursery(obj))) {
             mark_stack.push_back(obj);
         }
     }
@@ -350,9 +357,11 @@ bool OldGenSpace::incrementalMark(size_t work_units) {
         hdr->color = static_cast<u32>(Color::Black);
         hdr->epoch = current_epoch & 3;
 
-        // Track block occupancy for compaction.
-        size_t obj_size = getObjectSize(obj);
-        updateBlockLiveInfo(obj, obj_size);
+        // Track block occupancy for compaction (old gen only).
+        if (contains(obj)) {
+            size_t obj_size = getObjectSize(obj);
+            updateBlockLiveInfo(obj, obj_size);
+        }
 
         units_done++;
     }
@@ -441,7 +450,13 @@ void OldGenSpace::markHPointer(HPointer &ptr) {
         return;
 
     void *obj = fromPointer(ptr);
-    if (obj && contains(obj)) {
+    if (!obj)
+        return;
+
+    // Push both old gen and nursery objects onto mark stack.
+    // Nursery objects will be marked grey->black like old gen objects.
+    // This is harmless since minor GC uses forwarding pointers, not colors.
+    if (contains(obj) || (gc_ref && gc_ref->isInNursery(obj))) {
         Header *hdr = getHeader(obj);
         if (hdr->color != static_cast<u32>(Color::Black)) {
             mark_stack.push_back(obj);

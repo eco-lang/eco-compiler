@@ -86,6 +86,16 @@ public:
     // Signals shutdown - wakes any blocked allocators.
     void signalShutdown();
 
+    // ========== Stop-the-World Barrier ==========
+
+    // Returns true if the given pointer is in any thread's nursery.
+    bool isInNursery(void *ptr);
+
+    // Returns true if STW barrier is currently active.
+    bool isSTWActive() const {
+        return stw_barrier.load(std::memory_order_relaxed);
+    }
+
 #if ENABLE_GC_STATS
     // Returns the global major GC statistics.
     GCStats& getMajorGCStats() { return major_gc_stats; }
@@ -131,6 +141,13 @@ private:
 
     // Updates the memory pressure flag based on current heap usage.
     void updateMemoryPressure();
+
+    // ========== Stop-the-World Barrier ==========
+
+    std::atomic<bool> stw_barrier{false};  // When true, threads block on allocation.
+
+    // Blocks until STW barrier is lowered. Called from allocate().
+    void waitAtSTWBarrier();
 
 #if ENABLE_GC_STATS
     GCStats major_gc_stats; // Global major GC statistics.

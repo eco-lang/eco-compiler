@@ -11,6 +11,9 @@
 
 namespace Elm {
 
+// Forward declaration.
+class GarbageCollector;
+
 // Follows a forwarding pointer if present, updating the HPointer in place.
 void* readBarrier(HPointer& ptr);
 
@@ -47,10 +50,11 @@ public:
     // ========== Mark-and-Sweep ==========
 
     // Begins a concurrent marking phase, pushing roots onto the mark stack.
+    // Takes GarbageCollector reference to check if objects are in nursery.
 #if ENABLE_GC_STATS
-    void startConcurrentMark(RootSet &roots, GCStats &stats);
+    void startConcurrentMark(RootSet &roots, GarbageCollector &gc, GCStats &stats);
 #else
-    void startConcurrentMark(RootSet &roots);
+    void startConcurrentMark(RootSet &roots, GarbageCollector &gc);
 #endif
 
     // Performs incremental marking work. Returns true if more work remains.
@@ -147,6 +151,7 @@ private:
     std::recursive_mutex mark_mutex;  // Protects marking operations.
     std::atomic<u32> current_epoch;   // Current GC epoch number.
     std::atomic<bool> marking_active; // True if marking is in progress.
+    GarbageCollector *gc_ref;         // Reference to GC for nursery checks during marking.
 
     // ========== TLAB Support ==========
 
