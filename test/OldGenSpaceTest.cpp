@@ -75,11 +75,11 @@ Testing::TestCase testAllocateTLAB("allocateTLAB returns usable TLAB within OldG
         auto& oldgen = gc.getOldGen();
 
         // Allocate a TLAB.
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+        TLAB* tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
         RC_ASSERT(tlab != nullptr);
 
         // Verify TLAB has expected capacity.
-        RC_ASSERT(tlab->capacity() >= OldGenSpace::TLAB_MIN_SIZE);
+        RC_ASSERT(tlab->capacity() >= TLAB_MIN_SIZE);
 
         // Verify TLAB memory is within OldGenSpace bounds.
         RC_ASSERT(oldgen.contains(tlab->start));
@@ -103,7 +103,7 @@ Testing::TestCase testRootsMarkedAtStart("startConcurrentMark pushes roots to ma
         auto& rootset = gc.getRootSet();
 
         // Allocate a TLAB and put some objects in it.
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+        TLAB* tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
         RC_ASSERT(tlab != nullptr);
 
         // Generate random int values (size-scaled: 1-10 at size 0, up to 1-110 at size 1000).
@@ -176,7 +176,7 @@ Testing::TestCase testRootsPreservedAfterIncrementalMark("Roots remain marked Bl
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+        TLAB* tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
         RC_ASSERT(tlab != nullptr);
 
         // Create a linked list of objects (size-scaled: 2-8 at size 0, up to 2-108 at size 1000).
@@ -254,7 +254,7 @@ Testing::TestCase testRootsPreservedAfterSweep("Root objects survive full GC cyc
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+        TLAB* tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
         RC_ASSERT(tlab != nullptr);
 
         // Create some rooted objects (size-scaled: 1-5 at size 0, up to 1-55 at size 1000).
@@ -318,7 +318,7 @@ Testing::TestCase testGarbageUnmarkedInIncrementalSteps("Objects with no roots r
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+        TLAB* tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
         RC_ASSERT(tlab != nullptr);
 
         // Create objects but DON'T root them (size-scaled: 1-10 at size 0, up to 1-110 at size 1000).
@@ -373,7 +373,7 @@ Testing::TestCase testGarbageFreeListedAfterSweep("Unreachable objects are recla
         auto& oldgen = gc.getOldGen();
         auto& rootset = gc.getRootSet();
 
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+        TLAB* tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
         RC_ASSERT(tlab != nullptr);
 
         // Create garbage objects (size-scaled: 1-10 at size 0, up to 1-110 at size 1000).

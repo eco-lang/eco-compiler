@@ -164,7 +164,7 @@ Testing::TestCase testTLABFillAndSeal("Promoting objects beyond TLAB capacity se
 
         // To seal TLABs, we need to promote enough objects to fill them.
         // TLAB_DEFAULT_SIZE is 128KB, so we need to promote 3x that to seal at least 2.
-        size_t tlab_size = OldGenSpace::TLAB_DEFAULT_SIZE;
+        size_t tlab_size = TLAB_DEFAULT_SIZE;
         size_t target_promoted = tlab_size * 3;
 
         size_t total_promoted = 0;

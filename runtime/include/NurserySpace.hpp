@@ -40,7 +40,7 @@ public:
     size_t bytesRemaining() const { return from_space + (NURSERY_SIZE / 2) - alloc_ptr; }
 
     // Returns true if the given allocation would push usage above the threshold.
-    bool wouldExceedThreshold(size_t size, float threshold = 0.9f) const {
+    bool wouldExceedThreshold(size_t size, float threshold = NURSERY_GC_THRESHOLD) const {
         size_t aligned_size = (size + 7) & ~7;
         size_t total_capacity = NURSERY_SIZE / 2;
         size_t usage_after = (alloc_ptr - from_space) + aligned_size;

@@ -27,7 +27,7 @@ public:
     static GarbageCollector &instance();
 
     // Initializes the GC with the given maximum heap size.
-    void initialize(size_t max_heap_size = 1ULL * 1024 * 1024 * 1024);
+    void initialize(size_t max_heap_size = DEFAULT_MAX_HEAP_SIZE);
 
     // Initializes GC for the calling thread, creating its nursery.
     void initThread();
@@ -56,8 +56,8 @@ public:
     // Returns the base address of the unified heap.
     char *getHeapBase() const { return heap_base; }
 
-    // Returns true if the current thread's nursery is over the threshold (default 90%).
-    bool isNurseryNearFull(float threshold = 0.9f) {
+    // Returns true if the current thread's nursery is over the threshold.
+    bool isNurseryNearFull(float threshold = NURSERY_GC_THRESHOLD) {
         NurserySpace *nursery = getNursery();
         if (nursery) {
             size_t total_capacity = NURSERY_SIZE / 2;
@@ -124,7 +124,7 @@ private:
     std::atomic<bool> shutdown_flag{false};        // Set when shutting down.
     std::mutex gc_wait_mutex;                      // Protects condition variable.
     std::condition_variable gc_wait_cv;            // For blocking allocators.
-    size_t memory_pressure_threshold = 50 * 1024 * 1024;  // Default 50MB.
+    size_t memory_pressure_threshold = DEFAULT_MEMORY_PRESSURE_THRESHOLD;
 
     // Checks memory pressure and blocks if necessary. Called from allocate().
     void checkMemoryPressure();

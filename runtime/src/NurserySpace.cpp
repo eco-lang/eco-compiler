@@ -204,7 +204,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     // Promote to old gen if age >= PROMOTION_AGE.
     if (hdr->age >= PROMOTION_AGE) {
         // Try TLAB allocation first (fast path, no lock).
-        if (promotion_tlab && size <= OldGenSpace::TLAB_DEFAULT_SIZE) {
+        if (promotion_tlab && size <= TLAB_DEFAULT_SIZE) {
             new_obj = promotion_tlab->allocate(size);
         }
 
@@ -219,15 +219,15 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
             }
 
             // Try to get a new TLAB (lock-free CAS).
-            if (!promotion_tlab && size <= OldGenSpace::TLAB_DEFAULT_SIZE) {
-                promotion_tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+            if (!promotion_tlab && size <= TLAB_DEFAULT_SIZE) {
+                promotion_tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
                 if (promotion_tlab) {
                     GC_STATS_TLAB_ALLOCATED(stats);
                     new_obj = promotion_tlab->allocate(size);
                 }
             }
         }
-        
+
         if (new_obj) {
             // Save color set by oldgen.allocate before memcpy overwrites it.
             Header *new_hdr = getHeader(new_obj);

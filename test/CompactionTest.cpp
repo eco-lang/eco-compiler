@@ -90,7 +90,7 @@ Testing::TestCase testBlockInitialization("Blocks cover the free-list region wit
         auto& rootset = gc.getRootSet();
 
         // Allocate a TLAB to trigger block initialization during marking.
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+        TLAB* tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
         if (!tlab) RC_FAIL("Failed to allocate TLAB");
 
         // Allocate some objects.
@@ -131,7 +131,7 @@ Testing::TestCase testBlockLiveInfoTracking("Objects marked as live update block
         auto& rootset = gc.getRootSet();
 
         // Allocate objects in old gen via TLAB.
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+        TLAB* tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
         if (!tlab) RC_FAIL("Failed to allocate TLAB");
 
         // Generate random number of objects.
@@ -194,7 +194,7 @@ Testing::TestCase testCompactionSetSelection("Blocks below threshold are selecte
         auto& rootset = gc.getRootSet();
 
         // Allocate a small amount of live data to create low-occupancy blocks.
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+        TLAB* tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
         if (!tlab) RC_FAIL("Failed to allocate TLAB");
 
         // Just a few objects - should result in very low block occupancy.
@@ -244,7 +244,7 @@ Testing::TestCase testObjectEvacuationWithForwarding("After evacuation, original
         auto& rootset = gc.getRootSet();
 
         // Allocate object.
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+        TLAB* tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
         if (!tlab) RC_FAIL("Failed to allocate TLAB");
 
         i64 test_value = *rc::gen::arbitrary<i64>();
@@ -303,7 +303,7 @@ Testing::TestCase testReadBarrierSelfHealing("readBarrier updates pointer to new
         auto& rootset = gc.getRootSet();
 
         // Allocate and root an object.
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+        TLAB* tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
         if (!tlab) RC_FAIL("Failed to allocate TLAB");
 
         i64 test_value = *rc::gen::arbitrary<i64>();
@@ -361,7 +361,7 @@ Testing::TestCase testBlockEvacuation("evacuateBlock moves all Black objects fro
         auto& rootset = gc.getRootSet();
 
         // Allocate multiple objects.
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+        TLAB* tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
         if (!tlab) RC_FAIL("Failed to allocate TLAB");
 
         size_t num_objects = *rc::gen::inRange<size_t>(3, 10);
@@ -432,7 +432,7 @@ Testing::TestCase testBlockReclaimToTLABs("reclaimEvacuatedBlocks adds empty blo
         auto& rootset = gc.getRootSet();
 
         // Allocate a small object to create a very sparse block.
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+        TLAB* tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
         if (!tlab) RC_FAIL("Failed to allocate TLAB");
 
         void* obj = allocateIntIntoTLAB(tlab, 999);
@@ -488,7 +488,7 @@ Testing::TestCase testCompactionPreservesValues("Object data is identical after 
             rc::gen::arbitrary<i64>()
         );
 
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+        TLAB* tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
         if (!tlab) RC_FAIL("Failed to allocate TLAB");
 
         std::vector<HPointer> root_storage;
@@ -549,7 +549,7 @@ Testing::TestCase testRootPointerUpdatesAfterCompaction("Roots point to correct 
         auto& rootset = gc.getRootSet();
 
         // Build a linked list in old gen.
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+        TLAB* tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
         if (!tlab) RC_FAIL("Failed to allocate TLAB");
 
         size_t list_length = *rc::gen::inRange<size_t>(3, 8);
@@ -637,7 +637,7 @@ Testing::TestCase testFragmentationDefragmentation("Sparse objects are consolida
         auto& rootset = gc.getRootSet();
 
         // Create fragmentation: allocate objects, then only root some of them.
-        TLAB* tlab = oldgen.allocateTLAB(OldGenSpace::TLAB_DEFAULT_SIZE);
+        TLAB* tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
         if (!tlab) RC_FAIL("Failed to allocate TLAB");
 
         size_t total_objects = *rc::gen::inRange<size_t>(10, 30);

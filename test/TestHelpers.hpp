@@ -168,7 +168,7 @@ void allocateGarbageInts(GarbageCollector& gc, size_t count);
 
 // Allocate a TLAB from old gen, RC_FAIL if allocation fails.
 TLAB* allocateTLABOrFail(OldGenSpace& oldgen,
-                          size_t size = OldGenSpace::TLAB_DEFAULT_SIZE);
+                          size_t size = TLAB_DEFAULT_SIZE);
 
 // ============================================================================
 // 13. Build Linked List

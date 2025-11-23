@@ -110,13 +110,6 @@ public:
         std::lock_guard<std::recursive_mutex> lock_;
     };
 
-    // ========== Constants ==========
-
-    static constexpr size_t TLAB_DEFAULT_SIZE = 128 * 1024;
-    static constexpr size_t TLAB_MIN_SIZE = 64 * 1024;
-    static constexpr size_t BLOCK_SIZE = 256 * 1024;
-    static constexpr double EVACUATION_THRESHOLD = 0.25;
-
 private:
     struct FreeBlock {
         size_t size;

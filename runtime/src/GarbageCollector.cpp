@@ -46,8 +46,7 @@ void GarbageCollector::initialize(size_t max_heap_size) {
     next_nursery_offset = nursery_offset;
 
     // Old gen starts at offset 0, can grow up to halfway point.
-    // Commit initial 1MB for old gen.
-    size_t initial_old_gen = 1 * 1024 * 1024;  // 1MB.
+    size_t initial_old_gen = INITIAL_OLD_GEN_SIZE;
     size_t max_old_gen = nursery_offset;  // Can grow to halfway point.
     growOldGen(initial_old_gen);
     old_gen.initialize(heap_base, old_gen_committed, max_old_gen);
@@ -131,10 +130,10 @@ void *GarbageCollector::allocate(size_t size, Tag tag) {
     NurserySpace *nursery = getNursery();
 
     if (nursery) {
-        // Check if allocation would exceed 90% threshold - trigger GC proactively.
+        // Check if allocation would exceed threshold - trigger GC proactively.
         // But only if GC is not already in progress (prevent recursion).
         bool gc_triggered = false;
-        if (!gc_in_progress && nursery->wouldExceedThreshold(size, 0.9f)) {
+        if (!gc_in_progress && nursery->wouldExceedThreshold(size, NURSERY_GC_THRESHOLD)) {
             minorGC();
             gc_triggered = true;
         }

@@ -16,11 +16,34 @@ enum class Color : u32 {
     Black = 2    // Marked and all children scanned.
 };
 
-// Objects surviving this many minor GCs are promoted to old gen.
-constexpr u32 PROMOTION_AGE = 1;
+// ============================================================================
+// GC Sizing Constants
+// ============================================================================
 
-// Size of each thread-local nursery semi-space.
-constexpr size_t NURSERY_SIZE = 4 * 1024 * 1024;
+// ----- Heap Sizing -----
+constexpr size_t DEFAULT_MAX_HEAP_SIZE = 1ULL * 1024 * 1024 * 1024;  // 1 GB address space.
+constexpr size_t INITIAL_OLD_GEN_SIZE = 1 * 1024 * 1024;             // 1 MB initial commit.
+constexpr size_t MIN_OLD_GEN_CHUNK_SIZE = 1 * 1024 * 1024;           // 1 MB minimum growth.
+
+// ----- Nursery Sizing -----
+constexpr size_t NURSERY_SIZE = 4 * 1024 * 1024;  // 4 MB total (2 MB per semi-space).
+
+// ----- TLAB Sizing -----
+constexpr size_t TLAB_DEFAULT_SIZE = 128 * 1024;  // 128 KB default TLAB.
+constexpr size_t TLAB_MIN_SIZE = 64 * 1024;       // 64 KB minimum TLAB.
+
+// ----- Block Sizing (for compaction) -----
+constexpr size_t BLOCK_SIZE = 256 * 1024;  // 256 KB blocks for compaction metadata.
+
+// ----- Promotion & GC Triggers -----
+constexpr u32 PROMOTION_AGE = 1;                            // Promote after 1 minor GC survival.
+constexpr float NURSERY_GC_THRESHOLD = 0.9f;                // Trigger minor GC at 90% full.
+constexpr size_t DEFAULT_MEMORY_PRESSURE_THRESHOLD = 50 * 1024 * 1024;  // 50 MB backpressure.
+
+// ----- Compaction Thresholds -----
+constexpr double EVACUATION_THRESHOLD = 0.25;       // Evacuate blocks below 25% occupancy.
+constexpr double EVACUATION_DEST_THRESHOLD = 0.75;  // Blocks below 75% can receive objects.
+constexpr double MAX_EVACUATION_RATIO = 0.10;       // Evacuate at most 10% of heap per cycle.
 
 // Returns the header of a heap object.
 inline Header *getHeader(void *obj) { return static_cast<Header *>(obj); }

@@ -163,7 +163,7 @@ void *OldGenSpace::allocate_internal(size_t size) {
     }
 
     // No suitable block, allocate new chunk.
-    size_t chunk_size = std::max(size * 2, (long unsigned int) 1024 * 1024);
+    size_t chunk_size = std::max(size * 2, MIN_OLD_GEN_CHUNK_SIZE);
     addChunk(chunk_size);
 
     // Try again (recursive call to internal version, lock already held).
@@ -687,13 +687,13 @@ void OldGenSpace::selectCompactionSet() {
         if (occupancy < EVACUATION_THRESHOLD && occupancy > 0) {
             block.is_evacuation_target = true;
             candidates.push_back(&block);
-        } else if (occupancy < 0.75) {  // Has space to receive objects.
+        } else if (occupancy < EVACUATION_DEST_THRESHOLD) {
             block.is_evacuation_dest = true;
         }
     }
 
-    // Limit compaction work (e.g., max 10% of heap per cycle).
-    size_t max_evac_bytes = region_size * 0.10;
+    // Limit compaction work per cycle.
+    size_t max_evac_bytes = static_cast<size_t>(region_size * MAX_EVACUATION_RATIO);
     size_t planned_bytes = 0;
 
     // Sort by live bytes (evacuate blocks with fewest live objects first).
