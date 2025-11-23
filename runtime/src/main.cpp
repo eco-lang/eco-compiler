@@ -276,10 +276,12 @@ static void programThreadFunc() {
         gc.getRootSet().addRoot(&model);
 
         iterations++;
-
-        // Run minor GC every iteration.
-        // This works well for Elm since each update cycle produces short-lived garbage.
-        gc.minorGC();
+        
+        // Run minor GC only when nursery is near full (90% threshold).
+        // This reduces GC overhead while still preventing nursery overflow.
+        if (gc.isNurseryNearFull(0.9f)) {
+            gc.minorGC();
+        }
 
         // Request major GC when old gen exceeds threshold.
         // The allocator will automatically block if memory pressure is high.

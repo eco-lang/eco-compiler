@@ -56,6 +56,17 @@ public:
     // Returns the base address of the unified heap.
     char *getHeapBase() const { return heap_base; }
 
+    // Returns true if the current thread's nursery is over the threshold (default 90%).
+    bool isNurseryNearFull(float threshold = 0.9f) {
+        NurserySpace *nursery = getNursery();
+        if (nursery) {
+            size_t total_capacity = NURSERY_SIZE / 2;
+            size_t usage = nursery->bytesAllocated();
+            return usage >= (size_t)(total_capacity * threshold);
+        }
+        return false;
+    }
+
     // ========== Memory Pressure / Backpressure ==========
 
     // Sets the memory pressure threshold (in bytes). When old gen exceeds this,
