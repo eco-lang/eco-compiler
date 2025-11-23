@@ -32,6 +32,7 @@ static size_t model_num_fields = 8;       // Number of fields in the model Recor
 static size_t list_size = 500;            // Elements per list.
 static std::chrono::seconds duration{0};  // 0 = run forever until Ctrl+C.
 static size_t major_gc_threshold = 50 * 1024 * 1024;  // Trigger major GC when old gen exceeds this (50MB default).
+static double reversal_probability = 0.5; // Probability of reversing each list (default 0.5).
 
 // ============================================================================
 // Signal Handler
@@ -229,12 +230,13 @@ static void programThreadFunc() {
 
     std::cout << "[Program] Started with " << model_num_fields
               << " fields, list size " << list_size
-              << ", major GC threshold " << (major_gc_threshold / (1024 * 1024)) << " MB" << std::endl;
+              << ", major GC threshold " << (major_gc_threshold / (1024 * 1024)) << " MB"
+              << ", reversal probability " << reversal_probability << std::endl;
 
-    // Random number generator for selecting fields.
+    // Random number generator for probability testing.
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<size_t> field_dist(0, model_num_fields - 1);
+    std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
 
     // Create initial model with lists in each field.
     HPointer model = allocateRecord(gc, model_num_fields);
@@ -251,14 +253,30 @@ static void programThreadFunc() {
     size_t iterations = 0;
 
     while (!shutdown_requested.load()) {
-        // Pick a random field to update.
-        size_t field_index = field_dist(gen);
+        // Select a field to reverse using probability-based strategy.
+        // Try each field in sequence with probability P, guaranteeing to reverse
+        // the last one if none were selected.
+        size_t field_index = 0;
+        bool field_selected = false;
 
-        // Get the current list from that field.
         void* model_obj = fromPointer(model);
         if (!model_obj) break;
-
         Record* record = static_cast<Record*>(model_obj);
+
+        // Test each field except the last with probability P
+        for (field_index = 0; field_index < model_num_fields - 1; field_index++) {
+            if (prob_dist(gen) < reversal_probability) {
+                field_selected = true;
+                break;
+            }
+        }
+
+        // If no field was selected, use the last field
+        if (!field_selected) {
+            field_index = model_num_fields - 1;
+        }
+
+        // Get the current list from the selected field.
         HPointer current_list = record->values[field_index].p;
 
         // Reverse the list (creates new cons cells).
@@ -314,6 +332,7 @@ static void printUsage(const char* prog) {
               << "  -f, --fields <n>        Number of fields in model record (default: 8)\n"
               << "  -l, --list-size <n>     Size of each list (default: 500)\n"
               << "  -t, --threshold <bytes> Major GC threshold in MB (default: 50)\n"
+              << "  -p, --probability <p>   Probability of reversing each list (default: 0.5)\n"
               << "  -h, --help              Show this help message\n"
               << "\n"
               << "Press Ctrl+C to stop.\n";
@@ -353,12 +372,13 @@ static bool parseArgs(int argc, char* argv[]) {
         {"fields",     required_argument, nullptr, 'f'},
         {"list-size",  required_argument, nullptr, 'l'},
         {"threshold",  required_argument, nullptr, 't'},
+        {"probability",required_argument, nullptr, 'p'},
         {"help",       no_argument,       nullptr, 'h'},
         {nullptr,      0,                 nullptr, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "d:f:l:t:h", long_options, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "d:f:l:t:p:h", long_options, nullptr)) != -1) {
         switch (opt) {
             case 'd': {
                 auto dur = parseDuration(optarg);
@@ -384,6 +404,13 @@ static bool parseArgs(int argc, char* argv[]) {
                 major_gc_threshold = std::stoul(optarg) * 1024 * 1024;  // Convert MB to bytes.
                 if (major_gc_threshold < 1024 * 1024) {
                     std::cerr << "Error: threshold must be >= 1 MB\n";
+                    return false;
+                }
+                break;
+            case 'p':
+                reversal_probability = std::stod(optarg);
+                if (reversal_probability < 0.0 || reversal_probability > 1.0) {
+                    std::cerr << "Error: probability must be between 0.0 and 1.0\n";
                     return false;
                 }
                 break;
