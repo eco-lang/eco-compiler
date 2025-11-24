@@ -135,8 +135,12 @@ std::vector<HPointer*> GarbageCollector::collectAllRoots() {
     std::vector<HPointer*> all_roots;
     std::lock_guard<std::mutex> lock(nursery_mutex);
     for (auto& [tid, nursery] : nurseries) {
+        // Collect long-lived roots.
         const auto& roots = nursery->getRootSet().getRoots();
         all_roots.insert(all_roots.end(), roots.begin(), roots.end());
+        // Collect stack roots.
+        const auto& stack_roots = nursery->getRootSet().getStackRoots();
+        all_roots.insert(all_roots.end(), stack_roots.begin(), stack_roots.end());
     }
     return all_roots;
 }

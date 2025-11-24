@@ -113,30 +113,34 @@ static HPointer allocateConsInt(GarbageCollector& gc, i64 value, HPointer tail) 
 static HPointer createIntList(GarbageCollector& gc, size_t size) {
     HPointer list = createNil();
 
+    // Register list as stack root so GC can update it during allocations.
+    size_t root_point = gc.getRootSet().stackRootPoint();
+    gc.getRootSet().pushStackRoot(&list);
+
     for (size_t i = size; i > 0; i--) {
-        list = allocateConsInt(gc, static_cast<i64>(i - 1), list);
+        HPointer new_cons = allocateConsInt(gc, static_cast<i64>(i - 1), list);
+        gc.getRootSet().replaceHead(new_cons);
+        list = new_cons;
     }
 
+    gc.getRootSet().restoreStackRootPoint(root_point);
     return list;
 }
 
 // Reverses a list by allocating new Cons cells.
 // This is a pure functional reverse: the original list is unchanged.
 //
-// Implementation note: Local pointers must be registered as roots because
-// gc.allocate() may trigger a minor GC, which could relocate objects.
-// Without root registration, list_root and acc_root could become dangling.
+// Implementation note: The input list is already rooted through the model record.
+// We only need to track acc as a stack root since it grows during allocation.
 static HPointer reverseList(GarbageCollector& gc, HPointer list) {
     HPointer acc = createNil();
 
-    // Register locals as roots so GC can update them if collection occurs.
-    HPointer list_root = list;
-    HPointer acc_root = acc;
-    gc.getRootSet().addRoot(&list_root);
-    gc.getRootSet().addRoot(&acc_root);
+    // Track acc as a stack root - it will be updated via replaceHead as we build.
+    size_t root_point = gc.getRootSet().stackRootPoint();
+    gc.getRootSet().pushStackRoot(&acc);
 
-    while (list_root.constant != Const_Nil) {
-        void* obj = fromPointer(list_root);
+    while (list.constant != Const_Nil) {
+        void* obj = fromPointer(list);
         if (!obj) {
             break;
         }
@@ -149,7 +153,7 @@ static HPointer reverseList(GarbageCollector& gc, HPointer list) {
         Unboxable head_copy = cons->head;
 
         // Advance to next element before allocation for the same reason.
-        list_root = cons->tail;
+        list = cons->tail;
 
         // Allocate new cons cell with head prepended to accumulator.
         void* new_obj = gc.allocate(sizeof(Cons), Tag_Cons);
@@ -160,15 +164,16 @@ static HPointer reverseList(GarbageCollector& gc, HPointer list) {
         Cons* new_cons = static_cast<Cons*>(new_obj);
         new_cons->header.unboxed = unboxed_flag;
         new_cons->head = head_copy;
-        new_cons->tail = acc_root;
+        new_cons->tail = acc;
 
-        acc_root = toPointer(new_obj);
+        // Update acc via replaceHead to track the new cons cell.
+        gc.getRootSet().replaceHead(toPointer(new_obj));
+        acc = toPointer(new_obj);
     }
 
-    gc.getRootSet().removeRoot(&acc_root);
-    gc.getRootSet().removeRoot(&list_root);
+    gc.getRootSet().restoreStackRootPoint(root_point);
 
-    return acc_root;
+    return acc;
 }
 
 // Allocates a Record with the given number of fields, all initialized to Nil.

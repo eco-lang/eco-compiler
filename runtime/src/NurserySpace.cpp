@@ -106,19 +106,14 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
     // Buffer for promoted objects that need scanning.
     std::vector<void*> promoted_objects;
 
-    // Phase 1: Evacuate roots (may add to promoted_objects).
+    // Phase 1a: Evacuate long-lived roots (may add to promoted_objects).
     for (HPointer *root: root_set.getRoots()) {
         evacuate(*root, oldgen, &promoted_objects);
     }
 
-    // TODO: This part needs linking into LLVM to get the stack roots.
-    // Evacuate any stack roots also.
-    for (auto &[stack_ptr, size]: root_set.getStackRoots()) {
-        HPointer *ptrs = static_cast<HPointer *>(stack_ptr);
-        size_t count = size / sizeof(HPointer);
-        for (size_t i = 0; i < count; i++) {
-            evacuate(ptrs[i], oldgen, &promoted_objects);
-        }
+    // Phase 1b: Evacuate stack roots (temporary roots from current call stack).
+    for (HPointer *root: root_set.getStackRoots()) {
+        evacuate(*root, oldgen, &promoted_objects);
     }
 
     // Phase 2: Cheney's algorithm on to-space (may add to promoted_objects).
