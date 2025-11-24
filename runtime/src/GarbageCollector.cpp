@@ -219,35 +219,11 @@ void *GarbageCollector::allocate(size_t size, Tag tag) {
     }
 
     // Allocate in old gen.
-    void *obj = old_gen.allocate(size);
-    if (obj) {
-        Header *hdr = getHeader(obj);
-        hdr->tag = tag;
-        switch (tag) {
-            case Tag_String:
-                hdr->size = (size - sizeof(ElmString)) / sizeof(u16);
-                break;
-            case Tag_Custom:
-                hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);
-                break;
-            case Tag_Record:
-                hdr->size = (size - sizeof(Record)) / sizeof(Unboxable);
-                break;
-            case Tag_DynRecord:
-                hdr->size = (size - sizeof(DynRecord)) / sizeof(HPointer);
-                break;
-            case Tag_FieldGroup:
-                hdr->size = (size - sizeof(FieldGroup)) / sizeof(u32);
-                break;
-            case Tag_Closure:
-                hdr->size = (size - sizeof(Closure)) / sizeof(Unboxable);
-                break;
-            default:
-                hdr->size = size;
-                break;
-        }
-    }
-    return obj;
+    // Seems dangerous to fall back to oldgen allocation as could allocate an object which is
+    // then filled in with its children creating a back reference from old gen to nursery?
+    // TODO: Correct response here is to make the nursery space bigger.
+    assert(true && "Failed to allocate to nursery, it is full.");
+    return nullptr;
 }
 
 // Triggers a minor GC on the current thread's nursery.
