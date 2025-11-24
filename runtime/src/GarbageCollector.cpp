@@ -120,6 +120,27 @@ NurserySpace *GarbageCollector::getNursery() {
     return nullptr;
 }
 
+RootSet &GarbageCollector::getRootSet() {
+    NurserySpace *nursery = getNursery();
+    if (!nursery) {
+        // Thread must call initThread() before using getRootSet().
+        // Auto-initialize for convenience.
+        initThread();
+        nursery = getNursery();
+    }
+    return nursery->getRootSet();
+}
+
+std::vector<HPointer*> GarbageCollector::collectAllRoots() {
+    std::vector<HPointer*> all_roots;
+    std::lock_guard<std::mutex> lock(nursery_mutex);
+    for (auto& [tid, nursery] : nurseries) {
+        const auto& roots = nursery->getRootSet().getRoots();
+        all_roots.insert(all_roots.end(), roots.begin(), roots.end());
+    }
+    return all_roots;
+}
+
 void *GarbageCollector::allocate(size_t size, Tag tag) {
     // FAST PATH: Check STW barrier first - blocks during major GC root marking.
     if (stw_barrier.load(std::memory_order_acquire)) [[unlikely]] {
@@ -251,7 +272,7 @@ void GarbageCollector::minorGC() {
 
     NurserySpace *nursery = getNursery();
     if (nursery) {
-        nursery->minorGC(root_set, old_gen);
+        nursery->minorGC(old_gen);
     }
 
     // Clear flag when done.
@@ -275,11 +296,14 @@ void GarbageCollector::majorGC() {
     // This ensures a consistent view of roots and heap during initial marking.
     stw_barrier.store(true, std::memory_order_release);
 
+    // Collect all roots from all threads.
+    std::vector<HPointer*> all_roots = collectAllRoots();
+
     // Start marking phase - traces through ALL objects including nursery.
 #if ENABLE_GC_STATS
-    old_gen.startConcurrentMark(root_set, *this, major_gc_stats);
+    old_gen.startConcurrentMark(all_roots, *this, major_gc_stats);
 #else
-    old_gen.startConcurrentMark(root_set, *this);
+    old_gen.startConcurrentMark(all_roots, *this);
 #endif
 
     // Lower STW barrier - threads can allocate again.
@@ -359,10 +383,7 @@ GCStats GarbageCollector::getCombinedNurseryStats() {
 #endif
 
 void GarbageCollector::reset() {
-    // Reset root set.
-    root_set.reset();
-
-    // Reset all nurseries.
+    // Reset all nurseries (each nursery resets its own root set).
     {
         std::lock_guard<std::mutex> lock(nursery_mutex);
         for (auto& [tid, nursery] : nurseries) {

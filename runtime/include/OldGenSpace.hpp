@@ -50,11 +50,11 @@ public:
     // ========== Mark-and-Sweep ==========
 
     // Begins a concurrent marking phase, pushing roots onto the mark stack.
-    // Takes GarbageCollector reference to check if objects are in nursery.
+    // Takes collected roots from all threads and GC reference for nursery checks.
 #if ENABLE_GC_STATS
-    void startConcurrentMark(RootSet &roots, GarbageCollector &gc, GCStats &stats);
+    void startConcurrentMark(const std::vector<HPointer*> &roots, GarbageCollector &gc, GCStats &stats);
 #else
-    void startConcurrentMark(RootSet &roots, GarbageCollector &gc);
+    void startConcurrentMark(const std::vector<HPointer*> &roots, GarbageCollector &gc);
 #endif
 
     // Performs incremental marking work. Returns true if more work remains.

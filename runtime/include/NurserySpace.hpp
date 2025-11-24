@@ -28,7 +28,10 @@ public:
     void *allocate(size_t size);
 
     // Performs minor GC, evacuating live objects to to_space or promoting to old gen.
-    void minorGC(RootSet &roots, OldGenSpace &oldgen);
+    void minorGC(OldGenSpace &oldgen);
+
+    // Returns the root set for this nursery's thread.
+    RootSet& getRootSet() { return root_set; }
 
     // Returns true if the pointer points into this nursery's memory region.
     bool contains(void *ptr) const;
@@ -64,6 +67,7 @@ private:
     char *scan_ptr;       // Cheney scan pointer during evacuation.
 
     TLAB* promotion_tlab; // TLAB for lock-free promotions to old gen.
+    RootSet root_set;     // Thread-local root set for this nursery.
 
 #if ENABLE_GC_STATS
     GCStats stats;        // Performance statistics.

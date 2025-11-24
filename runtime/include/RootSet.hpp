@@ -1,7 +1,7 @@
 #ifndef ECO_ROOTSET_H
 #define ECO_ROOTSET_H
 
-#include <mutex>
+#include <cstddef>
 #include <utility>
 #include <vector>
 #include "Heap.hpp"
@@ -12,7 +12,8 @@ namespace Elm {
  * Tracks GC roots: pointers into the heap that must be scanned during collection.
  *
  * Maintains both explicit roots (registered HPointer locations) and stack roots
- * (memory regions containing potential pointers). Thread-safe via internal mutex.
+ * (memory regions containing potential pointers). Each thread has its own RootSet
+ * in its NurserySpace, so no mutex is needed.
  */
 class RootSet {
 public:
@@ -40,7 +41,6 @@ public:
 private:
     std::vector<HPointer *> roots;                      // Registered pointer locations.
     std::vector<std::pair<void *, size_t>> stack_roots; // Stack regions to scan.
-    std::mutex mutex;                                   // Protects all root set operations.
 };
 
 } // namespace Elm

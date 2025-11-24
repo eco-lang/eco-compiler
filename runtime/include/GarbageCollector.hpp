@@ -44,8 +44,11 @@ public:
     // Resets the GC to initial state. Used for testing.
     void reset();
 
-    // Returns the root set for registering GC roots.
-    RootSet &getRootSet() { return root_set; }
+    // Returns the root set for the current thread. Thread must have called initThread().
+    RootSet &getRootSet();
+
+    // Collects all roots from all threads for major GC.
+    std::vector<HPointer*> collectAllRoots();
 
     // Returns the current thread's nursery, or nullptr if not initialized.
     NurserySpace *getNursery();
@@ -108,7 +111,6 @@ private:
     bool initialized;             // True after initialize() has been called.
 
     OldGenSpace old_gen;
-    RootSet root_set;
 
     // ========== Thread-Local Nurseries ==========
 

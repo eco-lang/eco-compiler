@@ -43,6 +43,9 @@ void NurserySpace::reset(OldGenSpace &oldgen) {
     alloc_ptr = from_space;
     scan_ptr = from_space;
 
+    // Reset the thread-local root set.
+    root_set.reset();
+
     // Note: We do NOT reset GC stats here - stats accumulate across runs.
 }
 
@@ -87,7 +90,7 @@ bool NurserySpace::contains(void *ptr) const {
  * ones and never the other way around. Therefore objects moved into the old generation during evacuation do
  * not need to be scanned by Cheney's algorithm.
  */
-void NurserySpace::minorGC(RootSet &roots, OldGenSpace &oldgen) {
+void NurserySpace::minorGC(OldGenSpace &oldgen) {
 #if ENABLE_GC_STATS
     // Capture state before GC.
     size_t from_space_used = alloc_ptr - from_space;
@@ -103,13 +106,13 @@ void NurserySpace::minorGC(RootSet &roots, OldGenSpace &oldgen) {
     std::vector<void*> promoted_objects;
 
     // Phase 1: Evacuate roots (may add to promoted_objects).
-    for (HPointer *root: roots.getRoots()) {
+    for (HPointer *root: root_set.getRoots()) {
         evacuate(*root, oldgen, &promoted_objects);
     }
 
     // TODO: This part needs linking into LLVM to get the stack roots.
     // Evacuate any stack roots also.
-    for (auto &[stack_ptr, size]: roots.getStackRoots()) {
+    for (auto &[stack_ptr, size]: root_set.getStackRoots()) {
         HPointer *ptrs = static_cast<HPointer *>(stack_ptr);
         size_t count = size / sizeof(HPointer);
         for (size_t i = 0; i < count; i++) {

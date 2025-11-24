@@ -271,12 +271,12 @@ void OldGenSpace::sealTLAB(TLAB* tlab) {
 /**
  * Start a concurrent marking phase.
  * This is a public method that handles its own locking.
- * Takes GarbageCollector reference to check if objects are in nursery during tracing.
+ * Takes collected roots from all threads and GC reference for nursery checks.
  */
 #if ENABLE_GC_STATS
-void OldGenSpace::startConcurrentMark(RootSet &roots, GarbageCollector &gc, GCStats &stats) {
+void OldGenSpace::startConcurrentMark(const std::vector<HPointer*> &roots, GarbageCollector &gc, GCStats &stats) {
 #else
-void OldGenSpace::startConcurrentMark(RootSet &roots, GarbageCollector &gc) {
+void OldGenSpace::startConcurrentMark(const std::vector<HPointer*> &roots, GarbageCollector &gc) {
 #endif
     std::lock_guard<std::recursive_mutex> lock(mark_mutex);
 
@@ -306,7 +306,7 @@ void OldGenSpace::startConcurrentMark(RootSet &roots, GarbageCollector &gc) {
     // Push ALL roots onto mark stack - including nursery objects.
     // Nursery objects will be marked (grey->black) like old gen objects.
     // This is harmless since minor GC uses forwarding pointers, not colors.
-    for (HPointer *root: roots.getRoots()) {
+    for (HPointer *root: roots) {
         void *obj = fromPointer(*root);
         if (obj && (contains(obj) || gc_ref->isInNursery(obj))) {
             mark_stack.push_back(obj);

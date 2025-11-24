@@ -134,9 +134,9 @@ Testing::TestCase testRootsMarkedAtStart("startConcurrentMark pushes roots to ma
         // Start concurrent mark.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, GarbageCollector::instance(), stats);
+        oldgen.startConcurrentMark(rootset.getRoots(), GarbageCollector::instance(), stats);
 #else
-        oldgen.startConcurrentMark(rootset, GarbageCollector::instance());
+        oldgen.startConcurrentMark(rootset.getRoots(), GarbageCollector::instance());
 #endif
 
         // After startConcurrentMark, roots should be on the mark stack.
@@ -213,9 +213,9 @@ Testing::TestCase testRootsPreservedAfterIncrementalMark("Roots remain marked Bl
         // Start marking.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, GarbageCollector::instance(), stats);
+        oldgen.startConcurrentMark(rootset.getRoots(), GarbageCollector::instance(), stats);
 #else
-        oldgen.startConcurrentMark(rootset, GarbageCollector::instance());
+        oldgen.startConcurrentMark(rootset.getRoots(), GarbageCollector::instance());
 #endif
 
         // Do incremental marking in small steps (size-scaled).
@@ -284,10 +284,10 @@ Testing::TestCase testRootsPreservedAfterSweep("Root objects survive full GC cyc
         // Run full GC.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, GarbageCollector::instance(), stats);
+        oldgen.startConcurrentMark(rootset.getRoots(), GarbageCollector::instance(), stats);
         oldgen.finishMarkAndSweep(stats);
 #else
-        oldgen.startConcurrentMark(rootset, GarbageCollector::instance());
+        oldgen.startConcurrentMark(rootset.getRoots(), GarbageCollector::instance());
         oldgen.finishMarkAndSweep();
 #endif
 
@@ -337,9 +337,9 @@ Testing::TestCase testGarbageUnmarkedInIncrementalSteps("Objects with no roots r
         // Start mark with empty root set (no roots!).
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, GarbageCollector::instance(), stats);
+        oldgen.startConcurrentMark(rootset.getRoots(), GarbageCollector::instance(), stats);
 #else
-        oldgen.startConcurrentMark(rootset, GarbageCollector::instance());
+        oldgen.startConcurrentMark(rootset.getRoots(), GarbageCollector::instance());
 #endif
 
         // Incremental mark should have nothing to do.
@@ -395,10 +395,10 @@ Testing::TestCase testGarbageFreeListedAfterSweep("Unreachable objects are recla
         // Run full GC with no roots - all should be reclaimed.
 #if ENABLE_GC_STATS
         GCStats& stats = gc.getMajorGCStats();
-        oldgen.startConcurrentMark(rootset, GarbageCollector::instance(), stats);
+        oldgen.startConcurrentMark(rootset.getRoots(), GarbageCollector::instance(), stats);
         oldgen.finishMarkAndSweep(stats);
 #else
-        oldgen.startConcurrentMark(rootset, GarbageCollector::instance());
+        oldgen.startConcurrentMark(rootset.getRoots(), GarbageCollector::instance());
         oldgen.finishMarkAndSweep();
 #endif
 
