@@ -1,3 +1,11 @@
+/**
+ * GCStats Implementation.
+ *
+ * Tracks GC performance metrics including allocation counts, GC cycle timing,
+ * and survival/promotion rates. Provides histogram visualization for latency
+ * analysis. Zero overhead when ENABLE_GC_STATS is disabled.
+ */
+
 #include <algorithm>
 #include <iomanip>
 #include <iostream>
@@ -5,6 +13,7 @@
 
 namespace Elm {
 
+// Records a single allocation of the given size.
 void GCStats::recordAllocation(size_t bytes) {
     objects_allocated++;
     bytes_allocated += bytes;

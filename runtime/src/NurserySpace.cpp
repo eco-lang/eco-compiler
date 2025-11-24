@@ -1,3 +1,20 @@
+/**
+ * NurserySpace Implementation.
+ *
+ * Thread-local nursery using Cheney's semi-space copying algorithm.
+ *
+ * Allocation: Bump pointer into from_space (O(1), no locking).
+ *
+ * Minor GC algorithm:
+ *   1. Evacuate roots to to_space (or promote to old gen if aged).
+ *   2. Cheney scan: walk to_space objects, evacuate their children.
+ *   3. Process promoted objects (they may point back to nursery).
+ *   4. Swap from_space and to_space.
+ *
+ * Key optimization: Elm's immutability means no old->young pointers exist,
+ * so no write barrier or remembered set is needed.
+ */
+
 #include "NurserySpace.hpp"
 #include "GarbageCollector.hpp"
 #include <cassert>

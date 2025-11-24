@@ -1,3 +1,18 @@
+/**
+ * GarbageCollector Implementation.
+ *
+ * This file implements the central GC coordinator that manages:
+ *   - Unified heap address space (reserved via mmap, committed on demand).
+ *   - Thread-local nurseries for fast allocation.
+ *   - Old generation for long-lived objects.
+ *   - Minor GC (copying collection in nurseries).
+ *   - Major GC (concurrent mark-sweep in old gen).
+ *
+ * Memory layout:
+ *   [0 .. heap_reserved/2)      - Old generation (grows from 0 upward).
+ *   [heap_reserved/2 .. end)    - Nurseries (one per thread, 4MB each).
+ */
+
 #include "GarbageCollector.hpp"
 #include <cstring>
 #include <new>
@@ -5,10 +20,10 @@
 
 namespace Elm {
 
-// Global heap base for read barrier.
+// Global heap base for read barrier (used by fromPointer/toPointer).
 char* g_heap_base = nullptr;
 
-// Define the thread_local flag for preventing recursive GC.
+// Thread-local flag to prevent recursive GC calls during allocation.
 thread_local bool GarbageCollector::gc_in_progress = false;
 
 GarbageCollector::GarbageCollector() :
@@ -23,15 +38,19 @@ GarbageCollector::~GarbageCollector() {
     }
 }
 
+// Initializes the GC with a reserved address space of max_heap_size bytes.
+// Physical memory is committed lazily as needed for old gen and nurseries.
 void GarbageCollector::initialize(size_t max_heap_size) {
-    if (initialized)
+    if (initialized) {
         return;
+    }
 
     heap_reserved = max_heap_size;
 
     // Reserve address space without committing physical memory.
+    // PROT_NONE means no access until we commit regions with mmap(MAP_FIXED).
     heap_base = static_cast<char *>(mmap(nullptr, heap_reserved,
-                                         PROT_NONE,  // No access initially.
+                                         PROT_NONE,
                                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0));
 
     if (heap_base == MAP_FAILED) {
@@ -54,8 +73,9 @@ void GarbageCollector::initialize(size_t max_heap_size) {
     initialized = true;
 }
 
+// Commits additional physical memory for the old generation.
+// Called when old gen needs to grow beyond its current committed size.
 void GarbageCollector::growOldGen(size_t additional_size) {
-    // Commit more memory for old gen.
     char *new_region = heap_base + old_gen_committed;
 
     void *result =
@@ -68,8 +88,8 @@ void GarbageCollector::growOldGen(size_t additional_size) {
     old_gen_committed += additional_size;
 }
 
+// Commits physical memory for a new thread's nursery.
 void GarbageCollector::commitNursery(char *nursery_base, size_t size) {
-    // Commit memory for a nursery.
     void *result = mmap(nursery_base, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
 
     if (result == MAP_FAILED) {
@@ -77,11 +97,14 @@ void GarbageCollector::commitNursery(char *nursery_base, size_t size) {
     }
 }
 
+// Returns the singleton GarbageCollector instance.
 GarbageCollector &GarbageCollector::instance() {
     static GarbageCollector gc;
     return gc;
 }
 
+// Initializes GC state for the calling thread, creating its nursery.
+// Must be called by each thread before it can allocate.
 void GarbageCollector::initThread() {
     // Ensure GC is initialized.
     if (!initialized) {
@@ -145,6 +168,9 @@ std::vector<HPointer*> GarbageCollector::collectAllRoots() {
     return all_roots;
 }
 
+// Allocates a heap object of the given size with the specified tag.
+// Tries nursery first (fast path), falls back to old gen if nursery is full.
+// May trigger minor GC if nursery usage exceeds threshold.
 void *GarbageCollector::allocate(size_t size, Tag tag) {
     // FAST PATH: Check STW barrier first - blocks during major GC root marking.
     if (stw_barrier.load(std::memory_order_acquire)) [[unlikely]] {
@@ -265,13 +291,14 @@ void *GarbageCollector::allocate(size_t size, Tag tag) {
     return obj;
 }
 
+// Triggers a minor GC on the current thread's nursery.
+// Uses Cheney's copying algorithm to evacuate live objects to to-space
+// or promote them to old gen if they've survived enough collections.
 void GarbageCollector::minorGC() {
-    // Prevent recursive GC calls.
     if (gc_in_progress) {
-        return;
+        return;  // Prevent recursive GC calls.
     }
 
-    // Set flag to indicate GC is in progress.
     gc_in_progress = true;
 
     NurserySpace *nursery = getNursery();
@@ -279,10 +306,11 @@ void GarbageCollector::minorGC() {
         nursery->minorGC(old_gen);
     }
 
-    // Clear flag when done.
     gc_in_progress = false;
 }
 
+// Triggers a major GC cycle: concurrent mark-sweep on old generation.
+// Briefly raises STW barrier during root collection, then marks concurrently.
 void GarbageCollector::majorGC() {
     // Prevent recursive GC calls.
     if (gc_in_progress) {

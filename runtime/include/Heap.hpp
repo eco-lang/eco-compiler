@@ -1,3 +1,28 @@
+/**
+ * Heap Object Definitions for Elm Runtime.
+ *
+ * This file defines all heap-allocated value types for the Elm runtime.
+ * Every object begins with a 64-bit Header containing type tag, GC color,
+ * age, and size information.
+ *
+ * Memory layout:
+ *   - All objects are 8-byte aligned.
+ *   - Pointers (HPointer) are 40-bit logical offsets, allowing 8TB heap.
+ *   - Common constants (Nil, True, False, etc.) are embedded in pointers.
+ *   - Primitive values can be unboxed directly into container fields.
+ *
+ * Object types:
+ *   - ElmInt, ElmFloat, ElmChar: Boxed primitives.
+ *   - ElmString: Variable-length UTF-16 string.
+ *   - Tuple2, Tuple3: Fixed-size tuples with unboxing support.
+ *   - Cons: List cons cell with unboxable head.
+ *   - Custom: Algebraic data type variants.
+ *   - Record, DynRecord: Fixed and dynamic records.
+ *   - Closure: Function closure with captured values.
+ *   - Process, Task: Concurrency primitives.
+ *   - Forward: Forwarding pointer for GC compaction.
+ */
+
 #ifndef ECO_HEAP_H
 #define ECO_HEAP_H
 
@@ -5,11 +30,19 @@
 
 namespace Elm {
 
-typedef unsigned long long int u64;
-typedef unsigned int u32;
-typedef unsigned short u16;
-typedef long long int i64;
-typedef double f64;
+// ============================================================================
+// Primitive Type Aliases
+// ============================================================================
+
+typedef unsigned long long int u64;  // 64-bit unsigned integer.
+typedef unsigned int u32;            // 32-bit unsigned integer.
+typedef unsigned short u16;          // 16-bit unsigned integer.
+typedef long long int i64;           // 64-bit signed integer.
+typedef double f64;                  // 64-bit floating point.
+
+// ============================================================================
+// Header and Pointer Layout
+// ============================================================================
 
 /**
  * Headers are always 64-bits in size, and every heap element always has a
@@ -22,7 +55,7 @@ typedef double f64;
  * such as commonly used constants.
  */
 
-// Default bit widths.
+// Bit widths for header and pointer fields.
 #define TAG_BITS 5
 #define CTOR_BITS 16
 #define POINTER_BITS 40
@@ -94,16 +127,23 @@ typedef union {
 } Unboxable;
 static_assert(sizeof(Unboxable) == 8, "Unboxable must be 64 bits");
 
+// ============================================================================
+// Elm Value Types
+// ============================================================================
+
+// Boxed 64-bit floating point value.
 typedef struct {
     Header header;
     f64 value;
 } ElmFloat;
 
+// Boxed 64-bit signed integer value.
 typedef struct {
     Header header;
     i64 value;
 } ElmInt;
 
+// Boxed Unicode character (UTF-16 code unit).
 typedef struct {
     Header header;
     u16 value;

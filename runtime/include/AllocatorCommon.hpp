@@ -1,3 +1,15 @@
+/**
+ * Common Definitions for Garbage Collector Components.
+ *
+ * This file contains shared constants, types, and utilities used across
+ * the GC subsystem (NurserySpace, OldGenSpace, GarbageCollector).
+ *
+ * Key contents:
+ *   - Sizing constants: Heap size, nursery size, TLAB size, block size.
+ *   - Color enum: Tri-color marking states (White, Grey, Black).
+ *   - Utility functions: getHeader(), getObjectSize(), pointer conversion.
+ */
+
 #ifndef ECO_ALLOCATOR_COMMON_H
 #define ECO_ALLOCATOR_COMMON_H
 

@@ -1,3 +1,17 @@
+/**
+ * OldGenSpace Implementation.
+ *
+ * Implements the old generation for long-lived objects using:
+ *   - Free-list allocation with first-fit strategy.
+ *   - Concurrent tri-color mark-and-sweep collection.
+ *   - Thread-local allocation buffers (TLABs) for lock-free promotion.
+ *   - Optional compaction to reduce fragmentation.
+ *
+ * Memory layout:
+ *   [0 .. max_size/2)     - Free-list region for general allocation.
+ *   [max_size/2 .. end)   - TLAB region for nursery promotions.
+ */
+
 #include "OldGenSpace.hpp"
 #include "GarbageCollector.hpp"
 #include <algorithm>
@@ -9,7 +23,7 @@
 
 namespace Elm {
 
-// Declare the global heap base from GarbageCollector.cpp.
+// Global heap base (defined in GarbageCollector.cpp).
 extern char* g_heap_base;
 
 // Read barrier implementation - self-healing for forwarded objects.
