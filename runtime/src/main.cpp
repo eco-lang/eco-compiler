@@ -88,6 +88,7 @@ static size_t list_size = 500;                       // Number of integers in ea
 static std::chrono::seconds duration{0};             // Run duration (0 = run until Ctrl+C).
 static double major_gc_threshold = 0.9;              // Fraction of old gen that triggers major GC.
 static double reversal_probability = 0.5;            // Probability of reversing each field's list.
+static size_t num_program_threads = 1;               // Number of program threads to run.
 
 // ============================================================================
 // Signal Handler
@@ -343,14 +344,16 @@ static void requestMajorGC() {
 //   - Each list reversal allocates N new Cons cells.
 //   - Each model update allocates a new Record.
 //   - Old objects become garbage after each iteration.
-static void programThreadFunc() {
+//
+// thread_id: Identifies this thread in log output (0-based).
+static void programThreadFunc(size_t thread_id) {
     size_t iterations = 0;
 
     try {
         auto& gc = GarbageCollector::instance();
         gc.initThread();
 
-        std::cout << "[Program] Started with " << model_num_fields
+        std::cout << "[Program " << thread_id << "] Started with " << model_num_fields
                   << " fields, list size " << list_size
                   << ", major GC threshold " << (major_gc_threshold * 100) << "%"
                   << ", reversal probability " << reversal_probability << std::endl;
@@ -431,13 +434,13 @@ static void programThreadFunc() {
         gc.getRootSet().removeRoot(&model);
 
     } catch (const std::exception& e) {
-        std::cerr << "\n[Program] FATAL ERROR: " << e.what() << "\n";
+        std::cerr << "\n[Program " << thread_id << "] FATAL ERROR: " << e.what() << "\n";
         printStackTrace();
         shutdown_requested.store(true);
         gc_condition.notify_all();
     }
 
-    std::cout << "[Program] Stopped after " << iterations << " iterations" << std::endl;
+    std::cout << "[Program " << thread_id << "] Stopped after " << iterations << " iterations" << std::endl;
 }
 
 // ============================================================================
@@ -454,6 +457,7 @@ static void printUsage(const char* prog) {
               << "  -l, --list-size <n>     Size of each list (default: 500)\n"
               << "  -t, --threshold <frac>  Major GC threshold as fraction of heap (default: 0.9)\n"
               << "  -p, --probability <p>   Probability of reversing each list (default: 0.5)\n"
+              << "  -n, --threads <n>       Number of program threads (default: 1)\n"
               << "  -h, --help              Show this help message\n"
               << "\n"
               << "Press Ctrl+C to stop.\n";
@@ -501,12 +505,13 @@ static bool parseArgs(int argc, char* argv[]) {
         {"list-size",  required_argument, nullptr, 'l'},
         {"threshold",  required_argument, nullptr, 't'},
         {"probability",required_argument, nullptr, 'p'},
+        {"threads",    required_argument, nullptr, 'n'},
         {"help",       no_argument,       nullptr, 'h'},
         {nullptr,      0,                 nullptr, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "d:f:l:t:p:h", long_options, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "d:f:l:t:p:n:h", long_options, nullptr)) != -1) {
         switch (opt) {
             case 'd': {
                 auto dur = parseDuration(optarg);
@@ -539,6 +544,13 @@ static bool parseArgs(int argc, char* argv[]) {
                 reversal_probability = std::stod(optarg);
                 if (reversal_probability < 0.0 || reversal_probability > 1.0) {
                     std::cerr << "Error: probability must be between 0.0 and 1.0\n";
+                    return false;
+                }
+                break;
+            case 'n':
+                num_program_threads = std::stoul(optarg);
+                if (num_program_threads < 1) {
+                    std::cerr << "Error: threads must be >= 1\n";
                     return false;
                 }
                 break;
@@ -580,9 +592,17 @@ int main(int argc, char* argv[]) {
         std::cout << "GC initialized (memory pressure threshold: "
                   << (major_gc_threshold * 100) << "%)" << std::endl;
 
-        // Start the collector and program threads.
+        // Start the collector thread.
         std::thread collector_thread(collectorThreadFunc);
-        std::thread program_thread(programThreadFunc);
+
+        // Start the program threads.
+        std::vector<std::thread> program_threads;
+        program_threads.reserve(num_program_threads);
+        for (size_t i = 0; i < num_program_threads; i++) {
+            program_threads.emplace_back(programThreadFunc, i);
+        }
+
+        std::cout << "Started " << num_program_threads << " program thread(s)" << std::endl;
 
         // Main thread monitors for shutdown: either duration elapsed or signal.
         if (duration.count() > 0) {
@@ -611,8 +631,10 @@ int main(int argc, char* argv[]) {
 
         std::cout << "Waiting for threads to finish..." << std::endl;
 
-        // Wait for both threads to exit cleanly.
-        program_thread.join();
+        // Wait for all threads to exit cleanly.
+        for (auto& t : program_threads) {
+            t.join();
+        }
         collector_thread.join();
 
         // Print combined GC statistics if enabled at compile time.
