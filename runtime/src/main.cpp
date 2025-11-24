@@ -255,6 +255,7 @@ static void collectorThreadFunc() {
 
         if (gc_requested.load()) {
             gc_requested.store(false);
+            std::cout << "MajorGC Started" << std::endl;
             gc.majorGC();
         }
     }
@@ -265,8 +266,9 @@ static void collectorThreadFunc() {
 // Signals the collector thread to run a major GC.
 // Called by the program thread when old generation exceeds the threshold.
 static void requestMajorGC() {
+    std::cout << "[Program] MajorGC Requested" << std::endl;
     gc_requested.store(true);
-    gc_condition.notify_one();
+    gc_condition.notify_all();
 }
 
 // ============================================================================
