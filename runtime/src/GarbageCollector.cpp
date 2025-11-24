@@ -257,10 +257,6 @@ void GarbageCollector::majorGC() {
     old_gen.startConcurrentMark(all_roots, *this);
 #endif
 
-    // Lower STW barrier - threads can allocate again.
-    stw_barrier.store(false, std::memory_order_release);
-    gc_wait_cv.notify_all();
-
     // Continue with concurrent marking and sweep.
 #if ENABLE_GC_STATS
     old_gen.finishMarkAndSweep(major_gc_stats);
@@ -274,6 +270,12 @@ void GarbageCollector::majorGC() {
     old_gen.performCompaction();
     old_gen.reclaimEvacuatedBlocks();
     old_gen.setCompactionInProgress(false);
+
+    // Lower STW barrier - threads can allocate again.
+    // IMPORTANT: This must happen AFTER compaction completes, otherwise minor GC
+    // can run concurrently and read object headers that are being moved by compaction.
+    stw_barrier.store(false, std::memory_order_release);
+    gc_wait_cv.notify_all();
 
 #if ENABLE_GC_STATS
     uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
@@ -343,6 +345,39 @@ void GarbageCollector::reset() {
     old_gen.reset();
 
     // Note: We do NOT reset GC stats here - stats accumulate across runs.
+}
+
+// ============================================================================
+// Safe Public Pointer API
+// ============================================================================
+
+void* GarbageCollector::resolve(HPointer ptr) {
+    if (ptr.constant != 0) {
+        return nullptr;  // Embedded constant (Nil, True, False, Unit)
+    }
+
+    void* obj = fromPointerRaw(ptr);
+    assert(obj && "Null pointer from valid HPointer");
+
+    // Validate within heap bounds
+    assert(static_cast<char*>(obj) >= heap_base && "Pointer below heap base");
+    assert(static_cast<char*>(obj) < heap_base + heap_reserved && "Pointer above heap end");
+
+    // Follow forwarding chain to final location
+    Header* hdr = getHeader(obj);
+    while (hdr->tag == Tag_Forward) {
+        Forward* fwd = static_cast<Forward*>(obj);
+        uintptr_t byte_offset = static_cast<uintptr_t>(fwd->header.forward_ptr) << 3;
+        obj = heap_base + byte_offset;
+        hdr = getHeader(obj);
+    }
+
+    assert(hdr->tag < Tag_Forward && "Invalid tag after forward resolution");
+    return obj;
+}
+
+HPointer GarbageCollector::wrap(void* obj) {
+    return toPointerRaw(obj);
 }
 
 } // namespace Elm

@@ -26,6 +26,18 @@ public:
     // Returns the singleton GarbageCollector instance.
     static GarbageCollector &instance();
 
+    // ========== Safe Public Pointer API ==========
+
+    // Resolves an HPointer to its physical address.
+    // Follows any forwarding pointer chain to the final location.
+    // Returns nullptr for embedded constants (Nil, True, False, Unit).
+    // Asserts on invalid pointer or corrupted memory.
+    void* resolve(HPointer ptr);
+
+    // Wraps a physical address as an HPointer.
+    // Used after allocate() to get a storable pointer.
+    HPointer wrap(void* obj);
+
     // Initializes the GC with the given maximum heap size.
     void initialize(size_t max_heap_size = DEFAULT_MAX_HEAP_SIZE);
 
@@ -120,6 +132,31 @@ private:
     std::mutex nursery_mutex;
     std::unordered_map<std::thread::id, std::unique_ptr<NurserySpace>> nurseries;
 
+    // ========== Internal Pointer Conversion ==========
+
+    // Raw pointer conversion - internal use only, no forward resolution.
+    // Friends can access these for performance-critical GC operations.
+    static inline void* fromPointerRaw(HPointer ptr) {
+        if (ptr.constant != 0) return nullptr;
+        char* heap_base = instance().heap_base;
+        uintptr_t byte_offset = static_cast<uintptr_t>(ptr.ptr) << 3;
+        return heap_base + byte_offset;
+    }
+
+    static inline HPointer toPointerRaw(void* obj) {
+        HPointer ptr;
+        char* heap_base = instance().heap_base;
+        uintptr_t byte_offset = static_cast<char*>(obj) - heap_base;
+        ptr.ptr = byte_offset >> 3;
+        ptr.constant = 0;
+        ptr.padding = 0;
+        return ptr;
+    }
+
+    friend class NurserySpace;
+    friend class OldGenSpace;
+    friend class GCTestAccess;
+
     // ========== Thread signalling ==========
 
     std::atomic<bool> shutdown_flag{false};        // Set when shutting down.
@@ -138,27 +175,22 @@ private:
     void commitNursery(char *nursery_base, size_t size);
 };
 
-// Converts a logical HPointer to a physical memory address.
-// Returns nullptr if the pointer represents an embedded constant.
-inline void *fromPointer(HPointer ptr) {
-    if (ptr.constant != 0) {
-        return nullptr;
-    }
-    char *heap_base = GarbageCollector::instance().getHeapBase();
-    uintptr_t byte_offset = static_cast<uintptr_t>(ptr.ptr) << 3;
-    return heap_base + byte_offset;
-}
+// ============================================================================
+// Test Access Helper
+// ============================================================================
 
-// Converts a physical memory address to a logical HPointer.
-inline HPointer toPointer(void *obj) {
-    HPointer ptr;
-    char *heap_base = GarbageCollector::instance().getHeapBase();
-    uintptr_t byte_offset = static_cast<char *>(obj) - heap_base;
-    ptr.ptr = byte_offset >> 3;
-    ptr.constant = 0;
-    ptr.padding = 0;
-    return ptr;
-}
+// For test code only - provides privileged access to raw pointer conversion.
+// This class is a friend of GarbageCollector and can access internal functions.
+class GCTestAccess {
+public:
+    static void* fromPointer(HPointer ptr) {
+        return GarbageCollector::fromPointerRaw(ptr);
+    }
+
+    static HPointer toPointer(void* obj) {
+        return GarbageCollector::toPointerRaw(obj);
+    }
+};
 
 } // namespace Elm
 

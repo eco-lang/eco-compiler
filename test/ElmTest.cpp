@@ -32,7 +32,7 @@ HPointer elm_cons(HPointer head, HPointer tail) {
     cons->head.p = head;
     cons->tail = tail;
 
-    return toPointer(obj);
+    return GCTestAccess::toPointer(obj);
 }
 
 HPointer elm_cons_int(i64 value, HPointer tail) {
@@ -48,7 +48,7 @@ HPointer elm_cons_int(i64 value, HPointer tail) {
     cons->head.i = value;
     cons->tail = tail;
 
-    return toPointer(obj);
+    return GCTestAccess::toPointer(obj);
 }
 
 HPointer elm_reverse(HPointer list) {
@@ -68,7 +68,7 @@ HPointer elm_reverse(HPointer list) {
 
     while (list_root.constant != Const_Nil) {
         // Read current cons cell from root (root is always up-to-date).
-        void* obj = fromPointer(list_root);
+        void* obj = GCTestAccess::fromPointer(list_root);
         if (!obj) break;
 
         Cons* cons = static_cast<Cons*>(obj);
@@ -92,7 +92,7 @@ HPointer elm_reverse(HPointer list) {
         new_cons->head = head_copy;  // Copy head value (integer or pointer).
         new_cons->tail = acc_root;   // Use root version which may have been updated.
 
-        acc_root = toPointer(new_obj);
+        acc_root = GCTestAccess::toPointer(new_obj);
     }
 
     // Remove roots before returning.
@@ -105,7 +105,7 @@ HPointer elm_reverse(HPointer list) {
 HPointer elm_foldl(HPointer (*func)(HPointer, HPointer), HPointer acc, HPointer list) {
     // Generic foldl - currently unused but kept for completeness.
     while (list.constant != Const_Nil) {
-        void* obj = fromPointer(list);
+        void* obj = GCTestAccess::fromPointer(list);
         if (!obj) break;
 
         Cons* cons = static_cast<Cons*>(obj);
@@ -205,7 +205,7 @@ Testing::UnitTest testElmConsAllocation("Cons cell is allocated correctly", []()
 
     TEST_ASSERT(list.constant == 0);  // Not a constant.
 
-    void* obj = fromPointer(list);
+    void* obj = GCTestAccess::fromPointer(list);
     if (!obj) TEST_FAIL("fromPointer returned null");
 
     Cons* cons = static_cast<Cons*>(obj);

@@ -327,7 +327,7 @@ void OldGenSpace::startConcurrentMark(const std::vector<HPointer*> &roots, Garba
     // Nursery objects will be marked (grey->black) like old gen objects.
     // This is harmless since minor GC uses forwarding pointers, not colors.
     for (HPointer *root: roots) {
-        void *obj = fromPointer(*root);
+        void *obj = GarbageCollector::fromPointerRaw(*root);
         if (obj && (contains(obj) || gc_ref->isInNursery(obj))) {
             mark_stack.push_back(obj);
         }
@@ -469,7 +469,7 @@ void OldGenSpace::markHPointer(HPointer &ptr) {
     if (ptr.constant != 0)
         return;
 
-    void *obj = fromPointer(ptr);
+    void *obj = GarbageCollector::fromPointerRaw(ptr);
     if (!obj)
         return;
 

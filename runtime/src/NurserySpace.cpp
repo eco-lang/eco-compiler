@@ -187,7 +187,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     if (ptr.constant != 0)
         return;  // It's a constant.
 
-    void *obj = fromPointer(ptr);
+    void *obj = GarbageCollector::fromPointerRaw(ptr);
     if (!obj)
         return;
 
@@ -208,7 +208,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         // Follow forward pointer and update ptr.
         Forward *fwd = static_cast<Forward *>(obj);
         uintptr_t byte_offset = static_cast<uintptr_t>(fwd->header.forward_ptr) << 3;
-        ptr = toPointer(heap_base + byte_offset);
+        ptr = GarbageCollector::toPointerRaw(heap_base + byte_offset);
         return;
     }
 
@@ -301,7 +301,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     fwd->header.forward_ptr = byte_offset >> 3;  // Store as offset in 8-byte units.
     fwd->header.unused = 0;
 
-    ptr = toPointer(new_obj);
+    ptr = GarbageCollector::toPointerRaw(new_obj);
 }
 
 void NurserySpace::evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {

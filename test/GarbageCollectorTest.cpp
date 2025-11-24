@@ -44,11 +44,11 @@ Testing::TestCase testPromotionToOldGen("Objects surviving PROMOTION_AGE minor G
         ElmInt* elm_int = static_cast<ElmInt*>(obj);
         elm_int->value = test_value;
 
-        HPointer root = toPointer(obj);
+        HPointer root = GCTestAccess::toPointer(obj);
         gc.getRootSet().addRoot(&root);
 
         // Object should start in nursery.
-        void* current = fromPointer(root);
+        void* current = GCTestAccess::fromPointer(root);
         RC_ASSERT(isInNursery(gc, current));
 
         // Run enough minor GCs to trigger promotion (PROMOTION_AGE + 1).
@@ -61,7 +61,7 @@ Testing::TestCase testPromotionToOldGen("Objects surviving PROMOTION_AGE minor G
         }
 
         // Object should now be in old gen.
-        current = fromPointer(root);
+        current = GCTestAccess::fromPointer(root);
         RC_ASSERT(isInOldGen(gc, current));
 
         // Value should be preserved.
@@ -91,7 +91,7 @@ Testing::TestCase testMinorThenMajorGCSequence("Roots survive minor then major G
             ElmInt* elm_int = static_cast<ElmInt*>(obj);
             elm_int->value = val;
             expected_values.push_back(val);
-            root_storage.push_back(toPointer(obj));
+            root_storage.push_back(GCTestAccess::toPointer(obj));
         }
 
         RC_ASSERT(!root_storage.empty());
@@ -142,7 +142,7 @@ Testing::TestCase testLongLivedObjectsSurviveMajorGC("Promoted objects survive m
             ElmInt* elm_int = static_cast<ElmInt*>(obj);
             elm_int->value = val;
             expected_values.push_back(val);
-            root_storage.push_back(toPointer(obj));
+            root_storage.push_back(GCTestAccess::toPointer(obj));
         }
 
         RC_ASSERT(!root_storage.empty());
@@ -158,7 +158,7 @@ Testing::TestCase testLongLivedObjectsSurviveMajorGC("Promoted objects survive m
 
         // Verify objects are in old gen.
         for (auto& root : root_storage) {
-            void* obj = fromPointer(root);
+            void* obj = GCTestAccess::fromPointer(root);
             RC_ASSERT(isInOldGen(gc, obj));
         }
 
@@ -202,7 +202,7 @@ Testing::TestCase testMajorGCReclaimsOldGenGarbage("Unrooted objects in old gen 
 
             ElmInt* elm_int = static_cast<ElmInt*>(obj);
             elm_int->value = val;
-            all_roots.push_back(toPointer(obj));
+            all_roots.push_back(GCTestAccess::toPointer(obj));
         }
 
         RC_ASSERT(all_roots.size() >= 4);
@@ -267,7 +267,7 @@ Testing::TestCase testFullGCCycleWithCompaction("Objects survive full GC cycle i
             ElmInt* elm_int = static_cast<ElmInt*>(obj);
             elm_int->value = val;
             expected_values.push_back(val);
-            root_storage.push_back(toPointer(obj));
+            root_storage.push_back(GCTestAccess::toPointer(obj));
         }
 
         RC_ASSERT(!root_storage.empty());
@@ -321,7 +321,7 @@ Testing::TestCase testMixedAllocationWorkload("Roots survive mixed minor and maj
             ElmInt* elm_int = static_cast<ElmInt*>(obj);
             elm_int->value = val;
             expected_values.push_back(val);
-            root_storage.push_back(toPointer(obj));
+            root_storage.push_back(GCTestAccess::toPointer(obj));
         }
 
         RC_ASSERT(!root_storage.empty());
@@ -404,10 +404,10 @@ Testing::TestCase testObjectGraphSpanningPromotions("Linked list survives with n
             if (!cons_obj) RC_FAIL("Failed to allocate cons");
 
             Cons* cons = static_cast<Cons*>(cons_obj);
-            cons->head.p = toPointer(int_obj);
+            cons->head.p = GCTestAccess::toPointer(int_obj);
             cons->tail = list_head;
 
-            list_head = toPointer(cons_obj);
+            list_head = GCTestAccess::toPointer(cons_obj);
 
             // Run minor GC partway through to create mixed generations.
             if (i == list_length / 2) {
@@ -476,7 +476,7 @@ Testing::TestCase testMultipleMajorGCCycles("Long-lived roots survive multiple m
             ElmInt* elm_int = static_cast<ElmInt*>(obj);
             elm_int->value = val;
             expected_values.push_back(val);
-            root_storage.push_back(toPointer(obj));
+            root_storage.push_back(GCTestAccess::toPointer(obj));
         }
 
         RC_ASSERT(!root_storage.empty());
@@ -545,7 +545,7 @@ Testing::TestCase testStressTestBothGenerations("High allocation rate with both 
             ElmInt* elm_int = static_cast<ElmInt*>(obj);
             elm_int->value = val;
             expected_values.push_back(val);
-            root_storage.push_back(toPointer(obj));
+            root_storage.push_back(GCTestAccess::toPointer(obj));
         }
 
         RC_ASSERT(!root_storage.empty());

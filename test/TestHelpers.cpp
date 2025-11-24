@@ -45,7 +45,7 @@ RootedInts createRootedInts(GarbageCollector& gc, size_t count) {
         ElmInt* elm_int = static_cast<ElmInt*>(obj);
         elm_int->value = val;
         result.values.push_back(val);
-        result.roots.push_back(toPointer(obj));
+        result.roots.push_back(GCTestAccess::toPointer(obj));
     }
 
     return result;
@@ -63,7 +63,7 @@ RootedInts createRootedIntsWithValues(GarbageCollector& gc, const std::vector<i6
         ElmInt* elm_int = static_cast<ElmInt*>(obj);
         elm_int->value = val;
         result.values.push_back(val);
-        result.roots.push_back(toPointer(obj));
+        result.roots.push_back(GCTestAccess::toPointer(obj));
     }
 
     return result;
@@ -215,13 +215,13 @@ GraphRoots setupRootsFromGraph(GarbageCollector& gc,
 
     for (size_t idx : graph.root_indices) {
         if (idx < allocated_objects.size()) {
-            result.storage.push_back(toPointer(allocated_objects[idx]));
+            result.storage.push_back(GCTestAccess::toPointer(allocated_objects[idx]));
         }
     }
 
     // If no valid roots from graph, use first object as root
     if (result.storage.empty() && !allocated_objects.empty()) {
-        result.storage.push_back(toPointer(allocated_objects[0]));
+        result.storage.push_back(GCTestAccess::toPointer(allocated_objects[0]));
     }
 
     for (auto& root : result.storage) {
@@ -277,10 +277,10 @@ LinkedList buildLinkedList(GarbageCollector& gc, size_t length) {
         if (!cons_obj) RC_FAIL("Failed to allocate cons");
 
         Cons* cons = static_cast<Cons*>(cons_obj);
-        cons->head.p = toPointer(int_obj);
+        cons->head.p = GCTestAccess::toPointer(int_obj);
         cons->tail = result.head;
 
-        result.head = toPointer(cons_obj);
+        result.head = GCTestAccess::toPointer(cons_obj);
     }
 
     // Reverse values so they match traversal order
@@ -300,11 +300,11 @@ LinkedList buildLinkedListInTLAB(TLAB* tlab, size_t length) {
         void* int_obj = allocateIntIntoTLAB(tlab, val);
         if (!int_obj) RC_FAIL("Failed to allocate int into TLAB");
 
-        HPointer head_ptr = toPointer(int_obj);
+        HPointer head_ptr = GCTestAccess::toPointer(int_obj);
         void* cons_obj = allocateConsIntoTLAB(tlab, head_ptr, result.head, true);
         if (!cons_obj) RC_FAIL("Failed to allocate cons into TLAB");
 
-        result.head = toPointer(cons_obj);
+        result.head = GCTestAccess::toPointer(cons_obj);
     }
 
     // Reverse values so they match traversal order

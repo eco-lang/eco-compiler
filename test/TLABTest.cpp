@@ -191,7 +191,7 @@ Testing::TestCase testTLABFillAndSeal("Promoting objects beyond TLAB capacity se
                 ElmInt* elm_int = static_cast<ElmInt*>(obj);
                 elm_int->value = static_cast<i64>(batch_count);
 
-                root_storage[batch_count] = toPointer(obj);
+                root_storage[batch_count] = GCTestAccess::toPointer(obj);
                 batch_count++;
                 batch_size += obj_size;
             }

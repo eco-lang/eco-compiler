@@ -215,7 +215,7 @@ static HPointer allocateInt(GarbageCollector& gc, i64 value) {
 
     ElmInt* elm_int = static_cast<ElmInt*>(obj);
     elm_int->value = value;
-    return toPointer(obj);
+    return gc.wrap(obj);
 }
 
 // Allocates a Cons cell with an unboxed integer as its head.
@@ -231,7 +231,7 @@ static HPointer allocateConsInt(GarbageCollector& gc, i64 value, HPointer tail) 
     cons->header.unboxed = 1;  // Mark head as unboxed integer.
     cons->head.i = value;
     cons->tail = tail;
-    return toPointer(obj);
+    return gc.wrap(obj);
 }
 
 // Creates a linked list of integers [0, 1, 2, ..., size-1].
@@ -267,7 +267,7 @@ static HPointer reverseList(GarbageCollector& gc, HPointer list) {
     gc.getRootSet().pushStackRoot(&acc);
 
     while (list.constant != Const_Nil) {
-        void* obj = fromPointer(list);
+        void* obj = gc.resolve(list);
         if (!obj) {
             gc.getRootSet().restoreStackRootPoint(root_point);
             throw CorruptHeapError("Null pointer encountered during list reversal");
@@ -296,8 +296,8 @@ static HPointer reverseList(GarbageCollector& gc, HPointer list) {
         new_cons->tail = acc;
 
         // Update acc via replaceHead to track the new cons cell.
-        gc.getRootSet().replaceHead(toPointer(new_obj));
-        acc = toPointer(new_obj);
+        gc.getRootSet().replaceHead(gc.wrap(new_obj));
+        acc = gc.wrap(new_obj);
     }
 
     gc.getRootSet().restoreStackRootPoint(root_point);
@@ -323,7 +323,7 @@ static HPointer allocateRecord(GarbageCollector& gc, size_t num_fields) {
         record->values[i].p = createNil();
     }
 
-    return toPointer(obj);
+    return gc.wrap(obj);
 }
 
 // Updates a root Record in place with one field changed (functional update).
@@ -335,7 +335,7 @@ static HPointer allocateRecord(GarbageCollector& gc, size_t num_fields) {
 // Throws CorruptHeapError if record_ptr is null, AllocationError on OOM.
 static void updateRootRecord(GarbageCollector& gc, HPointer& record_ptr,
                               size_t field_index, HPointer new_value) {
-    void* old_obj = fromPointer(record_ptr);
+    void* old_obj = gc.resolve(record_ptr);
     if (!old_obj) {
         throw CorruptHeapError("Record pointer is null in updateRootRecord");
     }
@@ -350,7 +350,7 @@ static void updateRootRecord(GarbageCollector& gc, HPointer& record_ptr,
     }
 
     // Re-derive old_record since GC may have relocated it during allocation.
-    old_obj = fromPointer(record_ptr);
+    old_obj = gc.resolve(record_ptr);
     old_record = static_cast<Record*>(old_obj);
 
     Record* new_record = static_cast<Record*>(new_obj);
@@ -368,7 +368,7 @@ static void updateRootRecord(GarbageCollector& gc, HPointer& record_ptr,
 
     // Replace old record root with new record root.
     gc.getRootSet().removeRoot(&record_ptr);
-    record_ptr = toPointer(new_obj);
+    record_ptr = gc.wrap(new_obj);
     gc.getRootSet().addRoot(&record_ptr);
 }
 
@@ -474,7 +474,7 @@ static void programThreadFunc(size_t thread_id) {
             size_t field_index = 0;
             bool field_selected = false;
 
-            void* model_obj = fromPointer(model);
+            void* model_obj = gc.resolve(model);
             if (!model_obj) {
                 throw CorruptHeapError("Model pointer became null during main loop");
             }

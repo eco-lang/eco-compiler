@@ -120,7 +120,7 @@ Testing::TestCase testRootsMarkedAtStart("startConcurrentMark pushes roots to ma
             void* obj = allocateIntIntoTLAB(tlab, val);
             if (!obj) RC_FAIL("Failed to allocate object into TLAB");
             objects.push_back(obj);
-            root_storage.push_back(toPointer(obj));
+            root_storage.push_back(GCTestAccess::toPointer(obj));
         }
 
         // Register all objects as roots.
@@ -196,12 +196,12 @@ Testing::TestCase testRootsPreservedAfterIncrementalMark("Roots remain marked Bl
             if (!int_obj) RC_FAIL("Failed to allocate int into TLAB");
             objects.push_back(int_obj);
 
-            HPointer head_ptr = toPointer(int_obj);
+            HPointer head_ptr = GCTestAccess::toPointer(int_obj);
             void* cons_obj = allocateConsIntoTLAB(tlab, head_ptr, tail, true);
             if (!cons_obj) RC_FAIL("Failed to allocate cons into TLAB");
             objects.push_back(cons_obj);
 
-            tail = toPointer(cons_obj);
+            tail = GCTestAccess::toPointer(cons_obj);
         }
 
         // Only root the head of the list (last cons created).
@@ -271,7 +271,7 @@ Testing::TestCase testRootsPreservedAfterSweep("Root objects survive full GC cyc
             void* obj = allocateIntIntoTLAB(tlab, val);
             if (!obj) RC_FAIL("Failed to allocate object into TLAB");
             objects.push_back(obj);
-            root_storage.push_back(toPointer(obj));
+            root_storage.push_back(GCTestAccess::toPointer(obj));
         }
 
         // Register roots.
@@ -293,7 +293,7 @@ Testing::TestCase testRootsPreservedAfterSweep("Root objects survive full GC cyc
 
         // Verify all root values are intact.
         for (size_t i = 0; i < objects.size(); i++) {
-            void* obj = fromPointer(root_storage[i]);
+            void* obj = GCTestAccess::fromPointer(root_storage[i]);
             if (!obj) RC_FAIL("Root object became null after GC");
 
             Header* hdr = getHeader(obj);

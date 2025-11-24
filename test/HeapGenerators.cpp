@@ -33,7 +33,7 @@ static Unboxable makeUnboxableFromConsHead(const ConsHeadDesc& head, const std::
     Unboxable val;
     if (head.head_boxed && !allocated.empty()) {
         size_t idx = head.child_index % allocated.size();
-        val.p = toPointer(allocated[idx]);
+        val.p = GCTestAccess::toPointer(allocated[idx]);
     } else if (head.head_boxed && allocated.empty()) {
         // No objects to reference, use Nil constant.
         val.p = createConstant(Const_Nil);
@@ -82,7 +82,7 @@ static Unboxable makeUnboxable(bool is_boxed, const HeapObjectDesc &desc, const 
     if (is_boxed && !allocated.empty()) {
         // Boxed: pointer to existing object.
         size_t idx = child_index % allocated.size();
-        val.p = toPointer(allocated[idx]);
+        val.p = GCTestAccess::toPointer(allocated[idx]);
     } else if (is_boxed && allocated.empty()) {
         // No objects to reference, use Nil constant.
         val.p = createConstant(Const_Nil);
@@ -150,7 +150,7 @@ HPointer allocateList(const ListDesc& list_desc, const std::vector<void*>& alloc
         hdr->unboxed = it->head_boxed ? 0 : 1;
 
         // Update tail for next iteration.
-        tail = toPointer(cons_obj);
+        tail = GCTestAccess::toPointer(cons_obj);
     }
 
     return tail;  // Returns head of list (or Nil if empty).
@@ -284,7 +284,7 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
 
                 // Set fieldgroup reference (clamp to valid range or use default).
                 if (!allocated.empty() && desc.dynrec_child_fieldgroup < allocated.size()) {
-                    dynrec->fieldgroup = toPointer(allocated[desc.dynrec_child_fieldgroup]);
+                    dynrec->fieldgroup = GCTestAccess::toPointer(allocated[desc.dynrec_child_fieldgroup]);
                 } else {
                     // Create Nil constant if no valid fieldgroup.
                     dynrec->fieldgroup.ptr = 0;
@@ -295,7 +295,7 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
                 for (size_t i = 0; i < num_values; i++) {
                     if (!allocated.empty()) {
                         size_t idx = desc.dynrec_child_values[i] % allocated.size();
-                        dynrec->values[i] = toPointer(allocated[idx]);
+                        dynrec->values[i] = GCTestAccess::toPointer(allocated[idx]);
                     } else {
                         dynrec->values[i].ptr = 0;
                         dynrec->values[i].constant = Const_Nil;

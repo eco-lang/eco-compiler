@@ -59,10 +59,6 @@ constexpr double MAX_EVACUATION_RATIO = 0.10;       // Evacuate at most 10% of h
 // Returns the header of a heap object.
 inline Header *getHeader(void *obj) { return static_cast<Header *>(obj); }
 
-// Defined in GarbageCollector.hpp after the class definition.
-void *fromPointer(HPointer ptr);
-HPointer toPointer(void *obj);
-
 // Returns the size of a heap object in bytes (8-byte aligned).
 inline size_t getObjectSize(void *obj) {
     Header *hdr = getHeader(obj);

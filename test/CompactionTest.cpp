@@ -97,7 +97,7 @@ Testing::TestCase testBlockInitialization("Blocks cover the free-list region wit
         void* obj = allocateIntIntoTLAB(tlab, 42);
         if (!obj) RC_FAIL("Failed to allocate object");
 
-        HPointer root = toPointer(obj);
+        HPointer root = GCTestAccess::toPointer(obj);
         rootset.addRoot(&root);
 
         oldgen.sealTLAB(tlab);
@@ -144,7 +144,7 @@ Testing::TestCase testBlockLiveInfoTracking("Objects marked as live update block
             void* obj = allocateIntIntoTLAB(tlab, val);
             if (!obj) break;
             objects.push_back(obj);
-            root_storage.push_back(toPointer(obj));
+            root_storage.push_back(GCTestAccess::toPointer(obj));
         }
 
         RC_ASSERT(!objects.empty());
@@ -201,7 +201,7 @@ Testing::TestCase testCompactionSetSelection("Blocks below threshold are selecte
         void* obj = allocateIntIntoTLAB(tlab, 12345);
         if (!obj) RC_FAIL("Failed to allocate object");
 
-        HPointer root = toPointer(obj);
+        HPointer root = GCTestAccess::toPointer(obj);
         rootset.addRoot(&root);
 
         oldgen.sealTLAB(tlab);
@@ -225,7 +225,7 @@ Testing::TestCase testCompactionSetSelection("Blocks below threshold are selecte
         oldgen.setCompactionInProgress(false);
 
         // Object should still be accessible (may have been moved).
-        void* current_obj = fromPointer(root);
+        void* current_obj = GCTestAccess::fromPointer(root);
         if (!current_obj) RC_FAIL("Object not accessible after compaction");
 
         ElmInt* elm_int = static_cast<ElmInt*>(current_obj);
@@ -251,7 +251,7 @@ Testing::TestCase testObjectEvacuationWithForwarding("After evacuation, original
         void* original_obj = allocateIntIntoTLAB(tlab, test_value);
         if (!original_obj) RC_FAIL("Failed to allocate object");
 
-        HPointer root = toPointer(original_obj);
+        HPointer root = GCTestAccess::toPointer(original_obj);
         rootset.addRoot(&root);
 
         oldgen.sealTLAB(tlab);
@@ -274,7 +274,7 @@ Testing::TestCase testObjectEvacuationWithForwarding("After evacuation, original
 
         // Check if object was moved (original location may have forwarding pointer).
         Header* original_hdr = getHeader(original_obj);
-        void* current_obj = fromPointer(root);
+        void* current_obj = GCTestAccess::fromPointer(root);
 
         if (original_hdr->tag == Tag_Forward) {
             // Object was evacuated - verify forwarding pointer works.
@@ -310,7 +310,7 @@ Testing::TestCase testReadBarrierSelfHealing("readBarrier updates pointer to new
         void* obj = allocateIntIntoTLAB(tlab, test_value);
         if (!obj) RC_FAIL("Failed to allocate object");
 
-        HPointer root = toPointer(obj);
+        HPointer root = GCTestAccess::toPointer(obj);
         HPointer original_root = root;  // Keep copy of original pointer.
         rootset.addRoot(&root);
 
@@ -341,7 +341,7 @@ Testing::TestCase testReadBarrierSelfHealing("readBarrier updates pointer to new
             RC_ASSERT(elm_int->value == test_value);
 
             // If object was moved, test_ptr should have been updated (self-healing).
-            Header* original_hdr = getHeader(fromPointer(original_root));
+            Header* original_hdr = getHeader(GCTestAccess::fromPointer(original_root));
             if (original_hdr->tag == Tag_Forward) {
                 // Pointer should have been updated.
                 RC_ASSERT(test_ptr.ptr != original_root.ptr);
@@ -375,7 +375,7 @@ Testing::TestCase testBlockEvacuation("evacuateBlock moves all Black objects fro
             if (!obj) break;
             original_locations.push_back(obj);
             expected_values.push_back(val);
-            root_storage.push_back(toPointer(obj));
+            root_storage.push_back(GCTestAccess::toPointer(obj));
         }
 
         RC_ASSERT(original_locations.size() >= 2);
@@ -404,7 +404,7 @@ Testing::TestCase testBlockEvacuation("evacuateBlock moves all Black objects fro
 
         // Verify all values are still accessible.
         for (size_t i = 0; i < root_storage.size(); i++) {
-            void* obj = fromPointer(root_storage[i]);
+            void* obj = GCTestAccess::fromPointer(root_storage[i]);
             if (!obj) RC_FAIL("Object is null");
 
             // Follow forwarding if needed.
@@ -438,7 +438,7 @@ Testing::TestCase testBlockReclaimToTLABs("reclaimEvacuatedBlocks adds empty blo
         void* obj = allocateIntIntoTLAB(tlab, 999);
         if (!obj) RC_FAIL("Failed to allocate object");
 
-        HPointer root = toPointer(obj);
+        HPointer root = GCTestAccess::toPointer(obj);
         rootset.addRoot(&root);
 
         oldgen.sealTLAB(tlab);
@@ -460,7 +460,7 @@ Testing::TestCase testBlockReclaimToTLABs("reclaimEvacuatedBlocks adds empty blo
         oldgen.setCompactionInProgress(false);
 
         // Object should still be valid.
-        void* current = fromPointer(root);
+        void* current = GCTestAccess::fromPointer(root);
         if (getHeader(current)->tag == Tag_Forward) {
             current = readBarrier(root);
         }
@@ -495,7 +495,7 @@ Testing::TestCase testCompactionPreservesValues("Object data is identical after 
         for (i64 val : values) {
             void* obj = allocateIntIntoTLAB(tlab, val);
             if (!obj) break;
-            root_storage.push_back(toPointer(obj));
+            root_storage.push_back(GCTestAccess::toPointer(obj));
         }
 
         RC_ASSERT(!root_storage.empty());
@@ -564,7 +564,7 @@ Testing::TestCase testRootPointerUpdatesAfterCompaction("Roots point to correct 
             void* int_obj = allocateIntIntoTLAB(tlab, val);
             if (!int_obj) RC_FAIL("Failed to allocate int");
 
-            HPointer head_ptr = toPointer(int_obj);
+            HPointer head_ptr = GCTestAccess::toPointer(int_obj);
             void* cons_obj = tlab->allocate(sizeof(Cons));
             if (!cons_obj) RC_FAIL("Failed to allocate cons");
 
@@ -577,7 +577,7 @@ Testing::TestCase testRootPointerUpdatesAfterCompaction("Roots point to correct 
             cons->head.p = head_ptr;
             cons->tail = tail;
 
-            tail = toPointer(cons_obj);
+            tail = GCTestAccess::toPointer(cons_obj);
         }
 
         HPointer root = tail;
@@ -658,7 +658,7 @@ Testing::TestCase testFragmentationDefragmentation("Sparse objects are consolida
         std::vector<HPointer> root_storage;
         std::vector<i64> rooted_values;
         for (size_t i = 0; i < all_objects.size(); i += 3) {
-            root_storage.push_back(toPointer(all_objects[i]));
+            root_storage.push_back(GCTestAccess::toPointer(all_objects[i]));
             rooted_values.push_back(all_values[i]);
         }
 
