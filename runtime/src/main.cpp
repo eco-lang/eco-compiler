@@ -91,14 +91,105 @@ static double reversal_probability = 0.5;            // Probability of reversing
 static size_t num_program_threads = 1;               // Number of program threads to run.
 
 // ============================================================================
-// Signal Handler
+// Signal Handlers
 // ============================================================================
 
 // Handles SIGINT and SIGTERM to initiate graceful shutdown.
-static void signalHandler(int signum) {
+static void shutdownHandler(int signum) {
     (void)signum;
     shutdown_requested.store(true);
     gc_condition.notify_all();
+}
+
+// Handles fatal signals (SIGSEGV, SIGABRT, SIGBUS, SIGFPE) by printing a stack trace.
+// Uses addr2line to get source file and line numbers.
+static void fatalSignalHandler(int sig) {
+    constexpr int MAX_FRAMES = 64;
+    void* callstack[MAX_FRAMES];
+
+    size_t frames = backtrace(callstack, MAX_FRAMES);
+    char** symbols = backtrace_symbols(callstack, frames);
+
+    // Print signal info.
+    const char* sig_name =
+        sig == SIGSEGV ? "SIGSEGV" :
+        sig == SIGABRT ? "SIGABRT" :
+        sig == SIGBUS  ? "SIGBUS" :
+        sig == SIGFPE  ? "SIGFPE" : "UNKNOWN";
+
+    fprintf(stderr, "\n=== FATAL SIGNAL ===\n");
+    fprintf(stderr, "Signal: %d (%s)\n", sig, sig_name);
+    fprintf(stderr, "Stack trace:\n");
+
+    // Get the executable path for addr2line.
+    char exe_path[1024];
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (len != -1) {
+        exe_path[len] = '\0';
+    } else {
+        exe_path[0] = '\0';
+    }
+
+    for (size_t i = 0; i < frames; i++) {
+        const char* symbol = symbols ? symbols[i] : "???";
+
+        // Extract the binary offset from symbol string.
+        // Format: "./build/ecor(+0x308a6) [0x5564e291e8a6]" or
+        //         "./build/ecor(_ZN3Elm...+0x1c4) [0x...]"
+        // We need the offset (after '+') for addr2line due to ASLR.
+        char addr_str[64] = {0};
+        const char* plus = strchr(symbol, '+');
+        const char* paren_close = strchr(symbol, ')');
+        if (plus && paren_close && plus < paren_close) {
+            size_t len = paren_close - plus - 1;
+            if (len < sizeof(addr_str)) {
+                strncpy(addr_str, plus + 1, len);
+                addr_str[len] = '\0';
+            }
+        }
+
+        // Try to get source location using addr2line.
+        char func_name[512] = {0};
+        char location[512] = {0};
+        bool got_location = false;
+
+        if (exe_path[0] != '\0' && addr_str[0] != '\0') {
+            char cmd[2048];
+            snprintf(cmd, sizeof(cmd), "addr2line -f -C -e %s %s 2>/dev/null", exe_path, addr_str);
+
+            FILE* pipe = popen(cmd, "r");
+            if (pipe) {
+                if (fgets(func_name, sizeof(func_name), pipe) &&
+                    fgets(location, sizeof(location), pipe)) {
+                    // Remove newlines.
+                    func_name[strcspn(func_name, "\n")] = '\0';
+                    location[strcspn(location, "\n")] = '\0';
+
+                    // Check if we got useful info.
+                    if (strcmp(func_name, "??") != 0 && strstr(location, "??") == nullptr) {
+                        got_location = true;
+                    }
+                }
+                pclose(pipe);
+            }
+        }
+
+        // Print frame with source location if available.
+        if (got_location) {
+            fprintf(stderr, "  [%2zu] %s\n", i, func_name);
+            fprintf(stderr, "       at %s\n", location);
+        } else {
+            fprintf(stderr, "  [%2zu] %s\n", i, symbol);
+        }
+    }
+
+    if (symbols) {
+        free(symbols);
+    }
+
+    // Re-raise signal with default handler to get proper exit code.
+    signal(sig, SIG_DFL);
+    raise(sig);
 }
 
 // ============================================================================
@@ -580,8 +671,14 @@ int main(int argc, char* argv[]) {
         std::cout << "=== Eco Runtime for Elm ===" << std::endl;
 
         // Install signal handlers for graceful shutdown on Ctrl+C or kill.
-        signal(SIGINT, signalHandler);
-        signal(SIGTERM, signalHandler);
+        signal(SIGINT, shutdownHandler);
+        signal(SIGTERM, shutdownHandler);
+
+        // Install signal handlers for fatal signals to get stack traces.
+        signal(SIGSEGV, fatalSignalHandler);
+        signal(SIGABRT, fatalSignalHandler);
+        signal(SIGBUS, fatalSignalHandler);
+        signal(SIGFPE, fatalSignalHandler);
 
         // Initialize the garbage collector with a 2GB heap reservation.
         // The old generation can grow up to ~1GB within this space.
