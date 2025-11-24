@@ -120,8 +120,6 @@ private:
     std::mutex nursery_mutex;
     std::unordered_map<std::thread::id, std::unique_ptr<NurserySpace>> nurseries;
 
-    thread_local static bool gc_in_progress; // Prevents recursive GC calls.
-
     // ========== Thread signalling ==========
 
     std::atomic<bool> shutdown_flag{false};        // Set when shutting down.

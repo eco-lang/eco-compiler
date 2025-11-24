@@ -23,9 +23,6 @@ namespace Elm {
 // Global heap base for read barrier (used by fromPointer/toPointer).
 char* g_heap_base = nullptr;
 
-// Thread-local flag to prevent recursive GC calls during allocation.
-thread_local bool GarbageCollector::gc_in_progress = false;
-
 GarbageCollector::GarbageCollector() :
     heap_base(nullptr), heap_reserved(0), old_gen_committed(0), nursery_offset(0), next_nursery_offset(0),
     initialized(false) {
@@ -181,9 +178,8 @@ void *GarbageCollector::allocate(size_t size, Tag tag) {
 
     if (nursery) {
         // Check if allocation would exceed threshold - trigger GC proactively.
-        // But only if GC is not already in progress (prevent recursion).
         bool gc_triggered = false;
-        if (!gc_in_progress && nursery->wouldExceedThreshold(size, NURSERY_GC_THRESHOLD)) {
+        if (nursery->wouldExceedThreshold(size, NURSERY_GC_THRESHOLD)) {
             minorGC();
             gc_triggered = true;
         }
@@ -221,8 +217,8 @@ void *GarbageCollector::allocate(size_t size, Tag tag) {
             return obj;
         }
 
-        // Nursery full - trigger GC only if we haven't already and if GC is not in progress.
-        if (!gc_triggered && !gc_in_progress) {
+        // Nursery full - trigger GC only if we haven't already.
+        if (!gc_triggered) {
             minorGC();
         }
 
@@ -295,34 +291,18 @@ void *GarbageCollector::allocate(size_t size, Tag tag) {
 // Uses Cheney's copying algorithm to evacuate live objects to to-space
 // or promote them to old gen if they've survived enough collections.
 void GarbageCollector::minorGC() {
-    if (gc_in_progress) {
-        return;  // Prevent recursive GC calls.
-    }
-
-    gc_in_progress = true;
-
     NurserySpace *nursery = getNursery();
     if (nursery) {
         nursery->minorGC(old_gen);
     }
-
-    gc_in_progress = false;
 }
 
 // Triggers a major GC cycle: concurrent mark-sweep on old generation.
 // Briefly raises STW barrier during root collection, then marks concurrently.
 void GarbageCollector::majorGC() {
-    // Prevent recursive GC calls.
-    if (gc_in_progress) {
-        return;
-    }
-
 #if ENABLE_GC_STATS
     auto gc_start = GC_STATS_TIMER_START();
 #endif
-
-    // Set flag to indicate GC is in progress.
-    gc_in_progress = true;
 
     // Raise STW barrier - threads will block when they try to allocate.
     // This ensures a consistent view of roots and heap during initial marking.
@@ -355,9 +335,6 @@ void GarbageCollector::majorGC() {
     old_gen.performCompaction();
     old_gen.reclaimEvacuatedBlocks();
     old_gen.setCompactionInProgress(false);
-
-    // Clear flag when done.
-    gc_in_progress = false;
 
 #if ENABLE_GC_STATS
     uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
@@ -427,9 +404,6 @@ void GarbageCollector::reset() {
     old_gen.reset();
 
     // Note: We do NOT reset GC stats here - stats accumulate across runs.
-
-    // Reset thread-local GC flag.
-    gc_in_progress = false;
 }
 
 } // namespace Elm
