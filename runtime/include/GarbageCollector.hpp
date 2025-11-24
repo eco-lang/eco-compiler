@@ -59,6 +59,9 @@ public:
     // Returns the base address of the unified heap.
     char *getHeapBase() const { return heap_base; }
 
+    // Returns the total reserved heap size.
+    size_t getHeapReserved() const { return heap_reserved; }
+
     // Returns true if the current thread's nursery is over the threshold.
     bool isNurseryNearFull(float threshold = NURSERY_GC_THRESHOLD) {
         NurserySpace *nursery = getNursery();

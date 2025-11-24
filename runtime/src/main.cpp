@@ -191,16 +191,17 @@ static HPointer allocateRecord(GarbageCollector& gc, size_t num_fields) {
     return toPointer(obj);
 }
 
-// Creates a new Record with one field updated (functional update).
-// Returns the original record if allocation fails.
+// Updates a root Record in place with one field changed (functional update).
+// Precondition: record_ptr must already be registered as a root.
+// The old record is unrooted and the new record becomes the root.
 //
 // This implements Elm's record update syntax: { record | field = value }.
 // A new record is allocated with all fields copied except the updated one.
-static HPointer updateRecordField(GarbageCollector& gc, HPointer record_ptr,
-                                   size_t field_index, HPointer new_value) {
+static void updateRootRecord(GarbageCollector& gc, HPointer& record_ptr,
+                              size_t field_index, HPointer new_value) {
     void* old_obj = fromPointer(record_ptr);
     if (!old_obj) {
-        return createNil();
+        return;
     }
 
     Record* old_record = static_cast<Record*>(old_obj);
@@ -209,8 +210,12 @@ static HPointer updateRecordField(GarbageCollector& gc, HPointer record_ptr,
     size_t size = sizeof(Record) + num_fields * sizeof(Unboxable);
     void* new_obj = gc.allocate(size, Tag_Record);
     if (!new_obj) {
-        return record_ptr;  // Return original on allocation failure.
+        return;
     }
+
+    // Re-derive old_record since GC may have relocated it during allocation.
+    old_obj = fromPointer(record_ptr);
+    old_record = static_cast<Record*>(old_obj);
 
     Record* new_record = static_cast<Record*>(new_obj);
     new_record->header.size = static_cast<u32>(num_fields);
@@ -225,7 +230,10 @@ static HPointer updateRecordField(GarbageCollector& gc, HPointer record_ptr,
         }
     }
 
-    return toPointer(new_obj);
+    // Replace old record root with new record root.
+    gc.getRootSet().removeRoot(&record_ptr);
+    record_ptr = toPointer(new_obj);
+    gc.getRootSet().addRoot(&record_ptr);
 }
 
 // ============================================================================
@@ -308,7 +316,7 @@ static void programThreadFunc() {
     // Initialize each field with a list of integers [0..list_size-1].
     for (size_t i = 0; i < model_num_fields; i++) {
         HPointer list = createIntList(gc, list_size);
-        model = updateRecordField(gc, model, i, list);
+        updateRootRecord(gc, model, i, list);
     }
 
     size_t iterations = 0;
@@ -344,15 +352,9 @@ static void programThreadFunc() {
         HPointer current_list = record->values[field_index].p;
         HPointer reversed = reverseList(gc, current_list);
 
-        // Create new model with the reversed list in the selected field.
-        // The old model remains reachable until we update the root.
-        HPointer new_model = updateRecordField(gc, model, field_index, reversed);
-
-        // Atomically switch roots from old model to new model.
-        // This mirrors how a real Elm runtime manages roots explicitly.
-        gc.getRootSet().removeRoot(&model);
-        model = new_model;
-        gc.getRootSet().addRoot(&model);
+        // Update model with the reversed list in the selected field.
+        // updateRootRecord handles root management internally.
+        updateRootRecord(gc, model, field_index, reversed);
 
         iterations++;
 

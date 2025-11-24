@@ -1,5 +1,6 @@
 #include "NurserySpace.hpp"
 #include "GarbageCollector.hpp"
+#include <cassert>
 #include <cstring>
 
 namespace Elm {
@@ -178,14 +179,22 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     if (!obj)
         return;
 
+    // Assert pointer is within valid heap memory.
+    char *heap_base = GarbageCollector::instance().getHeapBase();
+    char *heap_end = heap_base + GarbageCollector::instance().getHeapReserved();
+    assert(static_cast<char*>(obj) >= heap_base && "Pointer below heap base!");
+    assert(static_cast<char*>(obj) < heap_end && "Pointer above heap end!");
+
     // First priority: Check if this location has a forward pointer.
     // This must happen BEFORE the from-space check so that pointers from
     // old-gen objects can be updated even when pointing to from-space.
     Header *hdr = getHeader(obj);
+
+    // Assert tag is valid.
+    assert(hdr->tag <= Tag_Forward && "Invalid tag value!");
     if (hdr->tag == Tag_Forward) {
         // Follow forward pointer and update ptr.
         Forward *fwd = static_cast<Forward *>(obj);
-        char *heap_base = GarbageCollector::instance().getHeapBase();
         uintptr_t byte_offset = static_cast<uintptr_t>(fwd->header.forward_ptr) << 3;
         ptr = toPointer(heap_base + byte_offset);
         return;
@@ -259,6 +268,9 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         new_obj = alloc_ptr;
         alloc_ptr += size;
 
+        // Assert we haven't overflowed to_space.
+        assert(alloc_ptr <= to_space + (NURSERY_SIZE / 2) && "To-space overflow during evacuation!");
+
         // Copy the object (size includes padding, but that's fine).
         std::memcpy(new_obj, obj, size);
 
@@ -273,7 +285,6 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     // IMPORTANT: Set this BEFORE evacuating children to prevent infinite recursion.
     Forward *fwd = static_cast<Forward *>(obj);
     fwd->header.tag = Tag_Forward;
-    char *heap_base = GarbageCollector::instance().getHeapBase();
     uintptr_t byte_offset = static_cast<char *>(new_obj) - heap_base;
     fwd->header.forward_ptr = byte_offset >> 3;  // Store as offset in 8-byte units.
     fwd->header.unused = 0;

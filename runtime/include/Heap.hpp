@@ -207,7 +207,7 @@ typedef struct {
 typedef struct {
     struct {
         u64 tag : TAG_BITS;           // Tag_Forward (identifies this as a forwarding pointer).
-        u32 color : 2;
+        u64 color : 2;                // Must use u64 to match other bitfields for correct packing.
         u64 forward_ptr : POINTER_BITS;  // Logical pointer offset to new location.
         u64 unused : 17;              // Unused bits (could store metadata if needed).
     } header;

@@ -14,6 +14,9 @@ add_executable(ecor
 target_include_directories(ecor PRIVATE runtime/include)
 target_compile_features(ecor PRIVATE cxx_std_20)
 
+# Keep asserts enabled even in release builds for debugging
+target_compile_options(ecor PRIVATE -UNDEBUG)
+
 # Link RapidCheck
 find_package(rapidcheck REQUIRED)
 target_link_libraries(ecor PRIVATE rapidcheck)
