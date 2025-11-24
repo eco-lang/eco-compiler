@@ -445,7 +445,6 @@ int main(int argc, char* argv[]) {
     // This gives old gen 1GB max instead of 512MB.
     auto& gc = GarbageCollector::instance();
     gc.initialize(2ULL * 1024 * 1024 * 1024);  // 2GB heap
-    gc.setMemoryPressureThreshold(major_gc_threshold);
     gc.initThread();  // Main thread needs GC access too.
 
     std::cout << "GC initialized (memory pressure threshold: "

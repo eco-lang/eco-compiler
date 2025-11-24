@@ -67,21 +67,10 @@ public:
         return false;
     }
 
-    // ========== Memory Pressure / Backpressure ==========
-
-    // Sets the memory pressure threshold (in bytes). When old gen exceeds this,
-    // allocating threads will block until GC makes progress.
-    void setMemoryPressureThreshold(size_t threshold) {
-        memory_pressure_threshold = threshold;
-    }
+    // ========== Thread signalling ==========
 
     // Called by collector thread after major GC completes to wake blocked allocators.
     void signalGCComplete();
-
-    // Returns true if memory pressure is currently active.
-    bool isMemoryPressureActive() const {
-        return memory_pressure.load(std::memory_order_relaxed);
-    }
 
     // Signals shutdown - wakes any blocked allocators.
     void signalShutdown();
@@ -128,23 +117,12 @@ private:
 
     thread_local static bool gc_in_progress; // Prevents recursive GC calls.
 
-    // ========== Memory Pressure ==========
+    // ========== Thread signalling ==========
 
-    std::atomic<bool> memory_pressure{false};      // Fast-path check flag.
     std::atomic<bool> shutdown_flag{false};        // Set when shutting down.
+    std::atomic<bool> stw_barrier{false}; // When true, threads block on allocation.
     std::mutex gc_wait_mutex;                      // Protects condition variable.
     std::condition_variable gc_wait_cv;            // For blocking allocators.
-    size_t memory_pressure_threshold = DEFAULT_MEMORY_PRESSURE_THRESHOLD;
-
-    // Checks memory pressure and blocks if necessary. Called from allocate().
-    void checkMemoryPressure();
-
-    // Updates the memory pressure flag based on current heap usage.
-    void updateMemoryPressure();
-
-    // ========== Stop-the-World Barrier ==========
-
-    std::atomic<bool> stw_barrier{false};  // When true, threads block on allocation.
 
     // Blocks until STW barrier is lowered. Called from allocate().
     void waitAtSTWBarrier();

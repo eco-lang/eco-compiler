@@ -38,7 +38,6 @@ constexpr size_t BLOCK_SIZE = 256 * 1024;  // 256 KB blocks for compaction metad
 // ----- Promotion & GC Triggers -----
 constexpr u32 PROMOTION_AGE = 1;                            // Promote after 1 minor GC survival.
 constexpr float NURSERY_GC_THRESHOLD = 0.9f;                // Trigger minor GC at 90% full.
-constexpr size_t DEFAULT_MEMORY_PRESSURE_THRESHOLD = 50 * 1024 * 1024;  // 50 MB backpressure.
 
 // ----- Compaction Thresholds -----
 constexpr double EVACUATION_THRESHOLD = 0.25;       // Evacuate blocks below 25% occupancy.

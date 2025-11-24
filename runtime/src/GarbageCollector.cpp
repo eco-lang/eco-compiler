@@ -126,11 +126,6 @@ void *GarbageCollector::allocate(size_t size, Tag tag) {
         waitAtSTWBarrier();
     }
 
-    // Check memory pressure - blocks if old gen is over threshold.
-    if (memory_pressure.load(std::memory_order_relaxed)) [[unlikely]] {
-        checkMemoryPressure();
-    }
-
     NurserySpace *nursery = getNursery();
 
     if (nursery) {
@@ -318,45 +313,12 @@ void GarbageCollector::majorGC() {
 }
 
 // ============================================================================
-// Memory Pressure / Backpressure Implementation
+// Thread signalling.
 // ============================================================================
 
-void GarbageCollector::checkMemoryPressure() {
-    // Slow path: called when memory_pressure flag is set.
-    // Block until GC makes progress and clears the flag, or shutdown.
-    std::unique_lock<std::mutex> lock(gc_wait_mutex);
-    gc_wait_cv.wait(lock, [this] {
-        return !memory_pressure.load(std::memory_order_acquire) ||
-               shutdown_flag.load(std::memory_order_acquire);
-    });
-}
-
-void GarbageCollector::updateMemoryPressure() {
-    // Check if old gen usage exceeds threshold.
-    size_t current_usage = old_gen.getAllocatedBytes();
-    bool should_pressure = (current_usage >= memory_pressure_threshold);
-
-    // Update the flag (only if changing to avoid unnecessary writes).
-    bool was_pressure = memory_pressure.load(std::memory_order_relaxed);
-    if (should_pressure != was_pressure) {
-        memory_pressure.store(should_pressure, std::memory_order_release);
-    }
-}
-
 void GarbageCollector::signalGCComplete() {
-    // Called after major GC completes.
-    // Temporarily clear pressure to let threads retry after GC.
-    // This ensures threads get a chance to make progress even if
-    // GC didn't free enough memory. The pressure will be set again
-    // on the next allocation if we're still over threshold.
-    memory_pressure.store(false, std::memory_order_release);
-
     // Wake all waiting threads to let them retry allocation.
     gc_wait_cv.notify_all();
-
-    // Update the actual pressure state for the next allocation.
-    // This happens after waking threads so they get one chance to allocate.
-    updateMemoryPressure();
 }
 
 void GarbageCollector::signalShutdown() {
@@ -364,10 +326,6 @@ void GarbageCollector::signalShutdown() {
     shutdown_flag.store(true, std::memory_order_release);
     gc_wait_cv.notify_all();
 }
-
-// ============================================================================
-// Stop-the-World Barrier Implementation
-// ============================================================================
 
 void GarbageCollector::waitAtSTWBarrier() {
     // Block until STW barrier is lowered or shutdown is signaled.
