@@ -156,6 +156,9 @@ void *OldGenSpace::allocate_internal(size_t size) {
             // Bug: if marking is in progress the object should be conservatively marked Black.
             hdr->color = static_cast<u32>(Color::White);
 
+            // Track allocated bytes.
+            allocated_bytes.fetch_add(size, std::memory_order_relaxed);
+
             return curr;
         }
 
@@ -262,6 +265,9 @@ void OldGenSpace::sealTLAB(TLAB* tlab) {
         delete tlab;
         return;
     }
+
+    // Track bytes allocated into this TLAB.
+    allocated_bytes.fetch_add(tlab->bytesUsed(), std::memory_order_relaxed);
 
     // Add to sealed list for sweeping.
     std::lock_guard<std::mutex> lock(sealed_tlabs_mutex);

@@ -52,7 +52,7 @@ static std::condition_variable gc_condition;         // Wakes collector thread o
 static size_t model_num_fields = 8;                  // Number of fields in the model Record.
 static size_t list_size = 500;                       // Number of integers in each list.
 static std::chrono::seconds duration{0};             // Run duration (0 = run until Ctrl+C).
-static size_t major_gc_threshold = 50 * 1024 * 1024; // Old gen size that triggers major GC (bytes).
+static double major_gc_threshold = 0.9;              // Fraction of old gen that triggers major GC.
 static double reversal_probability = 0.5;            // Probability of reversing each field's list.
 
 // ============================================================================
@@ -274,7 +274,6 @@ static void collectorThreadFunc() {
 // Signals the collector thread to run a major GC.
 // Called by the program thread when old generation exceeds the threshold.
 static void requestMajorGC() {
-    std::cout << "[Program] MajorGC Requested" << std::endl;
     gc_requested.store(true);
     gc_condition.notify_all();
 }
@@ -299,7 +298,7 @@ static void programThreadFunc() {
 
     std::cout << "[Program] Started with " << model_num_fields
               << " fields, list size " << list_size
-              << ", major GC threshold " << (major_gc_threshold / (1024 * 1024)) << " MB"
+              << ", major GC threshold " << (major_gc_threshold * 100) << "%"
               << ", reversal probability " << reversal_probability << std::endl;
 
     // Random number generator for selecting which field to reverse.
@@ -365,7 +364,8 @@ static void programThreadFunc() {
 
         // Request major GC when old generation exceeds threshold.
         size_t old_gen_bytes = gc.getOldGen().getAllocatedBytes();
-        if (old_gen_bytes >= major_gc_threshold) {
+        size_t old_gen_max = gc.getOldGen().getMaxSize();
+        if (old_gen_bytes >= static_cast<size_t>(old_gen_max * major_gc_threshold)) {
             requestMajorGC();
         }
 
@@ -393,7 +393,7 @@ static void printUsage(const char* prog) {
               << "  -d, --duration <time>   Run for specified duration (e.g., 30s, 5m, 1h)\n"
               << "  -f, --fields <n>        Number of fields in model record (default: 8)\n"
               << "  -l, --list-size <n>     Size of each list (default: 500)\n"
-              << "  -t, --threshold <bytes> Major GC threshold in MB (default: 50)\n"
+              << "  -t, --threshold <frac>  Major GC threshold as fraction of heap (default: 0.9)\n"
               << "  -p, --probability <p>   Probability of reversing each list (default: 0.5)\n"
               << "  -h, --help              Show this help message\n"
               << "\n"
@@ -470,9 +470,9 @@ static bool parseArgs(int argc, char* argv[]) {
                 }
                 break;
             case 't':
-                major_gc_threshold = std::stoul(optarg) * 1024 * 1024;  // Convert MB to bytes.
-                if (major_gc_threshold < 1024 * 1024) {
-                    std::cerr << "Error: threshold must be >= 1 MB\n";
+                major_gc_threshold = std::stod(optarg);
+                if (major_gc_threshold <= 0.0 || major_gc_threshold > 1.0) {
+                    std::cerr << "Error: threshold must be between 0.0 and 1.0\n";
                     return false;
                 }
                 break;
@@ -518,7 +518,7 @@ int main(int argc, char* argv[]) {
     gc.initThread();  // Main thread needs GC access too.
 
     std::cout << "GC initialized (memory pressure threshold: "
-              << (major_gc_threshold / (1024 * 1024)) << " MB)" << std::endl;
+              << (major_gc_threshold * 100) << "%)" << std::endl;
 
     // Start the collector and program threads.
     std::thread collector_thread(collectorThreadFunc);
