@@ -5,7 +5,7 @@
 ## Project Roadmap
 
 - [ ] **1. Runtime Foundation** → [§1](#1-runtime-foundation)
-  - [ ] 1.1 Custom Heap Model → [§1.1](#11-custom-heap-model)
+  - [x] 1.1 Custom Heap Model → [§1.1](#11-custom-heap-model)
   - [ ] 1.2 Garbage Collector → [§1.2](#12-garbage-collector)
     - [ ] 1.2.1 Concurrent Mark-and-Sweep → [§1.2.1](#121-concurrent-mark-and-sweep)
     - [ ] 1.2.2 LLVM Stack Map Integration → [§1.2.2](#122-llvm-stack-map-integration)
@@ -99,7 +99,7 @@ The runtime provides memory management, garbage collection, and execution suppor
 
 ### 1.1 Custom Heap Model
 
-**Status**: In Progress
+**Status**: Complete
 
 Design and implement a heap model that matches Elm's type system requirements.
 
