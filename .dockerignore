@@ -1,0 +1,31 @@
+# Build directories
+build/
+debug/
+
+# Git directory and metadata
+.git/
+.gitignore
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker files themselves
+Dockerfile
+.dockerignore
+
+# Documentation and plans (not needed for build)
+*.md
+plans/
+
+# Claude Code directory
+.claude/
