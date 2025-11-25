@@ -1196,95 +1196,246 @@ Lean's MLIR implementation provides an excellent reference for compiling functio
 
 The Lean implementation is ~1500 lines of well-structured code that demonstrates all these patterns. It's a valuable reference for ECO's MLIR backend development.
 
-## Additional Research: lz Repository
+## lz Dialect C++ Implementation (Master Branch)
 
 ### Repository Information
 
 - **lz Repository**: git@github.com:bollu/lz.git
-- **Branch analyzed**: `2021-cgo-artifact`
-- **Status**: Fork of Lean4 with MLIR emission code
+- **Branch**: `master` (contains the C++ dialect implementation)
+- **Alternative branch**: `2021-cgo-artifact` (contains Lean4 fork with EmitMLIR.lean)
+- **Project name**: Core-MLIR
+- **Status**: Research implementation for functional language compilation
 
-### Key Finding: No C++ Dialect Implementation
+### Key Finding: Complete C++ Dialect Implementation
 
-After examining the lz repository, the important finding is that it contains the **MLIR emission code** (EmitMLIR.lean) but **not the C++ dialect implementation** that would parse and lower the generated MLIR. The lz repository is essentially a modified Lean4 compiler that:
+The `lz` repository on the **master branch** contains a complete C++ implementation of the `lz` MLIR dialect, along with several other dialects for functional language compilation. This is a comprehensive MLIR-based compiler infrastructure.
 
-1. Emits textual MLIR using string generation
-2. Uses custom `lz` dialect operations (e.g., `"lz.construct"`, `"lz.call"`, `"lz.project"`)
-3. Relies on an external MLIR dialect definition (C++/TableGen) to parse this output
-
-### Architecture Implication
-
-This means the Lean MLIR approach uses a **two-stage architecture**:
+### Architecture Overview
 
 ```
-Stage 1 (in lz repo):     Lean4 Compiler → EmitMLIR.lean → Textual MLIR (lz dialect)
-                                                              ↓
-Stage 2 (external):       MLIR Parser (C++) → lz Dialect (in-memory) → Lowering → LLVM
+Lean4 Compiler (2021-cgo-artifact branch)
+    │
+    │ EmitMLIR.lean generates textual MLIR
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│  lz Repository (master branch) - "Core-MLIR"                │
+│                                                             │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
+│  │ Hask Dialect│  │ lambdapure  │  │   Pointer   │         │
+│  │   (lz.*)    │  │   Dialect   │  │   Dialect   │         │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘         │
+│         │                │                │                 │
+│         └────────────────┼────────────────┘                 │
+│                          │                                  │
+│                          ▼                                  │
+│                   ┌─────────────┐                           │
+│                   │  hask-opt   │  (MLIR optimizer tool)    │
+│                   └──────┬──────┘                           │
+│                          │                                  │
+│         ┌────────────────┼────────────────┐                 │
+│         │                │                │                 │
+│         ▼                ▼                ▼                 │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
+│  │ --lean-lower│  │ --ptr-lower │  │   SCF/Std   │         │
+│  └─────────────┘  └─────────────┘  └─────────────┘         │
+│                          │                                  │
+│                          ▼                                  │
+│                   ┌─────────────┐                           │
+│                   │ LLVM Dialect│                           │
+│                   └──────┬──────┘                           │
+└──────────────────────────┼──────────────────────────────────┘
+                           │
+                           ▼
+                    ┌─────────────┐
+                    │   LLVM IR   │
+                    └─────────────┘
 ```
 
-The C++ dialect implementation would need to:
-- Define `lz::ConstructOp`, `lz::CallOp`, `lz::ProjectOp`, etc.
-- Implement parsing for the textual format
-- Provide lowering passes to LLVM dialect
+### Dialects Implemented
+
+#### 1. Hask Dialect (`lz.*` operations)
+
+The primary dialect for functional language compilation. Located in:
+- `include/Hask/HaskDialect.h`, `HaskDialect.td`
+- `include/Hask/HaskOps.h` (783 lines)
+- `lib/Hask/HaskOps.cpp` (1244 lines)
+- `lib/Hask/HaskDialect.cpp`
+
+**Complete Operation List:**
+
+| Operation | Description | C++ Class |
+|-----------|-------------|-----------|
+| `lz.return` | Return from function | `HaskReturnOp` |
+| `lz.ap` | Lazy application (creates thunk) | `ApOp` |
+| `lz.apEager` | Eager application (direct call) | `ApEagerOp` |
+| `lz.case` | Pattern match on ADT constructors | `CaseOp` |
+| `lz.caseint` | Pattern match on integers | `CaseIntOp` |
+| `lz.caseRet` | Case with implicit return | `HaskCaseRetOp` |
+| `lz.caseIntRet` | Integer case with implicit return | `HaskCaseIntRetOp` |
+| `lz.construct` | Create ADT constructor | `HaskConstructOp` |
+| `lz.project` | Extract field from constructor | `ProjectionOp` |
+| `lz.pap` | Partial application (closure) | `PapOp` |
+| `lz.papExtend` | Extend closure with more args | `PapExtendOp` |
+| `lz.lambda` | Lambda abstraction | `HaskLambdaOp` |
+| `lz.force` | Force evaluation of thunk | `ForceOp` |
+| `lz.thunkify` | Wrap value in thunk | `ThunkifyOp` |
+| `lz.tagget` | Get constructor tag | `TagGetOp` |
+| `lz.int` | Integer constant | `HaskIntegerConstOp` |
+| `lz.largeint` | Large integer constant | `HaskLargeIntegerConstOp` |
+| `lz.string` | String constant | `HaskStringConstOp` |
+| `lz.inc` | Increment reference count | `IncOp` |
+| `lz.dec` | Decrement reference count | `DecOp` |
+| `lz.joinpoint` | Join point declaration | `HaskJoinPointOp` |
+| `lz.jump` | Jump to join point | `HaskJumpOp` |
+| `lz.call` | Direct function call | `HaskCallOp` |
+| `lz.erasedvalue` | Erased proof term | `ErasedValueOp` |
+| `lz.reset` | Reset for destructive update | `ResetOp` |
+| `lz.reuseconstruct` | Reuse allocation | `ReuseConstructorOp` |
+
+**Types:**
+- `ValueType` (`!lz.value`) - Boxed heap value
+- `ThunkType` (`!lz.thunk<T>`) - Lazy thunk wrapping type T
+
+#### 2. lambdapure Dialect
+
+Alternative functional dialect, located in:
+- `include/lambdapure/Dialect.h`, `Ops.td`
+- `lib/lambdapure/Dialect.cpp`
+
+Operations (mostly commented out in current code):
+- `lambdapure.IntegerConst`, `lambdapure.AppOp`, `lambdapure.PapOp`
+- `lambdapure.CallOp`, `lambdapure.ReturnOp`, `lambdapure.ConstructorOp`
+- `lambdapure.ProjectionOp`, `lambdapure.CaseOp`, `lambdapure.ResetOp`
+- `lambdapure.IncOp`, `lambdapure.DecOp`, `lambdapure.BoxOp`, `lambdapure.UnboxOp`
+
+#### 3. Pointer Dialect (`ptr.*`)
+
+Low-level pointer operations, located in:
+- `include/Pointer/PointerDialect.h`, `PointerDialect.td`
+- `include/Pointer/PointerOps.h`, `PointerOps.td`
+- `lib/Pointer/PointerDialect.cpp`, `PointerOps.cpp`
+
+#### 4. GRIN Dialect
+
+Graph Reduction Intermediate Notation, located in:
+- `include/GRIN/GRINDialect.h`, `GRINDialect.td`
+- `include/GRIN/GRINOps.h`, `GRINOps.td`
+- `lib/GRIN/GRINDialect.cpp`, `GRINOps.cpp`
+
+#### 5. Unification Dialect
+
+Type unification operations, located in:
+- `include/Unification/UnificationDialect.h`, `UnificationDialect.td`
+- `include/Unification/UnificationOps.h`, `UnificationOps.td`
+- `lib/Unification/UnificationDialect.cpp`, `UnificationOps.cpp`
+
+#### 6. Rgn Dialect
+
+Region-based memory management, located in:
+- `include/RgnDialect.h`
+- `lib/RgnDialect.cpp`
+- `hask-opt/RgnDialect.cpp`, `RgnToStd.cpp`, `RgnCSEPass.cpp`
+
+### Key Implementation Files
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `include/Hask/HaskOps.h` | 783 | All Hask operation class definitions |
+| `lib/Hask/HaskOps.cpp` | 1244 | Operation implementations (parse, print, build) |
+| `lib/Hask/HaskDialect.cpp` | ~200 | Dialect registration and type definitions |
+| `lib/Hask/LeanLowering.cpp` | ~800 | Lowering Hask dialect to LLVM |
+| `lib/Hask/LeanRgnLowering.cpp` | ~500 | Region-based lowering |
+| `hask-opt/hask-opt.cpp` | ~300 | Main optimizer tool |
+| `hask-opt/LeanPipeline.cpp` | ~200 | Compilation pipeline |
+
+### Lowering Passes
+
+The repository includes several lowering passes:
+
+1. **`--lean-lower`**: Lowers `lz.*` operations to lower-level constructs
+2. **`--ptr-lower`**: Lowers pointer operations
+3. **`--convert-scf-to-std`**: Standard MLIR pass for control flow
+4. **`--lz-lambdapure-to-lean`**: Converts lambdapure to Hask dialect
+5. **`--lz-lambdapure-reference-rewriter`**: Optimizes reference counting
+6. **`--lz-lambdapure-destructive-updates`**: Enables in-place updates
+
+### Usage Example
+
+From the test scripts:
+```bash
+# Compile Lean to MLIR
+lean -m "$f.mlir" "$f"
+
+# Run through hask-opt with lowering passes
+hask-opt "$f.mlir" --convert-scf-to-std --lean-lower --ptr-lower | \
+  mlir-translate --mlir-to-llvmir -o "$f.ll"
+
+# Compile LLVM IR to executable
+clang "$f.ll" -o "$f.out"
+```
+
+### Code Example: HaskConstructOp Implementation
+
+From `lib/Hask/HaskOps.cpp`:
+
+```cpp
+void HaskConstructOp::build(mlir::OpBuilder &builder,
+                            mlir::OperationState &state,
+                            StringRef constructorName,
+                            ValueRange args) {
+  state.addAttribute(
+      HaskConstructOp::getDataConstructorAttrKey(),
+      FlatSymbolRefAttr::get(builder.getContext(), constructorName));
+  state.addOperands(args);
+  // return type
+  state.addTypes(ValueType::get(builder.getContext()));
+};
+```
 
 ### Implications for ECO
 
-This architecture choice has trade-offs:
+This implementation provides a complete reference for ECO's MLIR dialect:
 
-**Advantages:**
-- Lean code generation is simple (string emission)
-- No need to link MLIR libraries into Lean compiler
-- Dialect can evolve independently
+**What to adopt:**
+1. **Operation structure**: The pattern of `Op<...>` classes with `parse`, `print`, `build` methods
+2. **Type system**: `ValueType` for boxed values, separate types for thunks
+3. **Pattern matching**: `CaseOp` with regions for each alternative
+4. **Closures**: Three-phase handling (`pap`, `papExtend`, application)
+5. **Join points**: `HaskJoinPointOp` and `HaskJumpOp` for efficient loops
+6. **Lowering passes**: Staged lowering to LLVM dialect
 
-**Disadvantages:**
-- Two separate codebases to maintain
-- Text parsing overhead
-- Potential for format mismatches
-
-**ECO recommendation:** Consider whether to:
-1. **Follow Lean's approach**: Emit textual MLIR from Elm compiler, use separate C++ MLIR tooling
-2. **Direct MLIR generation**: Use MLIR C bindings to generate MLIR directly (no text parsing)
-
-Option 2 may be more robust for ECO since it avoids the serialization/deserialization step.
-
-### Recent Commits in lz
-
-Key MLIR-related commits (from git log):
-
-- `70c56ee07b` - add PIC changes
-- `850fd84e43` - emit MLIR: change to i32 to prevent bitcast
-- `e5b90403b0` - lower inc, dec
-- `d6021f6b3c` - emit musttail annotation
-- `7ab3f8f53f` - Fix phashmap3 by generating large nums correctly
-- `965aa80381` - Fix closure codegen
-
-These commits show ongoing development of MLIR emission targeting specific issues like closure codegen, tail calls, and reference counting operations.
+**What to change for ECO:**
+1. **Remove RC operations**: `lz.inc`/`lz.dec` not needed with tracing GC
+2. **Add GC operations**: Safepoints, stack maps, allocation barriers
+3. **Simplify types**: Elm doesn't need `ThunkType` (strict evaluation)
+4. **Add Elm-specific ops**: Records, update syntax, ports
 
 ## Further Research
 
 To deepen understanding:
 
-1. **Find the dialect definition**: The C++ code that parses/lowers the `lz` dialect may be in bollu's other repositories or unpublished
+1. **Study lowering passes**: Examine `LeanLowering.cpp` in detail for patterns
 
-2. **Study lowering passes**: How `lz.construct`, `lz.call`, etc. would be lowered to LLVM
+2. **Examine generated code**: Compile Lean programs and inspect MLIR output
 
-3. **Examine generated code**: Compile Lean programs and inspect MLIR output
+3. **Performance analysis**: Compare Lean MLIR vs. Lean C backend
 
-4. **Performance analysis**: Compare Lean MLIR vs. Lean C backend
+4. **GC integration examples**: Look for other MLIR projects with GC (Mojo, Flang, Julia MLIR)
 
-5. **GC integration examples**: Look for other MLIR projects with GC (Mojo, Flang, Julia MLIR)
-
-6. **Contact the author**: Siddharth Bhat (@bollu) may have the C++ dialect code available
+5. **Build the project**: Try building `hask-opt` to experiment with the dialect
 
 ## References
 
 - **Lean 4 Main Repository**: https://github.com/leanprover/lean4
 - **MLIR Fork by bollu (lean4)**: https://github.com/bollu/lean4 (branch: 2021-cgo-artifact)
-- **lz Repository**: https://github.com/bollu/lz (branch: 2021-cgo-artifact)
+- **lz Repository (C++ dialect)**: https://github.com/bollu/lz (branch: master)
 - **Author**: Siddharth Bhat (@bollu) - known for MLIR work, compiler research
-- **Key File**: `src/Lean/Compiler/IR/EmitMLIR.lean` (1509 lines)
-- **CGO 2021**: Likely associated with "Code Generation and Optimization" conference paper
+- **Key Files**:
+  - `src/Lean/Compiler/IR/EmitMLIR.lean` (1509 lines) - MLIR emission
+  - `include/Hask/HaskOps.h` (783 lines) - C++ dialect definition
+  - `lib/Hask/HaskOps.cpp` (1244 lines) - C++ dialect implementation
+- **CGO 2021**: Associated with "Code Generation and Optimization" conference
 - **MLIR Documentation**: https://mlir.llvm.org/
 - **Lean IR Documentation**: https://github.com/leanprover/lean4/blob/master/src/library/compiler/ir.cpp
 
-This research provides a solid foundation for ECO's MLIR dialect design and implementation strategy. The key insight is that ECO should consider whether to follow Lean's text-based MLIR emission approach or use direct MLIR generation via C bindings.
+This research provides a comprehensive foundation for ECO's MLIR dialect design. The lz repository demonstrates a complete, working implementation of an MLIR dialect for functional language compilation, including all the key patterns needed for ADTs, closures, pattern matching, and optimization.
