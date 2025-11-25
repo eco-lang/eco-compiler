@@ -157,7 +157,7 @@ struct GCConfig {
     double evacuation_dest_threshold = EVACUATION_DEST_THRESHOLD;
     double max_evacuation_ratio = MAX_EVACUATION_RATIO;
 
-    // Constructor with all defaults (C++11 in-class initializers above)
+    // Default constructor using in-class member initializers.
     GCConfig() = default;
 
     // Validates all configuration parameters.
@@ -217,7 +217,7 @@ struct GCConfig {
         }
 
         // ========== 3. Nursery Constraints ==========
-        // Nursery is split into two semi-spaces
+        // Nursery is split into two semi-spaces.
 
         if (nursery_size % 2 != 0) {
             throw std::invalid_argument(
@@ -303,11 +303,11 @@ struct GCConfig {
                 "max_evacuation_ratio must be in [0.0, 1.0]");
         }
 
-        // Logical constraint: destination must be less full than evacuation target
+        // Destination blocks must be less full than source blocks to allow evacuation.
         if (evacuation_dest_threshold < evacuation_threshold) {
             throw std::invalid_argument(
                 "evacuation_dest_threshold must be >= evacuation_threshold "
-                "(destinations must be less full than sources)");
+                "(destination blocks must be less full than evacuation sources)");
         }
     }
 };

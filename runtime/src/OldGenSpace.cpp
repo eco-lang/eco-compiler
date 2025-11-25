@@ -97,8 +97,8 @@ void OldGenSpace::initialize(char *base, size_t initial_size, size_t max_size, c
 }
 
 /**
- * Add a new memory chunk to the old generation space.
- * REQUIRES: Caller must hold alloc_mutex (modifies free_list and region_size)
+ * Adds a new memory chunk to the old generation space.
+ * REQUIRES: Caller must hold alloc_mutex to protect free_list and region_size.
  */
 void OldGenSpace::addChunk(size_t size) {
     // Check if we can grow.
@@ -194,9 +194,9 @@ void *OldGenSpace::allocate_internal(size_t size) {
 
 bool OldGenSpace::contains(void *ptr) const {
     char *p = static_cast<char *>(ptr);
-    // Check both free-list region and TLAB region:
-    // Free-list: region_base to region_base + region_size.
-    // TLAB: tlab_region_start to tlab_region_end.
+    // Check both free-list allocation region and TLAB region.
+    // Free-list: [region_base, region_base + region_size)
+    // TLAB: [tlab_region_start, tlab_region_end)
     bool in_freelist = (p >= region_base && p < region_base + region_size);
     bool in_tlab = (p >= tlab_region_start && p < tlab_region_end);
     return in_freelist || in_tlab;
@@ -256,8 +256,9 @@ TLAB* OldGenSpace::allocateTLAB(size_t size) {
             return nullptr;
         }
 
-        // Update region_size.
-        // This is benign even if racy - worst case is we commit slightly more than needed.
+        // Update region_size to reflect new committed memory.
+        // Safe despite potential races: multiple threads may commit overlapping regions,
+        // but mmap with MAP_FIXED is idempotent for already-mapped pages.
         region_size = new_ptr - region_base;
     }
 

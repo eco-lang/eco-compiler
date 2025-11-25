@@ -45,7 +45,7 @@ public:
     // Initializes GC for the calling thread, creating its nursery.
     void initThread();
 
-    // Allocates an object. Tries nursery first, falls back to old gen.
+    // Allocates an object in the nursery. Asserts if nursery is full.
     void *allocate(size_t size, Tag tag);
 
     // Triggers a minor GC on the current thread's nursery.

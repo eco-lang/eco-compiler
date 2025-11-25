@@ -10,7 +10,7 @@
  *
  * Memory layout:
  *   [0 .. heap_reserved/2)      - Old generation (grows from 0 upward).
- *   [heap_reserved/2 .. end)    - Nurseries (one per thread, 4MB each).
+ *   [heap_reserved/2 .. end)    - Nurseries (one per thread, size configurable).
  */
 
 #include "GarbageCollector.hpp"
@@ -67,7 +67,7 @@ void GarbageCollector::initialize(const GCConfig& config) {
 
     // Old gen starts at offset 0, can grow up to halfway point.
     size_t initial_old_gen = config_.initial_old_gen_size;
-    size_t max_old_gen = nursery_offset;  // Can grow to halfway point.
+    size_t max_old_gen = nursery_offset;
     growOldGen(initial_old_gen);
     old_gen.initialize(heap_base, old_gen_committed, max_old_gen, &config_);
 
@@ -193,8 +193,8 @@ void *GarbageCollector::allocate(size_t size, Tag tag) {
             Header *hdr = getHeader(obj);
             std::memset(hdr, 0, sizeof(Header));
             hdr->tag = tag;
-            // For variable-sized types, hdr->size stores the element count.
-            // For fixed-size types, it's unused (but set to total size for consistency).
+            // For variable-sized types, hdr->size stores element count.
+            // For fixed-size types, hdr->size stores total byte size.
             switch (tag) {
                 case Tag_String:
                     hdr->size = (size - sizeof(ElmString)) / sizeof(u16);
@@ -222,10 +222,10 @@ void *GarbageCollector::allocate(size_t size, Tag tag) {
         }
     }
 
-    // Allocate in old gen.
-    // Seems dangerous to fall back to oldgen allocation as could allocate an object which is
-    // then filled in with its children creating a back reference from old gen to nursery?
-    // TODO: Correct response here is to make the nursery space bigger.
+    // Nursery allocation failed - currently treated as fatal error.
+    // Cannot fall back to old gen allocation: would create old-to-young pointers
+    // when the object's fields are filled in, violating generational GC invariants.
+    // Solution: Configure larger nursery_size or trigger GC more aggressively.
     assert(true && "Failed to allocate to nursery, it is full.");
     return nullptr;
 }
@@ -363,7 +363,7 @@ void* GarbageCollector::resolve(HPointer ptr) {
     void* obj = fromPointerRaw(ptr);
     assert(obj && "Null pointer from valid HPointer");
 
-    // Validate within heap bounds
+    // Validate pointer is within allocated heap address space.
     assert(static_cast<char*>(obj) >= heap_base && "Pointer below heap base");
     assert(static_cast<char*>(obj) < heap_base + heap_reserved && "Pointer above heap end");
 

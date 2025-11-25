@@ -106,7 +106,7 @@ bool NurserySpace::contains(void *ptr) const {
  * The from and to spaces are flipped over in their roles once all live objects have been removed.
  *
  * There is no "remembered set" of pointers from the old generation into the nursery to consider, since Elm
- * only creates acyclic structures on the heap and immutability means that younger object only point to older
+ * only creates acyclic structures on the heap and immutability means that younger objects only point to older
  * ones and never the other way around. Therefore objects moved into the old generation during evacuation do
  * not need to be scanned by Cheney's algorithm.
  */
@@ -168,11 +168,11 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
 }
 
 /**
- * Updates a pointer into the nursery space to a new location at which that object will located after
+ * Updates a pointer into the nursery space to a new location at which that object will be located after
  * a garbage collection cycle. The pointer MUST point to a live object that should not be garbage
  * collected.
  *
- *     - If the object has already been moved, it will leave behing a forwarding pointer, and the
+ *     - If the object has already been moved, it will leave behind a forwarding pointer, and the
  *       pointer requested will be updated to this new location.
  *     - If the object has not already been moved, it will be copied to its new location, and the
  *       pointer requested will be updated to this new location.
@@ -255,7 +255,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         }
 
         if (new_obj) {
-            // Save color set by oldgen.allocate before memcpy overwrites it.
+            // Save color from TLAB allocation before memcpy overwrites it.
             Header *new_hdr = getHeader(new_obj);
             u32 saved_color = new_hdr->color;
 
@@ -285,7 +285,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         // Assert we haven't overflowed to_space.
         assert(alloc_ptr <= to_space + nursery_capacity_ && "To-space overflow during evacuation!");
 
-        // Copy the object (size includes padding, but that's fine).
+        // Copy the object with its padding to maintain alignment.
         std::memcpy(new_obj, obj, size);
 
         // Update age after copying (preserves all other fields).
