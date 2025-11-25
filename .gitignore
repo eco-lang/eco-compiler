@@ -2,3 +2,5 @@ build/
 worktrees/
 debug/
 .claude/
+lean/
+lz/
