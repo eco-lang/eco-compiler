@@ -15,6 +15,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include "Heap.hpp"
 
 namespace Elm {
@@ -120,6 +121,196 @@ inline size_t getObjectSize(void *obj) {
     // All heap objects are 8-byte aligned.
     return (size + 7) & ~7;
 }
+
+// ============================================================================
+// GC Configuration
+// ============================================================================
+
+/**
+ * Configuration for garbage collector parameters.
+ *
+ * All fields have sensible defaults from the constants above. Users can
+ * override any field before passing to GarbageCollector::initialize().
+ */
+struct GCConfig {
+    // Heap sizing
+    size_t max_heap_size = DEFAULT_MAX_HEAP_SIZE;
+    size_t initial_old_gen_size = INITIAL_OLD_GEN_SIZE;
+    size_t min_old_gen_chunk_size = MIN_OLD_GEN_CHUNK_SIZE;
+
+    // Nursery sizing
+    size_t nursery_size = NURSERY_SIZE;
+
+    // TLAB sizing
+    size_t tlab_default_size = TLAB_DEFAULT_SIZE;
+    size_t tlab_min_size = TLAB_MIN_SIZE;
+
+    // Block sizing (for compaction)
+    size_t block_size = BLOCK_SIZE;
+
+    // Promotion & GC triggers
+    u32 promotion_age = PROMOTION_AGE;
+    float nursery_gc_threshold = NURSERY_GC_THRESHOLD;
+
+    // Compaction thresholds
+    double evacuation_threshold = EVACUATION_THRESHOLD;
+    double evacuation_dest_threshold = EVACUATION_DEST_THRESHOLD;
+    double max_evacuation_ratio = MAX_EVACUATION_RATIO;
+
+    // Constructor with all defaults (C++11 in-class initializers above)
+    GCConfig() = default;
+
+    // Validates all configuration parameters.
+    // Throws std::invalid_argument with descriptive message on validation failure.
+    void validate() const {
+        // ========== 1. Basic Size Constraints ==========
+
+        if (max_heap_size == 0) {
+            throw std::invalid_argument("max_heap_size must be > 0");
+        }
+
+        if (initial_old_gen_size == 0) {
+            throw std::invalid_argument("initial_old_gen_size must be > 0");
+        }
+
+        if (min_old_gen_chunk_size == 0) {
+            throw std::invalid_argument("min_old_gen_chunk_size must be > 0");
+        }
+
+        if (nursery_size == 0) {
+            throw std::invalid_argument("nursery_size must be > 0");
+        }
+
+        if (tlab_default_size == 0) {
+            throw std::invalid_argument("tlab_default_size must be > 0");
+        }
+
+        if (tlab_min_size == 0) {
+            throw std::invalid_argument("tlab_min_size must be > 0");
+        }
+
+        if (block_size == 0) {
+            throw std::invalid_argument("block_size must be > 0");
+        }
+
+        // ========== 2. Heap Partitioning Constraints ==========
+        // Heap is split: [0, max/2) = old gen, [max/2, max) = nurseries
+
+        size_t old_gen_space = max_heap_size / 2;
+
+        if (initial_old_gen_size >= old_gen_space) {
+            throw std::invalid_argument(
+                "initial_old_gen_size must be < max_heap_size / 2 "
+                "(old gen lives in first half of heap)");
+        }
+
+        if (min_old_gen_chunk_size > old_gen_space) {
+            throw std::invalid_argument(
+                "min_old_gen_chunk_size must be <= max_heap_size / 2 "
+                "(chunk can't exceed old gen space)");
+        }
+
+        if (nursery_size >= old_gen_space) {
+            throw std::invalid_argument(
+                "nursery_size must be < max_heap_size / 2 "
+                "(nurseries live in second half of heap)");
+        }
+
+        // ========== 3. Nursery Constraints ==========
+        // Nursery is split into two semi-spaces
+
+        if (nursery_size % 2 != 0) {
+            throw std::invalid_argument(
+                "nursery_size must be even (split into two semi-spaces)");
+        }
+
+        if (nursery_size < 64 * 1024) {
+            throw std::invalid_argument(
+                "nursery_size must be >= 64KB (32KB per semi-space minimum)");
+        }
+
+        // ========== 4. TLAB Constraints ==========
+
+        if (tlab_min_size > tlab_default_size) {
+            throw std::invalid_argument(
+                "tlab_min_size must be <= tlab_default_size");
+        }
+
+        // FreeBlock is 16 bytes (size_t + pointer)
+        constexpr size_t MIN_TLAB_SIZE = 16;
+        if (tlab_min_size < MIN_TLAB_SIZE) {
+            throw std::invalid_argument(
+                "tlab_min_size must be >= 16 bytes (sizeof(FreeBlock))");
+        }
+
+        if (tlab_default_size > old_gen_space) {
+            throw std::invalid_argument(
+                "tlab_default_size must be <= max_heap_size / 2 "
+                "(can't exceed old gen space)");
+        }
+
+        // ========== 5. Block Size Constraints ==========
+
+        constexpr size_t MIN_BLOCK_SIZE = 4096;  // 4KB
+        if (block_size < MIN_BLOCK_SIZE) {
+            throw std::invalid_argument(
+                "block_size must be >= 4KB for meaningful compaction granularity");
+        }
+
+        if (block_size > old_gen_space / 4) {
+            throw std::invalid_argument(
+                "block_size must be <= max_heap_size / 8 "
+                "(need at least 4 blocks in old gen)");
+        }
+
+        if (initial_old_gen_size < block_size) {
+            throw std::invalid_argument(
+                "initial_old_gen_size must be >= block_size "
+                "(old gen should have at least one block)");
+        }
+
+        // ========== 6. Promotion Constraints ==========
+
+        if (promotion_age < 1) {
+            throw std::invalid_argument(
+                "promotion_age must be >= 1 (must survive at least 1 GC)");
+        }
+
+        if (promotion_age > 15) {
+            throw std::invalid_argument(
+                "promotion_age must be <= 15 (header age field limit)");
+        }
+
+        // ========== 7. Threshold Constraints ==========
+
+        if (nursery_gc_threshold <= 0.0f || nursery_gc_threshold > 1.0f) {
+            throw std::invalid_argument(
+                "nursery_gc_threshold must be in (0.0, 1.0]");
+        }
+
+        if (evacuation_threshold < 0.0 || evacuation_threshold > 1.0) {
+            throw std::invalid_argument(
+                "evacuation_threshold must be in [0.0, 1.0]");
+        }
+
+        if (evacuation_dest_threshold < 0.0 || evacuation_dest_threshold > 1.0) {
+            throw std::invalid_argument(
+                "evacuation_dest_threshold must be in [0.0, 1.0]");
+        }
+
+        if (max_evacuation_ratio < 0.0 || max_evacuation_ratio > 1.0) {
+            throw std::invalid_argument(
+                "max_evacuation_ratio must be in [0.0, 1.0]");
+        }
+
+        // Logical constraint: destination must be less full than evacuation target
+        if (evacuation_dest_threshold < evacuation_threshold) {
+            throw std::invalid_argument(
+                "evacuation_dest_threshold must be >= evacuation_threshold "
+                "(destinations must be less full than sources)");
+        }
+    }
+};
 
 } // namespace Elm
 

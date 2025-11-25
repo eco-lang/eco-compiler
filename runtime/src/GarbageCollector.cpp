@@ -35,14 +35,18 @@ GarbageCollector::~GarbageCollector() {
     }
 }
 
-// Initializes the GC with a reserved address space of max_heap_size bytes.
-// Physical memory is committed lazily as needed for old gen and nurseries.
-void GarbageCollector::initialize(size_t max_heap_size) {
+// Initializes the GC with the given configuration.
+// Validates config and reserves address space. Physical memory committed lazily.
+void GarbageCollector::initialize(const GCConfig& config) {
     if (initialized) {
         return;
     }
 
-    heap_reserved = max_heap_size;
+    // Validate configuration before proceeding.
+    config.validate();
+    config_ = config;
+
+    heap_reserved = config_.max_heap_size;
 
     // Reserve address space without committing physical memory.
     // PROT_NONE means no access until we commit regions with mmap(MAP_FIXED).
@@ -62,10 +66,10 @@ void GarbageCollector::initialize(size_t max_heap_size) {
     next_nursery_offset = nursery_offset;
 
     // Old gen starts at offset 0, can grow up to halfway point.
-    size_t initial_old_gen = INITIAL_OLD_GEN_SIZE;
+    size_t initial_old_gen = config_.initial_old_gen_size;
     size_t max_old_gen = nursery_offset;  // Can grow to halfway point.
     growOldGen(initial_old_gen);
-    old_gen.initialize(heap_base, old_gen_committed, max_old_gen);
+    old_gen.initialize(heap_base, old_gen_committed, max_old_gen, &config_);
 
     initialized = true;
 }
@@ -115,18 +119,18 @@ void GarbageCollector::initThread() {
         char *nursery_base = heap_base + next_nursery_offset;
 
         // Check we have space in reserved address space.
-        if (next_nursery_offset + NURSERY_SIZE > heap_reserved) {
+        if (next_nursery_offset + config_.nursery_size > heap_reserved) {
             throw std::bad_alloc();  // Out of heap space.
         }
 
         // Commit physical memory for this nursery.
-        commitNursery(nursery_base, NURSERY_SIZE);
+        commitNursery(nursery_base, config_.nursery_size);
 
         auto nursery = std::make_unique<NurserySpace>();
-        nursery->initialize(nursery_base, NURSERY_SIZE);
+        nursery->initialize(nursery_base, config_.nursery_size, &config_);
         nurseries[tid] = std::move(nursery);
 
-        next_nursery_offset += NURSERY_SIZE;
+        next_nursery_offset += config_.nursery_size;
     }
 }
 
@@ -179,7 +183,7 @@ void *GarbageCollector::allocate(size_t size, Tag tag) {
     if (nursery) {
         // Check if allocation would exceed threshold - trigger GC proactively.
         bool gc_triggered = false;
-        if (nursery->wouldExceedThreshold(size, NURSERY_GC_THRESHOLD)) {
+        if (nursery->wouldExceedThreshold(size, config_.nursery_gc_threshold)) {
             minorGC();
             gc_triggered = true;
         }

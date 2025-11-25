@@ -23,8 +23,8 @@
 namespace Elm {
 
 NurserySpace::NurserySpace() :
-    memory(nullptr), from_space(nullptr), to_space(nullptr), alloc_ptr(nullptr), scan_ptr(nullptr),
-    promotion_tlab(nullptr) {
+    config_(nullptr), memory(nullptr), from_space(nullptr), to_space(nullptr), alloc_ptr(nullptr),
+    scan_ptr(nullptr), nursery_capacity_(0), promotion_tlab(nullptr) {
     // Initialization happens in initialize() method.
 }
 
@@ -40,10 +40,12 @@ NurserySpace::~NurserySpace() {
     // No need to free memory - it's part of the main heap.
 }
 
-void NurserySpace::initialize(char *nursery_base, size_t size) {
+void NurserySpace::initialize(char *nursery_base, size_t size, const GCConfig* config) {
+    config_ = config;
     memory = nursery_base;
+    nursery_capacity_ = size / 2;  // Each semi-space is half the total.
     from_space = memory;
-    to_space = memory + (size / 2);
+    to_space = memory + nursery_capacity_;
     alloc_ptr = from_space;
     scan_ptr = from_space;
 }
@@ -57,7 +59,7 @@ void NurserySpace::reset(OldGenSpace &oldgen) {
 
     // Reset allocation pointers to start of from_space.
     from_space = memory;
-    to_space = memory + (NURSERY_SIZE / 2);
+    to_space = memory + nursery_capacity_;
     alloc_ptr = from_space;
     scan_ptr = from_space;
 
@@ -71,7 +73,7 @@ void *NurserySpace::allocate(size_t size) {
     // Align to 8 bytes.
     size = (size + 7) & ~7;
 
-    if (alloc_ptr + size > from_space + (NURSERY_SIZE / 2)) {
+    if (alloc_ptr + size > from_space + nursery_capacity_) {
         return nullptr;  // Nursery full, trigger GC.
     }
 
@@ -85,7 +87,7 @@ void *NurserySpace::allocate(size_t size) {
 
 bool NurserySpace::contains(void *ptr) const {
     char *p = static_cast<char *>(ptr);
-    return (p >= memory && p < memory + NURSERY_SIZE);
+    return (p >= memory && p < memory + (nursery_capacity_ * 2));
 }
 
 /**
@@ -215,7 +217,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     // Second priority: Only evacuate if in from-space (not to-space!).
     // This prevents creating forwarding chains by re-evacuating already-moved objects.
     char *p = static_cast<char *>(obj);
-    if (p < from_space || p >= from_space + (NURSERY_SIZE / 2))
+    if (p < from_space || p >= from_space + nursery_capacity_)
         return;
 
     // Now proceed with evacuation (object is in from-space and not yet forwarded).
@@ -225,10 +227,10 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
 
     bool promoted = false;
 
-    // Promote to old gen if age >= PROMOTION_AGE.
-    if (hdr->age >= PROMOTION_AGE) {
+    // Promote to old gen if age >= config_->promotion_age.
+    if (hdr->age >= config_->promotion_age) {
         // Try TLAB allocation first (fast path, no lock).
-        if (promotion_tlab && size <= TLAB_DEFAULT_SIZE) {
+        if (promotion_tlab && size <= config_->tlab_default_size) {
             new_obj = promotion_tlab->allocate(size);
         }
 
@@ -243,8 +245,8 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
             }
 
             // Try to get a new TLAB (lock-free CAS).
-            if (!promotion_tlab && size <= TLAB_DEFAULT_SIZE) {
-                promotion_tlab = oldgen.allocateTLAB(TLAB_DEFAULT_SIZE);
+            if (!promotion_tlab && size <= config_->tlab_default_size) {
+                promotion_tlab = oldgen.allocateTLAB(config_->tlab_default_size);
                 if (promotion_tlab) {
                     GC_STATS_TLAB_ALLOCATED(stats);
                     new_obj = promotion_tlab->allocate(size);
@@ -281,7 +283,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         alloc_ptr += size;
 
         // Assert we haven't overflowed to_space.
-        assert(alloc_ptr <= to_space + (NURSERY_SIZE / 2) && "To-space overflow during evacuation!");
+        assert(alloc_ptr <= to_space + nursery_capacity_ && "To-space overflow during evacuation!");
 
         // Copy the object (size includes padding, but that's fine).
         std::memcpy(new_obj, obj, size);

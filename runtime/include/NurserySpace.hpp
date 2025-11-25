@@ -22,7 +22,7 @@ public:
     ~NurserySpace();
 
     // Initializes this nursery with the given memory region from the main heap.
-    void initialize(char *nursery_base, size_t size);
+    void initialize(char *nursery_base, size_t size, const GCConfig* config);
 
     // Allocates memory in the nursery using bump pointer. Returns nullptr if full.
     void *allocate(size_t size);
@@ -40,12 +40,12 @@ public:
     size_t bytesAllocated() const { return alloc_ptr - from_space; }
 
     // Returns the number of bytes still available for allocation.
-    size_t bytesRemaining() const { return from_space + (NURSERY_SIZE / 2) - alloc_ptr; }
+    size_t bytesRemaining() const { return from_space + nursery_capacity_ - alloc_ptr; }
 
     // Returns true if the given allocation would push usage above the threshold.
-    bool wouldExceedThreshold(size_t size, float threshold = NURSERY_GC_THRESHOLD) const {
+    bool wouldExceedThreshold(size_t size, float threshold) const {
         size_t aligned_size = (size + 7) & ~7;
-        size_t total_capacity = NURSERY_SIZE / 2;
+        size_t total_capacity = nursery_capacity_;
         size_t usage_after = (alloc_ptr - from_space) + aligned_size;
         return usage_after >= (size_t)(total_capacity * threshold);
     }
@@ -60,11 +60,13 @@ public:
 #endif
 
 private:
+    const GCConfig* config_;  // GC configuration parameters.
     char *memory;         // Total nursery memory (both semi-spaces).
     char *from_space;     // Current allocation space.
     char *to_space;       // Copy target during GC.
     char *alloc_ptr;      // Bump allocation pointer.
     char *scan_ptr;       // Cheney scan pointer during evacuation.
+    size_t nursery_capacity_;  // Capacity of one semi-space (total_size / 2).
 
     TLAB* promotion_tlab; // TLAB for lock-free promotions to old gen.
     RootSet root_set;     // Thread-local root set for this nursery.

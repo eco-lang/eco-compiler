@@ -683,7 +683,9 @@ int main(int argc, char* argv[]) {
         // Initialize the garbage collector with a 2GB heap reservation.
         // The old generation can grow up to ~1GB within this space.
         auto& gc = GarbageCollector::instance();
-        gc.initialize(2ULL * 1024 * 1024 * 1024);  // 2GB heap
+        GCConfig config;
+        config.max_heap_size = 2ULL * 1024 * 1024 * 1024;  // 2GB heap
+        gc.initialize(config);
         gc.initThread();  // Main thread needs GC access too.
 
         std::cout << "GC initialized (memory pressure threshold: "

@@ -31,7 +31,7 @@ public:
     // ========== Initialization ==========
 
     // Initializes the old generation with a memory region from the main heap.
-    void initialize(char *base, size_t initial_size, size_t max_size);
+    void initialize(char *base, size_t initial_size, size_t max_size, const GCConfig* config);
 
     // Resets to initial state, clearing all allocated objects. Used for testing.
     void reset();
@@ -137,6 +137,7 @@ private:
 
     // ========== Memory Region ==========
 
+    const GCConfig* config_;      // GC configuration parameters.
     char *region_base;            // Base of assigned region in main heap.
     size_t region_size;           // Current committed size.
     size_t max_region_size;       // Maximum size this region can grow to.

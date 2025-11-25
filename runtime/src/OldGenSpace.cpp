@@ -57,8 +57,9 @@ void* readBarrier(HPointer& ptr) {
 }
 
 OldGenSpace::OldGenSpace() :
-    region_base(nullptr), region_size(0), max_region_size(0), free_list(nullptr), current_epoch(0),
-    marking_active(false), gc_ref(nullptr), tlab_region_start(nullptr), tlab_region_end(nullptr) {
+    config_(nullptr), region_base(nullptr), region_size(0), max_region_size(0), free_list(nullptr),
+    current_epoch(0), marking_active(false), gc_ref(nullptr), tlab_region_start(nullptr),
+    tlab_region_end(nullptr) {
     // Initialization happens in initialize() method.
 }
 
@@ -66,7 +67,8 @@ OldGenSpace::~OldGenSpace() {
     // No need to free memory - it's part of the main heap.
 }
 
-void OldGenSpace::initialize(char *base, size_t initial_size, size_t max_size) {
+void OldGenSpace::initialize(char *base, size_t initial_size, size_t max_size, const GCConfig* config) {
+    config_ = config;
     region_base = base;
     region_size = initial_size;
     max_region_size = max_size;
@@ -105,7 +107,9 @@ void OldGenSpace::addChunk(size_t size) {
     }
 
     // Calculate how much to grow (at least requested size, up to max).
-    size_t growth = std::min(size * 2, max_region_size - region_size);
+    size_t min_growth = config_->min_old_gen_chunk_size;
+    size_t growth = std::max(size * 2, min_growth);
+    growth = std::min(growth, max_region_size - region_size);
     growth = std::max(growth, size);
 
     // Commit more memory.
@@ -181,7 +185,7 @@ void *OldGenSpace::allocate_internal(size_t size) {
     }
 
     // No suitable block, allocate new chunk.
-    size_t chunk_size = std::max(size * 2, MIN_OLD_GEN_CHUNK_SIZE);
+    size_t chunk_size = std::max(size * 2, config_->min_old_gen_chunk_size);
     addChunk(chunk_size);
 
     // Try again (recursive call to internal version, lock already held).
@@ -209,7 +213,7 @@ bool OldGenSpace::contains(void *ptr) const {
  */
 TLAB* OldGenSpace::allocateTLAB(size_t size) {
     // Ensure minimum size and alignment.
-    size = std::max(size, TLAB_MIN_SIZE);
+    size = std::max(size, config_->tlab_min_size);
     size = (size + 7) & ~7;  // 8-byte align.
 
     // Lock-free allocation using atomic CAS.
@@ -644,7 +648,7 @@ void OldGenSpace::reset() {
 
     // Re-initialize with original settings if needed.
     if (region_base && region_size > 0) {
-        initialize(region_base, region_size, max_region_size);
+        initialize(region_base, region_size, max_region_size, config_);
     }
 }
 
@@ -658,19 +662,20 @@ void OldGenSpace::initializeBlocks() {
 
     char* ptr = region_base;
     char* end = tlab_region_start;  // Only up to TLAB region.
+    size_t block_size = config_->block_size;
 
-    while (ptr + BLOCK_SIZE <= end) {
+    while (ptr + block_size <= end) {
         BlockInfo block;
         block.start = ptr;
-        block.end = ptr + BLOCK_SIZE;
-        block.block_size = BLOCK_SIZE;
+        block.end = ptr + block_size;
+        block.block_size = block_size;
         block.live_bytes = 0;
         block.live_count = 0;
         block.is_evacuation_target = false;
         block.is_evacuation_dest = false;
         blocks.push_back(block);
 
-        ptr += BLOCK_SIZE;
+        ptr += block_size;
     }
 
     // Handle any remaining space as a partial block.
@@ -719,16 +724,16 @@ void OldGenSpace::selectCompactionSet() {
     for (auto& block : blocks) {
         double occupancy = (double)block.live_bytes / block.block_size;
 
-        if (occupancy < EVACUATION_THRESHOLD && occupancy > 0) {
+        if (occupancy < config_->evacuation_threshold && occupancy > 0) {
             block.is_evacuation_target = true;
             candidates.push_back(&block);
-        } else if (occupancy < EVACUATION_DEST_THRESHOLD) {
+        } else if (occupancy < config_->evacuation_dest_threshold) {
             block.is_evacuation_dest = true;
         }
     }
 
     // Limit compaction work per cycle.
-    size_t max_evac_bytes = static_cast<size_t>(region_size * MAX_EVACUATION_RATIO);
+    size_t max_evac_bytes = static_cast<size_t>(region_size * config_->max_evacuation_ratio);
     size_t planned_bytes = 0;
 
     // Sort by live bytes (evacuate blocks with fewest live objects first).

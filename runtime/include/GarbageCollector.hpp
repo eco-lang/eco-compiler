@@ -38,8 +38,9 @@ public:
     // Used after allocate() to get a storable pointer.
     HPointer wrap(void* obj);
 
-    // Initializes the GC with the given maximum heap size.
-    void initialize(size_t max_heap_size = DEFAULT_MAX_HEAP_SIZE);
+    // Initializes the GC with the given configuration.
+    // Validates config parameters and throws std::invalid_argument on failure.
+    void initialize(const GCConfig& config = GCConfig());
 
     // Initializes GC for the calling thread, creating its nursery.
     void initThread();
@@ -75,15 +76,18 @@ public:
     size_t getHeapReserved() const { return heap_reserved; }
 
     // Returns true if the current thread's nursery is over the threshold.
-    bool isNurseryNearFull(float threshold = NURSERY_GC_THRESHOLD) {
+    bool isNurseryNearFull(float threshold) {
         NurserySpace *nursery = getNursery();
         if (nursery) {
-            size_t total_capacity = NURSERY_SIZE / 2;
+            size_t total_capacity = config_.nursery_size / 2;
             size_t usage = nursery->bytesAllocated();
             return usage >= (size_t)(total_capacity * threshold);
         }
         return false;
     }
+
+    // Returns the GC configuration.
+    const GCConfig& getConfig() const { return config_; }
 
     // ========== Thread signalling ==========
 
@@ -118,6 +122,7 @@ private:
 
     // ========== Unified Heap ==========
 
+    GCConfig config_;             // GC configuration parameters.
     char *heap_base;              // Base of reserved address space.
     size_t heap_reserved;         // Total address space reserved.
     size_t old_gen_committed;     // Committed bytes in old gen.
