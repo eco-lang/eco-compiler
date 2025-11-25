@@ -1,7 +1,7 @@
 # Dockerfile for eco-runtime build environment
 # Provides all build dependencies for reproducible builds
 
-FROM ubuntu:24.04
+FROM debian:bookworm
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
