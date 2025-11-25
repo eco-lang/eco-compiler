@@ -1,35 +1,43 @@
 # Elm Runtime in C
 
-## To use the interactive Docker container (recommended)
+## Building with Docker (recommended for reproducible builds)
 
-This step will take some time to build the docker image, as it checks out the 
-LLVM git and builds it. This is set up to support interactive development inside
-the container, and will detect and run as your current user.
+The Dockerfile provides all build dependencies in a reproducible environment.
 
-Follow the advice here on installing Docker, 
-[install docker](https://docs.docker.com/engine/install/debian/) 
-as well as setting up non-root users to be able to use it, 
-[non-root users](https://docs.docker.com/engine/install/linux-postinstall/#manage-docker-as-a-non-root-user).
+### Prerequisites
 
-To confirm it is working correctly run these commands (`newgrp docker` only 
+Follow the advice here on installing Docker:
+- [Install Docker](https://docs.docker.com/engine/install/debian/)
+- [Configure non-root users](https://docs.docker.com/engine/install/linux-postinstall/#manage-docker-as-a-non-root-user)
+
+To confirm Docker is working correctly, run these commands (`newgrp docker` only
 needs to be run if you are not logging out and back in again):
 
     newgrp docker
     docker run hello-world
 
-To build the docker image:
+### Build the Docker image
 
-    docker build -t mlir-dev:bookworm .
+    docker build -t eco-runtime-build .
 
-To run an interactive session as your user inside the docker container:
+### Build the project using Docker
 
-    docker run -it --rm -v "$PWD":/work mlir-dev:bookworm bash
+To configure and build the project in one step:
 
-Your build artifacts will be owned by you on the host, not root.
+    docker run --rm -v "$PWD":/workspace eco-runtime-build
 
-Set up the build with:
+To run an interactive session inside the container for development:
+
+    docker run -it --rm -v "$PWD":/workspace eco-runtime-build bash
+
+Inside the container, you can configure and build manually:
 
     cmake --preset ninja-clang-lld-linux
+    cmake --build build
+
+### Run tests using Docker
+
+    docker run --rm -v "$PWD":/workspace eco-runtime-build bash -c "cmake --preset ninja-clang-lld-linux && cmake --build build && ./build/test/test"
 
 ## To work directly on a Debian or other apt-based Linux host
 
