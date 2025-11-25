@@ -55,7 +55,8 @@ public:
     void majorGC();
 
     // Resets the GC to initial state. Used for testing.
-    void reset();
+    // If new_config is provided, reconfigures with new parameters.
+    void reset(const GCConfig* new_config = nullptr);
 
     // Returns the root set for the current thread. Thread must have called initThread().
     RootSet &getRootSet();

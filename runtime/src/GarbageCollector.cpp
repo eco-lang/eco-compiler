@@ -336,17 +336,25 @@ GCStats GarbageCollector::getCombinedNurseryStats() {
 }
 #endif
 
-void GarbageCollector::reset() {
+void GarbageCollector::reset(const GCConfig* new_config) {
+    // Update config if provided.
+    if (new_config) {
+        new_config->validate();
+        config_ = *new_config;
+    }
+
     // Reset all nurseries (each nursery resets its own root set).
+    // Pass config pointer so nurseries can reconfigure.
     {
         std::lock_guard<std::mutex> lock(nursery_mutex);
         for (auto& [tid, nursery] : nurseries) {
-            nursery->reset(old_gen);
+            nursery->reset(old_gen, new_config ? &config_ : nullptr);
         }
     }
 
     // Reset old gen (must be after nurseries to handle any sealed TLABs).
-    old_gen.reset();
+    // Pass config pointer so old gen can reconfigure.
+    old_gen.reset(new_config ? &config_ : nullptr);
 
     // Note: We do NOT reset GC stats here - stats accumulate across runs.
 }

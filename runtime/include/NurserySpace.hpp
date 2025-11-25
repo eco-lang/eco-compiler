@@ -51,7 +51,8 @@ public:
     }
 
     // Resets the nursery to initial state. Used for testing.
-    void reset(OldGenSpace &oldgen);
+    // If new_config is provided, reconfigures with new parameters.
+    void reset(OldGenSpace &oldgen, const GCConfig* new_config = nullptr);
 
 #if ENABLE_GC_STATS
     // Returns the GC statistics for this nursery.

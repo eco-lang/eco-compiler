@@ -148,9 +148,14 @@ Testing::TestCase testTLABAllocationFillsCorrectly("TLAB fills to capacity and r
 
 Testing::TestCase testTLABFillAndSeal("Promoting objects beyond TLAB capacity seals TLABs", []() {
     rc::check([]() {
+        // Use smaller TLAB size for faster test - 8KB TLABs.
+        GCConfig config;
+        config.tlab_default_size = 8 * 1024;
+        config.tlab_min_size = 4 * 1024;
+
         auto &gc = GarbageCollector::instance();
         gc.initThread();
-        gc.reset();
+        gc.reset(&config);
 
         auto* nursery = gc.getNursery();
         if (!nursery) {
@@ -163,8 +168,8 @@ Testing::TestCase testTLABFillAndSeal("Promoting objects beyond TLAB capacity se
 #endif
 
         // To seal TLABs, we need to promote enough objects to fill them.
-        // TLAB_DEFAULT_SIZE is 128KB, so we need to promote 3x that to seal at least 2.
-        size_t tlab_size = TLAB_DEFAULT_SIZE;
+        // Using smaller TLAB size (8KB) so we only need to promote 24KB to seal 2.
+        size_t tlab_size = config.tlab_default_size;
         size_t target_promoted = tlab_size * 3;
 
         size_t total_promoted = 0;

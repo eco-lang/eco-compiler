@@ -50,11 +50,20 @@ void NurserySpace::initialize(char *nursery_base, size_t size, const GCConfig* c
     scan_ptr = from_space;
 }
 
-void NurserySpace::reset(OldGenSpace &oldgen) {
+void NurserySpace::reset(OldGenSpace &oldgen, const GCConfig* new_config) {
     // Seal any active promotion TLAB.
     if (promotion_tlab) {
         oldgen.sealTLAB(promotion_tlab);
         promotion_tlab = nullptr;
+    }
+
+    // Update config if provided.
+    if (new_config) {
+        config_ = new_config;
+        // Recalculate nursery capacity from new config.
+        // Note: memory region size is fixed at initialization, but we can use
+        // a smaller portion of it based on the new config.
+        nursery_capacity_ = new_config->nursery_size / 2;
     }
 
     // Reset allocation pointers to start of from_space.

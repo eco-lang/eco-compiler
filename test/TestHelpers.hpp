@@ -32,8 +32,9 @@ namespace TestHelpers {
 // ============================================================================
 
 // Initialize GC for testing: get instance, init thread, reset state.
+// If config is provided, resets GC with new configuration parameters.
 // Returns reference to the singleton for convenience.
-GarbageCollector& initGC();
+GarbageCollector& initGC(const GCConfig& config = GCConfig());
 
 // ============================================================================
 // 2. Create and Root Multiple ElmInts

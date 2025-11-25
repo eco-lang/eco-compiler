@@ -34,7 +34,8 @@ public:
     void initialize(char *base, size_t initial_size, size_t max_size, const GCConfig* config);
 
     // Resets to initial state, clearing all allocated objects. Used for testing.
-    void reset();
+    // If new_config is provided, reconfigures with new parameters.
+    void reset(const GCConfig* new_config = nullptr);
 
     // ========== Allocation ==========
 

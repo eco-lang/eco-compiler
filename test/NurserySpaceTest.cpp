@@ -90,15 +90,18 @@ Testing::TestCase testMultipleMinorGCCycles("Multiple minor GC cycles preserve r
 
 Testing::TestCase testContinuousGarbageAllocation("Continuous garbage allocation triggers automatic GC and recycles space", []() {
         rc::check([](const HeapGraphDesc &graph) {
-            auto &gc = initGC();
+            // Use smaller nursery for faster test - 64KB total (32KB per semi-space).
+            GCConfig config;
+            config.nursery_size = 64 * 1024;
+            auto &gc = initGC(config);
             auto *nursery = gc.getNursery();
 
             if (nursery == nullptr) {
                 RC_DISCARD("Nursery not available");
             }
 
-            // Get nursery capacity for calculating target.
-            size_t nursery_capacity = NURSERY_SIZE / 2;
+            // Get nursery capacity for calculating target (use config value).
+            size_t nursery_capacity = config.nursery_size / 2;
             size_t target_allocation = nursery_capacity * 2;
 
             // Allocate initial rooted objects from graph description.

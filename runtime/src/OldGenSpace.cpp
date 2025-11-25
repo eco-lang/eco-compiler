@@ -616,12 +616,18 @@ void OldGenSpace::sweep() {
     free_list = new_free_list;
 }
 
-void OldGenSpace::reset() {
+void OldGenSpace::reset(const GCConfig* new_config) {
+    // Update config if provided.
+    if (new_config) {
+        config_ = new_config;
+    }
+
     // Reset all state to initial.
     free_list = nullptr;
     marking_active = false;
     current_epoch = 0;
     mark_stack.clear();
+    allocated_bytes.store(0, std::memory_order_relaxed);
 
     // Reset blocks.
     blocks.clear();
@@ -647,9 +653,11 @@ void OldGenSpace::reset() {
         available_tlabs.clear();
     }
 
-    // Re-initialize with original settings if needed.
-    if (region_base && region_size > 0) {
-        initialize(region_base, region_size, max_region_size, config_);
+    // Re-initialize with current config settings.
+    if (region_base && max_region_size > 0 && config_) {
+        // Use initial_old_gen_size from config for the initial committed size.
+        size_t initial_size = config_->initial_old_gen_size;
+        initialize(region_base, initial_size, max_region_size, config_);
     }
 }
 

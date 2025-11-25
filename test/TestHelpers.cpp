@@ -9,10 +9,10 @@ namespace TestHelpers {
 // 1. GC Initialization
 // ============================================================================
 
-GarbageCollector& initGC() {
+GarbageCollector& initGC(const GCConfig& config) {
     auto& gc = GarbageCollector::instance();
     gc.initThread();
-    gc.reset();
+    gc.reset(&config);
     return gc;
 }
 

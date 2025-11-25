@@ -304,9 +304,15 @@ Testing::TestCase testFullGCCycleWithCompaction("Objects survive full GC cycle i
 
 Testing::TestCase testMixedAllocationWorkload("Roots survive mixed minor and major GC workload", []() {
     rc::check([]() {
+        // Use smaller heap for faster test.
+        GCConfig config;
+        config.nursery_size = 64 * 1024;        // 64KB (32KB per semi-space)
+        config.tlab_default_size = 8 * 1024;    // 8KB TLABs
+        config.tlab_min_size = 4 * 1024;        // 4KB min TLAB
+
         auto& gc = GarbageCollector::instance();
         gc.initThread();
-        gc.reset();
+        gc.reset(&config);
 
         // Create some long-lived roots (size-scaled: 3-8 at size 0, up to 3-108 at size 1000)
         size_t num_roots = *rc::sizedRange<size_t>(3, 8, 0.1);
@@ -528,9 +534,15 @@ Testing::TestCase testMultipleMajorGCCycles("Long-lived roots survive multiple m
 
 Testing::TestCase testStressTestBothGenerations("High allocation rate with both minor and major GCs", []() {
     rc::check([]() {
+        // Use smaller heap for faster test.
+        GCConfig config;
+        config.nursery_size = 64 * 1024;        // 64KB (32KB per semi-space)
+        config.tlab_default_size = 8 * 1024;    // 8KB TLABs
+        config.tlab_min_size = 4 * 1024;        // 4KB min TLAB
+
         auto& gc = GarbageCollector::instance();
         gc.initThread();
-        gc.reset();
+        gc.reset(&config);
 
         // Create some persistent roots (size-scaled: 2-5 at size 0, up to 2-105 at size 1000)
         size_t num_persistent = *rc::sizedRange<size_t>(2, 5, 0.1);
