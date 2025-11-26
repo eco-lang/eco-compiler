@@ -7,9 +7,9 @@
 - [ ] **1. Runtime Foundation** → [§1](#1-runtime-foundation)
   - [x] 1.1 Custom Heap Model → [§1.1](#11-custom-heap-model)
   - [ ] 1.2 Garbage Collector → [§1.2](#12-garbage-collector)
-    - [ ] 1.2.1 Concurrent Mark-and-Sweep → [§1.2.1](#121-concurrent-mark-and-sweep)
-    - [x] 1.2.2 LLVM Stack Map Integration → [§1.2.2](#122-llvm-stack-map-integration) *(research complete)*
-    - [ ] 1.2.3 Lock-Free Optimization → [§1.2.3](#123-lock-free-optimization)
+    - [ ] 1.2.1 Old Generation Algorithm → [§1.2.1](#121-old-generation-algorithm)
+    - [x] 1.2.2 LLVM Stack Map Investigation → [§1.2.2](#122-llvm-stack-map-investigation)
+    - [ ] 1.2.3 LLVM Stack Map Implementation → [§1.2.3](#123-llvm-stack-map-implementation)
   - [ ] 1.3 Process & Thread Model → [§1.3](#13-process--thread-model)
   - [ ] 1.4 Runtime Testing Infrastructure → [§1.4](#14-runtime-testing-infrastructure)
 
@@ -63,6 +63,7 @@
   - [ ] 7.1 Fixed-Size Object Spaces → [§7.1](#71-fixed-size-object-spaces)
   - [ ] 7.2 Stack-Allocated Values → [§7.2](#72-stack-allocated-values)
   - [ ] 7.3 Reference Counting & Uniqueness → [§7.3](#73-reference-counting--uniqueness)
+  - [ ] 7.4 Lock-Free Optimization → [§7.4](#74-lock-free-optimization)
 
 - [ ] **8. More Compilation Targets** → [§8](#8-more-compilation-targets)
   - [ ] 8.1 ARM64 Support → [§8.1](#81-arm64-support)
