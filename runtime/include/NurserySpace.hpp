@@ -6,12 +6,11 @@
 #include "GCStats.hpp"
 #include "OldGenSpace.hpp"
 #include "RootSet.hpp"
-#include "TLAB.hpp"
 
 namespace Elm {
 
 /**
- * Thread-local nursery with semi-space copying collector (Cheney's algorithm).
+ * Nursery with semi-space copying collector (Cheney's algorithm).
  *
  * Objects are allocated via bump pointer in from_space. When full, minorGC
  * evacuates live objects to to_space (or promotes to old gen), then swaps spaces.
@@ -22,7 +21,7 @@ public:
     ~NurserySpace();
 
     // Initializes this nursery with the given memory region from the main heap.
-    void initialize(char *nursery_base, size_t size, const GCConfig* config);
+    void initialize(char *nursery_base, size_t size, const HeapConfig* config);
 
     // Allocates memory in the nursery using bump pointer. Returns nullptr if full.
     void *allocate(size_t size);
@@ -30,7 +29,7 @@ public:
     // Performs minor GC, evacuating live objects to to_space or promoting to old gen.
     void minorGC(OldGenSpace &oldgen);
 
-    // Returns the root set for this nursery's thread.
+    // Returns the root set for this nursery.
     RootSet& getRootSet() { return root_set; }
 
     // Returns true if the pointer points into this nursery's memory region.
@@ -52,7 +51,7 @@ public:
 
     // Resets the nursery to initial state. Used for testing.
     // If new_config is provided, reconfigures with new parameters.
-    void reset(OldGenSpace &oldgen, const GCConfig* new_config = nullptr);
+    void reset(OldGenSpace &oldgen, const HeapConfig* new_config = nullptr);
 
 #if ENABLE_GC_STATS
     // Returns the GC statistics for this nursery.
@@ -61,7 +60,7 @@ public:
 #endif
 
 private:
-    const GCConfig* config_;  // GC configuration parameters.
+    const HeapConfig* config_;  // Heap configuration parameters.
     char *memory;         // Total nursery memory (both semi-spaces).
     char *from_space;     // Current allocation space.
     char *to_space;       // Copy target during GC.
@@ -69,8 +68,7 @@ private:
     char *scan_ptr;       // Cheney scan pointer during evacuation.
     size_t nursery_capacity_;  // Capacity of one semi-space (total_size / 2).
 
-    TLAB* promotion_tlab; // TLAB for lock-free promotions to old gen.
-    RootSet root_set;     // Thread-local root set for this nursery.
+    RootSet root_set;     // Root set for this nursery.
 
 #if ENABLE_GC_STATS
     GCStats stats;        // Performance statistics.

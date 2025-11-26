@@ -3,11 +3,10 @@
 #include <rapidcheck.h>
 #include <stdexcept>
 #include <vector>
-#include "GarbageCollector.hpp"
+#include "Allocator.hpp"
 #include "Heap.hpp"
 #include "HeapGenerators.hpp"
 #include "OldGenSpace.hpp"
-#include "TLAB.hpp"
 
 // Simple assertion for unit tests (outside rc::check).
 // Throws std::runtime_error on failure, which the test runner catches.
@@ -28,13 +27,13 @@ namespace Elm {
 namespace TestHelpers {
 
 // ============================================================================
-// 1. GC Initialization
+// 1. Allocator Initialization
 // ============================================================================
 
-// Initialize GC for testing: get instance, init thread, reset state.
-// If config is provided, resets GC with new configuration parameters.
+// Initialize Allocator for testing: get instance, init thread, reset state.
+// If config is provided, resets Allocator with new configuration parameters.
 // Returns reference to the singleton for convenience.
-GarbageCollector& initGC(const GCConfig& config = GCConfig());
+Allocator& initAllocator(const HeapConfig& config = HeapConfig());
 
 // ============================================================================
 // 2. Create and Root Multiple ElmInts
@@ -45,11 +44,11 @@ struct RootedInts {
     std::vector<i64> values;
     std::vector<HPointer> roots;
 
-    // Register all roots with the GC
-    void registerRoots(GarbageCollector& gc);
+    // Register all roots with the Allocator
+    void registerRoots(Allocator& alloc);
 
-    // Unregister all roots from the GC
-    void unregisterRoots(GarbageCollector& gc);
+    // Unregister all roots from the Allocator
+    void unregisterRoots(Allocator& alloc);
 
     // Number of successfully created objects
     size_t size() const { return roots.size(); }
@@ -60,24 +59,24 @@ struct RootedInts {
 
 // Create multiple ElmInt objects with random values and store them.
 // Does NOT register roots - call registerRoots() after.
-RootedInts createRootedInts(GarbageCollector& gc, size_t count);
+RootedInts createRootedInts(Allocator& alloc, size_t count);
 
 // Create multiple ElmInt objects with specific values.
-RootedInts createRootedIntsWithValues(GarbageCollector& gc, const std::vector<i64>& values);
+RootedInts createRootedIntsWithValues(Allocator& alloc, const std::vector<i64>& values);
 
 // ============================================================================
 // 3. Unregister Roots
 // ============================================================================
 
-// Unregister all roots in a vector from the GC
-void unregisterRoots(GarbageCollector& gc, std::vector<HPointer>& roots);
+// Unregister all roots in a vector from the Allocator
+void unregisterRoots(Allocator& alloc, std::vector<HPointer>& roots);
 
 // ============================================================================
 // 4. Promote Objects to Old Gen
 // ============================================================================
 
 // Run enough minor GCs to promote objects (PROMOTION_AGE + 1 cycles)
-void promoteToOldGen(GarbageCollector& gc);
+void promoteToOldGen(Allocator& alloc);
 
 // ============================================================================
 // 5. Verify ElmInt Values
@@ -100,42 +99,24 @@ HPointer createConstant(Constant c);
 inline HPointer createNil() { return createConstant(Const_Nil); }
 
 // ============================================================================
-// 7. Allocate ElmInt into TLAB
-// ============================================================================
-
-// Allocate an ElmInt with given value into a TLAB.
-// Sets header tag, color (White), and value.
-// Returns nullptr if allocation fails.
-void* allocateIntIntoTLAB(TLAB* tlab, i64 value);
-
-// ============================================================================
-// 8. Run Mark-and-Sweep (Stats-Aware)
+// 7. Run Mark-and-Sweep (Stats-Aware)
 // ============================================================================
 
 // Run a complete mark-and-sweep cycle on the old generation.
 // Handles ENABLE_GC_STATS conditional compilation internally.
-void runMarkAndSweep(GarbageCollector& gc);
+void runMarkAndSweep(Allocator& alloc);
 
 // ============================================================================
-// 9. Run Compaction Sequence
-// ============================================================================
-
-// Run the full compaction sequence:
-// selectCompactionSet -> setCompactionInProgress(true) -> performCompaction
-// -> optionally reclaimEvacuatedBlocks -> setCompactionInProgress(false)
-void runCompaction(OldGenSpace& oldgen, bool reclaimBlocks = true);
-
-// ============================================================================
-// 10. Setup Roots from HeapGraphDesc
+// 8. Setup Roots from HeapGraphDesc
 // ============================================================================
 
 // RAII wrapper for roots created from a HeapGraphDesc
 struct GraphRoots {
-    GarbageCollector* gc;
+    Allocator* alloc = nullptr;
     std::vector<HPointer> storage;
     std::vector<HPointer*> ptrs;
 
-    GraphRoots() : gc(nullptr) {}
+    GraphRoots() = default;
     ~GraphRoots();
 
     // Prevent copying
@@ -151,28 +132,20 @@ struct GraphRoots {
 };
 
 // Setup roots from a HeapGraphDesc. Returns RAII wrapper that auto-unregisters.
-GraphRoots setupRootsFromGraph(GarbageCollector& gc,
+GraphRoots setupRootsFromGraph(Allocator& alloc,
                                 const HeapGraphDesc& graph,
                                 const std::vector<void*>& allocated_objects);
 
 // ============================================================================
-// 11. Allocate Garbage Ints
+// 9. Allocate Garbage Ints
 // ============================================================================
 
 // Allocate unrooted ElmInt objects (garbage).
 // Useful for triggering GC or filling nursery.
-void allocateGarbageInts(GarbageCollector& gc, size_t count);
+void allocateGarbageInts(Allocator& alloc, size_t count);
 
 // ============================================================================
-// 12. Allocate TLAB with Assertion
-// ============================================================================
-
-// Allocate a TLAB from old gen, RC_FAIL if allocation fails.
-TLAB* allocateTLABOrFail(OldGenSpace& oldgen,
-                          size_t size = TLAB_DEFAULT_SIZE);
-
-// ============================================================================
-// 13. Build Linked List
+// 10. Build Linked List
 // ============================================================================
 
 // Result of building a linked list
@@ -183,13 +156,10 @@ struct LinkedList {
 
 // Build a cons list of ElmInts with random values.
 // Returns head pointer and the values (in list order).
-LinkedList buildLinkedList(GarbageCollector& gc, size_t length);
-
-// Build a cons list in a TLAB (for old gen tests).
-LinkedList buildLinkedListInTLAB(TLAB* tlab, size_t length);
+LinkedList buildLinkedList(Allocator& alloc, size_t length);
 
 // ============================================================================
-// 14. Verify Linked List
+// 11. Verify Linked List
 // ============================================================================
 
 // Walk a cons list and verify it contains expected values in order.
@@ -197,7 +167,7 @@ LinkedList buildLinkedListInTLAB(TLAB* tlab, size_t length);
 void verifyLinkedList(HPointer head, const std::vector<i64>& expected);
 
 // ============================================================================
-// 15. Assert Object is Int with Value
+// 12. Assert Object is Int with Value
 // ============================================================================
 
 // Assert that an object is an ElmInt with the expected value.
@@ -209,10 +179,7 @@ void assertObjectIsInt(HPointer ptr, i64 expected);
 // Additional Utilities
 // ============================================================================
 
-// Allocate a Cons cell into a TLAB
-void* allocateConsIntoTLAB(TLAB* tlab, HPointer head_ptr, HPointer tail_ptr, bool head_boxed);
-
-// Allocate an ElmInt directly in OldGen free-list
+// Allocate an ElmInt directly in OldGen
 void* allocateIntInOldGen(OldGenSpace& oldgen, i64 value);
 
 } // namespace TestHelpers

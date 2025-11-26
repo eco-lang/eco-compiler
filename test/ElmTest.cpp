@@ -1,7 +1,7 @@
 #include "ElmTest.hpp"
 #include <cstring>
 #include <rapidcheck.h>
-#include "GarbageCollector.hpp"
+#include "Allocator.hpp"
 #include "OldGenSpace.hpp"
 #include "TestHelpers.hpp"
 
@@ -20,9 +20,9 @@ HPointer elm_nil() {
 }
 
 HPointer elm_cons(HPointer head, HPointer tail) {
-    auto& gc = GarbageCollector::instance();
+    auto& alloc = Allocator::instance();
 
-    void* obj = gc.allocate(sizeof(Cons), Tag_Cons);
+    void* obj = alloc.allocate(sizeof(Cons), Tag_Cons);
     if (!obj) {
         return elm_nil();  // Allocation failed.
     }
@@ -32,13 +32,13 @@ HPointer elm_cons(HPointer head, HPointer tail) {
     cons->head.p = head;
     cons->tail = tail;
 
-    return GCTestAccess::toPointer(obj);
+    return AllocatorTestAccess::toPointer(obj);
 }
 
 HPointer elm_cons_int(i64 value, HPointer tail) {
-    auto& gc = GarbageCollector::instance();
+    auto& alloc = Allocator::instance();
 
-    void* obj = gc.allocate(sizeof(Cons), Tag_Cons);
+    void* obj = alloc.allocate(sizeof(Cons), Tag_Cons);
     if (!obj) {
         return elm_nil();  // Allocation failed.
     }
@@ -48,7 +48,7 @@ HPointer elm_cons_int(i64 value, HPointer tail) {
     cons->head.i = value;
     cons->tail = tail;
 
-    return GCTestAccess::toPointer(obj);
+    return AllocatorTestAccess::toPointer(obj);
 }
 
 HPointer elm_reverse(HPointer list) {
@@ -57,18 +57,18 @@ HPointer elm_reverse(HPointer list) {
     //
     // IMPORTANT: This function is GC-safe. We register local pointers as roots
     // so they get updated if GC triggers during allocation.
-    auto& gc = GarbageCollector::instance();
+    auto& alloc = Allocator::instance();
     HPointer acc = elm_nil();
 
     // Register locals as roots so GC can update them if triggered.
     HPointer list_root = list;
     HPointer acc_root = acc;
-    gc.getRootSet().addRoot(&list_root);
-    gc.getRootSet().addRoot(&acc_root);
+    alloc.getRootSet().addRoot(&list_root);
+    alloc.getRootSet().addRoot(&acc_root);
 
     while (list_root.constant != Const_Nil) {
         // Read current cons cell from root (root is always up-to-date).
-        void* obj = GCTestAccess::fromPointer(list_root);
+        void* obj = AllocatorTestAccess::fromPointer(list_root);
         if (!obj) break;
 
         Cons* cons = static_cast<Cons*>(obj);
@@ -84,7 +84,7 @@ HPointer elm_reverse(HPointer list) {
 
         // Create new cons cell - this might trigger GC!
         // After this, list_root may have been updated to point to new location.
-        void* new_obj = gc.allocate(sizeof(Cons), Tag_Cons);
+        void* new_obj = alloc.allocate(sizeof(Cons), Tag_Cons);
         if (!new_obj) break;
 
         Cons* new_cons = static_cast<Cons*>(new_obj);
@@ -92,12 +92,12 @@ HPointer elm_reverse(HPointer list) {
         new_cons->head = head_copy;  // Copy head value (integer or pointer).
         new_cons->tail = acc_root;   // Use root version which may have been updated.
 
-        acc_root = GCTestAccess::toPointer(new_obj);
+        acc_root = AllocatorTestAccess::toPointer(new_obj);
     }
 
     // Remove roots before returning.
-    gc.getRootSet().removeRoot(&acc_root);
-    gc.getRootSet().removeRoot(&list_root);
+    alloc.getRootSet().removeRoot(&acc_root);
+    alloc.getRootSet().removeRoot(&list_root);
 
     return acc_root;
 }
@@ -105,7 +105,7 @@ HPointer elm_reverse(HPointer list) {
 HPointer elm_foldl(HPointer (*func)(HPointer, HPointer), HPointer acc, HPointer list) {
     // Generic foldl - currently unused but kept for completeness.
     while (list.constant != Const_Nil) {
-        void* obj = GCTestAccess::fromPointer(list);
+        void* obj = AllocatorTestAccess::fromPointer(list);
         if (!obj) break;
 
         Cons* cons = static_cast<Cons*>(obj);
@@ -197,15 +197,15 @@ Testing::UnitTest testElmNilConstant("Nil has correct constant field", []() {
 });
 
 Testing::UnitTest testElmConsAllocation("Cons cell is allocated correctly", []() {
-    auto& gc = initGC();
-    (void)gc;
+    auto& alloc = initAllocator();
+    (void)alloc;
 
     i64 value = 42;
     HPointer list = elm_cons_int(value, elm_nil());
 
     TEST_ASSERT(list.constant == 0);  // Not a constant.
 
-    void* obj = GCTestAccess::fromPointer(list);
+    void* obj = AllocatorTestAccess::fromPointer(list);
     if (!obj) TEST_FAIL("fromPointer returned null");
 
     Cons* cons = static_cast<Cons*>(obj);
@@ -217,8 +217,8 @@ Testing::UnitTest testElmConsAllocation("Cons cell is allocated correctly", []()
 
 Testing::TestCase testElmListFromInts("List from ints has correct structure", []() {
     rc::check([]() {
-        auto& gc = initGC();
-        (void)gc;  // gc not used directly but needed for initialization
+        auto& alloc = initAllocator();
+        (void)alloc;  // alloc not used directly but needed for initialization
 
         size_t len = *rc::gen::inRange<size_t>(0, 20);
         std::vector<i64> values;
@@ -237,7 +237,7 @@ Testing::TestCase testElmListFromInts("List from ints has correct structure", []
 });
 
 Testing::UnitTest testElmReverseEmpty("Reverse of nil is nil", []() {
-    initGC();
+    initAllocator();
 
     HPointer nil = elm_nil();
     HPointer reversed = elm_reverse(nil);
@@ -246,14 +246,14 @@ Testing::UnitTest testElmReverseEmpty("Reverse of nil is nil", []() {
 });
 
 Testing::UnitTest testElmReverseSingle("Reverse of [x] is [x]", []() {
-    auto& gc = initGC();
+    auto& alloc = initAllocator();
 
     i64 value = 42;
     HPointer list = elm_cons_int(value, elm_nil());
 
     // Register as root to survive any GC during reverse.
     HPointer root = list;
-    gc.getRootSet().addRoot(&root);
+    alloc.getRootSet().addRoot(&root);
 
     HPointer reversed = elm_reverse(root);
 
@@ -261,12 +261,12 @@ Testing::UnitTest testElmReverseSingle("Reverse of [x] is [x]", []() {
     TEST_ASSERT(result.size() == 1);
     TEST_ASSERT(result[0] == value);
 
-    gc.getRootSet().removeRoot(&root);
+    alloc.getRootSet().removeRoot(&root);
 });
 
 Testing::TestCase testElmReverseMultiple("Reverse of [1,2,3,..] is [..,3,2,1]", []() {
     rc::check([]() {
-        auto& gc = initGC();
+        auto& alloc = initAllocator();
 
         size_t len = *rc::gen::inRange<size_t>(2, 10);
         std::vector<i64> values;
@@ -279,7 +279,7 @@ Testing::TestCase testElmReverseMultiple("Reverse of [1,2,3,..] is [..,3,2,1]", 
 
         // Register as root.
         HPointer root = list;
-        gc.getRootSet().addRoot(&root);
+        alloc.getRootSet().addRoot(&root);
 
         HPointer reversed = elm_reverse(root);
 
@@ -291,34 +291,34 @@ Testing::TestCase testElmReverseMultiple("Reverse of [1,2,3,..] is [..,3,2,1]", 
 
         RC_ASSERT(result == expected);
 
-        gc.getRootSet().removeRoot(&root);
+        alloc.getRootSet().removeRoot(&root);
     });
 });
 
 Testing::UnitTest testElmReverseSurvivesGC("Reversed list survives minor and major GC", []() {
-    auto& gc = initGC();
+    auto& alloc = initAllocator();
 
     std::vector<i64> values = {1, 2, 3, 4, 5};
     HPointer list = elm_list_from_ints(values);
 
     // Register original list as root during reverse.
     HPointer root1 = list;
-    gc.getRootSet().addRoot(&root1);
+    alloc.getRootSet().addRoot(&root1);
 
     // Reverse the list (root1 keeps original alive if GC triggers).
     HPointer reversed = elm_reverse(root1);
 
     // Register reversed list as root.
     HPointer root2 = reversed;
-    gc.getRootSet().addRoot(&root2);
+    alloc.getRootSet().addRoot(&root2);
 
     // Remove original root - we only need the reversed list now.
-    gc.getRootSet().removeRoot(&root1);
+    alloc.getRootSet().removeRoot(&root1);
 
     // Trigger minor GC twice to promote objects to old gen.
     // PROMOTION_AGE=1, so after first GC age becomes 1, and on second GC they're promoted.
-    gc.minorGC();
-    gc.minorGC();
+    alloc.minorGC();
+    alloc.minorGC();
 
     // Read from root2 (may have been updated by GC).
     std::vector<i64> after_minor = elm_list_to_ints(root2);
@@ -326,18 +326,18 @@ Testing::UnitTest testElmReverseSurvivesGC("Reversed list survives minor and maj
     TEST_ASSERT(after_minor == expected);
 
     // Now objects are in old gen, so major GC should work.
-    gc.majorGC();
+    alloc.majorGC();
 
     // Verify list is still intact.
     std::vector<i64> after_major = elm_list_to_ints(root2);
     TEST_ASSERT(after_major == expected);
 
-    gc.getRootSet().removeRoot(&root2);
+    alloc.getRootSet().removeRoot(&root2);
 });
 
 Testing::TestCase testElmReverseLargeList("Reverse of large list is correct", []() {
     rc::check([]() {
-        auto& gc = initGC();
+        auto& alloc = initAllocator();
 
         // Create a list with 100-500 elements with random values.
         size_t size = *rc::gen::inRange<size_t>(100, 500);
@@ -350,16 +350,16 @@ Testing::TestCase testElmReverseLargeList("Reverse of large list is correct", []
 
         // Register original as root during reverse.
         HPointer root1 = list;
-        gc.getRootSet().addRoot(&root1);
+        alloc.getRootSet().addRoot(&root1);
 
         HPointer reversed = elm_reverse(root1);
 
         // Register reversed as root.
         HPointer root2 = reversed;
-        gc.getRootSet().addRoot(&root2);
+        alloc.getRootSet().addRoot(&root2);
 
         // Remove original root.
-        gc.getRootSet().removeRoot(&root1);
+        alloc.getRootSet().removeRoot(&root1);
 
         // Verify length.
         RC_ASSERT(elm_list_length(root2) == size);
@@ -372,6 +372,6 @@ Testing::TestCase testElmReverseLargeList("Reverse of large list is correct", []
         std::reverse(expected.begin(), expected.end());
         RC_ASSERT(result == expected);
 
-        gc.getRootSet().removeRoot(&root2);
+        alloc.getRootSet().removeRoot(&root2);
     });
 });

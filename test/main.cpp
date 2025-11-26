@@ -8,17 +8,15 @@
 #include <sstream>
 #include <unordered_set>
 #include <vector>
-#include "GarbageCollector.hpp"
+#include "Allocator.hpp"
 #include "NurserySpaceTest.hpp"
 #include "Heap.hpp"
 #include "HeapGenerators.hpp"
 #include "HeapSnapshot.hpp"
-#include "CompactionTest.hpp"
 #include "ElmTest.hpp"
-#include "GarbageCollectorTest.hpp"
+#include "AllocatorTest.hpp"
 #include "OldGenSpaceTest.hpp"
 #include "TestSuite.hpp"
-#include "TLABTest.hpp"
 
 using namespace Elm;
 
@@ -467,42 +465,24 @@ int main(int argc, char* argv[]) {
     nurseryTests.add(testMultipleMinorGCCycles);
     nurseryTests.add(testContinuousGarbageAllocation);
 
-    Testing::TestSuite tlabTests("TLAB");
-    tlabTests.add(testTLABMetricsOnEmpty);
-    tlabTests.add(testTLABMetricsAfterAllocation);
-    tlabTests.add(testTLABAllocationFillsCorrectly);
-    tlabTests.add(testTLABFillAndSeal);
-
     Testing::TestSuite oldGenTests("OldGenSpace");
-    oldGenTests.add(testAllocateTLAB);
+    oldGenTests.add(testOldGenAllocate);
     oldGenTests.add(testRootsMarkedAtStart);
     oldGenTests.add(testRootsPreservedAfterIncrementalMark);
     oldGenTests.add(testRootsPreservedAfterSweep);
     oldGenTests.add(testGarbageUnmarkedInIncrementalSteps);
-    oldGenTests.add(testGarbageFreeListedAfterSweep);
+    oldGenTests.add(testGarbageReclaimedAfterSweep);
 
-    Testing::TestSuite compactionTests("Compaction");
-    compactionTests.add(testBlockInitialization);
-    compactionTests.add(testBlockLiveInfoTracking);
-    compactionTests.add(testCompactionSetSelection);
-    compactionTests.add(testObjectEvacuationWithForwarding);
-    compactionTests.add(testReadBarrierSelfHealing);
-    compactionTests.add(testBlockEvacuation);
-    compactionTests.add(testBlockReclaimToTLABs);
-    compactionTests.add(testCompactionPreservesValues);
-    compactionTests.add(testRootPointerUpdatesAfterCompaction);
-    compactionTests.add(testFragmentationDefragmentation);
-
-    Testing::TestSuite gcTests("GarbageCollector");
-    gcTests.add(testPromotionToOldGen);
-    gcTests.add(testMinorThenMajorGCSequence);
-    gcTests.add(testLongLivedObjectsSurviveMajorGC);
-    gcTests.add(testMajorGCReclaimsOldGenGarbage);
-    gcTests.add(testFullGCCycleWithCompaction);
-    gcTests.add(testMixedAllocationWorkload);
-    gcTests.add(testObjectGraphSpanningPromotions);
-    gcTests.add(testMultipleMajorGCCycles);
-    gcTests.add(testStressTestBothGenerations);
+    Testing::TestSuite allocatorTests("Allocator");
+    allocatorTests.add(testPromotionToOldGen);
+    allocatorTests.add(testMinorThenMajorGCSequence);
+    allocatorTests.add(testLongLivedObjectsSurviveMajorGC);
+    allocatorTests.add(testMajorGCReclaimsOldGenGarbage);
+    allocatorTests.add(testFullGCCycle);
+    allocatorTests.add(testMixedAllocationWorkload);
+    allocatorTests.add(testObjectGraphSpanningPromotions);
+    allocatorTests.add(testMultipleMajorGCCycles);
+    allocatorTests.add(testStressTestBothGenerations);
 
     Testing::TestSuite elmTests("Elm");
     elmTests.add(testElmNilConstant);
@@ -517,10 +497,8 @@ int main(int argc, char* argv[]) {
     // Root suite containing all sub-suites.
     Testing::TestSuite suite("All Tests");
     suite.add(std::move(nurseryTests));
-    suite.add(std::move(tlabTests));
     suite.add(std::move(oldGenTests));
-    suite.add(std::move(compactionTests));
-    suite.add(std::move(gcTests));
+    suite.add(std::move(allocatorTests));
     suite.add(std::move(elmTests));
 
     // Handle --list option.
@@ -655,14 +633,14 @@ int main(int argc, char* argv[]) {
 #if ENABLE_GC_STATS
     // Print GC statistics after all tests complete.
     // Combine thread-local nursery stats with global major GC stats.
-    auto &gc = GarbageCollector::instance();
-    auto *nursery = gc.getNursery();
+    auto &alloc = Allocator::instance();
+    auto *nursery = alloc.getNursery();
     if (nursery) {
-        // Start with a copy of the nursery stats (Minor GC + TLAB).
+        // Start with a copy of the nursery stats (Minor GC + AllocBuffer).
         GCStats combined_stats = nursery->getStats();
 
         // Combine with global Major GC stats.
-        combined_stats.combine(gc.getMajorGCStats());
+        combined_stats.combine(alloc.getMajorGCStats());
 
         // Print the combined statistics.
         combined_stats.print();

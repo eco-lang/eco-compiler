@@ -1,30 +1,14 @@
-#include "GarbageCollectorTest.hpp"
+#include "AllocatorTest.hpp"
 #include <cstring>
 #include <rapidcheck.h>
 #include <vector>
-#include "GarbageCollector.hpp"
+#include "Allocator.hpp"
 #include "Heap.hpp"
 #include "HeapGenerators.hpp"
 #include "OldGenSpace.hpp"
+#include "TestHelpers.hpp"
 
 using namespace Elm;
-
-// ============================================================================
-// Helper: Check if pointer is in old gen.
-// ============================================================================
-
-static bool isInOldGen(GarbageCollector& gc, void* obj) {
-    return gc.getOldGen().contains(obj);
-}
-
-// ============================================================================
-// Helper: Check if pointer is in nursery.
-// ============================================================================
-
-static bool isInNursery(GarbageCollector& gc, void* obj) {
-    auto* nursery = gc.getNursery();
-    return nursery && nursery->contains(obj);
-}
 
 // ============================================================================
 // Tests
@@ -32,51 +16,47 @@ static bool isInNursery(GarbageCollector& gc, void* obj) {
 
 Testing::TestCase testPromotionToOldGen("Objects surviving PROMOTION_AGE minor GCs are promoted", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& alloc = initAllocator();
 
         // Allocate object in nursery.
         i64 test_value = *rc::gen::arbitrary<i64>();
-        void* obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+        void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
         if (!obj) RC_FAIL("Failed to allocate object");
 
         ElmInt* elm_int = static_cast<ElmInt*>(obj);
         elm_int->value = test_value;
 
-        HPointer root = GCTestAccess::toPointer(obj);
-        gc.getRootSet().addRoot(&root);
+        HPointer root = AllocatorTestAccess::toPointer(obj);
+        alloc.getRootSet().addRoot(&root);
 
         // Object should start in nursery.
-        void* current = GCTestAccess::fromPointer(root);
-        RC_ASSERT(isInNursery(gc, current));
+        void* current = AllocatorTestAccess::fromPointer(root);
+        RC_ASSERT(alloc.isInNursery(current));
 
         // Run enough minor GCs to trigger promotion (PROMOTION_AGE + 1).
         for (u32 i = 0; i <= PROMOTION_AGE; i++) {
             // Allocate some garbage to ensure GC does work.
             for (int j = 0; j < 10; j++) {
-                gc.allocate(sizeof(ElmInt), Tag_Int);
+                alloc.allocate(sizeof(ElmInt), Tag_Int);
             }
-            gc.minorGC();
+            alloc.minorGC();
         }
 
         // Object should now be in old gen.
-        current = GCTestAccess::fromPointer(root);
-        RC_ASSERT(isInOldGen(gc, current));
+        current = AllocatorTestAccess::fromPointer(root);
+        RC_ASSERT(alloc.isInOldGen(current));
 
         // Value should be preserved.
         elm_int = static_cast<ElmInt*>(current);
         RC_ASSERT(elm_int->value == test_value);
 
-        gc.getRootSet().removeRoot(&root);
+        alloc.getRootSet().removeRoot(&root);
     });
 });
 
 Testing::TestCase testMinorThenMajorGCSequence("Roots survive minor then major GC sequence", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& alloc = initAllocator();
 
         // Create objects with random values (size-scaled: 3-10 at size 0, up to 3-110 at size 1000)
         size_t num_objects = *rc::sizedRange<size_t>(3, 10, 0.1);
@@ -85,28 +65,28 @@ Testing::TestCase testMinorThenMajorGCSequence("Roots survive minor then major G
 
         for (size_t i = 0; i < num_objects; i++) {
             i64 val = *rc::gen::arbitrary<i64>();
-            void* obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+            void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
             if (!obj) break;
 
             ElmInt* elm_int = static_cast<ElmInt*>(obj);
             elm_int->value = val;
             expected_values.push_back(val);
-            root_storage.push_back(GCTestAccess::toPointer(obj));
+            root_storage.push_back(AllocatorTestAccess::toPointer(obj));
         }
 
         RC_ASSERT(!root_storage.empty());
 
         for (auto& root : root_storage) {
-            gc.getRootSet().addRoot(&root);
+            alloc.getRootSet().addRoot(&root);
         }
 
         // Run minor GCs to promote objects.
         for (u32 i = 0; i <= PROMOTION_AGE; i++) {
-            gc.minorGC();
+            alloc.minorGC();
         }
 
         // Now run major GC.
-        gc.majorGC();
+        alloc.majorGC();
 
         // Verify all values preserved.
         for (size_t i = 0; i < root_storage.size(); i++) {
@@ -118,16 +98,14 @@ Testing::TestCase testMinorThenMajorGCSequence("Roots survive minor then major G
         }
 
         for (auto& root : root_storage) {
-            gc.getRootSet().removeRoot(&root);
+            alloc.getRootSet().removeRoot(&root);
         }
     });
 });
 
 Testing::TestCase testLongLivedObjectsSurviveMajorGC("Promoted objects survive major GC with values intact", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& alloc = initAllocator();
 
         // Create and promote objects (size-scaled: 5-15 at size 0, up to 5-115 at size 1000)
         size_t num_objects = *rc::sizedRange<size_t>(5, 15, 0.1);
@@ -136,34 +114,34 @@ Testing::TestCase testLongLivedObjectsSurviveMajorGC("Promoted objects survive m
 
         for (size_t i = 0; i < num_objects; i++) {
             i64 val = *rc::gen::inRange<i64>(0, 1000000);
-            void* obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+            void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
             if (!obj) break;
 
             ElmInt* elm_int = static_cast<ElmInt*>(obj);
             elm_int->value = val;
             expected_values.push_back(val);
-            root_storage.push_back(GCTestAccess::toPointer(obj));
+            root_storage.push_back(AllocatorTestAccess::toPointer(obj));
         }
 
         RC_ASSERT(!root_storage.empty());
 
         for (auto& root : root_storage) {
-            gc.getRootSet().addRoot(&root);
+            alloc.getRootSet().addRoot(&root);
         }
 
         // Promote to old gen.
         for (u32 i = 0; i <= PROMOTION_AGE; i++) {
-            gc.minorGC();
+            alloc.minorGC();
         }
 
         // Verify objects are in old gen.
         for (auto& root : root_storage) {
-            void* obj = GCTestAccess::fromPointer(root);
-            RC_ASSERT(isInOldGen(gc, obj));
+            void* obj = AllocatorTestAccess::fromPointer(root);
+            RC_ASSERT(alloc.isInOldGen(obj));
         }
 
         // Run major GC.
-        gc.majorGC();
+        alloc.majorGC();
 
         // Verify values still intact.
         for (size_t i = 0; i < root_storage.size(); i++) {
@@ -178,16 +156,14 @@ Testing::TestCase testLongLivedObjectsSurviveMajorGC("Promoted objects survive m
         }
 
         for (auto& root : root_storage) {
-            gc.getRootSet().removeRoot(&root);
+            alloc.getRootSet().removeRoot(&root);
         }
     });
 });
 
 Testing::TestCase testMajorGCReclaimsOldGenGarbage("Unrooted objects in old gen are reclaimed by major GC", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& alloc = initAllocator();
 
         // Create objects (size-scaled: 6-12 at size 0, up to 6-112 at size 1000)
         size_t num_objects = *rc::sizedRange<size_t>(6, 12, 0.1);
@@ -197,24 +173,24 @@ Testing::TestCase testMajorGCReclaimsOldGenGarbage("Unrooted objects in old gen 
 
         for (size_t i = 0; i < num_objects; i++) {
             i64 val = static_cast<i64>(i * 1000);
-            void* obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+            void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
             if (!obj) break;
 
             ElmInt* elm_int = static_cast<ElmInt*>(obj);
             elm_int->value = val;
-            all_roots.push_back(GCTestAccess::toPointer(obj));
+            all_roots.push_back(AllocatorTestAccess::toPointer(obj));
         }
 
         RC_ASSERT(all_roots.size() >= 4);
 
         // Root all objects initially.
         for (auto& root : all_roots) {
-            gc.getRootSet().addRoot(&root);
+            alloc.getRootSet().addRoot(&root);
         }
 
         // Promote all to old gen.
         for (u32 i = 0; i <= PROMOTION_AGE; i++) {
-            gc.minorGC();
+            alloc.minorGC();
         }
 
         // Now unroot half of them (they become garbage).
@@ -225,12 +201,12 @@ Testing::TestCase testMajorGCReclaimsOldGenGarbage("Unrooted objects in old gen 
                 kept_values.push_back(static_cast<i64>(i * 1000));
             } else {
                 // Remove this one - it becomes garbage.
-                gc.getRootSet().removeRoot(&all_roots[i]);
+                alloc.getRootSet().removeRoot(&all_roots[i]);
             }
         }
 
         // Run major GC - should reclaim the unrooted objects.
-        gc.majorGC();
+        alloc.majorGC();
 
         // Verify kept objects still have correct values.
         for (size_t i = 0; i < kept_roots.size(); i++) {
@@ -243,16 +219,14 @@ Testing::TestCase testMajorGCReclaimsOldGenGarbage("Unrooted objects in old gen 
 
         // Clean up remaining roots.
         for (auto& root : kept_roots) {
-            gc.getRootSet().removeRoot(&root);
+            alloc.getRootSet().removeRoot(&root);
         }
     });
 });
 
-Testing::TestCase testFullGCCycleWithCompaction("Objects survive full GC cycle including compaction", []() {
+Testing::TestCase testFullGCCycle("Objects survive full GC cycle", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& alloc = initAllocator();
 
         // Create objects (size-scaled: 5-20 at size 0, up to 5-120 at size 1000)
         size_t num_objects = *rc::sizedRange<size_t>(5, 20, 0.1);
@@ -261,28 +235,28 @@ Testing::TestCase testFullGCCycleWithCompaction("Objects survive full GC cycle i
 
         for (size_t i = 0; i < num_objects; i++) {
             i64 val = *rc::gen::arbitrary<i64>();
-            void* obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+            void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
             if (!obj) break;
 
             ElmInt* elm_int = static_cast<ElmInt*>(obj);
             elm_int->value = val;
             expected_values.push_back(val);
-            root_storage.push_back(GCTestAccess::toPointer(obj));
+            root_storage.push_back(AllocatorTestAccess::toPointer(obj));
         }
 
         RC_ASSERT(!root_storage.empty());
 
         for (auto& root : root_storage) {
-            gc.getRootSet().addRoot(&root);
+            alloc.getRootSet().addRoot(&root);
         }
 
         // Promote to old gen.
         for (u32 i = 0; i <= PROMOTION_AGE; i++) {
-            gc.minorGC();
+            alloc.minorGC();
         }
 
-        // Run major GC (which includes compaction).
-        gc.majorGC();
+        // Run major GC.
+        alloc.majorGC();
 
         // Verify all values using read barrier (handles forwarding).
         for (size_t i = 0; i < root_storage.size(); i++) {
@@ -297,7 +271,7 @@ Testing::TestCase testFullGCCycleWithCompaction("Objects survive full GC cycle i
         }
 
         for (auto& root : root_storage) {
-            gc.getRootSet().removeRoot(&root);
+            alloc.getRootSet().removeRoot(&root);
         }
     });
 });
@@ -305,14 +279,10 @@ Testing::TestCase testFullGCCycleWithCompaction("Objects survive full GC cycle i
 Testing::TestCase testMixedAllocationWorkload("Roots survive mixed minor and major GC workload", []() {
     rc::check([]() {
         // Use smaller heap for faster test.
-        GCConfig config;
-        config.nursery_size = 64 * 1024;        // 64KB (32KB per semi-space)
-        config.tlab_default_size = 8 * 1024;    // 8KB TLABs
-        config.tlab_min_size = 4 * 1024;        // 4KB min TLAB
+        HeapConfig config;
+        config.nursery_size = 64 * 1024;  // 64KB (32KB per semi-space)
 
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset(&config);
+        auto& alloc = initAllocator(config);
 
         // Create some long-lived roots (size-scaled: 3-8 at size 0, up to 3-108 at size 1000)
         size_t num_roots = *rc::sizedRange<size_t>(3, 8, 0.1);
@@ -321,19 +291,19 @@ Testing::TestCase testMixedAllocationWorkload("Roots survive mixed minor and maj
 
         for (size_t i = 0; i < num_roots; i++) {
             i64 val = *rc::gen::inRange<i64>(0, 1000000);
-            void* obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+            void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
             if (!obj) break;
 
             ElmInt* elm_int = static_cast<ElmInt*>(obj);
             elm_int->value = val;
             expected_values.push_back(val);
-            root_storage.push_back(GCTestAccess::toPointer(obj));
+            root_storage.push_back(AllocatorTestAccess::toPointer(obj));
         }
 
         RC_ASSERT(!root_storage.empty());
 
         for (auto& root : root_storage) {
-            gc.getRootSet().addRoot(&root);
+            alloc.getRootSet().addRoot(&root);
         }
 
         // Mixed workload: allocate garbage, trigger minor GCs, occasionally major GC.
@@ -343,7 +313,7 @@ Testing::TestCase testMixedAllocationWorkload("Roots survive mixed minor and maj
         for (size_t iter = 0; iter < num_iterations; iter++) {
             // Allocate some garbage.
             for (int j = 0; j < 100; j++) {
-                void* garbage = gc.allocate(sizeof(ElmInt), Tag_Int);
+                void* garbage = alloc.allocate(sizeof(ElmInt), Tag_Int);
                 if (garbage) {
                     static_cast<ElmInt*>(garbage)->value = j;
                 }
@@ -351,17 +321,17 @@ Testing::TestCase testMixedAllocationWorkload("Roots survive mixed minor and maj
 
             // Minor GC happens automatically, but let's also trigger explicitly sometimes.
             if (iter % 3 == 0) {
-                gc.minorGC();
+                alloc.minorGC();
             }
 
             // Occasionally run major GC.
             if (iter % 5 == 0) {
-                gc.majorGC();
+                alloc.majorGC();
             }
         }
 
         // Final major GC.
-        gc.majorGC();
+        alloc.majorGC();
 
         // Verify all roots preserved.
         for (size_t i = 0; i < root_storage.size(); i++) {
@@ -373,16 +343,14 @@ Testing::TestCase testMixedAllocationWorkload("Roots survive mixed minor and maj
         }
 
         for (auto& root : root_storage) {
-            gc.getRootSet().removeRoot(&root);
+            alloc.getRootSet().removeRoot(&root);
         }
     });
 });
 
 Testing::TestCase testObjectGraphSpanningPromotions("Linked list survives with nodes in different generations", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& alloc = initAllocator();
 
         // Build a linked list (size-scaled: 4-10 at size 0, up to 4-110 at size 1000)
         size_t list_length = *rc::sizedRange<size_t>(4, 10, 0.1);
@@ -401,37 +369,37 @@ Testing::TestCase testObjectGraphSpanningPromotions("Linked list survives with n
             expected_values.push_back(val);
 
             // Allocate Int.
-            void* int_obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+            void* int_obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
             if (!int_obj) RC_FAIL("Failed to allocate int");
             static_cast<ElmInt*>(int_obj)->value = val;
 
             // Allocate Cons.
-            void* cons_obj = gc.allocate(sizeof(Cons), Tag_Cons);
+            void* cons_obj = alloc.allocate(sizeof(Cons), Tag_Cons);
             if (!cons_obj) RC_FAIL("Failed to allocate cons");
 
             Cons* cons = static_cast<Cons*>(cons_obj);
-            cons->head.p = GCTestAccess::toPointer(int_obj);
+            cons->head.p = AllocatorTestAccess::toPointer(int_obj);
             cons->tail = list_head;
 
-            list_head = GCTestAccess::toPointer(cons_obj);
+            list_head = AllocatorTestAccess::toPointer(cons_obj);
 
             // Run minor GC partway through to create mixed generations.
             if (i == list_length / 2) {
                 // Temporarily root the list.
-                gc.getRootSet().addRoot(&list_head);
+                alloc.getRootSet().addRoot(&list_head);
                 for (u32 j = 0; j <= PROMOTION_AGE; j++) {
-                    gc.minorGC();
+                    alloc.minorGC();
                 }
-                gc.getRootSet().removeRoot(&list_head);
+                alloc.getRootSet().removeRoot(&list_head);
             }
         }
 
         // Root the final list.
-        gc.getRootSet().addRoot(&list_head);
+        alloc.getRootSet().addRoot(&list_head);
 
         // Run more GCs.
-        gc.minorGC();
-        gc.majorGC();
+        alloc.minorGC();
+        alloc.majorGC();
 
         // Walk the list and verify values (in reverse order).
         HPointer current = list_head;
@@ -459,15 +427,13 @@ Testing::TestCase testObjectGraphSpanningPromotions("Linked list survives with n
 
         RC_ASSERT(idx == 0);  // Should have visited all nodes
 
-        gc.getRootSet().removeRoot(&list_head);
+        alloc.getRootSet().removeRoot(&list_head);
     });
 });
 
 Testing::TestCase testMultipleMajorGCCycles("Long-lived roots survive multiple major GC cycles", []() {
     rc::check([]() {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset();
+        auto& alloc = initAllocator();
 
         // Create long-lived objects (size-scaled: 3-10 at size 0, up to 3-110 at size 1000)
         size_t num_objects = *rc::sizedRange<size_t>(3, 10, 0.1);
@@ -476,24 +442,24 @@ Testing::TestCase testMultipleMajorGCCycles("Long-lived roots survive multiple m
 
         for (size_t i = 0; i < num_objects; i++) {
             i64 val = *rc::gen::arbitrary<i64>();
-            void* obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+            void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
             if (!obj) break;
 
             ElmInt* elm_int = static_cast<ElmInt*>(obj);
             elm_int->value = val;
             expected_values.push_back(val);
-            root_storage.push_back(GCTestAccess::toPointer(obj));
+            root_storage.push_back(AllocatorTestAccess::toPointer(obj));
         }
 
         RC_ASSERT(!root_storage.empty());
 
         for (auto& root : root_storage) {
-            gc.getRootSet().addRoot(&root);
+            alloc.getRootSet().addRoot(&root);
         }
 
         // Promote to old gen.
         for (u32 i = 0; i <= PROMOTION_AGE; i++) {
-            gc.minorGC();
+            alloc.minorGC();
         }
 
         // Run multiple major GC cycles (size-scaled: 3-7 at size 0, up to 3-17 at size 1000).
@@ -502,7 +468,7 @@ Testing::TestCase testMultipleMajorGCCycles("Long-lived roots survive multiple m
         for (size_t cycle = 0; cycle < num_cycles; cycle++) {
             // Allocate some garbage between cycles.
             for (int j = 0; j < 50; j++) {
-                void* garbage = gc.allocate(sizeof(ElmInt), Tag_Int);
+                void* garbage = alloc.allocate(sizeof(ElmInt), Tag_Int);
                 if (garbage) {
                     static_cast<ElmInt*>(garbage)->value = j;
                 }
@@ -510,11 +476,11 @@ Testing::TestCase testMultipleMajorGCCycles("Long-lived roots survive multiple m
 
             // Promote garbage to old gen.
             for (u32 i = 0; i <= PROMOTION_AGE; i++) {
-                gc.minorGC();
+                alloc.minorGC();
             }
 
             // Major GC.
-            gc.majorGC();
+            alloc.majorGC();
 
             // Verify values after each cycle.
             for (size_t i = 0; i < root_storage.size(); i++) {
@@ -527,7 +493,7 @@ Testing::TestCase testMultipleMajorGCCycles("Long-lived roots survive multiple m
         }
 
         for (auto& root : root_storage) {
-            gc.getRootSet().removeRoot(&root);
+            alloc.getRootSet().removeRoot(&root);
         }
     });
 });
@@ -535,14 +501,10 @@ Testing::TestCase testMultipleMajorGCCycles("Long-lived roots survive multiple m
 Testing::TestCase testStressTestBothGenerations("High allocation rate with both minor and major GCs", []() {
     rc::check([]() {
         // Use smaller heap for faster test.
-        GCConfig config;
-        config.nursery_size = 64 * 1024;        // 64KB (32KB per semi-space)
-        config.tlab_default_size = 8 * 1024;    // 8KB TLABs
-        config.tlab_min_size = 4 * 1024;        // 4KB min TLAB
+        HeapConfig config;
+        config.nursery_size = 64 * 1024;  // 64KB (32KB per semi-space)
 
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-        gc.reset(&config);
+        auto& alloc = initAllocator(config);
 
         // Create some persistent roots (size-scaled: 2-5 at size 0, up to 2-105 at size 1000)
         size_t num_persistent = *rc::sizedRange<size_t>(2, 5, 0.1);
@@ -551,19 +513,19 @@ Testing::TestCase testStressTestBothGenerations("High allocation rate with both 
 
         for (size_t i = 0; i < num_persistent; i++) {
             i64 val = *rc::gen::inRange<i64>(0, 1000000);
-            void* obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+            void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
             if (!obj) break;
 
             ElmInt* elm_int = static_cast<ElmInt*>(obj);
             elm_int->value = val;
             expected_values.push_back(val);
-            root_storage.push_back(GCTestAccess::toPointer(obj));
+            root_storage.push_back(AllocatorTestAccess::toPointer(obj));
         }
 
         RC_ASSERT(!root_storage.empty());
 
         for (auto& root : root_storage) {
-            gc.getRootSet().addRoot(&root);
+            alloc.getRootSet().addRoot(&root);
         }
 
         // Stress test: lots of allocation forcing many GCs.
@@ -573,20 +535,20 @@ Testing::TestCase testStressTestBothGenerations("High allocation rate with both 
         size_t major_gc_interval = *rc::sizedRange<size_t>(100, 300, 0.2);
 
         for (size_t i = 0; i < total_allocations; i++) {
-            void* obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+            void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
             if (obj) {
                 static_cast<ElmInt*>(obj)->value = static_cast<i64>(i);
             }
 
             // Periodically trigger major GC.
             if (i > 0 && i % major_gc_interval == 0) {
-                gc.majorGC();
+                alloc.majorGC();
             }
         }
 
         // Final GC cycle.
-        gc.minorGC();
-        gc.majorGC();
+        alloc.minorGC();
+        alloc.majorGC();
 
         // Verify persistent roots survived.
         for (size_t i = 0; i < root_storage.size(); i++) {
@@ -601,7 +563,7 @@ Testing::TestCase testStressTestBothGenerations("High allocation rate with both 
         }
 
         for (auto& root : root_storage) {
-            gc.getRootSet().removeRoot(&root);
+            alloc.getRootSet().removeRoot(&root);
         }
     });
 });

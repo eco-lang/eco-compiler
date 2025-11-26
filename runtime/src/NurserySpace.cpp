@@ -1,9 +1,9 @@
 /**
  * NurserySpace Implementation.
  *
- * Thread-local nursery using Cheney's semi-space copying algorithm.
+ * Nursery using Cheney's semi-space copying algorithm.
  *
- * Allocation: Bump pointer into from_space (O(1), no locking).
+ * Allocation: Bump pointer into from_space (O(1)).
  *
  * Minor GC algorithm:
  *   1. Evacuate roots to to_space (or promote to old gen if aged).
@@ -16,7 +16,7 @@
  */
 
 #include "NurserySpace.hpp"
-#include "GarbageCollector.hpp"
+#include "Allocator.hpp"
 #include <cassert>
 #include <cstring>
 
@@ -24,23 +24,15 @@ namespace Elm {
 
 NurserySpace::NurserySpace() :
     config_(nullptr), memory(nullptr), from_space(nullptr), to_space(nullptr), alloc_ptr(nullptr),
-    scan_ptr(nullptr), nursery_capacity_(0), promotion_tlab(nullptr) {
+    scan_ptr(nullptr), nursery_capacity_(0) {
     // Initialization happens in initialize() method.
 }
 
 NurserySpace::~NurserySpace() {
-    // Seal any active TLAB before destroying nursery.
-    if (promotion_tlab) {
-        GarbageCollector::instance().getOldGen().sealTLAB(promotion_tlab);
-#if ENABLE_GC_STATS
-        GC_STATS_TLAB_SEALED(stats);
-#endif
-        promotion_tlab = nullptr;
-    }
     // No need to free memory - it's part of the main heap.
 }
 
-void NurserySpace::initialize(char *nursery_base, size_t size, const GCConfig* config) {
+void NurserySpace::initialize(char *nursery_base, size_t size, const HeapConfig* config) {
     config_ = config;
     memory = nursery_base;
     nursery_capacity_ = size / 2;  // Each semi-space is half the total.
@@ -50,13 +42,7 @@ void NurserySpace::initialize(char *nursery_base, size_t size, const GCConfig* c
     scan_ptr = from_space;
 }
 
-void NurserySpace::reset(OldGenSpace &oldgen, const GCConfig* new_config) {
-    // Seal any active promotion TLAB.
-    if (promotion_tlab) {
-        oldgen.sealTLAB(promotion_tlab);
-        promotion_tlab = nullptr;
-    }
-
+void NurserySpace::reset(OldGenSpace &oldgen, const HeapConfig* new_config) {
     // Update config if provided.
     if (new_config) {
         config_ = new_config;
@@ -72,7 +58,7 @@ void NurserySpace::reset(OldGenSpace &oldgen, const GCConfig* new_config) {
     alloc_ptr = from_space;
     scan_ptr = from_space;
 
-    // Reset the thread-local root set.
+    // Reset the root set.
     root_set.reset();
 
     // Note: We do NOT reset GC stats here - stats accumulate across runs.
@@ -198,13 +184,13 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     if (ptr.constant != 0)
         return;  // It's a constant.
 
-    void *obj = GarbageCollector::fromPointerRaw(ptr);
+    void *obj = Allocator::fromPointerRaw(ptr);
     if (!obj)
         return;
 
     // Assert pointer is within valid heap memory.
-    char *heap_base = GarbageCollector::instance().getHeapBase();
-    char *heap_end = heap_base + GarbageCollector::instance().getHeapReserved();
+    char *heap_base = Allocator::instance().getHeapBase();
+    char *heap_end = heap_base + Allocator::instance().getHeapReserved();
     assert(static_cast<char*>(obj) >= heap_base && "Pointer below heap base!");
     assert(static_cast<char*>(obj) < heap_end && "Pointer above heap end!");
 
@@ -219,7 +205,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         // Follow forward pointer and update ptr.
         Forward *fwd = static_cast<Forward *>(obj);
         uintptr_t byte_offset = static_cast<uintptr_t>(fwd->header.forward_ptr) << 3;
-        ptr = GarbageCollector::toPointerRaw(heap_base + byte_offset);
+        ptr = Allocator::toPointerRaw(heap_base + byte_offset);
         return;
     }
 
@@ -238,51 +224,23 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
 
     // Promote to old gen if age >= config_->promotion_age.
     if (hdr->age >= config_->promotion_age) {
-        // Try TLAB allocation first (fast path, no lock).
-        if (promotion_tlab && size <= config_->tlab_default_size) {
-            new_obj = promotion_tlab->allocate(size);
+        // Direct allocation to old gen (simplified - no TLAB buffering).
+        new_obj = oldgen.allocate(size);
+        assert(new_obj && "Failed to allocate in old gen during promotion");
+
+        std::memcpy(new_obj, obj, size);
+
+        // Reset age for promoted object.
+        Header *new_hdr = getHeader(new_obj);
+        new_hdr->age = 0;
+        promoted = true;
+
+        // Add to promoted objects buffer for later scanning.
+        if (promoted_objects) {
+            promoted_objects->push_back(new_obj);
         }
 
-        // TLAB exhausted or doesn't exist.
-        if (!new_obj) {
-            // Check if current TLAB is exhausted.
-            if (promotion_tlab && promotion_tlab->bytesRemaining() < size) {
-                // Seal exhausted TLAB.
-                oldgen.sealTLAB(promotion_tlab);
-                GC_STATS_TLAB_SEALED(stats);
-                promotion_tlab = nullptr;
-            }
-
-            // Try to get a new TLAB (lock-free CAS).
-            if (!promotion_tlab && size <= config_->tlab_default_size) {
-                promotion_tlab = oldgen.allocateTLAB(config_->tlab_default_size);
-                if (promotion_tlab) {
-                    GC_STATS_TLAB_ALLOCATED(stats);
-                    new_obj = promotion_tlab->allocate(size);
-                }
-            }
-        }
-
-        if (new_obj) {
-            // Save color from TLAB allocation before memcpy overwrites it.
-            Header *new_hdr = getHeader(new_obj);
-            u32 saved_color = new_hdr->color;
-
-            std::memcpy(new_obj, obj, size);
-
-            // Restore old-gen color and reset age.
-            new_hdr = getHeader(new_obj);
-            new_hdr->color = saved_color;
-            new_hdr->age = 0;
-            promoted = true;
-
-            // Add to promoted objects buffer for later scanning.
-            if (promoted_objects) {
-                promoted_objects->push_back(new_obj);
-            }
-
-            GC_STATS_MINOR_INC_PROMOTED(stats);
-        }
+        GC_STATS_MINOR_INC_PROMOTED(stats);
     }
 
     // Copy to to_space if not promoted.
@@ -312,7 +270,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     fwd->header.forward_ptr = byte_offset >> 3;  // Store as offset in 8-byte units.
     fwd->header.unused = 0;
 
-    ptr = GarbageCollector::toPointerRaw(new_obj);
+    ptr = Allocator::toPointerRaw(new_obj);
 }
 
 void NurserySpace::evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {

@@ -6,64 +6,64 @@ namespace Elm {
 namespace TestHelpers {
 
 // ============================================================================
-// 1. GC Initialization
+// 1. Allocator Initialization
 // ============================================================================
 
-GarbageCollector& initGC(const GCConfig& config) {
-    auto& gc = GarbageCollector::instance();
-    gc.initThread();
-    gc.reset(&config);
-    return gc;
+Allocator& initAllocator(const HeapConfig& config) {
+    auto& alloc = Allocator::instance();
+    alloc.initThread();
+    alloc.reset(&config);
+    return alloc;
 }
 
 // ============================================================================
 // 2. Create and Root Multiple ElmInts
 // ============================================================================
 
-void RootedInts::registerRoots(GarbageCollector& gc) {
+void RootedInts::registerRoots(Allocator& alloc) {
     for (auto& root : roots) {
-        gc.getRootSet().addRoot(&root);
+        alloc.getRootSet().addRoot(&root);
     }
 }
 
-void RootedInts::unregisterRoots(GarbageCollector& gc) {
+void RootedInts::unregisterRoots(Allocator& alloc) {
     for (auto& root : roots) {
-        gc.getRootSet().removeRoot(&root);
+        alloc.getRootSet().removeRoot(&root);
     }
 }
 
-RootedInts createRootedInts(GarbageCollector& gc, size_t count) {
+RootedInts createRootedInts(Allocator& alloc, size_t count) {
     RootedInts result;
     result.values.reserve(count);
     result.roots.reserve(count);
 
     for (size_t i = 0; i < count; i++) {
         i64 val = *rc::gen::arbitrary<i64>();
-        void* obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+        void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
         if (!obj) break;
 
         ElmInt* elm_int = static_cast<ElmInt*>(obj);
         elm_int->value = val;
         result.values.push_back(val);
-        result.roots.push_back(GCTestAccess::toPointer(obj));
+        result.roots.push_back(AllocatorTestAccess::toPointer(obj));
     }
 
     return result;
 }
 
-RootedInts createRootedIntsWithValues(GarbageCollector& gc, const std::vector<i64>& values) {
+RootedInts createRootedIntsWithValues(Allocator& alloc, const std::vector<i64>& values) {
     RootedInts result;
     result.values.reserve(values.size());
     result.roots.reserve(values.size());
 
     for (i64 val : values) {
-        void* obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+        void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
         if (!obj) break;
 
         ElmInt* elm_int = static_cast<ElmInt*>(obj);
         elm_int->value = val;
         result.values.push_back(val);
-        result.roots.push_back(GCTestAccess::toPointer(obj));
+        result.roots.push_back(AllocatorTestAccess::toPointer(obj));
     }
 
     return result;
@@ -73,9 +73,9 @@ RootedInts createRootedIntsWithValues(GarbageCollector& gc, const std::vector<i6
 // 3. Unregister Roots
 // ============================================================================
 
-void unregisterRoots(GarbageCollector& gc, std::vector<HPointer>& roots) {
+void unregisterRoots(Allocator& alloc, std::vector<HPointer>& roots) {
     for (auto& root : roots) {
-        gc.getRootSet().removeRoot(&root);
+        alloc.getRootSet().removeRoot(&root);
     }
 }
 
@@ -83,9 +83,9 @@ void unregisterRoots(GarbageCollector& gc, std::vector<HPointer>& roots) {
 // 4. Promote Objects to Old Gen
 // ============================================================================
 
-void promoteToOldGen(GarbageCollector& gc) {
+void promoteToOldGen(Allocator& alloc) {
     for (u32 i = 0; i <= PROMOTION_AGE; i++) {
-        gc.minorGC();
+        alloc.minorGC();
     }
 }
 
@@ -123,122 +123,89 @@ HPointer createConstant(Constant c) {
 }
 
 // ============================================================================
-// 7. Allocate ElmInt into TLAB
+// 7. Run Mark-and-Sweep (Stats-Aware)
 // ============================================================================
 
-void* allocateIntIntoTLAB(TLAB* tlab, i64 value) {
-    void* obj = tlab->allocate(sizeof(ElmInt));
-    if (!obj) return nullptr;
-
-    Header* hdr = reinterpret_cast<Header*>(obj);
-    std::memset(hdr, 0, sizeof(Header));
-    hdr->tag = Tag_Int;
-    hdr->color = static_cast<u32>(Color::White);
-
-    ElmInt* elm_int = static_cast<ElmInt*>(obj);
-    elm_int->value = value;
-
-    return obj;
-}
-
-// ============================================================================
-// 8. Run Mark-and-Sweep (Stats-Aware)
-// ============================================================================
-
-void runMarkAndSweep(GarbageCollector& gc) {
-    auto& oldgen = gc.getOldGen();
-    auto& rootset = gc.getRootSet();
+void runMarkAndSweep(Allocator& alloc) {
+    auto& oldgen = alloc.getOldGen();
+    auto& rootset = alloc.getRootSet();
 
 #if ENABLE_GC_STATS
-    GCStats& stats = gc.getMajorGCStats();
-    oldgen.startConcurrentMark(rootset.getRoots(), GarbageCollector::instance(), stats);
+    GCStats& stats = alloc.getMajorGCStats();
+    oldgen.startMark(rootset.getRoots(), Allocator::instance(), stats);
     oldgen.finishMarkAndSweep(stats);
 #else
-    oldgen.startConcurrentMark(rootset.getRoots(), GarbageCollector::instance());
+    oldgen.startMark(rootset.getRoots(), Allocator::instance());
     oldgen.finishMarkAndSweep();
 #endif
 }
 
 // ============================================================================
-// 9. Run Compaction Sequence
-// ============================================================================
-
-void runCompaction(OldGenSpace& oldgen, bool reclaimBlocks) {
-    oldgen.selectCompactionSet();
-    oldgen.setCompactionInProgress(true);
-    oldgen.performCompaction();
-    if (reclaimBlocks) {
-        oldgen.reclaimEvacuatedBlocks();
-    }
-    oldgen.setCompactionInProgress(false);
-}
-
-// ============================================================================
-// 10. Setup Roots from HeapGraphDesc
+// 8. Setup Roots from HeapGraphDesc
 // ============================================================================
 
 GraphRoots::~GraphRoots() {
-    if (gc) {
+    if (alloc) {
         for (auto& root : storage) {
-            gc->getRootSet().removeRoot(&root);
+            alloc->getRootSet().removeRoot(&root);
         }
     }
 }
 
 GraphRoots::GraphRoots(GraphRoots&& other) noexcept
-    : gc(other.gc), storage(std::move(other.storage)), ptrs(std::move(other.ptrs)) {
-    other.gc = nullptr;
+    : alloc(other.alloc), storage(std::move(other.storage)), ptrs(std::move(other.ptrs)) {
+    other.alloc = nullptr;
 }
 
 GraphRoots& GraphRoots::operator=(GraphRoots&& other) noexcept {
     if (this != &other) {
         // Clean up existing
-        if (gc) {
+        if (alloc) {
             for (auto& root : storage) {
-                gc->getRootSet().removeRoot(&root);
+                alloc->getRootSet().removeRoot(&root);
             }
         }
         // Move from other
-        gc = other.gc;
+        alloc = other.alloc;
         storage = std::move(other.storage);
         ptrs = std::move(other.ptrs);
-        other.gc = nullptr;
+        other.alloc = nullptr;
     }
     return *this;
 }
 
-GraphRoots setupRootsFromGraph(GarbageCollector& gc,
+GraphRoots setupRootsFromGraph(Allocator& alloc,
                                 const HeapGraphDesc& graph,
                                 const std::vector<void*>& allocated_objects) {
     GraphRoots result;
-    result.gc = &gc;
+    result.alloc = &alloc;
 
     for (size_t idx : graph.root_indices) {
         if (idx < allocated_objects.size()) {
-            result.storage.push_back(GCTestAccess::toPointer(allocated_objects[idx]));
+            result.storage.push_back(AllocatorTestAccess::toPointer(allocated_objects[idx]));
         }
     }
 
     // If no valid roots from graph, use first object as root
     if (result.storage.empty() && !allocated_objects.empty()) {
-        result.storage.push_back(GCTestAccess::toPointer(allocated_objects[0]));
+        result.storage.push_back(AllocatorTestAccess::toPointer(allocated_objects[0]));
     }
 
     for (auto& root : result.storage) {
         result.ptrs.push_back(&root);
-        gc.getRootSet().addRoot(&root);
+        alloc.getRootSet().addRoot(&root);
     }
 
     return result;
 }
 
 // ============================================================================
-// 11. Allocate Garbage Ints
+// 9. Allocate Garbage Ints
 // ============================================================================
 
-void allocateGarbageInts(GarbageCollector& gc, size_t count) {
+void allocateGarbageInts(Allocator& alloc, size_t count) {
     for (size_t j = 0; j < count; j++) {
-        void* garbage = gc.allocate(sizeof(ElmInt), Tag_Int);
+        void* garbage = alloc.allocate(sizeof(ElmInt), Tag_Int);
         if (garbage) {
             static_cast<ElmInt*>(garbage)->value = static_cast<i64>(j);
         }
@@ -246,20 +213,10 @@ void allocateGarbageInts(GarbageCollector& gc, size_t count) {
 }
 
 // ============================================================================
-// 12. Allocate TLAB with Assertion
+// 10. Build Linked List
 // ============================================================================
 
-TLAB* allocateTLABOrFail(OldGenSpace& oldgen, size_t size) {
-    TLAB* tlab = oldgen.allocateTLAB(size);
-    if (!tlab) RC_FAIL("Failed to allocate TLAB");
-    return tlab;
-}
-
-// ============================================================================
-// 13. Build Linked List
-// ============================================================================
-
-LinkedList buildLinkedList(GarbageCollector& gc, size_t length) {
+LinkedList buildLinkedList(Allocator& alloc, size_t length) {
     LinkedList result;
     result.head = createNil();
 
@@ -268,43 +225,19 @@ LinkedList buildLinkedList(GarbageCollector& gc, size_t length) {
         result.values.push_back(val);
 
         // Allocate Int
-        void* int_obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+        void* int_obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
         if (!int_obj) RC_FAIL("Failed to allocate int");
         static_cast<ElmInt*>(int_obj)->value = val;
 
         // Allocate Cons
-        void* cons_obj = gc.allocate(sizeof(Cons), Tag_Cons);
+        void* cons_obj = alloc.allocate(sizeof(Cons), Tag_Cons);
         if (!cons_obj) RC_FAIL("Failed to allocate cons");
 
         Cons* cons = static_cast<Cons*>(cons_obj);
-        cons->head.p = GCTestAccess::toPointer(int_obj);
+        cons->head.p = AllocatorTestAccess::toPointer(int_obj);
         cons->tail = result.head;
 
-        result.head = GCTestAccess::toPointer(cons_obj);
-    }
-
-    // Reverse values so they match traversal order
-    std::reverse(result.values.begin(), result.values.end());
-
-    return result;
-}
-
-LinkedList buildLinkedListInTLAB(TLAB* tlab, size_t length) {
-    LinkedList result;
-    result.head = createNil();
-
-    for (size_t i = 0; i < length; i++) {
-        i64 val = *rc::gen::arbitrary<i64>();
-        result.values.push_back(val);
-
-        void* int_obj = allocateIntIntoTLAB(tlab, val);
-        if (!int_obj) RC_FAIL("Failed to allocate int into TLAB");
-
-        HPointer head_ptr = GCTestAccess::toPointer(int_obj);
-        void* cons_obj = allocateConsIntoTLAB(tlab, head_ptr, result.head, true);
-        if (!cons_obj) RC_FAIL("Failed to allocate cons into TLAB");
-
-        result.head = GCTestAccess::toPointer(cons_obj);
+        result.head = AllocatorTestAccess::toPointer(cons_obj);
     }
 
     // Reverse values so they match traversal order
@@ -314,7 +247,7 @@ LinkedList buildLinkedListInTLAB(TLAB* tlab, size_t length) {
 }
 
 // ============================================================================
-// 14. Verify Linked List
+// 11. Verify Linked List
 // ============================================================================
 
 void verifyLinkedList(HPointer head, const std::vector<i64>& expected) {
@@ -346,7 +279,7 @@ void verifyLinkedList(HPointer head, const std::vector<i64>& expected) {
 }
 
 // ============================================================================
-// 15. Assert Object is Int with Value
+// 12. Assert Object is Int with Value
 // ============================================================================
 
 void assertObjectIsInt(void* obj, i64 expected) {
@@ -367,23 +300,6 @@ void assertObjectIsInt(HPointer ptr, i64 expected) {
 // ============================================================================
 // Additional Utilities
 // ============================================================================
-
-void* allocateConsIntoTLAB(TLAB* tlab, HPointer head_ptr, HPointer tail_ptr, bool head_boxed) {
-    void* obj = tlab->allocate(sizeof(Cons));
-    if (!obj) return nullptr;
-
-    Header* hdr = reinterpret_cast<Header*>(obj);
-    std::memset(hdr, 0, sizeof(Header));
-    hdr->tag = Tag_Cons;
-    hdr->color = static_cast<u32>(Color::White);
-    hdr->unboxed = head_boxed ? 0 : 1;  // bit 0 = head unboxed flag
-
-    Cons* cons = static_cast<Cons*>(obj);
-    cons->head.p = head_ptr;
-    cons->tail = tail_ptr;
-
-    return obj;
-}
 
 void* allocateIntInOldGen(OldGenSpace& oldgen, i64 value) {
     void* obj = oldgen.allocate(sizeof(ElmInt));
