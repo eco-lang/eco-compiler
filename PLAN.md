@@ -8,14 +8,14 @@
   - [x] 1.1 Custom Heap Model → [§1.1](#11-custom-heap-model)
   - [ ] 1.2 Garbage Collector → [§1.2](#12-garbage-collector)
     - [ ] 1.2.1 Concurrent Mark-and-Sweep → [§1.2.1](#121-concurrent-mark-and-sweep)
-    - [ ] 1.2.2 LLVM Stack Map Integration → [§1.2.2](#122-llvm-stack-map-integration)
+    - [x] 1.2.2 LLVM Stack Map Integration → [§1.2.2](#122-llvm-stack-map-integration) *(research complete)*
     - [ ] 1.2.3 Lock-Free Optimization → [§1.2.3](#123-lock-free-optimization)
   - [ ] 1.3 Process & Thread Model → [§1.3](#13-process--thread-model)
   - [ ] 1.4 Runtime Testing Infrastructure → [§1.4](#14-runtime-testing-infrastructure)
 
 - [ ] **2. Standard Library Porting** → [§2](#2-standard-library-porting)
   - [ ] 2.1 Guida Runtime to Kernel Packages → [§2.1](#21-guida-runtime-to-kernel-packages)
-    - [ ] 2.1.1 Audit Guida I/O Implementation → [§2.1.1](#211-audit-guida-io-implementation)
+    - [ ] 2.1.1 Audit Guida I/O Implementation → [§2.1.1](#211-audit-guida-io-implementation) *(audit complete, rationalization pending)*
     - [ ] 2.1.2 File System Operations Design → [§2.1.2](#212-file-system-operations-design)
     - [ ] 2.1.3 Network Operations Design → [§2.1.3](#213-network-operations-design)
     - [ ] 2.1.4 System Operations Design → [§2.1.4](#214-system-operations-design)
@@ -25,7 +25,7 @@
 
 - [ ] **3. MLIR/LLVM Integration** → [§3](#3-mlirllvm-integration)
   - [ ] 3.1 ECO MLIR Dialect → [§3.1](#31-eco-mlir-dialect)
-    - [ ] 3.1.1 Research & Reference Implementation → [§3.1.1](#311-research--reference-implementation)
+    - [x] 3.1.1 Research & Reference Implementation → [§3.1.1](#311-research--reference-implementation)
     - [ ] 3.1.2 Dialect Definition → [§3.1.2](#312-dialect-definition)
     - [ ] 3.1.3 Operations → [§3.1.3](#313-operations)
     - [ ] 3.1.4 Type System → [§3.1.4](#314-type-system)
@@ -153,21 +153,21 @@ Ensure highly concurrent operation of the garbage collector thread alongside mul
 
 #### 1.2.2 LLVM Stack Map Integration
 
-**Status**: Not Started
+**Status**: Research Complete
 
 Integrate with LLVM's stack map facilities for precise stack root tracing.
 
 **Tasks**:
-- Research LLVM stack map and statepoint APIs
-- Build a small example program in LLVM using recursion to create stack frames with heap pointers
-- Integrate stack map parsing into the runtime's root scanning
-- Stress test to verify stack roots are preserved correctly across major GC cycles
-- Document the integration approach
+- [x] Research LLVM stack map and statepoint APIs *(see design_docs/llvm_stackmap_integration.md)*
+- [ ] Build a small example program in LLVM using recursion to create stack frames with heap pointers
+- [ ] Integrate stack map parsing into the runtime's root scanning
+- [ ] Stress test to verify stack roots are preserved correctly across major GC cycles
+- [x] Document the integration approach *(see design_docs/llvm_stackmap_integration.md)*
 
 **Deliverables**:
-- LLVM stack map example/prototype
-- Runtime stack map parser
-- Integration tests for stack root preservation
+- [ ] LLVM stack map example/prototype
+- [ ] Runtime stack map parser
+- [ ] Integration tests for stack root preservation
 
 #### 1.2.3 Lock-Free Optimization
 
@@ -248,19 +248,19 @@ The Guida compiler currently uses a small runtime library with HTTP URL hacks fo
 
 #### 2.1.1 Audit Guida I/O Implementation
 
-**Status**: Not Started
+**Status**: In Progress (audit complete, rationalization pending)
 
 Check out and build the Guida compiler. Catalog all operations in its native I/O implementation.
 
 **Tasks**:
-- Clone and build Guida compiler
-- Document all native I/O operations currently implemented
-- Rationalize the design to form a well-designed I/O package suitable for any CLI tool written in Elm, not just Guida
-- Identify any missing operations needed for general-purpose CLI development
+- [x] Clone and build Guida compiler *(see design_docs/guida_build_notes.md)*
+- [x] Document all native I/O operations currently implemented *(see design_docs/guida-io-operations.md)*
+- [ ] Rationalize the design to form a well-designed I/O package suitable for any CLI tool written in Elm, not just Guida
+- [x] Identify any missing operations needed for general-purpose CLI development *(gaps documented in guida-io-operations.md)*
 
 **Deliverables**:
-- Comprehensive list of current I/O operations
-- Rationalized I/O design document
+- [x] Comprehensive list of current I/O operations *(design_docs/guida-io-ops.csv - 37 operations)*
+- [ ] Rationalized I/O design document
 
 #### 2.1.2 File System Operations Design
 
@@ -396,20 +396,20 @@ Design and implement a custom MLIR dialect called "eco" for Elm compilation.
 
 #### 3.1.1 Research & Reference Implementation
 
-**Status**: Not Started
+**Status**: Complete
 
 Study existing MLIR implementations for functional languages as reference.
 
 **Tasks**:
-- Check out and build the Lean MLIR branch as a working example of compiling a functional language through MLIR
-- Study Lean's dialect design, lowering passes, and runtime integration
-- Find and review academic papers on MLIR dialects for reference counting and garbage reduction
-- Document relevant patterns and techniques applicable to ECO
+- [x] Check out and build the Lean MLIR branch as a working example of compiling a functional language through MLIR *(lean/ and lz/ cloned)*
+- [x] Study Lean's dialect design, lowering passes, and runtime integration *(see design_docs/lean_mlir_research.md)*
+- [ ] Find and review academic papers on MLIR dialects for reference counting and garbage reduction
+- [x] Document relevant patterns and techniques applicable to ECO *(see design_docs/lean_mlir_research.md)*
 
 **Deliverables**:
-- Working Lean MLIR build for reference
-- Summary of relevant papers and techniques
-- Design notes for ECO dialect based on findings
+- [x] Working Lean MLIR build for reference *(lz/ - hask-opt tool)*
+- [ ] Summary of relevant papers and techniques
+- [x] Design notes for ECO dialect based on findings *(design_docs/lean_mlir_research.md - 1400+ lines)*
 
 #### 3.1.2 Dialect Definition
 
@@ -772,25 +772,25 @@ Design and implement user-facing CLI for the `eco` compiler.
 
 #### 5.1.3 Build System & Packaging
 
-**Status**: Not Started
+**Status**: In Progress
 
 Create robust build system and distribution packages.
 
 **Tasks**:
-- Evaluate whether CMake is the right tool (needs to invoke Elm compiler and tools outside normal C/C++ toolchain)
-- Consider alternatives or CMake extensions for non-C/C++ tool invocation
-- Create Dockerfile encapsulating all build dependencies
-- Build on Arch Linux with statically linked libc (musl) for cross-platform Linux distribution
-- Create Debian package (.deb)
-- Create npm package for Node.js distribution
-- Document build process and dependencies
+- [ ] Evaluate whether CMake is the right tool (needs to invoke Elm compiler and tools outside normal C/C++ toolchain)
+- [ ] Consider alternatives or CMake extensions for non-C/C++ tool invocation
+- [x] Create Dockerfile encapsulating all build dependencies *(Dockerfile based on Debian Bookworm)*
+- [ ] Build on Arch Linux with statically linked libc (musl) for cross-platform Linux distribution
+- [ ] Create Debian package (.deb)
+- [ ] Create npm package for Node.js distribution
+- [ ] Document build process and dependencies
 
 **Deliverables**:
-- Dockerfile for reproducible builds
-- Static Linux binary (musl-linked)
-- Debian package
-- npm package
-- Build system documentation
+- [x] Dockerfile for reproducible builds *(Dockerfile, .dockerignore)*
+- [ ] Static Linux binary (musl-linked)
+- [ ] Debian package
+- [ ] npm package
+- [ ] Build system documentation
 
 #### 5.1.4 Linker Integration & Runtime Libraries
 
@@ -1080,13 +1080,17 @@ Runtime Foundation (§1)
 
 ## Project Status
 
-**Current Phase**: Runtime Foundation (§1)
-**Last Updated**: 2025-11-24
+**Current Phase**: Runtime Foundation (§1) + Research
+**Last Updated**: 2025-11-26
 
 **Completed**:
 - Initial heap model design
 - Two-generation garbage collector implementation
 - Property-based testing infrastructure
+- Dockerfile for reproducible builds (§5.1.3)
+- LLVM stack map API research (§1.2.2) - see design_docs/llvm_stackmap_integration.md
+- Lean/lz MLIR dialect research (§3.1.1) - see design_docs/lean_mlir_research.md
+- Guida I/O audit (§2.1.1) - see design_docs/guida-io-operations.md and guida-io-ops.csv
 
 **In Progress**:
 - GC refinement and tuning
@@ -1094,5 +1098,5 @@ Runtime Foundation (§1)
 
 **Next Steps**:
 - Process & thread model design (§1.3)
-- Begin MLIR dialect design (§3.1)
-- Audit Guida runtime for kernel package conversion (§2.1)
+- Begin ECO MLIR dialect definition (§3.1.2)
+- Design file system operations API (§2.1.2)
