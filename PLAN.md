@@ -134,22 +134,24 @@ Implement a generational garbage collector as an intermediate solution to de-ris
 - `gc_stats.hpp`: Telemetry and diagnostics
 - Property-based test suite
 
-#### 1.2.1 Concurrent Mark-and-Sweep
+#### 1.2.1 Old Generation Algorithm
 
 **Status**: Not Started
 
-Ensure highly concurrent operation of the garbage collector thread alongside multiple program (mutator) threads with full thread safety.
+Choose and implement an appropriate algorithm for old generation garbage collection.
+
+**Background**: The current implementation has a mark-and-sweep algorithm, but the choice of algorithm and its implementation details need to be finalized. A simple stop-the-world mark-and-sweep may be sufficient for initial implementation, with concurrent collection deferred to advanced GC work (see §7.4).
 
 **Tasks**:
-- Make mark-and-sweep algorithm run concurrently with program threads without race conditions
-- Implement safe root set snapshotting: stop all mutator threads briefly to capture initial marking snapshot, then allow them to resume
-- Minimize stop-the-world overhead during snapshot phase
-- Expand stress test coverage to exercise all heap object types under concurrent GC
-- Verify correctness under heavy multi-threaded allocation patterns
+- Evaluate algorithm options (simple mark-and-sweep vs mark-compact vs other)
+- Implement chosen algorithm with stop-the-world collection
+- Ensure thread safety during collection phase
+- Expand stress test coverage to exercise all heap object types under GC
+- Verify correctness under multi-threaded allocation patterns
 
 **Deliverables**:
-- Concurrent mark-and-sweep implementation
-- Root set snapshot mechanism with minimal pause times
+- Finalized old generation GC algorithm
+- Thread-safe implementation
 - Stress tests covering all object types
 
 #### 1.2.2 LLVM Stack Map Integration
