@@ -6,7 +6,7 @@ add_executable(ecor
         runtime/src/RootSet.cpp
         runtime/src/OldGenSpace.cpp
         runtime/src/NurserySpace.cpp
-        runtime/src/GarbageCollector.cpp
+        runtime/src/Allocator.cpp
         runtime/src/GCStats.cpp
         test/HeapGenerators.hpp
 )

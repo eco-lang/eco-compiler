@@ -34,7 +34,7 @@
 #include <thread>
 #include <vector>
 
-#include "GarbageCollector.hpp"
+#include "Allocator.hpp"
 #include "GCStats.hpp"
 #include "Heap.hpp"
 #include "OldGenSpace.hpp"
@@ -207,22 +207,22 @@ static HPointer createNil() {
 
 // Allocates an ElmInt on the heap with the given value.
 // Throws AllocationError if allocation fails.
-static HPointer allocateInt(GarbageCollector& gc, i64 value) {
-    void* obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+static HPointer allocateInt(Allocator& alloc, i64 value) {
+    void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
     if (!obj) {
         throw AllocationError("Failed to allocate ElmInt");
     }
 
     ElmInt* elm_int = static_cast<ElmInt*>(obj);
     elm_int->value = value;
-    return gc.wrap(obj);
+    return alloc.wrap(obj);
 }
 
 // Allocates a Cons cell with an unboxed integer as its head.
 // The integer value is stored directly in the cell rather than as a pointer.
 // Throws AllocationError if allocation fails.
-static HPointer allocateConsInt(GarbageCollector& gc, i64 value, HPointer tail) {
-    void* obj = gc.allocate(sizeof(Cons), Tag_Cons);
+static HPointer allocateConsInt(Allocator& alloc, i64 value, HPointer tail) {
+    void* obj = alloc.allocate(sizeof(Cons), Tag_Cons);
     if (!obj) {
         throw AllocationError("Failed to allocate Cons cell");
     }
@@ -231,25 +231,25 @@ static HPointer allocateConsInt(GarbageCollector& gc, i64 value, HPointer tail) 
     cons->header.unboxed = 1;  // Mark head as unboxed integer.
     cons->head.i = value;
     cons->tail = tail;
-    return gc.wrap(obj);
+    return alloc.wrap(obj);
 }
 
 // Creates a linked list of integers [0, 1, 2, ..., size-1].
 // Builds the list in reverse order since cons prepends to the front.
-static HPointer createIntList(GarbageCollector& gc, size_t size) {
+static HPointer createIntList(Allocator& alloc, size_t size) {
     HPointer list = createNil();
 
     // Register list as stack root so GC can update it during allocations.
-    size_t root_point = gc.getRootSet().stackRootPoint();
-    gc.getRootSet().pushStackRoot(&list);
+    size_t root_point = alloc.getRootSet().stackRootPoint();
+    alloc.getRootSet().pushStackRoot(&list);
 
     for (size_t i = size; i > 0; i--) {
-        HPointer new_cons = allocateConsInt(gc, static_cast<i64>(i - 1), list);
-        gc.getRootSet().replaceHead(new_cons);
+        HPointer new_cons = allocateConsInt(alloc, static_cast<i64>(i - 1), list);
+        alloc.getRootSet().replaceHead(new_cons);
         list = new_cons;
     }
 
-    gc.getRootSet().restoreStackRootPoint(root_point);
+    alloc.getRootSet().restoreStackRootPoint(root_point);
     return list;
 }
 
@@ -259,17 +259,17 @@ static HPointer createIntList(GarbageCollector& gc, size_t size) {
 // Implementation note: The input list is already rooted through the model record.
 // We only need to track acc as a stack root since it grows during allocation.
 // Throws CorruptHeapError if list contains null pointer, AllocationError on OOM.
-static HPointer reverseList(GarbageCollector& gc, HPointer list) {
+static HPointer reverseList(Allocator& alloc, HPointer list) {
     HPointer acc = createNil();
 
     // Track acc as a stack root - it will be updated via replaceHead as we build.
-    size_t root_point = gc.getRootSet().stackRootPoint();
-    gc.getRootSet().pushStackRoot(&acc);
+    size_t root_point = alloc.getRootSet().stackRootPoint();
+    alloc.getRootSet().pushStackRoot(&acc);
 
     while (list.constant != Const_Nil) {
-        void* obj = gc.resolve(list);
+        void* obj = alloc.resolve(list);
         if (!obj) {
-            gc.getRootSet().restoreStackRootPoint(root_point);
+            alloc.getRootSet().restoreStackRootPoint(root_point);
             throw CorruptHeapError("Null pointer encountered during list reversal");
         }
 
@@ -284,9 +284,9 @@ static HPointer reverseList(GarbageCollector& gc, HPointer list) {
         list = cons->tail;
 
         // Allocate new cons cell with head prepended to accumulator.
-        void* new_obj = gc.allocate(sizeof(Cons), Tag_Cons);
+        void* new_obj = alloc.allocate(sizeof(Cons), Tag_Cons);
         if (!new_obj) {
-            gc.getRootSet().restoreStackRootPoint(root_point);
+            alloc.getRootSet().restoreStackRootPoint(root_point);
             throw AllocationError("Failed to allocate Cons during list reversal");
         }
 
@@ -296,11 +296,11 @@ static HPointer reverseList(GarbageCollector& gc, HPointer list) {
         new_cons->tail = acc;
 
         // Update acc via replaceHead to track the new cons cell.
-        gc.getRootSet().replaceHead(gc.wrap(new_obj));
-        acc = gc.wrap(new_obj);
+        alloc.getRootSet().replaceHead(alloc.wrap(new_obj));
+        acc = alloc.wrap(new_obj);
     }
 
-    gc.getRootSet().restoreStackRootPoint(root_point);
+    alloc.getRootSet().restoreStackRootPoint(root_point);
 
     return acc;
 }
@@ -308,9 +308,9 @@ static HPointer reverseList(GarbageCollector& gc, HPointer list) {
 // Allocates a Record with the given number of fields, all initialized to Nil.
 // Records are variable-size objects with a header followed by field values.
 // Throws AllocationError if allocation fails.
-static HPointer allocateRecord(GarbageCollector& gc, size_t num_fields) {
+static HPointer allocateRecord(Allocator& alloc, size_t num_fields) {
     size_t size = sizeof(Record) + num_fields * sizeof(Unboxable);
-    void* obj = gc.allocate(size, Tag_Record);
+    void* obj = alloc.allocate(size, Tag_Record);
     if (!obj) {
         throw AllocationError("Failed to allocate Record");
     }
@@ -323,7 +323,7 @@ static HPointer allocateRecord(GarbageCollector& gc, size_t num_fields) {
         record->values[i].p = createNil();
     }
 
-    return gc.wrap(obj);
+    return alloc.wrap(obj);
 }
 
 // Updates a root Record in place with one field changed (functional update).
@@ -333,9 +333,9 @@ static HPointer allocateRecord(GarbageCollector& gc, size_t num_fields) {
 // This implements Elm's record update syntax: { record | field = value }.
 // A new record is allocated with all fields copied except the updated one.
 // Throws CorruptHeapError if record_ptr is null, AllocationError on OOM.
-static void updateRootRecord(GarbageCollector& gc, HPointer& record_ptr,
+static void updateRootRecord(Allocator& alloc, HPointer& record_ptr,
                               size_t field_index, HPointer new_value) {
-    void* old_obj = gc.resolve(record_ptr);
+    void* old_obj = alloc.resolve(record_ptr);
     if (!old_obj) {
         throw CorruptHeapError("Record pointer is null in updateRootRecord");
     }
@@ -344,13 +344,13 @@ static void updateRootRecord(GarbageCollector& gc, HPointer& record_ptr,
     size_t num_fields = old_record->header.size;
 
     size_t size = sizeof(Record) + num_fields * sizeof(Unboxable);
-    void* new_obj = gc.allocate(size, Tag_Record);
+    void* new_obj = alloc.allocate(size, Tag_Record);
     if (!new_obj) {
         throw AllocationError("Failed to allocate Record in updateRootRecord");
     }
 
     // Re-derive old_record since GC may have relocated it during allocation.
-    old_obj = gc.resolve(record_ptr);
+    old_obj = alloc.resolve(record_ptr);
     old_record = static_cast<Record*>(old_obj);
 
     Record* new_record = static_cast<Record*>(new_obj);
@@ -367,62 +367,27 @@ static void updateRootRecord(GarbageCollector& gc, HPointer& record_ptr,
     }
 
     // Replace old record root with new record root.
-    gc.getRootSet().removeRoot(&record_ptr);
-    record_ptr = gc.wrap(new_obj);
-    gc.getRootSet().addRoot(&record_ptr);
+    alloc.getRootSet().removeRoot(&record_ptr);
+    record_ptr = alloc.wrap(new_obj);
+    alloc.getRootSet().addRoot(&record_ptr);
 }
 
 // ============================================================================
-// Collector Thread
+// Collector Thread (DISABLED - single-threaded mode)
 // ============================================================================
 
-// Background thread that runs major GC when requested by the program thread.
-// Waits on gc_condition for requests, with a 100ms timeout to check shutdown.
-static void collectorThreadFunc() {
-    try {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
+// NOTE: Multi-threaded collector is disabled. Major GC is called directly
+// from the program thread when needed.
 
-        std::cout << "[Collector] Started" << std::endl;
-
-        while (!shutdown_requested.load()) {
-            // Wait for GC request, shutdown signal, or 100ms timeout.
-            {
-                std::unique_lock<std::mutex> lock(gc_mutex);
-                gc_condition.wait_for(lock, std::chrono::milliseconds(100), []() {
-                    return gc_requested.load() || shutdown_requested.load();
-                });
-            }
-
-            if (shutdown_requested.load()) {
-                break;
-            }
-
-            if (gc_requested.load()) {
-                gc_requested.store(false);
-                std::cout << "MajorGC Started" << std::endl;
-                gc.majorGC();
-            }
-        }
-    } catch (const std::exception& e) {
-        std::cerr << "\n[Collector] FATAL ERROR: " << e.what() << "\n";
-        printStackTrace();
-        shutdown_requested.store(true);
-        gc_condition.notify_all();
-    }
-
-    std::cout << "[Collector] Stopped" << std::endl;
-}
-
-// Signals the collector thread to run a major GC.
-// Called by the program thread when old generation exceeds the threshold.
-static void requestMajorGC() {
-    gc_requested.store(true);
-    gc_condition.notify_all();
+// Signals the allocator to run a major GC.
+// In single-threaded mode, this runs synchronously.
+static void requestMajorGC(Allocator& alloc) {
+    std::cout << "MajorGC Started" << std::endl;
+    alloc.majorGC();
 }
 
 // ============================================================================
-// Program Thread
+// Program Loop (single-threaded)
 // ============================================================================
 
 // Simulates an Elm application's update cycle.
@@ -435,16 +400,11 @@ static void requestMajorGC() {
 //   - Each list reversal allocates N new Cons cells.
 //   - Each model update allocates a new Record.
 //   - Old objects become garbage after each iteration.
-//
-// thread_id: Identifies this thread in log output (0-based).
-static void programThreadFunc(size_t thread_id) {
+static void runProgramLoop(Allocator& alloc) {
     size_t iterations = 0;
 
     try {
-        auto& gc = GarbageCollector::instance();
-        gc.initThread();
-
-        std::cout << "[Program " << thread_id << "] Started with " << model_num_fields
+        std::cout << "[Program] Started with " << model_num_fields
                   << " fields, list size " << list_size
                   << ", major GC threshold " << (major_gc_threshold * 100) << "%"
                   << ", reversal probability " << reversal_probability << std::endl;
@@ -455,15 +415,15 @@ static void programThreadFunc(size_t thread_id) {
         std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
 
         // Create initial model: a Record with model_num_fields fields.
-        HPointer model = allocateRecord(gc, model_num_fields);
+        HPointer model = allocateRecord(alloc, model_num_fields);
 
         // The model must be registered as a root so GC can find and update it.
-        gc.getRootSet().addRoot(&model);
+        alloc.getRootSet().addRoot(&model);
 
         // Initialize each field with a list of integers [0..list_size-1].
         for (size_t i = 0; i < model_num_fields; i++) {
-            HPointer list = createIntList(gc, list_size);
-            updateRootRecord(gc, model, i, list);
+            HPointer list = createIntList(alloc, list_size);
+            updateRootRecord(alloc, model, i, list);
         }
 
         // Main loop: repeatedly reverse a randomly-selected list.
@@ -474,7 +434,7 @@ static void programThreadFunc(size_t thread_id) {
             size_t field_index = 0;
             bool field_selected = false;
 
-            void* model_obj = gc.resolve(model);
+            void* model_obj = alloc.resolve(model);
             if (!model_obj) {
                 throw CorruptHeapError("Model pointer became null during main loop");
             }
@@ -495,43 +455,41 @@ static void programThreadFunc(size_t thread_id) {
 
             // Extract the list from the selected field and reverse it.
             HPointer current_list = record->values[field_index].p;
-            HPointer reversed = reverseList(gc, current_list);
+            HPointer reversed = reverseList(alloc, current_list);
 
             // Update model with the reversed list in the selected field.
             // updateRootRecord handles root management internally.
-            updateRootRecord(gc, model, field_index, reversed);
+            updateRootRecord(alloc, model, field_index, reversed);
 
             iterations++;
 
             // Trigger minor GC when nursery is 90% full to avoid overflow.
-            if (gc.isNurseryNearFull(0.9f)) {
-                gc.minorGC();
+            if (alloc.isNurseryNearFull(0.9f)) {
+                alloc.minorGC();
             }
 
             // Request major GC when old generation exceeds threshold.
-            size_t old_gen_bytes = gc.getOldGen().getAllocatedBytes();
-            size_t old_gen_max = gc.getOldGen().getMaxSize();
-            if (old_gen_bytes >= static_cast<size_t>(old_gen_max * major_gc_threshold)) {
-                requestMajorGC();
-            }
+            // Note: In single-threaded mode, this runs synchronously.
+            size_t old_gen_bytes = alloc.getOldGen().getAllocatedBytes();
+            // Old gen no longer has getMaxSize() - just skip major GC for now
+            // TODO: Re-enable major GC threshold check when old gen has proper size tracking
 
-            // Yield periodically to let the collector thread run.
+            // Yield periodically.
             if (iterations % 1000 == 0) {
                 std::this_thread::yield();
             }
         }
 
-        // Clean up: unregister model root before thread exits.
-        gc.getRootSet().removeRoot(&model);
+        // Clean up: unregister model root before exiting.
+        alloc.getRootSet().removeRoot(&model);
 
     } catch (const std::exception& e) {
-        std::cerr << "\n[Program " << thread_id << "] FATAL ERROR: " << e.what() << "\n";
+        std::cerr << "\n[Program] FATAL ERROR: " << e.what() << "\n";
         printStackTrace();
         shutdown_requested.store(true);
-        gc_condition.notify_all();
     }
 
-    std::cout << "[Program " << thread_id << "] Stopped after " << iterations << " iterations" << std::endl;
+    std::cout << "[Program] Stopped after " << iterations << " iterations" << std::endl;
 }
 
 // ============================================================================
@@ -660,7 +618,8 @@ static bool parseArgs(int argc, char* argv[]) {
 // Main
 // ============================================================================
 
-// Entry point: initializes GC, starts worker threads, and waits for shutdown.
+// Entry point: initializes allocator and runs the program loop.
+// NOTE: Multi-threading is disabled in this single-threaded version.
 int main(int argc, char* argv[]) {
     if (!parseArgs(argc, argv)) {
         printUsage(argv[0]);
@@ -668,7 +627,7 @@ int main(int argc, char* argv[]) {
     }
 
     try {
-        std::cout << "=== Eco Runtime for Elm ===" << std::endl;
+        std::cout << "=== Eco Runtime for Elm (single-threaded) ===" << std::endl;
 
         // Install signal handlers for graceful shutdown on Ctrl+C or kill.
         signal(SIGINT, shutdownHandler);
@@ -680,66 +639,41 @@ int main(int argc, char* argv[]) {
         signal(SIGBUS, fatalSignalHandler);
         signal(SIGFPE, fatalSignalHandler);
 
-        // Initialize the garbage collector with a 2GB heap reservation.
-        // The old generation can grow up to ~1GB within this space.
-        auto& gc = GarbageCollector::instance();
-        GCConfig config;
+        // Initialize the allocator with a 2GB heap reservation.
+        auto& alloc = Allocator::instance();
+        HeapConfig config;
         config.max_heap_size = 2ULL * 1024 * 1024 * 1024;  // 2GB heap
-        gc.initialize(config);
-        gc.initThread();  // Main thread needs GC access too.
+        alloc.initialize(config);
+        alloc.initThread();
 
-        std::cout << "GC initialized (memory pressure threshold: "
+        std::cout << "Allocator initialized (memory pressure threshold: "
                   << (major_gc_threshold * 100) << "%)" << std::endl;
 
-        // Start the collector thread.
-        std::thread collector_thread(collectorThreadFunc);
-
-        // Start the program threads.
-        std::vector<std::thread> program_threads;
-        program_threads.reserve(num_program_threads);
-        for (size_t i = 0; i < num_program_threads; i++) {
-            program_threads.emplace_back(programThreadFunc, i);
-        }
-
-        std::cout << "Started " << num_program_threads << " program thread(s)" << std::endl;
-
-        // Main thread monitors for shutdown: either duration elapsed or signal.
+        // Set up duration-based shutdown if specified.
+        std::thread duration_thread;
         if (duration.count() > 0) {
             std::cout << "Running for " << duration.count() << " seconds..." << std::endl;
-            auto start = std::chrono::steady_clock::now();
-
-            while (!shutdown_requested.load()) {
-                auto elapsed = std::chrono::steady_clock::now() - start;
-                if (elapsed >= duration) {
-                    std::cout << "Duration elapsed, shutting down..." << std::endl;
-                    shutdown_requested.store(true);
-                    gc_condition.notify_all();
-                    break;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
+            duration_thread = std::thread([&]() {
+                std::this_thread::sleep_for(duration);
+                std::cout << "Duration elapsed, shutting down..." << std::endl;
+                shutdown_requested.store(true);
+            });
         } else {
             std::cout << "Running until Ctrl+C..." << std::endl;
-            while (!shutdown_requested.load()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
         }
 
-        // Signal shutdown to unblock any threads waiting on memory pressure.
-        gc.signalShutdown();
+        // Run the program loop (single-threaded).
+        runProgramLoop(alloc);
 
-        std::cout << "Waiting for threads to finish..." << std::endl;
-
-        // Wait for all threads to exit cleanly.
-        for (auto& t : program_threads) {
-            t.join();
+        // Wait for duration thread if it was started.
+        if (duration_thread.joinable()) {
+            duration_thread.join();
         }
-        collector_thread.join();
 
         // Print combined GC statistics if enabled at compile time.
 #if ENABLE_GC_STATS
-        GCStats combined = gc.getCombinedNurseryStats();
-        combined.combine(gc.getMajorGCStats());
+        GCStats combined = alloc.getCombinedNurseryStats();
+        combined.combine(alloc.getMajorGCStats());
         combined.print();
 #endif
 

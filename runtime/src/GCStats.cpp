@@ -106,9 +106,9 @@ void GCStats::combine(const GCStats& other) {
         minor_time_histogram[i] += other.minor_time_histogram[i];
     }
 
-    // Combine TLAB stats.
-    tlabs_allocated += other.tlabs_allocated;
-    tlabs_sealed += other.tlabs_sealed;
+    // Combine AllocBuffer stats.
+    buffers_allocated += other.buffers_allocated;
+    buffers_filled += other.buffers_filled;
 
     // Combine Major GC event stats.
     concurrent_marks_started += other.concurrent_marks_started;
@@ -239,11 +239,11 @@ void GCStats::print() const {
         }
     }
 
-    // ========== TLAB Stats ==========
-    if (tlabs_allocated > 0 || tlabs_sealed > 0) {
-        std::cout << "\nTLAB Statistics:" << std::endl;
-        std::cout << "  TLABs allocated:       " << std::setw(12) << tlabs_allocated << std::endl;
-        std::cout << "  TLABs sealed:          " << std::setw(12) << tlabs_sealed << std::endl;
+    // ========== AllocBuffer Stats ==========
+    if (buffers_allocated > 0 || buffers_filled > 0) {
+        std::cout << "\nAllocBuffer Statistics:" << std::endl;
+        std::cout << "  Buffers allocated:     " << std::setw(12) << buffers_allocated << std::endl;
+        std::cout << "  Buffers filled:        " << std::setw(12) << buffers_filled << std::endl;
     }
 
     // ========== Major GC Event Stats ==========
@@ -356,9 +356,9 @@ void GCStats::reset() {
         minor_time_histogram[i] = 0;
     }
 
-    // Reset TLAB stats.
-    tlabs_allocated = 0;
-    tlabs_sealed = 0;
+    // Reset AllocBuffer stats.
+    buffers_allocated = 0;
+    buffers_filled = 0;
 
     // Reset Major GC stats.
     concurrent_marks_started = 0;

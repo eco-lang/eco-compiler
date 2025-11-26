@@ -5,15 +5,13 @@ add_executable(test
         HeapGenerators.cpp
         TestHelpers.cpp
         NurserySpaceTest.cpp
-        TLABTest.cpp
         OldGenSpaceTest.cpp
-        CompactionTest.cpp
-        GarbageCollectorTest.cpp
+        AllocatorTest.cpp
         ElmTest.cpp
         ../runtime/src/RootSet.cpp
         ../runtime/src/OldGenSpace.cpp
         ../runtime/src/NurserySpace.cpp
-        ../runtime/src/GarbageCollector.cpp
+        ../runtime/src/Allocator.cpp
         ../runtime/src/GCStats.cpp
 )
 

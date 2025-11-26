@@ -8,14 +8,14 @@ using namespace Elm;
 
 Testing::TestCase testMinorGCPreservesRoots("Minor GC preserves all reachable objects from roots", []() {
         rc::check([](const HeapGraphDesc &graph) {
-            auto &gc = initGC();
+            auto &alloc = initAllocator();
 
             // Allocate heap from description (RapidCheck can shrink this!)
             std::vector<void *> allocated_objects = allocateHeapGraph(graph.nodes);
             RC_ASSERT(!allocated_objects.empty());
 
             // Set up roots from graph description (RAII - auto-unregisters)
-            GraphRoots roots = setupRootsFromGraph(gc, graph, allocated_objects);
+            GraphRoots roots = setupRootsFromGraph(alloc, graph, allocated_objects);
             RC_ASSERT(!roots.empty());
 
             // Take snapshot before GC
@@ -23,7 +23,7 @@ Testing::TestCase testMinorGCPreservesRoots("Minor GC preserves all reachable ob
             snapshot.capture(allocated_objects, roots.ptrs);
 
             // Perform minor GC
-            gc.minorGC();
+            alloc.minorGC();
 
             // Verify all roots still intact and valid
             bool valid = snapshot.verify(roots.ptrs);
@@ -42,22 +42,22 @@ Testing::TestCase testMultipleMinorGCCycles("Multiple minor GC cycles preserve r
             auto params = *testGen;
             auto [int_value, num_cycles, garbage_per_cycle] = params;
 
-            auto &gc = initGC();
+            auto &alloc = initAllocator();
 
             // Create a long-lived Int object as root.
-            void *root_obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+            void *root_obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
             ElmInt *elm_int = static_cast<ElmInt *>(root_obj);
             elm_int->value = int_value;
 
-            HPointer root_ptr = GCTestAccess::toPointer(root_obj);
-            gc.getRootSet().addRoot(&root_ptr);
+            HPointer root_ptr = AllocatorTestAccess::toPointer(root_obj);
+            alloc.getRootSet().addRoot(&root_ptr);
 
             i64 original_value = elm_int->value;
 
             // Run multiple GC cycles.
             for (int i = 0; i < num_cycles; i++) {
                 // Check value before GC.
-                void *current_obj = GCTestAccess::fromPointer(root_ptr);
+                void *current_obj = AllocatorTestAccess::fromPointer(root_ptr);
                 i64 before_value = static_cast<ElmInt *>(current_obj)->value;
 
                 // Allocate garbage between cycles from generated descriptions.
@@ -65,17 +65,17 @@ Testing::TestCase testMultipleMinorGCCycles("Multiple minor GC cycles preserve r
                     allocateHeapGraph(garbage_per_cycle[i]);
                 }
 
-                gc.minorGC();
+                alloc.minorGC();
 
                 // Check value after GC.
-                void *after_obj = GCTestAccess::fromPointer(root_ptr);
+                void *after_obj = AllocatorTestAccess::fromPointer(root_ptr);
                 i64 after_value = static_cast<ElmInt *>(after_obj)->value;
 
                 RC_ASSERT(before_value == after_value);
             }
 
             // Verify root still exists and has same value.
-            void *final_obj = GCTestAccess::fromPointer(root_ptr);
+            void *final_obj = AllocatorTestAccess::fromPointer(root_ptr);
             RC_ASSERT(reinterpret_cast<uintptr_t>(final_obj) != 0);
 
             Header *hdr = getHeader(final_obj);
@@ -84,17 +84,17 @@ Testing::TestCase testMultipleMinorGCCycles("Multiple minor GC cycles preserve r
             i64 final_value = static_cast<ElmInt *>(final_obj)->value;
             RC_ASSERT(original_value == final_value);
 
-            gc.getRootSet().removeRoot(&root_ptr);
+            alloc.getRootSet().removeRoot(&root_ptr);
         });
 });
 
 Testing::TestCase testContinuousGarbageAllocation("Continuous garbage allocation triggers automatic GC and recycles space", []() {
         rc::check([](const HeapGraphDesc &graph) {
             // Use smaller nursery for faster test - 64KB total (32KB per semi-space).
-            GCConfig config;
+            HeapConfig config;
             config.nursery_size = 64 * 1024;
-            auto &gc = initGC(config);
-            auto *nursery = gc.getNursery();
+            auto &alloc = initAllocator(config);
+            auto *nursery = alloc.getNursery();
 
             if (nursery == nullptr) {
                 RC_DISCARD("Nursery not available");
@@ -116,18 +116,18 @@ Testing::TestCase testContinuousGarbageAllocation("Continuous garbage allocation
             // Use graph's root indices to select roots.
             for (size_t idx : graph.root_indices) {
                 if (idx < root_objects.size()) {
-                    root_storage.push_back(GCTestAccess::toPointer(root_objects[idx]));
+                    root_storage.push_back(AllocatorTestAccess::toPointer(root_objects[idx]));
                 }
             }
 
             // If no valid roots from graph, use first object as root.
             if (root_storage.empty()) {
-                root_storage.push_back(GCTestAccess::toPointer(root_objects[0]));
+                root_storage.push_back(AllocatorTestAccess::toPointer(root_objects[0]));
             }
 
             for (auto &root : root_storage) {
                 root_ptrs.push_back(&root);
-                gc.getRootSet().addRoot(&root);
+                alloc.getRootSet().addRoot(&root);
             }
 
             // Take snapshot of root objects before continuous allocation.
@@ -143,7 +143,7 @@ Testing::TestCase testContinuousGarbageAllocation("Continuous garbage allocation
                 // Allocate proper ElmInt objects to avoid uninitialized memory issues.
                 size_t obj_size = sizeof(ElmInt);
 
-                void *garbage = gc.allocate(obj_size, Tag_Int);
+                void *garbage = alloc.allocate(obj_size, Tag_Int);
                 if (garbage == nullptr) {
                     RC_FAIL("Allocation failed - automatic GC should prevent this");
                 }
@@ -161,7 +161,7 @@ Testing::TestCase testContinuousGarbageAllocation("Continuous garbage allocation
 
             // Cleanup roots.
             for (auto *root : root_ptrs) {
-                gc.getRootSet().removeRoot(root);
+                alloc.getRootSet().removeRoot(root);
             }
 
             RC_ASSERT(valid);

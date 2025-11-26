@@ -1,5 +1,5 @@
 #include <algorithm>
-#include "GarbageCollector.hpp"
+#include "Allocator.hpp"
 #include "HeapGenerators.hpp"
 
 namespace Elm {
@@ -33,7 +33,7 @@ static Unboxable makeUnboxableFromConsHead(const ConsHeadDesc& head, const std::
     Unboxable val;
     if (head.head_boxed && !allocated.empty()) {
         size_t idx = head.child_index % allocated.size();
-        val.p = GCTestAccess::toPointer(allocated[idx]);
+        val.p = AllocatorTestAccess::toPointer(allocated[idx]);
     } else if (head.head_boxed && allocated.empty()) {
         // No objects to reference, use Nil constant.
         val.p = createConstant(Const_Nil);
@@ -82,7 +82,7 @@ static Unboxable makeUnboxable(bool is_boxed, const HeapObjectDesc &desc, const 
     if (is_boxed && !allocated.empty()) {
         // Boxed: pointer to existing object.
         size_t idx = child_index % allocated.size();
-        val.p = GCTestAccess::toPointer(allocated[idx]);
+        val.p = AllocatorTestAccess::toPointer(allocated[idx]);
     } else if (is_boxed && allocated.empty()) {
         // No objects to reference, use Nil constant.
         val.p = createConstant(Const_Nil);
@@ -126,7 +126,7 @@ static Unboxable makeUnboxable(bool is_boxed, const HeapObjectDesc &desc, const 
 }
 
 HPointer allocateList(const ListDesc& list_desc, const std::vector<void*>& allocated) {
-    auto& gc = GarbageCollector::instance();
+    auto& alloc = Allocator::instance();
 
     // Start with Nil constant.
     HPointer tail;
@@ -136,7 +136,7 @@ HPointer allocateList(const ListDesc& list_desc, const std::vector<void*>& alloc
 
     // Build list from end to beginning.
     for (auto it = list_desc.elements.rbegin(); it != list_desc.elements.rend(); ++it) {
-        void* cons_obj = gc.allocate(sizeof(Cons), Tag_Cons);
+        void* cons_obj = alloc.allocate(sizeof(Cons), Tag_Cons);
         Cons* cons = static_cast<Cons*>(cons_obj);
         Header* hdr = getHeader(cons_obj);
 
@@ -150,14 +150,14 @@ HPointer allocateList(const ListDesc& list_desc, const std::vector<void*>& alloc
         hdr->unboxed = it->head_boxed ? 0 : 1;
 
         // Update tail for next iteration.
-        tail = GCTestAccess::toPointer(cons_obj);
+        tail = AllocatorTestAccess::toPointer(cons_obj);
     }
 
     return tail;  // Returns head of list (or Nil if empty).
 }
 
 std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) {
-    auto &gc = GarbageCollector::instance();
+    auto &alloc = Allocator::instance();
     std::vector<void *> allocated;
     allocated.reserve(nodes.size());
 
@@ -167,21 +167,21 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
 
         switch (desc.type) {
             case HeapObjectDesc::Int: {
-                obj = gc.allocate(sizeof(ElmInt), Tag_Int);
+                obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
                 ElmInt *elm_int = static_cast<ElmInt *>(obj);
                 elm_int->value = desc.int_val;
                 break;
             }
 
             case HeapObjectDesc::Float: {
-                obj = gc.allocate(sizeof(ElmFloat), Tag_Float);
+                obj = alloc.allocate(sizeof(ElmFloat), Tag_Float);
                 ElmFloat *elm_float = static_cast<ElmFloat *>(obj);
                 elm_float->value = desc.float_val;
                 break;
             }
 
             case HeapObjectDesc::Char: {
-                obj = gc.allocate(sizeof(ElmChar), Tag_Char);
+                obj = alloc.allocate(sizeof(ElmChar), Tag_Char);
                 ElmChar *elm_char = static_cast<ElmChar *>(obj);
                 elm_char->value = desc.char_val;
                 break;
@@ -196,7 +196,7 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
                 }
 
                 size_t size = sizeof(ElmString) + desc.string_chars.size() * sizeof(u16);
-                obj = gc.allocate(size, Tag_String);
+                obj = alloc.allocate(size, Tag_String);
                 ElmString *elm_string = static_cast<ElmString *>(obj);
                 for (size_t i = 0; i < desc.string_chars.size(); i++) {
                     elm_string->chars[i] = desc.string_chars[i];
@@ -205,7 +205,7 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
             }
 
             case HeapObjectDesc::Tuple2: {
-                obj = gc.allocate(sizeof(Tuple2), Tag_Tuple2);
+                obj = alloc.allocate(sizeof(Tuple2), Tag_Tuple2);
                 Tuple2 *tuple = static_cast<Tuple2 *>(obj);
                 Header *hdr = getHeader(obj);
 
@@ -223,7 +223,7 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
             }
 
             case HeapObjectDesc::Tuple3: {
-                obj = gc.allocate(sizeof(Tuple3), Tag_Tuple3);
+                obj = alloc.allocate(sizeof(Tuple3), Tag_Tuple3);
                 Tuple3 *tuple = static_cast<Tuple3 *>(obj);
                 Header *hdr = getHeader(obj);
 
@@ -246,7 +246,7 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
             case HeapObjectDesc::Custom: {
                 size_t num_values = std::min(desc.custom_values_boxed.size(), desc.custom_child_values.size());
                 size_t size = sizeof(Custom) + num_values * sizeof(Unboxable);
-                obj = gc.allocate(size, Tag_Custom);
+                obj = alloc.allocate(size, Tag_Custom);
                 Custom *custom = static_cast<Custom *>(obj);
 
                 custom->ctor = desc.ctor;
@@ -262,7 +262,7 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
             case HeapObjectDesc::Record: {
                 size_t num_values = std::min(desc.record_values_boxed.size(), desc.record_child_values.size());
                 size_t size = sizeof(Record) + num_values * sizeof(Unboxable);
-                obj = gc.allocate(size, Tag_Record);
+                obj = alloc.allocate(size, Tag_Record);
                 Record *record = static_cast<Record *>(obj);
 
                 record->unboxed = buildUnboxedBitmap(desc.record_values_boxed, 64);
@@ -277,14 +277,14 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
             case HeapObjectDesc::DynRecord: {
                 size_t num_values = desc.dynrec_child_values.size();
                 size_t size = sizeof(DynRecord) + num_values * sizeof(HPointer);
-                obj = gc.allocate(size, Tag_DynRecord);
+                obj = alloc.allocate(size, Tag_DynRecord);
                 DynRecord *dynrec = static_cast<DynRecord *>(obj);
 
                 dynrec->unboxed = 0;  // DynRecord values are all HPointers.
 
                 // Set fieldgroup reference (clamp to valid range or use default).
                 if (!allocated.empty() && desc.dynrec_child_fieldgroup < allocated.size()) {
-                    dynrec->fieldgroup = GCTestAccess::toPointer(allocated[desc.dynrec_child_fieldgroup]);
+                    dynrec->fieldgroup = AllocatorTestAccess::toPointer(allocated[desc.dynrec_child_fieldgroup]);
                 } else {
                     // Create Nil constant if no valid fieldgroup.
                     dynrec->fieldgroup.ptr = 0;
@@ -295,7 +295,7 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
                 for (size_t i = 0; i < num_values; i++) {
                     if (!allocated.empty()) {
                         size_t idx = desc.dynrec_child_values[i] % allocated.size();
-                        dynrec->values[i] = GCTestAccess::toPointer(allocated[idx]);
+                        dynrec->values[i] = AllocatorTestAccess::toPointer(allocated[idx]);
                     } else {
                         dynrec->values[i].ptr = 0;
                         dynrec->values[i].constant = Const_Nil;
@@ -308,7 +308,7 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
             case HeapObjectDesc::FieldGroup: {
                 size_t num_fields = desc.fieldgroup_ids.size();
                 size_t size = sizeof(FieldGroup) + num_fields * sizeof(u32);
-                obj = gc.allocate(size, Tag_FieldGroup);
+                obj = alloc.allocate(size, Tag_FieldGroup);
                 FieldGroup *fieldgroup = static_cast<FieldGroup *>(obj);
 
                 fieldgroup->count = num_fields;
@@ -321,7 +321,7 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
             case HeapObjectDesc::Closure: {
                 size_t num_values = std::min(desc.closure_values_boxed.size(), desc.closure_child_values.size());
                 size_t size = sizeof(Closure) + num_values * sizeof(Unboxable);
-                obj = gc.allocate(size, Tag_Closure);
+                obj = alloc.allocate(size, Tag_Closure);
                 Closure *closure = static_cast<Closure *>(obj);
 
                 closure->n_values = num_values;

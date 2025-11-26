@@ -41,20 +41,20 @@ public:
     // - 18 buckets of 50000ns each (100000ns-1000000ns)
     // - 1 overflow bucket (>1000000ns)
     static constexpr int HISTOGRAM_BUCKETS = 39;
-    static constexpr uint64_t MINOR_HISTOGRAM_FIRST_RANGE = 100000;  // 100µs
+    static constexpr uint64_t MINOR_HISTOGRAM_FIRST_RANGE = 100000;  // 100us
     static constexpr uint64_t MINOR_HISTOGRAM_SECOND_RANGE = 1000000; // 1ms
-    static constexpr uint64_t MINOR_BUCKET_SIZE_SMALL = 5000;   // 5µs for first range
-    static constexpr uint64_t MINOR_BUCKET_SIZE_LARGE = 50000;  // 50µs for second range
-    static constexpr int MINOR_BUCKETS_SMALL = 20;  // 0-100µs
-    static constexpr int MINOR_BUCKETS_LARGE = 18;  // 100µs-1ms
+    static constexpr uint64_t MINOR_BUCKET_SIZE_SMALL = 5000;   // 5us for first range
+    static constexpr uint64_t MINOR_BUCKET_SIZE_LARGE = 50000;  // 50us for second range
+    static constexpr int MINOR_BUCKETS_SMALL = 20;  // 0-100us
+    static constexpr int MINOR_BUCKETS_LARGE = 18;  // 100us-1ms
 
     uint64_t minor_time_histogram[HISTOGRAM_BUCKETS] = {0};
 
-    // ========== TLAB Stats (Thread-Local) ==========
-    uint64_t tlabs_allocated = 0;
-    uint64_t tlabs_sealed = 0;
+    // ========== AllocBuffer Stats ==========
+    uint64_t buffers_allocated = 0;
+    uint64_t buffers_filled = 0;
 
-    // ========== Major GC Event Stats (Global Collector Thread) ==========
+    // ========== Major GC Event Stats ==========
     uint64_t concurrent_marks_started = 0;
     uint64_t mark_sweeps_completed = 0;
     uint64_t incremental_mark_calls = 0;
@@ -128,12 +128,12 @@ private:
             (stats).total_incremental_mark_work_units += (work_units); \
         } while(0)
 
-    // ========== TLAB Macros ==========
-    #define GC_STATS_TLAB_ALLOCATED(stats) \
-        do { (stats).tlabs_allocated++; } while(0)
+    // ========== AllocBuffer Macros ==========
+    #define GC_STATS_BUFFER_ALLOCATED(stats) \
+        do { (stats).buffers_allocated++; } while(0)
 
-    #define GC_STATS_TLAB_SEALED(stats) \
-        do { (stats).tlabs_sealed++; } while(0)
+    #define GC_STATS_BUFFER_FILLED(stats) \
+        do { (stats).buffers_filled++; } while(0)
 
     // ========== Helper Macros ==========
     #define GC_STATS_TIMER_START() \
@@ -153,8 +153,8 @@ private:
     #define GC_STATS_MAJOR_INC_CONCURRENT_MARK(stats) do {} while(0)
     #define GC_STATS_MAJOR_INC_MARK_SWEEP(stats) do {} while(0)
     #define GC_STATS_MAJOR_INC_INCREMENTAL_MARK(stats, work_units) do {} while(0)
-    #define GC_STATS_TLAB_ALLOCATED(stats) do {} while(0)
-    #define GC_STATS_TLAB_SEALED(stats) do {} while(0)
+    #define GC_STATS_BUFFER_ALLOCATED(stats) do {} while(0)
+    #define GC_STATS_BUFFER_FILLED(stats) do {} while(0)
     #define GC_STATS_TIMER_START() 0
     #define GC_STATS_TIMER_ELAPSED_NS(start) 0
 #endif

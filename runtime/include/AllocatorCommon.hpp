@@ -1,13 +1,13 @@
 /**
- * Common Definitions for Garbage Collector Components.
+ * Common Definitions for Allocator Components.
  *
  * This file contains shared constants, types, and utilities used across
- * the GC subsystem (NurserySpace, OldGenSpace, GarbageCollector).
+ * the allocator subsystem (NurserySpace, OldGenSpace, Allocator).
  *
  * Key contents:
- *   - Sizing constants: Heap size, nursery size, TLAB size, block size.
+ *   - Sizing constants: Heap size, nursery size, AllocBuffer size.
  *   - Color enum: Tri-color marking states (White, Grey, Black).
- *   - Utility functions: getHeader(), getObjectSize(), pointer conversion.
+ *   - Utility functions: getHeader(), getObjectSize().
  */
 
 #ifndef ECO_ALLOCATOR_COMMON_H
@@ -20,9 +20,9 @@
 
 namespace Elm {
 
-class GarbageCollector;
+class Allocator;
 
-// Tri-color marking states for concurrent GC.
+// Tri-color marking states for mark-and-sweep GC.
 enum class Color : u32 {
     White = 0,   // Not yet marked (potential garbage).
     Grey = 1,    // Marked but children not yet scanned.
@@ -30,32 +30,22 @@ enum class Color : u32 {
 };
 
 // ============================================================================
-// GC Sizing Constants
+// Sizing Constants
 // ============================================================================
 
 // ----- Heap Sizing -----
 constexpr size_t DEFAULT_MAX_HEAP_SIZE = 1ULL * 1024 * 1024 * 1024;  // 1 GB address space.
 constexpr size_t INITIAL_OLD_GEN_SIZE = 1 * 1024 * 1024;             // 1 MB initial commit.
-constexpr size_t MIN_OLD_GEN_CHUNK_SIZE = 1 * 1024 * 1024;           // 1 MB minimum growth.
 
 // ----- Nursery Sizing -----
 constexpr size_t NURSERY_SIZE = 4 * 1024 * 1024;  // 4 MB total (2 MB per semi-space).
 
-// ----- TLAB Sizing -----
-constexpr size_t TLAB_DEFAULT_SIZE = 128 * 1024;  // 128 KB default TLAB.
-constexpr size_t TLAB_MIN_SIZE = 64 * 1024;       // 64 KB minimum TLAB.
-
-// ----- Block Sizing (for compaction) -----
-constexpr size_t BLOCK_SIZE = 256 * 1024;  // 256 KB blocks for compaction metadata.
+// ----- AllocBuffer Sizing -----
+constexpr size_t ALLOC_BUFFER_SIZE = 128 * 1024;  // 128 KB default AllocBuffer.
 
 // ----- Promotion & GC Triggers -----
 constexpr u32 PROMOTION_AGE = 1;                            // Promote after 1 minor GC survival.
 constexpr float NURSERY_GC_THRESHOLD = 0.9f;                // Trigger minor GC at 90% full.
-
-// ----- Compaction Thresholds -----
-constexpr double EVACUATION_THRESHOLD = 0.25;       // Evacuate blocks below 25% occupancy.
-constexpr double EVACUATION_DEST_THRESHOLD = 0.75;  // Blocks below 75% can receive objects.
-constexpr double MAX_EVACUATION_RATIO = 0.10;       // Evacuate at most 10% of heap per cycle.
 
 // Returns the header of a heap object.
 inline Header *getHeader(void *obj) { return static_cast<Header *>(obj); }
@@ -123,42 +113,32 @@ inline size_t getObjectSize(void *obj) {
 }
 
 // ============================================================================
-// GC Configuration
+// Heap Configuration
 // ============================================================================
 
 /**
- * Configuration for garbage collector parameters.
+ * Configuration for heap and allocator parameters.
  *
  * All fields have sensible defaults from the constants above. Users can
- * override any field before passing to GarbageCollector::initialize().
+ * override any field before passing to Allocator::initialize().
  */
-struct GCConfig {
+struct HeapConfig {
     // Heap sizing
     size_t max_heap_size = DEFAULT_MAX_HEAP_SIZE;
     size_t initial_old_gen_size = INITIAL_OLD_GEN_SIZE;
-    size_t min_old_gen_chunk_size = MIN_OLD_GEN_CHUNK_SIZE;
 
     // Nursery sizing
     size_t nursery_size = NURSERY_SIZE;
 
-    // TLAB sizing
-    size_t tlab_default_size = TLAB_DEFAULT_SIZE;
-    size_t tlab_min_size = TLAB_MIN_SIZE;
-
-    // Block sizing (for compaction)
-    size_t block_size = BLOCK_SIZE;
+    // AllocBuffer sizing
+    size_t alloc_buffer_size = ALLOC_BUFFER_SIZE;
 
     // Promotion & GC triggers
     u32 promotion_age = PROMOTION_AGE;
     float nursery_gc_threshold = NURSERY_GC_THRESHOLD;
 
-    // Compaction thresholds
-    double evacuation_threshold = EVACUATION_THRESHOLD;
-    double evacuation_dest_threshold = EVACUATION_DEST_THRESHOLD;
-    double max_evacuation_ratio = MAX_EVACUATION_RATIO;
-
     // Default constructor using in-class member initializers.
-    GCConfig() = default;
+    HeapConfig() = default;
 
     // Validates all configuration parameters.
     // Throws std::invalid_argument with descriptive message on validation failure.
@@ -173,28 +153,16 @@ struct GCConfig {
             throw std::invalid_argument("initial_old_gen_size must be > 0");
         }
 
-        if (min_old_gen_chunk_size == 0) {
-            throw std::invalid_argument("min_old_gen_chunk_size must be > 0");
-        }
-
         if (nursery_size == 0) {
             throw std::invalid_argument("nursery_size must be > 0");
         }
 
-        if (tlab_default_size == 0) {
-            throw std::invalid_argument("tlab_default_size must be > 0");
-        }
-
-        if (tlab_min_size == 0) {
-            throw std::invalid_argument("tlab_min_size must be > 0");
-        }
-
-        if (block_size == 0) {
-            throw std::invalid_argument("block_size must be > 0");
+        if (alloc_buffer_size == 0) {
+            throw std::invalid_argument("alloc_buffer_size must be > 0");
         }
 
         // ========== 2. Heap Partitioning Constraints ==========
-        // Heap is split: [0, max/2) = old gen, [max/2, max) = nurseries
+        // Heap is split: [0, max/2) = old gen, [max/2, max) = nursery
 
         size_t old_gen_space = max_heap_size / 2;
 
@@ -204,16 +172,10 @@ struct GCConfig {
                 "(old gen lives in first half of heap)");
         }
 
-        if (min_old_gen_chunk_size > old_gen_space) {
-            throw std::invalid_argument(
-                "min_old_gen_chunk_size must be <= max_heap_size / 2 "
-                "(chunk can't exceed old gen space)");
-        }
-
         if (nursery_size >= old_gen_space) {
             throw std::invalid_argument(
                 "nursery_size must be < max_heap_size / 2 "
-                "(nurseries live in second half of heap)");
+                "(nursery lives in second half of heap)");
         }
 
         // ========== 3. Nursery Constraints ==========
@@ -229,47 +191,21 @@ struct GCConfig {
                 "nursery_size must be >= 64KB (32KB per semi-space minimum)");
         }
 
-        // ========== 4. TLAB Constraints ==========
+        // ========== 4. AllocBuffer Constraints ==========
 
-        if (tlab_min_size > tlab_default_size) {
+        constexpr size_t MIN_BUFFER_SIZE = 4096;  // 4KB minimum
+        if (alloc_buffer_size < MIN_BUFFER_SIZE) {
             throw std::invalid_argument(
-                "tlab_min_size must be <= tlab_default_size");
+                "alloc_buffer_size must be >= 4KB");
         }
 
-        // FreeBlock is 16 bytes (size_t + pointer)
-        constexpr size_t MIN_TLAB_SIZE = 16;
-        if (tlab_min_size < MIN_TLAB_SIZE) {
+        if (alloc_buffer_size > old_gen_space) {
             throw std::invalid_argument(
-                "tlab_min_size must be >= 16 bytes (sizeof(FreeBlock))");
-        }
-
-        if (tlab_default_size > old_gen_space) {
-            throw std::invalid_argument(
-                "tlab_default_size must be <= max_heap_size / 2 "
+                "alloc_buffer_size must be <= max_heap_size / 2 "
                 "(can't exceed old gen space)");
         }
 
-        // ========== 5. Block Size Constraints ==========
-
-        constexpr size_t MIN_BLOCK_SIZE = 4096;  // 4KB
-        if (block_size < MIN_BLOCK_SIZE) {
-            throw std::invalid_argument(
-                "block_size must be >= 4KB for meaningful compaction granularity");
-        }
-
-        if (block_size > old_gen_space / 4) {
-            throw std::invalid_argument(
-                "block_size must be <= max_heap_size / 8 "
-                "(need at least 4 blocks in old gen)");
-        }
-
-        if (initial_old_gen_size < block_size) {
-            throw std::invalid_argument(
-                "initial_old_gen_size must be >= block_size "
-                "(old gen should have at least one block)");
-        }
-
-        // ========== 6. Promotion Constraints ==========
+        // ========== 5. Promotion Constraints ==========
 
         if (promotion_age < 1) {
             throw std::invalid_argument(
@@ -281,33 +217,11 @@ struct GCConfig {
                 "promotion_age must be <= 15 (header age field limit)");
         }
 
-        // ========== 7. Threshold Constraints ==========
+        // ========== 6. Threshold Constraints ==========
 
         if (nursery_gc_threshold <= 0.0f || nursery_gc_threshold > 1.0f) {
             throw std::invalid_argument(
                 "nursery_gc_threshold must be in (0.0, 1.0]");
-        }
-
-        if (evacuation_threshold < 0.0 || evacuation_threshold > 1.0) {
-            throw std::invalid_argument(
-                "evacuation_threshold must be in [0.0, 1.0]");
-        }
-
-        if (evacuation_dest_threshold < 0.0 || evacuation_dest_threshold > 1.0) {
-            throw std::invalid_argument(
-                "evacuation_dest_threshold must be in [0.0, 1.0]");
-        }
-
-        if (max_evacuation_ratio < 0.0 || max_evacuation_ratio > 1.0) {
-            throw std::invalid_argument(
-                "max_evacuation_ratio must be in [0.0, 1.0]");
-        }
-
-        // Destination blocks must be less full than source blocks to allow evacuation.
-        if (evacuation_dest_threshold < evacuation_threshold) {
-            throw std::invalid_argument(
-                "evacuation_dest_threshold must be >= evacuation_threshold "
-                "(destination blocks must be less full than evacuation sources)");
         }
     }
 };

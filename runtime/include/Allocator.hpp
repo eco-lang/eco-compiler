@@ -1,12 +1,7 @@
-#ifndef ECO_GARBAGECOLLECTOR_H
-#define ECO_GARBAGECOLLECTOR_H
+#ifndef ECO_ALLOCATOR_H
+#define ECO_ALLOCATOR_H
 
-#include <atomic>
-#include <condition_variable>
 #include <memory>
-#include <mutex>
-#include <thread>
-#include <unordered_map>
 #include "AllocatorCommon.hpp"
 #include "NurserySpace.hpp"
 #include "OldGenSpace.hpp"
@@ -15,16 +10,22 @@
 
 namespace Elm {
 
+class AllocBuffer;
+
 /**
- * Central GC coordinator managing nurseries and old generation.
+ * Central allocator managing nursery and old generation.
  *
- * Singleton that owns the unified heap address space and coordinates GC across
- * all threads. Each thread gets its own nursery; old gen is shared.
+ * Singleton that owns the unified heap address space. Single-threaded version
+ * with one nursery and shared old gen.
+ *
+ * Memory layout:
+ *   [0 .. heap_reserved/2)      - Old generation (AllocBuffers allocated here)
+ *   [heap_reserved/2 .. end)    - Nursery
  */
-class GarbageCollector {
+class Allocator {
 public:
-    // Returns the singleton GarbageCollector instance.
-    static GarbageCollector &instance();
+    // Returns the singleton Allocator instance.
+    static Allocator &instance();
 
     // ========== Safe Public Pointer API ==========
 
@@ -38,33 +39,33 @@ public:
     // Used after allocate() to get a storable pointer.
     HPointer wrap(void* obj);
 
-    // Initializes the GC with the given configuration.
+    // Initializes the allocator with the given configuration.
     // Validates config parameters and throws std::invalid_argument on failure.
-    void initialize(const GCConfig& config = GCConfig());
+    void initialize(const HeapConfig& config = HeapConfig());
 
-    // Initializes GC for the calling thread, creating its nursery.
+    // Initializes allocator state, creating the nursery.
     void initThread();
 
     // Allocates an object in the nursery. Asserts if nursery is full.
     void *allocate(size_t size, Tag tag);
 
-    // Triggers a minor GC on the current thread's nursery.
+    // Triggers a minor GC on the nursery.
     void minorGC();
 
-    // Triggers a major GC (concurrent mark-and-sweep on old gen).
+    // Triggers a major GC (mark-and-sweep on old gen).
     void majorGC();
 
-    // Resets the GC to initial state. Used for testing.
+    // Resets the allocator to initial state. Used for testing.
     // If new_config is provided, reconfigures with new parameters.
-    void reset(const GCConfig* new_config = nullptr);
+    void reset(const HeapConfig* new_config = nullptr);
 
-    // Returns the root set for the current thread. Thread must have called initThread().
+    // Returns the root set.
     RootSet &getRootSet();
 
-    // Collects all roots from all threads for major GC.
+    // Collects all roots for major GC.
     std::vector<HPointer*> collectAllRoots();
 
-    // Returns the current thread's nursery, or nullptr if not initialized.
+    // Returns the nursery, or nullptr if not initialized.
     NurserySpace *getNursery();
 
     // Returns the old generation space.
@@ -76,9 +77,11 @@ public:
     // Returns the total reserved heap size.
     size_t getHeapReserved() const { return heap_reserved; }
 
-    // Returns true if the current thread's nursery is over the threshold.
+    // Returns the offset where nursery starts.
+    size_t getNurseryOffset() const { return nursery_offset; }
+
+    // Returns true if the nursery is over the threshold.
     bool isNurseryNearFull(float threshold) {
-        NurserySpace *nursery = getNursery();
         if (nursery) {
             size_t total_capacity = config_.nursery_size / 2;
             size_t usage = nursery->bytesAllocated();
@@ -87,56 +90,51 @@ public:
         return false;
     }
 
-    // Returns the GC configuration.
-    const GCConfig& getConfig() const { return config_; }
+    // Returns the heap configuration.
+    const HeapConfig& getConfig() const { return config_; }
 
-    // ========== Thread signalling ==========
-
-    // Called by collector thread after major GC completes to wake blocked allocators.
-    void signalGCComplete();
-
-    // Signals shutdown - wakes any blocked allocators.
-    void signalShutdown();
-
-    // ========== Stop-the-World Barrier ==========
-
-    // Returns true if the given pointer is in any thread's nursery.
+    // Returns true if the given pointer is in the nursery.
     bool isInNursery(void *ptr);
 
-    // Returns true if STW barrier is currently active.
-    bool isSTWActive() const {
-        return stw_barrier.load(std::memory_order_relaxed);
-    }
+    // Returns true if the given pointer is in the old generation.
+    bool isInOldGen(void *ptr);
+
+    // ========== AllocBuffer Management ==========
+
+    // Acquires a new AllocBuffer of the specified size from the old gen region.
+    // Returns nullptr if unable to allocate (out of address space).
+    AllocBuffer* acquireAllocBuffer(size_t size);
+
+    // Returns an AllocBuffer to the allocator (currently a no-op).
+    void releaseAllocBuffer(AllocBuffer* buffer);
 
 #if ENABLE_GC_STATS
     // Returns the global major GC statistics.
     GCStats& getMajorGCStats() { return major_gc_stats; }
     const GCStats& getMajorGCStats() const { return major_gc_stats; }
 
-    // Returns combined statistics from all nurseries.
+    // Returns nursery statistics.
     GCStats getCombinedNurseryStats();
 #endif
 
 private:
-    GarbageCollector();
-    ~GarbageCollector();
+    Allocator();
+    ~Allocator();
 
     // ========== Unified Heap ==========
 
-    GCConfig config_;             // GC configuration parameters.
+    HeapConfig config_;           // Heap configuration parameters.
     char *heap_base;              // Base of reserved address space.
     size_t heap_reserved;         // Total address space reserved.
-    size_t old_gen_committed;     // Committed bytes in old gen.
-    size_t nursery_offset;        // Where nurseries start (halfway point).
-    size_t next_nursery_offset;   // Next available nursery location.
+    size_t old_gen_committed;     // Committed bytes in old gen region.
+    size_t nursery_offset;        // Where nursery starts (halfway point).
     bool initialized;             // True after initialize() has been called.
 
     OldGenSpace old_gen;
 
-    // ========== Thread-Local Nurseries ==========
+    // ========== Single Nursery ==========
 
-    std::mutex nursery_mutex;
-    std::unordered_map<std::thread::id, std::unique_ptr<NurserySpace>> nurseries;
+    std::unique_ptr<NurserySpace> nursery;
 
     // ========== Internal Pointer Conversion ==========
 
@@ -161,23 +159,12 @@ private:
 
     friend class NurserySpace;
     friend class OldGenSpace;
-    friend class GCTestAccess;
-
-    // ========== Thread signalling ==========
-
-    std::atomic<bool> shutdown_flag{false};        // Set when shutting down.
-    std::atomic<bool> stw_barrier{false}; // When true, threads block on allocation.
-    std::mutex gc_wait_mutex;                      // Protects condition variable.
-    std::condition_variable gc_wait_cv;            // For blocking allocators.
-
-    // Blocks until STW barrier is lowered. Called from allocate().
-    void waitAtSTWBarrier();
+    friend class AllocatorTestAccess;
 
 #if ENABLE_GC_STATS
     GCStats major_gc_stats; // Global major GC statistics.
 #endif
 
-    void growOldGen(size_t additional_size);
     void commitNursery(char *nursery_base, size_t size);
 };
 
@@ -186,18 +173,18 @@ private:
 // ============================================================================
 
 // For test code only - provides privileged access to raw pointer conversion.
-// This class is a friend of GarbageCollector and can access internal functions.
-class GCTestAccess {
+// This class is a friend of Allocator and can access internal functions.
+class AllocatorTestAccess {
 public:
     static void* fromPointer(HPointer ptr) {
-        return GarbageCollector::fromPointerRaw(ptr);
+        return Allocator::fromPointerRaw(ptr);
     }
 
     static HPointer toPointer(void* obj) {
-        return GarbageCollector::toPointerRaw(obj);
+        return Allocator::toPointerRaw(obj);
     }
 };
 
 } // namespace Elm
 
-#endif // ECO_GARBAGECOLLECTOR_H
+#endif // ECO_ALLOCATOR_H

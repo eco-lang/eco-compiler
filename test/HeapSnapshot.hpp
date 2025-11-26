@@ -4,7 +4,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include "GarbageCollector.hpp"
+#include "Allocator.hpp"
 #include "Heap.hpp"
 
 using namespace Elm;
@@ -102,13 +102,13 @@ struct HeapSnapshot {
                 case Tag_Tuple2: {
                     Tuple2 *t = static_cast<Tuple2 *>(obj);
                     if (!(hdr->unboxed & 1) && t->a.p.constant == 0) {
-                        void *child = GCTestAccess::fromPointer(t->a.p);
+                        void *child = AllocatorTestAccess::fromPointer(t->a.p);
                         if (child && obj_to_idx.count(child)) {
                             nodes[node_idx].children.push_back(obj_to_idx[child]);
                         }
                     }
                     if (!(hdr->unboxed & 2) && t->b.p.constant == 0) {
-                        void *child = GCTestAccess::fromPointer(t->b.p);
+                        void *child = AllocatorTestAccess::fromPointer(t->b.p);
                         if (child && obj_to_idx.count(child)) {
                             nodes[node_idx].children.push_back(obj_to_idx[child]);
                         }
@@ -118,19 +118,19 @@ struct HeapSnapshot {
                 case Tag_Tuple3: {
                     Tuple3 *t = static_cast<Tuple3 *>(obj);
                     if (!(hdr->unboxed & 1) && t->a.p.constant == 0) {
-                        void *child = GCTestAccess::fromPointer(t->a.p);
+                        void *child = AllocatorTestAccess::fromPointer(t->a.p);
                         if (child && obj_to_idx.count(child)) {
                             nodes[node_idx].children.push_back(obj_to_idx[child]);
                         }
                     }
                     if (!(hdr->unboxed & 2) && t->b.p.constant == 0) {
-                        void *child = GCTestAccess::fromPointer(t->b.p);
+                        void *child = AllocatorTestAccess::fromPointer(t->b.p);
                         if (child && obj_to_idx.count(child)) {
                             nodes[node_idx].children.push_back(obj_to_idx[child]);
                         }
                     }
                     if (!(hdr->unboxed & 4) && t->c.p.constant == 0) {
-                        void *child = GCTestAccess::fromPointer(t->c.p);
+                        void *child = AllocatorTestAccess::fromPointer(t->c.p);
                         if (child && obj_to_idx.count(child)) {
                             nodes[node_idx].children.push_back(obj_to_idx[child]);
                         }
@@ -141,14 +141,14 @@ struct HeapSnapshot {
                     Cons *cons = static_cast<Cons *>(obj);
                     // Track head if boxed.
                     if (!(hdr->unboxed & 1) && cons->head.p.constant == 0) {
-                        void *child = GCTestAccess::fromPointer(cons->head.p);
+                        void *child = AllocatorTestAccess::fromPointer(cons->head.p);
                         if (child && obj_to_idx.count(child)) {
                             nodes[node_idx].children.push_back(obj_to_idx[child]);
                         }
                     }
                     // Track tail (always a pointer, may be Nil).
                     if (cons->tail.constant == 0) {
-                        void *child = GCTestAccess::fromPointer(cons->tail);
+                        void *child = AllocatorTestAccess::fromPointer(cons->tail);
                         if (child && obj_to_idx.count(child)) {
                             nodes[node_idx].children.push_back(obj_to_idx[child]);
                         }
@@ -159,7 +159,7 @@ struct HeapSnapshot {
                     Custom *custom = static_cast<Custom *>(obj);
                     for (size_t i = 0; i < hdr->size && i < 48; i++) {
                         if (!(custom->unboxed & (1ULL << i)) && custom->values[i].p.constant == 0) {
-                            void *child = GCTestAccess::fromPointer(custom->values[i].p);
+                            void *child = AllocatorTestAccess::fromPointer(custom->values[i].p);
                             if (child && obj_to_idx.count(child)) {
                                 nodes[node_idx].children.push_back(obj_to_idx[child]);
                             }
@@ -171,7 +171,7 @@ struct HeapSnapshot {
                     Record *record = static_cast<Record *>(obj);
                     for (size_t i = 0; i < hdr->size && i < 64; i++) {
                         if (!(record->unboxed & (1ULL << i)) && record->values[i].p.constant == 0) {
-                            void *child = GCTestAccess::fromPointer(record->values[i].p);
+                            void *child = AllocatorTestAccess::fromPointer(record->values[i].p);
                             if (child && obj_to_idx.count(child)) {
                                 nodes[node_idx].children.push_back(obj_to_idx[child]);
                             }
@@ -183,7 +183,7 @@ struct HeapSnapshot {
                     DynRecord *dynrec = static_cast<DynRecord *>(obj);
                     // Track fieldgroup.
                     if (dynrec->fieldgroup.constant == 0) {
-                        void *child = GCTestAccess::fromPointer(dynrec->fieldgroup);
+                        void *child = AllocatorTestAccess::fromPointer(dynrec->fieldgroup);
                         if (child && obj_to_idx.count(child)) {
                             nodes[node_idx].children.push_back(obj_to_idx[child]);
                         }
@@ -191,7 +191,7 @@ struct HeapSnapshot {
                     // Track all values (all HPointers).
                     for (size_t i = 0; i < hdr->size; i++) {
                         if (dynrec->values[i].constant == 0) {
-                            void *child = GCTestAccess::fromPointer(dynrec->values[i]);
+                            void *child = AllocatorTestAccess::fromPointer(dynrec->values[i]);
                             if (child && obj_to_idx.count(child)) {
                                 nodes[node_idx].children.push_back(obj_to_idx[child]);
                             }
@@ -203,7 +203,7 @@ struct HeapSnapshot {
                     Closure *closure = static_cast<Closure *>(obj);
                     for (size_t i = 0; i < closure->n_values && i < 52; i++) {
                         if (!(closure->unboxed & (1ULL << i)) && closure->values[i].p.constant == 0) {
-                            void *child = GCTestAccess::fromPointer(closure->values[i].p);
+                            void *child = AllocatorTestAccess::fromPointer(closure->values[i].p);
                             if (child && obj_to_idx.count(child)) {
                                 nodes[node_idx].children.push_back(obj_to_idx[child]);
                             }
@@ -221,7 +221,7 @@ struct HeapSnapshot {
         for (HPointer *root: roots) {
             if (root->constant != 0)
                 continue;
-            void *obj = GCTestAccess::fromPointer(*root);
+            void *obj = AllocatorTestAccess::fromPointer(*root);
             if (obj && obj_to_idx.count(obj)) {
                 root_indices.push_back(obj_to_idx[obj]);
             }
@@ -239,7 +239,7 @@ struct HeapSnapshot {
             if (root->constant != 0) {
                 continue;
             }
-            void *obj = GCTestAccess::fromPointer(*root);
+            void *obj = AllocatorTestAccess::fromPointer(*root);
             if (obj) {
                 worklist.push_back(obj);
                 reachable.insert(obj);
@@ -262,13 +262,13 @@ struct HeapSnapshot {
                 case Tag_Tuple2: {
                     Tuple2 *t = static_cast<Tuple2 *>(obj);
                     if (!(hdr->unboxed & 1) && t->a.p.constant == 0) {
-                        void *child = GCTestAccess::fromPointer(t->a.p);
+                        void *child = AllocatorTestAccess::fromPointer(t->a.p);
                         if (child && reachable.insert(child).second) {
                             worklist.push_back(child);
                         }
                     }
                     if (!(hdr->unboxed & 2) && t->b.p.constant == 0) {
-                        void *child = GCTestAccess::fromPointer(t->b.p);
+                        void *child = AllocatorTestAccess::fromPointer(t->b.p);
                         if (child && reachable.insert(child).second) {
                             worklist.push_back(child);
                         }
@@ -278,19 +278,19 @@ struct HeapSnapshot {
                 case Tag_Tuple3: {
                     Tuple3 *t = static_cast<Tuple3 *>(obj);
                     if (!(hdr->unboxed & 1) && t->a.p.constant == 0) {
-                        void *child = GCTestAccess::fromPointer(t->a.p);
+                        void *child = AllocatorTestAccess::fromPointer(t->a.p);
                         if (child && reachable.insert(child).second) {
                             worklist.push_back(child);
                         }
                     }
                     if (!(hdr->unboxed & 2) && t->b.p.constant == 0) {
-                        void *child = GCTestAccess::fromPointer(t->b.p);
+                        void *child = AllocatorTestAccess::fromPointer(t->b.p);
                         if (child && reachable.insert(child).second) {
                             worklist.push_back(child);
                         }
                     }
                     if (!(hdr->unboxed & 4) && t->c.p.constant == 0) {
-                        void *child = GCTestAccess::fromPointer(t->c.p);
+                        void *child = AllocatorTestAccess::fromPointer(t->c.p);
                         if (child && reachable.insert(child).second) {
                             worklist.push_back(child);
                         }
@@ -300,13 +300,13 @@ struct HeapSnapshot {
                 case Tag_Cons: {
                     Cons *cons = static_cast<Cons *>(obj);
                     if (!(hdr->unboxed & 1) && cons->head.p.constant == 0) {
-                        void *child = GCTestAccess::fromPointer(cons->head.p);
+                        void *child = AllocatorTestAccess::fromPointer(cons->head.p);
                         if (child && reachable.insert(child).second) {
                             worklist.push_back(child);
                         }
                     }
                     if (cons->tail.constant == 0) {
-                        void *child = GCTestAccess::fromPointer(cons->tail);
+                        void *child = AllocatorTestAccess::fromPointer(cons->tail);
                         if (child && reachable.insert(child).second) {
                             worklist.push_back(child);
                         }
@@ -317,7 +317,7 @@ struct HeapSnapshot {
                     Custom *custom = static_cast<Custom *>(obj);
                     for (size_t i = 0; i < hdr->size && i < 48; i++) {
                         if (!(custom->unboxed & (1ULL << i)) && custom->values[i].p.constant == 0) {
-                            void *child = GCTestAccess::fromPointer(custom->values[i].p);
+                            void *child = AllocatorTestAccess::fromPointer(custom->values[i].p);
                             if (child && reachable.insert(child).second) {
                                 worklist.push_back(child);
                             }
@@ -329,7 +329,7 @@ struct HeapSnapshot {
                     Record *record = static_cast<Record *>(obj);
                     for (size_t i = 0; i < hdr->size && i < 64; i++) {
                         if (!(record->unboxed & (1ULL << i)) && record->values[i].p.constant == 0) {
-                            void *child = GCTestAccess::fromPointer(record->values[i].p);
+                            void *child = AllocatorTestAccess::fromPointer(record->values[i].p);
                             if (child && reachable.insert(child).second) {
                                 worklist.push_back(child);
                             }
@@ -340,14 +340,14 @@ struct HeapSnapshot {
                 case Tag_DynRecord: {
                     DynRecord *dynrec = static_cast<DynRecord *>(obj);
                     if (dynrec->fieldgroup.constant == 0) {
-                        void *child = GCTestAccess::fromPointer(dynrec->fieldgroup);
+                        void *child = AllocatorTestAccess::fromPointer(dynrec->fieldgroup);
                         if (child && reachable.insert(child).second) {
                             worklist.push_back(child);
                         }
                     }
                     for (size_t i = 0; i < hdr->size; i++) {
                         if (dynrec->values[i].constant == 0) {
-                            void *child = GCTestAccess::fromPointer(dynrec->values[i]);
+                            void *child = AllocatorTestAccess::fromPointer(dynrec->values[i]);
                             if (child && reachable.insert(child).second) {
                                 worklist.push_back(child);
                             }
@@ -359,7 +359,7 @@ struct HeapSnapshot {
                     Closure *closure = static_cast<Closure *>(obj);
                     for (size_t i = 0; i < closure->n_values && i < 52; i++) {
                         if (!(closure->unboxed & (1ULL << i)) && closure->values[i].p.constant == 0) {
-                            void *child = GCTestAccess::fromPointer(closure->values[i].p);
+                            void *child = AllocatorTestAccess::fromPointer(closure->values[i].p);
                             if (child && reachable.insert(child).second) {
                                 worklist.push_back(child);
                             }
