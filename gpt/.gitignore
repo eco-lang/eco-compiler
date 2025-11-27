@@ -1,0 +1,13 @@
+# Virtual environment
+venv/
+
+# Settings and cache (contains API-specific IDs)
+settings.json
+vector_store_id.txt
+
+# Chat logs
+chat_logs/
+
+# Python
+__pycache__/
+*.pyc
