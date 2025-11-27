@@ -17,29 +17,6 @@ DOCS_DIR = "knowledge"
 SETTINGS_FILE = "settings.json"
 LOG_DIR = "chat_logs"
 
-console = Console()
-
-api_key = os.environ.get("OPEN_AI_API_KEY")
-if not api_key:
-    console.print("[red]Error: OPEN_AI_API_KEY environment variable not set[/red]")
-    sys.exit(1)
-
-client = OpenAI(api_key=api_key)
-
-os.makedirs(LOG_DIR, exist_ok=True)
-
-# --------------------------------
-# CLI Args
-# --------------------------------
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--reindex", action="store_true", help="Force re-upload + reindex")
-parser.add_argument("--strict", action="store_true", help="Only answer if info is in files")
-parser.add_argument("--debug", action="store_true", help="Show retrieved chunks")
-parser.add_argument("-t", "--thinking", choices=["l", "m", "h"], help="Override thinking level: l=low, m=medium, h=high")
-parser.add_argument("-n", "--non-interactive", action="store_true", help="Non-interactive mode: read query from stdin, write response to stdout, exit")
-args = parser.parse_args()
-
 THINKING_MAP = {"l": "low", "m": "medium", "h": "high"}
 
 # --------------------------------
@@ -56,7 +33,7 @@ def save_settings(settings):
     with open(SETTINGS_FILE, "w") as f:
         json.dump(settings, f, indent=2)
 
-def select_model():
+def select_model(client, console):
     console.print("\n[yellow]Fetching available models...[/yellow]")
 
     with Status("[yellow]Loading models from OpenAI...[/yellow]", console=console):
@@ -89,7 +66,7 @@ def select_model():
             pass
         console.print("[red]Invalid choice, try again[/red]")
 
-def select_reasoning_effort():
+def select_reasoning_effort(console):
     """Select reasoning effort level for thinking models."""
     console.print("\n[bold cyan]Reasoning effort levels:[/bold cyan]")
     options = [
@@ -115,30 +92,10 @@ def select_reasoning_effort():
         console.print("[red]Invalid choice, try again[/red]")
 
 # --------------------------------
-# Load or create vector store
+# Vector Store Management
 # --------------------------------
 
-def load_or_create_settings():
-    """Load existing settings or run first-time setup."""
-    settings = load_settings()
-    needs_setup = args.reindex or not settings.get("vector_store_id")
-
-    if not needs_setup:
-        if not args.non_interactive:
-            console.print(f"[green]Using model:[/green] {settings.get('model')}")
-            if settings.get("reasoning_effort"):
-                console.print(f"[green]Reasoning effort:[/green] {settings.get('reasoning_effort')}")
-            console.print(f"[green]Using vector store:[/green] {settings.get('vector_store_id')}")
-        return settings
-
-    # First time or reindex - select model, reasoning, and create vector store
-    settings["model"] = select_model()
-    settings["reasoning_effort"] = select_reasoning_effort()
-    settings["vector_store_id"] = create_vector_store()
-    save_settings(settings)
-    return settings
-
-def create_vector_store():
+def create_vector_store(client, console):
     """Upload files and create a new vector store."""
     console.print("\n[yellow]Uploading and indexing files...[/yellow]")
 
@@ -158,6 +115,11 @@ def create_vector_store():
         # Config and markup
         ".toml", ".ini", ".cfg", ".conf", ".tex", ".rst", ".org", ".adoc",
     )
+
+    if not os.path.exists(DOCS_DIR):
+        console.print(f"[red]Error: {DOCS_DIR}/ directory not found[/red]")
+        console.print("Create a 'knowledge' directory and add files to index.")
+        sys.exit(1)
 
     files_to_upload = [f for f in os.listdir(DOCS_DIR) if f.lower().endswith(SUPPORTED_EXTENSIONS)]
     total_files = len(files_to_upload)
@@ -208,8 +170,64 @@ def create_vector_store():
     console.print("[green]✓ Vector store ready.[/green]")
     return vector_store.id
 
-def main():
-    settings = load_or_create_settings()
+def load_or_create_settings(args, client, console):
+    """Load existing settings or run first-time setup."""
+    settings = load_settings()
+    needs_setup = args.reindex or not settings.get("vector_store_id")
+
+    if not needs_setup:
+        if not args.non_interactive:
+            console.print(f"[green]Using model:[/green] {settings.get('model')}")
+            if settings.get("reasoning_effort"):
+                console.print(f"[green]Reasoning effort:[/green] {settings.get('reasoning_effort')}")
+            console.print(f"[green]Using vector store:[/green] {settings.get('vector_store_id')}")
+        return settings
+
+    # First time or reindex - select model, reasoning, and create vector store
+    settings["model"] = select_model(client, console)
+    settings["reasoning_effort"] = select_reasoning_effort(console)
+    settings["vector_store_id"] = create_vector_store(client, console)
+    save_settings(settings)
+    return settings
+
+# --------------------------------
+# Main Entry Point
+# --------------------------------
+
+def cli():
+    """Main entry point for the CLI."""
+    parser = argparse.ArgumentParser(
+        prog="rag-cli",
+        description="A RAG CLI tool using OpenAI's vector store and file search"
+    )
+    parser.add_argument("--reindex", action="store_true", help="Force re-upload + reindex")
+    parser.add_argument("--strict", action="store_true", help="Only answer if info is in files")
+    parser.add_argument("--debug", action="store_true", help="Show retrieved chunks")
+    parser.add_argument("-t", "--thinking", choices=["l", "m", "h"], help="Override thinking level: l=low, m=medium, h=high")
+    parser.add_argument("-n", "--non-interactive", action="store_true", help="Non-interactive mode: read query from stdin, write response to stdout, exit")
+    args = parser.parse_args()
+
+    console = Console()
+
+    # Check for API key
+    api_key = os.environ.get("OPEN_AI_API_KEY")
+    if not api_key:
+        console.print("[red]Error: OPEN_AI_API_KEY environment variable not set[/red]")
+        sys.exit(1)
+
+    client = OpenAI(api_key=api_key)
+
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+    try:
+        main(args, client, console)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Interrupted.[/yellow]")
+        sys.exit(0)
+
+def main(args, client, console):
+    """Main application logic."""
+    settings = load_or_create_settings(args, client, console)
     model = settings["model"]
     vector_store_id = settings["vector_store_id"]
 
@@ -349,9 +367,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Interrupted.[/yellow]")
-        sys.exit(0)
-
+    cli()

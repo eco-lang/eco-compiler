@@ -11,3 +11,15 @@ chat_logs/
 # Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Development
+*.so
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
