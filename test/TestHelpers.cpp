@@ -1,4 +1,5 @@
 #include "TestHelpers.hpp"
+#include "ThreadLocalHeap.hpp"
 #include <cstring>
 #include <rapidcheck.h>
 
@@ -11,8 +12,9 @@ namespace TestHelpers {
 
 Allocator& initAllocator(const HeapConfig& config) {
     auto& alloc = Allocator::instance();
-    alloc.initThread();
+    // Reset first (clears all thread heaps), then init thread with new config.
     AllocatorTestAccess::reset(alloc, &config);
+    alloc.initThread();
     return alloc;
 }
 
@@ -165,11 +167,14 @@ HPointer createConstant(Constant c) {
 // ============================================================================
 
 void runMarkAndSweep(Allocator& alloc) {
-    auto& oldgen = AllocatorTestAccess::getOldGen(alloc);
+    auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
+    if (!heap) return;
+
+    auto& oldgen = heap->getOldGen();
     auto& rootset = alloc.getRootSet();
 
 #if ENABLE_GC_STATS
-    GCStats& stats = alloc.getMajorGCStats();
+    GCStats& stats = heap->getStats();
     OldGenSpaceTestAccess::startMark(oldgen, rootset.getRoots(), Allocator::instance(), stats);
     OldGenSpaceTestAccess::finishMarkAndSweep(oldgen, stats);
 #else

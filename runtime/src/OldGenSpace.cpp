@@ -58,6 +58,16 @@ void OldGenSpace::initialize(Allocator* allocator, const HeapConfig* config) {
     allocated_bytes = 0;
 }
 
+bool OldGenSpace::contains(void* ptr) const {
+    char* p = static_cast<char*>(ptr);
+    for (const AllocBuffer* buffer : buffers_) {
+        if (p >= buffer->start_ && p < buffer->end_) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void OldGenSpace::reset(const HeapConfig* new_config) {
     // Update config if provided.
     if (new_config) {

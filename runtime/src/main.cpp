@@ -614,10 +614,28 @@ static bool parseArgs(int argc, char* argv[]) {
 // Main
 // ============================================================================
 
+// Thread function that initializes thread-local heap and runs the program loop.
+// Note: We don't call cleanupThread() here so that getCombinedStats() can
+// aggregate stats from all threads after they finish. The allocator destructor
+// will clean up all thread heaps.
+static void programThreadFunc(Allocator& alloc, int thread_id) {
+    try {
+        // Initialize this thread's heap space.
+        alloc.initThread();
+
+        // Run the program loop.
+        runProgramLoop(alloc, thread_id);
+
+        // Don't call cleanupThread() - let main() print stats first.
+    } catch (const std::exception& e) {
+        std::cerr << "\n[Thread " << thread_id << "] FATAL ERROR: " << e.what() << "\n";
+        printStackTrace();
+        shutdown_requested.store(true);
+    }
+}
+
 // Entry point: initializes allocator and runs the program loop(s).
 // Each thread has its own private heap space (nursery + old gen).
-// NOTE: Currently uses singleton Allocator, so only 1 thread is supported.
-// Multi-threading requires per-thread Allocator instances (future work).
 int main(int argc, char* argv[]) {
     if (!parseArgs(argc, argv)) {
         printUsage(argv[0]);
@@ -626,12 +644,6 @@ int main(int argc, char* argv[]) {
 
     try {
         std::cout << "=== Eco Runtime for Elm ===" << std::endl;
-
-        if (num_program_threads > 1) {
-            std::cerr << "Warning: Multi-threading not yet supported (requires per-thread allocators).\n";
-            std::cerr << "Running with 1 thread instead.\n";
-            num_program_threads = 1;
-        }
 
         // Install signal handlers for graceful shutdown on Ctrl+C or kill.
         signal(SIGINT, shutdownHandler);
@@ -648,10 +660,9 @@ int main(int argc, char* argv[]) {
         HeapConfig config;
         config.max_heap_size = 2ULL * 1024 * 1024 * 1024;  // 2GB heap
         alloc.initialize(config);
-        alloc.initThread();
 
-        std::cout << "Allocator initialized (major GC threshold: "
-                  << (major_gc_threshold * 100) << "% of "
+        std::cout << "Allocator initialized with " << num_program_threads << " thread(s) "
+                  << "(major GC threshold: " << (major_gc_threshold * 100) << "% of "
                   << (max_old_gen_bytes / (1024 * 1024)) << "MB)" << std::endl;
 
         // Set up duration-based shutdown if specified.
@@ -667,8 +678,18 @@ int main(int argc, char* argv[]) {
             std::cout << "Running until Ctrl+C..." << std::endl;
         }
 
-        // Run the program loop.
-        runProgramLoop(alloc, 0);
+        // Create and start program threads.
+        std::vector<std::thread> program_threads;
+        program_threads.reserve(num_program_threads);
+
+        for (size_t i = 0; i < num_program_threads; i++) {
+            program_threads.emplace_back(programThreadFunc, std::ref(alloc), static_cast<int>(i));
+        }
+
+        // Wait for all program threads to finish.
+        for (auto& t : program_threads) {
+            t.join();
+        }
 
         // Wait for duration thread if it was started.
         if (duration_thread.joinable()) {

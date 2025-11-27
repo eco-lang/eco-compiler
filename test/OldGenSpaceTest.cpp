@@ -9,8 +9,25 @@
 #include "HeapSnapshot.hpp"
 #include "OldGenSpace.hpp"
 #include "TestHelpers.hpp"
+#include "ThreadLocalHeap.hpp"
 
 using namespace Elm;
+
+// Helper to get thread-local OldGenSpace reference.
+static OldGenSpace& getOldGen(Allocator& alloc) {
+    auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
+    RC_ASSERT(heap != nullptr);
+    return heap->getOldGen();
+}
+
+// Helper to get thread-local GCStats reference.
+#if ENABLE_GC_STATS
+static GCStats& getStats(Allocator& alloc) {
+    auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
+    RC_ASSERT(heap != nullptr);
+    return heap->getStats();
+}
+#endif
 
 // ============================================================================
 // Tests
@@ -19,7 +36,7 @@ using namespace Elm;
 Testing::TestCase testOldGenAllocate("OldGenSpace allocate returns valid objects", []() {
     rc::check([]() {
         auto& alloc = initAllocator();
-        auto& oldgen = AllocatorTestAccess::getOldGen(alloc);
+        auto& oldgen = getOldGen(alloc);
 
         // Allocate objects directly in old gen (size-scaled: 1-10 at size 0, up to 1-110 at size 1000)
         size_t num_objects = *rc::sizedRange<size_t>(1, 10, 0.1);
@@ -48,7 +65,7 @@ Testing::TestCase testOldGenAllocate("OldGenSpace allocate returns valid objects
 Testing::TestCase testRootsMarkedAtStart("startMark pushes roots to mark stack", []() {
     rc::check([]() {
         auto& alloc = initAllocator();
-        auto& oldgen = AllocatorTestAccess::getOldGen(alloc);
+        auto& oldgen = getOldGen(alloc);
         auto& rootset = alloc.getRootSet();
 
         // Allocate objects in old gen (size-scaled: 1-10 at size 0, up to 1-110 at size 1000)
@@ -71,7 +88,7 @@ Testing::TestCase testRootsMarkedAtStart("startMark pushes roots to mark stack",
 
         // Start marking
 #if ENABLE_GC_STATS
-        GCStats& stats = alloc.getMajorGCStats();
+        GCStats& stats = getStats(alloc);
         OldGenSpaceTestAccess::startMark(oldgen, rootset.getRoots(), Allocator::instance(), stats);
 #else
         OldGenSpaceTestAccess::startMark(oldgen, rootset.getRoots(), Allocator::instance());
@@ -108,7 +125,7 @@ Testing::TestCase testRootsMarkedAtStart("startMark pushes roots to mark stack",
 Testing::TestCase testRootsPreservedAfterIncrementalMark("Roots remain marked Black after incremental mark steps", []() {
     rc::check([](const HeapGraphDesc& graph) {
         auto& alloc = initAllocator();
-        auto& oldgen = AllocatorTestAccess::getOldGen(alloc);
+        auto& oldgen = getOldGen(alloc);
 
         // Allocate complex heap graph directly in old gen.
         std::vector<void*> objects = allocateHeapGraphInOldGen(oldgen, graph.nodes);
@@ -120,7 +137,7 @@ Testing::TestCase testRootsPreservedAfterIncrementalMark("Roots remain marked Bl
 
         // Start marking.
 #if ENABLE_GC_STATS
-        GCStats& stats = alloc.getMajorGCStats();
+        GCStats& stats = getStats(alloc);
         OldGenSpaceTestAccess::startMark(oldgen, alloc.getRootSet().getRoots(), Allocator::instance(), stats);
 #else
         OldGenSpaceTestAccess::startMark(oldgen, alloc.getRootSet().getRoots(), Allocator::instance());
@@ -157,7 +174,7 @@ Testing::TestCase testRootsPreservedAfterIncrementalMark("Roots remain marked Bl
 Testing::TestCase testRootsPreservedAfterSweep("Root objects survive full GC cycle with values intact", []() {
     rc::check([]() {
         auto& alloc = initAllocator();
-        auto& oldgen = AllocatorTestAccess::getOldGen(alloc);
+        auto& oldgen = getOldGen(alloc);
         auto& rootset = alloc.getRootSet();
 
         // Allocate objects in old gen (size-scaled: 1-10 at size 0, up to 1-110 at size 1000)
@@ -200,7 +217,7 @@ Testing::TestCase testRootsPreservedAfterSweep("Root objects survive full GC cyc
 Testing::TestCase testGarbageUnmarkedInIncrementalSteps("Objects with no roots remain White after incremental marking", []() {
     rc::check([](const HeapGraphDesc& graph) {
         auto& alloc = initAllocator();
-        auto& oldgen = AllocatorTestAccess::getOldGen(alloc);
+        auto& oldgen = getOldGen(alloc);
 
         // Allocate complex heap graph directly in old gen - but DON'T root them.
         std::vector<void*> garbage_objects = allocateHeapGraphInOldGen(oldgen, graph.nodes);
@@ -208,7 +225,7 @@ Testing::TestCase testGarbageUnmarkedInIncrementalSteps("Objects with no roots r
 
         // Start mark with empty root set (no roots!).
 #if ENABLE_GC_STATS
-        GCStats& stats = alloc.getMajorGCStats();
+        GCStats& stats = getStats(alloc);
         OldGenSpaceTestAccess::startMark(oldgen, alloc.getRootSet().getRoots(), Allocator::instance(), stats);
 #else
         OldGenSpaceTestAccess::startMark(oldgen, alloc.getRootSet().getRoots(), Allocator::instance());
@@ -240,7 +257,7 @@ Testing::TestCase testGarbageUnmarkedInIncrementalSteps("Objects with no roots r
 Testing::TestCase testGarbageReclaimedAfterSweep("Unreachable objects are reclaimed by sweep", []() {
     rc::check([](const HeapGraphDesc& graph) {
         auto& alloc = initAllocator();
-        auto& oldgen = AllocatorTestAccess::getOldGen(alloc);
+        auto& oldgen = getOldGen(alloc);
 
         // Allocate complex heap graph directly in old gen - but DON'T root them.
         std::vector<void*> garbage_objects = allocateHeapGraphInOldGen(oldgen, graph.nodes);

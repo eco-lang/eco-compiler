@@ -7,6 +7,7 @@ add_executable(ecor
         runtime/src/OldGenSpace.cpp
         runtime/src/NurserySpace.cpp
         runtime/src/Allocator.cpp
+        runtime/src/ThreadLocalHeap.cpp
         runtime/src/GCStats.cpp
         test/HeapGenerators.hpp
 )

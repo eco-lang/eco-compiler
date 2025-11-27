@@ -3,18 +3,17 @@
  *
  * This file implements the central allocator that manages:
  *   - Unified heap address space (reserved via mmap, committed on demand).
- *   - Single nursery for fast allocation.
- *   - Old generation for long-lived objects.
- *   - Minor GC (copying collection in nursery).
- *   - Major GC (mark-sweep in old gen).
+ *   - Thread-local heaps for each thread (nursery + old gen + stats).
+ *   - Delegation to thread-local heaps for allocation and GC.
  *
  * Memory layout:
- *   [0 .. heap_reserved/2)      - Old generation (AllocBuffers allocated here).
- *   [heap_reserved/2 .. end)    - Nursery.
+ *   [0 .. heap_reserved/2)      - Old generation region (carved up per-thread).
+ *   [heap_reserved/2 .. end)    - Nursery region (carved up per-thread).
  */
 
 #include "Allocator.hpp"
 #include "AllocBuffer.hpp"
+#include "ThreadLocalHeap.hpp"
 #include <cassert>
 #include <cstring>
 #include <new>
@@ -25,6 +24,9 @@ namespace Elm {
 // Global heap base for read barrier (used by fromPointer/toPointer).
 char* g_heap_base = nullptr;
 
+// Thread-local heap pointer for fast access.
+thread_local ThreadLocalHeap* Allocator::tl_heap_ = nullptr;
+
 Allocator::Allocator() :
     heap_base(nullptr), heap_reserved(0), old_gen_committed(0), nursery_offset(0),
     nursery_committed_(0), initialized(false) {
@@ -32,6 +34,12 @@ Allocator::Allocator() :
 }
 
 Allocator::~Allocator() {
+    // Clean up all thread heaps.
+    {
+        std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+        thread_heaps_.clear();
+    }
+
     if (heap_base) {
         munmap(heap_base, heap_reserved);
     }
@@ -63,18 +71,16 @@ void Allocator::initialize(const HeapConfig& config) {
     // Set global heap_base for read barrier.
     g_heap_base = heap_base;
 
-    // Nursery starts at halfway point.
+    // Nursery region starts at halfway point.
     nursery_offset = heap_reserved / 2;
-
-    // Initialize old gen with reference back to this allocator.
-    old_gen.initialize(this, &config_);
 
     initialized = true;
 }
 
-// Commits physical memory for the nursery.
+// Commits physical memory for a nursery region.
 void Allocator::commitNursery(char *nursery_base, size_t size) {
-    void *result = mmap(nursery_base, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    void *result = mmap(nursery_base, size, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
 
     if (result == MAP_FAILED) {
         throw std::bad_alloc();
@@ -87,176 +93,118 @@ Allocator &Allocator::instance() {
     return alloc;
 }
 
-// Initializes allocator state, creating the nursery.
-// Must be called before allocation.
+// Initializes the calling thread's heap space.
 void Allocator::initThread() {
     // Ensure allocator is initialized.
     if (!initialized) {
         initialize();
     }
 
-    if (!nursery) {
-        // Reset nursery committed tracking.
-        nursery_committed_ = 0;
-
-        nursery = std::make_unique<NurserySpace>();
-        nursery->initialize(this, &config_);
+    // Check if this thread already has a heap.
+    if (tl_heap_ != nullptr) {
+        return;  // Already initialized.
     }
+
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+
+    // Double-check after acquiring lock.
+    auto thread_id = std::this_thread::get_id();
+    if (thread_heaps_.find(thread_id) != thread_heaps_.end()) {
+        tl_heap_ = thread_heaps_[thread_id].get();
+        return;
+    }
+
+    // Create ThreadLocalHeap.
+    // Memory is allocated on demand by NurserySpace (via acquireNurseryBlock)
+    // and OldGenSpace (via acquireAllocBuffer).
+    auto heap = std::make_unique<ThreadLocalHeap>(
+        this,
+        nullptr, 0,    // Nursery base/size - allocated on demand
+        nullptr, 0, 0, // Old gen base/initial/max - allocated on demand
+        &config_
+    );
+
+    tl_heap_ = heap.get();
+    thread_heaps_[thread_id] = std::move(heap);
 }
 
-NurserySpace *Allocator::getNursery() {
-    return nursery.get();
+// Cleans up the calling thread's heap space.
+void Allocator::cleanupThread() {
+    if (tl_heap_ == nullptr) {
+        return;  // Nothing to clean up.
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+
+    auto thread_id = std::this_thread::get_id();
+    auto it = thread_heaps_.find(thread_id);
+    if (it != thread_heaps_.end()) {
+        thread_heaps_.erase(it);
+    }
+
+    tl_heap_ = nullptr;
 }
 
 RootSet &Allocator::getRootSet() {
-    if (!nursery) {
+    if (!tl_heap_) {
         // Auto-initialize for convenience.
         initThread();
     }
-    return nursery->getRootSet();
-}
-
-std::vector<HPointer*> Allocator::collectAllRoots() {
-    std::vector<HPointer*> all_roots;
-    if (nursery) {
-        // Collect long-lived roots.
-        const auto& roots = nursery->getRootSet().getRoots();
-        all_roots.insert(all_roots.end(), roots.begin(), roots.end());
-        // Collect stack roots.
-        const auto& stack_roots = nursery->getRootSet().getStackRoots();
-        all_roots.insert(all_roots.end(), stack_roots.begin(), stack_roots.end());
-    }
-    return all_roots;
+    return tl_heap_->getRootSet();
 }
 
 // Allocates a heap object of the given size with the specified tag.
-// Tries nursery first (fast path).
-// May trigger minor GC if nursery usage exceeds threshold.
 void *Allocator::allocate(size_t size, Tag tag) {
-    if (nursery) {
-        // Check if allocation would exceed threshold - trigger GC proactively.
-        if (nursery->wouldExceedThreshold(size, config_.nursery_gc_threshold)) {
-            minorGC();
-        }
-
-        void *obj = nursery->allocate(size);
-        if (obj) {
-            Header *hdr = getHeader(obj);
-            std::memset(hdr, 0, sizeof(Header));
-            hdr->tag = tag;
-            // For variable-sized types, hdr->size stores element count.
-            // For fixed-size types, hdr->size stores total byte size.
-            switch (tag) {
-                case Tag_String:
-                    hdr->size = (size - sizeof(ElmString)) / sizeof(u16);
-                    break;
-                case Tag_Custom:
-                    hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);
-                    break;
-                case Tag_Record:
-                    hdr->size = (size - sizeof(Record)) / sizeof(Unboxable);
-                    break;
-                case Tag_DynRecord:
-                    hdr->size = (size - sizeof(DynRecord)) / sizeof(HPointer);
-                    break;
-                case Tag_FieldGroup:
-                    hdr->size = (size - sizeof(FieldGroup)) / sizeof(u32);
-                    break;
-                case Tag_Closure:
-                    hdr->size = (size - sizeof(Closure)) / sizeof(Unboxable);
-                    break;
-                default:
-                    hdr->size = size;
-                    break;
-            }
-            return obj;
-        }
-    }
-
-    // Nursery allocation failed - currently treated as fatal error.
-    // Cannot fall back to old gen allocation: would create old-to-young pointers
-    // when the object's fields are filled in, violating generational GC invariants.
-    // Solution: Configure larger nursery_size or trigger GC more aggressively.
-    assert(false && "Failed to allocate to nursery, it is full.");
-    return nullptr;
+    assert(tl_heap_ && "Thread not initialized - call initThread() first");
+    return tl_heap_->allocate(size, tag);
 }
 
-// Triggers a minor GC on the nursery.
-// Uses Cheney's copying algorithm to evacuate live objects to to-space
-// or promote them to old gen if they've survived enough collections.
+// Triggers a minor GC on the thread-local nursery.
 void Allocator::minorGC() {
-    if (nursery) {
-        nursery->minorGC(old_gen);
+    if (tl_heap_) {
+        tl_heap_->minorGC();
     }
 }
 
-// Triggers a major GC cycle: mark-sweep on old generation.
+// Triggers a major GC on the thread-local old gen.
 void Allocator::majorGC() {
-#if ENABLE_GC_STATS
-    auto gc_start = GC_STATS_TIMER_START();
-#endif
+    if (tl_heap_) {
+        tl_heap_->majorGC();
+    }
+}
 
-    // Collect all roots.
-    std::vector<HPointer*> all_roots = collectAllRoots();
-
-    // Start marking phase - traces through ALL objects including nursery.
-#if ENABLE_GC_STATS
-    old_gen.startMark(all_roots, *this, major_gc_stats);
-#else
-    old_gen.startMark(all_roots, *this);
-#endif
-
-    // Continue with marking and sweep.
-#if ENABLE_GC_STATS
-    old_gen.finishMarkAndSweep(major_gc_stats);
-#else
-    old_gen.finishMarkAndSweep();
-#endif
-
-#if ENABLE_GC_STATS
-    uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
-    GC_STATS_MAJOR_RECORD_GC_END(major_gc_stats, elapsed_ns);
-#endif
+bool Allocator::isNurseryNearFull(float threshold) {
+    if (tl_heap_) {
+        return tl_heap_->isNurseryNearFull(threshold);
+    }
+    return false;
 }
 
 bool Allocator::isInNursery(void *ptr) {
-    return nursery && nursery->contains(ptr);
+    return tl_heap_ && tl_heap_->isInNursery(ptr);
 }
 
 bool Allocator::isInOldGen(void *ptr) {
-    char* p = static_cast<char*>(ptr);
-    return p >= heap_base && p < heap_base + nursery_offset;
+    return tl_heap_ && tl_heap_->isInOldGen(ptr);
+}
+
+size_t Allocator::getOldGenAllocatedBytes() const {
+    if (tl_heap_) {
+        return tl_heap_->getOldGenAllocatedBytes();
+    }
+    return 0;
 }
 
 // ============================================================================
-// AllocBuffer Management
+// Region Allocation (for NurserySpace growth)
 // ============================================================================
-
-AllocBuffer* Allocator::acquireAllocBuffer(size_t size) {
-    // Align size to 8 bytes.
-    size = (size + 7) & ~7;
-
-    // Check if we have space in old gen region.
-    if (old_gen_committed + size > nursery_offset) {
-        return nullptr;  // Out of old gen address space.
-    }
-
-    // Commit physical memory for this buffer.
-    char* buffer_base = heap_base + old_gen_committed;
-    void* result = mmap(buffer_base, size, PROT_READ | PROT_WRITE,
-                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-
-    if (result == MAP_FAILED) {
-        return nullptr;
-    }
-
-    old_gen_committed += size;
-
-    // Create and return the AllocBuffer.
-    return new AllocBuffer(buffer_base, size);
-}
 
 char* Allocator::acquireNurseryBlock(size_t size) {
+    // Note: This is called by NurserySpace during growth.
+    // The calling thread already holds appropriate locks within NurserySpace.
+    // We need our own lock for the shared nursery_committed_ counter.
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+
     // Align size to 8 bytes.
     size = (size + 7) & ~7;
 
@@ -281,29 +229,72 @@ char* Allocator::acquireNurseryBlock(size_t size) {
     return block_base;
 }
 
+AllocBuffer* Allocator::acquireAllocBuffer(size_t size) {
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+
+    // Align size to 8 bytes.
+    size = (size + 7) & ~7;
+
+    // Check if we have space in old gen region.
+    if (old_gen_committed + size > nursery_offset) {
+        return nullptr;  // Out of old gen address space.
+    }
+
+    char* buffer_base = heap_base + old_gen_committed;
+
+    // Commit physical memory for this buffer.
+    void* result = mmap(buffer_base, size, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+
+    if (result == MAP_FAILED) {
+        return nullptr;
+    }
+
+    old_gen_committed += size;
+    return new AllocBuffer(buffer_base, size);
+}
+
+char* Allocator::acquireOldGenRegion(size_t initial_size, size_t max_size) {
+    // Note: Caller must hold thread_mutex_.
+    // Align sizes to 8 bytes.
+    initial_size = (initial_size + 7) & ~7;
+    max_size = (max_size + 7) & ~7;
+
+    // Check if we have space in old gen region.
+    if (old_gen_committed + max_size > nursery_offset) {
+        return nullptr;  // Out of old gen address space.
+    }
+
+    char* region_base = heap_base + old_gen_committed;
+
+    // Commit initial physical memory.
+    void* result = mmap(region_base, initial_size, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+
+    if (result == MAP_FAILED) {
+        return nullptr;
+    }
+
+    old_gen_committed += max_size;  // Reserve the full max size.
+    return region_base;
+}
+
 void Allocator::reset(const HeapConfig* new_config) {
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+
     // Update config if provided.
     if (new_config) {
         new_config->validate();
         config_ = *new_config;
     }
 
-    // Reset nursery (resets its own root set).
-    // Pass config pointer so nursery can reconfigure.
-    if (nursery) {
-        nursery->reset(old_gen, new_config ? &config_ : nullptr);
-    }
+    // Clear all thread heaps.
+    thread_heaps_.clear();
+    tl_heap_ = nullptr;
 
-    // Reset old gen.
-    // Pass config pointer so old gen can reconfigure.
-    old_gen.reset(new_config ? &config_ : nullptr);
-
-    // Reset committed memory tracking for old gen and nursery.
-    // Note: We keep the address space reserved but will recommit as needed.
+    // Reset committed memory tracking.
     old_gen_committed = 0;
     nursery_committed_ = 0;
-
-    // Note: We do NOT reset GC stats here - stats accumulate across runs.
 }
 
 // ============================================================================
@@ -341,13 +332,30 @@ HPointer Allocator::wrap(void* obj) {
 
 #if ENABLE_GC_STATS
 GCStats Allocator::getCombinedStats() const {
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+
     GCStats combined;
-    if (nursery) {
-        combined.combine(nursery->getStats());
+    for (const auto& [thread_id, heap] : thread_heaps_) {
+        // Combine both nursery stats and thread-local heap stats.
+        combined.combine(heap->getNursery().getStats());
+        combined.combine(heap->getStats());
     }
-    combined.combine(major_gc_stats);
     return combined;
 }
 #endif
+
+// ============================================================================
+// Test Access Helper
+// ============================================================================
+
+NurserySpace* AllocatorTestAccess::getNursery(Allocator& alloc) {
+    ThreadLocalHeap* heap = alloc.getThreadHeap();
+    return heap ? &heap->getNursery() : nullptr;
+}
+
+OldGenSpace* AllocatorTestAccess::getOldGen(Allocator& alloc) {
+    ThreadLocalHeap* heap = alloc.getThreadHeap();
+    return heap ? &heap->getOldGen() : nullptr;
+}
 
 } // namespace Elm

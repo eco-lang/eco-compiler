@@ -12,6 +12,7 @@ add_executable(test
         ../runtime/src/OldGenSpace.cpp
         ../runtime/src/NurserySpace.cpp
         ../runtime/src/Allocator.cpp
+        ../runtime/src/ThreadLocalHeap.cpp
         ../runtime/src/GCStats.cpp
 )
 

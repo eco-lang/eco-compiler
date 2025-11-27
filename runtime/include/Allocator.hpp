@@ -2,6 +2,9 @@
 #define ECO_ALLOCATOR_H
 
 #include <memory>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
 #include "AllocatorCommon.hpp"
 #include "NurserySpace.hpp"
 #include "OldGenSpace.hpp"
@@ -11,16 +14,22 @@
 namespace Elm {
 
 class AllocBuffer;
+class ThreadLocalHeap;
 
 /**
- * Central allocator managing nursery and old generation.
+ * Central allocator managing thread-local heaps.
  *
- * Singleton that owns the unified heap address space. Single-threaded version
- * with one nursery and shared old gen.
+ * Singleton that owns the unified heap address space. Each thread gets its own
+ * ThreadLocalHeap with independent nursery, old gen, and GC stats.
  *
  * Memory layout:
- *   [0 .. heap_reserved/2)      - Old generation (AllocBuffers allocated here)
- *   [heap_reserved/2 .. end)    - Nursery
+ *   [0 .. heap_reserved/2)      - Old generation region (carved up per-thread)
+ *   [heap_reserved/2 .. end)    - Nursery region (carved up per-thread)
+ *
+ * Thread safety:
+ *   - initThread() acquires mutex to allocate regions
+ *   - allocate(), minorGC(), majorGC() are lock-free (use thread-local heap)
+ *   - getCombinedStats() acquires mutex to iterate all thread heaps
  */
 class Allocator {
 public:
@@ -43,63 +52,61 @@ public:
 
     // Initializes the allocator with the given configuration.
     // Validates config parameters and throws std::invalid_argument on failure.
+    // Must be called before any thread calls initThread().
     void initialize(const HeapConfig& config = HeapConfig());
 
-    // Initializes allocator state, creating the nursery.
+    // Initializes the calling thread's heap space.
+    // Creates a ThreadLocalHeap with nursery and old gen regions.
+    // Thread-safe: acquires mutex to allocate regions from shared address space.
     void initThread();
+
+    // Cleans up the calling thread's heap space.
+    // Should be called before the thread exits.
+    void cleanupThread();
 
     // ========== Allocation ==========
 
-    // Allocates an object in the nursery. Asserts if nursery is full.
+    // Allocates an object in the thread-local nursery.
+    // Delegates to the calling thread's ThreadLocalHeap.
     void *allocate(size_t size, Tag tag);
 
     // ========== Garbage Collection ==========
 
-    // Triggers a minor GC on the nursery.
+    // Triggers a minor GC on the thread-local nursery.
     void minorGC();
 
-    // Triggers a major GC (mark-and-sweep on old gen).
+    // Triggers a major GC on the thread-local old gen.
     void majorGC();
 
     // ========== Root Management ==========
 
-    // Returns the root set.
+    // Returns the thread-local root set.
     RootSet &getRootSet();
 
     // ========== Diagnostics ==========
 
-    // Returns true if the nursery is over the threshold.
-    bool isNurseryNearFull(float threshold) {
-        if (nursery) {
-            size_t total_capacity = config_.nurserySize() / 2;
-            size_t usage = nursery->bytesAllocated();
-            return usage >= (size_t)(total_capacity * threshold);
-        }
-        return false;
-    }
+    // Returns true if the thread-local nursery is over the threshold.
+    bool isNurseryNearFull(float threshold);
 
-    // Returns true if the given pointer is in the nursery.
+    // Returns true if the given pointer is in the calling thread's nursery.
     bool isInNursery(void *ptr);
 
-    // Returns true if the given pointer is in the old generation.
+    // Returns true if the given pointer is in the calling thread's old gen.
     bool isInOldGen(void *ptr);
 
-    // Returns true if the given pointer is anywhere in the heap (nursery or old gen).
+    // Returns true if the given pointer is anywhere in the heap (any thread).
     // O(1) bounds check - used for validation during GC.
     bool isInHeap(void *ptr) const {
         char* p = static_cast<char*>(ptr);
         return p >= heap_base && p < heap_base + heap_reserved;
     }
 
-    // Returns the current number of bytes allocated in old gen.
-    size_t getOldGenAllocatedBytes() const { return old_gen.getAllocatedBytes(); }
+    // Returns the current number of bytes allocated in thread-local old gen.
+    size_t getOldGenAllocatedBytes() const;
 
 #if ENABLE_GC_STATS
-    // Returns the global major GC statistics.
-    GCStats& getMajorGCStats() { return major_gc_stats; }
-    const GCStats& getMajorGCStats() const { return major_gc_stats; }
-
-    // Returns combined nursery and major GC statistics.
+    // Returns combined statistics from all thread heaps.
+    // Thread-safe: acquires mutex to iterate all thread heaps.
     GCStats getCombinedStats() const;
 #endif
 
@@ -117,26 +124,22 @@ private:
     size_t nursery_committed_;    // Committed bytes in nursery region.
     bool initialized;             // True after initialize() has been called.
 
-    OldGenSpace old_gen;
+    // ========== Thread-Local Heaps ==========
 
-    // ========== Single Nursery ==========
+    mutable std::recursive_mutex thread_mutex_;  // Protects thread_heaps_ and region allocation.
+    std::unordered_map<std::thread::id, std::unique_ptr<ThreadLocalHeap>> thread_heaps_;
 
-    std::unique_ptr<NurserySpace> nursery;
+    // Thread-local fast access (set in initThread, cleared in cleanupThread).
+    static thread_local ThreadLocalHeap* tl_heap_;
 
     // ========== Internal Methods ==========
+
+    // Returns the calling thread's heap, or nullptr if not initialized.
+    ThreadLocalHeap* getThreadHeap() const { return tl_heap_; }
 
     // Resets the allocator to initial state. Used for testing.
     // If new_config is provided, reconfigures with new parameters.
     void reset(const HeapConfig* new_config = nullptr);
-
-    // Collects all roots for major GC.
-    std::vector<HPointer*> collectAllRoots();
-
-    // Returns the nursery, or nullptr if not initialized.
-    NurserySpace *getNursery();
-
-    // Returns the old generation space.
-    OldGenSpace &getOldGen() { return old_gen; }
 
     // Returns the base address of the unified heap.
     char *getHeapBase() const { return heap_base; }
@@ -147,13 +150,18 @@ private:
     // Returns the heap configuration.
     const HeapConfig& getConfig() const { return config_; }
 
-    // Acquires a new AllocBuffer of the specified size from the old gen region.
-    // Returns nullptr if unable to allocate (out of address space).
+    // Acquires a block of memory from the nursery region.
+    // Thread-safe: acquires thread_mutex_.
+    char* acquireNurseryBlock(size_t size);
+
+    // Acquires a new AllocBuffer from the old gen region.
+    // Thread-safe: acquires thread_mutex_.
     AllocBuffer* acquireAllocBuffer(size_t size);
 
-    // Acquires a block of memory from the nursery region for NurserySpace.
-    // Returns nullptr if unable to allocate (out of address space).
-    char* acquireNurseryBlock(size_t size);
+    // Acquires a region of memory from the old gen region.
+    // Thread-safe: caller must hold thread_mutex_.
+    // Returns base address and commits initial_size bytes.
+    char* acquireOldGenRegion(size_t initial_size, size_t max_size);
 
     void commitNursery(char *nursery_base, size_t size);
 
@@ -180,11 +188,8 @@ private:
 
     friend class NurserySpace;
     friend class OldGenSpace;
+    friend class ThreadLocalHeap;
     friend class AllocatorTestAccess;
-
-#if ENABLE_GC_STATS
-    GCStats major_gc_stats; // Global major GC statistics.
-#endif
 };
 
 // ============================================================================
@@ -209,14 +214,15 @@ public:
         alloc.reset(new_config);
     }
 
-    // Access nursery for testing.
-    static NurserySpace* getNursery(Allocator& alloc) {
-        return alloc.getNursery();
-    }
+    // Access thread-local nursery for testing.
+    static NurserySpace* getNursery(Allocator& alloc);
 
-    // Access old gen for testing.
-    static OldGenSpace& getOldGen(Allocator& alloc) {
-        return alloc.getOldGen();
+    // Access thread-local old gen for testing.
+    static OldGenSpace* getOldGen(Allocator& alloc);
+
+    // Access thread-local heap for testing.
+    static ThreadLocalHeap* getThreadHeap(Allocator& alloc) {
+        return alloc.getThreadHeap();
     }
 };
 

@@ -42,6 +42,9 @@ public:
     // Returns the current number of bytes allocated in old gen.
     size_t getAllocatedBytes() const { return allocated_bytes; }
 
+    // Returns true if the pointer is within any of this old gen's buffers.
+    bool contains(void* ptr) const;
+
 private:
     // ========== Configuration ==========
 
@@ -99,6 +102,7 @@ private:
 
     friend class Allocator;
     friend class NurserySpace;
+    friend class ThreadLocalHeap;
     friend class OldGenSpaceTestAccess;
 };
 

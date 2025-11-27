@@ -22,6 +22,7 @@
 
 #include "NurserySpace.hpp"
 #include "Allocator.hpp"
+#include "ThreadLocalHeap.hpp"
 #include <cassert>
 #include <cstring>
 
@@ -31,7 +32,7 @@ NurserySpace::NurserySpace() :
     config_(nullptr), allocator_(nullptr), block_size_(0),
     alloc_ptr_(nullptr), alloc_end_(nullptr),
     copy_ptr_(nullptr), copy_end_(nullptr), scan_ptr_(nullptr),
-    growth_threshold_(0.75f) {
+    growth_threshold_(0.75f), thread_heap_(nullptr) {
     // Initialization happens in initialize() method.
 }
 
@@ -42,6 +43,7 @@ NurserySpace::~NurserySpace() {
 void NurserySpace::initialize(Allocator* allocator, const HeapConfig* config) {
     config_ = config;
     allocator_ = allocator;
+    thread_heap_ = nullptr;  // Not using ThreadLocalHeap mode.
     block_size_ = config->alloc_buffer_size;
     growth_threshold_ = 0.75f;  // Grow when 75% full after GC.
 
@@ -55,6 +57,33 @@ void NurserySpace::initialize(Allocator* allocator, const HeapConfig* config) {
     }
     for (size_t i = 0; i < blocks_per_space; i++) {
         char* block = allocator->acquireNurseryBlock(block_size_);
+        assert(block && "Failed to acquire nursery block for to-space");
+        to_blocks_.insert(block);
+    }
+
+    // Initialize allocation state - start at first (lowest address) block.
+    current_from_it_ = from_blocks_.begin();
+    alloc_ptr_ = *current_from_it_;
+    alloc_end_ = *current_from_it_ + block_size_;
+}
+
+void NurserySpace::initialize(ThreadLocalHeap* heap, const HeapConfig* config) {
+    config_ = config;
+    thread_heap_ = heap;
+    allocator_ = heap->getParent();  // Get Allocator for block acquisition during growth.
+    block_size_ = config->alloc_buffer_size;
+    growth_threshold_ = 0.75f;  // Grow when 75% full after GC.
+
+    size_t blocks_per_space = config->nursery_block_count / 2;
+
+    // Request initial blocks from Allocator (through parent).
+    for (size_t i = 0; i < blocks_per_space; i++) {
+        char* block = allocator_->acquireNurseryBlock(block_size_);
+        assert(block && "Failed to acquire nursery block for from-space");
+        from_blocks_.insert(block);
+    }
+    for (size_t i = 0; i < blocks_per_space; i++) {
+        char* block = allocator_->acquireNurseryBlock(block_size_);
         assert(block && "Failed to acquire nursery block for to-space");
         to_blocks_.insert(block);
     }

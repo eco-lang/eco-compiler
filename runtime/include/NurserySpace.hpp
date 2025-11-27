@@ -12,6 +12,7 @@ namespace Elm {
 
 // Forward declarations.
 class Allocator;
+class ThreadLocalHeap;
 class NurserySpaceTestAccess;
 
 /**
@@ -74,10 +75,16 @@ private:
     GCStats stats;                  // Performance statistics.
 #endif
 
+    ThreadLocalHeap* thread_heap_;  // Owner ThreadLocalHeap (for multi-threaded mode).
+
     // ========== Internal Methods ==========
 
     // Initializes this nursery by requesting blocks from the Allocator.
+    // Used for backward compatibility with single-threaded tests.
     void initialize(Allocator* allocator, const HeapConfig* config);
+
+    // Initializes this nursery with pre-allocated memory from ThreadLocalHeap.
+    void initialize(ThreadLocalHeap* heap, const HeapConfig* config);
 
     // Performs minor GC, evacuating live objects to to_space or promoting to old gen.
     void minorGC(OldGenSpace &oldgen);
@@ -124,6 +131,7 @@ private:
     void scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
 
     friend class Allocator;
+    friend class ThreadLocalHeap;
     friend class NurserySpaceTestAccess;
 };
 
