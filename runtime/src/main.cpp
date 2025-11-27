@@ -6,9 +6,9 @@
  * then repeatedly reverses lists to generate allocation pressure. This mimics
  * how an Elm application's Model is updated each frame.
  *
- * The program runs two threads:
- *   - Program thread: Simulates Elm's update cycle by reversing lists.
- *   - Collector thread: Runs major GC when the old generation exceeds a threshold.
+ * Each program thread has its own private heap space (nursery + old gen) and
+ * runs independently without GC coordination with other threads. Each thread
+ * triggers its own minor and major GC as needed.
  *
  * Usage:
  *   ./ecor [options]
@@ -20,14 +20,12 @@
 
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
 #include <execinfo.h>
 #include <getopt.h>
 #include <iostream>
-#include <mutex>
 #include <optional>
 #include <random>
 #include <stdexcept>
@@ -76,17 +74,15 @@ static void printStackTrace() {
 // Global State
 // ============================================================================
 
-// Thread coordination flags.
-static std::atomic<bool> shutdown_requested{false};  // Set by signal handler to stop all threads.
-static std::atomic<bool> gc_requested{false};        // Set by program thread to request major GC.
-static std::mutex gc_mutex;                          // Protects gc_condition waits.
-static std::condition_variable gc_condition;         // Wakes collector thread on GC request or shutdown.
+// Shutdown flag - set by signal handler to stop all threads.
+static std::atomic<bool> shutdown_requested{false};
 
 // Workload configuration (set via command-line arguments).
 static size_t model_num_fields = 8;                  // Number of fields in the model Record.
 static size_t list_size = 500;                       // Number of integers in each list.
 static std::chrono::seconds duration{0};             // Run duration (0 = run until Ctrl+C).
-static double major_gc_threshold = 0.9;              // Fraction of old gen that triggers major GC.
+static double major_gc_threshold = 0.5;              // Fraction of old gen max that triggers major GC.
+static size_t max_old_gen_bytes = 64 * 1024 * 1024;  // Max old gen size before major GC (64MB default).
 static double reversal_probability = 0.5;            // Probability of reversing each field's list.
 static size_t num_program_threads = 1;               // Number of program threads to run.
 
@@ -98,7 +94,6 @@ static size_t num_program_threads = 1;               // Number of program thread
 static void shutdownHandler(int signum) {
     (void)signum;
     shutdown_requested.store(true);
-    gc_condition.notify_all();
 }
 
 // Handles fatal signals (SIGSEGV, SIGABRT, SIGBUS, SIGFPE) by printing a stack trace.
@@ -373,21 +368,22 @@ static void updateRootRecord(Allocator& alloc, HPointer& record_ptr,
 }
 
 // ============================================================================
-// Collector Thread (DISABLED - single-threaded mode)
+// Major GC Trigger
 // ============================================================================
 
-// NOTE: Multi-threaded collector is disabled. Major GC is called directly
-// from the program thread when needed.
+// Checks if major GC should be triggered based on old gen usage.
+// Each thread calls this with its own allocator - no coordination needed.
+static void checkAndRunMajorGC(Allocator& alloc) {
+    size_t old_gen_bytes = alloc.getOldGenAllocatedBytes();
+    size_t threshold_bytes = static_cast<size_t>(max_old_gen_bytes * major_gc_threshold);
 
-// Signals the allocator to run a major GC.
-// In single-threaded mode, this runs synchronously.
-static void requestMajorGC(Allocator& alloc) {
-    std::cout << "MajorGC Started" << std::endl;
-    alloc.majorGC();
+    if (old_gen_bytes >= threshold_bytes) {
+        alloc.majorGC();
+    }
 }
 
 // ============================================================================
-// Program Loop (single-threaded)
+// Program Loop
 // ============================================================================
 
 // Simulates an Elm application's update cycle.
@@ -400,11 +396,14 @@ static void requestMajorGC(Allocator& alloc) {
 //   - Each list reversal allocates N new Cons cells.
 //   - Each model update allocates a new Record.
 //   - Old objects become garbage after each iteration.
-static void runProgramLoop(Allocator& alloc) {
+//
+// Each thread runs this loop with its own private heap space.
+// GC (both minor and major) is triggered locally within each thread.
+static void runProgramLoop(Allocator& alloc, int thread_id) {
     size_t iterations = 0;
 
     try {
-        std::cout << "[Program] Started with " << model_num_fields
+        std::cout << "[Thread " << thread_id << "] Started with " << model_num_fields
                   << " fields, list size " << list_size
                   << ", major GC threshold " << (major_gc_threshold * 100) << "%"
                   << ", reversal probability " << reversal_probability << std::endl;
@@ -468,11 +467,8 @@ static void runProgramLoop(Allocator& alloc) {
                 alloc.minorGC();
             }
 
-            // Request major GC when old generation exceeds threshold.
-            // Note: In single-threaded mode, this runs synchronously.
-            size_t old_gen_bytes = alloc.getOldGenAllocatedBytes();
-            // Old gen no longer has getMaxSize() - just skip major GC for now
-            // TODO: Re-enable major GC threshold check when old gen has proper size tracking
+            // Check and run major GC when old generation exceeds threshold.
+            checkAndRunMajorGC(alloc);
 
             // Yield periodically.
             if (iterations % 1000 == 0) {
@@ -484,12 +480,12 @@ static void runProgramLoop(Allocator& alloc) {
         alloc.getRootSet().removeRoot(&model);
 
     } catch (const std::exception& e) {
-        std::cerr << "\n[Program] FATAL ERROR: " << e.what() << "\n";
+        std::cerr << "\n[Thread " << thread_id << "] FATAL ERROR: " << e.what() << "\n";
         printStackTrace();
         shutdown_requested.store(true);
     }
 
-    std::cout << "[Program] Stopped after " << iterations << " iterations" << std::endl;
+    std::cout << "[Thread " << thread_id << "] Stopped after " << iterations << " iterations" << std::endl;
 }
 
 // ============================================================================
@@ -618,8 +614,10 @@ static bool parseArgs(int argc, char* argv[]) {
 // Main
 // ============================================================================
 
-// Entry point: initializes allocator and runs the program loop.
-// NOTE: Multi-threading is disabled in this single-threaded version.
+// Entry point: initializes allocator and runs the program loop(s).
+// Each thread has its own private heap space (nursery + old gen).
+// NOTE: Currently uses singleton Allocator, so only 1 thread is supported.
+// Multi-threading requires per-thread Allocator instances (future work).
 int main(int argc, char* argv[]) {
     if (!parseArgs(argc, argv)) {
         printUsage(argv[0]);
@@ -627,7 +625,13 @@ int main(int argc, char* argv[]) {
     }
 
     try {
-        std::cout << "=== Eco Runtime for Elm (single-threaded) ===" << std::endl;
+        std::cout << "=== Eco Runtime for Elm ===" << std::endl;
+
+        if (num_program_threads > 1) {
+            std::cerr << "Warning: Multi-threading not yet supported (requires per-thread allocators).\n";
+            std::cerr << "Running with 1 thread instead.\n";
+            num_program_threads = 1;
+        }
 
         // Install signal handlers for graceful shutdown on Ctrl+C or kill.
         signal(SIGINT, shutdownHandler);
@@ -646,8 +650,9 @@ int main(int argc, char* argv[]) {
         alloc.initialize(config);
         alloc.initThread();
 
-        std::cout << "Allocator initialized (memory pressure threshold: "
-                  << (major_gc_threshold * 100) << "%)" << std::endl;
+        std::cout << "Allocator initialized (major GC threshold: "
+                  << (major_gc_threshold * 100) << "% of "
+                  << (max_old_gen_bytes / (1024 * 1024)) << "MB)" << std::endl;
 
         // Set up duration-based shutdown if specified.
         std::thread duration_thread;
@@ -662,8 +667,8 @@ int main(int argc, char* argv[]) {
             std::cout << "Running until Ctrl+C..." << std::endl;
         }
 
-        // Run the program loop (single-threaded).
-        runProgramLoop(alloc);
+        // Run the program loop.
+        runProgramLoop(alloc, 0);
 
         // Wait for duration thread if it was started.
         if (duration_thread.joinable()) {
