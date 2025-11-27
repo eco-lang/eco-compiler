@@ -36,7 +36,11 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--reindex", action="store_true", help="Force re-upload + reindex")
 parser.add_argument("--strict", action="store_true", help="Only answer if info is in files")
 parser.add_argument("--debug", action="store_true", help="Show retrieved chunks")
+parser.add_argument("-t", "--thinking", choices=["l", "m", "h"], help="Override thinking level: l=low, m=medium, h=high")
+parser.add_argument("-n", "--non-interactive", action="store_true", help="Non-interactive mode: read query from stdin, write response to stdout, exit")
 args = parser.parse_args()
+
+THINKING_MAP = {"l": "low", "m": "medium", "h": "high"}
 
 # --------------------------------
 # Settings Management
@@ -85,6 +89,31 @@ def select_model():
             pass
         console.print("[red]Invalid choice, try again[/red]")
 
+def select_reasoning_effort():
+    """Select reasoning effort level for thinking models."""
+    console.print("\n[bold cyan]Reasoning effort levels:[/bold cyan]")
+    options = [
+        ("low", "Minimal thinking - faster, cheaper"),
+        ("medium", "Balanced thinking"),
+        ("high", "Maximum thinking - slower, more thorough"),
+    ]
+
+    for i, (level, desc) in enumerate(options, 1):
+        console.print(f"  {i}. {level:8} - {desc}")
+
+    console.print()
+    while True:
+        choice = Prompt.ask("Select reasoning effort", default="2")
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(options):
+                selected = options[idx][0]
+                console.print(f"[green]✓[/green] Selected: {selected}")
+                return selected
+        except ValueError:
+            pass
+        console.print("[red]Invalid choice, try again[/red]")
+
 # --------------------------------
 # Load or create vector store
 # --------------------------------
@@ -95,12 +124,16 @@ def load_or_create_settings():
     needs_setup = args.reindex or not settings.get("vector_store_id")
 
     if not needs_setup:
-        console.print(f"[green]Using model:[/green] {settings.get('model')}")
-        console.print(f"[green]Using vector store:[/green] {settings.get('vector_store_id')}")
+        if not args.non_interactive:
+            console.print(f"[green]Using model:[/green] {settings.get('model')}")
+            if settings.get("reasoning_effort"):
+                console.print(f"[green]Reasoning effort:[/green] {settings.get('reasoning_effort')}")
+            console.print(f"[green]Using vector store:[/green] {settings.get('vector_store_id')}")
         return settings
 
-    # First time or reindex - select model and create vector store
+    # First time or reindex - select model, reasoning, and create vector store
     settings["model"] = select_model()
+    settings["reasoning_effort"] = select_reasoning_effort()
     settings["vector_store_id"] = create_vector_store()
     save_settings(settings)
     return settings
@@ -180,6 +213,14 @@ def main():
     model = settings["model"]
     vector_store_id = settings["vector_store_id"]
 
+    # CLI override for thinking level
+    if args.thinking:
+        reasoning_effort = THINKING_MAP[args.thinking]
+        if not args.non_interactive:
+            console.print(f"[yellow]Thinking level override:[/yellow] {reasoning_effort}")
+    else:
+        reasoning_effort = settings.get("reasoning_effort")
+
     # --------------------------------
     # System Prompt (Strict mode aware)
     # --------------------------------
@@ -217,7 +258,67 @@ def main():
             f.write(f"## {role.upper()}\n{text}\n\n")
 
     # --------------------------------
-    # Streaming Chat Loop
+    # Query Processing
+    # --------------------------------
+
+    def process_query(user_input):
+        """Process a single query and return the response."""
+        conversation.append({"role": "user", "content": user_input})
+        log("user", user_input)
+
+        streamed_text = []
+
+        # Build API request
+        request_kwargs = {
+            "model": model,
+            "input": conversation,
+            "stream": True,
+            "tools": [
+                {
+                    "type": "file_search",
+                    "vector_store_ids": [vector_store_id]
+                }
+            ]
+        }
+        if reasoning_effort:
+            request_kwargs["reasoning"] = {"effort": reasoning_effort}
+
+        response = client.responses.create(**request_kwargs)
+
+        retrieved_chunks = []
+
+        for event in response:
+            if event.type == "response.output_text.delta":
+                if args.non_interactive:
+                    print(event.delta, end="", flush=True)
+                else:
+                    console.print(event.delta, end="")
+                streamed_text.append(event.delta)
+
+            elif event.type == "response.file_search.result" and args.debug:
+                retrieved_chunks.append(event)
+
+        final_answer = "".join(streamed_text)
+
+        conversation.append({"role": "assistant", "content": final_answer})
+        log("assistant", final_answer)
+
+        return final_answer, retrieved_chunks
+
+    # --------------------------------
+    # Non-interactive mode
+    # --------------------------------
+
+    if args.non_interactive:
+        user_input = sys.stdin.read().strip()
+        if not user_input:
+            sys.exit(0)
+        process_query(user_input)
+        print()  # Final newline
+        sys.exit(0)
+
+    # --------------------------------
+    # Interactive Chat Loop
     # --------------------------------
 
     console.print("\n[bold cyan]=== RAG CLI Ready ===[/bold cyan]")
@@ -230,39 +331,9 @@ def main():
             console.print("Goodbye.")
             break
 
-        conversation.append({"role": "user", "content": user_input})
-        log("user", user_input)
-
         console.print("\n[bold green]Assistant:[/bold green]")
 
-        streamed_text = []
-
-        response = client.responses.create(
-            model=model,
-            input=conversation,
-            stream=True,
-            tools=[
-                {
-                    "type": "file_search",
-                    "vector_store_ids": [vector_store_id]
-                }
-            ]
-        )
-
-        retrieved_chunks = []
-
-        for event in response:
-            if event.type == "response.output_text.delta":
-                console.print(event.delta, end="")
-                streamed_text.append(event.delta)
-
-            elif event.type == "response.file_search.result" and args.debug:
-                retrieved_chunks.append(event)
-
-        final_answer = "".join(streamed_text)
-
-        conversation.append({"role": "assistant", "content": final_answer})
-        log("assistant", final_answer)
+        _, retrieved_chunks = process_query(user_input)
 
         console.print("\n")
 
