@@ -1,25 +1,75 @@
 # RAG CLI
 
-A command-line RAG (Retrieval-Augmented Generation) tool using OpenAI's vector store and file search.
+A command-line tool for building and querying a knowledge base using OpenAI's vector store and file search capabilities. RAG CLI lets you index your documents, code, and data files, then have natural conversations with an AI that can search and retrieve relevant information from your indexed content.
+
+**Key features:**
+- Index documents, code, and data files with a single command
+- Interactive chat with context-aware responses from your knowledge base
+- Non-interactive mode for scripting and automation
+- Support for OpenAI's reasoning models with configurable thinking levels
+- Strict mode to ensure answers come only from indexed content
+
+## Prerequisites
+
+- Python 3.10 or higher
+- An OpenAI API key with access to the Responses API
 
 ## Installation
 
+### From PyPI
+
 ```bash
 pip install rag-cli
-# or with pipx (recommended for CLI tools)
+```
+
+Or using pipx (recommended for CLI tools):
+
+```bash
 pipx install rag-cli
 ```
 
-## Setup
+### From Source
 
-Set your OpenAI API key:
 ```bash
-export OPEN_AI_API_KEY="your-api-key"
+git clone https://github.com/rupertlssmith/rag-cli
+cd rag-cli
+pip install -e .
 ```
+
+## Configuration
+
+### OpenAI API Key
+
+RAG CLI requires an OpenAI API key. Set it as an environment variable:
+
+```bash
+export OPEN_AI_API_KEY="sk-your-api-key-here"
+```
+
+To make this permanent, add it to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.):
+
+```bash
+echo 'export OPEN_AI_API_KEY="sk-your-api-key-here"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+You can obtain an API key from [OpenAI's platform](https://platform.openai.com/api-keys).
+
+### Settings File
+
+On first run, RAG CLI creates a `settings.json` file in the current directory containing:
+- `model` - Selected OpenAI model
+- `reasoning_effort` - Thinking level (low/medium/high)
+- `vector_store_id` - OpenAI vector store ID
+- `file_patterns` - Indexed file patterns
+
+This file is gitignored by default as it contains API-specific IDs.
 
 ## Usage
 
-### First Run - Index Your Files
+### Indexing Files
+
+On first run, provide files or glob patterns to index:
 
 ```bash
 # Index specific files
@@ -38,28 +88,37 @@ rag-cli 'docs/**/*.md' 'src/**/*.py' '*.txt'
 rag-cli knowledge/
 ```
 
-On first run, you'll be prompted to select a model and reasoning effort level.
+You'll be prompted to select a model and reasoning effort level.
 
-### Subsequent Runs
+### Interactive Chat
 
-Once indexed, just run without arguments to start chatting:
+Once indexed, run without arguments to start chatting:
+
 ```bash
 rag-cli
 ```
 
-### Re-index Files
+Type your questions and the AI will search your indexed files for relevant context. Type `quit` or `exit` to end the session.
+
+### Re-indexing
+
+To update your knowledge base with new or changed files:
 
 ```bash
-rag-cli --reindex 'new_docs/**/*.md'
+rag-cli --reindex 'docs/**/*.md'
 ```
 
 ### Non-interactive Mode
+
+For scripting and automation, use non-interactive mode:
 
 ```bash
 echo "What is garbage collection?" | rag-cli -n
 ```
 
-### Options
+This reads the query from stdin, outputs the response to stdout, and exits.
+
+### Command-Line Options
 
 | Option | Description |
 |--------|-------------|
@@ -70,14 +129,7 @@ echo "What is garbage collection?" | rag-cli -n
 | `-t`, `--thinking` | Override thinking level: `l`=low, `m`=medium, `h`=high |
 | `-n`, `--non-interactive` | Read query from stdin, write response to stdout, exit |
 
-## Supported File Types
-
-- **Documents**: `.txt`, `.md`, `.pdf`, `.doc`, `.docx`, `.pptx`, `.html`
-- **Data**: `.json`, `.xml`, `.csv`, `.yaml`
-- **Code**: `.py`, `.js`, `.ts`, `.java`, `.c`, `.cpp`, `.go`, `.rs`, `.rb`, `.php`, `.sql`, `.sh`, `.elm`, `.hs`, and more
-- **Config**: `.toml`, `.ini`, `.cfg`, `.conf`, `.tex`
-
-## Glob Pattern Examples
+### Glob Pattern Examples
 
 | Pattern | Matches |
 |---------|---------|
@@ -87,21 +139,60 @@ echo "What is garbage collection?" | rag-cli -n
 | `src/**/*.py` | All Python files in src/ recursively |
 | `*.{md,txt}` | All .md and .txt files (shell expansion) |
 
-## Settings
+## Supported File Types
 
-Settings are stored in `settings.json`:
-- `model` - Selected OpenAI model
-- `reasoning_effort` - Thinking level (low/medium/high)
-- `vector_store_id` - OpenAI vector store ID
-- `file_patterns` - Indexed file patterns
+RAG CLI supports a wide range of file types:
+
+- **Documents**: `.txt`, `.md`, `.pdf`, `.doc`, `.docx`, `.pptx`, `.html`
+- **Data**: `.json`, `.xml`, `.csv`, `.yaml`, `.yml`
+- **Code**: `.py`, `.js`, `.ts`, `.jsx`, `.tsx`, `.java`, `.c`, `.cpp`, `.h`, `.hpp`, `.cs`, `.go`, `.rs`, `.rb`, `.php`, `.swift`, `.kt`, `.scala`, `.r`, `.sh`, `.bash`, `.sql`, `.lua`, `.pl`, `.hs`, `.elm`, `.ex`, `.clj`, `.lisp`, `.ml`, `.fs`
+- **Config**: `.toml`, `.ini`, `.cfg`, `.conf`, `.tex`, `.rst`, `.org`
 
 ## Development
 
+### Setting Up a Development Environment
+
 ```bash
-# Clone and install in development mode
+# Clone the repository
 git clone https://github.com/rupertlssmith/rag-cli
 cd rag-cli
+
+# Create a virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install in development mode
 pip install -e .
+
+# Set your API key
+export OPEN_AI_API_KEY="sk-your-api-key-here"
+```
+
+### Project Structure
+
+```
+rag-cli/
+├── src/
+│   └── rag_cli/
+│       ├── __init__.py
+│       └── main.py      # Main CLI implementation
+├── pyproject.toml       # Project configuration and dependencies
+├── README.md
+└── .gitignore
+```
+
+### Running Locally
+
+After installing in development mode, you can run the CLI directly:
+
+```bash
+rag-cli 'docs/*.md'
+```
+
+Or run the module:
+
+```bash
+python -m rag_cli.main 'docs/*.md'
 ```
 
 ## License
