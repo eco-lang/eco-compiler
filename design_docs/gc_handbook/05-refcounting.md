@@ -1,168 +1,694 @@
-# 5. Reference Counting (Deep Summary with Pseudocode)
+# 5. Reference Counting
 
-Reference counting (RC) maintains a count of references to each object and reclaims objects when the count reaches zero. It offers prompt reclamation and local work but struggles with cycles and write-barrier costs. This summary covers eager/deferred/coalesced RC, cycle handling, hybrids, and performance engineering.
+Reference counting is a direct collection method that maintains a count of incoming references to each object. When an object's count reaches zero, it is immediately reclaimed. Unlike tracing collectors, RC identifies garbage directly from the object itself, without graph traversal. This chapter covers the core algorithm, deferred and coalesced RC, cycle collection, and hybrid approaches combining RC with tracing.
 
 ---
 
-## 5.1 Core Eager RC
+## 5.1 The Core Algorithm
 
-- Each object has a reference count (RC) field.
-- On pointer assignment: increment RC of new referent; decrement RC of old referent; when RC hits zero, reclaim recursively (cascading deletes).
-- Pros: prompt reclamation, predictable local work.
-- Cons: high write-barrier cost (every pointer store updates RC), cache traffic, cycles not collected.
+Each object maintains a reference count that tracks how many pointers refer to it:
 
-**Pseudocode (eager, no cycles)**
 ```pseudo
-assign(obj, field, new_ptr):
-  old = obj.field
-  obj.field = new_ptr
-  if is_heap_ptr(new_ptr):
-    inc_rc(new_ptr)
-  if is_heap_ptr(old):
-    dec_rc(old)
+Object:
+    header: Header
+    refCount: int      // Number of incoming references
+    fields: ...
 
-dec_rc(ptr):
-  rc(ptr) -= 1
-  if rc(ptr) == 0:
-    reclaim(ptr)
+// Pointer assignment updates counts
+Write(obj, field, newValue):
+    oldValue ← obj[field]
+    obj[field] ← newValue
+    if newValue ≠ null:
+        increment(newValue)
+    if oldValue ≠ null:
+        decrement(oldValue)
 
-reclaim(ptr):
-  for each child in children(ptr):
-    if is_heap_ptr(child):
-      dec_rc(child)
-  free(ptr)
+increment(obj):
+    obj.refCount ← obj.refCount + 1
+
+decrement(obj):
+    obj.refCount ← obj.refCount - 1
+    if obj.refCount = 0:
+        reclaim(obj)
+
+reclaim(obj):
+    for each field in Pointers(obj):
+        child ← *field
+        if child ≠ null:
+            decrement(child)  // May cascade
+    free(obj)
+```
+
+### Allocation
+
+```pseudo
+New(size):
+    obj ← allocate(size)
+    obj.refCount ← 1  // Initial reference from assignment target
+    return obj
+```
+
+### Properties
+
+**Advantages**:
+- **Prompt reclamation**: Objects freed immediately when unreachable
+- **Incremental**: Work distributed across mutations
+- **Predictable**: No stop-the-world pauses (mostly)
+- **Local**: Garbage identified from object alone
+
+**Disadvantages**:
+- **Cycles**: Cannot reclaim cyclic garbage
+- **Overhead**: Every pointer store requires count updates
+- **Cache pollution**: Count updates touch scattered memory
+- **Space**: Count field in each object
+
+---
+
+## 5.2 Deferred Reference Counting
+
+Reduce overhead by buffering decrements and processing them later:
+
+```pseudo
+ThreadLocal:
+    decrementBuffer: Buffer
+    incrementBuffer: Buffer
+
+Write(obj, field, newValue):
+    oldValue ← obj[field]
+    obj[field] ← newValue
+
+    if newValue ≠ null:
+        incrementBuffer.push(newValue)
+    if oldValue ≠ null:
+        decrementBuffer.push(oldValue)
+
+    if decrementBuffer.full():
+        processBuffers()
+
+processBuffers():
+    // Process increments first (for safety)
+    for each obj in incrementBuffer:
+        obj.refCount ← obj.refCount + 1
+    incrementBuffer.clear()
+
+    // Then decrements
+    for each obj in decrementBuffer:
+        obj.refCount ← obj.refCount - 1
+        if obj.refCount = 0:
+            reclaim(obj)
+    decrementBuffer.clear()
+```
+
+### Zero Count Table (ZCT)
+
+Track objects that reached zero count but weren't immediately reclaimed:
+
+```pseudo
+ZCT: Set<Object>
+
+deferredDecrement(obj):
+    obj.refCount ← obj.refCount - 1
+    if obj.refCount = 0:
+        ZCT.add(obj)
+
+processZCT():
+    while not ZCT.empty():
+        obj ← ZCT.remove()
+        if obj.refCount = 0:  // Still zero
+            for each field in Pointers(obj):
+                child ← *field
+                if child ≠ null:
+                    deferredDecrement(child)
+            free(obj)
 ```
 
 ---
 
-## 5.2 Deferred and Coalesced RC
+## 5.3 Coalesced Reference Counting
 
-- Buffer decrements instead of applying immediately (deferred).
-- Batch increments/decrements to reduce cache churn (coalesced).
-- Apply buffered operations at safepoints or when buffer is full.
+Eliminate redundant updates to the same object:
 
-**Deferred decrement buffer**
 ```pseudo
-dec_rc(ptr):
-  buffer.push(ptr)
-  if buffer.full():
-    flush_buffer()
+ThreadLocal:
+    deltaMap: HashMap<Object, int>  // Net change per object
 
-flush_buffer():
-  while not buffer.empty():
-    p = buffer.pop()
-    rc(p) -= 1
-    if rc(p) == 0:
-      reclaim(p)
+Write(obj, field, newValue):
+    oldValue ← obj[field]
+    obj[field] ← newValue
+
+    if oldValue ≠ null:
+        deltaMap[oldValue] ← deltaMap.getOrDefault(oldValue, 0) - 1
+    if newValue ≠ null:
+        deltaMap[newValue] ← deltaMap.getOrDefault(newValue, 0) + 1
+
+    if deltaMap.size() > COALESCE_THRESHOLD:
+        flushDeltas()
+
+flushDeltas():
+    for each (obj, delta) in deltaMap:
+        obj.refCount ← obj.refCount + delta
+        if obj.refCount = 0:
+            reclaim(obj)
+        else if obj.refCount < 0:
+            error "Negative reference count"
+    deltaMap.clear()
 ```
 
-Coalesced: count occurrences per object in buffer, apply net delta once.
+**Benefit**: Multiple inc/dec to same object become single atomic update.
 
----
-
-## 5.3 Cycles
-
-- RC alone cannot reclaim cycles (objects only referenced by each other).
-- Solutions:
-  - **Trial deletion / backup tracing**: periodically run a tracing collector to find cyclic garbage.
-  - **Cycle detection algorithms**: e.g., Bacon’s partial cycle collector, trial deletion using candidate sets.
-  - **Hybrid RC + tracing**: RC for prompt reclamation, tracing for cycles.
-
-**Trial deletion sketch**
+**Example**:
 ```pseudo
-candidate_set = suspected_cycle_roots()
-mark_candidates(candidate_set)
-for obj in candidate_set:
-  if rc(obj) == internal_refs_only(obj):
-    // unreachable from roots
-    reclaim_cycle(obj)
-```
+// Without coalescing: 6 count operations
+x.a = y  // inc(y)
+x.a = z  // dec(y), inc(z)
+x.a = y  // dec(z), inc(y)
 
----
-
-## 5.4 Limited-Field / Compressed RC
-
-- Limit RC field width to reduce header size; overflow handling (sticky high bit + overflow table).
-- Trade precision for space; large fan-out structures may saturate count and force conservative retention or table lookups.
-
----
-
-## 5.5 Performance Engineering
-
-- **Barrier cost**: every pointer store becomes heavier; mitigate via:
-  - Coalescing/deferred updates.
-  - Avoiding increments for constants/null.
-  - Specialized fast paths for intra-object initialization (bulk init without intermediate RC changes).
-- **Cache locality**: RC updates are writes to scattered headers; consider biasing RC fields into hot cache lines, or using “update-avoidance” when pointer stability is high.
-- **Threading**: per-thread RC buffers; atomic RC updates if shared; avoid false sharing of RC fields.
-
----
-
-## 5.6 Promptness vs Throughput
-
-- RC reclaims immediately at last release, reducing memory footprint.
-- Throughput cost: frequent barrier updates; can be significant vs tracing which amortizes.
-- Pause time: mostly short pauses; but cycle collection may add longer pauses if tracing-based.
-
----
-
-## 5.7 Hybrids with Tracing
-
-- **Deferred RC + periodic tracing**: use RC for fast reclamation; periodically trace to remove cycles.
-- **Ulterior reference counting**: young gen tracing, old gen RC.
-- **Generational RC**: RC in old gen, tracing in young; maintain inter-gen remembered sets.
-
----
-
-## 5.8 Examples of RC Algorithms
-
-- **Deferred RC (Deutsch-Bobrow style)**: buffers decrements; treats buffer flush as mini-GC.
-- **Coalesced RC (Levanoni/Petrank)**: counts net changes in buffers per object.
-- **Partial cycle collectors**: select candidates via heuristics (e.g., low out-degree, old objects) and perform limited tracing to prove collectability.
-- **Sliding views (Yuasa, Blackburn)**: maintain two views of RCs to allow concurrent RC updates with less synchronization.
-
----
-
-## 5.9 Pseudocode: Coalesced Buffer Flush
-
-```pseudo
-flush_buffer():
-  table = hashmap<object, int>()
-  for each entry e in buffer:
-    table[e.ptr] += e.delta  // delta = -1 for dec, +1 for inc
-  buffer.clear()
-  for (ptr, delta) in table:
-    rc(ptr) += delta
-    if rc(ptr) == 0:
-      reclaim(ptr)
+// With coalescing: 0 net operations to y, 0 to z
+// deltaMap: {y: 0, z: 0} → no actual count changes
 ```
 
 ---
 
-## 5.10 Concurrency Considerations
+## 5.4 Cycle Collection
 
-- Atomic RC updates needed for shared objects; high contention risk.
-- Per-thread buffers reduce contention; flush with synchronization.
-- Concurrent cycle detection requires barriers or quiescent states to avoid missing reachability changes.
+Reference counting cannot reclaim cyclic garbage. Solutions combine RC with cycle detection.
+
+### The Problem
+
+```pseudo
+// Create cycle
+a.next = b
+b.next = a
+
+// Remove external references
+root = null
+
+// Now: a.refCount = 1 (from b), b.refCount = 1 (from a)
+// Both unreachable but counts never reach zero
+```
+
+### Trial Deletion (Bobrow's Algorithm)
+
+Test whether suspected cycles can be collected:
+
+```pseudo
+CycleCandidate:
+    object: Object
+    color: Color  // WHITE, GREY, BLACK, PURPLE
+
+collectCycles():
+    // Phase 1: Mark roots (objects with external refs)
+    for each obj in candidates:
+        if obj.refCount > 0:
+            markGrey(obj)
+
+    // Phase 2: Scan and identify garbage
+    for each obj in candidates:
+        if obj.color = GREY:
+            scan(obj)
+
+    // Phase 3: Collect white objects
+    for each obj in candidates:
+        if obj.color = WHITE:
+            collectWhite(obj)
+
+markGrey(obj):
+    if obj.color ≠ GREY:
+        obj.color ← GREY
+        for each child in children(obj):
+            child.trialRefCount ← child.trialRefCount - 1
+            markGrey(child)
+
+scan(obj):
+    if obj.color = GREY:
+        if obj.trialRefCount > 0:
+            // Has external references - not garbage
+            scanBlack(obj)
+        else:
+            obj.color ← WHITE
+            for each child in children(obj):
+                scan(child)
+
+scanBlack(obj):
+    obj.color ← BLACK
+    for each child in children(obj):
+        child.trialRefCount ← child.trialRefCount + 1
+        if child.color ≠ BLACK:
+            scanBlack(child)
+
+collectWhite(obj):
+    if obj.color = WHITE:
+        obj.color ← BLACK
+        for each child in children(obj):
+            collectWhite(child)
+        free(obj)
+```
+
+### Synchronous Cycle Collection
+
+Trigger cycle collection periodically or when candidates accumulate:
+
+```pseudo
+decrement(obj):
+    obj.refCount ← obj.refCount - 1
+    if obj.refCount = 0:
+        reclaim(obj)
+    else:
+        // Potential cycle root - add to candidates
+        if obj.color ≠ PURPLE:
+            obj.color ← PURPLE
+            candidates.add(obj)
+
+    if candidates.size() > CYCLE_THRESHOLD:
+        collectCycles()
+```
+
+### Bacon-Rajan Cycle Collection
+
+More efficient algorithm with fewer traversals:
+
+```pseudo
+Colors:
+    BLACK = in use
+    GREY  = possible cycle member
+    WHITE = garbage
+    PURPLE = possible cycle root
+
+possibleRoot(obj):
+    if obj.color ≠ PURPLE:
+        obj.color ← PURPLE
+        if not obj.buffered:
+            obj.buffered ← true
+            roots.add(obj)
+
+markRoots():
+    newRoots ← []
+    for each obj in roots:
+        if obj.color = PURPLE and obj.refCount > 0:
+            markGrey(obj)
+            newRoots.add(obj)
+        else:
+            obj.buffered ← false
+            if obj.color = BLACK and obj.refCount = 0:
+                free(obj)
+    roots ← newRoots
+
+scanRoots():
+    for each obj in roots:
+        scan(obj)
+
+collectRoots():
+    for each obj in roots:
+        obj.buffered ← false
+        collectWhite(obj)
+    roots.clear()
+
+collectCycles():
+    markRoots()
+    scanRoots()
+    collectRoots()
+```
 
 ---
 
-## 5.11 Strengths and Weaknesses
+## 5.5 Limited-Field Reference Counts
 
-- Strengths: prompt reclamation, fine-grained locality (frees where last used), easy to integrate with systems disallowing moving objects.
-- Weaknesses: cycles; high barrier cost; RC field space; performance sensitive to mutation patterns.
+Reduce space by limiting count width:
+
+```pseudo
+MAX_COUNT = 127  // 7 bits
+STICKY_BIT = 128
+
+increment(obj):
+    if obj.refCount < MAX_COUNT:
+        obj.refCount ← obj.refCount + 1
+    else:
+        obj.refCount ← obj.refCount | STICKY_BIT  // Saturate
+
+decrement(obj):
+    if (obj.refCount & STICKY_BIT) = 0:
+        obj.refCount ← obj.refCount - 1
+        if obj.refCount = 0:
+            reclaim(obj)
+    // Else: sticky - need backup tracing to collect
+```
+
+### Overflow Table
+
+Handle overflow counts separately:
+
+```pseudo
+overflowTable: HashMap<Object, int>
+
+increment(obj):
+    if obj.refCount < MAX_COUNT:
+        obj.refCount ← obj.refCount + 1
+    else if obj.refCount = MAX_COUNT:
+        obj.refCount ← OVERFLOW_MARKER
+        overflowTable[obj] ← MAX_COUNT + 1
+    else:
+        overflowTable[obj] ← overflowTable[obj] + 1
+
+decrement(obj):
+    if obj.refCount < MAX_COUNT:
+        obj.refCount ← obj.refCount - 1
+        if obj.refCount = 0:
+            reclaim(obj)
+    else:
+        count ← overflowTable[obj] - 1
+        if count = MAX_COUNT:
+            overflowTable.remove(obj)
+            obj.refCount ← MAX_COUNT
+        else:
+            overflowTable[obj] ← count
+```
 
 ---
 
-## 5.12 When to Use RC
+## 5.6 Concurrent Reference Counting
 
-- Systems needing prompt reclamation (streaming, low-latency memory reuse).
-- Environments where moving objects is hard (interop, embedded, shared memory).
-- As a component in a hybrid (RC + tracing) to get promptness without missing cycles.
+### Atomic Reference Counting
+
+Use atomic operations for thread safety:
+
+```pseudo
+atomicIncrement(obj):
+    AtomicAdd(&obj.refCount, 1)
+
+atomicDecrement(obj):
+    oldCount ← AtomicAdd(&obj.refCount, -1)
+    if oldCount = 1:  // Was 1, now 0
+        scheduleReclamation(obj)
+```
+
+### Per-Thread Buffers
+
+Reduce contention with thread-local buffering:
+
+```pseudo
+ThreadLocal:
+    localBuffer: Buffer
+
+increment(obj):
+    localBuffer.push(IncrementEntry(obj))
+    if localBuffer.full():
+        flushBuffer()
+
+decrement(obj):
+    localBuffer.push(DecrementEntry(obj))
+    if localBuffer.full():
+        flushBuffer()
+
+flushBuffer():
+    // Sort by object address for cache efficiency
+    sort(localBuffer, byObjectAddress)
+
+    for each entry in localBuffer:
+        if entry.isIncrement:
+            AtomicAdd(&entry.obj.refCount, 1)
+        else:
+            oldCount ← AtomicAdd(&entry.obj.refCount, -1)
+            if oldCount = 1:
+                scheduleReclamation(entry.obj)
+
+    localBuffer.clear()
+```
+
+### Biased Reference Counting
+
+Optimize for creating thread:
+
+```pseudo
+Object:
+    ownerThread: Thread
+    localCount: int      // No sync needed for owner
+    sharedCount: AtomicInt
+
+increment(obj):
+    if currentThread() = obj.ownerThread:
+        obj.localCount ← obj.localCount + 1
+    else:
+        AtomicAdd(&obj.sharedCount, 1)
+
+decrement(obj):
+    if currentThread() = obj.ownerThread:
+        obj.localCount ← obj.localCount - 1
+        if obj.localCount + obj.sharedCount = 0:
+            reclaim(obj)
+    else:
+        oldShared ← AtomicAdd(&obj.sharedCount, -1)
+        // Must coordinate with owner for final reclamation
+```
 
 ---
 
-## 5.13 Summary
+## 5.7 Handling Cascade Deletions
 
-Reference counting provides immediate reclamation but burdens the write barrier and misses cycles. Practical RC uses buffering/coalescing to reduce overhead and relies on tracing or specialized algorithms to collect cycles. Hybrids place RC in old generations or for specific object kinds, with tracing for the rest. Careful engineering of buffers, atomic updates, and cycle detection is required for competitive performance.
+Reclaiming an object may trigger cascading decrements:
+
+### Iterative Reclamation
+
+Avoid deep recursion:
+
+```pseudo
+reclaim(obj):
+    workList ← [obj]
+    while not workList.empty():
+        current ← workList.pop()
+        for each field in Pointers(current):
+            child ← *field
+            if child ≠ null:
+                child.refCount ← child.refCount - 1
+                if child.refCount = 0:
+                    workList.push(child)
+        free(current)
+```
+
+### Lazy Reclamation
+
+Limit work per allocation:
+
+```pseudo
+reclaimQueue: Queue<Object>
+
+scheduleReclamation(obj):
+    reclaimQueue.push(obj)
+
+allocate(size):
+    // Do some reclamation work
+    for i from 0 to WORK_UNITS:
+        if reclaimQueue.empty():
+            break
+        processOneReclamation()
+
+    return doAllocate(size)
+
+processOneReclamation():
+    obj ← reclaimQueue.pop()
+    for each field in Pointers(obj):
+        child ← *field
+        if child ≠ null:
+            child.refCount ← child.refCount - 1
+            if child.refCount = 0:
+                reclaimQueue.push(child)
+    free(obj)
+```
+
+---
+
+## 5.8 Hybrid RC + Tracing
+
+Combine RC's promptness with tracing's cycle handling:
+
+### Ulterior Reference Counting
+
+RC for old generation, tracing for young:
+
+```pseudo
+// Young generation: tracing (copying) collector
+// Old generation: reference counting
+
+writeBarrier(obj, field, newValue):
+    oldValue ← obj[field]
+    obj[field] ← newValue
+
+    // Generational barrier
+    if inOldGen(obj) and inYoungGen(newValue):
+        recordOldToYoung(obj, field)
+
+    // RC barrier for old→old references
+    if inOldGen(obj):
+        if oldValue ≠ null and inOldGen(oldValue):
+            decrement(oldValue)
+        if newValue ≠ null and inOldGen(newValue):
+            increment(newValue)
+```
+
+### Periodic Backup Tracing
+
+Use tracing to collect cycles:
+
+```pseudo
+// Normal operation: reference counting
+// Periodically: full tracing to find cycles
+
+periodicCollection():
+    if timeSinceLastTrace() > TRACE_INTERVAL:
+        // Pause and trace to find cycles
+        markFromRoots()
+        sweepUnmarked()  // Includes cyclic garbage
+    else:
+        // Normal RC operation
+        processRCBuffers()
+```
+
+### Trial Deletion with Backup
+
+Fall back to tracing if cycle detection fails:
+
+```pseudo
+collectCycles():
+    candidates ← getCycleCandidates()
+    trialDelete(candidates)
+
+    // If candidates remain after trial deletion
+    if candidates.size() > TRACE_THRESHOLD:
+        // Use backup tracing
+        markFromRoots()
+        for each obj in candidates:
+            if not isMarked(obj):
+                free(obj)
+```
+
+---
+
+## 5.9 Sliding Views Reference Counting
+
+Maintain stable and delta counts for concurrent operation:
+
+```pseudo
+Object:
+    stableCount: int     // Base reference count
+    deltaCount: AtomicInt // Accumulated changes
+
+// Mutator updates delta
+concurrentIncrement(obj):
+    AtomicAdd(&obj.deltaCount, 1)
+
+concurrentDecrement(obj):
+    AtomicAdd(&obj.deltaCount, -1)
+
+// Collector reconciles periodically
+reconcile():
+    for each obj in heap:
+        delta ← AtomicExchange(&obj.deltaCount, 0)
+        obj.stableCount ← obj.stableCount + delta
+        if obj.stableCount = 0:
+            scheduleReclamation(obj)
+```
+
+**Benefit**: Collector works with stable counts, mutators update deltas concurrently.
+
+---
+
+## 5.10 Performance Engineering
+
+### Avoiding Barrier Overhead
+
+Filter unnecessary updates:
+
+```pseudo
+optimizedWrite(obj, field, newValue):
+    oldValue ← obj[field]
+
+    // Skip if no change
+    if oldValue = newValue:
+        obj[field] ← newValue
+        return
+
+    // Skip null
+    if newValue ≠ null:
+        increment(newValue)
+    if oldValue ≠ null:
+        decrement(oldValue)
+
+    obj[field] ← newValue
+```
+
+### Initialization Without RC
+
+Bulk initialization skips intermediate states:
+
+```pseudo
+// Instead of:
+obj.field1 = a  // inc(a)
+obj.field2 = b  // inc(b)
+obj.field3 = c  // inc(c)
+
+// Use:
+initializeObject(obj, [a, b, c]):
+    obj.field1 ← a
+    obj.field2 ← b
+    obj.field3 ← c
+    increment(a)
+    increment(b)
+    increment(c)
+```
+
+### Cache-Conscious Counts
+
+Place counts to reduce cache pressure:
+
+```pseudo
+// Option 1: Count in header (co-located with object)
+Object:
+    header: Header { tag, refCount, ... }
+    fields: ...
+
+// Option 2: Separate count table (better for dense scanning)
+countTable: array[maxObjects] of int
+getCount(obj) = countTable[objectIndex(obj)]
+```
+
+---
+
+## 5.11 Summary
+
+Reference counting provides immediate reclamation at the cost of per-write overhead:
+
+| Aspect | Characteristic |
+|--------|---------------|
+| **Reclamation** | Immediate when count hits zero |
+| **Cycles** | Cannot collect (need backup) |
+| **Overhead** | Per-pointer-write updates |
+| **Pauses** | Small (cascade can be bounded) |
+| **Space** | Count field per object |
+
+Optimization techniques:
+
+| Technique | Benefit | Trade-off |
+|-----------|---------|-----------|
+| **Deferred RC** | Reduced barrier cost | Delayed reclamation |
+| **Coalesced RC** | Eliminated redundant updates | Memory for delta map |
+| **Biased RC** | Fast for creating thread | Complex cross-thread |
+| **Limited counts** | Smaller headers | Sticky bits or overflow table |
+
+Cycle collection:
+
+| Approach | Complexity | Completeness |
+|----------|------------|--------------|
+| **Trial deletion** | O(cycle size) | May miss some |
+| **Backup tracing** | O(live set) | Complete |
+| **Hybrid** | Variable | Complete |
+
+When to use RC:
+- Prompt reclamation required (real-time, low latency)
+- Objects cannot move (FFI, shared memory)
+- Mostly acyclic data structures
+- As component in hybrid collector
+
+When to avoid RC:
+- High mutation rate (barrier overhead dominates)
+- Many cycles (need frequent backup tracing)
+- Simple generational collector suffices
 

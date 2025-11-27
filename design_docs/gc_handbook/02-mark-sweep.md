@@ -1,447 +1,637 @@
-# 2. Mark-Sweep (Deep Summary with Pseudocode)
+# 2. Mark-Sweep Garbage Collection
 
-This chapter expands the core mark-sweep family, focusing on correctness invariants, practical implementations, optimizations, and trade-offs. It also sketches incremental/parallel extensions because they shape real-world designs. Lengthy by design (~5k words) for CLI-friendly reference.
+Mark-sweep is the foundational tracing collector algorithm, developed by McCarthy in 1960 for Lisp. It operates in two phases: first tracing the object graph from roots to identify live objects (marking), then scanning the entire heap to reclaim unmarked objects (sweeping). This chapter covers the core algorithm, the tricolor abstraction, bitmap marking, lazy sweeping, and cache-conscious optimizations.
 
 ---
 
-## 2.1 Core Algorithm and Invariants
+## 2.1 The Core Algorithm
 
-**Goal**: reclaim unreachable objects without moving survivors. Two phases:
-1) **Mark**: discover all reachable (live) objects from roots.
-2) **Sweep**: reclaim unmarked (white) objects and return their memory to the allocator (typically as free-list nodes).
+Mark-sweep is an indirect collection algorithm. Rather than detecting garbage directly, it identifies all live objects and concludes that everything else must be garbage.
 
-**Tri-colour abstraction**:
-- White: unvisited (candidate garbage).
-- Grey: discovered but not yet scanned.
-- Black: discovered and all children scanned.
-Correctness invariant: no black object points to white (prevents losing reachable objects).
-
-### Minimal Pseudocode (Stop-the-World, Non-moving)
+### Basic Structure
 
 ```pseudo
-mark_sweep(heap, roots):
-  // Phase 1: Mark
-  for each root in roots:
-    mark(root)
+// Allocation triggers collection when heap is full
+New():
+    ref ← allocate()
+    if ref = null:
+        collect()
+        ref ← allocate()
+        if ref = null:
+            error "Out of memory"
+    return ref
 
-  // Phase 2: Sweep
-  free_list = null
-  cursor = heap.start
-  while cursor < heap.end:
-    hdr = header(cursor)
-    size = object_size(cursor)  // robust parser is required
-    if hdr.color == WHITE:
-      // reclaim
-      add_to_free_list(cursor, size, free_list)
-    else:
-      hdr.color = WHITE  // reset for next GC
-    cursor += size
+atomic collect():
+    markFromRoots()
+    sweep(HeapStart, HeapEnd)
+```
 
-mark(obj):
-  if obj == null: return
-  hdr = header(obj)
-  if hdr.color != WHITE: return
-  hdr.color = GREY
-  push(mark_stack, obj)
-  while mark_stack not empty:
-    o = pop(mark_stack)
-    scan_children(o)
-    header(o).color = BLACK
+### Marking Phase
 
-scan_children(o):
-  for each pointer field p in o:
-    if p is heap pointer:
-      mark(p)
+The marker traverses the object graph starting from roots:
+
+```pseudo
+markFromRoots():
+    initialize(worklist)
+    for each fld in Roots:
+        ref ← *fld
+        if ref ≠ null and not isMarked(ref):
+            setMarked(ref)
+            add(worklist, ref)
+    mark()
+
+mark():
+    while not isEmpty(worklist):
+        ref ← remove(worklist)
+        for each fld in Pointers(ref):
+            child ← *fld
+            if child ≠ null and not isMarked(child):
+                setMarked(child)
+                add(worklist, child)
+```
+
+### Sweeping Phase
+
+The sweeper reclaims unmarked objects:
+
+```pseudo
+sweep(start, end):
+    scan ← start
+    while scan < end:
+        if isMarked(scan):
+            unsetMarked(scan)
+        else:
+            free(scan)
+        scan ← nextObject(scan)
 ```
 
 ### Complexity
-- Time: O(L + H) where L = number of live objects (mark), H = number of heap objects/blocks (sweep must visit all). Sweep can dominate when the heap is sparse.
-- Space: stack/queue for grey set. For bounded-stack variants, uses pointer reversal or iterative depth-first with limited auxiliary space.
+
+- **Mark phase**: O(L) where L is the size of live data
+- **Sweep phase**: O(H) where H is the heap size
+- **Space**: O(D) for the mark stack, where D is maximum graph depth
 
 ---
 
-## 2.2 Practical Marking
+## 2.2 The Tricolor Abstraction
 
-### Root discovery
-- **Precise**: compiler/runtime supplies exact root locations (preferred).
-- **Conservative**: scans stacks/globals for bit patterns that look like pointers; avoids moving objects but can retain false positives.
+The tricolor abstraction provides a framework for reasoning about collector correctness:
 
-### Mark stack management
-- Use explicit vector/stack; can overflow → employ overflow lists or fallback to recursive traversal of already-marked objects (pointer reversal).
-- Parallel marking: per-thread local stacks + global work stealing.
-
-### Pointer finding and layouts
-- Need parsable object layouts: tag/size, field descriptors, or metadata tables.
-- For variable-sized objects, `object_size` must be robust and resilient to corrupted headers; often guarded by segregated layouts per type.
-
-### Bitmap marking
-- Store mark bits in a side bitmap instead of headers to reduce header writes and allow cheap sweeping.
-- Addressing: `bit_index = (addr - heap_base) / alignment`.
-- Sweep uses bitmap to decide liveness without touching cold objects.
-
-### Card tables vs. remembered sets
-- For mark-sweep itself, card tables not needed; but if combined with generational or incremental barriers, cards record dirty ranges to rescan.
-
----
-
-## 2.3 Optimizing Sweep
-
-### Lazy sweeping
-- Delay sweeping until allocation time; spreads cost.
-- Maintain “current sweep cursor”. Allocation first tries free list; when empty, sweep incrementally to replenish.
-- Reduces pause; but must ensure full pass before next mark to avoid accumulating garbage.
-
-**Pseudocode (lazy sweep skeleton)**:
 ```pseudo
-lazy_sweep_state = { cursor = heap.start, free_list = initial }
+Colors:
+    WHITE = unvisited (candidate garbage)
+    GREY  = discovered but not yet scanned
+    BLACK = scanned and all children identified
+```
+
+### Color Transitions
+
+```pseudo
+// Initial state: all objects WHITE
+
+// When first discovered
+greyObject(obj):
+    if color(obj) = WHITE:
+        color(obj) ← GREY
+        add(worklist, obj)
+
+// When scanned
+blackenObject(obj):
+    for each child in children(obj):
+        greyObject(child)
+    color(obj) ← BLACK
+```
+
+### The Strong Tricolor Invariant
+
+**Invariant**: No black object points directly to a white object.
+
+This ensures that any white object reachable from the roots must be reachable through a grey object. If this invariant is maintained, the collector will not miss any live objects.
+
+### Wavefront Model
+
+The grey objects form a "wavefront" separating black (processed) from white (unprocessed) objects. Marking progresses by advancing this wavefront until no grey objects remain.
+
+---
+
+## 2.3 Mark Bit Storage
+
+### In-Header Mark Bits
+
+Store mark bits in object headers:
+
+```pseudo
+isMarked(obj):
+    return (obj.header & MARK_BIT) ≠ 0
+
+setMarked(obj):
+    obj.header ← obj.header | MARK_BIT
+
+unsetMarked(obj):
+    obj.header ← obj.header & ~MARK_BIT
+```
+
+**Advantages**: Simple, no extra data structures
+**Disadvantages**: Modifies objects, cache traffic
+
+### Bitmap Marking
+
+Store marks in a separate bitmap:
+
+```pseudo
+ALIGNMENT = 8  // Minimum object alignment
+markBitmap: array[(HeapEnd - HeapStart) / ALIGNMENT] of bit
+
+bitIndex(obj):
+    return (addressOf(obj) - HeapStart) / ALIGNMENT
+
+isMarked(obj):
+    return markBitmap[bitIndex(obj)] = 1
+
+setMarked(obj):
+    markBitmap[bitIndex(obj)] ← 1
+
+clearAllMarks():
+    memset(markBitmap, 0, sizeof(markBitmap))
+```
+
+**Advantages**:
+- Compact representation (1 bit per possible object)
+- Cache-friendly for sweeping (dense bit scanning)
+- Safe for conservative collectors (doesn't modify objects)
+- Allows testing multiple objects at once (word operations)
+
+**Disadvantages**:
+- Extra memory for bitmap
+- Additional indirection to test marks
+
+### Byte Maps for Parallel Marking
+
+Single bits cause race conditions in parallel marking. Use bytes instead:
+
+```pseudo
+markByteMap: array[(HeapEnd - HeapStart) / ALIGNMENT] of byte
+
+setMarked(obj):
+    // Idempotent - no race condition
+    markByteMap[bitIndex(obj)] ← 1
+```
+
+---
+
+## 2.4 The Mark Stack
+
+### Basic Stack Implementation
+
+```pseudo
+MarkStack:
+    entries: array[MAX_DEPTH] of Address
+    top: int
+
+push(stack, obj):
+    if stack.top >= MAX_DEPTH:
+        handleOverflow(obj)
+    else:
+        stack.entries[stack.top] ← obj
+        stack.top ← stack.top + 1
+
+pop(stack):
+    if stack.top = 0:
+        return null
+    stack.top ← stack.top - 1
+    return stack.entries[stack.top]
+```
+
+### Overflow Handling
+
+When the stack overflows, use an overflow bitmap:
+
+```pseudo
+overflowed: boolean
+overflowBitmap: array[...] of bit
+
+handleOverflow(obj):
+    overflowed ← true
+    overflowBitmap[bitIndex(obj)] ← 1
+
+processOverflow():
+    if not overflowed:
+        return
+
+    overflowed ← false
+    for each obj in heap:
+        if overflowBitmap[bitIndex(obj)] = 1:
+            overflowBitmap[bitIndex(obj)] ← 0
+            if not allChildrenMarked(obj):
+                push(markStack, obj)
+
+// After main mark loop completes
+while overflowed:
+    processOverflow()
+    mark()
+```
+
+### Linear Bitmap Scan (Printezis/Detlefs)
+
+Avoid stack overflow by scanning the bitmap linearly:
+
+```pseudo
+markWithBitmapScan():
+    cur ← nextMarkedInBitmap(HeapStart)
+    while cur < HeapEnd:
+        add(worklist, cur)
+        markStep(cur)
+        cur ← nextMarkedInBitmap(cur)
+
+markStep(start):
+    while not isEmpty(worklist):
+        ref ← remove(worklist)
+        for each fld in Pointers(ref):
+            child ← *fld
+            if child ≠ null and not isMarked(child):
+                setMarked(child)
+                if child < start:
+                    add(worklist, child)  // Behind wavefront
+                // Else: will be found by linear scan
+```
+
+---
+
+## 2.5 Lazy Sweeping
+
+Defer sweeping until allocation time to reduce pause times:
+
+```pseudo
+LazySweeperState:
+    sweepCursor: Address
+    reclaimList: List<Block>
+
+collect():
+    markFromRoots()
+    // Don't sweep now - add blocks to reclaim list
+    for each block in Blocks:
+        if not anyMarked(block):
+            returnToBlockAllocator(block)
+        else:
+            add(reclaimList, block)
 
 allocate(size):
-  blk = find_in_free_list(free_list, size)
-  if blk: return carve(blk, size)
-  // replenish
-  while cursor < heap.end:
-    hdr = header(cursor)
-    sz = object_size(cursor)
-    if hdr.color == WHITE:
-      add_to_free_list(cursor, sz, free_list)
+    result ← freeList[sizeClass(size)].pop()
+    if result ≠ null:
+        return result
+
+    // Sweep incrementally until we find space
+    lazySweep(size)
+    return freeList[sizeClass(size)].pop()
+
+lazySweep(size):
+    while true:
+        block ← nextBlock(reclaimList, size)
+        if block = null:
+            break
+
+        sweep(block.start, block.end)
+        if spaceFound(block, size):
+            return
+
+    // No space found - get fresh block or trigger GC
+    allocateFreshBlock(size)
+```
+
+### Block-Level Marking
+
+Track whether any object in a block is marked:
+
+```pseudo
+blockMarked: array[numBlocks] of byte
+
+setMarked(obj):
+    markBitmap[bitIndex(obj)] ← 1
+    blockMarked[blockIndex(obj)] ← 1  // Also mark block
+
+// In collect()
+for each block in Blocks:
+    if blockMarked[blockIndex(block)] = 0:
+        // Entire block is garbage
+        returnToBlockAllocator(block)
     else:
-      hdr.color = WHITE
-    cursor += sz
-    blk = find_in_free_list(free_list, size)
-    if blk: return carve(blk, size)
-  // if we fall through, out of memory → trigger GC or grow
-  trigger_gc_or_fail()
-```
-
-### Free-list policy
-- First-fit (fast, more fragmentation), Next-fit (cache-friendly scanning), Best-fit (less fragmentation, slower).
-- Segregated free lists by size class reduce search time and fragmentation.
-
-### Coalescing
-- Adjacent free blocks merged to control external fragmentation.
-- Boundary tags or footer/headers help coalescing; interacts with object parsing.
-
----
-
-## 2.4 Cache and Locality Considerations
-
-- Marking touches live objects; sweeping touches the whole heap. For large heaps with sparse liveness, sweep dominates cache misses.
-- Bitmap marking + block-local sweeping improves locality: sweep per block and skip all-white blocks.
-- Prefetching during mark stack popping can hide latency.
-- Layout-sensitive scanning: group frequently-pointed-to metadata to the front of objects; compact headers.
-
----
-
-## 2.5 Incremental and Concurrent Mark-Sweep
-
-### Motivation
-- Reduce pause times by interleaving collector work with mutator execution.
-- Need write/read barriers to maintain tri-colour invariant when mutator runs during marking.
-
-### Barriers (common styles)
-- **Dijkstra (incremental update)**: On pointer store `obj.f = new`, if obj is black, shade `new` grey. Prevents black→white edge creation.
-- **Baker (read barrier)**: On pointer load, ensure the referent is blackened (copying collectors), less common for mark-sweep.
-- **Snapshot-at-beginning (SATB)**: On pointer store overwriting old value, shade the old value; preserves view of heap as of mark start.
-
-### Incremental marking loop (SATB style)
-```pseudo
-on_store(obj, field, new):
-  old = obj.field
-  obj.field = new
-  if mutator_state == MARKING and is_heap_pointer(old):
-    shade(old)  // push to mark stack/queue
-
-incremental_mark_step(quanta):
-  steps = 0
-  while steps < quanta and mark_stack not empty:
-    o = pop(mark_stack)
-    scan_children(o)
-    header(o).color = BLACK
-    steps++
-```
-
-### Concurrent sweep
-- Easier: sweep can run after world is stopped for mark completion and then overlap with mutators if allocator can avoid unswept regions or synchronize reuse.
-- Techniques: bump “sweep frontier”; mutators allocate from already-swept regions only; requires atomic updates to free lists.
-
-### Restart and termination
-- Need a termination protocol (when mark stack empty) and a way to restart if barriers add new grey objects.
-- SATB tends to have fewer rescans; incremental-update can produce more re-greying.
-
----
-
-## 2.6 Parallel Mark-Sweep
-
-- Multiple GC threads traverse the mark stack in parallel; work stealing to balance load.
-- Parallel sweep: partition heap into chunks; each thread sweeps a chunk and builds local free lists; merge at end.
-- Concurrency vs parallelism: parallel still stop-the-world but faster; concurrent overlaps with mutators but needs barriers.
-
-Work packet pattern (parallel):
-```pseudo
-initialize_work_packets(mark_stack, roots)
-parallel_for_each(worker):
-  while packet = steal_or_take():
-    for obj in packet:
-      scan_children(obj)
-      header(obj).color = BLACK
-      enqueue_newly_found(packet_pool, children)
+        add(reclaimList, block)
+        blockMarked[blockIndex(block)] ← 0  // Reset for next cycle
 ```
 
 ---
 
-## 2.7 Interaction with Generational GC
+## 2.6 Cache-Conscious Marking
 
-- Mark-sweep typically manages the **old generation**; young generation uses copying.
-- Requires **remembered set/card table** for old→young pointers; during old-gen mark, you must treat young objects reachable from old as roots (or perform minor GC first).
-- Major GC often collects old + young together or minor-first to reduce cross-generation traversal.
+### FIFO Prefetch Buffer
 
----
-
-## 2.8 Handling Large / Pinned Objects
-
-- Moving is off the table for pure mark-sweep, so large/pinned objects fit naturally.
-- Still must manage fragmentation: use a separate large-object space with coarse blocks to reduce sweep overhead; can recycle via free lists of big spans.
-- For pinned objects in mostly-moving collectors, mark-sweep regions are the natural home.
-
----
-
-## 2.9 Safety and Robustness
-
-- Heap parsability: sweep must be able to walk objects even when corrupted; often use object-size tables or guarded headers.
-- Overflow protection: mark stack overflow must not corrupt invariants; use overflow lists or fallback to recursive/pointer reversal.
-- Fault tolerance: conservative marking on stacks can prevent freeing objects if address ambiguity exists.
-
----
-
-## 2.10 Example Variants and Pseudocode
-
-### Simple Bitmap Mark-Sweep
+Insert a FIFO queue between stack operations to enable prefetching:
 
 ```pseudo
-// Setup: heap divided into fixed-size blocks; each block has a mark bitmap.
+MarkWorklist:
+    stack: MarkStack
+    fifo: CircularBuffer[PREFETCH_DISTANCE]
 
-mark(obj):
-  if obj == null: return
-  if test_mark_bit(obj): return
-  set_mark_bit(obj)
-  push(mark_stack, obj)
-  while mark_stack not empty:
-    o = pop(mark_stack)
-    for child in children(o):
-      if is_heap_pointer(child) and !test_mark_bit(child):
-        set_mark_bit(child)
-        push(mark_stack, child)
+add(worklist, item):
+    push(worklist.stack, item)
 
-sweep_block(block):
-  free_list_local = null
-  for each object slot in block:
-    if mark_bit(slot) == 0:
-      add_to_list(free_list_local, slot)
+remove(worklist):
+    addr ← pop(worklist.stack)
+    if addr = null:
+        return removeLast(worklist.fifo)
+
+    prefetch(addr)
+    prepend(worklist.fifo, addr)
+    return removeLast(worklist.fifo)
+```
+
+The prefetch distance (FIFO size) determines how far ahead objects are fetched. Typical values: 8-32 entries.
+
+### Edge Marking vs Node Marking
+
+Traditional marking adds each node once. Edge marking adds children unconditionally:
+
+```pseudo
+// Node marking (traditional)
+markNode():
+    while not isEmpty(worklist):
+        obj ← remove(worklist)
+        for each fld in Pointers(obj):
+            child ← *fld
+            if child ≠ null and not isMarked(child):
+                setMarked(child)
+                add(worklist, child)
+
+// Edge marking (better cache behavior)
+markEdge():
+    while not isEmpty(worklist):
+        obj ← remove(worklist)
+        if not isMarked(obj):
+            setMarked(obj)
+            for each fld in Pointers(obj):
+                child ← *fld
+                if child ≠ null:
+                    add(worklist, child)  // Unconditional
+```
+
+Edge marking has more worklist entries but better cache behavior because `isMarked` and `Pointers` operate on the same (prefetched) object.
+
+### Prefetch on Grey
+
+Prefetch object contents when adding to worklist:
+
+```pseudo
+greyAndPrefetch(obj):
+    if not isMarked(obj):
+        setMarked(obj)
+        prefetch(obj)  // Fetch first cache line
+        add(worklist, obj)
+```
+
+---
+
+## 2.7 Parallel Mark-Sweep
+
+### Work Stealing for Marking
+
+```pseudo
+parallelMark():
+    // Initialize: distribute roots among workers
+    for each worker w:
+        w.localQueue ← empty
+    distributeRoots(Roots, workers)
+
+    // Mark in parallel
+    parallel for each worker w:
+        markWorkerLoop(w)
+
+markWorkerLoop(worker):
+    while true:
+        obj ← worker.localQueue.pop()
+        if obj = null:
+            obj ← globalQueue.steal()
+        if obj = null:
+            victim ← randomWorker()
+            obj ← victim.localQueue.steal()
+        if obj = null:
+            if terminationDetected():
+                return
+            continue
+
+        scanObject(obj, worker)
+
+scanObject(obj, worker):
+    for each child in children(obj):
+        if child ≠ null and tryMark(child):
+            worker.localQueue.push(child)
+            if worker.localQueue.size() > SHARE_THRESHOLD:
+                globalQueue.add(worker.localQueue.split())
+```
+
+### Atomic Mark Bit Setting
+
+```pseudo
+tryMark(obj):
+    loop:
+        byte ← markByteMap[bitIndex(obj)]
+        if byte ≠ 0:
+            return false  // Already marked
+        if CompareAndSet(&markByteMap[bitIndex(obj)], 0, 1):
+            return true
+```
+
+### Parallel Sweeping
+
+```pseudo
+parallelSweep():
+    chunks ← divideHeap(CHUNK_SIZE)
+    parallel for each chunk in chunks:
+        sweepChunk(chunk)
+
+sweepChunk(chunk):
+    localFreeList ← empty
+    cursor ← chunk.start
+    while cursor < chunk.end:
+        if not isMarked(cursor):
+            addToFreeList(localFreeList, cursor)
+        else:
+            unsetMarked(cursor)
+        cursor ← nextObject(cursor)
+
+    mergeFreeList(globalFreeList, localFreeList)
+```
+
+---
+
+## 2.8 Incremental and Concurrent Marking
+
+### Write Barriers for Concurrent Marking
+
+To maintain the tricolor invariant while mutators run:
+
+**Dijkstra Barrier (Incremental Update)**:
+```pseudo
+dijkstraWriteBarrier(obj, field, newValue):
+    obj[field] ← newValue
+    if gcState = MARKING:
+        if isBlack(obj) and isWhite(newValue):
+            shade(newValue)  // Grey the new target
+```
+
+**SATB Barrier (Snapshot-at-Beginning)**:
+```pseudo
+satbWriteBarrier(obj, field, newValue):
+    oldValue ← obj[field]
+    obj[field] ← newValue
+    if gcState = MARKING:
+        if oldValue ≠ null and not isMarked(oldValue):
+            satbBuffer.push(oldValue)
+```
+
+### Concurrent Sweep
+
+Sweep can run concurrently with mutators since garbage objects are not accessible:
+
+```pseudo
+concurrentSweep():
+    sweepFrontier ← HeapStart
+    while sweepFrontier < HeapEnd:
+        chunk ← getChunkAt(sweepFrontier)
+        sweepChunk(chunk)
+        sweepFrontier ← chunk.end
+        yield()  // Allow mutator progress
+
+// Allocator must only use swept regions
+allocate(size):
+    while freeList.empty():
+        if sweepFrontier >= HeapEnd:
+            return null
+        helpSweep()  // Mutator helps sweep
+    return freeList.pop(size)
+```
+
+---
+
+## 2.9 Free List Management
+
+### Segregated Free Lists
+
+Organize free cells by size class:
+
+```pseudo
+NUM_SIZE_CLASSES = 64
+freeLists: array[NUM_SIZE_CLASSES] of FreeList
+
+sizeClass(size):
+    if size <= 128:
+        return size / 8
     else:
-      clear_mark_bit(slot)
-  merge(free_list, free_list_local)
+        return 16 + log2(size - 128)
+
+allocate(size):
+    class ← sizeClass(size)
+    cell ← freeLists[class].pop()
+    if cell ≠ null:
+        return cell
+    return allocateSlow(size)
 ```
 
-### Lazy Sweep with Allocation
+### Coalescing Adjacent Free Cells
 
 ```pseudo
-state:
-  sweep_cursor = heap.start
-  sweep_end    = heap.end
-  free_lists[class]  // segregated by size
+free(obj):
+    size ← objectSize(obj)
+    prev ← previousObject(obj)
+    next ← nextObject(obj)
 
-alloc(size):
-  cls = size_class(size)
-  blk = pop(free_lists[cls])
-  if blk: return init_object(blk, size)
-  // replenish by sweeping incrementally
-  while sweep_cursor < sweep_end:
-    hdr = header(sweep_cursor)
-    sz  = object_size(sweep_cursor)
-    if hdr.color == WHITE:
-      push_to_class(free_lists, sweep_cursor, sz)
+    // Coalesce with previous
+    if prev ≠ null and isFree(prev):
+        removeFromFreeList(prev)
+        obj ← prev
+        size ← size + objectSize(prev)
+
+    // Coalesce with next
+    if next ≠ null and isFree(next):
+        removeFromFreeList(next)
+        size ← size + objectSize(next)
+
+    addToFreeList(obj, size)
+```
+
+---
+
+## 2.10 Heap Parsability
+
+The sweeper must be able to find each object in the heap:
+
+### Using Object Size Fields
+
+```pseudo
+nextObject(obj):
+    return obj + objectSize(obj) + alignmentPadding(obj)
+
+objectSize(obj):
+    return obj.header.size  // Or from type descriptor
+```
+
+### Using Block Structure
+
+```pseudo
+// All objects in a block have the same size
+nextObjectInBlock(obj, block):
+    next ← obj + block.cellSize
+    if next >= block.end:
+        return null
+    return next
+```
+
+### Crossing Maps for Large Objects
+
+```pseudo
+// Map from card → offset to object start
+crossingMap: array[numCards] of int
+
+firstObjectInCard(cardIndex):
+    offset ← crossingMap[cardIndex]
+    if offset >= 0:
+        return cardStart(cardIndex) + offset
     else:
-      hdr.color = WHITE
-    sweep_cursor += sz
-    blk = pop(free_lists[cls])
-    if blk: return init_object(blk, size)
-  trigger_full_gc_or_fail()
-```
-
-### Incremental Update Barrier (Dijkstra) Skeleton
-
-```pseudo
-// invoked on every pointer store during marking
-write_barrier(obj, field, new_val):
-  old = obj.field
-  obj.field = new_val
-  if GC.state == MARKING:
-    if is_heap_pointer(new_val) and color(obj) == BLACK:
-      shade(new_val)  // push to mark stack
-```
-
-### Snapshot-at-Beginning (SATB) Barrier
-
-```pseudo
-write_barrier(obj, field, new_val):
-  old = obj.field
-  obj.field = new_val
-  if GC.state == MARKING and is_heap_pointer(old):
-    shade(old)
+        // Object spans from previous card
+        return firstObjectInCard(cardIndex + offset)
 ```
 
 ---
 
-## 2.11 Fragmentation and Compaction Interplay
+## 2.11 Summary
 
-- Mark-sweep leaves holes; over time, fragmentation increases allocation failures despite free memory.
-- Mitigations:
-  - Segregated fits/size classes to keep similar-sized objects together.
-  - Periodic compaction or evacuation of fragmented regions (hybrid collectors).
-  - Allocation policies: prefer best-fit for large blocks, first/next-fit for small blocks to reduce large-block breakage.
-- Heap growth policy: grow before fragmentation stalls allocation; shrink rarely to avoid oscillation.
+Mark-sweep is the foundational non-moving collector:
 
----
+| Aspect | Characteristic |
+|--------|---------------|
+| **Space overhead** | Low (mark bits only) |
+| **Allocation** | Free-list based |
+| **Fragmentation** | Yes (not compacting) |
+| **Pause time** | Proportional to live + heap size |
+| **Mutator overhead** | None (STW) or barrier (concurrent) |
 
-## 2.12 Tracing Order and Locality
+Key optimizations:
 
-- Depth-first vs breadth-first:
-  - DFS (stack) preserves parent-child adjacency; uses less queue space but can cause deep recursion unless iterative.
-  - BFS (queue) may improve cache for wide object graphs and copying collectors; for mark-sweep, order mainly affects cache.
-- Prefetch hints for child headers can reduce stalls on NUMA/large heaps.
-- Chunked scanning: process heap in blocks to improve TLB and cache hit rates.
+| Technique | Benefit |
+|-----------|---------|
+| **Bitmap marking** | Cache-friendly sweeping, safe for conservative GC |
+| **Lazy sweeping** | Amortizes sweep cost, reduces pause |
+| **FIFO prefetch** | Hides memory latency in mark phase |
+| **Edge marking** | Better cache utilization |
+| **Parallel marking** | Reduces pause via multiple threads |
 
----
+When to use mark-sweep:
+- Old generation in generational collectors
+- Conservative/uncooperative environments
+- Memory-constrained systems (no copy reserve)
+- When objects cannot move (FFI, pinning)
 
-## 2.13 Memory Layout, Alignment, and Bitmaps
-
-- Alignment (e.g., 8 or 16 bytes) simplifies bitmap addressing and object parsing.
-- For bitmap marking, ensure bitmap alignment so `bit_index` is constant-time (shift instead of division).
-- Crossing maps: optional for interior pointers; mark-sweep generally needs object starts for sweep correctness.
-
----
-
-## 2.14 GC Triggers and Policies
-
-- Common triggers: allocation threshold, heap occupancy ratio, time since last GC, external signals (low OS memory).
-- Mark-sweep often paired with “occupancy threshold” (e.g., 60–70% full) to balance pause vs throughput.
-- With lazy sweeping, trigger mark when free lists + unswept region below threshold.
-
----
-
-## 2.15 Parallel Sweep Details
-
-- Partition heap into equal-sized chunks; each thread sweeps a chunk independently into thread-local free lists.
-- Merge phase: concatenate or keep per-thread free lists to reduce lock contention in alloc fast path (requires thread-safe selection).
-- Avoid sharing writes: each sweeper resets mark bits and builds local lists to reduce cache ping-pong.
-
----
-
-## 2.16 Correctness Corner Cases
-
-- Double-free: avoided by reset-to-white protocol; sweep only frees white, then resets black to white.
-- Header corruption: guard `object_size` against nonsense values (e.g., by block bounds).
-- Interior pointers: mark-sweep needs to find object starts; if interior pointers allowed, must map interior → base (card/crossing maps).
-- Finalizers: if supported, mark reachable finalizable objects, queue for finalization, possibly a second mark to keep resurrected reachability.
-
----
-
-## 2.17 When to Use Mark-Sweep
-
-- Pros: space-efficient (no copy reserve), supports large/pinned objects, simple allocator (free list).
-- Cons: fragmentation, sweep cost proportional to heap size, pauses unless incremental/parallelized.
-- Fit: old-generation management in a generational collector; environments with many large/pinned objects; memory-constrained systems where 2× space for copying is unacceptable.
-
----
-
-## 2.18 Relationship to Other Algorithms
-
-- Mark-compact: same marking, but adds relocation to remove fragmentation.
-- Copying: replaces sweep with evacuation; trades space for locality and fast allocation.
-- RC hybrids: mark-sweep can be fallback for cycle collection in RC systems.
-- Region/Immix: incorporate block/line concepts to get partial compaction benefits while sweeping.
-
----
-
-## 2.19 Implementation Checklist (pragmatic)
-
-- Object parsing: robust size computation; tables per tag.
-- Mark stack: bounded, overflow strategy.
-- Roots: precise list; handle globals, stacks, registers; optional conservative scan.
-- Mark bits: header vs bitmap; choose alignment to simplify.
-- Sweep: coalescing + size classes; lazy sweep option.
-- Barriers: only if incremental/concurrent; choose SATB vs incremental-update.
-- Allocation fast path: bump or segregated free-list selection; clear headers.
-- Concurrency/parallelism: locks or thread-local caches; per-thread free lists.
-- Large objects: dedicated space or classes; avoid fragmentation.
-- Testing: stress mark stack overflow, corrupted headers, interior pointers, cross-gen and remembered sets (if generational).
-
----
-
-## 2.20 Extended Pseudocode (Stop-the-World, Size Classes, Bitmap)
-
-```pseudo
-struct Heap {
-  base, end
-  bitmap  // 1 bit per min_align unit
-  free_lists[MAX_CLASS]
-}
-
-function gc(Heap H, Roots R):
-  // Mark
-  for r in R: shade(r)
-  while mark_stack not empty:
-    o = pop(mark_stack)
-    for child in children(o):
-      if is_heap_pointer(child):
-        shade(child)
-
-  // Sweep by blocks to improve locality
-  for each block in H:
-    sweep_block(block, H)
-
-function shade(ptr):
-  if ptr == null: return
-  if test_bit(bitmap, ptr): return
-  set_bit(bitmap, ptr)
-  push(mark_stack, ptr)
-
-function sweep_block(block, H):
-  cursor = block.start
-  free_runs = []
-  while cursor < block.end:
-    if test_bit(bitmap, cursor) == 0:
-      // start of a free run
-      run_start = cursor
-      while cursor < block.end and test_bit(bitmap, cursor) == 0:
-        cursor += object_size(cursor)  // or min_align if not parsable
-      add_free_run(run_start, cursor - run_start, H.free_lists)
-    else:
-      clear_bit(bitmap, cursor)
-      cursor += object_size(cursor)
-```
-
----
-
-## 2.21 Notes on Real Implementations
-
-- **HotSpot CMS**: concurrent mark-sweep with incremental-update barrier; fragmentation issues → optional compaction via Full GC.
-- **Boehm GC**: conservative mark-sweep; bitmap-based; incremental/concurrent options.
-- **Lua**: incremental mark-sweep for tables/objects; uses tri-colour invariant and barriers.
-- **Go (pre-1.5)**: stop-the-world mark-sweep; later moved to concurrent mark + sweep with pacing.
-
----
-
-## 2.22 Practical Tuning Tips
-
-- If pauses are long, add incremental marking (small quanta per allocation) or parallel mark/sweep.
-- If fragmentation hurts, add size classes and occasional compaction, or switch some regions to moving collectors.
-- If mark stack overflows, increase size or add overflow list; avoid recursion.
-- If write barrier cost is high (incremental/concurrent), prefer SATB (lower store-barrier frequency) or coarsen the barrier with cards.
-
----
-
-## 2.23 Summary
-
-Mark-sweep is the canonical non-moving collector: straightforward to implement, space-efficient, and flexible for large/pinned objects. Its main costs are heap-proportional sweep and fragmentation, which can be mitigated with bitmaps, lazy/parallel sweep, size classes, and—when needed—periodic compaction. Incremental/concurrent variants rely on barriers to maintain tri-colour safety, enabling shorter pauses. In generational systems, mark-sweep naturally serves as the old-generation manager with remembered sets handling inter-generational pointers.
+Limitations:
+- Fragmentation accumulates over time
+- Sweep cost proportional to entire heap
+- May need periodic compaction
 

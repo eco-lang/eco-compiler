@@ -1,84 +1,517 @@
-# 17. Mostly-Concurrent Copying (Deep Summary)
+# 17. Mostly-Concurrent Copying Collection
 
-Concurrent or mostly-concurrent copying collectors move objects while mutators run, using barriers to maintain consistency. Techniques include read barriers (Baker), indirection (Brooks pointers), and phased algorithms (e.g., Sapphire).
-
----
-
-## 17.1 Core Idea
-
-- Evacuate objects from from-space to to-space while mutators may still reference from-space.
-- Ensure every access yields the to-space copy via barriers or indirection.
+Concurrent copying collectors relocate objects while mutators continue executing. This is more challenging than concurrent marking because mutators may access objects mid-copy, requiring sophisticated barriers to maintain consistency. This chapter covers the algorithms, barriers, and invariants needed for concurrent object relocation.
 
 ---
 
-## 17.2 Read Barriers (Baker)
+## 17.1 The Challenge of Concurrent Copying
 
-- On load, if object is still in from-space (not yet evacuated), evacuate or forward to to-space; return to-space pointer.
-- Ensures mutator always sees the latest copy; from-space references can remain but are translated on access.
+In stop-the-world copying, the collector has exclusive access to the heap. Concurrent copying must handle:
+
+1. **Mutator reads from-space**: May see partially copied or stale data
+2. **Mutator writes to from-space**: Updates may be lost if object moves
+3. **Pointer comparisons**: Same object may have two addresses
+4. **Memory ordering**: Copies must be visible before forwarding
+
+The goal is to ensure mutators always see a consistent view of objects, typically the to-space copy.
+
+---
+
+## 17.2 Read Barriers
+
+### Baker's To-Space Invariant
+
+The **to-space invariant** guarantees mutators only access to-space copies:
 
 ```pseudo
-read(ptr):
-  obj = ptr
-  if in_from_space(obj):
-    fwd = header(obj).fwd
-    if fwd == null: fwd = evacuate(obj)
-    return fwd
-  return obj
+bakerReadBarrier(ref):
+    if inFromSpace(ref):
+        // Ensure object is in to-space
+        if isForwarded(ref):
+            return getForwardingAddress(ref)
+        else:
+            return evacuate(ref)
+    return ref
+
+evacuate(object):
+    // Allocate to-space copy
+    size ← objectSize(object)
+    newLocation ← toSpaceAlloc(size)
+
+    // Copy data
+    copyObjectData(object, newLocation, size)
+
+    // Install forwarding pointer atomically
+    if CompareAndSet(&object.forwardingWord, null, newLocation):
+        return newLocation
+    else:
+        // Lost race - another thread evacuated
+        rollbackAllocation(size)
+        return object.forwardingWord
+```
+
+**Properties:**
+- Mutators always see to-space copies
+- Every pointer dereference requires barrier check
+- Objects evacuated on demand
+
+### Incremental Evacuation
+
+Rather than evacuating entire objects on access, scan and evacuate incrementally:
+
+```pseudo
+incrementalReadBarrier(ref):
+    if inFromSpace(ref):
+        ref ← ensureForwarded(ref)
+    return ref
+
+ensureForwarded(object):
+    header ← object.header
+    if isForwarded(header):
+        return getForwardingAddress(header)
+
+    // Object not yet forwarded - evacuate
+    return evacuateObject(object)
+```
+
+### Load Barrier Placement
+
+The barrier must execute on every pointer load:
+
+```pseudo
+// Field load
+loadField(object, offset):
+    ref ← object[offset]
+    return readBarrier(ref)
+
+// Array element load
+loadArrayElement(array, index):
+    ref ← array[index]
+    return readBarrier(ref)
+
+// Stack/register access (compiler-generated)
+// Barrier on entry to safe points
 ```
 
 ---
 
-## 17.3 Brooks Indirection
+## 17.3 Brooks Forwarding Pointers
 
-- Each object has an indirection pointer (often first word) to its current location.
-- Mutator loads via the indirection; collector updates indirection when moving object.
-- Reduces per-load logic to one indirection; avoids conditional evacuation on each read.
+Each object contains a forwarding pointer (typically the first word). Objects initially forward to themselves:
+
+```pseudo
+// Object layout
+Object:
+    forwardingPointer: Address  // First word
+    header: Header
+    fields: ...
+
+// Allocation sets self-forwarding
+allocateObject(size):
+    obj ← bump(size + FORWARD_PTR_SIZE)
+    obj.forwardingPointer ← obj  // Self-forwarding
+    return obj
+
+// Read barrier is simple indirection
+brooksReadBarrier(ref):
+    return ref.forwardingPointer
+
+// Moving an object
+moveObject(old, new):
+    copy(old, new, objectSize(old))
+    new.forwardingPointer ← new   // Self-forward
+    old.forwardingPointer ← new   // Redirect old to new
+```
+
+**Advantages:**
+- Constant-time barrier (single indirection)
+- No conditional branches in common case
+- Old copies remain valid
+
+**Disadvantages:**
+- One word overhead per object
+- Extra memory access per read
+
+### Compressing Brooks Pointers
+
+Reduce overhead by embedding forwarding in header when not moved:
+
+```pseudo
+compressedBrooksRead(ref):
+    header ← ref.header
+    if isForwarded(header):
+        return extractForwardAddress(header)
+    return ref  // Not moved
+```
 
 ---
 
-## 17.4 Sapphire-style Phases
+## 17.4 Write Barriers for Concurrent Copying
 
-- Phased barriers for mark/copy/flip; ensures consistent handling of reads/writes during concurrent copying.
-- Uses read/write barriers tuned per phase to manage forwarding and equality checks.
+Mutator writes must go to the to-space copy to avoid lost updates.
+
+### Write-Through to To-Space
+
+All writes go to the to-space copy:
+
+```pseudo
+copyingWriteBarrier(object, offset, value):
+    toSpaceObj ← readBarrier(object)
+    toSpaceObj[offset] ← value
+```
+
+### Write Logging
+
+Log writes for replay to to-space copy:
+
+```pseudo
+loggedWriteBarrier(object, offset, value):
+    object[offset] ← value
+
+    if inFromSpace(object):
+        writeLog.push(WriteEntry(object, offset, value))
+
+// Collector processes log
+processWriteLog():
+    for each entry in writeLog:
+        toSpaceObj ← getForwardingAddress(entry.object)
+        toSpaceObj[entry.offset] ← entry.value
+```
+
+### Combined Read-Write Barriers
+
+```pseudo
+readWriteBarrier(object, offset, value):
+    // Ensure we have to-space reference
+    toSpaceObj ← object.forwardingPointer
+
+    // Write to to-space copy
+    toSpaceObj[offset] ← value
+
+    // Also update from-space if collector not done
+    if inFromSpace(object) and object ≠ toSpaceObj:
+        object[offset] ← value
+```
 
 ---
 
-## 17.5 Write Barriers
+## 17.5 Maintaining Pointer Equality
 
-- Needed to keep to-space up to date: if mutator writes to object, write must go to to-space copy or be replayed.
-- Commonly, mutator always writes through the forwarded/indirected location to avoid divergence.
+With two copies of each object, pointer comparison is problematic:
 
----
+```pseudo
+// Wrong: compares addresses directly
+equals(a, b):
+    return a = b
 
-## 17.6 Equality and Identity
+// Correct: compare canonical (to-space) addresses
+safeEquals(a, b):
+    return readBarrier(a) = readBarrier(b)
+```
 
-- Must ensure pointer equality semantics are preserved; often normalize pointers to to-space in mutator.
-- Self-healing: once read barrier translates a pointer, mutator stores/uses the translated version to reduce repeated barriers.
+### Self-Healing
 
----
+Update stale pointers when encountered:
 
-## 17.7 Interaction with Generations
+```pseudo
+selfHealingRead(source, offset):
+    ref ← source[offset]
+    if inFromSpace(ref):
+        newRef ← readBarrier(ref)
+        // Try to update source to avoid repeated forwarding
+        CompareAndSet(&source[offset], ref, newRef)
+        return newRef
+    return ref
+```
 
-- Concurrent copying usually for young gen is rare (minors are typically STW). More common for whole-heap concurrent copying in pauseless designs.
-- Generational card/store barriers still needed for cross-gen pointers.
-
----
-
-## 17.8 Correctness and Termination
-
-- Invariant: all reachable objects eventually forwarded; all pointers the mutator sees point to to-space.
-- Termination when work queues empty and no pending evacuation from barriers.
-
----
-
-## 17.9 Costs
-
-- Read barrier on every load is expensive; Brooks indirection reduces conditional logic but adds pointer chasing.
-- More common in hard real-time/pauseless collectors where latency trumps throughput.
+Self-healing amortizes barrier cost by fixing stale pointers.
 
 ---
 
-## 17.10 Summary
+## 17.6 The Sapphire Algorithm
 
-Mostly-concurrent copying relies on read barriers or indirection to make mutator accesses see to-space copies while evacuation proceeds concurrently. It preserves low pause times at the cost of steady-state barrier overhead. Phased algorithms (Sapphire) refine barriers per phase to manage forwarding and equality.
+A phased concurrent copying algorithm with precise barrier requirements per phase:
 
+### Phase 1: Mark
+
+Concurrent marking to identify live objects:
+
+```pseudo
+sapphireMarkPhase():
+    gcPhase ← MARKING
+    concurrentMark()  // Standard concurrent marking
+    gcPhase ← MARKED
+```
+
+### Phase 2: Flip
+
+Atomically switch the meaning of spaces:
+
+```pseudo
+sapphireFlip():
+    // Brief STW to flip spaces
+    stopAllMutators()
+    swap(fromSpace, toSpace)
+    gcPhase ← COPYING
+    resumeAllMutators()
+```
+
+### Phase 3: Copy
+
+Concurrent copying with read barriers:
+
+```pseudo
+sapphireCopyPhase():
+    // Evacuate all live objects
+    while not allEvacuated():
+        object ← getNextLiveObject()
+        evacuate(object)
+
+    gcPhase ← DONE
+```
+
+### Phase Barriers
+
+Different barriers for each phase:
+
+```pseudo
+sapphireReadBarrier(ref):
+    switch gcPhase:
+        case MARKING:
+            // No barrier needed (objects don't move yet)
+            return ref
+        case COPYING:
+            // Must ensure to-space copy
+            return ensureForwarded(ref)
+        case DONE:
+            // All objects in to-space
+            return ref
+
+sapphireWriteBarrier(object, offset, value):
+    switch gcPhase:
+        case MARKING:
+            // SATB barrier for marking
+            satbBarrier(object, offset, value)
+        case COPYING:
+            // Write to to-space copy
+            writeThrough(object, offset, value)
+        case DONE:
+            // Normal write
+            object[offset] ← value
+```
+
+---
+
+## 17.7 Concurrent Copying for Generational GC
+
+### Young Generation: Usually STW
+
+Young generation collections are typically stop-the-world because:
+- Young gen is small → short pauses
+- High allocation rate → frequent collections
+- Read barrier overhead would hurt throughput
+
+### Old Generation: Concurrent Options
+
+Concurrent copying in old generation:
+
+```pseudo
+concurrentOldGenCopy():
+    // Mark live objects (concurrent)
+    concurrentMark()
+
+    // Select regions for evacuation
+    evacuationSet ← selectLowLivenessRegions()
+
+    // Evacuate concurrently with read barriers
+    for each region in evacuationSet:
+        evacuateRegion(region)
+
+    // Update references (may need STW)
+    updateReferences()
+```
+
+### Card Table Interaction
+
+Concurrent copying must handle inter-generational pointers:
+
+```pseudo
+generationalCopyingBarrier(object, offset, value):
+    toSpaceObj ← ensureForwarded(object)
+
+    // Write to to-space copy
+    toSpaceObj[offset] ← value
+
+    // Generational barrier
+    if isOld(toSpaceObj) and isYoung(value):
+        dirtyCard(toSpaceObj)
+```
+
+---
+
+## 17.8 Termination and Correctness
+
+### Termination Condition
+
+Collection complete when:
+1. All live objects evacuated
+2. All references updated to to-space
+3. Write log processed
+
+```pseudo
+checkTermination():
+    // All live objects copied?
+    if not allLiveObjectsEvacuated():
+        return false
+
+    // All references fixed?
+    if pendingReferenceUpdates():
+        return false
+
+    // Write log empty?
+    if not writeLog.empty():
+        processWriteLog()
+        return false
+
+    return true
+```
+
+### Invariants
+
+**To-space invariant:** Every pointer dereferenced by the mutator yields a to-space address.
+
+**Forwarding completeness:** Every from-space object reachable at the start of copying eventually has a forwarding pointer.
+
+**Write consistency:** Every write by the mutator is reflected in the to-space copy.
+
+---
+
+## 17.9 Memory Ordering
+
+### Copy-Then-Forward
+
+The copy must be visible before the forwarding pointer:
+
+```pseudo
+evacuateWithOrdering(object):
+    newLocation ← allocate(objectSize(object))
+
+    // Copy object data
+    copyObjectData(object, newLocation)
+
+    // Release fence: copy visible before forwarding
+    releaseFence()
+
+    // Install forwarding pointer
+    if CompareAndSet(&object.forwardingWord, null, newLocation):
+        return newLocation
+    else:
+        rollback(newLocation)
+        return object.forwardingWord
+```
+
+### Read Barrier Ordering
+
+```pseudo
+readBarrierWithOrdering(ref):
+    forwardingPtr ← ref.forwardingWord
+    if forwardingPtr ≠ ref:
+        // Acquire fence: see copy before accessing fields
+        acquireFence()
+        return forwardingPtr
+    return ref
+```
+
+---
+
+## 17.10 Implementation Considerations
+
+### Barrier Elision
+
+Compiler can elide barriers in certain cases:
+
+```pseudo
+// Back-to-back loads from same object
+x ← obj.field1  // Barrier here
+y ← obj.field2  // Can skip barrier (obj already forwarded)
+
+// Loop over object fields
+for i from 0 to n-1:
+    // Only barrier on first iteration
+    process(obj.fields[i])
+```
+
+### Large Object Handling
+
+Large objects may use virtual memory tricks:
+
+```pseudo
+evacuateLargeObject(object):
+    if objectSize(object) > LARGE_THRESHOLD:
+        // Remap pages instead of copying
+        newLocation ← reserveVirtualSpace(objectSize(object))
+        remapPages(object, newLocation)
+        installForwarding(object, newLocation)
+    else:
+        normalEvacuate(object)
+```
+
+### Treadmill for Large Objects
+
+Non-copying collection within concurrent framework:
+
+```pseudo
+treadmillBarrier(ref):
+    // No evacuation needed for treadmill objects
+    // Just ensure marked
+    if not isMarked(ref):
+        mark(ref)
+    return ref
+```
+
+---
+
+## 17.11 Notable Systems
+
+### Azul C4
+
+Pauseless concurrent copying:
+- Read barrier ("Loaded Value Barrier")
+- Self-healing
+- No stop-the-world phases for steady state
+
+### Shenandoah
+
+Concurrent copying for OpenJDK:
+- Brooks-style forwarding
+- Load and store barriers
+- Concurrent evacuation and update
+
+### ZGC
+
+Concurrent copying with colored pointers:
+- Metadata in pointer bits
+- Load barrier only
+- Region-based
+
+---
+
+## 17.12 Summary
+
+Concurrent copying requires barriers to maintain consistency:
+
+| Technique | Barrier Type | Trade-off |
+|-----------|-------------|-----------|
+| Baker's | Read (evacuate on access) | High barrier cost, simple model |
+| Brooks | Read (indirection) | Per-object overhead, constant barrier |
+| Sapphire | Phased read/write | Complex phases, lower overhead |
+| Self-healing | Read + CAS write | Amortized cost, extra CAS |
+
+Design considerations:
+- Read barrier overhead is significant (every load)
+- Write barriers ensure to-space gets updates
+- Self-healing reduces repeated barrier cost
+- Memory ordering crucial for correctness
+- Large objects may need special handling
+
+Concurrent copying achieves the lowest pause times but at the cost of steady-state throughput. It's most valuable when latency requirements are stringent.

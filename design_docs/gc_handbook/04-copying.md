@@ -1,230 +1,688 @@
-# 4. Copying Collection (Deep Summary with Pseudocode)
+# 4. Copying Garbage Collection
 
-Copying collectors evacuate live objects from a “from-space” to a “to-space,” leaving behind forwarding pointers and flipping roles afterward. They trade space (copy reserve) for very fast allocation and built-in compaction/locality. This summary covers Cheney semispace, traversal orders, worklists, locality, variants, and practical engineering concerns.
+Copying collectors evacuate live objects from one memory region (from-space) to another (to-space), leaving behind forwarding pointers. This approach provides automatic compaction, enables extremely fast bump-pointer allocation, and naturally improves cache locality. This chapter covers Cheney's semispace algorithm, traversal strategies, generational copying, and parallel copying techniques.
 
 ---
 
-## 4.1 Semispace Copying (Cheney)
+## 4.1 Semispace Copying
 
-- Heap divided into two equal regions: from-space and to-space.
-- Allocation: bump pointer in from-space.
-- GC: copy live objects to to-space, install forwarding pointers, then flip spaces.
-- Guarantees: no fragmentation; objects compacted; allocation is extremely fast (bump).
+The heap is divided into two equal semispaces. Only one is active at a time:
 
-### Cheney’s Breadth-First Algorithm (Pseudocode)
+```pseudo
+Heap:
+    fromSpace: Region
+    toSpace: Region
+    allocPtr: Address      // Bump pointer in from-space
+    scanPtr: Address       // Cheney scan pointer
+
+initialize():
+    fromSpace ← Region(HeapStart, HeapMid)
+    toSpace ← Region(HeapMid, HeapEnd)
+    allocPtr ← fromSpace.start
+```
+
+### Allocation
+
+Bump-pointer allocation is extremely fast:
+
+```pseudo
+allocate(size):
+    aligned ← align(size, ALIGNMENT)
+    if allocPtr + aligned > fromSpace.end:
+        collect()
+        if allocPtr + aligned > fromSpace.end:
+            error "Out of memory"
+
+    result ← allocPtr
+    allocPtr ← allocPtr + aligned
+    return result
+```
+
+### Collection
 
 ```pseudo
 collect():
-  // Assume roots contains pointers into from-space
-  // Phase 1: Evacuate roots
-  for each root in roots:
-    *root = copy(*root)
+    // Flip spaces
+    swap(fromSpace, toSpace)
+    allocPtr ← toSpace.start
+    scanPtr ← toSpace.start
 
-  // Phase 2: Scan to-space (BFS)
-  scan = to_space_start
-  alloc = to_space_alloc  // bumped by copy()
-  while scan < alloc:
-    obj = scan
-    for each pointer field p in obj:
-      *p = copy(*p)
-    scan += size(obj)
+    // Evacuate roots
+    for each root in Roots:
+        if *root ≠ null:
+            *root ← evacuate(*root)
 
-  // Phase 3: flip
-  swap(from_space, to_space)
-  from_alloc = alloc - to_space_start  // live size becomes new allocation top
+    // Cheney scan: process grey objects
+    while scanPtr < allocPtr:
+        obj ← objectAt(scanPtr)
+        for each field in Pointers(obj):
+            if *field ≠ null:
+                *field ← evacuate(*field)
+        scanPtr ← scanPtr + objectSize(obj)
 
-copy(ptr):
-  if ptr == null or is_constant(ptr): return ptr
-  obj = ptr
-  hdr = header(obj)
-  if hdr.tag == FORWARD:
-    return hdr.forward_ptr
-  size = object_size(obj)
-  new_loc = to_space_alloc
-  memcpy(new_loc, obj, size)
-  to_space_alloc += size
-  // install forwarding pointer in from-space object
-  hdr.tag = FORWARD
-  hdr.forward_ptr = new_loc
-  return new_loc
-```
-
-Notes:
-- BFS traversal (Cheney) improves locality for siblings; DFS variants are also possible.
-- Forwarding pointer typically stored in header or object body; header reuse is common.
-
----
-
-## 4.2 Traversal Order and Worklists
-
-- **BFS (Cheney)**: uses scan/alloc pointers, no explicit stack; good cache behavior on wide graphs; deterministic order.
-- **DFS**: uses explicit stack; may give better locality for deep structures; enables tail recursion to reuse stack space.
-- **Worklist implementations**: single queue, double-ended queues, chunked work packets (for parallel copying).
-
----
-
-## 4.3 Locality Considerations
-
-- Copying compacts live objects; improves cache/TLB behavior.
-- Traversal order affects clustering: BFS clusters siblings; DFS clusters parent-child chains.
-- “Approximately depth-first” or “weighted” orders can pack hot objects together.
-- Prefetch headers/fields during scan to reduce stalls.
-
----
-
-## 4.4 Space and Alignment
-
-- Requires copy reserve: to-space must fit all live data from from-space.
-- Typical 2× overhead for pure semispace; mitigations:
-  - Use copying only for young gen where live set is small.
-  - Use sliding compaction in old gen.
-  - Use smaller to-space fraction and fallback to mark-compact if overflow (copy-failure handling).
-- Alignment: 8/16-byte align for predictable object starts and bitmap/card computations.
-
----
-
-## 4.5 Write/Read Barriers
-
-- For stop-the-world copying, no barrier needed.
-- For concurrent/incremental copying (rare), need read barriers (Baker) to ensure mutator sees to-space object and not stale from-space; or use indirection (Brooks pointer).
-- Snapshot-at-beginning barrier on stores can also be used in some concurrent copying designs.
-
----
-
-## 4.6 Promotion and Generations
-
-- Commonly used for young gen: fast alloc, short pauses.
-- Promotion policy: survivors after N minor collections promoted to old gen; use age counters or survivor spaces.
-- Inter-generational pointers: remember old→young edges with card tables; minor GC must treat card-marked old objects as roots (or maintain remembered set).
-- Copy-failure handling: if to-space overflows, promote survivors to old gen or trigger major GC.
-
----
-
-## 4.7 Variants and Hybrids
-
-- **Copying with remembered set only**: For partial-heap copying; not full semispace.
-- **Replicating collectors**: maintain multiple copies for fault tolerance (rare).
-- **Train algorithm / older-first**: copy in age order to reduce promotion spikes.
-- **Immix-like**: copy within lines/blocks; mix copying with bump-in-block allocation.
-- **Bookmarking**: modifies copy traversal to avoid scanning pointer-free objects fully; specialized.
-
----
-
-## 4.8 Handling Large Objects
-
-- Typically avoid copying very large objects; place in LOS (large object space) managed by mark-sweep or mark-compact.
-- Alternative: chunked large objects to allow partial copying; more complex.
-
----
-
-## 4.9 Parallel Copying
-
-- Divide from-space into chunks; workers steal copying work.
-- Work packets: grey objects to process; each worker pops, scans children, pushes new greys.
-- Need synchronization for to-space bump pointer; use per-thread to-space “PLABs” (promotion-local allocation buffers) or CAS bump pointer.
-
-**Pseudocode (with PLAB)**
-```pseudo
-worker_copy():
-  plab = alloc_plab()
-  while obj = steal_or_pop():
-    for each child in obj:
-      if needs_copy(child):
-        if plab.remaining < size(child):
-          plab = alloc_plab()
-        new_loc = plab.alloc(size(child))
-        install_forward(child, new_loc)
-        memcpy(new_loc, child, size(child))
-        push_work(new_loc)
+    // fromSpace is now garbage - can be reused next flip
 ```
 
 ---
 
-## 4.10 Copying Order Tuning
+## 4.2 Cheney's Algorithm
 
-- “Approximately depth-first copying” can reduce to-space footprint for trees.
-- Cache-aware copying may prefetch likely hot successors.
-- Card/line clustering: place related objects in the same card to reduce barrier/card scanning cost in future minors.
-
----
-
-## 4.11 Failure Modes and Robustness
-
-- Copy overflow: need graceful fallback (promote or trigger full GC).
-- Forwarding chain prevention: always check forwarding before copying; avoid repeated copies.
-- Object parsing correctness: must not read invalid size; usually guaranteed by invariant that only live objects are copied.
-- Interop/FFI: moving objects requires pinning or handles/indirection for external references.
-
----
-
-## 4.12 Incremental Copying and Barriers
-
-- Requires read barrier (Baker) to ensure every load returns to-space pointer; mutator may still hold from-space pointers.
-- Brooks indirection pointer: each object has a “to-space header pointer”; mutator uses indirection to current location, allowing relocation without updating all references immediately.
-- Higher overhead; often avoided in favor of stop-the-world minors.
-
-**Baker Read Barrier (simplified)**
-```pseudo
-read_barrier(ptr):
-  obj = ptr
-  if in_from_space(obj) and header(obj).tag == FORWARD:
-    return header(obj).forward_ptr
-  return obj
-```
-
----
-
-## 4.13 Example: Copying Minor GC with Promotion
+Cheney's algorithm uses the to-space itself as an implicit queue for breadth-first traversal:
 
 ```pseudo
-minor_gc():
-  to_space_alloc = to_space_start
-  scan = to_space_start
+// scanPtr divides to-space into:
+//   [toSpace.start, scanPtr) - BLACK: fully processed
+//   [scanPtr, allocPtr)      - GREY: evacuated but not scanned
+//   [allocPtr, toSpace.end)  - available for new evacuations
 
-  // Evacuate roots
-  for root in roots:
-    *root = evac(*root)
+evacuate(obj):
+    if obj = null:
+        return null
 
-  // Cheney scan
-  while scan < to_space_alloc:
-    obj = scan
-    for child in children(obj):
-      *child = evac(*child)
-    scan += size(obj)
+    // Check if already forwarded
+    if isForwarded(obj):
+        return forwardingAddress(obj)
 
-  flip_spaces()
+    // Copy to to-space
+    size ← objectSize(obj)
+    newLocation ← allocPtr
+    memcpy(newLocation, obj, size)
+    allocPtr ← allocPtr + size
 
-evac(ptr):
-  if ptr == null or is_constant(ptr): return ptr
-  obj = ptr
-  hdr = header(obj)
-  if hdr.tag == FORWARD:
-    return hdr.forward_ptr
-  size = object_size(obj)
-  if hdr.age >= PROMOTION_AGE:
-    new_loc = old_gen_alloc(size)  // promotion
-  else:
-    new_loc = to_space_alloc
-    to_space_alloc += size
-  memcpy(new_loc, obj, size)
-  new_hdr = header(new_loc)
-  new_hdr.age = hdr.age + 1
-  hdr.tag = FORWARD
-  hdr.forward_ptr = new_loc
-  return new_loc
+    // Install forwarding pointer in from-space
+    setForwardingPointer(obj, newLocation)
+
+    return newLocation
+
+isForwarded(obj):
+    return obj.header.tag = FORWARDING_TAG
+
+forwardingAddress(obj):
+    return obj.header.forwarding
+
+setForwardingPointer(obj, newLoc):
+    obj.header.tag ← FORWARDING_TAG
+    obj.header.forwarding ← newLoc
+```
+
+### Forwarding Pointer Layout
+
+```pseudo
+// Original object in from-space before evacuation:
+Object:
+    header: Header
+    field0: Value
+    field1: Value
+    ...
+
+// After evacuation, from-space object becomes:
+ForwardingPointer:
+    header: Header { tag = FORWARDING_TAG }
+    forwarding: Address  // Points to to-space copy
 ```
 
 ---
 
-## 4.14 When to Use Copying
+## 4.3 Traversal Order
 
-- Pros: fast allocation, compaction by default, simple nursery collector, good cache locality.
-- Cons: 2× space for full-space copying; moving objects complicate interop; large objects excluded.
-- Fit: young generation in generational GC; small heaps needing predictable pauses and no fragmentation; partial-heap collectors with region evacuation.
+### Breadth-First (Cheney)
+
+The scan/alloc pointer pair implements BFS naturally:
+
+```pseudo
+// Siblings evacuated together → good cache locality for wide graphs
+// Objects processed in allocation order within to-space
+
+cheneyTraversal():
+    while scanPtr < allocPtr:
+        obj ← objectAt(scanPtr)
+        scanChildren(obj)
+        scanPtr ← scanPtr + objectSize(obj)
+```
+
+### Depth-First with Explicit Stack
+
+Better for deep graphs, preserves parent-child locality:
+
+```pseudo
+dfsEvacuate():
+    stack ← []
+
+    // Evacuate roots
+    for each root in Roots:
+        if *root ≠ null:
+            *root ← copyAndPush(*root, stack)
+
+    // Process stack
+    while not stack.empty():
+        obj ← stack.pop()
+        for each field in Pointers(obj):
+            if *field ≠ null and not isForwarded(*field):
+                *field ← copyAndPush(*field, stack)
+            else if *field ≠ null:
+                *field ← forwardingAddress(*field)
+
+copyAndPush(obj, stack):
+    newLoc ← copyToSpace(obj)
+    setForwardingPointer(obj, newLoc)
+    stack.push(newLoc)
+    return newLoc
+```
+
+### Approximately Depth-First
+
+Hybrid approach with bounded stack:
+
+```pseudo
+approximatelyDFS():
+    // Use small stack for DFS, fall back to Cheney when full
+    stack ← BoundedStack(MAX_DEPTH)
+
+    for each root in Roots:
+        processWithStack(*root, stack)
+
+    // Cheney scan for overflow
+    while scanPtr < allocPtr:
+        obj ← objectAt(scanPtr)
+        processWithStack(obj, stack)
+        scanPtr ← scanPtr + objectSize(obj)
+
+processWithStack(obj, stack):
+    for each field in Pointers(obj):
+        child ← *field
+        if child ≠ null and not isForwarded(child):
+            newChild ← evacuate(child)
+            *field ← newChild
+            if not stack.full():
+                stack.push(newChild)
+        else if child ≠ null:
+            *field ← forwardingAddress(child)
+
+    // Process stack until empty
+    while not stack.empty():
+        stackObj ← stack.pop()
+        processWithStack(stackObj, stack)
+```
 
 ---
 
-## 4.15 Summary
+## 4.4 Generational Copying
 
-Copying collectors move live data to a fresh space, naturally compacting the heap and enabling fast bump allocation. Cheney’s semispace BFS is the canonical form. Variations address space overhead (partial/region evacuation), parallel copying (PLABs and work stealing), and concurrency (read barriers). In generational designs, copying underpins fast minor GCs; promotion, card tables, and copy-failure handling connect it to the old generation strategy.
+### Young Generation Structure
+
+```pseudo
+YoungGen:
+    eden: Region           // New allocations
+    survivor0: Region      // First survivor space
+    survivor1: Region      // Second survivor space
+    fromSurvivor: Region   // Points to current from-space
+    toSurvivor: Region     // Points to current to-space
+
+minorGC():
+    // Evacuate from eden and fromSurvivor to toSurvivor
+    toAllocPtr ← toSurvivor.start
+
+    // Process roots
+    for each root in Roots:
+        if inYoungGen(*root):
+            *root ← minorEvacuate(*root)
+
+    // Process remembered set (old→young references)
+    for each card in dirtyCards:
+        for each obj in objectsInCard(card):
+            for each field in Pointers(obj):
+                if inYoungGen(*field):
+                    *field ← minorEvacuate(*field)
+
+    // Cheney scan
+    scanPtr ← toSurvivor.start
+    while scanPtr < toAllocPtr:
+        obj ← objectAt(scanPtr)
+        for each field in Pointers(obj):
+            if inYoungGen(*field):
+                *field ← minorEvacuate(*field)
+        scanPtr ← scanPtr + objectSize(obj)
+
+    // Clear eden and swap survivors
+    eden.allocPtr ← eden.start
+    swap(fromSurvivor, toSurvivor)
+```
+
+### Promotion to Old Generation
+
+```pseudo
+PROMOTION_AGE = 2  // Promote after surviving 2 collections
+
+minorEvacuate(obj):
+    if isForwarded(obj):
+        return forwardingAddress(obj)
+
+    size ← objectSize(obj)
+
+    // Check age for promotion
+    if obj.header.age >= PROMOTION_AGE:
+        // Promote to old generation
+        newLoc ← oldGenAllocate(size)
+        memcpy(newLoc, obj, size)
+        newLoc.header.age ← 0  // Reset age in old gen
+    else:
+        // Copy to survivor space
+        newLoc ← toAllocPtr
+        memcpy(newLoc, obj, size)
+        toAllocPtr ← toAllocPtr + size
+        newLoc.header.age ← obj.header.age + 1
+
+    setForwardingPointer(obj, newLoc)
+    return newLoc
+```
+
+### Remembered Set / Card Table
+
+Track old→young pointers:
+
+```pseudo
+CARD_SIZE = 512
+cardTable: array[heapSize / CARD_SIZE] of byte
+
+writeBarrier(obj, field, value):
+    obj[field] ← value
+    if inOldGen(obj) and inYoungGen(value):
+        cardIndex ← (addressOf(obj) - heapStart) / CARD_SIZE
+        cardTable[cardIndex] ← DIRTY
+
+processRememberedSet():
+    for cardIndex from 0 to cardTableSize - 1:
+        if cardTable[cardIndex] = DIRTY:
+            processCard(cardIndex)
+            cardTable[cardIndex] ← CLEAN
+
+processCard(cardIndex):
+    cardStart ← heapStart + cardIndex * CARD_SIZE
+    cardEnd ← cardStart + CARD_SIZE
+    obj ← firstObjectInCard(cardIndex)
+    while addressOf(obj) < cardEnd:
+        for each field in Pointers(obj):
+            if inYoungGen(*field):
+                addToRootSet(addressOf(field))
+        obj ← nextObject(obj)
+```
+
+---
+
+## 4.5 Handling Allocation Failure
+
+### Overflow to Old Generation
+
+When to-space fills during minor GC:
+
+```pseudo
+minorEvacuateWithOverflow(obj):
+    if isForwarded(obj):
+        return forwardingAddress(obj)
+
+    size ← objectSize(obj)
+
+    // Try survivor space
+    if toAllocPtr + size <= toSurvivor.end:
+        newLoc ← toAllocPtr
+        toAllocPtr ← toAllocPtr + size
+    else:
+        // Overflow: promote directly to old gen
+        newLoc ← oldGenAllocate(size)
+        if newLoc = null:
+            // Must trigger major GC
+            triggerMajorGC()
+            newLoc ← oldGenAllocate(size)
+
+    memcpy(newLoc, obj, size)
+    setForwardingPointer(obj, newLoc)
+    return newLoc
+```
+
+### Dynamic Survivor Sizing
+
+Adjust survivor space size based on survival rate:
+
+```pseudo
+adjustSurvivorSize():
+    survivalRate ← bytesSurvived / bytesCollected
+
+    if survivalRate > HIGH_THRESHOLD:
+        // Many survivors - increase survivor size
+        survivorSize ← min(survivorSize * 2, maxSurvivorSize)
+    else if survivalRate < LOW_THRESHOLD:
+        // Few survivors - decrease survivor size
+        survivorSize ← max(survivorSize / 2, minSurvivorSize)
+```
+
+---
+
+## 4.6 Parallel Copying
+
+### Promotion-Local Allocation Buffers (PLABs)
+
+Each GC thread has its own allocation buffer:
+
+```pseudo
+PLAB:
+    start: Address
+    current: Address
+    end: Address
+
+allocatePLAB():
+    // Atomically claim chunk from to-space
+    loop:
+        current ← toSpaceAllocPtr
+        next ← current + PLAB_SIZE
+        if next > toSpace.end:
+            return null  // To-space exhausted
+        if CompareAndSet(&toSpaceAllocPtr, current, next):
+            return PLAB(current, current, next)
+
+plabAllocate(plab, size):
+    if plab.current + size > plab.end:
+        return null  // PLAB exhausted
+    result ← plab.current
+    plab.current ← plab.current + size
+    return result
+```
+
+### Parallel Evacuation with PLABs
+
+```pseudo
+parallelCopy():
+    // Distribute roots among workers
+    rootChunks ← partition(Roots, numWorkers)
+
+    parallel for each worker w:
+        w.plab ← allocatePLAB()
+
+        // Evacuate assigned roots
+        for each root in rootChunks[w.id]:
+            if *root ≠ null and inFromSpace(*root):
+                *root ← parallelEvacuate(*root, w)
+
+        // Process grey objects from local work queue
+        while obj ← w.workQueue.pop():
+            for each field in Pointers(obj):
+                if *field ≠ null and inFromSpace(*field):
+                    *field ← parallelEvacuate(*field, w)
+
+        // Work stealing when local queue empty
+        while not terminationDetected():
+            victim ← randomWorker()
+            stolen ← victim.workQueue.steal()
+            if stolen ≠ null:
+                processObject(stolen, w)
+
+parallelEvacuate(obj, worker):
+    // Try to claim object for evacuation
+    header ← obj.header
+    if isForwarded(header):
+        return forwardingAddress(header)
+
+    size ← objectSize(obj)
+
+    // Allocate in worker's PLAB
+    newLoc ← plabAllocate(worker.plab, size)
+    if newLoc = null:
+        worker.plab ← allocatePLAB()
+        newLoc ← plabAllocate(worker.plab, size)
+
+    // Copy data
+    memcpy(newLoc, obj, size)
+
+    // Try to install forwarding pointer (CAS for race)
+    forwardHeader ← makeForwardingHeader(newLoc)
+    if CompareAndSet(&obj.header, header, forwardHeader):
+        // Won race - our copy is canonical
+        worker.workQueue.push(newLoc)
+        return newLoc
+    else:
+        // Lost race - reclaim our copy, use winner's
+        worker.plab.current ← newLoc  // Rollback
+        return forwardingAddress(obj.header)
+```
+
+### Work Stealing Deques
+
+```pseudo
+WorkDeque:
+    array: array[SIZE] of Address
+    top: AtomicInt      // Owner pushes/pops here
+    bottom: AtomicInt   // Thieves steal from here
+
+push(deque, obj):
+    t ← deque.top
+    deque.array[t mod SIZE] ← obj
+    deque.top ← t + 1
+
+pop(deque):
+    t ← deque.top - 1
+    deque.top ← t
+    b ← deque.bottom
+    if t < b:
+        deque.top ← b
+        return null
+    obj ← deque.array[t mod SIZE]
+    if t > b:
+        return obj
+    // Single element - race with steal
+    if not CompareAndSet(&deque.bottom, b, b + 1):
+        obj ← null  // Lost to thief
+    deque.top ← b + 1
+    return obj
+
+steal(deque):
+    b ← deque.bottom
+    t ← deque.top
+    if b >= t:
+        return null
+    obj ← deque.array[b mod SIZE]
+    if CompareAndSet(&deque.bottom, b, b + 1):
+        return obj
+    return null
+```
+
+---
+
+## 4.7 Incremental and Concurrent Copying
+
+### Baker's Read Barrier
+
+Ensure mutators only see to-space objects:
+
+```pseudo
+bakerReadBarrier(ref):
+    if inFromSpace(ref):
+        if isForwarded(ref):
+            return forwardingAddress(ref)
+        else:
+            // Evacuate on access
+            return evacuate(ref)
+    return ref
+
+// All pointer loads go through barrier
+Read(obj, field):
+    ref ← obj[field]
+    return bakerReadBarrier(ref)
+```
+
+### Brooks Forwarding Pointer
+
+Each object has an indirection pointer:
+
+```pseudo
+// Object layout
+Object:
+    forwardingPtr: Address  // First word - always points to self or copy
+    header: Header
+    fields: ...
+
+// Allocation sets self-forwarding
+allocate(size):
+    obj ← bumpAllocate(size + POINTER_SIZE)
+    obj.forwardingPtr ← obj
+    return obj
+
+// Read barrier is simple indirection
+brooksReadBarrier(ref):
+    return ref.forwardingPtr
+
+// Moving an object
+moveObject(old, new):
+    memcpy(new, old, objectSize(old))
+    new.forwardingPtr ← new    // Self-forward
+    old.forwardingPtr ← new    // Redirect old to new
+```
+
+**Characteristics**:
+- Constant-time barrier (single indirection)
+- One word overhead per object
+- Old copies remain valid until reclaimed
+
+### Self-Healing Pointers
+
+Update stale pointers when encountered:
+
+```pseudo
+selfHealingRead(source, offset):
+    ref ← source[offset]
+    if inFromSpace(ref):
+        newRef ← bakerReadBarrier(ref)
+        // Try to update source to avoid repeated forwarding
+        CompareAndSet(&source[offset], ref, newRef)
+        return newRef
+    return ref
+```
+
+---
+
+## 4.8 Large Object Handling
+
+### Separate Large Object Space
+
+```pseudo
+LARGE_OBJECT_THRESHOLD = 8192  // 8KB
+
+allocate(size):
+    if size >= LARGE_OBJECT_THRESHOLD:
+        return allocateInLOS(size)
+    else:
+        return allocateInCopyingSpace(size)
+
+// LOS uses mark-sweep, objects don't move
+allocateInLOS(size):
+    obj ← losAllocator.allocate(size)
+    obj.header.space ← LOS
+    return obj
+
+// During copying GC, mark but don't copy LOS objects
+evacuate(obj):
+    if obj.header.space = LOS:
+        setMarked(obj)
+        return obj  // Don't move
+    // Normal evacuation for small objects
+    ...
+```
+
+### Virtual Memory Tricks for Large Objects
+
+```pseudo
+evacuateLargeObject(obj):
+    if objectSize(obj) > PAGE_REMAP_THRESHOLD:
+        // Remap pages instead of copying
+        newLoc ← reserveVirtualMemory(objectSize(obj))
+        remapPages(obj, newLoc)
+        return newLoc
+    else:
+        // Normal copy
+        return normalEvacuate(obj)
+```
+
+---
+
+## 4.9 Locality Optimizations
+
+### Prefetching During Evacuation
+
+```pseudo
+evacuateWithPrefetch(obj):
+    if isForwarded(obj):
+        return forwardingAddress(obj)
+
+    // Prefetch children before copying
+    for each field in Pointers(obj):
+        child ← *field
+        if child ≠ null and inFromSpace(child):
+            prefetch(child)
+
+    // Copy
+    newLoc ← copyObject(obj)
+    setForwardingPointer(obj, newLoc)
+    return newLoc
+```
+
+### Clustering Related Objects
+
+```pseudo
+// Copy objects reachable from same root together
+clusteringEvacuate(root):
+    cluster ← []
+    collectCluster(root, cluster, MAX_CLUSTER_SIZE)
+
+    // Allocate contiguous space for cluster
+    totalSize ← sum(objectSize(obj) for obj in cluster)
+    clusterStart ← allocPtr
+    allocPtr ← allocPtr + totalSize
+
+    // Copy in cluster order
+    dest ← clusterStart
+    for each obj in cluster:
+        memcpy(dest, obj, objectSize(obj))
+        setForwardingPointer(obj, dest)
+        dest ← dest + objectSize(obj)
+```
+
+---
+
+## 4.10 Summary
+
+Copying collection trades space for simplicity and speed:
+
+| Aspect | Characteristic |
+|--------|---------------|
+| **Space overhead** | 2× for semispace (less for generational) |
+| **Allocation** | Bump pointer (fastest possible) |
+| **Fragmentation** | None (automatic compaction) |
+| **Locality** | Excellent (objects compacted together) |
+| **Pause time** | Proportional to live data only |
+
+Key algorithms:
+
+| Algorithm | Traversal | Stack Space | Locality |
+|-----------|-----------|-------------|----------|
+| **Cheney (BFS)** | Breadth-first | None (implicit) | Sibling clustering |
+| **DFS** | Depth-first | O(depth) | Parent-child clustering |
+| **Approximate DFS** | Hybrid | Bounded | Balanced |
+
+Generational design:
+
+| Generation | Typical Size | Collector | Survival Rate |
+|------------|--------------|-----------|---------------|
+| **Eden** | Large | Copying | Very low |
+| **Survivor** | Small | Copying | Low |
+| **Old** | Large | Mark-sweep/compact | High |
+
+When to use copying:
+- Young generation in generational collectors
+- When allocation speed is critical
+- When low fragmentation is required
+- When live data is much smaller than heap
+
+Limitations:
+- 2× space overhead for full semispace
+- Moving objects requires updating all pointers
+- Incompatible with pinned objects (without special handling)
+- Large objects usually excluded
 

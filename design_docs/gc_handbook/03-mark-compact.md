@@ -1,339 +1,588 @@
-# 3. Mark-Compact (Deep Summary with Pseudocode)
+# 3. Mark-Compact Garbage Collection
 
-Mark-compact collectors eliminate fragmentation by relocating live objects after marking. This summary dives into the main compaction styles (two-finger, sliding, Lisp2/threaded, one-pass), practical engineering issues (forwarding metadata, object parsing, large/pinned objects), and incremental/parallel variants. Lengthy by design for quick CLI reference.
-
----
-
-## 3.1 Motivation and Shape
-
-- **Mark-sweep problem**: fragmentation and poor locality from holes in the heap.
-- **Mark-compact answer**: mark live objects, then move them to coalesce free space; update all pointers.
-- **Trade-offs**: better locality and space efficiency, but higher pause time and need to patch references; requires either extra pass or copy reserve.
+Mark-compact collectors extend mark-sweep by adding a compaction phase that relocates live objects to eliminate fragmentation. After marking, objects are moved to form a contiguous block at one end of the heap, leaving all free space at the other end. This chapter covers the main compaction algorithms (two-finger, Lisp2, and sliding), forwarding pointer management, and region-based partial compaction.
 
 ---
 
-## 3.2 Core Sliding Collector (Two-Phase)
+## 3.1 Motivation and Structure
 
-Phases:
-1) **Mark**: same as mark-sweep (tri-colour).
-2) **Compute destinations**: determine new addresses for live objects (e.g., prefix sums of sizes).
-3) **Relocate**: move objects to new addresses; leave forwarding pointers at old locations.
-4) **Update references**: fix all pointers to point to new locations.
+Mark-sweep leaves "holes" in the heap where dead objects resided. Over time, these holes cause:
+- **External fragmentation**: Many small free spaces that can't satisfy large allocations
+- **Poor locality**: Live objects scattered across memory
+- **Allocation overhead**: Complex free-list management
 
-### Pseudocode (Stop-the-World Sliding)
+Mark-compact addresses these by relocating live objects:
 
 ```pseudo
-mark_compact(heap, roots):
-  // Phase 1: Mark
-  mark_phase(roots)
+markCompact():
+    // Phase 1: Mark (same as mark-sweep)
+    markFromRoots()
 
-  // Phase 2: Compute forwarding (prefix sum)
-  dest = heap.start
-  cursor = heap.start
-  while cursor < heap.end:
-    hdr = header(cursor)
-    sz = object_size(cursor)
-    if is_marked(hdr):
-      set_forward(hdr, dest)   // store forwarding address
-      dest += sz
-    cursor += sz
-  new_top = dest
+    // Phase 2: Compute forwarding addresses
+    computeLocations()
 
-  // Phase 3: Relocate (copy live objects down)
-  cursor = heap.start
-  while cursor < heap.end:
-    hdr = header(cursor)
-    sz = object_size(cursor)
-    if is_marked(hdr):
-      dest_addr = get_forward(hdr)
-      memcpy(dest_addr, cursor, sz)
-      clear_mark(new_header(dest_addr))
-    cursor += sz
+    // Phase 3: Update references
+    updateReferences()
 
-  // Phase 4: Update references
-  cursor = heap.start
-  while cursor < new_top:
-    fix_children(cursor)
-    cursor += object_size(cursor)
-
-  heap.top = new_top
+    // Phase 4: Relocate objects
+    relocate()
 ```
 
-Notes:
-- `set_forward` may store forwarding addresses in headers, side tables, or in-place (repurpose mark bits).
-- Updating references traverses all live objects; can be folded into relocation if you scan children as you copy.
+**Trade-offs**:
+- **Pros**: No fragmentation, bump allocation, good locality
+- **Cons**: Multiple heap passes, must update all pointers, longer pauses
 
 ---
 
-## 3.3 Two-Finger Compaction (Edwards)
+## 3.2 Two-Finger Compaction (Edwards)
 
-- Uses two pointers: `free` (bottom → up) to find holes; `scan` (top → down) to find live objects.
-- Moves topmost live objects into bottom holes until pointers cross.
-- Benefits: simple, one-pass relocation; no full prefix sum needed.
-- Downsides: poor size matching when object sizes vary; arbitrary ordering harms locality.
+The simplest compaction algorithm uses two pointers that converge from opposite ends:
 
-**Pseudocode:**
 ```pseudo
-free = heap.start
-scan = heap.end
-while free < scan:
-  while free < scan and is_marked(free): free += size(free)
-  while scan > free and !is_marked(prev_obj(scan)): scan -= size(prev_obj(scan))
-  if free >= scan: break
-  // move object at scan to free
-  src = prev_obj(scan)
-  sz = size(src)
-  memcpy(free, src, sz)
-  set_forward(src, free)
-  free += sz
-// after move phase, update references using forwarding addrs
-update_refs(heap.start, free)
+twoFingerCompact():
+    // Phase 1: Mark (standard)
+    markFromRoots()
+
+    // Phase 2: Move objects
+    free ← HeapStart      // Points to first gap
+    scan ← HeapEnd        // Points to last object
+
+    while free < scan:
+        // Find first unmarked object (gap) from bottom
+        while free < scan and isMarked(free):
+            free ← free + objectSize(free)
+
+        // Find last marked object from top
+        while scan > free and not isMarked(objectBefore(scan)):
+            scan ← objectBefore(scan)
+
+        if free >= scan:
+            break
+
+        // Move object from scan to free
+        src ← objectBefore(scan)
+        size ← objectSize(src)
+        memcpy(free, src, size)
+        setForwardingPointer(src, free)
+        unsetMarked(free)
+        free ← free + size
+        scan ← src
+
+    newHeapTop ← free
+
+    // Phase 3: Update all references
+    updateReferences(HeapStart, newHeapTop)
 ```
 
----
+### Updating References
 
-## 3.4 Sliding Compaction (Classic)
-
-- Perform a linear pass computing compacted destinations using a running allocation pointer.
-- Usually preserves original order (improves locality vs two-finger).
-- Needs a scan to compute prefix sums; can fuse with marking using “mark+scanline” techniques.
-
-**Pseudocode (prefix-sum based)**:
 ```pseudo
-dest = heap.start
-for each object in address order:
-  if marked(obj):
-    set_forward(obj, dest)
-    dest += size(obj)
+updateReferences(start, end):
+    // Update roots
+    for each root in Roots:
+        if *root ≠ null:
+            *root ← forwardingAddress(*root)
 
-for each object in address order:
-  if marked(obj):
-    memcpy(get_forward(obj), obj, size(obj))
-    clear_mark(new_header(get_forward(obj)))
-
-for each object in new space [heap.start, dest):
-  for each pointer field p:
-    old = *p
-    if is_heap_ptr(old):
-      *p = get_forward(old)
-heap.top = dest
+    // Update object fields
+    cursor ← start
+    while cursor < end:
+        for each field in Pointers(cursor):
+            old ← *field
+            if old ≠ null:
+                *field ← forwardingAddress(old)
+        cursor ← cursor + objectSize(cursor)
 ```
+
+**Characteristics**:
+- Simple implementation
+- Single pass for relocation
+- Arbitrary object ordering (destroys allocation locality)
+- Requires uniform object sizes for efficient operation
 
 ---
 
-## 3.5 Lisp2 / Threaded Compaction
+## 3.3 Lisp2 Compaction (Threaded)
 
-- Stores threading info in object headers/fields to avoid separate forwarding storage.
-- Moves objects and threads pointers through them, allowing single-pass updates.
-- Useful when header space is limited; complex to implement correctly with variable-sized objects.
+The Lisp2 algorithm uses pointer threading to avoid extra space for forwarding addresses:
+
+```pseudo
+lisp2Compact():
+    // Phase 1: Mark
+    markFromRoots()
+
+    // Phase 2: Compute forwarding addresses and thread pointers
+    dest ← HeapStart
+    cursor ← HeapStart
+    while cursor < HeapEnd:
+        if isMarked(cursor):
+            forwardAddress[cursor] ← dest
+            threadReferences(cursor)
+            dest ← dest + objectSize(cursor)
+        cursor ← cursor + objectSize(cursor)
+
+    newTop ← dest
+
+    // Phase 3: Update threaded references and move objects
+    cursor ← HeapStart
+    dest ← HeapStart
+    while cursor < HeapEnd:
+        if isMarked(cursor):
+            unthread(cursor)
+            if cursor ≠ dest:
+                memcpy(dest, cursor, objectSize(cursor))
+            unsetMarked(dest)
+            dest ← dest + objectSize(cursor)
+        cursor ← cursor + objectSize(cursor)
+```
+
+### Pointer Threading
+
+Replace pointers with a linked list through the objects they reference:
+
+```pseudo
+threadReferences(obj):
+    for each field in Pointers(obj):
+        target ← *field
+        if target ≠ null and isMarked(target):
+            // Thread: store field's address in target, point field to target's old first threaded pointer
+            oldThread ← target.header.thread
+            target.header.thread ← addressOf(field)
+            *field ← oldThread
+
+unthread(obj):
+    thread ← obj.header.thread
+    newAddr ← forwardAddress[obj]
+    while thread ≠ null:
+        next ← *thread
+        *thread ← newAddr  // Update to point to new location
+        thread ← next
+    obj.header.thread ← null
+```
+
+**Characteristics**:
+- No extra space for forwarding addresses
+- Complex implementation
+- Requires header space for threading
+- Good for memory-constrained systems
+
+---
+
+## 3.4 Sliding Compaction (LISP 1.5)
+
+Sliding compaction preserves allocation order by moving objects toward the heap start:
+
+```pseudo
+slidingCompact():
+    // Phase 1: Mark
+    markFromRoots()
+
+    // Phase 2: Compute forwarding addresses (prefix sum)
+    dest ← HeapStart
+    cursor ← HeapStart
+    while cursor < HeapEnd:
+        size ← objectSize(cursor)
+        if isMarked(cursor):
+            setForwardingAddress(cursor, dest)
+            dest ← dest + size
+        cursor ← cursor + size
+    newTop ← dest
+
+    // Phase 3: Update references
+    updateAllReferences()
+
+    // Phase 4: Relocate objects
+    cursor ← HeapStart
+    while cursor < HeapEnd:
+        size ← objectSize(cursor)
+        if isMarked(cursor):
+            destAddr ← forwardingAddress(cursor)
+            if destAddr ≠ cursor:
+                memmove(destAddr, cursor, size)
+            unsetMarked(destAddr)
+        cursor ← cursor + size
+
+    heapTop ← newTop
+```
+
+### Forwarding Address Storage
+
+Options for storing forwarding addresses:
+
+**In object header**:
+```pseudo
+setForwardingAddress(obj, dest):
+    obj.header.forwarding ← dest
+
+forwardingAddress(obj):
+    return obj.header.forwarding
+```
+
+**In side table**:
+```pseudo
+forwardingTable: HashMap<Address, Address>
+
+setForwardingAddress(obj, dest):
+    forwardingTable[obj] ← dest
+
+forwardingAddress(obj):
+    return forwardingTable[obj]
+```
+
+**Computed from bitmap**:
+```pseudo
+// Use bitmap to recompute offset
+forwardingAddress(obj):
+    // Count live bytes before obj
+    liveBytes ← 0
+    cursor ← HeapStart
+    while cursor < obj:
+        if isMarked(cursor):
+            liveBytes ← liveBytes + objectSize(cursor)
+        cursor ← cursor + objectSize(cursor)
+    return HeapStart + liveBytes
+```
+
+**Characteristics**:
+- Preserves allocation order (good locality)
+- Requires multiple heap passes
+- Must handle overlapping source/destination
+
+---
+
+## 3.5 Break Table Compaction (Haddon-Waite)
+
+Avoid storing per-object forwarding addresses by recording only the "breaks" where gaps occur:
+
+```pseudo
+BreakEntry:
+    oldAddress: Address
+    newAddress: Address
+
+buildBreakTable():
+    breaks ← []
+    dest ← HeapStart
+    cursor ← HeapStart
+
+    while cursor < HeapEnd:
+        size ← objectSize(cursor)
+        if isMarked(cursor):
+            if dest ≠ cursor:
+                // Gap: record break
+                breaks.add(BreakEntry(cursor, dest))
+            dest ← dest + size
+        cursor ← cursor + size
+
+    return breaks
+
+forwardingAddress(obj, breaks):
+    // Binary search for break before obj
+    entry ← binarySearchFloor(breaks, obj.oldAddress)
+    if entry = null:
+        return obj  // No break before - unmoved
+    offset ← obj - entry.oldAddress
+    return entry.newAddress + offset
+```
+
+**Characteristics**:
+- Space proportional to number of gaps, not objects
+- O(log n) lookup per reference
+- Good when few large gaps
 
 ---
 
 ## 3.6 One-Pass Algorithms
 
-- Combine relocation and reference fixup in one traversal to reduce passes.
-- Example: **Cheney-style sliding**: as you copy an object, immediately fix its pointers to forwarded targets (requires those targets’ forwarding addresses to be known).
-- Another: **Treadmill-like non-copying with threading**; less common.
-
----
-
-## 3.7 Copy Reserve and Sliding With Less Space
-
-- Pure copying needs 2× space; sliding compaction can run in-place with small auxiliary metadata.
-- However, in-place sliding needs scratch to avoid overwriting yet-to-be-copied objects if destination overlaps source. Solutions:
-  - Move downward only (dest ≤ src) to avoid overlap (common).
-  - Use evacuation sets (region-based) where sources and destinations are disjoint blocks.
-
----
-
-## 3.8 Object Relocation Metadata
-
-- **Forwarding pointers**: usually stored in header (reuse mark/color bits) or overwrite first word (requires type to tolerate temporary corruption).
-- **Mark bits**: side bitmap or header bits; compaction may repurpose mark bit to “has forwarding entry”.
-- **Crossing maps**: optional; help locate object starts during reference updates if interior pointers exist.
-
----
-
-## 3.9 Handling Large and Pinned Objects
-
-- Large objects often excluded from compaction: place in separate “LOS” (large object space) with page-sized blocks and free-list management; mark-sweep or pin-only.
-- Pinned objects (FFI, stacks, raw buffers) can sit in non-moving region; compactor skips them and may leave holes (partial fragmentation).
-
----
-
-## 3.10 Parallel Compaction
-
-- Partition heap into regions; assign to threads. Must coordinate source→dest mapping to avoid overlaps.
-- Region-based evacuations (G1/Immix-style): choose sparse regions as sources, dense regions as destinations; parallel evacuate.
-- After evacuation, rebuild remembered sets/card tables for moved objects; update references within regions in parallel.
-
----
-
-## 3.11 Incremental Compaction
-
-- Goal: break long pause of relocation.
-- Strategies:
-  - **Region-based partial compaction**: evacuate a subset of regions per cycle (Beltway/Immix/G1 style).
-  - **Incremental sliding**: interleave small relocation steps with mutator; requires read barriers or load barriers to follow forwarding pointers while objects may be mid-move.
-  - **Brooks pointer** or **indirection table**: extra level of indirection so pointers stay valid while object moves.
-- Barriers: read barriers to resolve forwarding addresses during incremental move; write barriers to handle mutator stores into objects being moved.
-
----
-
-## 3.12 Compaction Order and Locality
-
-- **Address order** preserves spatial locality of allocation order; good cache behavior if allocation order matches access.
-- **Object graph order** (e.g., BFS from roots) can cluster related objects; requires copying in graph traversal order.
-- **Size-based packing**: group by size class to reduce fragmentation within compacted area.
-
----
-
-## 3.13 Interaction with Generational GC
-
-- Young gen often copying; old gen may be mark-compact (full heap) or partial compaction of old-gen regions.
-- Cross-gen pointers: remembered sets/card tables must be updated when objects move.
-- Promotion: moving into compacted old-gen may require free lists or region allocation for destinations.
-
----
-
-## 3.14 Example Sliding Collector with Forwarding in Header
+Combine reference updating with relocation:
 
 ```pseudo
-mark() // standard tri-colour
+onePassCompact():
+    markFromRoots()
 
-// Compute forwarding addresses
-dest = heap.start
-for obj in heap in address order:
-  if marked(obj):
-    header(obj).fwd = dest
-    dest += size(obj)
-  else:
-    header(obj).fwd = null
-new_top = dest
+    // Compute forwarding addresses
+    computeForwardingAddresses()
 
-// Relocate + clear mark
-for obj in heap in address order:
-  if header(obj).fwd != null:
-    to = header(obj).fwd
-    memcpy(to, obj, size(obj))
-    clear_mark(header(to))
+    // Single pass: copy and update simultaneously
+    dest ← HeapStart
+    cursor ← HeapStart
+    while cursor < HeapEnd:
+        if isMarked(cursor):
+            size ← objectSize(cursor)
 
-// Fix references
-cursor = heap.start
-while cursor < new_top:
-  for each pointer field p in cursor:
-    old = *p
-    if is_heap_ptr(old):
-      *p = header(old).fwd
-  cursor += size(cursor)
+            // Copy object
+            if cursor ≠ dest:
+                memcpy(dest, cursor, size)
 
-heap.top = new_top
+            // Update fields in the copy
+            for each field in Pointers(dest):
+                old ← *field
+                if old ≠ null:
+                    *field ← forwardingAddress(old)
+
+            unsetMarked(dest)
+            dest ← dest + size
+        cursor ← cursor + objectSize(cursor)
+
+    // Update roots
+    updateRoots()
+    heapTop ← dest
+```
+
+**Requirement**: Forwarding addresses must be computed before relocation begins, or destinations must not overlap sources (sliding downward satisfies this).
+
+---
+
+## 3.7 Handling Large and Pinned Objects
+
+### Large Object Space (LOS)
+
+Exclude large objects from compaction:
+
+```pseudo
+allocate(size):
+    if size > LARGE_OBJECT_THRESHOLD:
+        return allocateInLOS(size)
+    else:
+        return allocateInCompactedSpace(size)
+
+compact():
+    // Only compact regular space, not LOS
+    markFromRoots()
+    compactRegularSpace()
+    sweepLOS()  // Use mark-sweep for large objects
+```
+
+### Pinned Objects
+
+Objects that cannot move (FFI references, etc.):
+
+```pseudo
+computeForwardingWithPins():
+    dest ← HeapStart
+    cursor ← HeapStart
+
+    while cursor < HeapEnd:
+        size ← objectSize(cursor)
+        if isMarked(cursor):
+            if isPinned(cursor):
+                // Pinned: leave in place
+                if dest < cursor:
+                    // Fill gap before pinned object
+                    addToFreeList(dest, cursor - dest)
+                setForwardingAddress(cursor, cursor)
+                dest ← cursor + size
+            else:
+                setForwardingAddress(cursor, dest)
+                dest ← dest + size
+        cursor ← cursor + size
 ```
 
 ---
 
-## 3.15 Two-Finger (Edwards) Example
+## 3.8 Parallel Compaction
+
+### Region-Based Parallel Compaction
+
+Divide heap into regions for parallel processing:
 
 ```pseudo
-free = heap.start
-scan = heap.end
+parallelCompact():
+    // Phase 1: Parallel mark
+    parallelMark()
 
-while true:
-  while free < scan and marked(free): free += size(free)
-  repeat:
-    prev = previous_object(scan)
-    scan = prev
-  until scan <= free or marked(scan)
-  if free >= scan: break
-  memcpy(free, scan, size(scan))
-  set_forward(scan, free)
-  free += size(scan)
+    // Phase 2: Compute per-region live bytes
+    parallel for each region r:
+        r.liveBytes ← countLiveBytes(r)
 
-update_refs(heap.start, free)
+    // Phase 3: Sequential prefix sum (quick)
+    offset ← 0
+    for each region r:
+        r.destStart ← offset
+        offset ← offset + r.liveBytes
+
+    // Phase 4: Parallel compute per-object forwarding
+    parallel for each region r:
+        dest ← r.destStart
+        for each obj in r:
+            if isMarked(obj):
+                setForwardingAddress(obj, dest)
+                dest ← dest + objectSize(obj)
+
+    // Phase 5: Parallel update references
+    parallel for each region r:
+        for each obj in r:
+            if isMarked(obj):
+                updateObjectReferences(obj)
+
+    // Phase 6: Parallel relocate
+    parallel for each region r:
+        relocateRegion(r)
+```
+
+### Handling Cross-Region Dependencies
+
+Objects may move to different regions than their source:
+
+```pseudo
+relocateRegion(sourceRegion):
+    for each obj in sourceRegion:
+        if isMarked(obj):
+            dest ← forwardingAddress(obj)
+            destRegion ← regionOf(dest)
+
+            // May need synchronization if dest in different region
+            if destRegion ≠ sourceRegion:
+                lock(destRegion)
+                memcpy(dest, obj, objectSize(obj))
+                unlock(destRegion)
+            else:
+                memcpy(dest, obj, objectSize(obj))
 ```
 
 ---
 
-## 3.16 Handling Interior Pointers
+## 3.9 Incremental Compaction
 
-- Need mapping from interior address to object start. Approaches:
-  - **Crossing maps** per block (byte/word offset to last object start).
-  - **Object table** keyed by page/block.
-  - **Tagged pointers** disallowing interior references simplifies compaction.
-- When updating references, interior pointers must adjust relative offset (ptr = base + delta → ptr’ = fwd(base) + delta).
+Break compaction into smaller steps to reduce pause times:
 
----
-
-## 3.17 Dealing with Concurrency
-
-- **Stop-the-world compaction**: simplest; common in many VMs.
-- **Concurrent/Incremental**: requires barriers + indirection; often only compacts selected regions to cap pause (e.g., CMS with “mark-sweep-compact” fallback).
-- **Read barrier** resolves to-space location; self-healing pointers (Brooks pointer) avoids repeated barrier cost after first access.
-
----
-
-## 3.18 Region-Based Hybrid (Immix/G1 style)
-
-- Divide heap into regions (e.g., 1–4 MB). Track live bytes per region during mark.
-- Choose sparse regions to evacuate; choose dense regions as destinations.
-- Non-evacuated regions are swept in place (mark-sweep), giving partial compaction without full-heap pause.
-- Remembered sets track inter-region pointers; must be updated on evacuation.
-
----
-
-## 3.19 Pseudocode: Region Evacuation Sketch
+### Region-Based Incremental Compaction (G1/Immix Style)
 
 ```pseudo
-// After marking, we have live_bytes per region
-evac_sources = regions with occupancy < evacuate_threshold
-dest_regions = regions with occupancy < dest_threshold and not sources
+incrementalCompact():
+    // Select regions to evacuate (based on liveness)
+    evacuationSet ← selectLowLivenessRegions()
 
-for src in evac_sources in parallel:
-  for obj in src.live_objects:
-    dst = alloc_in_dest(dest_regions, size(obj))
-    memcpy(dst, obj, size(obj))
-    set_forward(obj, dst)
+    for each region r in evacuationSet:
+        evacuateRegion(r)
+        yield()  // Allow mutator progress
 
-// Fix references in evacuated objects
-for each evacuated obj:
-  for ptr in children(obj):
-    if is_heap_ptr(ptr):
-      *ptr = resolve_forward(ptr)
+evacuateRegion(region):
+    for each obj in region:
+        if isMarked(obj):
+            dest ← allocateInDenseRegion(objectSize(obj))
+            memcpy(dest, obj, objectSize(obj))
+            setForwardingAddress(obj, dest)
 
-// Rebuild free lists: evacuated source regions become free/available
+    // Update references (needs read barrier during incremental)
+    updateReferencesToEvacuatedObjects(region)
+    freeRegion(region)
+```
+
+### Read Barriers for Incremental Compaction
+
+```pseudo
+// Brooks-style forwarding pointer in each object
+readBarrier(obj):
+    return obj.forwardingPointer
+
+// Or check if in evacuated region
+readBarrier(obj):
+    if inEvacuatedRegion(obj):
+        return forwardingAddress(obj)
+    return obj
 ```
 
 ---
 
-## 3.20 Practical Engineering Concerns
+## 3.10 Memory Ordering and Correctness
 
-- **Copy safety**: overlap avoidance; prefer downward sliding or region-disjoint evacuation.
-- **Write amplification**: compaction writes whole live set; may stress caches/TLB; region-based compacts less at a time.
-- **Page protection tricks**: sometimes used to detect interior pointer writes or to protect from-space during incremental compaction; can be expensive.
-- **Alignment and padding**: preserve alignment when computing forwarding addresses; respect object-specific alignment (vectors, SIMD).
+### Copy-Then-Update Ordering
+
+Ensure copy is visible before forwarding pointer:
+
+```pseudo
+relocateWithOrdering(obj, dest):
+    // Copy object data
+    memcpy(dest, obj, objectSize(obj))
+
+    // Memory barrier: ensure copy visible
+    writeBarrier()
+
+    // Now install forwarding pointer
+    setForwardingAddress(obj, dest)
+```
+
+### Handling Overlapping Regions
+
+When destination overlaps source (common in sliding):
+
+```pseudo
+safeRelocate(obj, dest):
+    size ← objectSize(obj)
+    if dest < obj:
+        // Moving down: safe to copy forward
+        memcpy(dest, obj, size)
+    else if dest > obj:
+        // Moving up: copy backward to avoid overwrite
+        memmove(dest, obj, size)  // memmove handles overlap
+    // else: dest = obj, no copy needed
+```
 
 ---
 
-## 3.21 Testing Checklist
+## 3.11 Interior Pointers
 
-- Forwarding correctness: all pointers updated; no stale from-space references.
-- Interior pointers: delta preserved.
-- Large/pinned objects excluded and not moved.
-- Cross-region remember-set update after moves.
-- Stress: fragmented heaps, varied object sizes, deep graphs.
-- Concurrency: barriers maintain correctness under mutator stores/reads.
+Handle pointers into the middle of objects:
+
+```pseudo
+updateInteriorPointer(fieldAddr):
+    ptr ← *fieldAddr
+    base ← findObjectBase(ptr)
+    offset ← ptr - base
+    newBase ← forwardingAddress(base)
+    *fieldAddr ← newBase + offset
+
+findObjectBase(interiorPtr):
+    // Use crossing map or object table
+    card ← cardOf(interiorPtr)
+    objStart ← firstObjectInCard(card)
+    while objStart + objectSize(objStart) <= interiorPtr:
+        objStart ← objStart + objectSize(objStart)
+    return objStart
+```
 
 ---
 
-## 3.22 When to Use Mark-Compact
+## 3.12 Comparison of Compaction Algorithms
 
-- Need to control fragmentation and improve locality.
-- Accept higher pause time than mark-sweep; can mitigate with regional/partial compaction.
-- Good as full-heap collector in VMs where copy reserve is too costly for old gen but fragmentation is an issue.
+| Algorithm | Passes | Extra Space | Order Preserved | Complexity |
+|-----------|--------|-------------|-----------------|------------|
+| **Two-Finger** | 2 | Forwarding table | No | Simple |
+| **Lisp2 (Threaded)** | 2 | Header thread field | Yes | Complex |
+| **Sliding** | 3-4 | Forwarding in header | Yes | Moderate |
+| **Break Table** | 3 | O(gaps) | Yes | Moderate |
+| **One-Pass** | 2 | Forwarding table | Yes | Moderate |
 
 ---
 
-## 3.23 Summary
+## 3.13 Summary
 
-Mark-compact collectors add a relocation phase to mark-sweep to deliver defragmented, dense heaps and better locality. Core styles include two-finger (single pass, arbitrary order) and sliding (prefix-sum, order-preserving). Region-based evacuation gives partial compaction with lower pauses. Forwarding metadata and pointer updates are central correctness concerns; pinned/large objects often stay out of compacted regions. Incremental/parallel variants rely on barriers or regional compaction to keep pauses tolerable.
+Mark-compact eliminates fragmentation at the cost of additional passes:
+
+| Phase | Purpose | Cost |
+|-------|---------|------|
+| **Mark** | Identify live objects | O(L) |
+| **Compute** | Calculate forwarding addresses | O(H) |
+| **Update** | Fix all pointers | O(L × refs) |
+| **Relocate** | Move objects | O(L) |
+
+Key design choices:
+
+| Aspect | Options |
+|--------|---------|
+| **Forwarding storage** | Header, side table, computed, threaded |
+| **Order** | Preserved (sliding) vs arbitrary (two-finger) |
+| **Large objects** | Separate LOS, exclude from compaction |
+| **Parallelism** | Region-based with prefix sums |
+| **Incrementality** | Region evacuation with barriers |
+
+When to use mark-compact:
+- When fragmentation is problematic
+- When allocation locality matters
+- As fallback for mark-sweep when fragmentation threshold exceeded
+- For full-heap collection in generational systems
+
+Compared to copying:
+- Uses less space (no copy reserve)
+- More complex pointer updates
+- Suitable for old generation where copying's 2× overhead is prohibitive
 
