@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import time
+import glob
 import argparse
 from datetime import datetime
 from openai import OpenAI
@@ -13,7 +14,6 @@ from rich.prompt import Prompt
 # Config
 # --------------------------------
 
-DOCS_DIR = "knowledge"
 SETTINGS_FILE = "settings.json"
 LOG_DIR = "chat_logs"
 
@@ -92,55 +92,97 @@ def select_reasoning_effort(console):
         console.print("[red]Invalid choice, try again[/red]")
 
 # --------------------------------
+# File Resolution
+# --------------------------------
+
+# File types supported by OpenAI's file_search
+SUPPORTED_EXTENSIONS = (
+    # Documents
+    ".txt", ".md", ".pdf", ".doc", ".docx", ".pptx", ".html", ".htm",
+    # Data formats
+    ".json", ".xml", ".csv", ".tsv", ".yaml", ".yml",
+    # Programming languages
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp", ".h", ".hpp",
+    ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".kt", ".scala", ".r",
+    ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".sql", ".lua", ".pl",
+    ".hs", ".elm", ".ex", ".exs", ".clj", ".lisp", ".scm", ".ml", ".fs",
+    # Config and markup
+    ".toml", ".ini", ".cfg", ".conf", ".tex", ".rst", ".org", ".adoc",
+)
+
+def resolve_file_patterns(patterns, console):
+    """Resolve glob patterns to a list of files."""
+    files = []
+    for pattern in patterns:
+        # Expand glob pattern
+        matches = glob.glob(pattern, recursive=True)
+        if not matches:
+            # Check if it's a literal file that doesn't exist
+            if not any(c in pattern for c in '*?[]'):
+                console.print(f"[yellow]Warning: File not found: {pattern}[/yellow]")
+            else:
+                console.print(f"[yellow]Warning: No matches for pattern: {pattern}[/yellow]")
+            continue
+
+        for match in matches:
+            if os.path.isfile(match):
+                # Check if it's a supported file type
+                if match.lower().endswith(SUPPORTED_EXTENSIONS):
+                    files.append(match)
+                else:
+                    console.print(f"[yellow]Warning: Unsupported file type: {match}[/yellow]")
+            elif os.path.isdir(match):
+                # If a directory is specified, get all supported files in it
+                for root, _, filenames in os.walk(match):
+                    for filename in filenames:
+                        filepath = os.path.join(root, filename)
+                        if filepath.lower().endswith(SUPPORTED_EXTENSIONS):
+                            files.append(filepath)
+
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_files = []
+    for f in files:
+        abs_path = os.path.abspath(f)
+        if abs_path not in seen:
+            seen.add(abs_path)
+            unique_files.append(f)
+
+    return unique_files
+
+# --------------------------------
 # Vector Store Management
 # --------------------------------
 
-def create_vector_store(client, console):
+def create_vector_store(file_patterns, client, console):
     """Upload files and create a new vector store."""
-    console.print("\n[yellow]Uploading and indexing files...[/yellow]")
 
-    file_ids = []
+    # Resolve file patterns to actual files
+    files_to_upload = resolve_file_patterns(file_patterns, console)
 
-    # File types supported by OpenAI's file_search
-    SUPPORTED_EXTENSIONS = (
-        # Documents
-        ".txt", ".md", ".pdf", ".doc", ".docx", ".pptx", ".html", ".htm",
-        # Data formats
-        ".json", ".xml", ".csv", ".tsv", ".yaml", ".yml",
-        # Programming languages
-        ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp", ".h", ".hpp",
-        ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".kt", ".scala", ".r",
-        ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".sql", ".lua", ".pl",
-        ".hs", ".elm", ".ex", ".exs", ".clj", ".lisp", ".scm", ".ml", ".fs",
-        # Config and markup
-        ".toml", ".ini", ".cfg", ".conf", ".tex", ".rst", ".org", ".adoc",
-    )
-
-    if not os.path.exists(DOCS_DIR):
-        console.print(f"[red]Error: {DOCS_DIR}/ directory not found[/red]")
-        console.print("Create a 'knowledge' directory and add files to index.")
+    if not files_to_upload:
+        console.print("[red]Error: No supported files found[/red]")
+        console.print("\nUsage: rag-cli 'docs/*.md' 'src/**/*.py'")
+        console.print("Supported: .txt, .md, .pdf, .py, .js, .json, .yaml, and many more")
         sys.exit(1)
 
-    files_to_upload = [f for f in os.listdir(DOCS_DIR) if f.lower().endswith(SUPPORTED_EXTENSIONS)]
+    console.print(f"\n[yellow]Uploading {len(files_to_upload)} files...[/yellow]")
+
+    file_ids = []
     total_files = len(files_to_upload)
 
-    for i, filename in enumerate(files_to_upload, 1):
-        path = os.path.join(DOCS_DIR, filename)
+    for i, filepath in enumerate(files_to_upload, 1):
+        display_name = os.path.basename(filepath)
 
-        with Status(f"[yellow]Uploading ({i}/{total_files}): {filename}[/yellow]", console=console):
-            with open(path, "rb") as f:
+        with Status(f"[yellow]Uploading ({i}/{total_files}): {display_name}[/yellow]", console=console):
+            with open(filepath, "rb") as f:
                 uploaded = client.files.create(
                     file=f,
                     purpose="assistants"
                 )
 
         file_ids.append(uploaded.id)
-        console.print(f"  [green]✓[/green] ({i}/{total_files}) {filename}")
-
-    if not file_ids:
-        console.print("[red]Error: No supported files found in knowledge/ directory[/red]")
-        console.print("Supported: documents, code files, data formats (txt, md, pdf, py, js, json, etc.)")
-        sys.exit(1)
+        console.print(f"  [green]✓[/green] ({i}/{total_files}) {filepath}")
 
     console.print("\n[yellow]Creating vector store...[/yellow]")
     vector_store = client.vector_stores.create(
@@ -181,12 +223,27 @@ def load_or_create_settings(args, client, console):
             if settings.get("reasoning_effort"):
                 console.print(f"[green]Reasoning effort:[/green] {settings.get('reasoning_effort')}")
             console.print(f"[green]Using vector store:[/green] {settings.get('vector_store_id')}")
+            if settings.get("file_patterns"):
+                console.print(f"[green]Indexed patterns:[/green] {', '.join(settings['file_patterns'])}")
         return settings
+
+    # Check if file patterns are provided
+    if not args.files:
+        console.print("[red]Error: No files specified for indexing[/red]")
+        console.print("\nUsage: rag-cli 'docs/*.md' 'src/**/*.py'")
+        console.print("       rag-cli --reindex 'knowledge/'")
+        console.print("\nExamples:")
+        console.print("  rag-cli '*.md'                    # All markdown files in current dir")
+        console.print("  rag-cli 'docs/**/*.txt'           # All txt files in docs/ recursively")
+        console.print("  rag-cli README.md guide.md        # Specific files")
+        console.print("  rag-cli knowledge/                # All supported files in a directory")
+        sys.exit(1)
 
     # First time or reindex - select model, reasoning, and create vector store
     settings["model"] = select_model(client, console)
     settings["reasoning_effort"] = select_reasoning_effort(console)
-    settings["vector_store_id"] = create_vector_store(client, console)
+    settings["file_patterns"] = args.files
+    settings["vector_store_id"] = create_vector_store(args.files, client, console)
     save_settings(settings)
     return settings
 
@@ -198,9 +255,16 @@ def cli():
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
         prog="rag-cli",
-        description="A RAG CLI tool using OpenAI's vector store and file search"
+        description="A RAG CLI tool using OpenAI's vector store and file search",
+        epilog="Examples:\n"
+               "  rag-cli 'docs/*.md'              Index markdown files and start chat\n"
+               "  rag-cli 'src/**/*.py' '*.md'     Index multiple patterns\n"
+               "  rag-cli --reindex 'knowledge/'  Re-index a directory\n"
+               "  rag-cli                          Use existing index\n",
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--reindex", action="store_true", help="Force re-upload + reindex")
+    parser.add_argument("files", nargs="*", metavar="FILE", help="Files or glob patterns to index (e.g., '*.md', 'docs/**/*.txt')")
+    parser.add_argument("--reindex", action="store_true", help="Force re-upload + reindex files")
     parser.add_argument("--strict", action="store_true", help="Only answer if info is in files")
     parser.add_argument("--debug", action="store_true", help="Show retrieved chunks")
     parser.add_argument("-t", "--thinking", choices=["l", "m", "h"], help="Override thinking level: l=low, m=medium, h=high")
