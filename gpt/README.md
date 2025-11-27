@@ -16,24 +16,20 @@ A command-line tool for building and querying a knowledge base using OpenAI's ve
 
 ## Installation
 
-### From PyPI
-
 ```bash
-pip install rag-cli
-```
-
-Or using pipx (recommended for CLI tools):
-
-```bash
-pipx install rag-cli
-```
-
-### From Source
-
-```bash
-git clone https://github.com/rupertlssmith/rag-cli
+# Clone the repository
+git clone https://github.com/the-sett/rag-cli.git
 cd rag-cli
-pip install -e .
+
+# Create and activate a virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies and the package in development mode
+./venv/bin/pip install -e .
+
+# Symlink the program in working directory for convenience
+ln -s ./venv/bin/rag-cli
 ```
 
 ## Configuration
@@ -150,24 +146,6 @@ RAG CLI supports a wide range of file types:
 
 ## Development
 
-### Setting Up a Development Environment
-
-```bash
-# Clone the repository
-git clone https://github.com/rupertlssmith/rag-cli
-cd rag-cli
-
-# Create a virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install in development mode
-pip install -e .
-
-# Set your API key
-export OPEN_AI_API_KEY="sk-your-api-key-here"
-```
-
 ### Project Structure
 
 ```
@@ -183,16 +161,17 @@ rag-cli/
 
 ### Running Locally
 
-After installing in development mode, you can run the CLI directly:
+After installing, you can run the CLI via the virtual environment:
 
 ```bash
-rag-cli 'docs/*.md'
+./venv/bin/rag-cli 'docs/*.md'
 ```
 
-Or run the module:
+Or activate the virtual environment first:
 
 ```bash
-python -m rag_cli.main 'docs/*.md'
+source venv/bin/activate
+rag-cli 'docs/*.md'
 ```
 
 ## License
