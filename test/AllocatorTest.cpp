@@ -5,6 +5,7 @@
 #include "Allocator.hpp"
 #include "Heap.hpp"
 #include "HeapGenerators.hpp"
+#include "HeapSnapshot.hpp"
 #include "OldGenSpace.hpp"
 #include "TestHelpers.hpp"
 
@@ -15,70 +16,61 @@ using namespace Elm;
 // ============================================================================
 
 Testing::TestCase testPromotionToOldGen("Objects surviving PROMOTION_AGE minor GCs are promoted", []() {
-    rc::check([]() {
+    rc::check([](const HeapGraphDesc& graph) {
         auto& alloc = initAllocator();
 
-        // Allocate object in nursery.
-        i64 test_value = *rc::gen::arbitrary<i64>();
-        void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
-        if (!obj) RC_FAIL("Failed to allocate object");
+        // Allocate complex heap graph in nursery.
+        std::vector<void*> objects = allocateHeapGraph(graph.nodes);
+        RC_ASSERT(!objects.empty());
 
-        ElmInt* elm_int = static_cast<ElmInt*>(obj);
-        elm_int->value = test_value;
+        // Set up roots from graph description (RAII - auto-unregisters).
+        GraphRoots roots = setupRootsFromGraph(alloc, graph, objects);
+        RC_ASSERT(!roots.empty());
 
-        HPointer root = AllocatorTestAccess::toPointer(obj);
-        alloc.getRootSet().addRoot(&root);
+        // Take snapshot before promotion.
+        HeapSnapshot snapshot;
+        snapshot.capture(objects, roots.ptrs);
 
-        // Object should start in nursery.
-        void* current = AllocatorTestAccess::fromPointer(root);
-        RC_ASSERT(alloc.isInNursery(current));
+        // All rooted objects should start in nursery.
+        for (auto* root_ptr : roots.ptrs) {
+            void* obj = AllocatorTestAccess::fromPointer(*root_ptr);
+            RC_ASSERT(alloc.isInNursery(obj));
+        }
 
         // Run enough minor GCs to trigger promotion (PROMOTION_AGE + 1).
         for (u32 i = 0; i <= PROMOTION_AGE; i++) {
             // Allocate some garbage to ensure GC does work.
-            for (int j = 0; j < 10; j++) {
-                alloc.allocate(sizeof(ElmInt), Tag_Int);
-            }
+            allocateGarbageInts(alloc, 10);
             alloc.minorGC();
         }
 
-        // Object should now be in old gen.
-        current = AllocatorTestAccess::fromPointer(root);
-        RC_ASSERT(alloc.isInOldGen(current));
+        // All rooted objects should now be in old gen.
+        for (auto* root_ptr : roots.ptrs) {
+            void* obj = readBarrier(*root_ptr);
+            RC_ASSERT(alloc.isInOldGen(obj));
+        }
 
-        // Value should be preserved.
-        elm_int = static_cast<ElmInt*>(current);
-        RC_ASSERT(elm_int->value == test_value);
-
-        alloc.getRootSet().removeRoot(&root);
+        // Verify all roots still intact and values preserved.
+        bool valid = snapshot.verify(roots.ptrs);
+        RC_ASSERT(valid);
     });
 });
 
 Testing::TestCase testMinorThenMajorGCSequence("Roots survive minor then major GC sequence", []() {
-    rc::check([]() {
+    rc::check([](const HeapGraphDesc& graph) {
         auto& alloc = initAllocator();
 
-        // Create objects with random values (size-scaled: 3-10 at size 0, up to 3-110 at size 1000)
-        size_t num_objects = *rc::sizedRange<size_t>(3, 10, 0.1);
-        std::vector<i64> expected_values;
-        std::vector<HPointer> root_storage;
+        // Allocate complex heap graph in nursery.
+        std::vector<void*> objects = allocateHeapGraph(graph.nodes);
+        RC_ASSERT(!objects.empty());
 
-        for (size_t i = 0; i < num_objects; i++) {
-            i64 val = *rc::gen::arbitrary<i64>();
-            void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
-            if (!obj) break;
+        // Set up roots from graph description (RAII - auto-unregisters).
+        GraphRoots roots = setupRootsFromGraph(alloc, graph, objects);
+        RC_ASSERT(!roots.empty());
 
-            ElmInt* elm_int = static_cast<ElmInt*>(obj);
-            elm_int->value = val;
-            expected_values.push_back(val);
-            root_storage.push_back(AllocatorTestAccess::toPointer(obj));
-        }
-
-        RC_ASSERT(!root_storage.empty());
-
-        for (auto& root : root_storage) {
-            alloc.getRootSet().addRoot(&root);
-        }
+        // Take snapshot before GC sequence.
+        HeapSnapshot snapshot;
+        snapshot.capture(objects, roots.ptrs);
 
         // Run minor GCs to promote objects.
         for (u32 i = 0; i <= PROMOTION_AGE; i++) {
@@ -88,167 +80,103 @@ Testing::TestCase testMinorThenMajorGCSequence("Roots survive minor then major G
         // Now run major GC.
         alloc.majorGC();
 
-        // Verify all values preserved.
-        for (size_t i = 0; i < root_storage.size(); i++) {
-            void* obj = readBarrier(root_storage[i]);
-            if (!obj) RC_FAIL("Object is null after GC sequence");
-
-            ElmInt* elm_int = static_cast<ElmInt*>(obj);
-            RC_ASSERT(elm_int->value == expected_values[i]);
-        }
-
-        for (auto& root : root_storage) {
-            alloc.getRootSet().removeRoot(&root);
-        }
+        // Verify all roots still intact and values preserved.
+        bool valid = snapshot.verify(roots.ptrs);
+        RC_ASSERT(valid);
     });
 });
 
 Testing::TestCase testLongLivedObjectsSurviveMajorGC("Promoted objects survive major GC with values intact", []() {
-    rc::check([]() {
+    rc::check([](const HeapGraphDesc& graph) {
         auto& alloc = initAllocator();
 
-        // Create and promote objects (size-scaled: 5-15 at size 0, up to 5-115 at size 1000)
-        size_t num_objects = *rc::sizedRange<size_t>(5, 15, 0.1);
-        std::vector<i64> expected_values;
-        std::vector<HPointer> root_storage;
+        // Allocate complex heap graph in nursery.
+        std::vector<void*> objects = allocateHeapGraph(graph.nodes);
+        RC_ASSERT(!objects.empty());
 
-        for (size_t i = 0; i < num_objects; i++) {
-            i64 val = *rc::gen::inRange<i64>(0, 1000000);
-            void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
-            if (!obj) break;
+        // Set up roots from graph description (RAII - auto-unregisters).
+        GraphRoots roots = setupRootsFromGraph(alloc, graph, objects);
+        RC_ASSERT(!roots.empty());
 
-            ElmInt* elm_int = static_cast<ElmInt*>(obj);
-            elm_int->value = val;
-            expected_values.push_back(val);
-            root_storage.push_back(AllocatorTestAccess::toPointer(obj));
-        }
-
-        RC_ASSERT(!root_storage.empty());
-
-        for (auto& root : root_storage) {
-            alloc.getRootSet().addRoot(&root);
-        }
+        // Take snapshot before promotion.
+        HeapSnapshot snapshot;
+        snapshot.capture(objects, roots.ptrs);
 
         // Promote to old gen.
         for (u32 i = 0; i <= PROMOTION_AGE; i++) {
             alloc.minorGC();
         }
 
-        // Verify objects are in old gen.
-        for (auto& root : root_storage) {
-            void* obj = AllocatorTestAccess::fromPointer(root);
+        // Verify rooted objects are in old gen.
+        for (auto* root_ptr : roots.ptrs) {
+            void* obj = readBarrier(*root_ptr);
             RC_ASSERT(alloc.isInOldGen(obj));
         }
 
         // Run major GC.
         alloc.majorGC();
 
-        // Verify values still intact.
-        for (size_t i = 0; i < root_storage.size(); i++) {
-            void* obj = readBarrier(root_storage[i]);
-            if (!obj) RC_FAIL("Object is null after major GC");
-
-            Header* hdr = getHeader(obj);
-            RC_ASSERT(hdr->tag == Tag_Int);
-
-            ElmInt* elm_int = static_cast<ElmInt*>(obj);
-            RC_ASSERT(elm_int->value == expected_values[i]);
-        }
-
-        for (auto& root : root_storage) {
-            alloc.getRootSet().removeRoot(&root);
-        }
+        // Verify all roots still intact and values preserved.
+        bool valid = snapshot.verify(roots.ptrs);
+        RC_ASSERT(valid);
     });
 });
 
 Testing::TestCase testMajorGCReclaimsOldGenGarbage("Unrooted objects in old gen are reclaimed by major GC", []() {
-    rc::check([]() {
+    rc::check([](const HeapGraphDesc& graph) {
         auto& alloc = initAllocator();
 
-        // Create objects (size-scaled: 6-12 at size 0, up to 6-112 at size 1000)
-        size_t num_objects = *rc::sizedRange<size_t>(6, 12, 0.1);
-        std::vector<HPointer> all_roots;
-        std::vector<HPointer> kept_roots;
-        std::vector<i64> kept_values;
+        // Allocate complex heap graph in nursery.
+        std::vector<void*> objects = allocateHeapGraph(graph.nodes);
+        RC_ASSERT(!objects.empty());
 
-        for (size_t i = 0; i < num_objects; i++) {
-            i64 val = static_cast<i64>(i * 1000);
-            void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
-            if (!obj) break;
+        // Set up roots from graph description (RAII - auto-unregisters).
+        // This roots only the designated roots, not all objects.
+        GraphRoots roots = setupRootsFromGraph(alloc, graph, objects);
+        RC_ASSERT(!roots.empty());
 
-            ElmInt* elm_int = static_cast<ElmInt*>(obj);
-            elm_int->value = val;
-            all_roots.push_back(AllocatorTestAccess::toPointer(obj));
-        }
-
-        RC_ASSERT(all_roots.size() >= 4);
-
-        // Root all objects initially.
-        for (auto& root : all_roots) {
-            alloc.getRootSet().addRoot(&root);
-        }
+        // Take snapshot of rooted objects before promotion.
+        HeapSnapshot snapshot;
+        snapshot.capture(objects, roots.ptrs);
 
         // Promote all to old gen.
         for (u32 i = 0; i <= PROMOTION_AGE; i++) {
             alloc.minorGC();
         }
 
-        // Now unroot half of them (they become garbage).
-        for (size_t i = 0; i < all_roots.size(); i++) {
-            if (i % 2 == 0) {
-                // Keep this one.
-                kept_roots.push_back(all_roots[i]);
-                kept_values.push_back(static_cast<i64>(i * 1000));
-            } else {
-                // Remove this one - it becomes garbage.
-                alloc.getRootSet().removeRoot(&all_roots[i]);
-            }
+        // Now allocate MORE garbage (unrooted) directly in the heap.
+        // This garbage will be promoted and then collected.
+        allocateGarbageInts(alloc, 50);
+
+        // Promote garbage to old gen.
+        for (u32 i = 0; i <= PROMOTION_AGE; i++) {
+            alloc.minorGC();
         }
 
-        // Run major GC - should reclaim the unrooted objects.
+        // Run major GC - should reclaim the unrooted garbage.
         alloc.majorGC();
 
-        // Verify kept objects still have correct values.
-        for (size_t i = 0; i < kept_roots.size(); i++) {
-            void* obj = readBarrier(kept_roots[i]);
-            if (!obj) RC_FAIL("Kept object is null after major GC");
-
-            ElmInt* elm_int = static_cast<ElmInt*>(obj);
-            RC_ASSERT(elm_int->value == kept_values[i]);
-        }
-
-        // Clean up remaining roots.
-        for (auto& root : kept_roots) {
-            alloc.getRootSet().removeRoot(&root);
-        }
+        // Verify rooted objects still intact.
+        bool valid = snapshot.verify(roots.ptrs);
+        RC_ASSERT(valid);
     });
 });
 
 Testing::TestCase testFullGCCycle("Objects survive full GC cycle", []() {
-    rc::check([]() {
+    rc::check([](const HeapGraphDesc& graph) {
         auto& alloc = initAllocator();
 
-        // Create objects (size-scaled: 5-20 at size 0, up to 5-120 at size 1000)
-        size_t num_objects = *rc::sizedRange<size_t>(5, 20, 0.1);
-        std::vector<i64> expected_values;
-        std::vector<HPointer> root_storage;
+        // Allocate complex heap graph in nursery.
+        std::vector<void*> objects = allocateHeapGraph(graph.nodes);
+        RC_ASSERT(!objects.empty());
 
-        for (size_t i = 0; i < num_objects; i++) {
-            i64 val = *rc::gen::arbitrary<i64>();
-            void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
-            if (!obj) break;
+        // Set up roots from graph description (RAII - auto-unregisters).
+        GraphRoots roots = setupRootsFromGraph(alloc, graph, objects);
+        RC_ASSERT(!roots.empty());
 
-            ElmInt* elm_int = static_cast<ElmInt*>(obj);
-            elm_int->value = val;
-            expected_values.push_back(val);
-            root_storage.push_back(AllocatorTestAccess::toPointer(obj));
-        }
-
-        RC_ASSERT(!root_storage.empty());
-
-        for (auto& root : root_storage) {
-            alloc.getRootSet().addRoot(&root);
-        }
+        // Take snapshot before GC cycle.
+        HeapSnapshot snapshot;
+        snapshot.capture(objects, roots.ptrs);
 
         // Promote to old gen.
         for (u32 i = 0; i <= PROMOTION_AGE; i++) {
@@ -258,53 +186,29 @@ Testing::TestCase testFullGCCycle("Objects survive full GC cycle", []() {
         // Run major GC.
         alloc.majorGC();
 
-        // Verify all values using read barrier (handles forwarding).
-        for (size_t i = 0; i < root_storage.size(); i++) {
-            void* obj = readBarrier(root_storage[i]);
-            if (!obj) RC_FAIL("Object is null after full GC cycle");
-
-            Header* hdr = getHeader(obj);
-            RC_ASSERT(hdr->tag == Tag_Int);
-
-            ElmInt* elm_int = static_cast<ElmInt*>(obj);
-            RC_ASSERT(elm_int->value == expected_values[i]);
-        }
-
-        for (auto& root : root_storage) {
-            alloc.getRootSet().removeRoot(&root);
-        }
+        // Verify all roots still intact and values preserved.
+        bool valid = snapshot.verify(roots.ptrs);
+        RC_ASSERT(valid);
     });
 });
 
 Testing::TestCase testMixedAllocationWorkload("Roots survive mixed minor and major GC workload", []() {
-    rc::check([]() {
-        // Use smaller heap for faster test.
-        HeapConfig config;
-        config.nursery_size = 64 * 1024;  // 64KB (32KB per semi-space)
+    rc::check([](const HeapGraphDesc& graph) {
+        // Use heap scaled to RapidCheck size to handle larger test inputs.
+        int rc_size = *rc::currentSize();
+        auto& alloc = initAllocatorScaled(rc_size);
 
-        auto& alloc = initAllocator(config);
+        // Allocate complex heap graph in nursery.
+        std::vector<void*> objects = allocateHeapGraph(graph.nodes);
+        RC_ASSERT(!objects.empty());
 
-        // Create some long-lived roots (size-scaled: 3-8 at size 0, up to 3-108 at size 1000)
-        size_t num_roots = *rc::sizedRange<size_t>(3, 8, 0.1);
-        std::vector<i64> expected_values;
-        std::vector<HPointer> root_storage;
+        // Set up roots from graph description (RAII - auto-unregisters).
+        GraphRoots roots = setupRootsFromGraph(alloc, graph, objects);
+        RC_ASSERT(!roots.empty());
 
-        for (size_t i = 0; i < num_roots; i++) {
-            i64 val = *rc::gen::inRange<i64>(0, 1000000);
-            void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
-            if (!obj) break;
-
-            ElmInt* elm_int = static_cast<ElmInt*>(obj);
-            elm_int->value = val;
-            expected_values.push_back(val);
-            root_storage.push_back(AllocatorTestAccess::toPointer(obj));
-        }
-
-        RC_ASSERT(!root_storage.empty());
-
-        for (auto& root : root_storage) {
-            alloc.getRootSet().addRoot(&root);
-        }
+        // Take snapshot before workload.
+        HeapSnapshot snapshot;
+        snapshot.capture(objects, roots.ptrs);
 
         // Mixed workload: allocate garbage, trigger minor GCs, occasionally major GC.
         // Size-scaled: 5-15 at size 0, up to 5-115 at size 1000.
@@ -312,12 +216,7 @@ Testing::TestCase testMixedAllocationWorkload("Roots survive mixed minor and maj
 
         for (size_t iter = 0; iter < num_iterations; iter++) {
             // Allocate some garbage.
-            for (int j = 0; j < 100; j++) {
-                void* garbage = alloc.allocate(sizeof(ElmInt), Tag_Int);
-                if (garbage) {
-                    static_cast<ElmInt*>(garbage)->value = j;
-                }
-            }
+            allocateGarbageInts(alloc, 100);
 
             // Minor GC happens automatically, but let's also trigger explicitly sometimes.
             if (iter % 3 == 0) {
@@ -333,18 +232,9 @@ Testing::TestCase testMixedAllocationWorkload("Roots survive mixed minor and maj
         // Final major GC.
         alloc.majorGC();
 
-        // Verify all roots preserved.
-        for (size_t i = 0; i < root_storage.size(); i++) {
-            void* obj = readBarrier(root_storage[i]);
-            if (!obj) RC_FAIL("Root object is null after mixed workload");
-
-            ElmInt* elm_int = static_cast<ElmInt*>(obj);
-            RC_ASSERT(elm_int->value == expected_values[i]);
-        }
-
-        for (auto& root : root_storage) {
-            alloc.getRootSet().removeRoot(&root);
-        }
+        // Verify all roots still intact and values preserved.
+        bool valid = snapshot.verify(roots.ptrs);
+        RC_ASSERT(valid);
     });
 });
 
@@ -432,30 +322,20 @@ Testing::TestCase testObjectGraphSpanningPromotions("Linked list survives with n
 });
 
 Testing::TestCase testMultipleMajorGCCycles("Long-lived roots survive multiple major GC cycles", []() {
-    rc::check([]() {
+    rc::check([](const HeapGraphDesc& graph) {
         auto& alloc = initAllocator();
 
-        // Create long-lived objects (size-scaled: 3-10 at size 0, up to 3-110 at size 1000)
-        size_t num_objects = *rc::sizedRange<size_t>(3, 10, 0.1);
-        std::vector<i64> expected_values;
-        std::vector<HPointer> root_storage;
+        // Allocate complex heap graph in nursery.
+        std::vector<void*> objects = allocateHeapGraph(graph.nodes);
+        RC_ASSERT(!objects.empty());
 
-        for (size_t i = 0; i < num_objects; i++) {
-            i64 val = *rc::gen::arbitrary<i64>();
-            void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
-            if (!obj) break;
+        // Set up roots from graph description (RAII - auto-unregisters).
+        GraphRoots roots = setupRootsFromGraph(alloc, graph, objects);
+        RC_ASSERT(!roots.empty());
 
-            ElmInt* elm_int = static_cast<ElmInt*>(obj);
-            elm_int->value = val;
-            expected_values.push_back(val);
-            root_storage.push_back(AllocatorTestAccess::toPointer(obj));
-        }
-
-        RC_ASSERT(!root_storage.empty());
-
-        for (auto& root : root_storage) {
-            alloc.getRootSet().addRoot(&root);
-        }
+        // Take snapshot before GC cycles.
+        HeapSnapshot snapshot;
+        snapshot.capture(objects, roots.ptrs);
 
         // Promote to old gen.
         for (u32 i = 0; i <= PROMOTION_AGE; i++) {
@@ -467,12 +347,7 @@ Testing::TestCase testMultipleMajorGCCycles("Long-lived roots survive multiple m
 
         for (size_t cycle = 0; cycle < num_cycles; cycle++) {
             // Allocate some garbage between cycles.
-            for (int j = 0; j < 50; j++) {
-                void* garbage = alloc.allocate(sizeof(ElmInt), Tag_Int);
-                if (garbage) {
-                    static_cast<ElmInt*>(garbage)->value = j;
-                }
-            }
+            allocateGarbageInts(alloc, 50);
 
             // Promote garbage to old gen.
             for (u32 i = 0; i <= PROMOTION_AGE; i++) {
@@ -483,50 +358,29 @@ Testing::TestCase testMultipleMajorGCCycles("Long-lived roots survive multiple m
             alloc.majorGC();
 
             // Verify values after each cycle.
-            for (size_t i = 0; i < root_storage.size(); i++) {
-                void* obj = readBarrier(root_storage[i]);
-                if (!obj) RC_FAIL("Object is null after major GC cycle");
-
-                ElmInt* elm_int = static_cast<ElmInt*>(obj);
-                RC_ASSERT(elm_int->value == expected_values[i]);
-            }
-        }
-
-        for (auto& root : root_storage) {
-            alloc.getRootSet().removeRoot(&root);
+            bool valid = snapshot.verify(roots.ptrs);
+            RC_ASSERT(valid);
         }
     });
 });
 
 Testing::TestCase testStressTestBothGenerations("High allocation rate with both minor and major GCs", []() {
-    rc::check([]() {
-        // Use smaller heap for faster test.
-        HeapConfig config;
-        config.nursery_size = 64 * 1024;  // 64KB (32KB per semi-space)
+    rc::check([](const HeapGraphDesc& graph) {
+        // Use heap scaled to RapidCheck size to handle larger test inputs.
+        int rc_size = *rc::currentSize();
+        auto& alloc = initAllocatorScaled(rc_size);
 
-        auto& alloc = initAllocator(config);
+        // Allocate complex heap graph in nursery.
+        std::vector<void*> objects = allocateHeapGraph(graph.nodes);
+        RC_ASSERT(!objects.empty());
 
-        // Create some persistent roots (size-scaled: 2-5 at size 0, up to 2-105 at size 1000)
-        size_t num_persistent = *rc::sizedRange<size_t>(2, 5, 0.1);
-        std::vector<i64> expected_values;
-        std::vector<HPointer> root_storage;
+        // Set up roots from graph description (RAII - auto-unregisters).
+        GraphRoots roots = setupRootsFromGraph(alloc, graph, objects);
+        RC_ASSERT(!roots.empty());
 
-        for (size_t i = 0; i < num_persistent; i++) {
-            i64 val = *rc::gen::inRange<i64>(0, 1000000);
-            void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
-            if (!obj) break;
-
-            ElmInt* elm_int = static_cast<ElmInt*>(obj);
-            elm_int->value = val;
-            expected_values.push_back(val);
-            root_storage.push_back(AllocatorTestAccess::toPointer(obj));
-        }
-
-        RC_ASSERT(!root_storage.empty());
-
-        for (auto& root : root_storage) {
-            alloc.getRootSet().addRoot(&root);
-        }
+        // Take snapshot before stress test.
+        HeapSnapshot snapshot;
+        snapshot.capture(objects, roots.ptrs);
 
         // Stress test: lots of allocation forcing many GCs.
         // Size-scaled: 500-2000 at size 0, up to 500-5000 at size 1000.
@@ -550,20 +404,8 @@ Testing::TestCase testStressTestBothGenerations("High allocation rate with both 
         alloc.minorGC();
         alloc.majorGC();
 
-        // Verify persistent roots survived.
-        for (size_t i = 0; i < root_storage.size(); i++) {
-            void* obj = readBarrier(root_storage[i]);
-            if (!obj) RC_FAIL("Persistent root is null after stress test");
-
-            Header* hdr = getHeader(obj);
-            RC_ASSERT(hdr->tag == Tag_Int);
-
-            ElmInt* elm_int = static_cast<ElmInt*>(obj);
-            RC_ASSERT(elm_int->value == expected_values[i]);
-        }
-
-        for (auto& root : root_storage) {
-            alloc.getRootSet().removeRoot(&root);
-        }
+        // Verify all roots still intact and values preserved.
+        bool valid = snapshot.verify(roots.ptrs);
+        RC_ASSERT(valid);
     });
 });

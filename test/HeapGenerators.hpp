@@ -100,6 +100,12 @@ struct HeapGraphDesc {
 // Allocates heap objects from the given descriptions.
 std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes);
 
+// Allocates heap objects directly into old generation (bypassing nursery).
+// Requires OldGenSpace reference for direct allocation.
+class OldGenSpace;  // Forward declaration
+std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
+                                               const std::vector<HeapObjectDesc> &nodes);
+
 // Allocates a linked list from the description.
 HPointer allocateList(const ListDesc& list_desc,
                       const std::vector<void*>& allocated);
@@ -111,6 +117,14 @@ HPointer allocateList(const ListDesc& list_desc,
 // ============================================================================
 
 namespace rc {
+
+// Returns the current RapidCheck size parameter (0 to max_size).
+// Useful for scaling test configuration based on test complexity.
+inline Gen<int> currentSize() {
+    return gen::withSize([](int size) {
+        return gen::just(size);
+    });
+}
 
 // Size-scaled range generator with minimum floor.
 // At size=0, generates in range [min_val, base_max).

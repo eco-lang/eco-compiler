@@ -5,6 +5,9 @@
 
 namespace Elm {
 
+// Forward declaration for friend access.
+class OldGenSpace;
+
 /**
  * An allocation buffer for fast bump-pointer allocation into old gen.
  * Provides O(1) allocation by simply incrementing a pointer.
@@ -17,7 +20,7 @@ public:
      * @param size Size of the region in bytes
      */
     AllocBuffer(char* base, size_t size)
-        : start(base), end(base + size), alloc_ptr(base) {}
+        : start_(base), end_(base + size), alloc_ptr_(base) {}
 
     /**
      * Allocate from this buffer using bump pointer.
@@ -30,38 +33,22 @@ public:
         size = (size + 7) & ~7;
 
         // Check if we have space.
-        if (alloc_ptr + size > end) {
+        if (alloc_ptr_ + size > end_) {
             return nullptr;  // Buffer exhausted.
         }
 
         // Bump pointer allocation.
-        void* result = alloc_ptr;
-        alloc_ptr += size;
+        void* result = alloc_ptr_;
+        alloc_ptr_ += size;
         return result;
     }
 
-    // ========== Query Methods ==========
+private:
+    char* start_;      // Start of buffer memory region.
+    char* end_;        // End of buffer memory region (exclusive).
+    char* alloc_ptr_;  // Current bump pointer for next allocation.
 
-    // Returns the number of bytes allocated from this buffer.
-    size_t bytesUsed() const { return alloc_ptr - start; }
-
-    // Returns the number of bytes still available in this buffer.
-    size_t bytesRemaining() const { return end - alloc_ptr; }
-
-    // Returns the total capacity of this buffer in bytes.
-    size_t capacity() const { return end - start; }
-
-    // Returns true if no allocations have been made from this buffer.
-    bool isEmpty() const { return alloc_ptr == start; }
-
-    // Returns true if this buffer has no remaining space.
-    bool isFull() const { return alloc_ptr == end; }
-
-    // ========== Memory Region ==========
-
-    char* start;      // Start of buffer memory region.
-    char* end;        // End of buffer memory region (exclusive).
-    char* alloc_ptr;  // Current bump pointer for next allocation.
+    friend class OldGenSpace;
 };
 
 } // namespace Elm

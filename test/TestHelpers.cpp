@@ -12,8 +12,44 @@ namespace TestHelpers {
 Allocator& initAllocator(const HeapConfig& config) {
     auto& alloc = Allocator::instance();
     alloc.initThread();
-    alloc.reset(&config);
+    AllocatorTestAccess::reset(alloc, &config);
     return alloc;
+}
+
+HeapConfig scaledHeapConfig(int rc_size) {
+    HeapConfig config;
+
+    // At size 0-100: minimum 64KB nursery (32KB per semi-space).
+    // At size 1000: 640KB nursery.
+    // At size 5000: 3.2MB nursery.
+    // At size 10000: 6.4MB nursery.
+    //
+    // The scaling is: base + (size / 100) * 64KB
+    // This ensures we have enough space for the objects generated at that size.
+
+    constexpr size_t MIN_NURSERY = 64 * 1024;       // 64KB minimum
+    constexpr size_t SCALE_UNIT = 64 * 1024;        // 64KB per 100 size units
+    constexpr size_t MAX_NURSERY = 64 * 1024 * 1024; // 64MB maximum
+
+    size_t scaled_nursery = MIN_NURSERY + (static_cast<size_t>(rc_size) / 100) * SCALE_UNIT;
+    config.nursery_size = std::min(scaled_nursery, MAX_NURSERY);
+
+    // Ensure nursery_size is even (split into two semi-spaces).
+    config.nursery_size = (config.nursery_size / 2) * 2;
+
+    // Scale old gen initial size similarly (less aggressively since old gen grows on demand).
+    constexpr size_t MIN_OLD_GEN = 1 * 1024 * 1024;   // 1MB minimum
+    constexpr size_t OLD_GEN_SCALE = 512 * 1024;      // 512KB per 100 size units
+    constexpr size_t MAX_OLD_GEN = 64 * 1024 * 1024;  // 64MB maximum
+
+    size_t scaled_old_gen = MIN_OLD_GEN + (static_cast<size_t>(rc_size) / 100) * OLD_GEN_SCALE;
+    config.initial_old_gen_size = std::min(scaled_old_gen, MAX_OLD_GEN);
+
+    return config;
+}
+
+Allocator& initAllocatorScaled(int rc_size) {
+    return initAllocator(scaledHeapConfig(rc_size));
 }
 
 // ============================================================================
@@ -127,16 +163,16 @@ HPointer createConstant(Constant c) {
 // ============================================================================
 
 void runMarkAndSweep(Allocator& alloc) {
-    auto& oldgen = alloc.getOldGen();
+    auto& oldgen = AllocatorTestAccess::getOldGen(alloc);
     auto& rootset = alloc.getRootSet();
 
 #if ENABLE_GC_STATS
     GCStats& stats = alloc.getMajorGCStats();
-    oldgen.startMark(rootset.getRoots(), Allocator::instance(), stats);
-    oldgen.finishMarkAndSweep(stats);
+    OldGenSpaceTestAccess::startMark(oldgen, rootset.getRoots(), Allocator::instance(), stats);
+    OldGenSpaceTestAccess::finishMarkAndSweep(oldgen, stats);
 #else
-    oldgen.startMark(rootset.getRoots(), Allocator::instance());
-    oldgen.finishMarkAndSweep();
+    OldGenSpaceTestAccess::startMark(oldgen, rootset.getRoots(), Allocator::instance());
+    OldGenSpaceTestAccess::finishMarkAndSweep(oldgen);
 #endif
 }
 

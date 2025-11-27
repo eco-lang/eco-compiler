@@ -9,6 +9,9 @@
 
 namespace Elm {
 
+// Forward declaration for friend access.
+class NurserySpaceTestAccess;
+
 /**
  * Nursery with semi-space copying collector (Cheney's algorithm).
  *
@@ -20,38 +23,11 @@ public:
     NurserySpace();
     ~NurserySpace();
 
-    // Initializes this nursery with the given memory region from the main heap.
-    void initialize(char *nursery_base, size_t size, const HeapConfig* config);
-
     // Allocates memory in the nursery using bump pointer. Returns nullptr if full.
     void *allocate(size_t size);
 
-    // Performs minor GC, evacuating live objects to to_space or promoting to old gen.
-    void minorGC(OldGenSpace &oldgen);
-
     // Returns the root set for this nursery.
     RootSet& getRootSet() { return root_set; }
-
-    // Returns true if the pointer points into this nursery's memory region.
-    bool contains(void *ptr) const;
-
-    // Returns the number of bytes currently allocated in the nursery.
-    size_t bytesAllocated() const { return alloc_ptr - from_space; }
-
-    // Returns the number of bytes still available for allocation.
-    size_t bytesRemaining() const { return from_space + nursery_capacity_ - alloc_ptr; }
-
-    // Returns true if the given allocation would push usage above the threshold.
-    bool wouldExceedThreshold(size_t size, float threshold) const {
-        size_t aligned_size = (size + 7) & ~7;
-        size_t total_capacity = nursery_capacity_;
-        size_t usage_after = (alloc_ptr - from_space) + aligned_size;
-        return usage_after >= (size_t)(total_capacity * threshold);
-    }
-
-    // Resets the nursery to initial state. Used for testing.
-    // If new_config is provided, reconfigures with new parameters.
-    void reset(OldGenSpace &oldgen, const HeapConfig* new_config = nullptr);
 
 #if ENABLE_GC_STATS
     // Returns the GC statistics for this nursery.
@@ -74,9 +50,54 @@ private:
     GCStats stats;        // Performance statistics.
 #endif
 
+    // ========== Internal Methods ==========
+
+    // Initializes this nursery with the given memory region from the main heap.
+    void initialize(char *nursery_base, size_t size, const HeapConfig* config);
+
+    // Performs minor GC, evacuating live objects to to_space or promoting to old gen.
+    void minorGC(OldGenSpace &oldgen);
+
+    // Returns true if the pointer points into this nursery's memory region.
+    bool contains(void *ptr) const;
+
+    // Returns the number of bytes currently allocated in the nursery.
+    size_t bytesAllocated() const { return alloc_ptr - from_space; }
+
+    // Returns true if the given allocation would push usage above the threshold.
+    bool wouldExceedThreshold(size_t size, float threshold) const {
+        size_t aligned_size = (size + 7) & ~7;
+        size_t total_capacity = nursery_capacity_;
+        size_t usage_after = (alloc_ptr - from_space) + aligned_size;
+        return usage_after >= (size_t)(total_capacity * threshold);
+    }
+
+    // Resets the nursery to initial state. Used for testing.
+    // If new_config is provided, reconfigures with new parameters.
+    void reset(OldGenSpace &oldgen, const HeapConfig* new_config = nullptr);
+
     void evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
     void evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
     void scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
+
+    friend class Allocator;
+    friend class NurserySpaceTestAccess;
+};
+
+// ============================================================================
+// Test Access Helper
+// ============================================================================
+
+// For test code only - provides privileged access to NurserySpace internals.
+class NurserySpaceTestAccess {
+public:
+    static bool contains(const NurserySpace& nursery, void* ptr) {
+        return nursery.contains(ptr);
+    }
+
+    static size_t bytesAllocated(const NurserySpace& nursery) {
+        return nursery.bytesAllocated();
+    }
 };
 
 } // namespace Elm

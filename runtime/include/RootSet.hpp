@@ -37,9 +37,6 @@ public:
     // Pushes a new stack root.
     void pushStackRoot(HPointer *root) { stack_roots.push_back(root); }
 
-    // Pops the top stack root.
-    void popStackRoot() { if (!stack_roots.empty()) stack_roots.pop_back(); }
-
     // Replaces the value stored at the top stack root location.
     void replaceHead(HPointer new_value) {
         if (!stack_roots.empty()) {

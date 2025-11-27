@@ -264,23 +264,6 @@ AllocBuffer* Allocator::acquireAllocBuffer(size_t size) {
     return new AllocBuffer(buffer_base, size);
 }
 
-void Allocator::releaseAllocBuffer(AllocBuffer* buffer) {
-    // Currently a no-op - we don't reclaim buffers yet.
-    // In the future, this could return the buffer to a pool or
-    // decommit the memory.
-    (void)buffer;
-}
-
-#if ENABLE_GC_STATS
-GCStats Allocator::getCombinedNurseryStats() {
-    GCStats combined;
-    if (nursery) {
-        combined.combine(nursery->getStats());
-    }
-    return combined;
-}
-#endif
-
 void Allocator::reset(const HeapConfig* new_config) {
     // Update config if provided.
     if (new_config) {
@@ -337,5 +320,16 @@ void* Allocator::resolve(HPointer ptr) {
 HPointer Allocator::wrap(void* obj) {
     return toPointerRaw(obj);
 }
+
+#if ENABLE_GC_STATS
+GCStats Allocator::getCombinedStats() const {
+    GCStats combined;
+    if (nursery) {
+        combined.combine(nursery->getStats());
+    }
+    combined.combine(major_gc_stats);
+    return combined;
+}
+#endif
 
 } // namespace Elm

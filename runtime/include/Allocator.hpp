@@ -39,6 +39,8 @@ public:
     // Used after allocate() to get a storable pointer.
     HPointer wrap(void* obj);
 
+    // ========== Lifecycle ==========
+
     // Initializes the allocator with the given configuration.
     // Validates config parameters and throws std::invalid_argument on failure.
     void initialize(const HeapConfig& config = HeapConfig());
@@ -46,8 +48,12 @@ public:
     // Initializes allocator state, creating the nursery.
     void initThread();
 
+    // ========== Allocation ==========
+
     // Allocates an object in the nursery. Asserts if nursery is full.
     void *allocate(size_t size, Tag tag);
+
+    // ========== Garbage Collection ==========
 
     // Triggers a minor GC on the nursery.
     void minorGC();
@@ -55,30 +61,12 @@ public:
     // Triggers a major GC (mark-and-sweep on old gen).
     void majorGC();
 
-    // Resets the allocator to initial state. Used for testing.
-    // If new_config is provided, reconfigures with new parameters.
-    void reset(const HeapConfig* new_config = nullptr);
+    // ========== Root Management ==========
 
     // Returns the root set.
     RootSet &getRootSet();
 
-    // Collects all roots for major GC.
-    std::vector<HPointer*> collectAllRoots();
-
-    // Returns the nursery, or nullptr if not initialized.
-    NurserySpace *getNursery();
-
-    // Returns the old generation space.
-    OldGenSpace &getOldGen() { return old_gen; }
-
-    // Returns the base address of the unified heap.
-    char *getHeapBase() const { return heap_base; }
-
-    // Returns the total reserved heap size.
-    size_t getHeapReserved() const { return heap_reserved; }
-
-    // Returns the offset where nursery starts.
-    size_t getNurseryOffset() const { return nursery_offset; }
+    // ========== Diagnostics ==========
 
     // Returns true if the nursery is over the threshold.
     bool isNurseryNearFull(float threshold) {
@@ -90,31 +78,22 @@ public:
         return false;
     }
 
-    // Returns the heap configuration.
-    const HeapConfig& getConfig() const { return config_; }
-
     // Returns true if the given pointer is in the nursery.
     bool isInNursery(void *ptr);
 
     // Returns true if the given pointer is in the old generation.
     bool isInOldGen(void *ptr);
 
-    // ========== AllocBuffer Management ==========
-
-    // Acquires a new AllocBuffer of the specified size from the old gen region.
-    // Returns nullptr if unable to allocate (out of address space).
-    AllocBuffer* acquireAllocBuffer(size_t size);
-
-    // Returns an AllocBuffer to the allocator (currently a no-op).
-    void releaseAllocBuffer(AllocBuffer* buffer);
+    // Returns the current number of bytes allocated in old gen.
+    size_t getOldGenAllocatedBytes() const { return old_gen.getAllocatedBytes(); }
 
 #if ENABLE_GC_STATS
     // Returns the global major GC statistics.
     GCStats& getMajorGCStats() { return major_gc_stats; }
     const GCStats& getMajorGCStats() const { return major_gc_stats; }
 
-    // Returns nursery statistics.
-    GCStats getCombinedNurseryStats();
+    // Returns combined nursery and major GC statistics.
+    GCStats getCombinedStats() const;
 #endif
 
 private:
@@ -135,6 +114,36 @@ private:
     // ========== Single Nursery ==========
 
     std::unique_ptr<NurserySpace> nursery;
+
+    // ========== Internal Methods ==========
+
+    // Resets the allocator to initial state. Used for testing.
+    // If new_config is provided, reconfigures with new parameters.
+    void reset(const HeapConfig* new_config = nullptr);
+
+    // Collects all roots for major GC.
+    std::vector<HPointer*> collectAllRoots();
+
+    // Returns the nursery, or nullptr if not initialized.
+    NurserySpace *getNursery();
+
+    // Returns the old generation space.
+    OldGenSpace &getOldGen() { return old_gen; }
+
+    // Returns the base address of the unified heap.
+    char *getHeapBase() const { return heap_base; }
+
+    // Returns the total reserved heap size.
+    size_t getHeapReserved() const { return heap_reserved; }
+
+    // Returns the heap configuration.
+    const HeapConfig& getConfig() const { return config_; }
+
+    // Acquires a new AllocBuffer of the specified size from the old gen region.
+    // Returns nullptr if unable to allocate (out of address space).
+    AllocBuffer* acquireAllocBuffer(size_t size);
+
+    void commitNursery(char *nursery_base, size_t size);
 
     // ========== Internal Pointer Conversion ==========
 
@@ -164,24 +173,38 @@ private:
 #if ENABLE_GC_STATS
     GCStats major_gc_stats; // Global major GC statistics.
 #endif
-
-    void commitNursery(char *nursery_base, size_t size);
 };
 
 // ============================================================================
 // Test Access Helper
 // ============================================================================
 
-// For test code only - provides privileged access to raw pointer conversion.
+// For test code only - provides privileged access to internal allocator state.
 // This class is a friend of Allocator and can access internal functions.
 class AllocatorTestAccess {
 public:
+    // Raw pointer conversion (no forwarding resolution).
     static void* fromPointer(HPointer ptr) {
         return Allocator::fromPointerRaw(ptr);
     }
 
     static HPointer toPointer(void* obj) {
         return Allocator::toPointerRaw(obj);
+    }
+
+    // Reset allocator state for testing.
+    static void reset(Allocator& alloc, const HeapConfig* new_config = nullptr) {
+        alloc.reset(new_config);
+    }
+
+    // Access nursery for testing.
+    static NurserySpace* getNursery(Allocator& alloc) {
+        return alloc.getNursery();
+    }
+
+    // Access old gen for testing.
+    static OldGenSpace& getOldGen(Allocator& alloc) {
+        return alloc.getOldGen();
     }
 };
 

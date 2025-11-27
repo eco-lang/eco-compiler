@@ -23,34 +23,16 @@ namespace Elm {
 // Global heap base (defined in Allocator.cpp).
 extern char* g_heap_base;
 
-// Read barrier implementation - self-healing for forwarded objects.
+// Read barrier - returns the object at the pointer location.
+// Note: This is a dummy implementation of a read barrier that simply decompresses the pointer.
 void* readBarrier(HPointer& ptr) {
     // Null check (common case - embedded constants).
     if (ptr.constant != 0) {
         return nullptr;  // It's a constant, not a heap pointer.
     }
 
-    // Convert logical pointer to physical address.
-    void* obj = g_heap_base + (ptr.ptr << 3);
-
-    // Read header (single load).
-    Header* hdr = reinterpret_cast<Header*>(obj);
-
-    // Fast path: not forwarded (common case).
-    if (hdr->tag != Tag_Forward) {
-        return obj;
-    }
-
-    // Slow path: follow forwarding pointer and self-heal.
-    Forward* fwd = reinterpret_cast<Forward*>(obj);
-
-    // Calculate new location from forward_ptr.
-    void* new_location = g_heap_base + (fwd->header.forward_ptr << 3);
-
-    // Self-heal: update the pointer for next access.
-    ptr.ptr = fwd->header.forward_ptr;
-
-    return new_location;
+    // Convert logical pointer to physical address and return.
+    return g_heap_base + (ptr.ptr << 3);
 }
 
 OldGenSpace::OldGenSpace() :
@@ -355,8 +337,8 @@ void OldGenSpace::finishMarkAndSweep() {
 void OldGenSpace::sweep() {
     // Walk all buffers and reset colors of live objects.
     for (AllocBuffer* buffer : buffers_) {
-        char* ptr = buffer->start;
-        char* used_end = buffer->alloc_ptr;
+        char* ptr = buffer->start_;
+        char* used_end = buffer->alloc_ptr_;
 
         while (ptr < used_end) {
             Header* hdr = reinterpret_cast<Header*>(ptr);

@@ -470,7 +470,7 @@ static void runProgramLoop(Allocator& alloc) {
 
             // Request major GC when old generation exceeds threshold.
             // Note: In single-threaded mode, this runs synchronously.
-            size_t old_gen_bytes = alloc.getOldGen().getAllocatedBytes();
+            size_t old_gen_bytes = alloc.getOldGenAllocatedBytes();
             // Old gen no longer has getMaxSize() - just skip major GC for now
             // TODO: Re-enable major GC threshold check when old gen has proper size tracking
 
@@ -672,9 +672,7 @@ int main(int argc, char* argv[]) {
 
         // Print combined GC statistics if enabled at compile time.
 #if ENABLE_GC_STATS
-        GCStats combined = alloc.getCombinedNurseryStats();
-        combined.combine(alloc.getMajorGCStats());
-        combined.print();
+        alloc.getCombinedStats().print();
 #endif
 
         std::cout << "\nGoodbye!" << std::endl;

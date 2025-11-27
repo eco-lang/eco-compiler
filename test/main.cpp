@@ -634,7 +634,7 @@ int main(int argc, char* argv[]) {
     // Print GC statistics after all tests complete.
     // Combine thread-local nursery stats with global major GC stats.
     auto &alloc = Allocator::instance();
-    auto *nursery = alloc.getNursery();
+    auto *nursery = AllocatorTestAccess::getNursery(alloc);
     if (nursery) {
         // Start with a copy of the nursery stats (Minor GC + AllocBuffer).
         GCStats combined_stats = nursery->getStats();

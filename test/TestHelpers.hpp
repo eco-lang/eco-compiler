@@ -35,6 +35,16 @@ namespace TestHelpers {
 // Returns reference to the singleton for convenience.
 Allocator& initAllocator(const HeapConfig& config = HeapConfig());
 
+// Creates a HeapConfig scaled to the given RapidCheck size.
+// At size 0-100, uses minimum nursery (64KB).
+// At larger sizes, scales up to accommodate more/larger objects.
+// Use rc::currentSize() (from HeapGenerators.hpp) to get the current size.
+HeapConfig scaledHeapConfig(int rc_size);
+
+// Initialize allocator with config scaled to given RapidCheck size.
+// Convenience wrapper for: initAllocator(scaledHeapConfig(size))
+Allocator& initAllocatorScaled(int rc_size);
+
 // ============================================================================
 // 2. Create and Root Multiple ElmInts
 // ============================================================================

@@ -32,107 +32,65 @@ Testing::TestCase testMinorGCPreservesRoots("Minor GC preserves all reachable ob
 });
 
 Testing::TestCase testMultipleMinorGCCycles("Multiple minor GC cycles preserve roots correctly", []() {
-        rc::check([]() {
-            // Generate proper test parameters directly using custom generator
+        rc::check([](const HeapGraphDesc &graph) {
             // Size-scaled: num_cycles 2-5 at size 0, up to 2-15 at size 1000
-            auto testGen = rc::gen::tuple(rc::gen::arbitrary<i64>(), // int_value
-                                          rc::sizedRange<int>(2, 5, 0.01), // num_cycles
-                                          rc::gen::arbitrary<std::vector<std::vector<HeapObjectDesc>>>());
-
-            auto params = *testGen;
-            auto [int_value, num_cycles, garbage_per_cycle] = params;
+            int num_cycles = *rc::sizedRange<int>(2, 5, 0.01);
 
             auto &alloc = initAllocator();
 
-            // Create a long-lived Int object as root.
-            void *root_obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
-            ElmInt *elm_int = static_cast<ElmInt *>(root_obj);
-            elm_int->value = int_value;
+            // Allocate complex heap graph as long-lived roots.
+            std::vector<void *> allocated_objects = allocateHeapGraph(graph.nodes);
+            RC_ASSERT(!allocated_objects.empty());
 
-            HPointer root_ptr = AllocatorTestAccess::toPointer(root_obj);
-            alloc.getRootSet().addRoot(&root_ptr);
+            // Set up roots from graph description (RAII - auto-unregisters)
+            GraphRoots roots = setupRootsFromGraph(alloc, graph, allocated_objects);
+            RC_ASSERT(!roots.empty());
 
-            i64 original_value = elm_int->value;
+            // Take snapshot before GC cycles
+            HeapSnapshot snapshot;
+            snapshot.capture(allocated_objects, roots.ptrs);
 
-            // Run multiple GC cycles.
+            // Run multiple GC cycles with garbage allocation between them.
             for (int i = 0; i < num_cycles; i++) {
-                // Check value before GC.
-                void *current_obj = AllocatorTestAccess::fromPointer(root_ptr);
-                i64 before_value = static_cast<ElmInt *>(current_obj)->value;
-
-                // Allocate garbage between cycles from generated descriptions.
-                if (i < static_cast<int>(garbage_per_cycle.size())) {
-                    allocateHeapGraph(garbage_per_cycle[i]);
-                }
+                // Allocate some garbage between cycles.
+                allocateGarbageInts(alloc, 50);
 
                 alloc.minorGC();
 
-                // Check value after GC.
-                void *after_obj = AllocatorTestAccess::fromPointer(root_ptr);
-                i64 after_value = static_cast<ElmInt *>(after_obj)->value;
-
-                RC_ASSERT(before_value == after_value);
+                // Verify roots still valid after each cycle.
+                bool valid = snapshot.verify(roots.ptrs);
+                RC_ASSERT(valid);
             }
-
-            // Verify root still exists and has same value.
-            void *final_obj = AllocatorTestAccess::fromPointer(root_ptr);
-            RC_ASSERT(reinterpret_cast<uintptr_t>(final_obj) != 0);
-
-            Header *hdr = getHeader(final_obj);
-            RC_ASSERT(hdr->tag == Tag_Int);
-
-            i64 final_value = static_cast<ElmInt *>(final_obj)->value;
-            RC_ASSERT(original_value == final_value);
-
-            alloc.getRootSet().removeRoot(&root_ptr);
         });
 });
 
 Testing::TestCase testContinuousGarbageAllocation("Continuous garbage allocation triggers automatic GC and recycles space", []() {
         rc::check([](const HeapGraphDesc &graph) {
-            // Use smaller nursery for faster test - 64KB total (32KB per semi-space).
-            HeapConfig config;
-            config.nursery_size = 64 * 1024;
-            auto &alloc = initAllocator(config);
-            auto *nursery = alloc.getNursery();
+            // Use heap size scaled to RapidCheck size to handle larger test inputs.
+            int rc_size = *rc::currentSize();
+            auto& alloc = initAllocatorScaled(rc_size);
+            auto *nursery = AllocatorTestAccess::getNursery(alloc);
 
             if (nursery == nullptr) {
                 RC_DISCARD("Nursery not available");
             }
 
-            // Get nursery capacity for calculating target (use config value).
+            // Get scaled config to calculate target allocation.
+            HeapConfig config = scaledHeapConfig(rc_size);
             size_t nursery_capacity = config.nursery_size / 2;
             size_t target_allocation = nursery_capacity * 2;
 
-            // Allocate initial rooted objects from graph description.
-            std::vector<void *> root_objects = allocateHeapGraph(graph.nodes);
-            if (root_objects.empty()) {
-                RC_DISCARD("No objects allocated");
-            }
+            // Allocate complex heap graph in nursery.
+            std::vector<void*> objects = allocateHeapGraph(graph.nodes);
+            RC_ASSERT(!objects.empty());
 
-            std::vector<HPointer> root_storage;
-            std::vector<HPointer *> root_ptrs;
-
-            // Use graph's root indices to select roots.
-            for (size_t idx : graph.root_indices) {
-                if (idx < root_objects.size()) {
-                    root_storage.push_back(AllocatorTestAccess::toPointer(root_objects[idx]));
-                }
-            }
-
-            // If no valid roots from graph, use first object as root.
-            if (root_storage.empty()) {
-                root_storage.push_back(AllocatorTestAccess::toPointer(root_objects[0]));
-            }
-
-            for (auto &root : root_storage) {
-                root_ptrs.push_back(&root);
-                alloc.getRootSet().addRoot(&root);
-            }
+            // Set up roots from graph description (RAII - auto-unregisters).
+            GraphRoots roots = setupRootsFromGraph(alloc, graph, objects);
+            RC_ASSERT(!roots.empty());
 
             // Take snapshot of root objects before continuous allocation.
             HeapSnapshot snapshot;
-            snapshot.capture(root_objects, root_ptrs);
+            snapshot.capture(objects, roots.ptrs);
 
             // Continuously allocate garbage (unrooted objects) until we've allocated 2x the nursery capacity.
             size_t total_allocated = 0;
@@ -157,13 +115,7 @@ Testing::TestCase testContinuousGarbageAllocation("Continuous garbage allocation
             }
 
             // Final verification: all roots still intact and values preserved.
-            bool valid = snapshot.verify(root_ptrs);
-
-            // Cleanup roots.
-            for (auto *root : root_ptrs) {
-                alloc.getRootSet().removeRoot(root);
-            }
-
+            bool valid = snapshot.verify(roots.ptrs);
             RC_ASSERT(valid);
         });
 });
