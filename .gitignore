@@ -5,3 +5,6 @@ debug/
 lean/
 lz/
 guida/
+chat_logs/
+rag-cli
+settings.json
