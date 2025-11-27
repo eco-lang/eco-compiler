@@ -1,6 +1,7 @@
 #ifndef ECO_NURSERYSPACE_H
 #define ECO_NURSERYSPACE_H
 
+#include <set>
 #include <vector>
 #include "AllocatorCommon.hpp"
 #include "GCStats.hpp"
@@ -9,14 +10,21 @@
 
 namespace Elm {
 
-// Forward declaration for friend access.
+// Forward declarations.
+class Allocator;
 class NurserySpaceTestAccess;
 
 /**
  * Nursery with semi-space copying collector (Cheney's algorithm).
  *
- * Objects are allocated via bump pointer in from_space. When full, minorGC
- * evacuates live objects to to_space (or promotes to old gen), then swaps spaces.
+ * The nursery is composed of blocks (same size as AllocBuffer). Blocks are
+ * organized into two sets: from_blocks_ (allocation space) and to_blocks_
+ * (copy target during GC).
+ *
+ * Objects are allocated via bump pointer within the current block. When a
+ * block is exhausted, we move to the next block. When all from-space blocks
+ * are full, minorGC evacuates live objects to to-space blocks (or promotes
+ * to old gen), then swaps spaces.
  */
 class NurserySpace {
 public:
@@ -36,45 +44,80 @@ public:
 #endif
 
 private:
-    const HeapConfig* config_;  // Heap configuration parameters.
-    char *memory;         // Total nursery memory (both semi-spaces).
-    char *from_space;     // Current allocation space.
-    char *to_space;       // Copy target during GC.
-    char *alloc_ptr;      // Bump allocation pointer.
-    char *scan_ptr;       // Cheney scan pointer during evacuation.
-    size_t nursery_capacity_;  // Capacity of one semi-space (total_size / 2).
+    const HeapConfig* config_;      // Heap configuration parameters.
+    Allocator* allocator_;          // For requesting new blocks.
 
-    RootSet root_set;     // Root set for this nursery.
+    // Block management - std::set for O(log n) lookup.
+    // Sets store block start addresses, sorted by address.
+    std::set<char*> from_blocks_;   // Block start addresses in from-space.
+    std::set<char*> to_blocks_;     // Block start addresses in to-space.
+    size_t block_size_;             // Size of each block (from config).
+
+    // Current allocation state.
+    std::set<char*>::iterator current_from_it_;  // Current from-space block.
+    char* alloc_ptr_;               // Bump pointer in current block.
+    char* alloc_end_;               // End of current block.
+
+    // GC state (during minorGC).
+    std::set<char*>::iterator current_to_it_;    // Current to-space block being copied into.
+    char* copy_ptr_;                // Bump pointer for copying in to-space.
+    char* copy_end_;                // End of current to-space block.
+    std::set<char*>::iterator scan_block_it_;    // Which to-space block scan_ptr is in.
+    char* scan_ptr_;                // Cheney scan pointer.
+
+    // Growth tracking.
+    float growth_threshold_;        // Trigger growth when to-space > this fraction full.
+
+    RootSet root_set;               // Root set for this nursery.
 
 #if ENABLE_GC_STATS
-    GCStats stats;        // Performance statistics.
+    GCStats stats;                  // Performance statistics.
 #endif
 
     // ========== Internal Methods ==========
 
-    // Initializes this nursery with the given memory region from the main heap.
-    void initialize(char *nursery_base, size_t size, const HeapConfig* config);
+    // Initializes this nursery by requesting blocks from the Allocator.
+    void initialize(Allocator* allocator, const HeapConfig* config);
 
     // Performs minor GC, evacuating live objects to to_space or promoting to old gen.
     void minorGC(OldGenSpace &oldgen);
 
-    // Returns true if the pointer points into this nursery's memory region.
+    // Returns true if the pointer points into any of this nursery's blocks.
+    // O(log n) using std::set.
     bool contains(void *ptr) const;
 
+    // Returns true if the pointer is in from-space.
+    // O(log n) using std::set::upper_bound().
+    bool isInFromSpace(void* ptr) const;
+
+    // Returns true if the pointer is in to-space.
+    // O(log n) using std::set::upper_bound().
+    bool isInToSpace(void* ptr) const;
+
     // Returns the number of bytes currently allocated in the nursery.
-    size_t bytesAllocated() const { return alloc_ptr - from_space; }
+    size_t bytesAllocated() const;
 
     // Returns true if the given allocation would push usage above the threshold.
-    bool wouldExceedThreshold(size_t size, float threshold) const {
-        size_t aligned_size = (size + 7) & ~7;
-        size_t total_capacity = nursery_capacity_;
-        size_t usage_after = (alloc_ptr - from_space) + aligned_size;
-        return usage_after >= (size_t)(total_capacity * threshold);
-    }
+    bool wouldExceedThreshold(size_t size, float threshold) const;
 
     // Resets the nursery to initial state. Used for testing.
     // If new_config is provided, reconfigures with new parameters.
     void reset(OldGenSpace &oldgen, const HeapConfig* new_config = nullptr);
+
+    // Allocation slow path - advances to next block or returns nullptr.
+    void* allocateSlow(size_t size);
+
+    // Allocates space in to-space during GC copying.
+    void* copyToSpace(size_t size);
+
+    // Returns true if scan pointer has more to process.
+    bool scanHasMore() const;
+
+    // Advances scan pointer to next block if needed.
+    void advanceScanIfNeeded();
+
+    // Checks occupancy after GC and grows if needed.
+    void checkAndGrow();
 
     void evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
     void evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
@@ -97,6 +140,22 @@ public:
 
     static size_t bytesAllocated(const NurserySpace& nursery) {
         return nursery.bytesAllocated();
+    }
+
+    static bool isInFromSpace(const NurserySpace& nursery, void* ptr) {
+        return nursery.isInFromSpace(ptr);
+    }
+
+    static bool isInToSpace(const NurserySpace& nursery, void* ptr) {
+        return nursery.isInToSpace(ptr);
+    }
+
+    static size_t fromBlockCount(const NurserySpace& nursery) {
+        return nursery.from_blocks_.size();
+    }
+
+    static size_t toBlockCount(const NurserySpace& nursery) {
+        return nursery.to_blocks_.size();
     }
 };
 

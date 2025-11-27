@@ -19,23 +19,25 @@ Allocator& initAllocator(const HeapConfig& config) {
 HeapConfig scaledHeapConfig(int rc_size) {
     HeapConfig config;
 
-    // At size 0-100: minimum 64KB nursery (32KB per semi-space).
-    // At size 1000: 640KB nursery.
-    // At size 5000: 3.2MB nursery.
-    // At size 10000: 6.4MB nursery.
+    // Nursery is now defined in terms of block count.
+    // At size 0-100: minimum 2 blocks (1 per semi-space) = 256KB total.
+    // At size 1000: 10 blocks = 1.25MB total.
+    // At size 5000: 50 blocks = 6.25MB total.
     //
-    // The scaling is: base + (size / 100) * 64KB
+    // The scaling is: base + (size / 100) blocks
     // This ensures we have enough space for the objects generated at that size.
 
-    constexpr size_t MIN_NURSERY = 64 * 1024;       // 64KB minimum
-    constexpr size_t SCALE_UNIT = 64 * 1024;        // 64KB per 100 size units
-    constexpr size_t MAX_NURSERY = 64 * 1024 * 1024; // 64MB maximum
+    constexpr size_t MIN_BLOCKS = 2;               // Minimum 2 blocks (1 per semi-space)
+    constexpr size_t MAX_BLOCKS = 512;             // Maximum 512 blocks = 64MB
 
-    size_t scaled_nursery = MIN_NURSERY + (static_cast<size_t>(rc_size) / 100) * SCALE_UNIT;
-    config.nursery_size = std::min(scaled_nursery, MAX_NURSERY);
+    size_t scaled_blocks = MIN_BLOCKS + (static_cast<size_t>(rc_size) / 100);
+    config.nursery_block_count = std::min(scaled_blocks, MAX_BLOCKS);
 
-    // Ensure nursery_size is even (split into two semi-spaces).
-    config.nursery_size = (config.nursery_size / 2) * 2;
+    // Ensure block count is even (split into from-space and to-space).
+    config.nursery_block_count = (config.nursery_block_count / 2) * 2;
+    if (config.nursery_block_count < MIN_BLOCKS) {
+        config.nursery_block_count = MIN_BLOCKS;
+    }
 
     // Scale old gen initial size similarly (less aggressively since old gen grows on demand).
     constexpr size_t MIN_OLD_GEN = 1 * 1024 * 1024;   // 1MB minimum

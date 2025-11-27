@@ -1,15 +1,20 @@
 /**
  * NurserySpace Implementation.
  *
- * Nursery using Cheney's semi-space copying algorithm.
+ * Block-based nursery using Cheney's semi-space copying algorithm.
  *
- * Allocation: Bump pointer into from_space (O(1)).
+ * The nursery is composed of blocks (same size as AllocBuffer). Blocks are
+ * organized into two sets: from_blocks_ (allocation space) and to_blocks_
+ * (copy target during GC).
+ *
+ * Allocation: Bump pointer into current from-space block (O(1)).
  *
  * Minor GC algorithm:
- *   1. Evacuate roots to to_space (or promote to old gen if aged).
- *   2. Cheney scan: walk to_space objects, evacuate their children.
+ *   1. Evacuate roots to to_space blocks (or promote to old gen if aged).
+ *   2. Cheney scan: walk to_space blocks, evacuate their children.
  *   3. Process promoted objects (they may point back to nursery).
- *   4. Swap from_space and to_space.
+ *   4. Check occupancy and grow if needed.
+ *   5. Swap from_blocks_ and to_blocks_.
  *
  * Key optimization: Elm's immutability means no old->young pointers exist,
  * so no write barrier or remembered set is needed.
@@ -23,40 +28,72 @@
 namespace Elm {
 
 NurserySpace::NurserySpace() :
-    config_(nullptr), memory(nullptr), from_space(nullptr), to_space(nullptr), alloc_ptr(nullptr),
-    scan_ptr(nullptr), nursery_capacity_(0) {
+    config_(nullptr), allocator_(nullptr), block_size_(0),
+    alloc_ptr_(nullptr), alloc_end_(nullptr),
+    copy_ptr_(nullptr), copy_end_(nullptr), scan_ptr_(nullptr),
+    growth_threshold_(0.75f) {
     // Initialization happens in initialize() method.
 }
 
 NurserySpace::~NurserySpace() {
-    // No need to free memory - it's part of the main heap.
+    // No need to free memory - blocks are part of the main heap.
 }
 
-void NurserySpace::initialize(char *nursery_base, size_t size, const HeapConfig* config) {
+void NurserySpace::initialize(Allocator* allocator, const HeapConfig* config) {
     config_ = config;
-    memory = nursery_base;
-    nursery_capacity_ = size / 2;  // Each semi-space is half the total.
-    from_space = memory;
-    to_space = memory + nursery_capacity_;
-    alloc_ptr = from_space;
-    scan_ptr = from_space;
+    allocator_ = allocator;
+    block_size_ = config->alloc_buffer_size;
+    growth_threshold_ = 0.75f;  // Grow when 75% full after GC.
+
+    size_t blocks_per_space = config->nursery_block_count / 2;
+
+    // Request initial blocks from Allocator.
+    for (size_t i = 0; i < blocks_per_space; i++) {
+        char* block = allocator->acquireNurseryBlock(block_size_);
+        assert(block && "Failed to acquire nursery block for from-space");
+        from_blocks_.insert(block);
+    }
+    for (size_t i = 0; i < blocks_per_space; i++) {
+        char* block = allocator->acquireNurseryBlock(block_size_);
+        assert(block && "Failed to acquire nursery block for to-space");
+        to_blocks_.insert(block);
+    }
+
+    // Initialize allocation state - start at first (lowest address) block.
+    current_from_it_ = from_blocks_.begin();
+    alloc_ptr_ = *current_from_it_;
+    alloc_end_ = *current_from_it_ + block_size_;
 }
 
 void NurserySpace::reset(OldGenSpace &oldgen, const HeapConfig* new_config) {
     // Update config if provided.
     if (new_config) {
         config_ = new_config;
-        // Recalculate nursery capacity from new config.
-        // Note: memory region size is fixed at initialization, but we can use
-        // a smaller portion of it based on the new config.
-        nursery_capacity_ = new_config->nursery_size / 2;
+        block_size_ = new_config->alloc_buffer_size;
     }
 
-    // Reset allocation pointers to start of from_space.
-    from_space = memory;
-    to_space = memory + nursery_capacity_;
-    alloc_ptr = from_space;
-    scan_ptr = from_space;
+    // Clear existing blocks (memory will be recommitted on next init).
+    from_blocks_.clear();
+    to_blocks_.clear();
+
+    // Re-initialize with current config.
+    size_t blocks_per_space = config_->nursery_block_count / 2;
+
+    for (size_t i = 0; i < blocks_per_space; i++) {
+        char* block = allocator_->acquireNurseryBlock(block_size_);
+        assert(block && "Failed to acquire nursery block for from-space");
+        from_blocks_.insert(block);
+    }
+    for (size_t i = 0; i < blocks_per_space; i++) {
+        char* block = allocator_->acquireNurseryBlock(block_size_);
+        assert(block && "Failed to acquire nursery block for to-space");
+        to_blocks_.insert(block);
+    }
+
+    // Reset allocation state.
+    current_from_it_ = from_blocks_.begin();
+    alloc_ptr_ = *current_from_it_;
+    alloc_end_ = *current_from_it_ + block_size_;
 
     // Reset the root set.
     root_set.reset();
@@ -68,21 +105,167 @@ void *NurserySpace::allocate(size_t size) {
     // Align to 8 bytes.
     size = (size + 7) & ~7;
 
-    if (alloc_ptr + size > from_space + nursery_capacity_) {
-        return nullptr;  // Nursery full, trigger GC.
+    // Fast path: fits in current block.
+    if (alloc_ptr_ + size <= alloc_end_) {
+        void *result = alloc_ptr_;
+        alloc_ptr_ += size;
+        GC_STATS_MINOR_RECORD_ALLOC(stats, size);
+        return result;
     }
 
-    void *result = alloc_ptr;
-    alloc_ptr += size;
+    // Slow path: need next block.
+    return allocateSlow(size);
+}
 
-    GC_STATS_MINOR_RECORD_ALLOC(stats, size);
+void* NurserySpace::allocateSlow(size_t size) {
+    // Try next block in from-space.
+    ++current_from_it_;
+    if (current_from_it_ != from_blocks_.end()) {
+        alloc_ptr_ = *current_from_it_;
+        alloc_end_ = alloc_ptr_ + block_size_;
 
-    return result;
+        if (alloc_ptr_ + size <= alloc_end_) {
+            void* result = alloc_ptr_;
+            alloc_ptr_ += size;
+            GC_STATS_MINOR_RECORD_ALLOC(stats, size);
+            return result;
+        }
+    }
+
+    // No more blocks - return nullptr to trigger GC.
+    return nullptr;
 }
 
 bool NurserySpace::contains(void *ptr) const {
-    char *p = static_cast<char *>(ptr);
-    return (p >= memory && p < memory + (nursery_capacity_ * 2));
+    return isInFromSpace(ptr) || isInToSpace(ptr);
+}
+
+bool NurserySpace::isInFromSpace(void* ptr) const {
+    char* p = static_cast<char*>(ptr);
+
+    // Find first block with start > p.
+    auto it = from_blocks_.upper_bound(p);
+
+    // If it's the first element, p is before all blocks.
+    if (it == from_blocks_.begin())
+        return false;
+
+    // Check the previous block (last one with start <= p).
+    --it;
+    return p < (*it + block_size_);
+}
+
+bool NurserySpace::isInToSpace(void* ptr) const {
+    char* p = static_cast<char*>(ptr);
+
+    auto it = to_blocks_.upper_bound(p);
+    if (it == to_blocks_.begin())
+        return false;
+
+    --it;
+    return p < (*it + block_size_);
+}
+
+size_t NurserySpace::bytesAllocated() const {
+    size_t bytes = 0;
+
+    // Count full blocks before current.
+    for (auto it = from_blocks_.begin(); it != current_from_it_; ++it) {
+        bytes += block_size_;
+    }
+
+    // Add partial current block.
+    if (current_from_it_ != from_blocks_.end()) {
+        bytes += (alloc_ptr_ - *current_from_it_);
+    }
+
+    return bytes;
+}
+
+bool NurserySpace::wouldExceedThreshold(size_t size, float threshold) const {
+    size_t aligned_size = (size + 7) & ~7;
+    size_t total_capacity = from_blocks_.size() * block_size_;
+    size_t usage_after = bytesAllocated() + aligned_size;
+    return usage_after >= (size_t)(total_capacity * threshold);
+}
+
+void* NurserySpace::copyToSpace(size_t size) {
+    // Fast path: fits in current to-space block.
+    if (copy_ptr_ + size <= copy_end_) {
+        void* result = copy_ptr_;
+        copy_ptr_ += size;
+        return result;
+    }
+
+    // Need next block.
+    ++current_to_it_;
+    if (current_to_it_ != to_blocks_.end()) {
+        copy_ptr_ = *current_to_it_;
+        copy_end_ = copy_ptr_ + block_size_;
+
+        void* result = copy_ptr_;
+        copy_ptr_ += size;
+        return result;
+    }
+
+    // Out of to-space blocks - this shouldn't happen if spaces are equal size.
+    assert(false && "To-space overflow - should not happen with equal-sized spaces");
+    return nullptr;
+}
+
+bool NurserySpace::scanHasMore() const {
+    // Check if scan pointer has caught up to copy pointer.
+    // Compare block iterators first, then pointers within same block.
+    if (scan_block_it_ != current_to_it_) {
+        // Different blocks - scan is behind if its block address is less.
+        return *scan_block_it_ < *current_to_it_;
+    }
+    // Same block - compare pointers.
+    return scan_ptr_ < copy_ptr_;
+}
+
+void NurserySpace::advanceScanIfNeeded() {
+    // If scan_ptr reached end of current block, move to next.
+    char* block_end = *scan_block_it_ + block_size_;
+    if (scan_ptr_ >= block_end) {
+        ++scan_block_it_;
+        if (scan_block_it_ != to_blocks_.end()) {
+            scan_ptr_ = *scan_block_it_;
+        }
+    }
+}
+
+void NurserySpace::checkAndGrow() {
+    // Calculate how full to-space is after copying.
+    size_t bytes_used = 0;
+    for (auto it = to_blocks_.begin(); it != current_to_it_; ++it) {
+        bytes_used += block_size_;  // Full blocks before current.
+    }
+    if (current_to_it_ != to_blocks_.end()) {
+        bytes_used += (copy_ptr_ - *current_to_it_);  // Partial current block.
+    }
+
+    size_t total_to_capacity = to_blocks_.size() * block_size_;
+    float occupancy = static_cast<float>(bytes_used) / total_to_capacity;
+
+    if (occupancy > growth_threshold_) {
+        // Request more blocks for both spaces.
+        size_t blocks_to_add = to_blocks_.size() / 2;  // Grow by 50%.
+        if (blocks_to_add < 1) blocks_to_add = 1;
+
+        for (size_t i = 0; i < blocks_to_add; i++) {
+            char* block = allocator_->acquireNurseryBlock(block_size_);
+            if (block) {
+                from_blocks_.insert(block);
+            }
+        }
+        for (size_t i = 0; i < blocks_to_add; i++) {
+            char* block = allocator_->acquireNurseryBlock(block_size_);
+            if (block) {
+                to_blocks_.insert(block);
+            }
+        }
+    }
 }
 
 /**
@@ -108,14 +291,18 @@ bool NurserySpace::contains(void *ptr) const {
 void NurserySpace::minorGC(OldGenSpace &oldgen) {
 #if ENABLE_GC_STATS
     // Capture state before GC.
-    size_t from_space_used = alloc_ptr - from_space;
+    size_t from_space_used = bytesAllocated();
     auto gc_start = GC_STATS_TIMER_START();
 #endif
 
-    // Reset allocation into the to_space.
-    alloc_ptr = to_space;
-    scan_ptr = to_space;
-    char *alloc_end = to_space;
+    // Reset to-space allocation - start at first block.
+    current_to_it_ = to_blocks_.begin();
+    copy_ptr_ = *current_to_it_;
+    copy_end_ = *current_to_it_ + block_size_;
+
+    // Reset scan pointers.
+    scan_block_it_ = to_blocks_.begin();
+    scan_ptr_ = *scan_block_it_;
 
     // Buffer for promoted objects that need scanning.
     std::vector<void*> promoted_objects;
@@ -130,13 +317,12 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
         evacuate(*root, oldgen, &promoted_objects);
     }
 
-    // Phase 2: Cheney's algorithm on to-space (may add to promoted_objects).
-    alloc_end = alloc_ptr;
-    while (scan_ptr < alloc_end) {
-        void *obj = scan_ptr;
+    // Phase 2: Cheney's algorithm on to-space blocks (may add to promoted_objects).
+    while (scanHasMore()) {
+        void *obj = scan_ptr_;
         scanObject(obj, oldgen, &promoted_objects);
-        scan_ptr += getObjectSize(obj);
-        alloc_end = alloc_ptr;  // Update in case scanObject caused evacuations.
+        scan_ptr_ += getObjectSize(obj);
+        advanceScanIfNeeded();
     }
 
     // Phase 3: Process promoted objects until buffer is empty.
@@ -145,17 +331,31 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
         scanObject(promoted_objects[i], oldgen, &promoted_objects);
     }
 
-    // Phase 4: Flip spaces.
-    std::swap(from_space, to_space);
-    // After swap: from_space = old to_space (has live objects).
-    //             to_space = old from_space (empty).
-    //             alloc_ptr already points to end of live objects in new from_space.
-    scan_ptr = from_space;
+    // Phase 4: Check occupancy and grow if needed.
+    checkAndGrow();
+
+    // Phase 5: Swap spaces.
+    std::swap(from_blocks_, to_blocks_);
+
+    // Reset from-space allocation to continue after survivors.
+    // After swap: from_blocks_ contains the old to_blocks_ (with survivors).
+    //             current_to_it_ now points into from_blocks_.
+    current_from_it_ = current_to_it_;  // Iterator still valid after swap.
+    alloc_ptr_ = copy_ptr_;             // Continue from where copying ended.
+    if (current_from_it_ != from_blocks_.end()) {
+        alloc_end_ = *current_from_it_ + block_size_;
+    }
 
 #if ENABLE_GC_STATS
     // Calculate what happened during this GC.
-    size_t to_space_used = alloc_ptr - from_space;
-    size_t bytes_freed = from_space_used - to_space_used;
+    size_t to_space_used = 0;
+    for (auto it = from_blocks_.begin(); it != current_from_it_; ++it) {
+        to_space_used += block_size_;
+    }
+    if (current_from_it_ != from_blocks_.end()) {
+        to_space_used += (alloc_ptr_ - *current_from_it_);
+    }
+    size_t bytes_freed = from_space_used > to_space_used ? from_space_used - to_space_used : 0;
     uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
 
     GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, bytes_freed);
@@ -211,8 +411,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
 
     // Second priority: Only evacuate if in from-space (not to-space!).
     // This prevents creating forwarding chains by re-evacuating already-moved objects.
-    char *p = static_cast<char *>(obj);
-    if (p < from_space || p >= from_space + nursery_capacity_)
+    if (!isInFromSpace(obj))
         return;
 
     // Now proceed with evacuation (object is in from-space and not yet forwarded).
@@ -245,12 +444,9 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
 
     // Copy to to_space if not promoted.
     if (!new_obj) {
-        // Allocate in to_space (size is already aligned from getObjectSize).
-        new_obj = alloc_ptr;
-        alloc_ptr += size;
-
-        // Assert we haven't overflowed to_space.
-        assert(alloc_ptr <= to_space + nursery_capacity_ && "To-space overflow during evacuation!");
+        // Allocate in to_space.
+        new_obj = copyToSpace(size);
+        assert(new_obj && "Failed to copy to to-space during evacuation!");
 
         // Copy the object with its padding to maintain alignment.
         std::memcpy(new_obj, obj, size);

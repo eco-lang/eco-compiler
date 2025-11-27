@@ -77,7 +77,7 @@ Testing::TestCase testContinuousGarbageAllocation("Continuous garbage allocation
 
             // Get scaled config to calculate target allocation.
             HeapConfig config = scaledHeapConfig(rc_size);
-            size_t nursery_capacity = config.nursery_size / 2;
+            size_t nursery_capacity = config.nurserySize() / 2;
             size_t target_allocation = nursery_capacity * 2;
 
             // Allocate complex heap graph in nursery.

@@ -37,11 +37,13 @@ enum class Color : u32 {
 constexpr size_t DEFAULT_MAX_HEAP_SIZE = 1ULL * 1024 * 1024 * 1024;  // 1 GB address space.
 constexpr size_t INITIAL_OLD_GEN_SIZE = 1 * 1024 * 1024;             // 1 MB initial commit.
 
-// ----- Nursery Sizing -----
-constexpr size_t NURSERY_SIZE = 4 * 1024 * 1024;  // 4 MB total (2 MB per semi-space).
-
 // ----- AllocBuffer Sizing -----
 constexpr size_t ALLOC_BUFFER_SIZE = 128 * 1024;  // 128 KB default AllocBuffer.
+
+// ----- Nursery Sizing -----
+// Nursery is composed of blocks (same size as AllocBuffer).
+// Block count must be even (split into from-space and to-space).
+constexpr size_t NURSERY_BLOCK_COUNT = 32;  // 32 blocks = 4 MB total (16 per semi-space).
 
 // ----- Promotion & GC Triggers -----
 constexpr u32 PROMOTION_AGE = 1;                            // Promote after 1 minor GC survival.
@@ -127,15 +129,19 @@ struct HeapConfig {
     size_t max_heap_size = DEFAULT_MAX_HEAP_SIZE;
     size_t initial_old_gen_size = INITIAL_OLD_GEN_SIZE;
 
-    // Nursery sizing
-    size_t nursery_size = NURSERY_SIZE;
-
     // AllocBuffer sizing
     size_t alloc_buffer_size = ALLOC_BUFFER_SIZE;
+
+    // Nursery sizing (in blocks, not bytes)
+    // Block count must be even (split into from-space and to-space).
+    size_t nursery_block_count = NURSERY_BLOCK_COUNT;
 
     // Promotion & GC triggers
     u32 promotion_age = PROMOTION_AGE;
     float nursery_gc_threshold = NURSERY_GC_THRESHOLD;
+
+    // Derived value: total nursery size in bytes
+    size_t nurserySize() const { return nursery_block_count * alloc_buffer_size; }
 
     // Default constructor using in-class member initializers.
     HeapConfig() = default;
@@ -153,12 +159,12 @@ struct HeapConfig {
             throw std::invalid_argument("initial_old_gen_size must be > 0");
         }
 
-        if (nursery_size == 0) {
-            throw std::invalid_argument("nursery_size must be > 0");
-        }
-
         if (alloc_buffer_size == 0) {
             throw std::invalid_argument("alloc_buffer_size must be > 0");
+        }
+
+        if (nursery_block_count == 0) {
+            throw std::invalid_argument("nursery_block_count must be > 0");
         }
 
         // ========== 2. Heap Partitioning Constraints ==========
@@ -172,23 +178,24 @@ struct HeapConfig {
                 "(old gen lives in first half of heap)");
         }
 
+        size_t nursery_size = nurserySize();
         if (nursery_size >= old_gen_space) {
             throw std::invalid_argument(
-                "nursery_size must be < max_heap_size / 2 "
+                "nursery total size must be < max_heap_size / 2 "
                 "(nursery lives in second half of heap)");
         }
 
-        // ========== 3. Nursery Constraints ==========
-        // Nursery is split into two semi-spaces.
+        // ========== 3. Nursery Block Constraints ==========
+        // Nursery is split into two semi-spaces (from and to).
 
-        if (nursery_size % 2 != 0) {
+        if (nursery_block_count % 2 != 0) {
             throw std::invalid_argument(
-                "nursery_size must be even (split into two semi-spaces)");
+                "nursery_block_count must be even (split into from-space and to-space)");
         }
 
-        if (nursery_size < 64 * 1024) {
+        if (nursery_block_count < 2) {
             throw std::invalid_argument(
-                "nursery_size must be >= 64KB (32KB per semi-space minimum)");
+                "nursery_block_count must be >= 2 (at least 1 block per semi-space)");
         }
 
         // ========== 4. AllocBuffer Constraints ==========

@@ -71,7 +71,7 @@ public:
     // Returns true if the nursery is over the threshold.
     bool isNurseryNearFull(float threshold) {
         if (nursery) {
-            size_t total_capacity = config_.nursery_size / 2;
+            size_t total_capacity = config_.nurserySize() / 2;
             size_t usage = nursery->bytesAllocated();
             return usage >= (size_t)(total_capacity * threshold);
         }
@@ -83,6 +83,13 @@ public:
 
     // Returns true if the given pointer is in the old generation.
     bool isInOldGen(void *ptr);
+
+    // Returns true if the given pointer is anywhere in the heap (nursery or old gen).
+    // O(1) bounds check - used for validation during GC.
+    bool isInHeap(void *ptr) const {
+        char* p = static_cast<char*>(ptr);
+        return p >= heap_base && p < heap_base + heap_reserved;
+    }
 
     // Returns the current number of bytes allocated in old gen.
     size_t getOldGenAllocatedBytes() const { return old_gen.getAllocatedBytes(); }
@@ -107,6 +114,7 @@ private:
     size_t heap_reserved;         // Total address space reserved.
     size_t old_gen_committed;     // Committed bytes in old gen region.
     size_t nursery_offset;        // Where nursery starts (halfway point).
+    size_t nursery_committed_;    // Committed bytes in nursery region.
     bool initialized;             // True after initialize() has been called.
 
     OldGenSpace old_gen;
@@ -142,6 +150,10 @@ private:
     // Acquires a new AllocBuffer of the specified size from the old gen region.
     // Returns nullptr if unable to allocate (out of address space).
     AllocBuffer* acquireAllocBuffer(size_t size);
+
+    // Acquires a block of memory from the nursery region for NurserySpace.
+    // Returns nullptr if unable to allocate (out of address space).
+    char* acquireNurseryBlock(size_t size);
 
     void commitNursery(char *nursery_base, size_t size);
 

@@ -145,7 +145,7 @@ void OldGenSpace::startMark(const std::vector<HPointer*> &roots, Allocator &allo
     // This is harmless since minor GC uses forwarding pointers, not colors.
     for (HPointer *root: roots) {
         void *obj = Allocator::fromPointerRaw(*root);
-        if (obj && (alloc.isInOldGen(obj) || alloc.isInNursery(obj))) {
+        if (obj && alloc.isInHeap(obj)) {
             mark_stack.push_back(obj);
         }
     }
@@ -284,7 +284,7 @@ void OldGenSpace::markHPointer(HPointer &ptr) {
     // Push both old gen and nursery objects onto mark stack.
     // Nursery objects will be marked grey->black like old gen objects.
     // This is harmless since minor GC uses forwarding pointers, not colors.
-    if (allocator_ref_ && (allocator_ref_->isInOldGen(obj) || allocator_ref_->isInNursery(obj))) {
+    if (allocator_ref_ && allocator_ref_->isInHeap(obj)) {
         Header *hdr = getHeader(obj);
         if (hdr->color != static_cast<u32>(Color::Black)) {
             mark_stack.push_back(obj);

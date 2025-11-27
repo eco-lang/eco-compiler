@@ -27,7 +27,7 @@ char* g_heap_base = nullptr;
 
 Allocator::Allocator() :
     heap_base(nullptr), heap_reserved(0), old_gen_committed(0), nursery_offset(0),
-    initialized(false) {
+    nursery_committed_(0), initialized(false) {
     // Initialization happens in initialize() method.
 }
 
@@ -96,19 +96,11 @@ void Allocator::initThread() {
     }
 
     if (!nursery) {
-        // Allocate nursery from the main heap.
-        char *nursery_base = heap_base + nursery_offset;
-
-        // Check we have space in reserved address space.
-        if (nursery_offset + config_.nursery_size > heap_reserved) {
-            throw std::bad_alloc();  // Out of heap space.
-        }
-
-        // Commit physical memory for the nursery.
-        commitNursery(nursery_base, config_.nursery_size);
+        // Reset nursery committed tracking.
+        nursery_committed_ = 0;
 
         nursery = std::make_unique<NurserySpace>();
-        nursery->initialize(nursery_base, config_.nursery_size, &config_);
+        nursery->initialize(this, &config_);
     }
 }
 
@@ -264,6 +256,31 @@ AllocBuffer* Allocator::acquireAllocBuffer(size_t size) {
     return new AllocBuffer(buffer_base, size);
 }
 
+char* Allocator::acquireNurseryBlock(size_t size) {
+    // Align size to 8 bytes.
+    size = (size + 7) & ~7;
+
+    // Nursery region is [nursery_offset .. heap_reserved).
+    size_t nursery_space = heap_reserved - nursery_offset;
+
+    // Check if we have space in nursery region.
+    if (nursery_committed_ + size > nursery_space) {
+        return nullptr;  // Out of nursery address space.
+    }
+
+    // Commit physical memory for this block.
+    char* block_base = heap_base + nursery_offset + nursery_committed_;
+    void* result = mmap(block_base, size, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+
+    if (result == MAP_FAILED) {
+        return nullptr;
+    }
+
+    nursery_committed_ += size;
+    return block_base;
+}
+
 void Allocator::reset(const HeapConfig* new_config) {
     // Update config if provided.
     if (new_config) {
@@ -281,9 +298,10 @@ void Allocator::reset(const HeapConfig* new_config) {
     // Pass config pointer so old gen can reconfigure.
     old_gen.reset(new_config ? &config_ : nullptr);
 
-    // Reset committed memory tracking for old gen.
+    // Reset committed memory tracking for old gen and nursery.
     // Note: We keep the address space reserved but will recommit as needed.
     old_gen_committed = 0;
+    nursery_committed_ = 0;
 
     // Note: We do NOT reset GC stats here - stats accumulate across runs.
 }
