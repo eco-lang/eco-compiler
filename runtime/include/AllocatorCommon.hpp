@@ -140,6 +140,12 @@ struct HeapConfig {
     u32 promotion_age = PROMOTION_AGE;
     float nursery_gc_threshold = NURSERY_GC_THRESHOLD;
 
+    // Traversal strategy: hybrid DFS/BFS for improved locality
+    // When enabled, deep structures (Cons lists, Task chains) are copied
+    // depth-first for better cache locality, while wide structures
+    // (Tuple, Record, Closure) use BFS to keep siblings together.
+    bool use_hybrid_dfs = true;
+
     // Derived value: total nursery size in bytes
     size_t nurserySize() const { return nursery_block_count * alloc_buffer_size; }
 

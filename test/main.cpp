@@ -464,6 +464,15 @@ int main(int argc, char* argv[]) {
     nurseryTests.add(testMinorGCPreservesRoots);
     nurseryTests.add(testMultipleMinorGCCycles);
     nurseryTests.add(testContinuousGarbageAllocation);
+    // Hybrid DFS/BFS list tests
+    nurseryTests.add(testListSurvivesGCWithHybridDFS);
+    nurseryTests.add(testListSurvivesGCWithBFS);
+    nurseryTests.add(testMultipleListsSurviveGCWithHybridDFS);
+    nurseryTests.add(testMultipleListsSurviveGCWithBFS);
+    nurseryTests.add(testListLocalityImprovedByHybridDFS);
+    nurseryTests.add(testListSurvivesMultipleGCCyclesWithHybridDFS);
+    nurseryTests.add(testListSurvivesMultipleGCCyclesWithBFS);
+    nurseryTests.add(testDeepListExceedsDFSStack);
 
     Testing::TestSuite oldGenTests("OldGenSpace");
     oldGenTests.add(testOldGenAllocate);

@@ -10,6 +10,38 @@
 
 namespace Elm {
 
+// ============================================================================
+// DFS Stack for Hybrid Traversal
+// ============================================================================
+
+/**
+ * Bounded stack for approximate depth-first traversal during GC.
+ *
+ * Used by the hybrid DFS/BFS copying collector to prioritize depth-first
+ * traversal for deep structures (Cons lists, Task chains) while falling
+ * back to Cheney's BFS when the stack is full.
+ *
+ * Benefits:
+ *   - Lists: Cons cells copied contiguously (better cache locality)
+ *   - Tasks: Task chains clustered together
+ *   - Processes: Each subgraph (root, stack, mailbox) clustered
+ *
+ * When the stack is full, objects fall through to Cheney's scanPtr,
+ * which provides BFS traversal as a fallback. This bounds memory usage
+ * while still improving locality for typical workloads.
+ */
+struct DfsStack {
+    static constexpr size_t MAX_DEPTH = 256;  // Tunable: 128-512 typical
+    void* data[MAX_DEPTH];
+    size_t top = 0;
+
+    bool empty() const { return top == 0; }
+    bool full() const { return top == MAX_DEPTH; }
+    void push(void* obj) { if (!full()) data[top++] = obj; }
+    void* pop() { return data[--top]; }
+    void clear() { top = 0; }
+};
+
 // Forward declarations.
 class Allocator;
 class ThreadLocalHeap;
@@ -76,6 +108,8 @@ private:
 #endif
 
     ThreadLocalHeap* thread_heap_;  // Owner ThreadLocalHeap (for multi-threaded mode).
+
+    DfsStack dfs_stack_;            // Stack for hybrid DFS/BFS traversal.
 
     // ========== Internal Methods ==========
 

@@ -6,3 +6,13 @@
 extern Testing::TestCase testMinorGCPreservesRoots;
 extern Testing::TestCase testMultipleMinorGCCycles;
 extern Testing::TestCase testContinuousGarbageAllocation;
+
+// Hybrid DFS/BFS list tests
+extern Testing::TestCase testListSurvivesGCWithHybridDFS;
+extern Testing::TestCase testListSurvivesGCWithBFS;
+extern Testing::TestCase testMultipleListsSurviveGCWithHybridDFS;
+extern Testing::TestCase testMultipleListsSurviveGCWithBFS;
+extern Testing::TestCase testListLocalityImprovedByHybridDFS;
+extern Testing::TestCase testListSurvivesMultipleGCCyclesWithHybridDFS;
+extern Testing::TestCase testListSurvivesMultipleGCCyclesWithBFS;
+extern Testing::TestCase testDeepListExceedsDFSStack;

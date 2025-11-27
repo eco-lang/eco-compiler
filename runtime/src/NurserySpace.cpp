@@ -346,12 +346,31 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
         evacuate(*root, oldgen, &promoted_objects);
     }
 
-    // Phase 2: Cheney's algorithm on to-space blocks (may add to promoted_objects).
-    while (scanHasMore()) {
-        void *obj = scan_ptr_;
-        scanObject(obj, oldgen, &promoted_objects);
-        scan_ptr_ += getObjectSize(obj);
-        advanceScanIfNeeded();
+    // Clear DFS stack before starting hybrid traversal.
+    dfs_stack_.clear();
+
+    // Phase 2: Hybrid Cheney/DFS algorithm (may add to promoted_objects).
+    // - DFS stack provides depth-first bias for deep structures (lists, task chains)
+    // - Cheney's scanPtr provides BFS fallback and guarantees completion
+    while (scanHasMore() || !dfs_stack_.empty()) {
+        // Priority 1: Drain DFS stack (depth-first for lists/chains).
+        // This clusters related objects together for better cache locality.
+        while (!dfs_stack_.empty()) {
+            void* obj = dfs_stack_.pop();
+            // Only scan if object is in to-space (already evacuated there).
+            // Objects may have been pushed but already processed via scanPtr.
+            if (isInToSpace(obj)) {
+                scanObject(obj, oldgen, &promoted_objects);
+            }
+        }
+
+        // Priority 2: Cheney scan (BFS fallback, handles stack overflow).
+        if (scanHasMore()) {
+            void *obj = scan_ptr_;
+            scanObject(obj, oldgen, &promoted_objects);
+            scan_ptr_ += getObjectSize(obj);
+            advanceScanIfNeeded();
+        }
     }
 
     // Phase 3: Process promoted objects until buffer is empty.
@@ -504,11 +523,26 @@ void NurserySpace::evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace 
     }
 }
 
+/**
+ * Scans a heap object and evacuates all its children.
+ *
+ * This implements a hybrid DFS/BFS traversal strategy:
+ *   - Deep structures (Cons lists, Task chains): Push tails onto DFS stack
+ *     for depth-first traversal, which clusters list cells contiguously.
+ *   - Wide structures (Tuple, Record, Closure): Evacuate inline for BFS,
+ *     which keeps sibling fields together (accessed as a group).
+ *
+ * The DFS stack has bounded size; when full, objects fall through to
+ * Cheney's scanPtr for BFS processing.
+ */
 void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
     Header *hdr = getHeader(obj);
 
     // Process children based on tag.
     switch (hdr->tag) {
+        // ====== Wide structures: BFS (inline evacuation) ======
+        // These have multiple fields accessed together; keep siblings contiguous.
+
         case Tag_Tuple2: {
             Tuple2 *t = static_cast<Tuple2 *>(obj);
             evacuateUnboxable(t->a, !(hdr->unboxed & 1), oldgen, promoted_objects);
@@ -520,12 +554,6 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             evacuateUnboxable(t->a, !(hdr->unboxed & 1), oldgen, promoted_objects);
             evacuateUnboxable(t->b, !(hdr->unboxed & 2), oldgen, promoted_objects);
             evacuateUnboxable(t->c, !(hdr->unboxed & 4), oldgen, promoted_objects);
-            break;
-        }
-        case Tag_Cons: {
-            Cons *c = static_cast<Cons *>(obj);
-            evacuateUnboxable(c->head, !(hdr->unboxed & 1), oldgen, promoted_objects);
-            evacuate(c->tail, oldgen, promoted_objects);
             break;
         }
         case Tag_Custom: {
@@ -557,21 +585,94 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             }
             break;
         }
-        case Tag_Process: {
-            Process *p = static_cast<Process *>(obj);
-            evacuate(p->root, oldgen, promoted_objects);
-            evacuate(p->stack, oldgen, promoted_objects);
-            evacuate(p->mailbox, oldgen, promoted_objects);
+
+        // ====== Deep structures: DFS (push tail onto stack) ======
+        // These form chains; depth-first keeps the chain contiguous.
+
+        case Tag_Cons: {
+            Cons *c = static_cast<Cons *>(obj);
+            // Head is "wide" direction - evacuate inline.
+            evacuateUnboxable(c->head, !(hdr->unboxed & 1), oldgen, promoted_objects);
+
+            // Tail is "deep" direction - use DFS for list locality.
+            if (config_->use_hybrid_dfs) {
+                // Evacuate tail first (updates c->tail to new location).
+                evacuate(c->tail, oldgen, promoted_objects);
+
+                // Push evacuated tail onto DFS stack for immediate processing.
+                // This ensures the next Cons cell is copied right after this one.
+                if (c->tail.constant == 0) {
+                    void* tail_obj = Allocator::fromPointerRaw(c->tail);
+                    if (tail_obj && isInToSpace(tail_obj) && !dfs_stack_.full()) {
+                        dfs_stack_.push(tail_obj);
+                    }
+                }
+            } else {
+                evacuate(c->tail, oldgen, promoted_objects);
+            }
             break;
         }
+
         case Tag_Task: {
             Task *t = static_cast<Task *>(obj);
+            // value, callback, kill are "wide" - evacuate inline.
             evacuate(t->value, oldgen, promoted_objects);
             evacuate(t->callback, oldgen, promoted_objects);
             evacuate(t->kill, oldgen, promoted_objects);
-            evacuate(t->task, oldgen, promoted_objects);
+
+            // task pointer can form chains - use DFS.
+            if (config_->use_hybrid_dfs) {
+                evacuate(t->task, oldgen, promoted_objects);
+
+                if (t->task.constant == 0) {
+                    void* task_obj = Allocator::fromPointerRaw(t->task);
+                    if (task_obj && isInToSpace(task_obj) && !dfs_stack_.full()) {
+                        dfs_stack_.push(task_obj);
+                    }
+                }
+            } else {
+                evacuate(t->task, oldgen, promoted_objects);
+            }
             break;
         }
+
+        case Tag_Process: {
+            Process *p = static_cast<Process *>(obj);
+
+            if (config_->use_hybrid_dfs) {
+                // Evacuate all three subgraphs.
+                evacuate(p->root, oldgen, promoted_objects);
+                evacuate(p->stack, oldgen, promoted_objects);
+                evacuate(p->mailbox, oldgen, promoted_objects);
+
+                // Push in reverse order so root is processed first (LIFO).
+                // This clusters each subgraph together.
+                if (p->mailbox.constant == 0) {
+                    void* mailbox_obj = Allocator::fromPointerRaw(p->mailbox);
+                    if (mailbox_obj && isInToSpace(mailbox_obj) && !dfs_stack_.full()) {
+                        dfs_stack_.push(mailbox_obj);
+                    }
+                }
+                if (p->stack.constant == 0) {
+                    void* stack_obj = Allocator::fromPointerRaw(p->stack);
+                    if (stack_obj && isInToSpace(stack_obj) && !dfs_stack_.full()) {
+                        dfs_stack_.push(stack_obj);
+                    }
+                }
+                if (p->root.constant == 0) {
+                    void* root_obj = Allocator::fromPointerRaw(p->root);
+                    if (root_obj && isInToSpace(root_obj) && !dfs_stack_.full()) {
+                        dfs_stack_.push(root_obj);
+                    }
+                }
+            } else {
+                evacuate(p->root, oldgen, promoted_objects);
+                evacuate(p->stack, oldgen, promoted_objects);
+                evacuate(p->mailbox, oldgen, promoted_objects);
+            }
+            break;
+        }
+
         default:
             break;
     }
