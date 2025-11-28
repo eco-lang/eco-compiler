@@ -43,9 +43,9 @@ NurserySpace::~NurserySpace() {
 void NurserySpace::initialize(Allocator* allocator, const HeapConfig* config) {
     config_ = config;
     allocator_ = allocator;
-    thread_heap_ = nullptr;  // Not using ThreadLocalHeap mode.
+    thread_heap_ = nullptr;  // Legacy single-threaded mode (not using ThreadLocalHeap).
     block_size_ = config->alloc_buffer_size;
-    growth_threshold_ = 0.75f;  // Grow when 75% full after GC.
+    growth_threshold_ = 0.75f;  // Grow when to-space exceeds 75% full after GC.
 
     size_t blocks_per_space = config->nursery_block_count / 2;
 
@@ -70,9 +70,9 @@ void NurserySpace::initialize(Allocator* allocator, const HeapConfig* config) {
 void NurserySpace::initialize(ThreadLocalHeap* heap, const HeapConfig* config) {
     config_ = config;
     thread_heap_ = heap;
-    allocator_ = heap->getParent();  // Get Allocator for block acquisition during growth.
+    allocator_ = heap->getParent();  // Reference to Allocator for block acquisition during growth.
     block_size_ = config->alloc_buffer_size;
-    growth_threshold_ = 0.75f;  // Grow when 75% full after GC.
+    growth_threshold_ = 0.75f;  // Grow when to-space exceeds 75% full after GC.
 
     size_t blocks_per_space = config->nursery_block_count / 2;
 
@@ -127,7 +127,7 @@ void NurserySpace::reset(OldGenSpace &oldgen, const HeapConfig* new_config) {
     // Reset the root set.
     root_set.reset();
 
-    // Note: We do NOT reset GC stats here - stats accumulate across runs.
+    // Note: GC stats are not reset here - they accumulate across multiple runs.
 }
 
 void *NurserySpace::allocate(size_t size) {
@@ -172,14 +172,14 @@ bool NurserySpace::contains(void *ptr) const {
 bool NurserySpace::isInFromSpace(void* ptr) const {
     char* p = static_cast<char*>(ptr);
 
-    // Find first block with start > p.
+    // Find the first block whose start address is greater than p.
     auto it = from_blocks_.upper_bound(p);
 
-    // If it's the first element, p is before all blocks.
+    // If there is no such block, p is before all blocks.
     if (it == from_blocks_.begin())
         return false;
 
-    // Check the previous block (last one with start <= p).
+    // Check if p falls within the previous block (the block with largest start <= p).
     --it;
     return p < (*it + block_size_);
 }
@@ -226,7 +226,7 @@ void* NurserySpace::copyToSpace(size_t size) {
         return result;
     }
 
-    // Need next block.
+    // Slow path: advance to next block.
     ++current_to_it_;
     if (current_to_it_ != to_blocks_.end()) {
         copy_ptr_ = *current_to_it_;
@@ -237,7 +237,7 @@ void* NurserySpace::copyToSpace(size_t size) {
         return result;
     }
 
-    // Out of to-space blocks - this shouldn't happen if spaces are equal size.
+    // Out of to-space blocks - should not happen with equal-sized spaces.
     assert(false && "To-space overflow - should not happen with equal-sized spaces");
     return nullptr;
 }
@@ -265,21 +265,21 @@ void NurserySpace::advanceScanIfNeeded() {
 }
 
 void NurserySpace::checkAndGrow() {
-    // Calculate how full to-space is after copying.
+    // Calculate to-space occupancy after copying.
     size_t bytes_used = 0;
     for (auto it = to_blocks_.begin(); it != current_to_it_; ++it) {
-        bytes_used += block_size_;  // Full blocks before current.
+        bytes_used += block_size_;  // Count full blocks before current.
     }
     if (current_to_it_ != to_blocks_.end()) {
-        bytes_used += (copy_ptr_ - *current_to_it_);  // Partial current block.
+        bytes_used += (copy_ptr_ - *current_to_it_);  // Add partial current block.
     }
 
     size_t total_to_capacity = to_blocks_.size() * block_size_;
     float occupancy = static_cast<float>(bytes_used) / total_to_capacity;
 
     if (occupancy > growth_threshold_) {
-        // Request more blocks for both spaces.
-        size_t blocks_to_add = to_blocks_.size() / 2;  // Grow by 50%.
+        // Grow both spaces by 50%.
+        size_t blocks_to_add = to_blocks_.size() / 2;
         if (blocks_to_add < 1) blocks_to_add = 1;
 
         for (size_t i = 0; i < blocks_to_add; i++) {
@@ -298,24 +298,18 @@ void NurserySpace::checkAndGrow() {
 }
 
 /**
- * Performs a minor garbage collection by evacuating all live objects out of the nursery "from space" and
- * into new locations in either the nursery "to space" or the old generation space.
+ * Performs a minor garbage collection using Cheney's algorithm with hybrid DFS/BFS traversal.
  *
- * All known roots and current stack roots are evacuated first. This may create an initial set of objects
- * allocated in the to space.
+ * Algorithm phases:
+ *   1. Evacuate all roots (from root set) to to-space or old gen (if aged).
+ *   2. Hybrid traversal: drain DFS stack for deep structures, fall back to
+ *      Cheney's scan pointer for breadth-first when stack is empty.
+ *   3. Process promoted objects (scan their children, may add more promoted objects).
+ *   4. Check occupancy and grow nursery if needed.
+ *   5. Swap from-space and to-space.
  *
- * A scan pointer is set to the start of the to space, and is stepped over every object it encounters in the
- * to space, evacuating any object that it finds a pointer to. If more objects are evacuated into the to space,
- * this will bump up the allocation pointer and those objects will be created ahead of the scan pointer so will
- * also eventually be scanned. When the scan pointer catches up to the allocation pointer, there are no more live
- * objects left to consider.
- *
- * The from and to spaces are flipped over in their roles once all live objects have been removed.
- *
- * There is no "remembered set" of pointers from the old generation into the nursery to consider, since Elm
- * only creates acyclic structures on the heap and immutability means that younger objects only point to older
- * ones and never the other way around. Therefore objects moved into the old generation during evacuation do
- * not need to be scanned by Cheney's algorithm.
+ * Key optimization: Elm's immutability guarantees no old-to-young pointers,
+ * so no remembered set or write barriers are needed.
  */
 void NurserySpace::minorGC(OldGenSpace &oldgen) {
 #if ENABLE_GC_STATS
@@ -411,22 +405,20 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
 }
 
 /**
- * Updates a pointer into the nursery space to a new location at which that object will be located after
- * a garbage collection cycle. The pointer MUST point to a live object that should not be garbage
- * collected.
+ * Evacuates an object from from-space to to-space or old gen.
  *
- *     - If the object has already been moved, it will leave behind a forwarding pointer, and the
- *       pointer requested will be updated to this new location.
- *     - If the object has not already been moved, it will be copied to its new location, and the
- *       pointer requested will be updated to this new location.
+ * Behavior:
+ *   - If already forwarded: updates ptr to forwarding target and returns.
+ *   - If not in from-space: returns (already evacuated or in old gen).
+ *   - Otherwise: copies object to to-space (or promotes to old gen if aged),
+ *     leaves forwarding pointer, and updates ptr to new location.
  *
- * If the object has reached promotion age by surviving a number of garbage collection moves, it is moved
- * into the old generation. Otherwise, it is moved to the nursery "to space" and its age is incremented by
- * one.
+ * Promotion: Objects with age >= promotion_age are copied to old gen and
+ * added to promoted_objects for later scanning. Otherwise, they are copied
+ * to to-space with age incremented.
  *
- * The original object in the nursery "from space" is replaced with a Tag_Forward and its forwarding address
- * in either the old generation or the nursery to space, so that subsequent requests to evacuate the same
- * pointer can be updated to its new location without repeating the move.
+ * The original object is replaced with a forwarding pointer (Tag_Forward)
+ * to prevent redundant copying if multiple pointers reference it.
  */
 void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
     if (ptr.constant != 0)

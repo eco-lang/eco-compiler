@@ -46,8 +46,8 @@ constexpr size_t ALLOC_BUFFER_SIZE = 128 * 1024;  // 128 KB default AllocBuffer.
 constexpr size_t NURSERY_BLOCK_COUNT = 32;  // 32 blocks = 4 MB total (16 per semi-space).
 
 // ----- Promotion & GC Triggers -----
-constexpr u32 PROMOTION_AGE = 1;                            // Promote after 1 minor GC survival.
-constexpr float NURSERY_GC_THRESHOLD = 0.9f;                // Trigger minor GC at 90% full.
+constexpr u32 PROMOTION_AGE = 1;                            // Promote objects after surviving 1 minor GC.
+constexpr float NURSERY_GC_THRESHOLD = 0.9f;                // Trigger minor GC when 90% full.
 
 // Returns the header of a heap object.
 inline Header *getHeader(void *obj) { return static_cast<Header *>(obj); }
@@ -125,28 +125,28 @@ inline size_t getObjectSize(void *obj) {
  * override any field before passing to Allocator::initialize().
  */
 struct HeapConfig {
-    // Heap sizing
+    // Heap sizing.
     size_t max_heap_size = DEFAULT_MAX_HEAP_SIZE;
     size_t initial_old_gen_size = INITIAL_OLD_GEN_SIZE;
 
-    // AllocBuffer sizing
+    // AllocBuffer sizing.
     size_t alloc_buffer_size = ALLOC_BUFFER_SIZE;
 
-    // Nursery sizing (in blocks, not bytes)
+    // Nursery sizing (in blocks, not bytes).
     // Block count must be even (split into from-space and to-space).
     size_t nursery_block_count = NURSERY_BLOCK_COUNT;
 
-    // Promotion & GC triggers
+    // Promotion & GC triggers.
     u32 promotion_age = PROMOTION_AGE;
     float nursery_gc_threshold = NURSERY_GC_THRESHOLD;
 
-    // Traversal strategy: hybrid DFS/BFS for improved locality
+    // Traversal strategy: hybrid DFS/BFS for improved locality.
     // When enabled, deep structures (Cons lists, Task chains) are copied
     // depth-first for better cache locality, while wide structures
     // (Tuple, Record, Closure) use BFS to keep siblings together.
     bool use_hybrid_dfs = true;
 
-    // Derived value: total nursery size in bytes
+    // Derived value: total nursery size in bytes.
     size_t nurserySize() const { return nursery_block_count * alloc_buffer_size; }
 
     // Default constructor using in-class member initializers.
@@ -174,7 +174,7 @@ struct HeapConfig {
         }
 
         // ========== 2. Heap Partitioning Constraints ==========
-        // Heap is split: [0, max/2) = old gen, [max/2, max) = nursery
+        // Heap is split: [0, max/2) = old gen, [max/2, max) = nursery.
 
         size_t old_gen_space = max_heap_size / 2;
 
@@ -206,7 +206,7 @@ struct HeapConfig {
 
         // ========== 4. AllocBuffer Constraints ==========
 
-        constexpr size_t MIN_BUFFER_SIZE = 4096;  // 4KB minimum
+        constexpr size_t MIN_BUFFER_SIZE = 4096;  // 4KB minimum.
         if (alloc_buffer_size < MIN_BUFFER_SIZE) {
             throw std::invalid_argument(
                 "alloc_buffer_size must be >= 4KB");

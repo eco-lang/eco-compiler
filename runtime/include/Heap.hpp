@@ -88,12 +88,12 @@ typedef struct {
     u32 tag : TAG_BITS;
     u32 color : 2; // Black, white, grey for concurrent mark and sweep.
     u32 pin : 1; // Memory-pinned object.
-    u32 epoch : 2; // Object marked this cycle.
-    u32 age : 2; // Survival age.
+    u32 epoch : 2; // Object marked during this GC cycle.
+    u32 age : 2; // Number of GC cycles survived.
     u32 unboxed : 3; // Unboxed flags for cons, tuple2, tuple3 only.
     u32 padding : 1;
-    u32 refcount : 16; // Reference count; 16 bits is more than needed.
-    u32 size; // Size bits.
+    u32 refcount : 16; // Reference count.
+    u32 size; // Object size in type-specific units.
 } Header;
 static_assert(sizeof(Header) == 8, "Header must be 64 bits");
 
@@ -112,8 +112,8 @@ typedef enum {
 // A logical pointer into the heap.
 typedef struct {
     u64 ptr : POINTER_BITS;
-    u64 constant : 4; // For frequently used Elm constants.
-    u64 padding : 20; // Spare space.
+    u64 constant : 4; // Index of embedded Elm constant (0 = regular pointer).
+    u64 padding : 20; // Reserved for future use.
 } HPointer;
 static_assert(sizeof(HPointer) == 8, "HPointer must be 64 bits");
 
@@ -166,40 +166,40 @@ struct ALIGN(8) elm_string {
 typedef struct elm_string ElmString;
 
 typedef struct {
-    Header header; // Contains unboxed bits for tuples.
+    Header header; // Header.unboxed indicates which fields are unboxed.
     Unboxable a;
     Unboxable b;
 } Tuple2;
 
 typedef struct {
-    Header header; // Contains unboxed bits for tuples.
+    Header header; // Header.unboxed indicates which fields are unboxed.
     Unboxable a;
     Unboxable b;
     Unboxable c;
 } Tuple3;
 
 typedef struct {
-    Header header; // Contains unboxed bits for cons.
+    Header header; // Header.unboxed indicates if head is unboxed.
     Unboxable head;
     HPointer tail;
 } Cons;
 
 typedef struct {
-    Header header; // Size in bottom 6 bits of size in header, but unboxed bitset in next word.
+    Header header; // Header.size contains field count (up to 63).
     u64 ctor : CTOR_BITS;
-    u64 unboxed : 48; // First 48 fields can be unboxed, so compiler can sort primitive fields to come first.
+    u64 unboxed : 48; // Bitmap indicating which of the first 48 fields are unboxed.
     Unboxable values[];
 } Custom;
 
 typedef struct {
-    Header header; // Size in bottom 7 bits of size in header, but unboxed bitset in next word.
-    u64 unboxed; // First 64 fields can be unboxed, so compiler should sort primitive fields to come first.
+    Header header; // Header.size contains field count (up to 127).
+    u64 unboxed; // Bitmap indicating which of the first 64 fields are unboxed.
     Unboxable values[];
 } Record;
 
 typedef struct {
     Header header;
-    u64 unboxed; // First 64 fields can be unboxed, so compiler should sort primitive fields to come first.
+    u64 unboxed; // Bitmap indicating which of the first 64 fields are unboxed.
     HPointer fieldgroup;
     HPointer values[];
 } DynRecord;
@@ -214,9 +214,9 @@ typedef void *(*EvalFunction)(void *[]);
 
 typedef struct {
     Header header;
-    u64 n_values : 6;
-    u64 max_values : 6;
-    u64 unboxed : 52;
+    u64 n_values : 6;      // Number of captured values currently stored.
+    u64 max_values : 6;    // Maximum number of values this closure can hold.
+    u64 unboxed : 52;      // Bitmap indicating which captured values are unboxed.
     EvalFunction evaluator;
     Unboxable values[];
 } Closure;

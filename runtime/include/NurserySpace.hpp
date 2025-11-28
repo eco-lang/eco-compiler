@@ -31,7 +31,7 @@ namespace Elm {
  * while still improving locality for typical workloads.
  */
 struct DfsStack {
-    static constexpr size_t MAX_DEPTH = 256;  // Tunable: 128-512 typical
+    static constexpr size_t MAX_DEPTH = 256;  // Tunable: 128-512 typical.
     void* data[MAX_DEPTH];
     size_t top = 0;
 
@@ -78,13 +78,13 @@ public:
 
 private:
     const HeapConfig* config_;      // Heap configuration parameters.
-    Allocator* allocator_;          // For requesting new blocks.
+    Allocator* allocator_;          // Back-reference for requesting new blocks.
 
     // Block management - std::set for O(log n) lookup.
     // Sets store block start addresses, sorted by address.
     std::set<char*> from_blocks_;   // Block start addresses in from-space.
     std::set<char*> to_blocks_;     // Block start addresses in to-space.
-    size_t block_size_;             // Size of each block (from config).
+    size_t block_size_;             // Size of each block in bytes.
 
     // Current allocation state.
     std::set<char*>::iterator current_from_it_;  // Current from-space block.
@@ -99,7 +99,7 @@ private:
     char* scan_ptr_;                // Cheney scan pointer.
 
     // Growth tracking.
-    float growth_threshold_;        // Trigger growth when to-space > this fraction full.
+    float growth_threshold_;        // Trigger growth when to-space exceeds this fraction full.
 
     RootSet root_set;               // Root set for this nursery.
 

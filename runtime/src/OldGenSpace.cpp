@@ -23,10 +23,10 @@ namespace Elm {
 // Global heap base (defined in Allocator.cpp).
 extern char* g_heap_base;
 
-// Read barrier - returns the object at the pointer location.
-// Note: This is a dummy implementation of a read barrier that simply decompresses the pointer.
+// Read barrier - converts logical pointer to physical address.
+// Does not follow forwarding pointers (use Allocator::resolve() for that).
 void* readBarrier(HPointer& ptr) {
-    // Null check (common case - embedded constants).
+    // Check for embedded constants.
     if (ptr.constant != 0) {
         return nullptr;  // It's a constant, not a heap pointer.
     }
@@ -89,7 +89,8 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
 }
 
 /**
- * Allocate memory in the old generation space using bump-pointer allocation.
+ * Allocates memory in the old generation using bump-pointer allocation.
+ * Acquires a new AllocBuffer if the current buffer is exhausted.
  */
 void *OldGenSpace::allocate(size_t size) {
     size = (size + 7) & ~7;  // Align to 8 bytes.
@@ -132,8 +133,8 @@ void *OldGenSpace::allocate(size_t size) {
 }
 
 /**
- * Start a marking phase.
- * Takes collected roots and Allocator reference for nursery checks.
+ * Starts the marking phase of a major GC.
+ * Pushes all roots onto the mark stack and prepares for incremental marking.
  */
 #if ENABLE_GC_STATS
 void OldGenSpace::startMark(const std::vector<HPointer*> &roots, Allocator &alloc, GCStats &stats) {
@@ -166,7 +167,7 @@ void OldGenSpace::startMark(const std::vector<HPointer*> &roots, Allocator &allo
 }
 
 /**
- * Perform incremental marking work.
+ * Performs incremental marking work for up to work_units objects.
  * Returns true if more work remains, false if marking is complete.
  */
 #if ENABLE_GC_STATS

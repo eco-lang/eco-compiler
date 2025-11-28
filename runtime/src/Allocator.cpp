@@ -21,7 +21,7 @@
 
 namespace Elm {
 
-// Global heap base for read barrier (used by fromPointer/toPointer).
+// Global heap base for pointer conversion (used by fromPointerRaw/toPointerRaw).
 char* g_heap_base = nullptr;
 
 // Thread-local heap pointer for fast access.
@@ -68,7 +68,7 @@ void Allocator::initialize(const HeapConfig& config) {
         throw std::bad_alloc();
     }
 
-    // Set global heap_base for read barrier.
+    // Set global heap_base for pointer conversion.
     g_heap_base = heap_base;
 
     // Nursery region starts at halfway point.
@@ -200,9 +200,8 @@ size_t Allocator::getOldGenAllocatedBytes() const {
 // ============================================================================
 
 char* Allocator::acquireNurseryBlock(size_t size) {
-    // Note: This is called by NurserySpace during growth.
-    // The calling thread already holds appropriate locks within NurserySpace.
-    // We need our own lock for the shared nursery_committed_ counter.
+    // Called by NurserySpace during initialization or growth.
+    // Thread-safe: acquires thread_mutex_ to update shared nursery_committed_ counter.
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
     // Align size to 8 bytes.
@@ -309,11 +308,11 @@ void* Allocator::resolve(HPointer ptr) {
     void* obj = fromPointerRaw(ptr);
     assert(obj && "Null pointer from valid HPointer");
 
-    // Validate pointer is within allocated heap address space.
+    // Validate pointer is within the reserved heap address space.
     assert(static_cast<char*>(obj) >= heap_base && "Pointer below heap base");
     assert(static_cast<char*>(obj) < heap_base + heap_reserved && "Pointer above heap end");
 
-    // Follow forwarding chain to final location
+    // Follow forwarding chain to final location.
     Header* hdr = getHeader(obj);
     while (hdr->tag == Tag_Forward) {
         Forward* fwd = static_cast<Forward*>(obj);
