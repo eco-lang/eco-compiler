@@ -25,7 +25,9 @@
 #include <cstring>
 #include <execinfo.h>
 #include <getopt.h>
+#include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <stdexcept>
@@ -76,6 +78,15 @@ static void printStackTrace() {
 
 // Shutdown flag - set by signal handler to stop all threads.
 static std::atomic<bool> shutdown_requested{false};
+
+// Thread-local Cons cell count - no synchronization needed since each thread
+// only writes to its own counter.
+static thread_local uint64_t tl_cons_count = 0;
+
+// Vector to collect final counts from each thread after they finish.
+// Protected by mutex since threads write their final counts concurrently.
+static std::mutex cons_counts_mutex;
+static std::vector<uint64_t> final_cons_counts;
 
 // Workload configuration (set via command-line arguments).
 static size_t model_num_fields = 8;                  // Number of fields in the model Record.
@@ -242,6 +253,7 @@ static HPointer createIntList(Allocator& alloc, size_t size) {
         HPointer new_cons = allocateConsInt(alloc, static_cast<i64>(i - 1), list);
         alloc.getRootSet().replaceHead(new_cons);
         list = new_cons;
+        ++tl_cons_count;
     }
 
     alloc.getRootSet().restoreStackRootPoint(root_point);
@@ -293,6 +305,7 @@ static HPointer reverseList(Allocator& alloc, HPointer list) {
         // Update acc via replaceHead to track the new cons cell.
         alloc.getRootSet().replaceHead(alloc.wrap(new_obj));
         acc = alloc.wrap(new_obj);
+        ++tl_cons_count;
     }
 
     alloc.getRootSet().restoreStackRootPoint(root_point);
@@ -485,6 +498,12 @@ static void runProgramLoop(Allocator& alloc, int thread_id) {
         shutdown_requested.store(true);
     }
 
+    // Save thread-local cons count to global vector for aggregation.
+    {
+        std::lock_guard<std::mutex> lock(cons_counts_mutex);
+        final_cons_counts.push_back(tl_cons_count);
+    }
+
     std::cout << "[Thread " << thread_id << "] Stopped after " << iterations << " iterations" << std::endl;
 }
 
@@ -642,6 +661,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Record program start time.
+    auto program_start = std::chrono::steady_clock::now();
+
     try {
         std::cout << "=== Eco Runtime for Elm ===" << std::endl;
 
@@ -678,6 +700,9 @@ int main(int argc, char* argv[]) {
             std::cout << "Running until Ctrl+C..." << std::endl;
         }
 
+        // Reserve space for final cons counts from each thread.
+        final_cons_counts.reserve(num_program_threads);
+
         // Create and start program threads.
         std::vector<std::thread> program_threads;
         program_threads.reserve(num_program_threads);
@@ -696,10 +721,32 @@ int main(int argc, char* argv[]) {
             duration_thread.join();
         }
 
+        // Record program end time.
+        auto program_end = std::chrono::steady_clock::now();
+        auto program_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+            program_end - program_start);
+
         // Print combined GC statistics if enabled at compile time.
 #if ENABLE_GC_STATS
         alloc.getCombinedStats().print();
 #endif
+
+        // Sum up Cons cell counts from all threads.
+        uint64_t total_cons_cells = 0;
+        for (uint64_t count : final_cons_counts) {
+            total_cons_cells += count;
+        }
+
+        // Print throughput statistics.
+        double duration_sec = program_duration.count() / 1000.0;
+        double throughput = (duration_sec > 0) ? (total_cons_cells / duration_sec) : 0;
+
+        std::cout << "\n=== Throughput Statistics ===" << std::endl;
+        std::cout << "Cons cells created: " << total_cons_cells << std::endl;
+        std::cout << "Program runtime: " << std::fixed << std::setprecision(2)
+                  << duration_sec << " s" << std::endl;
+        std::cout << "Throughput: " << std::fixed << std::setprecision(2)
+                  << (throughput / 1e6) << " M cells/sec" << std::endl;
 
         std::cout << "\nGoodbye!" << std::endl;
         return 0;
