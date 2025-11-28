@@ -121,7 +121,8 @@ private:
     size_t heap_reserved;         // Total address space reserved.
     size_t old_gen_committed;     // Committed bytes in old gen region.
     size_t nursery_offset;        // Where nursery starts (halfway point).
-    size_t nursery_committed_;    // Committed bytes in nursery region.
+    size_t nursery_low_committed_;   // Committed bytes in nursery low region.
+    size_t nursery_high_committed_;  // Committed bytes in nursery high region.
     bool initialized;             // True after initialize() has been called.
 
 #if ENABLE_GC_STATS
@@ -156,9 +157,13 @@ private:
     // Returns the heap configuration.
     const HeapConfig& getConfig() const { return config_; }
 
-    // Acquires a block of memory from the nursery region.
+    // Acquires a block of memory from the nursery low region.
     // Thread-safe: acquires thread_mutex_.
-    char* acquireNurseryBlock(size_t size);
+    char* acquireNurseryBlockLow(size_t size);
+
+    // Acquires a block of memory from the nursery high region.
+    // Thread-safe: acquires thread_mutex_.
+    char* acquireNurseryBlockHigh(size_t size);
 
     // Acquires a new AllocBuffer from the old gen region.
     // Thread-safe: acquires thread_mutex_.

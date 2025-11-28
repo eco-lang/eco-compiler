@@ -1,7 +1,7 @@
 #ifndef ECO_NURSERYSPACE_H
 #define ECO_NURSERYSPACE_H
 
-#include <set>
+#include <algorithm>
 #include <vector>
 #include "AllocatorCommon.hpp"
 #include "GCStats.hpp"
@@ -80,36 +80,44 @@ private:
     const HeapConfig* config_;      // Heap configuration parameters.
     Allocator* allocator_;          // Back-reference for requesting new blocks.
 
-    // Block management - std::set for O(log n) lookup.
-    // Sets store block start addresses, sorted by address.
-    std::set<char*> from_blocks_;   // Block start addresses in from-space.
-    std::set<char*> to_blocks_;     // Block start addresses in to-space.
-    size_t block_size_;             // Size of each block in bytes.
+    // Block management - two vectors for O(1) membership checks.
+    // Low and high blocks are from separate address space regions.
+    // All low block addresses < all high block addresses.
+    std::vector<char*> low_blocks_;   // Blocks from low nursery region, sorted.
+    std::vector<char*> high_blocks_;  // Blocks from high nursery region, sorted.
+    size_t block_size_;               // Size of each block in bytes.
+    bool from_is_low_;                // True if from-space is low_blocks_.
+
+    // Cached bounds for O(1) membership checks.
+    char* low_base_;                  // low_blocks_.front()
+    char* low_end_;                   // low_blocks_.back() + block_size_
+    char* high_base_;                 // high_blocks_.front()
+    char* high_end_;                  // high_blocks_.back() + block_size_
 
     // Current allocation state.
-    std::set<char*>::iterator current_from_it_;  // Current from-space block.
-    char* alloc_ptr_;               // Bump pointer in current block.
-    char* alloc_end_;               // End of current block.
+    size_t current_from_idx_;         // Index into current from-space vector.
+    char* alloc_ptr_;                 // Bump pointer in current block.
+    char* alloc_end_;                 // End of current block.
 
     // GC state (during minorGC).
-    std::set<char*>::iterator current_to_it_;    // Current to-space block being copied into.
-    char* copy_ptr_;                // Bump pointer for copying in to-space.
-    char* copy_end_;                // End of current to-space block.
-    std::set<char*>::iterator scan_block_it_;    // Which to-space block scan_ptr is in.
-    char* scan_ptr_;                // Cheney scan pointer.
+    size_t current_to_idx_;           // Index into current to-space vector.
+    char* copy_ptr_;                  // Bump pointer for copying in to-space.
+    char* copy_end_;                  // End of current to-space block.
+    size_t scan_block_idx_;           // Which to-space block scan_ptr is in.
+    char* scan_ptr_;                  // Cheney scan pointer.
 
     // Growth tracking.
-    float growth_threshold_;        // Trigger growth when to-space exceeds this fraction full.
+    float growth_threshold_;          // Trigger growth when to-space exceeds this fraction full.
 
-    RootSet root_set;               // Root set for this nursery.
+    RootSet root_set;                 // Root set for this nursery.
 
 #if ENABLE_GC_STATS
-    GCStats stats;                  // Performance statistics.
+    GCStats stats;                    // Performance statistics.
 #endif
 
-    ThreadLocalHeap* thread_heap_;  // Owner ThreadLocalHeap (for multi-threaded mode).
+    ThreadLocalHeap* thread_heap_;    // Owner ThreadLocalHeap (for multi-threaded mode).
 
-    DfsStack dfs_stack_;            // Stack for hybrid DFS/BFS traversal.
+    DfsStack dfs_stack_;              // Stack for hybrid DFS/BFS traversal.
 
     // ========== Internal Methods ==========
 
@@ -124,16 +132,19 @@ private:
     void minorGC(OldGenSpace &oldgen);
 
     // Returns true if the pointer points into any of this nursery's blocks.
-    // O(log n) using std::set.
+    // O(1) using cached bounds (approximate - includes gaps between blocks).
     bool contains(void *ptr) const;
 
     // Returns true if the pointer is in from-space.
-    // O(log n) using std::set::upper_bound().
+    // O(1) using cached bounds.
     bool isInFromSpace(void* ptr) const;
 
     // Returns true if the pointer is in to-space.
-    // O(log n) using std::set::upper_bound().
+    // O(1) using cached bounds.
     bool isInToSpace(void* ptr) const;
+
+    // Updates cached bounds after block changes.
+    void updateBounds();
 
     // Returns the number of bytes currently allocated in the nursery.
     size_t bytesAllocated() const;
@@ -193,11 +204,19 @@ public:
     }
 
     static size_t fromBlockCount(const NurserySpace& nursery) {
-        return nursery.from_blocks_.size();
+        return nursery.from_is_low_ ? nursery.low_blocks_.size() : nursery.high_blocks_.size();
     }
 
     static size_t toBlockCount(const NurserySpace& nursery) {
-        return nursery.to_blocks_.size();
+        return nursery.from_is_low_ ? nursery.high_blocks_.size() : nursery.low_blocks_.size();
+    }
+
+    static size_t lowBlockCount(const NurserySpace& nursery) {
+        return nursery.low_blocks_.size();
+    }
+
+    static size_t highBlockCount(const NurserySpace& nursery) {
+        return nursery.high_blocks_.size();
     }
 };
 

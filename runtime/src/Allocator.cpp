@@ -29,7 +29,7 @@ thread_local ThreadLocalHeap* Allocator::tl_heap_ = nullptr;
 
 Allocator::Allocator() :
     heap_base(nullptr), heap_reserved(0), old_gen_committed(0), nursery_offset(0),
-    nursery_committed_(0), initialized(false) {
+    nursery_low_committed_(0), nursery_high_committed_(0), initialized(false) {
     // Initialization happens in initialize() method.
 }
 
@@ -199,24 +199,26 @@ size_t Allocator::getOldGenAllocatedBytes() const {
 // Region Allocation (for NurserySpace growth)
 // ============================================================================
 
-char* Allocator::acquireNurseryBlock(size_t size) {
+char* Allocator::acquireNurseryBlockLow(size_t size) {
     // Called by NurserySpace during initialization or growth.
-    // Thread-safe: acquires thread_mutex_ to update shared nursery_committed_ counter.
+    // Thread-safe: acquires thread_mutex_ to update shared nursery committed counters.
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
     // Align size to 8 bytes.
     size = (size + 7) & ~7;
 
-    // Nursery region is [nursery_offset .. heap_reserved).
+    // Nursery is split into two halves: low and high.
+    // Low region: [nursery_offset .. nursery_offset + nursery_space/2)
     size_t nursery_space = heap_reserved - nursery_offset;
+    size_t low_region_size = nursery_space / 2;
 
-    // Check if we have space in nursery region.
-    if (nursery_committed_ + size > nursery_space) {
-        return nullptr;  // Out of nursery address space.
+    // Check if we have space in low region.
+    if (nursery_low_committed_ + size > low_region_size) {
+        return nullptr;  // Out of low region address space.
     }
 
     // Commit physical memory for this block.
-    char* block_base = heap_base + nursery_offset + nursery_committed_;
+    char* block_base = heap_base + nursery_offset + nursery_low_committed_;
     void* result = mmap(block_base, size, PROT_READ | PROT_WRITE,
                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
 
@@ -224,7 +226,39 @@ char* Allocator::acquireNurseryBlock(size_t size) {
         return nullptr;
     }
 
-    nursery_committed_ += size;
+    nursery_low_committed_ += size;
+    return block_base;
+}
+
+char* Allocator::acquireNurseryBlockHigh(size_t size) {
+    // Note: This is called by NurserySpace during initialization and growth.
+    // We need our own lock for the shared nursery committed counters.
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+
+    // Align size to 8 bytes.
+    size = (size + 7) & ~7;
+
+    // Nursery is split into two halves: low and high.
+    // High region: [nursery_offset + nursery_space/2 .. heap_reserved)
+    size_t nursery_space = heap_reserved - nursery_offset;
+    size_t high_region_start = nursery_space / 2;
+    size_t high_region_size = nursery_space - high_region_start;
+
+    // Check if we have space in high region.
+    if (nursery_high_committed_ + size > high_region_size) {
+        return nullptr;  // Out of high region address space.
+    }
+
+    // Commit physical memory for this block.
+    char* block_base = heap_base + nursery_offset + high_region_start + nursery_high_committed_;
+    void* result = mmap(block_base, size, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+
+    if (result == MAP_FAILED) {
+        return nullptr;
+    }
+
+    nursery_high_committed_ += size;
     return block_base;
 }
 
@@ -301,7 +335,8 @@ void Allocator::reset(const HeapConfig* new_config) {
 
     // Reset committed memory tracking.
     old_gen_committed = 0;
-    nursery_committed_ = 0;
+    nursery_low_committed_ = 0;
+    nursery_high_committed_ = 0;
 }
 
 // ============================================================================
