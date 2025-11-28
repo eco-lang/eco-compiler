@@ -287,6 +287,14 @@ void Allocator::reset(const HeapConfig* new_config) {
         config_ = *new_config;
     }
 
+#if ENABLE_GC_STATS
+    // Accumulate stats from all thread heaps before destroying them.
+    for (const auto& [thread_id, heap] : thread_heaps_) {
+        accumulated_stats_.combine(heap->getNursery().getStats());
+        accumulated_stats_.combine(heap->getStats());
+    }
+#endif
+
     // Clear all thread heaps.
     thread_heaps_.clear();
     tl_heap_ = nullptr;
@@ -333,7 +341,10 @@ HPointer Allocator::wrap(void* obj) {
 GCStats Allocator::getCombinedStats() const {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
-    GCStats combined;
+    // Start with accumulated stats from destroyed thread heaps.
+    GCStats combined = accumulated_stats_;
+
+    // Add stats from current thread heaps.
     for (const auto& [thread_id, heap] : thread_heaps_) {
         // Combine both nursery stats and thread-local heap stats.
         combined.combine(heap->getNursery().getStats());

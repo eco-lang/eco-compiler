@@ -9,9 +9,32 @@
 #include <algorithm>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include "GCStats.hpp"
 
 namespace Elm {
+
+// Helper to format nanoseconds with appropriate units.
+// Returns a string like "123.45 ns", "1.23 µs", "45.67 ms", or "1.23 s"
+static std::string formatTime(uint64_t ns) {
+    std::ostringstream oss;
+    oss << std::fixed;
+
+    if (ns < 1000) {
+        // Nanoseconds
+        oss << std::setprecision(0) << ns << " ns";
+    } else if (ns < 1000000) {
+        // Microseconds
+        oss << std::setprecision(2) << (ns / 1000.0) << " µs";
+    } else if (ns < 1000000000) {
+        // Milliseconds
+        oss << std::setprecision(2) << (ns / 1000000.0) << " ms";
+    } else {
+        // Seconds
+        oss << std::setprecision(2) << (ns / 1000000000.0) << " s";
+    }
+    return oss.str();
+}
 
 // Records a single allocation of the given size.
 void GCStats::recordAllocation(size_t bytes) {
@@ -171,28 +194,20 @@ void GCStats::print() const {
     if (minor_gc_count > 0) {
         std::cout << "\nMinor GC Timing:" << std::endl;
 
-        double total_ms = total_minor_gc_time_ns / 1000000.0;
-        std::cout << "  Total time:            " << std::setw(12) << std::fixed << std::setprecision(3)
-                  << total_ms << " ms" << std::endl;
+        std::cout << "  Total time:            " << std::setw(15) << formatTime(total_minor_gc_time_ns) << std::endl;
 
         uint64_t avg_ns = total_minor_gc_time_ns / minor_gc_count;
-        double avg_us = avg_ns / 1000.0;
-        std::cout << "  Average time:          " << std::setw(12) << std::fixed << std::setprecision(2)
-                  << avg_us << " µs" << std::endl;
+        std::cout << "  Average time:          " << std::setw(15) << formatTime(avg_ns) << std::endl;
 
         if (min_minor_gc_time_ns != UINT64_MAX) {
-            double min_us = min_minor_gc_time_ns / 1000.0;
-            std::cout << "  Min time:              " << std::setw(12) << std::fixed << std::setprecision(2)
-                      << min_us << " µs" << std::endl;
+            std::cout << "  Min time:              " << std::setw(15) << formatTime(min_minor_gc_time_ns) << std::endl;
         }
 
-        double max_us = max_minor_gc_time_ns / 1000.0;
-        std::cout << "  Max time:              " << std::setw(12) << std::fixed << std::setprecision(2)
-                  << max_us << " µs" << std::endl;
+        std::cout << "  Max time:              " << std::setw(15) << formatTime(max_minor_gc_time_ns) << std::endl;
         std::cout << std::endl;
 
         // ========== Minor GC Histogram ==========
-        std::cout << "Minor GC Time Histogram (nanoseconds):" << std::endl;
+        std::cout << "Minor GC Time Histogram:" << std::endl;
 
         // Find max count for scaling.
         uint64_t max_count = 0;
@@ -220,10 +235,10 @@ void GCStats::print() const {
                     range_end = MINOR_HISTOGRAM_FIRST_RANGE + ((offset + 1) * MINOR_BUCKET_SIZE_LARGE);
                 }
 
-                std::cout << "  " << std::setw(7) << range_start << " - "
-                          << std::setw(7) << range_end << " ns: ";
+                std::cout << "  " << std::setw(10) << formatTime(range_start) << " - "
+                          << std::setw(10) << formatTime(range_end) << ": ";
             } else {
-                std::cout << "  > " << std::setw(7) << MINOR_HISTOGRAM_SECOND_RANGE << " ns: ";
+                std::cout << "  > " << std::setw(10) << formatTime(MINOR_HISTOGRAM_SECOND_RANGE) << "     : ";
             }
 
             // Draw bar.
@@ -260,28 +275,20 @@ void GCStats::print() const {
     if (major_gc_count > 0) {
         std::cout << "\nMajor GC Timing:" << std::endl;
 
-        double total_ms = total_major_gc_time_ns / 1000000.0;
-        std::cout << "  Total time:            " << std::setw(12) << std::fixed << std::setprecision(3)
-                  << total_ms << " ms" << std::endl;
+        std::cout << "  Total time:            " << std::setw(15) << formatTime(total_major_gc_time_ns) << std::endl;
 
         uint64_t avg_ns = total_major_gc_time_ns / major_gc_count;
-        double avg_ms = avg_ns / 1000000.0;
-        std::cout << "  Average time:          " << std::setw(12) << std::fixed << std::setprecision(3)
-                  << avg_ms << " ms" << std::endl;
+        std::cout << "  Average time:          " << std::setw(15) << formatTime(avg_ns) << std::endl;
 
         if (min_major_gc_time_ns != UINT64_MAX) {
-            double min_ms = min_major_gc_time_ns / 1000000.0;
-            std::cout << "  Min time:              " << std::setw(12) << std::fixed << std::setprecision(3)
-                      << min_ms << " ms" << std::endl;
+            std::cout << "  Min time:              " << std::setw(15) << formatTime(min_major_gc_time_ns) << std::endl;
         }
 
-        double max_ms = max_major_gc_time_ns / 1000000.0;
-        std::cout << "  Max time:              " << std::setw(12) << std::fixed << std::setprecision(3)
-                  << max_ms << " ms" << std::endl;
+        std::cout << "  Max time:              " << std::setw(15) << formatTime(max_major_gc_time_ns) << std::endl;
         std::cout << std::endl;
 
         // ========== Major GC Histogram ==========
-        std::cout << "Major GC Time Histogram (milliseconds):" << std::endl;
+        std::cout << "Major GC Time Histogram:" << std::endl;
 
         // Find max count for scaling.
         uint64_t max_count = 0;
@@ -291,35 +298,34 @@ void GCStats::print() const {
 
         const int BAR_WIDTH = 40;
 
+        // Use the same constants as in getMajorHistogramBucket
+        static constexpr uint64_t MAJOR_FIRST_RANGE = 100000000;  // 100ms
+        static constexpr uint64_t MAJOR_SECOND_RANGE = 1000000000; // 1000ms
+        static constexpr uint64_t MAJOR_BUCKET_SMALL = 5000000;   // 5ms
+        static constexpr uint64_t MAJOR_BUCKET_LARGE = 50000000;  // 50ms
+
         for (int i = 0; i < HISTOGRAM_BUCKETS; i++) {
             if (major_time_histogram[i] == 0) continue;  // Skip empty buckets.
 
-            // Bucket range (convert to milliseconds for display).
+            // Bucket range.
             if (i < HISTOGRAM_BUCKETS - 1) {
-                double range_start, range_end;
-
-                // Use the same constants as in getMajorHistogramBucket
-                static constexpr uint64_t MAJOR_FIRST_RANGE = 100000000;  // 100ms
-                static constexpr uint64_t MAJOR_BUCKET_SMALL = 5000000;   // 5ms
-                static constexpr uint64_t MAJOR_BUCKET_LARGE = 50000000;  // 50ms
+                uint64_t range_start, range_end;
 
                 if (i < MINOR_BUCKETS_SMALL) {
                     // First range: 0-100ms with 5ms buckets
-                    range_start = (i * MAJOR_BUCKET_SMALL) / 1000000.0;
-                    range_end = ((i + 1) * MAJOR_BUCKET_SMALL) / 1000000.0;
+                    range_start = i * MAJOR_BUCKET_SMALL;
+                    range_end = (i + 1) * MAJOR_BUCKET_SMALL;
                 } else {
                     // Second range: 100ms-1s with 50ms buckets
                     size_t offset = i - MINOR_BUCKETS_SMALL;
-                    range_start = (MAJOR_FIRST_RANGE + (offset * MAJOR_BUCKET_LARGE)) / 1000000.0;
-                    range_end = (MAJOR_FIRST_RANGE + ((offset + 1) * MAJOR_BUCKET_LARGE)) / 1000000.0;
+                    range_start = MAJOR_FIRST_RANGE + (offset * MAJOR_BUCKET_LARGE);
+                    range_end = MAJOR_FIRST_RANGE + ((offset + 1) * MAJOR_BUCKET_LARGE);
                 }
 
-                std::cout << "  " << std::setw(6) << std::fixed << std::setprecision(1) << range_start << " - "
-                          << std::setw(6) << std::fixed << std::setprecision(1) << range_end << " ms: ";
+                std::cout << "  " << std::setw(10) << formatTime(range_start) << " - "
+                          << std::setw(10) << formatTime(range_end) << ": ";
             } else {
-                static constexpr uint64_t MAJOR_SECOND_RANGE = 1000000000; // 1000ms
-                double max_ms = MAJOR_SECOND_RANGE / 1000000.0;
-                std::cout << "  > " << std::setw(6) << std::fixed << std::setprecision(1) << max_ms << " ms: ";
+                std::cout << "  > " << std::setw(10) << formatTime(MAJOR_SECOND_RANGE) << "     : ";
             }
 
             // Draw bar.

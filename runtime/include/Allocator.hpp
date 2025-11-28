@@ -124,6 +124,12 @@ private:
     size_t nursery_committed_;    // Committed bytes in nursery region.
     bool initialized;             // True after initialize() has been called.
 
+#if ENABLE_GC_STATS
+    // Accumulated stats from thread heaps that were destroyed during reset.
+    // This ensures stats survive across test runs that reset the allocator.
+    GCStats accumulated_stats_;
+#endif
+
     // ========== Thread-Local Heaps ==========
 
     mutable std::recursive_mutex thread_mutex_;  // Protects thread_heaps_ and region allocation.
