@@ -1,0 +1,13 @@
+{
+  "file_patterns": [
+    "design_docs/gc_handbook",
+    "design_docs/guida_build_notes.md",
+    "design_docs/guida-io-operations.md",
+    "design_docs/guida-io-ops.csv",
+    "design_docs/lean_mlir_research.md",
+    "design_docs/llvm_stackmap_integration.md"
+  ],
+  "model": "gpt-5.1",
+  "reasoning_effort": "medium",
+  "vector_store_id": "vs_6929b0f3740c81919bbdee4d25929ffc"
+}

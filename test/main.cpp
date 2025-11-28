@@ -481,6 +481,29 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testRootsPreservedAfterSweep);
     oldGenTests.add(testGarbageUnmarkedInIncrementalSteps);
     oldGenTests.add(testGarbageReclaimedAfterSweep);
+    // Phase 1-2: Free-list allocation
+    oldGenTests.add(testSizeClassCorrectness);
+    oldGenTests.add(testFreeListRoundTrip);
+    oldGenTests.add(testMixedSizeAllocation);
+    // Phase 3: Lazy sweeping
+    oldGenTests.add(testLazySweepPreservesLive);
+    oldGenTests.add(testSweepProgressMonotonicity);
+    oldGenTests.add(testAllocationDuringSweep);
+    // Phase 4: Incremental marking
+    oldGenTests.add(testIncrementalMarkEquivalence);
+    oldGenTests.add(testMarkingWithAllocation);
+    // Phase 5: Fragmentation statistics
+    oldGenTests.add(testUtilizationCalculation);
+    oldGenTests.add(testLiveBytesAccuracy);
+    // Phase 6: Incremental compaction
+    oldGenTests.add(testEvacuationPreservesValues);
+    oldGenTests.add(testForwardingPointerCorrectness);
+    // Integration / Stress tests
+    oldGenTests.add(testMultipleCycleStability);
+    oldGenTests.add(testHeaderConsistency);
+    oldGenTests.add(testEmptyHeapBehavior);
+    oldGenTests.add(testAllGarbageHeap);
+    oldGenTests.add(testAllLiveHeap);
 
     Testing::TestSuite allocatorTests("Allocator");
     allocatorTests.add(testPromotionToOldGen);

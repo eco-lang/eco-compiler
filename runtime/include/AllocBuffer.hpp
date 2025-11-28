@@ -43,6 +43,14 @@ public:
         return result;
     }
 
+    // Accessors for buffer bounds.
+    char* start() const { return start_; }
+    char* end() const { return end_; }
+    char* allocPtr() const { return alloc_ptr_; }
+
+    // Returns the number of bytes used in this buffer.
+    size_t usedBytes() const { return alloc_ptr_ - start_; }
+
 private:
     char* start_;      // Start of buffer memory region.
     char* end_;        // End of buffer memory region (exclusive).

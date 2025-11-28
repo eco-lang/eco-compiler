@@ -357,7 +357,8 @@ std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
         if (obj) {
             Header* hdr = getHeader(obj);
             hdr->tag = tag;
-            hdr->color = static_cast<u32>(Color::White);
+            // Note: Don't overwrite color - allocate() already set it correctly
+            // based on current GC phase (Black during marking/sweeping, White otherwise).
             hdr->age = 0;
             hdr->unboxed = 0;
         }

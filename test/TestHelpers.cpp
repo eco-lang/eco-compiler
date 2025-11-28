@@ -350,7 +350,8 @@ void* allocateIntInOldGen(OldGenSpace& oldgen, i64 value) {
 
     Header* hdr = reinterpret_cast<Header*>(obj);
     hdr->tag = Tag_Int;
-    hdr->color = static_cast<u32>(Color::White);
+    // Note: Don't overwrite color - allocate() already set it correctly
+    // based on current GC phase (Black during marking/sweeping, White otherwise).
 
     ElmInt* elm_int = static_cast<ElmInt*>(obj);
     elm_int->value = value;
