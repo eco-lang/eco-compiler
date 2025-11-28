@@ -21,7 +21,7 @@ This is not a minor optimization - it fundamentally simplifies the GC design. Th
 
 The GC uses two generations because the "weak generational hypothesis" holds: most Elm values die young. The design pairs each generation with the algorithm best suited to its characteristics.
 
-### Nursery: Semi-Space Copying (Cheney's Algorithm)
+### Nursery: Block-Based Semi-Space Copying (Cheney's Algorithm)
 
 Young objects live in the nursery, which uses Cheney's copying collector:
 
@@ -31,7 +31,13 @@ Young objects live in the nursery, which uses Cheney's copying collector:
 
 This is optimal for high-churn, short-lived allocations. The cost of GC is proportional to survivors, not total allocations.
 
-The nursery is divided into two semi-spaces (from-space and to-space). Only one is active at a time. The 2x space overhead is acceptable for the speed benefit.
+**Block-based design**: Rather than two contiguous semi-spaces, the nursery uses AllocBuffer-sized blocks organized into two sets (`from_blocks_` and `to_blocks_`). This enables:
+
+- **Dynamic growth**: When survivors exceed 75% of to-space capacity, both spaces grow by 50%
+- **Unified block management**: Same block size as old gen AllocBuffers (simpler memory layout)
+- **On-demand acquisition**: Blocks are acquired from the Allocator as needed
+
+The trade-off: `isInFromSpace()` requires O(log n) lookup via `std::set::upper_bound()` rather than O(1) pointer comparison. This is acceptable because the check only happens during GC (once per pointer), not on the allocation fast path.
 
 ### Old Generation: Mark-and-Sweep
 
@@ -91,14 +97,18 @@ The allocator reserves a single large address space (1GB by default) via `mmap` 
 
 ```
 [0 .. heap_reserved/2)      - Old generation
-[heap_reserved/2 .. end)    - Nursery
+[heap_reserved/2 .. end)    - Nursery blocks
 ```
 
 Physical memory is committed on demand:
-- Nursery: Committed fully when `initThread()` creates it
+- Nursery: Blocks committed via `acquireNurseryBlock()` as the nursery initializes or grows
 - Old gen: Committed in AllocBuffer-sized chunks as objects are promoted
 
 This lazy commitment means the runtime reserves address space but only uses physical memory for actual allocations.
+
+**Configuration**: The nursery is sized via `nursery_block_count` (must be even, split between from-space and to-space). Total nursery size = `nursery_block_count * alloc_buffer_size`.
+
+**Heap validation**: During major GC, pointers are validated with `isInHeap()` - a simple O(1) bounds check against the reserved address range. This is simpler than checking `isInOldGen() || isInNursery()` and correctly handles all valid heap pointers regardless of which generation they're in.
 
 ## Promotion: When Objects Grow Up
 
@@ -109,6 +119,15 @@ u32 age : 2;  // Survives up to 3 GCs before promotion
 ```
 
 When `evacuate()` sees an object that has reached promotion age, it allocates in the old gen instead of to-space. Promoted objects are added to a buffer and scanned to update their child pointers, since they may reference other nursery objects that haven't been evacuated yet.
+
+## Execution Model: Mutator Runs GC
+
+There is no separate collector thread. Each mutator thread runs its own GC:
+
+- **Minor GC**: Triggered when nursery allocation fails (all from-space blocks exhausted)
+- **Major GC**: Triggered when old gen committed bytes exceed a threshold
+
+This stop-the-world approach is simple and avoids synchronization complexity. The mutator pauses, runs GC, then resumes. For Elm's typical use case (short-lived web applications), this is sufficient.
 
 ## Key Invariants
 
@@ -123,6 +142,8 @@ When `evacuate()` sees an object that has reached promotion age, it allocates in
 5. **Constants are never heap-allocated**: Nil, True, False, Unit are embedded in the pointer representation.
 
 6. **Allocation may trigger GC**: Callers must assume any allocation could move all live objects.
+
+7. **Block membership is O(log n)**: Checking if a pointer is in from-space or to-space uses `std::set::upper_bound()`. This only matters during GC, not allocation.
 
 ## Object Layout and Size Calculation
 
@@ -156,18 +177,18 @@ Key testing infrastructure:
 
 When a test fails, RapidCheck provides a reproduction string. Use `--reproduce <string>` to reliably replay the failure for debugging.
 
-## Mental Model: Think in Generations
+## Mental Model: Think in Generations and Blocks
 
 When reasoning about the GC, think in terms of where objects live and when they move:
 
 ```
-Allocation  -->  [Nursery from-space]
+Allocation  -->  [Nursery from-space blocks]
                        |
-                       v  (minor GC)
-                 [Nursery to-space] or [Old gen]
+                       v  (minor GC - blocks exhausted)
+                 [Nursery to-space blocks] or [Old gen]
                        |
-                       v  (spaces flip)
-                 [Nursery from-space]  (now has survivors)
+                       v  (spaces swap)
+                 [Nursery from-space blocks]  (now has survivors)
                        |
                        v  (next minor GC, if survived enough)
                  [Old gen]  (promoted)
@@ -175,10 +196,13 @@ Allocation  -->  [Nursery from-space]
 
 Old gen objects only die during major GC. They can never move back to nursery.
 
+**Block iteration during GC**: The nursery maintains iterators (`current_from_it_`, `current_to_it_`) to track which block is currently active for allocation and copying. Cheney's algorithm advances through to-space blocks as it copies survivors.
+
 The key questions for debugging:
 1. Was it correctly evacuated? (forwarding pointer left behind)
 2. Were its children correctly updated? (scanObject/markChildren)
 3. Was its size calculated correctly? (getObjectSize)
+4. Is the pointer in the right block set? (isInFromSpace vs isInToSpace)
 
 ## Future Direction
 
