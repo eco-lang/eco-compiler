@@ -997,15 +997,8 @@ Testing::TestCase testHeaderConsistency("Rooted object headers remain valid afte
                 void* obj = objects[idx];
                 Header* hdr = getHeader(obj);
 
-                // Tag should be valid for this object type.
-                bool valid_tag = (hdr->tag >= Tag_Int && hdr->tag <= Tag_Forward) ||
-                                 hdr->tag == Tag_Tuple2 || hdr->tag == Tag_Tuple3 ||
-                                 hdr->tag == Tag_Cons || hdr->tag == Tag_Custom ||
-                                 hdr->tag == Tag_Record || hdr->tag == Tag_DynRecord ||
-                                 hdr->tag == Tag_Closure || hdr->tag == Tag_Process ||
-                                 hdr->tag == Tag_Task || hdr->tag == Tag_String ||
-                                 hdr->tag == Tag_Float || hdr->tag == Tag_Char ||
-                                 hdr->tag == Tag_FieldGroup;
+                // Tag should be valid for this object type (0 to Tag_Forward=14).
+                bool valid_tag = hdr->tag <= Tag_Forward;
                 RC_ASSERT(valid_tag);
 
                 // Live objects should not be Grey (in the middle of marking).

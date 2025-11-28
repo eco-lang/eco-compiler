@@ -405,6 +405,8 @@ std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
                 obj = allocInOldGen(size, Tag_String);
                 if (!obj) break;
                 ElmString *elm_string = static_cast<ElmString *>(obj);
+                Header* hdr = getHeader(obj);
+                hdr->size = desc.string_chars.size();  // Required for getObjectSize()
                 for (size_t i = 0; i < desc.string_chars.size(); i++) {
                     elm_string->chars[i] = desc.string_chars[i];
                 }
@@ -458,6 +460,8 @@ std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
                 obj = allocInOldGen(size, Tag_Custom);
                 if (!obj) break;
                 Custom *custom = static_cast<Custom *>(obj);
+                Header* hdr = getHeader(obj);
+                hdr->size = num_values;  // Required for getObjectSize()
 
                 custom->ctor = desc.ctor;
                 custom->unboxed = buildUnboxedBitmap(desc.custom_values_boxed, 48);
@@ -475,6 +479,8 @@ std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
                 obj = allocInOldGen(size, Tag_Record);
                 if (!obj) break;
                 Record *record = static_cast<Record *>(obj);
+                Header* hdr = getHeader(obj);
+                hdr->size = num_values;  // Required for getObjectSize()
 
                 record->unboxed = buildUnboxedBitmap(desc.record_values_boxed, 64);
 
@@ -491,6 +497,8 @@ std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
                 obj = allocInOldGen(size, Tag_DynRecord);
                 if (!obj) break;
                 DynRecord *dynrec = static_cast<DynRecord *>(obj);
+                Header* hdr = getHeader(obj);
+                hdr->size = num_values;  // Required for getObjectSize()
 
                 dynrec->unboxed = 0;  // DynRecord values are all HPointers.
 
@@ -523,6 +531,8 @@ std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
                 obj = allocInOldGen(size, Tag_FieldGroup);
                 if (!obj) break;
                 FieldGroup *fieldgroup = static_cast<FieldGroup *>(obj);
+                Header* hdr = getHeader(obj);
+                hdr->size = num_fields;  // Required for getObjectSize()
 
                 fieldgroup->count = num_fields;
                 for (size_t i = 0; i < num_fields; i++) {

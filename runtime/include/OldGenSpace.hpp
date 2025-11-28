@@ -42,8 +42,14 @@ static constexpr size_t MARK_WORK_RATIO = 2;
 
 // A free cell in the segregated free list. Overlays the object's memory.
 // Size is implicit from the size class.
+//
+// IMPORTANT: The FreeCell preserves the original Header to allow getObjectSize()
+// to work correctly during subsequent GC sweeps. The 'next' pointer is stored
+// AFTER the header, in the space that would normally hold the object's data.
+// This means all objects in the free list must be at least sizeof(Header) + 8 bytes.
 struct FreeCell {
-    FreeCell* next;
+    Header header;    // Preserved original header (8 bytes)
+    FreeCell* next;   // Free list link (8 bytes, stored in object's data area)
 };
 
 // ============================================================================
