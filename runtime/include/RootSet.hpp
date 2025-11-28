@@ -2,6 +2,7 @@
 #define ECO_ROOTSET_H
 
 #include <cstddef>
+#include <unordered_set>
 #include <vector>
 #include "Heap.hpp"
 
@@ -20,14 +21,14 @@ class RootSet {
 public:
     // ===== Long-lived roots =====
 
-    // Registers a pointer location as a GC root.
+    // Registers a pointer location as a GC root. O(1) average.
     void addRoot(HPointer *root);
 
-    // Unregisters a pointer location from the root set.
+    // Unregisters a pointer location from the root set. O(1) average.
     void removeRoot(HPointer *root);
 
-    // Returns the list of registered root pointers.
-    const std::vector<HPointer *> &getRoots() const { return roots; }
+    // Returns the set of registered root pointers.
+    const std::unordered_set<HPointer *> &getRoots() const { return roots; }
 
     // ===== Stack roots (temporary, frame-based) =====
 
@@ -56,7 +57,7 @@ public:
     void reset();
 
 private:
-    std::vector<HPointer *> roots;        // Long-lived roots.
+    std::unordered_set<HPointer *> roots; // Long-lived roots (O(1) add/remove).
     std::vector<HPointer *> stack_roots;  // Temporary stack roots.
 };
 

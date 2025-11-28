@@ -1,6 +1,7 @@
 #ifndef ECO_OLDGENSPACE_H
 #define ECO_OLDGENSPACE_H
 
+#include <unordered_set>
 #include <vector>
 #include "AllocatorCommon.hpp"
 #include "AllocBuffer.hpp"
@@ -42,8 +43,12 @@ public:
     // Returns the current number of bytes allocated in old gen.
     size_t getAllocatedBytes() const { return allocated_bytes; }
 
-    // Returns true if the pointer is within any of this old gen's buffers.
-    bool contains(void* ptr) const;
+    // Returns true if the pointer is within the old gen region.
+    // O(1) using cached bounds. Inline for performance.
+    inline bool contains(void* ptr) const {
+        char* p = static_cast<char*>(ptr);
+        return p >= region_base_ && p < region_end_;
+    }
 
 private:
     // ========== Configuration ==========
@@ -56,6 +61,10 @@ private:
     std::vector<AllocBuffer*> buffers_;   // All buffers owned by old gen.
     AllocBuffer* current_buffer_;          // Active buffer for allocation.
     size_t allocated_bytes;                // Current bytes in use.
+
+    // Cached bounds for O(1) membership checks.
+    char* region_base_;                    // Start of old gen region.
+    char* region_end_;                     // End of committed old gen region.
 
     // ========== Marking State ==========
 
@@ -76,9 +85,9 @@ private:
     // Begins marking phase, pushing roots onto the mark stack.
     // Takes collected roots and Allocator reference for nursery checks.
 #if ENABLE_GC_STATS
-    void startMark(const std::vector<HPointer*> &roots, Allocator &alloc, GCStats &stats);
+    void startMark(const std::unordered_set<HPointer*> &roots, Allocator &alloc, GCStats &stats);
 #else
-    void startMark(const std::vector<HPointer*> &roots, Allocator &alloc);
+    void startMark(const std::unordered_set<HPointer*> &roots, Allocator &alloc);
 #endif
 
     // Performs incremental marking work. Returns true if more work remains.
@@ -114,7 +123,7 @@ private:
 class OldGenSpaceTestAccess {
 public:
 #if ENABLE_GC_STATS
-    static void startMark(OldGenSpace& oldgen, const std::vector<HPointer*>& roots,
+    static void startMark(OldGenSpace& oldgen, const std::unordered_set<HPointer*>& roots,
                           Allocator& alloc, GCStats& stats) {
         oldgen.startMark(roots, alloc, stats);
     }
@@ -127,7 +136,7 @@ public:
         oldgen.finishMarkAndSweep(stats);
     }
 #else
-    static void startMark(OldGenSpace& oldgen, const std::vector<HPointer*>& roots,
+    static void startMark(OldGenSpace& oldgen, const std::unordered_set<HPointer*>& roots,
                           Allocator& alloc) {
         oldgen.startMark(roots, alloc);
     }

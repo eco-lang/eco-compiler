@@ -222,29 +222,7 @@ void* NurserySpace::allocateSlow(size_t size) {
     return nullptr;
 }
 
-bool NurserySpace::contains(void *ptr) const {
-    char* p = static_cast<char*>(ptr);
-    return (p >= low_base_ && p < low_end_) ||
-           (p >= high_base_ && p < high_end_);
-}
-
-bool NurserySpace::isInFromSpace(void* ptr) const {
-    char* p = static_cast<char*>(ptr);
-    if (from_is_low_) {
-        return p >= low_base_ && p < low_end_;
-    } else {
-        return p >= high_base_ && p < high_end_;
-    }
-}
-
-bool NurserySpace::isInToSpace(void* ptr) const {
-    char* p = static_cast<char*>(ptr);
-    if (from_is_low_) {
-        return p >= high_base_ && p < high_end_;
-    } else {
-        return p >= low_base_ && p < low_end_;
-    }
-}
+// contains(), isInFromSpace(), isInToSpace() are now inline in the header.
 
 size_t NurserySpace::bytesAllocated() const {
     const std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
@@ -527,11 +505,10 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     if (!obj)
         return;
 
-    // Assert pointer is within valid heap memory.
-    char *heap_base = Allocator::instance().getHeapBase();
-    char *heap_end = heap_base + Allocator::instance().getHeapReserved();
+    // Use cached allocator reference instead of repeated singleton lookup.
+    char *heap_base = allocator_->getHeapBase();
     assert(static_cast<char*>(obj) >= heap_base && "Pointer below heap base!");
-    assert(static_cast<char*>(obj) < heap_end && "Pointer above heap end!");
+    assert(static_cast<char*>(obj) < heap_base + allocator_->getHeapReserved() && "Pointer above heap end!");
 
     // First priority: Check if this location has a forward pointer.
     // This must happen BEFORE the from-space check so that pointers from

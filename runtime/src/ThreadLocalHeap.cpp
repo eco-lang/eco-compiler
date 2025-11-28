@@ -91,7 +91,7 @@ void ThreadLocalHeap::majorGC() {
 #endif
 
     // Collect all roots from this thread.
-    std::vector<HPointer*> roots = collectRoots();
+    std::unordered_set<HPointer*> roots = collectRoots();
 
     // Start marking phase.
 #if ENABLE_GC_STATS
@@ -119,16 +119,13 @@ bool ThreadLocalHeap::isNurseryNearFull(float threshold) const {
     return usage >= static_cast<size_t>(total_capacity * threshold);
 }
 
-std::vector<HPointer*> ThreadLocalHeap::collectRoots() {
-    std::vector<HPointer*> all_roots;
+std::unordered_set<HPointer*> ThreadLocalHeap::collectRoots() {
+    // Start with the long-lived roots (already an unordered_set).
+    std::unordered_set<HPointer*> all_roots = nursery_.getRootSet().getRoots();
 
-    // Collect long-lived roots.
-    const auto& roots = nursery_.getRootSet().getRoots();
-    all_roots.insert(all_roots.end(), roots.begin(), roots.end());
-
-    // Collect stack roots.
+    // Add stack roots.
     const auto& stack_roots = nursery_.getRootSet().getStackRoots();
-    all_roots.insert(all_roots.end(), stack_roots.begin(), stack_roots.end());
+    all_roots.insert(stack_roots.begin(), stack_roots.end());
 
     return all_roots;
 }

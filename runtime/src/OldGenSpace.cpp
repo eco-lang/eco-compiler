@@ -38,6 +38,7 @@ void* readBarrier(HPointer& ptr) {
 OldGenSpace::OldGenSpace() :
     config_(nullptr), allocator_(nullptr),
     current_buffer_(nullptr), allocated_bytes(0),
+    region_base_(nullptr), region_end_(nullptr),
     current_epoch(0), marking_active(false), allocator_ref_(nullptr) {
     // Initialization happens in initialize() method.
 }
@@ -58,15 +59,7 @@ void OldGenSpace::initialize(Allocator* allocator, const HeapConfig* config) {
     allocated_bytes = 0;
 }
 
-bool OldGenSpace::contains(void* ptr) const {
-    char* p = static_cast<char*>(ptr);
-    for (const AllocBuffer* buffer : buffers_) {
-        if (p >= buffer->start_ && p < buffer->end_) {
-            return true;
-        }
-    }
-    return false;
-}
+// contains() is now inline in the header.
 
 void OldGenSpace::reset(const HeapConfig* new_config) {
     // Update config if provided.
@@ -83,6 +76,8 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
 
     // Reset state.
     allocated_bytes = 0;
+    region_base_ = nullptr;
+    region_end_ = nullptr;
     marking_active = false;
     current_epoch = 0;
     mark_stack.clear();
@@ -119,6 +114,12 @@ void *OldGenSpace::allocate(size_t size) {
 
     buffers_.push_back(current_buffer_);
 
+    // Update cached bounds for O(1) contains() check.
+    if (region_base_ == nullptr) {
+        region_base_ = current_buffer_->start_;
+    }
+    region_end_ = current_buffer_->end_;
+
     void* result = current_buffer_->allocate(size);
     assert(result && "Failed to allocate from fresh AllocBuffer");
 
@@ -137,9 +138,9 @@ void *OldGenSpace::allocate(size_t size) {
  * Pushes all roots onto the mark stack and prepares for incremental marking.
  */
 #if ENABLE_GC_STATS
-void OldGenSpace::startMark(const std::vector<HPointer*> &roots, Allocator &alloc, GCStats &stats) {
+void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots, Allocator &alloc, GCStats &stats) {
 #else
-void OldGenSpace::startMark(const std::vector<HPointer*> &roots, Allocator &alloc) {
+void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots, Allocator &alloc) {
 #endif
     if (marking_active)
         return;

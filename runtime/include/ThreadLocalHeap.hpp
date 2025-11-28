@@ -1,6 +1,7 @@
 #ifndef ECO_THREAD_LOCAL_HEAP_H
 #define ECO_THREAD_LOCAL_HEAP_H
 
+#include <unordered_set>
 #include "AllocatorCommon.hpp"
 #include "NurserySpace.hpp"
 #include "OldGenSpace.hpp"
@@ -110,7 +111,7 @@ private:
 #endif
 
     /** Collects all roots from this thread's root set. */
-    std::vector<HPointer*> collectRoots();
+    std::unordered_set<HPointer*> collectRoots();
 };
 
 } // namespace Elm

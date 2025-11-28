@@ -133,15 +133,34 @@ private:
 
     // Returns true if the pointer points into any of this nursery's blocks.
     // O(1) using cached bounds (approximate - includes gaps between blocks).
-    bool contains(void *ptr) const;
+    // Inline for performance - called frequently during GC.
+    inline bool contains(void *ptr) const {
+        char* p = static_cast<char*>(ptr);
+        return (p >= low_base_ && p < low_end_) ||
+               (p >= high_base_ && p < high_end_);
+    }
 
     // Returns true if the pointer is in from-space.
-    // O(1) using cached bounds.
-    bool isInFromSpace(void* ptr) const;
+    // O(1) using cached bounds. Inline for performance.
+    inline bool isInFromSpace(void* ptr) const {
+        char* p = static_cast<char*>(ptr);
+        if (from_is_low_) {
+            return p >= low_base_ && p < low_end_;
+        } else {
+            return p >= high_base_ && p < high_end_;
+        }
+    }
 
     // Returns true if the pointer is in to-space.
-    // O(1) using cached bounds.
-    bool isInToSpace(void* ptr) const;
+    // O(1) using cached bounds. Inline for performance.
+    inline bool isInToSpace(void* ptr) const {
+        char* p = static_cast<char*>(ptr);
+        if (from_is_low_) {
+            return p >= high_base_ && p < high_end_;
+        } else {
+            return p >= low_base_ && p < low_end_;
+        }
+    }
 
     // Updates cached bounds after block changes.
     void updateBounds();
