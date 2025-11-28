@@ -373,12 +373,12 @@ void NurserySpace::checkAndGrow() {
 }
 
 /**
- * Performs a minor garbage collection using Cheney's algorithm with hybrid DFS/BFS traversal.
+ * Performs a minor garbage collection using Cheney's algorithm.
  *
  * Algorithm phases:
  *   1. Evacuate all roots (from root set) to to-space or old gen (if aged).
- *   2. Hybrid traversal: drain DFS stack for deep structures, fall back to
- *      Cheney's scan pointer for breadth-first when stack is empty.
+ *   2. Cheney scan: walk to-space objects breadth-first, evacuating children.
+ *      When use_hybrid_dfs is enabled, list spines are copied contiguously.
  *   3. Process promoted objects (scan their children, may add more promoted objects).
  *   4. Check occupancy and grow nursery if needed.
  *   5. Swap from-space and to-space.
@@ -417,31 +417,14 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
         evacuate(*root, oldgen, &promoted_objects);
     }
 
-    // Clear DFS stack before starting hybrid traversal.
-    dfs_stack_.clear();
-
-    // Phase 2: Hybrid Cheney/DFS algorithm (may add to promoted_objects).
-    // - DFS stack provides depth-first bias for deep structures (lists, task chains)
-    // - Cheney's scanPtr provides BFS fallback and guarantees completion
-    while (scanHasMore() || !dfs_stack_.empty()) {
-        // Priority 1: Drain DFS stack (depth-first for lists/chains).
-        // This clusters related objects together for better cache locality.
-        while (!dfs_stack_.empty()) {
-            void* obj = dfs_stack_.pop();
-            // Only scan if object is in to-space (already evacuated there).
-            // Objects may have been pushed but already processed via scanPtr.
-            if (isInToSpace(obj)) {
-                scanObject(obj, oldgen, &promoted_objects);
-            }
-        }
-
-        // Priority 2: Cheney scan (BFS fallback, handles stack overflow).
-        if (scanHasMore()) {
-            void *obj = scan_ptr_;
-            scanObject(obj, oldgen, &promoted_objects);
-            scan_ptr_ += getObjectSize(obj);
-            advanceScanIfNeeded();
-        }
+    // Phase 2: Cheney's algorithm - scan to-space objects breadth-first.
+    // When use_hybrid_dfs is enabled, list spine copying provides locality optimization
+    // within scanObject() without requiring a separate DFS stack.
+    while (scanHasMore()) {
+        void *obj = scan_ptr_;
+        scanObject(obj, oldgen, &promoted_objects);
+        scan_ptr_ += getObjectSize(obj);
+        advanceScanIfNeeded();
     }
 
     // Phase 3: Process promoted objects until buffer is empty.
@@ -594,14 +577,14 @@ void NurserySpace::evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace 
 /**
  * Scans a heap object and evacuates all its children.
  *
- * This implements a hybrid DFS/BFS traversal strategy:
- *   - Deep structures (Cons lists, Task chains): Push tails onto DFS stack
- *     for depth-first traversal, which clusters list cells contiguously.
- *   - Wide structures (Tuple, Record, Closure): Evacuate inline for BFS,
- *     which keeps sibling fields together (accessed as a group).
+ * Uses standard Cheney's BFS with a locality optimization for lists:
+ *   - When use_hybrid_dfs is enabled and a Cons cell's tail is in from-space,
+ *     the entire list spine is copied contiguously using two-pass copying.
+ *   - Pass 1 (evacuateListSpine): Copies Cons cells by following tail pointers
+ *   - Pass 2 (evacuateListHeads): Evacuates heads if any were boxed pointers
+ *   - This creates contiguous list spines for better cache locality.
  *
- * The DFS stack has bounded size; when full, objects fall through to
- * Cheney's scanPtr for BFS processing.
+ * All other types use standard BFS evacuation.
  */
 void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
     Header *hdr = getHeader(obj);
@@ -654,28 +637,39 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             break;
         }
 
-        // ====== Deep structures: DFS (push tail onto stack) ======
-        // These form chains; depth-first keeps the chain contiguous.
+        // ====== Deep structures: Two-pass spine copying for locality ======
+        // Lists form chains; copying spine first keeps cells contiguous.
 
         case Tag_Cons: {
             Cons *c = static_cast<Cons *>(obj);
-            // Head is "wide" direction - evacuate inline.
-            evacuateUnboxable(c->head, !(hdr->unboxed & 1), oldgen, promoted_objects);
 
-            // Tail is "deep" direction - use DFS for list locality.
             if (config_->use_hybrid_dfs) {
-                // Evacuate tail first (updates c->tail to new location).
-                evacuate(c->tail, oldgen, promoted_objects);
+                // Two-pass list copying for optimal locality:
+                // Pass 1: Copy the tail spine contiguously
+                // Pass 2: Copy heads (only if needed)
 
-                // Push evacuated tail onto DFS stack for immediate processing.
-                // This ensures the next Cons cell is copied right after this one.
+                // First evacuate this cell's head
+                evacuateUnboxable(c->head, !(hdr->unboxed & 1), oldgen, promoted_objects);
+
+                // Then copy the tail spine if it's in from-space
                 if (c->tail.constant == 0) {
                     void* tail_obj = Allocator::fromPointerRaw(c->tail);
-                    if (tail_obj && isInToSpace(tail_obj) && !dfs_stack_.full()) {
-                        dfs_stack_.push(tail_obj);
+                    if (tail_obj && isInFromSpace(tail_obj)) {
+                        bool needs_head_pass = false;
+                        void* spine_start = evacuateListSpine(c->tail, oldgen, promoted_objects, needs_head_pass);
+
+                        if (needs_head_pass && spine_start) {
+                            evacuateListHeads(spine_start, oldgen, promoted_objects);
+                        }
+                    } else {
+                        // Tail not in from-space - just update the pointer if forwarded
+                        evacuate(c->tail, oldgen, promoted_objects);
                     }
                 }
+                // If tail is Nil constant, nothing to do
             } else {
+                // Standard BFS: evacuate head and tail normally
+                evacuateUnboxable(c->head, !(hdr->unboxed & 1), oldgen, promoted_objects);
                 evacuate(c->tail, oldgen, promoted_objects);
             }
             break;
@@ -683,66 +677,215 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
 
         case Tag_Task: {
             Task *t = static_cast<Task *>(obj);
-            // value, callback, kill are "wide" - evacuate inline.
+            // Evacuate all children - no special handling needed.
+            // Task chains will be processed via Cheney's BFS.
             evacuate(t->value, oldgen, promoted_objects);
             evacuate(t->callback, oldgen, promoted_objects);
             evacuate(t->kill, oldgen, promoted_objects);
-
-            // task pointer can form chains - use DFS.
-            if (config_->use_hybrid_dfs) {
-                evacuate(t->task, oldgen, promoted_objects);
-
-                if (t->task.constant == 0) {
-                    void* task_obj = Allocator::fromPointerRaw(t->task);
-                    if (task_obj && isInToSpace(task_obj) && !dfs_stack_.full()) {
-                        dfs_stack_.push(task_obj);
-                    }
-                }
-            } else {
-                evacuate(t->task, oldgen, promoted_objects);
-            }
+            evacuate(t->task, oldgen, promoted_objects);
             break;
         }
 
         case Tag_Process: {
             Process *p = static_cast<Process *>(obj);
-
-            if (config_->use_hybrid_dfs) {
-                // Evacuate all three subgraphs.
-                evacuate(p->root, oldgen, promoted_objects);
-                evacuate(p->stack, oldgen, promoted_objects);
-                evacuate(p->mailbox, oldgen, promoted_objects);
-
-                // Push in reverse order so root is processed first (LIFO).
-                // This clusters each subgraph together.
-                if (p->mailbox.constant == 0) {
-                    void* mailbox_obj = Allocator::fromPointerRaw(p->mailbox);
-                    if (mailbox_obj && isInToSpace(mailbox_obj) && !dfs_stack_.full()) {
-                        dfs_stack_.push(mailbox_obj);
-                    }
-                }
-                if (p->stack.constant == 0) {
-                    void* stack_obj = Allocator::fromPointerRaw(p->stack);
-                    if (stack_obj && isInToSpace(stack_obj) && !dfs_stack_.full()) {
-                        dfs_stack_.push(stack_obj);
-                    }
-                }
-                if (p->root.constant == 0) {
-                    void* root_obj = Allocator::fromPointerRaw(p->root);
-                    if (root_obj && isInToSpace(root_obj) && !dfs_stack_.full()) {
-                        dfs_stack_.push(root_obj);
-                    }
-                }
-            } else {
-                evacuate(p->root, oldgen, promoted_objects);
-                evacuate(p->stack, oldgen, promoted_objects);
-                evacuate(p->mailbox, oldgen, promoted_objects);
-            }
+            // Evacuate all children - no special handling needed.
+            // Process subgraphs will be processed via Cheney's BFS.
+            evacuate(p->root, oldgen, promoted_objects);
+            evacuate(p->stack, oldgen, promoted_objects);
+            evacuate(p->mailbox, oldgen, promoted_objects);
             break;
         }
 
         default:
             break;
+    }
+}
+
+// ============================================================================
+// List Locality Optimization - Two-Pass Spine Copying
+// ============================================================================
+
+/**
+ * Copies a list spine (Cons cells only) contiguously in to-space.
+ *
+ * This function iterates through a linked list via tail pointers, copying
+ * each Cons cell to create a contiguous spine in to-space. This provides
+ * excellent cache locality when traversing the list later.
+ *
+ * The function handles:
+ *   - Already-forwarded cells (follows the forward, stops copying)
+ *   - Promotion to old gen (aged cells go to old gen)
+ *   - Non-Cons tails (delegates to regular evacuate)
+ *   - Nil terminator (stops iteration)
+ *
+ * @return Pointer to first copied Cons in to-space, or nullptr if list was empty
+ */
+void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
+                                       std::vector<void*> *promoted_objects,
+                                       bool &needs_head_pass) {
+    needs_head_pass = false;
+
+    if (ptr.constant != 0) {
+        return nullptr;  // Nil or other constant - nothing to copy
+    }
+
+    void* first_copied = nullptr;
+    void* prev_copied = nullptr;
+    HPointer current = ptr;
+    char* heap_base = allocator_->getHeapBase();
+
+    while (current.constant == 0) {
+        void* obj = Allocator::fromPointerRaw(current);
+        if (!obj) break;
+
+        Header* hdr = getHeader(obj);
+
+        // Already forwarded? Update pointer and stop - rest of list already copied
+        if (hdr->tag == Tag_Forward) {
+            Forward* fwd = static_cast<Forward*>(obj);
+            uintptr_t byte_offset = static_cast<uintptr_t>(fwd->header.forward_ptr) << 3;
+            HPointer forwarded = Allocator::toPointerRaw(heap_base + byte_offset);
+
+            if (prev_copied) {
+                // Link previous copied cell to the forwarded location
+                Cons* prev_cons = static_cast<Cons*>(prev_copied);
+                prev_cons->tail = forwarded;
+            } else {
+                // First cell was already forwarded
+                ptr = forwarded;
+            }
+            break;
+        }
+
+        // Not in from-space? Stop spine copying
+        if (!isInFromSpace(obj)) {
+            break;
+        }
+
+        // Not a Cons? Delegate to regular evacuate and stop
+        if (hdr->tag != Tag_Cons) {
+            if (prev_copied) {
+                Cons* prev_cons = static_cast<Cons*>(prev_copied);
+                evacuate(prev_cons->tail, oldgen, promoted_objects);
+            } else {
+                evacuate(ptr, oldgen, promoted_objects);
+            }
+            break;
+        }
+
+        Cons* cons = static_cast<Cons*>(obj);
+
+        // Check if head needs evacuation (boxed pointer, not a constant)
+        bool head_is_boxed = !(hdr->unboxed & 1);
+        if (head_is_boxed && cons->head.p.constant == 0) {
+            needs_head_pass = true;
+        }
+
+        // Save tail before we overwrite the object with forwarding pointer
+        HPointer next_tail = cons->tail;
+
+        // Copy this Cons cell (may go to old gen if aged)
+        size_t size = sizeof(Cons);
+        void* new_obj = nullptr;
+        bool promoted = false;
+
+        if (hdr->age >= config_->promotion_age) {
+            // Promote to old gen
+            new_obj = oldgen.allocate(size);
+            assert(new_obj && "Failed to allocate in old gen during list spine copy");
+            std::memcpy(new_obj, obj, size);
+
+            Header* new_hdr = getHeader(new_obj);
+            new_hdr->age = 0;
+            promoted = true;
+
+            if (promoted_objects) {
+                promoted_objects->push_back(new_obj);
+            }
+            GC_STATS_MINOR_INC_PROMOTED(stats);
+        } else {
+            // Copy to to-space
+            new_obj = copyToSpace(size);
+            assert(new_obj && "Failed to copy Cons to to-space during spine copy");
+            std::memcpy(new_obj, obj, size);
+
+            Header* new_hdr = getHeader(new_obj);
+            new_hdr->age++;
+            GC_STATS_MINOR_INC_SURVIVORS(stats);
+        }
+
+        // Leave forwarding pointer at original location
+        Forward* fwd = static_cast<Forward*>(obj);
+        fwd->header.tag = Tag_Forward;
+        fwd->header.forward_ptr = (static_cast<char*>(new_obj) - heap_base) >> 3;
+        fwd->header.unused = 0;
+
+        // Link previous cell to this new cell
+        if (prev_copied) {
+            Cons* prev_cons = static_cast<Cons*>(prev_copied);
+            prev_cons->tail = Allocator::toPointerRaw(new_obj);
+        } else {
+            // This is the first cell - update the original pointer
+            first_copied = new_obj;
+            ptr = Allocator::toPointerRaw(new_obj);
+        }
+
+        prev_copied = new_obj;
+        current = next_tail;
+    }
+
+    // Handle Nil terminator or end of list - update last cell's tail
+    if (prev_copied && current.constant != 0) {
+        Cons* prev_cons = static_cast<Cons*>(prev_copied);
+        prev_cons->tail = current;  // Keep the Nil constant
+    }
+
+    return first_copied;
+}
+
+/**
+ * Evacuates heads of a previously-copied list spine.
+ *
+ * This is Pass 2 of the two-pass list copying algorithm. It iterates through
+ * the already-copied spine in to-space and evacuates each head that contains
+ * a boxed pointer (not unboxed, not a constant).
+ *
+ * This function should only be called if evacuateListSpine() set needs_head_pass
+ * to true, indicating that at least one head requires evacuation.
+ */
+void NurserySpace::evacuateListHeads(void* first_cons, OldGenSpace &oldgen,
+                                      std::vector<void*> *promoted_objects) {
+    if (!first_cons) return;
+
+    void* current = first_cons;
+
+    while (current) {
+        // Verify we're still looking at a Cons cell in to-space or old gen
+        Header* hdr = getHeader(current);
+        if (hdr->tag != Tag_Cons) break;
+
+        Cons* cons = static_cast<Cons*>(current);
+
+        // Evacuate head if it's boxed
+        bool head_is_boxed = !(hdr->unboxed & 1);
+        if (head_is_boxed) {
+            evacuate(cons->head.p, oldgen, promoted_objects);
+        }
+
+        // Move to next cell in spine
+        if (cons->tail.constant != 0) {
+            break;  // Reached Nil or other constant
+        }
+
+        void* next = Allocator::fromPointerRaw(cons->tail);
+
+        // Stop if we've left the contiguous region we just copied
+        // (tail might point to something copied earlier or in old gen)
+        if (!next || (!isInToSpace(next) && !oldgen.contains(next))) {
+            break;
+        }
+
+        current = next;
     }
 }
 

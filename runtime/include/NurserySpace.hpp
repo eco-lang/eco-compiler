@@ -10,38 +10,6 @@
 
 namespace Elm {
 
-// ============================================================================
-// DFS Stack for Hybrid Traversal
-// ============================================================================
-
-/**
- * Bounded stack for approximate depth-first traversal during GC.
- *
- * Used by the hybrid DFS/BFS copying collector to prioritize depth-first
- * traversal for deep structures (Cons lists, Task chains) while falling
- * back to Cheney's BFS when the stack is full.
- *
- * Benefits:
- *   - Lists: Cons cells copied contiguously (better cache locality)
- *   - Tasks: Task chains clustered together
- *   - Processes: Each subgraph (root, stack, mailbox) clustered
- *
- * When the stack is full, objects fall through to Cheney's scanPtr,
- * which provides BFS traversal as a fallback. This bounds memory usage
- * while still improving locality for typical workloads.
- */
-struct DfsStack {
-    static constexpr size_t MAX_DEPTH = 256;  // Tunable: 128-512 typical.
-    void* data[MAX_DEPTH];
-    size_t top = 0;
-
-    bool empty() const { return top == 0; }
-    bool full() const { return top == MAX_DEPTH; }
-    void push(void* obj) { if (!full()) data[top++] = obj; }
-    void* pop() { return data[--top]; }
-    void clear() { top = 0; }
-};
-
 // Forward declarations.
 class Allocator;
 class ThreadLocalHeap;
@@ -117,8 +85,6 @@ private:
 
     ThreadLocalHeap* thread_heap_;    // Owner ThreadLocalHeap (for multi-threaded mode).
 
-    DfsStack dfs_stack_;              // Stack for hybrid DFS/BFS traversal.
-
     // ========== Internal Methods ==========
 
     // Initializes this nursery by requesting blocks from the Allocator.
@@ -193,6 +159,38 @@ private:
     void evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
     void evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
     void scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
+
+    // ========== List Locality Optimization ==========
+    // Two-pass list copying for contiguous spine allocation.
+
+    /**
+     * Copies a list spine (Cons cells only) contiguously in to-space.
+     *
+     * Pass 1: Iterates through tail pointers, copying each Cons cell.
+     * This creates a contiguous spine with good cache locality.
+     *
+     * @param ptr          Pointer to first Cons cell to copy (updated to new location)
+     * @param oldgen       Old generation for promotion
+     * @param promoted_objects  Buffer for objects promoted to old gen
+     * @param needs_head_pass   Set to true if any head requires evacuation
+     * @return Pointer to first copied Cons in to-space (nullptr if empty/error)
+     */
+    void* evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
+                            std::vector<void*> *promoted_objects,
+                            bool &needs_head_pass);
+
+    /**
+     * Evacuates heads of a previously-copied list spine.
+     *
+     * Pass 2: Iterates through the copied spine in to-space and evacuates
+     * each head that contains a boxed pointer.
+     *
+     * @param first_cons   Pointer to first Cons in to-space (from evacuateListSpine)
+     * @param oldgen       Old generation for promotion
+     * @param promoted_objects  Buffer for objects promoted to old gen
+     */
+    void evacuateListHeads(void* first_cons, OldGenSpace &oldgen,
+                           std::vector<void*> *promoted_objects);
 
     friend class Allocator;
     friend class ThreadLocalHeap;
