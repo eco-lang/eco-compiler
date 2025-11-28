@@ -681,6 +681,7 @@ int main(int argc, char* argv[]) {
         auto& alloc = Allocator::instance();
         HeapConfig config;
         config.max_heap_size = 2ULL * 1024 * 1024 * 1024;  // 2GB heap
+        config.use_hybrid_dfs = false;
         alloc.initialize(config);
 
         std::cout << "Allocator initialized with " << num_program_threads << " thread(s) "
