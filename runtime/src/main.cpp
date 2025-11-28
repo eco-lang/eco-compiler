@@ -96,7 +96,7 @@ static double major_gc_threshold = 0.5;              // Fraction of old gen max 
 static size_t max_old_gen_bytes = 64 * 1024 * 1024;  // Max old gen size before major GC (64MB default).
 static double reversal_probability = 0.5;            // Probability of reversing each field's list.
 static size_t num_program_threads = 1;               // Number of program threads to run.
-static bool use_hybrid_dfs = true;                   // Use hybrid DFS/BFS for improved heap locality.
+static bool use_hybrid_dfs = true;                   // Use two-pass list spine copying for improved cache locality.
 
 // ============================================================================
 // Signal Handlers
@@ -523,8 +523,8 @@ static void printUsage(const char* prog) {
               << "  -t, --threshold <frac>  Major GC threshold as fraction of heap (default: 0.9)\n"
               << "  -p, --probability <p>   Probability of reversing each list (default: 0.5)\n"
               << "  -n, --threads <n>       Number of program threads (default: 1)\n"
-              << "      --dfs               Enable hybrid DFS/BFS for heap locality (default: on)\n"
-              << "      --no-dfs            Disable hybrid DFS, use pure BFS (Cheney's algorithm)\n"
+              << "      --dfs               Enable two-pass list spine copying for locality (default: on)\n"
+              << "      --no-dfs            Disable list optimization, use pure BFS (Cheney's algorithm)\n"
               << "  -h, --help              Show this help message\n"
               << "\n"
               << "Press Ctrl+C to stop.\n";
@@ -701,7 +701,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Allocator initialized with " << num_program_threads << " thread(s) "
                   << "(major GC threshold: " << (major_gc_threshold * 100) << "% of "
                   << (max_old_gen_bytes / (1024 * 1024)) << "MB, "
-                  << "hybrid DFS: " << (use_hybrid_dfs ? "on" : "off") << ")" << std::endl;
+                  << "list locality: " << (use_hybrid_dfs ? "on" : "off") << ")" << std::endl;
 
         // Set up duration-based shutdown if specified.
         std::thread duration_thread;

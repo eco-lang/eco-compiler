@@ -214,7 +214,7 @@ Testing::TestCase testContinuousGarbageAllocation("Continuous garbage allocation
 });
 
 // ============================================================================
-// Hybrid DFS/BFS List Tests
+// List Locality Optimization Tests (Two-Pass Spine Copying)
 // ============================================================================
 
 Testing::TestCase testListSurvivesGCWithHybridDFS("List survives minor GC with hybrid DFS enabled", []() {
@@ -462,9 +462,9 @@ Testing::TestCase testListSurvivesMultipleGCCyclesWithBFS("List survives multipl
     });
 });
 
-Testing::TestCase testDeepListExceedsDFSStack("Deep list exceeding DFS stack size still works correctly", []() {
+Testing::TestCase testDeepListLocalityCopying("Deep list with two-pass spine copying works correctly", []() {
     rc::check([]() {
-        // Create a list longer than DfsStack::MAX_DEPTH (256) to test fallback to BFS
+        // Create a long list to test two-pass spine copying for locality optimization.
         const size_t LIST_LENGTH = 300;
 
         HeapConfig config;

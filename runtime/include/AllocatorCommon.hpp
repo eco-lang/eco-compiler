@@ -140,10 +140,11 @@ struct HeapConfig {
     u32 promotion_age = PROMOTION_AGE;
     float nursery_gc_threshold = NURSERY_GC_THRESHOLD;
 
-    // Traversal strategy: hybrid DFS/BFS for improved locality.
-    // When enabled, deep structures (Cons lists, Task chains) are copied
-    // depth-first for better cache locality, while wide structures
-    // (Tuple, Record, Closure) use BFS to keep siblings together.
+    // List locality optimization: two-pass spine copying.
+    // When enabled, Cons list spines are copied contiguously using a two-pass
+    // algorithm (pass 1: copy tail chain, pass 2: evacuate heads), which
+    // provides better cache locality when traversing lists later.
+    // All other types use standard Cheney's BFS evacuation.
     bool use_hybrid_dfs = true;
 
     // Derived value: total nursery size in bytes.

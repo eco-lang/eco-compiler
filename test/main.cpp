@@ -472,7 +472,7 @@ int main(int argc, char* argv[]) {
     nurseryTests.add(testListLocalityImprovedByHybridDFS);
     nurseryTests.add(testListSurvivesMultipleGCCyclesWithHybridDFS);
     nurseryTests.add(testListSurvivesMultipleGCCyclesWithBFS);
-    nurseryTests.add(testDeepListExceedsDFSStack);
+    nurseryTests.add(testDeepListLocalityCopying);
 
     Testing::TestSuite oldGenTests("OldGenSpace");
     oldGenTests.add(testOldGenAllocate);
