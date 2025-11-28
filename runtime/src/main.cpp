@@ -96,6 +96,7 @@ static double major_gc_threshold = 0.5;              // Fraction of old gen max 
 static size_t max_old_gen_bytes = 64 * 1024 * 1024;  // Max old gen size before major GC (64MB default).
 static double reversal_probability = 0.5;            // Probability of reversing each field's list.
 static size_t num_program_threads = 1;               // Number of program threads to run.
+static bool use_hybrid_dfs = true;                   // Use hybrid DFS/BFS for improved heap locality.
 
 // ============================================================================
 // Signal Handlers
@@ -522,6 +523,8 @@ static void printUsage(const char* prog) {
               << "  -t, --threshold <frac>  Major GC threshold as fraction of heap (default: 0.9)\n"
               << "  -p, --probability <p>   Probability of reversing each list (default: 0.5)\n"
               << "  -n, --threads <n>       Number of program threads (default: 1)\n"
+              << "      --dfs               Enable hybrid DFS/BFS for heap locality (default: on)\n"
+              << "      --no-dfs            Disable hybrid DFS, use pure BFS (Cheney's algorithm)\n"
               << "  -h, --help              Show this help message\n"
               << "\n"
               << "Press Ctrl+C to stop.\n";
@@ -563,6 +566,9 @@ static std::optional<std::chrono::seconds> parseDuration(const std::string& str)
 // Parses command-line arguments and sets global configuration variables.
 // Returns false on error.
 static bool parseArgs(int argc, char* argv[]) {
+    // Option codes for long-only options (no short form).
+    enum { OPT_DFS = 256, OPT_NO_DFS };
+
     static struct option long_options[] = {
         {"duration",   required_argument, nullptr, 'd'},
         {"fields",     required_argument, nullptr, 'f'},
@@ -570,6 +576,8 @@ static bool parseArgs(int argc, char* argv[]) {
         {"threshold",  required_argument, nullptr, 't'},
         {"probability",required_argument, nullptr, 'p'},
         {"threads",    required_argument, nullptr, 'n'},
+        {"dfs",        no_argument,       nullptr, OPT_DFS},
+        {"no-dfs",     no_argument,       nullptr, OPT_NO_DFS},
         {"help",       no_argument,       nullptr, 'h'},
         {nullptr,      0,                 nullptr, 0}
     };
@@ -617,6 +625,12 @@ static bool parseArgs(int argc, char* argv[]) {
                     std::cerr << "Error: threads must be >= 1\n";
                     return false;
                 }
+                break;
+            case OPT_DFS:
+                use_hybrid_dfs = true;
+                break;
+            case OPT_NO_DFS:
+                use_hybrid_dfs = false;
                 break;
             case 'h':
                 printUsage(argv[0]);
@@ -681,12 +695,13 @@ int main(int argc, char* argv[]) {
         auto& alloc = Allocator::instance();
         HeapConfig config;
         config.max_heap_size = 2ULL * 1024 * 1024 * 1024;  // 2GB heap
-        config.use_hybrid_dfs = false;
+        config.use_hybrid_dfs = use_hybrid_dfs;
         alloc.initialize(config);
 
         std::cout << "Allocator initialized with " << num_program_threads << " thread(s) "
                   << "(major GC threshold: " << (major_gc_threshold * 100) << "% of "
-                  << (max_old_gen_bytes / (1024 * 1024)) << "MB)" << std::endl;
+                  << (max_old_gen_bytes / (1024 * 1024)) << "MB, "
+                  << "hybrid DFS: " << (use_hybrid_dfs ? "on" : "off") << ")" << std::endl;
 
         // Set up duration-based shutdown if specified.
         std::thread duration_thread;
