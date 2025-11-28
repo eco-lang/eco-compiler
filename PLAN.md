@@ -140,18 +140,33 @@ Implement a generational garbage collector as an intermediate solution to de-ris
 
 Choose and implement an appropriate algorithm for old generation garbage collection.
 
-**Background**: The current implementation has a mark-and-sweep algorithm, but the choice of algorithm and its implementation details need to be finalized. A simple stop-the-world mark-and-sweep may be sufficient for initial implementation, with concurrent collection deferred to advanced GC work (see §7.4). Thread-local allocators simplify the design.
+**Background**: The implementation uses a mark-and-sweep algorithm with bump-pointer allocation via AllocBuffers. A detailed completion plan is documented in `docs/OLDGEN_COMPLETION_PLAN.md` which covers free-list allocation, lazy sweeping, incremental marking, and incremental compaction phases.
+
+**Current State**:
+- Bump-pointer allocation via AllocBuffers
+- Tri-color incremental marking (White/Grey/Black)
+- Object graph traversal for all Elm types
+- GC statistics integration (optional)
+- Comprehensive property-based test suite (`test/OldGenSpaceTest.cpp`)
 
 **Tasks**:
-- [~] Evaluate algorithm options (simple mark-and-sweep vs mark-compact vs other)
-- [ ] Implement chosen algorithm
-- [ ] Ensure it is well tested
+- [x] Evaluate algorithm options (simple mark-and-sweep vs mark-compact vs other)
+- [~] Implement chosen algorithm (see `docs/OLDGEN_COMPLETION_PLAN.md` for phases)
+- [~] Ensure it is well tested
 - [ ] Expand stress test coverage to exercise all heap object types under GC
 - [ ] Verify correctness under load
 
+**Remaining Work** (from completion plan):
+- Phase 1: Mark new allocations as live during marking (P0)
+- Phase 2: Free-list allocation for memory reuse (P0)
+- Phase 3: Lazy sweeping state machine (P1)
+- Phase 4: Allocation-paced incremental marking (P1)
+- Phase 5: Fragmentation monitoring (P2)
+- Phase 6: Incremental compaction (P3)
+
 **Deliverables**:
-- [ ] Finalized old generation GC algorithm
-- [ ] Stress tests covering all object types
+- [~] Finalized old generation GC algorithm
+- [~] Stress tests covering all object types
 
 #### 1.2.2 LLVM Stack Map Investigation
 
@@ -1096,7 +1111,7 @@ Runtime Foundation (§1)
 ## Project Status
 
 **Current Phase**: Runtime Foundation (§1) + Research
-**Last Updated**: 2025-11-26
+**Last Updated**: 2025-11-28
 
 **Completed**:
 - Initial heap model design
@@ -1106,12 +1121,23 @@ Runtime Foundation (§1)
 - LLVM stack map API research (§1.2.2) - see design_docs/llvm_stackmap_integration.md
 - Lean/lz MLIR dialect research (§3.1.1) - see design_docs/lean_mlir_research.md
 - Guida I/O audit (§2.1.1) - see design_docs/guida-io-operations.md and guida-io-ops.csv
+- Old generation completion plan (§1.2.1) - see docs/OLDGEN_COMPLETION_PLAN.md
+- Old generation property-based test suite (`test/OldGenSpaceTest.cpp`)
 
 **In Progress**:
-- GC refinement and tuning
-- Nursery space optimization
+- Old generation GC implementation (§1.2.1)
+  - Tri-color incremental marking working
+  - Need: free-list allocation, lazy sweeping, compaction
+- Nursery space optimization (DFS locality algorithm now optional)
+
+**Recent Changes**:
+- Added comprehensive OldGenSpace test suite (817 lines)
+- Improved List Cons DFS algorithm to two-pass (no stack needed)
+- Made DFS locality algorithm optional for performance tuning
+- Various performance improvements to minor GC
 
 **Next Steps**:
+- Complete P0 items from old gen completion plan (mark new allocations, free-list allocation)
 - Process & thread model design (§1.3)
 - Begin ECO MLIR dialect definition (§3.1.2)
 - Design file system operations API (§2.1.2)
