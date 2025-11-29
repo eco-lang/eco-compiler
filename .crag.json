@@ -1,13 +1,124 @@
 {
   "file_patterns": [
-    "design_docs/gc_handbook",
-    "design_docs/guida_build_notes.md",
-    "design_docs/guida-io-operations.md",
-    "design_docs/guida-io-ops.csv",
-    "design_docs/lean_mlir_research.md",
-    "design_docs/llvm_stackmap_integration.md"
+    "THEORY.md",
+    "PLAN.md",
+    "design_docs/**"
   ],
+  "indexed_files": {
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/PLAN.md": {
+      "last_modified": -4673241159,
+      "openai_file_id": "file-ThjZn7NvPQ2Vjwgv57ExGe"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/THEORY.md": {
+      "last_modified": -4673308457,
+      "openai_file_id": "file-9T52DAz3r1QU9ADpSchTbn"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/01-intro.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-4T6yVnpg2279XtDwzyPiD3"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/02-mark-sweep.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-5g7FtiHvtf9CDMAxMKps8H"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/03-mark-compact.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-KNtaVEquTGrzg1AmwAiSNe"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/04-copying.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-GnWKRDHMFzvQuJJt9hDEXp"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/05-refcounting.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-2aY1h85X8322EZCkNBqJBR"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/06-comparing.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-Heo69wndJHoSREHFCBPpiP"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/07-allocation.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-Wze9gdKTEjH9DijrsHEem9"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/08-partitioning.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-HZb6yu26U9H3hYWCnGXVhm"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/09-generational.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-KkALoZpx2TV9U3HsM8wJrL"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/10-other-partitioned.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-Wip3DNmofHjDzuXWBresmZ"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/11-runtime-interface.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-LCVFzYbcMKYU59DnSYKoe7"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/12-concurrency.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-8W4p9Sgc4zzWkNGjdgNuRJ"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/13-atomics-and-sync.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-Mip2dyL8yDMkLvksGD9BVr"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/14-parallel-gc.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-35UD3w6tA8qUgy6DVaB94d"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/15-barriers.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-B15numhsVXLNg112nD5rqm"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/16-mostly-concurrent-mark-sweep.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-EE4PbNWFQsNU5QXKoLZGLc"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/17-mostly-concurrent-copying.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-6uFq1prJreGVRKekeELFnW"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/18-concurrent-refcounting.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-3caW6zuy5gs624okbdBjy1"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/19-work-based-and-real-time.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-NxzztApqBA2zzRtaDXT4wk"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/cheatsheet.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-PaKD2pbwz6XktudYgR6REM"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/gc_handbook/index.md": {
+      "last_modified": -4673392467,
+      "openai_file_id": "file-GCQiMYnyriZitEwEM86nvV"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/guida-io-operations.md": {
+      "last_modified": -4673468525,
+      "openai_file_id": "file-NHJtYpR93HDunbqKamu5bA"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/guida-io-ops.csv": {
+      "last_modified": -4673468525,
+      "openai_file_id": "file-8eD8teyTN5PfjttmrfeGz4"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/guida_build_notes.md": {
+      "last_modified": -4673472112,
+      "openai_file_id": "file-5RbRPQH6AQmM9SyQjpsow8"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/lean_mlir_research.md": {
+      "last_modified": -4673472112,
+      "openai_file_id": "file-YH2sjqiDcTceJ546Vmrwkw"
+    },
+    "/home/rupert/sc/gitlab/eco-runtime/worktrees/deep/design_docs/llvm_stackmap_integration.md": {
+      "last_modified": -4673472112,
+      "openai_file_id": "file-C7d6M9kk8iMmgc7RxYTPGY"
+    }
+  },
   "model": "gpt-5.1",
   "reasoning_effort": "medium",
-  "vector_store_id": "vs_6929b0f3740c81919bbdee4d25929ffc"
+  "vector_store_id": "vs_692afa66e1b081919dc614544f5ad170"
 }
