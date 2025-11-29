@@ -7,6 +7,7 @@ add_executable(test
         NurserySpaceTest.cpp
         OldGenSpaceTest.cpp
         AllocatorTest.cpp
+        AllocatorCommonTest.cpp
         ElmTest.cpp
         ../runtime/src/RootSet.cpp
         ../runtime/src/OldGenSpace.cpp

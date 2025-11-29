@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include <vector>
 #include "Allocator.hpp"
+#include "AllocatorCommonTest.hpp"
 #include "NurserySpaceTest.hpp"
 #include "Heap.hpp"
 #include "HeapGenerators.hpp"
@@ -526,12 +527,44 @@ int main(int argc, char* argv[]) {
     elmTests.add(testElmReverseSurvivesGC);
     elmTests.add(testElmReverseLargeList);
 
+    // Unit tests for AllocatorCommon.hpp (getObjectSize, etc.)
+    Testing::TestSuite allocatorCommonTests("AllocatorCommon");
+    // Fixed-size object tests
+    allocatorCommonTests.add(testGetObjectSizeInt);
+    allocatorCommonTests.add(testGetObjectSizeFloat);
+    allocatorCommonTests.add(testGetObjectSizeChar);
+    allocatorCommonTests.add(testGetObjectSizeTuple2);
+    allocatorCommonTests.add(testGetObjectSizeTuple3);
+    allocatorCommonTests.add(testGetObjectSizeCons);
+    allocatorCommonTests.add(testGetObjectSizeProcess);
+    allocatorCommonTests.add(testGetObjectSizeTask);
+    allocatorCommonTests.add(testGetObjectSizeForward);
+    // Variable-size object tests
+    allocatorCommonTests.add(testGetObjectSizeString);
+    allocatorCommonTests.add(testGetObjectSizeStringEdgeCases);
+    allocatorCommonTests.add(testGetObjectSizeCustom);
+    allocatorCommonTests.add(testGetObjectSizeCustomEdgeCases);
+    allocatorCommonTests.add(testGetObjectSizeRecord);
+    allocatorCommonTests.add(testGetObjectSizeRecordEdgeCases);
+    allocatorCommonTests.add(testGetObjectSizeDynRecord);
+    allocatorCommonTests.add(testGetObjectSizeDynRecordEdgeCases);
+    allocatorCommonTests.add(testGetObjectSizeFieldGroup);
+    allocatorCommonTests.add(testGetObjectSizeFieldGroupEdgeCases);
+    // Closure tests
+    allocatorCommonTests.add(testGetObjectSizeClosure);
+    allocatorCommonTests.add(testGetObjectSizeClosureEdgeCases);
+    // Alignment and edge case tests
+    allocatorCommonTests.add(testGetObjectSizeAlwaysAligned);
+    allocatorCommonTests.add(testGetObjectSizeUnknownTag);
+    allocatorCommonTests.add(testGetObjectSizeAllTagsExhaustive);
+
     // Root suite containing all sub-suites.
     Testing::TestSuite suite("All Tests");
     suite.add(std::move(nurseryTests));
     suite.add(std::move(oldGenTests));
     suite.add(std::move(allocatorTests));
     suite.add(std::move(elmTests));
+    suite.add(std::move(allocatorCommonTests));
 
     // Handle --list option.
     if (config.list_tests) {
