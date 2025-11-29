@@ -75,14 +75,24 @@ private:
 // ============================================================================
 
 /**
+ * Information about a failed test.
+ */
+struct FailedTest {
+    std::string name;  // Name of the failed test.
+};
+
+/**
  * Result of running a test suite.
  */
 struct TestSuiteResult {
     size_t tests_run = 0;           // Number of tests executed.
+    size_t tests_passed = 0;        // Number of tests that passed.
+    size_t tests_failed = 0;        // Number of tests that failed.
     size_t tests_total = 0;         // Total tests that would have run.
     bool duration_expired = false;  // True if stopped due to --duration limit.
     bool timeout_expired = false;   // True if stopped due to --timeout limit.
     std::chrono::milliseconds elapsed{0};  // Total elapsed time.
+    std::vector<FailedTest> failed_tests;  // List of failed test names.
 };
 
 // ============================================================================
@@ -98,8 +108,12 @@ class Test {
 public:
     virtual ~Test() = default;
 
-    // Executes the test or suite.
+    // Executes the test or suite (legacy interface for interactive mode).
     virtual void run() const = 0;
+
+    // Executes the test or suite with result tracking.
+    // Returns true if the test passed, false if it failed.
+    virtual bool runWithResult() const = 0;
 
     // Returns the test/suite name.
     virtual const std::string& getName() const = 0;
@@ -127,6 +141,22 @@ public:
     void run() const override {
         std::cout << "- " << name_ << std::endl;
         testFunc_();
+    }
+
+    // Executes the test with result tracking.
+    // Returns true if passed, false if failed.
+    bool runWithResult() const override {
+        std::cout << "- " << name_ << std::endl;
+        try {
+            testFunc_();
+            return true;
+        } catch (const std::exception& e) {
+            // RapidCheck throws on failure - error already printed
+            return false;
+        } catch (...) {
+            std::cerr << "Unknown exception in test: " << name_ << std::endl;
+            return false;
+        }
     }
 
     // Returns the test name/description.
@@ -171,6 +201,23 @@ public:
         std::cout << "- " << name_ << std::endl;
         testFunc_();
         std::cout << "OK" << std::endl;
+    }
+
+    // Executes the test with result tracking.
+    // Returns true if passed, false if failed.
+    bool runWithResult() const override {
+        std::cout << "- " << name_ << std::endl;
+        try {
+            testFunc_();
+            std::cout << "OK" << std::endl;
+            return true;
+        } catch (const std::exception& e) {
+            std::cerr << "FAILED: " << e.what() << std::endl;
+            return false;
+        } catch (...) {
+            std::cerr << "FAILED: Unknown exception" << std::endl;
+            return false;
+        }
     }
 
     // Returns the test name/description.
@@ -273,6 +320,17 @@ public:
         }
     }
 
+    // Runs the suite with result tracking (for composite pattern).
+    bool runWithResult() const override {
+        bool all_passed = true;
+        for (const auto& child : children_) {
+            if (!child->runWithResult()) {
+                all_passed = false;
+            }
+        }
+        return all_passed;
+    }
+
     // Runs all tests matching the filter, with hierarchical output.
     // Returns result with timing and deadline status.
     TestSuiteResult run(const std::string& filter) const {
@@ -340,8 +398,14 @@ private:
                 // It's a TestCase - check if it matches filter.
                 const std::string& name = child->getName();
                 if (filter.empty() || name.find(filter) != std::string::npos) {
-                    child->run();
+                    bool passed = child->runWithResult();
                     result.tests_run++;
+                    if (passed) {
+                        result.tests_passed++;
+                    } else {
+                        result.tests_failed++;
+                        result.failed_tests.push_back({name});
+                    }
                 }
             }
         }

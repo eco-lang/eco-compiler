@@ -148,15 +148,27 @@ void printHelp(const char* program_name) {
 }
 
 
+// Global seed used for test run (for summary reporting).
+static uint64_t g_test_seed = 0;
+
+// Generates a random seed based on current time.
+static uint64_t generateRandomSeed() {
+    auto now = std::chrono::high_resolution_clock::now();
+    auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        now.time_since_epoch()).count();
+    return static_cast<uint64_t>(nanos);
+}
+
 // Configures RapidCheck via environment variables.
-void configureRapidCheck(const TestConfig& config) {
+// Returns the seed being used.
+uint64_t configureRapidCheck(const TestConfig& config) {
     // RapidCheck's configuration is tricky to modify programmatically.
     // We use the environment variable approach as a workaround.
     std::string rc_params = "";
 
-    if (config.seed.has_value()) {
-        rc_params = "seed=" + std::to_string(config.seed.value());
-    }
+    // Use provided seed or generate one.
+    uint64_t seed = config.seed.has_value() ? config.seed.value() : generateRandomSeed();
+    rc_params = "seed=" + std::to_string(seed);
 
     rc_params += " max_success=" + std::to_string(config.num_tests);
     rc_params += " max_size=" + std::to_string(config.max_size);
@@ -165,7 +177,42 @@ void configureRapidCheck(const TestConfig& config) {
     // Set RC_PARAMS environment variable.
     setenv("RC_PARAMS", rc_params.c_str(), 1);
 
+    // Store globally for summary reporting.
+    g_test_seed = seed;
+
     // Note: RapidCheck will read RC_PARAMS when check() is called.
+    return seed;
+}
+
+// Prints the test run summary.
+void printTestSummary(const Testing::TestSuiteResult& result, uint64_t seed) {
+    std::cout << std::endl;
+    std::cout << "=== Test Summary ===" << std::endl;
+    std::cout << std::endl;
+
+    // Print pass/fail counts.
+    std::cout << "Tests run:    " << result.tests_run << std::endl;
+    std::cout << "Tests passed: " << result.tests_passed << std::endl;
+    std::cout << "Tests failed: " << result.tests_failed << std::endl;
+
+    // Print overall result.
+    std::cout << std::endl;
+    if (result.tests_failed == 0) {
+        std::cout << "Result: PASSED" << std::endl;
+    } else {
+        std::cout << "Result: FAILED" << std::endl;
+        std::cout << std::endl;
+
+        // List failed tests.
+        std::cout << "Failed tests:" << std::endl;
+        for (const auto& failed : result.failed_tests) {
+            std::cout << "  - " << failed.name << std::endl;
+        }
+
+        // Print seed for reproduction.
+        std::cout << std::endl;
+        std::cout << "To reproduce failures, run with: --seed " << seed << std::endl;
+    }
 }
 
 // Parses command line arguments into a TestConfig.
@@ -585,12 +632,12 @@ int main(int argc, char* argv[]) {
     }
 
     // Configure RapidCheck with command line parameters.
-    configureRapidCheck(config);
+    uint64_t seed = configureRapidCheck(config);
 
     std::cout << "=== Eco Runtime GC Property-Based Tests ===" << std::endl;
 
-    if (config.show_seed && config.seed.has_value()) {
-        std::cout << "Using configuration: seed=" << config.seed.value() << std::endl;
+    if (config.show_seed) {
+        std::cout << "Using seed: " << seed << std::endl;
     }
 
     if (config.verbose) {
@@ -616,12 +663,14 @@ int main(int argc, char* argv[]) {
     // Run tests (potentially multiple times or for a duration).
     int exit_code = 0;
 
+    // Track total results across all iterations.
+    Testing::TestSuiteResult total_result;
+
     if (config.duration.has_value()) {
         // Duration mode: run tests repeatedly until time expires, then exit successfully.
         Testing::Deadline::setDuration(config.duration.value());
         auto start_time = std::chrono::steady_clock::now();
         int iteration = 1;
-        size_t total_tests_run = 0;
 
         std::cout << "Running tests for " << formatDuration(config.duration.value()) << "..." << std::endl;
         std::cout << std::endl;
@@ -639,7 +688,15 @@ int main(int argc, char* argv[]) {
 
             // Run all tests (or filtered subset).
             auto result = suite.run(config.filter);
-            total_tests_run += result.tests_run;
+
+            // Accumulate results.
+            total_result.tests_run += result.tests_run;
+            total_result.tests_passed += result.tests_passed;
+            total_result.tests_failed += result.tests_failed;
+            total_result.tests_total += result.tests_total;
+            for (const auto& failed : result.failed_tests) {
+                total_result.failed_tests.push_back(failed);
+            }
 
             if (result.duration_expired) {
                 // Duration expired mid-suite - this is fine, just stop.
@@ -657,12 +714,15 @@ int main(int argc, char* argv[]) {
         auto total_elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - start_time);
         std::cout << std::endl;
-        std::cout << "Completed " << total_tests_run << " tests across "
+        std::cout << "Completed " << total_result.tests_run << " tests across "
                   << iteration << " iteration(s) in "
                   << formatDuration(total_elapsed) << std::endl;
 
         Testing::Deadline::clear();
-        // exit_code stays 0 - duration expiring is success.
+        // Set exit code based on failures.
+        if (total_result.tests_failed > 0) {
+            exit_code = 1;
+        }
     } else {
         // Iteration-based test execution (with optional timeout).
         if (config.timeout.has_value()) {
@@ -678,11 +738,21 @@ int main(int argc, char* argv[]) {
             // Run all tests (or filtered subset).
             auto result = suite.run(config.filter);
 
+            // Accumulate results.
+            total_result.tests_run += result.tests_run;
+            total_result.tests_passed += result.tests_passed;
+            total_result.tests_failed += result.tests_failed;
+            total_result.tests_total += result.tests_total;
+            for (const auto& failed : result.failed_tests) {
+                total_result.failed_tests.push_back(failed);
+            }
+
             if (result.timeout_expired) {
                 std::cerr << std::endl;
                 std::cerr << "TIMEOUT: Tests exceeded " << formatDuration(config.timeout.value())
                           << " limit after " << result.tests_run << " of "
                           << result.tests_total << " tests in iteration " << iteration << std::endl;
+                total_result.timeout_expired = true;
                 exit_code = 1;
                 break;
             }
@@ -693,6 +763,11 @@ int main(int argc, char* argv[]) {
         }
 
         Testing::Deadline::clear();
+
+        // Set exit code based on failures.
+        if (total_result.tests_failed > 0) {
+            exit_code = 1;
+        }
     }
 
 #if ENABLE_GC_STATS
@@ -702,6 +777,9 @@ int main(int argc, char* argv[]) {
     GCStats combined_stats = alloc.getCombinedStats();
     combined_stats.print();
 #endif
+
+    // Print test summary.
+    printTestSummary(total_result, seed);
 
     return exit_code;
 }
