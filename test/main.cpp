@@ -9,14 +9,14 @@
 #include <unordered_set>
 #include <vector>
 #include "Allocator.hpp"
-#include "AllocatorCommonTest.hpp"
-#include "NurserySpaceTest.hpp"
+#include "allocator/AllocatorCommonTest.hpp"
+#include "allocator/NurserySpaceTest.hpp"
 #include "Heap.hpp"
-#include "HeapGenerators.hpp"
-#include "HeapSnapshot.hpp"
-#include "ElmTest.hpp"
-#include "AllocatorTest.hpp"
-#include "OldGenSpaceTest.hpp"
+#include "allocator/HeapGenerators.hpp"
+#include "allocator/HeapSnapshot.hpp"
+#include "allocator/ElmTest.hpp"
+#include "allocator/AllocatorTest.hpp"
+#include "allocator/OldGenSpaceTest.hpp"
 #include "TestSuite.hpp"
 
 using namespace Elm;

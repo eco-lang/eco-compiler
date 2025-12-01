@@ -1,6 +1,6 @@
 #pragma once
 
-#include "TestSuite.hpp"
+#include "../TestSuite.hpp"
 
 // Unit tests for getObjectSize() function in AllocatorCommon.hpp
 

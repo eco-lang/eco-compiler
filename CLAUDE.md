@@ -75,14 +75,14 @@ The test suite uses RapidCheck for property-based testing. When a test fails, it
 
 **Two-generation design** based on generational hypothesis:
 
-1. **Minor GC (NurserySpace)** - `runtime/src/allocator.cpp:~400-600`
+1. **Minor GC (NurserySpace)** - `runtime/src/allocator/NurserySpace.cpp`
    - Thread-local semi-space copying collector (4MB per thread)
    - Cheney's algorithm for breadth-first evacuation
    - Bump pointer allocation (fast O(1) path)
    - Objects promoted to old gen after surviving `PROMOTION_AGE` collections (currently 1)
    - No synchronization needed on allocation fast path
 
-2. **Major GC (OldGenSpace)** - `runtime/src/allocator.cpp:~600-800`
+2. **Major GC (OldGenSpace)** - `runtime/src/allocator/OldGenSpace.cpp`
    - Mark-and-sweep collector with free-list allocation
    - Tri-color marking (White/Grey/Black) for incremental/concurrent collection
    - Uses recursive mutexes for thread safety (allows re-entrant allocation during GC)
@@ -92,7 +92,7 @@ The test suite uses RapidCheck for property-based testing. When a test fails, it
 
 ### Object Representation
 
-All heap objects defined in `runtime/include/heap.hpp`:
+All heap objects defined in `runtime/src/allocator/Heap.hpp`:
 - **64-bit header**: tag (16 bits), color (2 bits), age (2 bits), refcount (28 bits), flags
 - **8-byte alignment**: All objects aligned to 8 bytes for performance
 - **Type hierarchy**: Int, Float, Char, String, Tuple2, Tuple3, Cons (lists), Custom, Record, DynRecord, FieldGroup, Closure, Process, Task
@@ -103,8 +103,8 @@ During copying collection, evacuated objects leave behind a 16-byte forwarding p
 ### Test Infrastructure
 
 Property-based testing with RapidCheck (`test/main.cpp`):
-- **Generators** (`test/generators.hpp`, `test/generators.cpp`): Create random heap graphs with controlled properties
-- **HeapSnapshot**: Captures heap state before/after GC to validate correctness
+- **Generators** (`test/allocator/HeapGenerators.hpp`, `test/allocator/HeapGenerators.cpp`): Create random heap graphs with controlled properties
+- **HeapSnapshot** (`test/allocator/HeapSnapshot.hpp`): Captures heap state before/after GC to validate correctness
 - **Three core properties tested**:
   1. GC preserves all reachable objects (values unchanged)
   2. GC collects unreachable objects (memory reclaimed)
@@ -120,24 +120,32 @@ When debugging test failures, use the `--reproduce` parameter with the provided 
 
 ### Statistics System
 
-`runtime/include/gc_stats.hpp` provides comprehensive GC telemetry:
+`runtime/src/allocator/GCStats.hpp` provides comprehensive GC telemetry:
 - **Zero overhead when disabled**: All macros compile to nothing when `ENABLE_GC_STATS` is not defined
 - **Tracks**: Allocations, GC cycles, timing histograms, survival/promotion rates
 - **Output**: Pretty-printed with Unicode bar charts at program end
 
-To enable statistics, define `ENABLE_GC_STATS` before including `gc_stats.hpp` or add it as a compile definition.
+To enable statistics, define `ENABLE_GC_STATS` before including `GCStats.hpp` or add it as a compile definition.
 
 ## Key Files
 
-- `runtime/include/allocator.hpp` (325 lines): GC system interface - NurserySpace, OldGenSpace, GarbageCollector classes
-- `runtime/src/allocator.cpp` (908 lines): Complete GC implementation including Cheney's algorithm and mark-sweep
-- `runtime/include/heap.hpp` (231 lines): All Elm value type definitions and object layouts
-- `test/main.cpp` (816 lines): Property-based test runner with heap validation
-- `test/generators.hpp` (260 lines): RapidCheck generators for creating random heap structures
+Allocator source files are in `runtime/src/allocator/`:
+- `Allocator.hpp` / `Allocator.cpp`: GC system interface and implementation
+- `NurserySpace.hpp` / `NurserySpace.cpp`: Minor GC with Cheney's algorithm
+- `OldGenSpace.hpp` / `OldGenSpace.cpp`: Major GC with mark-sweep and incremental compaction
+- `Heap.hpp`: All Elm value type definitions and object layouts
+- `AllocatorCommon.hpp`: Shared types, constants, and utility functions
+- `GCStats.hpp` / `GCStats.cpp`: Statistics tracking and reporting
+
+Test files are in `test/` with allocator-specific tests in `test/allocator/`:
+- `test/main.cpp`: Test runner and command-line interface
+- `test/TestSuite.hpp`: Test framework
+- `test/allocator/HeapGenerators.hpp` / `.cpp`: RapidCheck generators for heap structures
+- `test/allocator/*Test.hpp` / `.cpp`: Component-specific tests
 
 ## Important Constants
 
-- `PROMOTION_AGE`: Currently set to 1 in `runtime/include/allocator.hpp` - objects promoted after surviving 1 minor GC
+- `PROMOTION_AGE`: Currently set to 1 in `runtime/src/allocator/Allocator.hpp` - objects promoted after surviving 1 minor GC
 - Default nursery size: 4MB per thread
 - Default heap reservation: 1GB total address space
 - Object alignment: 8 bytes
@@ -190,7 +198,7 @@ When developing features or fixes, follow this branch-based workflow:
 
 When modifying the GC:
 - Locking must use recursive mutexes because GC can trigger allocation (e.g., when expanding old gen)
-- Object scanning in `scanObject()` must handle all types defined in `heap.hpp`
+- Object scanning in `scanObject()` must handle all types defined in `Heap.hpp`
 - Size calculation in `objectSize()` must match object layout exactly (8-byte aligned)
 - Forwarding pointers are 16 bytes and must be recognizable by their tag
 - Remember that Elm values are immutable - no write barriers or remembered sets needed

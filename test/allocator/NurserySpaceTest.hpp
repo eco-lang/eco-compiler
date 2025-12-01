@@ -1,6 +1,6 @@
 #pragma once
 
-#include "TestSuite.hpp"
+#include "../TestSuite.hpp"
 
 // NurserySpace (minor GC) property-based tests
 extern Testing::TestCase testMinorGCPreservesRoots;

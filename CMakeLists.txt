@@ -3,16 +3,16 @@ project(EcoRuntime LANGUAGES CXX)
 
 add_executable(ecor
         runtime/src/main.cpp
-        runtime/src/RootSet.cpp
-        runtime/src/OldGenSpace.cpp
-        runtime/src/NurserySpace.cpp
-        runtime/src/Allocator.cpp
-        runtime/src/ThreadLocalHeap.cpp
-        runtime/src/GCStats.cpp
-        test/HeapGenerators.hpp
+        runtime/src/allocator/RootSet.cpp
+        runtime/src/allocator/OldGenSpace.cpp
+        runtime/src/allocator/NurserySpace.cpp
+        runtime/src/allocator/Allocator.cpp
+        runtime/src/allocator/ThreadLocalHeap.cpp
+        runtime/src/allocator/GCStats.cpp
+        test/allocator/HeapGenerators.hpp
 )
 
-target_include_directories(ecor PRIVATE runtime/include)
+target_include_directories(ecor PRIVATE runtime/src/allocator)
 target_compile_features(ecor PRIVATE cxx_std_20)
 
 # Keep asserts enabled even in release builds for debugging

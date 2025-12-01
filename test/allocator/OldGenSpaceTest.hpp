@@ -1,6 +1,6 @@
 #pragma once
 
-#include "TestSuite.hpp"
+#include "../TestSuite.hpp"
 
 // OldGenSpace tests - mark and sweep, allocation
 extern Testing::TestCase testOldGenAllocate;

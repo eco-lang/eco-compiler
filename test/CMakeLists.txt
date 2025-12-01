@@ -1,20 +1,21 @@
-include_directories(../runtime/include/)
+include_directories(../runtime/src/allocator/)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 add_executable(test
         main.cpp
-        HeapGenerators.cpp
-        TestHelpers.cpp
-        NurserySpaceTest.cpp
-        OldGenSpaceTest.cpp
-        AllocatorTest.cpp
-        AllocatorCommonTest.cpp
-        ElmTest.cpp
-        ../runtime/src/RootSet.cpp
-        ../runtime/src/OldGenSpace.cpp
-        ../runtime/src/NurserySpace.cpp
-        ../runtime/src/Allocator.cpp
-        ../runtime/src/ThreadLocalHeap.cpp
-        ../runtime/src/GCStats.cpp
+        allocator/HeapGenerators.cpp
+        allocator/TestHelpers.cpp
+        allocator/NurserySpaceTest.cpp
+        allocator/OldGenSpaceTest.cpp
+        allocator/AllocatorTest.cpp
+        allocator/AllocatorCommonTest.cpp
+        allocator/ElmTest.cpp
+        ../runtime/src/allocator/RootSet.cpp
+        ../runtime/src/allocator/OldGenSpace.cpp
+        ../runtime/src/allocator/NurserySpace.cpp
+        ../runtime/src/allocator/Allocator.cpp
+        ../runtime/src/allocator/ThreadLocalHeap.cpp
+        ../runtime/src/allocator/GCStats.cpp
 )
 
 target_compile_features(test PRIVATE cxx_std_20)

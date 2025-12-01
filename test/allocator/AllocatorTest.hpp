@@ -1,6 +1,6 @@
 #pragma once
 
-#include "TestSuite.hpp"
+#include "../TestSuite.hpp"
 
 // Full Allocator tests (minor + major GC).
 extern Testing::TestCase testPromotionToOldGen;

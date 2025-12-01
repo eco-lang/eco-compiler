@@ -1,6 +1,6 @@
 #pragma once
 
-#include "TestSuite.hpp"
+#include "../TestSuite.hpp"
 #include "Heap.hpp"
 
 namespace Elm {
