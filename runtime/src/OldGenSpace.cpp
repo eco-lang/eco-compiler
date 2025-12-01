@@ -2,18 +2,19 @@
  * OldGenSpace Implementation.
  *
  * Implements the old generation for long-lived objects using:
- *   - AllocBuffer-based bump-pointer allocation.
+ *   - Block-based bump-pointer allocation.
  *   - Tri-color mark-and-sweep collection.
  *
- * Each AllocBuffer is a contiguous region of memory obtained from the
+ * Each block is a contiguous region of memory obtained from the
  * Allocator. Objects are allocated by bumping a pointer within the
- * current buffer. When a buffer is exhausted, a new one is acquired.
+ * current block. When a block is exhausted, a new one is acquired.
  *
  * Single-threaded version.
  */
 
 #include "OldGenSpace.hpp"
 #include "Allocator.hpp"
+#include <limits>
 #include <algorithm>
 #include <cassert>
 #include <cstring>
@@ -36,9 +37,12 @@ void* readBarrier(HPointer& ptr) {
     return g_heap_base + (ptr.ptr << 3);
 }
 
+// Sentinel value indicating no current block.
+static constexpr size_t NO_BLOCK = std::numeric_limits<size_t>::max();
+
 OldGenSpace::OldGenSpace() :
     config_(nullptr), allocator_(nullptr),
-    current_buffer_(nullptr), allocated_bytes(0),
+    current_block_index_(NO_BLOCK), allocated_bytes(0),
     region_base_(nullptr), region_end_(nullptr),
     gc_phase_(GCPhase::Idle),
     current_epoch(0), marking_active(false), allocator_ref_(nullptr),
@@ -54,18 +58,16 @@ OldGenSpace::OldGenSpace() :
 }
 
 OldGenSpace::~OldGenSpace() {
-    // Delete all AllocBuffers.
-    for (AllocBuffer* buffer : buffers_) {
-        delete buffer;
-    }
-    buffers_.clear();
-    current_buffer_ = nullptr;
+    // Memory blocks are owned by the Allocator's mmap region, not us.
+    // Just clear our tracking structures.
+    blocks_.clear();
+    current_block_index_ = NO_BLOCK;
 }
 
 void OldGenSpace::initialize(Allocator* allocator, const HeapConfig* config) {
     config_ = config;
     allocator_ = allocator;
-    current_buffer_ = nullptr;
+    current_block_index_ = NO_BLOCK;
     allocated_bytes = 0;
 }
 
@@ -77,13 +79,10 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
         config_ = new_config;
     }
 
-    // Delete all AllocBuffers.
-    for (AllocBuffer* buffer : buffers_) {
-        delete buffer;
-    }
-    buffers_.clear();
+    // Memory blocks are owned by Allocator's mmap region - just clear tracking.
+    blocks_.clear();
     buffer_meta_.clear();
-    current_buffer_ = nullptr;
+    current_block_index_ = NO_BLOCK;
 
     // Reset state.
     allocated_bytes = 0;
@@ -208,12 +207,13 @@ void *OldGenSpace::allocate(size_t size) {
 }
 
 /**
- * Bump-pointer allocation from current or new buffer.
+ * Bump-pointer allocation from current or new block.
  */
 void* OldGenSpace::bumpAllocate(size_t size) {
-    // Try current buffer first.
-    if (current_buffer_) {
-        void* result = current_buffer_->allocate(size);
+    // Try current block first.
+    if (current_block_index_ != NO_BLOCK) {
+        BlockInfo& block = blocks_[current_block_index_];
+        void* result = block.allocate(size);
         if (result) {
             allocated_bytes += size;
 
@@ -233,26 +233,33 @@ void* OldGenSpace::bumpAllocate(size_t size) {
         }
     }
 
-    // Current buffer exhausted or doesn't exist - acquire new one.
+    // Current block exhausted or doesn't exist - acquire new one.
     assert(allocator_ && "OldGenSpace not initialized with Allocator");
-    assert(size <= config_->alloc_buffer_size && "Object too large for AllocBuffer");
+    assert(size <= config_->alloc_buffer_size && "Object too large for block");
 
-    current_buffer_ = allocator_->acquireAllocBuffer(config_->alloc_buffer_size);
-    assert(current_buffer_ && "Failed to acquire AllocBuffer");
+    char* block_base = allocator_->acquireOldGenBlock(config_->alloc_buffer_size);
+    assert(block_base && "Failed to acquire old gen block");
 
-    buffers_.push_back(current_buffer_);
+    // Create new block info.
+    BlockInfo new_block;
+    new_block.start = block_base;
+    new_block.end = block_base + config_->alloc_buffer_size;
+    new_block.alloc_ptr = block_base;
 
-    // Add metadata for new buffer.
-    buffer_meta_.push_back({current_buffer_, 0, 0, false});
+    blocks_.push_back(new_block);
+    current_block_index_ = blocks_.size() - 1;
+
+    // Add metadata for new block.
+    buffer_meta_.push_back({current_block_index_, 0, 0, false});
 
     // Update cached bounds for O(1) contains() check.
     if (region_base_ == nullptr) {
-        region_base_ = current_buffer_->start_;
+        region_base_ = block_base;
     }
-    region_end_ = current_buffer_->end_;
+    region_end_ = new_block.end;
 
-    void* result = current_buffer_->allocate(size);
-    assert(result && "Failed to allocate from fresh AllocBuffer");
+    void* result = blocks_[current_block_index_].allocate(size);
+    assert(result && "Failed to allocate from fresh block");
 
     allocated_bytes += size;
 
@@ -489,18 +496,18 @@ void OldGenSpace::sweep() {
         free_lists_[i] = nullptr;
     }
 
-    // Ensure buffer metadata matches buffers.
-    while (buffer_meta_.size() < buffers_.size()) {
-        buffer_meta_.push_back({buffers_[buffer_meta_.size()], 0, 0, false});
+    // Ensure buffer metadata matches blocks.
+    while (buffer_meta_.size() < blocks_.size()) {
+        buffer_meta_.push_back({buffer_meta_.size(), 0, 0, false});
     }
 
-    // Walk all buffers.
-    for (size_t buf_idx = 0; buf_idx < buffers_.size(); buf_idx++) {
-        AllocBuffer* buffer = buffers_[buf_idx];
-        char* ptr = buffer->start_;
-        char* used_end = buffer->alloc_ptr_;
+    // Walk all blocks.
+    for (size_t buf_idx = 0; buf_idx < blocks_.size(); buf_idx++) {
+        BlockInfo& block = blocks_[buf_idx];
+        char* ptr = block.start;
+        char* used_end = block.alloc_ptr;
 
-        // Reset metadata for this buffer.
+        // Reset metadata for this block.
         buffer_meta_[buf_idx].live_bytes = 0;
         buffer_meta_[buf_idx].garbage_bytes = 0;
         buffer_meta_[buf_idx].fully_swept = true;
@@ -547,12 +554,12 @@ void OldGenSpace::transitionToSweeping() {
         free_lists_[i] = nullptr;
     }
 
-    // Ensure buffer metadata matches buffers.
-    while (buffer_meta_.size() < buffers_.size()) {
-        buffer_meta_.push_back({buffers_[buffer_meta_.size()], 0, 0, false});
+    // Ensure buffer metadata matches blocks.
+    while (buffer_meta_.size() < blocks_.size()) {
+        buffer_meta_.push_back({buffer_meta_.size(), 0, 0, false});
     }
 
-    // Reset per-buffer stats for this sweep.
+    // Reset per-block stats for this sweep.
     for (auto& meta : buffer_meta_) {
         meta.live_bytes = 0;
         meta.garbage_bytes = 0;
@@ -573,19 +580,19 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
     while (work_done < work_budget && gc_phase_ == GCPhase::Sweeping) {
         // Get current sweep position.
         if (sweep_cursor_ == nullptr) {
-            if (sweep_buffer_index_ >= buffers_.size()) {
-                // All buffers swept - sweeping complete.
+            if (sweep_buffer_index_ >= blocks_.size()) {
+                // All blocks swept - sweeping complete.
                 gc_phase_ = GCPhase::Idle;
                 onSweepComplete();
                 return;
             }
-            sweep_cursor_ = buffers_[sweep_buffer_index_]->start_;
+            sweep_cursor_ = blocks_[sweep_buffer_index_].start;
         }
 
-        AllocBuffer* buffer = buffers_[sweep_buffer_index_];
-        char* used_end = buffer->alloc_ptr_;
+        BlockInfo& block = blocks_[sweep_buffer_index_];
+        char* used_end = block.alloc_ptr;
 
-        // Process objects in current buffer.
+        // Process objects in current block.
         while (sweep_cursor_ < used_end && work_done < work_budget) {
             Header* hdr = reinterpret_cast<Header*>(sweep_cursor_);
             size_t obj_size = getObjectSize(sweep_cursor_);
@@ -613,7 +620,7 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
             work_done += obj_size;
         }
 
-        // Check if we've finished this buffer.
+        // Check if we've finished this block.
         if (sweep_cursor_ >= used_end) {
             if (sweep_buffer_index_ < buffer_meta_.size()) {
                 buffer_meta_[sweep_buffer_index_].fully_swept = true;
@@ -628,8 +635,8 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
         }
     }
 
-    // Check if all buffers are swept.
-    if (sweep_buffer_index_ >= buffers_.size()) {
+    // Check if all blocks are swept.
+    if (sweep_buffer_index_ >= blocks_.size()) {
         gc_phase_ = GCPhase::Idle;
         onSweepComplete();
     }
@@ -650,17 +657,18 @@ void OldGenSpace::onSweepComplete() {
 }
 
 /**
- * Computes heap-wide fragmentation statistics from per-buffer metadata.
+ * Computes heap-wide fragmentation statistics from per-block metadata.
  */
 void OldGenSpace::computeFragmentationStats() {
     frag_stats_.live_bytes = 0;
     frag_stats_.total_free_bytes = 0;
     frag_stats_.heap_bytes = 0;
 
-    for (const auto& meta : buffer_meta_) {
+    for (size_t i = 0; i < buffer_meta_.size() && i < blocks_.size(); i++) {
+        const auto& meta = buffer_meta_[i];
         frag_stats_.live_bytes += meta.live_bytes;
         frag_stats_.total_free_bytes += meta.garbage_bytes;
-        frag_stats_.heap_bytes += meta.buffer->usedBytes();
+        frag_stats_.heap_bytes += blocks_[i].usedBytes();
     }
 
     // Update allocated_bytes to reflect actual live bytes.
@@ -704,13 +712,13 @@ void OldGenSpace::scheduleCompaction() {
 }
 
 /**
- * Selects buffers for evacuation, prioritizing those with most garbage.
+ * Selects blocks for evacuation, prioritizing those with most garbage.
  *
  * @param max_live_to_move Maximum live bytes to evacuate.
- * @return Vector of buffer indices to evacuate.
+ * @return Vector of block indices to evacuate.
  */
 std::vector<size_t> OldGenSpace::selectEvacuationSet(size_t max_live_to_move) {
-    // Build candidate list: buffers with significant garbage (>30% dead).
+    // Build candidate list: blocks with significant garbage (>30% dead).
     struct Candidate {
         size_t index;
         size_t garbage_bytes;
@@ -718,16 +726,19 @@ std::vector<size_t> OldGenSpace::selectEvacuationSet(size_t max_live_to_move) {
     };
     std::vector<Candidate> candidates;
 
-    for (size_t i = 0; i < buffer_meta_.size(); i++) {
+    for (size_t i = 0; i < buffer_meta_.size() && i < blocks_.size(); i++) {
         const auto& meta = buffer_meta_[i];
 
-        // Skip current allocation buffer and non-swept buffers.
-        if (buffers_[i] == current_buffer_ || !meta.fully_swept) {
+        // Skip current allocation block and non-swept blocks.
+        if (i == current_block_index_ || !meta.fully_swept) {
             continue;
         }
 
-        // Only consider buffers with significant garbage (liveness < 70%).
-        float liveness = meta.liveness();
+        // Compute liveness for this block.
+        size_t total = blocks_[i].usedBytes();
+        float liveness = total > 0 ? static_cast<float>(meta.live_bytes) / total : 0.0f;
+
+        // Only consider blocks with significant garbage (liveness < 70%).
         if (liveness < 0.70f && meta.garbage_bytes > 0) {
             candidates.push_back({i, meta.garbage_bytes, meta.live_bytes});
         }
@@ -783,7 +794,7 @@ void OldGenSpace::incrementalCompactionSlice(size_t work_budget) {
 }
 
 /**
- * Evacuates live objects from one buffer slice.
+ * Evacuates live objects from one block slice.
  *
  * @param work_budget Maximum bytes to evacuate.
  * @return Bytes of work performed.
@@ -795,14 +806,14 @@ size_t OldGenSpace::evacuateSlice(size_t work_budget) {
            current_evac_index_ < evacuation_set_.size()) {
 
         size_t src_idx = evacuation_set_[current_evac_index_];
-        AllocBuffer* src_buffer = buffers_[src_idx];
+        BlockInfo& src_block = blocks_[src_idx];
 
-        // Initialize cursor if starting a new buffer.
+        // Initialize cursor if starting a new block.
         if (evac_cursor_ == nullptr) {
-            evac_cursor_ = src_buffer->start_;
+            evac_cursor_ = src_block.start;
         }
 
-        char* end = src_buffer->allocPtr();
+        char* end = src_block.alloc_ptr;
 
         while (evac_cursor_ < end && work_done < work_budget) {
             Header* hdr = reinterpret_cast<Header*>(evac_cursor_);
@@ -832,7 +843,7 @@ size_t OldGenSpace::evacuateSlice(size_t work_budget) {
         }
 
         if (evac_cursor_ >= end) {
-            // Buffer fully evacuated.
+            // Block fully evacuated.
             current_evac_index_++;
             evac_cursor_ = nullptr;
         }
@@ -843,33 +854,39 @@ size_t OldGenSpace::evacuateSlice(size_t work_budget) {
 
 /**
  * Allocates space for an evacuated object.
- * Allocates in buffers not in the evacuation set.
+ * Allocates in blocks not in the evacuation set.
  */
 void* OldGenSpace::allocateForEvacuation(size_t size) {
-    // Try current buffer if it's not being evacuated.
-    if (current_buffer_ && !isInEvacuationSet(buffers_.size() - 1)) {
-        void* result = current_buffer_->allocate(size);
+    // Try current block if it's not being evacuated.
+    if (current_block_index_ != NO_BLOCK && !isInEvacuationSet(current_block_index_)) {
+        void* result = blocks_[current_block_index_].allocate(size);
         if (result) {
             return result;
         }
     }
 
-    // Need a new buffer - acquire from allocator.
+    // Need a new block - acquire from allocator.
     // Note: During compaction we skip the normal allocation path
     // to avoid triggering more GC work.
     if (allocator_) {
-        current_buffer_ = allocator_->acquireAllocBuffer(config_->alloc_buffer_size);
-        if (current_buffer_) {
-            buffers_.push_back(current_buffer_);
-            buffer_meta_.push_back({current_buffer_, 0, 0, false});
+        char* block_base = allocator_->acquireOldGenBlock(config_->alloc_buffer_size);
+        if (block_base) {
+            BlockInfo new_block;
+            new_block.start = block_base;
+            new_block.end = block_base + config_->alloc_buffer_size;
+            new_block.alloc_ptr = block_base;
+
+            blocks_.push_back(new_block);
+            current_block_index_ = blocks_.size() - 1;
+            buffer_meta_.push_back({current_block_index_, 0, 0, false});
 
             // Update cached bounds.
             if (region_base_ == nullptr) {
-                region_base_ = current_buffer_->start_;
+                region_base_ = block_base;
             }
-            region_end_ = current_buffer_->end_;
+            region_end_ = new_block.end;
 
-            return current_buffer_->allocate(size);
+            return blocks_[current_block_index_].allocate(size);
         }
     }
 
@@ -921,23 +938,23 @@ void OldGenSpace::fixReferencesSlice(size_t work_budget) {
     size_t work_done = 0;
 
     while (work_done < work_budget &&
-           fixup_buffer_index_ < buffers_.size()) {
+           fixup_buffer_index_ < blocks_.size()) {
 
-        // Skip evacuated buffers (they're about to be freed).
+        // Skip evacuated blocks (they're about to be freed).
         if (isInEvacuationSet(fixup_buffer_index_)) {
             fixup_buffer_index_++;
             fixup_cursor_ = nullptr;
             continue;
         }
 
-        AllocBuffer* buffer = buffers_[fixup_buffer_index_];
+        BlockInfo& block = blocks_[fixup_buffer_index_];
 
-        // Initialize cursor if starting a new buffer.
+        // Initialize cursor if starting a new block.
         if (fixup_cursor_ == nullptr) {
-            fixup_cursor_ = buffer->start_;
+            fixup_cursor_ = block.start;
         }
 
-        char* end = buffer->allocPtr();
+        char* end = block.alloc_ptr;
 
         while (fixup_cursor_ < end && work_done < work_budget) {
             Header* hdr = reinterpret_cast<Header*>(fixup_cursor_);
@@ -958,8 +975,8 @@ void OldGenSpace::fixReferencesSlice(size_t work_budget) {
         }
     }
 
-    if (fixup_buffer_index_ >= buffers_.size()) {
-        // Reference fixup complete - free evacuated buffers.
+    if (fixup_buffer_index_ >= blocks_.size()) {
+        // Reference fixup complete - free evacuated blocks.
         freeEvacuatedBuffers();
         compact_phase_ = CompactionPhase::Idle;
     }
@@ -1071,7 +1088,7 @@ void OldGenSpace::fixUnboxable(Unboxable& val, bool is_boxed) {
 }
 
 /**
- * Checks if a buffer index is in the evacuation set.
+ * Checks if a block index is in the evacuation set.
  */
 bool OldGenSpace::isInEvacuationSet(size_t buffer_index) const {
     return std::find(evacuation_set_.begin(), evacuation_set_.end(),
@@ -1079,7 +1096,7 @@ bool OldGenSpace::isInEvacuationSet(size_t buffer_index) const {
 }
 
 /**
- * Frees all evacuated buffers after compaction completes.
+ * Frees all evacuated blocks after compaction completes.
  */
 void OldGenSpace::freeEvacuatedBuffers() {
     // Sort evacuation set in descending order for safe removal.
@@ -1087,13 +1104,19 @@ void OldGenSpace::freeEvacuatedBuffers() {
     std::sort(sorted_set.begin(), sorted_set.end(), std::greater<size_t>());
 
     for (size_t idx : sorted_set) {
-        // Delete the buffer.
-        delete buffers_[idx];
-
-        // Remove from vectors.
-        buffers_.erase(buffers_.begin() + idx);
+        // Memory is owned by Allocator's mmap region - just remove from vectors.
+        blocks_.erase(blocks_.begin() + idx);
         if (idx < buffer_meta_.size()) {
             buffer_meta_.erase(buffer_meta_.begin() + idx);
+        }
+
+        // Update current_block_index_ if needed.
+        if (current_block_index_ != NO_BLOCK) {
+            if (current_block_index_ == idx) {
+                current_block_index_ = NO_BLOCK;
+            } else if (current_block_index_ > idx) {
+                current_block_index_--;
+            }
         }
     }
 

@@ -4,7 +4,6 @@
 #include <unordered_set>
 #include <vector>
 #include "AllocatorCommon.hpp"
-#include "AllocBuffer.hpp"
 #include "RootSet.hpp"
 #include "GCStats.hpp"
 
@@ -53,20 +52,45 @@ struct FreeCell {
 };
 
 // ============================================================================
-// Per-Buffer Metadata
+// Block Info Structure
 // ============================================================================
 
-// Tracks per-buffer statistics for evacuation decisions.
+// Tracks a memory block for bump-pointer allocation.
+// Replaces AllocBuffer with direct pointer tracking.
+struct BlockInfo {
+    char* start;        // Start of the memory block.
+    char* end;          // End of the memory block (exclusive).
+    char* alloc_ptr;    // Current allocation pointer (bump pointer).
+
+    // Returns the number of bytes used in this block.
+    size_t usedBytes() const { return alloc_ptr - start; }
+
+    // Returns the number of remaining bytes available for allocation.
+    size_t remainingBytes() const { return end - alloc_ptr; }
+
+    // Allocates memory from this block using bump pointer.
+    // Returns nullptr if not enough space.
+    void* allocate(size_t size) {
+        size = (size + 7) & ~7;  // Align to 8 bytes.
+        if (alloc_ptr + size > end) {
+            return nullptr;
+        }
+        void* result = alloc_ptr;
+        alloc_ptr += size;
+        return result;
+    }
+};
+
+// ============================================================================
+// Per-Block Metadata
+// ============================================================================
+
+// Tracks per-block statistics for evacuation decisions.
 struct BufferMetadata {
-    AllocBuffer* buffer;
+    size_t block_index;     // Index into blocks_ vector.
     size_t live_bytes;      // Computed during sweep.
     size_t garbage_bytes;   // Computed during sweep.
-    bool fully_swept;       // True when sweep of this buffer is complete.
-
-    float liveness() const {
-        size_t total = buffer->usedBytes();
-        return total > 0 ? static_cast<float>(live_bytes) / total : 0.0f;
-    }
+    bool fully_swept;       // True when sweep of this block is complete.
 };
 
 // ============================================================================
@@ -129,8 +153,8 @@ public:
 
     // ========== Allocation ==========
 
-    // Allocates memory using bump pointer in current AllocBuffer.
-    // Acquires new buffer from Allocator if current is exhausted.
+    // Allocates memory using bump pointer in current block.
+    // Acquires new block from Allocator if current is exhausted.
     void *allocate(size_t size);
 
     // ========== Queries ==========
@@ -151,10 +175,10 @@ private:
     const HeapConfig* config_;    // Heap configuration parameters.
     Allocator* allocator_;        // Back-reference for acquiring buffers.
 
-    // ========== AllocBuffer Collection ==========
+    // ========== Block Collection ==========
 
-    std::vector<AllocBuffer*> buffers_;   // All buffers owned by old gen.
-    AllocBuffer* current_buffer_;          // Active buffer for allocation.
+    std::vector<BlockInfo> blocks_;        // All memory blocks owned by old gen.
+    size_t current_block_index_;           // Index of active block for allocation (-1 if none).
     size_t allocated_bytes;                // Current bytes in use.
 
     // Cached bounds for O(1) membership checks.
@@ -337,12 +361,12 @@ public:
         return cls < NUM_SIZE_CLASSES ? oldgen.free_lists_[cls] : nullptr;
     }
 
-    // Buffer metadata.
+    // Block metadata.
     static const std::vector<BufferMetadata>& getBufferMeta(const OldGenSpace& oldgen) {
         return oldgen.buffer_meta_;
     }
-    static const std::vector<AllocBuffer*>& getBuffers(const OldGenSpace& oldgen) {
-        return oldgen.buffers_;
+    static const std::vector<BlockInfo>& getBlocks(const OldGenSpace& oldgen) {
+        return oldgen.blocks_;
     }
 
     // Manual control of lazy sweeping for testing.

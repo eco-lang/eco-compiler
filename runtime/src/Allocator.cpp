@@ -12,7 +12,6 @@
  */
 
 #include "Allocator.hpp"
-#include "AllocBuffer.hpp"
 #include "ThreadLocalHeap.hpp"
 #include <cassert>
 #include <cstring>
@@ -262,7 +261,7 @@ char* Allocator::acquireNurseryBlockHigh(size_t size) {
     return block_base;
 }
 
-AllocBuffer* Allocator::acquireAllocBuffer(size_t size) {
+char* Allocator::acquireOldGenBlock(size_t size) {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
     // Align size to 8 bytes.
@@ -273,10 +272,10 @@ AllocBuffer* Allocator::acquireAllocBuffer(size_t size) {
         return nullptr;  // Out of old gen address space.
     }
 
-    char* buffer_base = heap_base + old_gen_committed;
+    char* block_base = heap_base + old_gen_committed;
 
-    // Commit physical memory for this buffer.
-    void* result = mmap(buffer_base, size, PROT_READ | PROT_WRITE,
+    // Commit physical memory for this block.
+    void* result = mmap(block_base, size, PROT_READ | PROT_WRITE,
                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
 
     if (result == MAP_FAILED) {
@@ -284,7 +283,7 @@ AllocBuffer* Allocator::acquireAllocBuffer(size_t size) {
     }
 
     old_gen_committed += size;
-    return new AllocBuffer(buffer_base, size);
+    return block_base;
 }
 
 char* Allocator::acquireOldGenRegion(size_t initial_size, size_t max_size) {

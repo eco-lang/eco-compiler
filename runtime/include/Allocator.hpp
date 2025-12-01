@@ -12,8 +12,6 @@
 #include "GCStats.hpp"
 
 namespace Elm {
-
-class AllocBuffer;
 class ThreadLocalHeap;
 
 /**
@@ -165,9 +163,10 @@ private:
     // Thread-safe: acquires thread_mutex_.
     char* acquireNurseryBlockHigh(size_t size);
 
-    // Acquires a new AllocBuffer from the old gen region.
+    // Acquires a block of memory from the old gen region.
     // Thread-safe: acquires thread_mutex_.
-    AllocBuffer* acquireAllocBuffer(size_t size);
+    // Returns pointer to base of committed block.
+    char* acquireOldGenBlock(size_t size);
 
     // Acquires a region of memory from the old gen region.
     // Thread-safe: caller must hold thread_mutex_.
