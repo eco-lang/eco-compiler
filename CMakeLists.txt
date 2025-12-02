@@ -33,3 +33,9 @@ target_link_libraries(ecor PRIVATE Threads::Threads)
 target_link_options(ecor PRIVATE -rdynamic)
 
 add_subdirectory(test)
+
+# Optional: MLIR-based code generation (requires MLIR to be installed)
+option(ECO_BUILD_CODEGEN "Build MLIR-based code generation" OFF)
+if(ECO_BUILD_CODEGEN)
+    add_subdirectory(runtime/src/codegen)
+endif()
