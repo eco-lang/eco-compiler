@@ -837,398 +837,550 @@ generateBoxFunc ctx funcName =
 generateExpr : Context -> Opt.Expr -> ExprResult
 generateExpr ctx expr =
     case expr of
-        ------------------------------------------
-        -- LITERALS
-        ------------------------------------------
         Opt.Bool _ value ->
-            let
-                ( var, ctx1 ) =
-                    freshVar ctx
-
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-
-                tag : Int
-                tag =
-                    if value then
-                        1
-
-                    else
-                        0
-            in
-            { ops = [ ecoConstruct var opId tag 0 [] ]
-            , resultVar = var
-            , ctx = ctx2
-            }
+            generateBoolExpr ctx value
 
         Opt.Chr _ value ->
-            let
-                ( var, ctx1 ) =
-                    freshVar ctx
-
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-
-                charCode : Int
-                charCode =
-                    String.uncons value
-                        |> Maybe.map (Tuple.first >> Char.toCode)
-                        |> Maybe.withDefault 0
-            in
-            -- TODO: Proper char representation
-            { ops = [ ecoConstruct var opId charCode 0 [] ]
-            , resultVar = var
-            , ctx = ctx2
-            }
+            generateChrExpr ctx value
 
         Opt.Str _ value ->
-            let
-                ( var, ctx1 ) =
-                    freshVar ctx
-
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-            in
-            { ops = [ ecoStringLiteral var opId value ]
-            , resultVar = var
-            , ctx = ctx2
-            }
+            generateStrExpr ctx value
 
         Opt.Int _ value ->
-            let
-                ( var, ctx1 ) =
-                    freshVar ctx
-
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-            in
-            { ops = [ arithConstantInt var opId value ]
-            , resultVar = var
-            , ctx = ctx2
-            }
+            generateIntExpr ctx value
 
         Opt.Float _ value ->
-            let
-                ( var, ctx1 ) =
-                    freshVar ctx
+            generateFloatExpr ctx value
 
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-            in
-            { ops = [ arithConstantFloat var opId value ]
-            , resultVar = var
-            , ctx = ctx2
-            }
-
-        ------------------------------------------
-        -- VARIABLES
-        ------------------------------------------
         Opt.VarLocal name ->
-            emptyResult ctx ("%" ++ name)
+            generateVarLocalExpr ctx name
 
         Opt.TrackedVarLocal _ name ->
-            emptyResult ctx ("%" ++ name)
+            generateVarLocalExpr ctx name
 
         Opt.VarGlobal _ global ->
-            let
-                ( var, ctx1 ) =
-                    freshVar ctx
-
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-
-                globalName : String
-                globalName =
-                    globalToMLIRName global
-            in
-            { ops = [ ecoCall var opId globalName [] ]
-            , resultVar = var
-            , ctx = ctx2
-            }
+            generateVarGlobalExpr ctx global
 
         Opt.VarEnum _ global index ->
-            let
-                ( var, ctx1 ) =
-                    freshVar ctx
-
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-
-                tag : Int
-                tag =
-                    Index.toMachine index
-            in
-            { ops = [ ecoConstruct var opId tag 0 [] ]
-            , resultVar = var
-            , ctx = ctx2
-            }
+            generateVarEnumExpr ctx global index
 
         Opt.VarBox _ global ->
-            let
-                ( var, ctx1 ) =
-                    freshVar ctx
-
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-            in
-            { ops = [ ecoCall var opId (globalToMLIRName global) [] ]
-            , resultVar = var
-            , ctx = ctx2
-            }
+            generateVarBoxExpr ctx global
 
         Opt.VarCycle _ home name ->
-            let
-                ( var, ctx1 ) =
-                    freshVar ctx
-
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-
-                cycleName : String
-                cycleName =
-                    canonicalToMLIRName home ++ "_" ++ name
-            in
-            { ops = [ ecoCall var opId cycleName [] ]
-            , resultVar = var
-            , ctx = ctx2
-            }
+            generateVarCycleExpr ctx home name
 
         Opt.VarDebug _ name home maybeName ->
-            let
-                ( var, ctx1 ) =
-                    freshVar ctx
-
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-            in
-            -- TODO: Implement debug
-            { ops = [ ecoConstruct var opId 0 0 [] ]
-            , resultVar = var
-            , ctx = ctx2
-            }
+            generateVarDebugExpr ctx name home maybeName
 
         Opt.VarKernel _ home name ->
-            let
-                ( var, ctx1 ) =
-                    freshVar ctx
+            generateVarKernelExpr ctx home name
 
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-
-                kernelName : String
-                kernelName =
-                    "Elm_Kernel_" ++ home ++ "_" ++ name
-            in
-            { ops = [ ecoCall var opId kernelName [] ]
-            , resultVar = var
-            , ctx = ctx2
-            }
-
-        ------------------------------------------
-        -- DATA STRUCTURES
-        ------------------------------------------
         Opt.Unit ->
-            let
-                ( var, ctx1 ) =
-                    freshVar ctx
-
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-            in
-            { ops = [ ecoConstruct var opId 0 0 [] ]
-            , resultVar = var
-            , ctx = ctx2
-            }
+            generateUnitExpr ctx
 
         Opt.Tuple _ a b maybeC ->
-            let
-                resultA : ExprResult
-                resultA =
-                    generateExpr ctx a
-
-                resultB : ExprResult
-                resultB =
-                    generateExpr resultA.ctx b
-
-                ( restOps, restVars, finalCtx ) =
-                    generateExprList resultB.ctx maybeC
-
-                allVars : List String
-                allVars =
-                    resultA.resultVar :: resultB.resultVar :: restVars
-
-                ( resultVar, ctx1 ) =
-                    freshVar finalCtx
-
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-
-                arity : Int
-                arity =
-                    List.length allVars
-            in
-            { ops = resultA.ops ++ resultB.ops ++ restOps ++ [ ecoConstruct resultVar opId 0 arity allVars ]
-            , resultVar = resultVar
-            , ctx = ctx2
-            }
+            generateTupleExpr ctx a b maybeC
 
         Opt.List _ items ->
-            generateList ctx items
+            generateListExpr ctx items
 
         Opt.Record fields ->
-            generateRecord ctx fields
+            generateRecordExpr ctx fields
 
         Opt.TrackedRecord _ fields ->
-            generateTrackedRecord ctx fields
+            generateTrackedRecordExpr ctx fields
 
-        ------------------------------------------
-        -- FUNCTIONS AND CALLS
-        ------------------------------------------
         Opt.Function args body ->
-            let
-                ( var, ctx1 ) =
-                    freshVar ctx
-
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-
-                arity : Int
-                arity =
-                    List.length args
-            in
-            -- TODO: Generate actual closure
-            { ops = [ ecoPapCreate var opId "anonymous" arity 0 ]
-            , resultVar = var
-            , ctx = ctx2
-            }
+            generateFunctionExpr ctx args body
 
         Opt.TrackedFunction locatedArgs body ->
-            let
-                args =
-                    List.map A.toValue locatedArgs
-
-                ( var, ctx1 ) =
-                    freshVar ctx
-
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-
-                arity : Int
-                arity =
-                    List.length args
-            in
-            -- TODO: Generate actual closure
-            { ops = [ ecoPapCreate var opId "anonymous" arity 0 ]
-            , resultVar = var
-            , ctx = ctx2
-            }
+            generateTrackedFunctionExpr ctx locatedArgs body
 
         Opt.Call _ func args ->
-            generateCall ctx func args
+            generateCallExpr ctx func args
 
         Opt.TailCall name args ->
-            let
-                ( argsOps, argVars, ctx1 ) =
-                    generateNamedArgs ctx args
+            generateTailCallExpr ctx name args
 
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-
-                ( resultVar, ctx3 ) =
-                    freshVar ctx2
-
-                ( opId2, ctx4 ) =
-                    freshOpId ctx3
-            in
-            { ops = argsOps ++ [ ecoJump opId 0 argVars, ecoConstruct resultVar opId2 0 0 [] ]
-            , resultVar = resultVar
-            , ctx = ctx4
-            }
-
-        ------------------------------------------
-        -- CONTROL FLOW
-        ------------------------------------------
         Opt.If branches final ->
-            generateIf ctx branches final
+            generateIfExpr ctx branches final
 
         Opt.Let def body ->
-            generateLet ctx def body
+            generateLetExpr ctx def body
 
         Opt.Destruct destructor body ->
-            generateDestruct ctx destructor body
+            generateDestructExpr ctx destructor body
 
         Opt.Case scrutinee1 scrutinee2 decider jumps ->
-            generateCase ctx scrutinee1 scrutinee2 decider jumps
+            generateCaseExpr ctx scrutinee1 scrutinee2 decider jumps
 
-        ------------------------------------------
-        -- RECORD OPERATIONS
-        ------------------------------------------
         Opt.Accessor _ fieldName ->
-            let
-                ( var, ctx1 ) =
-                    freshVar ctx
-
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-            in
-            -- TODO: Generate proper accessor function
-            { ops = [ ecoPapCreate var opId ("accessor_" ++ fieldName) 1 0 ]
-            , resultVar = var
-            , ctx = ctx2
-            }
+            generateAccessorExpr ctx fieldName
 
         Opt.Access record _ fieldName ->
-            let
-                recordResult : ExprResult
-                recordResult =
-                    generateExpr ctx record
-
-                ( resultVar, ctx1 ) =
-                    freshVar recordResult.ctx
-
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-            in
-            -- TODO: Compute actual field index
-            { ops = recordResult.ops ++ [ ecoProject resultVar opId 0 recordResult.resultVar ]
-            , resultVar = resultVar
-            , ctx = ctx2
-            }
+            generateAccessExpr ctx record fieldName
 
         Opt.Update _ record updates ->
-            let
-                recordResult : ExprResult
-                recordResult =
-                    generateExpr ctx record
+            generateUpdateExpr ctx record updates
 
-                ( resultVar, ctx1 ) =
-                    freshVar recordResult.ctx
-
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-            in
-            -- TODO: Implement record update
-            { ops = recordResult.ops ++ [ ecoConstruct resultVar opId 0 1 [ recordResult.resultVar ] ]
-            , resultVar = resultVar
-            , ctx = ctx2
-            }
-
-        ------------------------------------------
-        -- SPECIAL
-        ------------------------------------------
         Opt.Shader _ _ _ ->
-            let
-                ( var, ctx1 ) =
-                    freshVar ctx
+            generateShaderExpr ctx
 
-                ( opId, ctx2 ) =
-                    freshOpId ctx1
-            in
-            -- Shader not supported
-            { ops = [ ecoConstruct var opId 0 0 [] ]
-            , resultVar = var
-            , ctx = ctx2
-            }
+
+
+-- LITERAL EXPRESSIONS
+
+
+generateBoolExpr : Context -> Bool -> ExprResult
+generateBoolExpr ctx value =
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+
+        tag : Int
+        tag =
+            if value then
+                1
+
+            else
+                0
+    in
+    { ops = [ ecoConstruct var opId tag 0 [] ]
+    , resultVar = var
+    , ctx = ctx2
+    }
+
+
+generateChrExpr : Context -> String -> ExprResult
+generateChrExpr ctx value =
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+
+        charCode : Int
+        charCode =
+            String.uncons value
+                |> Maybe.map (Tuple.first >> Char.toCode)
+                |> Maybe.withDefault 0
+    in
+    -- TODO: Proper char representation
+    { ops = [ ecoConstruct var opId charCode 0 [] ]
+    , resultVar = var
+    , ctx = ctx2
+    }
+
+
+generateStrExpr : Context -> String -> ExprResult
+generateStrExpr ctx value =
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+    in
+    { ops = [ ecoStringLiteral var opId value ]
+    , resultVar = var
+    , ctx = ctx2
+    }
+
+
+generateIntExpr : Context -> Int -> ExprResult
+generateIntExpr ctx value =
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+    in
+    { ops = [ arithConstantInt var opId value ]
+    , resultVar = var
+    , ctx = ctx2
+    }
+
+
+generateFloatExpr : Context -> Float -> ExprResult
+generateFloatExpr ctx value =
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+    in
+    { ops = [ arithConstantFloat var opId value ]
+    , resultVar = var
+    , ctx = ctx2
+    }
+
+
+
+-- VARIABLE EXPRESSIONS
+
+
+generateVarLocalExpr : Context -> Name.Name -> ExprResult
+generateVarLocalExpr ctx name =
+    emptyResult ctx ("%" ++ name)
+
+
+generateVarGlobalExpr : Context -> Opt.Global -> ExprResult
+generateVarGlobalExpr ctx global =
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+
+        globalName : String
+        globalName =
+            globalToMLIRName global
+    in
+    { ops = [ ecoCall var opId globalName [] ]
+    , resultVar = var
+    , ctx = ctx2
+    }
+
+
+generateVarEnumExpr : Context -> Opt.Global -> Index.ZeroBased -> ExprResult
+generateVarEnumExpr ctx global index =
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+
+        tag : Int
+        tag =
+            Index.toMachine index
+    in
+    { ops = [ ecoConstruct var opId tag 0 [] ]
+    , resultVar = var
+    , ctx = ctx2
+    }
+
+
+generateVarBoxExpr : Context -> Opt.Global -> ExprResult
+generateVarBoxExpr ctx global =
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+    in
+    { ops = [ ecoCall var opId (globalToMLIRName global) [] ]
+    , resultVar = var
+    , ctx = ctx2
+    }
+
+
+generateVarCycleExpr : Context -> IO.Canonical -> Name.Name -> ExprResult
+generateVarCycleExpr ctx home name =
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+
+        cycleName : String
+        cycleName =
+            canonicalToMLIRName home ++ "_" ++ name
+    in
+    { ops = [ ecoCall var opId cycleName [] ]
+    , resultVar = var
+    , ctx = ctx2
+    }
+
+
+generateVarDebugExpr : Context -> Name.Name -> IO.Canonical -> Maybe Name.Name -> ExprResult
+generateVarDebugExpr ctx name home maybeName =
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+    in
+    -- TODO: Implement debug
+    { ops = [ ecoConstruct var opId 0 0 [] ]
+    , resultVar = var
+    , ctx = ctx2
+    }
+
+
+generateVarKernelExpr : Context -> Name.Name -> Name.Name -> ExprResult
+generateVarKernelExpr ctx home name =
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+
+        kernelName : String
+        kernelName =
+            "Elm_Kernel_" ++ home ++ "_" ++ name
+    in
+    { ops = [ ecoCall var opId kernelName [] ]
+    , resultVar = var
+    , ctx = ctx2
+    }
+
+
+
+-- DATA STRUCTURE EXPRESSIONS
+
+
+generateUnitExpr : Context -> ExprResult
+generateUnitExpr ctx =
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+    in
+    { ops = [ ecoConstruct var opId 0 0 [] ]
+    , resultVar = var
+    , ctx = ctx2
+    }
+
+
+generateTupleExpr : Context -> Opt.Expr -> Opt.Expr -> List Opt.Expr -> ExprResult
+generateTupleExpr ctx a b maybeC =
+    let
+        resultA : ExprResult
+        resultA =
+            generateExpr ctx a
+
+        resultB : ExprResult
+        resultB =
+            generateExpr resultA.ctx b
+
+        ( restOps, restVars, finalCtx ) =
+            generateExprList resultB.ctx maybeC
+
+        allVars : List String
+        allVars =
+            resultA.resultVar :: resultB.resultVar :: restVars
+
+        ( resultVar, ctx1 ) =
+            freshVar finalCtx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+
+        arity : Int
+        arity =
+            List.length allVars
+    in
+    { ops = resultA.ops ++ resultB.ops ++ restOps ++ [ ecoConstruct resultVar opId 0 arity allVars ]
+    , resultVar = resultVar
+    , ctx = ctx2
+    }
+
+
+generateListExpr : Context -> List Opt.Expr -> ExprResult
+generateListExpr ctx items =
+    generateList ctx items
+
+
+generateRecordExpr : Context -> EveryDict.Dict String Name.Name Opt.Expr -> ExprResult
+generateRecordExpr ctx fields =
+    generateRecord ctx fields
+
+
+generateTrackedRecordExpr : Context -> EveryDict.Dict String (A.Located Name.Name) Opt.Expr -> ExprResult
+generateTrackedRecordExpr ctx fields =
+    generateTrackedRecord ctx fields
+
+
+
+-- FUNCTION EXPRESSIONS
+
+
+generateFunctionExpr : Context -> List Name.Name -> Opt.Expr -> ExprResult
+generateFunctionExpr ctx args body =
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+
+        arity : Int
+        arity =
+            List.length args
+    in
+    -- TODO: Generate actual closure
+    { ops = [ ecoPapCreate var opId "anonymous" arity 0 ]
+    , resultVar = var
+    , ctx = ctx2
+    }
+
+
+generateTrackedFunctionExpr : Context -> List (A.Located Name.Name) -> Opt.Expr -> ExprResult
+generateTrackedFunctionExpr ctx locatedArgs body =
+    let
+        args =
+            List.map A.toValue locatedArgs
+
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+
+        arity : Int
+        arity =
+            List.length args
+    in
+    -- TODO: Generate actual closure
+    { ops = [ ecoPapCreate var opId "anonymous" arity 0 ]
+    , resultVar = var
+    , ctx = ctx2
+    }
+
+
+generateCallExpr : Context -> Opt.Expr -> List Opt.Expr -> ExprResult
+generateCallExpr ctx func args =
+    generateCall ctx func args
+
+
+generateTailCallExpr : Context -> Name.Name -> List ( Name.Name, Opt.Expr ) -> ExprResult
+generateTailCallExpr ctx name args =
+    let
+        ( argsOps, argVars, ctx1 ) =
+            generateNamedArgs ctx args
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+
+        ( resultVar, ctx3 ) =
+            freshVar ctx2
+
+        ( opId2, ctx4 ) =
+            freshOpId ctx3
+    in
+    { ops = argsOps ++ [ ecoJump opId 0 argVars, ecoConstruct resultVar opId2 0 0 [] ]
+    , resultVar = resultVar
+    , ctx = ctx4
+    }
+
+
+
+-- CONTROL FLOW EXPRESSIONS
+
+
+generateIfExpr : Context -> List ( Opt.Expr, Opt.Expr ) -> Opt.Expr -> ExprResult
+generateIfExpr ctx branches final =
+    generateIf ctx branches final
+
+
+generateLetExpr : Context -> Opt.Def -> Opt.Expr -> ExprResult
+generateLetExpr ctx def body =
+    generateLet ctx def body
+
+
+generateDestructExpr : Context -> Opt.Destructor -> Opt.Expr -> ExprResult
+generateDestructExpr ctx destructor body =
+    generateDestruct ctx destructor body
+
+
+generateCaseExpr : Context -> Name.Name -> Name.Name -> Opt.Decider Opt.Choice -> List ( Int, Opt.Expr ) -> ExprResult
+generateCaseExpr ctx scrutinee1 scrutinee2 decider jumps =
+    generateCase ctx scrutinee1 scrutinee2 decider jumps
+
+
+
+-- RECORD OPERATION EXPRESSIONS
+
+
+generateAccessorExpr : Context -> Name.Name -> ExprResult
+generateAccessorExpr ctx fieldName =
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+    in
+    -- TODO: Generate proper accessor function
+    { ops = [ ecoPapCreate var opId ("accessor_" ++ fieldName) 1 0 ]
+    , resultVar = var
+    , ctx = ctx2
+    }
+
+
+generateAccessExpr : Context -> Opt.Expr -> Name.Name -> ExprResult
+generateAccessExpr ctx record fieldName =
+    let
+        recordResult : ExprResult
+        recordResult =
+            generateExpr ctx record
+
+        ( resultVar, ctx1 ) =
+            freshVar recordResult.ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+    in
+    -- TODO: Compute actual field index
+    { ops = recordResult.ops ++ [ ecoProject resultVar opId 0 recordResult.resultVar ]
+    , resultVar = resultVar
+    , ctx = ctx2
+    }
+
+
+generateUpdateExpr : Context -> Opt.Expr -> EveryDict.Dict String (A.Located Name.Name) Opt.Expr -> ExprResult
+generateUpdateExpr ctx record updates =
+    let
+        recordResult : ExprResult
+        recordResult =
+            generateExpr ctx record
+
+        ( resultVar, ctx1 ) =
+            freshVar recordResult.ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+    in
+    -- TODO: Implement record update
+    { ops = recordResult.ops ++ [ ecoConstruct resultVar opId 0 1 [ recordResult.resultVar ] ]
+    , resultVar = resultVar
+    , ctx = ctx2
+    }
+
+
+
+-- SPECIAL EXPRESSIONS
+
+
+generateShaderExpr : Context -> ExprResult
+generateShaderExpr ctx =
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        ( opId, ctx2 ) =
+            freshOpId ctx1
+    in
+    -- Shader not supported
+    { ops = [ ecoConstruct var opId 0 0 [] ]
+    , resultVar = var
+    , ctx = ctx2
+    }
 
 
 
