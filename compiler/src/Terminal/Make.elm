@@ -44,6 +44,7 @@ type Flags
 type Output
     = JS String
     | Html String
+    | MLIR String
     | DevNull
 
 
@@ -102,14 +103,14 @@ runHelp root paths style (Flags debug optimize withSourceMaps maybeOutput _ mayb
                                                                                 Task.pure ()
 
                                                                             [ name ] ->
-                                                                                toBuilder withSourceMaps Html.leadingLines root details desiredMode artifacts
+                                                                                toBuilder Generate.javascriptBackend withSourceMaps Html.leadingLines root details desiredMode artifacts
                                                                                     |> Task.bind
                                                                                         (\builder ->
                                                                                             generate style "index.html" (Html.sandwich name builder) (NE.Nonempty name [])
                                                                                         )
 
                                                                             name :: names ->
-                                                                                toBuilder withSourceMaps 0 root details desiredMode artifacts
+                                                                                toBuilder Generate.javascriptBackend withSourceMaps 0 root details desiredMode artifacts
                                                                                     |> Task.bind
                                                                                         (\builder ->
                                                                                             generate style "elm.js" builder (NE.Nonempty name names)
@@ -121,7 +122,7 @@ runHelp root paths style (Flags debug optimize withSourceMaps maybeOutput _ mayb
                                                                     Just (JS target) ->
                                                                         case getNoMains artifacts of
                                                                             [] ->
-                                                                                toBuilder withSourceMaps 0 root details desiredMode artifacts
+                                                                                toBuilder Generate.javascriptBackend withSourceMaps 0 root details desiredMode artifacts
                                                                                     |> Task.bind
                                                                                         (\builder ->
                                                                                             generate style target builder (Build.getRootNames artifacts)
@@ -134,12 +135,24 @@ runHelp root paths style (Flags debug optimize withSourceMaps maybeOutput _ mayb
                                                                         hasOneMain artifacts
                                                                             |> Task.bind
                                                                                 (\name ->
-                                                                                    toBuilder withSourceMaps Html.leadingLines root details desiredMode artifacts
+                                                                                    toBuilder Generate.javascriptBackend withSourceMaps Html.leadingLines root details desiredMode artifacts
                                                                                         |> Task.bind
                                                                                             (\builder ->
                                                                                                 generate style target (Html.sandwich name builder) (NE.Nonempty name [])
                                                                                             )
                                                                                 )
+
+                                                                    Just (MLIR target) ->
+                                                                        case getNoMains artifacts of
+                                                                            [] ->
+                                                                                toBuilder Generate.mlirBackend withSourceMaps 0 root details desiredMode artifacts
+                                                                                    |> Task.bind
+                                                                                        (\builder ->
+                                                                                            generate style target builder (Build.getRootNames artifacts)
+                                                                                        )
+
+                                                                            name :: names ->
+                                                                                Task.throw (Exit.MakeNonMainFilesIntoJavaScript name names)
                                                             )
                                         )
                             )
@@ -318,19 +331,19 @@ type DesiredMode
     | Prod
 
 
-toBuilder : Bool -> Int -> FilePath -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
-toBuilder withSourceMaps leadingLines root details desiredMode artifacts =
+toBuilder : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
+toBuilder backend withSourceMaps leadingLines root details desiredMode artifacts =
     Task.mapError Exit.MakeBadGenerate <|
         Task.fmap CodeGen.outputToString <|
             case desiredMode of
                 Debug ->
-                    Generate.debug withSourceMaps leadingLines root details artifacts
+                    Generate.debug backend withSourceMaps leadingLines root details artifacts
 
                 Dev ->
-                    Generate.dev withSourceMaps leadingLines root details artifacts
+                    Generate.dev backend withSourceMaps leadingLines root details artifacts
 
                 Prod ->
-                    Generate.prod withSourceMaps leadingLines root details artifacts
+                    Generate.prod backend withSourceMaps leadingLines root details artifacts
 
 
 
@@ -362,7 +375,7 @@ output =
         { singular = "output file"
         , plural = "output files"
         , suggest = \_ -> Task.pure []
-        , examples = \_ -> Task.pure [ "elm.js", "index.html", "/dev/null" ]
+        , examples = \_ -> Task.pure [ "elm.js", "index.html", "output.mlir", "/dev/null" ]
         }
 
 
@@ -376,6 +389,9 @@ parseOutput name =
 
     else if hasExt ".js" name then
         Just (JS name)
+
+    else if hasExt ".mlir" name then
+        Just (MLIR name)
 
     else
         Nothing

@@ -600,7 +600,7 @@ attemptEval (Env root interpreter ansi) oldState newState output =
                                     (Build.fromRepl root details (toByteString newState output))
                                     |> Task.bind
                                         (\artifacts ->
-                                            Utils.maybeTraverseTask (Task.mapError Exit.ReplBadGenerate << Task.fmap CodeGen.outputToString << Generate.repl root details ansi artifacts) (toPrintName output)
+                                            Utils.maybeTraverseTask (Task.mapError Exit.ReplBadGenerate << Task.fmap CodeGen.outputToString << Generate.repl Generate.javascriptBackend root details ansi artifacts) (toPrintName output)
                                         )
                             )
                     )

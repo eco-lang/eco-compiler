@@ -185,13 +185,13 @@ toBuilder withSourceMaps leadingLines root details desiredMode artifacts =
         Task.fmap CodeGen.outputToString <|
             case desiredMode of
                 Debug ->
-                    Generate.debug withSourceMaps leadingLines root details artifacts
+                    Generate.debug Generate.javascriptBackend withSourceMaps leadingLines root details artifacts
 
                 Dev ->
-                    Generate.dev withSourceMaps leadingLines root details artifacts
+                    Generate.dev Generate.javascriptBackend withSourceMaps leadingLines root details artifacts
 
                 Prod ->
-                    Generate.prod withSourceMaps leadingLines root details artifacts
+                    Generate.prod Generate.javascriptBackend withSourceMaps leadingLines root details artifacts
 
 
 

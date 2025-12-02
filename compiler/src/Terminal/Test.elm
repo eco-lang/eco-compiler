@@ -1105,7 +1105,7 @@ toBuilder : Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.T
 toBuilder leadingLines root details artifacts =
     Task.mapError Exit.TestBadGenerate <|
         Task.fmap CodeGen.outputToString <|
-            Generate.dev False leadingLines root details artifacts
+            Generate.dev Generate.javascriptBackend False leadingLines root details artifacts
 
 
 

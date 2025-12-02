@@ -1,6 +1,8 @@
 module Builder.Generate exposing
     ( debug
     , dev
+    , javascriptBackend
+    , mlirBackend
     , prod
     , repl
     )
@@ -35,19 +37,29 @@ import Utils.Task.Extra as Task
 -- NOTE: This is used by Make, Repl, and Reactor right now. But it may be
 -- desireable to have Repl and Reactor to keep foreign objects in memory
 -- to make things a bit faster?
--- GENERATORS
+-- BACKENDS
 
 
-{-| Current backend for code generation.
-Change this to switch between JavaScript and MLIR backends for testing.
+{-| JavaScript code generation backend.
 -}
-currentBackend : CodeGen.CodeGen
-currentBackend =
+javascriptBackend : CodeGen.CodeGen
+javascriptBackend =
     JavaScript.backend
 
 
-debug : Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
-debug withSourceMaps leadingLines root details (Build.Artifacts pkg ifaces roots modules) =
+{-| MLIR code generation backend.
+-}
+mlirBackend : CodeGen.CodeGen
+mlirBackend =
+    MLIR.backend
+
+
+
+-- GENERATORS
+
+
+debug : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
+debug backend withSourceMaps leadingLines root details (Build.Artifacts pkg ifaces roots modules) =
     loadObjects root details modules
         |> Task.bind
             (\loading ->
@@ -73,7 +85,7 @@ debug withSourceMaps leadingLines root details (Build.Artifacts pkg ifaces roots
                                         prepareSourceMaps withSourceMaps root
                                             |> Task.fmap
                                                 (\sourceMaps ->
-                                                    currentBackend.generate
+                                                    backend.generate
                                                         { sourceMaps = sourceMaps
                                                         , leadingLines = leadingLines
                                                         , mode = mode
@@ -86,8 +98,8 @@ debug withSourceMaps leadingLines root details (Build.Artifacts pkg ifaces roots
             )
 
 
-dev : Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
-dev withSourceMaps leadingLines root details (Build.Artifacts pkg _ roots modules) =
+dev : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
+dev backend withSourceMaps leadingLines root details (Build.Artifacts pkg _ roots modules) =
     Task.bind finalizeObjects (loadObjects root details modules)
         |> Task.bind
             (\objects ->
@@ -107,7 +119,7 @@ dev withSourceMaps leadingLines root details (Build.Artifacts pkg _ roots module
                 prepareSourceMaps withSourceMaps root
                     |> Task.fmap
                         (\sourceMaps ->
-                            currentBackend.generate
+                            backend.generate
                                 { sourceMaps = sourceMaps
                                 , leadingLines = leadingLines
                                 , mode = mode
@@ -118,8 +130,8 @@ dev withSourceMaps leadingLines root details (Build.Artifacts pkg _ roots module
             )
 
 
-prod : Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
-prod withSourceMaps leadingLines root details (Build.Artifacts pkg _ roots modules) =
+prod : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
+prod backend withSourceMaps leadingLines root details (Build.Artifacts pkg _ roots modules) =
     Task.bind finalizeObjects (loadObjects root details modules)
         |> Task.bind
             (\objects ->
@@ -142,7 +154,7 @@ prod withSourceMaps leadingLines root details (Build.Artifacts pkg _ roots modul
                             prepareSourceMaps withSourceMaps root
                                 |> Task.fmap
                                     (\sourceMaps ->
-                                        currentBackend.generate
+                                        backend.generate
                                             { sourceMaps = sourceMaps
                                             , leadingLines = leadingLines
                                             , mode = mode
@@ -166,8 +178,8 @@ prepareSourceMaps withSourceMaps root =
         Task.pure CodeGen.NoSourceMaps
 
 
-repl : FilePath -> Details.Details -> Bool -> Build.ReplArtifacts -> N.Name -> Task Exit.Generate CodeGen.Output
-repl root details ansi (Build.ReplArtifacts home modules localizer annotations) name =
+repl : CodeGen.CodeGen -> FilePath -> Details.Details -> Bool -> Build.ReplArtifacts -> N.Name -> Task Exit.Generate CodeGen.Output
+repl backend root details ansi (Build.ReplArtifacts home modules localizer annotations) name =
     Task.bind finalizeObjects (loadObjects root details modules)
         |> Task.fmap
             (\objects ->
@@ -176,7 +188,7 @@ repl root details ansi (Build.ReplArtifacts home modules localizer annotations) 
                     graph =
                         objectsToGlobalGraph objects
                 in
-                currentBackend.generateForRepl
+                backend.generateForRepl
                     { ansi = ansi
                     , localizer = localizer
                     , graph = graph
