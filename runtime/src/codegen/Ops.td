@@ -22,21 +22,20 @@ class Eco_Op<string mnemonic, list<Trait> traits = []>
 //------------------------------------------------------------------------------
 
 def Eco_FuncOp : Eco_Op<"func"> {
-  let summary = "Eco function (placeholder; typically you would just use func.func)";
+  let summary = "Function definition";
   let description = [{
-    Placeholder Eco function op. In practice you can likely reuse builtin
-    func.func and not define this.
+    Defines a function with a body region. Used for Elm functions that have been
+    lambda-lifted and converted to top-level definitions.
   }];
 
-  // Function body region.
   let regions = (region AnyRegion:$body);
 }
 
 def Eco_LetOp : Eco_Op<"let"> {
-  let summary = "Let-binding placeholder op";
+  let summary = "Let-binding";
   let description = [{
-    Represents a Eco IR let-binding; in MLIR SSA form this is usually not
-    needed and can be modeled directly with SSA values.
+    Represents an Elm let-binding. Passes the input value through unchanged,
+    providing a named binding point in the IR for debugging and analysis.
   }];
 
   let arguments = (ins AnyType:$value);
@@ -44,11 +43,11 @@ def Eco_LetOp : Eco_Op<"let"> {
 }
 
 def Eco_SwitchOp : Eco_Op<"switch"> {
-  let summary = "Eco switch / pattern-match on scrutinee";
+  let summary = "Pattern match on ADT constructor tag";
   let description = [{
-    High-level switch over a scrutinee value. For now this is modeled with
-    one region for the case arms and one for the default; you may want
-    variadic regions plus attributes for case keys.
+    Pattern match on an Elm value's constructor tag. The cases region contains
+    one block per constructor alternative, and defaultRegion handles unmatched
+    cases. Used for compiling Elm case expressions.
   }];
 
   let arguments = (ins AnyType:$scrutinee);
@@ -58,9 +57,9 @@ def Eco_SwitchOp : Eco_Op<"switch"> {
 }
 
 def Eco_RetOp : Eco_Op<"ret", [Terminator]> {
-  let summary = "Eco return";
+  let summary = "Return from function";
   let description = [{
-    Return from a Eco function.
+    Returns values from an eco.func. Terminates the current block.
   }];
 
   let arguments = (ins Variadic<AnyType>:$results);
@@ -68,14 +67,14 @@ def Eco_RetOp : Eco_Op<"ret", [Terminator]> {
 }
 
 def Eco_JoinpointOp : Eco_Op<"joinpoint"> {
-  let summary = "Joinpoint definition";
+  let summary = "Local control flow label";
   let description = [{
-    Defines a joinpoint with parameters and a body region, plus a continuation
-    region for code after the joinpoint declaration.
+    Defines a joinpoint for efficient local control flow without heap allocation.
+    The jpRegion contains the joinpoint body with block arguments as parameters.
+    The continuation region contains code that follows the joinpoint declaration
+    and may jump to the joinpoint via eco.jump.
   }];
 
-  // Region 0: joinpoint body (block arguments = parameters)
-  // Region 1: continuation after joinpoint definition
   let regions = (region AnyRegion:$jpRegion,
                  AnyRegion:$continuation);
   let results = (outs);
@@ -84,8 +83,8 @@ def Eco_JoinpointOp : Eco_Op<"joinpoint"> {
 def Eco_JumpOp : Eco_Op<"jump", [Terminator]> {
   let summary = "Jump to joinpoint";
   let description = [{
-    Jump to a previously-defined eco.joinpoint, passing arguments that match
-    the joinpoint’s parameters.
+    Transfers control to a joinpoint defined by eco.joinpoint, passing arguments
+    that bind to the joinpoint's block parameters. Terminates the current block.
   }];
 
   let arguments = (ins Variadic<AnyType>:$args);
@@ -93,10 +92,11 @@ def Eco_JumpOp : Eco_Op<"jump", [Terminator]> {
 }
 
 def Eco_CrashOp : Eco_Op<"crash", [Terminator]> {
-  let summary = "Crash / panic";
+  let summary = "Unconditional program abort";
   let description = [{
-    Unconditional crash (panic). Typically lowers to a call into the Eco
-    runtime plus an unreachable/return.
+    Aborts execution with an error message. Used for Elm's Debug.todo and
+    exhaustive pattern match failures. Lowers to a runtime call followed by
+    unreachable.
   }];
 
   let arguments = (ins AnyType:$message);
@@ -104,9 +104,10 @@ def Eco_CrashOp : Eco_Op<"crash", [Terminator]> {
 }
 
 def Eco_ExpectOp : Eco_Op<"expect"> {
-  let summary = "Debug assertion (expect)";
+  let summary = "Runtime assertion";
   let description = [{
-    Represents Eco's Expect statement (runtime assertion).
+    Checks a condition and aborts with message if false. Returns the condition
+    value for chaining. Used for internal runtime invariant checks.
   }];
 
   let arguments = (ins AnyType:$cond,
@@ -115,9 +116,10 @@ def Eco_ExpectOp : Eco_Op<"expect"> {
 }
 
 def Eco_DbgOp : Eco_Op<"dbg"> {
-  let summary = "Debug/logging operation";
+  let summary = "Debug logging";
   let description = [{
-    Debug/log op; can be lowered to calls or metadata as needed.
+    Emits debug output for development. Used to implement Elm's Debug.log.
+    Lowers to a runtime logging call or is stripped in release builds.
   }];
 
   let arguments = (ins Variadic<AnyType>:$args);
@@ -129,18 +131,20 @@ def Eco_DbgOp : Eco_Op<"dbg"> {
 //------------------------------------------------------------------------------
 
 def Eco_StringLiteralOp : Eco_Op<"string_literal"> {
-  let summary = "Eco string literal";
+  let summary = "String constant";
   let description = [{
-    Creates a Eco string value (e.g. {ptr,len,cap} layout).
+    Creates a heap-allocated Elm String from a compile-time constant. The string
+    data is stored in the constant pool and wrapped in a String header at runtime.
   }];
 
   let results = (outs AnyType:$result);
 }
 
 def Eco_StructOp : Eco_Op<"struct"> {
-  let summary = "Construct Eco struct value";
+  let summary = "Construct record or tuple";
   let description = [{
-    Constructs a Eco struct (product) value from field operands.
+    Constructs an Elm record or tuple from field values. Fields are stored
+    contiguously after the object header in the order provided.
   }];
 
   let arguments = (ins Variadic<AnyType>:$fields);
@@ -148,9 +152,10 @@ def Eco_StructOp : Eco_Op<"struct"> {
 }
 
 def Eco_StructExtractOp : Eco_Op<"struct_extract"> {
-  let summary = "Extract field from Eco struct";
+  let summary = "Extract record or tuple field";
   let description = [{
-    Extract a single field from a Eco struct value.
+    Extracts a field from an Elm record or tuple by index. The field index
+    is specified via an attribute.
   }];
 
   let arguments = (ins AnyType:$structValue);
@@ -158,9 +163,10 @@ def Eco_StructExtractOp : Eco_Op<"struct_extract"> {
 }
 
 def Eco_TagConstructOp : Eco_Op<"tag_construct"> {
-  let summary = "Construct tagged union value";
+  let summary = "Construct custom type value";
   let description = [{
-    Construct a Eco tagged union (ADT constructor) with a given payload.
+    Constructs an Elm custom type (ADT) variant. The constructor tag and name
+    are specified via attributes. Payload fields follow the header in memory.
   }];
 
   let arguments = (ins Variadic<AnyType>:$payload);
@@ -168,9 +174,10 @@ def Eco_TagConstructOp : Eco_Op<"tag_construct"> {
 }
 
 def Eco_TagGetIdOp : Eco_Op<"tag_get_id"> {
-  let summary = "Get tag id from tagged union";
+  let summary = "Read constructor tag";
   let description = [{
-    Read the discriminant/tag id from a Eco union value.
+    Reads the constructor tag from an Elm custom type value's header. Returns
+    an integer identifying which variant the value represents.
   }];
 
   let arguments = (ins AnyType:$value);
@@ -178,10 +185,10 @@ def Eco_TagGetIdOp : Eco_Op<"tag_get_id"> {
 }
 
 def Eco_TagExtractOp : Eco_Op<"tag_extract"> {
-  let summary = "Extract field from tagged union variant";
+  let summary = "Extract custom type payload field";
   let description = [{
-    Extract a payload field from a Eco tagged union, given that it is a
-    particular constructor.
+    Extracts a payload field from an Elm custom type variant by index. Assumes
+    the value has the expected constructor tag; behavior is undefined otherwise.
   }];
 
   let arguments = (ins AnyType:$value);
@@ -189,9 +196,10 @@ def Eco_TagExtractOp : Eco_Op<"tag_extract"> {
 }
 
 def Eco_ListLiteralOp : Eco_Op<"list_literal"> {
-  let summary = "Construct Eco list from elements";
+  let summary = "Construct list from elements";
   let description = [{
-    Construct a Eco list (array) value from element operands.
+    Constructs an Elm List from element values. Allocates Cons cells for each
+    element, linking them into a singly-linked list terminated by Nil.
   }];
 
   let arguments = (ins Variadic<AnyType>:$elems);
@@ -199,19 +207,20 @@ def Eco_ListLiteralOp : Eco_Op<"list_literal"> {
 }
 
 def Eco_EmptyListOp : Eco_Op<"empty_list"> {
-  let summary = "Empty Eco list";
+  let summary = "Empty list constant";
   let description = [{
-    Construct an empty Eco list value for a given element type/layout.
+    Returns Elm's empty list (Nil). This is a constant embedded in the pointer
+    representation, not a heap allocation.
   }];
 
   let results = (outs AnyType:$result);
 }
 
 def Eco_ErasedPackOp : Eco_Op<"erased.pack"> {
-  let summary = "Pack value into erased representation";
+  let summary = "Erase type information";
   let description = [{
-    Pack a value into Eco's erased representation (for existential/erased
-    types).
+    Converts a typed value to the uniform boxed representation. Used when
+    storing values in polymorphic containers or passing to generic functions.
   }];
 
   let arguments = (ins AnyType:$value);
@@ -219,9 +228,10 @@ def Eco_ErasedPackOp : Eco_Op<"erased.pack"> {
 }
 
 def Eco_ErasedUnpackOp : Eco_Op<"erased.unpack"> {
-  let summary = "Unpack value from erased representation";
+  let summary = "Restore type information";
   let description = [{
-    Unpack a value from Eco's erased representation.
+    Converts a boxed value back to a typed representation. The result type
+    must match the original value's type; behavior is undefined otherwise.
   }];
 
   let arguments = (ins AnyType:$erased);
@@ -233,10 +243,11 @@ def Eco_ErasedUnpackOp : Eco_Op<"erased.unpack"> {
 //------------------------------------------------------------------------------
 
 def Eco_CallOp : Eco_Op<"call"> {
-  let summary = "Direct call to Eco function";
+  let summary = "Direct function call";
   let description = [{
-    Direct call to a Eco function by symbol/name. Function symbol and
-    calling convention are typically modeled as attributes.
+    Calls a function by symbol reference. The function symbol and optional
+    tail-call attribute are specified via attributes. Arguments must match
+    the function's parameter types.
   }];
 
   let arguments = (ins Variadic<AnyType>:$args);
@@ -244,9 +255,11 @@ def Eco_CallOp : Eco_Op<"call"> {
 }
 
 def Eco_CallIndirectOp : Eco_Op<"call_indirect"> {
-  let summary = "Indirect call via function pointer";
+  let summary = "Call through closure";
   let description = [{
-    Call a function value or function pointer with arguments.
+    Invokes a function through a closure value. The callee is a Closure object
+    containing a function pointer and captured environment. Used for calling
+    partially-applied functions and first-class function values.
   }];
 
   let arguments = (ins AnyType:$callee,
@@ -255,10 +268,11 @@ def Eco_CallIndirectOp : Eco_Op<"call_indirect"> {
 }
 
 def Eco_CallForeignOp : Eco_Op<"call_foreign"> {
-  let summary = "Call foreign (FFI) function";
+  let summary = "Call external C function";
   let description = [{
-    Call into foreign code (C, etc.). Foreign symbol, ABI, and other
-    metadata are typically modeled as attributes.
+    Calls an external C function for FFI or runtime integration. The foreign
+    symbol and calling convention are specified via attributes. Arguments are
+    marshalled according to the C ABI.
   }];
 
   let arguments = (ins Variadic<AnyType>:$args);
@@ -266,11 +280,11 @@ def Eco_CallForeignOp : Eco_Op<"call_foreign"> {
 }
 
 def Eco_CallLowLevelOp : Eco_Op<"call_lowlevel"> {
-  let summary = "Call Eco low-level builtin";
+  let summary = "Invoke primitive operation";
   let description = [{
-    Represents Eco's low-level builtin operations (List.concat, Str.concat,
-    numerical ops, etc.). The specific builtin is usually encoded as an
-    enum attribute.
+    Invokes a built-in primitive operation such as arithmetic, string
+    concatenation, or list operations. The specific operation is identified
+    by an enum attribute. Lowers to inlined code or runtime calls.
   }];
 
   let arguments = (ins Variadic<AnyType>:$args);
@@ -278,10 +292,11 @@ def Eco_CallLowLevelOp : Eco_Op<"call_lowlevel"> {
 }
 
 def Eco_CallHOOp : Eco_Op<"call_ho"> {
-  let summary = "Higher-order builtin call";
+  let summary = "Higher-order builtin";
   let description = [{
-    Represents higher-order Eco builtins (e.g. list.map) before they are
-    expanded into loops and direct calls.
+    Invokes a higher-order built-in function like List.map or List.filter.
+    These operations take a function argument and are later lowered to loops
+    with direct calls for efficiency.
   }];
 
   let arguments = (ins Variadic<AnyType>:$args);
@@ -289,14 +304,15 @@ def Eco_CallHOOp : Eco_Op<"call_ho"> {
 }
 
 //------------------------------------------------------------------------------
-// 4. Reference counting / reuse (Perceus)
+// 4. Reference counting / reuse (Perceus-style optimization)
 //------------------------------------------------------------------------------
 
 def Eco_IncrefOp : Eco_Op<"incref"> {
   let summary = "Increment reference count";
   let description = [{
-    Increment the reference count of a heap object. The increment amount
-    is usually modeled as an integer attribute.
+    Increments the reference count field in a heap object's header. Used for
+    Perceus-style reuse analysis where RC=1 enables in-place mutation. The
+    increment amount is specified via an integer attribute.
   }];
 
   let arguments = (ins AnyType:$value);
@@ -304,9 +320,11 @@ def Eco_IncrefOp : Eco_Op<"incref"> {
 }
 
 def Eco_DecrefOp : Eco_Op<"decref"> {
-  let summary = "Decrement reference count (possibly recursive free)";
+  let summary = "Decrement reference count";
   let description = [{
-    Decrement reference count; if it reaches zero, recursively free children.
+    Decrements the reference count and recursively decrements children if
+    the count reaches zero. Used in conjunction with eco.incref for
+    Perceus-style memory reuse optimization.
   }];
 
   let arguments = (ins AnyType:$value);
@@ -314,10 +332,11 @@ def Eco_DecrefOp : Eco_Op<"decref"> {
 }
 
 def Eco_DecrefShallowOp : Eco_Op<"decref_shallow"> {
-  let summary = "Decrement reference count (non-recursive)";
+  let summary = "Shallow reference count decrement";
   let description = [{
-    Decrement reference count without recursively freeing children
-    (shallow dec).
+    Decrements the reference count without recursively processing children.
+    Used when the caller will separately handle child references, avoiding
+    redundant traversals.
   }];
 
   let arguments = (ins AnyType:$value);
@@ -325,9 +344,11 @@ def Eco_DecrefShallowOp : Eco_Op<"decref_shallow"> {
 }
 
 def Eco_FreeOp : Eco_Op<"free"> {
-  let summary = "Free unique object";
+  let summary = "Deallocate unique object";
   let description = [{
-    Free an object known to have reference count 1 (unique / owned).
+    Deallocates an object known to have reference count 1. Used when static
+    analysis proves uniqueness, allowing immediate deallocation without
+    checking the reference count at runtime.
   }];
 
   let arguments = (ins AnyType:$value);
@@ -335,10 +356,11 @@ def Eco_FreeOp : Eco_Op<"free"> {
 }
 
 def Eco_ResetOp : Eco_Op<"reset"> {
-  let summary = "Reset object for potential in-place reuse";
+  let summary = "Prepare object for reuse";
   let description = [{
-    Reset an object for in-place reuse if unique; otherwise perform
-    appropriate decrefs/frees.
+    Checks if an object can be reused in-place (RC=1). If unique, releases
+    child references and returns the object for reuse. If shared, decrements
+    the reference and returns null to signal fresh allocation is needed.
   }];
 
   let arguments = (ins AnyType:$value);
@@ -346,10 +368,11 @@ def Eco_ResetOp : Eco_Op<"reset"> {
 }
 
 def Eco_ResetRefOp : Eco_Op<"reset_ref"> {
-  let summary = "Reset reference with update mode semantics";
+  let summary = "Reset reference slot for reuse";
   let description = [{
-    Variant of reset that updates a reference (pointer slot) in-place
-    depending on update mode.
+    Like eco.reset but operates on a pointer slot rather than a value.
+    Conditionally updates the slot contents based on uniqueness, enabling
+    in-place field updates when the containing object is unique.
   }];
 
   let arguments = (ins AnyType:$ref);

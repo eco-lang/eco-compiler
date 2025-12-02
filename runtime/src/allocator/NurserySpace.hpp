@@ -16,16 +16,16 @@ class ThreadLocalHeap;
 class NurserySpaceTestAccess;
 
 /**
- * Nursery with semi-space copying collector (Cheney's algorithm).
+ * Nursery with semi-space copying collector using Cheney's algorithm.
  *
- * The nursery is composed of blocks (same size as AllocBuffer). Blocks are
- * organized into two sets: from_blocks_ (allocation space) and to_blocks_
- * (copy target during GC).
+ * The nursery consists of memory blocks organized into two sets: low_blocks_
+ * and high_blocks_. One set serves as from-space (allocation target) and the
+ * other as to-space (evacuation target), swapping roles after each GC.
  *
  * Objects are allocated via bump pointer within the current block. When a
- * block is exhausted, we move to the next block. When all from-space blocks
- * are full, minorGC evacuates live objects to to-space blocks (or promotes
- * to old gen), then swaps spaces.
+ * block fills, we advance to the next block. When all from-space blocks are
+ * full, minorGC evacuates live objects to to-space (or promotes to old gen),
+ * then swaps the from-space and to-space designations.
  */
 class NurserySpace {
 public:
@@ -48,34 +48,34 @@ private:
     const HeapConfig* config_;      // Heap configuration parameters.
     Allocator* allocator_;          // Back-reference for requesting new blocks.
 
-    // Block management - two vectors for O(1) membership checks.
-    // Low and high blocks are from separate address space regions.
-    // All low block addresses < all high block addresses.
-    std::vector<char*> low_blocks_;   // Blocks from low nursery region, sorted.
-    std::vector<char*> high_blocks_;  // Blocks from high nursery region, sorted.
+    // Block management using two separate address regions for semi-space copying.
+    // Low blocks come from lower addresses, high blocks from higher addresses.
+    // This separation enables O(1) from-space vs to-space checks using address ranges.
+    std::vector<char*> low_blocks_;   // Blocks from lower nursery region (sorted).
+    std::vector<char*> high_blocks_;  // Blocks from upper nursery region (sorted).
     size_t block_size_;               // Size of each block in bytes.
-    bool from_is_low_;                // True if from-space is low_blocks_.
+    bool from_is_low_;                // True if from-space is currently low_blocks_.
 
-    // Cached bounds for O(1) membership checks.
-    char* low_base_;                  // low_blocks_.front()
-    char* low_end_;                   // low_blocks_.back() + block_size_
-    char* high_base_;                 // high_blocks_.front()
-    char* high_end_;                  // high_blocks_.back() + block_size_
+    // Cached bounds for O(1) membership checks (updated when blocks change).
+    char* low_base_;                  // Start of first low block (low_blocks_.front()).
+    char* low_end_;                   // End of last low block (low_blocks_.back() + block_size_).
+    char* high_base_;                 // Start of first high block (high_blocks_.front()).
+    char* high_end_;                  // End of last high block (high_blocks_.back() + block_size_).
 
-    // Current allocation state.
-    size_t current_from_idx_;         // Index into current from-space vector.
-    char* alloc_ptr_;                 // Bump pointer in current block.
-    char* alloc_end_;                 // End of current block.
+    // Current allocation state (bump pointer allocation).
+    size_t current_from_idx_;         // Index of active from-space block.
+    char* alloc_ptr_;                 // Bump pointer within current from-space block.
+    char* alloc_end_;                 // End address of current from-space block.
 
-    // GC state (during minorGC).
-    size_t current_to_idx_;           // Index into current to-space vector.
-    char* copy_ptr_;                  // Bump pointer for copying in to-space.
-    char* copy_end_;                  // End of current to-space block.
-    size_t scan_block_idx_;           // Which to-space block scan_ptr is in.
-    char* scan_ptr_;                  // Cheney scan pointer.
+    // GC state (active only during minorGC execution).
+    size_t current_to_idx_;           // Index of active to-space block for evacuation.
+    char* copy_ptr_;                  // Bump pointer for copying objects into to-space.
+    char* copy_end_;                  // End address of current to-space block.
+    size_t scan_block_idx_;           // Index of to-space block containing scan_ptr.
+    char* scan_ptr_;                  // Cheney scan pointer (next object to process).
 
-    // Growth tracking.
-    float growth_threshold_;          // Trigger growth when to-space exceeds this fraction full.
+    // Growth tracking for adaptive nursery sizing.
+    float growth_threshold_;          // Request more blocks when to-space exceeds this occupancy.
 
     RootSet root_set;                 // Root set for this nursery.
 
@@ -88,7 +88,7 @@ private:
     // ========== Internal Methods ==========
 
     // Initializes this nursery by requesting blocks from the Allocator.
-    // Used for backward compatibility with single-threaded tests.
+    // Legacy initialization path for backward compatibility with older tests.
     void initialize(Allocator* allocator, const HeapConfig* config);
 
     // Initializes this nursery with pre-allocated memory from ThreadLocalHeap.
@@ -97,17 +97,17 @@ private:
     // Performs minor GC, evacuating live objects to to_space or promoting to old gen.
     void minorGC(OldGenSpace &oldgen);
 
-    // Returns true if the pointer points into any of this nursery's blocks.
-    // O(1) using cached bounds (approximate - includes gaps between blocks).
-    // Inline for performance - called frequently during GC.
+    // Returns true if the pointer is within this nursery's address ranges.
+    // O(1) check using cached bounds (may include small gaps between blocks).
+    // Inlined for performance as this is called frequently during GC.
     inline bool contains(void *ptr) const {
         char* p = static_cast<char*>(ptr);
         return (p >= low_base_ && p < low_end_) ||
                (p >= high_base_ && p < high_end_);
     }
 
-    // Returns true if the pointer is in from-space.
-    // O(1) using cached bounds. Inline for performance.
+    // Returns true if the pointer is in from-space (current allocation space).
+    // O(1) check using cached bounds. Inlined for performance.
     inline bool isInFromSpace(void* ptr) const {
         char* p = static_cast<char*>(ptr);
         if (from_is_low_) {
@@ -117,8 +117,8 @@ private:
         }
     }
 
-    // Returns true if the pointer is in to-space.
-    // O(1) using cached bounds. Inline for performance.
+    // Returns true if the pointer is in to-space (evacuation target during GC).
+    // O(1) check using cached bounds. Inlined for performance.
     inline bool isInToSpace(void* ptr) const {
         char* p = static_cast<char*>(ptr);
         if (from_is_low_) {
@@ -134,11 +134,11 @@ private:
     // Returns the number of bytes currently allocated in the nursery.
     size_t bytesAllocated() const;
 
-    // Returns true if the given allocation would push usage above the threshold.
+    // Returns true if allocating size bytes would exceed the occupancy threshold.
     bool wouldExceedThreshold(size_t size, float threshold) const;
 
-    // Resets the nursery to initial state. Used for testing.
-    // If new_config is provided, reconfigures with new parameters.
+    // Resets the nursery to initial state (clears all blocks and stats).
+    // If new_config is provided, reconfigures with new parameters. Used for testing.
     void reset(OldGenSpace &oldgen, const HeapConfig* new_config = nullptr);
 
     // Allocation slow path - advances to next block or returns nullptr.
@@ -161,19 +161,20 @@ private:
     void scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
 
     // ========== List Locality Optimization ==========
-    // Two-pass list copying for contiguous spine allocation.
+    // Two-pass list copying for contiguous spine allocation (improves cache locality).
 
     /**
      * Copies a list spine (Cons cells only) contiguously in to-space.
      *
-     * Pass 1: Iterates through tail pointers, copying each Cons cell.
-     * This creates a contiguous spine with good cache locality.
+     * Pass 1 of two-pass list copying: Iterates through tail pointers, copying
+     * each Cons cell sequentially. This allocates the entire spine contiguously,
+     * improving cache locality during traversal.
      *
-     * @param ptr          Pointer to first Cons cell to copy (updated to new location)
-     * @param oldgen       Old generation for promotion
-     * @param promoted_objects  Buffer for objects promoted to old gen
-     * @param needs_head_pass   Set to true if any head requires evacuation
-     * @return Pointer to first copied Cons in to-space (nullptr if empty/error)
+     * @param ptr          Pointer to first Cons cell to copy (updated to new location).
+     * @param oldgen       Old generation space for promotion decisions.
+     * @param promoted_objects  Vector to collect objects promoted to old gen.
+     * @param needs_head_pass   Set to true if any head contains a boxed pointer.
+     * @return Pointer to first copied Cons in to-space (nullptr if empty/error).
      */
     void* evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
                             std::vector<void*> *promoted_objects,
@@ -182,12 +183,12 @@ private:
     /**
      * Evacuates heads of a previously-copied list spine.
      *
-     * Pass 2: Iterates through the copied spine in to-space and evacuates
-     * each head that contains a boxed pointer.
+     * Pass 2 of two-pass list copying: Iterates through the already-copied spine
+     * in to-space and evacuates each head element that contains a boxed pointer.
      *
-     * @param first_cons   Pointer to first Cons in to-space (from evacuateListSpine)
-     * @param oldgen       Old generation for promotion
-     * @param promoted_objects  Buffer for objects promoted to old gen
+     * @param first_cons   Pointer to first Cons in to-space (from evacuateListSpine).
+     * @param oldgen       Old generation space for promotion decisions.
+     * @param promoted_objects  Vector to collect objects promoted to old gen.
      */
     void evacuateListHeads(void* first_cons, OldGenSpace &oldgen,
                            std::vector<void*> *promoted_objects);

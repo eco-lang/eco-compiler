@@ -86,13 +86,13 @@ typedef enum {
 // Heap header that every heap object must have.
 typedef struct {
     u32 tag : TAG_BITS;
-    u32 color : 2; // Black, white, grey for concurrent mark and sweep.
-    u32 pin : 1; // Memory-pinned object.
-    u32 epoch : 2; // Object marked during this GC cycle.
-    u32 age : 2; // Number of GC cycles survived.
-    u32 unboxed : 3; // Unboxed flags for cons, tuple2, tuple3 only.
+    u32 color : 2; // White, Grey, or Black for tri-color mark-and-sweep.
+    u32 pin : 1; // Memory-pinned object (prevents relocation).
+    u32 epoch : 2; // GC epoch when this object was last marked.
+    u32 age : 2; // Number of minor GC cycles survived.
+    u32 unboxed : 3; // Unboxed flags for Cons, Tuple2, Tuple3 only.
     u32 padding : 1;
-    u32 refcount : 16; // Reference count.
+    u32 refcount : 16; // Reference count (unused currently).
     u32 size; // Object size in type-specific units.
 } Header;
 static_assert(sizeof(Header) == 8, "Header must be 64 bits");
@@ -112,13 +112,13 @@ typedef enum {
 // A logical pointer into the heap.
 typedef struct {
     u64 ptr : POINTER_BITS;
-    u64 constant : 4; // Index of embedded Elm constant (0 = regular pointer).
+    u64 constant : 4; // Embedded constant index (0 means regular pointer, 1-15 encode constants).
     u64 padding : 20; // Reserved for future use.
 } HPointer;
 static_assert(sizeof(HPointer) == 8, "HPointer must be 64 bits");
 
-// A pointer or unboxed primitive. Used when there is an "unboxed" bitmap in a structure.
-// The bitmap describes which fields are boxed or unboxed.
+// A pointer or unboxed primitive.
+// Used in structures with an unboxed bitmap that indicates which fields are pointers vs primitives.
 typedef union {
     HPointer p;
     i64 i;
@@ -147,7 +147,7 @@ typedef struct {
 typedef struct {
     Header header;
     u16 value;
-    u16 padding1;
+    u16 padding1;  // Padding to maintain 8-byte alignment.
     u16 padding2;
     u16 padding3;
 } ElmChar;
@@ -156,8 +156,8 @@ typedef struct {
 // This prevents the issue where an 8-byte empty string would be overwritten by
 // a 16-byte forward pointer, corrupting adjacent heap objects.
 
-// Make sure strings are properly aligned on 64-bit target.
-// Otherwise the C compiler can truncate any zero padding at the end.
+// Ensure strings are 8-byte aligned on 64-bit targets.
+// Without explicit alignment, the compiler might truncate trailing padding.
 #define ALIGN(X) __attribute__((aligned(X)))
 struct ALIGN(8) elm_string {
     Header header; // Size in header, up to 4G characters.
@@ -185,21 +185,21 @@ typedef struct {
 } Cons;
 
 typedef struct {
-    Header header; // Header.size contains field count (up to 63).
+    Header header; // Header.size contains field count (max 63).
     u64 ctor : CTOR_BITS;
-    u64 unboxed : 48; // Bitmap indicating which of the first 48 fields are unboxed.
+    u64 unboxed : 48; // Bitmap: bit N set means field N is unboxed (primitive value).
     Unboxable values[];
 } Custom;
 
 typedef struct {
-    Header header; // Header.size contains field count (up to 127).
-    u64 unboxed; // Bitmap indicating which of the first 64 fields are unboxed.
+    Header header; // Header.size contains field count (max 127).
+    u64 unboxed; // Bitmap: bit N set means field N is unboxed (primitive value).
     Unboxable values[];
 } Record;
 
 typedef struct {
     Header header;
-    u64 unboxed; // Bitmap indicating which of the first 64 fields are unboxed.
+    u64 unboxed; // Bitmap: bit N set means field N is unboxed (primitive value).
     HPointer fieldgroup;
     HPointer values[];
 } DynRecord;
@@ -214,9 +214,9 @@ typedef void *(*EvalFunction)(void *[]);
 
 typedef struct {
     Header header;
-    u64 n_values : 6;      // Number of captured values currently stored.
-    u64 max_values : 6;    // Maximum number of values this closure can hold.
-    u64 unboxed : 52;      // Bitmap indicating which captured values are unboxed.
+    u64 n_values : 6;      // Number of captured values currently stored (0-63).
+    u64 max_values : 6;    // Maximum capacity for captured values (0-63).
+    u64 unboxed : 52;      // Bitmap: bit N set means captured value N is unboxed.
     EvalFunction evaluator;
     Unboxable values[];
 } Closure;
@@ -241,9 +241,9 @@ typedef struct {
     HPointer task;
 } Task;
 
-// Forward object for compaction - uses special header layout.
-// The header fields are repurposed: tag identifies it as Forward,
-// and the remaining bits store the forwarding pointer.
+// Forwarding pointer for copying collection.
+// Replaces an evacuated object's header to redirect references to the new location.
+// The tag field identifies this as Forward, and remaining bits store the target address.
 typedef struct {
     struct {
         u64 tag : TAG_BITS;           // Tag_Forward (identifies this as a forwarding pointer).

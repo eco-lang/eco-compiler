@@ -37,13 +37,13 @@ public:
     // ========== Safe Public Pointer API ==========
 
     // Resolves an HPointer to its physical address.
-    // Follows any forwarding pointer chain to the final location.
-    // Returns nullptr for embedded constants (Nil, True, False, Unit).
-    // Asserts on invalid pointer or corrupted memory.
+    // Follows forwarding pointers to the final evacuated location if present.
+    // Returns nullptr for embedded constants (Nil, True, False, Unit, etc.).
+    // Asserts on invalid pointers or corrupted memory.
     void* resolve(HPointer ptr);
 
     // Wraps a physical address as an HPointer.
-    // Used after allocate() to get a storable pointer.
+    // Converts raw pointer returned by allocate() into a storable logical pointer.
     HPointer wrap(void* obj);
 
     // ========== Lifecycle ==========
@@ -54,8 +54,8 @@ public:
     void initialize(const HeapConfig& config = HeapConfig());
 
     // Initializes the calling thread's heap space.
-    // Creates a ThreadLocalHeap with nursery and old gen regions.
-    // Thread-safe: acquires mutex to allocate regions from shared address space.
+    // Creates a ThreadLocalHeap with dedicated nursery and old gen regions.
+    // Thread-safe: acquires mutex to carve out regions from the unified heap.
     void initThread();
 
     // Cleans up the calling thread's heap space.
@@ -86,14 +86,14 @@ public:
     // Returns true if the thread-local nursery is over the threshold.
     bool isNurseryNearFull(float threshold);
 
-    // Returns true if the given pointer is in the calling thread's nursery.
+    // Returns true if the pointer is in the calling thread's nursery.
     bool isInNursery(void *ptr);
 
-    // Returns true if the given pointer is in the calling thread's old gen.
+    // Returns true if the pointer is in the calling thread's old gen.
     bool isInOldGen(void *ptr);
 
-    // Returns true if the given pointer is anywhere in the heap (any thread).
-    // O(1) bounds check - used for validation during GC.
+    // Returns true if the pointer is anywhere in the unified heap (any thread).
+    // O(1) bounds check using base and reserved size.
     bool isInHeap(void *ptr) const {
         char* p = static_cast<char*>(ptr);
         return p >= heap_base && p < heap_base + heap_reserved;
@@ -116,25 +116,25 @@ private:
 
     HeapConfig config_;           // Heap configuration parameters.
     char *heap_base;              // Base of reserved address space.
-    size_t heap_reserved;         // Total address space reserved.
-    size_t old_gen_committed;     // Committed bytes in old gen region.
-    size_t nursery_offset;        // Where nursery starts (halfway point).
-    size_t nursery_low_committed_;   // Committed bytes in nursery low region.
-    size_t nursery_high_committed_;  // Committed bytes in nursery high region.
+    size_t heap_reserved;         // Total address space reserved (bytes).
+    size_t old_gen_committed;     // Committed bytes in old gen region (grows on demand).
+    size_t nursery_offset;        // Byte offset where nursery region begins (heap midpoint).
+    size_t nursery_low_committed_;   // Committed bytes in first half of nursery region.
+    size_t nursery_high_committed_;  // Committed bytes in second half of nursery region.
     bool initialized;             // True after initialize() has been called.
 
 #if ENABLE_GC_STATS
-    // Accumulated stats from thread heaps that were destroyed during reset.
-    // This ensures stats survive across test runs that reset the allocator.
+    // Accumulated statistics from destroyed thread heaps.
+    // Preserves stats across test runs when the allocator is reset.
     GCStats accumulated_stats_;
 #endif
 
     // ========== Thread-Local Heaps ==========
 
-    mutable std::recursive_mutex thread_mutex_;  // Protects thread_heaps_ and region allocation.
+    mutable std::recursive_mutex thread_mutex_;  // Protects thread_heaps_ map and region allocation.
     std::unordered_map<std::thread::id, std::unique_ptr<ThreadLocalHeap>> thread_heaps_;
 
-    // Thread-local fast access (set in initThread, cleared in cleanupThread).
+    // Thread-local cache for fast access to current thread's heap (avoids map lookup).
     static thread_local ThreadLocalHeap* tl_heap_;
 
     // ========== Internal Methods ==========
@@ -142,8 +142,8 @@ private:
     // Returns the calling thread's heap, or nullptr if not initialized.
     ThreadLocalHeap* getThreadHeap() const { return tl_heap_; }
 
-    // Resets the allocator to initial state. Used for testing.
-    // If new_config is provided, reconfigures with new parameters.
+    // Resets the allocator to initial state (clears all heaps and stats).
+    // If new_config is provided, reconfigures with new parameters. Used for testing.
     void reset(const HeapConfig* new_config = nullptr);
 
     // Returns the base address of the unified heap.
@@ -155,11 +155,11 @@ private:
     // Returns the heap configuration.
     const HeapConfig& getConfig() const { return config_; }
 
-    // Acquires a block of memory from the nursery low region.
+    // Acquires a block of memory from the lower nursery region.
     // Thread-safe: acquires thread_mutex_.
     char* acquireNurseryBlockLow(size_t size);
 
-    // Acquires a block of memory from the nursery high region.
+    // Acquires a block of memory from the upper nursery region.
     // Thread-safe: acquires thread_mutex_.
     char* acquireNurseryBlockHigh(size_t size);
 
@@ -168,17 +168,17 @@ private:
     // Returns pointer to base of committed block.
     char* acquireOldGenBlock(size_t size);
 
-    // Acquires a region of memory from the old gen region.
-    // Thread-safe: caller must hold thread_mutex_.
-    // Returns base address and commits initial_size bytes.
+    // Acquires a contiguous region from the old gen address space.
+    // Pre-condition: caller must hold thread_mutex_.
+    // Commits initial_size bytes immediately, reserves space for growth to max_size.
     char* acquireOldGenRegion(size_t initial_size, size_t max_size);
 
     void commitNursery(char *nursery_base, size_t size);
 
     // ========== Internal Pointer Conversion ==========
 
-    // Raw pointer conversion - internal use only, no forward resolution.
-    // Friends can access these for performance-critical GC operations.
+    // Raw pointer conversion without forwarding resolution.
+    // Internal use only - friends can access for performance-critical GC operations.
     static inline void* fromPointerRaw(HPointer ptr) {
         if (ptr.constant != 0) return nullptr;
         char* heap_base = instance().heap_base;

@@ -17,7 +17,7 @@ namespace Elm {
  * Collects performance metrics for garbage collection.
  *
  * Tracks allocation counts, GC cycle counts, timing histograms, and
- * survival/promotion rates. Zero overhead when ENABLE_GC_STATS is 0.
+ * survival/promotion rates. Compiles to zero overhead when ENABLE_GC_STATS is 0.
  */
 class GCStats {
 public:
@@ -29,24 +29,24 @@ public:
     uint64_t minor_gc_count = 0;
     uint64_t objects_survived = 0;
     uint64_t objects_promoted = 0;
-    uint64_t bytes_freed = 0;  // Running total across all GCs.
+    uint64_t bytes_freed = 0;  // Cumulative total across all GC cycles.
 
     // ========== Minor GC Timing Stats ==========
     uint64_t total_minor_gc_time_ns = 0;
     uint64_t min_minor_gc_time_ns = UINT64_MAX;
     uint64_t max_minor_gc_time_ns = 0;
 
-    // Histogram: Extended dynamic range
-    // - 20 buckets of 5000ns each (0-100000ns)
-    // - 18 buckets of 50000ns each (100000ns-1000000ns)
-    // - 1 overflow bucket (>1000000ns)
+    // Histogram with extended dynamic range:
+    // - 20 buckets of 5us each (0-100us range)
+    // - 18 buckets of 50us each (100us-1ms range)
+    // - 1 overflow bucket (>1ms)
     static constexpr int HISTOGRAM_BUCKETS = 39;
-    static constexpr uint64_t MINOR_HISTOGRAM_FIRST_RANGE = 100000;  // 100us
-    static constexpr uint64_t MINOR_HISTOGRAM_SECOND_RANGE = 1000000; // 1ms
-    static constexpr uint64_t MINOR_BUCKET_SIZE_SMALL = 5000;   // 5us for first range
-    static constexpr uint64_t MINOR_BUCKET_SIZE_LARGE = 50000;  // 50us for second range
-    static constexpr int MINOR_BUCKETS_SMALL = 20;  // 0-100us
-    static constexpr int MINOR_BUCKETS_LARGE = 18;  // 100us-1ms
+    static constexpr uint64_t MINOR_HISTOGRAM_FIRST_RANGE = 100000;  // 100us (nanoseconds).
+    static constexpr uint64_t MINOR_HISTOGRAM_SECOND_RANGE = 1000000; // 1ms (nanoseconds).
+    static constexpr uint64_t MINOR_BUCKET_SIZE_SMALL = 5000;   // 5us bucket width (first range).
+    static constexpr uint64_t MINOR_BUCKET_SIZE_LARGE = 50000;  // 50us bucket width (second range).
+    static constexpr int MINOR_BUCKETS_SMALL = 20;  // Number of small buckets (0-100us).
+    static constexpr int MINOR_BUCKETS_LARGE = 18;  // Number of large buckets (100us-1ms).
 
     uint64_t minor_time_histogram[HISTOGRAM_BUCKETS] = {0};
 
@@ -66,27 +66,27 @@ public:
     uint64_t min_major_gc_time_ns = UINT64_MAX;
     uint64_t max_major_gc_time_ns = 0;
 
-    // Major GC histogram: Using same bucket count as minor GC
+    // Major GC histogram using same bucket configuration as minor GC.
     uint64_t major_time_histogram[HISTOGRAM_BUCKETS] = {0};
 
     // ========== Methods ==========
 
-    // Records an allocation of the given size.
+    // Records an allocation event.
     void recordAllocation(size_t bytes);
 
-    // Records completion of a minor GC cycle.
+    // Records completion of a minor GC cycle with timing and reclaimed bytes.
     void recordMinorGCEnd(uint64_t elapsed_ns, size_t freed);
 
-    // Records completion of a major GC cycle.
+    // Records completion of a major GC cycle with timing.
     void recordMajorGCEnd(uint64_t elapsed_ns);
 
-    // Merges statistics from another GCStats instance.
+    // Merges statistics from another GCStats instance (for combining thread stats).
     void combine(const GCStats& other);
 
-    // Prints a formatted summary to stdout.
+    // Prints a formatted summary to stdout with histograms.
     void print() const;
 
-    // Resets all statistics to initial values.
+    // Resets all statistics to zero (clears all counters and histograms).
     void reset();
 
 private:
@@ -100,6 +100,7 @@ private:
 
 #if ENABLE_GC_STATS
     // ========== Minor GC Macros ==========
+
     #define GC_STATS_MINOR_RECORD_ALLOC(stats, bytes) \
         do { (stats).recordAllocation(bytes); } while(0)
 
@@ -144,7 +145,7 @@ private:
             std::chrono::high_resolution_clock::now() - (start)).count()
 
 #else
-    // Stats disabled: all macros expand to nothing (zero overhead).
+    // Stats disabled - all macros expand to nothing (zero overhead).
     #define GC_STATS_MINOR_RECORD_ALLOC(stats, bytes) do {} while(0)
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) do {} while(0)
     #define GC_STATS_MINOR_INC_SURVIVORS(stats) do {} while(0)
