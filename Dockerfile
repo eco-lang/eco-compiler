@@ -40,7 +40,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git build-essential python3 pkg-config \
     cmake ninja-build clang lld zlib1g-dev libxml2-dev \
-    gosu curl \
+    gosu curl libcmark-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Installed LLVM/MLIR
@@ -59,8 +59,12 @@ RUN git clone https://github.com/emil-e/rapidcheck.git /tmp/rapidcheck \
     && rm -rf /tmp/rapidcheck
 
 # Install Claude CLI
-COPY ./install_claude.sh ./install_claude.sh
+COPY ./install_claude.sh .
 RUN ./install_claude.sh
+
+# Install crag for knowledge base queries.
+COPY ./crag_0.1.0_amd64.deb .
+RUN dpkg --install ./crag_0.1.0_amd64.deb
 
 # Workspace
 WORKDIR /work
