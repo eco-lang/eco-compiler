@@ -1,0 +1,24 @@
+node_modules
+elm-stuff
+.DS_Store
+.idea
+
+# Guida
+guida-stuff
+
+# Main
+lib/guida.js
+lib/guida.min.js
+
+# Command line
+bin/guida.js
+bin/guida.min.js
+
+# Try
+try/public/app.js
+
+# Assets
+assets/some-application/index.html
+
+# Examples
+examples/index.html

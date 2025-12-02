@@ -1,0 +1,14 @@
+{
+  "name": "guida-try",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "preserver": "esbuild app.js --bundle --platform=browser --outfile=public/app.js",
+    "server": "./server.js"
+  },
+  "dependencies": {
+    "esbuild": "^0.25.1",
+    "express": "^4.21.2",
+    "guida": "file:.."
+  }
+}
