@@ -26,10 +26,10 @@
 - [ ] **3. MLIR/LLVM Integration** → [§3](#3-mlirllvm-integration)
   - [ ] 3.1 ECO MLIR Dialect → [§3.1](#31-eco-mlir-dialect)
     - [x] 3.1.1 Research & Reference Implementation → [§3.1.1](#311-research--reference-implementation)
-    - [ ] 3.1.2 Dialect Definition → [§3.1.2](#312-dialect-definition)
-    - [ ] 3.1.3 Operations → [§3.1.3](#313-operations)
+    - [x] 3.1.2 Dialect Definition → [§3.1.2](#312-dialect-definition)
+    - [ ] 3.1.3 Operations → [§3.1.3](#313-operations) *(in progress - skeletal ops defined)*
     - [ ] 3.1.4 Type System → [§3.1.4](#314-type-system)
-    - [ ] 3.1.5 GC Integration Hooks → [§3.1.5](#315-gc-integration-hooks)
+    - [ ] 3.1.5 GC Integration Hooks → [§3.1.5](#315-gc-integration-hooks) *(in progress - refcount ops defined)*
     - [ ] 3.1.6 Process Primitives → [§3.1.6](#316-process-primitives)
     - [ ] 3.1.7 Test Programs → [§3.1.7](#317-test-programs)
   - [ ] 3.2 Lowering Pipeline → [§3.2](#32-lowering-pipeline)
@@ -388,15 +388,15 @@ The compilation pipeline uses MLIR for high-level optimization and LLVM for code
 
 ### 3.1 ECO MLIR Dialect
 
-**Status**: Not Started
+**Status**: In Progress
 
 Design and implement a custom MLIR dialect called "eco" for Elm compilation.
 
 **Expertise Required**: MLIR framework knowledge
 
 **Deliverables**:
-- [ ] `ECODialect.cpp/hpp`: Dialect definition
-- [ ] Operation definitions
+- [x] `ECODialect.cpp/hpp`: Dialect definition
+- [x] Operation definitions (skeletal)
 - [ ] Type system implementation
 - [ ] MLIR dialect documentation
 - [ ] Test programs demonstrating dialect usage
@@ -420,37 +420,45 @@ Study existing MLIR implementations for functional languages as reference.
 
 #### 3.1.2 Dialect Definition
 
-**Status**: Not Started
+**Status**: Complete
 
 Create the core dialect infrastructure.
 
 **Tasks**:
-- [ ] Define ECO dialect namespace and registration with MLIR framework
+- [x] Define ECO dialect namespace and registration with MLIR framework
 - [ ] Set up dialect versioning strategy
-- [ ] Establish dialect structure and organization
-- [ ] Configure build system for MLIR integration
+- [x] Establish dialect structure and organization
+- [x] Configure build system for MLIR integration
 
 **Deliverables**:
-- [ ] `ECODialect.cpp/hpp`: Core dialect definition
-- [ ] CMake integration for MLIR
+- [x] `EcoDialect.cpp/hpp`: Core dialect definition *(runtime/src/codegen/)*
+- [x] CMake integration for MLIR *(runtime/src/codegen/CMakeLists.txt)*
 
 #### 3.1.3 Operations
 
-**Status**: Not Started
+**Status**: In Progress
 
 Define custom operations representing Elm semantics.
 
+**Current Implementation** *(runtime/src/codegen/Ops.td - ~30 ops defined)*:
+- Control flow: `eco.func`, `eco.let`, `eco.switch`, `eco.ret`, `eco.joinpoint`, `eco.jump`, `eco.crash`, `eco.expect`, `eco.dbg`
+- Values/ADTs: `eco.string_literal`, `eco.struct`, `eco.struct_extract`, `eco.tag_construct`, `eco.tag_get_id`, `eco.tag_extract`, `eco.list_literal`, `eco.empty_list`, `eco.erased.pack`, `eco.erased.unpack`
+- Calls: `eco.call`, `eco.call_indirect`, `eco.call_foreign`, `eco.call_lowlevel`, `eco.call_ho`
+- Reference counting (Perceus-style): `eco.incref`, `eco.decref`, `eco.decref_shallow`, `eco.free`, `eco.reset`, `eco.reset_ref`
+
 **Tasks**:
-- [ ] Function definition and application operations
-- [ ] Pattern matching operations
-- [ ] Data constructor operations (algebraic data types)
-- [ ] Record operations (creation, field access, update)
-- [ ] Let bindings and variable references
-- [ ] Closure creation and invocation
+- [x] Function definition and application operations
+- [x] Pattern matching operations (switch, joinpoint/jump)
+- [x] Data constructor operations (tag_construct, tag_get_id, tag_extract)
+- [x] Record operations (struct, struct_extract)
+- [x] Let bindings and variable references
+- [ ] Closure creation and invocation (not yet defined)
+- [ ] Add parser/printer/builder/verification for all ops
 
 **Deliverables**:
-- [ ] Operation definitions in TableGen
-- [ ] Operation implementation files
+- [x] Operation definitions in TableGen *(Ops.td)*
+- [x] Operation implementation files *(EcoOps.cpp/h)*
+- [ ] Complete operation semantics and verification
 
 #### 3.1.4 Type System
 
@@ -471,18 +479,23 @@ Implement MLIR types matching Elm's type system.
 
 #### 3.1.5 GC Integration Hooks
 
-**Status**: Not Started
+**Status**: In Progress
 
 Define operations for garbage collection integration.
+
+**Current Implementation**:
+- Reference counting ops defined: `eco.incref`, `eco.decref`, `eco.decref_shallow`, `eco.free`, `eco.reset`, `eco.reset_ref`
 
 **Tasks**:
 - [ ] Allocation operations (nursery, old gen)
 - [ ] GC safepoint operations
 - [ ] Root registration/deregistration operations
 - [ ] Write barrier operations (if needed for future concurrent GC)
+- [x] Reference counting operations (Perceus-style reuse)
 
 **Deliverables**:
-- [ ] GC-related operation definitions
+- [x] Reference counting operation definitions *(in Ops.td)*
+- [ ] Allocation operation definitions
 - [ ] Documentation on GC integration points
 
 #### 3.1.6 Process Primitives
@@ -1108,8 +1121,8 @@ Runtime Foundation (§1)
 
 ## Project Status
 
-**Current Phase**: GC Complete, Moving to Compiler Integration
-**Last Updated**: 2025-12-01
+**Current Phase**: GC Complete, MLIR Dialect In Progress
+**Last Updated**: 2025-12-02
 
 **Completed**:
 - Heap model design (§1.1)
@@ -1124,15 +1137,17 @@ Runtime Foundation (§1)
 - LLVM stack map API research (§1.2.2) - see design_docs/llvm_stackmap_integration.md
 - Lean/lz MLIR dialect research (§3.1.1) - see design_docs/lean_mlir_research.md
 - Guida I/O audit (§2.1.1) - see design_docs/guida-io-operations.md and guida-io-ops.csv
+- ECO MLIR dialect definition (§3.1.2) - core infrastructure in runtime/src/codegen/
+- ECO MLIR operations skeleton (§3.1.3) - ~30 ops defined in Ops.td
 
 **Recent Changes**:
-- Completed old generation GC with all phases implemented
-- Added throughput statistics to demo program (Cons cells/sec)
-- Improved GC stats time unit formatting (ns/µs/ms/s)
-- Fixed stats accumulation across allocator resets
+- Reorganized allocator code into runtime/src/allocator/ subdirectory
+- Reorganized test code into test/allocator/ subdirectory
+- Created ECO MLIR dialect skeleton with TableGen definitions
+- Added CMake integration for MLIR code generation
 
 **Next Steps**:
+- Complete ECO MLIR operations (§3.1.3) - add closure ops, parser/printer/verification
+- ECO MLIR type system (§3.1.4)
 - LLVM stack map implementation (§1.2.3)
-- Process & thread model design (§1.3)
-- Begin ECO MLIR dialect definition (§3.1.2)
 - Rationalize Guida I/O design (§2.1.1)
