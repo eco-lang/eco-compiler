@@ -1,0 +1,24 @@
+{
+    "type": "package",
+    "name": "guida/elm-io",
+    "summary": "Port-based IO library for Guida compiler",
+    "license": "BSD-3-Clause",
+    "version": "1.0.0",
+    "exposed-modules": [
+        "Guida.IO",
+        "Guida.IO.FileSystem",
+        "Guida.IO.Console",
+        "Guida.IO.Process",
+        "Guida.IO.Concurrency",
+        "Guida.IO.Network"
+    ],
+    "elm-version": "0.19.0 <= v < 0.20.0",
+    "dependencies": {
+        "elm/core": "1.0.0 <= v < 2.0.0",
+        "elm/json": "1.1.3 <= v < 2.0.0",
+        "elm/bytes": "1.0.0 <= v < 2.0.0",
+        "elm/time": "1.0.0 <= v < 2.0.0",
+        "brian-watkins/elm-procedure": "3.0.0 <= v < 4.0.0"
+    },
+    "test-dependencies": {}
+}

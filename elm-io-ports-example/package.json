@@ -1,0 +1,17 @@
+{
+    "author": "Rupert Smith",
+    "name": "elm-realtime-shared",
+    "version": "1.0.0",
+    "description": "Shared modules for elm-realtime.",
+    "devDependencies": {
+    },
+    "engines": {
+        "node": ">=12"
+    },
+    "prettier": {
+        "tabWidth": 4
+    },
+    "dependencies": {
+        "@gomomento/sdk-web": "^1.100.0"
+    }
+}
