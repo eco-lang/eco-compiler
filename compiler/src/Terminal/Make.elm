@@ -22,6 +22,7 @@ import Builder.Stuff as Stuff
 import Compiler.AST.Optimized as Opt
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.Html as Html
 import Maybe.Extra as Maybe
 import Task exposing (Task)
@@ -320,15 +321,16 @@ type DesiredMode
 toBuilder : Bool -> Int -> FilePath -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
 toBuilder withSourceMaps leadingLines root details desiredMode artifacts =
     Task.mapError Exit.MakeBadGenerate <|
-        case desiredMode of
-            Debug ->
-                Generate.debug withSourceMaps leadingLines root details artifacts
+        Task.fmap CodeGen.outputToString <|
+            case desiredMode of
+                Debug ->
+                    Generate.debug withSourceMaps leadingLines root details artifacts
 
-            Dev ->
-                Generate.dev withSourceMaps leadingLines root details artifacts
+                Dev ->
+                    Generate.dev withSourceMaps leadingLines root details artifacts
 
-            Prod ->
-                Generate.prod withSourceMaps leadingLines root details artifacts
+                Prod ->
+                    Generate.prod withSourceMaps leadingLines root details artifacts
 
 
 

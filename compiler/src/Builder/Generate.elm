@@ -18,7 +18,9 @@ import Compiler.Elm.Compiler.Type.Extract as Extract
 import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.Generate.JavaScript as JS
+import Compiler.Generate.CodeGen as CodeGen
+import Compiler.Generate.CodeGen.JavaScript as JavaScript
+import Compiler.Generate.CodeGen.MLIR as MLIR
 import Compiler.Generate.Mode as Mode
 import Compiler.Nitpick.Debug as Nitpick
 import Data.Map as Dict exposing (Dict)
@@ -36,7 +38,15 @@ import Utils.Task.Extra as Task
 -- GENERATORS
 
 
-debug : Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate String
+{-| Current backend for code generation.
+Change this to switch between JavaScript and MLIR backends for testing.
+-}
+currentBackend : CodeGen.CodeGen
+currentBackend =
+    JavaScript.backend
+
+
+debug : Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
 debug withSourceMaps leadingLines root details (Build.Artifacts pkg ifaces roots modules) =
     loadObjects root details modules
         |> Task.bind
@@ -61,13 +71,22 @@ debug withSourceMaps leadingLines root details (Build.Artifacts pkg ifaces roots
                                                 gatherMains pkg objects roots
                                         in
                                         prepareSourceMaps withSourceMaps root
-                                            |> Task.fmap (\sourceMaps -> JS.generate sourceMaps leadingLines mode graph mains)
+                                            |> Task.fmap
+                                                (\sourceMaps ->
+                                                    currentBackend.generate
+                                                        { sourceMaps = sourceMaps
+                                                        , leadingLines = leadingLines
+                                                        , mode = mode
+                                                        , graph = graph
+                                                        , mains = mains
+                                                        }
+                                                )
                                     )
                         )
             )
 
 
-dev : Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate String
+dev : Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
 dev withSourceMaps leadingLines root details (Build.Artifacts pkg _ roots modules) =
     Task.bind finalizeObjects (loadObjects root details modules)
         |> Task.bind
@@ -86,11 +105,20 @@ dev withSourceMaps leadingLines root details (Build.Artifacts pkg _ roots module
                         gatherMains pkg objects roots
                 in
                 prepareSourceMaps withSourceMaps root
-                    |> Task.fmap (\sourceMaps -> JS.generate sourceMaps leadingLines mode graph mains)
+                    |> Task.fmap
+                        (\sourceMaps ->
+                            currentBackend.generate
+                                { sourceMaps = sourceMaps
+                                , leadingLines = leadingLines
+                                , mode = mode
+                                , graph = graph
+                                , mains = mains
+                                }
+                        )
             )
 
 
-prod : Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate String
+prod : Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
 prod withSourceMaps leadingLines root details (Build.Artifacts pkg _ roots modules) =
     Task.bind finalizeObjects (loadObjects root details modules)
         |> Task.bind
@@ -112,24 +140,33 @@ prod withSourceMaps leadingLines root details (Build.Artifacts pkg _ roots modul
                                     gatherMains pkg objects roots
                             in
                             prepareSourceMaps withSourceMaps root
-                                |> Task.fmap (\sourceMaps -> JS.generate sourceMaps leadingLines mode graph mains)
+                                |> Task.fmap
+                                    (\sourceMaps ->
+                                        currentBackend.generate
+                                            { sourceMaps = sourceMaps
+                                            , leadingLines = leadingLines
+                                            , mode = mode
+                                            , graph = graph
+                                            , mains = mains
+                                            }
+                                    )
                         )
             )
 
 
-prepareSourceMaps : Bool -> FilePath -> Task Exit.Generate JS.SourceMaps
+prepareSourceMaps : Bool -> FilePath -> Task Exit.Generate CodeGen.SourceMaps
 prepareSourceMaps withSourceMaps root =
     if withSourceMaps then
         Outline.getAllModulePaths root
             |> Task.bind (Utils.mapTraverse ModuleName.toComparableCanonical ModuleName.compareCanonical File.readUtf8)
-            |> Task.fmap JS.SourceMaps
+            |> Task.fmap CodeGen.SourceMaps
             |> Task.io
 
     else
-        Task.pure JS.NoSourceMaps
+        Task.pure CodeGen.NoSourceMaps
 
 
-repl : FilePath -> Details.Details -> Bool -> Build.ReplArtifacts -> N.Name -> Task Exit.Generate String
+repl : FilePath -> Details.Details -> Bool -> Build.ReplArtifacts -> N.Name -> Task Exit.Generate CodeGen.Output
 repl root details ansi (Build.ReplArtifacts home modules localizer annotations) name =
     Task.bind finalizeObjects (loadObjects root details modules)
         |> Task.fmap
@@ -139,7 +176,14 @@ repl root details ansi (Build.ReplArtifacts home modules localizer annotations) 
                     graph =
                         objectsToGlobalGraph objects
                 in
-                JS.generateForRepl ansi localizer graph home name (Utils.find identity name annotations)
+                currentBackend.generateForRepl
+                    { ansi = ansi
+                    , localizer = localizer
+                    , graph = graph
+                    , home = home
+                    , name = name
+                    , annotation = Utils.find identity name annotations
+                    }
             )
 
 

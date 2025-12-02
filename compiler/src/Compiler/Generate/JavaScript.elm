@@ -1,7 +1,5 @@
 module Compiler.Generate.JavaScript exposing
-    ( Mains
-    , SourceMaps(..)
-    , generate
+    ( generate
     , generateForRepl
     , generateForReplEndpoint
     )
@@ -13,6 +11,7 @@ import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
 import Compiler.Elm.Kernel as K
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.JavaScript.Builder as JS
 import Compiler.Generate.JavaScript.Expression as Expr
 import Compiler.Generate.JavaScript.Functions as Functions
@@ -40,15 +39,6 @@ type alias Graph =
     Dict (List String) Opt.Global Opt.Node
 
 
-type alias Mains =
-    Dict (List String) IO.Canonical Opt.Main
-
-
-type SourceMaps
-    = NoSourceMaps
-    | SourceMaps (Dict (List String) IO.Canonical String)
-
-
 firstGeneratedLineNumber : Mode.Mode -> Int
 firstGeneratedLineNumber mode =
     List.length (String.lines (prelude mode))
@@ -61,7 +51,7 @@ prelude mode =
         ++ perfNote mode
 
 
-generate : SourceMaps -> Int -> Mode.Mode -> Opt.GlobalGraph -> Mains -> String
+generate : CodeGen.SourceMaps -> Int -> Mode.Mode -> Opt.GlobalGraph -> CodeGen.Mains -> String
 generate sourceMaps leadingLines mode (Opt.GlobalGraph graph _) mains =
     let
         state : State
@@ -98,13 +88,13 @@ escapeNewCode code =
     "//__START__\n" ++ code ++ "\n//__END__\n"
 
 
-generateSourceMaps : SourceMaps -> Int -> State -> String
+generateSourceMaps : CodeGen.SourceMaps -> Int -> State -> String
 generateSourceMaps sourceMaps leadingLines state =
     case sourceMaps of
-        NoSourceMaps ->
+        CodeGen.NoSourceMaps ->
             ""
 
-        SourceMaps moduleSources ->
+        CodeGen.SourceMaps moduleSources ->
             let
                 kernelLeadingLines : Int
                 kernelLeadingLines =
@@ -642,7 +632,7 @@ generateManagerHelp home effectsType =
 -- MAIN EXPORTS
 
 
-toMainExports : Mode.Mode -> Mains -> String
+toMainExports : Mode.Mode -> CodeGen.Mains -> String
 toMainExports mode mains =
     let
         export : JsName.Name

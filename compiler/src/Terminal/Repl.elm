@@ -16,6 +16,7 @@ import Builder.Generate as Generate
 import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
+import Compiler.Generate.CodeGen as CodeGen
 import Compiler.AST.Source as Src
 import Compiler.Data.Name as N
 import Compiler.Elm.Constraint as C
@@ -599,7 +600,7 @@ attemptEval (Env root interpreter ansi) oldState newState output =
                                     (Build.fromRepl root details (toByteString newState output))
                                     |> Task.bind
                                         (\artifacts ->
-                                            Utils.maybeTraverseTask (Task.mapError Exit.ReplBadGenerate << Generate.repl root details ansi artifacts) (toPrintName output)
+                                            Utils.maybeTraverseTask (Task.mapError Exit.ReplBadGenerate << Task.fmap CodeGen.outputToString << Generate.repl root details ansi artifacts) (toPrintName output)
                                         )
                             )
                     )

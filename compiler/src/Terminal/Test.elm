@@ -23,6 +23,7 @@ import Compiler.Data.NonEmptyList as NE
 import Compiler.Elm.Constraint as C
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
+import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Parse.Module as Parse
 import Compiler.Parse.SyntaxVersion as SV
 import Compiler.Reporting.Annotation as A
@@ -1103,7 +1104,8 @@ buildPaths root details paths =
 toBuilder : Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Test String
 toBuilder leadingLines root details artifacts =
     Task.mapError Exit.TestBadGenerate <|
-        Generate.dev False leadingLines root details artifacts
+        Task.fmap CodeGen.outputToString <|
+            Generate.dev False leadingLines root details artifacts
 
 
 
