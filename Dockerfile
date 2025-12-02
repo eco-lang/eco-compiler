@@ -36,12 +36,18 @@ RUN cmake -S llvm -B build -G Ninja \
 # ============================================================
 FROM debian:bookworm
 ARG DEBIAN_FRONTEND=noninteractive
+ARG NODE_VERSION=22
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git build-essential python3 pkg-config \
     cmake ninja-build clang lld zlib1g-dev libxml2-dev \
     gosu curl libcmark-dev \
  && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js for Guida compiler builds
+RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
 
 # Installed LLVM/MLIR
 COPY --from=builder /opt/llvm-mlir /opt/llvm-mlir
