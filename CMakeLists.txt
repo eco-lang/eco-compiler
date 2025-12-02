@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(EcoRuntime LANGUAGES CXX)
+project(EcoRuntime LANGUAGES C CXX)
 
 add_executable(ecor
         runtime/src/main.cpp
@@ -34,8 +34,5 @@ target_link_options(ecor PRIVATE -rdynamic)
 
 add_subdirectory(test)
 
-# Optional: MLIR-based code generation (requires MLIR to be installed)
-option(ECO_BUILD_CODEGEN "Build MLIR-based code generation" OFF)
-if(ECO_BUILD_CODEGEN)
-    add_subdirectory(runtime/src/codegen)
-endif()
+# MLIR-based code generation
+add_subdirectory(runtime/src/codegen)
