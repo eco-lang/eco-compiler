@@ -24,11 +24,13 @@ needs to be run if you are not logging out and back in again):
 
 To configure and build the project in one step:
 
-    docker run --rm -v "$PWD":/workspace eco-runtime-build
+    docker run --rm -v "$PWD":/work eco-runtime-build
 
-To run an interactive session inside the container for development:
+To run an interactive session inside the container for development, recommend creating 
+a named docker volume to preserve your home directory accross session:
 
-    docker run -it --rm -v "$PWD":/workspace eco-runtime-build bash
+    docker volume create eco-dev-home
+    docker run -it --rm -v "$PWD":/work -v eco-dev-home:/home/dev eco-runtime-build bash
 
 Inside the container, you can configure and build manually:
 
@@ -37,7 +39,7 @@ Inside the container, you can configure and build manually:
 
 ### Run tests using Docker
 
-    docker run --rm -v "$PWD":/workspace eco-runtime-build bash -c "cmake --preset ninja-clang-lld-linux && cmake --build build && ./build/test/test"
+    docker run --rm -v "$PWD":/work eco-runtime-build bash -c "cmake --preset ninja-clang-lld-linux && cmake --build build && ./build/test/test"
 
 ## To work directly on a Debian or other apt-based Linux host
 
