@@ -32,6 +32,9 @@ include_directories(${MLIR_INCLUDE_DIRS})
 # Include directory for generated headers
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
 
+# Include directory for source headers (EcoDialect.h, EcoOps.h)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+
 # Add LLVM definitions
 add_definitions(${LLVM_DEFINITIONS})
 
@@ -67,22 +70,23 @@ add_public_tablegen_target(EcoOpsIncGen)
 # Optional: Create a library target for the dialect
 #------------------------------------------------------------------------------
 
-# Uncomment when you have EcoDialect.cpp and EcoOps.cpp implementation files:
-#
-# add_mlir_dialect_library(EcoDialect
-#     EcoDialect.cpp
-#     EcoOps.cpp
-#
-#     ADDITIONAL_HEADER_DIRS
-#     ${CMAKE_CURRENT_BINARY_DIR}/include/eco
-#
-#     DEPENDS
-#     EcoOpsIncGen
-#
-#     LINK_LIBS PUBLIC
-#     MLIRIR
-#     MLIRSupport
-# )
+add_mlir_dialect_library(EcoDialect
+    EcoDialect.cpp
+    EcoOps.cpp
+
+    ADDITIONAL_HEADER_DIRS
+    ${CMAKE_CURRENT_BINARY_DIR}/include/eco
+
+    DEPENDS
+    EcoOpsIncGen
+
+    LINK_LIBS PUBLIC
+    MLIRIR
+    MLIRSupport
+)
+
+# LLVM/MLIR headers require C++17 features
+target_compile_features(obj.EcoDialect PRIVATE cxx_std_17)
 
 #------------------------------------------------------------------------------
 # Usage instructions

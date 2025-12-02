@@ -153,7 +153,7 @@ def Eco_StructExtractOp : Eco_Op<"struct_extract"> {
     Extract a single field from a Eco struct value.
   }];
 
-  let arguments = (ins AnyType:$struct);
+  let arguments = (ins AnyType:$structValue);
   let results   = (outs AnyType:$field);
 }
 
