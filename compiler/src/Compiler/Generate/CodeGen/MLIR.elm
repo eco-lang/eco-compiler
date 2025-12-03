@@ -9,7 +9,7 @@ import Compiler.Generate.Mode as Mode
 import Compiler.Reporting.Annotation as A
 import Data.Map as EveryDict
 import Data.Set as EverySet exposing (EverySet)
-import Dict
+import Dict exposing (Dict)
 import Mlir.Loc as Loc exposing (Loc)
 import Mlir.Mlir as Mlir
     exposing
@@ -148,13 +148,31 @@ emptyResult ctx var =
 
 
 
--- MLIR OP BUILDERS
+-- OP BUILDER
+-- A builder pattern for constructing MLIR ops more concisely
 
 
-{-| Create an empty MlirOp with the given name
+type alias OpBuilder =
+    { name : String
+    , id : String
+    , operands : List String
+    , results : List ( String, MlirType )
+    , attrs : Dict String MlirAttr
+    , regions : List MlirRegion
+    , isTerminator : Bool
+    , loc : Loc
+    , successors : List String
+    }
+
+
+{-| Start building an op with the given name. Uses the context to generate a fresh op ID.
 -}
-mkOp : String -> String -> MlirOp
-mkOp name opId =
+mlirOp : String -> Context -> OpBuilder
+mlirOp name ctx =
+    let
+        ( opId, _ ) =
+            freshOpId ctx
+    in
     { name = name
     , id = opId
     , operands = []
@@ -167,226 +185,194 @@ mkOp name opId =
     }
 
 
-{-| Helper to create attribute dict from list
--}
-attrsFromList : List ( String, MlirAttr ) -> Dict.Dict String MlirAttr
-attrsFromList =
-    Dict.fromList
+withOperands : List String -> OpBuilder -> OpBuilder
+withOperands operands builder =
+    { builder | operands = operands }
+
+
+withResult : String -> MlirType -> OpBuilder -> OpBuilder
+withResult ssa type_ builder =
+    { builder | results = [ ( ssa, type_ ) ] }
+
+
+withResults : List ( String, MlirType ) -> OpBuilder -> OpBuilder
+withResults results builder =
+    { builder | results = results }
+
+
+withAttr : String -> MlirAttr -> OpBuilder -> OpBuilder
+withAttr key value builder =
+    { builder | attrs = Dict.insert key value builder.attrs }
+
+
+withAttrs : Dict String MlirAttr -> OpBuilder -> OpBuilder
+withAttrs attrs builder =
+    { builder | attrs = Dict.union attrs builder.attrs }
+
+
+withRegion : MlirRegion -> OpBuilder -> OpBuilder
+withRegion region builder =
+    { builder | regions = [ region ] }
+
+
+withRegions : List MlirRegion -> OpBuilder -> OpBuilder
+withRegions regions builder =
+    { builder | regions = regions }
+
+
+withLoc : Loc -> OpBuilder -> OpBuilder
+withLoc loc builder =
+    { builder | loc = loc }
+
+
+asTerminator : OpBuilder -> OpBuilder
+asTerminator builder =
+    { builder | isTerminator = True }
+
+
+build : OpBuilder -> MlirOp
+build builder =
+    { name = builder.name
+    , id = builder.id
+    , operands = builder.operands
+    , results = builder.results
+    , attrs = builder.attrs
+    , regions = builder.regions
+    , isTerminator = builder.isTerminator
+    , loc = builder.loc
+    , successors = builder.successors
+    }
+
+
+
+-- ECO DIALECT OP HELPERS
+-- These use the builder pattern for cleaner construction
 
 
 {-| eco.construct - create an ADT value
 -}
-ecoConstruct : String -> String -> Int -> Int -> List String -> MlirOp
-ecoConstruct resultVar opId tag size operands =
-    { name = "eco.construct"
-    , id = opId
-    , operands = operands
-    , results = [ ( resultVar, ecoValue ) ]
-    , attrs =
-        attrsFromList
-            [ ( "tag", IntAttr tag )
-            , ( "size", IntAttr size )
-            ]
-    , regions = []
-    , isTerminator = False
-    , loc = Loc.unknown
-    , successors = []
-    }
+ecoConstruct : Context -> String -> Int -> Int -> List String -> MlirOp
+ecoConstruct ctx resultVar tag size operands =
+    mlirOp "eco.construct" ctx
+        |> withOperands operands
+        |> withResult resultVar ecoValue
+        |> withAttr "tag" (IntAttr tag)
+        |> withAttr "size" (IntAttr size)
+        |> build
 
 
 {-| eco.call - call a function
 -}
-ecoCall : String -> String -> String -> List String -> MlirOp
-ecoCall resultVar opId funcName operands =
-    { name = "eco.call"
-    , id = opId
-    , operands = operands
-    , results = [ ( resultVar, ecoValue ) ]
-    , attrs =
-        attrsFromList
-            [ ( "callee", SymbolRefAttr funcName )
-            ]
-    , regions = []
-    , isTerminator = False
-    , loc = Loc.unknown
-    , successors = []
-    }
+ecoCall : Context -> String -> String -> List String -> MlirOp
+ecoCall ctx resultVar funcName operands =
+    mlirOp "eco.call" ctx
+        |> withOperands operands
+        |> withResult resultVar ecoValue
+        |> withAttr "callee" (SymbolRefAttr funcName)
+        |> build
 
 
 {-| eco.project - extract a field/index from a value
 -}
-ecoProject : String -> String -> Int -> String -> MlirOp
-ecoProject resultVar opId index operand =
-    { name = "eco.project"
-    , id = opId
-    , operands = [ operand ]
-    , results = [ ( resultVar, ecoValue ) ]
-    , attrs =
-        attrsFromList
-            [ ( "index", IntAttr index )
-            ]
-    , regions = []
-    , isTerminator = False
-    , loc = Loc.unknown
-    , successors = []
-    }
+ecoProject : Context -> String -> Int -> String -> MlirOp
+ecoProject ctx resultVar index operand =
+    mlirOp "eco.project" ctx
+        |> withOperands [ operand ]
+        |> withResult resultVar ecoValue
+        |> withAttr "index" (IntAttr index)
+        |> build
 
 
 {-| eco.return - return a value
 -}
-ecoReturn : String -> String -> MlirOp
-ecoReturn opId operand =
-    { name = "eco.return"
-    , id = opId
-    , operands = [ operand ]
-    , results = []
-    , attrs = Dict.empty
-    , regions = []
-    , isTerminator = True
-    , loc = Loc.unknown
-    , successors = []
-    }
+ecoReturn : Context -> String -> MlirOp
+ecoReturn ctx operand =
+    mlirOp "eco.return" ctx
+        |> withOperands [ operand ]
+        |> asTerminator
+        |> build
 
 
 {-| eco.string\_literal - create a string literal
 -}
-ecoStringLiteral : String -> String -> String -> MlirOp
-ecoStringLiteral resultVar opId value =
-    { name = "eco.string_literal"
-    , id = opId
-    , operands = []
-    , results = [ ( resultVar, ecoValue ) ]
-    , attrs =
-        attrsFromList
-            [ ( "value", StringAttr value )
-            ]
-    , regions = []
-    , isTerminator = False
-    , loc = Loc.unknown
-    , successors = []
-    }
+ecoStringLiteral : Context -> String -> String -> MlirOp
+ecoStringLiteral ctx resultVar value =
+    mlirOp "eco.string_literal" ctx
+        |> withResult resultVar ecoValue
+        |> withAttr "value" (StringAttr value)
+        |> build
 
 
 {-| eco.papCreate - create a partial application (closure)
 -}
-ecoPapCreate : String -> String -> String -> Int -> Int -> MlirOp
-ecoPapCreate resultVar opId funcName arity numCaptured =
-    { name = "eco.papCreate"
-    , id = opId
-    , operands = []
-    , results = [ ( resultVar, ecoValue ) ]
-    , attrs =
-        attrsFromList
-            [ ( "function", SymbolRefAttr funcName )
-            , ( "arity", IntAttr arity )
-            , ( "num_captured", IntAttr numCaptured )
-            ]
-    , regions = []
-    , isTerminator = False
-    , loc = Loc.unknown
-    , successors = []
-    }
+ecoPapCreate : Context -> String -> String -> Int -> Int -> MlirOp
+ecoPapCreate ctx resultVar funcName arity numCaptured =
+    mlirOp "eco.papCreate" ctx
+        |> withResult resultVar ecoValue
+        |> withAttr "function" (SymbolRefAttr funcName)
+        |> withAttr "arity" (IntAttr arity)
+        |> withAttr "num_captured" (IntAttr numCaptured)
+        |> build
 
 
 {-| eco.papExtend - extend a partial application with more arguments
 -}
-ecoPapExtend : String -> String -> List String -> MlirOp
-ecoPapExtend resultVar opId operands =
-    { name = "eco.papExtend"
-    , id = opId
-    , operands = operands
-    , results = [ ( resultVar, ecoValue ) ]
-    , attrs = Dict.empty
-    , regions = []
-    , isTerminator = False
-    , loc = Loc.unknown
-    , successors = []
-    }
+ecoPapExtend : Context -> String -> List String -> MlirOp
+ecoPapExtend ctx resultVar operands =
+    mlirOp "eco.papExtend" ctx
+        |> withOperands operands
+        |> withResult resultVar ecoValue
+        |> build
 
 
 {-| eco.jump - jump to a join point (for tail calls)
 -}
-ecoJump : String -> Int -> List String -> MlirOp
-ecoJump opId joinPoint operands =
-    { name = "eco.jump"
-    , id = opId
-    , operands = operands
-    , results = []
-    , attrs =
-        attrsFromList
-            [ ( "join_point", IntAttr joinPoint )
-            ]
-    , regions = []
-    , isTerminator = True
-    , loc = Loc.unknown
-    , successors = []
-    }
+ecoJump : Context -> Int -> List String -> MlirOp
+ecoJump ctx joinPoint operands =
+    mlirOp "eco.jump" ctx
+        |> withOperands operands
+        |> withAttr "join_point" (IntAttr joinPoint)
+        |> asTerminator
+        |> build
 
 
 {-| arith.constant for integers
 -}
-arithConstantInt : String -> String -> Int -> MlirOp
-arithConstantInt resultVar opId value =
-    { name = "arith.constant"
-    , id = opId
-    , operands = []
-    , results = [ ( resultVar, I64 ) ]
-    , attrs =
-        attrsFromList
-            [ ( "value", IntAttr value )
-            ]
-    , regions = []
-    , isTerminator = False
-    , loc = Loc.unknown
-    , successors = []
-    }
+arithConstantInt : Context -> String -> Int -> MlirOp
+arithConstantInt ctx resultVar value =
+    mlirOp "arith.constant" ctx
+        |> withResult resultVar I64
+        |> withAttr "value" (IntAttr value)
+        |> build
 
 
 {-| arith.constant for floats
 -}
-arithConstantFloat : String -> String -> Float -> MlirOp
-arithConstantFloat resultVar opId value =
-    { name = "arith.constant"
-    , id = opId
-    , operands = []
-    , results = [ ( resultVar, F64 ) ]
-    , attrs =
-        attrsFromList
-            [ ( "value", FloatAttr value )
-            ]
-    , regions = []
-    , isTerminator = False
-    , loc = Loc.unknown
-    , successors = []
-    }
+arithConstantFloat : Context -> String -> Float -> MlirOp
+arithConstantFloat ctx resultVar value =
+    mlirOp "arith.constant" ctx
+        |> withResult resultVar F64
+        |> withAttr "value" (FloatAttr value)
+        |> build
 
 
 {-| func.func - define a function
 -}
-funcFunc : String -> String -> List ( String, MlirType ) -> MlirRegion -> MlirOp
-funcFunc funcName opId args bodyRegion =
-    { name = "func.func"
-    , id = opId
-    , operands = []
-    , results = []
-    , attrs =
-        attrsFromList
-            [ ( "sym_name", StringAttr funcName )
-            , ( "sym_visibility", VisibilityAttr Private )
-            , ( "function_type"
-              , TypeAttr
-                    (FunctionType
-                        { inputs = List.map Tuple.second args
-                        , results = [ ecoValue ]
-                        }
-                    )
-              )
-            ]
-    , regions = [ bodyRegion ]
-    , isTerminator = False
-    , loc = Loc.unknown
-    , successors = []
-    }
+funcFunc : Context -> String -> List ( String, MlirType ) -> MlirRegion -> MlirOp
+funcFunc ctx funcName args bodyRegion =
+    mlirOp "func.func" ctx
+        |> withRegion bodyRegion
+        |> withAttr "sym_name" (StringAttr funcName)
+        |> withAttr "sym_visibility" (VisibilityAttr Private)
+        |> withAttr "function_type"
+            (TypeAttr
+                (FunctionType
+                    { inputs = List.map Tuple.second args
+                    , results = [ ecoValue ]
+                    }
+                )
+            )
+        |> build
 
 
 {-| Create a simple region with a single entry block
@@ -453,30 +439,24 @@ addMain mode graph home main state =
                 ( callVar, ctx1 ) =
                     freshVar ctx
 
-                ( opId1, ctx2 ) =
-                    freshOpId ctx1
-
-                ( opId2, _ ) =
-                    freshOpId ctx2
-
                 callOp : MlirOp
                 callOp =
-                    ecoCall callVar opId1 funcName []
+                    ecoCall ctx1 callVar funcName []
+
+                ( _, ctx2 ) =
+                    freshOpId ctx1
 
                 returnOp : MlirOp
                 returnOp =
-                    ecoReturn opId2 callVar
+                    ecoReturn ctx2 callVar
 
                 region : MlirRegion
                 region =
                     mkRegion [] [ callOp ] returnOp
 
-                ( funcOpId, _ ) =
-                    freshOpId ctx
-
                 mainFunc : MlirOp
                 mainFunc =
-                    funcFunc (funcName ++ "_entry") funcOpId [] region
+                    funcFunc ctx (funcName ++ "_entry") [] region
             in
             addOp mainFunc stateWithMain
 
@@ -489,30 +469,24 @@ addMain mode graph home main state =
                 ( callVar, ctx1 ) =
                     freshVar exprResult.ctx
 
-                ( opId1, ctx2 ) =
-                    freshOpId ctx1
-
-                ( opId2, _ ) =
-                    freshOpId ctx2
-
                 callOp : MlirOp
                 callOp =
-                    ecoCall callVar opId1 "Elm_Platform_initialize" [ exprResult.resultVar ]
+                    ecoCall ctx1 callVar "Elm_Platform_initialize" [ exprResult.resultVar ]
+
+                ( _, ctx2 ) =
+                    freshOpId ctx1
 
                 returnOp : MlirOp
                 returnOp =
-                    ecoReturn opId2 callVar
+                    ecoReturn ctx2 callVar
 
                 region : MlirRegion
                 region =
                     mkRegion [] (exprResult.ops ++ [ callOp ]) returnOp
 
-                ( funcOpId, _ ) =
-                    freshOpId ctx
-
                 mainFunc : MlirOp
                 mainFunc =
-                    funcFunc (funcName ++ "_entry") funcOpId [] region
+                    funcFunc ctx (funcName ++ "_entry") [] region
             in
             addOp mainFunc stateWithMain
 
@@ -610,21 +584,15 @@ generateTopLevelDef ctx funcName expr =
                 exprResult =
                     generateExpr ctx expr
 
-                ( opId, _ ) =
-                    freshOpId exprResult.ctx
-
                 returnOp : MlirOp
                 returnOp =
-                    ecoReturn opId exprResult.resultVar
+                    ecoReturn exprResult.ctx exprResult.resultVar
 
                 region : MlirRegion
                 region =
                     mkRegion [] exprResult.ops returnOp
-
-                ( funcOpId, _ ) =
-                    freshOpId ctx
             in
-            funcFunc funcName funcOpId [] region
+            funcFunc ctx funcName [] region
 
 
 generateFuncDef : Context -> String -> List Name.Name -> Opt.Expr -> MlirOp
@@ -643,21 +611,15 @@ generateFuncDef ctx funcName args body =
         exprResult =
             generateExpr ctxWithArgs body
 
-        ( opId, _ ) =
-            freshOpId exprResult.ctx
-
         returnOp : MlirOp
         returnOp =
-            ecoReturn opId exprResult.resultVar
+            ecoReturn exprResult.ctx exprResult.resultVar
 
         region : MlirRegion
         region =
             mkRegion argPairs exprResult.ops returnOp
-
-        ( funcOpId, _ ) =
-            freshOpId ctx
     in
-    funcFunc funcName funcOpId argPairs region
+    funcFunc ctx funcName argPairs region
 
 
 generateTailFunc : Context -> String -> List (A.Located Name.Name) -> Opt.Expr -> MlirOp
@@ -679,22 +641,16 @@ generateTailFunc ctx funcName locatedArgs body =
         exprResult =
             generateExpr ctxWithArgs body
 
-        ( opId, _ ) =
-            freshOpId exprResult.ctx
-
         returnOp : MlirOp
         returnOp =
-            ecoReturn opId exprResult.resultVar
+            ecoReturn exprResult.ctx exprResult.resultVar
 
         -- TODO: Implement proper joinpoint region structure
         region : MlirRegion
         region =
             mkRegion argPairs exprResult.ops returnOp
-
-        ( funcOpId, _ ) =
-            freshOpId ctx
     in
-    funcFunc funcName funcOpId argPairs region
+    funcFunc ctx funcName argPairs region
 
 
 generateCtorFunc : Context -> String -> Index.ZeroBased -> Int -> MlirOp
@@ -710,28 +666,22 @@ generateCtorFunc ctx funcName index arity =
             ( resultVar, ctx1 ) =
                 freshVar ctx
 
-            ( opId1, ctx2 ) =
-                freshOpId ctx1
-
-            ( opId2, _ ) =
-                freshOpId ctx2
-
             constructOp : MlirOp
             constructOp =
-                ecoConstruct resultVar opId1 tag 0 []
+                ecoConstruct ctx1 resultVar tag 0 []
+
+            ( _, ctx2 ) =
+                freshOpId ctx1
 
             returnOp : MlirOp
             returnOp =
-                ecoReturn opId2 resultVar
+                ecoReturn ctx2 resultVar
 
             region : MlirRegion
             region =
                 mkRegion [] [ constructOp ] returnOp
-
-            ( funcOpId, _ ) =
-                freshOpId ctx
         in
-        funcFunc funcName funcOpId [] region
+        funcFunc ctx funcName [] region
 
     else
         -- Constructor with arguments
@@ -748,28 +698,22 @@ generateCtorFunc ctx funcName index arity =
             ( resultVar, ctx1 ) =
                 freshVar { ctx | nextVar = arity }
 
-            ( opId1, ctx2 ) =
-                freshOpId ctx1
-
-            ( opId2, _ ) =
-                freshOpId ctx2
-
             constructOp : MlirOp
             constructOp =
-                ecoConstruct resultVar opId1 tag arity argNames
+                ecoConstruct ctx1 resultVar tag arity argNames
+
+            ( _, ctx2 ) =
+                freshOpId ctx1
 
             returnOp : MlirOp
             returnOp =
-                ecoReturn opId2 resultVar
+                ecoReturn ctx2 resultVar
 
             region : MlirRegion
             region =
                 mkRegion argPairs [ constructOp ] returnOp
-
-            ( funcOpId, _ ) =
-                freshOpId ctx
         in
-        funcFunc funcName funcOpId argPairs region
+        funcFunc ctx funcName argPairs region
 
 
 generateEnumConstant : Context -> String -> Index.ZeroBased -> MlirOp
@@ -782,28 +726,22 @@ generateEnumConstant ctx funcName index =
         ( resultVar, ctx1 ) =
             freshVar ctx
 
-        ( opId1, ctx2 ) =
-            freshOpId ctx1
-
-        ( opId2, _ ) =
-            freshOpId ctx2
-
         constructOp : MlirOp
         constructOp =
-            ecoConstruct resultVar opId1 tag 0 []
+            ecoConstruct ctx1 resultVar tag 0 []
+
+        ( _, ctx2 ) =
+            freshOpId ctx1
 
         returnOp : MlirOp
         returnOp =
-            ecoReturn opId2 resultVar
+            ecoReturn ctx2 resultVar
 
         region : MlirRegion
         region =
             mkRegion [] [ constructOp ] returnOp
-
-        ( funcOpId, _ ) =
-            freshOpId ctx
     in
-    funcFunc funcName funcOpId [] region
+    funcFunc ctx funcName [] region
 
 
 generateBoxFunc : Context -> String -> MlirOp
@@ -813,21 +751,15 @@ generateBoxFunc ctx funcName =
         argPairs =
             [ ( "%arg0", ecoValue ) ]
 
-        ( opId, _ ) =
-            freshOpId ctx
-
         returnOp : MlirOp
         returnOp =
-            ecoReturn opId "%arg0"
+            ecoReturn ctx "%arg0"
 
         region : MlirRegion
         region =
             mkRegion argPairs [] returnOp
-
-        ( funcOpId, _ ) =
-            freshOpId ctx
     in
-    funcFunc funcName funcOpId argPairs region
+    funcFunc ctx funcName argPairs region
 
 
 
@@ -938,9 +870,6 @@ generateBoolExpr ctx value =
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( opId, ctx2 ) =
-            freshOpId ctx1
-
         tag : Int
         tag =
             if value then
@@ -948,8 +877,11 @@ generateBoolExpr ctx value =
 
             else
                 0
+
+        ( _, ctx2 ) =
+            freshOpId ctx1
     in
-    { ops = [ ecoConstruct var opId tag 0 [] ]
+    { ops = [ ecoConstruct ctx1 var tag 0 [] ]
     , resultVar = var
     , ctx = ctx2
     }
@@ -961,17 +893,17 @@ generateChrExpr ctx value =
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( opId, ctx2 ) =
-            freshOpId ctx1
-
         charCode : Int
         charCode =
             String.uncons value
                 |> Maybe.map (Tuple.first >> Char.toCode)
                 |> Maybe.withDefault 0
+
+        ( _, ctx2 ) =
+            freshOpId ctx1
     in
     -- TODO: Proper char representation
-    { ops = [ ecoConstruct var opId charCode 0 [] ]
+    { ops = [ ecoConstruct ctx1 var charCode 0 [] ]
     , resultVar = var
     , ctx = ctx2
     }
@@ -983,10 +915,10 @@ generateStrExpr ctx value =
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( opId, ctx2 ) =
+        ( _, ctx2 ) =
             freshOpId ctx1
     in
-    { ops = [ ecoStringLiteral var opId value ]
+    { ops = [ ecoStringLiteral ctx1 var value ]
     , resultVar = var
     , ctx = ctx2
     }
@@ -998,10 +930,10 @@ generateIntExpr ctx value =
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( opId, ctx2 ) =
+        ( _, ctx2 ) =
             freshOpId ctx1
     in
-    { ops = [ arithConstantInt var opId value ]
+    { ops = [ arithConstantInt ctx1 var value ]
     , resultVar = var
     , ctx = ctx2
     }
@@ -1013,10 +945,10 @@ generateFloatExpr ctx value =
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( opId, ctx2 ) =
+        ( _, ctx2 ) =
             freshOpId ctx1
     in
-    { ops = [ arithConstantFloat var opId value ]
+    { ops = [ arithConstantFloat ctx1 var value ]
     , resultVar = var
     , ctx = ctx2
     }
@@ -1037,14 +969,14 @@ generateVarGlobalExpr ctx global =
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( opId, ctx2 ) =
-            freshOpId ctx1
-
         globalName : String
         globalName =
             globalToMLIRName global
+
+        ( _, ctx2 ) =
+            freshOpId ctx1
     in
-    { ops = [ ecoCall var opId globalName [] ]
+    { ops = [ ecoCall ctx1 var globalName [] ]
     , resultVar = var
     , ctx = ctx2
     }
@@ -1056,14 +988,14 @@ generateVarEnumExpr ctx global index =
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( opId, ctx2 ) =
-            freshOpId ctx1
-
         tag : Int
         tag =
             Index.toMachine index
+
+        ( _, ctx2 ) =
+            freshOpId ctx1
     in
-    { ops = [ ecoConstruct var opId tag 0 [] ]
+    { ops = [ ecoConstruct ctx1 var tag 0 [] ]
     , resultVar = var
     , ctx = ctx2
     }
@@ -1075,10 +1007,10 @@ generateVarBoxExpr ctx global =
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( opId, ctx2 ) =
+        ( _, ctx2 ) =
             freshOpId ctx1
     in
-    { ops = [ ecoCall var opId (globalToMLIRName global) [] ]
+    { ops = [ ecoCall ctx1 var (globalToMLIRName global) [] ]
     , resultVar = var
     , ctx = ctx2
     }
@@ -1090,14 +1022,14 @@ generateVarCycleExpr ctx home name =
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( opId, ctx2 ) =
-            freshOpId ctx1
-
         cycleName : String
         cycleName =
             canonicalToMLIRName home ++ "_" ++ name
+
+        ( _, ctx2 ) =
+            freshOpId ctx1
     in
-    { ops = [ ecoCall var opId cycleName [] ]
+    { ops = [ ecoCall ctx1 var cycleName [] ]
     , resultVar = var
     , ctx = ctx2
     }
@@ -1109,11 +1041,11 @@ generateVarDebugExpr ctx name home maybeName =
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( opId, ctx2 ) =
+        ( _, ctx2 ) =
             freshOpId ctx1
     in
     -- TODO: Implement debug
-    { ops = [ ecoConstruct var opId 0 0 [] ]
+    { ops = [ ecoConstruct ctx1 var 0 0 [] ]
     , resultVar = var
     , ctx = ctx2
     }
@@ -1125,14 +1057,14 @@ generateVarKernelExpr ctx home name =
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( opId, ctx2 ) =
-            freshOpId ctx1
-
         kernelName : String
         kernelName =
             "Elm_Kernel_" ++ home ++ "_" ++ name
+
+        ( _, ctx2 ) =
+            freshOpId ctx1
     in
-    { ops = [ ecoCall var opId kernelName [] ]
+    { ops = [ ecoCall ctx1 var kernelName [] ]
     , resultVar = var
     , ctx = ctx2
     }
@@ -1148,10 +1080,10 @@ generateUnitExpr ctx =
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( opId, ctx2 ) =
+        ( _, ctx2 ) =
             freshOpId ctx1
     in
-    { ops = [ ecoConstruct var opId 0 0 [] ]
+    { ops = [ ecoConstruct ctx1 var 0 0 [] ]
     , resultVar = var
     , ctx = ctx2
     }
@@ -1178,14 +1110,14 @@ generateTupleExpr ctx a b maybeC =
         ( resultVar, ctx1 ) =
             freshVar finalCtx
 
-        ( opId, ctx2 ) =
-            freshOpId ctx1
-
         arity : Int
         arity =
             List.length allVars
+
+        ( _, ctx2 ) =
+            freshOpId ctx1
     in
-    { ops = resultA.ops ++ resultB.ops ++ restOps ++ [ ecoConstruct resultVar opId 0 arity allVars ]
+    { ops = resultA.ops ++ resultB.ops ++ restOps ++ [ ecoConstruct ctx1 resultVar 0 arity allVars ]
     , resultVar = resultVar
     , ctx = ctx2
     }
@@ -1216,15 +1148,15 @@ generateFunctionExpr ctx args body =
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( opId, ctx2 ) =
-            freshOpId ctx1
-
         arity : Int
         arity =
             List.length args
+
+        ( _, ctx2 ) =
+            freshOpId ctx1
     in
     -- TODO: Generate actual closure
-    { ops = [ ecoPapCreate var opId "anonymous" arity 0 ]
+    { ops = [ ecoPapCreate ctx1 var "anonymous" arity 0 ]
     , resultVar = var
     , ctx = ctx2
     }
@@ -1239,15 +1171,15 @@ generateTrackedFunctionExpr ctx locatedArgs body =
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( opId, ctx2 ) =
-            freshOpId ctx1
-
         arity : Int
         arity =
             List.length args
+
+        ( _, ctx2 ) =
+            freshOpId ctx1
     in
     -- TODO: Generate actual closure
-    { ops = [ ecoPapCreate var opId "anonymous" arity 0 ]
+    { ops = [ ecoPapCreate ctx1 var "anonymous" arity 0 ]
     , resultVar = var
     , ctx = ctx2
     }
@@ -1264,16 +1196,16 @@ generateTailCallExpr ctx name args =
         ( argsOps, argVars, ctx1 ) =
             generateNamedArgs ctx args
 
-        ( opId, ctx2 ) =
+        ( _, ctx2 ) =
             freshOpId ctx1
 
         ( resultVar, ctx3 ) =
             freshVar ctx2
 
-        ( opId2, ctx4 ) =
+        ( _, ctx4 ) =
             freshOpId ctx3
     in
-    { ops = argsOps ++ [ ecoJump opId 0 argVars, ecoConstruct resultVar opId2 0 0 [] ]
+    { ops = argsOps ++ [ ecoJump ctx1 0 argVars, ecoConstruct ctx3 resultVar 0 0 [] ]
     , resultVar = resultVar
     , ctx = ctx4
     }
@@ -1313,11 +1245,11 @@ generateAccessorExpr ctx fieldName =
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( opId, ctx2 ) =
+        ( _, ctx2 ) =
             freshOpId ctx1
     in
     -- TODO: Generate proper accessor function
-    { ops = [ ecoPapCreate var opId ("accessor_" ++ fieldName) 1 0 ]
+    { ops = [ ecoPapCreate ctx1 var ("accessor_" ++ fieldName) 1 0 ]
     , resultVar = var
     , ctx = ctx2
     }
@@ -1333,11 +1265,11 @@ generateAccessExpr ctx record fieldName =
         ( resultVar, ctx1 ) =
             freshVar recordResult.ctx
 
-        ( opId, ctx2 ) =
+        ( _, ctx2 ) =
             freshOpId ctx1
     in
     -- TODO: Compute actual field index
-    { ops = recordResult.ops ++ [ ecoProject resultVar opId 0 recordResult.resultVar ]
+    { ops = recordResult.ops ++ [ ecoProject ctx1 resultVar 0 recordResult.resultVar ]
     , resultVar = resultVar
     , ctx = ctx2
     }
@@ -1353,11 +1285,11 @@ generateUpdateExpr ctx record updates =
         ( resultVar, ctx1 ) =
             freshVar recordResult.ctx
 
-        ( opId, ctx2 ) =
+        ( _, ctx2 ) =
             freshOpId ctx1
     in
     -- TODO: Implement record update
-    { ops = recordResult.ops ++ [ ecoConstruct resultVar opId 0 1 [ recordResult.resultVar ] ]
+    { ops = recordResult.ops ++ [ ecoConstruct ctx1 resultVar 0 1 [ recordResult.resultVar ] ]
     , resultVar = resultVar
     , ctx = ctx2
     }
@@ -1373,11 +1305,11 @@ generateShaderExpr ctx =
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( opId, ctx2 ) =
+        ( _, ctx2 ) =
             freshOpId ctx1
     in
     -- Shader not supported
-    { ops = [ ecoConstruct var opId 0 0 [] ]
+    { ops = [ ecoConstruct ctx1 var 0 0 [] ]
     , resultVar = var
     , ctx = ctx2
     }
@@ -1434,10 +1366,10 @@ generateList ctx items =
                 ( var, ctx1 ) =
                     freshVar ctx
 
-                ( opId, ctx2 ) =
+                ( _, ctx2 ) =
                     freshOpId ctx1
             in
-            { ops = [ ecoConstruct var opId 0 0 [] ]
+            { ops = [ ecoConstruct ctx1 var 0 0 [] ]
             , resultVar = var
             , ctx = ctx2
             }
@@ -1448,12 +1380,12 @@ generateList ctx items =
                 ( nilVar, ctx1 ) =
                     freshVar ctx
 
-                ( nilOpId, ctx2 ) =
-                    freshOpId ctx1
-
                 nilOp : MlirOp
                 nilOp =
-                    ecoConstruct nilVar nilOpId 0 0 []
+                    ecoConstruct ctx1 nilVar 0 0 []
+
+                ( _, ctx2 ) =
+                    freshOpId ctx1
 
                 -- Fold from right, building up the list
                 ( consOps, finalVar, finalCtx ) =
@@ -1467,12 +1399,12 @@ generateList ctx items =
                                 ( consVar, ctx3 ) =
                                     freshVar itemResult.ctx
 
-                                ( consOpId, ctx4 ) =
-                                    freshOpId ctx3
-
                                 consOp : MlirOp
                                 consOp =
-                                    ecoConstruct consVar consOpId 1 2 [ itemResult.resultVar, tailVar ]
+                                    ecoConstruct ctx3 consVar 1 2 [ itemResult.resultVar, tailVar ]
+
+                                ( _, ctx4 ) =
+                                    freshOpId ctx3
                             in
                             ( itemResult.ops ++ [ consOp ] ++ accOps, consVar, ctx4 )
                         )
@@ -1512,14 +1444,14 @@ generateRecord ctx fields =
         ( resultVar, ctx2 ) =
             freshVar ctx1
 
-        ( opId, ctx3 ) =
-            freshOpId ctx2
-
         arity : Int
         arity =
             List.length fieldList
+
+        ( _, ctx3 ) =
+            freshOpId ctx2
     in
-    { ops = fieldsOps ++ [ ecoConstruct resultVar opId 0 arity fieldVars ]
+    { ops = fieldsOps ++ [ ecoConstruct ctx2 resultVar 0 arity fieldVars ]
     , resultVar = resultVar
     , ctx = ctx3
     }
@@ -1548,14 +1480,14 @@ generateTrackedRecord ctx fields =
         ( resultVar, ctx2 ) =
             freshVar ctx1
 
-        ( opId, ctx3 ) =
-            freshOpId ctx2
-
         arity : Int
         arity =
             List.length fieldList
+
+        ( _, ctx3 ) =
+            freshOpId ctx2
     in
-    { ops = fieldsOps ++ [ ecoConstruct resultVar opId 0 arity fieldVars ]
+    { ops = fieldsOps ++ [ ecoConstruct ctx2 resultVar 0 arity fieldVars ]
     , resultVar = resultVar
     , ctx = ctx3
     }
@@ -1577,14 +1509,14 @@ generateCall ctx func args =
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
-                ( opId, ctx3 ) =
-                    freshOpId ctx2
-
                 funcName : String
                 funcName =
                     globalToMLIRName global
+
+                ( _, ctx3 ) =
+                    freshOpId ctx2
             in
-            { ops = argsOps ++ [ ecoCall resultVar opId funcName argVars ]
+            { ops = argsOps ++ [ ecoCall ctx2 resultVar funcName argVars ]
             , resultVar = resultVar
             , ctx = ctx3
             }
@@ -1598,14 +1530,14 @@ generateCall ctx func args =
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
-                ( opId, ctx3 ) =
-                    freshOpId ctx2
-
                 allArgs : List String
                 allArgs =
                     ("%" ++ name) :: argVars
+
+                ( _, ctx3 ) =
+                    freshOpId ctx2
             in
-            { ops = argsOps ++ [ ecoPapExtend resultVar opId allArgs ]
+            { ops = argsOps ++ [ ecoPapExtend ctx2 resultVar allArgs ]
             , resultVar = resultVar
             , ctx = ctx3
             }
@@ -1623,14 +1555,14 @@ generateCall ctx func args =
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
-                ( opId, ctx3 ) =
-                    freshOpId ctx2
-
                 allArgs : List String
                 allArgs =
                     funcResult.resultVar :: argVars
+
+                ( _, ctx3 ) =
+                    freshOpId ctx2
             in
-            { ops = funcResult.ops ++ argsOps ++ [ ecoPapExtend resultVar opId allArgs ]
+            { ops = funcResult.ops ++ argsOps ++ [ ecoPapExtend ctx2 resultVar allArgs ]
             , resultVar = resultVar
             , ctx = ctx3
             }
@@ -1684,12 +1616,12 @@ generateLet ctx def body =
                     generateExpr ctx expr
 
                 -- Create an alias: %name = eco.construct(%exprVar) for the binding
-                ( opId, ctx1 ) =
-                    freshOpId exprResult.ctx
-
                 aliasOp : MlirOp
                 aliasOp =
-                    ecoConstruct ("%" ++ name) opId 0 1 [ exprResult.resultVar ]
+                    ecoConstruct exprResult.ctx ("%" ++ name) 0 1 [ exprResult.resultVar ]
+
+                ( _, ctx1 ) =
+                    freshOpId exprResult.ctx
 
                 bodyResult : ExprResult
                 bodyResult =
@@ -1720,12 +1652,12 @@ generateDestruct ctx (Opt.Destructor name path) body =
         ( pathOps, pathVar, ctx1 ) =
             generatePath ctx path
 
-        ( opId, ctx2 ) =
-            freshOpId ctx1
-
         aliasOp : MlirOp
         aliasOp =
-            ecoConstruct ("%" ++ name) opId 0 1 [ pathVar ]
+            ecoConstruct ctx1 ("%" ++ name) 0 1 [ pathVar ]
+
+        ( _, ctx2 ) =
+            freshOpId ctx1
 
         bodyResult : ExprResult
         bodyResult =
@@ -1751,14 +1683,14 @@ generatePath ctx path =
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
-                ( opId, ctx3 ) =
-                    freshOpId ctx2
-
                 idx : Int
                 idx =
                     Index.toMachine index
+
+                ( _, ctx3 ) =
+                    freshOpId ctx2
             in
-            ( subOps ++ [ ecoProject resultVar opId idx subVar ]
+            ( subOps ++ [ ecoProject ctx2 resultVar idx subVar ]
             , resultVar
             , ctx3
             )
@@ -1771,11 +1703,11 @@ generatePath ctx path =
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
-                ( opId, ctx3 ) =
+                ( _, ctx3 ) =
                     freshOpId ctx2
             in
             -- TODO: Compute actual field index
-            ( subOps ++ [ ecoProject resultVar opId 0 subVar ]
+            ( subOps ++ [ ecoProject ctx2 resultVar 0 subVar ]
             , resultVar
             , ctx3
             )
@@ -1792,10 +1724,10 @@ generatePath ctx path =
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
-                ( opId, ctx3 ) =
+                ( _, ctx3 ) =
                     freshOpId ctx2
             in
-            ( subOps ++ [ ecoProject resultVar opId idx subVar ]
+            ( subOps ++ [ ecoProject ctx2 resultVar idx subVar ]
             , resultVar
             , ctx3
             )
@@ -1812,10 +1744,10 @@ generateCase ctx scrutinee1 scrutinee2 decider jumps =
         ( resultVar, ctx1 ) =
             freshVar ctx
 
-        ( opId, ctx2 ) =
+        ( _, ctx2 ) =
             freshOpId ctx1
     in
-    { ops = [ ecoConstruct resultVar opId 0 0 [] ]
+    { ops = [ ecoConstruct ctx1 resultVar 0 0 [] ]
     , resultVar = resultVar
     , ctx = ctx2
     }
