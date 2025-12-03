@@ -94,6 +94,32 @@ var string = '';
 \t\t);
 \t}
 \treturn _Utils_Tuple2(offset, string.join(''));
-});`);
+});`)
+
+    /* Add Bytes encoder/decoder for ports support.
+       Allows Bytes.Bytes to be sent through ports, mapping to Uint8Array on the JS side.
+     */
+    .replace(
+        `var _Json_encodeNull = _Json_wrap(null);`,
+        `var _Json_encodeNull = _Json_wrap(null);
+
+// BYTES FOR PORTS
+var _Json_decodeBytes = _Json_decodePrim(function(value) {
+\tif (value instanceof Uint8Array) {
+\t\treturn $elm$core$Result$Ok(new DataView(value.buffer, value.byteOffset, value.byteLength));
+\t}
+\tif (value instanceof ArrayBuffer) {
+\t\treturn $elm$core$Result$Ok(new DataView(value));
+\t}
+\tif (value instanceof DataView) {
+\t\treturn $elm$core$Result$Ok(value);
+\t}
+\treturn _Json_expecting('a BYTES value (Uint8Array, ArrayBuffer, or DataView)', value);
+});
+
+var _Json_encodeBytes = function(bytes) {
+\treturn _Json_wrap(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+};`
+    );
 
 fs.writeFileSync(path, data, { encoding: 'utf8', flag: 'w' });

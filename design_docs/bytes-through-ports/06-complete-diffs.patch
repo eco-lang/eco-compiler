@@ -1,0 +1,122 @@
+# Complete Diffs for Bytes Through Ports
+#
+# This file shows the minimal unified diffs for all five files.
+# Apply these changes to enable Bytes.Bytes in Elm ports.
+
+--- a/compiler/src/Elm/Package.hs
++++ b/compiler/src/Elm/Package.hs
+@@ -17,6 +17,8 @@ module Elm.Package
+   , webgl, linearAlgebra
+   --
+   , suggestions
+   , nearbyNames
+   --
+   , decoder
+   , encode
+   , keyDecoder
+   --
+   , parser
++  -- Bytes support
++  , bytes
+   )
+   where
+
+@@ -193,3 +195,9 @@ linearAlgebra :: Name
+ linearAlgebra =
+   toName elm_explorations "linear-algebra"
++
++
++{-# NOINLINE bytes #-}
++bytes :: Name
++bytes =
++  toName elm "bytes"
+
+
+--- a/compiler/src/Elm/ModuleName.hs
++++ b/compiler/src/Elm/ModuleName.hs
+@@ -17,6 +17,8 @@ module Elm.ModuleName
+   , debug
+   , virtualDom
+   , jsonDecode, jsonEncode
+   , webgl, texture, vector2, vector3, vector4, matrix4
++  -- Bytes support
++  , bytes
+   )
+   where
+
+@@ -281,3 +283,9 @@ vector4 = Canonical Pkg.linearAlgebra "Math.Vector4"
+ {-# NOINLINE matrix4 #-}
+ matrix4 :: Canonical
+ matrix4 = Canonical Pkg.linearAlgebra "Math.Matrix4"
++
++
++{-# NOINLINE bytes #-}
++bytes :: Canonical
++bytes = Canonical Pkg.bytes "Bytes"
+
+
+--- a/compiler/src/Data/Name.hs
++++ b/compiler/src/Data/Name.hs
+@@ -31,6 +31,8 @@ module Data.Name
+   , utils, negate, true, false, value
+   , node, program, _main, _Main, dollar, identity
+   , replModule, replValueToPrint
++  -- Bytes support
++  , bytes
+   )
+   where
+
+@@ -614,3 +616,9 @@ replModule = fromChars "Elm_Repl"
+ {-# NOINLINE replValueToPrint #-}
+ replValueToPrint :: Name
+ replValueToPrint = fromChars "repl_input_value_"
++
++
++{-# NOINLINE bytes #-}
++bytes :: Name
++bytes = fromChars "Bytes"
+
+
+--- a/compiler/src/Canonicalize/Effects.hs
++++ b/compiler/src/Canonicalize/Effects.hs
+@@ -166,6 +166,7 @@ checkPayload tipe =
+         []
+           | isJson home name -> Right ()
+           | isString home name -> Right ()
+           | isIntFloatBool home name -> Right ()
++          | isBytes home name -> Right ()
+
+         [arg]
+           | isList  home name -> checkPayload arg
+@@ -247,3 +248,10 @@ isArray :: ModuleName.Canonical -> Name.Name -> Bool
+ isArray home name =
+   home == ModuleName.array
+   &&
+   name == Name.array
++
++
++isBytes :: ModuleName.Canonical -> Name.Name -> Bool
++isBytes home name =
++  home == ModuleName.bytes
++  &&
++  name == Name.bytes
+
+
+--- a/compiler/src/Optimize/Port.hs
++++ b/compiler/src/Optimize/Port.hs
+@@ -48,6 +48,7 @@ toEncoder tipe =
+           | name == Name.bool   -> encode "bool"
+           | name == Name.string -> encode "string"
+           | name == Name.value  -> Names.registerGlobal ModuleName.basics Name.identity
++          | name == Name.bytes  -> Names.registerGlobal ModuleName.basics Name.identity
+
+         [arg]
+           | name == Name.maybe -> encodeMaybe arg
+@@ -177,6 +178,7 @@ toDecoder tipe =
+           | name == Name.bool   -> decode "bool"
+           | name == Name.string -> decode "string"
+           | name == Name.value  -> decode "value"
++          | name == Name.bytes  -> decode "value"
+
+         [arg]
+           | name == Name.maybe -> decodeMaybe arg

@@ -3,6 +3,7 @@ module Compiler.Elm.Package exposing
     , Name
     , Project
     , browser
+    , bytes
     , compareName
     , core
     , decoder
@@ -142,6 +143,11 @@ html =
 json : Name
 json =
     toName elm "json"
+
+
+bytes : Name
+bytes =
+    toName elm "bytes"
 
 
 http : Name
