@@ -1,3 +1,6 @@
+cmake_minimum_required(VERSION 3.16)
+project(elm-kernel LANGUAGES CXX)
+
 # Elm Kernel C++ Implementation
 # Stub implementations of Elm kernel functions
 
