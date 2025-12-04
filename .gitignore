@@ -9,3 +9,4 @@ chat_logs/
 rag-cli
 settings.json
 .crag.json
+elm-kernel/
