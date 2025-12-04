@@ -17,11 +17,30 @@ Elm values are immutable. Once created, they never change. This means:
 
 This is not a minor optimization - it fundamentally simplifies the GC design. The complexity you do not see in this codebase (card tables, remembered sets, store buffers, barrier code on every write) is the complexity you would normally expect.
 
+## Thread-Local Heaps
+
+Each thread owns a `ThreadLocalHeap` containing its own nursery and old generation. This design eliminates cross-thread synchronization during normal operation:
+
+- **Allocation**: Pure bump-pointer in thread-local nursery, no locks
+- **Minor GC**: Operates only on thread-local nursery, no coordination
+- **Major GC**: Operates only on thread-local old gen, no coordination
+
+The central `Allocator` singleton manages the unified address space and carves out regions for each thread on initialization. Once a thread has its regions, it operates independently.
+
+```
+Thread 1: [Nursery₁] → [OldGen₁]
+Thread 2: [Nursery₂] → [OldGen₂]
+          ↑                    ↑
+          └── carved from unified heap ──┘
+```
+
+This is simpler than shared-heap designs that require synchronization on every allocation or during GC. The trade-off is that memory cannot be shared between threads, but Elm's message-passing concurrency model makes this natural.
+
 ## Two Generations, Two Algorithms
 
 The GC uses two generations because the "weak generational hypothesis" holds: most Elm values die young. The design pairs each generation with the algorithm best suited to its characteristics.
 
-### Nursery: Block-Based Semi-Space Copying (Cheney's Algorithm)
+### Nursery: Region-Based Semi-Space Copying (Cheney's Algorithm)
 
 Young objects live in the nursery, which uses Cheney's copying collector:
 
@@ -31,22 +50,38 @@ Young objects live in the nursery, which uses Cheney's copying collector:
 
 This is optimal for high-churn, short-lived allocations. The cost of GC is proportional to survivors, not total allocations.
 
-**Block-based design**: Rather than two contiguous semi-spaces, the nursery uses AllocBuffer-sized blocks organized into two sets (`from_blocks_` and `to_blocks_`). This enables:
+**Two-region design**: The nursery uses two separate address regions (`low_blocks_` and `high_blocks_`) rather than interleaved blocks. One region serves as from-space, the other as to-space, swapping roles after each GC. This enables:
 
-- **Dynamic growth**: When survivors exceed 75% of to-space capacity, both spaces grow by 50%
-- **Unified block management**: Same block size as old gen AllocBuffers (simpler memory layout)
-- **On-demand acquisition**: Blocks are acquired from the Allocator as needed
+- **O(1) membership checks**: Simple bounds comparison (`ptr >= low_base_ && ptr < low_end_`) instead of O(log n) set lookup
+- **Dynamic growth**: When survivors exceed 75% of to-space capacity, both regions grow
+- **Unified block sizing**: Same block size as old gen (simpler memory layout)
 
-The trade-off: `isInFromSpace()` requires O(log n) lookup via `std::set::upper_bound()` rather than O(1) pointer comparison. This is acceptable because the check only happens during GC (once per pointer), not on the allocation fast path.
+The key insight: by keeping from-space and to-space in separate address ranges, `isInFromSpace()` becomes a single bounds check cached in member variables (`low_base_`, `low_end_`, `high_base_`, `high_end_`).
 
-### Old Generation: Mark-and-Sweep
+### Old Generation: Mark-Sweep with Lazy Sweeping and Incremental Compaction
 
-Long-lived objects promoted from the nursery live in the old generation, which uses mark-and-sweep:
+Long-lived objects promoted from the nursery live in the old generation, which uses mark-and-sweep with several optimizations:
 
 1. **Mark**: Trace from roots, marking reachable objects (tri-color: white/grey/black).
-2. **Sweep**: Walk all objects; unreachable (white) objects are garbage.
+2. **Lazy Sweep**: Instead of sweeping all objects immediately, sweep on-demand when allocation needs free space.
+3. **Segregated Free Lists**: 32 size classes (8-256 bytes in 8-byte increments) for fast small-object allocation.
+4. **Incremental Compaction**: When fragmentation exceeds a threshold, evacuate sparse blocks incrementally.
 
-Mark-sweep does not require 2x space overhead. The current implementation is non-compacting.
+**Allocation strategy**:
+- Small objects (≤256 bytes): Check segregated free list first, fall back to bump allocation
+- Large objects: Bump allocation from current block
+- When current block exhausted: Trigger lazy sweep to reclaim memory, or acquire new block
+
+**GC phases** (state machine):
+```
+Idle → Marking → Sweeping → Idle
+                    ↓
+              (if fragmented)
+                    ↓
+            Compaction: Evacuating → FixingRefs → Idle
+```
+
+Mark-sweep does not require 2x space overhead. Compaction is optional and incremental, spreading the cost across multiple allocation slow-paths.
 
 ## Forwarding Pointers
 
@@ -71,6 +106,26 @@ typedef struct {
 
 Key insight: Forwarding pointers are only valid during GC. By the time the mutator resumes, all pointers have been updated to their final locations.
 
+## List Locality Optimization
+
+Elm programs create many linked lists. Standard Cheney's algorithm copies objects in breadth-first order, which can scatter list nodes across memory. The GC uses an optional two-pass copying strategy for Cons cells to improve cache locality:
+
+**Pass 1 - Copy spine contiguously**: Walk the tail chain, copying each Cons cell immediately after the previous one in to-space. This allocates the entire spine contiguously.
+
+**Pass 2 - Evacuate heads**: Walk the copied spine and evacuate each head element (which may be any type).
+
+```
+Before GC (scattered):    After GC (contiguous spine):
+  [Cons₁] → ... → [Cons₂] → ... → [Cons₃]    [Cons₁][Cons₂][Cons₃] → heads nearby
+```
+
+This optimization is controlled by `HeapConfig::use_hybrid_dfs` (enabled by default). The term "hybrid DFS" refers to the depth-first treatment of list tails within an otherwise breadth-first Cheney algorithm.
+
+Benefits:
+- Better cache prefetching when traversing lists
+- Reduced TLB misses for list-heavy code
+- No cost for non-list data structures (they use standard BFS)
+
 ## Logical Pointers: 40-bit Offsets
 
 All heap pointers are logical offsets, not raw addresses:
@@ -85,49 +140,67 @@ typedef struct {
 
 The 40-bit offset (with 8-byte alignment) addresses 8TB of heap space. Benefits:
 
-1. **Embedded constants**: Nil, True, False, Unit are represented by the constant field, not as heap objects. No allocation, no pointer chase.
+1. **Embedded constants**: Nil, True, False, Unit, Nothing, EmptyString, and EmptyRec are represented by the constant field, not as heap objects. No allocation, no pointer chase.
 2. **Compression**: 8-byte pointers instead of native 64-bit addresses.
 3. **Relocation-friendly**: Offsets from a base are easier to adjust than raw addresses.
 
 The `fromPointerRaw` and `toPointerRaw` conversions are the only places that touch `heap_base`. All pointer manipulation goes through these.
 
-## Unified Heap: One Address Space, Two Regions
+## Unified Heap: One Address Space, Per-Thread Regions
 
 The allocator reserves a single large address space (1GB by default) via `mmap` without committing physical memory. This space is partitioned:
 
 ```
-[0 .. heap_reserved/2)      - Old generation
-[heap_reserved/2 .. end)    - Nursery blocks
+[0 .. heap_reserved/2)      - Old generation regions (carved up per-thread)
+[heap_reserved/2 .. end)    - Nursery regions (carved up per-thread)
 ```
 
 Physical memory is committed on demand:
-- Nursery: Blocks committed via `acquireNurseryBlock()` as the nursery initializes or grows
-- Old gen: Committed in AllocBuffer-sized chunks as objects are promoted
+- Nursery: Blocks committed via `acquireNurseryBlockLow()`/`acquireNurseryBlockHigh()` as threads initialize or grow
+- Old gen: Committed via `acquireOldGenRegion()` when a thread initializes, grows as needed
 
-This lazy commitment means the runtime reserves address space but only uses physical memory for actual allocations.
+Each thread gets its own regions within these spaces. The Allocator tracks committed ranges and hands out contiguous chunks to each `ThreadLocalHeap`.
 
-**Configuration**: The nursery is sized via `nursery_block_count` (must be even, split between from-space and to-space). Total nursery size = `nursery_block_count * alloc_buffer_size`.
+**Configuration**: Heap parameters are centralized in `HeapConfig`:
+- `nursery_block_count`: Must be even (split between from-space and to-space)
+- `alloc_buffer_size`: Size of each block (default 128KB)
+- `promotion_age`: GC cycles before promotion (default 1)
+- `nursery_gc_threshold`: Occupancy threshold for minor GC trigger (default 90%)
+- `use_hybrid_dfs`: Enable list locality optimization (default true)
+
+Configuration is validated on `Allocator::initialize()` to catch invalid combinations early.
 
 **Heap validation**: During major GC, pointers are validated with `isInHeap()` - a simple O(1) bounds check against the reserved address range. This is simpler than checking `isInOldGen() || isInNursery()` and correctly handles all valid heap pointers regardless of which generation they're in.
 
 ## Promotion: When Objects Grow Up
 
-Objects are promoted from nursery to old gen after surviving `PROMOTION_AGE` minor GCs (currently 1). The age is tracked in the header:
+Objects are promoted from nursery to old gen after surviving `PROMOTION_AGE` minor GCs (default 1, configurable via `HeapConfig`). The age is tracked in the header:
 
 ```cpp
-u32 age : 2;  // Survives up to 3 GCs before promotion
+u32 age : 2;    // Survives up to 3 GCs before promotion
+u32 epoch : 2;  // GC epoch when last marked (for incremental marking)
+u32 pin : 1;    // Prevents relocation (for FFI or debugging)
 ```
 
 When `evacuate()` sees an object that has reached promotion age, it allocates in the old gen instead of to-space. Promoted objects are added to a buffer and scanned to update their child pointers, since they may reference other nursery objects that haven't been evacuated yet.
 
-## Execution Model: Mutator Runs GC
+## Execution Model: Thread-Local Stop-the-World
 
-There is no separate collector thread. Each mutator thread runs its own GC:
+There is no separate collector thread. Each mutator thread runs its own GC on its own heap:
 
-- **Minor GC**: Triggered when nursery allocation fails (all from-space blocks exhausted)
+- **Minor GC**: Triggered when nursery occupancy exceeds `nursery_gc_threshold` (default 90%)
 - **Major GC**: Triggered when old gen committed bytes exceed a threshold
+- **Incremental work**: Marking and compaction can be spread across allocation slow-paths
 
-This stop-the-world approach is simple and avoids synchronization complexity. The mutator pauses, runs GC, then resumes. For Elm's typical use case (short-lived web applications), this is sufficient.
+Each thread's GC is stop-the-world *for that thread only*. Other threads continue executing. This avoids global synchronization while keeping the GC simple.
+
+The `ThreadLocalHeap` coordinates its nursery and old gen:
+1. `allocate()` bumps pointer in nursery
+2. When threshold exceeded, `minorGC()` evacuates survivors
+3. Promoted objects go to thread-local old gen
+4. When old gen grows large, `majorGC()` marks and sweeps
+
+For Elm's typical use case (short-lived web applications with message-passing concurrency), thread-local heaps match the programming model naturally.
 
 ## Key Invariants
 
@@ -139,11 +212,13 @@ This stop-the-world approach is simple and avoids synchronization complexity. Th
 
 4. **Headers are always first**: Every heap object starts with an 8-byte Header. Size calculation depends on this.
 
-5. **Constants are never heap-allocated**: Nil, True, False, Unit are embedded in the pointer representation.
+5. **Constants are never heap-allocated**: Nil, True, False, Unit, Nothing, EmptyString, and EmptyRec are embedded in the pointer representation.
 
 6. **Allocation may trigger GC**: Callers must assume any allocation could move all live objects.
 
-7. **Block membership is O(log n)**: Checking if a pointer is in from-space or to-space uses `std::set::upper_bound()`. This only matters during GC, not allocation.
+7. **Space membership is O(1)**: Checking if a pointer is in from-space or to-space uses cached bounds (`low_base_`, `low_end_`, etc.) for simple range comparison.
+
+8. **Thread ownership is exclusive**: Each heap region is owned by exactly one thread. No cross-thread pointer sharing (Elm uses message passing).
 
 ## Object Layout and Size Calculation
 
@@ -177,40 +252,56 @@ Key testing infrastructure:
 
 When a test fails, RapidCheck provides a reproduction string. Use `--reproduce <string>` to reliably replay the failure for debugging.
 
-## Mental Model: Think in Generations and Blocks
+## Mental Model: Think in Threads, Generations, and Regions
 
-When reasoning about the GC, think in terms of where objects live and when they move:
+When reasoning about the GC, think in terms of thread ownership, where objects live, and when they move:
 
 ```
-Allocation  -->  [Nursery from-space blocks]
+Thread initialization:
+  Allocator carves out regions → ThreadLocalHeap owns [Nursery] + [OldGen]
+
+Object lifecycle (within one thread):
+  allocate() → [Nursery low_blocks (from-space)]
                        |
-                       v  (minor GC - blocks exhausted)
-                 [Nursery to-space blocks] or [Old gen]
+                       v  (minor GC - threshold exceeded)
+                 [Nursery high_blocks (to-space)] or [Old gen]
                        |
-                       v  (spaces swap)
-                 [Nursery from-space blocks]  (now has survivors)
+                       v  (spaces swap: from_is_low_ flips)
+                 [Nursery low_blocks (now to-space)]
                        |
-                       v  (next minor GC, if survived enough)
+                       v  (next minor GC, if survived PROMOTION_AGE)
                  [Old gen]  (promoted)
 ```
 
 Old gen objects only die during major GC. They can never move back to nursery.
 
-**Block iteration during GC**: The nursery maintains iterators (`current_from_it_`, `current_to_it_`) to track which block is currently active for allocation and copying. Cheney's algorithm advances through to-space blocks as it copies survivors.
+**Key state variables during GC**:
+- `from_is_low_`: Which region is currently from-space (flips after each GC)
+- `current_from_idx_`, `alloc_ptr_`: Bump pointer allocation state
+- `current_to_idx_`, `copy_ptr_`: Evacuation destination state
+- `scan_block_idx_`, `scan_ptr_`: Cheney scan position
 
 The key questions for debugging:
 1. Was it correctly evacuated? (forwarding pointer left behind)
 2. Were its children correctly updated? (scanObject/markChildren)
 3. Was its size calculated correctly? (getObjectSize)
-4. Is the pointer in the right block set? (isInFromSpace vs isInToSpace)
+4. Is the pointer in the right region? (isInFromSpace vs isInToSpace)
+5. Which thread owns this memory? (check ThreadLocalHeap bounds)
 
 ## Future Direction
 
-The current GC is a foundation. PLAN.md §7 describes advanced techniques to pursue later:
+Several optimizations from PLAN.md §7 have been implemented:
 
-- **Fixed-size object spaces**: Segregated pools for common sizes (Cons cells, tuples)
+- ✓ **Segregated free lists**: 32 size classes for small objects (8-256 bytes)
+- ✓ **Thread-local heaps**: Eliminates cross-thread synchronization
+- ✓ **Incremental compaction**: Spreads defragmentation cost over time
+- ✓ **List locality optimization**: Contiguous spine copying for better cache behavior
+
+Remaining opportunities:
+
 - **Stack-allocated values**: Escape analysis to avoid heap allocation entirely
 - **Reference counting for uniqueness**: Detect refcount==1 to enable safe in-place mutation
-- **Lock-free coordination**: Reduce contention in multi-threaded scenarios
+- **Concurrent marking**: Mark phase running in parallel with mutator
+- **NUMA-aware allocation**: Thread affinity for memory locality on multi-socket systems
 
 The design philosophy is: start simple, prove correctness, then optimize. Complexity is added only when necessary.
