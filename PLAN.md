@@ -15,6 +15,7 @@
 
 - [ ] **2. Standard Library Porting** → [§2](#2-standard-library-porting)
   - [ ] 2.1 Guida Runtime to Kernel Packages → [§2.1](#21-guida-runtime-to-kernel-packages)
+    - [x] 2.1.0 Bytes over Ports Support → [§2.1.0](#210-bytes-over-ports-support)
     - [ ] 2.1.1 Audit Guida I/O Implementation → [§2.1.1](#211-audit-guida-io-implementation) *(audit complete, rationalization pending)*
     - [ ] 2.1.2 File System Operations Design → [§2.1.2](#212-file-system-operations-design)
     - [ ] 2.1.3 Network Operations Design → [§2.1.3](#213-network-operations-design)
@@ -252,6 +253,42 @@ The Guida compiler currently uses a small runtime library with HTTP URL hacks fo
 - [ ] Elm kernel package definitions
 - [ ] API specification document
 - [ ] Refactored Guida using new kernel package
+
+#### 2.1.0 Bytes over Ports Support
+
+**Status**: Complete
+
+Enable `Bytes.Bytes` to be sent through Elm ports, allowing binary data interchange between Elm and JavaScript.
+
+**Background**: Standard Elm does not support sending `Bytes` through ports. The elm/json package lacks `Json.Encode.bytes` and `Json.Decode.bytes` functions. This feature is needed for ECO's I/O system to efficiently handle binary data.
+
+**Implementation**:
+- Modified `Compiler/Optimize/Port.elm` to generate kernel function references for Bytes encoding/decoding
+- Added `_Json_encodeBytes` and `_Json_decodeBytes` JavaScript functions to `Compiler/Generate/JavaScript.elm`
+- Functions are injected after kernel code but before module code (order matters for references)
+
+**Technical Details**:
+- `_Json_encodeBytes`: Converts Elm's `DataView` (internal Bytes representation) → JavaScript `Uint8Array`
+- `_Json_decodeBytes`: Accepts `Uint8Array`, `ArrayBuffer`, or `DataView` → Elm's `DataView`
+- Uses `_Json_decodePrim` for decoder infrastructure (consistent with other Json decoders)
+- Uses `_Json_wrap` for encoder output (consistent with other Json encoders)
+
+**Files Modified**:
+- `compiler/src/Compiler/Optimize/Port.elm`: Added `encodeBytes` and `decodeBytes` helpers using kernel references
+- `compiler/src/Compiler/Generate/JavaScript.elm`: Added `bytesForPorts` constant with JS implementations
+
+**Test Program**: `compiler/bop/` contains a working example demonstrating bytes over ports.
+
+**Tasks**:
+- [x] Implement `_Json_encodeBytes` function
+- [x] Implement `_Json_decodeBytes` function
+- [x] Modify Port.elm to reference kernel functions for Bytes type
+- [x] Ensure correct code generation order (functions defined before use)
+- [x] Test with example program
+
+**Deliverables**:
+- [x] Modified Guida compiler with Bytes over Ports support
+- [x] Test program (`compiler/bop/`)
 
 #### 2.1.1 Audit Guida I/O Implementation
 
@@ -1121,8 +1158,8 @@ Runtime Foundation (§1)
 
 ## Project Status
 
-**Current Phase**: GC Complete, MLIR Dialect In Progress
-**Last Updated**: 2025-12-02
+**Current Phase**: GC Complete, MLIR Dialect In Progress, Guida Compiler Enhancements
+**Last Updated**: 2025-12-04
 
 **Completed**:
 - Heap model design (§1.1)
@@ -1139,12 +1176,13 @@ Runtime Foundation (§1)
 - Guida I/O audit (§2.1.1) - see design_docs/guida-io-operations.md and guida-io-ops.csv
 - ECO MLIR dialect definition (§3.1.2) - core infrastructure in runtime/src/codegen/
 - ECO MLIR operations skeleton (§3.1.3) - ~30 ops defined in Ops.td
+- Bytes over Ports support (§2.1.0) - enables binary data through Elm ports
 
 **Recent Changes**:
-- Reorganized allocator code into runtime/src/allocator/ subdirectory
-- Reorganized test code into test/allocator/ subdirectory
-- Created ECO MLIR dialect skeleton with TableGen definitions
-- Added CMake integration for MLIR code generation
+- Added Bytes over Ports support to Guida compiler (§2.1.0)
+  - Modified `Compiler/Optimize/Port.elm` to handle Bytes type via kernel functions
+  - Added `_Json_encodeBytes` and `_Json_decodeBytes` to JavaScript code generator
+  - Created test program in `compiler/bop/` demonstrating the feature
 
 **Next Steps**:
 - Complete ECO MLIR operations (§3.1.3) - add closure ops, parser/printer/verification
