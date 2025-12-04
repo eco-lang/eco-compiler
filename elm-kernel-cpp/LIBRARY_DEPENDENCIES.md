@@ -2,6 +2,18 @@
 
 This document summarizes the external C++ library dependencies required to implement the Elm kernel functions.
 
+## Chosen Libraries
+
+| Category | Library | Rationale |
+|----------|---------|-----------|
+| **JSON** | RapidJSON | Fast, full read/write support, DOM and SAX APIs |
+| **Regex** | PCRE2 | Full JavaScript regex compatibility, JIT compilation |
+| **HTTP** | Boost.Beast | Modern C++, async via Asio, WebSocket support |
+| **Async** | std::jthread | No external dependencies, C++20 standard |
+| **GUI/Browser** | WebAssembly (Emscripten) | Native DOM access, real browser environment |
+
+---
+
 ## Summary by Module
 
 ### Core Modules (No External Dependencies)
@@ -22,88 +34,76 @@ These modules can be implemented using only C++ standard library features:
 
 ### Platform/Scheduler Modules
 
-| Module | Functions | Standard Library | Optional Libraries |
-|--------|-----------|------------------|-------------------|
-| **Platform** | 8 | None | GUI framework for rendering |
-| **Process** | 3 | `<chrono>` | libuv, Boost.Asio for async |
-| **Scheduler** | 22 | `<queue>`, `<functional>` | libuv, Boost.Asio for event loop |
+| Module | Functions | Standard Library | Libraries Used |
+|--------|-----------|------------------|----------------|
+| **Platform** | 8 | None | WebAssembly for rendering |
+| **Process** | 3 | `<chrono>`, `<thread>` | std::jthread |
+| **Scheduler** | 22 | `<queue>`, `<functional>` | std::jthread |
 
 ### Data Modules
 
-| Module | Functions | Standard Library | Recommended Libraries |
-|--------|-----------|------------------|----------------------|
-| **Json** | 28 | None | RapidJSON, nlohmann/json, simdjson |
+| Module | Functions | Standard Library | Libraries Used |
+|--------|-----------|------------------|----------------|
+| **Json** | 28 | None | RapidJSON |
 | **Bytes** | 26 | `<bit>` (C++20), `<cstring>` | None |
 | **Parser** | 7 | None | None |
-| **Regex** | 6 | `<regex>` | RE2, PCRE2, Boost.Regex |
+| **Regex** | 6 | None | PCRE2 |
 | **Url** | 2 | None | None |
 
 ### I/O Modules
 
-| Module | Functions | Standard Library | Required Libraries |
-|--------|-----------|------------------|-------------------|
-| **Time** | 4 | `<chrono>` | libuv, Boost.Asio (timers) |
-| **Http** | 8 | None | libcurl, cpp-httplib, Boost.Beast |
-| **File** | 12 | `<filesystem>` (C++17) | Platform file dialogs |
+| Module | Functions | Standard Library | Libraries Used |
+|--------|-----------|------------------|----------------|
+| **Time** | 4 | `<chrono>`, `<thread>` | std::jthread |
+| **Http** | 8 | None | Boost.Beast |
+| **File** | 12 | `<filesystem>` (C++17) | WebAssembly File API |
 
 ### Browser/DOM Modules (BROWSER_FUNCTION)
 
-| Module | Functions | Notes |
-|--------|-----------|-------|
-| **Browser** | 20 | Requires GUI framework or WebAssembly |
-| **VirtualDom** | 25 | Requires DOM-like API |
+| Module | Functions | Libraries Used |
+|--------|-----------|----------------|
+| **Browser** | 20 | WebAssembly + Emscripten |
+| **VirtualDom** | 25 | WebAssembly + Emscripten |
 
 ---
 
-## Detailed Library Recommendations
+## Library Details
 
-### 1. JSON Processing
+### 1. RapidJSON (JSON Processing)
 
-**Options (in order of recommendation):**
+**Version:** 1.1.0+
+**License:** MIT
+**Website:** https://rapidjson.org/
 
-1. **simdjson** - Fastest JSON parser
-   - Pros: Exceptional performance, SIMD-accelerated
-   - Cons: Read-only, no serialization
-   - Use for: Decoding only
-
-2. **RapidJSON** - Fast and full-featured
-   - Pros: Very fast, read/write, DOM and SAX APIs
-   - Cons: More complex API
-   - Use for: Full JSON support
-
-3. **nlohmann/json** - Modern C++ API
-   - Pros: Beautiful API, easy to use
-   - Cons: Slower than alternatives
-   - Use for: Developer productivity
+**Features used:**
+- DOM API for parsing and building JSON
+- SAX API for streaming large documents
+- In-situ parsing for zero-copy performance
+- UTF-8/UTF-16 transcoding
 
 **Elm JSON Requirements:**
 - Decode: primitives, objects, arrays, null
 - Custom decoders with combinators (map, andThen, oneOf)
 - Error messages with path tracking
+- Encode: value construction and serialization
 
-### 2. Regular Expressions
+**Integration notes:**
+- Header-only library
+- No external dependencies
+- Thread-safe for read operations
 
-**Options (in order of recommendation):**
+### 2. PCRE2 (Regular Expressions)
 
-1. **RE2** - Google's regex library
-   - Pros: Linear time guarantee, thread-safe
-   - Cons: No backreferences, no lookahead
-   - Use for: Performance-critical, safe patterns
+**Version:** 10.40+
+**License:** BSD
+**Website:** https://www.pcre.org/
 
-2. **PCRE2** - Perl Compatible Regular Expressions
-   - Pros: Full regex features, JIT compilation
-   - Cons: Potential exponential blowup on pathological patterns
-   - Use for: Full JS regex compatibility
-
-3. **Boost.Regex** - Part of Boost
-   - Pros: Full-featured, well-tested
-   - Cons: Boost dependency
-   - Use for: Projects already using Boost
-
-4. **std::regex** - Standard library
-   - Pros: No external dependency
-   - Cons: Poor performance, limited features
-   - Use for: Simple patterns only
+**Features used:**
+- Full Perl/JavaScript regex compatibility
+- JIT compilation for performance
+- Named capture groups
+- Unicode support (UTF-8 and UTF-16)
+- Global matching with `pcre2_match` iteration
 
 **Elm Regex Requirements:**
 - find/findAll with Match structure
@@ -111,24 +111,23 @@ These modules can be implemented using only C++ standard library features:
 - contains check
 - Match: { match, index, number, submatches }
 
-### 3. HTTP Client
+**Integration notes:**
+- Requires linking against `libpcre2-8` or `libpcre2-16`
+- JIT requires additional `libpcre2-jit`
+- Thread-safe when compiled patterns are not modified
 
-**Options (in order of recommendation):**
+### 3. Boost.Beast (HTTP Client)
 
-1. **libcurl** - The de facto standard
-   - Pros: Extremely mature, all protocols, async support
-   - Cons: C API, requires careful memory management
-   - Use for: Production systems
+**Version:** Boost 1.70+
+**License:** Boost Software License
+**Website:** https://www.boost.org/doc/libs/release/libs/beast/
 
-2. **cpp-httplib** - Header-only simplicity
-   - Pros: Single header, easy to use, modern C++
-   - Cons: Fewer features, sync by default
-   - Use for: Simple HTTP needs
-
-3. **Boost.Beast** - Boost's HTTP/WebSocket
-   - Pros: Modern C++, async via Asio, WebSocket support
-   - Cons: Boost dependency, steeper learning curve
-   - Use for: High-performance async needs
+**Features used:**
+- HTTP/1.1 client with async support
+- Request/response message types
+- Body types: string, dynamic buffer, file
+- Timeout handling via Asio
+- SSL/TLS via Boost.Asio SSL
 
 **Elm HTTP Requirements:**
 - GET, POST, PUT, DELETE, etc.
@@ -137,24 +136,26 @@ These modules can be implemented using only C++ standard library features:
 - Timeout and progress tracking
 - Multipart form data
 
-### 4. Async/Event Loop
+**Integration notes:**
+- Header-only (mostly)
+- Requires Boost.Asio and Boost.System
+- For SSL: requires OpenSSL
 
-**Options (in order of recommendation):**
+**Dependencies:**
+- Boost.Asio (for async I/O)
+- Boost.System (for error codes)
+- OpenSSL (optional, for HTTPS)
 
-1. **libuv** - Node.js's event loop
-   - Pros: Battle-tested, cross-platform, full-featured
-   - Cons: C API
-   - Use for: Full async runtime
+### 4. std::jthread (Async/Event Loop)
 
-2. **Boost.Asio** - Boost's async I/O
-   - Pros: Modern C++, networking + timers
-   - Cons: Boost dependency
-   - Use for: Networking-focused apps
+**Version:** C++20
+**License:** N/A (standard library)
 
-3. **std::jthread + std::condition_variable** - Standard only
-   - Pros: No dependencies
-   - Cons: Manual event loop implementation
-   - Use for: Simple cases
+**Features used:**
+- `std::jthread` for cooperative cancellation
+- `std::stop_token` for cancellation signaling
+- `std::condition_variable_any` for waiting with stop tokens
+- `std::chrono` for timing
 
 **Elm Scheduler Requirements:**
 - Task queuing and execution
@@ -162,29 +163,25 @@ These modules can be implemented using only C++ standard library features:
 - Timer (sleep, interval)
 - Effect manager integration
 
-### 5. GUI Framework (for Browser module)
+**Implementation approach:**
+- Single-threaded event loop with task queue
+- `std::jthread` for background timers
+- `std::condition_variable` for blocking waits
+- Manual event loop rather than external library
 
-**Options:**
+### 5. WebAssembly + Emscripten (Browser/GUI)
 
-1. **WebAssembly + Emscripten**
-   - Pros: Real browser, native DOM
-   - Cons: Browser-only deployment
-   - Use for: Web target
+**Version:** Emscripten 3.0+
+**License:** MIT (Emscripten), various (browser APIs)
+**Website:** https://emscripten.org/
 
-2. **Qt** - Cross-platform GUI
-   - Pros: Mature, full-featured, QtWebEngine for HTML
-   - Cons: Large, licensing considerations
-   - Use for: Desktop apps
-
-3. **GTK** - Linux-native GUI
-   - Pros: Open source, WebKitGTK for HTML
-   - Cons: Less portable
-   - Use for: Linux-focused apps
-
-4. **Custom Virtual DOM** - Headless rendering
-   - Pros: No GUI dependency, testable
-   - Cons: No visual output
-   - Use for: Server-side or testing
+**Features used:**
+- Native DOM manipulation via `emscripten::val`
+- JavaScript interop for browser APIs
+- requestAnimationFrame binding
+- Event listener registration
+- History/URL APIs
+- File API (upload/download)
 
 **Elm Browser Requirements:**
 - sandboxed, element, document, application
@@ -193,6 +190,12 @@ These modules can be implemented using only C++ standard library features:
 - Event handling
 - Focus/blur management
 - URL/History API (for navigation)
+
+**Integration notes:**
+- Compile with `emcc` instead of `clang++`
+- Use `-s WASM=1` for WebAssembly output
+- Use `-s MODULARIZE=1` for module pattern
+- Browser APIs accessed via `EM_JS` or `emscripten::val`
 
 ---
 
@@ -208,105 +211,168 @@ These modules can be implemented using only C++ standard library features:
 ### C++20 Features Used
 - `<bit>` - `std::bit_cast` for type punning
 - `std::endian` - Endianness detection
+- `std::jthread` - Cooperative threading
+- `std::stop_token` - Cancellation
 - `<format>` - String formatting (optional)
 - Concepts (optional, for type constraints)
-- Ranges (optional, for list operations)
-
----
-
-## Minimal Dependency Configuration
-
-For a minimal implementation with fewest dependencies:
-
-```
-Core modules:        C++ standard library only
-JSON:               nlohmann/json (header-only)
-Regex:              std::regex (limited but no deps)
-HTTP:               cpp-httplib (header-only)
-Async:              std::thread + std::chrono
-File:               std::filesystem
-Browser:            WebAssembly/Emscripten
-```
-
-## Full-Featured Configuration
-
-For maximum performance and compatibility:
-
-```
-Core modules:        C++ standard library only
-JSON:               RapidJSON or simdjson
-Regex:              PCRE2 (full JS regex compat)
-HTTP:               libcurl
-Async:              libuv
-File:               std::filesystem + platform dialogs
-Browser:            Qt with QtWebEngine
-```
 
 ---
 
 ## Build System Integration
 
-### CMake Find Modules
+### CMake Configuration
 
 ```cmake
-# JSON (example with nlohmann/json)
-find_package(nlohmann_json REQUIRED)
-target_link_libraries(elm-kernel PRIVATE nlohmann_json::nlohmann_json)
+cmake_minimum_required(VERSION 3.16)
+project(elm-kernel LANGUAGES CXX)
 
-# Regex with PCRE2
+# Require C++20
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# RapidJSON (header-only)
+find_package(RapidJSON REQUIRED)
+target_include_directories(elm-kernel PRIVATE ${RAPIDJSON_INCLUDE_DIRS})
+
+# PCRE2
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCRE2 REQUIRED libpcre2-8)
+target_include_directories(elm-kernel PRIVATE ${PCRE2_INCLUDE_DIRS})
 target_link_libraries(elm-kernel PRIVATE ${PCRE2_LIBRARIES})
 
-# HTTP with libcurl
-find_package(CURL REQUIRED)
-target_link_libraries(elm-kernel PRIVATE CURL::libcurl)
+# Boost.Beast (requires Boost.Asio, Boost.System)
+find_package(Boost 1.70 REQUIRED COMPONENTS system)
+target_link_libraries(elm-kernel PRIVATE Boost::system)
 
-# Async with libuv
-find_package(libuv REQUIRED)
-target_link_libraries(elm-kernel PRIVATE uv)
+# OpenSSL (for HTTPS)
+find_package(OpenSSL REQUIRED)
+target_link_libraries(elm-kernel PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+
+# Threading
+find_package(Threads REQUIRED)
+target_link_libraries(elm-kernel PRIVATE Threads::Threads)
+```
+
+### Emscripten Build
+
+```cmake
+if(EMSCRIPTEN)
+    set(CMAKE_EXECUTABLE_SUFFIX ".js")
+    target_link_options(elm-kernel PRIVATE
+        -s WASM=1
+        -s MODULARIZE=1
+        -s EXPORT_NAME="ElmKernel"
+        -s ALLOW_MEMORY_GROWTH=1
+        -s NO_EXIT_RUNTIME=1
+    )
+endif()
+```
+
+### Package Installation (Ubuntu/Debian)
+
+```bash
+# RapidJSON
+sudo apt-get install rapidjson-dev
+
+# PCRE2
+sudo apt-get install libpcre2-dev
+
+# Boost
+sudo apt-get install libboost-system-dev libboost-dev
+
+# OpenSSL
+sudo apt-get install libssl-dev
+
+# Emscripten (via emsdk)
+git clone https://github.com/emscripten-core/emsdk.git
+cd emsdk && ./emsdk install latest && ./emsdk activate latest
 ```
 
 ---
 
 ## Function Count by Category
 
-| Category | Modules | Functions | External Deps Required |
-|----------|---------|-----------|----------------------|
-| Core | 9 | 105 | No |
-| Data | 5 | 69 | JSON lib, Regex lib |
-| I/O | 3 | 24 | HTTP lib, Timer lib |
-| Browser/DOM | 2 | 45 | GUI framework |
+| Category | Modules | Functions | External Deps |
+|----------|---------|-----------|---------------|
+| Core | 9 | 105 | None |
+| Data | 5 | 69 | RapidJSON, PCRE2 |
+| I/O | 3 | 24 | Boost.Beast |
+| Browser/DOM | 2 | 45 | Emscripten |
 | **Total** | **19** | **243** | |
-
-Note: Some functions overlap or have been consolidated from the original 271 count.
 
 ---
 
 ## BROWSER_FUNCTION Summary
 
-Functions marked as `BROWSER_FUNCTION` require browser/DOM APIs and need alternative implementations for native C++:
+Functions marked as `BROWSER_FUNCTION` require browser/DOM APIs. With WebAssembly + Emscripten, these map directly to browser APIs:
 
 ### Browser.cpp (20 functions)
 - All program initialization (element, document, application)
-- Animation frame handling
-- URL/navigation management
-- DOM event coordination
+- Animation frame handling → `requestAnimationFrame`
+- URL/navigation management → History API
+- DOM event coordination → `addEventListener`
 
 ### VirtualDom.cpp (25 functions)
-- Node creation and rendering
-- Event handler attachment
-- DOM diffing and patching
-- Focus/blur management
-- Custom element integration
+- Node creation and rendering → `document.createElement`
+- Event handler attachment → `addEventListener`
+- DOM diffing and patching → Direct DOM manipulation
+- Focus/blur management → `element.focus()`, `element.blur()`
+- Custom element integration → Custom Elements API
 
 ### File.cpp (partial - 8 functions)
-- File upload dialogs (uploadOne, uploadOneOrMore)
-- File download triggers (download, downloadUrl)
-- File content reading (toString, toBytes, toUrl)
-- File decoder for events
+- File upload dialogs → `<input type="file">`
+- File download triggers → `<a download>`, `URL.createObjectURL`
+- File content reading → FileReader API
+- File decoder for events → `event.target.files`
 
-**Native alternatives:**
-- Qt: `QFileDialog`, `QWebEngineView`
-- GTK: `GtkFileChooserDialog`, `WebKitGTK`
-- Headless: In-memory DOM representation for testing
+---
+
+## Architecture Notes
+
+### Threading Model
+
+With `std::jthread` for async:
+- Main thread runs the Elm event loop
+- Background threads for timers and I/O
+- Task queue protected by mutex
+- Condition variable for waking main thread
+
+```
+┌─────────────────────────────────────────┐
+│            Main Thread                  │
+│  ┌─────────────────────────────────┐   │
+│  │     Elm Scheduler Loop          │   │
+│  │  - Process task queue           │   │
+│  │  - Run effects                  │   │
+│  │  - Update model                 │   │
+│  │  - Render view                  │   │
+│  └─────────────────────────────────┘   │
+└─────────────────────────────────────────┘
+         ▲                    ▲
+         │                    │
+    ┌────┴────┐          ┌────┴────┐
+    │ Timer   │          │  HTTP   │
+    │ Thread  │          │ Thread  │
+    └─────────┘          └─────────┘
+```
+
+### WebAssembly Integration
+
+```
+┌─────────────────────────────────────────┐
+│              Browser                    │
+│  ┌─────────────────────────────────┐   │
+│  │         JavaScript              │   │
+│  │  - Event dispatch               │   │
+│  │  - requestAnimationFrame        │   │
+│  │  - DOM API wrappers             │   │
+│  └──────────────┬──────────────────┘   │
+│                 │ Emscripten bindings  │
+│  ┌──────────────▼──────────────────┐   │
+│  │      WebAssembly Module         │   │
+│  │  - Elm Kernel (C++)             │   │
+│  │  - Virtual DOM diffing          │   │
+│  │  - Scheduler                    │   │
+│  └─────────────────────────────────┘   │
+└─────────────────────────────────────────┘
+```
