@@ -27,6 +27,7 @@ import Builder.Stuff as Stuff
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
+import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Compile as Compile
 import Compiler.Data.Map.Utils as Map
 import Compiler.Data.Name as Name
@@ -62,19 +63,19 @@ import Utils.Task.Extra as Task
 
 
 type Env
-    = Env Reporting.BKey String Parse.ProjectType (List AbsoluteSrcDir) Details.BuildID (Dict String ModuleName.Raw Details.Local) (Dict String ModuleName.Raw Details.Foreign)
+    = Env Reporting.BKey String Parse.ProjectType (List AbsoluteSrcDir) Details.BuildID (Dict String ModuleName.Raw Details.Local) (Dict String ModuleName.Raw Details.Foreign) Bool
 
 
-makeEnv : Reporting.BKey -> FilePath -> Details.Details -> Task Never Env
-makeEnv key root (Details.Details _ validOutline buildID locals foreigns _) =
+makeEnv : Reporting.BKey -> FilePath -> Details.Details -> Bool -> Task Never Env
+makeEnv key root (Details.Details _ validOutline buildID locals foreigns _) needsTypedOpt =
     case validOutline of
         Details.ValidApp givenSrcDirs ->
             Utils.listTraverse (toAbsoluteSrcDir root) (NE.toList givenSrcDirs)
-                |> Task.fmap (\srcDirs -> Env key root Parse.Application srcDirs buildID locals foreigns)
+                |> Task.fmap (\srcDirs -> Env key root Parse.Application srcDirs buildID locals foreigns needsTypedOpt)
 
         Details.ValidPkg pkg _ _ ->
             toAbsoluteSrcDir root (Outline.RelativeSrcDir "src")
-                |> Task.fmap (\srcDir -> Env key root (Parse.Package pkg) [ srcDir ] buildID locals foreigns)
+                |> Task.fmap (\srcDir -> Env key root (Parse.Package pkg) [ srcDir ] buildID locals foreigns needsTypedOpt)
 
 
 
@@ -135,7 +136,7 @@ fromExposed : BD.Decoder docs -> (docs -> BE.Encoder) -> Reporting.Style -> File
 fromExposed docsDecoder docsEncoder style root details docsGoal ((NE.Nonempty e es) as exposed) =
     Reporting.trackBuild docsDecoder docsEncoder style <|
         \key ->
-            makeEnv key root details
+            makeEnv key root details False
                 |> Task.bind
                     (\env ->
                         Details.loadInterfaces root details
@@ -211,7 +212,7 @@ type Artifacts
 
 
 type Module
-    = Fresh ModuleName.Raw I.Interface Opt.LocalGraph
+    = Fresh ModuleName.Raw I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph)
     | Cached ModuleName.Raw Bool (MVar CachedInterface)
 
 
@@ -219,11 +220,11 @@ type alias Dependencies =
     Dict (List String) TypeCheck.Canonical I.DependencyInterface
 
 
-fromPaths : Reporting.Style -> FilePath -> Details.Details -> NE.Nonempty FilePath -> Task Never (Result Exit.BuildProblem Artifacts)
-fromPaths style root details paths =
+fromPaths : Reporting.Style -> FilePath -> Details.Details -> Bool -> NE.Nonempty FilePath -> Task Never (Result Exit.BuildProblem Artifacts)
+fromPaths style root details needsTypedOpt paths =
     Reporting.trackBuild artifactsDecoder artifactsEncoder style <|
         \key ->
-            makeEnv key root details
+            makeEnv key root details needsTypedOpt
                 |> Task.bind
                     (\env ->
                         findRoots env paths
@@ -363,7 +364,7 @@ crawlDeps env mvar deps blockedValue =
 
 
 crawlModule : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> Task Never Status
-crawlModule ((Env _ root projectType srcDirs buildID locals foreigns) as env) mvar ((DocsNeed needsDocs) as docsNeed) name =
+crawlModule ((Env _ root projectType srcDirs buildID locals foreigns _) as env) mvar ((DocsNeed needsDocs) as docsNeed) name =
     let
         guidaFileName : String
         guidaFileName =
@@ -439,7 +440,7 @@ crawlModule ((Env _ root projectType srcDirs buildID locals foreigns) as env) mv
 
 
 crawlFile : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> FilePath -> File.Time -> Details.BuildID -> Task Never Status
-crawlFile ((Env _ root projectType _ buildID _ _) as env) mvar docsNeed expectedName path time lastChange =
+crawlFile ((Env _ root projectType _ buildID _ _ _) as env) mvar docsNeed expectedName path time lastChange =
     File.readUtf8 (Utils.fpCombine root path)
         |> Task.bind
             (\source ->
@@ -484,8 +485,8 @@ type alias ResultDict =
 
 
 type BResult
-    = RNew Details.Local I.Interface Opt.LocalGraph (Maybe Docs.Module)
-    | RSame Details.Local I.Interface Opt.LocalGraph (Maybe Docs.Module)
+    = RNew Details.Local I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe Docs.Module)
+    | RSame Details.Local I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe Docs.Module)
     | RCached Bool Details.BuildID (MVar CachedInterface)
     | RNotFound Import.Problem
     | RProblem Error.Module
@@ -501,7 +502,7 @@ type CachedInterface
 
 
 checkModule : Env -> Dependencies -> MVar ResultDict -> ModuleName.Raw -> Status -> Task Never BResult
-checkModule ((Env _ root projectType _ _ _ _) as env) foreigns resultsMVar name status =
+checkModule ((Env _ root projectType _ _ _ _ _) as env) foreigns resultsMVar name status =
     case status of
         SCached ((Details.Local path time deps hasMain lastChange lastCompile) as local) ->
             Utils.readMVar resultDictDecoder resultsMVar
@@ -639,10 +640,10 @@ checkDepsHelp root results deps new same cached importProblems isBlocked lastDep
                 |> Task.bind
                     (\result ->
                         case result of
-                            RNew (Details.Local _ _ _ _ lastChange _) iface _ _ ->
+                            RNew (Details.Local _ _ _ _ lastChange _) iface _ _ _ ->
                                 checkDepsHelp root results otherDeps (( dep, iface ) :: new) same cached importProblems isBlocked (max lastChange lastDepChange) lastCompile
 
-                            RSame (Details.Local _ _ _ _ lastChange _) iface _ _ ->
+                            RSame (Details.Local _ _ _ _ lastChange _) iface _ _ _ ->
                                 checkDepsHelp root results otherDeps new (( dep, iface ) :: same) cached importProblems isBlocked (max lastChange lastDepChange) lastCompile
 
                             RCached _ lastChange mvar ->
@@ -694,7 +695,7 @@ checkDepsHelp root results deps new same cached importProblems isBlocked lastDep
 
 
 toImportErrors : Env -> ResultDict -> List Src.Import -> NE.Nonempty ( ModuleName.Raw, Import.Problem ) -> NE.Nonempty Import.Error
-toImportErrors (Env _ _ _ _ _ locals foreigns) results imports problems =
+toImportErrors (Env _ _ _ _ _ locals foreigns _) results imports problems =
     let
         knownModules : EverySet.EverySet String ModuleName.Raw
         knownModules =
@@ -964,12 +965,21 @@ checkInside name p1 status =
 
 
 compile : Env -> DocsNeed -> Details.Local -> String -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never BResult
-compile (Env key root projectType _ buildID _ _) docsNeed (Details.Local path time deps main lastChange _) source ifaces modul =
+compile (Env key root projectType _ buildID _ _ needsTypedOpt) docsNeed (Details.Local path time deps main lastChange _) source ifaces modul =
     let
         pkg : Pkg.Name
         pkg =
             projectTypeToPkg projectType
     in
+    if needsTypedOpt then
+        compileWithTypedOpt key root pkg buildID docsNeed path time deps main lastChange source ifaces modul
+
+    else
+        compileWithoutTypedOpt key root pkg buildID docsNeed path time deps main lastChange source ifaces modul
+
+
+compileWithoutTypedOpt : Reporting.BKey -> FilePath -> Pkg.Name -> Details.BuildID -> DocsNeed -> FilePath -> File.Time -> List ModuleName.Raw -> Bool -> Details.BuildID -> String -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never BResult
+compileWithoutTypedOpt key root pkg buildID docsNeed path time deps main lastChange source ifaces modul =
     Compile.compile pkg ifaces modul
         |> Task.bind
             (\result ->
@@ -1004,7 +1014,6 @@ compile (Env key root projectType _ buildID _ _) docsNeed (Details.Local path ti
                                                         case maybeOldi of
                                                             Just oldi ->
                                                                 if oldi == iface then
-                                                                    -- iface should be fully forced by equality check
                                                                     Reporting.report key Reporting.BDone
                                                                         |> Task.fmap
                                                                             (\_ ->
@@ -1013,7 +1022,7 @@ compile (Env key root projectType _ buildID _ _) docsNeed (Details.Local path ti
                                                                                     local =
                                                                                         Details.Local path time deps main lastChange buildID
                                                                                 in
-                                                                                RSame local iface objects docs
+                                                                                RSame local iface objects Nothing docs
                                                                             )
 
                                                                 else
@@ -1028,12 +1037,11 @@ compile (Env key root projectType _ buildID _ _) docsNeed (Details.Local path ti
                                                                                                 local =
                                                                                                     Details.Local path time deps main buildID buildID
                                                                                             in
-                                                                                            RNew local iface objects docs
+                                                                                            RNew local iface objects Nothing docs
                                                                                         )
                                                                             )
 
                                                             _ ->
-                                                                -- iface may be lazy still
                                                                 File.writeBinary I.interfaceEncoder guidai iface
                                                                     |> Task.bind
                                                                         (\_ ->
@@ -1045,9 +1053,102 @@ compile (Env key root projectType _ buildID _ _) docsNeed (Details.Local path ti
                                                                                             local =
                                                                                                 Details.Local path time deps main buildID buildID
                                                                                         in
-                                                                                        RNew local iface objects docs
+                                                                                        RNew local iface objects Nothing docs
                                                                                     )
                                                                         )
+                                                    )
+                                        )
+
+                    Err err ->
+                        Task.pure <|
+                            RProblem <|
+                                Error.Module (Src.getName modul) path time source err
+            )
+
+
+compileWithTypedOpt : Reporting.BKey -> FilePath -> Pkg.Name -> Details.BuildID -> DocsNeed -> FilePath -> File.Time -> List ModuleName.Raw -> Bool -> Details.BuildID -> String -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never BResult
+compileWithTypedOpt key root pkg buildID docsNeed path time deps main lastChange source ifaces modul =
+    Compile.compileTyped pkg ifaces modul
+        |> Task.bind
+            (\result ->
+                case result of
+                    Ok (Compile.TypedArtifacts canonical annotations objects typedObjects) ->
+                        case makeDocs docsNeed canonical of
+                            Err err ->
+                                Task.pure <|
+                                    RProblem <|
+                                        Error.Module (Src.getName modul) path time source (Error.BadDocs err)
+
+                            Ok docs ->
+                                let
+                                    name : Name.Name
+                                    name =
+                                        Src.getName modul
+
+                                    iface : I.Interface
+                                    iface =
+                                        I.fromModule pkg canonical annotations
+
+                                    guidai : String
+                                    guidai =
+                                        Stuff.guidai root name
+                                in
+                                -- Write both .guidao and .guidato files
+                                File.writeBinary Opt.localGraphEncoder (Stuff.guidao root name) objects
+                                    |> Task.bind
+                                        (\_ ->
+                                            File.writeBinary TOpt.localGraphEncoder (Stuff.guidato root name) typedObjects
+                                                |> Task.bind
+                                                    (\_ ->
+                                                        File.readBinary I.interfaceDecoder guidai
+                                                            |> Task.bind
+                                                                (\maybeOldi ->
+                                                                    case maybeOldi of
+                                                                        Just oldi ->
+                                                                            if oldi == iface then
+                                                                                Reporting.report key Reporting.BDone
+                                                                                    |> Task.fmap
+                                                                                        (\_ ->
+                                                                                            let
+                                                                                                local : Details.Local
+                                                                                                local =
+                                                                                                    Details.Local path time deps main lastChange buildID
+                                                                                            in
+                                                                                            RSame local iface objects (Just typedObjects) docs
+                                                                                        )
+
+                                                                            else
+                                                                                File.writeBinary I.interfaceEncoder guidai iface
+                                                                                    |> Task.bind
+                                                                                        (\_ ->
+                                                                                            Reporting.report key Reporting.BDone
+                                                                                                |> Task.fmap
+                                                                                                    (\_ ->
+                                                                                                        let
+                                                                                                            local : Details.Local
+                                                                                                            local =
+                                                                                                                Details.Local path time deps main buildID buildID
+                                                                                                        in
+                                                                                                        RNew local iface objects (Just typedObjects) docs
+                                                                                                    )
+                                                                                        )
+
+                                                                        _ ->
+                                                                            File.writeBinary I.interfaceEncoder guidai iface
+                                                                                |> Task.bind
+                                                                                    (\_ ->
+                                                                                        Reporting.report key Reporting.BDone
+                                                                                            |> Task.fmap
+                                                                                                (\_ ->
+                                                                                                    let
+                                                                                                        local : Details.Local
+                                                                                                        local =
+                                                                                                            Details.Local path time deps main buildID buildID
+                                                                                                    in
+                                                                                                    RNew local iface objects (Just typedObjects) docs
+                                                                                                )
+                                                                                    )
+                                                                )
                                                     )
                                         )
 
@@ -1081,10 +1182,10 @@ writeDetails root (Details.Details time outline buildID locals foreigns extras) 
 addNewLocal : ModuleName.Raw -> BResult -> Dict String ModuleName.Raw Details.Local -> Dict String ModuleName.Raw Details.Local
 addNewLocal name result locals =
     case result of
-        RNew local _ _ _ ->
+        RNew local _ _ _ _ ->
             Dict.insert identity name local locals
 
-        RSame local _ _ _ ->
+        RSame local _ _ _ _ ->
             Dict.insert identity name local locals
 
         RCached _ _ _ ->
@@ -1128,10 +1229,10 @@ finalizeExposed root docsGoal exposed results =
 addErrors : BResult -> List Error.Module -> List Error.Module
 addErrors result errors =
     case result of
-        RNew _ _ _ _ ->
+        RNew _ _ _ _ _ ->
             errors
 
-        RSame _ _ _ _ ->
+        RSame _ _ _ _ _ ->
             errors
 
         RCached _ _ _ ->
@@ -1156,10 +1257,10 @@ addErrors result errors =
 addImportProblems : Dict String ModuleName.Raw BResult -> ModuleName.Raw -> List ( ModuleName.Raw, Import.Problem ) -> List ( ModuleName.Raw, Import.Problem )
 addImportProblems results name problems =
     case Utils.find identity name results of
-        RNew _ _ _ _ ->
+        RNew _ _ _ _ _ ->
             problems
 
-        RSame _ _ _ _ ->
+        RSame _ _ _ _ _ ->
             problems
 
         RCached _ _ _ ->
@@ -1253,10 +1354,10 @@ finalizeDocs goal results =
 toDocs : BResult -> Maybe Docs.Module
 toDocs result =
     case result of
-        RNew _ _ _ d ->
+        RNew _ _ _ _ d ->
             d
 
-        RSame _ _ _ d ->
+        RSame _ _ _ _ d ->
             d
 
         RCached _ _ _ ->
@@ -1291,9 +1392,9 @@ type ReplArtifacts
 
 fromRepl : FilePath -> Details.Details -> String -> Task Never (Result Exit.Repl ReplArtifacts)
 fromRepl root details source =
-    makeEnv Reporting.ignorer root details
+    makeEnv Reporting.ignorer root details False
         |> Task.bind
-            (\((Env _ _ projectType _ _ _ _) as env) ->
+            (\((Env _ _ projectType _ _ _ _ _) as env) ->
                 case Parse.fromByteString SV.Guida projectType source of
                     Err syntaxError ->
                         Task.pure <| Err <| Exit.ReplBadInput source <| Error.BadSyntax syntaxError
@@ -1358,7 +1459,7 @@ fromRepl root details source =
 
 
 finalizeReplArtifacts : Env -> String -> Src.Module -> DepsStatus -> ResultDict -> Dict String ModuleName.Raw BResult -> Task Never (Result Exit.Repl ReplArtifacts)
-finalizeReplArtifacts ((Env _ root projectType _ _ _ _) as env) source ((Src.Module _ _ _ _ imports _ _ _ _ _) as modul) depsStatus resultMVars results =
+finalizeReplArtifacts ((Env _ root projectType _ _ _ _ _) as env) source ((Src.Module _ _ _ _ imports _ _ _ _ _) as modul) depsStatus resultMVars results =
     let
         pkg : Pkg.Name
         pkg =
@@ -1378,7 +1479,7 @@ finalizeReplArtifacts ((Env _ root projectType _ _ _ _) as env) source ((Src.Mod
 
                                     m : Module
                                     m =
-                                        Fresh (Src.getName modul) (I.fromModule pkg canonical annotations) objects
+                                        Fresh (Src.getName modul) (I.fromModule pkg canonical annotations) objects Nothing
 
                                     ms : List Module
                                     ms =
@@ -1493,7 +1594,7 @@ getRootInfo env path =
 
 
 getRootInfoHelp : Env -> FilePath -> FilePath -> Task Never (Result Exit.BuildProjectProblem RootInfo)
-getRootInfoHelp (Env _ _ _ srcDirs _ _ _) path absolutePath =
+getRootInfoHelp (Env _ _ _ srcDirs _ _ _ _) path absolutePath =
     let
         ( dirs, file ) =
             Utils.fpSplitFileName absolutePath
@@ -1609,7 +1710,7 @@ type RootStatus
 
 
 crawlRoot : Env -> MVar StatusDict -> RootLocation -> Task Never RootStatus
-crawlRoot ((Env _ _ projectType _ buildID _ _) as env) mvar root =
+crawlRoot ((Env _ _ projectType _ buildID _ _ _) as env) mvar root =
     case root of
         LInside name ->
             Utils.newEmptyMVar
@@ -1667,7 +1768,7 @@ type RootResult
 
 
 checkRoot : Env -> ResultDict -> RootStatus -> Task Never RootResult
-checkRoot ((Env _ root _ _ _ _ _) as env) results rootStatus =
+checkRoot ((Env _ root _ _ _ _ _ _) as env) results rootStatus =
     case rootStatus of
         SInside name ->
             Task.pure (RInside name)
@@ -1707,7 +1808,7 @@ checkRoot ((Env _ root _ _ _ _ _) as env) results rootStatus =
 
 
 compileOutside : Env -> Details.Local -> String -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never RootResult
-compileOutside (Env key _ projectType _ _ _ _) (Details.Local path time _ _ _ _) source ifaces modul =
+compileOutside (Env key _ projectType _ _ _ _ _) (Details.Local path time _ _ _ _) source ifaces modul =
     let
         pkg : Pkg.Name
         pkg =
@@ -1740,7 +1841,7 @@ type Root
 
 
 toArtifacts : Env -> Dependencies -> Dict String ModuleName.Raw BResult -> NE.Nonempty RootResult -> Result Exit.BuildProblem Artifacts
-toArtifacts (Env _ root projectType _ _ _ _) foreigns results rootResults =
+toArtifacts (Env _ root projectType _ _ _ _ _) foreigns results rootResults =
     case gatherProblemsOrMains results rootResults of
         Err (NE.Nonempty e es) ->
             Err (Exit.BuildBadModules root e es)
@@ -1799,11 +1900,11 @@ gatherProblemsOrMains results (NE.Nonempty rootResult rootResults) =
 addInside : ModuleName.Raw -> BResult -> List Module -> List Module
 addInside name result modules =
     case result of
-        RNew _ iface objs _ ->
-            Fresh name iface objs :: modules
+        RNew _ iface objs typedObjs _ ->
+            Fresh name iface objs typedObjs :: modules
 
-        RSame _ iface objs _ ->
-            Fresh name iface objs :: modules
+        RSame _ iface objs typedObjs _ ->
+            Fresh name iface objs typedObjs :: modules
 
         RCached main _ mvar ->
             Cached name main mvar :: modules
@@ -1836,7 +1937,7 @@ addOutside root modules =
             modules
 
         ROutsideOk name iface objs ->
-            Fresh name iface objs :: modules
+            Fresh name iface objs Nothing :: modules
 
         ROutsideErr _ ->
             modules
@@ -1857,21 +1958,23 @@ dictRawMVarBResultEncoder =
 bResultEncoder : BResult -> BE.Encoder
 bResultEncoder bResult =
     case bResult of
-        RNew local iface objects docs ->
+        RNew local iface objects typedObjects docs ->
             BE.sequence
                 [ BE.unsignedInt8 0
                 , Details.localEncoder local
                 , I.interfaceEncoder iface
                 , Opt.localGraphEncoder objects
+                , BE.maybe TOpt.localGraphEncoder typedObjects
                 , BE.maybe Docs.bytesModuleEncoder docs
                 ]
 
-        RSame local iface objects docs ->
+        RSame local iface objects typedObjects docs ->
             BE.sequence
                 [ BE.unsignedInt8 1
                 , Details.localEncoder local
                 , I.interfaceEncoder iface
                 , Opt.localGraphEncoder objects
+                , BE.maybe TOpt.localGraphEncoder typedObjects
                 , BE.maybe Docs.bytesModuleEncoder docs
                 ]
 
@@ -1915,17 +2018,19 @@ bResultDecoder =
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map4 RNew
+                        BD.map5 RNew
                             Details.localDecoder
                             I.interfaceDecoder
                             Opt.localGraphDecoder
+                            (BD.maybe TOpt.localGraphDecoder)
                             (BD.maybe Docs.bytesModuleDecoder)
 
                     1 ->
-                        BD.map4 RSame
+                        BD.map5 RSame
                             Details.localDecoder
                             I.interfaceDecoder
                             Opt.localGraphDecoder
+                            (BD.maybe TOpt.localGraphDecoder)
                             (BD.maybe Docs.bytesModuleDecoder)
 
                     2 ->
@@ -2305,12 +2410,13 @@ rootDecoder =
 moduleEncoder : Module -> BE.Encoder
 moduleEncoder modul =
     case modul of
-        Fresh name iface objs ->
+        Fresh name iface objs typedObjs ->
             BE.sequence
                 [ BE.unsignedInt8 0
                 , ModuleName.rawEncoder name
                 , I.interfaceEncoder iface
                 , Opt.localGraphEncoder objs
+                , BE.maybe TOpt.localGraphEncoder typedObjs
                 ]
 
         Cached name main mvar ->
@@ -2329,10 +2435,11 @@ moduleDecoder =
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 Fresh
+                        BD.map4 Fresh
                             ModuleName.rawDecoder
                             I.interfaceDecoder
                             Opt.localGraphDecoder
+                            (BD.maybe TOpt.localGraphDecoder)
 
                     1 ->
                         BD.map3 Cached

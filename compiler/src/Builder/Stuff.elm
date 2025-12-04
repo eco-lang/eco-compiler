@@ -7,6 +7,7 @@ module Builder.Stuff exposing
     , getReplCache
     , guidai
     , guidao
+    , guidato
     , interfaces
     , objects
     , package
@@ -15,6 +16,7 @@ module Builder.Stuff exposing
     , prepublishDir
     , registry
     , testDir
+    , typedObjects
     , withRegistryLock
     , withRootLock
     )
@@ -54,6 +56,13 @@ objects root =
     stuff root ++ "/o.dat"
 
 
+{-| Path to typed global objects file for MLIR backend
+-}
+typedObjects : String -> String
+typedObjects root =
+    stuff root ++ "/to.dat"
+
+
 prepublishDir : String -> String
 prepublishDir root =
     stuff root ++ "/prepublish"
@@ -81,6 +90,13 @@ guidai root name =
 guidao : String -> ModuleName.Raw -> String
 guidao root name =
     toArtifactPath root name "guidao"
+
+
+{-| Path to typed optimized artifact (.guidato) for MLIR backend
+-}
+guidato : String -> ModuleName.Raw -> String
+guidato root name =
+    toArtifactPath root name "guidato"
 
 
 toArtifactPath : String -> ModuleName.Raw -> String -> String

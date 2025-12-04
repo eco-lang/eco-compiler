@@ -132,7 +132,7 @@ getMode debug optimize =
 buildPaths : Reporting.Style -> FilePath -> Details.Details -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
 buildPaths style root details paths =
     Task.eio Exit.MakeCannotBuild <|
-        Build.fromPaths style root details paths
+        Build.fromPaths style root details False paths
 
 
 
@@ -162,7 +162,7 @@ getMain modules root =
 isMain : ModuleName.Raw -> Build.Module -> Bool
 isMain targetName modul =
     case modul of
-        Build.Fresh name _ (Opt.LocalGraph maybeMain _ _) ->
+        Build.Fresh name _ (Opt.LocalGraph maybeMain _ _) _ ->
             Maybe.isJust maybeMain && name == targetName
 
         Build.Cached name mainIsDefined _ ->

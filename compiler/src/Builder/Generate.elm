@@ -5,6 +5,7 @@ module Builder.Generate exposing
     , mlirBackend
     , prod
     , repl
+    , typedDev
     )
 
 import Builder.Build as Build
@@ -14,6 +15,7 @@ import Builder.File as File
 import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
 import Compiler.AST.Optimized as Opt
+import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as N
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Elm.Compiler.Type.Extract as Extract
@@ -47,9 +49,9 @@ javascriptBackend =
     JavaScript.backend
 
 
-{-| MLIR code generation backend.
+{-| MLIR code generation backend (uses typed IR).
 -}
-mlirBackend : CodeGen.CodeGen
+mlirBackend : CodeGen.TypedCodeGen
 mlirBackend =
     MLIR.backend
 
@@ -263,7 +265,7 @@ loadObjects root details modules =
 loadObject : FilePath -> Build.Module -> Task Never ( ModuleName.Raw, MVar (Maybe Opt.LocalGraph) )
 loadObject root modul =
     case modul of
-        Build.Fresh name _ graph ->
+        Build.Fresh name _ graph _ ->
             Utils.newMVar (Utils.maybeEncoder Opt.localGraphEncoder) (Just graph)
                 |> Task.fmap (\mvar -> ( name, mvar ))
 
@@ -341,7 +343,7 @@ loadTypes root ifaces modules =
 loadTypesHelp : FilePath -> Build.Module -> Task Never (MVar (Maybe Extract.Types))
 loadTypesHelp root modul =
     case modul of
-        Build.Fresh name iface _ ->
+        Build.Fresh name iface _ _ ->
             Utils.newMVar (Utils.maybeEncoder Extract.typesEncoder) (Just (Extract.fromInterface name iface))
 
         Build.Cached name _ ciMVar ->
@@ -369,3 +371,160 @@ loadTypesHelp root modul =
                             Build.Corrupted ->
                                 Utils.newMVar (Utils.maybeEncoder Extract.typesEncoder) Nothing
                     )
+
+
+
+-- TYPED GENERATION (FOR MLIR BACKEND)
+
+
+typedDev : CodeGen.TypedCodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
+typedDev backend withSourceMaps leadingLines root details (Build.Artifacts pkg _ roots modules) =
+    Task.bind finalizeTypedObjects (loadTypedObjects root details modules)
+        |> Task.bind
+            (\objects ->
+                let
+                    mode : Mode.Mode
+                    mode =
+                        Mode.Dev Nothing
+
+                    graph : TOpt.GlobalGraph
+                    graph =
+                        typedObjectsToGlobalGraph objects
+
+                    mains : Dict (List String) TypeCheck.Canonical TOpt.Main
+                    mains =
+                        gatherTypedMains pkg objects roots
+                in
+                prepareSourceMaps withSourceMaps root
+                    |> Task.fmap
+                        (\sourceMaps ->
+                            backend.generate
+                                { sourceMaps = sourceMaps
+                                , leadingLines = leadingLines
+                                , mode = mode
+                                , graph = graph
+                                , mains = mains
+                                }
+                        )
+            )
+
+
+
+-- TYPED OBJECTS LOADING
+
+
+type TypedLoadingObjects
+    = TypedLoadingObjects (MVar (Maybe TOpt.GlobalGraph)) (Dict String ModuleName.Raw (MVar (Maybe TOpt.LocalGraph)))
+
+
+loadTypedObjects : FilePath -> Details.Details -> List Build.Module -> Task Exit.Generate TypedLoadingObjects
+loadTypedObjects root details modules =
+    Task.io
+        (Details.loadTypedObjects root details
+            |> Task.bind
+                (\mvar ->
+                    Utils.listTraverse (loadTypedObject root) modules
+                        |> Task.fmap
+                            (\mvars ->
+                                TypedLoadingObjects mvar (Dict.fromList identity mvars)
+                            )
+                )
+        )
+
+
+loadTypedObject : FilePath -> Build.Module -> Task Never ( ModuleName.Raw, MVar (Maybe TOpt.LocalGraph) )
+loadTypedObject root modul =
+    case modul of
+        Build.Fresh name _ _ maybeTypedGraph ->
+            -- Use the typed graph from the build if available, otherwise empty
+            let
+                graph : TOpt.LocalGraph
+                graph =
+                    Maybe.withDefault TOpt.emptyLocalGraph maybeTypedGraph
+            in
+            Utils.newMVar (Utils.maybeEncoder TOpt.localGraphEncoder) (Just graph)
+                |> Task.fmap (\mvar -> ( name, mvar ))
+
+        Build.Cached name _ _ ->
+            Utils.newEmptyMVar
+                |> Task.bind
+                    (\mvar ->
+                        Utils.forkIO
+                            (File.readBinary TOpt.localGraphDecoder (Stuff.guidato root name)
+                                |> Task.bind
+                                    (\maybeGraph ->
+                                        -- If .guidato file doesn't exist, use empty graph
+                                        let
+                                            graph : Maybe TOpt.LocalGraph
+                                            graph =
+                                                case maybeGraph of
+                                                    Just g ->
+                                                        Just g
+
+                                                    Nothing ->
+                                                        Just TOpt.emptyLocalGraph
+                                        in
+                                        Utils.putMVar (Utils.maybeEncoder TOpt.localGraphEncoder) mvar graph
+                                    )
+                            )
+                            |> Task.fmap (\_ -> ( name, mvar ))
+                    )
+
+
+
+-- FINALIZE TYPED OBJECTS
+
+
+type TypedObjects
+    = TypedObjects TOpt.GlobalGraph (Dict String ModuleName.Raw TOpt.LocalGraph)
+
+
+finalizeTypedObjects : TypedLoadingObjects -> Task Exit.Generate TypedObjects
+finalizeTypedObjects (TypedLoadingObjects mvar mvars) =
+    Task.eio identity
+        (Utils.readMVar (BD.maybe TOpt.globalGraphDecoder) mvar
+            |> Task.bind
+                (\result ->
+                    Utils.mapTraverse identity compare (Utils.readMVar (BD.maybe TOpt.localGraphDecoder)) mvars
+                        |> Task.fmap
+                            (\results ->
+                                case Maybe.map2 TypedObjects result (Utils.sequenceDictMaybe identity compare results) of
+                                    Just loaded ->
+                                        Ok loaded
+
+                                    Nothing ->
+                                        Err Exit.GenerateCannotLoadArtifacts
+                            )
+                )
+        )
+
+
+typedObjectsToGlobalGraph : TypedObjects -> TOpt.GlobalGraph
+typedObjectsToGlobalGraph (TypedObjects globals locals) =
+    Dict.foldr compare (\_ -> TOpt.addLocalGraph) globals locals
+
+
+
+-- GATHER TYPED MAINS
+
+
+gatherTypedMains : Pkg.Name -> TypedObjects -> NE.Nonempty Build.Root -> Dict (List String) TypeCheck.Canonical TOpt.Main
+gatherTypedMains pkg (TypedObjects _ locals) roots =
+    Dict.fromList ModuleName.toComparableCanonical (List.filterMap (lookupTypedMain pkg locals) (NE.toList roots))
+
+
+lookupTypedMain : Pkg.Name -> Dict String ModuleName.Raw TOpt.LocalGraph -> Build.Root -> Maybe ( TypeCheck.Canonical, TOpt.Main )
+lookupTypedMain pkg locals root =
+    let
+        toPair : N.Name -> TOpt.LocalGraph -> Maybe ( TypeCheck.Canonical, TOpt.Main )
+        toPair name (TOpt.LocalGraph maybeMain _ _ _) =
+            Maybe.map (Tuple.pair (TypeCheck.Canonical pkg name)) maybeMain
+    in
+    case root of
+        Build.Inside name ->
+            Maybe.andThen (toPair name) (Dict.get identity name locals)
+
+        Build.Outside _ _ _ ->
+            -- Outside roots use Opt.LocalGraph, not TOpt.LocalGraph
+            -- For now, return Nothing - typed optimization should have been run
+            Nothing

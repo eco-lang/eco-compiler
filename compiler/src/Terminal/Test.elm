@@ -1094,7 +1094,7 @@ runMake root path =
 buildPaths : FilePath -> Details.Details -> NE.Nonempty FilePath -> Task Exit.Test Build.Artifacts
 buildPaths root details paths =
     Task.eio Exit.TestCannotBuild <|
-        Build.fromPaths style root details paths
+        Build.fromPaths style root details False paths
 
 
 

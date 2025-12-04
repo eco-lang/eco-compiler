@@ -11,6 +11,7 @@ module Builder.Elm.Details exposing
     , load
     , loadInterfaces
     , loadObjects
+    , loadTypedObjects
     , localDecoder
     , localEncoder
     , verifyInstall
@@ -28,6 +29,7 @@ import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
+import Compiler.AST.TypedOptimized as TOpt
 import Compiler.AST.Source as Src
 import Compiler.Compile as Compile
 import Compiler.Data.Name as Name
@@ -118,6 +120,28 @@ loadObjects root (Details _ _ _ _ _ extras) =
 
         ArtifactsCached ->
             fork (Utils.maybeEncoder Opt.globalGraphEncoder) (File.readBinary Opt.globalGraphDecoder (Stuff.objects root))
+
+
+{-| Load typed global objects for MLIR backend.
+For now, typed objects are always loaded from cache since we don't store them in Extras.
+-}
+loadTypedObjects : FilePath -> Details -> Task Never (MVar (Maybe TOpt.GlobalGraph))
+loadTypedObjects root _ =
+    -- Typed objects are not cached in memory, always load from disk
+    -- The file may not exist if typed optimization hasn't been run
+    fork (Utils.maybeEncoder TOpt.globalGraphEncoder)
+        (File.readBinary TOpt.globalGraphDecoder (Stuff.typedObjects root)
+            |> Task.fmap
+                (\maybeGraph ->
+                    -- If the file doesn't exist, return an empty graph
+                    case maybeGraph of
+                        Just g ->
+                            Just g
+
+                        Nothing ->
+                            Just TOpt.emptyGlobalGraph
+                )
+        )
 
 
 loadInterfaces : FilePath -> Details -> Task Never (MVar (Maybe Interfaces))

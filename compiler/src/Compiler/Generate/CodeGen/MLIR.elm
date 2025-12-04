@@ -1,6 +1,7 @@
 module Compiler.Generate.CodeGen.MLIR exposing (backend)
 
-import Compiler.AST.Optimized as Opt
+import Compiler.AST.Canonical as Can
+import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
@@ -31,19 +32,12 @@ import Utils.Main as Utils
 -- BACKEND
 
 
-backend : CodeGen.CodeGen
+backend : CodeGen.TypedCodeGen
 backend =
     { generate =
         \config ->
             CodeGen.TextOutput <|
                 generateModule config.mode config.graph config.mains
-    , generateForRepl =
-        \_ ->
-            -- MLIR REPL would need compilation + execution
-            CodeGen.TextOutput "// MLIR REPL not yet implemented\n"
-    , generateForReplEndpoint =
-        \_ ->
-            CodeGen.TextOutput "// MLIR REPL endpoint not yet implemented\n"
     }
 
 
@@ -64,7 +58,7 @@ ecoValue =
 
 
 type State
-    = State (List MlirOp) (EverySet (List String) Opt.Global)
+    = State (List MlirOp) (EverySet (List String) TOpt.Global)
 
 
 emptyState : State
@@ -87,14 +81,14 @@ addOps newOps (State ops seen) =
     State (List.reverse newOps ++ ops) seen
 
 
-hasSeen : Opt.Global -> State -> Bool
+hasSeen : TOpt.Global -> State -> Bool
 hasSeen global (State _ seen) =
-    EverySet.member Opt.toComparableGlobal global seen
+    EverySet.member TOpt.toComparableGlobal global seen
 
 
-markSeen : Opt.Global -> State -> State
+markSeen : TOpt.Global -> State -> State
 markSeen global (State ops seen) =
-    State ops (EverySet.insert Opt.toComparableGlobal global seen)
+    State ops (EverySet.insert TOpt.toComparableGlobal global seen)
 
 
 
@@ -393,8 +387,8 @@ mkRegion args body terminator =
 -- GENERATE MODULE
 
 
-generateModule : Mode.Mode -> Opt.GlobalGraph -> CodeGen.Mains -> String
-generateModule mode ((Opt.GlobalGraph graph _) as globalGraph) mains =
+generateModule : Mode.Mode -> TOpt.GlobalGraph -> CodeGen.TypedMains -> String
+generateModule mode ((TOpt.GlobalGraph graph _ _) as globalGraph) mains =
     let
         -- Start from mains and recursively add only reachable globals (dead code elimination)
         state : State
@@ -414,12 +408,12 @@ generateModule mode ((Opt.GlobalGraph graph _) as globalGraph) mains =
     Pretty.ppModule mlirModule
 
 
-addMain : Mode.Mode -> Graph -> IO.Canonical -> Opt.Main -> State -> State
+addMain : Mode.Mode -> Graph -> IO.Canonical -> TOpt.Main -> State -> State
 addMain mode graph home main state =
     let
-        mainGlobal : Opt.Global
+        mainGlobal : TOpt.Global
         mainGlobal =
-            Opt.Global home "main"
+            TOpt.Global home "main"
 
         stateWithMain : State
         stateWithMain =
@@ -434,7 +428,7 @@ addMain mode graph home main state =
             canonicalToMLIRName home ++ "_main"
     in
     case main of
-        Opt.Static ->
+        TOpt.Static ->
             let
                 ( callVar, ctx1 ) =
                     freshVar ctx
@@ -460,7 +454,7 @@ addMain mode graph home main state =
             in
             addOp mainFunc stateWithMain
 
-        Opt.Dynamic _ flagsDecoder ->
+        TOpt.Dynamic _ flagsDecoder ->
             let
                 exprResult : ExprResult
                 exprResult =
@@ -491,7 +485,7 @@ addMain mode graph home main state =
             addOp mainFunc stateWithMain
 
 
-addGlobal : Mode.Mode -> Graph -> Opt.Global -> State -> State
+addGlobal : Mode.Mode -> Graph -> TOpt.Global -> State -> State
 addGlobal mode graph global state =
     if hasSeen global state then
         state
@@ -500,15 +494,15 @@ addGlobal mode graph global state =
         addGlobalHelp mode graph global (markSeen global state)
 
 
-addGlobalHelp : Mode.Mode -> Graph -> Opt.Global -> State -> State
-addGlobalHelp mode graph ((Opt.Global home name) as global) state =
+addGlobalHelp : Mode.Mode -> Graph -> TOpt.Global -> State -> State
+addGlobalHelp mode graph ((TOpt.Global home name) as global) state =
     let
-        addDeps : EverySet (List String) Opt.Global -> State -> State
+        addDeps : EverySet (List String) TOpt.Global -> State -> State
         addDeps deps someState =
             let
-                sortedDeps : List Opt.Global
+                sortedDeps : List TOpt.Global
                 sortedDeps =
-                    List.sortWith Opt.compareGlobal (EverySet.toList Opt.compareGlobal deps)
+                    List.sortWith TOpt.compareGlobal (EverySet.toList TOpt.compareGlobal deps)
             in
             List.foldl (\dep st -> addGlobal mode graph dep st) someState sortedDeps
 
@@ -520,62 +514,91 @@ addGlobalHelp mode graph ((Opt.Global home name) as global) state =
         ctx =
             initContext mode
     in
-    case Utils.find Opt.toComparableGlobal global graph of
-        Opt.Define expr deps ->
-            addOp (generateTopLevelDef ctx funcName expr) (addDeps deps state)
+    case EveryDict.get TOpt.toComparableGlobal global graph of
+        Nothing ->
+            -- Global not found - it's likely from a dependency or kernel module
+            -- For now, generate an extern declaration
+            addOp (generateExternDecl funcName) state
 
-        Opt.TrackedDefine _ expr deps ->
-            addOp (generateTopLevelDef ctx funcName expr) (addDeps deps state)
+        Just (TOpt.Define expr deps tipe) ->
+            addOp (generateTopLevelDef ctx funcName tipe expr) (addDeps deps state)
 
-        Opt.DefineTailFunc _ argNames body deps ->
-            addOp (generateTailFunc ctx funcName argNames body) (addDeps deps state)
+        Just (TOpt.TrackedDefine _ expr deps tipe) ->
+            addOp (generateTopLevelDef ctx funcName tipe expr) (addDeps deps state)
 
-        Opt.Ctor index arity ->
-            addOp (generateCtorFunc ctx funcName index arity) state
+        Just (TOpt.DefineTailFunc _ typedArgNames body deps returnType) ->
+            addOp (generateTailFunc ctx funcName typedArgNames body returnType) (addDeps deps state)
 
-        Opt.Enum index ->
-            addOp (generateEnumConstant ctx funcName index) state
+        Just (TOpt.Ctor index arity ctorType) ->
+            addOp (generateCtorFunc ctx funcName index arity ctorType) state
 
-        Opt.Box ->
-            addOp (generateBoxFunc ctx funcName) state
+        Just (TOpt.Enum index enumType) ->
+            addOp (generateEnumConstant ctx funcName index enumType) state
 
-        Opt.Link linkedGlobal ->
+        Just (TOpt.Box boxType) ->
+            addOp (generateBoxFunc ctx funcName boxType) state
+
+        Just (TOpt.Link linkedGlobal) ->
             -- For links, we just need to ensure the linked global is generated
             addGlobal mode graph linkedGlobal state
 
-        Opt.Cycle names values funcs deps ->
+        Just (TOpt.Cycle names values funcs deps) ->
             -- TODO: Implement cycle handling
             addDeps deps state
 
-        Opt.Manager effectsType ->
+        Just (TOpt.Manager effectsType) ->
             -- TODO: Implement effects manager
             state
 
-        Opt.Kernel chunks deps ->
+        Just (TOpt.Kernel chunks deps) ->
             -- TODO: Implement kernel code
             addDeps deps state
 
-        Opt.PortIncoming _ deps ->
+        Just (TOpt.PortIncoming _ deps portType) ->
             -- TODO: Implement port incoming
             addDeps deps state
 
-        Opt.PortOutgoing _ deps ->
+        Just (TOpt.PortOutgoing _ deps portType) ->
             -- TODO: Implement port outgoing
             addDeps deps state
+
+
+
+-- GENERATE EXTERN DECLARATION
+
+
+{-| Generate an extern declaration for a function from a dependency module.
+This serves as a placeholder when we don't have the typed definition available.
+-}
+generateExternDecl : String -> MlirOp
+generateExternDecl funcName =
+    -- Create a stub func.func with no body to represent an external reference
+    mlirOp "func.func" (initContext (Mode.Dev Nothing))
+        |> withAttr "sym_name" (StringAttr funcName)
+        |> withAttr "sym_visibility" (VisibilityAttr Private)
+        |> withAttr "function_type"
+            (TypeAttr
+                (FunctionType
+                    { inputs = []
+                    , results = [ ecoValue ]
+                    }
+                )
+            )
+        |> build
 
 
 
 -- GENERATE TOP-LEVEL DEFINITION
 
 
-generateTopLevelDef : Context -> String -> Opt.Expr -> MlirOp
-generateTopLevelDef ctx funcName expr =
+generateTopLevelDef : Context -> String -> Can.Type -> TOpt.Expr -> MlirOp
+generateTopLevelDef ctx funcName tipe expr =
     case expr of
-        Opt.Function args body ->
+        TOpt.Function args body _ ->
             generateFuncDef ctx funcName args body
 
-        Opt.TrackedFunction locatedArgs body ->
-            generateFuncDef ctx funcName (List.map A.toValue locatedArgs) body
+        TOpt.TrackedFunction locatedArgs body _ ->
+            generateTypedFuncDef ctx funcName locatedArgs body
 
         _ ->
             -- Value (thunk) - wrap in nullary function
@@ -595,12 +618,12 @@ generateTopLevelDef ctx funcName expr =
             funcFunc ctx funcName [] region
 
 
-generateFuncDef : Context -> String -> List Name.Name -> Opt.Expr -> MlirOp
+generateFuncDef : Context -> String -> List ( Name.Name, Can.Type ) -> TOpt.Expr -> MlirOp
 generateFuncDef ctx funcName args body =
     let
         argPairs : List ( String, MlirType )
         argPairs =
-            List.map (\name -> ( "%" ++ name, ecoValue )) args
+            List.map (\( name, _ ) -> ( "%" ++ name, ecoValue )) args
 
         -- Create context with args already bound
         ctxWithArgs : Context
@@ -622,16 +645,26 @@ generateFuncDef ctx funcName args body =
     funcFunc ctx funcName argPairs region
 
 
-generateTailFunc : Context -> String -> List (A.Located Name.Name) -> Opt.Expr -> MlirOp
-generateTailFunc ctx funcName locatedArgs body =
+generateTypedFuncDef : Context -> String -> List ( A.Located Name.Name, Can.Type ) -> TOpt.Expr -> MlirOp
+generateTypedFuncDef ctx funcName locatedArgs body =
     let
-        args : List Name.Name
+        args : List ( Name.Name, Can.Type )
         args =
-            List.map A.toValue locatedArgs
+            List.map (\( loc, tipe ) -> ( A.toValue loc, tipe )) locatedArgs
+    in
+    generateFuncDef ctx funcName args body
+
+
+generateTailFunc : Context -> String -> List ( A.Located Name.Name, Can.Type ) -> TOpt.Expr -> Can.Type -> MlirOp
+generateTailFunc ctx funcName locatedArgs body _ =
+    let
+        args : List ( Name.Name, Can.Type )
+        args =
+            List.map (\( loc, tipe ) -> ( A.toValue loc, tipe )) locatedArgs
 
         argPairs : List ( String, MlirType )
         argPairs =
-            List.map (\name -> ( "%" ++ name, ecoValue )) args
+            List.map (\( name, _ ) -> ( "%" ++ name, ecoValue )) args
 
         ctxWithArgs : Context
         ctxWithArgs =
@@ -653,8 +686,8 @@ generateTailFunc ctx funcName locatedArgs body =
     funcFunc ctx funcName argPairs region
 
 
-generateCtorFunc : Context -> String -> Index.ZeroBased -> Int -> MlirOp
-generateCtorFunc ctx funcName index arity =
+generateCtorFunc : Context -> String -> Index.ZeroBased -> Int -> Can.Type -> MlirOp
+generateCtorFunc ctx funcName index arity _ =
     let
         tag : Int
         tag =
@@ -716,8 +749,8 @@ generateCtorFunc ctx funcName index arity =
         funcFunc ctx funcName argPairs region
 
 
-generateEnumConstant : Context -> String -> Index.ZeroBased -> MlirOp
-generateEnumConstant ctx funcName index =
+generateEnumConstant : Context -> String -> Index.ZeroBased -> Can.Type -> MlirOp
+generateEnumConstant ctx funcName index _ =
     let
         tag : Int
         tag =
@@ -744,8 +777,8 @@ generateEnumConstant ctx funcName index =
     funcFunc ctx funcName [] region
 
 
-generateBoxFunc : Context -> String -> MlirOp
-generateBoxFunc ctx funcName =
+generateBoxFunc : Context -> String -> Can.Type -> MlirOp
+generateBoxFunc ctx funcName _ =
     let
         argPairs : List ( String, MlirType )
         argPairs =
@@ -766,97 +799,97 @@ generateBoxFunc ctx funcName =
 -- GENERATE EXPRESSION
 
 
-generateExpr : Context -> Opt.Expr -> ExprResult
+generateExpr : Context -> TOpt.Expr -> ExprResult
 generateExpr ctx expr =
     case expr of
-        Opt.Bool _ value ->
+        TOpt.Bool _ value _ ->
             generateBoolExpr ctx value
 
-        Opt.Chr _ value ->
+        TOpt.Chr _ value _ ->
             generateChrExpr ctx value
 
-        Opt.Str _ value ->
+        TOpt.Str _ value _ ->
             generateStrExpr ctx value
 
-        Opt.Int _ value ->
+        TOpt.Int _ value _ ->
             generateIntExpr ctx value
 
-        Opt.Float _ value ->
+        TOpt.Float _ value _ ->
             generateFloatExpr ctx value
 
-        Opt.VarLocal name ->
+        TOpt.VarLocal name _ ->
             generateVarLocalExpr ctx name
 
-        Opt.TrackedVarLocal _ name ->
+        TOpt.TrackedVarLocal _ name _ ->
             generateVarLocalExpr ctx name
 
-        Opt.VarGlobal _ global ->
+        TOpt.VarGlobal _ global _ ->
             generateVarGlobalExpr ctx global
 
-        Opt.VarEnum _ global index ->
+        TOpt.VarEnum _ global index _ ->
             generateVarEnumExpr ctx global index
 
-        Opt.VarBox _ global ->
+        TOpt.VarBox _ global _ ->
             generateVarBoxExpr ctx global
 
-        Opt.VarCycle _ home name ->
+        TOpt.VarCycle _ home name _ ->
             generateVarCycleExpr ctx home name
 
-        Opt.VarDebug _ name home maybeName ->
+        TOpt.VarDebug _ name home maybeName _ ->
             generateVarDebugExpr ctx name home maybeName
 
-        Opt.VarKernel _ home name ->
+        TOpt.VarKernel _ home name _ ->
             generateVarKernelExpr ctx home name
 
-        Opt.Unit ->
+        TOpt.Unit _ ->
             generateUnitExpr ctx
 
-        Opt.Tuple _ a b maybeC ->
-            generateTupleExpr ctx a b maybeC
+        TOpt.Tuple _ a b cs _ ->
+            generateTupleExpr ctx a b cs
 
-        Opt.List _ items ->
+        TOpt.List _ items _ ->
             generateListExpr ctx items
 
-        Opt.Record fields ->
+        TOpt.Record fields _ ->
             generateRecordExpr ctx fields
 
-        Opt.TrackedRecord _ fields ->
+        TOpt.TrackedRecord _ fields _ ->
             generateTrackedRecordExpr ctx fields
 
-        Opt.Function args body ->
+        TOpt.Function args body _ ->
             generateFunctionExpr ctx args body
 
-        Opt.TrackedFunction locatedArgs body ->
+        TOpt.TrackedFunction locatedArgs body _ ->
             generateTrackedFunctionExpr ctx locatedArgs body
 
-        Opt.Call _ func args ->
+        TOpt.Call _ func args _ ->
             generateCallExpr ctx func args
 
-        Opt.TailCall name args ->
+        TOpt.TailCall name args _ ->
             generateTailCallExpr ctx name args
 
-        Opt.If branches final ->
+        TOpt.If branches final _ ->
             generateIfExpr ctx branches final
 
-        Opt.Let def body ->
+        TOpt.Let def body _ ->
             generateLetExpr ctx def body
 
-        Opt.Destruct destructor body ->
+        TOpt.Destruct destructor body _ ->
             generateDestructExpr ctx destructor body
 
-        Opt.Case scrutinee1 scrutinee2 decider jumps ->
+        TOpt.Case scrutinee1 scrutinee2 decider jumps _ ->
             generateCaseExpr ctx scrutinee1 scrutinee2 decider jumps
 
-        Opt.Accessor _ fieldName ->
+        TOpt.Accessor _ fieldName _ ->
             generateAccessorExpr ctx fieldName
 
-        Opt.Access record _ fieldName ->
+        TOpt.Access record _ fieldName _ ->
             generateAccessExpr ctx record fieldName
 
-        Opt.Update _ record updates ->
+        TOpt.Update _ record updates _ ->
             generateUpdateExpr ctx record updates
 
-        Opt.Shader _ _ _ ->
+        TOpt.Shader _ _ _ _ ->
             generateShaderExpr ctx
 
 
@@ -963,7 +996,7 @@ generateVarLocalExpr ctx name =
     emptyResult ctx ("%" ++ name)
 
 
-generateVarGlobalExpr : Context -> Opt.Global -> ExprResult
+generateVarGlobalExpr : Context -> TOpt.Global -> ExprResult
 generateVarGlobalExpr ctx global =
     let
         ( var, ctx1 ) =
@@ -982,7 +1015,7 @@ generateVarGlobalExpr ctx global =
     }
 
 
-generateVarEnumExpr : Context -> Opt.Global -> Index.ZeroBased -> ExprResult
+generateVarEnumExpr : Context -> TOpt.Global -> Index.ZeroBased -> ExprResult
 generateVarEnumExpr ctx global index =
     let
         ( var, ctx1 ) =
@@ -1001,7 +1034,7 @@ generateVarEnumExpr ctx global index =
     }
 
 
-generateVarBoxExpr : Context -> Opt.Global -> ExprResult
+generateVarBoxExpr : Context -> TOpt.Global -> ExprResult
 generateVarBoxExpr ctx global =
     let
         ( var, ctx1 ) =
@@ -1089,8 +1122,8 @@ generateUnitExpr ctx =
     }
 
 
-generateTupleExpr : Context -> Opt.Expr -> Opt.Expr -> List Opt.Expr -> ExprResult
-generateTupleExpr ctx a b maybeC =
+generateTupleExpr : Context -> TOpt.Expr -> TOpt.Expr -> List TOpt.Expr -> ExprResult
+generateTupleExpr ctx a b cs =
     let
         resultA : ExprResult
         resultA =
@@ -1101,7 +1134,7 @@ generateTupleExpr ctx a b maybeC =
             generateExpr resultA.ctx b
 
         ( restOps, restVars, finalCtx ) =
-            generateExprList resultB.ctx maybeC
+            generateExprList resultB.ctx cs
 
         allVars : List String
         allVars =
@@ -1123,17 +1156,17 @@ generateTupleExpr ctx a b maybeC =
     }
 
 
-generateListExpr : Context -> List Opt.Expr -> ExprResult
+generateListExpr : Context -> List TOpt.Expr -> ExprResult
 generateListExpr ctx items =
     generateList ctx items
 
 
-generateRecordExpr : Context -> EveryDict.Dict String Name.Name Opt.Expr -> ExprResult
+generateRecordExpr : Context -> EveryDict.Dict String Name.Name TOpt.Expr -> ExprResult
 generateRecordExpr ctx fields =
     generateRecord ctx fields
 
 
-generateTrackedRecordExpr : Context -> EveryDict.Dict String (A.Located Name.Name) Opt.Expr -> ExprResult
+generateTrackedRecordExpr : Context -> EveryDict.Dict String (A.Located Name.Name) TOpt.Expr -> ExprResult
 generateTrackedRecordExpr ctx fields =
     generateTrackedRecord ctx fields
 
@@ -1142,7 +1175,7 @@ generateTrackedRecordExpr ctx fields =
 -- FUNCTION EXPRESSIONS
 
 
-generateFunctionExpr : Context -> List Name.Name -> Opt.Expr -> ExprResult
+generateFunctionExpr : Context -> List ( Name.Name, Can.Type ) -> TOpt.Expr -> ExprResult
 generateFunctionExpr ctx args body =
     let
         ( var, ctx1 ) =
@@ -1162,11 +1195,11 @@ generateFunctionExpr ctx args body =
     }
 
 
-generateTrackedFunctionExpr : Context -> List (A.Located Name.Name) -> Opt.Expr -> ExprResult
+generateTrackedFunctionExpr : Context -> List ( A.Located Name.Name, Can.Type ) -> TOpt.Expr -> ExprResult
 generateTrackedFunctionExpr ctx locatedArgs body =
     let
         args =
-            List.map A.toValue locatedArgs
+            List.map (\( loc, tipe ) -> ( A.toValue loc, tipe )) locatedArgs
 
         ( var, ctx1 ) =
             freshVar ctx
@@ -1185,12 +1218,12 @@ generateTrackedFunctionExpr ctx locatedArgs body =
     }
 
 
-generateCallExpr : Context -> Opt.Expr -> List Opt.Expr -> ExprResult
+generateCallExpr : Context -> TOpt.Expr -> List TOpt.Expr -> ExprResult
 generateCallExpr ctx func args =
     generateCall ctx func args
 
 
-generateTailCallExpr : Context -> Name.Name -> List ( Name.Name, Opt.Expr ) -> ExprResult
+generateTailCallExpr : Context -> Name.Name -> List ( Name.Name, TOpt.Expr ) -> ExprResult
 generateTailCallExpr ctx name args =
     let
         ( argsOps, argVars, ctx1 ) =
@@ -1215,22 +1248,22 @@ generateTailCallExpr ctx name args =
 -- CONTROL FLOW EXPRESSIONS
 
 
-generateIfExpr : Context -> List ( Opt.Expr, Opt.Expr ) -> Opt.Expr -> ExprResult
+generateIfExpr : Context -> List ( TOpt.Expr, TOpt.Expr ) -> TOpt.Expr -> ExprResult
 generateIfExpr ctx branches final =
     generateIf ctx branches final
 
 
-generateLetExpr : Context -> Opt.Def -> Opt.Expr -> ExprResult
+generateLetExpr : Context -> TOpt.Def -> TOpt.Expr -> ExprResult
 generateLetExpr ctx def body =
     generateLet ctx def body
 
 
-generateDestructExpr : Context -> Opt.Destructor -> Opt.Expr -> ExprResult
+generateDestructExpr : Context -> TOpt.Destructor -> TOpt.Expr -> ExprResult
 generateDestructExpr ctx destructor body =
     generateDestruct ctx destructor body
 
 
-generateCaseExpr : Context -> Name.Name -> Name.Name -> Opt.Decider Opt.Choice -> List ( Int, Opt.Expr ) -> ExprResult
+generateCaseExpr : Context -> Name.Name -> Name.Name -> TOpt.Decider TOpt.Choice -> List ( Int, TOpt.Expr ) -> ExprResult
 generateCaseExpr ctx scrutinee1 scrutinee2 decider jumps =
     generateCase ctx scrutinee1 scrutinee2 decider jumps
 
@@ -1255,7 +1288,7 @@ generateAccessorExpr ctx fieldName =
     }
 
 
-generateAccessExpr : Context -> Opt.Expr -> Name.Name -> ExprResult
+generateAccessExpr : Context -> TOpt.Expr -> Name.Name -> ExprResult
 generateAccessExpr ctx record fieldName =
     let
         recordResult : ExprResult
@@ -1275,7 +1308,7 @@ generateAccessExpr ctx record fieldName =
     }
 
 
-generateUpdateExpr : Context -> Opt.Expr -> EveryDict.Dict String (A.Located Name.Name) Opt.Expr -> ExprResult
+generateUpdateExpr : Context -> TOpt.Expr -> EveryDict.Dict String (A.Located Name.Name) TOpt.Expr -> ExprResult
 generateUpdateExpr ctx record updates =
     let
         recordResult : ExprResult
@@ -1319,7 +1352,7 @@ generateShaderExpr ctx =
 -- HELPER: Generate list of expressions
 
 
-generateExprList : Context -> List Opt.Expr -> ( List MlirOp, List String, Context )
+generateExprList : Context -> List TOpt.Expr -> ( List MlirOp, List String, Context )
 generateExprList ctx exprs =
     List.foldl
         (\expr ( accOps, accVars, accCtx ) ->
@@ -1338,7 +1371,7 @@ generateExprList ctx exprs =
 -- HELPER: Generate named args for tail call
 
 
-generateNamedArgs : Context -> List ( Name.Name, Opt.Expr ) -> ( List MlirOp, List String, Context )
+generateNamedArgs : Context -> List ( Name.Name, TOpt.Expr ) -> ( List MlirOp, List String, Context )
 generateNamedArgs ctx args =
     List.foldl
         (\( _, expr ) ( accOps, accVars, accCtx ) ->
@@ -1357,7 +1390,7 @@ generateNamedArgs ctx args =
 -- GENERATE LIST
 
 
-generateList : Context -> List Opt.Expr -> ExprResult
+generateList : Context -> List TOpt.Expr -> ExprResult
 generateList ctx items =
     case items of
         [] ->
@@ -1421,10 +1454,10 @@ generateList ctx items =
 -- GENERATE RECORD
 
 
-generateRecord : Context -> EveryDict.Dict String Name.Name Opt.Expr -> ExprResult
+generateRecord : Context -> EveryDict.Dict String Name.Name TOpt.Expr -> ExprResult
 generateRecord ctx fields =
     let
-        fieldList : List ( Name.Name, Opt.Expr )
+        fieldList : List ( Name.Name, TOpt.Expr )
         fieldList =
             EveryDict.toList compare fields
 
@@ -1457,10 +1490,10 @@ generateRecord ctx fields =
     }
 
 
-generateTrackedRecord : Context -> EveryDict.Dict String (A.Located Name.Name) Opt.Expr -> ExprResult
+generateTrackedRecord : Context -> EveryDict.Dict String (A.Located Name.Name) TOpt.Expr -> ExprResult
 generateTrackedRecord ctx fields =
     let
-        fieldList : List ( A.Located Name.Name, Opt.Expr )
+        fieldList : List ( A.Located Name.Name, TOpt.Expr )
         fieldList =
             EveryDict.toList A.compareLocated fields
 
@@ -1497,10 +1530,10 @@ generateTrackedRecord ctx fields =
 -- GENERATE CALL
 
 
-generateCall : Context -> Opt.Expr -> List Opt.Expr -> ExprResult
+generateCall : Context -> TOpt.Expr -> List TOpt.Expr -> ExprResult
 generateCall ctx func args =
     case func of
-        Opt.VarGlobal _ global ->
+        TOpt.VarGlobal _ global _ ->
             -- Direct call to known function
             let
                 ( argsOps, argVars, ctx1 ) =
@@ -1521,7 +1554,28 @@ generateCall ctx func args =
             , ctx = ctx3
             }
 
-        Opt.VarLocal name ->
+        TOpt.VarLocal name _ ->
+            -- Call to local variable (closure)
+            let
+                ( argsOps, argVars, ctx1 ) =
+                    generateExprList ctx args
+
+                ( resultVar, ctx2 ) =
+                    freshVar ctx1
+
+                allArgs : List String
+                allArgs =
+                    ("%" ++ name) :: argVars
+
+                ( _, ctx3 ) =
+                    freshOpId ctx2
+            in
+            { ops = argsOps ++ [ ecoPapExtend ctx2 resultVar allArgs ]
+            , resultVar = resultVar
+            , ctx = ctx3
+            }
+
+        TOpt.TrackedVarLocal _ name _ ->
             -- Call to local variable (closure)
             let
                 ( argsOps, argVars, ctx1 ) =
@@ -1572,7 +1626,7 @@ generateCall ctx func args =
 -- GENERATE IF
 
 
-generateIf : Context -> List ( Opt.Expr, Opt.Expr ) -> Opt.Expr -> ExprResult
+generateIf : Context -> List ( TOpt.Expr, TOpt.Expr ) -> TOpt.Expr -> ExprResult
 generateIf ctx branches final =
     case branches of
         [] ->
@@ -1606,10 +1660,10 @@ generateIf ctx branches final =
 -- GENERATE LET
 
 
-generateLet : Context -> Opt.Def -> Opt.Expr -> ExprResult
+generateLet : Context -> TOpt.Def -> TOpt.Expr -> ExprResult
 generateLet ctx def body =
     case def of
-        Opt.Def _ name expr ->
+        TOpt.Def _ name expr _ ->
             let
                 exprResult : ExprResult
                 exprResult =
@@ -1632,7 +1686,7 @@ generateLet ctx def body =
             , ctx = bodyResult.ctx
             }
 
-        Opt.TailDef _ name locatedArgs expr ->
+        TOpt.TailDef _ name locatedArgs expr _ ->
             -- TODO: Implement local tail-recursive definition with joinpoint
             let
                 bodyResult : ExprResult
@@ -1646,8 +1700,8 @@ generateLet ctx def body =
 -- GENERATE DESTRUCT
 
 
-generateDestruct : Context -> Opt.Destructor -> Opt.Expr -> ExprResult
-generateDestruct ctx (Opt.Destructor name path) body =
+generateDestruct : Context -> TOpt.Destructor -> TOpt.Expr -> ExprResult
+generateDestruct ctx (TOpt.Destructor name path _) body =
     let
         ( pathOps, pathVar, ctx1 ) =
             generatePath ctx path
@@ -1669,13 +1723,13 @@ generateDestruct ctx (Opt.Destructor name path) body =
     }
 
 
-generatePath : Context -> Opt.Path -> ( List MlirOp, String, Context )
+generatePath : Context -> TOpt.Path -> ( List MlirOp, String, Context )
 generatePath ctx path =
     case path of
-        Opt.Root name ->
+        TOpt.Root name ->
             ( [], "%" ++ name, ctx )
 
-        Opt.Index index subPath ->
+        TOpt.Index index subPath ->
             let
                 ( subOps, subVar, ctx1 ) =
                     generatePath ctx subPath
@@ -1695,7 +1749,7 @@ generatePath ctx path =
             , ctx3
             )
 
-        Opt.Field name subPath ->
+        TOpt.Field name subPath ->
             let
                 ( subOps, subVar, ctx1 ) =
                     generatePath ctx subPath
@@ -1712,11 +1766,11 @@ generatePath ctx path =
             , ctx3
             )
 
-        Opt.Unbox subPath ->
+        TOpt.Unbox subPath ->
             -- Unbox is identity for our purposes
             generatePath ctx subPath
 
-        Opt.ArrayIndex idx subPath ->
+        TOpt.ArrayIndex idx subPath ->
             let
                 ( subOps, subVar, ctx1 ) =
                     generatePath ctx subPath
@@ -1737,7 +1791,7 @@ generatePath ctx path =
 -- GENERATE CASE
 
 
-generateCase : Context -> Name.Name -> Name.Name -> Opt.Decider Opt.Choice -> List ( Int, Opt.Expr ) -> ExprResult
+generateCase : Context -> Name.Name -> Name.Name -> TOpt.Decider TOpt.Choice -> List ( Int, TOpt.Expr ) -> ExprResult
 generateCase ctx scrutinee1 scrutinee2 decider jumps =
     -- TODO: Implement proper case/decision tree
     let
@@ -1758,7 +1812,7 @@ generateCase ctx scrutinee1 scrutinee2 decider jumps =
 
 
 type alias Graph =
-    EveryDict.Dict (List String) Opt.Global Opt.Node
+    EveryDict.Dict (List String) TOpt.Global TOpt.Node
 
 
 canonicalToMLIRName : IO.Canonical -> String
@@ -1766,8 +1820,8 @@ canonicalToMLIRName (IO.Canonical _ moduleName) =
     String.replace "." "_" moduleName
 
 
-globalToMLIRName : Opt.Global -> String
-globalToMLIRName (Opt.Global home name) =
+globalToMLIRName : TOpt.Global -> String
+globalToMLIRName (TOpt.Global home name) =
     canonicalToMLIRName home ++ "_" ++ sanitizeName name
 
 

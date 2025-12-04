@@ -3,11 +3,14 @@ module Compiler.Generate.CodeGen exposing
     , Mains
     , Output(..)
     , SourceMaps(..)
+    , TypedCodeGen
+    , TypedMains
     , outputToString
     )
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
+import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name
 import Compiler.Generate.Mode as Mode
 import Compiler.Reporting.Render.Type.Localizer as L
@@ -85,6 +88,10 @@ type alias Mains =
     Dict (List String) IO.Canonical Opt.Main
 
 
+type alias TypedMains =
+    Dict (List String) IO.Canonical TOpt.Main
+
+
 
 -- SOURCE MAPS
 
@@ -92,3 +99,26 @@ type alias Mains =
 type SourceMaps
     = NoSourceMaps
     | SourceMaps (Dict (List String) IO.Canonical String)
+
+
+
+-- TYPED CODE GEN
+-- Interface for backends that need full type information (e.g., MLIR)
+
+
+{-| The TypedCodeGen interface for backends that need type information.
+
+This is used by backends like MLIR that need types for monomorphization.
+
+-}
+type alias TypedCodeGen =
+    { -- Generate a complete program from the typed optimized global graph
+      generate :
+        { sourceMaps : SourceMaps
+        , leadingLines : Int
+        , mode : Mode.Mode
+        , graph : TOpt.GlobalGraph
+        , mains : TypedMains
+        }
+        -> Output
+    }

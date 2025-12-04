@@ -87,13 +87,23 @@ runHelp root paths style (Flags debug optimize withSourceMaps maybeOutput _ mayb
                                 Task.eio Exit.MakeBadDetails (Details.load style scope root)
                                     |> Task.bind
                                         (\details ->
+                                            let
+                                                needsTypedOpt : Bool
+                                                needsTypedOpt =
+                                                    case maybeOutput of
+                                                        Just (MLIR _) ->
+                                                            True
+
+                                                        _ ->
+                                                            False
+                                            in
                                             case paths of
                                                 [] ->
                                                     getExposed details
                                                         |> Task.bind (\exposed -> buildExposed style root details maybeDocs exposed)
 
                                                 p :: ps ->
-                                                    buildPaths style root details (NE.Nonempty p ps)
+                                                    buildPaths style root details needsTypedOpt (NE.Nonempty p ps)
                                                         |> Task.bind
                                                             (\artifacts ->
                                                                 case maybeOutput of
@@ -145,7 +155,7 @@ runHelp root paths style (Flags debug optimize withSourceMaps maybeOutput _ mayb
                                                                     Just (MLIR target) ->
                                                                         case getNoMains artifacts of
                                                                             [] ->
-                                                                                toBuilder Generate.mlirBackend withSourceMaps 0 root details desiredMode artifacts
+                                                                                toTypedBuilder Generate.mlirBackend withSourceMaps 0 root details desiredMode artifacts
                                                                                     |> Task.bind
                                                                                         (\builder ->
                                                                                             generate style target builder (Build.getRootNames artifacts)
@@ -226,10 +236,10 @@ buildExposed style root details maybeDocs exposed =
             exposed
 
 
-buildPaths : Reporting.Style -> FilePath -> Details.Details -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
-buildPaths style root details paths =
+buildPaths : Reporting.Style -> FilePath -> Details.Details -> Bool -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
+buildPaths style root details needsTypedOpt paths =
     Task.eio Exit.MakeCannotBuild <|
-        Build.fromPaths style root details paths
+        Build.fromPaths style root details needsTypedOpt paths
 
 
 
@@ -259,7 +269,7 @@ getMain modules root =
 isMain : ModuleName.Raw -> Build.Module -> Bool
 isMain targetName modul =
     case modul of
-        Build.Fresh name _ (Opt.LocalGraph maybeMain _ _) ->
+        Build.Fresh name _ (Opt.LocalGraph maybeMain _ _) _ ->
             Maybe.isJust maybeMain && name == targetName
 
         Build.Cached name mainIsDefined _ ->
@@ -344,6 +354,25 @@ toBuilder backend withSourceMaps leadingLines root details desiredMode artifacts
 
                 Prod ->
                     Generate.prod backend withSourceMaps leadingLines root details artifacts
+
+
+{-| Build using typed code generation (for MLIR backend)
+-}
+toTypedBuilder : CodeGen.TypedCodeGen -> Bool -> Int -> FilePath -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
+toTypedBuilder backend withSourceMaps leadingLines root details desiredMode artifacts =
+    Task.mapError Exit.MakeBadGenerate <|
+        Task.fmap CodeGen.outputToString <|
+            case desiredMode of
+                Debug ->
+                    -- TODO: Add typed debug when needed
+                    Generate.typedDev backend withSourceMaps leadingLines root details artifacts
+
+                Dev ->
+                    Generate.typedDev backend withSourceMaps leadingLines root details artifacts
+
+                Prod ->
+                    -- TODO: Add typed prod when needed
+                    Generate.typedDev backend withSourceMaps leadingLines root details artifacts
 
 
 
