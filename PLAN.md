@@ -668,16 +668,25 @@ Ensure the backend can be replaced with alternative implementations.
 
 Analyze the Guida/Elm Global AST and consider necessary changes for native compilation.
 
+**Background**: The Optimized IR (GlobalGraph) currently discards type information since JavaScript code generation doesn't need it. For MLIR/native code generation, full type information must be preserved to generate correctly typed operations and enable monomorphization.
+
 **Tasks**:
 - [ ] Study the Global AST structure and how it represents Elm programs
-- [ ] Design monomorphization pass to specialize polymorphic functions into type-specific implementations
-- [ ] Focus on Record shape specialization (different record types → different implementations)
+- [ ] Modify compiler to preserve full type information in Optimized IR
+  - [ ] Identify where type information is currently discarded
+  - [ ] Extend Opt.Expr and related types to carry type annotations
+  - [ ] Ensure type information flows through optimization passes
+- [ ] Design and implement monomorphization pass on GlobalGraph
+  - [ ] Specialize polymorphic functions into type-specific implementations
+  - [ ] Focus on Record shape specialization (different record types → different implementations)
+  - [ ] Handle type variables and constraints
 - [ ] Evaluate whether DynRecord is needed for native compilation or can be eliminated
 - [ ] Document AST changes needed for MLIR code generation
 
 **Deliverables**:
+- [ ] Modified Optimized IR with type annotations
+- [ ] Monomorphization pass implementation
 - [ ] Global AST analysis document
-- [ ] Monomorphization pass design
 - [ ] Decision on DynRecord necessity
 - [ ] AST modification plan (if needed)
 
@@ -722,6 +731,10 @@ Get existing tests running and expand coverage.
 **Status**: Not Started
 
 Implement code generation from Elm AST to eco MLIR dialect.
+
+**Prerequisites**:
+- Type-annotated Optimized IR (§4.1.2) - MLIR code generation requires full type information
+- Monomorphization pass (§4.1.2) - polymorphic code must be specialized before MLIR emission
 
 **Code Generation Tasks**:
 - [ ] Expression translation
@@ -1185,6 +1198,8 @@ Runtime Foundation (§1)
   - Created test program in `compiler/bop/` demonstrating the feature
 
 **Next Steps**:
+- Preserve type information in Optimized IR (§4.1.2) - required for MLIR code generation
+- Implement monomorphization pass on GlobalGraph (§4.1.2) - specialize polymorphic functions
 - Complete ECO MLIR operations (§3.1.3) - add closure ops, parser/printer/verification
 - ECO MLIR type system (§3.1.4)
 - LLVM stack map implementation (§1.2.3)
