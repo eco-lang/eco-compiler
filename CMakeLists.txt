@@ -36,3 +36,6 @@ add_subdirectory(test)
 
 # MLIR-based code generation
 add_subdirectory(runtime/src/codegen)
+
+# Elm kernel C++ implementation
+add_subdirectory(elm-kernel-cpp)
