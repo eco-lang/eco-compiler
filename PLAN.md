@@ -21,8 +21,14 @@
     - [ ] 2.1.3 Network Operations Design → [§2.1.3](#213-network-operations-design)
     - [ ] 2.1.4 System Operations Design → [§2.1.4](#214-system-operations-design)
     - [ ] 2.1.5 Kernel Package Implementation & Guida Refactor → [§2.1.5](#215-kernel-package-implementation--guida-refactor)
-  - [ ] 2.2 Kernel Package C++ Implementation → [§2.2](#22-kernel-package-c-implementation)
-  - [ ] 2.3 elm/core Porting → [§2.3](#23-elmcore-porting)
+  - [ ] 2.2 Elm Kernel JavaScript Audit → [§2.2](#22-elm-kernel-javascript-audit)
+  - [ ] 2.3 Elm Kernel C++ Implementation → [§2.3](#23-elm-kernel-c-implementation)
+    - [ ] 2.3.1 elm/core Kernel → [§2.3.1](#231-elmcore-kernel)
+    - [ ] 2.3.2 elm/json Kernel → [§2.3.2](#232-elmjson-kernel)
+    - [ ] 2.3.3 elm/bytes Kernel → [§2.3.3](#233-elmbytes-kernel)
+    - [ ] 2.3.4 elm/random Kernel → [§2.3.4](#234-elmrandom-kernel)
+    - [ ] 2.3.5 elm/time Kernel → [§2.3.5](#235-elmtime-kernel)
+  - [ ] 2.4 I/O Kernel Package C++ Implementation → [§2.4](#24-io-kernel-package-c-implementation)
 
 - [ ] **3. MLIR/LLVM Integration** → [§3](#3-mlirllvm-integration)
   - [ ] 3.1 ECO MLIR Dialect → [§3.1](#31-eco-mlir-dialect)
@@ -380,42 +386,223 @@ Design Elm types for the kernel package and refactor Guida to use it.
 - [ ] Local kernel package loading support
 - [ ] Refactored Guida using new I/O kernel package
 
-### 2.2 Kernel Package C++ Implementation
+### 2.2 Elm Kernel JavaScript Audit
 
 **Status**: Not Started
 
-Implement the kernel packages defined in §2.1 in C++ for linking with the native runtime.
+Audit all kernel JavaScript files in Elm's standard packages to understand what needs to be ported to C++.
+
+**Background**: Elm packages contain kernel JavaScript files (e.g., `Elm/Kernel/List.js`) that implement low-level operations. These must be reimplemented in C++ for native compilation. This audit will create a comprehensive catalog of all kernel functions.
+
+**Packages to Audit**:
+- `elm/core` - Basics, List, String, Char, Array, Bitwise, Debug, Platform, Process, Scheduler, Utils
+- `elm/json` - JSON encoding/decoding primitives
+- `elm/bytes` - Binary data handling
+- `elm/random` - Random number generation
+- `elm/time` - Time primitives
+- `elm/virtual-dom` - (may not be needed for CLI, but audit anyway)
+- `elm/browser` - (may not be needed for CLI)
+- `elm/http` - HTTP client primitives
+- `elm/file` - File handling primitives
 
 **Tasks**:
-- [ ] C++ implementations of kernel package APIs
+- [ ] Clone/locate all standard Elm packages
+- [ ] For each package, catalog all kernel JS files
+- [ ] For each kernel file, document:
+  - [ ] All exported functions
+  - [ ] Function signatures (parameters, return types)
+  - [ ] Dependencies on other kernel functions
+  - [ ] Dependencies on browser/Node.js APIs
+- [ ] Identify which packages are essential for CLI tools vs browser-only
+- [ ] Prioritize kernel functions by importance for self-hosting Guida
+
+**Deliverables**:
+- [ ] Kernel function catalog (CSV or similar)
+- [ ] Dependency graph between kernel modules
+- [ ] Prioritized implementation order
+- [ ] Documentation in `design_docs/elm-kernel-audit.md`
+
+### 2.3 Elm Kernel C++ Implementation
+
+**Status**: Not Started
+
+Implement Elm kernel functions in C++ using the ECO runtime's heap model.
+
+**Architecture**:
+- All kernel functions operate on ECO heap objects (`runtime/src/allocator/Heap.hpp`)
+- Functions follow C++ calling conventions for linkage with MLIR-generated code
+- Memory management uses ECO's garbage collector
+- Each kernel module becomes a C++ source file in `runtime/src/kernel/`
+
+**Common Patterns**:
+- Elm `List` → `Heap::Cons` chains ending in `Heap::Nil`
+- Elm `String` → `Heap::String` (UTF-8 encoded)
+- Elm `Int` → `Heap::Int` or unboxed where possible
+- Elm `Maybe` → `Heap::Custom` with tags for Just/Nothing
+- Elm `Result` → `Heap::Custom` with tags for Ok/Err
+
+**Testing Strategy**:
+- Property-based tests comparing C++ output to JavaScript kernel output
+- Use RapidCheck generators from existing test infrastructure
+- Test each kernel function in isolation before integration
+
+#### 2.3.1 elm/core Kernel
+
+**Status**: Not Started
+
+Implement the core kernel functions that all Elm programs depend on.
+
+**Kernel Files**:
+- `Basics.js` - Arithmetic, comparison, boolean operations
+- `List.js` - List construction, traversal, transformation
+- `String.js` - String manipulation, conversion
+- `Char.js` - Character operations, Unicode handling
+- `Array.js` - Array operations (mutable under the hood)
+- `Bitwise.js` - Bitwise integer operations
+- `Debug.js` - Debug.log, Debug.toString
+- `Utils.js` - Equality, comparison, tuples, update
+- `Scheduler.js` - Task scheduling, process management
+- `Platform.js` - Program initialization, ports, effects
+- `Process.js` - Process spawning, killing
+
+**Priority Order** (for self-hosting):
+1. `Utils.js` - Fundamental operations used everywhere
+2. `Basics.js` - Arithmetic and comparisons
+3. `List.js` - List operations (heavily used)
+4. `String.js` - String manipulation
+5. `Char.js` - Character handling
+6. `Bitwise.js` - Bit operations
+7. `Array.js` - Array operations
+8. `Debug.js` - Debugging support
+9. `Scheduler.js` - Task execution
+10. `Platform.js` - Program runtime
+11. `Process.js` - Process management
+
+**Tasks**:
+- [ ] Implement `Kernel/Utils.cpp` - eq, cmp, Tuple0/2/3, update, append, chr
+- [ ] Implement `Kernel/Basics.cpp` - arithmetic, comparison, boolean ops
+- [ ] Implement `Kernel/List.cpp` - cons, head, tail, map, filter, foldl, foldr, etc.
+- [ ] Implement `Kernel/String.cpp` - concat, slice, split, etc.
+- [ ] Implement `Kernel/Char.cpp` - toCode, fromCode, toUpper, toLower
+- [ ] Implement `Kernel/Bitwise.cpp` - and, or, xor, shiftLeft, shiftRight
+- [ ] Implement `Kernel/Array.cpp` - get, set, push, slice, etc.
+- [ ] Implement `Kernel/Debug.cpp` - log, toString
+- [ ] Implement `Kernel/Scheduler.cpp` - task scheduling primitives
+- [ ] Implement `Kernel/Platform.cpp` - program initialization
+- [ ] Implement `Kernel/Process.cpp` - process primitives
+
+**Deliverables**:
+- [ ] C++ kernel implementations in `runtime/src/kernel/`
+- [ ] Header files declaring kernel function signatures
+- [ ] Unit tests for each kernel module
+
+#### 2.3.2 elm/json Kernel
+
+**Status**: Not Started
+
+Implement JSON encoding and decoding primitives.
+
+**Kernel Functions**:
+- Decoders: `decodeInt`, `decodeFloat`, `decodeString`, `decodeBool`, `decodeNull`, `decodeList`, `decodeArray`, `decodeField`, `decodeIndex`, `decodeKeyValuePairs`, `decodeMap*`, `decodeOneOf`, `decodeFail`, `decodeSucceed`, `decodeAndThen`
+- Encoders: `encodeNull`, `encodeInt`, `encodeFloat`, `encodeString`, `encodeBool`, `encodeList`, `encodeArray`, `encodeObject`
+- `encode` - Convert Value to String
+- `decodeString` - Parse JSON string
+- Bytes support: `encodeBytes`, `decodeBytes` (already added to Guida)
+
+**Tasks**:
+- [ ] Implement JSON parser (or integrate existing C++ JSON library)
+- [ ] Implement decoder combinators
+- [ ] Implement encoder functions
+- [ ] Implement `Kernel/Json.cpp`
+
+**Deliverables**:
+- [ ] `runtime/src/kernel/Json.cpp`
+- [ ] JSON parsing/serialization
+- [ ] Unit tests
+
+#### 2.3.3 elm/bytes Kernel
+
+**Status**: Not Started
+
+Implement binary data handling primitives.
+
+**Kernel Functions**:
+- `Bytes.width` - Get byte length
+- Encoding: `write_i8`, `write_i16`, `write_i32`, `write_f32`, `write_f64`, `write_string`, `write_bytes`
+- Decoding: `read_i8`, `read_i16`, `read_i32`, `read_f32`, `read_f64`, `read_string`, `read_bytes`
+- Endianness handling (BE/LE)
+
+**Tasks**:
+- [ ] Define `Heap::Bytes` representation (or use existing if defined)
+- [ ] Implement `Kernel/Bytes.cpp`
+- [ ] Handle endianness correctly
+
+**Deliverables**:
+- [ ] `runtime/src/kernel/Bytes.cpp`
+- [ ] Unit tests
+
+#### 2.3.4 elm/random Kernel
+
+**Status**: Not Started
+
+Implement random number generation primitives.
+
+**Kernel Functions**:
+- `initialSeed` - Create seed from integer
+- `next` - Generate next random value
+- `peel` - Extract value from seed
+
+**Notes**: Elm uses a specific PRNG algorithm (PCG) for reproducibility. Must match exactly.
+
+**Tasks**:
+- [ ] Research Elm's exact PRNG algorithm
+- [ ] Implement `Kernel/Random.cpp`
+- [ ] Verify output matches JavaScript version for same seeds
+
+**Deliverables**:
+- [ ] `runtime/src/kernel/Random.cpp`
+- [ ] Unit tests with seed verification
+
+#### 2.3.5 elm/time Kernel
+
+**Status**: Not Started
+
+Implement time-related primitives.
+
+**Kernel Functions**:
+- `now` - Get current POSIX time
+- `here` - Get current time zone
+- `getZoneName` - Get time zone name
+- Conversion functions for time zones
+
+**Tasks**:
+- [ ] Implement `Kernel/Time.cpp`
+- [ ] Handle time zone database (may need external dependency)
+
+**Deliverables**:
+- [ ] `runtime/src/kernel/Time.cpp`
+- [ ] Unit tests
+
+### 2.4 I/O Kernel Package C++ Implementation
+
+**Status**: Not Started
+
+Implement the I/O kernel packages defined in §2.1 in C++ for linking with the native runtime.
+
+**Background**: This is separate from the standard Elm kernel (§2.3) because it covers the custom I/O operations needed for CLI tools, as designed in §2.1.
+
+**Tasks**:
+- [ ] C++ implementations of file system APIs (§2.1.2)
+- [ ] C++ implementations of network APIs (§2.1.3)
+- [ ] C++ implementations of system APIs (§2.1.4)
 - [ ] FFI bridge between Elm and C++ runtime
-- [ ] Memory management for foreign objects
+- [ ] Memory management for foreign objects (file handles, sockets, etc.)
 - [ ] Error handling across language boundary
 
 **Deliverables**:
-- [ ] C++ kernel package implementations
+- [ ] C++ I/O kernel implementations in `runtime/src/kernel/`
 - [ ] FFI bridge code
-- [ ] Test suite for kernel packages
-
-### 2.3 elm/core Porting
-
-**Status**: Not Started
-
-Port necessary parts of `elm/core` to C++ implementations.
-
-**Core Modules to Port**:
-- `Basics`: Fundamental operations and types
-- `List`: List operations
-- `String`: String manipulation
-- `Char`: Character operations
-- `Maybe`, `Result`: Core data types
-- `Debug`: Debugging support
-- `Platform`: Runtime support
-
-**Deliverables**:
-- [ ] C++ implementations of core modules
-- [ ] Test suite for parity with JavaScript version
-- [ ] Performance benchmarks
+- [ ] Test suite for I/O operations
 
 ---
 
@@ -1204,3 +1391,10 @@ Runtime Foundation (§1)
 - ECO MLIR type system (§3.1.4)
 - LLVM stack map implementation (§1.2.3)
 - Rationalize Guida I/O design (§2.1.1)
+- Elm kernel JavaScript audit (§2.2) - catalog all kernel functions for C++ porting
+- Elm kernel C++ implementation (§2.3) - independent workstream for native runtime
+
+**Active Workstreams**:
+1. MLIR backend (§3, §4) - dialect and code generation
+2. Guida I/O refactoring (§2.1) - kernel package design
+3. Elm kernel C++ porting (§2.2, §2.3) - can run in parallel with above
