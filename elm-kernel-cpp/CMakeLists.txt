@@ -5,9 +5,6 @@ project(elm-kernel LANGUAGES CXX)
 # Stub implementations of Elm kernel functions
 
 add_library(elm-kernel
-    # Types (header-only, but listed for IDE support)
-    # src/types/ElmValue.hpp
-
     # Core
     src/core/Basics.cpp
     src/core/Bitwise.cpp
