@@ -1,6 +1,7 @@
 module Compiler.Generate.CodeGen exposing
     ( CodeGen
     , Mains
+    , MonoCodeGen
     , Output(..)
     , SourceMaps(..)
     , TypedCodeGen
@@ -9,6 +10,7 @@ module Compiler.Generate.CodeGen exposing
     )
 
 import Compiler.AST.Canonical as Can
+import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name
@@ -119,6 +121,29 @@ type alias TypedCodeGen =
         , mode : Mode.Mode
         , graph : TOpt.GlobalGraph
         , mains : TypedMains
+        }
+        -> Output
+    }
+
+
+
+-- MONO CODE GEN
+-- Interface for backends that work with fully monomorphized IR
+
+
+{-| The MonoCodeGen interface for backends that work with monomorphized IR.
+
+This is used by backends that need fully specialized, monomorphic code
+with no polymorphism remaining.
+
+-}
+type alias MonoCodeGen =
+    { -- Generate a complete program from the monomorphized graph
+      generate :
+        { sourceMaps : SourceMaps
+        , leadingLines : Int
+        , mode : Mode.Mode
+        , graph : Mono.MonoGraph
         }
         -> Output
     }

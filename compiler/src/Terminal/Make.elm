@@ -155,7 +155,7 @@ runHelp root paths style (Flags debug optimize withSourceMaps maybeOutput _ mayb
                                                                     Just (MLIR target) ->
                                                                         case getNoMains artifacts of
                                                                             [] ->
-                                                                                toTypedBuilder Generate.mlirBackend withSourceMaps 0 root details desiredMode artifacts
+                                                                                toMonoBuilder Generate.mlirMonoBackend withSourceMaps 0 root details desiredMode artifacts
                                                                                     |> Task.bind
                                                                                         (\builder ->
                                                                                             generate style target builder (Build.getRootNames artifacts)
@@ -374,6 +374,22 @@ toTypedBuilder backend withSourceMaps leadingLines root details desiredMode arti
                     -- TODO: Add typed prod when needed
                     Generate.typedDev backend withSourceMaps leadingLines root details artifacts
 
+
+{-| Build using monomorphized code generation (for MLIR mono backend)
+-}
+toMonoBuilder : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
+toMonoBuilder backend withSourceMaps leadingLines root details desiredMode artifacts =
+    Task.mapError Exit.MakeBadGenerate <|
+        Task.fmap CodeGen.outputToString <|
+            case desiredMode of
+                Debug ->
+                    Generate.monoDev backend withSourceMaps leadingLines root details artifacts
+
+                Dev ->
+                    Generate.monoDev backend withSourceMaps leadingLines root details artifacts
+
+                Prod ->
+                    Generate.monoDev backend withSourceMaps leadingLines root details artifacts
 
 
 -- PARSERS

@@ -2817,6 +2817,7 @@ toModuleNameConventionTable srcDir names =
 type Generate
     = GenerateCannotLoadArtifacts
     | GenerateCannotOptimizeDebugValues ModuleName.Raw (List ModuleName.Raw)
+    | GenerateMonomorphizationError String
 
 
 toGenerateReport : Generate -> Help.Report
@@ -2841,6 +2842,15 @@ toGenerateReport problem =
                         "(2) Values like `type Height = Height Float` are unboxed. This reduces allocation, but it also means that `Debug.toString` cannot tell if it is looking at a `Height` or `Float` value."
                 , D.reflow <|
                     "There are a few other cases like that, and it will be much worse once we start inlining code. That optimization could move `Debug.log` and `Debug.todo` calls, resulting in unpredictable behavior. I hope that clarifies why this restriction exists!"
+                ]
+
+        GenerateMonomorphizationError errorMessage ->
+            Help.report "MONOMORPHIZATION ERROR"
+                Nothing
+                "An error occurred during monomorphization:"
+                [ D.indent 4 <| D.red <| D.fromChars errorMessage
+                , D.reflow <|
+                    "This is likely a compiler bug. Please report it with a minimal reproduction case."
                 ]
 
 

@@ -3,6 +3,8 @@ module Builder.Generate exposing
     , dev
     , javascriptBackend
     , mlirBackend
+    , mlirMonoBackend
+    , monoDev
     , prod
     , repl
     , typedDev
@@ -14,6 +16,7 @@ import Builder.Elm.Outline as Outline
 import Builder.File as File
 import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
+import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as N
@@ -25,7 +28,9 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.CodeGen.JavaScript as JavaScript
 import Compiler.Generate.CodeGen.MLIR as MLIR
+import Compiler.Generate.CodeGen.MLIR.Mono as MLIRMono
 import Compiler.Generate.Mode as Mode
+import Compiler.Generate.Monomorphize as Monomorphize
 import Compiler.Nitpick.Debug as Nitpick
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as TypeCheck
@@ -54,6 +59,13 @@ javascriptBackend =
 mlirBackend : CodeGen.TypedCodeGen
 mlirBackend =
     MLIR.backend
+
+
+{-| MLIR code generation backend (uses monomorphized IR).
+-}
+mlirMonoBackend : CodeGen.MonoCodeGen
+mlirMonoBackend =
+    MLIRMono.backend
 
 
 
@@ -528,3 +540,40 @@ lookupTypedMain pkg locals root =
             -- Outside roots use Opt.LocalGraph, not TOpt.LocalGraph
             -- For now, return Nothing - typed optimization should have been run
             Nothing
+
+
+
+-- MONOMORPHIZED GENERATION (FOR MLIR MONO BACKEND)
+
+
+monoDev : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
+monoDev backend withSourceMaps leadingLines root details (Build.Artifacts pkg _ roots modules) =
+    Task.bind finalizeTypedObjects (loadTypedObjects root details modules)
+        |> Task.bind
+            (\objects ->
+                let
+                    mode : Mode.Mode
+                    mode =
+                        Mode.Dev Nothing
+
+                    typedGraph : TOpt.GlobalGraph
+                    typedGraph =
+                        typedObjectsToGlobalGraph objects
+                in
+                -- Run monomorphization pass
+                case Monomorphize.monomorphize typedGraph of
+                    Err err ->
+                        Task.throw (Exit.GenerateMonomorphizationError err)
+
+                    Ok monoGraph ->
+                        prepareSourceMaps withSourceMaps root
+                            |> Task.fmap
+                                (\sourceMaps ->
+                                    backend.generate
+                                        { sourceMaps = sourceMaps
+                                        , leadingLines = leadingLines
+                                        , mode = mode
+                                        , graph = monoGraph
+                                        }
+                                )
+            )
