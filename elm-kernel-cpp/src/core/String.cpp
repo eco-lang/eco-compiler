@@ -12,15 +12,11 @@
 namespace Elm::Kernel::String {
 
 // ============================================================================
-// Length and Character Access
+// Length
 // ============================================================================
 
 i64 length(void* str) {
     return StringOps::length(str);
-}
-
-bool isEmpty(HPointer str) {
-    return StringOps::isEmpty(str);
 }
 
 // ============================================================================
@@ -29,10 +25,6 @@ bool isEmpty(HPointer str) {
 
 HPointer append(void* a, void* b) {
     return StringOps::append(a, b);
-}
-
-HPointer concat(HPointer stringList) {
-    return StringOps::concat(stringList);
 }
 
 HPointer join(void* sep, HPointer stringList) {
@@ -103,10 +95,6 @@ HPointer fromList(HPointer chars) {
     return allocator.wrap(result);
 }
 
-HPointer toList(void* str) {
-    return StringOps::toList(str);
-}
-
 // ============================================================================
 // Higher-Order Operations
 // ============================================================================
@@ -128,27 +116,39 @@ bool all(CharPredicate pred, void* str) {
 }
 
 // ============================================================================
+// Folding
+// ============================================================================
+
+HPointer foldl(FoldFunc func, HPointer acc, void* str) {
+    auto& allocator = Allocator::instance();
+    ElmString* s = static_cast<ElmString*>(str);
+
+    HPointer result = acc;
+    for (u32 i = 0; i < s->header.size; ++i) {
+        void* accObj = allocator.resolve(result);
+        result = func(s->chars[i], accObj);
+    }
+    return result;
+}
+
+HPointer foldr(FoldFunc func, HPointer acc, void* str) {
+    auto& allocator = Allocator::instance();
+    ElmString* s = static_cast<ElmString*>(str);
+
+    HPointer result = acc;
+    for (i64 i = s->header.size - 1; i >= 0; --i) {
+        void* accObj = allocator.resolve(result);
+        result = func(s->chars[i], accObj);
+    }
+    return result;
+}
+
+// ============================================================================
 // Slicing
 // ============================================================================
 
 HPointer slice(i64 start, i64 end, void* str) {
     return StringOps::slice(str, start, end);
-}
-
-HPointer left(i64 n, void* str) {
-    return StringOps::left(str, n);
-}
-
-HPointer right(i64 n, void* str) {
-    return StringOps::right(str, n);
-}
-
-HPointer dropLeft(i64 n, void* str) {
-    return StringOps::dropLeft(str, n);
-}
-
-HPointer dropRight(i64 n, void* str) {
-    return StringOps::dropRight(str, n);
 }
 
 // ============================================================================
@@ -266,18 +266,6 @@ HPointer trimRight(void* str) {
     return StringOps::trimRight(str);
 }
 
-HPointer padLeft(i64 n, u16 padChar, void* str) {
-    return StringOps::padLeft(str, n, padChar);
-}
-
-HPointer padRight(i64 n, u16 padChar, void* str) {
-    return StringOps::padRight(str, n, padChar);
-}
-
-HPointer repeat(i64 n, void* str) {
-    return StringOps::repeat(str, n);
-}
-
 // ============================================================================
 // Searching
 // ============================================================================
@@ -310,16 +298,18 @@ HPointer toFloat(void* str) {
     return StringOps::toFloat(str);
 }
 
-HPointer fromInt(i64 n) {
-    return StringOps::fromInt(n);
-}
-
-HPointer fromFloat(f64 n) {
-    return StringOps::fromFloat(n);
-}
-
-HPointer fromChar(u16 c) {
-    return StringOps::fromChar(c);
+HPointer fromNumber(void* n) {
+    // Detect type and convert accordingly
+    Header* hdr = static_cast<Header*>(n);
+    if (hdr->tag == Tag_Int) {
+        ElmInt* i = static_cast<ElmInt*>(n);
+        return StringOps::fromInt(i->value);
+    } else if (hdr->tag == Tag_Float) {
+        ElmFloat* f = static_cast<ElmFloat*>(n);
+        return StringOps::fromFloat(f->value);
+    }
+    // Fallback to empty string
+    return alloc::emptyString();
 }
 
 } // namespace Elm::Kernel::String

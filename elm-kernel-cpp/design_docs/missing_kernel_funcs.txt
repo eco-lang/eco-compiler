@@ -1,0 +1,54 @@
+# Missing Kernel Functions in elm-kernel-cpp
+# These functions ARE in the official Elm kernel but are NOT implemented
+
+## Elm.Kernel.List (2 missing)
+- map4
+- map5
+
+## Elm.Kernel.Browser (6 missing/wrong name)
+- call
+- doc (implemented as getDocument)
+- now
+- on (implemented as onEvent)
+- rAF
+- visibilityInfo (implemented as getVisibility)
+- window (implemented as getWindow)
+- withWindow
+
+## Elm.Kernel.File (2 missing)
+- decoder
+- makeBytesSafeForInternetExplorer
+
+## Elm.Kernel.Http (5 missing)
+- bytesToBlob
+- expect
+- mapExpect
+- toDataView
+- toFormData
+
+## Elm.Kernel.Json (10 missing)
+- addEntry
+- addField
+- map1
+- map2
+- map3
+- map4
+- map5
+- map6
+- map7
+- map8
+
+## Elm.Kernel.VirtualDom (6 missing)
+- lazy4
+- lazy5
+- lazy6
+- lazy7
+- lazy8
+- mapAttribute
+- noJavaScriptOrHtmlJson
+
+## Elm.Kernel.String (1 wrong name)
+- fromNumber (implemented as separate fromInt/fromFloat)
+
+# Note: map2/map3 in List exist but have WRONG SIGNATURE
+# They should take a function argument, not just zip lists.

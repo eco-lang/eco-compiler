@@ -60,6 +60,28 @@ DecoderPtr andThen(AndThenCallback callback, DecoderPtr decoder);
 DecoderPtr oneOf(HPointer decoders);
 
 // ============================================================================
+// Map Functions (for combining decoders)
+// ============================================================================
+
+using Map1Fn = std::function<HPointer(HPointer)>;
+using Map2Fn = std::function<HPointer(HPointer, HPointer)>;
+using Map3Fn = std::function<HPointer(HPointer, HPointer, HPointer)>;
+using Map4Fn = std::function<HPointer(HPointer, HPointer, HPointer, HPointer)>;
+using Map5Fn = std::function<HPointer(HPointer, HPointer, HPointer, HPointer, HPointer)>;
+using Map6Fn = std::function<HPointer(HPointer, HPointer, HPointer, HPointer, HPointer, HPointer)>;
+using Map7Fn = std::function<HPointer(HPointer, HPointer, HPointer, HPointer, HPointer, HPointer, HPointer)>;
+using Map8Fn = std::function<HPointer(HPointer, HPointer, HPointer, HPointer, HPointer, HPointer, HPointer, HPointer)>;
+
+DecoderPtr map1(Map1Fn f, DecoderPtr d1);
+DecoderPtr map2(Map2Fn f, DecoderPtr d1, DecoderPtr d2);
+DecoderPtr map3(Map3Fn f, DecoderPtr d1, DecoderPtr d2, DecoderPtr d3);
+DecoderPtr map4(Map4Fn f, DecoderPtr d1, DecoderPtr d2, DecoderPtr d3, DecoderPtr d4);
+DecoderPtr map5(Map5Fn f, DecoderPtr d1, DecoderPtr d2, DecoderPtr d3, DecoderPtr d4, DecoderPtr d5);
+DecoderPtr map6(Map6Fn f, DecoderPtr d1, DecoderPtr d2, DecoderPtr d3, DecoderPtr d4, DecoderPtr d5, DecoderPtr d6);
+DecoderPtr map7(Map7Fn f, DecoderPtr d1, DecoderPtr d2, DecoderPtr d3, DecoderPtr d4, DecoderPtr d5, DecoderPtr d6, DecoderPtr d7);
+DecoderPtr map8(Map8Fn f, DecoderPtr d1, DecoderPtr d2, DecoderPtr d3, DecoderPtr d4, DecoderPtr d5, DecoderPtr d6, DecoderPtr d7, DecoderPtr d8);
+
+// ============================================================================
 // Running Decoders
 // ============================================================================
 
@@ -104,15 +126,15 @@ JsonValuePtr emptyArray();
  */
 JsonValuePtr emptyObject();
 
-// ============================================================================
-// Parsing
-// ============================================================================
+/**
+ * Add entry to JSON array.
+ */
+JsonValuePtr addEntry(JsonValuePtr entry, JsonValuePtr array);
 
 /**
- * Parse JSON string to JsonValue.
- * Returns nullptr on parse error.
+ * Add field to JSON object.
  */
-JsonValuePtr parse(void* jsonString);
+JsonValuePtr addField(void* key, JsonValuePtr value, JsonValuePtr object);
 
 } // namespace Elm::Kernel::Json
 

@@ -1,0 +1,92 @@
+# Extra Kernel Functions in elm-kernel-cpp
+# These functions are implemented but should NOT be kernel functions
+# (they are either pure Elm functions or internal helpers)
+
+## Elm.Kernel.JsArray (4 extra)
+- singleton
+- withCapacity
+- capacity
+- get
+
+## Elm.Kernel.List (17 extra)
+- Nil (internal constructor, use listNil constant)
+- isEmpty
+- length
+- head
+- tail
+- reverse
+- append
+- concat
+- take
+- drop
+- sort
+- sum
+- product
+- maximum
+- minimum
+- member
+- range
+- repeat
+
+## Elm.Kernel.String (11 extra)
+- isEmpty
+- concat
+- toList
+- left
+- right
+- dropLeft
+- dropRight
+- padLeft
+- padRight
+- repeat
+- fromChar
+
+## Elm.Kernel.Utils (5 extra)
+- cmp (internal helper)
+- Tuple0
+- Tuple2
+- Tuple3
+- chr
+
+## Elm.Kernel.Browser (8 extra)
+- focus
+- blur
+- onEvent (wrong name, should just expose 'on')
+- getDocument (wrong name)
+- getWindow (wrong name)
+- getVisibility (wrong name)
+- internal
+- external
+- notFound
+
+## Elm.Kernel.Http (5 extra)
+- stringBody
+- cancel
+- badUrl
+- timeout
+- networkError
+
+## Elm.Kernel.Json (1 extra)
+- parse
+
+## Elm.Kernel.VirtualDom (7 extra)
+- onWithOptions
+- diff
+- applyPatches
+- render
+- virtualize
+- wrapVNode
+- unwrapVNode
+
+## Elm.Kernel.Scheduler (8 extra internal functions)
+- binding (internal)
+- receive (internal)
+- send (internal)
+- rawSpawn (internal)
+- rawSend (internal)
+- enqueue (internal)
+- step (internal)
+- drain (internal)
+
+# Note: Some Scheduler internals may need to stay for runtime implementation
+# but should not be exposed as kernel API functions.

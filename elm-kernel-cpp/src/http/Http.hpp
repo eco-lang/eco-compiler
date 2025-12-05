@@ -16,23 +16,27 @@ namespace Elm::Kernel::Http {
 
 using TaskPtr = Scheduler::TaskPtr;
 
-// Body types
-enum class BodyType { Empty, String, Json, Bytes, FormData };
+// ============================================================================
+// Body Construction
+// ============================================================================
 
 /**
  * Create empty body.
  */
 HPointer emptyBody();
 
-/**
- * Create body with string content.
- */
-HPointer stringBody(void* contentType, void* content);
+// ============================================================================
+// Header/Param helpers
+// ============================================================================
 
 /**
  * Create a key-value pair for headers/params.
  */
 HPointer pair(void* key, void* value);
+
+// ============================================================================
+// Request Conversion
+// ============================================================================
 
 /**
  * Convert HTTP request to Task.
@@ -40,25 +44,38 @@ HPointer pair(void* key, void* value);
  */
 TaskPtr toTask(HPointer request);
 
-/**
- * Cancel an HTTP request.
- */
-void cancel(void* tracker);
+// ============================================================================
+// Expect/Response handling
+// ============================================================================
 
 /**
- * Create BadUrl response.
+ * Create an Expect value for response handling.
  */
-HPointer badUrl(void* url);
+HPointer expect(HPointer responseToResult);
 
 /**
- * Create Timeout response.
+ * Map over an Expect value.
  */
-HPointer timeout();
+HPointer mapExpect(std::function<HPointer(HPointer)> func, HPointer expectVal);
+
+// ============================================================================
+// Data conversion helpers
+// ============================================================================
 
 /**
- * Create NetworkError response.
+ * Convert bytes to a Blob representation.
  */
-HPointer networkError();
+HPointer bytesToBlob(void* bytes, void* mimeType);
+
+/**
+ * Convert bytes to a DataView.
+ */
+HPointer toDataView(void* bytes);
+
+/**
+ * Create FormData from a list of parts.
+ */
+HPointer toFormData(HPointer parts);
 
 } // namespace Elm::Kernel::Http
 

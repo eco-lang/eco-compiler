@@ -29,29 +29,14 @@ namespace Elm::Kernel::JsArray {
  */
 HPointer empty();
 
-/**
- * Creates an array with a single element.
- */
-HPointer singleton(HPointer value);
-
-/**
- * Creates an array with specified initial capacity.
- */
-HPointer withCapacity(u32 capacity);
-
 // ============================================================================
-// Length and Capacity
+// Length
 // ============================================================================
 
 /**
  * Returns the number of elements in the array.
  */
 u32 length(void* array);
-
-/**
- * Returns the allocated capacity of the array.
- */
-u32 capacity(void* array);
 
 // ============================================================================
 // Initialization
@@ -82,11 +67,6 @@ HPointer initializeFromList(u32 max, HPointer list);
  * Returns the unboxable value - caller must check isUnboxed to interpret.
  */
 Unboxable unsafeGet(u32 index, void* array);
-
-/**
- * Gets the element as an HPointer (boxing if needed).
- */
-HPointer get(u32 index, void* array);
 
 /**
  * Sets the element at index, returning a new array (immutable).

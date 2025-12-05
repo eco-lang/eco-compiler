@@ -16,7 +16,7 @@
 namespace Elm::Kernel::String {
 
 // ============================================================================
-// Length and Character Access
+// Length
 // ============================================================================
 
 /**
@@ -24,11 +24,6 @@ namespace Elm::Kernel::String {
  * Equivalent to Elm's String.length for BMP characters.
  */
 i64 length(void* str);
-
-/**
- * Checks if a string is empty.
- */
-bool isEmpty(HPointer str);
 
 // ============================================================================
 // Concatenation
@@ -38,11 +33,6 @@ bool isEmpty(HPointer str);
  * Appends two strings: a ++ b
  */
 HPointer append(void* a, void* b);
-
-/**
- * Concatenates a list of strings.
- */
-HPointer concat(HPointer stringList);
 
 /**
  * Joins strings with a separator.
@@ -69,11 +59,6 @@ HPointer uncons(void* str);
  * Converts a list of characters to a string.
  */
 HPointer fromList(HPointer chars);
-
-/**
- * Converts a string to a list of single-character strings.
- */
-HPointer toList(void* str);
 
 // ============================================================================
 // Higher-Order Operations
@@ -110,6 +95,25 @@ bool any(CharPredicate pred, void* str);
 bool all(CharPredicate pred, void* str);
 
 // ============================================================================
+// Folding
+// ============================================================================
+
+/**
+ * Fold function type: (char, accumulator) -> new_accumulator
+ */
+using FoldFunc = HPointer (*)(u16, void*);
+
+/**
+ * Folds left over characters.
+ */
+HPointer foldl(FoldFunc func, HPointer acc, void* str);
+
+/**
+ * Folds right over characters.
+ */
+HPointer foldr(FoldFunc func, HPointer acc, void* str);
+
+// ============================================================================
 // Slicing
 // ============================================================================
 
@@ -118,26 +122,6 @@ bool all(CharPredicate pred, void* str);
  * Negative indices count from end.
  */
 HPointer slice(i64 start, i64 end, void* str);
-
-/**
- * Returns the first n characters.
- */
-HPointer left(i64 n, void* str);
-
-/**
- * Returns the last n characters.
- */
-HPointer right(i64 n, void* str);
-
-/**
- * Drops the first n characters.
- */
-HPointer dropLeft(i64 n, void* str);
-
-/**
- * Drops the last n characters.
- */
-HPointer dropRight(i64 n, void* str);
 
 // ============================================================================
 // Splitting
@@ -192,21 +176,6 @@ HPointer trimLeft(void* str);
  */
 HPointer trimRight(void* str);
 
-/**
- * Pads string on the left to reach at least n characters.
- */
-HPointer padLeft(i64 n, u16 padChar, void* str);
-
-/**
- * Pads string on the right to reach at least n characters.
- */
-HPointer padRight(i64 n, u16 padChar, void* str);
-
-/**
- * Repeats a string n times.
- */
-HPointer repeat(i64 n, void* str);
-
 // ============================================================================
 // Searching
 // ============================================================================
@@ -248,19 +217,10 @@ HPointer toInt(void* str);
 HPointer toFloat(void* str);
 
 /**
- * Converts an integer to a string.
+ * Converts a number to a string.
+ * Works for both Int and Float types.
  */
-HPointer fromInt(i64 n);
-
-/**
- * Converts a float to a string.
- */
-HPointer fromFloat(f64 n);
-
-/**
- * Converts a character to a single-character string.
- */
-HPointer fromChar(u16 c);
+HPointer fromNumber(void* n);
 
 } // namespace Elm::Kernel::String
 

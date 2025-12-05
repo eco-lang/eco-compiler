@@ -12,21 +12,13 @@
 
 namespace Elm::Kernel::Browser {
 
-// UrlRequest type tags
-constexpr u16 TAG_INTERNAL = 0;
-constexpr u16 TAG_EXTERNAL = 1;
-
-// Dom.Error tags
-constexpr u16 TAG_NOT_FOUND = 0;
-
-// Result tags
-constexpr u16 TAG_OK = 0;
-constexpr u16 TAG_ERR = 1;
-
 // Program type tags
 constexpr u16 TAG_ELEMENT = 0;
 constexpr u16 TAG_DOCUMENT = 1;
 constexpr u16 TAG_APPLICATION = 2;
+
+// Dom.Error tags
+constexpr u16 TAG_NOT_FOUND = 0;
 
 // ============================================================================
 // Helper to create Viewport record
@@ -49,6 +41,13 @@ static HPointer createViewport(f64 sceneW, f64 sceneH, f64 x, f64 y, f64 w, f64 
     HPointer viewport = alloc::record({alloc::boxed(vpHeight), alloc::boxed(vpWidth), alloc::boxed(vpX), alloc::boxed(vpY)}, 0);
 
     return alloc::record({alloc::boxed(scene), alloc::boxed(viewport)}, 0);
+}
+
+// Helper to create NotFound error
+static HPointer notFound(void* id) {
+    HPointer idPtr = Allocator::instance().wrap(id);
+    HPointer notFoundErr = alloc::custom(TAG_NOT_FOUND, {alloc::boxed(idPtr)}, 0);
+    return alloc::err(alloc::boxed(notFoundErr), false);
 }
 
 // ============================================================================
@@ -172,28 +171,10 @@ TaskPtr getElement(void* id) {
 }
 
 // ============================================================================
-// Focus management - Stubs
-// ============================================================================
-
-TaskPtr focus(void* id) {
-    return Scheduler::binding([id](Scheduler::Callback callback) -> std::function<void()> {
-        callback(notFound(id));
-        return []() {};
-    });
-}
-
-TaskPtr blur(void* id) {
-    return Scheduler::binding([id](Scheduler::Callback callback) -> std::function<void()> {
-        callback(notFound(id));
-        return []() {};
-    });
-}
-
-// ============================================================================
 // Events - Stubs
 // ============================================================================
 
-HPointer onEvent(HPointer node, void* eventName, HPointer handler) {
+HPointer on(HPointer node, void* eventName, HPointer handler) {
     (void)node;
     (void)eventName;
     (void)handler;
@@ -212,45 +193,67 @@ HPointer decodeEvent(DecoderPtr decoder, HPointer event) {
 // Document/Window access - Stubs
 // ============================================================================
 
-HPointer getDocument() {
+HPointer doc() {
     return alloc::custom(0, {}, 0);
 }
 
-HPointer getWindow() {
+HPointer window() {
     return alloc::custom(0, {}, 0);
+}
+
+TaskPtr withWindow(std::function<HPointer(HPointer)> func) {
+    return Scheduler::binding([func](Scheduler::Callback callback) -> std::function<void()> {
+        HPointer win = window();
+        HPointer result = func(win);
+        callback(result);
+        return []() {};
+    });
+}
+
+// ============================================================================
+// Animation - Stub
+// ============================================================================
+
+TaskPtr rAF() {
+    return Scheduler::binding([](Scheduler::Callback callback) -> std::function<void()> {
+        // Return current time as animation frame time
+        auto now = std::chrono::system_clock::now();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now.time_since_epoch()).count();
+        callback(alloc::allocInt(ms));
+        return []() {};
+    });
+}
+
+// ============================================================================
+// Time - Stub
+// ============================================================================
+
+TaskPtr now() {
+    return Scheduler::binding([](Scheduler::Callback callback) -> std::function<void()> {
+        auto now = std::chrono::system_clock::now();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now.time_since_epoch()).count();
+        callback(alloc::allocInt(ms));
+        return []() {};
+    });
 }
 
 // ============================================================================
 // Visibility
 // ============================================================================
 
-Visibility getVisibility() {
-    // Always visible in stub implementation
-    return Visibility::Visible;
+HPointer visibilityInfo() {
+    // Return Visible (ctor 0) - always visible in stub
+    return alloc::custom(0, {}, 0);
 }
 
 // ============================================================================
-// URL helpers
+// Call helper
 // ============================================================================
 
-HPointer internal(HPointer url) {
-    return alloc::custom(TAG_INTERNAL, {alloc::boxed(url)}, 0);
-}
-
-HPointer external(void* url) {
-    HPointer urlPtr = Allocator::instance().wrap(url);
-    return alloc::custom(TAG_EXTERNAL, {alloc::boxed(urlPtr)}, 0);
-}
-
-// ============================================================================
-// Dom error
-// ============================================================================
-
-HPointer notFound(void* id) {
-    // Create Dom.NotFound error wrapped in Result.Err
-    HPointer idPtr = Allocator::instance().wrap(id);
-    HPointer notFoundErr = alloc::custom(TAG_NOT_FOUND, {alloc::boxed(idPtr)}, 0);
-    return alloc::err(alloc::boxed(notFoundErr), false);
+HPointer call(std::function<HPointer()> func) {
+    return func();
 }
 
 } // namespace Elm::Kernel::Browser

@@ -29,9 +29,6 @@ using NavKeyPtr = std::shared_ptr<NavKey>;
 // Visibility
 enum class Visibility { Visible, Hidden };
 
-// URL Request types for application
-enum class UrlRequestType { Internal, External };
-
 // ============================================================================
 // Program types
 // ============================================================================
@@ -114,27 +111,13 @@ TaskPtr setViewportOf(void* id, f64 x, f64 y);
 TaskPtr getElement(void* id);
 
 // ============================================================================
-// Focus management
-// ============================================================================
-
-/**
- * Focus an element by ID.
- */
-TaskPtr focus(void* id);
-
-/**
- * Blur (unfocus) an element by ID.
- */
-TaskPtr blur(void* id);
-
-// ============================================================================
 // Events
 // ============================================================================
 
 /**
  * Attach an event handler to a node.
  */
-HPointer onEvent(HPointer node, void* eventName, HPointer handler);
+HPointer on(HPointer node, void* eventName, HPointer handler);
 
 /**
  * Decode an event using a JSON decoder.
@@ -148,44 +131,53 @@ HPointer decodeEvent(DecoderPtr decoder, HPointer event);
 /**
  * Get a reference to the document.
  */
-HPointer getDocument();
+HPointer doc();
 
 /**
  * Get a reference to the window.
  */
-HPointer getWindow();
+HPointer window();
+
+/**
+ * Run a function with the window object.
+ */
+TaskPtr withWindow(std::function<HPointer(HPointer)> func);
+
+// ============================================================================
+// Animation
+// ============================================================================
+
+/**
+ * Request animation frame.
+ */
+TaskPtr rAF();
+
+// ============================================================================
+// Time
+// ============================================================================
+
+/**
+ * Get current time (same as Time.now).
+ */
+TaskPtr now();
 
 // ============================================================================
 // Visibility
 // ============================================================================
 
 /**
- * Get current page visibility.
+ * Get current page visibility info.
  */
-Visibility getVisibility();
+HPointer visibilityInfo();
 
 // ============================================================================
-// URL helpers
-// ============================================================================
-
-/**
- * Create an internal URL request.
- */
-HPointer internal(HPointer url);
-
-/**
- * Create an external URL request.
- */
-HPointer external(void* url);
-
-// ============================================================================
-// Dom error
+// Call helper
 // ============================================================================
 
 /**
- * Create a NotFound error for an element ID.
+ * Call a function (used for delayed effects).
  */
-HPointer notFound(void* id);
+HPointer call(std::function<HPointer()> func);
 
 } // namespace Elm::Kernel::Browser
 

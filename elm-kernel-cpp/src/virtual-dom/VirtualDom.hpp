@@ -150,11 +150,6 @@ FactPtr style(void* key, void* value);
  */
 FactPtr on(void* event, DecoderPtr decoder);
 
-/**
- * Create an event handler with options.
- */
-FactPtr onWithOptions(void* event, DecoderPtr decoder, bool stopPropagation, bool preventDefault);
-
 // ============================================================================
 // Mapping
 // ============================================================================
@@ -164,32 +159,32 @@ FactPtr onWithOptions(void* event, DecoderPtr decoder, bool stopPropagation, boo
  */
 VNodePtr map(TaggerFn func, VNodePtr vnode);
 
+/**
+ * Map over an attribute (transform messages).
+ */
+FactPtr mapAttribute(TaggerFn func, FactPtr fact);
+
 // ============================================================================
 // Lazy nodes
 // ============================================================================
 
-/**
- * Create a lazy node (memoized).
- */
-VNodePtr lazy(std::function<VNodePtr(HPointer)> func, HPointer arg);
-VNodePtr lazy2(std::function<VNodePtr(HPointer, HPointer)> func, HPointer a, HPointer b);
-VNodePtr lazy3(std::function<VNodePtr(HPointer, HPointer, HPointer)> func, HPointer a, HPointer b, HPointer c);
+using Lazy1Fn = std::function<VNodePtr(HPointer)>;
+using Lazy2Fn = std::function<VNodePtr(HPointer, HPointer)>;
+using Lazy3Fn = std::function<VNodePtr(HPointer, HPointer, HPointer)>;
+using Lazy4Fn = std::function<VNodePtr(HPointer, HPointer, HPointer, HPointer)>;
+using Lazy5Fn = std::function<VNodePtr(HPointer, HPointer, HPointer, HPointer, HPointer)>;
+using Lazy6Fn = std::function<VNodePtr(HPointer, HPointer, HPointer, HPointer, HPointer, HPointer)>;
+using Lazy7Fn = std::function<VNodePtr(HPointer, HPointer, HPointer, HPointer, HPointer, HPointer, HPointer)>;
+using Lazy8Fn = std::function<VNodePtr(HPointer, HPointer, HPointer, HPointer, HPointer, HPointer, HPointer, HPointer)>;
 
-// ============================================================================
-// Diffing and patching
-// ============================================================================
-
-/**
- * Diff two virtual DOM trees.
- * Returns an Elm list of patches.
- */
-HPointer diff(VNodePtr oldNode, VNodePtr newNode);
-
-/**
- * Apply patches to DOM.
- * Platform-specific stub.
- */
-HPointer applyPatches(HPointer domNode, VNodePtr oldVNode, HPointer patches);
+VNodePtr lazy(Lazy1Fn func, HPointer arg);
+VNodePtr lazy2(Lazy2Fn func, HPointer a, HPointer b);
+VNodePtr lazy3(Lazy3Fn func, HPointer a, HPointer b, HPointer c);
+VNodePtr lazy4(Lazy4Fn func, HPointer a, HPointer b, HPointer c, HPointer d);
+VNodePtr lazy5(Lazy5Fn func, HPointer a, HPointer b, HPointer c, HPointer d, HPointer e);
+VNodePtr lazy6(Lazy6Fn func, HPointer a, HPointer b, HPointer c, HPointer d, HPointer e, HPointer f);
+VNodePtr lazy7(Lazy7Fn func, HPointer a, HPointer b, HPointer c, HPointer d, HPointer e, HPointer f, HPointer g);
+VNodePtr lazy8(Lazy8Fn func, HPointer a, HPointer b, HPointer c, HPointer d, HPointer e, HPointer f, HPointer g, HPointer h);
 
 // ============================================================================
 // Security filters
@@ -215,19 +210,10 @@ HPointer noInnerHtmlOrFormAction(void* key);
  */
 HPointer noJavaScriptOrHtmlUri(void* value);
 
-// ============================================================================
-// Rendering (platform-specific stubs)
-// ============================================================================
-
 /**
- * Render virtual DOM to platform representation.
+ * Filter to prevent javascript: and data:text/html in JSON values.
  */
-HPointer render(VNodePtr vnode, std::function<void(HPointer)> sendToApp);
-
-/**
- * Virtualize DOM node (for hydration).
- */
-VNodePtr virtualize(HPointer domNode);
+HPointer noJavaScriptOrHtmlJson(HPointer value);
 
 // ============================================================================
 // Converting VNodes to/from Elm values

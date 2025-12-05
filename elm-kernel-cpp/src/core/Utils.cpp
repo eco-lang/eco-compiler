@@ -27,31 +27,8 @@ static Tag getTag(void* obj) {
     return static_cast<Tag>(hdr->tag);
 }
 
-// ============================================================================
-// Tuple Constructors
-// ============================================================================
-
-HPointer Tuple0() {
-    return alloc::unit();
-}
-
-HPointer Tuple2(HPointer a, HPointer b) {
-    return alloc::tuple2(alloc::boxed(a), alloc::boxed(b), 0);
-}
-
-HPointer Tuple3(HPointer a, HPointer b, HPointer c) {
-    return alloc::tuple3(alloc::boxed(a), alloc::boxed(b), alloc::boxed(c), 0);
-}
-
-HPointer chr(u16 c) {
-    return alloc::allocChar(c);
-}
-
-// ============================================================================
-// Comparison Operations
-// ============================================================================
-
-int cmp(void* a, void* b) {
+// Low-level comparison returning -1 (LT), 0 (EQ), or 1 (GT)
+static int cmp(void* a, void* b) {
     // Null checks
     if (!a && !b) return 0;
     if (!a) return -1;
@@ -181,6 +158,10 @@ int cmp(void* a, void* b) {
             return 0;  // Other types compare as equal
     }
 }
+
+// ============================================================================
+// Comparison Operations
+// ============================================================================
 
 HPointer compare(void* a, void* b) {
     int n = cmp(a, b);

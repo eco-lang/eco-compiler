@@ -138,16 +138,12 @@ FactPtr style(void* key, void* value) {
 }
 
 FactPtr on(void* event, DecoderPtr decoder) {
-    return onWithOptions(event, decoder, false, false);
-}
-
-FactPtr onWithOptions(void* event, DecoderPtr decoder, bool stopPropagation, bool preventDefault) {
     auto fact = std::make_shared<Fact>();
     fact->tag = FactTag::Event;
     fact->name = stringToVec(event);
     fact->eventDecoder = decoder;
-    fact->stopPropagation = stopPropagation;
-    fact->preventDefault = preventDefault;
+    fact->stopPropagation = false;
+    fact->preventDefault = false;
     return fact;
 }
 
@@ -167,11 +163,30 @@ VNodePtr map(TaggerFn func, VNodePtr vnode) {
     return taggerNode;
 }
 
+FactPtr mapAttribute(TaggerFn func, FactPtr fact) {
+    if (!fact) return nullptr;
+
+    // For event handlers, we need to wrap the decoder result with the tagger
+    if (fact->tag == FactTag::Event) {
+        auto newFact = std::make_shared<Fact>();
+        newFact->tag = fact->tag;
+        newFact->name = fact->name;
+        newFact->eventDecoder = fact->eventDecoder;  // Would need to wrap decoder
+        newFact->stopPropagation = fact->stopPropagation;
+        newFact->preventDefault = fact->preventDefault;
+        // Store tagger for later use when decoding events
+        return newFact;
+    }
+
+    // Non-event facts don't need mapping
+    return fact;
+}
+
 // ============================================================================
 // Lazy nodes
 // ============================================================================
 
-VNodePtr lazy(std::function<VNodePtr(HPointer)> func, HPointer arg) {
+VNodePtr lazy(Lazy1Fn func, HPointer arg) {
     auto thunkNode = std::make_shared<VNode>();
     thunkNode->tag = VNodeTag::Thunk;
     thunkNode->refs.push_back(arg);
@@ -180,7 +195,7 @@ VNodePtr lazy(std::function<VNodePtr(HPointer)> func, HPointer arg) {
     return thunkNode;
 }
 
-VNodePtr lazy2(std::function<VNodePtr(HPointer, HPointer)> func, HPointer a, HPointer b) {
+VNodePtr lazy2(Lazy2Fn func, HPointer a, HPointer b) {
     auto thunkNode = std::make_shared<VNode>();
     thunkNode->tag = VNodeTag::Thunk;
     thunkNode->refs.push_back(a);
@@ -190,7 +205,7 @@ VNodePtr lazy2(std::function<VNodePtr(HPointer, HPointer)> func, HPointer a, HPo
     return thunkNode;
 }
 
-VNodePtr lazy3(std::function<VNodePtr(HPointer, HPointer, HPointer)> func, HPointer a, HPointer b, HPointer c) {
+VNodePtr lazy3(Lazy3Fn func, HPointer a, HPointer b, HPointer c) {
     auto thunkNode = std::make_shared<VNode>();
     thunkNode->tag = VNodeTag::Thunk;
     thunkNode->refs.push_back(a);
@@ -201,22 +216,74 @@ VNodePtr lazy3(std::function<VNodePtr(HPointer, HPointer, HPointer)> func, HPoin
     return thunkNode;
 }
 
-// ============================================================================
-// Diffing - Stub
-// ============================================================================
-
-HPointer diff(VNodePtr oldNode, VNodePtr newNode) {
-    // Stub - return empty list of patches
-    (void)oldNode;
-    (void)newNode;
-    return alloc::listNil();
+VNodePtr lazy4(Lazy4Fn func, HPointer a, HPointer b, HPointer c, HPointer d) {
+    auto thunkNode = std::make_shared<VNode>();
+    thunkNode->tag = VNodeTag::Thunk;
+    thunkNode->refs.push_back(a);
+    thunkNode->refs.push_back(b);
+    thunkNode->refs.push_back(c);
+    thunkNode->refs.push_back(d);
+    thunkNode->thunk = [func, a, b, c, d]() { return func(a, b, c, d); };
+    thunkNode->cachedNode = nullptr;
+    return thunkNode;
 }
 
-HPointer applyPatches(HPointer domNode, VNodePtr oldVNode, HPointer patches) {
-    // Stub - return original dom node
-    (void)oldVNode;
-    (void)patches;
-    return domNode;
+VNodePtr lazy5(Lazy5Fn func, HPointer a, HPointer b, HPointer c, HPointer d, HPointer e) {
+    auto thunkNode = std::make_shared<VNode>();
+    thunkNode->tag = VNodeTag::Thunk;
+    thunkNode->refs.push_back(a);
+    thunkNode->refs.push_back(b);
+    thunkNode->refs.push_back(c);
+    thunkNode->refs.push_back(d);
+    thunkNode->refs.push_back(e);
+    thunkNode->thunk = [func, a, b, c, d, e]() { return func(a, b, c, d, e); };
+    thunkNode->cachedNode = nullptr;
+    return thunkNode;
+}
+
+VNodePtr lazy6(Lazy6Fn func, HPointer a, HPointer b, HPointer c, HPointer d, HPointer e, HPointer f) {
+    auto thunkNode = std::make_shared<VNode>();
+    thunkNode->tag = VNodeTag::Thunk;
+    thunkNode->refs.push_back(a);
+    thunkNode->refs.push_back(b);
+    thunkNode->refs.push_back(c);
+    thunkNode->refs.push_back(d);
+    thunkNode->refs.push_back(e);
+    thunkNode->refs.push_back(f);
+    thunkNode->thunk = [func, a, b, c, d, e, f]() { return func(a, b, c, d, e, f); };
+    thunkNode->cachedNode = nullptr;
+    return thunkNode;
+}
+
+VNodePtr lazy7(Lazy7Fn func, HPointer a, HPointer b, HPointer c, HPointer d, HPointer e, HPointer f, HPointer g) {
+    auto thunkNode = std::make_shared<VNode>();
+    thunkNode->tag = VNodeTag::Thunk;
+    thunkNode->refs.push_back(a);
+    thunkNode->refs.push_back(b);
+    thunkNode->refs.push_back(c);
+    thunkNode->refs.push_back(d);
+    thunkNode->refs.push_back(e);
+    thunkNode->refs.push_back(f);
+    thunkNode->refs.push_back(g);
+    thunkNode->thunk = [func, a, b, c, d, e, f, g]() { return func(a, b, c, d, e, f, g); };
+    thunkNode->cachedNode = nullptr;
+    return thunkNode;
+}
+
+VNodePtr lazy8(Lazy8Fn func, HPointer a, HPointer b, HPointer c, HPointer d, HPointer e, HPointer f, HPointer g, HPointer h) {
+    auto thunkNode = std::make_shared<VNode>();
+    thunkNode->tag = VNodeTag::Thunk;
+    thunkNode->refs.push_back(a);
+    thunkNode->refs.push_back(b);
+    thunkNode->refs.push_back(c);
+    thunkNode->refs.push_back(d);
+    thunkNode->refs.push_back(e);
+    thunkNode->refs.push_back(f);
+    thunkNode->refs.push_back(g);
+    thunkNode->refs.push_back(h);
+    thunkNode->thunk = [func, a, b, c, d, e, f, g, h]() { return func(a, b, c, d, e, f, g, h); };
+    thunkNode->cachedNode = nullptr;
+    return thunkNode;
 }
 
 // ============================================================================
@@ -297,21 +364,19 @@ HPointer noJavaScriptOrHtmlUri(void* value) {
     return Allocator::instance().wrap(value);
 }
 
-// ============================================================================
-// Rendering - Stubs
-// ============================================================================
+HPointer noJavaScriptOrHtmlJson(HPointer value) {
+    // For JSON values, we need to check if it's a string containing dangerous URIs
+    void* resolved = Allocator::instance().resolve(value);
+    if (!resolved) return value;
 
-HPointer render(VNodePtr vnode, std::function<void(HPointer)> sendToApp) {
-    // Stub - platform specific
-    (void)vnode;
-    (void)sendToApp;
-    return alloc::unit();
-}
+    Header* hdr = static_cast<Header*>(resolved);
+    if (hdr->tag != Tag_String) {
+        // Non-string JSON values are safe
+        return value;
+    }
 
-VNodePtr virtualize(HPointer domNode) {
-    // Stub - platform specific
-    (void)domNode;
-    return text(nullptr);
+    // It's a string, apply the same check as noJavaScriptOrHtmlUri
+    return noJavaScriptOrHtmlUri(resolved);
 }
 
 // ============================================================================

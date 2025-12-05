@@ -21,20 +21,10 @@ namespace Elm::Kernel::List {
 // ============================================================================
 
 /**
- * Returns the empty list (Nil).
- */
-HPointer Nil();
-
-/**
  * Creates a Cons cell: head :: tail
  * The head can be boxed (pointer) or unboxed (primitive).
  */
-HPointer Cons(Unboxable head, HPointer tail, bool headIsBoxed);
-
-/**
- * Convenience: Cons with a boxed HPointer head.
- */
-HPointer ConsBoxed(HPointer head, HPointer tail);
+HPointer cons(Unboxable head, HPointer tail, bool headIsBoxed);
 
 /**
  * Converts a vector of HPointers to a list.
@@ -47,82 +37,57 @@ HPointer fromArray(const std::vector<HPointer>& array);
 std::vector<HPointer> toArray(HPointer list);
 
 // ============================================================================
-// Basic Operations
-// ============================================================================
-
-/**
- * Checks if the list is empty (Nil).
- */
-bool isEmpty(HPointer list);
-
-/**
- * Returns the length of the list.
- */
-i64 length(HPointer list);
-
-/**
- * Returns the head of the list, or Nothing if empty.
- */
-HPointer head(HPointer list);
-
-/**
- * Returns the tail of the list, or Nothing if empty.
- */
-HPointer tail(HPointer list);
-
-// ============================================================================
 // Map Operations (multiple lists)
+// These take a combining function as first argument.
 // ============================================================================
 
 /**
- * Zips two lists into a list of Tuple2.
+ * Function type for map2: (a, b) -> result
+ */
+using Map2Func = HPointer (*)(void*, void*);
+
+/**
+ * Combines two lists element-wise using a function.
  * Stops when the shorter list ends.
  */
-HPointer map2(HPointer xs, HPointer ys);
+HPointer map2(Map2Func func, HPointer xs, HPointer ys);
 
 /**
- * Zips three lists into a list of Tuple3.
+ * Function type for map3: (a, b, c) -> result
+ */
+using Map3Func = HPointer (*)(void*, void*, void*);
+
+/**
+ * Combines three lists element-wise using a function.
  * Stops when the shortest list ends.
  */
-HPointer map3(HPointer xs, HPointer ys, HPointer zs);
-
-// ============================================================================
-// Transformation
-// ============================================================================
+HPointer map3(Map3Func func, HPointer xs, HPointer ys, HPointer zs);
 
 /**
- * Reverses a list.
+ * Function type for map4: (a, b, c, d) -> result
  */
-HPointer reverse(HPointer list);
+using Map4Func = HPointer (*)(void*, void*, void*, void*);
 
 /**
- * Appends two lists: xs ++ ys
+ * Combines four lists element-wise using a function.
+ * Stops when the shortest list ends.
  */
-HPointer append(HPointer xs, HPointer ys);
+HPointer map4(Map4Func func, HPointer ws, HPointer xs, HPointer ys, HPointer zs);
 
 /**
- * Concatenates a list of lists into a single list.
+ * Function type for map5: (a, b, c, d, e) -> result
  */
-HPointer concat(HPointer listOfLists);
+using Map5Func = HPointer (*)(void*, void*, void*, void*, void*);
 
 /**
- * Takes the first n elements.
+ * Combines five lists element-wise using a function.
+ * Stops when the shortest list ends.
  */
-HPointer take(i64 n, HPointer list);
-
-/**
- * Drops the first n elements.
- */
-HPointer drop(i64 n, HPointer list);
+HPointer map5(Map5Func func, HPointer vs, HPointer ws, HPointer xs, HPointer ys, HPointer zs);
 
 // ============================================================================
 // Sorting
 // ============================================================================
-
-/**
- * Sorts a list of comparable values (ints, floats, strings).
- */
-HPointer sort(HPointer list);
 
 /**
  * Sorts by applying a key function to each element.
@@ -137,54 +102,6 @@ HPointer sortBy(KeyFunc keyFunc, HPointer list);
  */
 using CmpFunc = i64 (*)(void*, void*);
 HPointer sortWith(CmpFunc cmpFunc, HPointer list);
-
-// ============================================================================
-// Folding
-// ============================================================================
-
-/**
- * Sum of a list of integers.
- */
-i64 sum(HPointer list);
-
-/**
- * Product of a list of integers.
- */
-i64 product(HPointer list);
-
-/**
- * Maximum of a list. Returns Nothing for empty list.
- */
-HPointer maximum(HPointer list);
-
-/**
- * Minimum of a list. Returns Nothing for empty list.
- */
-HPointer minimum(HPointer list);
-
-// ============================================================================
-// Membership
-// ============================================================================
-
-/**
- * Checks if an element is in the list.
- * Uses structural equality.
- */
-bool member(HPointer element, HPointer list);
-
-// ============================================================================
-// Range
-// ============================================================================
-
-/**
- * Creates a list from low to high (inclusive).
- */
-HPointer range(i64 low, i64 high);
-
-/**
- * Repeats a value n times.
- */
-HPointer repeat(i64 n, HPointer value);
 
 } // namespace Elm::Kernel::List
 

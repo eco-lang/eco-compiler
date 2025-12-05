@@ -148,6 +148,102 @@ DecoderPtr oneOf(HPointer decoders) {
 }
 
 // ============================================================================
+// Map Functions - Stubs
+// ============================================================================
+
+DecoderPtr map1(Map1Fn f, DecoderPtr d1) {
+    (void)f;
+    (void)d1;
+    auto d = std::make_shared<Decoder>();
+    d->tag = Decoder::Tag::Map;
+    return d;
+}
+
+DecoderPtr map2(Map2Fn f, DecoderPtr d1, DecoderPtr d2) {
+    (void)f;
+    (void)d1;
+    (void)d2;
+    auto d = std::make_shared<Decoder>();
+    d->tag = Decoder::Tag::Map;
+    return d;
+}
+
+DecoderPtr map3(Map3Fn f, DecoderPtr d1, DecoderPtr d2, DecoderPtr d3) {
+    (void)f;
+    (void)d1;
+    (void)d2;
+    (void)d3;
+    auto d = std::make_shared<Decoder>();
+    d->tag = Decoder::Tag::Map;
+    return d;
+}
+
+DecoderPtr map4(Map4Fn f, DecoderPtr d1, DecoderPtr d2, DecoderPtr d3, DecoderPtr d4) {
+    (void)f;
+    (void)d1;
+    (void)d2;
+    (void)d3;
+    (void)d4;
+    auto d = std::make_shared<Decoder>();
+    d->tag = Decoder::Tag::Map;
+    return d;
+}
+
+DecoderPtr map5(Map5Fn f, DecoderPtr d1, DecoderPtr d2, DecoderPtr d3, DecoderPtr d4, DecoderPtr d5) {
+    (void)f;
+    (void)d1;
+    (void)d2;
+    (void)d3;
+    (void)d4;
+    (void)d5;
+    auto d = std::make_shared<Decoder>();
+    d->tag = Decoder::Tag::Map;
+    return d;
+}
+
+DecoderPtr map6(Map6Fn f, DecoderPtr d1, DecoderPtr d2, DecoderPtr d3, DecoderPtr d4, DecoderPtr d5, DecoderPtr d6) {
+    (void)f;
+    (void)d1;
+    (void)d2;
+    (void)d3;
+    (void)d4;
+    (void)d5;
+    (void)d6;
+    auto d = std::make_shared<Decoder>();
+    d->tag = Decoder::Tag::Map;
+    return d;
+}
+
+DecoderPtr map7(Map7Fn f, DecoderPtr d1, DecoderPtr d2, DecoderPtr d3, DecoderPtr d4, DecoderPtr d5, DecoderPtr d6, DecoderPtr d7) {
+    (void)f;
+    (void)d1;
+    (void)d2;
+    (void)d3;
+    (void)d4;
+    (void)d5;
+    (void)d6;
+    (void)d7;
+    auto d = std::make_shared<Decoder>();
+    d->tag = Decoder::Tag::Map;
+    return d;
+}
+
+DecoderPtr map8(Map8Fn f, DecoderPtr d1, DecoderPtr d2, DecoderPtr d3, DecoderPtr d4, DecoderPtr d5, DecoderPtr d6, DecoderPtr d7, DecoderPtr d8) {
+    (void)f;
+    (void)d1;
+    (void)d2;
+    (void)d3;
+    (void)d4;
+    (void)d5;
+    (void)d6;
+    (void)d7;
+    (void)d8;
+    auto d = std::make_shared<Decoder>();
+    d->tag = Decoder::Tag::Map;
+    return d;
+}
+
+// ============================================================================
 // Running Decoders - Stubs
 // ============================================================================
 
@@ -201,13 +297,20 @@ JsonValuePtr emptyObject() {
     return v;
 }
 
-// ============================================================================
-// Parsing - Stub
-// ============================================================================
+JsonValuePtr addEntry(JsonValuePtr entry, JsonValuePtr array) {
+    if (array && array->type == JsonType::Array) {
+        array->arrayVal.push_back(entry);
+    }
+    return array;
+}
 
-JsonValuePtr parse(void* jsonString) {
-    (void)jsonString;
-    return nullptr; // Parse error
+JsonValuePtr addField(void* key, JsonValuePtr value, JsonValuePtr object) {
+    if (object && object->type == JsonType::Object && key) {
+        ElmString* keyStr = static_cast<ElmString*>(key);
+        std::vector<u16> keyVec(keyStr->chars, keyStr->chars + keyStr->header.size);
+        object->objectVal[keyVec] = value;
+    }
+    return object;
 }
 
 } // namespace Elm::Kernel::Json

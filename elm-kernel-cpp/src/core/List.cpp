@@ -15,16 +15,8 @@ namespace Elm::Kernel::List {
 // Construction
 // ============================================================================
 
-HPointer Nil() {
-    return alloc::listNil();
-}
-
-HPointer Cons(Unboxable head, HPointer tail, bool headIsBoxed) {
+HPointer cons(Unboxable head, HPointer tail, bool headIsBoxed) {
     return alloc::cons(head, tail, headIsBoxed);
-}
-
-HPointer ConsBoxed(HPointer head, HPointer tail) {
-    return alloc::cons(alloc::boxed(head), tail, true);
 }
 
 HPointer fromArray(const std::vector<HPointer>& array) {
@@ -51,68 +43,212 @@ std::vector<HPointer> toArray(HPointer list) {
 }
 
 // ============================================================================
-// Basic Operations
-// ============================================================================
-
-bool isEmpty(HPointer list) {
-    return ListOps::isEmpty(list);
-}
-
-i64 length(HPointer list) {
-    return ListOps::length(list);
-}
-
-HPointer head(HPointer list) {
-    return ListOps::head(list);
-}
-
-HPointer tail(HPointer list) {
-    return ListOps::tail(list);
-}
-
-// ============================================================================
 // Map Operations (multiple lists)
 // ============================================================================
 
-HPointer map2(HPointer xs, HPointer ys) {
-    return ListOps::map2(xs, ys);
+HPointer map2(Map2Func func, HPointer xs, HPointer ys) {
+    if (alloc::isNil(xs) || alloc::isNil(ys)) return alloc::listNil();
+
+    auto& allocator = Allocator::instance();
+    std::vector<HPointer> results;
+
+    HPointer currX = xs;
+    HPointer currY = ys;
+
+    while (!alloc::isNil(currX) && !alloc::isNil(currY)) {
+        void* cellX = allocator.resolve(currX);
+        void* cellY = allocator.resolve(currY);
+        if (!cellX || !cellY) break;
+
+        Cons* cX = static_cast<Cons*>(cellX);
+        Cons* cY = static_cast<Cons*>(cellY);
+        Header* hdrX = static_cast<Header*>(cellX);
+        Header* hdrY = static_cast<Header*>(cellY);
+
+        // Resolve elements (box if unboxed)
+        void* elemX;
+        void* elemY;
+
+        if (!(hdrX->unboxed & 1)) {
+            elemX = allocator.resolve(cX->head.p);
+        } else {
+            HPointer boxed = alloc::allocInt(cX->head.i);
+            elemX = allocator.resolve(boxed);
+        }
+
+        if (!(hdrY->unboxed & 1)) {
+            elemY = allocator.resolve(cY->head.p);
+        } else {
+            HPointer boxed = alloc::allocInt(cY->head.i);
+            elemY = allocator.resolve(boxed);
+        }
+
+        // Apply the function
+        HPointer result = func(elemX, elemY);
+        results.push_back(result);
+
+        currX = cX->tail;
+        currY = cY->tail;
+    }
+
+    return alloc::listFromPointers(results);
 }
 
-HPointer map3(HPointer xs, HPointer ys, HPointer zs) {
-    return ListOps::map3(xs, ys, zs);
+HPointer map3(Map3Func func, HPointer xs, HPointer ys, HPointer zs) {
+    if (alloc::isNil(xs) || alloc::isNil(ys) || alloc::isNil(zs)) {
+        return alloc::listNil();
+    }
+
+    auto& allocator = Allocator::instance();
+    std::vector<HPointer> results;
+
+    HPointer currX = xs;
+    HPointer currY = ys;
+    HPointer currZ = zs;
+
+    while (!alloc::isNil(currX) && !alloc::isNil(currY) && !alloc::isNil(currZ)) {
+        void* cellX = allocator.resolve(currX);
+        void* cellY = allocator.resolve(currY);
+        void* cellZ = allocator.resolve(currZ);
+        if (!cellX || !cellY || !cellZ) break;
+
+        Cons* cX = static_cast<Cons*>(cellX);
+        Cons* cY = static_cast<Cons*>(cellY);
+        Cons* cZ = static_cast<Cons*>(cellZ);
+        Header* hdrX = static_cast<Header*>(cellX);
+        Header* hdrY = static_cast<Header*>(cellY);
+        Header* hdrZ = static_cast<Header*>(cellZ);
+
+        // Resolve elements
+        void* elemX = (!(hdrX->unboxed & 1)) ? allocator.resolve(cX->head.p)
+                     : allocator.resolve(alloc::allocInt(cX->head.i));
+        void* elemY = (!(hdrY->unboxed & 1)) ? allocator.resolve(cY->head.p)
+                     : allocator.resolve(alloc::allocInt(cY->head.i));
+        void* elemZ = (!(hdrZ->unboxed & 1)) ? allocator.resolve(cZ->head.p)
+                     : allocator.resolve(alloc::allocInt(cZ->head.i));
+
+        HPointer result = func(elemX, elemY, elemZ);
+        results.push_back(result);
+
+        currX = cX->tail;
+        currY = cY->tail;
+        currZ = cZ->tail;
+    }
+
+    return alloc::listFromPointers(results);
 }
 
-// ============================================================================
-// Transformation
-// ============================================================================
+HPointer map4(Map4Func func, HPointer ws, HPointer xs, HPointer ys, HPointer zs) {
+    if (alloc::isNil(ws) || alloc::isNil(xs) || alloc::isNil(ys) || alloc::isNil(zs)) {
+        return alloc::listNil();
+    }
 
-HPointer reverse(HPointer list) {
-    return ListOps::reverse(list);
+    auto& allocator = Allocator::instance();
+    std::vector<HPointer> results;
+
+    HPointer currW = ws;
+    HPointer currX = xs;
+    HPointer currY = ys;
+    HPointer currZ = zs;
+
+    while (!alloc::isNil(currW) && !alloc::isNil(currX) && !alloc::isNil(currY) && !alloc::isNil(currZ)) {
+        void* cellW = allocator.resolve(currW);
+        void* cellX = allocator.resolve(currX);
+        void* cellY = allocator.resolve(currY);
+        void* cellZ = allocator.resolve(currZ);
+        if (!cellW || !cellX || !cellY || !cellZ) break;
+
+        Cons* cW = static_cast<Cons*>(cellW);
+        Cons* cX = static_cast<Cons*>(cellX);
+        Cons* cY = static_cast<Cons*>(cellY);
+        Cons* cZ = static_cast<Cons*>(cellZ);
+        Header* hdrW = static_cast<Header*>(cellW);
+        Header* hdrX = static_cast<Header*>(cellX);
+        Header* hdrY = static_cast<Header*>(cellY);
+        Header* hdrZ = static_cast<Header*>(cellZ);
+
+        void* elemW = (!(hdrW->unboxed & 1)) ? allocator.resolve(cW->head.p)
+                     : allocator.resolve(alloc::allocInt(cW->head.i));
+        void* elemX = (!(hdrX->unboxed & 1)) ? allocator.resolve(cX->head.p)
+                     : allocator.resolve(alloc::allocInt(cX->head.i));
+        void* elemY = (!(hdrY->unboxed & 1)) ? allocator.resolve(cY->head.p)
+                     : allocator.resolve(alloc::allocInt(cY->head.i));
+        void* elemZ = (!(hdrZ->unboxed & 1)) ? allocator.resolve(cZ->head.p)
+                     : allocator.resolve(alloc::allocInt(cZ->head.i));
+
+        HPointer result = func(elemW, elemX, elemY, elemZ);
+        results.push_back(result);
+
+        currW = cW->tail;
+        currX = cX->tail;
+        currY = cY->tail;
+        currZ = cZ->tail;
+    }
+
+    return alloc::listFromPointers(results);
 }
 
-HPointer append(HPointer xs, HPointer ys) {
-    return ListOps::append(xs, ys);
-}
+HPointer map5(Map5Func func, HPointer vs, HPointer ws, HPointer xs, HPointer ys, HPointer zs) {
+    if (alloc::isNil(vs) || alloc::isNil(ws) || alloc::isNil(xs) || alloc::isNil(ys) || alloc::isNil(zs)) {
+        return alloc::listNil();
+    }
 
-HPointer concat(HPointer listOfLists) {
-    return ListOps::concat(listOfLists);
-}
+    auto& allocator = Allocator::instance();
+    std::vector<HPointer> results;
 
-HPointer take(i64 n, HPointer list) {
-    return ListOps::take(n, list);
-}
+    HPointer currV = vs;
+    HPointer currW = ws;
+    HPointer currX = xs;
+    HPointer currY = ys;
+    HPointer currZ = zs;
 
-HPointer drop(i64 n, HPointer list) {
-    return ListOps::drop(n, list);
+    while (!alloc::isNil(currV) && !alloc::isNil(currW) && !alloc::isNil(currX) &&
+           !alloc::isNil(currY) && !alloc::isNil(currZ)) {
+        void* cellV = allocator.resolve(currV);
+        void* cellW = allocator.resolve(currW);
+        void* cellX = allocator.resolve(currX);
+        void* cellY = allocator.resolve(currY);
+        void* cellZ = allocator.resolve(currZ);
+        if (!cellV || !cellW || !cellX || !cellY || !cellZ) break;
+
+        Cons* cV = static_cast<Cons*>(cellV);
+        Cons* cW = static_cast<Cons*>(cellW);
+        Cons* cX = static_cast<Cons*>(cellX);
+        Cons* cY = static_cast<Cons*>(cellY);
+        Cons* cZ = static_cast<Cons*>(cellZ);
+        Header* hdrV = static_cast<Header*>(cellV);
+        Header* hdrW = static_cast<Header*>(cellW);
+        Header* hdrX = static_cast<Header*>(cellX);
+        Header* hdrY = static_cast<Header*>(cellY);
+        Header* hdrZ = static_cast<Header*>(cellZ);
+
+        void* elemV = (!(hdrV->unboxed & 1)) ? allocator.resolve(cV->head.p)
+                     : allocator.resolve(alloc::allocInt(cV->head.i));
+        void* elemW = (!(hdrW->unboxed & 1)) ? allocator.resolve(cW->head.p)
+                     : allocator.resolve(alloc::allocInt(cW->head.i));
+        void* elemX = (!(hdrX->unboxed & 1)) ? allocator.resolve(cX->head.p)
+                     : allocator.resolve(alloc::allocInt(cX->head.i));
+        void* elemY = (!(hdrY->unboxed & 1)) ? allocator.resolve(cY->head.p)
+                     : allocator.resolve(alloc::allocInt(cY->head.i));
+        void* elemZ = (!(hdrZ->unboxed & 1)) ? allocator.resolve(cZ->head.p)
+                     : allocator.resolve(alloc::allocInt(cZ->head.i));
+
+        HPointer result = func(elemV, elemW, elemX, elemY, elemZ);
+        results.push_back(result);
+
+        currV = cV->tail;
+        currW = cW->tail;
+        currX = cX->tail;
+        currY = cY->tail;
+        currZ = cZ->tail;
+    }
+
+    return alloc::listFromPointers(results);
 }
 
 // ============================================================================
 // Sorting
 // ============================================================================
-
-HPointer sort(HPointer list) {
-    return ListOps::sort(list);
-}
 
 HPointer sortBy(KeyFunc keyFunc, HPointer list) {
     // Wrap the KeyFunc to match ListOps::KeyExtractor signature
@@ -171,49 +307,6 @@ HPointer sortWith(CmpFunc cmpFunc, HPointer list) {
     };
 
     return ListOps::sortWith(comparator, list);
-}
-
-// ============================================================================
-// Folding
-// ============================================================================
-
-i64 sum(HPointer list) {
-    return ListOps::sum(list);
-}
-
-i64 product(HPointer list) {
-    return ListOps::product(list);
-}
-
-HPointer maximum(HPointer list) {
-    return ListOps::maximum(list);
-}
-
-HPointer minimum(HPointer list) {
-    return ListOps::minimum(list);
-}
-
-// ============================================================================
-// Membership
-// ============================================================================
-
-bool member(HPointer element, HPointer list) {
-    // member takes (Unboxable, bool, HPointer)
-    // Element is a boxed HPointer
-    return ListOps::member(alloc::boxed(element), true, list);
-}
-
-// ============================================================================
-// Range
-// ============================================================================
-
-HPointer range(i64 low, i64 high) {
-    return ListOps::range(low, high);
-}
-
-HPointer repeat(i64 n, HPointer value) {
-    // repeat takes (n, Unboxable, bool)
-    return ListOps::repeat(n, alloc::boxed(value), true);
 }
 
 } // namespace Elm::Kernel::List

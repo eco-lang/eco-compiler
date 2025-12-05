@@ -17,13 +17,6 @@ static void pushBoxed(HPointer arr, HPointer value) {
     alloc::arrayPush(arrObj, alloc::boxed(value), true);
 }
 
-// Helper to push an unboxed value
-static void pushUnboxed(HPointer arr, Unboxable value) {
-    auto& allocator = Allocator::instance();
-    void* arrObj = allocator.resolve(arr);
-    alloc::arrayPush(arrObj, value, false);
-}
-
 // ============================================================================
 // Construction
 // ============================================================================
@@ -32,26 +25,12 @@ HPointer empty() {
     return alloc::allocArray(0);
 }
 
-HPointer singleton(HPointer value) {
-    HPointer arr = alloc::allocArray(1);
-    pushBoxed(arr, value);
-    return arr;
-}
-
-HPointer withCapacity(u32 cap) {
-    return alloc::allocArray(cap);
-}
-
 // ============================================================================
-// Length and Capacity
+// Length
 // ============================================================================
 
 u32 length(void* array) {
     return alloc::arrayLength(array);
-}
-
-u32 capacity(void* array) {
-    return alloc::arrayCapacity(array);
 }
 
 // ============================================================================
@@ -109,16 +88,6 @@ HPointer initializeFromList(u32 max, HPointer list) {
 
 Unboxable unsafeGet(u32 index, void* array) {
     return alloc::arrayGet(array, index);
-}
-
-HPointer get(u32 index, void* array) {
-    Unboxable val = alloc::arrayGet(array, index);
-
-    if (alloc::arrayIsUnboxed(array, index)) {
-        // Box the value
-        return alloc::allocInt(val.i);
-    }
-    return val.p;
 }
 
 HPointer unsafeSet(u32 index, HPointer value, void* array) {

@@ -18,12 +18,6 @@ namespace Elm::Kernel::Utils {
 // ============================================================================
 
 /**
- * Low-level comparison returning -1 (LT), 0 (EQ), or 1 (GT).
- * Works on Int, Float, Char, String, Tuple, List.
- */
-int cmp(void* a, void* b);
-
-/**
  * Compare two comparable values, returns Elm Order (LT, EQ, GT).
  * Order is represented as Custom with ctor 0/1/2.
  */
@@ -62,34 +56,6 @@ bool gt(void* a, void* b);
  * Greater than or equal comparison.
  */
 bool ge(void* a, void* b);
-
-// ============================================================================
-// Tuple Constructors
-// ============================================================================
-
-/**
- * Returns unit value ().
- */
-HPointer Tuple0();
-
-/**
- * Creates a 2-tuple (a, b).
- */
-HPointer Tuple2(HPointer a, HPointer b);
-
-/**
- * Creates a 3-tuple (a, b, c).
- */
-HPointer Tuple3(HPointer a, HPointer b, HPointer c);
-
-// ============================================================================
-// Character Wrapper
-// ============================================================================
-
-/**
- * Wraps a character code point as an Elm Char.
- */
-HPointer chr(u16 c);
 
 // ============================================================================
 // Append Operation
