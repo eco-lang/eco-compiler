@@ -1,103 +1,266 @@
 #ifndef ELM_KERNEL_STRING_HPP
 #define ELM_KERNEL_STRING_HPP
 
-#include <string>
-#include <functional>
-#include <optional>
+/**
+ * Elm Kernel String Module - Runtime Heap Integration
+ *
+ * This module provides string operations that work with the GC-managed heap.
+ * All strings are represented as HPointer to ElmString objects on the heap.
+ *
+ * Functions delegate to StringOps helpers from the runtime allocator.
+ */
+
+#include "allocator/Heap.hpp"
+#include "allocator/HeapHelpers.hpp"
 
 namespace Elm::Kernel::String {
 
-// Forward declarations
-struct Value;
-struct List;
-struct Maybe;
+// ============================================================================
+// Length and Character Access
+// ============================================================================
 
-// Length of string
-size_t length(const std::u16string& str);
+/**
+ * Returns the number of code units in a string.
+ * Equivalent to Elm's String.length for BMP characters.
+ */
+i64 length(void* str);
 
-// String concatenation
-std::u16string append(const std::u16string& a, const std::u16string& b);
+/**
+ * Checks if a string is empty.
+ */
+bool isEmpty(HPointer str);
 
-// Prepend a character to a string
-std::u16string cons(char32_t c, const std::u16string& str);
+// ============================================================================
+// Concatenation
+// ============================================================================
 
-// Remove first character and return (char, rest) or Nothing
-Value* uncons(const std::u16string& str);
+/**
+ * Appends two strings: a ++ b
+ */
+HPointer append(void* a, void* b);
 
-// Convert list of characters to string
-std::u16string fromList(List* chars);
+/**
+ * Concatenates a list of strings.
+ */
+HPointer concat(HPointer stringList);
 
-// Map over characters in string
-std::u16string map(std::function<char32_t(char32_t)> func, const std::u16string& str);
+/**
+ * Joins strings with a separator.
+ */
+HPointer join(void* sep, HPointer stringList);
 
-// Filter characters in string
-std::u16string filter(std::function<bool(char32_t)> pred, const std::u16string& str);
+// ============================================================================
+// Character Operations
+// ============================================================================
 
-// Fold left over characters
-Value* foldl(std::function<Value*(char32_t, Value*)> func, Value* acc, const std::u16string& str);
+/**
+ * Prepends a character to a string.
+ * Takes a Unicode code point (char32_t stored as u16 for BMP).
+ */
+HPointer cons(u16 c, void* str);
 
-// Fold right over characters
-Value* foldr(std::function<Value*(char32_t, Value*)> func, Value* acc, const std::u16string& str);
+/**
+ * Removes and returns the first character.
+ * Returns Just(Tuple2(char, rest)) or Nothing if empty.
+ */
+HPointer uncons(void* str);
 
-// Check if any character satisfies predicate
-bool any(std::function<bool(char32_t)> pred, const std::u16string& str);
+/**
+ * Converts a list of characters to a string.
+ */
+HPointer fromList(HPointer chars);
 
-// Check if all characters satisfy predicate
-bool all(std::function<bool(char32_t)> pred, const std::u16string& str);
+/**
+ * Converts a string to a list of single-character strings.
+ */
+HPointer toList(void* str);
 
-// Reverse a string
-std::u16string reverse(const std::u16string& str);
+// ============================================================================
+// Higher-Order Operations
+// ============================================================================
 
-// Slice a string
-std::u16string slice(int start, int end, const std::u16string& str);
+/**
+ * Function pointer for character transformation.
+ */
+using CharMapper = u16 (*)(u16);
 
-// Split string by separator
-List* split(const std::u16string& sep, const std::u16string& str);
+/**
+ * Function pointer for character predicates.
+ */
+using CharPredicate = bool (*)(u16);
 
-// Join strings with separator
-std::u16string join(const std::u16string& sep, List* strings);
+/**
+ * Maps a function over each character, producing a new string.
+ */
+HPointer map(CharMapper func, void* str);
 
-// Split into lines
-List* lines(const std::u16string& str);
+/**
+ * Filters characters based on a predicate.
+ */
+HPointer filter(CharPredicate pred, void* str);
 
-// Split into words
-List* words(const std::u16string& str);
+/**
+ * Checks if any character satisfies a predicate.
+ */
+bool any(CharPredicate pred, void* str);
 
-// Trim whitespace from both ends
-std::u16string trim(const std::u16string& str);
+/**
+ * Checks if all characters satisfy a predicate.
+ */
+bool all(CharPredicate pred, void* str);
 
-// Trim whitespace from left
-std::u16string trimLeft(const std::u16string& str);
+// ============================================================================
+// Slicing
+// ============================================================================
 
-// Trim whitespace from right
-std::u16string trimRight(const std::u16string& str);
+/**
+ * Extracts a substring from start (inclusive) to end (exclusive).
+ * Negative indices count from end.
+ */
+HPointer slice(i64 start, i64 end, void* str);
 
-// Check if string starts with prefix
-bool startsWith(const std::u16string& prefix, const std::u16string& str);
+/**
+ * Returns the first n characters.
+ */
+HPointer left(i64 n, void* str);
 
-// Check if string ends with suffix
-bool endsWith(const std::u16string& suffix, const std::u16string& str);
+/**
+ * Returns the last n characters.
+ */
+HPointer right(i64 n, void* str);
 
-// Check if string contains substring
-bool contains(const std::u16string& sub, const std::u16string& str);
+/**
+ * Drops the first n characters.
+ */
+HPointer dropLeft(i64 n, void* str);
 
-// Find all indexes of substring
-List* indexes(const std::u16string& sub, const std::u16string& str);
+/**
+ * Drops the last n characters.
+ */
+HPointer dropRight(i64 n, void* str);
 
-// Convert to lowercase
-std::u16string toLower(const std::u16string& str);
+// ============================================================================
+// Splitting
+// ============================================================================
 
-// Convert to uppercase
-std::u16string toUpper(const std::u16string& str);
+/**
+ * Splits a string on a separator into a list of strings.
+ */
+HPointer split(void* sep, void* str);
 
-// Parse string as integer
-Value* toInt(const std::u16string& str);
+/**
+ * Splits a string into lines.
+ */
+HPointer lines(void* str);
 
-// Parse string as float
-Value* toFloat(const std::u16string& str);
+/**
+ * Splits a string into words.
+ */
+HPointer words(void* str);
 
-// Convert number to string
-std::u16string fromNumber(double n);
+// ============================================================================
+// Transformation
+// ============================================================================
+
+/**
+ * Reverses a string.
+ */
+HPointer reverse(void* str);
+
+/**
+ * Converts string to uppercase (ASCII only).
+ */
+HPointer toUpper(void* str);
+
+/**
+ * Converts string to lowercase (ASCII only).
+ */
+HPointer toLower(void* str);
+
+/**
+ * Trims whitespace from both ends.
+ */
+HPointer trim(void* str);
+
+/**
+ * Trims whitespace from the left.
+ */
+HPointer trimLeft(void* str);
+
+/**
+ * Trims whitespace from the right.
+ */
+HPointer trimRight(void* str);
+
+/**
+ * Pads string on the left to reach at least n characters.
+ */
+HPointer padLeft(i64 n, u16 padChar, void* str);
+
+/**
+ * Pads string on the right to reach at least n characters.
+ */
+HPointer padRight(i64 n, u16 padChar, void* str);
+
+/**
+ * Repeats a string n times.
+ */
+HPointer repeat(i64 n, void* str);
+
+// ============================================================================
+// Searching
+// ============================================================================
+
+/**
+ * Checks if str starts with prefix.
+ */
+bool startsWith(void* prefix, void* str);
+
+/**
+ * Checks if str ends with suffix.
+ */
+bool endsWith(void* suffix, void* str);
+
+/**
+ * Checks if the substring needle is contained in haystack.
+ */
+bool contains(void* needle, void* haystack);
+
+/**
+ * Returns a list of all indices where needle appears in haystack.
+ */
+HPointer indexes(void* needle, void* haystack);
+
+// ============================================================================
+// Conversion
+// ============================================================================
+
+/**
+ * Parses an integer from a string.
+ * Returns Just(int) on success, Nothing on failure.
+ */
+HPointer toInt(void* str);
+
+/**
+ * Parses a float from a string.
+ * Returns Just(float) on success, Nothing on failure.
+ */
+HPointer toFloat(void* str);
+
+/**
+ * Converts an integer to a string.
+ */
+HPointer fromInt(i64 n);
+
+/**
+ * Converts a float to a string.
+ */
+HPointer fromFloat(f64 n);
+
+/**
+ * Converts a character to a single-character string.
+ */
+HPointer fromChar(u16 c);
 
 } // namespace Elm::Kernel::String
 

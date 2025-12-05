@@ -1,57 +1,118 @@
 #ifndef ELM_KERNEL_JSON_HPP
 #define ELM_KERNEL_JSON_HPP
 
-#include <string>
+/**
+ * Elm Kernel Json Module - Runtime Heap Integration
+ *
+ * Provides JSON encoding/decoding using GC-managed heap values.
+ * Note: This is a stub - full implementation requires JSON parser.
+ */
+
+#include "allocator/Heap.hpp"
+#include "allocator/HeapHelpers.hpp"
 #include <functional>
+#include <memory>
 
 namespace Elm::Kernel::Json {
 
 // Forward declarations
-struct Value;
-struct Decoder;
 struct JsonValue;
-struct List;
+struct Decoder;
 
-// Decoders
-Decoder* decodeString();
-Decoder* decodeBool();
-Decoder* decodeInt();
-Decoder* decodeFloat();
-Decoder* decodeNull(Value* fallback);
-Decoder* decodeList(Decoder* decoder);
-Decoder* decodeArray(Decoder* decoder);
-Decoder* decodeField(const std::u16string& field, Decoder* decoder);
-Decoder* decodeIndex(int index, Decoder* decoder);
-Decoder* decodeKeyValuePairs(Decoder* decoder);
-Decoder* decodeValue();
+using JsonValuePtr = std::shared_ptr<JsonValue>;
+using DecoderPtr = std::shared_ptr<Decoder>;
 
-// Decoder combinators
-Decoder* map1(std::function<Value*(Value*)> func, Decoder* d1);
-Decoder* map2(std::function<Value*(Value*, Value*)> func, Decoder* d1, Decoder* d2);
-Decoder* map3(std::function<Value*(Value*, Value*, Value*)> func, Decoder* d1, Decoder* d2, Decoder* d3);
-Decoder* map4(std::function<Value*(Value*, Value*, Value*, Value*)> func, Decoder* d1, Decoder* d2, Decoder* d3, Decoder* d4);
-Decoder* map5(std::function<Value*(Value*, Value*, Value*, Value*, Value*)> func, Decoder* d1, Decoder* d2, Decoder* d3, Decoder* d4, Decoder* d5);
-Decoder* map6(std::function<Value*(Value*, Value*, Value*, Value*, Value*, Value*)> func, Decoder* d1, Decoder* d2, Decoder* d3, Decoder* d4, Decoder* d5, Decoder* d6);
-Decoder* map7(std::function<Value*(Value*, Value*, Value*, Value*, Value*, Value*, Value*)> func, Decoder* d1, Decoder* d2, Decoder* d3, Decoder* d4, Decoder* d5, Decoder* d6, Decoder* d7);
-Decoder* map8(std::function<Value*(Value*, Value*, Value*, Value*, Value*, Value*, Value*, Value*)> func, Decoder* d1, Decoder* d2, Decoder* d3, Decoder* d4, Decoder* d5, Decoder* d6, Decoder* d7, Decoder* d8);
+// JSON value types
+enum class JsonType { Null, Bool, Int, Float, String, Array, Object };
 
-Decoder* andThen(std::function<Decoder*(Value*)> callback, Decoder* decoder);
-Decoder* oneOf(List* decoders);
-Decoder* succeed(Value* value);
-Decoder* fail(const std::u16string& message);
+// Decoder callback types
+using AndThenCallback = std::function<DecoderPtr(HPointer)>;
+using MapFn = std::function<HPointer(std::vector<HPointer>&)>;
 
-// Running decoders
-Value* run(Decoder* decoder, JsonValue* value);
-Value* runOnString(Decoder* decoder, const std::u16string& jsonString);
+// ============================================================================
+// Primitive Decoders
+// ============================================================================
 
+DecoderPtr decodeString();
+DecoderPtr decodeBool();
+DecoderPtr decodeInt();
+DecoderPtr decodeFloat();
+DecoderPtr decodeNull(HPointer fallback);
+
+// ============================================================================
+// Collection Decoders
+// ============================================================================
+
+DecoderPtr decodeList(DecoderPtr decoder);
+DecoderPtr decodeArray(DecoderPtr decoder);
+DecoderPtr decodeField(void* fieldName, DecoderPtr decoder);
+DecoderPtr decodeIndex(i64 index, DecoderPtr decoder);
+DecoderPtr decodeKeyValuePairs(DecoderPtr decoder);
+DecoderPtr decodeValue();
+
+// ============================================================================
+// Decoder Combinators
+// ============================================================================
+
+DecoderPtr succeed(HPointer value);
+DecoderPtr fail(void* message);
+DecoderPtr andThen(AndThenCallback callback, DecoderPtr decoder);
+DecoderPtr oneOf(HPointer decoders);
+
+// ============================================================================
+// Running Decoders
+// ============================================================================
+
+/**
+ * Run decoder on JSON value.
+ * Returns Result (Ok value | Err error).
+ */
+HPointer run(DecoderPtr decoder, JsonValuePtr value);
+
+/**
+ * Run decoder on JSON string.
+ * Returns Result (Ok value | Err error).
+ */
+HPointer runOnString(DecoderPtr decoder, void* jsonString);
+
+// ============================================================================
 // Encoding
-std::u16string encode(int indent, JsonValue* value);
-JsonValue* wrap(Value* value);
-JsonValue* encodeNull();
-JsonValue* emptyArray();
-JsonValue* emptyObject();
-JsonValue* addEntry(std::function<JsonValue*(Value*)> func, Value* entry, JsonValue* array);
-JsonValue* addField(const std::u16string& key, JsonValue* value, JsonValue* object);
+// ============================================================================
+
+/**
+ * Encode JSON value to string with indentation.
+ */
+HPointer encode(i64 indent, JsonValuePtr value);
+
+/**
+ * Wrap an Elm value as JSON.
+ */
+JsonValuePtr wrap(HPointer value);
+
+/**
+ * Create JSON null.
+ */
+JsonValuePtr encodeNull();
+
+/**
+ * Create empty JSON array.
+ */
+JsonValuePtr emptyArray();
+
+/**
+ * Create empty JSON object.
+ */
+JsonValuePtr emptyObject();
+
+// ============================================================================
+// Parsing
+// ============================================================================
+
+/**
+ * Parse JSON string to JsonValue.
+ * Returns nullptr on parse error.
+ */
+JsonValuePtr parse(void* jsonString);
 
 } // namespace Elm::Kernel::Json
 

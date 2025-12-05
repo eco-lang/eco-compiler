@@ -1,274 +1,219 @@
+/**
+ * Elm Kernel List Module - Runtime Heap Integration
+ *
+ * This module delegates to ListOps helpers from the runtime allocator.
+ * All list operations work with GC-managed Cons cells on the heap.
+ */
+
 #include "List.hpp"
-#include <stdexcept>
-#include <vector>
-#include <algorithm>
+#include "allocator/ListOps.hpp"
+#include "allocator/Allocator.hpp"
 
 namespace Elm::Kernel::List {
 
-/*
- * List representation in Elm/JS:
- *
- * var _List_Nil = { $: 0 };  // Empty list (PROD) or { $: '[]' } (DEBUG)
- *
- * function _List_Cons(hd, tl) { return { $: 1, a: hd, b: tl }; }  // PROD
- * // or { $: '::', a: hd, b: tl } (DEBUG)
- *
- * List is a singly-linked list:
- * - $.$ == 0 or '[]': Nil (empty)
- * - $.$ == 1 or '::': Cons node with head ($.a) and tail ($.b)
- *
- * In C++, we use a List struct with tag, head, and tail pointers.
- */
+// ============================================================================
+// Construction
+// ============================================================================
 
-List* cons(Value* head, List* tail) {
-    /*
-     * JS: var _List_cons = F2(_List_Cons);
-     *     function _List_Cons(hd, tl) { return { $: 1, a: hd, b: tl }; }
-     *
-     * PSEUDOCODE:
-     * - Create a new Cons cell with given head and tail
-     * - Return the new list node
-     *
-     * HELPERS: _List_Cons (constructor)
-     * LIBRARIES: None (memory allocation)
-     */
-    // TODO: Allocate new Cons cell using runtime allocator
-    throw std::runtime_error("Elm.Kernel.List.cons: needs runtime allocator integration");
+HPointer Nil() {
+    return alloc::listNil();
 }
 
-List* fromArray(Array* array) {
-    /*
-     * JS: function _List_fromArray(arr)
-     *     {
-     *         var out = _List_Nil;
-     *         for (var i = arr.length; i--; )
-     *         {
-     *             out = _List_Cons(arr[i], out);
-     *         }
-     *         return out;
-     *     }
-     *
-     * PSEUDOCODE:
-     * - Start with empty list (Nil)
-     * - Iterate backwards through array
-     * - For each element, prepend to list using Cons
-     * - Return the resulting list
-     *
-     * NOTE: Iterating backwards ensures the list is in the same order
-     * as the array (since cons prepends).
-     *
-     * HELPERS:
-     * - _List_Nil (empty list constant)
-     * - _List_Cons (constructs Cons cell)
-     *
-     * LIBRARIES: None
-     */
-    // TODO: Implement when Array and List types are available
-    throw std::runtime_error("Elm.Kernel.List.fromArray: needs type integration");
+HPointer Cons(Unboxable head, HPointer tail, bool headIsBoxed) {
+    return alloc::cons(head, tail, headIsBoxed);
 }
 
-Array* toArray(List* list) {
-    /*
-     * JS: function _List_toArray(xs)
-     *     {
-     *         for (var out = []; xs.b; xs = xs.b) // WHILE_CONS
-     *         {
-     *             out.push(xs.a);
-     *         }
-     *         return out;
-     *     }
-     *
-     * PSEUDOCODE:
-     * - Create empty output array
-     * - While list is a Cons cell (has tail):
-     *   - Push head to array
-     *   - Move to tail
-     * - Return array
-     *
-     * NOTE: xs.b being truthy means xs is a Cons (has tail).
-     * When xs is Nil, xs.b is undefined (falsy), loop ends.
-     *
-     * HELPERS: None
-     * LIBRARIES: None
-     */
-    // TODO: Implement when Array and List types are available
-    throw std::runtime_error("Elm.Kernel.List.toArray: needs type integration");
+HPointer ConsBoxed(HPointer head, HPointer tail) {
+    return alloc::cons(alloc::boxed(head), tail, true);
 }
 
-List* map2(std::function<Value*(Value*, Value*)> func, List* xs, List* ys) {
-    /*
-     * JS: var _List_map2 = F3(function(f, xs, ys)
-     *     {
-     *         for (var arr = []; xs.b && ys.b; xs = xs.b, ys = ys.b) // WHILE_CONSES
-     *         {
-     *             arr.push(A2(f, xs.a, ys.a));
-     *         }
-     *         return _List_fromArray(arr);
-     *     });
-     *
-     * PSEUDOCODE:
-     * - Create empty array for results
-     * - While both lists are non-empty (Cons):
-     *   - Apply f to heads of both lists
-     *   - Push result to array
-     *   - Advance both lists to their tails
-     * - Convert array to list and return
-     *
-     * NOTE: Stops when either list is exhausted (zip behavior).
-     *
-     * HELPERS:
-     * - A2 (apply 2-argument function)
-     * - _List_fromArray (converts array to list)
-     *
-     * LIBRARIES: None
-     */
-    // TODO: Implement when types are available
-    throw std::runtime_error("Elm.Kernel.List.map2: needs type integration");
+HPointer fromArray(const std::vector<HPointer>& array) {
+    return alloc::listFromPointers(array);
 }
 
-List* map3(std::function<Value*(Value*, Value*, Value*)> func, List* xs, List* ys, List* zs) {
-    /*
-     * JS: var _List_map3 = F4(function(f, xs, ys, zs)
-     *     {
-     *         for (var arr = []; xs.b && ys.b && zs.b; xs = xs.b, ys = ys.b, zs = zs.b) // WHILE_CONSES
-     *         {
-     *             arr.push(A3(f, xs.a, ys.a, zs.a));
-     *         }
-     *         return _List_fromArray(arr);
-     *     });
-     *
-     * PSEUDOCODE:
-     * - Create empty array for results
-     * - While all three lists are non-empty (Cons):
-     *   - Apply f to heads of all three lists
-     *   - Push result to array
-     *   - Advance all lists to their tails
-     * - Convert array to list and return
-     *
-     * HELPERS:
-     * - A3 (apply 3-argument function)
-     * - _List_fromArray (converts array to list)
-     *
-     * LIBRARIES: None
-     */
-    // TODO: Implement when types are available
-    throw std::runtime_error("Elm.Kernel.List.map3: needs type integration");
+std::vector<HPointer> toArray(HPointer list) {
+    // ListOps::toVector returns vector<pair<Unboxable, bool>>
+    // We need to convert to vector<HPointer>, boxing unboxed values
+    auto pairs = ListOps::toVector(list);
+    std::vector<HPointer> result;
+    result.reserve(pairs.size());
+
+    for (const auto& [val, is_boxed] : pairs) {
+        if (is_boxed) {
+            result.push_back(val.p);
+        } else {
+            // Box the unboxed value
+            result.push_back(alloc::allocInt(val.i));
+        }
+    }
+
+    return result;
 }
 
-List* map4(std::function<Value*(Value*, Value*, Value*, Value*)> func, List* ws, List* xs, List* ys, List* zs) {
-    /*
-     * JS: var _List_map4 = F5(function(f, ws, xs, ys, zs)
-     *     {
-     *         for (var arr = []; ws.b && xs.b && ys.b && zs.b; ws = ws.b, xs = xs.b, ys = ys.b, zs = zs.b) // WHILE_CONSES
-     *         {
-     *             arr.push(A4(f, ws.a, xs.a, ys.a, zs.a));
-     *         }
-     *         return _List_fromArray(arr);
-     *     });
-     *
-     * PSEUDOCODE:
-     * - Create empty array for results
-     * - While all four lists are non-empty (Cons):
-     *   - Apply f to heads of all four lists
-     *   - Push result to array
-     *   - Advance all lists to their tails
-     * - Convert array to list and return
-     *
-     * HELPERS:
-     * - A4 (apply 4-argument function)
-     * - _List_fromArray (converts array to list)
-     *
-     * LIBRARIES: None
-     */
-    // TODO: Implement when types are available
-    throw std::runtime_error("Elm.Kernel.List.map4: needs type integration");
+// ============================================================================
+// Basic Operations
+// ============================================================================
+
+bool isEmpty(HPointer list) {
+    return ListOps::isEmpty(list);
 }
 
-List* map5(std::function<Value*(Value*, Value*, Value*, Value*, Value*)> func, List* vs, List* ws, List* xs, List* ys, List* zs) {
-    /*
-     * JS: var _List_map5 = F6(function(f, vs, ws, xs, ys, zs)
-     *     {
-     *         for (var arr = []; vs.b && ws.b && xs.b && ys.b && zs.b; vs = vs.b, ws = ws.b, xs = xs.b, ys = ys.b, zs = zs.b) // WHILE_CONSES
-     *         {
-     *             arr.push(A5(f, vs.a, ws.a, xs.a, ys.a, zs.a));
-     *         }
-     *         return _List_fromArray(arr);
-     *     });
-     *
-     * PSEUDOCODE:
-     * - Create empty array for results
-     * - While all five lists are non-empty (Cons):
-     *   - Apply f to heads of all five lists
-     *   - Push result to array
-     *   - Advance all lists to their tails
-     * - Convert array to list and return
-     *
-     * HELPERS:
-     * - A5 (apply 5-argument function)
-     * - _List_fromArray (converts array to list)
-     *
-     * LIBRARIES: None
-     */
-    // TODO: Implement when types are available
-    throw std::runtime_error("Elm.Kernel.List.map5: needs type integration");
+i64 length(HPointer list) {
+    return ListOps::length(list);
 }
 
-List* sortBy(std::function<Value*(Value*)> func, List* list) {
-    /*
-     * JS: var _List_sortBy = F2(function(f, xs)
-     *     {
-     *         return _List_fromArray(_List_toArray(xs).sort(function(a, b) {
-     *             return __Utils_cmp(f(a), f(b));
-     *         }));
-     *     });
-     *
-     * PSEUDOCODE:
-     * - Convert list to array
-     * - Sort array using comparison function:
-     *   - For each pair (a, b), compare f(a) with f(b)
-     *   - Use Utils.cmp for Elm-compatible comparison
-     * - Convert sorted array back to list
-     * - Return result
-     *
-     * HELPERS:
-     * - _List_toArray (converts list to array)
-     * - _List_fromArray (converts array to list)
-     * - __Utils_cmp (Elm comparison function returning -1, 0, or 1)
-     *
-     * LIBRARIES: std::sort (or manual sort implementation)
-     */
-    // TODO: Implement when types are available
-    throw std::runtime_error("Elm.Kernel.List.sortBy: needs type integration");
+HPointer head(HPointer list) {
+    return ListOps::head(list);
 }
 
-List* sortWith(std::function<int(Value*, Value*)> func, List* list) {
-    /*
-     * JS: var _List_sortWith = F2(function(f, xs)
-     *     {
-     *         return _List_fromArray(_List_toArray(xs).sort(function(a, b) {
-     *             var ord = A2(f, a, b);
-     *             return ord === __Basics_EQ ? 0 : ord === __Basics_LT ? -1 : 1;
-     *         }));
-     *     });
-     *
-     * PSEUDOCODE:
-     * - Convert list to array
-     * - Sort array using custom comparison function:
-     *   - Apply f(a, b) to get Elm Order (LT, EQ, GT)
-     *   - Convert Order to numeric: EQ->0, LT->-1, GT->1
-     * - Convert sorted array back to list
-     * - Return result
-     *
-     * HELPERS:
-     * - _List_toArray (converts list to array)
-     * - _List_fromArray (converts array to list)
-     * - A2 (apply 2-argument function)
-     * - __Basics_EQ, __Basics_LT (Order constructors)
-     *
-     * LIBRARIES: std::sort (or manual sort implementation)
-     */
-    // TODO: Implement when types are available
-    throw std::runtime_error("Elm.Kernel.List.sortWith: needs type integration");
+HPointer tail(HPointer list) {
+    return ListOps::tail(list);
+}
+
+// ============================================================================
+// Map Operations (multiple lists)
+// ============================================================================
+
+HPointer map2(HPointer xs, HPointer ys) {
+    return ListOps::map2(xs, ys);
+}
+
+HPointer map3(HPointer xs, HPointer ys, HPointer zs) {
+    return ListOps::map3(xs, ys, zs);
+}
+
+// ============================================================================
+// Transformation
+// ============================================================================
+
+HPointer reverse(HPointer list) {
+    return ListOps::reverse(list);
+}
+
+HPointer append(HPointer xs, HPointer ys) {
+    return ListOps::append(xs, ys);
+}
+
+HPointer concat(HPointer listOfLists) {
+    return ListOps::concat(listOfLists);
+}
+
+HPointer take(i64 n, HPointer list) {
+    return ListOps::take(n, list);
+}
+
+HPointer drop(i64 n, HPointer list) {
+    return ListOps::drop(n, list);
+}
+
+// ============================================================================
+// Sorting
+// ============================================================================
+
+HPointer sort(HPointer list) {
+    return ListOps::sort(list);
+}
+
+HPointer sortBy(KeyFunc keyFunc, HPointer list) {
+    // Wrap the KeyFunc to match ListOps::KeyExtractor signature
+    // KeyExtractor: (Unboxable, bool) -> i64
+    // KeyFunc: (void*) -> HPointer
+    auto& allocator = Allocator::instance();
+
+    ListOps::KeyExtractor extractor = [&allocator, keyFunc](Unboxable val, bool is_boxed) -> i64 {
+        void* elem;
+        if (is_boxed) {
+            elem = allocator.resolve(val.p);
+        } else {
+            // Box for the callback
+            HPointer boxed = alloc::allocInt(val.i);
+            elem = allocator.resolve(boxed);
+        }
+
+        HPointer keyResult = keyFunc(elem);
+        // Assume key is an int for sorting
+        void* keyObj = allocator.resolve(keyResult);
+        if (keyObj) {
+            ElmInt* intVal = static_cast<ElmInt*>(keyObj);
+            return intVal->value;
+        }
+        return 0;
+    };
+
+    return ListOps::sortBy(extractor, list);
+}
+
+HPointer sortWith(CmpFunc cmpFunc, HPointer list) {
+    // Wrap the CmpFunc to match ListOps::Comparator signature
+    // Comparator: (Unboxable, bool, Unboxable, bool) -> int
+    // CmpFunc: (void*, void*) -> i64
+    auto& allocator = Allocator::instance();
+
+    ListOps::Comparator comparator = [&allocator, cmpFunc](Unboxable a, bool a_boxed, Unboxable b, bool b_boxed) -> int {
+        void* elemA;
+        void* elemB;
+
+        if (a_boxed) {
+            elemA = allocator.resolve(a.p);
+        } else {
+            HPointer boxed = alloc::allocInt(a.i);
+            elemA = allocator.resolve(boxed);
+        }
+
+        if (b_boxed) {
+            elemB = allocator.resolve(b.p);
+        } else {
+            HPointer boxed = alloc::allocInt(b.i);
+            elemB = allocator.resolve(boxed);
+        }
+
+        return static_cast<int>(cmpFunc(elemA, elemB));
+    };
+
+    return ListOps::sortWith(comparator, list);
+}
+
+// ============================================================================
+// Folding
+// ============================================================================
+
+i64 sum(HPointer list) {
+    return ListOps::sum(list);
+}
+
+i64 product(HPointer list) {
+    return ListOps::product(list);
+}
+
+HPointer maximum(HPointer list) {
+    return ListOps::maximum(list);
+}
+
+HPointer minimum(HPointer list) {
+    return ListOps::minimum(list);
+}
+
+// ============================================================================
+// Membership
+// ============================================================================
+
+bool member(HPointer element, HPointer list) {
+    // member takes (Unboxable, bool, HPointer)
+    // Element is a boxed HPointer
+    return ListOps::member(alloc::boxed(element), true, list);
+}
+
+// ============================================================================
+// Range
+// ============================================================================
+
+HPointer range(i64 low, i64 high) {
+    return ListOps::range(low, high);
+}
+
+HPointer repeat(i64 n, HPointer value) {
+    // repeat takes (n, Unboxable, bool)
+    return ListOps::repeat(n, alloc::boxed(value), true);
 }
 
 } // namespace Elm::Kernel::List

@@ -1,41 +1,64 @@
 #ifndef ELM_KERNEL_HTTP_HPP
 #define ELM_KERNEL_HTTP_HPP
 
-#include <string>
-#include <functional>
+/**
+ * Elm Kernel Http Module - Runtime Heap Integration
+ *
+ * Provides HTTP request operations using GC-managed heap values.
+ * Note: This is a stub - full implementation requires HTTP client library.
+ */
+
+#include "allocator/Heap.hpp"
+#include "allocator/HeapHelpers.hpp"
+#include "../core/Scheduler.hpp"
 
 namespace Elm::Kernel::Http {
 
-// Forward declarations
-struct Value;
-struct Task;
-struct Body;
-struct Expect;
-struct Bytes;
+using TaskPtr = Scheduler::TaskPtr;
 
-// Create empty body
-Body* emptyBody();
+// Body types
+enum class BodyType { Empty, String, Json, Bytes, FormData };
 
-// Create a key-value pair for headers/params
-Value* pair(const std::u16string& key, const std::u16string& value);
+/**
+ * Create empty body.
+ */
+HPointer emptyBody();
 
-// Convert bytes to blob
-Value* bytesToBlob(Bytes* bytes, const std::u16string& mimeType);
+/**
+ * Create body with string content.
+ */
+HPointer stringBody(void* contentType, void* content);
 
-// Convert to DataView
-Value* toDataView(Bytes* bytes);
+/**
+ * Create a key-value pair for headers/params.
+ */
+HPointer pair(void* key, void* value);
 
-// Convert to FormData
-Value* toFormData(Value* parts);
+/**
+ * Convert HTTP request to Task.
+ * Returns Task that fails with NetworkError (not implemented).
+ */
+TaskPtr toTask(HPointer request);
 
-// Create an expectation for response handling
-Expect* expect(const std::u16string& responseType, std::function<Value*(Value*)> toValue);
+/**
+ * Cancel an HTTP request.
+ */
+void cancel(void* tracker);
 
-// Map over an expectation
-Expect* mapExpect(std::function<Value*(Value*)> func, Expect* expect);
+/**
+ * Create BadUrl response.
+ */
+HPointer badUrl(void* url);
 
-// Convert HTTP request to Task
-Task* toTask(Value* request);
+/**
+ * Create Timeout response.
+ */
+HPointer timeout();
+
+/**
+ * Create NetworkError response.
+ */
+HPointer networkError();
 
 } // namespace Elm::Kernel::Http
 

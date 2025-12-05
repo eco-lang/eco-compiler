@@ -5,6 +5,9 @@ project(elm-kernel LANGUAGES CXX)
 # Stub implementations of Elm kernel functions
 
 add_library(elm-kernel
+    # Types (header-only, but listed for IDE support)
+    # src/types/ElmValue.hpp
+
     # Core
     src/core/Basics.cpp
     src/core/Bitwise.cpp
@@ -53,6 +56,7 @@ add_library(elm-kernel
 target_include_directories(elm-kernel
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/src
 )
 
 target_compile_features(elm-kernel PUBLIC cxx_std_20)

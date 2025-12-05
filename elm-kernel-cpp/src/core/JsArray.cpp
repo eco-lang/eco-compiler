@@ -1,356 +1,360 @@
+/**
+ * Elm Kernel JsArray Module - Runtime Heap Integration
+ *
+ * This module provides array operations using the GC-managed ElmArray type.
+ * Operations maintain immutable semantics by creating new arrays.
+ */
+
 #include "JsArray.hpp"
-#include <stdexcept>
-#include <algorithm>
+#include "allocator/Allocator.hpp"
 
 namespace Elm::Kernel::JsArray {
 
-/*
- * JsArray is a mutable JavaScript array used internally by Elm's Array type.
- * Elm's Array uses a relaxed radix balanced tree (RRB tree) structure,
- * and JsArray provides the leaf node operations.
- *
- * IMPORTANT: These operations create NEW arrays (immutable semantics)
- * rather than mutating in place.
- */
-
-Array* empty() {
-    /*
-     * JS: var _JsArray_empty = [];
-     *
-     * PSEUDOCODE:
-     * - Return an empty array
-     *
-     * HELPERS: None
-     * LIBRARIES: None
-     */
-    // TODO: Implement when Array type is available
-    throw std::runtime_error("Elm.Kernel.JsArray.empty: needs Array type integration");
+// Helper to push a boxed HPointer value
+static void pushBoxed(HPointer arr, HPointer value) {
+    auto& allocator = Allocator::instance();
+    void* arrObj = allocator.resolve(arr);
+    alloc::arrayPush(arrObj, alloc::boxed(value), true);
 }
 
-Array* singleton(Value* value) {
-    /*
-     * JS: function _JsArray_singleton(value) { return [value]; }
-     *
-     * PSEUDOCODE:
-     * - Create array with single element
-     * - Return the array
-     *
-     * HELPERS: None
-     * LIBRARIES: None
-     */
-    // TODO: Implement when Array type is available
-    throw std::runtime_error("Elm.Kernel.JsArray.singleton: needs Array type integration");
+// Helper to push an unboxed value
+static void pushUnboxed(HPointer arr, Unboxable value) {
+    auto& allocator = Allocator::instance();
+    void* arrObj = allocator.resolve(arr);
+    alloc::arrayPush(arrObj, value, false);
 }
 
-size_t length(Array* array) {
-    /*
-     * JS: function _JsArray_length(array) { return array.length; }
-     *
-     * PSEUDOCODE:
-     * - Return the length of the array
-     *
-     * HELPERS: None
-     * LIBRARIES: None
-     */
-    // TODO: Implement when Array type is available
-    throw std::runtime_error("Elm.Kernel.JsArray.length: needs Array type integration");
+// ============================================================================
+// Construction
+// ============================================================================
+
+HPointer empty() {
+    return alloc::allocArray(0);
 }
 
-Array* initialize(size_t len, size_t offset, std::function<Value*(size_t)> func) {
-    /*
-     * JS: var _JsArray_initialize = F3(function(size, offset, func)
-     *     {
-     *         var result = new Array(size);
-     *         for (var i = 0; i < size; i++)
-     *         {
-     *             result[i] = func(offset + i);
-     *         }
-     *         return result;
-     *     });
-     *
-     * PSEUDOCODE:
-     * - Create new array of given size
-     * - For each index i from 0 to size-1:
-     *   - Call func(offset + i) to get value
-     *   - Store result at index i
-     * - Return the array
-     *
-     * HELPERS: None
-     * LIBRARIES: None
-     */
-    // TODO: Implement when Array type is available
-    throw std::runtime_error("Elm.Kernel.JsArray.initialize: needs Array type integration");
+HPointer singleton(HPointer value) {
+    HPointer arr = alloc::allocArray(1);
+    pushBoxed(arr, value);
+    return arr;
 }
 
-Array* initializeFromList(size_t max, List* list) {
-    /*
-     * JS: var _JsArray_initializeFromList = F2(function (max, ls)
-     *     {
-     *         var result = new Array(max);
-     *         for (var i = 0; i < max && ls.b; i++)
-     *         {
-     *             result[i] = ls.a;
-     *             ls = ls.b;
-     *         }
-     *         result.length = i;
-     *         return __Utils_Tuple2(result, ls);
-     *     });
-     *
-     * PSEUDOCODE:
-     * - Create new array of max size
-     * - Copy up to max elements from list to array
-     * - Stop when max reached or list exhausted
-     * - Trim array to actual number of elements copied
-     * - Return tuple of (array, remaining list)
-     *
-     * NOTE: Returns both the array AND the unconsumed portion of the list.
-     * This is used for efficiently building RRB tree leaves from lists.
-     *
-     * HELPERS:
-     * - __Utils_Tuple2 (creates 2-tuple)
-     *
-     * LIBRARIES: None
-     */
-    // TODO: Implement when Array and List types are available
-    throw std::runtime_error("Elm.Kernel.JsArray.initializeFromList: needs type integration");
+HPointer withCapacity(u32 cap) {
+    return alloc::allocArray(cap);
 }
 
-Value* unsafeGet(size_t index, Array* array) {
-    /*
-     * JS: var _JsArray_unsafeGet = F2(function(index, array) { return array[index]; });
-     *
-     * PSEUDOCODE:
-     * - Return element at given index
-     * - No bounds checking (caller must ensure valid index)
-     *
-     * HELPERS: None
-     * LIBRARIES: None
-     */
-    // TODO: Implement when Array type is available
-    throw std::runtime_error("Elm.Kernel.JsArray.unsafeGet: needs Array type integration");
+// ============================================================================
+// Length and Capacity
+// ============================================================================
+
+u32 length(void* array) {
+    return alloc::arrayLength(array);
 }
 
-Array* unsafeSet(size_t index, Value* value, Array* array) {
-    /*
-     * JS: var _JsArray_unsafeSet = F3(function(index, value, array)
-     *     {
-     *         var length = array.length;
-     *         var result = new Array(length);
-     *         for (var i = 0; i < length; i++)
-     *         {
-     *             result[i] = array[i];
-     *         }
-     *         result[index] = value;
-     *         return result;
-     *     });
-     *
-     * PSEUDOCODE:
-     * - Create new array of same length
-     * - Copy all elements from original
-     * - Set element at index to new value
-     * - Return new array (original unchanged - immutable!)
-     *
-     * NOTE: Despite "unsafe" name, this creates a copy.
-     * The "unsafe" refers to no bounds checking.
-     *
-     * HELPERS: None
-     * LIBRARIES: None
-     */
-    // TODO: Implement when Array type is available
-    throw std::runtime_error("Elm.Kernel.JsArray.unsafeSet: needs Array type integration");
+u32 capacity(void* array) {
+    return alloc::arrayCapacity(array);
 }
 
-Array* push(Value* value, Array* array) {
-    /*
-     * JS: var _JsArray_push = F2(function(value, array)
-     *     {
-     *         var length = array.length;
-     *         var result = new Array(length + 1);
-     *         for (var i = 0; i < length; i++)
-     *         {
-     *             result[i] = array[i];
-     *         }
-     *         result[length] = value;
-     *         return result;
-     *     });
-     *
-     * PSEUDOCODE:
-     * - Create new array with length + 1
-     * - Copy all elements from original
-     * - Append new value at end
-     * - Return new array (immutable - original unchanged)
-     *
-     * HELPERS: None
-     * LIBRARIES: None
-     */
-    // TODO: Implement when Array type is available
-    throw std::runtime_error("Elm.Kernel.JsArray.push: needs Array type integration");
+// ============================================================================
+// Initialization
+// ============================================================================
+
+HPointer initialize(u32 size, u32 offset, InitFunc func) {
+    HPointer arr = alloc::allocArray(size);
+
+    for (u32 i = 0; i < size; ++i) {
+        HPointer value = func(offset + i);
+        pushBoxed(arr, value);
+    }
+
+    return arr;
 }
 
-Value* foldl(std::function<Value*(Value*, Value*)> func, Value* acc, Array* array) {
-    /*
-     * JS: var _JsArray_foldl = F3(function(func, acc, array)
-     *     {
-     *         var length = array.length;
-     *         for (var i = 0; i < length; i++)
-     *         {
-     *             acc = A2(func, array[i], acc);
-     *         }
-     *         return acc;
-     *     });
-     *
-     * PSEUDOCODE:
-     * - Initialize accumulator with acc
-     * - Iterate left-to-right through array
-     * - For each element: acc = func(element, acc)
-     * - Return final accumulator
-     *
-     * HELPERS:
-     * - A2 (apply 2-argument function)
-     *
-     * LIBRARIES: None
-     */
-    // TODO: Implement when Array type is available
-    throw std::runtime_error("Elm.Kernel.JsArray.foldl: needs Array type integration");
+HPointer initializeFromList(u32 max, HPointer list) {
+    auto& allocator = Allocator::instance();
+
+    HPointer arr = alloc::allocArray(max);
+
+    u32 count = 0;
+    HPointer current = list;
+
+    while (count < max && !alloc::isNil(current)) {
+        void* cell = allocator.resolve(current);
+        if (!cell) break;
+
+        Cons* c = static_cast<Cons*>(cell);
+        Header* hdr = static_cast<Header*>(cell);
+
+        // Check if head is unboxed
+        bool isBoxed = !(hdr->unboxed & 1);
+        void* arrObj = allocator.resolve(arr);
+
+        if (isBoxed) {
+            alloc::arrayPush(arrObj, alloc::boxed(c->head.p), true);
+        } else {
+            // For unboxed values, we can store them directly
+            alloc::arrayPush(arrObj, c->head, false);
+        }
+
+        current = c->tail;
+        ++count;
+    }
+
+    // Return Tuple2(array, remaining_list)
+    return alloc::tuple2(alloc::boxed(arr), alloc::boxed(current), 0);
 }
 
-Value* foldr(std::function<Value*(Value*, Value*)> func, Value* acc, Array* array) {
-    /*
-     * JS: var _JsArray_foldr = F3(function(func, acc, array)
-     *     {
-     *         for (var i = array.length - 1; i >= 0; i--)
-     *         {
-     *             acc = A2(func, array[i], acc);
-     *         }
-     *         return acc;
-     *     });
-     *
-     * PSEUDOCODE:
-     * - Initialize accumulator with acc
-     * - Iterate right-to-left through array
-     * - For each element: acc = func(element, acc)
-     * - Return final accumulator
-     *
-     * HELPERS:
-     * - A2 (apply 2-argument function)
-     *
-     * LIBRARIES: None
-     */
-    // TODO: Implement when Array type is available
-    throw std::runtime_error("Elm.Kernel.JsArray.foldr: needs Array type integration");
+// ============================================================================
+// Element Access
+// ============================================================================
+
+Unboxable unsafeGet(u32 index, void* array) {
+    return alloc::arrayGet(array, index);
 }
 
-Array* map(std::function<Value*(Value*)> func, Array* array) {
-    /*
-     * JS: var _JsArray_map = F2(function(func, array)
-     *     {
-     *         var length = array.length;
-     *         var result = new Array(length);
-     *         for (var i = 0; i < length; i++)
-     *         {
-     *             result[i] = func(array[i]);
-     *         }
-     *         return result;
-     *     });
-     *
-     * PSEUDOCODE:
-     * - Create new array of same length
-     * - For each element, apply func and store result
-     * - Return new array
-     *
-     * HELPERS: None
-     * LIBRARIES: None
-     */
-    // TODO: Implement when Array type is available
-    throw std::runtime_error("Elm.Kernel.JsArray.map: needs Array type integration");
+HPointer get(u32 index, void* array) {
+    Unboxable val = alloc::arrayGet(array, index);
+
+    if (alloc::arrayIsUnboxed(array, index)) {
+        // Box the value
+        return alloc::allocInt(val.i);
+    }
+    return val.p;
 }
 
-Array* indexedMap(std::function<Value*(size_t, Value*)> func, size_t offset, Array* array) {
-    /*
-     * JS: var _JsArray_indexedMap = F3(function(func, offset, array)
-     *     {
-     *         var length = array.length;
-     *         var result = new Array(length);
-     *         for (var i = 0; i < length; i++)
-     *         {
-     *             result[i] = A2(func, offset + i, array[i]);
-     *         }
-     *         return result;
-     *     });
-     *
-     * PSEUDOCODE:
-     * - Create new array of same length
-     * - For each element at index i:
-     *   - Apply func(offset + i, element)
-     *   - Store result
-     * - Return new array
-     *
-     * NOTE: offset is added to index, useful for RRB tree traversal
-     * where leaf arrays need to know their absolute position.
-     *
-     * HELPERS:
-     * - A2 (apply 2-argument function)
-     *
-     * LIBRARIES: None
-     */
-    // TODO: Implement when Array type is available
-    throw std::runtime_error("Elm.Kernel.JsArray.indexedMap: needs Array type integration");
+HPointer unsafeSet(u32 index, HPointer value, void* array) {
+    // Create a copy with the modified element
+    ElmArray* src = static_cast<ElmArray*>(array);
+    u32 len = src->length;
+
+    HPointer newArr = alloc::allocArray(len);
+    auto& allocator = Allocator::instance();
+
+    // Copy elements
+    for (u32 i = 0; i < len; ++i) {
+        void* dstObj = allocator.resolve(newArr);
+
+        if (i == index) {
+            alloc::arrayPush(dstObj, alloc::boxed(value), true);
+        } else {
+            Unboxable elem = src->elements[i];
+            bool isUnboxed = alloc::arrayIsUnboxed(array, i);
+            alloc::arrayPush(dstObj, elem, !isUnboxed);
+        }
+    }
+
+    return newArr;
 }
 
-Array* slice(int start, int end, Array* array) {
-    /*
-     * JS: var _JsArray_slice = F3(function(from, to, array) { return array.slice(from, to); });
-     *
-     * PSEUDOCODE:
-     * - Extract subarray from start (inclusive) to end (exclusive)
-     * - Handle negative indices (from end)
-     * - Return new array with sliced elements
-     *
-     * HELPERS: None
-     * LIBRARIES: None (std::vector::assign or similar)
-     */
-    // TODO: Implement when Array type is available
-    throw std::runtime_error("Elm.Kernel.JsArray.slice: needs Array type integration");
+// ============================================================================
+// Modification
+// ============================================================================
+
+HPointer push(HPointer value, void* array) {
+    ElmArray* src = static_cast<ElmArray*>(array);
+    u32 len = src->length;
+
+    // Create a new array with copy + new element
+    HPointer newArr = alloc::allocArray(len + 1);
+    auto& allocator = Allocator::instance();
+
+    // Copy existing elements
+    for (u32 i = 0; i < len; ++i) {
+        void* dstObj = allocator.resolve(newArr);
+        Unboxable elem = src->elements[i];
+        bool isUnboxed = alloc::arrayIsUnboxed(array, i);
+        alloc::arrayPush(dstObj, elem, !isUnboxed);
+    }
+
+    // Add new element
+    void* dstObj = allocator.resolve(newArr);
+    alloc::arrayPush(dstObj, alloc::boxed(value), true);
+
+    return newArr;
 }
 
-Array* appendN(size_t n, Array* dest, Array* source) {
-    /*
-     * JS: var _JsArray_appendN = F3(function(n, dest, source)
-     *     {
-     *         var destLen = dest.length;
-     *         var itemsToCopy = n - destLen;
-     *         if (itemsToCopy > source.length)
-     *         {
-     *             itemsToCopy = source.length;
-     *         }
-     *         var size = destLen + itemsToCopy;
-     *         var result = new Array(size);
-     *         for (var i = 0; i < destLen; i++)
-     *         {
-     *             result[i] = dest[i];
-     *         }
-     *         for (var i = 0; i < itemsToCopy; i++)
-     *         {
-     *             result[i + destLen] = source[i];
-     *         }
-     *         return result;
-     *     });
-     *
-     * PSEUDOCODE:
-     * - Calculate items to copy: min(n - dest.length, source.length)
-     * - Create new array of size dest.length + itemsToCopy
-     * - Copy all elements from dest
-     * - Copy itemsToCopy elements from start of source
-     * - Return new array
-     *
-     * NOTE: This is used for RRB tree rebalancing. The target size is n,
-     * so we copy enough from source to reach that size (or all of source).
-     *
-     * HELPERS: None
-     * LIBRARIES: None
-     */
-    // TODO: Implement when Array type is available
-    throw std::runtime_error("Elm.Kernel.JsArray.appendN: needs Array type integration");
+// ============================================================================
+// Folding
+// ============================================================================
+
+HPointer foldl(FoldFunc func, HPointer acc, void* array) {
+    auto& allocator = Allocator::instance();
+    ElmArray* arr = static_cast<ElmArray*>(array);
+    u32 len = arr->length;
+
+    HPointer result = acc;
+
+    for (u32 i = 0; i < len; ++i) {
+        // Get element and resolve if pointer
+        void* elem;
+        if (alloc::arrayIsUnboxed(array, i)) {
+            // Box the value for the callback
+            HPointer boxed = alloc::allocInt(arr->elements[i].i);
+            elem = allocator.resolve(boxed);
+        } else {
+            elem = allocator.resolve(arr->elements[i].p);
+        }
+
+        void* accObj = allocator.resolve(result);
+        result = func(elem, accObj);
+    }
+
+    return result;
+}
+
+HPointer foldr(FoldFunc func, HPointer acc, void* array) {
+    auto& allocator = Allocator::instance();
+    ElmArray* arr = static_cast<ElmArray*>(array);
+    u32 len = arr->length;
+
+    HPointer result = acc;
+
+    for (u32 i = len; i > 0; --i) {
+        u32 idx = i - 1;
+
+        // Get element and resolve if pointer
+        void* elem;
+        if (alloc::arrayIsUnboxed(array, idx)) {
+            // Box the value for the callback
+            HPointer boxed = alloc::allocInt(arr->elements[idx].i);
+            elem = allocator.resolve(boxed);
+        } else {
+            elem = allocator.resolve(arr->elements[idx].p);
+        }
+
+        void* accObj = allocator.resolve(result);
+        result = func(elem, accObj);
+    }
+
+    return result;
+}
+
+// ============================================================================
+// Mapping
+// ============================================================================
+
+HPointer map(MapFunc func, void* array) {
+    auto& allocator = Allocator::instance();
+    ElmArray* arr = static_cast<ElmArray*>(array);
+    u32 len = arr->length;
+
+    HPointer newArr = alloc::allocArray(len);
+
+    for (u32 i = 0; i < len; ++i) {
+        // Get element and resolve if pointer
+        void* elem;
+        if (alloc::arrayIsUnboxed(array, i)) {
+            // Box the value for the callback
+            HPointer boxed = alloc::allocInt(arr->elements[i].i);
+            elem = allocator.resolve(boxed);
+        } else {
+            elem = allocator.resolve(arr->elements[i].p);
+        }
+
+        HPointer result = func(elem);
+        void* dstObj = allocator.resolve(newArr);
+        alloc::arrayPush(dstObj, alloc::boxed(result), true);
+    }
+
+    return newArr;
+}
+
+HPointer indexedMap(IndexedMapFunc func, u32 offset, void* array) {
+    auto& allocator = Allocator::instance();
+    ElmArray* arr = static_cast<ElmArray*>(array);
+    u32 len = arr->length;
+
+    HPointer newArr = alloc::allocArray(len);
+
+    for (u32 i = 0; i < len; ++i) {
+        // Get element and resolve if pointer
+        void* elem;
+        if (alloc::arrayIsUnboxed(array, i)) {
+            // Box the value for the callback
+            HPointer boxed = alloc::allocInt(arr->elements[i].i);
+            elem = allocator.resolve(boxed);
+        } else {
+            elem = allocator.resolve(arr->elements[i].p);
+        }
+
+        HPointer result = func(offset + i, elem);
+        void* dstObj = allocator.resolve(newArr);
+        alloc::arrayPush(dstObj, alloc::boxed(result), true);
+    }
+
+    return newArr;
+}
+
+// ============================================================================
+// Slicing
+// ============================================================================
+
+HPointer slice(i64 start, i64 end, void* array) {
+    ElmArray* arr = static_cast<ElmArray*>(array);
+    i64 len = static_cast<i64>(arr->length);
+
+    // Handle negative indices
+    if (start < 0) start = std::max(i64(0), len + start);
+    if (end < 0) end = std::max(i64(0), len + end);
+
+    // Clamp to valid range
+    start = std::min(start, len);
+    end = std::min(end, len);
+
+    if (start >= end) {
+        return alloc::allocArray(0);
+    }
+
+    u32 newLen = static_cast<u32>(end - start);
+    HPointer newArr = alloc::allocArray(newLen);
+    auto& allocator = Allocator::instance();
+
+    for (i64 i = start; i < end; ++i) {
+        u32 idx = static_cast<u32>(i);
+        Unboxable elem = arr->elements[idx];
+        bool isUnboxed = alloc::arrayIsUnboxed(array, idx);
+
+        void* dstObj = allocator.resolve(newArr);
+        alloc::arrayPush(dstObj, elem, !isUnboxed);
+    }
+
+    return newArr;
+}
+
+HPointer appendN(u32 n, void* dest, void* source) {
+    ElmArray* dstArr = static_cast<ElmArray*>(dest);
+    ElmArray* srcArr = static_cast<ElmArray*>(source);
+
+    u32 destLen = dstArr->length;
+    u32 srcLen = srcArr->length;
+
+    u32 itemsToCopy = (n > destLen) ? n - destLen : 0;
+    if (itemsToCopy > srcLen) {
+        itemsToCopy = srcLen;
+    }
+
+    u32 totalLen = destLen + itemsToCopy;
+    HPointer newArr = alloc::allocArray(totalLen);
+    auto& allocator = Allocator::instance();
+
+    // Copy all from dest
+    for (u32 i = 0; i < destLen; ++i) {
+        Unboxable elem = dstArr->elements[i];
+        bool isUnboxed = alloc::arrayIsUnboxed(dest, i);
+
+        void* resultObj = allocator.resolve(newArr);
+        alloc::arrayPush(resultObj, elem, !isUnboxed);
+    }
+
+    // Copy itemsToCopy from source
+    for (u32 i = 0; i < itemsToCopy; ++i) {
+        Unboxable elem = srcArr->elements[i];
+        bool isUnboxed = alloc::arrayIsUnboxed(source, i);
+
+        void* resultObj = allocator.resolve(newArr);
+        alloc::arrayPush(resultObj, elem, !isUnboxed);
+    }
+
+    return newArr;
 }
 
 } // namespace Elm::Kernel::JsArray

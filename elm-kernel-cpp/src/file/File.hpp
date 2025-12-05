@@ -1,42 +1,100 @@
 #ifndef ELM_KERNEL_FILE_HPP
 #define ELM_KERNEL_FILE_HPP
 
-#include <string>
-#include <cstdint>
+/**
+ * Elm Kernel File Module - Runtime Heap Integration
+ *
+ * Provides file operations using GC-managed heap values.
+ * Note: This is a stub - full implementation requires platform-specific file dialogs.
+ */
+
+#include "allocator/Heap.hpp"
+#include "allocator/HeapHelpers.hpp"
+#include "../core/Scheduler.hpp"
 
 namespace Elm::Kernel::File {
 
-// Forward declarations
-struct Value;
-struct Task;
-struct File;
-struct Bytes;
-struct Decoder;
+using TaskPtr = Scheduler::TaskPtr;
 
-// File properties
-std::u16string name(File* file);
-std::u16string mime(File* file);
-int64_t size(File* file);
-int64_t lastModified(File* file);
+/**
+ * Get the name of a file.
+ * @param file A File value
+ * @return String with the file name
+ */
+HPointer name(void* file);
 
-// File reading
-Task* toString(File* file);
-Task* toBytes(File* file);
-Task* toUrl(File* file);
+/**
+ * Get the MIME type of a file.
+ * @param file A File value
+ * @return String with the MIME type
+ */
+HPointer mime(void* file);
 
-// File selection
-Task* uploadOne(const std::u16string& mimeTypes);
-Task* uploadOneOrMore(const std::u16string& mimeTypes);
+/**
+ * Get the size of a file in bytes.
+ * @param file A File value
+ * @return Int with the file size
+ */
+HPointer size(void* file);
 
-// File downloading
-Task* download(const std::u16string& name, const std::u16string& mime, const std::u16string& content);
-Task* downloadUrl(const std::u16string& name, const std::u16string& url);
+/**
+ * Get the last modified time of a file.
+ * @param file A File value
+ * @return Posix time (Int) of last modification
+ */
+HPointer lastModified(void* file);
 
-// JSON decoder for File objects
-Decoder* decoder();
+/**
+ * Read file contents as a string.
+ * @param file A File value
+ * @return Task that produces String
+ */
+TaskPtr toString(void* file);
 
-// IE compatibility helper
-Bytes* makeBytesSafeForInternetExplorer(Bytes* bytes);
+/**
+ * Read file contents as bytes.
+ * @param file A File value
+ * @return Task that produces Bytes
+ */
+TaskPtr toBytes(void* file);
+
+/**
+ * Read file contents as a data URL.
+ * @param file A File value
+ * @return Task that produces String (data: URL)
+ */
+TaskPtr toUrl(void* file);
+
+/**
+ * Open file selector for single file.
+ * @param mimeTypes List of acceptable MIME types
+ * @return Task that produces Maybe File
+ */
+TaskPtr uploadOne(void* mimeTypes);
+
+/**
+ * Open file selector for one or more files.
+ * @param mimeTypes List of acceptable MIME types
+ * @return Task that produces (File, List File)
+ */
+TaskPtr uploadOneOrMore(void* mimeTypes);
+
+/**
+ * Download string content as a file.
+ * @param fileName Name for the downloaded file
+ * @param mimeType MIME type of the content
+ * @param content String content to download
+ * @return Task that produces ()
+ */
+TaskPtr download(void* fileName, void* mimeType, void* content);
+
+/**
+ * Download a URL as a file.
+ * @param fileName Name for the downloaded file
+ * @param url URL to download
+ * @return Task that produces ()
+ */
+TaskPtr downloadUrl(void* fileName, void* url);
 
 } // namespace Elm::Kernel::File
 

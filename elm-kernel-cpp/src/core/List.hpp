@@ -1,41 +1,190 @@
 #ifndef ELM_KERNEL_LIST_HPP
 #define ELM_KERNEL_LIST_HPP
 
-#include <functional>
+/**
+ * Elm Kernel List Module - Runtime Heap Integration
+ *
+ * This module provides list operations that work with the GC-managed heap.
+ * All lists are represented as HPointer to Cons cells on the heap, with
+ * Nil represented by the embedded Const_Nil constant.
+ *
+ * Functions delegate to ListOps helpers from the runtime allocator.
+ */
+
+#include "allocator/Heap.hpp"
+#include "allocator/HeapHelpers.hpp"
 
 namespace Elm::Kernel::List {
 
-// Forward declarations
-struct Value;
-struct List;
-struct Array;
+// ============================================================================
+// Construction
+// ============================================================================
 
-// Cons - prepend element to list
-List* cons(Value* head, List* tail);
+/**
+ * Returns the empty list (Nil).
+ */
+HPointer Nil();
 
-// Convert array to list
-List* fromArray(Array* array);
+/**
+ * Creates a Cons cell: head :: tail
+ * The head can be boxed (pointer) or unboxed (primitive).
+ */
+HPointer Cons(Unboxable head, HPointer tail, bool headIsBoxed);
 
-// Convert list to array
-Array* toArray(List* list);
+/**
+ * Convenience: Cons with a boxed HPointer head.
+ */
+HPointer ConsBoxed(HPointer head, HPointer tail);
 
-// Map over two lists in parallel
-List* map2(std::function<Value*(Value*, Value*)> func, List* xs, List* ys);
+/**
+ * Converts a vector of HPointers to a list.
+ */
+HPointer fromArray(const std::vector<HPointer>& array);
 
-// Map over three lists in parallel
-List* map3(std::function<Value*(Value*, Value*, Value*)> func, List* xs, List* ys, List* zs);
+/**
+ * Converts a list to a vector of HPointers.
+ */
+std::vector<HPointer> toArray(HPointer list);
 
-// Map over four lists in parallel
-List* map4(std::function<Value*(Value*, Value*, Value*, Value*)> func, List* ws, List* xs, List* ys, List* zs);
+// ============================================================================
+// Basic Operations
+// ============================================================================
 
-// Map over five lists in parallel
-List* map5(std::function<Value*(Value*, Value*, Value*, Value*, Value*)> func, List* vs, List* ws, List* xs, List* ys, List* zs);
+/**
+ * Checks if the list is empty (Nil).
+ */
+bool isEmpty(HPointer list);
 
-// Sort list by a key function
-List* sortBy(std::function<Value*(Value*)> func, List* list);
+/**
+ * Returns the length of the list.
+ */
+i64 length(HPointer list);
 
-// Sort list with a comparison function
-List* sortWith(std::function<int(Value*, Value*)> func, List* list);
+/**
+ * Returns the head of the list, or Nothing if empty.
+ */
+HPointer head(HPointer list);
+
+/**
+ * Returns the tail of the list, or Nothing if empty.
+ */
+HPointer tail(HPointer list);
+
+// ============================================================================
+// Map Operations (multiple lists)
+// ============================================================================
+
+/**
+ * Zips two lists into a list of Tuple2.
+ * Stops when the shorter list ends.
+ */
+HPointer map2(HPointer xs, HPointer ys);
+
+/**
+ * Zips three lists into a list of Tuple3.
+ * Stops when the shortest list ends.
+ */
+HPointer map3(HPointer xs, HPointer ys, HPointer zs);
+
+// ============================================================================
+// Transformation
+// ============================================================================
+
+/**
+ * Reverses a list.
+ */
+HPointer reverse(HPointer list);
+
+/**
+ * Appends two lists: xs ++ ys
+ */
+HPointer append(HPointer xs, HPointer ys);
+
+/**
+ * Concatenates a list of lists into a single list.
+ */
+HPointer concat(HPointer listOfLists);
+
+/**
+ * Takes the first n elements.
+ */
+HPointer take(i64 n, HPointer list);
+
+/**
+ * Drops the first n elements.
+ */
+HPointer drop(i64 n, HPointer list);
+
+// ============================================================================
+// Sorting
+// ============================================================================
+
+/**
+ * Sorts a list of comparable values (ints, floats, strings).
+ */
+HPointer sort(HPointer list);
+
+/**
+ * Sorts by applying a key function to each element.
+ * keyFunc takes an element (void*) and returns a comparable value (HPointer).
+ */
+using KeyFunc = HPointer (*)(void*);
+HPointer sortBy(KeyFunc keyFunc, HPointer list);
+
+/**
+ * Sorts using a custom comparison function.
+ * cmpFunc takes two elements (void*, void*) and returns Order (LT=-1, EQ=0, GT=1).
+ */
+using CmpFunc = i64 (*)(void*, void*);
+HPointer sortWith(CmpFunc cmpFunc, HPointer list);
+
+// ============================================================================
+// Folding
+// ============================================================================
+
+/**
+ * Sum of a list of integers.
+ */
+i64 sum(HPointer list);
+
+/**
+ * Product of a list of integers.
+ */
+i64 product(HPointer list);
+
+/**
+ * Maximum of a list. Returns Nothing for empty list.
+ */
+HPointer maximum(HPointer list);
+
+/**
+ * Minimum of a list. Returns Nothing for empty list.
+ */
+HPointer minimum(HPointer list);
+
+// ============================================================================
+// Membership
+// ============================================================================
+
+/**
+ * Checks if an element is in the list.
+ * Uses structural equality.
+ */
+bool member(HPointer element, HPointer list);
+
+// ============================================================================
+// Range
+// ============================================================================
+
+/**
+ * Creates a list from low to high (inclusive).
+ */
+HPointer range(i64 low, i64 high);
+
+/**
+ * Repeats a value n times.
+ */
+HPointer repeat(i64 n, HPointer value);
 
 } // namespace Elm::Kernel::List
 

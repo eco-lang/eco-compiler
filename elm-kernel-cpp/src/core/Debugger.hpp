@@ -1,37 +1,76 @@
 #ifndef ELM_KERNEL_DEBUGGER_HPP
 #define ELM_KERNEL_DEBUGGER_HPP
 
-#include <string>
+/**
+ * Elm Kernel Debugger Module - Runtime Heap Integration
+ *
+ * Provides debugger operations using GC-managed heap values.
+ * Note: This is a stub - full implementation requires platform-specific UI.
+ */
+
+#include "allocator/Heap.hpp"
+#include "allocator/HeapHelpers.hpp"
+#include "Scheduler.hpp"
 
 namespace Elm::Kernel::Debugger {
 
-// Forward declaration for generic Elm value
-struct Value;
-struct Model;
+using TaskPtr = Scheduler::TaskPtr;
 
-// Initialize the debugger
-Value* init(Value* value);
+// Expando types for debugger value display
+enum class ExpandoTag {
+    Primitive,    // Primitive value (number, bool, etc.)
+    S,            // String value
+    Constructor,  // Custom type constructor
+    Sequence,     // List, Array, Set
+    Dictionary,   // Dict
+    Record        // Record
+};
 
-// Check if debugger is open
-bool isOpen();
+enum class SequenceTag {
+    ListSeq,
+    ArraySeq,
+    SetSeq
+};
 
-// Open the debugger
-void open();
+/**
+ * Initialize a value for debugger display (converts to Expando).
+ */
+HPointer init(HPointer value);
 
-// Scroll in the debugger history
-void scroll(Value* args);
+/**
+ * Check if debugger window is open.
+ */
+bool isOpen(HPointer popout);
 
-// Convert a message to string for display
-std::string messageToString(Value* message);
+/**
+ * Open the debugger popout window.
+ */
+TaskPtr open(HPointer popout);
 
-// Download the debugger history
-void download(Value* history);
+/**
+ * Scroll debugger sidebar to bottom.
+ */
+TaskPtr scroll(HPointer popout);
 
-// Upload debugger history
-void upload(Value* args);
+/**
+ * Convert a message value to display string.
+ */
+HPointer messageToString(HPointer message);
 
-// Unsafe type coercion (for debugger internals)
-Value* unsafeCoerce(Value* value);
+/**
+ * Download history as JSON file.
+ */
+TaskPtr download(i64 historyLength, HPointer json);
+
+/**
+ * Upload history file.
+ */
+TaskPtr upload();
+
+/**
+ * Identity function (for internal type coercion).
+ */
+HPointer unsafeCoerce(HPointer value);
 
 } // namespace Elm::Kernel::Debugger
 

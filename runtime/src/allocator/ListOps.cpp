@@ -628,6 +628,51 @@ HPointer map2(HPointer listA, HPointer listB) {
     return alloc::listFromPointers(pairs);
 }
 
+HPointer map3(HPointer listA, HPointer listB, HPointer listC) {
+    if (alloc::isNil(listA) || alloc::isNil(listB) || alloc::isNil(listC)) {
+        return alloc::listNil();
+    }
+
+    auto& allocator = Allocator::instance();
+    std::vector<HPointer> triples;
+
+    HPointer currA = listA;
+    HPointer currB = listB;
+    HPointer currC = listC;
+
+    while (!alloc::isNil(currA) && !alloc::isNil(currB) && !alloc::isNil(currC)) {
+        void* cellA = allocator.resolve(currA);
+        void* cellB = allocator.resolve(currB);
+        void* cellC = allocator.resolve(currC);
+        if (!cellA || !cellB || !cellC) break;
+
+        Cons* cA = static_cast<Cons*>(cellA);
+        Cons* cB = static_cast<Cons*>(cellB);
+        Cons* cC = static_cast<Cons*>(cellC);
+        Header* hdrA = getHeader(cellA);
+        Header* hdrB = getHeader(cellB);
+        Header* hdrC = getHeader(cellC);
+        bool boxedA = !(hdrA->unboxed & 1);
+        bool boxedB = !(hdrB->unboxed & 1);
+        bool boxedC = !(hdrC->unboxed & 1);
+
+        // Create tuple (a, b, c)
+        u32 unboxedMask = 0;
+        if (!boxedA) unboxedMask |= 1;
+        if (!boxedB) unboxedMask |= 2;
+        if (!boxedC) unboxedMask |= 4;
+
+        HPointer tuple = alloc::tuple3(cA->head, cB->head, cC->head, unboxedMask);
+        triples.push_back(tuple);
+
+        currA = cA->tail;
+        currB = cB->tail;
+        currC = cC->tail;
+    }
+
+    return alloc::listFromPointers(triples);
+}
+
 HPointer unzip(HPointer listOfPairs) {
     if (alloc::isNil(listOfPairs)) {
         return alloc::tuple2(alloc::boxed(alloc::listNil()),
