@@ -425,6 +425,21 @@ void OldGenSpace::markChildren(void *obj) {
             markHPointer(t->task);
             break;
         }
+        case Tag_Array: {
+            ElmArray *arr = static_cast<ElmArray *>(obj);
+            // Mark only the used elements (length), not the full capacity.
+            for (u32 i = 0; i < arr->length && i < 64; i++) {
+                markUnboxable(arr->elements[i], !(arr->unboxed & (1ULL << i)));
+            }
+            // Elements beyond index 63 are always treated as boxed pointers.
+            for (u32 i = 64; i < arr->length; i++) {
+                markHPointer(arr->elements[i].p);
+            }
+            break;
+        }
+        // Tag_ByteBuffer: No pointers to mark (raw bytes only).
+        // Tag_FieldGroup: No pointers to mark (field IDs only).
+        // Tag_Int, Tag_Float, Tag_Char, Tag_String: No children.
         default:
             break;
     }
@@ -1052,8 +1067,20 @@ void OldGenSpace::fixPointersInObject(void* obj) {
             fixHPointer(t->task);
             break;
         }
+        case Tag_Array: {
+            ElmArray* arr = static_cast<ElmArray*>(obj);
+            // Fix only the used elements (length), not the full capacity.
+            for (u32 i = 0; i < arr->length && i < 64; i++) {
+                fixUnboxable(arr->elements[i], !(arr->unboxed & (1ULL << i)));
+            }
+            // Elements beyond index 63 are always treated as boxed pointers.
+            for (u32 i = 64; i < arr->length; i++) {
+                fixHPointer(arr->elements[i].p);
+            }
+            break;
+        }
         default:
-            // No pointers to fix (Int, Float, Char, String, FieldGroup).
+            // No pointers to fix (Int, Float, Char, String, FieldGroup, ByteBuffer).
             break;
     }
 }

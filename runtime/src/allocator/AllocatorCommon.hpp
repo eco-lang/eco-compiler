@@ -105,6 +105,17 @@ inline size_t getObjectSize(void *obj) {
         case Tag_Forward:
             size = sizeof(Forward);
             break;
+        case Tag_ByteBuffer:
+            // header.size = byte count
+            size = sizeof(ByteBuffer) + hdr->size * sizeof(u8);
+            break;
+        case Tag_Array: {
+            // For arrays, we copy based on length (used elements), not capacity
+            // header.size = capacity, but we use the actual length field for sizing
+            ElmArray *arr = static_cast<ElmArray *>(obj);
+            size = sizeof(ElmArray) + arr->length * sizeof(Unboxable);
+            break;
+        }
         default:
             size = sizeof(Header);
             break;

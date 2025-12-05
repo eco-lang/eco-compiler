@@ -76,11 +76,11 @@ typedef enum {
     Tag_Closure,
     Tag_Process,
     Tag_Task,
-    Tag_Forward,
-    // Tag_ByteBuffer - Buffers of bytes or UTF-8 encoded strings.
-    // Tag_Slice - String or even List or Array or Bytes slice.
-    // Tag_Array - Packed arrays.
-    // Tag_Tensor - Tensors.
+    Tag_ByteBuffer,  // Immutable byte array for binary data.
+    Tag_Array,       // Mutable/growable array of Elm values.
+    // Tag_Slice - String or even List or Array or Bytes slice (future).
+    // Tag_Tensor - Tensors (future).
+    Tag_Forward,     // Must be last - used for forwarding pointers during GC.
 } Tag;
 
 // Heap header that every heap object must have.
@@ -254,6 +254,67 @@ typedef struct {
     // No additional fields - this replaces the evacuated object's header.
 } Forward;
 
+// ============================================================================
+// Binary Data Types
+// ============================================================================
+
+typedef unsigned char u8;  // 8-bit unsigned byte.
+
+/**
+ * Immutable byte buffer for binary data.
+ *
+ * Used by:
+ *   - Bytes module for encoding/decoding binary data
+ *   - File module for file contents
+ *   - Http module for request/response bodies
+ *   - Base64 encoding operations
+ *
+ * Memory layout:
+ *   - header.size = byte count (up to 4GB)
+ *   - bytes[] = raw byte data, 8-byte aligned
+ *
+ * GC notes:
+ *   - Contains no pointers, so no scanning needed
+ *   - Can be directly copied during evacuation
+ */
+struct ALIGN(8) elm_bytebuffer {
+    Header header;  // header.size = byte count
+    u8 bytes[];     // Flexible array of raw bytes
+};
+typedef struct elm_bytebuffer ByteBuffer;
+
+/**
+ * Mutable/growable array of Elm values.
+ *
+ * Used by:
+ *   - JsArray module for array operations (push, slice, etc.)
+ *   - Json module for JSON arrays
+ *   - Internal intermediate collections
+ *
+ * Memory layout:
+ *   - header.size = allocated capacity (in elements)
+ *   - length = current number of elements
+ *   - unboxed = bitmap indicating which elements are unboxed primitives
+ *   - elements[] = array of Unboxable values
+ *
+ * Capacity vs Length:
+ *   - capacity (header.size) = total allocated slots
+ *   - length = number of slots currently in use
+ *   - Allows efficient push() without reallocating every time
+ *
+ * GC notes:
+ *   - Must scan elements[0..length-1] for pointers
+ *   - Check unboxed bitmap to skip unboxed primitives
+ *   - When copying, only copy header + used elements (not full capacity)
+ */
+typedef struct {
+    Header header;     // header.size = capacity (allocated element count)
+    u32 length;        // Current number of elements in use
+    u32 padding;       // Alignment padding
+    u64 unboxed;       // Bitmap: bit N set means elements[N] is unboxed primitive
+    Unboxable elements[];  // Flexible array of values (up to 64 elements with unboxing)
+} ElmArray;
+
 typedef union HeapValue {
     ElmInt intval;
     ElmFloat floatval;
@@ -270,6 +331,8 @@ typedef union HeapValue {
     Process process;
     Task task;
     Forward fwd;
+    ByteBuffer bytebuffer;
+    ElmArray array;
 } HeapValue;
 
 } // namespace Elm

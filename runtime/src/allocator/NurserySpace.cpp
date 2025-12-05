@@ -696,6 +696,22 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             break;
         }
 
+        case Tag_Array: {
+            ElmArray *arr = static_cast<ElmArray *>(obj);
+            // Scan only the used elements (length), not the full capacity.
+            for (u32 i = 0; i < arr->length && i < 64; i++) {
+                evacuateUnboxable(arr->elements[i], !(arr->unboxed & (1ULL << i)), oldgen, promoted_objects);
+            }
+            // Elements beyond index 63 are always treated as boxed pointers.
+            for (u32 i = 64; i < arr->length; i++) {
+                evacuate(arr->elements[i].p, oldgen, promoted_objects);
+            }
+            break;
+        }
+
+        // Tag_ByteBuffer: No pointers to scan (raw bytes only).
+        // Tag_FieldGroup: No pointers to scan (field IDs only).
+        // Tag_Int, Tag_Float, Tag_Char, Tag_String: No children.
         default:
             break;
     }

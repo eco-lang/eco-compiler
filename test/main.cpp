@@ -17,6 +17,10 @@
 #include "allocator/ElmTest.hpp"
 #include "allocator/AllocatorTest.hpp"
 #include "allocator/OldGenSpaceTest.hpp"
+#include "allocator/HeapHelpersTest.hpp"
+#include "allocator/StringOpsTest.hpp"
+#include "allocator/ListOpsTest.hpp"
+#include "allocator/BytesOpsTest.hpp"
 #include "TestSuite.hpp"
 
 using namespace Elm;
@@ -605,6 +609,22 @@ int main(int argc, char* argv[]) {
     allocatorCommonTests.add(testGetObjectSizeUnknownTag);
     allocatorCommonTests.add(testGetObjectSizeAllTagsExhaustive);
 
+    // Heap helpers tests
+    Testing::TestSuite heapHelpersTests("HeapHelpers");
+    registerHeapHelpersTests(heapHelpersTests);
+
+    // String operations tests
+    Testing::TestSuite stringOpsTests("StringOps");
+    registerStringOpsTests(stringOpsTests);
+
+    // List operations tests
+    Testing::TestSuite listOpsTests("ListOps");
+    registerListOpsTests(listOpsTests);
+
+    // Bytes operations tests
+    Testing::TestSuite bytesOpsTests("BytesOps");
+    registerBytesOpsTests(bytesOpsTests);
+
     // Root suite containing all sub-suites.
     Testing::TestSuite suite("All Tests");
     suite.add(std::move(nurseryTests));
@@ -612,6 +632,10 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(allocatorTests));
     suite.add(std::move(elmTests));
     suite.add(std::move(allocatorCommonTests));
+    suite.add(std::move(heapHelpersTests));
+    suite.add(std::move(stringOpsTests));
+    suite.add(std::move(listOpsTests));
+    suite.add(std::move(bytesOpsTests));
 
     // Handle --list option.
     if (config.list_tests) {
