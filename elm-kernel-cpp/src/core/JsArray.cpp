@@ -25,6 +25,12 @@ HPointer empty() {
     return alloc::allocArray(0);
 }
 
+HPointer singleton(HPointer value) {
+    HPointer arr = alloc::allocArray(1);
+    pushBoxed(arr, value);
+    return arr;
+}
+
 // ============================================================================
 // Length
 // ============================================================================

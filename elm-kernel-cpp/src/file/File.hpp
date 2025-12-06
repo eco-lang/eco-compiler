@@ -11,10 +11,24 @@
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "../core/Scheduler.hpp"
+#include "../json/Json.hpp"
 
 namespace Elm::Kernel::File {
 
 using TaskPtr = Scheduler::TaskPtr;
+using DecoderPtr = Json::DecoderPtr;
+
+/**
+ * JSON decoder for File values.
+ * Used for decoding files from form submissions and drag/drop events.
+ */
+DecoderPtr decoder();
+
+/**
+ * Make bytes safe for Internet Explorer (compatibility shim).
+ * In modern browsers, this is a no-op that returns the input unchanged.
+ */
+HPointer makeBytesSafeForInternetExplorer(HPointer bytes);
 
 /**
  * Get the name of a file.

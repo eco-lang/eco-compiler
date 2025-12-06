@@ -29,6 +29,11 @@ namespace Elm::Kernel::JsArray {
  */
 HPointer empty();
 
+/**
+ * Creates a single-element array.
+ */
+HPointer singleton(HPointer value);
+
 // ============================================================================
 // Length
 // ============================================================================

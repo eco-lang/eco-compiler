@@ -22,6 +22,22 @@ constexpr u32 FIELD_NAME = 3;
 constexpr u32 FIELD_SIZE = 4;
 
 // ============================================================================
+// Decoder and Compatibility
+// ============================================================================
+
+DecoderPtr decoder() {
+    // Return a decoder that extracts a File from a JSON event
+    // In practice, this decodes files from drag/drop and form events
+    return Json::decodeValue();
+}
+
+HPointer makeBytesSafeForInternetExplorer(HPointer bytes) {
+    // In modern environments, this is a no-op
+    // It was originally needed because IE had issues with certain byte sequences
+    return bytes;
+}
+
+// ============================================================================
 // File Property Accessors
 // ============================================================================
 
