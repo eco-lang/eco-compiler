@@ -63,16 +63,23 @@ mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoDialect.h.inc -gen-dialect-decls)
 # Generate dialect definitions
 mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoDialect.cpp.inc -gen-dialect-defs)
 
+# Generate type declarations
+mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoTypes.h.inc -gen-typedef-decls)
+
+# Generate type definitions
+mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoTypes.cpp.inc -gen-typedef-defs)
+
 # Create a target that depends on all generated files
 add_public_tablegen_target(EcoOpsIncGen)
 
 #------------------------------------------------------------------------------
-# Optional: Create a library target for the dialect
+# Create a library target for the dialect
 #------------------------------------------------------------------------------
 
 add_mlir_dialect_library(EcoDialect
     EcoDialect.cpp
     EcoOps.cpp
+    EcoTypes.cpp
 
     ADDITIONAL_HEADER_DIRS
     ${CMAKE_CURRENT_BINARY_DIR}/include/eco
@@ -83,10 +90,36 @@ add_mlir_dialect_library(EcoDialect
     LINK_LIBS PUBLIC
     MLIRIR
     MLIRSupport
+    MLIRControlFlowInterfaces
+    MLIRSideEffectInterfaces
 )
 
 # LLVM/MLIR headers require C++17 features
 target_compile_features(obj.EcoDialect PRIVATE cxx_std_17)
+
+#------------------------------------------------------------------------------
+# Build the ecogen executable
+#------------------------------------------------------------------------------
+
+add_llvm_executable(ecogen
+    ../ecogen.cpp
+)
+
+target_include_directories(ecogen PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_BINARY_DIR}/include
+)
+
+target_link_libraries(ecogen PRIVATE
+    EcoDialect
+    MLIRIR
+    MLIRParser
+    MLIRSupport
+    MLIRFuncDialect
+    LLVMSupport
+)
+
+target_compile_features(ecogen PRIVATE cxx_std_17)
 
 #------------------------------------------------------------------------------
 # Usage instructions
@@ -106,18 +139,46 @@ target_compile_features(obj.EcoDialect PRIVATE cxx_std_17)
 #   ${CMAKE_CURRENT_BINARY_DIR}/include/eco/EcoDialect.cpp.inc
 #     - Dialect definitions (include in your EcoDialect.cpp)
 #
+#   ${CMAKE_CURRENT_BINARY_DIR}/include/eco/EcoTypes.h.inc
+#     - Type declarations (include in your EcoTypes.h)
+#
+#   ${CMAKE_CURRENT_BINARY_DIR}/include/eco/EcoTypes.cpp.inc
+#     - Type definitions (include in your EcoTypes.cpp)
+#
 # To use in your C++ code:
 #
 #   // EcoDialect.h
 #   #include "mlir/IR/Dialect.h"
 #   #include "eco/EcoDialect.h.inc"
 #
+#   // EcoTypes.h
+#   #include "mlir/IR/Types.h"
+#   #define GET_TYPEDEF_CLASSES
+#   #include "eco/EcoTypes.h.inc"
+#
 #   // EcoOps.h
 #   #include "mlir/IR/OpDefinition.h"
 #   #define GET_OP_CLASSES
 #   #include "eco/EcoOps.h.inc"
 #
+#   // EcoDialect.cpp
+#   #include "eco/EcoDialect.cpp.inc"
+#   void EcoDialect::initialize() {
+#     addTypes<
+#     #define GET_TYPEDEF_LIST
+#     #include "eco/EcoTypes.cpp.inc"
+#     >();
+#     addOperations<
+#     #define GET_OP_LIST
+#     #include "eco/EcoOps.cpp.inc"
+#     >();
+#   }
+#
 #   // EcoOps.cpp
 #   #define GET_OP_CLASSES
 #   #include "eco/EcoOps.cpp.inc"
+#
+#   // EcoTypes.cpp
+#   #define GET_TYPEDEF_CLASSES
+#   #include "eco/EcoTypes.cpp.inc"
 #

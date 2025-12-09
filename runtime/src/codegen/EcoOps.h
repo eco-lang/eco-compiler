@@ -13,7 +13,12 @@
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
+
+#include "EcoDialect.h"
+#include "EcoTypes.h"
 
 #define GET_OP_CLASSES
 #include "eco/EcoOps.h.inc"

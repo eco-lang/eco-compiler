@@ -6,6 +6,7 @@
 
 #include "EcoDialect.h"
 #include "EcoOps.h"
+#include "EcoTypes.h"
 
 using namespace mlir;
 using namespace eco;
@@ -17,6 +18,13 @@ using namespace eco;
 //===----------------------------------------------------------------------===//
 
 void EcoDialect::initialize() {
+  // Register types
+  addTypes<
+#define GET_TYPEDEF_LIST
+#include "eco/EcoTypes.cpp.inc"
+      >();
+
+  // Register operations
   addOperations<
 #define GET_OP_LIST
 #include "eco/EcoOps.cpp.inc"
