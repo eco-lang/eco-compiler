@@ -9,7 +9,9 @@ module Compiler.Parse.SyntaxVersion exposing
 -}
 
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 {-| The `SyntaxVersion` type is used to specify which syntax version to work
@@ -40,9 +42,9 @@ fileSyntaxVersion path =
 -- ENCODERS and DECODERS
 
 
-encoder : SyntaxVersion -> BE.Encoder
+encoder : SyntaxVersion -> Bytes.Encode.Encoder
 encoder syntaxVersion =
-    BE.unsignedInt8
+    Bytes.Encode.unsignedInt8
         (case syntaxVersion of
             Elm ->
                 0
@@ -52,18 +54,18 @@ encoder syntaxVersion =
         )
 
 
-decoder : BD.Decoder SyntaxVersion
+decoder : Bytes.Decode.Decoder SyntaxVersion
 decoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed Elm
+                        Bytes.Decode.succeed Elm
 
                     1 ->
-                        BD.succeed Guida
+                        Bytes.Decode.succeed Guida
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

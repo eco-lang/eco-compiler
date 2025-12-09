@@ -21,7 +21,7 @@ occursHelp seen var foundCycle =
 
     else
         UF.get var
-            |> IO.bind
+            |> IO.andThen
                 (\(IO.Descriptor content _ _ _) ->
                     case content of
                         IO.FlexVar _ ->
@@ -47,22 +47,22 @@ occursHelp seen var foundCycle =
                                     IO.foldrM (occursHelp newSeen) foundCycle args
 
                                 IO.Fun1 a b ->
-                                    IO.bind (occursHelp newSeen a)
+                                    IO.andThen (occursHelp newSeen a)
                                         (occursHelp newSeen b foundCycle)
 
                                 IO.EmptyRecord1 ->
                                     IO.pure foundCycle
 
                                 IO.Record1 fields ext ->
-                                    IO.bind (occursHelp newSeen ext) <|
+                                    IO.andThen (occursHelp newSeen ext) <|
                                         IO.foldrM (occursHelp newSeen) foundCycle (Dict.values compare fields)
 
                                 IO.Unit1 ->
                                     IO.pure foundCycle
 
                                 IO.Tuple1 a b cs ->
-                                    IO.bind (occursHelp newSeen a)
-                                        (IO.bind (occursHelp newSeen b)
+                                    IO.andThen (occursHelp newSeen a)
+                                        (IO.andThen (occursHelp newSeen b)
                                             (IO.foldrM (occursHelp newSeen) foundCycle cs)
                                         )
 

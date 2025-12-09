@@ -49,7 +49,9 @@ import Compiler.Reporting.Render.Code as Code
 import Compiler.Reporting.Report as Report
 import Hex
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 
@@ -505,7 +507,9 @@ toReport syntaxVersion source err =
                     , D.reflow <|
                         "Try adding that as the first line of your file!"
                     , D.toSimpleNote <|
-                        "It is best to replace (..) with an explicit list of types and functions you want to expose. When you know a value is only used within this module, you can refactor without worrying about uses elsewhere. Limiting exposed values can also speed up compilation because I can skip a bunch of work if I see that the exposed API has not changed."
+                        "It is best to replace (..) with an explicit list of types and functions you want to expose. "
+                            ++ "When you know a value is only used within this module, you can refactor without worrying about uses elsewhere. "
+                            ++ "Limiting exposed values can also speed up compilation because I can skip a bunch of work if I see that the exposed API has not changed."
                     ]
 
         ModuleNameMismatch expectedName (A.At region actualName) ->
@@ -523,7 +527,8 @@ toReport syntaxVersion source err =
                                 |> D.a (D.green (D.fromName expectedName))
                             )
                         , D.toSimpleNote <|
-                            "I require that module names correspond to file paths. This makes it much easier to explore unfamiliar codebases! So if you want to keep the current module name, try renaming the file instead."
+                            "I require that module names correspond to file paths. This makes it much easier to explore unfamiliar codebases! "
+                                ++ "So if you want to keep the current module name, try renaming the file instead."
                         ]
                     )
 
@@ -618,7 +623,12 @@ toReport syntaxVersion source err =
                         [ D.reflow <|
                             "Switch to a normal module declaration."
                         , D.toSimpleNote <|
-                            "Effect modules are designed to allow certain core functionality to be defined separately from the compiler. So the @elm organization has access to this so that certain changes, extensions, and fixes can be introduced without needing to release new Elm binaries. For example, we want to make it possible to test effects, but this may require changes to the design of effect modules. By only having them defined in the @elm organization, that kind of design work can proceed much more smoothly."
+                            "Effect modules are designed to allow certain core functionality to be defined "
+                                ++ "separately from the compiler. So the @elm organization has access to this so that "
+                                ++ "certain changes, extensions, and fixes can be introduced without needing to release "
+                                ++ "new Elm binaries. For example, we want to make it possible to test effects, but this "
+                                ++ "may require changes to the design of effect modules. By only having them defined in "
+                                ++ "the @elm organization, that kind of design work can proceed much more smoothly."
                         ]
                     )
 
@@ -630,9 +640,21 @@ noteForPortsInPackage : D.Doc
 noteForPortsInPackage =
     D.stack
         [ D.toSimpleNote <|
-            "One of the major goals of the package ecosystem is to be completely written in Elm. This means when you install an Elm package, you can be sure you are safe from security issues on install and that you are not going to get any runtime exceptions coming from your new dependency. This design also sets the ecosystem up to target other platforms more easily (like mobile phones, WebAssembly, etc.) since no community code explicitly depends on JavaScript even existing."
+            "One of the major goals of the package ecosystem is to be completely written in Elm. "
+                ++ "This means when you install an Elm package, you can be sure you are safe from security "
+                ++ "issues on install and that you are not going to get any runtime exceptions coming from "
+                ++ "your new dependency. This design also sets the ecosystem up to target other platforms "
+                ++ "more easily (like mobile phones, WebAssembly, etc.) since no community code explicitly "
+                ++ "depends on JavaScript even existing."
         , D.reflow <|
-            "Given that overall goal, allowing ports in packages would lead to some pretty surprising behavior. If ports were allowed in packages, you could install a package but not realize that it brings in an indirect dependency that defines a port. Now you have a program that does not work and the fix is to realize that some JavaScript needs to be added for a dependency you did not even know about. That would be extremely frustrating! \"So why not allow the package author to include the necessary JS code as well?\" Now we are back in conflict with our overall goal to keep all community packages free from runtime exceptions."
+            "Given that overall goal, allowing ports in packages would lead to some pretty surprising "
+                ++ "behavior. If ports were allowed in packages, you could install a package but not realize "
+                ++ "that it brings in an indirect dependency that defines a port. Now you have a program "
+                ++ "that does not work and the fix is to realize that some JavaScript needs to be added "
+                ++ "for a dependency you did not even know about. That would be extremely frustrating! "
+                ++ "\"So why not allow the package author to include the necessary JS code as well?\" "
+                ++ "Now we are back in conflict with our overall goal to keep all community packages free "
+                ++ "from runtime exceptions."
         ]
 
 
@@ -678,7 +700,8 @@ toParseErrorReport syntaxVersion source modul =
                                     ]
                                 ]
                         , D.reflow <|
-                            "I generally recommend using an explicit exposing list. I can skip compiling a bunch of files when the public interface of a module stays the same, so exposing fewer values can help improve compile times!"
+                            "I generally recommend using an explicit exposing list. I can skip compiling a bunch of files "
+                                ++ "when the public interface of a module stays the same, so exposing fewer values can help improve compile times!"
                         ]
                     )
 
@@ -1108,7 +1131,12 @@ toWeirdEndReport source row col =
                             ( D.reflow "I got stuck on this semicolon:"
                             , D.stack
                                 [ D.reflow "Try removing it?"
-                                , D.toSimpleNote "Some languages require semicolons at the end of each statement. These are often called C-like languages, and they usually share a lot of language design choices. (E.g. side-effects, for loops, etc.) Elm manages effects with commands and subscriptions instead, so there is no special syntax for \"statements\" and therefore no need to use semicolons to separate them. I think this will make more sense as you work through <https://guide.elm-lang.org> though!"
+                                , D.toSimpleNote <|
+                                    "Some languages require semicolons at the end of each statement. These are often called C-like languages, "
+                                        ++ "and they usually share a lot of language design choices. (E.g. side-effects, for loops, etc.) "
+                                        ++ "Elm manages effects with commands and subscriptions instead, so there is no special syntax for \"statements\" "
+                                        ++ "and therefore no need to use semicolons to separate them. I think this will make more sense as you work through "
+                                        ++ "<https://guide.elm-lang.org> though!"
                                 ]
                             )
 
@@ -1118,7 +1146,10 @@ toWeirdEndReport source row col =
                             ( D.reflow "I got stuck on this comma:"
                             , D.stack
                                 [ D.reflow "I do not think I am parsing a list or tuple right now. Try deleting the comma?"
-                                , D.toSimpleNote "If this is supposed to be part of a list, the problem may be a bit earlier. Perhaps the opening [ is missing? Or perhaps some value in the list has an extra closing ] that is making me think the list ended earlier? The same kinds of things could be going wrong if this is supposed to be a tuple."
+                                , D.toSimpleNote <|
+                                    "If this is supposed to be part of a list, the problem may be a bit earlier. Perhaps the opening [ is missing? "
+                                        ++ "Or perhaps some value in the list has an extra closing ] that is making me think the list ended earlier? "
+                                        ++ "The same kinds of things could be going wrong if this is supposed to be a tuple."
                                 ]
                             )
 
@@ -1127,7 +1158,9 @@ toWeirdEndReport source row col =
                         Code.toSnippet source region Nothing <|
                             ( D.reflow "I got stuck on this character:"
                             , D.stack
-                                [ D.reflow "It is not used for anything in Elm syntax. It is used for multi-line strings in some languages though, so if you want a string that spans multiple lines, you can use Elm's multi-line string syntax like this:"
+                                [ D.reflow <|
+                                    "It is not used for anything in Elm syntax. It is used for multi-line strings in some languages though, "
+                                        ++ "so if you want a string that spans multiple lines, you can use Elm's multi-line string syntax like this:"
                                 , D.dullyellow <|
                                     D.indent 4 <|
                                         D.vcat
@@ -1148,7 +1181,9 @@ toWeirdEndReport source row col =
                     Report.Report "UNEXPECTED SYMBOL" region [] <|
                         Code.toSnippet source region Nothing <|
                             ( D.reflow "I got stuck on this dollar sign:"
-                            , D.reflow "It is not used for anything in Elm syntax. Are you coming from a language where dollar signs can be used in variable names? If so, try a name that (1) starts with a letter and (2) only contains letters, numbers, and underscores."
+                            , D.reflow <|
+                                "It is not used for anything in Elm syntax. Are you coming from a language where dollar signs can be used in variable names? "
+                                    ++ "If so, try a name that (1) starts with a letter and (2) only contains letters, numbers, and underscores."
                             )
 
                 Just c ->
@@ -1279,7 +1314,10 @@ toExposingReport source exposing_ startRow startCol =
                                     , D.fromChars "(Html, div, text)"
                                     ]
                                 ]
-                        , D.reflow "If you are getting tripped up, you can just expose everything for now. It should get easier to make an explicit exposing list as you see more examples in the wild."
+                        , D.reflow
+                            ("If you are getting tripped up, you can just expose everything for now. "
+                                ++ "It should get easier to make an explicit exposing list as you see more examples in the wild."
+                            )
                         ]
                     )
 
@@ -1344,7 +1382,8 @@ toExposingReport source exposing_ startRow startCol =
                         Code.toSnippet source surroundings (Just region) <|
                             ( D.reflow "I got stuck while parsing these exposed values:"
                             , D.stack
-                                [ D.reflow "I do not have an exact recommendation, so here are some valid examples of `exposing` for reference:"
+                                [ D.reflow <|
+                                    "I do not have an exact recommendation, so here are some valid examples of `exposing` for reference:"
                                 , D.indent 4 <|
                                     D.vcat
                                         [ D.fillSep
@@ -1360,7 +1399,9 @@ toExposingReport source exposing_ startRow startCol =
                                             , D.fromChars "(Int, Float, Bool(..), (+), not, sqrt)"
                                             ]
                                         ]
-                                , D.reflow "These examples show how to expose types, variants, operators, and functions. Everything should be some permutation of these examples, just with different names."
+                                , D.reflow <|
+                                    "These examples show how to expose types, variants, operators, and functions. "
+                                        ++ "Everything should be some permutation of these examples, just with different names."
                                 ]
                             )
 
@@ -1546,7 +1587,10 @@ toExposingReport source exposing_ startRow startCol =
                             , D.fromChars "crash!"
                             ]
                         , D.toSimpleNote <|
-                            "It is often best to keep the variants hidden! If someone pattern matches on the variants, it is a MAJOR change if any new variants are added. Suddenly their `case` expressions do not cover all variants! So if you do not need people to pattern match, keep the variants hidden and expose functions to construct values of this type. This way you can add new variants as a MINOR change!"
+                            "It is often best to keep the variants hidden! If someone pattern matches on the variants, "
+                                ++ "it is a MAJOR change if any new variants are added. Suddenly their `case` expressions do not cover all variants! "
+                                ++ "So if you do not need people to pattern match, keep the variants hidden and expose functions to construct values of this type. "
+                                ++ "This way you can add new variants as a MINOR change!"
                         ]
                     )
 
@@ -1631,7 +1675,9 @@ toSpaceReport source space row col =
                     , D.stack
                         -- "{-"
                         [ D.reflow "Add a -} somewhere after this to end the comment."
-                        , D.toSimpleHint "Multi-line comments can be nested in Elm, so {- {- -} -} is a comment that happens to contain another comment. Like parentheses and curly braces, the start and end markers must always be balanced. Maybe that is the problem?"
+                        , D.toSimpleHint <|
+                            "Multi-line comments can be nested in Elm, so {- {- -} -} is a comment that happens to contain another comment. "
+                                ++ "Like parentheses and curly braces, the start and end markers must always be balanced. Maybe that is the problem?"
                         ]
                     )
 
@@ -1721,7 +1767,9 @@ toDeclStartReport source row col =
                     ( D.reflow ("I was not expecting to run into the `" ++ keyword ++ "` keyword here:")
                     , case keyword of
                         "import" ->
-                            D.reflow "It is reserved for declaring imports at the top of your module. If you want another import, try moving it up top with the other imports. If you want to define a value or function, try changing the name to something else!"
+                            D.reflow <|
+                                "It is reserved for declaring imports at the top of your module. If you want another import, "
+                                    ++ "try moving it up top with the other imports. If you want to define a value or function, try changing the name to something else!"
 
                         "case" ->
                             D.stack
@@ -2035,7 +2083,11 @@ toPortReport source port_ startRow startCol =
                                     , D.fromChars "(String -> msg) -> Sub msg"
                                     ]
                                 ]
-                        , D.reflow "The first line defines a `send` port so you can send strings out to JavaScript. Maybe you send them on a WebSocket or put them into IndexedDB. The second line defines a `receive` port so you can receive strings from JavaScript. Maybe you get receive messages when new WebSocket messages come in or when an entry in IndexedDB changes for some external reason."
+                        , D.reflow <|
+                            "The first line defines a `send` port so you can send strings out to JavaScript. "
+                                ++ "Maybe you send them on a WebSocket or put them into IndexedDB. The second line defines a `receive` port "
+                                ++ "so you can receive strings from JavaScript. Maybe you get receive messages when new WebSocket messages come in "
+                                ++ "or when an entry in IndexedDB changes for some external reason."
                         ]
                     )
 
@@ -2059,7 +2111,11 @@ portNote =
                     , D.fromChars "(String -> msg) -> Sub msg"
                     ]
                 ]
-        , D.reflow "The first line defines a `send` port so you can send strings out to JavaScript. Maybe you send them on a WebSocket or put them into IndexedDB. The second line defines a `receive` port so you can receive strings from JavaScript. Maybe you get receive messages when new WebSocket messages come in or when the IndexedDB is changed for some external reason."
+        , D.reflow <|
+            "The first line defines a `send` port so you can send strings out to JavaScript. "
+                ++ "Maybe you send them on a WebSocket or put them into IndexedDB. The second line defines a `receive` port "
+                ++ "so you can receive strings from JavaScript. Maybe you get receive messages when new WebSocket messages come in "
+                ++ "or when the IndexedDB is changed for some external reason."
         ]
 
 
@@ -2340,7 +2396,8 @@ typeAliasNote =
                     ]
             ]
         , D.reflow <|
-            "This would let us use `Person` as a shorthand for that record type. Using this shorthand makes type annotations much easier to read, and makes changing code easier if you decide later that there is more to a person than age and height!"
+            "This would let us use `Person` as a shorthand for that record type. Using this shorthand makes type annotations "
+                ++ "much easier to read, and makes changing code easier if you decide later that there is more to a person than age and height!"
         ]
 
 
@@ -2590,7 +2647,9 @@ customTypeNote =
             , D.indent 6 <| D.fillSep [ D.fromChars "|", D.fromChars "Success", D.fromChars "String" ]
             ]
         , D.reflow <|
-            "This defines a new `Status` type with three variants. This could be useful if we are waiting for an HTTP request. Maybe we start with `Waiting` and then switch to `Failure` or `Success \"message from server\"` depending on how things go. Notice that the Success variant has some associated data, allowing us to store a String if the request goes well!"
+            "This defines a new `Status` type with three variants. This could be useful if we are waiting for an HTTP request. "
+                ++ "Maybe we start with `Waiting` and then switch to `Failure` or `Success \"message from server\"` depending on how things go. "
+                ++ "Notice that the Success variant has some associated data, allowing us to store a String if the request goes well!"
         ]
 
 
@@ -2938,7 +2997,10 @@ declDefNote =
                     |> D.a (D.fromChars " ++ name ++ ")
                     |> D.a (D.dullyellow (D.fromChars "\"!\""))
                 ]
-        , D.reflow "The top line (called a \"type annotation\") is optional. You can leave it off if you want. As you get more comfortable with Elm and as your project grows, it becomes more and more valuable to add them though! They work great as compiler-verified documentation, and they often improve error messages!"
+        , D.reflow <|
+            "The top line (called a \"type annotation\") is optional. You can leave it off if you want. "
+                ++ "As you get more comfortable with Elm and as your project grows, it becomes more and more valuable to add them though! "
+                ++ "They work great as compiler-verified documentation, and they often improve error messages!"
         ]
 
 
@@ -3234,7 +3296,9 @@ toExprReport syntaxVersion source context expr startRow startCol =
                             , D.fromChars "specific"
                             , D.fromChars "hint!"
                             ]
-                        , D.toSimpleNote "This can also happen if I run into reserved words like `let` or `as` unexpectedly. Or if I run into operators in unexpected spots. Point is, there are a couple ways I can get confused and give sort of weird advice!"
+                        , D.toSimpleNote <|
+                            "This can also happen if I run into reserved words like `let` or `as` unexpectedly. "
+                                ++ "Or if I run into operators in unexpected spots. Point is, there are a couple ways I can get confused and give sort of weird advice!"
                         ]
                     )
 
@@ -3318,7 +3382,11 @@ toExprReport syntaxVersion source context expr startRow startCol =
                             , D.fromChars "specific"
                             , D.fromChars "hint!"
                             ]
-                        , D.toSimpleNote <| "I may be getting confused by your indentation? The easiest way to make sure this is not an indentation problem is to put the expression on the right of the " ++ op ++ " operator on the same line."
+                        , D.toSimpleNote <|
+                            "I may be getting confused by your indentation? The easiest way to make sure this is not an indentation problem "
+                                ++ "is to put the expression on the right of the "
+                                ++ op
+                                ++ " operator on the same line."
                         ]
                     )
 
@@ -3362,8 +3430,9 @@ toCharReport source char row col =
                                 |> D.a (D.fromChars " => ")
                                 |> D.a (D.green (D.fromChars "\"this\""))
                             )
-                        , D.toSimpleNote
-                            "Elm uses double quotes for strings like \"hello\", whereas it uses single quotes for individual characters like 'a' and 'ø'. This distinction helps with code like (String.any (\\c -> c == 'X') \"90210\") where you are inspecting individual characters."
+                        , D.toSimpleNote <|
+                            "Elm uses double quotes for strings like \"hello\", whereas it uses single quotes for individual characters like 'a' and 'ø'. "
+                                ++ "This distinction helps with code like (String.any (\\c -> c == 'X') \"90210\") where you are inspecting individual characters."
                         ]
                     )
 
@@ -3486,7 +3555,9 @@ toEscapeReport source escape row col =
                                     , D.fromChars "\\u{003D}"
                                     ]
                         , D.reflow "Do you want one of those instead? Maybe you need \\\\ to escape a backslash?"
-                        , D.toSimpleNote "The last style lets encode ANY character by its Unicode code point. That means \\u{0009} and \\t are the same. You can use that style for anything not covered by the other six escapes!"
+                        , D.toSimpleNote <|
+                            "The last style lets encode ANY character by its Unicode code point. That means \\u{0009} and \\t are the same. "
+                                ++ "You can use that style for anything not covered by the other six escapes!"
                         ]
                     )
 
@@ -3674,7 +3745,10 @@ toNumberReport syntaxVersion source number row col =
                     ( D.reflow "I do not accept numbers with leading zeros:"
                     , D.stack
                         [ D.reflow "Just delete the leading zeros and it should work!"
-                        , D.toSimpleNote "Some languages let you to specify octal numbers by adding a leading zero. So in C, writing 0111 is the same as writing 73. Some people are used to that, but others probably want it to equal 111. Either path is going to surprise people from certain backgrounds, so Elm tries to avoid this whole situation."
+                        , D.toSimpleNote <|
+                            "Some languages let you to specify octal numbers by adding a leading zero. So in C, writing 0111 is the same as writing 73. "
+                                ++ "Some people are used to that, but others probably want it to equal 111. Either path is going to surprise people from certain backgrounds, "
+                                ++ "so Elm tries to avoid this whole situation."
                         ]
                     )
 
@@ -3684,7 +3758,9 @@ toNumberReport syntaxVersion source number row col =
                     ( D.reflow "I do not accept numbers with leading or trailing underscores:"
                     , D.stack
                         [ D.reflow "Just delete the leading or trailing underscore and it should work!"
-                        , D.toSimpleNote "Numbers should not have leading or trailing underscores, as this can make them ambiguous and harder to read or parse correctly. To maintain clarity and follow syntax rules, underscores should only appear between digits."
+                        , D.toSimpleNote <|
+                            "Numbers should not have leading or trailing underscores, as this can make them ambiguous and harder to read or parse correctly. "
+                                ++ "To maintain clarity and follow syntax rules, underscores should only appear between digits."
                         ]
                     )
 
@@ -3694,7 +3770,9 @@ toNumberReport syntaxVersion source number row col =
                     ( D.reflow "I do not accept numbers with consecutive underscores:"
                     , D.stack
                         [ D.reflow "Just delete the consecutive underscore and it should work!"
-                        , D.toSimpleNote "Numbers should not contain consecutive underscores, as this can lead to confusion and misinterpretation of the value. Use single underscores only between digits to improve readability without breaking the format."
+                        , D.toSimpleNote <|
+                            "Numbers should not contain consecutive underscores, as this can lead to confusion and misinterpretation of the value. "
+                                ++ "Use single underscores only between digits to improve readability without breaking the format."
                         ]
                     )
 
@@ -3704,7 +3782,9 @@ toNumberReport syntaxVersion source number row col =
                     ( D.reflow "I do not accept numbers with underscores directly next to a decimal point, e, or the +/- signs:"
                     , D.stack
                         [ D.reflow "Just delete the underscores directly next to a decimal point, e, or the +/- signs and it should work!"
-                        , D.toSimpleNote "Underscores must not appear directly next to a decimal point, e, or the +/- signs in scientific notation, as this disrupts the structure of the number. Keep underscores between digits only to ensure the number remains valid and clearly formatted."
+                        , D.toSimpleNote <|
+                            "Underscores must not appear directly next to a decimal point, e, or the +/- signs in scientific notation, "
+                                ++ "as this disrupts the structure of the number. Keep underscores between digits only to ensure the number remains valid and clearly formatted."
                         ]
                     )
 
@@ -3714,7 +3794,9 @@ toNumberReport syntaxVersion source number row col =
                     ( D.reflow "I do not accept numbers with underscores directly next to the hexadecimal prefix 0x:"
                     , D.stack
                         [ D.reflow "Just delete the underscores directly next to the hexadecimal prefix 0x and it should work!"
-                        , D.toSimpleNote "Underscores must not appear directly next to the hexadecimal prefix 0x, as this breaks the structure of the number and causes a syntax error. Always place underscores only between valid hexadecimal digits for proper formatting and readability."
+                        , D.toSimpleNote <|
+                            "Underscores must not appear directly next to the hexadecimal prefix 0x, as this breaks the structure of the number and causes a syntax error. "
+                                ++ "Always place underscores only between valid hexadecimal digits for proper formatting and readability."
                         ]
                     )
 
@@ -3724,7 +3806,9 @@ toNumberReport syntaxVersion source number row col =
                     ( D.reflow "I do not accept numbers with underscores directly next to the binary prefix 0b:"
                     , D.stack
                         [ D.reflow "Just delete the underscores directly next to the binary prefix 0b and it should work!"
-                        , D.toSimpleNote "Underscores must not appear directly next to the binary prefix 0b, as this breaks the structure of the number and causes a syntax error. Always place underscores only between valid binary digits for proper formatting and readability."
+                        , D.toSimpleNote <|
+                            "Underscores must not appear directly next to the binary prefix 0b, as this breaks the structure of the number and causes a syntax error. "
+                                ++ "Always place underscores only between valid binary digits for proper formatting and readability."
                         ]
                     )
 
@@ -3815,12 +3899,14 @@ toOperatorReport source context operator row col =
                             else
                                 case getDefName context of
                                     Nothing ->
-                                        "I may be getting confused by your indentation. I need all definitions to be indented exactly the same amount, so if this is meant to be a new definition, it may have too many spaces in front of it."
+                                        "I may be getting confused by your indentation. I need all definitions to be indented exactly the same amount, "
+                                            ++ "so if this is meant to be a new definition, it may have too many spaces in front of it."
 
                                     Just name ->
                                         "I may be getting confused by your indentation. I think I am still parsing the `"
                                             ++ name
-                                            ++ "` definition. Is this supposed to be part of a definition after that? If so, the problem may be a bit before the equals sign. I need all definitions to be indented exactly the same amount, so the problem may be that this new definition has too many spaces in front of it."
+                                            ++ "` definition. Is this supposed to be part of a definition after that? If so, the problem may be a bit before the equals sign. "
+                                            ++ "I need all definitions to be indented exactly the same amount, so the problem may be that this new definition has too many spaces in front of it."
                         ]
                     )
 
@@ -3878,7 +3964,9 @@ toOperatorReport source context operator row col =
                                 , D.toSimpleNote <|
                                     "I may be getting confused by your indentation. Is this supposed to be part of a type annotation AFTER the `"
                                         ++ name
-                                        ++ "` definition? If so, the problem may be a bit before the \"has type\" symbol. I need all definitions to be exactly aligned (with exactly the same indentation) so the problem may be that this new definition is indented a bit too much."
+                                        ++ "` definition? If so, the problem may be a bit before the \"has type\" symbol. "
+                                        ++ "I need all definitions to be exactly aligned (with exactly the same indentation) "
+                                        ++ "so the problem may be that this new definition is indented a bit too much."
                                 ]
                     )
 
@@ -3927,8 +4015,9 @@ toLetReport syntaxVersion source context let_ startRow startCol =
                             , D.fromChars "a"
                             , D.fromChars "typo?"
                             ]
-                        , D.toSimpleNote
-                            "This can also happen if you are trying to define another value within the `let` but it is not indented enough. Make sure each definition has exactly the same amount of spaces before it. They should line up exactly!"
+                        , D.toSimpleNote <|
+                            "This can also happen if you are trying to define another value within the `let` but it is not indented enough. "
+                                ++ "Make sure each definition has exactly the same amount of spaces before it. They should line up exactly!"
                         ]
                     )
 
@@ -3966,8 +4055,9 @@ toLetReport syntaxVersion source context let_ startRow startCol =
                             , D.fromChars "a"
                             , D.fromChars "typo?"
                             ]
-                        , D.toSimpleNote
-                            "This can also happen if you are trying to define another value within the `let` but it is not indented enough. Make sure each definition has exactly the same amount of spaces before it. They should line up exactly!"
+                        , D.toSimpleNote <|
+                            "This can also happen if you are trying to define another value within the `let` but it is not indented enough. "
+                                ++ "Make sure each definition has exactly the same amount of spaces before it. They should line up exactly!"
                         ]
                     )
 
@@ -4084,7 +4174,11 @@ toUnfinishLetReport source row col startRow startCol message =
                                 , D.fromChars "]"
                                 ]
                         ]
-                , D.reflow "Here we defined a `viewPerson` function that turns a person into some HTML. We use a `let` expression to define the `fullName` we want to show. Notice the indentation! The `fullName` is indented more than the `let` keyword, and the actual value of `fullName` is indented a bit more than that. That is important!"
+                , D.reflow <|
+                    "Here we defined a `viewPerson` function that turns a person into some HTML. "
+                        ++ "We use a `let` expression to define the `fullName` we want to show. Notice the indentation! "
+                        ++ "The `fullName` is indented more than the `let` keyword, and the actual value of `fullName` "
+                        ++ "is indented a bit more than that. That is important!"
                 ]
             )
 
@@ -4436,7 +4530,10 @@ defNote =
                     |> D.a (D.fromChars " ++ name ++ ")
                     |> D.a (D.dullyellow (D.fromChars "\"!\""))
                 ]
-        , D.reflow "The top line (called a \"type annotation\") is optional. You can leave it off if you want. As you get more comfortable with Elm and as your project grows, it becomes more and more valuable to add them though! They work great as compiler-verified documentation, and they often improve error messages!"
+        , D.reflow <|
+            "The top line (called a \"type annotation\") is optional. You can leave it off if you want. "
+                ++ "As you get more comfortable with Elm and as your project grows, it becomes more and more valuable to add them though! "
+                ++ "They work great as compiler-verified documentation, and they often improve error messages!"
         ]
 
 
@@ -4466,7 +4563,10 @@ toLetDestructReport syntaxVersion source destruct startRow startCol =
                         Code.Operator ":" ->
                             D.stack
                                 [ D.reflow "I was expecting to see an equals sign next, followed by an expression telling me what to compute."
-                                , D.toSimpleNote "It looks like you may be trying to write a type annotation? It is not possible to add type annotations on destructuring definitions like this. You can assign a name to the overall structure, put a type annotation on that, and then destructure separately though."
+                                , D.toSimpleNote <|
+                                    "It looks like you may be trying to write a type annotation? "
+                                        ++ "It is not possible to add type annotations on destructuring definitions like this. "
+                                        ++ "You can assign a name to the overall structure, put a type annotation on that, and then destructure separately though."
                                 ]
 
                         _ ->
@@ -5545,7 +5645,9 @@ toTupleReport syntaxVersion source context tuple startRow startCol =
                             , D.fromChars "that"
                             , D.fromChars "helps?"
                             ]
-                        , D.toSimpleNote "I can get stuck when I run into keywords, operators, parentheses, or brackets unexpectedly. So there may be some earlier syntax trouble (like extra parenthesis or missing brackets) that is confusing me."
+                        , D.toSimpleNote <|
+                            "I can get stuck when I run into keywords, operators, parentheses, or brackets unexpectedly. "
+                                ++ "So there may be some earlier syntax trouble (like extra parenthesis or missing brackets) that is confusing me."
                         ]
                     )
 
@@ -5574,7 +5676,9 @@ toTupleReport syntaxVersion source context tuple startRow startCol =
                             , D.fromChars "that"
                             , D.fromChars "helps!"
                             ]
-                        , D.toSimpleNote "I think I am parsing an operator function right now, so I am expecting to see something like (+) or (&&) where an operator is surrounded by parentheses with no extra spaces."
+                        , D.toSimpleNote <|
+                            "I think I am parsing an operator function right now, so I am expecting to see something like (+) or (&&) "
+                                ++ "where an operator is surrounded by parentheses with no extra spaces."
                         ]
                     )
 
@@ -6113,7 +6217,9 @@ toFuncReport syntaxVersion source context func startRow startCol =
                             , D.fromChars "case"
                             , D.fromChars "letter!"
                             ]
-                        , D.toSimpleNote "The syntax for anonymous functions is (\\x -> x + 1) where the backslash is meant to look a bit like a lambda if you squint. This visual pun seemed like a better idea at the time!"
+                        , D.toSimpleNote <|
+                            "The syntax for anonymous functions is (\\x -> x + 1) where the backslash is meant to look a bit like a lambda if you squint. "
+                                ++ "This visual pun seemed like a better idea at the time!"
                         ]
                     )
 
@@ -6152,7 +6258,11 @@ toFuncReport syntaxVersion source context func startRow startCol =
                             , D.fromChars "the"
                             , D.fromChars "function."
                             ]
-                        , D.toSimpleNote "It is possible that I am confused about indentation! I generally recommend switching to named functions if the definition cannot fit inline nicely, so either (1) try to fit the whole anonymous function on one line or (2) break the whole thing out into a named function. Things tend to be clearer that way!"
+                        , D.toSimpleNote <|
+                            "It is possible that I am confused about indentation! "
+                                ++ "I generally recommend switching to named functions if the definition cannot fit inline nicely, "
+                                ++ "so either (1) try to fit the whole anonymous function on one line or (2) break the whole thing out into a named function. "
+                                ++ "Things tend to be clearer that way!"
                         ]
                     )
 
@@ -6189,7 +6299,11 @@ toFuncReport syntaxVersion source context func startRow startCol =
                             , D.fromChars "the"
                             , D.fromChars "arrow!"
                             ]
-                        , D.toSimpleNote "It is possible that I am confused about indentation! I generally recommend switching to named functions if the definition cannot fit inline nicely, so either (1) try to fit the whole anonymous function on one line or (2) break the whole thing out into a named function. Things tend to be clearer that way!"
+                        , D.toSimpleNote <|
+                            "It is possible that I am confused about indentation! "
+                                ++ "I generally recommend switching to named functions if the definition cannot fit inline nicely, "
+                                ++ "so either (1) try to fit the whole anonymous function on one line or (2) break the whole thing out into a named function. "
+                                ++ "Things tend to be clearer that way!"
                         ]
                     )
 
@@ -6411,7 +6525,8 @@ toPatternReport syntaxVersion source context pattern startRow startCol =
                                 |> D.a (D.fromChars ".")
                             ]
                         , D.reflow <|
-                            "So I was expecting to see a variable name after the `as` keyword here. Sometimes people just want to use `as` as a variable name though. Try using a different name in that case!"
+                            "So I was expecting to see a variable name after the `as` keyword here. "
+                                ++ "Sometimes people just want to use `as` as a variable name though. Try using a different name in that case!"
                         ]
                     )
 
@@ -6597,7 +6712,8 @@ toPatternReport syntaxVersion source context pattern startRow startCol =
                             , D.dullyellow <| D.fromChars "point."
                             ]
                         , D.reflow <|
-                            "So I was expecting to see a variable name after the `as` keyword here. Sometimes people just want to use `as` as a variable name though. Try using a different name in that case!"
+                            "So I was expecting to see a variable name after the `as` keyword here. "
+                                ++ "Sometimes people just want to use `as` as a variable name though. Try using a different name in that case!"
                         ]
                     )
 
@@ -6829,7 +6945,8 @@ toPTupleReport syntaxVersion source context tuple startRow startCol =
                                     ++ op
                                     ++ " symbol unexpectedly in this pattern:"
                             , D.reflow <|
-                                "Only the :: symbol that works in patterns. It is useful if you are pattern matching on lists, trying to get the first element off the front. Did you want that instead?"
+                                "Only the :: symbol that works in patterns. It is useful if you are pattern matching on lists, "
+                                    ++ "trying to get the first element off the front. Did you want that instead?"
                             )
 
                 Code.Close term bracket ->
@@ -7851,8 +7968,9 @@ toTTupleReport source context tuple startRow startCol =
                             , D.fromChars "that"
                             , D.fromChars "helps?"
                             ]
-                        , D.toSimpleNote
-                            "I can get stuck when I run into keywords, operators, parentheses, or brackets unexpectedly. So there may be some earlier syntax trouble (like extra parenthesis or missing brackets) that is confusing me."
+                        , D.toSimpleNote <|
+                            "I can get stuck when I run into keywords, operators, parentheses, or brackets unexpectedly. "
+                                ++ "So there may be some earlier syntax trouble (like extra parenthesis or missing brackets) that is confusing me."
                         ]
                     )
 
@@ -7973,99 +8091,99 @@ toTTupleReport source context tuple startRow startCol =
 -- ENCODERS and DECODERS
 
 
-errorEncoder : Error -> BE.Encoder
+errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
     case error of
         ModuleNameUnspecified name ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , ModuleName.rawEncoder name
                 ]
 
         ModuleNameMismatch expectedName actualName ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , ModuleName.rawEncoder expectedName
                 , A.locatedEncoder ModuleName.rawEncoder actualName
                 ]
 
         UnexpectedPort region ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , A.regionEncoder region
                 ]
 
         NoPorts region ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , A.regionEncoder region
                 ]
 
         NoPortsInPackage name ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , A.locatedEncoder BE.string name
                 ]
 
         NoPortModulesInPackage region ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , A.regionEncoder region
                 ]
 
         NoEffectsOutsideKernel region ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , A.regionEncoder region
                 ]
 
         ParseError modul ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , moduleEncoder modul
                 ]
 
 
-errorDecoder : BD.Decoder Error
+errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map ModuleNameUnspecified ModuleName.rawDecoder
+                        Bytes.Decode.map ModuleNameUnspecified ModuleName.rawDecoder
 
                     1 ->
-                        BD.map2 ModuleNameMismatch
+                        Bytes.Decode.map2 ModuleNameMismatch
                             ModuleName.rawDecoder
                             (A.locatedDecoder ModuleName.rawDecoder)
 
                     2 ->
-                        BD.map UnexpectedPort A.regionDecoder
+                        Bytes.Decode.map UnexpectedPort A.regionDecoder
 
                     3 ->
-                        BD.map NoPorts A.regionDecoder
+                        Bytes.Decode.map NoPorts A.regionDecoder
 
                     4 ->
-                        BD.map NoPortsInPackage (A.locatedDecoder BD.string)
+                        Bytes.Decode.map NoPortsInPackage (A.locatedDecoder BD.string)
 
                     5 ->
-                        BD.map NoPortModulesInPackage A.regionDecoder
+                        Bytes.Decode.map NoPortModulesInPackage A.regionDecoder
 
                     6 ->
-                        BD.map NoEffectsOutsideKernel A.regionDecoder
+                        Bytes.Decode.map NoEffectsOutsideKernel A.regionDecoder
 
                     7 ->
-                        BD.map ParseError moduleDecoder
+                        Bytes.Decode.map ParseError moduleDecoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-spaceEncoder : Space -> BE.Encoder
+spaceEncoder : Space -> Bytes.Encode.Encoder
 spaceEncoder space =
-    BE.unsignedInt8
+    Bytes.Encode.unsignedInt8
         (case space of
             HasTab ->
                 0
@@ -8075,488 +8193,488 @@ spaceEncoder space =
         )
 
 
-spaceDecoder : BD.Decoder Space
+spaceDecoder : Bytes.Decode.Decoder Space
 spaceDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed HasTab
+                        Bytes.Decode.succeed HasTab
 
                     1 ->
-                        BD.succeed EndlessMultiComment
+                        Bytes.Decode.succeed EndlessMultiComment
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-moduleEncoder : Module -> BE.Encoder
+moduleEncoder : Module -> Bytes.Encode.Encoder
 moduleEncoder modul =
     case modul of
         ModuleSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         ModuleBadEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int row
                 , BE.int col
                 ]
 
         ModuleProblem row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int row
                 , BE.int col
                 ]
 
         ModuleName row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.int row
                 , BE.int col
                 ]
 
         ModuleExposing exposing_ row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , exposingEncoder exposing_
                 , BE.int row
                 , BE.int col
                 ]
 
         PortModuleProblem row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.int row
                 , BE.int col
                 ]
 
         PortModuleName row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , BE.int row
                 , BE.int col
                 ]
 
         PortModuleExposing exposing_ row col ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , exposingEncoder exposing_
                 , BE.int row
                 , BE.int col
                 ]
 
         Effect row col ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , BE.int row
                 , BE.int col
                 ]
 
         FreshLine row col ->
-            BE.sequence
-                [ BE.unsignedInt8 9
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
                 , BE.int row
                 , BE.int col
                 ]
 
         ImportStart row col ->
-            BE.sequence
-                [ BE.unsignedInt8 10
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 10
                 , BE.int row
                 , BE.int col
                 ]
 
         ImportName row col ->
-            BE.sequence
-                [ BE.unsignedInt8 11
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 11
                 , BE.int row
                 , BE.int col
                 ]
 
         ImportAs row col ->
-            BE.sequence
-                [ BE.unsignedInt8 12
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 12
                 , BE.int row
                 , BE.int col
                 ]
 
         ImportAlias row col ->
-            BE.sequence
-                [ BE.unsignedInt8 13
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 13
                 , BE.int row
                 , BE.int col
                 ]
 
         ImportExposing row col ->
-            BE.sequence
-                [ BE.unsignedInt8 14
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 14
                 , BE.int row
                 , BE.int col
                 ]
 
         ImportExposingList exposing_ row col ->
-            BE.sequence
-                [ BE.unsignedInt8 15
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 15
                 , exposingEncoder exposing_
                 , BE.int row
                 , BE.int col
                 ]
 
         ImportEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 16
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 16
                 , BE.int row
                 , BE.int col
                 ]
 
         ImportIndentName row col ->
-            BE.sequence
-                [ BE.unsignedInt8 17
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 17
                 , BE.int row
                 , BE.int col
                 ]
 
         ImportIndentAlias row col ->
-            BE.sequence
-                [ BE.unsignedInt8 18
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 18
                 , BE.int row
                 , BE.int col
                 ]
 
         ImportIndentExposingList row col ->
-            BE.sequence
-                [ BE.unsignedInt8 19
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 19
                 , BE.int row
                 , BE.int col
                 ]
 
         Infix row col ->
-            BE.sequence
-                [ BE.unsignedInt8 20
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 20
                 , BE.int row
                 , BE.int col
                 ]
 
         Declarations decl row col ->
-            BE.sequence
-                [ BE.unsignedInt8 21
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 21
                 , declEncoder decl
                 , BE.int row
                 , BE.int col
                 ]
 
 
-moduleDecoder : BD.Decoder Module
+moduleDecoder : Bytes.Decode.Decoder Module
 moduleDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 ModuleSpace
+                        Bytes.Decode.map3 ModuleSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map2 ModuleBadEnd
+                        Bytes.Decode.map2 ModuleBadEnd
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map2 ModuleProblem
+                        Bytes.Decode.map2 ModuleProblem
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map2 ModuleName
+                        Bytes.Decode.map2 ModuleName
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map3 ModuleExposing
+                        Bytes.Decode.map3 ModuleExposing
                             exposingDecoder
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map2 PortModuleProblem
+                        Bytes.Decode.map2 PortModuleProblem
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map2 PortModuleName
+                        Bytes.Decode.map2 PortModuleName
                             BD.int
                             BD.int
 
                     7 ->
-                        BD.map3 PortModuleExposing
+                        Bytes.Decode.map3 PortModuleExposing
                             exposingDecoder
                             BD.int
                             BD.int
 
                     8 ->
-                        BD.map2 Effect
+                        Bytes.Decode.map2 Effect
                             BD.int
                             BD.int
 
                     9 ->
-                        BD.map2 FreshLine
+                        Bytes.Decode.map2 FreshLine
                             BD.int
                             BD.int
 
                     10 ->
-                        BD.map2 ImportStart
+                        Bytes.Decode.map2 ImportStart
                             BD.int
                             BD.int
 
                     11 ->
-                        BD.map2 ImportName
+                        Bytes.Decode.map2 ImportName
                             BD.int
                             BD.int
 
                     12 ->
-                        BD.map2 ImportAs
+                        Bytes.Decode.map2 ImportAs
                             BD.int
                             BD.int
 
                     13 ->
-                        BD.map2 ImportAlias
+                        Bytes.Decode.map2 ImportAlias
                             BD.int
                             BD.int
 
                     14 ->
-                        BD.map2 ImportExposing
+                        Bytes.Decode.map2 ImportExposing
                             BD.int
                             BD.int
 
                     15 ->
-                        BD.map3 ImportExposingList
+                        Bytes.Decode.map3 ImportExposingList
                             exposingDecoder
                             BD.int
                             BD.int
 
                     16 ->
-                        BD.map2 ImportEnd
+                        Bytes.Decode.map2 ImportEnd
                             BD.int
                             BD.int
 
                     17 ->
-                        BD.map2 ImportIndentName
+                        Bytes.Decode.map2 ImportIndentName
                             BD.int
                             BD.int
 
                     18 ->
-                        BD.map2 ImportIndentAlias
+                        Bytes.Decode.map2 ImportIndentAlias
                             BD.int
                             BD.int
 
                     19 ->
-                        BD.map2 ImportIndentExposingList
+                        Bytes.Decode.map2 ImportIndentExposingList
                             BD.int
                             BD.int
 
                     20 ->
-                        BD.map2 Infix
+                        Bytes.Decode.map2 Infix
                             BD.int
                             BD.int
 
                     21 ->
-                        BD.map3 Declarations
+                        Bytes.Decode.map3 Declarations
                             declDecoder
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-exposingEncoder : Exposing -> BE.Encoder
+exposingEncoder : Exposing -> Bytes.Encode.Encoder
 exposingEncoder exposing_ =
     case exposing_ of
         ExposingSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         ExposingStart row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int row
                 , BE.int col
                 ]
 
         ExposingValue row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int row
                 , BE.int col
                 ]
 
         ExposingOperator row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.int row
                 , BE.int col
                 ]
 
         ExposingOperatorReserved op row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , Symbol.badOperatorEncoder op
                 , BE.int row
                 , BE.int col
                 ]
 
         ExposingOperatorRightParen row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.int row
                 , BE.int col
                 ]
 
         ExposingTypePrivacy row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , BE.int row
                 , BE.int col
                 ]
 
         ExposingEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , BE.int row
                 , BE.int col
                 ]
 
         ExposingIndentEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , BE.int row
                 , BE.int col
                 ]
 
         ExposingIndentValue row col ->
-            BE.sequence
-                [ BE.unsignedInt8 9
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
                 , BE.int row
                 , BE.int col
                 ]
 
 
-exposingDecoder : BD.Decoder Exposing
+exposingDecoder : Bytes.Decode.Decoder Exposing
 exposingDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 ExposingSpace
+                        Bytes.Decode.map3 ExposingSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map2 ExposingStart
+                        Bytes.Decode.map2 ExposingStart
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map2 ExposingValue
+                        Bytes.Decode.map2 ExposingValue
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map2 ExposingOperator
+                        Bytes.Decode.map2 ExposingOperator
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map3 ExposingOperatorReserved
+                        Bytes.Decode.map3 ExposingOperatorReserved
                             Symbol.badOperatorDecoder
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map2 ExposingOperatorRightParen
+                        Bytes.Decode.map2 ExposingOperatorRightParen
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map2 ExposingTypePrivacy
+                        Bytes.Decode.map2 ExposingTypePrivacy
                             BD.int
                             BD.int
 
                     7 ->
-                        BD.map2 ExposingEnd
+                        Bytes.Decode.map2 ExposingEnd
                             BD.int
                             BD.int
 
                     8 ->
-                        BD.map2 ExposingIndentEnd
+                        Bytes.Decode.map2 ExposingIndentEnd
                             BD.int
                             BD.int
 
                     9 ->
-                        BD.map2 ExposingIndentValue
+                        Bytes.Decode.map2 ExposingIndentValue
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-declEncoder : Decl -> BE.Encoder
+declEncoder : Decl -> Bytes.Encode.Encoder
 declEncoder decl =
     case decl of
         DeclStart row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.int row
                 , BE.int col
                 ]
 
         DeclSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         Port port_ row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , portEncoder port_
                 , BE.int row
                 , BE.int col
                 ]
 
         DeclType declType row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , declTypeEncoder declType
                 , BE.int row
                 , BE.int col
                 ]
 
         DeclDef name declDef row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.string name
                 , declDefEncoder declDef
                 , BE.int row
@@ -8564,545 +8682,545 @@ declEncoder decl =
                 ]
 
         DeclFreshLineAfterDocComment row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.int row
                 , BE.int col
                 ]
 
 
-declDecoder : BD.Decoder Decl
+declDecoder : Bytes.Decode.Decoder Decl
 declDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map2 DeclStart
+                        Bytes.Decode.map2 DeclStart
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map3 DeclSpace
+                        Bytes.Decode.map3 DeclSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map3 Port
+                        Bytes.Decode.map3 Port
                             portDecoder
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map3 DeclType
+                        Bytes.Decode.map3 DeclType
                             declTypeDecoder
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map4 DeclDef
+                        Bytes.Decode.map4 DeclDef
                             BD.string
                             declDefDecoder
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map2 DeclFreshLineAfterDocComment
+                        Bytes.Decode.map2 DeclFreshLineAfterDocComment
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-portEncoder : Port -> BE.Encoder
+portEncoder : Port -> Bytes.Encode.Encoder
 portEncoder port_ =
     case port_ of
         PortSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         PortName row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int row
                 , BE.int col
                 ]
 
         PortColon row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int row
                 , BE.int col
                 ]
 
         PortType tipe row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , typeEncoder tipe
                 , BE.int row
                 , BE.int col
                 ]
 
         PortIndentName row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.int row
                 , BE.int col
                 ]
 
         PortIndentColon row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.int row
                 , BE.int col
                 ]
 
         PortIndentType row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , BE.int row
                 , BE.int col
                 ]
 
 
-portDecoder : BD.Decoder Port
+portDecoder : Bytes.Decode.Decoder Port
 portDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 PortSpace
+                        Bytes.Decode.map3 PortSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map2 PortName
+                        Bytes.Decode.map2 PortName
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map2 PortColon
+                        Bytes.Decode.map2 PortColon
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map3 PortType
+                        Bytes.Decode.map3 PortType
                             typeDecoder
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map2 PortIndentName
+                        Bytes.Decode.map2 PortIndentName
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map2 PortIndentColon
+                        Bytes.Decode.map2 PortIndentColon
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map2 PortIndentType
+                        Bytes.Decode.map2 PortIndentType
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-declTypeEncoder : DeclType -> BE.Encoder
+declTypeEncoder : DeclType -> Bytes.Encode.Encoder
 declTypeEncoder declType =
     case declType of
         DT_Space space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         DT_Name row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int row
                 , BE.int col
                 ]
 
         DT_Alias typeAlias row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , typeAliasEncoder typeAlias
                 , BE.int row
                 , BE.int col
                 ]
 
         DT_Union customType row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , customTypeEncoder customType
                 , BE.int row
                 , BE.int col
                 ]
 
         DT_IndentName row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.int row
                 , BE.int col
                 ]
 
 
-declTypeDecoder : BD.Decoder DeclType
+declTypeDecoder : Bytes.Decode.Decoder DeclType
 declTypeDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 DT_Space
+                        Bytes.Decode.map3 DT_Space
                             spaceDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map2 DT_Name
+                        Bytes.Decode.map2 DT_Name
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map3 DT_Alias
+                        Bytes.Decode.map3 DT_Alias
                             typeAliasDecoder
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map3 DT_Union
+                        Bytes.Decode.map3 DT_Union
                             customTypeDecoder
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map2 DT_IndentName
+                        Bytes.Decode.map2 DT_IndentName
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-declDefEncoder : DeclDef -> BE.Encoder
+declDefEncoder : DeclDef -> Bytes.Encode.Encoder
 declDefEncoder declDef =
     case declDef of
         DeclDefSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         DeclDefEquals row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int row
                 , BE.int col
                 ]
 
         DeclDefType tipe row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , typeEncoder tipe
                 , BE.int row
                 , BE.int col
                 ]
 
         DeclDefArg pattern row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , patternEncoder pattern
                 , BE.int row
                 , BE.int col
                 ]
 
         DeclDefBody expr row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , exprEncoder expr
                 , BE.int row
                 , BE.int col
                 ]
 
         DeclDefNameRepeat row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.int row
                 , BE.int col
                 ]
 
         DeclDefNameMatch name row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , BE.string name
                 , BE.int row
                 , BE.int col
                 ]
 
         DeclDefIndentType row col ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , BE.int row
                 , BE.int col
                 ]
 
         DeclDefIndentEquals row col ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , BE.int row
                 , BE.int col
                 ]
 
         DeclDefIndentBody row col ->
-            BE.sequence
-                [ BE.unsignedInt8 9
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
                 , BE.int row
                 , BE.int col
                 ]
 
 
-declDefDecoder : BD.Decoder DeclDef
+declDefDecoder : Bytes.Decode.Decoder DeclDef
 declDefDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 DeclDefSpace
+                        Bytes.Decode.map3 DeclDefSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map2 DeclDefEquals
+                        Bytes.Decode.map2 DeclDefEquals
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map3 DeclDefType
+                        Bytes.Decode.map3 DeclDefType
                             typeDecoder
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map3 DeclDefArg
+                        Bytes.Decode.map3 DeclDefArg
                             patternDecoder
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map3 DeclDefBody
+                        Bytes.Decode.map3 DeclDefBody
                             exprDecoder
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map2 DeclDefNameRepeat
+                        Bytes.Decode.map2 DeclDefNameRepeat
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map3 DeclDefNameMatch
+                        Bytes.Decode.map3 DeclDefNameMatch
                             BD.string
                             BD.int
                             BD.int
 
                     7 ->
-                        BD.map2 DeclDefIndentType
+                        Bytes.Decode.map2 DeclDefIndentType
                             BD.int
                             BD.int
 
                     8 ->
-                        BD.map2 DeclDefIndentEquals
+                        Bytes.Decode.map2 DeclDefIndentEquals
                             BD.int
                             BD.int
 
                     9 ->
-                        BD.map2 DeclDefIndentBody
+                        Bytes.Decode.map2 DeclDefIndentBody
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-typeEncoder : Type -> BE.Encoder
+typeEncoder : Type -> Bytes.Encode.Encoder
 typeEncoder type_ =
     case type_ of
         TRecord record row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , tRecordEncoder record
                 , BE.int row
                 , BE.int col
                 ]
 
         TTuple tuple row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , tTupleEncoder tuple
                 , BE.int row
                 , BE.int col
                 ]
 
         TStart row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int row
                 , BE.int col
                 ]
 
         TSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         TIndentStart row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.int row
                 , BE.int col
                 ]
 
 
-typeDecoder : BD.Decoder Type
+typeDecoder : Bytes.Decode.Decoder Type
 typeDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 TRecord
+                        Bytes.Decode.map3 TRecord
                             tRecordDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map3 TTuple
+                        Bytes.Decode.map3 TTuple
                             tTupleDecoder
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map2 TStart
+                        Bytes.Decode.map2 TStart
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map3 TSpace
+                        Bytes.Decode.map3 TSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map2 TIndentStart
+                        Bytes.Decode.map2 TIndentStart
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-patternEncoder : Pattern -> BE.Encoder
+patternEncoder : Pattern -> Bytes.Encode.Encoder
 patternEncoder pattern =
     case pattern of
         PRecord record row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , pRecordEncoder record
                 , BE.int row
                 , BE.int col
                 ]
 
         PTuple tuple row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , pTupleEncoder tuple
                 , BE.int row
                 , BE.int col
                 ]
 
         PList list row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , pListEncoder list
                 , BE.int row
                 , BE.int col
                 ]
 
         PStart row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.int row
                 , BE.int col
                 ]
 
         PChar char row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , charEncoder char
                 , BE.int row
                 , BE.int col
                 ]
 
         PString string row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , stringEncoder string
                 , BE.int row
                 , BE.int col
                 ]
 
         PNumber number row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , numberEncoder number
                 , BE.int row
                 , BE.int col
                 ]
 
         PFloat width row col ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , BE.int width
                 , BE.int row
                 , BE.int col
                 ]
 
         PAlias row col ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , BE.int row
                 , BE.int col
                 ]
 
         PWildcardNotVar name width row col ->
-            BE.sequence
-                [ BE.unsignedInt8 9
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
                 , BE.string name
                 , BE.int width
                 , BE.int row
@@ -9110,8 +9228,8 @@ patternEncoder pattern =
                 ]
 
         PWildcardReservedWord name width row col ->
-            BE.sequence
-                [ BE.unsignedInt8 10
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 10
                 , BE.string name
                 , BE.int width
                 , BE.int row
@@ -9119,430 +9237,430 @@ patternEncoder pattern =
                 ]
 
         PSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 11
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 11
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         PIndentStart row col ->
-            BE.sequence
-                [ BE.unsignedInt8 12
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 12
                 , BE.int row
                 , BE.int col
                 ]
 
         PIndentAlias row col ->
-            BE.sequence
-                [ BE.unsignedInt8 13
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 13
                 , BE.int row
                 , BE.int col
                 ]
 
 
-patternDecoder : BD.Decoder Pattern
+patternDecoder : Bytes.Decode.Decoder Pattern
 patternDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 PRecord
+                        Bytes.Decode.map3 PRecord
                             pRecordDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map3 PTuple
+                        Bytes.Decode.map3 PTuple
                             pTupleDecoder
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map3 PList
+                        Bytes.Decode.map3 PList
                             pListDecoder
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map2 PStart
+                        Bytes.Decode.map2 PStart
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map3 PChar
+                        Bytes.Decode.map3 PChar
                             charDecoder
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map3 PString
+                        Bytes.Decode.map3 PString
                             stringDecoder
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map3 PNumber
+                        Bytes.Decode.map3 PNumber
                             numberDecoder
                             BD.int
                             BD.int
 
                     7 ->
-                        BD.map3 PFloat
+                        Bytes.Decode.map3 PFloat
                             BD.int
                             BD.int
                             BD.int
 
                     8 ->
-                        BD.map2 PAlias
+                        Bytes.Decode.map2 PAlias
                             BD.int
                             BD.int
 
                     9 ->
-                        BD.map4 PWildcardNotVar
+                        Bytes.Decode.map4 PWildcardNotVar
                             BD.string
                             BD.int
                             BD.int
                             BD.int
 
                     10 ->
-                        BD.map4 PWildcardReservedWord
+                        Bytes.Decode.map4 PWildcardReservedWord
                             BD.string
                             BD.int
                             BD.int
                             BD.int
 
                     11 ->
-                        BD.map3 PSpace
+                        Bytes.Decode.map3 PSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     12 ->
-                        BD.map2 PIndentStart
+                        Bytes.Decode.map2 PIndentStart
                             BD.int
                             BD.int
 
                     13 ->
-                        BD.map2 PIndentAlias
+                        Bytes.Decode.map2 PIndentAlias
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-exprEncoder : Expr -> BE.Encoder
+exprEncoder : Expr -> Bytes.Encode.Encoder
 exprEncoder expr =
     case expr of
         Let let_ row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , letEncoder let_
                 , BE.int row
                 , BE.int col
                 ]
 
         Case case_ row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , caseEncoder case_
                 , BE.int row
                 , BE.int col
                 ]
 
         If if_ row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , ifEncoder if_
                 , BE.int row
                 , BE.int col
                 ]
 
         List list row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , listEncoder list
                 , BE.int row
                 , BE.int col
                 ]
 
         Record record row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , recordEncoder record
                 , BE.int row
                 , BE.int col
                 ]
 
         Tuple tuple row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , tupleEncoder tuple
                 , BE.int row
                 , BE.int col
                 ]
 
         Func func row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , funcEncoder func
                 , BE.int row
                 , BE.int col
                 ]
 
         Dot row col ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , BE.int row
                 , BE.int col
                 ]
 
         Access row col ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , BE.int row
                 , BE.int col
                 ]
 
         OperatorRight op row col ->
-            BE.sequence
-                [ BE.unsignedInt8 9
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
                 , BE.string op
                 , BE.int row
                 , BE.int col
                 ]
 
         OperatorReserved operator row col ->
-            BE.sequence
-                [ BE.unsignedInt8 10
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 10
                 , Symbol.badOperatorEncoder operator
                 , BE.int row
                 , BE.int col
                 ]
 
         Start row col ->
-            BE.sequence
-                [ BE.unsignedInt8 11
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 11
                 , BE.int row
                 , BE.int col
                 ]
 
         Char char row col ->
-            BE.sequence
-                [ BE.unsignedInt8 12
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 12
                 , charEncoder char
                 , BE.int row
                 , BE.int col
                 ]
 
         String_ string row col ->
-            BE.sequence
-                [ BE.unsignedInt8 13
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 13
                 , stringEncoder string
                 , BE.int row
                 , BE.int col
                 ]
 
         Number number row col ->
-            BE.sequence
-                [ BE.unsignedInt8 14
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 14
                 , numberEncoder number
                 , BE.int row
                 , BE.int col
                 ]
 
         Space space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 15
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 15
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         EndlessShader row col ->
-            BE.sequence
-                [ BE.unsignedInt8 16
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 16
                 , BE.int row
                 , BE.int col
                 ]
 
         ShaderProblem problem row col ->
-            BE.sequence
-                [ BE.unsignedInt8 17
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 17
                 , BE.string problem
                 , BE.int row
                 , BE.int col
                 ]
 
         IndentOperatorRight op row col ->
-            BE.sequence
-                [ BE.unsignedInt8 18
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 18
                 , BE.string op
                 , BE.int row
                 , BE.int col
                 ]
 
 
-exprDecoder : BD.Decoder Expr
+exprDecoder : Bytes.Decode.Decoder Expr
 exprDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 Let
+                        Bytes.Decode.map3 Let
                             letDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map3 Case
+                        Bytes.Decode.map3 Case
                             caseDecoder
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map3 If
+                        Bytes.Decode.map3 If
                             ifDecoder
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map3 List
+                        Bytes.Decode.map3 List
                             listDecoder
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map3 Record
+                        Bytes.Decode.map3 Record
                             recordDecoder
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map3 Tuple
+                        Bytes.Decode.map3 Tuple
                             tupleDecoder
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map3 Func
+                        Bytes.Decode.map3 Func
                             funcDecoder
                             BD.int
                             BD.int
 
                     7 ->
-                        BD.map2 Dot
+                        Bytes.Decode.map2 Dot
                             BD.int
                             BD.int
 
                     8 ->
-                        BD.map2 Access
+                        Bytes.Decode.map2 Access
                             BD.int
                             BD.int
 
                     9 ->
-                        BD.map3 OperatorRight
+                        Bytes.Decode.map3 OperatorRight
                             BD.string
                             BD.int
                             BD.int
 
                     10 ->
-                        BD.map3 OperatorReserved
+                        Bytes.Decode.map3 OperatorReserved
                             Symbol.badOperatorDecoder
                             BD.int
                             BD.int
 
                     11 ->
-                        BD.map2 Start
+                        Bytes.Decode.map2 Start
                             BD.int
                             BD.int
 
                     12 ->
-                        BD.map3 Char
+                        Bytes.Decode.map3 Char
                             charDecoder
                             BD.int
                             BD.int
 
                     13 ->
-                        BD.map3 String_
+                        Bytes.Decode.map3 String_
                             stringDecoder
                             BD.int
                             BD.int
 
                     14 ->
-                        BD.map3 Number
+                        Bytes.Decode.map3 Number
                             numberDecoder
                             BD.int
                             BD.int
 
                     15 ->
-                        BD.map3 Space
+                        Bytes.Decode.map3 Space
                             spaceDecoder
                             BD.int
                             BD.int
 
                     16 ->
-                        BD.map2 EndlessShader
+                        Bytes.Decode.map2 EndlessShader
                             BD.int
                             BD.int
 
                     17 ->
-                        BD.map3 ShaderProblem
+                        Bytes.Decode.map3 ShaderProblem
                             BD.string
                             BD.int
                             BD.int
 
                     18 ->
-                        BD.map3 IndentOperatorRight
+                        Bytes.Decode.map3 IndentOperatorRight
                             BD.string
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-letEncoder : Let -> BE.Encoder
+letEncoder : Let -> Bytes.Encode.Encoder
 letEncoder let_ =
     case let_ of
         LetSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         LetIn row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int row
                 , BE.int col
                 ]
 
         LetDefAlignment int row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int int
                 , BE.int row
                 , BE.int col
                 ]
 
         LetDefName row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.int row
                 , BE.int col
                 ]
 
         LetDef name def row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.string name
                 , defEncoder def
                 , BE.int row
@@ -9550,2166 +9668,2166 @@ letEncoder let_ =
                 ]
 
         LetDestruct destruct row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , destructEncoder destruct
                 , BE.int row
                 , BE.int col
                 ]
 
         LetBody expr row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , exprEncoder expr
                 , BE.int row
                 , BE.int col
                 ]
 
         LetIndentDef row col ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , BE.int row
                 , BE.int col
                 ]
 
         LetIndentIn row col ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , BE.int row
                 , BE.int col
                 ]
 
         LetIndentBody row col ->
-            BE.sequence
-                [ BE.unsignedInt8 9
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
                 , BE.int row
                 , BE.int col
                 ]
 
 
-letDecoder : BD.Decoder Let
+letDecoder : Bytes.Decode.Decoder Let
 letDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 LetSpace
+                        Bytes.Decode.map3 LetSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map2 LetIn
+                        Bytes.Decode.map2 LetIn
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map3 LetDefAlignment
+                        Bytes.Decode.map3 LetDefAlignment
                             BD.int
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map2 LetDefName
+                        Bytes.Decode.map2 LetDefName
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map4 LetDef
+                        Bytes.Decode.map4 LetDef
                             BD.string
                             defDecoder
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map3 LetDestruct
+                        Bytes.Decode.map3 LetDestruct
                             destructDecoder
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map3 LetBody
+                        Bytes.Decode.map3 LetBody
                             exprDecoder
                             BD.int
                             BD.int
 
                     7 ->
-                        BD.map2 LetIndentDef
+                        Bytes.Decode.map2 LetIndentDef
                             BD.int
                             BD.int
 
                     8 ->
-                        BD.map2 LetIndentIn
+                        Bytes.Decode.map2 LetIndentIn
                             BD.int
                             BD.int
 
                     9 ->
-                        BD.map2 LetIndentBody
+                        Bytes.Decode.map2 LetIndentBody
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-caseEncoder : Case -> BE.Encoder
+caseEncoder : Case -> Bytes.Encode.Encoder
 caseEncoder case_ =
     case case_ of
         CaseSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         CaseOf row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int row
                 , BE.int col
                 ]
 
         CasePattern pattern row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , patternEncoder pattern
                 , BE.int row
                 , BE.int col
                 ]
 
         CaseArrow row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.int row
                 , BE.int col
                 ]
 
         CaseExpr expr row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , exprEncoder expr
                 , BE.int row
                 , BE.int col
                 ]
 
         CaseBranch expr row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , exprEncoder expr
                 , BE.int row
                 , BE.int col
                 ]
 
         CaseIndentOf row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , BE.int row
                 , BE.int col
                 ]
 
         CaseIndentExpr row col ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , BE.int row
                 , BE.int col
                 ]
 
         CaseIndentPattern row col ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , BE.int row
                 , BE.int col
                 ]
 
         CaseIndentArrow row col ->
-            BE.sequence
-                [ BE.unsignedInt8 9
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
                 , BE.int row
                 , BE.int col
                 ]
 
         CaseIndentBranch row col ->
-            BE.sequence
-                [ BE.unsignedInt8 10
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 10
                 , BE.int row
                 , BE.int col
                 ]
 
         CasePatternAlignment indent row col ->
-            BE.sequence
-                [ BE.unsignedInt8 11
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 11
                 , BE.int indent
                 , BE.int row
                 , BE.int col
                 ]
 
 
-caseDecoder : BD.Decoder Case
+caseDecoder : Bytes.Decode.Decoder Case
 caseDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 CaseSpace
+                        Bytes.Decode.map3 CaseSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map2 CaseOf
+                        Bytes.Decode.map2 CaseOf
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map3 CasePattern
+                        Bytes.Decode.map3 CasePattern
                             patternDecoder
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map2 CaseArrow
+                        Bytes.Decode.map2 CaseArrow
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map3 CaseExpr
+                        Bytes.Decode.map3 CaseExpr
                             exprDecoder
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map3 CaseBranch
+                        Bytes.Decode.map3 CaseBranch
                             exprDecoder
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map2 CaseIndentOf
+                        Bytes.Decode.map2 CaseIndentOf
                             BD.int
                             BD.int
 
                     7 ->
-                        BD.map2 CaseIndentExpr
+                        Bytes.Decode.map2 CaseIndentExpr
                             BD.int
                             BD.int
 
                     8 ->
-                        BD.map2 CaseIndentPattern
+                        Bytes.Decode.map2 CaseIndentPattern
                             BD.int
                             BD.int
 
                     9 ->
-                        BD.map2 CaseIndentArrow
+                        Bytes.Decode.map2 CaseIndentArrow
                             BD.int
                             BD.int
 
                     10 ->
-                        BD.map2 CaseIndentBranch
+                        Bytes.Decode.map2 CaseIndentBranch
                             BD.int
                             BD.int
 
                     11 ->
-                        BD.map3 CasePatternAlignment
+                        Bytes.Decode.map3 CasePatternAlignment
                             BD.int
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-ifEncoder : If -> BE.Encoder
+ifEncoder : If -> Bytes.Encode.Encoder
 ifEncoder if_ =
     case if_ of
         IfSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         IfThen row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int row
                 , BE.int col
                 ]
 
         IfElse row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int row
                 , BE.int col
                 ]
 
         IfElseBranchStart row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.int row
                 , BE.int col
                 ]
 
         IfCondition expr row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , exprEncoder expr
                 , BE.int row
                 , BE.int col
                 ]
 
         IfThenBranch expr row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , exprEncoder expr
                 , BE.int row
                 , BE.int col
                 ]
 
         IfElseBranch expr row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , exprEncoder expr
                 , BE.int row
                 , BE.int col
                 ]
 
         IfIndentCondition row col ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , BE.int row
                 , BE.int col
                 ]
 
         IfIndentThen row col ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , BE.int row
                 , BE.int col
                 ]
 
         IfIndentThenBranch row col ->
-            BE.sequence
-                [ BE.unsignedInt8 9
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
                 , BE.int row
                 , BE.int col
                 ]
 
         IfIndentElseBranch row col ->
-            BE.sequence
-                [ BE.unsignedInt8 10
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 10
                 , BE.int row
                 , BE.int col
                 ]
 
         IfIndentElse row col ->
-            BE.sequence
-                [ BE.unsignedInt8 11
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 11
                 , BE.int row
                 , BE.int col
                 ]
 
 
-ifDecoder : BD.Decoder If
+ifDecoder : Bytes.Decode.Decoder If
 ifDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 IfSpace
+                        Bytes.Decode.map3 IfSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map2 IfThen
+                        Bytes.Decode.map2 IfThen
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map2 IfElse
+                        Bytes.Decode.map2 IfElse
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map2 IfElseBranchStart
+                        Bytes.Decode.map2 IfElseBranchStart
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map3 IfCondition
+                        Bytes.Decode.map3 IfCondition
                             exprDecoder
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map3 IfThenBranch
+                        Bytes.Decode.map3 IfThenBranch
                             exprDecoder
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map3 IfElseBranch
+                        Bytes.Decode.map3 IfElseBranch
                             exprDecoder
                             BD.int
                             BD.int
 
                     7 ->
-                        BD.map2 IfIndentCondition
+                        Bytes.Decode.map2 IfIndentCondition
                             BD.int
                             BD.int
 
                     8 ->
-                        BD.map2 IfIndentThen
+                        Bytes.Decode.map2 IfIndentThen
                             BD.int
                             BD.int
 
                     9 ->
-                        BD.map2 IfIndentThenBranch
+                        Bytes.Decode.map2 IfIndentThenBranch
                             BD.int
                             BD.int
 
                     10 ->
-                        BD.map2 IfIndentElseBranch
+                        Bytes.Decode.map2 IfIndentElseBranch
                             BD.int
                             BD.int
 
                     11 ->
-                        BD.map2 IfIndentElse
+                        Bytes.Decode.map2 IfIndentElse
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-listEncoder : List_ -> BE.Encoder
+listEncoder : List_ -> Bytes.Encode.Encoder
 listEncoder list_ =
     case list_ of
         ListSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         ListOpen row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int row
                 , BE.int col
                 ]
 
         ListExpr expr row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , exprEncoder expr
                 , BE.int row
                 , BE.int col
                 ]
 
         ListEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.int row
                 , BE.int col
                 ]
 
         ListIndentOpen row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.int row
                 , BE.int col
                 ]
 
         ListIndentEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.int row
                 , BE.int col
                 ]
 
         ListIndentExpr row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , BE.int row
                 , BE.int col
                 ]
 
 
-listDecoder : BD.Decoder List_
+listDecoder : Bytes.Decode.Decoder List_
 listDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 ListSpace
+                        Bytes.Decode.map3 ListSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map2 ListOpen
+                        Bytes.Decode.map2 ListOpen
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map3 ListExpr
+                        Bytes.Decode.map3 ListExpr
                             exprDecoder
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map2 ListEnd
+                        Bytes.Decode.map2 ListEnd
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map2 ListIndentOpen
+                        Bytes.Decode.map2 ListIndentOpen
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map2 ListIndentEnd
+                        Bytes.Decode.map2 ListIndentEnd
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map2 ListIndentExpr
+                        Bytes.Decode.map2 ListIndentExpr
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-recordEncoder : Record -> BE.Encoder
+recordEncoder : Record -> Bytes.Encode.Encoder
 recordEncoder record =
     case record of
         RecordOpen row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.int row
                 , BE.int col
                 ]
 
         RecordEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int row
                 , BE.int col
                 ]
 
         RecordField row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int row
                 , BE.int col
                 ]
 
         RecordEquals row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.int row
                 , BE.int col
                 ]
 
         RecordExpr expr row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , exprEncoder expr
                 , BE.int row
                 , BE.int col
                 ]
 
         RecordSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         RecordIndentOpen row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , BE.int row
                 , BE.int col
                 ]
 
         RecordIndentEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , BE.int row
                 , BE.int col
                 ]
 
         RecordIndentField row col ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , BE.int row
                 , BE.int col
                 ]
 
         RecordIndentEquals row col ->
-            BE.sequence
-                [ BE.unsignedInt8 9
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
                 , BE.int row
                 , BE.int col
                 ]
 
         RecordIndentExpr row col ->
-            BE.sequence
-                [ BE.unsignedInt8 10
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 10
                 , BE.int row
                 , BE.int col
                 ]
 
 
-recordDecoder : BD.Decoder Record
+recordDecoder : Bytes.Decode.Decoder Record
 recordDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map2 RecordOpen
+                        Bytes.Decode.map2 RecordOpen
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map2 RecordEnd
+                        Bytes.Decode.map2 RecordEnd
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map2 RecordField
+                        Bytes.Decode.map2 RecordField
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map2 RecordEquals
+                        Bytes.Decode.map2 RecordEquals
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map3 RecordExpr
+                        Bytes.Decode.map3 RecordExpr
                             exprDecoder
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map3 RecordSpace
+                        Bytes.Decode.map3 RecordSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map2 RecordIndentOpen
+                        Bytes.Decode.map2 RecordIndentOpen
                             BD.int
                             BD.int
 
                     7 ->
-                        BD.map2 RecordIndentEnd
+                        Bytes.Decode.map2 RecordIndentEnd
                             BD.int
                             BD.int
 
                     8 ->
-                        BD.map2 RecordIndentField
+                        Bytes.Decode.map2 RecordIndentField
                             BD.int
                             BD.int
 
                     9 ->
-                        BD.map2 RecordIndentEquals
+                        Bytes.Decode.map2 RecordIndentEquals
                             BD.int
                             BD.int
 
                     10 ->
-                        BD.map2 RecordIndentExpr
+                        Bytes.Decode.map2 RecordIndentExpr
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-tupleEncoder : Tuple -> BE.Encoder
+tupleEncoder : Tuple -> Bytes.Encode.Encoder
 tupleEncoder tuple =
     case tuple of
         TupleExpr expr row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , exprEncoder expr
                 , BE.int row
                 , BE.int col
                 ]
 
         TupleSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         TupleEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int row
                 , BE.int col
                 ]
 
         TupleOperatorClose row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.int row
                 , BE.int col
                 ]
 
         TupleOperatorReserved operator row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , Symbol.badOperatorEncoder operator
                 , BE.int row
                 , BE.int col
                 ]
 
         TupleIndentExpr1 row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.int row
                 , BE.int col
                 ]
 
         TupleIndentExprN row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , BE.int row
                 , BE.int col
                 ]
 
         TupleIndentEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , BE.int row
                 , BE.int col
                 ]
 
 
-tupleDecoder : BD.Decoder Tuple
+tupleDecoder : Bytes.Decode.Decoder Tuple
 tupleDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 TupleExpr
+                        Bytes.Decode.map3 TupleExpr
                             exprDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map3 TupleSpace
+                        Bytes.Decode.map3 TupleSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map2 TupleEnd
+                        Bytes.Decode.map2 TupleEnd
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map2 TupleOperatorClose
+                        Bytes.Decode.map2 TupleOperatorClose
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map3 TupleOperatorReserved
+                        Bytes.Decode.map3 TupleOperatorReserved
                             Symbol.badOperatorDecoder
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map2 TupleIndentExpr1
+                        Bytes.Decode.map2 TupleIndentExpr1
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map2 TupleIndentExprN
+                        Bytes.Decode.map2 TupleIndentExprN
                             BD.int
                             BD.int
 
                     7 ->
-                        BD.map2 TupleIndentEnd
+                        Bytes.Decode.map2 TupleIndentEnd
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-funcEncoder : Func -> BE.Encoder
+funcEncoder : Func -> Bytes.Encode.Encoder
 funcEncoder func =
     case func of
         FuncSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         FuncArg pattern row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , patternEncoder pattern
                 , BE.int row
                 , BE.int col
                 ]
 
         FuncBody expr row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , exprEncoder expr
                 , BE.int row
                 , BE.int col
                 ]
 
         FuncArrow row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.int row
                 , BE.int col
                 ]
 
         FuncIndentArg row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.int row
                 , BE.int col
                 ]
 
         FuncIndentArrow row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.int row
                 , BE.int col
                 ]
 
         FuncIndentBody row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , BE.int row
                 , BE.int col
                 ]
 
 
-funcDecoder : BD.Decoder Func
+funcDecoder : Bytes.Decode.Decoder Func
 funcDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 FuncSpace
+                        Bytes.Decode.map3 FuncSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map3 FuncArg
+                        Bytes.Decode.map3 FuncArg
                             patternDecoder
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map3 FuncBody
+                        Bytes.Decode.map3 FuncBody
                             exprDecoder
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map2 FuncArrow
+                        Bytes.Decode.map2 FuncArrow
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map2 FuncIndentArg
+                        Bytes.Decode.map2 FuncIndentArg
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map2 FuncIndentArrow
+                        Bytes.Decode.map2 FuncIndentArrow
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map2 FuncIndentBody
+                        Bytes.Decode.map2 FuncIndentBody
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-charEncoder : Char -> BE.Encoder
+charEncoder : Char -> Bytes.Encode.Encoder
 charEncoder char =
     case char of
         CharEndless ->
-            BE.unsignedInt8 0
+            Bytes.Encode.unsignedInt8 0
 
         CharEscape escape ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , escapeEncoder escape
                 ]
 
         CharNotString width ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int width
                 ]
 
 
-charDecoder : BD.Decoder Char
+charDecoder : Bytes.Decode.Decoder Char
 charDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed CharEndless
+                        Bytes.Decode.succeed CharEndless
 
                     1 ->
-                        BD.map CharEscape escapeDecoder
+                        Bytes.Decode.map CharEscape escapeDecoder
 
                     2 ->
-                        BD.map CharNotString BD.int
+                        Bytes.Decode.map CharNotString BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-stringEncoder : String_ -> BE.Encoder
+stringEncoder : String_ -> Bytes.Encode.Encoder
 stringEncoder string_ =
     case string_ of
         StringEndless_Single ->
-            BE.unsignedInt8 0
+            Bytes.Encode.unsignedInt8 0
 
         StringEndless_Multi ->
-            BE.unsignedInt8 1
+            Bytes.Encode.unsignedInt8 1
 
         StringEscape escape ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , escapeEncoder escape
                 ]
 
 
-stringDecoder : BD.Decoder String_
+stringDecoder : Bytes.Decode.Decoder String_
 stringDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed StringEndless_Single
+                        Bytes.Decode.succeed StringEndless_Single
 
                     1 ->
-                        BD.succeed StringEndless_Multi
+                        Bytes.Decode.succeed StringEndless_Multi
 
                     2 ->
-                        BD.map StringEscape escapeDecoder
+                        Bytes.Decode.map StringEscape escapeDecoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-numberEncoder : Number -> BE.Encoder
+numberEncoder : Number -> Bytes.Encode.Encoder
 numberEncoder number =
     case number of
         NumberEnd ->
-            BE.unsignedInt8 0
+            Bytes.Encode.unsignedInt8 0
 
         NumberDot n ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int n
                 ]
 
         NumberHexDigit ->
-            BE.unsignedInt8 2
+            Bytes.Encode.unsignedInt8 2
 
         NumberBinDigit ->
-            BE.unsignedInt8 3
+            Bytes.Encode.unsignedInt8 3
 
         NumberNoLeadingZero ->
-            BE.unsignedInt8 4
+            Bytes.Encode.unsignedInt8 4
 
         NumberNoLeadingOrTrailingUnderscores ->
-            BE.unsignedInt8 5
+            Bytes.Encode.unsignedInt8 5
 
         NumberNoConsecutiveUnderscores ->
-            BE.unsignedInt8 6
+            Bytes.Encode.unsignedInt8 6
 
         NumberNoUnderscoresAdjacentToDecimalOrExponent ->
-            BE.unsignedInt8 7
+            Bytes.Encode.unsignedInt8 7
 
         NumberNoUnderscoresAdjacentToHexadecimalPreFix ->
-            BE.unsignedInt8 8
+            Bytes.Encode.unsignedInt8 8
 
         NumberNoUnderscoresAdjacentToBinaryPreFix ->
-            BE.unsignedInt8 9
+            Bytes.Encode.unsignedInt8 9
 
 
-numberDecoder : BD.Decoder Number
+numberDecoder : Bytes.Decode.Decoder Number
 numberDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed NumberEnd
+                        Bytes.Decode.succeed NumberEnd
 
                     1 ->
-                        BD.map NumberDot BD.int
+                        Bytes.Decode.map NumberDot BD.int
 
                     2 ->
-                        BD.succeed NumberHexDigit
+                        Bytes.Decode.succeed NumberHexDigit
 
                     3 ->
-                        BD.succeed NumberBinDigit
+                        Bytes.Decode.succeed NumberBinDigit
 
                     4 ->
-                        BD.succeed NumberNoLeadingZero
+                        Bytes.Decode.succeed NumberNoLeadingZero
 
                     5 ->
-                        BD.succeed NumberNoLeadingOrTrailingUnderscores
+                        Bytes.Decode.succeed NumberNoLeadingOrTrailingUnderscores
 
                     6 ->
-                        BD.succeed NumberNoConsecutiveUnderscores
+                        Bytes.Decode.succeed NumberNoConsecutiveUnderscores
 
                     7 ->
-                        BD.succeed NumberNoUnderscoresAdjacentToDecimalOrExponent
+                        Bytes.Decode.succeed NumberNoUnderscoresAdjacentToDecimalOrExponent
 
                     8 ->
-                        BD.succeed NumberNoUnderscoresAdjacentToHexadecimalPreFix
+                        Bytes.Decode.succeed NumberNoUnderscoresAdjacentToHexadecimalPreFix
 
                     9 ->
-                        BD.succeed NumberNoUnderscoresAdjacentToBinaryPreFix
+                        Bytes.Decode.succeed NumberNoUnderscoresAdjacentToBinaryPreFix
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-escapeEncoder : Escape -> BE.Encoder
+escapeEncoder : Escape -> Bytes.Encode.Encoder
 escapeEncoder escape =
     case escape of
         EscapeUnknown ->
-            BE.unsignedInt8 0
+            Bytes.Encode.unsignedInt8 0
 
         BadUnicodeFormat width ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int width
                 ]
 
         BadUnicodeCode width ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int width
                 ]
 
         BadUnicodeLength width numDigits badCode ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.int width
                 , BE.int numDigits
                 , BE.int badCode
                 ]
 
 
-escapeDecoder : BD.Decoder Escape
+escapeDecoder : Bytes.Decode.Decoder Escape
 escapeDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed EscapeUnknown
+                        Bytes.Decode.succeed EscapeUnknown
 
                     1 ->
-                        BD.map BadUnicodeFormat BD.int
+                        Bytes.Decode.map BadUnicodeFormat BD.int
 
                     2 ->
-                        BD.map BadUnicodeCode BD.int
+                        Bytes.Decode.map BadUnicodeCode BD.int
 
                     3 ->
-                        BD.map3 BadUnicodeLength
+                        Bytes.Decode.map3 BadUnicodeLength
                             BD.int
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-defEncoder : Def -> BE.Encoder
+defEncoder : Def -> Bytes.Encode.Encoder
 defEncoder def =
     case def of
         DefSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         DefType tipe row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , typeEncoder tipe
                 , BE.int row
                 , BE.int col
                 ]
 
         DefNameRepeat row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int row
                 , BE.int col
                 ]
 
         DefNameMatch name row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.string name
                 , BE.int row
                 , BE.int col
                 ]
 
         DefArg pattern row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , patternEncoder pattern
                 , BE.int row
                 , BE.int col
                 ]
 
         DefEquals row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.int row
                 , BE.int col
                 ]
 
         DefBody expr row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , exprEncoder expr
                 , BE.int row
                 , BE.int col
                 ]
 
         DefIndentEquals row col ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , BE.int row
                 , BE.int col
                 ]
 
         DefIndentType row col ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , BE.int row
                 , BE.int col
                 ]
 
         DefIndentBody row col ->
-            BE.sequence
-                [ BE.unsignedInt8 9
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
                 , BE.int row
                 , BE.int col
                 ]
 
         DefAlignment indent row col ->
-            BE.sequence
-                [ BE.unsignedInt8 10
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 10
                 , BE.int indent
                 , BE.int row
                 , BE.int col
                 ]
 
 
-defDecoder : BD.Decoder Def
+defDecoder : Bytes.Decode.Decoder Def
 defDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 DefSpace
+                        Bytes.Decode.map3 DefSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map3 DefType
+                        Bytes.Decode.map3 DefType
                             typeDecoder
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map2 DefNameRepeat
+                        Bytes.Decode.map2 DefNameRepeat
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map3 DefNameMatch
+                        Bytes.Decode.map3 DefNameMatch
                             BD.string
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map3 DefArg
+                        Bytes.Decode.map3 DefArg
                             patternDecoder
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map2 DefEquals
+                        Bytes.Decode.map2 DefEquals
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map3 DefBody
+                        Bytes.Decode.map3 DefBody
                             exprDecoder
                             BD.int
                             BD.int
 
                     7 ->
-                        BD.map2 DefIndentEquals
+                        Bytes.Decode.map2 DefIndentEquals
                             BD.int
                             BD.int
 
                     8 ->
-                        BD.map2 DefIndentType
+                        Bytes.Decode.map2 DefIndentType
                             BD.int
                             BD.int
 
                     9 ->
-                        BD.map2 DefIndentBody
+                        Bytes.Decode.map2 DefIndentBody
                             BD.int
                             BD.int
 
                     10 ->
-                        BD.map3 DefAlignment
+                        Bytes.Decode.map3 DefAlignment
                             BD.int
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-destructEncoder : Destruct -> BE.Encoder
+destructEncoder : Destruct -> Bytes.Encode.Encoder
 destructEncoder destruct =
     case destruct of
         DestructSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         DestructPattern pattern row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , patternEncoder pattern
                 , BE.int row
                 , BE.int col
                 ]
 
         DestructEquals row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int row
                 , BE.int col
                 ]
 
         DestructBody expr row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , exprEncoder expr
                 , BE.int row
                 , BE.int col
                 ]
 
         DestructIndentEquals row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.int row
                 , BE.int col
                 ]
 
         DestructIndentBody row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.int row
                 , BE.int col
                 ]
 
 
-destructDecoder : BD.Decoder Destruct
+destructDecoder : Bytes.Decode.Decoder Destruct
 destructDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 DestructSpace
+                        Bytes.Decode.map3 DestructSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map3 DestructPattern
+                        Bytes.Decode.map3 DestructPattern
                             patternDecoder
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map2 DestructEquals
+                        Bytes.Decode.map2 DestructEquals
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map3 DestructBody
+                        Bytes.Decode.map3 DestructBody
                             exprDecoder
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map2 DestructIndentEquals
+                        Bytes.Decode.map2 DestructIndentEquals
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map2 DestructIndentBody
+                        Bytes.Decode.map2 DestructIndentBody
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-pRecordEncoder : PRecord -> BE.Encoder
+pRecordEncoder : PRecord -> Bytes.Encode.Encoder
 pRecordEncoder pRecord =
     case pRecord of
         PRecordOpen row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.int row
                 , BE.int col
                 ]
 
         PRecordEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int row
                 , BE.int col
                 ]
 
         PRecordField row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int row
                 , BE.int col
                 ]
 
         PRecordSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         PRecordIndentOpen row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.int row
                 , BE.int col
                 ]
 
         PRecordIndentEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.int row
                 , BE.int col
                 ]
 
         PRecordIndentField row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , BE.int row
                 , BE.int col
                 ]
 
 
-pRecordDecoder : BD.Decoder PRecord
+pRecordDecoder : Bytes.Decode.Decoder PRecord
 pRecordDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map2 PRecordOpen
+                        Bytes.Decode.map2 PRecordOpen
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map2 PRecordEnd
+                        Bytes.Decode.map2 PRecordEnd
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map2 PRecordField
+                        Bytes.Decode.map2 PRecordField
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map3 PRecordSpace
+                        Bytes.Decode.map3 PRecordSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map2 PRecordIndentOpen
+                        Bytes.Decode.map2 PRecordIndentOpen
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map2 PRecordIndentEnd
+                        Bytes.Decode.map2 PRecordIndentEnd
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map2 PRecordIndentField
+                        Bytes.Decode.map2 PRecordIndentField
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-pTupleEncoder : PTuple -> BE.Encoder
+pTupleEncoder : PTuple -> Bytes.Encode.Encoder
 pTupleEncoder pTuple =
     case pTuple of
         PTupleOpen row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.int row
                 , BE.int col
                 ]
 
         PTupleEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int row
                 , BE.int col
                 ]
 
         PTupleExpr pattern row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , patternEncoder pattern
                 , BE.int row
                 , BE.int col
                 ]
 
         PTupleSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         PTupleIndentEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.int row
                 , BE.int col
                 ]
 
         PTupleIndentExpr1 row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.int row
                 , BE.int col
                 ]
 
         PTupleIndentExprN row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , BE.int row
                 , BE.int col
                 ]
 
 
-pTupleDecoder : BD.Decoder PTuple
+pTupleDecoder : Bytes.Decode.Decoder PTuple
 pTupleDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map2 PTupleOpen
+                        Bytes.Decode.map2 PTupleOpen
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map2 PTupleEnd
+                        Bytes.Decode.map2 PTupleEnd
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map3 PTupleExpr
+                        Bytes.Decode.map3 PTupleExpr
                             patternDecoder
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map3 PTupleSpace
+                        Bytes.Decode.map3 PTupleSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map2 PTupleIndentEnd
+                        Bytes.Decode.map2 PTupleIndentEnd
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map2 PTupleIndentExpr1
+                        Bytes.Decode.map2 PTupleIndentExpr1
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map2 PTupleIndentExprN
+                        Bytes.Decode.map2 PTupleIndentExprN
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-pListEncoder : PList -> BE.Encoder
+pListEncoder : PList -> Bytes.Encode.Encoder
 pListEncoder pList =
     case pList of
         PListOpen row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.int row
                 , BE.int col
                 ]
 
         PListEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int row
                 , BE.int col
                 ]
 
         PListExpr pattern row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , patternEncoder pattern
                 , BE.int row
                 , BE.int col
                 ]
 
         PListSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         PListIndentOpen row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.int row
                 , BE.int col
                 ]
 
         PListIndentEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.int row
                 , BE.int col
                 ]
 
         PListIndentExpr row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , BE.int row
                 , BE.int col
                 ]
 
 
-pListDecoder : BD.Decoder PList
+pListDecoder : Bytes.Decode.Decoder PList
 pListDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map2 PListOpen
+                        Bytes.Decode.map2 PListOpen
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map2 PListEnd
+                        Bytes.Decode.map2 PListEnd
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map3 PListExpr
+                        Bytes.Decode.map3 PListExpr
                             patternDecoder
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map3 PListSpace
+                        Bytes.Decode.map3 PListSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map2 PListIndentOpen
+                        Bytes.Decode.map2 PListIndentOpen
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map2 PListIndentEnd
+                        Bytes.Decode.map2 PListIndentEnd
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map2 PListIndentExpr
+                        Bytes.Decode.map2 PListIndentExpr
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-tRecordEncoder : TRecord -> BE.Encoder
+tRecordEncoder : TRecord -> Bytes.Encode.Encoder
 tRecordEncoder tRecord =
     case tRecord of
         TRecordOpen row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.int row
                 , BE.int col
                 ]
 
         TRecordEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int row
                 , BE.int col
                 ]
 
         TRecordField row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int row
                 , BE.int col
                 ]
 
         TRecordColon row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.int row
                 , BE.int col
                 ]
 
         TRecordType tipe row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , typeEncoder tipe
                 , BE.int row
                 , BE.int col
                 ]
 
         TRecordSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         TRecordIndentOpen row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , BE.int row
                 , BE.int col
                 ]
 
         TRecordIndentField row col ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , BE.int row
                 , BE.int col
                 ]
 
         TRecordIndentColon row col ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , BE.int row
                 , BE.int col
                 ]
 
         TRecordIndentType row col ->
-            BE.sequence
-                [ BE.unsignedInt8 9
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
                 , BE.int row
                 , BE.int col
                 ]
 
         TRecordIndentEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 10
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 10
                 , BE.int row
                 , BE.int col
                 ]
 
 
-tRecordDecoder : BD.Decoder TRecord
+tRecordDecoder : Bytes.Decode.Decoder TRecord
 tRecordDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map2 TRecordOpen
+                        Bytes.Decode.map2 TRecordOpen
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map2 TRecordEnd
+                        Bytes.Decode.map2 TRecordEnd
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map2 TRecordField
+                        Bytes.Decode.map2 TRecordField
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map2 TRecordColon
+                        Bytes.Decode.map2 TRecordColon
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map3 TRecordType
+                        Bytes.Decode.map3 TRecordType
                             typeDecoder
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map3 TRecordSpace
+                        Bytes.Decode.map3 TRecordSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map2 TRecordIndentOpen
+                        Bytes.Decode.map2 TRecordIndentOpen
                             BD.int
                             BD.int
 
                     7 ->
-                        BD.map2 TRecordIndentField
+                        Bytes.Decode.map2 TRecordIndentField
                             BD.int
                             BD.int
 
                     8 ->
-                        BD.map2 TRecordIndentColon
+                        Bytes.Decode.map2 TRecordIndentColon
                             BD.int
                             BD.int
 
                     9 ->
-                        BD.map2 TRecordIndentType
+                        Bytes.Decode.map2 TRecordIndentType
                             BD.int
                             BD.int
 
                     10 ->
-                        BD.map2 TRecordIndentEnd
+                        Bytes.Decode.map2 TRecordIndentEnd
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-tTupleEncoder : TTuple -> BE.Encoder
+tTupleEncoder : TTuple -> Bytes.Encode.Encoder
 tTupleEncoder tTuple =
     case tTuple of
         TTupleOpen row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.int row
                 , BE.int col
                 ]
 
         TTupleEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int row
                 , BE.int col
                 ]
 
         TTupleType tipe row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , typeEncoder tipe
                 , BE.int row
                 , BE.int col
                 ]
 
         TTupleSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         TTupleIndentType1 row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.int row
                 , BE.int col
                 ]
 
         TTupleIndentTypeN row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.int row
                 , BE.int col
                 ]
 
         TTupleIndentEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , BE.int row
                 , BE.int col
                 ]
 
 
-tTupleDecoder : BD.Decoder TTuple
+tTupleDecoder : Bytes.Decode.Decoder TTuple
 tTupleDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map2 TTupleOpen
+                        Bytes.Decode.map2 TTupleOpen
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map2 TTupleEnd
+                        Bytes.Decode.map2 TTupleEnd
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map3 TTupleType
+                        Bytes.Decode.map3 TTupleType
                             typeDecoder
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map3 TTupleSpace
+                        Bytes.Decode.map3 TTupleSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map2 TTupleIndentType1
+                        Bytes.Decode.map2 TTupleIndentType1
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map2 TTupleIndentTypeN
+                        Bytes.Decode.map2 TTupleIndentTypeN
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map2 TTupleIndentEnd
+                        Bytes.Decode.map2 TTupleIndentEnd
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-customTypeEncoder : CustomType -> BE.Encoder
+customTypeEncoder : CustomType -> Bytes.Encode.Encoder
 customTypeEncoder customType =
     case customType of
         CT_Space space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         CT_Name row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int row
                 , BE.int col
                 ]
 
         CT_Equals row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int row
                 , BE.int col
                 ]
 
         CT_Bar row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.int row
                 , BE.int col
                 ]
 
         CT_Variant row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.int row
                 , BE.int col
                 ]
 
         CT_VariantArg tipe row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , typeEncoder tipe
                 , BE.int row
                 , BE.int col
                 ]
 
         CT_IndentEquals row col ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , BE.int row
                 , BE.int col
                 ]
 
         CT_IndentBar row col ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , BE.int row
                 , BE.int col
                 ]
 
         CT_IndentAfterBar row col ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , BE.int row
                 , BE.int col
                 ]
 
         CT_IndentAfterEquals row col ->
-            BE.sequence
-                [ BE.unsignedInt8 9
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
                 , BE.int row
                 , BE.int col
                 ]
 
 
-customTypeDecoder : BD.Decoder CustomType
+customTypeDecoder : Bytes.Decode.Decoder CustomType
 customTypeDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 CT_Space
+                        Bytes.Decode.map3 CT_Space
                             spaceDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map2 CT_Name
+                        Bytes.Decode.map2 CT_Name
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map2 CT_Equals
+                        Bytes.Decode.map2 CT_Equals
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map2 CT_Bar
+                        Bytes.Decode.map2 CT_Bar
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map2 CT_Variant
+                        Bytes.Decode.map2 CT_Variant
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map3 CT_VariantArg
+                        Bytes.Decode.map3 CT_VariantArg
                             typeDecoder
                             BD.int
                             BD.int
 
                     6 ->
-                        BD.map2 CT_IndentEquals
+                        Bytes.Decode.map2 CT_IndentEquals
                             BD.int
                             BD.int
 
                     7 ->
-                        BD.map2 CT_IndentBar
+                        Bytes.Decode.map2 CT_IndentBar
                             BD.int
                             BD.int
 
                     8 ->
-                        BD.map2 CT_IndentAfterBar
+                        Bytes.Decode.map2 CT_IndentAfterBar
                             BD.int
                             BD.int
 
                     9 ->
-                        BD.map2 CT_IndentAfterEquals
+                        Bytes.Decode.map2 CT_IndentAfterEquals
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-typeAliasEncoder : TypeAlias -> BE.Encoder
+typeAliasEncoder : TypeAlias -> Bytes.Encode.Encoder
 typeAliasEncoder typeAlias =
     case typeAlias of
         AliasSpace space row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , spaceEncoder space
                 , BE.int row
                 , BE.int col
                 ]
 
         AliasName row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int row
                 , BE.int col
                 ]
 
         AliasEquals row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int row
                 , BE.int col
                 ]
 
         AliasBody tipe row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , typeEncoder tipe
                 , BE.int row
                 , BE.int col
                 ]
 
         AliasIndentEquals row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.int row
                 , BE.int col
                 ]
 
         AliasIndentBody row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.int row
                 , BE.int col
                 ]
 
 
-typeAliasDecoder : BD.Decoder TypeAlias
+typeAliasDecoder : Bytes.Decode.Decoder TypeAlias
 typeAliasDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 AliasSpace
+                        Bytes.Decode.map3 AliasSpace
                             spaceDecoder
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map2 AliasName
+                        Bytes.Decode.map2 AliasName
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map2 AliasEquals
+                        Bytes.Decode.map2 AliasEquals
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map3 AliasBody
+                        Bytes.Decode.map3 AliasBody
                             typeDecoder
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map2 AliasIndentEquals
+                        Bytes.Decode.map2 AliasIndentEquals
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map2 AliasIndentBody
+                        Bytes.Decode.map2 AliasIndentBody
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

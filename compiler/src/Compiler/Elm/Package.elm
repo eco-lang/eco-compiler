@@ -34,10 +34,12 @@ module Compiler.Elm.Package exposing
 import Compiler.Json.Decode as D
 import Compiler.Json.Encode as E
 import Compiler.Parse.Primitives as P exposing (Col, Row)
-import Compiler.Reporting.Suggest as Suggest
+import Levenshtein
 import Data.Map as Dict exposing (Dict)
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 
@@ -252,12 +254,12 @@ authorDistance given possibility =
         0
 
     else
-        abs (Suggest.distance given possibility)
+        abs (Levenshtein.distance given possibility)
 
 
 projectDistance : String -> Project -> Int
 projectDistance given possibility =
-    abs (Suggest.distance given possibility)
+    abs (Levenshtein.distance given possibility)
 
 
 
@@ -290,12 +292,12 @@ keyDecoder toError =
 
 parser : P.Parser ( Row, Col ) Name
 parser =
-    parseName isAlphaOrDigit isAlphaOrDigit
-        |> P.bind
+    parseName Char.isAlphaNum Char.isAlphaNum
+        |> P.andThen
             (\author ->
                 P.word1 '/' Tuple.pair
-                    |> P.bind (\_ -> parseName isLower isLowerOrDigit)
-                    |> P.fmap
+                    |> P.andThen (\_ -> parseName Char.isLower isLowerOrDigit)
+                    |> P.map
                         (\project -> ( author, project ))
             )
 
@@ -341,19 +343,9 @@ parseName isGoodStart isGoodInner =
                         P.Cerr row newCol Tuple.pair
 
 
-isLower : Char -> Bool
-isLower =
-    Char.isLower
-
-
 isLowerOrDigit : Char -> Bool
 isLowerOrDigit word =
     Char.isLower word || Char.isDigit word
-
-
-isAlphaOrDigit : Char -> Bool
-isAlphaOrDigit =
-    Char.isAlphaNum
 
 
 chompName : (Char -> Bool) -> String -> Int -> Int -> Bool -> ( Bool, Int )
@@ -385,14 +377,14 @@ chompName isGoodChar src pos end prevWasDash =
 -- ENCODERS and DECODERS
 
 
-nameEncoder : Name -> BE.Encoder
+nameEncoder : Name -> Bytes.Encode.Encoder
 nameEncoder ( author, project ) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.string author
         , BE.string project
         ]
 
 
-nameDecoder : BD.Decoder Name
+nameDecoder : Bytes.Decode.Decoder Name
 nameDecoder =
-    BD.map2 Tuple.pair BD.string BD.string
+    Bytes.Decode.map2 Tuple.pair BD.string BD.string

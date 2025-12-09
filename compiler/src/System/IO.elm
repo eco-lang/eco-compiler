@@ -120,15 +120,6 @@ writeString path content =
 
 
 
--- Task extra
-
-
-pure : a -> Task x a
-pure =
-    Task.succeed
-
-
-
 -- Files and handles
 
 
@@ -215,7 +206,7 @@ hFileSize (Handle handle) =
 
 hFlush : Handle -> Task Never ()
 hFlush _ =
-    pure ()
+    Task.succeed ()
 
 
 
@@ -224,7 +215,7 @@ hFlush _ =
 
 hIsTerminalDevice : Handle -> Task Never Bool
 hIsTerminalDevice _ =
-    pure True
+    Task.succeed True
 
 
 

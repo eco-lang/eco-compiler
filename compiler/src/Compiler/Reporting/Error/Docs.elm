@@ -18,7 +18,9 @@ import Compiler.Reporting.Error.Syntax as E
 import Compiler.Reporting.Render.Code as Code
 import Compiler.Reporting.Report as Report
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 type Error
@@ -69,7 +71,10 @@ toReports source err =
                         region
                         Nothing
                         ( D.reflow "I need you to be explicit about what this module exposes:"
-                        , D.reflow "A great API usually hides some implementation details, so it is rare that everything in the file should be exposed. And requiring package authors to be explicit about this is a way of adding another quality check before code gets published. So as you write out the public API, ask yourself if it will be easy to understand as people read the documentation!"
+                        , D.reflow <|
+                            "A great API usually hides some implementation details, so it is rare that everything in the file should be exposed. "
+                                ++ "And requiring package authors to be explicit about this is a way of adding another quality check before code gets published. "
+                                ++ "So as you write out the public API, ask yourself if it will be easy to understand as people read the documentation!"
                         )
 
         SyntaxProblem problem ->
@@ -194,7 +199,10 @@ toDefProblemReport source problem =
                     Nothing
                     ( D.reflow ("The `" ++ name ++ "` definition does not have a type annotation.")
                     , D.stack
-                        [ D.reflow "I use the type variable names from your annotations when generating docs. So if you say `Html msg` in your type annotation, I can use `msg` in the docs and make them a bit clearer. So add an annotation and try to use nice type variables!"
+                        [ D.reflow <|
+                            "I use the type variable names from your annotations when generating docs. "
+                                ++ "So if you say `Html msg` in your type annotation, I can use `msg` in the docs and make them a bit clearer. "
+                                ++ "So add an annotation and try to use nice type variables!"
                         , D.link "Note" "Read" "docs" "for more advice on writing great docs. There are a couple important tricks!"
                         ]
                     )
@@ -204,244 +212,244 @@ toDefProblemReport source problem =
 -- ENCODERS and DECODERS
 
 
-errorEncoder : Error -> BE.Encoder
+errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
     case error of
         NoDocs region ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , A.regionEncoder region
                 ]
 
         ImplicitExposing region ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , A.regionEncoder region
                 ]
 
         SyntaxProblem problem ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , syntaxProblemEncoder problem
                 ]
 
         NameProblems problems ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.nonempty nameProblemEncoder problems
                 ]
 
         DefProblems problems ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.nonempty defProblemEncoder problems
                 ]
 
 
-errorDecoder : BD.Decoder Error
+errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map NoDocs A.regionDecoder
+                        Bytes.Decode.map NoDocs A.regionDecoder
 
                     1 ->
-                        BD.map ImplicitExposing A.regionDecoder
+                        Bytes.Decode.map ImplicitExposing A.regionDecoder
 
                     2 ->
-                        BD.map SyntaxProblem syntaxProblemDecoder
+                        Bytes.Decode.map SyntaxProblem syntaxProblemDecoder
 
                     3 ->
-                        BD.map NameProblems (BD.nonempty nameProblemDecoder)
+                        Bytes.Decode.map NameProblems (BD.nonempty nameProblemDecoder)
 
                     4 ->
-                        BD.map DefProblems (BD.nonempty defProblemDecoder)
+                        Bytes.Decode.map DefProblems (BD.nonempty defProblemDecoder)
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-syntaxProblemEncoder : SyntaxProblem -> BE.Encoder
+syntaxProblemEncoder : SyntaxProblem -> Bytes.Encode.Encoder
 syntaxProblemEncoder syntaxProblem =
     case syntaxProblem of
         Op row col ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.int row
                 , BE.int col
                 ]
 
         OpBad badOperator row col ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , Symbol.badOperatorEncoder badOperator
                 , BE.int row
                 , BE.int col
                 ]
 
         Name row col ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int row
                 , BE.int col
                 ]
 
         Space name row col ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , E.spaceEncoder name
                 , BE.int row
                 , BE.int col
                 ]
 
         Comma row col ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.int row
                 , BE.int col
                 ]
 
         BadEnd row col ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.int row
                 , BE.int col
                 ]
 
 
-syntaxProblemDecoder : BD.Decoder SyntaxProblem
+syntaxProblemDecoder : Bytes.Decode.Decoder SyntaxProblem
 syntaxProblemDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\type_ ->
                 case type_ of
                     0 ->
-                        BD.map2 Op
+                        Bytes.Decode.map2 Op
                             BD.int
                             BD.int
 
                     1 ->
-                        BD.map3 OpBad
+                        Bytes.Decode.map3 OpBad
                             Symbol.badOperatorDecoder
                             BD.int
                             BD.int
 
                     2 ->
-                        BD.map2 Name
+                        Bytes.Decode.map2 Name
                             BD.int
                             BD.int
 
                     3 ->
-                        BD.map3 Space
+                        Bytes.Decode.map3 Space
                             E.spaceDecoder
                             BD.int
                             BD.int
 
                     4 ->
-                        BD.map2 Comma
+                        Bytes.Decode.map2 Comma
                             BD.int
                             BD.int
 
                     5 ->
-                        BD.map2 BadEnd
+                        Bytes.Decode.map2 BadEnd
                             BD.int
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-nameProblemEncoder : NameProblem -> BE.Encoder
+nameProblemEncoder : NameProblem -> Bytes.Encode.Encoder
 nameProblemEncoder nameProblem =
     case nameProblem of
         NameDuplicate name r1 r2 ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.string name
                 , A.regionEncoder r1
                 , A.regionEncoder r2
                 ]
 
         NameOnlyInDocs name region ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.string name
                 , A.regionEncoder region
                 ]
 
         NameOnlyInExports name region ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.string name
                 , A.regionEncoder region
                 ]
 
 
-nameProblemDecoder : BD.Decoder NameProblem
+nameProblemDecoder : Bytes.Decode.Decoder NameProblem
 nameProblemDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 NameDuplicate
+                        Bytes.Decode.map3 NameDuplicate
                             BD.string
                             A.regionDecoder
                             A.regionDecoder
 
                     1 ->
-                        BD.map2 NameOnlyInDocs
+                        Bytes.Decode.map2 NameOnlyInDocs
                             BD.string
                             A.regionDecoder
 
                     2 ->
-                        BD.map2 NameOnlyInExports
+                        Bytes.Decode.map2 NameOnlyInExports
                             BD.string
                             A.regionDecoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-defProblemEncoder : DefProblem -> BE.Encoder
+defProblemEncoder : DefProblem -> Bytes.Encode.Encoder
 defProblemEncoder defProblem =
     case defProblem of
         NoComment name region ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.string name
                 , A.regionEncoder region
                 ]
 
         NoAnnotation name region ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.string name
                 , A.regionEncoder region
                 ]
 
 
-defProblemDecoder : BD.Decoder DefProblem
+defProblemDecoder : Bytes.Decode.Decoder DefProblem
 defProblemDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map2 NoComment
+                        Bytes.Decode.map2 NoComment
                             BD.string
                             A.regionDecoder
 
                     1 ->
-                        BD.map2 NoAnnotation
+                        Bytes.Decode.map2 NoAnnotation
                             BD.string
                             A.regionDecoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

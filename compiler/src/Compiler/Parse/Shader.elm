@@ -18,13 +18,13 @@ import Utils.Crash as Crash
 shader : A.Position -> Parser E.Expr Src.Expr
 shader ((A.Position row col) as start) =
     parseBlock
-        |> P.bind
+        |> P.andThen
             (\block ->
                 parseGlsl row col block
-                    |> P.bind
+                    |> P.andThen
                         (\shdr ->
                             P.getPosition
-                                |> P.fmap
+                                |> P.map
                                     (\end ->
                                         A.at start end (Src.Shader (Shader.fromString block) shdr)
                                     )

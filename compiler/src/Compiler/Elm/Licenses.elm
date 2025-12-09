@@ -32,7 +32,7 @@ encode (License code) =
 decoder : (List String -> x) -> D.Decoder x License
 decoder toError =
     D.string
-        |> D.bind
+        |> D.andThen
             (\str ->
                 case check str of
                     Ok license ->

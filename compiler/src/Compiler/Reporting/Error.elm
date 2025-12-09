@@ -29,7 +29,9 @@ import Compiler.Reporting.Render.Type.Localizer as L
 import Compiler.Reporting.Report as Report
 import Time
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Main as Utils
 
 
@@ -239,9 +241,9 @@ encodeRegion (A.Region (A.Position sr sc) (A.Position er ec)) =
 -- ENCODERS and DECODERS
 
 
-moduleEncoder : Module -> BE.Encoder
+moduleEncoder : Module -> Bytes.Encode.Encoder
 moduleEncoder modul =
-    BE.sequence
+    Bytes.Encode.sequence
         [ ModuleName.rawEncoder modul.name
         , BE.string modul.absolutePath
         , File.timeEncoder modul.modificationTime
@@ -250,9 +252,9 @@ moduleEncoder modul =
         ]
 
 
-moduleDecoder : BD.Decoder Module
+moduleDecoder : Bytes.Decode.Decoder Module
 moduleDecoder =
-    BD.map5 Module
+    Bytes.Decode.map5 Module
         ModuleName.rawDecoder
         BD.string
         File.timeDecoder
@@ -260,85 +262,85 @@ moduleDecoder =
         errorDecoder
 
 
-errorEncoder : Error -> BE.Encoder
+errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
     case error of
         BadSyntax syntaxError ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , Syntax.errorEncoder syntaxError
                 ]
 
         BadImports errs ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.nonempty Import.errorEncoder errs
                 ]
 
         BadNames errs ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.oneOrMore Canonicalize.errorEncoder errs
                 ]
 
         BadTypes localizer errs ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , L.localizerEncoder localizer
                 , BE.nonempty Type.errorEncoder errs
                 ]
 
         BadMains localizer errs ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , L.localizerEncoder localizer
                 , BE.oneOrMore Main.errorEncoder errs
                 ]
 
         BadPatterns errs ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.nonempty P.errorEncoder errs
                 ]
 
         BadDocs docsErr ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , Docs.errorEncoder docsErr
                 ]
 
 
-errorDecoder : BD.Decoder Error
+errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map BadSyntax Syntax.errorDecoder
+                        Bytes.Decode.map BadSyntax Syntax.errorDecoder
 
                     1 ->
-                        BD.map BadImports (BD.nonempty Import.errorDecoder)
+                        Bytes.Decode.map BadImports (BD.nonempty Import.errorDecoder)
 
                     2 ->
-                        BD.map BadNames (BD.oneOrMore Canonicalize.errorDecoder)
+                        Bytes.Decode.map BadNames (BD.oneOrMore Canonicalize.errorDecoder)
 
                     3 ->
-                        BD.map2 BadTypes
+                        Bytes.Decode.map2 BadTypes
                             L.localizerDecoder
                             (BD.nonempty Type.errorDecoder)
 
                     4 ->
-                        BD.map2 BadMains
+                        Bytes.Decode.map2 BadMains
                             L.localizerDecoder
                             (BD.oneOrMore Main.errorDecoder)
 
                     5 ->
-                        BD.map BadPatterns (BD.nonempty P.errorDecoder)
+                        Bytes.Decode.map BadPatterns (BD.nonempty P.errorDecoder)
 
                     6 ->
-                        BD.map BadDocs Docs.errorDecoder
+                        Bytes.Decode.map BadDocs Docs.errorDecoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

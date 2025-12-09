@@ -56,14 +56,14 @@ type ReportType
 run : String -> Flags -> Task Never (Result Exit.Make String)
 run path flags =
     Stuff.findRoot
-        |> Task.bind
+        |> Task.andThen
             (\maybeRoot ->
                 case maybeRoot of
                     Just root ->
                         runHelp root path flags
 
                     Nothing ->
-                        Task.pure (Err Exit.MakeNoOutline)
+                        Task.succeed (Err Exit.MakeNoOutline)
             )
 
 
@@ -74,7 +74,7 @@ runHelp root path (Flags debug optimize withSourceMaps) =
             Stuff.withRootLock root <|
                 Task.run <|
                     (getMode debug optimize
-                        |> Task.bind
+                        |> Task.andThen
                             (\desiredMode ->
                                 let
                                     style : Reporting.Style
@@ -82,19 +82,19 @@ runHelp root path (Flags debug optimize withSourceMaps) =
                                         Reporting.json
                                 in
                                 Task.eio Exit.MakeBadDetails (Details.load style scope root)
-                                    |> Task.bind
+                                    |> Task.andThen
                                         (\details ->
                                             buildPaths style root details (NE.Nonempty path [])
-                                                |> Task.bind
+                                                |> Task.andThen
                                                     (\artifacts ->
                                                         case getMains artifacts of
                                                             [] ->
-                                                                -- Task.pure ()
+                                                                -- Task.succeed ()
                                                                 crash "No main!"
 
                                                             [ name ] ->
                                                                 toBuilder withSourceMaps Html.leadingLines root details desiredMode artifacts
-                                                                    |> Task.bind (Task.pure << Html.sandwich name)
+                                                                    |> Task.andThen (Task.succeed << Html.sandwich name)
 
                                                             _ ->
                                                                 crash "TODO"
@@ -116,13 +116,13 @@ getMode debug optimize =
             Task.throw Exit.MakeCannotOptimizeAndDebug
 
         ( True, False ) ->
-            Task.pure Debug
+            Task.succeed Debug
 
         ( False, False ) ->
-            Task.pure Dev
+            Task.succeed Dev
 
         ( False, True ) ->
-            Task.pure Prod
+            Task.succeed Prod
 
 
 
@@ -154,7 +154,7 @@ getMain modules root =
             else
                 Nothing
 
-        Build.Outside name _ (Opt.LocalGraph maybeMain _ _) ->
+        Build.Outside name _ (Opt.LocalGraph maybeMain _ _) _ ->
             maybeMain
                 |> Maybe.map (\_ -> name)
 
@@ -182,7 +182,7 @@ type DesiredMode
 toBuilder : Bool -> Int -> FilePath -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
 toBuilder withSourceMaps leadingLines root details desiredMode artifacts =
     Task.mapError Exit.MakeBadGenerate <|
-        Task.fmap CodeGen.outputToString <|
+        Task.map CodeGen.outputToString <|
             case desiredMode of
                 Debug ->
                     Generate.debug Generate.javascriptBackend withSourceMaps leadingLines root details artifacts
@@ -203,8 +203,8 @@ reportType =
     Parser
         { singular = "report type"
         , plural = "report types"
-        , suggest = \_ -> Task.pure [ "json" ]
-        , examples = \_ -> Task.pure [ "json" ]
+        , suggest = \_ -> Task.succeed [ "json" ]
+        , examples = \_ -> Task.succeed [ "json" ]
         }
 
 
@@ -222,8 +222,8 @@ output =
     Parser
         { singular = "output file"
         , plural = "output files"
-        , suggest = \_ -> Task.pure []
-        , examples = \_ -> Task.pure [ "elm.js", "index.html", "/dev/null" ]
+        , suggest = \_ -> Task.succeed []
+        , examples = \_ -> Task.succeed [ "elm.js", "index.html", "/dev/null" ]
         }
 
 
@@ -247,8 +247,8 @@ docsFile =
     Parser
         { singular = "json file"
         , plural = "json files"
-        , suggest = \_ -> Task.pure []
-        , examples = \_ -> Task.pure [ "docs.json", "documentation.json" ]
+        , suggest = \_ -> Task.succeed []
+        , examples = \_ -> Task.succeed [ "docs.json", "documentation.json" ]
         }
 
 

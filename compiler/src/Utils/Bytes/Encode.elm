@@ -1,8 +1,6 @@
 module Utils.Bytes.Encode exposing
-    ( Encoder
-    , assocListDict
+    ( assocListDict
     , bool
-    , encode
     , everySet
     , float
     , int
@@ -12,10 +10,8 @@ module Utils.Bytes.Encode exposing
     , nonempty
     , oneOrMore
     , result
-    , sequence
     , string
     , unit
-    , unsignedInt8
     )
 
 import Bytes
@@ -31,49 +27,30 @@ endian =
     Bytes.BE
 
 
-type alias Encoder =
-    BE.Encoder
-
-
-unsignedInt8 : Int -> Encoder
-unsignedInt8 =
-    BE.unsignedInt8
-
-
-sequence : List Encoder -> Encoder
-sequence =
-    BE.sequence
-
-
-encode : Encoder -> Bytes.Bytes
-encode =
-    BE.encode
-
-
-unit : () -> Encoder
+unit : () -> BE.Encoder
 unit () =
     BE.unsignedInt8 0
 
 
-int : Int -> Encoder
+int : Int -> BE.Encoder
 int =
     toFloat >> BE.float64 endian
 
 
-float : Float -> Encoder
+float : Float -> BE.Encoder
 float =
     BE.float64 endian
 
 
-string : String -> Encoder
+string : String -> BE.Encoder
 string str =
-    sequence
+    BE.sequence
         [ BE.unsignedInt32 endian (BE.getStringWidth str)
         , BE.string str
         ]
 
 
-bool : Bool -> Encoder
+bool : Bool -> BE.Encoder
 bool value =
     BE.unsignedInt8
         (if value then
@@ -84,7 +61,7 @@ bool value =
         )
 
 
-list : (a -> Encoder) -> List a -> Encoder
+list : (a -> BE.Encoder) -> List a -> BE.Encoder
 list encoder aList =
     BE.sequence
         (BE.unsignedInt32 endian (List.length aList)
@@ -92,7 +69,7 @@ list encoder aList =
         )
 
 
-maybe : (a -> Encoder) -> Maybe a -> Encoder
+maybe : (a -> BE.Encoder) -> Maybe a -> BE.Encoder
 maybe encoder maybeValue =
     case maybeValue of
         Just value ->
@@ -105,33 +82,33 @@ maybe encoder maybeValue =
             BE.unsignedInt8 0
 
 
-nonempty : (a -> Encoder) -> NE.Nonempty a -> Encoder
+nonempty : (a -> BE.Encoder) -> NE.Nonempty a -> BE.Encoder
 nonempty encoder (NE.Nonempty x xs) =
     list encoder (x :: xs)
 
 
-result : (x -> Encoder) -> (a -> Encoder) -> Result x a -> Encoder
+result : (x -> BE.Encoder) -> (a -> BE.Encoder) -> Result x a -> BE.Encoder
 result errEncoder successEncoder resultValue =
     case resultValue of
         Ok value ->
-            sequence
+            BE.sequence
                 [ BE.unsignedInt8 0
                 , successEncoder value
                 ]
 
         Err err ->
-            sequence
+            BE.sequence
                 [ BE.unsignedInt8 1
                 , errEncoder err
                 ]
 
 
-assocListDict : (k -> k -> Order) -> (k -> Encoder) -> (v -> Encoder) -> Dict c k v -> Encoder
+assocListDict : (k -> k -> Order) -> (k -> BE.Encoder) -> (v -> BE.Encoder) -> Dict c k v -> BE.Encoder
 assocListDict keyComparison keyEncoder valueEncoder =
     list (jsonPair keyEncoder valueEncoder) << List.reverse << Dict.toList keyComparison
 
 
-jsonPair : (a -> Encoder) -> (b -> Encoder) -> ( a, b ) -> Encoder
+jsonPair : (a -> BE.Encoder) -> (b -> BE.Encoder) -> ( a, b ) -> BE.Encoder
 jsonPair encoderA encoderB ( a, b ) =
     BE.sequence
         [ encoderA a
@@ -139,12 +116,12 @@ jsonPair encoderA encoderB ( a, b ) =
         ]
 
 
-everySet : (a -> a -> Order) -> (a -> Encoder) -> EverySet c a -> Encoder
+everySet : (a -> a -> Order) -> (a -> BE.Encoder) -> EverySet c a -> BE.Encoder
 everySet keyComparison encoder =
     list encoder << List.reverse << EverySet.toList keyComparison
 
 
-oneOrMore : (a -> Encoder) -> OneOrMore a -> Encoder
+oneOrMore : (a -> BE.Encoder) -> OneOrMore a -> BE.Encoder
 oneOrMore encoder oneOrMore_ =
     case oneOrMore_ of
         One value ->

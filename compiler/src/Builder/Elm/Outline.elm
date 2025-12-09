@@ -34,7 +34,9 @@ import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Main as Utils exposing (FilePath)
 import Utils.Task.Extra as Task
 
@@ -49,7 +51,13 @@ type Outline
 
 
 type AppOutline
-    = AppOutline V.Version (NE.Nonempty SrcDir) (Dict ( String, String ) Pkg.Name V.Version) (Dict ( String, String ) Pkg.Name V.Version) (Dict ( String, String ) Pkg.Name V.Version) (Dict ( String, String ) Pkg.Name V.Version)
+    = AppOutline
+        V.Version
+        (NE.Nonempty SrcDir)
+        (Dict ( String, String ) Pkg.Name V.Version)
+        (Dict ( String, String ) Pkg.Name V.Version)
+        (Dict ( String, String ) Pkg.Name V.Version)
+        (Dict ( String, String ) Pkg.Name V.Version)
 
 
 type PkgOutline
@@ -175,55 +183,76 @@ encodeSrcDir srcDir =
 read : FilePath -> Task Never (Result Exit.Outline Outline)
 read root =
     File.readUtf8 (root ++ "/elm.json")
-        |> Task.bind
-            (\bytes ->
-                case D.fromByteString decoder bytes of
-                    Err err ->
-                        Task.pure <| Err (Exit.OutlineHasBadStructure err)
+        |> Task.andThen (parseAndValidateOutline root)
 
-                    Ok outline ->
-                        case outline of
-                            Pkg (PkgOutline pkg _ _ _ _ deps _ _) ->
-                                Task.pure <|
-                                    if not (Dict.member identity Pkg.core deps) && pkg /= Pkg.core then
-                                        Err Exit.OutlineNoPkgCore
 
-                                    else
-                                        Ok outline
+parseAndValidateOutline : FilePath -> String -> Task Never (Result Exit.Outline Outline)
+parseAndValidateOutline root bytes =
+    case D.fromByteString decoder bytes of
+        Err err ->
+            Task.succeed <| Err (Exit.OutlineHasBadStructure err)
 
-                            App (AppOutline _ srcDirs direct indirect _ _) ->
-                                if not (Dict.member identity Pkg.core direct) then
-                                    Task.pure <| Err Exit.OutlineNoAppCore
+        Ok outline ->
+            validateOutline root outline
 
-                                else if not (Dict.member identity Pkg.json direct) && not (Dict.member identity Pkg.json indirect) then
-                                    Task.pure <| Err Exit.OutlineNoAppJson
 
-                                else
-                                    Utils.filterM (isSrcDirMissing root) (NE.toList srcDirs)
-                                        |> Task.bind
-                                            (\badDirs ->
-                                                case List.map toGiven badDirs of
-                                                    d :: ds ->
-                                                        Task.pure <| Err (Exit.OutlineHasMissingSrcDirs d ds)
+validateOutline : FilePath -> Outline -> Task Never (Result Exit.Outline Outline)
+validateOutline root outline =
+    case outline of
+        Pkg (PkgOutline pkg _ _ _ _ deps _ _) ->
+            validatePkgOutline pkg deps outline
 
-                                                    [] ->
-                                                        detectDuplicates root (NE.toList srcDirs)
-                                                            |> Task.bind
-                                                                (\maybeDups ->
-                                                                    case maybeDups of
-                                                                        Nothing ->
-                                                                            Task.pure <| Ok outline
+        App (AppOutline _ srcDirs direct indirect _ _) ->
+            validateAppOutline root srcDirs direct indirect outline
 
-                                                                        Just ( canonicalDir, ( dir1, dir2 ) ) ->
-                                                                            Task.pure <| Err (Exit.OutlineHasDuplicateSrcDirs canonicalDir dir1 dir2)
-                                                                )
-                                            )
-            )
+
+validatePkgOutline : Pkg.Name -> Dict ( String, String ) Pkg.Name a -> Outline -> Task Never (Result Exit.Outline Outline)
+validatePkgOutline pkg deps outline =
+    Task.succeed <|
+        if not (Dict.member identity Pkg.core deps) && pkg /= Pkg.core then
+            Err Exit.OutlineNoPkgCore
+
+        else
+            Ok outline
+
+
+validateAppOutline : FilePath -> NE.Nonempty SrcDir -> Dict ( String, String ) Pkg.Name a -> Dict ( String, String ) Pkg.Name b -> Outline -> Task Never (Result Exit.Outline Outline)
+validateAppOutline root srcDirs direct indirect outline =
+    if not (Dict.member identity Pkg.core direct) then
+        Task.succeed <| Err Exit.OutlineNoAppCore
+
+    else if not (Dict.member identity Pkg.json direct) && not (Dict.member identity Pkg.json indirect) then
+        Task.succeed <| Err Exit.OutlineNoAppJson
+
+    else
+        Utils.filterM (isSrcDirMissing root) (NE.toList srcDirs)
+            |> Task.andThen (checkSrcDirsAndDuplicates root srcDirs outline)
+
+
+checkSrcDirsAndDuplicates : FilePath -> NE.Nonempty SrcDir -> Outline -> List SrcDir -> Task Never (Result Exit.Outline Outline)
+checkSrcDirsAndDuplicates root srcDirs outline badDirs =
+    case List.map toGiven badDirs of
+        d :: ds ->
+            Task.succeed <| Err (Exit.OutlineHasMissingSrcDirs d ds)
+
+        [] ->
+            detectDuplicates root (NE.toList srcDirs)
+                |> Task.map (checkForDuplicateSrcDirs outline)
+
+
+checkForDuplicateSrcDirs : Outline -> Maybe ( FilePath, ( FilePath, FilePath ) ) -> Result Exit.Outline Outline
+checkForDuplicateSrcDirs outline maybeDups =
+    case maybeDups of
+        Nothing ->
+            Ok outline
+
+        Just ( canonicalDir, ( dir1, dir2 ) ) ->
+            Err (Exit.OutlineHasDuplicateSrcDirs canonicalDir dir1 dir2)
 
 
 isSrcDirMissing : FilePath -> SrcDir -> Task Never Bool
 isSrcDirMissing root srcDir =
-    Task.fmap not (Utils.dirDoesDirectoryExist (toAbsolute root srcDir))
+    Task.map not (Utils.dirDoesDirectoryExist (toAbsolute root srcDir))
 
 
 toGiven : SrcDir -> FilePath
@@ -249,7 +278,7 @@ toAbsolute root srcDir =
 detectDuplicates : FilePath -> List SrcDir -> Task Never (Maybe ( FilePath, ( FilePath, FilePath ) ))
 detectDuplicates root srcDirs =
     Utils.listTraverse (toPair root) srcDirs
-        |> Task.fmap
+        |> Task.map
             (\pairs ->
                 Utils.mapLookupMin <|
                     Utils.mapMapMaybe identity compare isDup <|
@@ -260,10 +289,7 @@ detectDuplicates root srcDirs =
 toPair : FilePath -> SrcDir -> Task Never ( FilePath, OneOrMore.OneOrMore FilePath )
 toPair root srcDir =
     Utils.dirCanonicalizePath (toAbsolute root srcDir)
-        |> Task.bind
-            (\key ->
-                Task.pure ( key, OneOrMore.one (toGiven srcDir) )
-            )
+        |> Task.map (\key -> ( key, OneOrMore.one (toGiven srcDir) ))
 
 
 isDup : OneOrMore.OneOrMore FilePath -> Maybe ( FilePath, FilePath )
@@ -283,11 +309,11 @@ isDup paths =
 getAllModulePaths : FilePath -> Task Never (Dict (List String) TypeCheck.Canonical FilePath)
 getAllModulePaths root =
     read root
-        |> Task.bind
+        |> Task.andThen
             (\outlineResult ->
                 case outlineResult of
                     Err _ ->
-                        Task.pure Dict.empty
+                        Task.succeed Dict.empty
 
                     Ok outline ->
                         case outline of
@@ -316,13 +342,13 @@ getAllModulePaths root =
 getAllModulePathsHelper : Pkg.Name -> List FilePath -> Dict ( String, String ) Pkg.Name V.Version -> Task Never (Dict (List String) TypeCheck.Canonical FilePath)
 getAllModulePathsHelper packageName packageSrcDirs deps =
     Utils.listTraverse recursiveFindFiles packageSrcDirs
-        |> Task.bind
+        |> Task.andThen
             (\files ->
                 Utils.mapTraverseWithKey identity compare resolvePackagePaths deps
-                    |> Task.bind
+                    |> Task.andThen
                         (\dependencyRoots ->
                             Utils.mapTraverse identity compare (\( pkgName, pkgRoot ) -> getAllModulePathsHelper pkgName [ pkgRoot ++ "/src" ] Dict.empty) dependencyRoots
-                                |> Task.fmap
+                                |> Task.map
                                     (\dependencyMaps ->
                                         let
                                             asMap : Dict (List String) TypeCheck.Canonical FilePath
@@ -340,13 +366,13 @@ getAllModulePathsHelper packageName packageSrcDirs deps =
 recursiveFindFiles : FilePath -> Task Never (List ( FilePath, FilePath ))
 recursiveFindFiles root =
     recursiveFindFilesHelp root
-        |> Task.fmap (List.map (Tuple.pair root))
+        |> Task.map (List.map (Tuple.pair root))
 
 
 recursiveFindFilesHelp : FilePath -> Task Never (List FilePath)
 recursiveFindFilesHelp root =
     Utils.dirListDirectory root
-        |> Task.bind
+        |> Task.andThen
             (\dirContents ->
                 let
                     ( elmFiles, ( guidaFiles, others ) ) =
@@ -354,10 +380,10 @@ recursiveFindFilesHelp root =
                             |> Tuple.mapSecond (List.partition (hasExtension ".guida"))
                 in
                 Utils.filterM (\fp -> Utils.dirDoesDirectoryExist (root ++ "/" ++ fp)) others
-                    |> Task.bind
+                    |> Task.andThen
                         (\subDirectories ->
                             Utils.listTraverse (\subDirectory -> recursiveFindFilesHelp (root ++ "/" ++ subDirectory)) subDirectories
-                                |> Task.fmap
+                                |> Task.map
                                     (\filesFromSubDirs ->
                                         List.concat filesFromSubDirs ++ List.map (\fp -> root ++ "/" ++ fp) (elmFiles ++ guidaFiles)
                                     )
@@ -381,7 +407,7 @@ moduleNameFromFilePath root filePath =
 resolvePackagePaths : Pkg.Name -> V.Version -> Task Never ( Pkg.Name, FilePath )
 resolvePackagePaths pkgName vsn =
     Stuff.getPackageCache
-        |> Task.fmap (\packageCache -> ( pkgName, Stuff.package packageCache pkgName vsn ))
+        |> Task.map (\packageCache -> ( pkgName, Stuff.package packageCache pkgName vsn ))
 
 
 
@@ -404,13 +430,13 @@ decoder =
             "package"
     in
     D.field "type" D.string
-        |> D.bind
+        |> D.andThen
             (\tipe ->
                 if tipe == application then
-                    D.fmap App appDecoder
+                    D.map App appDecoder
 
                 else if tipe == package then
-                    D.fmap Pkg pkgDecoder
+                    D.map Pkg pkgDecoder
 
                 else
                     D.failure Exit.OP_BadType
@@ -474,7 +500,7 @@ depsDecoder valueDecoder =
 
 dirsDecoder : Decoder (NE.Nonempty SrcDir)
 dirsDecoder =
-    D.fmap (NE.map toSrcDir) (D.nonEmptyList D.string Exit.OP_NoSrcDirs)
+    D.map (NE.map toSrcDir) (D.nonEmptyList D.string Exit.OP_NoSrcDirs)
 
 
 toSrcDir : FilePath -> SrcDir
@@ -493,8 +519,8 @@ toSrcDir path =
 exposedDecoder : Decoder Exposed
 exposedDecoder =
     D.oneOf
-        [ D.fmap ExposedList (D.list moduleDecoder)
-        , D.fmap ExposedDict (D.pairs headerKeyDecoder (D.list moduleDecoder))
+        [ D.map ExposedList (D.list moduleDecoder)
+        , D.map ExposedDict (D.pairs headerKeyDecoder (D.list moduleDecoder))
         ]
 
 
@@ -534,34 +560,34 @@ boundParser bound tooLong =
                 P.Cerr row newCol (\_ _ -> tooLong)
 
 
-srcDirEncoder : SrcDir -> BE.Encoder
+srcDirEncoder : SrcDir -> Bytes.Encode.Encoder
 srcDirEncoder srcDir =
     case srcDir of
         AbsoluteSrcDir dir ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.string dir
                 ]
 
         RelativeSrcDir dir ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.string dir
                 ]
 
 
-srcDirDecoder : BD.Decoder SrcDir
+srcDirDecoder : Bytes.Decode.Decoder SrcDir
 srcDirDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map AbsoluteSrcDir BD.string
+                        Bytes.Decode.map AbsoluteSrcDir BD.string
 
                     1 ->
-                        BD.map RelativeSrcDir BD.string
+                        Bytes.Decode.map RelativeSrcDir BD.string
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

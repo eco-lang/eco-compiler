@@ -34,18 +34,18 @@ import Utils.Crash exposing (crash)
 fresh : IO.Descriptor -> IO IO.Point
 fresh value =
     IORef.newIORefWeight 1
-        |> IO.bind
+        |> IO.andThen
             (\(IORef weight) ->
                 IORef.newIORefDescriptor value
-                    |> IO.bind (\(IORef desc) -> IORef.newIORefPointInfo (IO.Info weight desc))
-                    |> IO.fmap (\(IORef link) -> IO.Pt link)
+                    |> IO.andThen (\(IORef desc) -> IORef.newIORefPointInfo (IO.Info weight desc))
+                    |> IO.map (\(IORef link) -> IO.Pt link)
             )
 
 
 repr : IO.Point -> IO IO.Point
 repr ((IO.Pt ref) as point) =
     IORef.readIORefPointInfo (IORef ref)
-        |> IO.bind
+        |> IO.andThen
             (\pInfo ->
                 case pInfo of
                     IO.Info _ _ ->
@@ -53,14 +53,14 @@ repr ((IO.Pt ref) as point) =
 
                     IO.Link ((IO.Pt ref1) as point1) ->
                         repr point1
-                            |> IO.bind
+                            |> IO.andThen
                                 (\point2 ->
                                     if point2 /= point1 then
                                         IORef.readIORefPointInfo (IORef ref1)
-                                            |> IO.bind
+                                            |> IO.andThen
                                                 (\pInfo1 ->
                                                     IORef.writeIORefPointInfo (IORef ref) pInfo1
-                                                        |> IO.fmap (\_ -> point2)
+                                                        |> IO.map (\_ -> point2)
                                                 )
 
                                     else
@@ -72,7 +72,7 @@ repr ((IO.Pt ref) as point) =
 get : IO.Point -> IO Descriptor
 get ((IO.Pt ref) as point) =
     IORef.readIORefPointInfo (IORef ref)
-        |> IO.bind
+        |> IO.andThen
             (\pInfo ->
                 case pInfo of
                     IO.Info _ descRef ->
@@ -80,14 +80,14 @@ get ((IO.Pt ref) as point) =
 
                     IO.Link (IO.Pt ref1) ->
                         IORef.readIORefPointInfo (IORef ref1)
-                            |> IO.bind
+                            |> IO.andThen
                                 (\link_ ->
                                     case link_ of
                                         IO.Info _ descRef ->
                                             IORef.readIORefDescriptor (IORef descRef)
 
                                         IO.Link _ ->
-                                            IO.bind get (repr point)
+                                            IO.andThen get (repr point)
                                 )
             )
 
@@ -95,7 +95,7 @@ get ((IO.Pt ref) as point) =
 set : IO.Point -> Descriptor -> IO ()
 set ((IO.Pt ref) as point) newDesc =
     IORef.readIORefPointInfo (IORef ref)
-        |> IO.bind
+        |> IO.andThen
             (\pInfo ->
                 case pInfo of
                     IO.Info _ descRef ->
@@ -103,7 +103,7 @@ set ((IO.Pt ref) as point) newDesc =
 
                     IO.Link (IO.Pt ref1) ->
                         IORef.readIORefPointInfo (IORef ref1)
-                            |> IO.bind
+                            |> IO.andThen
                                 (\link_ ->
                                     case link_ of
                                         IO.Info _ descRef ->
@@ -111,7 +111,7 @@ set ((IO.Pt ref) as point) newDesc =
 
                                         IO.Link _ ->
                                             repr point
-                                                |> IO.bind
+                                                |> IO.andThen
                                                     (\newPoint ->
                                                         set newPoint newDesc
                                                     )
@@ -122,7 +122,7 @@ set ((IO.Pt ref) as point) newDesc =
 modify : IO.Point -> (Descriptor -> Descriptor) -> IO ()
 modify ((IO.Pt ref) as point) func =
     IORef.readIORefPointInfo (IORef ref)
-        |> IO.bind
+        |> IO.andThen
             (\pInfo ->
                 case pInfo of
                     IO.Info _ descRef ->
@@ -130,7 +130,7 @@ modify ((IO.Pt ref) as point) func =
 
                     IO.Link (IO.Pt ref1) ->
                         IORef.readIORefPointInfo (IORef ref1)
-                            |> IO.bind
+                            |> IO.andThen
                                 (\link_ ->
                                     case link_ of
                                         IO.Info _ descRef ->
@@ -138,7 +138,7 @@ modify ((IO.Pt ref) as point) func =
 
                                         IO.Link _ ->
                                             repr point
-                                                |> IO.bind (\newPoint -> modify newPoint func)
+                                                |> IO.andThen (\newPoint -> modify newPoint func)
                                 )
             )
 
@@ -146,16 +146,16 @@ modify ((IO.Pt ref) as point) func =
 union : IO.Point -> IO.Point -> IO.Descriptor -> IO ()
 union p1 p2 newDesc =
     repr p1
-        |> IO.bind
+        |> IO.andThen
             (\((IO.Pt ref1) as point1) ->
                 repr p2
-                    |> IO.bind
+                    |> IO.andThen
                         (\((IO.Pt ref2) as point2) ->
                             IORef.readIORefPointInfo (IORef ref1)
-                                |> IO.bind
+                                |> IO.andThen
                                     (\pointInfo1 ->
                                         IORef.readIORefPointInfo (IORef ref2)
-                                            |> IO.bind
+                                            |> IO.andThen
                                                 (\pointInfo2 ->
                                                     case ( pointInfo1, pointInfo2 ) of
                                                         ( IO.Info w1 d1, IO.Info w2 d2 ) ->
@@ -164,10 +164,10 @@ union p1 p2 newDesc =
 
                                                             else
                                                                 IORef.readIORefWeight (IORef w1)
-                                                                    |> IO.bind
+                                                                    |> IO.andThen
                                                                         (\weight1 ->
                                                                             IORef.readIORefWeight (IORef w2)
-                                                                                |> IO.bind
+                                                                                |> IO.andThen
                                                                                     (\weight2 ->
                                                                                         let
                                                                                             newWeight : Int
@@ -176,13 +176,13 @@ union p1 p2 newDesc =
                                                                                         in
                                                                                         if weight1 >= weight2 then
                                                                                             IORef.writeIORefPointInfo (IORef ref2) (IO.Link point1)
-                                                                                                |> IO.bind (\_ -> IORef.writeIORefWeight (IORef w1) newWeight)
-                                                                                                |> IO.bind (\_ -> IORef.writeIORefDescriptor (IORef d1) newDesc)
+                                                                                                |> IO.andThen (\_ -> IORef.writeIORefWeight (IORef w1) newWeight)
+                                                                                                |> IO.andThen (\_ -> IORef.writeIORefDescriptor (IORef d1) newDesc)
 
                                                                                         else
                                                                                             IORef.writeIORefPointInfo (IORef ref1) (IO.Link point2)
-                                                                                                |> IO.bind (\_ -> IORef.writeIORefWeight (IORef w2) newWeight)
-                                                                                                |> IO.bind (\_ -> IORef.writeIORefDescriptor (IORef d2) newDesc)
+                                                                                                |> IO.andThen (\_ -> IORef.writeIORefWeight (IORef w2) newWeight)
+                                                                                                |> IO.andThen (\_ -> IORef.writeIORefDescriptor (IORef d2) newDesc)
                                                                                     )
                                                                         )
 
@@ -197,17 +197,17 @@ union p1 p2 newDesc =
 equivalent : IO.Point -> IO.Point -> IO Bool
 equivalent p1 p2 =
     repr p1
-        |> IO.bind
+        |> IO.andThen
             (\v1 ->
                 repr p2
-                    |> IO.fmap (\v2 -> v1 == v2)
+                    |> IO.map (\v2 -> v1 == v2)
             )
 
 
 redundant : IO.Point -> IO Bool
 redundant (IO.Pt ref) =
     IORef.readIORefPointInfo (IORef ref)
-        |> IO.fmap
+        |> IO.map
             (\pInfo ->
                 case pInfo of
                     IO.Info _ _ ->

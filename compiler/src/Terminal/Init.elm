@@ -37,38 +37,42 @@ run : () -> Flags -> Task Never ()
 run () (Flags package autoYes) =
     Reporting.attempt Exit.initToReport <|
         (Utils.dirDoesFileExist "elm.json"
-            |> Task.bind
-                (\exists ->
-                    if exists then
-                        Task.pure (Err Exit.InitAlreadyExists)
-
-                    else
-                        let
-                            askQuestion : Task Never Bool
-                            askQuestion =
-                                if autoYes then
-                                    Help.toStdout (information [ D.fromChars "" ])
-                                        |> Task.fmap (\_ -> True)
-
-                                else
-                                    Reporting.ask
-                                        (information
-                                            [ D.fromChars "Knowing all that, would you like me to create an elm.json file now? [Y/n]: "
-                                            ]
-                                        )
-                        in
-                        askQuestion
-                            |> Task.bind
-                                (\approved ->
-                                    if approved then
-                                        init package
-
-                                    else
-                                        IO.putStrLn "Okay, I did not make any changes!"
-                                            |> Task.fmap (\_ -> Ok ())
-                                )
-                )
+            |> Task.andThen (checkExistsAndAsk package autoYes)
         )
+
+
+checkExistsAndAsk : Bool -> Bool -> Bool -> Task Never (Result Exit.Init ())
+checkExistsAndAsk package autoYes exists =
+    if exists then
+        Task.succeed (Err Exit.InitAlreadyExists)
+
+    else
+        askInitQuestion autoYes
+            |> Task.andThen (handleInitApproval package)
+
+
+askInitQuestion : Bool -> Task Never Bool
+askInitQuestion autoYes =
+    if autoYes then
+        Help.toStdout (information [ D.fromChars "" ])
+            |> Task.map (\_ -> True)
+
+    else
+        Reporting.ask
+            (information
+                [ D.fromChars "Knowing all that, would you like me to create an elm.json file now? [Y/n]: "
+                ]
+            )
+
+
+handleInitApproval : Bool -> Bool -> Task Never (Result Exit.Init ())
+handleInitApproval package approved =
+    if approved then
+        init package
+
+    else
+        IO.putStrLn "Okay, I did not make any changes!"
+            |> Task.map (\_ -> Ok ())
 
 
 information : List D.Doc -> D.Doc
@@ -89,7 +93,10 @@ information question =
             , D.fromChars "create"
             , D.fromChars "them!"
             ]
-            :: D.reflow "Now you may be wondering, what will be in this file? How do I add Elm files to my project? How do I see it in the browser? How will my code grow? Do I need more directories? What about tests? Etc."
+            :: D.reflow
+                ("Now you may be wondering, what will be in this file? How do I add Elm files to my project? "
+                    ++ "How do I see it in the browser? How will my code grow? Do I need more directories? What about tests? Etc."
+                )
             :: D.fillSep
                 [ D.fromChars "Check"
                 , D.fromChars "out"
@@ -107,126 +114,176 @@ information question =
 -- INIT
 
 
+type alias InitEnv =
+    { cache : Stuff.PackageCache
+    , connection : Solver.Connection
+    , registry : Registry.Registry
+    }
+
+
+type alias InitDetails =
+    { details : Dict ( String, String ) Pkg.Name Solver.Details
+    , testDetails : Dict ( String, String ) Pkg.Name Solver.Details
+    }
+
+
 init : Bool -> Task Never (Result Exit.Init ())
 init package =
     Solver.initEnv
-        |> Task.bind
-            (\eitherEnv ->
-                case eitherEnv of
-                    Err problem ->
-                        Task.pure (Err (Exit.InitRegistryProblem problem))
-
-                    Ok (Solver.Env cache _ connection registry) ->
-                        verify cache connection registry defaults <|
-                            \details ->
-                                verify cache connection registry testDefaults <|
-                                    \testDetails ->
-                                        Utils.dirCreateDirectoryIfMissing True "src"
-                                            |> Task.bind (\_ -> Utils.dirCreateDirectoryIfMissing True "tests")
-                                            |> Task.bind (\_ -> File.writeUtf8 "tests/Example.elm" testExample)
-                                            |> Task.bind
-                                                (\_ ->
-                                                    let
-                                                        outline : Outline.Outline
-                                                        outline =
-                                                            if package then
-                                                                let
-                                                                    directs : Dict ( String, String ) Pkg.Name Con.Constraint
-                                                                    directs =
-                                                                        Dict.map
-                                                                            (\pkg _ ->
-                                                                                let
-                                                                                    (Solver.Details vsn _) =
-                                                                                        Utils.find identity pkg details
-                                                                                in
-                                                                                Con.untilNextMajor vsn
-                                                                            )
-                                                                            packageDefaults
-
-                                                                    testDirects : Dict ( String, String ) Pkg.Name Con.Constraint
-                                                                    testDirects =
-                                                                        Dict.map
-                                                                            (\pkg _ ->
-                                                                                let
-                                                                                    (Solver.Details vsn _) =
-                                                                                        Utils.find identity pkg testDetails
-                                                                                in
-                                                                                Con.untilNextMajor vsn
-                                                                            )
-                                                                            packageTestDefaults
-                                                                in
-                                                                Outline.Pkg <|
-                                                                    Outline.PkgOutline
-                                                                        Pkg.dummyName
-                                                                        Outline.defaultSummary
-                                                                        Licenses.bsd3
-                                                                        V.one
-                                                                        (Outline.ExposedList [])
-                                                                        directs
-                                                                        testDirects
-                                                                        Con.defaultElm
-
-                                                            else
-                                                                let
-                                                                    solution : Dict ( String, String ) Pkg.Name V.Version
-                                                                    solution =
-                                                                        Dict.map (\_ (Solver.Details vsn _) -> vsn) details
-
-                                                                    directs : Dict ( String, String ) Pkg.Name V.Version
-                                                                    directs =
-                                                                        Dict.intersection compare solution defaults
-
-                                                                    indirects : Dict ( String, String ) Pkg.Name V.Version
-                                                                    indirects =
-                                                                        Dict.diff solution defaults
-
-                                                                    testSolution : Dict ( String, String ) Pkg.Name V.Version
-                                                                    testSolution =
-                                                                        Dict.map (\_ (Solver.Details vsn _) -> vsn) testDetails
-
-                                                                    testDirects : Dict ( String, String ) Pkg.Name V.Version
-                                                                    testDirects =
-                                                                        Dict.intersection compare testSolution testDefaults
-
-                                                                    testIndirects : Dict ( String, String ) Pkg.Name V.Version
-                                                                    testIndirects =
-                                                                        Dict.diff testSolution testDefaults
-                                                                            |> flip Dict.diff directs
-                                                                            |> flip Dict.diff indirects
-                                                                in
-                                                                Outline.App <|
-                                                                    Outline.AppOutline V.elmCompiler
-                                                                        (NE.Nonempty (Outline.RelativeSrcDir "src") [])
-                                                                        directs
-                                                                        indirects
-                                                                        testDirects
-                                                                        testIndirects
-                                                    in
-                                                    Outline.write "." outline
-                                                )
-                                            |> Task.bind (\_ -> IO.putStrLn "Okay, I created it. Now read that link!")
-                                            |> Task.fmap (\_ -> Ok ())
-            )
+        |> Task.andThen (initWithEnv package)
 
 
-verify : Stuff.PackageCache -> Solver.Connection -> Registry.Registry -> Dict ( String, String ) Pkg.Name Con.Constraint -> (Dict ( String, String ) Pkg.Name Solver.Details -> Task Never (Result Exit.Init ())) -> Task Never (Result Exit.Init ())
-verify cache connection registry constraints callback =
+initWithEnv : Bool -> Result Exit.RegistryProblem Solver.Env -> Task Never (Result Exit.Init ())
+initWithEnv package eitherEnv =
+    case eitherEnv of
+        Err problem ->
+            Task.succeed (Err (Exit.InitRegistryProblem problem))
+
+        Ok (Solver.Env cache _ connection registry) ->
+            let
+                env =
+                    InitEnv cache connection registry
+            in
+            verify env.cache env.connection env.registry defaults
+                |> Task.andThen (verifyTestDefaults env package)
+
+
+verifyTestDefaults : InitEnv -> Bool -> Solver.SolverResult (Dict ( String, String ) Pkg.Name Solver.Details) -> Task Never (Result Exit.Init ())
+verifyTestDefaults env package result =
+    case result of
+        Solver.SolverErr exit ->
+            Task.succeed (Err (Exit.InitSolverProblem exit))
+
+        Solver.NoSolution ->
+            Task.succeed (Err (Exit.InitNoSolution (Dict.keys compare defaults)))
+
+        Solver.NoOfflineSolution ->
+            Task.succeed (Err (Exit.InitNoOfflineSolution (Dict.keys compare defaults)))
+
+        Solver.SolverOk details ->
+            verify env.cache env.connection env.registry testDefaults
+                |> Task.andThen (createProjectFiles package details)
+
+
+createProjectFiles : Bool -> Dict ( String, String ) Pkg.Name Solver.Details -> Solver.SolverResult (Dict ( String, String ) Pkg.Name Solver.Details) -> Task Never (Result Exit.Init ())
+createProjectFiles package details result =
+    case result of
+        Solver.SolverErr exit ->
+            Task.succeed (Err (Exit.InitSolverProblem exit))
+
+        Solver.NoSolution ->
+            Task.succeed (Err (Exit.InitNoSolution (Dict.keys compare testDefaults)))
+
+        Solver.NoOfflineSolution ->
+            Task.succeed (Err (Exit.InitNoOfflineSolution (Dict.keys compare testDefaults)))
+
+        Solver.SolverOk testDetails ->
+            Utils.dirCreateDirectoryIfMissing True "src"
+                |> Task.andThen (\_ -> Utils.dirCreateDirectoryIfMissing True "tests")
+                |> Task.andThen (\_ -> File.writeUtf8 "tests/Example.elm" testExample)
+                |> Task.andThen (\_ -> writeOutline package (InitDetails details testDetails))
+                |> Task.andThen (\_ -> IO.putStrLn "Okay, I created it. Now read that link!")
+                |> Task.map (\_ -> Ok ())
+
+
+writeOutline : Bool -> InitDetails -> Task Never ()
+writeOutline package initDetails =
+    let
+        outline =
+            if package then
+                buildPackageOutline initDetails
+
+            else
+                buildAppOutline initDetails
+    in
+    Outline.write "." outline
+
+
+buildPackageOutline : InitDetails -> Outline.Outline
+buildPackageOutline initDetails =
+    let
+        directs : Dict ( String, String ) Pkg.Name Con.Constraint
+        directs =
+            Dict.map
+                (\pkg _ ->
+                    let
+                        (Solver.Details vsn _) =
+                            Utils.find identity pkg initDetails.details
+                    in
+                    Con.untilNextMajor vsn
+                )
+                packageDefaults
+
+        testDirects : Dict ( String, String ) Pkg.Name Con.Constraint
+        testDirects =
+            Dict.map
+                (\pkg _ ->
+                    let
+                        (Solver.Details vsn _) =
+                            Utils.find identity pkg initDetails.testDetails
+                    in
+                    Con.untilNextMajor vsn
+                )
+                packageTestDefaults
+    in
+    Outline.Pkg <|
+        Outline.PkgOutline
+            Pkg.dummyName
+            Outline.defaultSummary
+            Licenses.bsd3
+            V.one
+            (Outline.ExposedList [])
+            directs
+            testDirects
+            Con.defaultElm
+
+
+buildAppOutline : InitDetails -> Outline.Outline
+buildAppOutline initDetails =
+    let
+        solution : Dict ( String, String ) Pkg.Name V.Version
+        solution =
+            Dict.map (\_ (Solver.Details vsn _) -> vsn) initDetails.details
+
+        directs : Dict ( String, String ) Pkg.Name V.Version
+        directs =
+            Dict.intersection compare solution defaults
+
+        indirects : Dict ( String, String ) Pkg.Name V.Version
+        indirects =
+            Dict.diff solution defaults
+
+        testSolution : Dict ( String, String ) Pkg.Name V.Version
+        testSolution =
+            Dict.map (\_ (Solver.Details vsn _) -> vsn) initDetails.testDetails
+
+        testDirects : Dict ( String, String ) Pkg.Name V.Version
+        testDirects =
+            Dict.intersection compare testSolution testDefaults
+
+        testIndirects : Dict ( String, String ) Pkg.Name V.Version
+        testIndirects =
+            Dict.diff testSolution testDefaults
+                |> flip Dict.diff directs
+                |> flip Dict.diff indirects
+    in
+    Outline.App <|
+        Outline.AppOutline V.elmCompiler
+            (NE.Nonempty (Outline.RelativeSrcDir "src") [])
+            directs
+            indirects
+            testDirects
+            testIndirects
+
+
+verify :
+    Stuff.PackageCache
+    -> Solver.Connection
+    -> Registry.Registry
+    -> Dict ( String, String ) Pkg.Name Con.Constraint
+    -> Task Never (Solver.SolverResult (Dict ( String, String ) Pkg.Name Solver.Details))
+verify cache connection registry constraints =
     Solver.verify cache connection registry constraints
-        |> Task.bind
-            (\result ->
-                case result of
-                    Solver.SolverErr exit ->
-                        Task.pure (Err (Exit.InitSolverProblem exit))
-
-                    Solver.NoSolution ->
-                        Task.pure (Err (Exit.InitNoSolution (Dict.keys compare constraints)))
-
-                    Solver.NoOfflineSolution ->
-                        Task.pure (Err (Exit.InitNoOfflineSolution (Dict.keys compare constraints)))
-
-                    Solver.SolverOk details ->
-                        callback details
-            )
 
 
 defaults : Dict ( String, String ) Pkg.Name Con.Constraint

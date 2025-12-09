@@ -25,7 +25,9 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
@@ -206,9 +208,9 @@ privatize di =
 -- ENCODERS and DECODERS
 
 
-interfaceEncoder : Interface -> BE.Encoder
+interfaceEncoder : Interface -> Bytes.Encode.Encoder
 interfaceEncoder (Interface home values unions aliases binops) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ Pkg.nameEncoder home
         , BE.assocListDict compare BE.string Can.annotationEncoder values
         , BE.assocListDict compare BE.string unionEncoder unions
@@ -217,9 +219,9 @@ interfaceEncoder (Interface home values unions aliases binops) =
         ]
 
 
-interfaceDecoder : BD.Decoder Interface
+interfaceDecoder : Bytes.Decode.Decoder Interface
 interfaceDecoder =
-    BD.map5 Interface
+    Bytes.Decode.map5 Interface
         Pkg.nameDecoder
         (BD.assocListDict identity BD.string Can.annotationDecoder)
         (BD.assocListDict identity BD.string unionDecoder)
@@ -227,84 +229,84 @@ interfaceDecoder =
         (BD.assocListDict identity BD.string binopDecoder)
 
 
-unionEncoder : Union -> BE.Encoder
+unionEncoder : Union -> Bytes.Encode.Encoder
 unionEncoder union_ =
     case union_ of
         OpenUnion union ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , Can.unionEncoder union
                 ]
 
         ClosedUnion union ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , Can.unionEncoder union
                 ]
 
         PrivateUnion union ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , Can.unionEncoder union
                 ]
 
 
-unionDecoder : BD.Decoder Union
+unionDecoder : Bytes.Decode.Decoder Union
 unionDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map OpenUnion Can.unionDecoder
+                        Bytes.Decode.map OpenUnion Can.unionDecoder
 
                     1 ->
-                        BD.map ClosedUnion Can.unionDecoder
+                        Bytes.Decode.map ClosedUnion Can.unionDecoder
 
                     2 ->
-                        BD.map PrivateUnion Can.unionDecoder
+                        Bytes.Decode.map PrivateUnion Can.unionDecoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-aliasEncoder : Alias -> BE.Encoder
+aliasEncoder : Alias -> Bytes.Encode.Encoder
 aliasEncoder aliasValue =
     case aliasValue of
         PublicAlias alias_ ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , Can.aliasEncoder alias_
                 ]
 
         PrivateAlias alias_ ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , Can.aliasEncoder alias_
                 ]
 
 
-aliasDecoder : BD.Decoder Alias
+aliasDecoder : Bytes.Decode.Decoder Alias
 aliasDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map PublicAlias Can.aliasDecoder
+                        Bytes.Decode.map PublicAlias Can.aliasDecoder
 
                     1 ->
-                        BD.map PrivateAlias Can.aliasDecoder
+                        Bytes.Decode.map PrivateAlias Can.aliasDecoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-binopEncoder : Binop -> BE.Encoder
+binopEncoder : Binop -> Bytes.Encode.Encoder
 binopEncoder (Binop name annotation associativity precedence) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.string name
         , Can.annotationEncoder annotation
         , Binop.associativityEncoder associativity
@@ -312,48 +314,48 @@ binopEncoder (Binop name annotation associativity precedence) =
         ]
 
 
-binopDecoder : BD.Decoder Binop
+binopDecoder : Bytes.Decode.Decoder Binop
 binopDecoder =
-    BD.map4 Binop
+    Bytes.Decode.map4 Binop
         BD.string
         Can.annotationDecoder
         Binop.associativityDecoder
         Binop.precedenceDecoder
 
 
-dependencyInterfaceEncoder : DependencyInterface -> BE.Encoder
+dependencyInterfaceEncoder : DependencyInterface -> Bytes.Encode.Encoder
 dependencyInterfaceEncoder dependencyInterface =
     case dependencyInterface of
         Public i ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , interfaceEncoder i
                 ]
 
         Private pkg unions aliases ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , Pkg.nameEncoder pkg
                 , BE.assocListDict compare BE.string Can.unionEncoder unions
                 , BE.assocListDict compare BE.string Can.aliasEncoder aliases
                 ]
 
 
-dependencyInterfaceDecoder : BD.Decoder DependencyInterface
+dependencyInterfaceDecoder : Bytes.Decode.Decoder DependencyInterface
 dependencyInterfaceDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map Public interfaceDecoder
+                        Bytes.Decode.map Public interfaceDecoder
 
                     1 ->
-                        BD.map3 Private
+                        Bytes.Decode.map3 Private
                             Pkg.nameDecoder
                             (BD.assocListDict identity BD.string Can.unionDecoder)
                             (BD.assocListDict identity BD.string Can.aliasDecoder)
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

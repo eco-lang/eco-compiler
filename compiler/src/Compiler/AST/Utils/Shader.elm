@@ -15,7 +15,9 @@ import Compiler.Data.Name exposing (Name)
 import Data.Map exposing (Dict)
 import Regex
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 
@@ -126,36 +128,36 @@ unescape =
 -- ENCODERS and DECODERS
 
 
-sourceEncoder : Source -> BE.Encoder
+sourceEncoder : Source -> Bytes.Encode.Encoder
 sourceEncoder (Source src) =
     BE.string src
 
 
-sourceDecoder : BD.Decoder Source
+sourceDecoder : Bytes.Decode.Decoder Source
 sourceDecoder =
-    BD.map Source BD.string
+    Bytes.Decode.map Source BD.string
 
 
-typesEncoder : Types -> BE.Encoder
+typesEncoder : Types -> Bytes.Encode.Encoder
 typesEncoder (Types attribute uniform varying) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.assocListDict compare BE.string typeEncoder attribute
         , BE.assocListDict compare BE.string typeEncoder uniform
         , BE.assocListDict compare BE.string typeEncoder varying
         ]
 
 
-typesDecoder : BD.Decoder Types
+typesDecoder : Bytes.Decode.Decoder Types
 typesDecoder =
-    BD.map3 Types
+    Bytes.Decode.map3 Types
         (BD.assocListDict identity BD.string typeDecoder)
         (BD.assocListDict identity BD.string typeDecoder)
         (BD.assocListDict identity BD.string typeDecoder)
 
 
-typeEncoder : Type -> BE.Encoder
+typeEncoder : Type -> Bytes.Encode.Encoder
 typeEncoder type_ =
-    BE.unsignedInt8
+    Bytes.Encode.unsignedInt8
         (case type_ of
             Int ->
                 0
@@ -183,36 +185,36 @@ typeEncoder type_ =
         )
 
 
-typeDecoder : BD.Decoder Type
+typeDecoder : Bytes.Decode.Decoder Type
 typeDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed Int
+                        Bytes.Decode.succeed Int
 
                     1 ->
-                        BD.succeed Float
+                        Bytes.Decode.succeed Float
 
                     2 ->
-                        BD.succeed V2
+                        Bytes.Decode.succeed V2
 
                     3 ->
-                        BD.succeed V3
+                        Bytes.Decode.succeed V3
 
                     4 ->
-                        BD.succeed V4
+                        Bytes.Decode.succeed V4
 
                     5 ->
-                        BD.succeed M4
+                        Bytes.Decode.succeed M4
 
                     6 ->
-                        BD.succeed Texture
+                        Bytes.Decode.succeed Texture
 
                     7 ->
-                        BD.succeed Bool
+                        Bytes.Decode.succeed Bool
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

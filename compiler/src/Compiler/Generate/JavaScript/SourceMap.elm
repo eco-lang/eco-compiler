@@ -100,7 +100,10 @@ prepareForNewLine (Mappings srcs nms (SegmentAccounting _ saPrevSourceIdx saPrev
 
 
 encodeSegment : JS.Mapping -> Mappings -> Mappings
-encodeSegment (JS.Mapping segmentSrcLine segmentSrcCol segmentSrcModule segmentSrcName _ segmentGenCol) (Mappings srcs nms (SegmentAccounting saPrevCol saPrevSourceIdx saPrevSourceLine saPrevSourceCol saPrevNameIdx) vlqs) =
+encodeSegment
+    (JS.Mapping segmentSrcLine segmentSrcCol segmentSrcModule segmentSrcName _ segmentGenCol)
+    (Mappings srcs nms (SegmentAccounting saPrevCol saPrevSourceIdx saPrevSourceLine saPrevSourceCol saPrevNameIdx) vlqs)
+    =
     let
         newSources : OrderedListBuilder (List String) IO.Canonical
         newSources =

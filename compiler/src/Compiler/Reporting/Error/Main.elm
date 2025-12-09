@@ -15,7 +15,9 @@ import Compiler.Reporting.Render.Type as RT
 import Compiler.Reporting.Render.Type.Localizer as L
 import Compiler.Reporting.Report as Report
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 
@@ -80,7 +82,11 @@ toReport localizer source err =
 
                     E.TypeVariable name ->
                         ( "an unspecified type"
-                        , D.reflow ("But type variables like `" ++ name ++ "` cannot be given as flags. I need to know exactly what type of data I am getting, so I can guarantee that unexpected data cannot sneak in and crash the Elm program.")
+                        , D.reflow <|
+                            "But type variables like `"
+                                ++ name
+                                ++ "` cannot be given as flags. I need to know exactly what type of data I am getting, "
+                                ++ "so I can guarantee that unexpected data cannot sneak in and crash the Elm program."
                         )
 
                     E.UnsupportedType name ->
@@ -89,7 +95,9 @@ toReport localizer source err =
                             [ D.reflow "I cannot handle that. The types that CAN be in flags include:"
                             , D.indent 4 <|
                                 D.reflow "Ints, Floats, Bools, Strings, Maybes, Lists, Arrays, tuples, records, and JSON values."
-                            , D.reflow "Since JSON values can flow through, you can use JSON encoders and decoders to allow other types through as well. More advanced users often just do everything with encoders and decoders for more control and better errors."
+                            , D.reflow <|
+                                "Since JSON values can flow through, you can use JSON encoders and decoders to allow other types through as well. "
+                                    ++ "More advanced users often just do everything with encoders and decoders for more control and better errors."
                             ]
                         )
 
@@ -98,56 +106,56 @@ toReport localizer source err =
 -- ENCODERS and DECODERS
 
 
-errorEncoder : Error -> BE.Encoder
+errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
     case error of
         BadType region tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , A.regionEncoder region
                 , Can.typeEncoder tipe
                 ]
 
         BadCycle region name names ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , A.regionEncoder region
                 , BE.string name
                 , BE.list BE.string names
                 ]
 
         BadFlags region subType invalidPayload ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , A.regionEncoder region
                 , Can.typeEncoder subType
                 , E.invalidPayloadEncoder invalidPayload
                 ]
 
 
-errorDecoder : BD.Decoder Error
+errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map2 BadType
+                        Bytes.Decode.map2 BadType
                             A.regionDecoder
                             Can.typeDecoder
 
                     1 ->
-                        BD.map3 BadCycle
+                        Bytes.Decode.map3 BadCycle
                             A.regionDecoder
                             BD.string
                             (BD.list BD.string)
 
                     2 ->
-                        BD.map3 BadFlags
+                        Bytes.Decode.map3 BadFlags
                             A.regionDecoder
                             Can.typeDecoder
                             E.invalidPayloadDecoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

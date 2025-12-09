@@ -24,7 +24,6 @@ module Compiler.Elm.ModuleName exposing
     , string
     , sub
     , texture
-    , toChars
     , toComparableCanonical
     , toFilePath
     , toHyphenPath
@@ -44,7 +43,9 @@ import Compiler.Parse.Primitives as P
 import Compiler.Parse.Variable as Var
 import System.TypeCheck.IO exposing (Canonical(..))
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 
@@ -53,11 +54,6 @@ import Utils.Bytes.Encode as BE
 
 type alias Raw =
     Name
-
-
-toChars : Raw -> List Char
-toChars =
-    Name.toChars
 
 
 toFilePath : Raw -> String
@@ -330,26 +326,26 @@ matrix4 =
 -- ENCODERS and DECODERS
 
 
-canonicalEncoder : Canonical -> BE.Encoder
+canonicalEncoder : Canonical -> Bytes.Encode.Encoder
 canonicalEncoder (Canonical pkgName name) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ Pkg.nameEncoder pkgName
         , BE.string name
         ]
 
 
-canonicalDecoder : BD.Decoder Canonical
+canonicalDecoder : Bytes.Decode.Decoder Canonical
 canonicalDecoder =
-    BD.map2 Canonical
+    Bytes.Decode.map2 Canonical
         Pkg.nameDecoder
         BD.string
 
 
-rawEncoder : Raw -> BE.Encoder
+rawEncoder : Raw -> Bytes.Encode.Encoder
 rawEncoder =
     BE.string
 
 
-rawDecoder : BD.Decoder Raw
+rawDecoder : Bytes.Decode.Decoder Raw
 rawDecoder =
     BD.string

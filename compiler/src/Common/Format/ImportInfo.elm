@@ -112,9 +112,9 @@ fromImports knownContents rawImports =
 
                         Src.Explicit _ ->
                             -- TODO
-                            -- (fmap VarName <| Dict.keys <| AST.Module.values details)
-                            --     <> (fmap TypeName <| Dict.keys <| AST.Module.types details)
-                            --     <> (fmap CtorName <| foldMap (getCtorListings << extract << extract) <| Dict.elems <| AST.Module.types details)
+                            -- (map VarName <| Dict.keys <| AST.Module.values details)
+                            --     <> (map TypeName <| Dict.keys <| AST.Module.types details)
+                            --     <> (map CtorName <| foldMap (getCtorListings << extract << extract) <| Dict.elems <| AST.Module.types details)
                             []
 
         -- getCtorListings : Listing (CommentedMap name ()) -> List name
@@ -123,7 +123,8 @@ fromImports knownContents rawImports =
         --         ClosedListing ->
         --             []
         --         OpenListing _ ->
-        --             -- TODO: exposing (Type(..)) should pull in variant names from knownContents, though this should also be a warning because we can't know for sure which of those are for this type
+        --             -- TODO: exposing (Type(..)) should pull in variant names from knownContents,
+        --             -- though this should also be a warning because we can't know for sure which of those are for this type
         --             []
         --         ExplicitListing ctors _ ->
         --             Dict.keys ctors

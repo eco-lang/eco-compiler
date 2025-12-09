@@ -13,7 +13,7 @@ import Compiler.Data.Name as Name
 import Compiler.Parse.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
-import Compiler.Reporting.Result as R
+import Compiler.Reporting.Result as ReportingResult
 import Data.Map as Dict exposing (Dict)
 import Utils.Main as Utils
 
@@ -23,7 +23,7 @@ import Utils.Main as Utils
 
 
 type alias CResult i w a =
-    R.RResult i w Error.Error a
+    ReportingResult.RResult i w Error.Error a
 
 
 
@@ -33,7 +33,7 @@ type alias CResult i w a =
 toAnnotation : SyntaxVersion -> Env.Env -> Src.Type -> CResult i w Can.Annotation
 toAnnotation syntaxVersion env srcType =
     canonicalize syntaxVersion env srcType
-        |> R.bind (\tipe -> R.ok (Can.Forall (addFreeVars Dict.empty tipe) tipe))
+        |> ReportingResult.andThen (\tipe -> ReportingResult.ok (Can.Forall (addFreeVars Dict.empty tipe) tipe))
 
 
 
@@ -44,47 +44,47 @@ canonicalize : SyntaxVersion -> Env.Env -> Src.Type -> CResult i w Can.Type
 canonicalize syntaxVersion env (A.At typeRegion tipe) =
     case tipe of
         Src.TVar x ->
-            R.ok (Can.TVar x)
+            ReportingResult.ok (Can.TVar x)
 
         Src.TType region name args ->
             Env.findType region env name
-                |> R.bind (canonicalizeType syntaxVersion env typeRegion name (List.map Tuple.second args))
+                |> ReportingResult.andThen (canonicalizeType syntaxVersion env typeRegion name (List.map Tuple.second args))
 
         Src.TTypeQual region home name args ->
             Env.findTypeQual region env home name
-                |> R.bind (canonicalizeType syntaxVersion env typeRegion name (List.map Tuple.second args))
+                |> ReportingResult.andThen (canonicalizeType syntaxVersion env typeRegion name (List.map Tuple.second args))
 
         Src.TLambda ( _, a ) ( _, b ) ->
-            R.fmap Can.TLambda (canonicalize syntaxVersion env a)
-                |> R.apply (canonicalize syntaxVersion env b)
+            ReportingResult.map Can.TLambda (canonicalize syntaxVersion env a)
+                |> ReportingResult.apply (canonicalize syntaxVersion env b)
 
         Src.TRecord fields maybeExt _ ->
             Dups.checkFields (canonicalizeFields syntaxVersion env fields)
-                |> R.bind (Utils.sequenceADict identity compare)
-                |> R.fmap (\cfields -> Can.TRecord cfields (Maybe.map (\( _, A.At _ ext ) -> ext) maybeExt))
+                |> ReportingResult.andThen (Utils.sequenceADict identity compare)
+                |> ReportingResult.map (\cfields -> Can.TRecord cfields (Maybe.map (\( _, A.At _ ext ) -> ext) maybeExt))
 
         Src.TUnit ->
-            R.ok Can.TUnit
+            ReportingResult.ok Can.TUnit
 
         Src.TTuple ( _, a ) ( _, b ) cs ->
-            R.fmap Can.TTuple (canonicalize syntaxVersion env a)
-                |> R.apply (canonicalize syntaxVersion env b)
-                |> R.apply
+            ReportingResult.map Can.TTuple (canonicalize syntaxVersion env a)
+                |> ReportingResult.apply (canonicalize syntaxVersion env b)
+                |> ReportingResult.apply
                     (case cs of
                         [] ->
-                            R.ok []
+                            ReportingResult.ok []
 
                         [ ( _, c ) ] ->
                             canonicalize syntaxVersion env c
-                                |> R.fmap List.singleton
+                                |> ReportingResult.map List.singleton
 
                         _ ->
                             case syntaxVersion of
                                 SV.Elm ->
-                                    R.throw (Error.TupleLargerThanThree typeRegion)
+                                    ReportingResult.throw (Error.TupleLargerThanThree typeRegion)
 
                                 SV.Guida ->
-                                    R.traverse (canonicalize syntaxVersion env) (List.map Src.c2EolValue cs)
+                                    ReportingResult.traverse (canonicalize syntaxVersion env) (List.map Src.c2EolValue cs)
                     )
 
         Src.TParens ( _, tipe_ ) ->
@@ -94,9 +94,9 @@ canonicalize syntaxVersion env (A.At typeRegion tipe) =
 canonicalizeFields : SyntaxVersion -> Env.Env -> List (Src.C2 ( Src.C1 (A.Located Name.Name), Src.C1 Src.Type )) -> List ( A.Located Name.Name, CResult i w Can.FieldType )
 canonicalizeFields syntaxVersion env fields =
     let
-        canonicalizeField : Int -> Src.C2 ( Src.C1 a, Src.C1 Src.Type ) -> ( a, R.RResult i w Error.Error Can.FieldType )
+        canonicalizeField : Int -> Src.C2 ( Src.C1 a, Src.C1 Src.Type ) -> ( a, ReportingResult.RResult i w Error.Error Can.FieldType )
         canonicalizeField index ( _, ( ( _, name ), ( _, srcType ) ) ) =
-            ( name, R.fmap (Can.FieldType index) (canonicalize syntaxVersion env srcType) )
+            ( name, ReportingResult.map (Can.FieldType index) (canonicalize syntaxVersion env srcType) )
     in
     List.indexedMap canonicalizeField fields
 
@@ -107,8 +107,8 @@ canonicalizeFields syntaxVersion env fields =
 
 canonicalizeType : SyntaxVersion -> Env.Env -> A.Region -> Name.Name -> List Src.Type -> Env.Type -> CResult i w Can.Type
 canonicalizeType syntaxVersion env region name args info =
-    R.traverse (canonicalize syntaxVersion env) args
-        |> R.bind
+    ReportingResult.traverse (canonicalize syntaxVersion env) args
+        |> ReportingResult.andThen
             (\cargs ->
                 case info of
                     Env.Alias arity home argNames aliasedType ->
@@ -129,10 +129,10 @@ checkArity expected region name args answer =
             List.length args
     in
     if expected == actual then
-        R.ok answer
+        ReportingResult.ok answer
 
     else
-        R.throw (Error.BadArity region Error.TypeArity name expected actual)
+        ReportingResult.throw (Error.BadArity region Error.TypeArity name expected actual)
 
 
 

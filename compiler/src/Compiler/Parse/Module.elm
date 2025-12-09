@@ -85,7 +85,7 @@ type alias Module =
 chompModule : SyntaxVersion -> ProjectType -> P.Parser E.Module Module
 chompModule syntaxVersion projectType =
     chompHeader
-        |> P.bind
+        |> P.andThen
             (\( ( initialComments, headerComments ), header ) ->
                 chompImports
                     (if isCore projectType then
@@ -94,7 +94,7 @@ chompModule syntaxVersion projectType =
                      else
                         Imports.defaults
                     )
-                    |> P.bind
+                    |> P.andThen
                         (\imports ->
                             (if isKernel projectType then
                                 chompInfixes []
@@ -102,10 +102,10 @@ chompModule syntaxVersion projectType =
                              else
                                 P.pure []
                             )
-                                |> P.bind
+                                |> P.andThen
                                     (\infixes ->
                                         P.specialize E.Declarations (chompDecls syntaxVersion)
-                                            |> P.fmap
+                                            |> P.map
                                                 (\decls ->
                                                     Module
                                                         initialComments
@@ -217,7 +217,13 @@ checkEffects projectType ports effects =
                 Err (E.NoEffectsOutsideKernel region)
 
 
-categorizeDecls : List (A.Located Src.Value) -> List (A.Located Src.Union) -> List (A.Located Src.Alias) -> List Src.Port -> List Decl.Decl -> ( ( List (A.Located Src.Value), List (A.Located Src.Union) ), ( List (A.Located Src.Alias), List Src.Port ) )
+categorizeDecls :
+    List (A.Located Src.Value)
+    -> List (A.Located Src.Union)
+    -> List (A.Located Src.Alias)
+    -> List Src.Port
+    -> List Decl.Decl
+    -> ( ( List (A.Located Src.Value), List (A.Located Src.Union) ), ( List (A.Located Src.Alias), List Src.Port ) )
 categorizeDecls values unions aliases ports decls =
     case decls of
         [] ->
@@ -290,10 +296,10 @@ addComment maybeComment (A.At _ name) comments =
 freshLine : (Row -> Col -> E.Module) -> P.Parser E.Module Src.FComments
 freshLine toFreshLineError =
     Space.chomp E.ModuleSpace
-        |> P.bind
+        |> P.andThen
             (\comments ->
                 Space.checkFreshLine toFreshLineError
-                    |> P.fmap (\_ -> comments)
+                    |> P.map (\_ -> comments)
             )
 
 
@@ -304,17 +310,17 @@ freshLine toFreshLineError =
 chompDecls : SyntaxVersion -> P.Parser E.Decl (List (Src.C2 Decl.Decl))
 chompDecls syntaxVersion =
     Decl.declaration syntaxVersion
-        |> P.bind (\( decl, _ ) -> P.loop (chompDeclsHelp syntaxVersion) [ decl ])
+        |> P.andThen (\( decl, _ ) -> P.loop (chompDeclsHelp syntaxVersion) [ decl ])
 
 
 chompDeclsHelp : SyntaxVersion -> List (Src.C2 Decl.Decl) -> P.Parser E.Decl (P.Step (List (Src.C2 Decl.Decl)) (List (Src.C2 Decl.Decl)))
 chompDeclsHelp syntaxVersion decls =
     P.oneOfWithFallback
         [ Space.checkFreshLine E.DeclStart
-            |> P.bind
+            |> P.andThen
                 (\_ ->
                     Decl.declaration syntaxVersion
-                        |> P.fmap (\( decl, _ ) -> P.Loop (decl :: decls))
+                        |> P.map (\( decl, _ ) -> P.Loop (decl :: decls))
                 )
         ]
         (P.Done (List.reverse decls))
@@ -324,7 +330,7 @@ chompInfixes : List (Src.C1 (A.Located Src.Infix)) -> P.Parser E.Module (List (S
 chompInfixes infixes =
     P.oneOfWithFallback
         [ Decl.infix_
-            |> P.bind (\binop -> chompInfixes (binop :: infixes))
+            |> P.andThen (\binop -> chompInfixes (binop :: infixes))
         ]
         infixes
 
@@ -336,17 +342,17 @@ chompInfixes infixes =
 chompModuleDocCommentSpace : P.Parser E.Module (Src.C1 (Result A.Region Src.Comment))
 chompModuleDocCommentSpace =
     P.addLocation (freshLine E.FreshLine)
-        |> P.bind
+        |> P.andThen
             (\(A.At region beforeComments) ->
                 P.oneOfWithFallback
                     [ Space.docComment E.ImportStart E.ModuleSpace
-                        |> P.bind
+                        |> P.andThen
                             (\docComment ->
                                 Space.chomp E.ModuleSpace
-                                    |> P.bind
+                                    |> P.andThen
                                         (\afterComments ->
                                             Space.checkFreshLine E.FreshLine
-                                                |> P.fmap
+                                                |> P.map
                                                     (\_ ->
                                                         ( beforeComments ++ afterComments
                                                         , Ok docComment
@@ -386,155 +392,231 @@ type Effects
     | Manager A.Region Src.FComments (Src.C1 Src.Manager)
 
 
+
+-- HEADER PARSING HELPERS
+
+
+type alias ModuleErrContext =
+    { spaceErr : Row -> Col -> E.Module
+    , nameErr : Row -> Col -> E.Module
+    , exposingErr : E.Exposing -> Row -> Col -> E.Module
+    }
+
+
+chompModuleHeaderCommon :
+    ModuleErrContext
+    -> (A.Position -> A.Position -> Effects)
+    -> Src.FComments
+    -> A.Position
+    -> P.Parser E.Module (Src.C2 (Maybe Header))
+chompModuleHeaderCommon errCtx makeEffects initialComments start =
+    P.getPosition
+        |> P.andThen
+            (\effectEnd ->
+                Space.chompAndCheckIndent E.ModuleSpace errCtx.spaceErr
+                    |> P.andThen
+                        (\beforeNameComments ->
+                            P.addLocation (Var.moduleName errCtx.nameErr)
+                                |> P.andThen
+                                    (\name ->
+                                        Space.chompAndCheckIndent E.ModuleSpace errCtx.spaceErr
+                                            |> P.andThen
+                                                (\afterNameComments ->
+                                                    Keyword.exposing_ errCtx.spaceErr
+                                                        |> P.andThen (\_ -> Space.chompAndCheckIndent E.ModuleSpace errCtx.spaceErr)
+                                                        |> P.andThen
+                                                            (\afterExportsComments ->
+                                                                P.addLocation (P.specialize errCtx.exposingErr exposing_)
+                                                                    |> P.andThen
+                                                                        (\exports ->
+                                                                            chompModuleDocCommentSpace
+                                                                                |> P.map
+                                                                                    (\docCommentResult ->
+                                                                                        buildHeader initialComments start effectEnd
+                                                                                            beforeNameComments name afterNameComments
+                                                                                            afterExportsComments exports
+                                                                                            (makeEffects start effectEnd) docCommentResult
+                                                                                    )
+                                                                        )
+                                                            )
+                                                )
+                                    )
+                        )
+            )
+
+
+buildHeader :
+    Src.FComments
+    -> A.Position
+    -> A.Position
+    -> Src.FComments
+    -> A.Located Name.Name
+    -> Src.FComments
+    -> Src.FComments
+    -> A.Located Src.Exposing
+    -> Effects
+    -> Src.C1 (Result A.Region Src.Comment)
+    -> Src.C2 (Maybe Header)
+buildHeader initialComments _ _ beforeNameComments name afterNameComments afterExportsComments exports effects ( headerComments, docComment ) =
+    ( ( initialComments, headerComments )
+    , Just <|
+        Header
+            ( ( beforeNameComments, afterNameComments ), name )
+            effects
+            ( ( [], afterExportsComments ), exports )
+            docComment
+    )
+
+
 chompHeader : P.Parser E.Module (Src.C2 (Maybe Header))
 chompHeader =
     freshLine E.FreshLine
-        |> P.bind
+        |> P.andThen
             (\initialComments ->
                 P.getPosition
-                    |> P.bind
+                    |> P.andThen
                         (\start ->
                             P.oneOfWithFallback
-                                [ -- module MyThing exposing (..)
-                                  Keyword.module_ E.ModuleProblem
-                                    |> P.bind (\_ -> P.getPosition)
-                                    |> P.bind
-                                        (\effectEnd ->
-                                            Space.chompAndCheckIndent E.ModuleSpace E.ModuleProblem
-                                                |> P.bind
-                                                    (\beforeNameComments ->
-                                                        P.addLocation (Var.moduleName E.ModuleName)
-                                                            |> P.bind
-                                                                (\name ->
-                                                                    Space.chompAndCheckIndent E.ModuleSpace E.ModuleProblem
-                                                                        |> P.bind
-                                                                            (\afterNameComments ->
-                                                                                Keyword.exposing_ E.ModuleProblem
-                                                                                    |> P.bind (\_ -> Space.chompAndCheckIndent E.ModuleSpace E.ModuleProblem)
-                                                                                    |> P.bind
-                                                                                        (\afterExportsComments ->
-                                                                                            P.addLocation (P.specialize E.ModuleExposing exposing_)
-                                                                                                |> P.bind
-                                                                                                    (\exports ->
-                                                                                                        chompModuleDocCommentSpace
-                                                                                                            |> P.fmap
-                                                                                                                (\( headerComments, docComment ) ->
-                                                                                                                    ( ( initialComments, headerComments )
-                                                                                                                    , Just <|
-                                                                                                                        Header ( ( beforeNameComments, afterNameComments ), name )
-                                                                                                                            (NoEffects (A.Region start effectEnd))
-                                                                                                                            ( ( [], afterExportsComments ), exports )
-                                                                                                                            docComment
-                                                                                                                    )
-                                                                                                                )
-                                                                                                    )
-                                                                                        )
-                                                                            )
-                                                                )
-                                                    )
-                                        )
-                                , -- port module MyThing exposing (..)
-                                  Keyword.port_ E.PortModuleProblem
-                                    |> P.bind (\_ -> Space.chompAndCheckIndent E.ModuleSpace E.PortModuleProblem)
-                                    |> P.bind
-                                        (\postPortComments ->
-                                            Keyword.module_ E.PortModuleProblem
-                                                |> P.bind (\_ -> P.getPosition)
-                                                |> P.bind
-                                                    (\effectEnd ->
-                                                        Space.chompAndCheckIndent E.ModuleSpace E.PortModuleProblem
-                                                            |> P.bind
-                                                                (\beforeNameComments ->
-                                                                    P.addLocation (Var.moduleName E.PortModuleName)
-                                                                        |> P.bind
-                                                                            (\name ->
-                                                                                Space.chompAndCheckIndent E.ModuleSpace E.PortModuleProblem
-                                                                                    |> P.bind
-                                                                                        (\afterNameComments ->
-                                                                                            Keyword.exposing_ E.PortModuleProblem
-                                                                                                |> P.bind (\_ -> Space.chompAndCheckIndent E.ModuleSpace E.PortModuleProblem)
-                                                                                                |> P.bind
-                                                                                                    (\postExportsComments ->
-                                                                                                        P.addLocation (P.specialize E.PortModuleExposing exposing_)
-                                                                                                            |> P.bind
-                                                                                                                (\exports ->
-                                                                                                                    chompModuleDocCommentSpace
-                                                                                                                        |> P.fmap
-                                                                                                                            (\( headerComments, docComment ) ->
-                                                                                                                                ( ( initialComments, headerComments )
-                                                                                                                                , Just <|
-                                                                                                                                    Header ( ( beforeNameComments, afterNameComments ), name )
-                                                                                                                                        (Ports (A.Region start effectEnd) postPortComments)
-                                                                                                                                        ( ( [], postExportsComments ), exports )
-                                                                                                                                        docComment
-                                                                                                                                )
-                                                                                                                            )
-                                                                                                                )
-                                                                                                    )
-                                                                                        )
-                                                                            )
-                                                                )
-                                                    )
-                                        )
-                                , -- effect module MyThing where { command = MyCmd } exposing (..)
-                                  Keyword.effect_ E.Effect
-                                    |> P.bind (\_ -> Space.chompAndCheckIndent E.ModuleSpace E.Effect)
-                                    |> P.bind
-                                        (\postEffectComments ->
-                                            Keyword.module_ E.Effect
-                                                |> P.bind (\_ -> P.getPosition)
-                                                |> P.bind
-                                                    (\effectEnd ->
-                                                        Space.chompAndCheckIndent E.ModuleSpace E.Effect
-                                                            |> P.bind
-                                                                (\beforeNameComments ->
-                                                                    P.addLocation (Var.moduleName E.ModuleName)
-                                                                        |> P.bind
-                                                                            (\name ->
-                                                                                Space.chompAndCheckIndent E.ModuleSpace E.Effect
-                                                                                    |> P.bind
-                                                                                        (\afterNameComments ->
-                                                                                            Keyword.where_ E.Effect
-                                                                                                |> P.bind (\_ -> Space.chompAndCheckIndent E.ModuleSpace E.Effect)
-                                                                                                |> P.bind
-                                                                                                    (\postWhereComments ->
-                                                                                                        chompManager
-                                                                                                            |> P.bind
-                                                                                                                (\( beforeExportsComments, manager ) ->
-                                                                                                                    Space.chompAndCheckIndent E.ModuleSpace E.Effect
-                                                                                                                        |> P.bind
-                                                                                                                            (\_ ->
-                                                                                                                                Keyword.exposing_ E.Effect
-                                                                                                                                    |> P.bind (\_ -> Space.chompAndCheckIndent E.ModuleSpace E.Effect)
-                                                                                                                                    |> P.bind
-                                                                                                                                        (\afterExportsComments ->
-                                                                                                                                            P.addLocation (P.specialize (\_ -> E.Effect) exposing_)
-                                                                                                                                                |> P.bind
-                                                                                                                                                    (\exports ->
-                                                                                                                                                        chompModuleDocCommentSpace
-                                                                                                                                                            |> P.fmap
-                                                                                                                                                                (\( headerComments, docComment ) ->
-                                                                                                                                                                    ( ( initialComments, headerComments )
-                                                                                                                                                                    , Just <|
-                                                                                                                                                                        Header ( ( beforeNameComments, afterNameComments ), name )
-                                                                                                                                                                            (Manager (A.Region start effectEnd) postEffectComments ( postWhereComments, manager ))
-                                                                                                                                                                            ( ( beforeExportsComments, afterExportsComments ), exports )
-                                                                                                                                                                            docComment
-                                                                                                                                                                    )
-                                                                                                                                                                )
-                                                                                                                                                    )
-                                                                                                                                        )
-                                                                                                                            )
-                                                                                                                )
-                                                                                                    )
-                                                                                        )
-                                                                            )
-                                                                )
-                                                    )
-                                        )
+                                [ chompNormalModule initialComments start
+                                , chompPortModule initialComments start
+                                , chompEffectModule initialComments start
                                 ]
-                                -- default header
                                 ( ( initialComments, [] ), Nothing )
+                        )
+            )
+
+
+chompNormalModule : Src.FComments -> A.Position -> P.Parser E.Module (Src.C2 (Maybe Header))
+chompNormalModule initialComments start =
+    let
+        errCtx : ModuleErrContext
+        errCtx =
+            { spaceErr = E.ModuleProblem
+            , nameErr = E.ModuleName
+            , exposingErr = E.ModuleExposing
+            }
+    in
+    Keyword.module_ E.ModuleProblem
+        |> P.andThen (\_ -> chompModuleHeaderCommon errCtx (\s e -> NoEffects (A.Region s e)) initialComments start)
+
+
+chompPortModule : Src.FComments -> A.Position -> P.Parser E.Module (Src.C2 (Maybe Header))
+chompPortModule initialComments start =
+    let
+        errCtx : ModuleErrContext
+        errCtx =
+            { spaceErr = E.PortModuleProblem
+            , nameErr = E.PortModuleName
+            , exposingErr = E.PortModuleExposing
+            }
+    in
+    Keyword.port_ E.PortModuleProblem
+        |> P.andThen (\_ -> Space.chompAndCheckIndent E.ModuleSpace E.PortModuleProblem)
+        |> P.andThen
+            (\postPortComments ->
+                Keyword.module_ E.PortModuleProblem
+                    |> P.andThen (\_ -> chompModuleHeaderCommon errCtx (\s e -> Ports (A.Region s e) postPortComments) initialComments start)
+            )
+
+
+chompEffectModule : Src.FComments -> A.Position -> P.Parser E.Module (Src.C2 (Maybe Header))
+chompEffectModule initialComments start =
+    Keyword.effect_ E.Effect
+        |> P.andThen (\_ -> Space.chompAndCheckIndent E.ModuleSpace E.Effect)
+        |> P.andThen
+            (\postEffectComments ->
+                Keyword.module_ E.Effect
+                    |> P.andThen (\_ -> chompEffectModuleBody initialComments start postEffectComments)
+            )
+
+
+chompEffectModuleBody : Src.FComments -> A.Position -> Src.FComments -> P.Parser E.Module (Src.C2 (Maybe Header))
+chompEffectModuleBody initialComments start postEffectComments =
+    P.getPosition
+        |> P.andThen
+            (\effectEnd ->
+                Space.chompAndCheckIndent E.ModuleSpace E.Effect
+                    |> P.andThen
+                        (\beforeNameComments ->
+                            P.addLocation (Var.moduleName E.ModuleName)
+                                |> P.andThen
+                                    (\name ->
+                                        Space.chompAndCheckIndent E.ModuleSpace E.Effect
+                                            |> P.andThen
+                                                (\afterNameComments ->
+                                                    chompEffectModuleWhere initialComments start effectEnd postEffectComments beforeNameComments name afterNameComments
+                                                )
+                                    )
+                        )
+            )
+
+
+chompEffectModuleWhere :
+    Src.FComments
+    -> A.Position
+    -> A.Position
+    -> Src.FComments
+    -> Src.FComments
+    -> A.Located Name.Name
+    -> Src.FComments
+    -> P.Parser E.Module (Src.C2 (Maybe Header))
+chompEffectModuleWhere initialComments start effectEnd postEffectComments beforeNameComments name afterNameComments =
+    Keyword.where_ E.Effect
+        |> P.andThen (\_ -> Space.chompAndCheckIndent E.ModuleSpace E.Effect)
+        |> P.andThen
+            (\postWhereComments ->
+                chompManager
+                    |> P.andThen
+                        (\( beforeExportsComments, manager ) ->
+                            chompEffectModuleExposing initialComments start effectEnd postEffectComments beforeNameComments name afterNameComments postWhereComments beforeExportsComments manager
+                        )
+            )
+
+
+chompEffectModuleExposing :
+    Src.FComments
+    -> A.Position
+    -> A.Position
+    -> Src.FComments
+    -> Src.FComments
+    -> A.Located Name.Name
+    -> Src.FComments
+    -> Src.FComments
+    -> Src.FComments
+    -> Src.Manager
+    -> P.Parser E.Module (Src.C2 (Maybe Header))
+chompEffectModuleExposing initialComments start effectEnd postEffectComments beforeNameComments name afterNameComments postWhereComments beforeExportsComments manager =
+    Space.chompAndCheckIndent E.ModuleSpace E.Effect
+        |> P.andThen
+            (\_ ->
+                Keyword.exposing_ E.Effect
+                    |> P.andThen (\_ -> Space.chompAndCheckIndent E.ModuleSpace E.Effect)
+                    |> P.andThen
+                        (\afterExportsComments ->
+                            P.addLocation (P.specialize (\_ -> E.Effect) exposing_)
+                                |> P.andThen
+                                    (\exports ->
+                                        chompModuleDocCommentSpace
+                                            |> P.map
+                                                (\( headerComments, docComment ) ->
+                                                    let
+                                                        nameWithComments : Src.C2 (A.Located Name.Name)
+                                                        nameWithComments =
+                                                            ( ( beforeNameComments, afterNameComments ), name )
+
+                                                        managerType : Effects
+                                                        managerType =
+                                                            Manager (A.Region start effectEnd) postEffectComments ( postWhereComments, manager )
+
+                                                        exportsWithComments : Src.C2 (A.Located Src.Exposing)
+                                                        exportsWithComments =
+                                                            ( ( beforeExportsComments, afterExportsComments ), exports )
+                                                    in
+                                                    ( ( initialComments, headerComments )
+                                                    , Just <| Header nameWithComments managerType exportsWithComments docComment
+                                                    )
+                                                )
+                                    )
                         )
             )
 
@@ -542,38 +624,38 @@ chompHeader =
 chompManager : P.Parser E.Module (Src.C1 Src.Manager)
 chompManager =
     P.word1 '{' E.Effect
-        |> P.bind (\_ -> spaces_em)
-        |> P.bind
+        |> P.andThen (\_ -> spaces_em)
+        |> P.andThen
             (\postOpeningBracketComments ->
                 P.oneOf E.Effect
                     [ chompCommand
-                        |> P.bind
+                        |> P.andThen
                             (\cmd ->
                                 spaces_em
-                                    |> P.bind
+                                    |> P.andThen
                                         (\trailingComments ->
                                             P.oneOf E.Effect
                                                 [ P.word1 '}' E.Effect
-                                                    |> P.bind (\_ -> spaces_em)
-                                                    |> P.fmap
+                                                    |> P.andThen (\_ -> spaces_em)
+                                                    |> P.map
                                                         (\postClosingBracketComments ->
                                                             ( postClosingBracketComments
                                                             , Src.Cmd ( ( postOpeningBracketComments, trailingComments ), cmd )
                                                             )
                                                         )
                                                 , P.word1 ',' E.Effect
-                                                    |> P.bind (\_ -> spaces_em)
-                                                    |> P.bind
+                                                    |> P.andThen (\_ -> spaces_em)
+                                                    |> P.andThen
                                                         (\postCommaComments ->
                                                             chompSubscription
-                                                                |> P.bind
+                                                                |> P.andThen
                                                                     (\sub ->
                                                                         spaces_em
-                                                                            |> P.bind
+                                                                            |> P.andThen
                                                                                 (\preClosingBracketComments ->
                                                                                     P.word1 '}' E.Effect
-                                                                                        |> P.bind (\_ -> spaces_em)
-                                                                                        |> P.fmap
+                                                                                        |> P.andThen (\_ -> spaces_em)
+                                                                                        |> P.map
                                                                                             (\postClosingBracketComments ->
                                                                                                 ( postClosingBracketComments
                                                                                                 , Src.Fx
@@ -588,33 +670,33 @@ chompManager =
                                         )
                             )
                     , chompSubscription
-                        |> P.bind
+                        |> P.andThen
                             (\sub ->
                                 spaces_em
-                                    |> P.bind
+                                    |> P.andThen
                                         (\trailingComments ->
                                             P.oneOf E.Effect
                                                 [ P.word1 '}' E.Effect
-                                                    |> P.bind (\_ -> spaces_em)
-                                                    |> P.fmap
+                                                    |> P.andThen (\_ -> spaces_em)
+                                                    |> P.map
                                                         (\postClosingBracketComments ->
                                                             ( postClosingBracketComments
                                                             , Src.Sub ( ( postOpeningBracketComments, trailingComments ), sub )
                                                             )
                                                         )
                                                 , P.word1 ',' E.Effect
-                                                    |> P.bind (\_ -> spaces_em)
-                                                    |> P.bind
+                                                    |> P.andThen (\_ -> spaces_em)
+                                                    |> P.andThen
                                                         (\postCommaComments ->
                                                             chompCommand
-                                                                |> P.bind
+                                                                |> P.andThen
                                                                     (\cmd ->
                                                                         spaces_em
-                                                                            |> P.bind
+                                                                            |> P.andThen
                                                                                 (\preClosingBracketComments ->
                                                                                     P.word1 '}' E.Effect
-                                                                                        |> P.bind (\_ -> spaces_em)
-                                                                                        |> P.fmap
+                                                                                        |> P.andThen (\_ -> spaces_em)
+                                                                                        |> P.map
                                                                                             (\postClosingBracketComments ->
                                                                                                 ( postClosingBracketComments
                                                                                                 , Src.Fx
@@ -635,15 +717,15 @@ chompManager =
 chompCommand : P.Parser E.Module (Src.C2 (A.Located Name.Name))
 chompCommand =
     Keyword.command_ E.Effect
-        |> P.bind (\_ -> spaces_em)
-        |> P.bind
+        |> P.andThen (\_ -> spaces_em)
+        |> P.andThen
             (\beforeEqualComments ->
                 P.word1 '=' E.Effect
-                    |> P.bind (\_ -> spaces_em)
-                    |> P.bind
+                    |> P.andThen (\_ -> spaces_em)
+                    |> P.andThen
                         (\afterEqualComments ->
                             P.addLocation (Var.upper E.Effect)
-                                |> P.fmap (\command -> ( ( beforeEqualComments, afterEqualComments ), command ))
+                                |> P.map (\command -> ( ( beforeEqualComments, afterEqualComments ), command ))
                         )
             )
 
@@ -651,15 +733,15 @@ chompCommand =
 chompSubscription : P.Parser E.Module (Src.C2 (A.Located Name.Name))
 chompSubscription =
     Keyword.subscription_ E.Effect
-        |> P.bind (\_ -> spaces_em)
-        |> P.bind
+        |> P.andThen (\_ -> spaces_em)
+        |> P.andThen
             (\beforeEqualComments ->
                 P.word1 '=' E.Effect
-                    |> P.bind (\_ -> spaces_em)
-                    |> P.bind
+                    |> P.andThen (\_ -> spaces_em)
+                    |> P.andThen
                         (\afterEqualComments ->
                             P.addLocation (Var.upper E.Effect)
-                                |> P.fmap (\subscription -> ( ( beforeEqualComments, afterEqualComments ), subscription ))
+                                |> P.map (\subscription -> ( ( beforeEqualComments, afterEqualComments ), subscription ))
                         )
             )
 
@@ -677,7 +759,7 @@ chompImports : List (Src.C1 Src.Import) -> P.Parser E.Module (List (Src.C1 Src.I
 chompImports is =
     P.oneOfWithFallback
         [ chompImport
-            |> P.bind (\i -> chompImports (i :: is))
+            |> P.andThen (\i -> chompImports (i :: is))
         ]
         (List.reverse is)
 
@@ -685,20 +767,20 @@ chompImports is =
 chompImport : P.Parser E.Module (Src.C1 Src.Import)
 chompImport =
     Keyword.import_ E.ImportStart
-        |> P.bind (\_ -> Space.chompAndCheckIndent E.ModuleSpace E.ImportIndentName)
-        |> P.bind
+        |> P.andThen (\_ -> Space.chompAndCheckIndent E.ModuleSpace E.ImportIndentName)
+        |> P.andThen
             (\preNameComments ->
                 P.addLocation (Var.moduleName E.ImportName)
-                    |> P.bind
+                    |> P.andThen
                         (\((A.At (A.Region _ end) _) as name) ->
                             Space.chomp E.ModuleSpace
-                                |> P.bind
+                                |> P.andThen
                                     (\trailingComments ->
                                         P.oneOf E.ImportEnd
                                             [ Space.checkFreshLine E.ImportEnd
-                                                |> P.fmap (\_ -> ( trailingComments, Src.Import ( preNameComments, name ) Nothing ( ( [], [] ), Src.Explicit (A.At A.zero []) ) ))
+                                                |> P.map (\_ -> ( trailingComments, Src.Import ( preNameComments, name ) Nothing ( ( [], [] ), Src.Explicit (A.At A.zero []) ) ))
                                             , Space.checkIndent end E.ImportEnd
-                                                |> P.bind
+                                                |> P.andThen
                                                     (\_ ->
                                                         P.oneOf E.ImportAs
                                                             [ chompAs ( preNameComments, name ) trailingComments
@@ -714,23 +796,32 @@ chompImport =
 chompAs : Src.C1 (A.Located Name.Name) -> Src.FComments -> P.Parser E.Module (Src.C1 Src.Import)
 chompAs name trailingComments =
     Keyword.as_ E.ImportAs
-        |> P.bind (\_ -> Space.chompAndCheckIndent E.ModuleSpace E.ImportIndentAlias)
-        |> P.bind
+        |> P.andThen (\_ -> Space.chompAndCheckIndent E.ModuleSpace E.ImportIndentAlias)
+        |> P.andThen
             (\postAliasComments ->
                 Var.upper E.ImportAlias
-                    |> P.bind
+                    |> P.andThen
                         (\alias_ ->
                             P.getPosition
-                                |> P.bind
+                                |> P.andThen
                                     (\end ->
                                         Space.chomp E.ModuleSpace
-                                            |> P.bind
+                                            |> P.andThen
                                                 (\preExposedComments ->
+                                                    let
+                                                        aliasWithComments : Maybe (Src.C2 Name.Name)
+                                                        aliasWithComments =
+                                                            Just ( ( trailingComments, postAliasComments ), alias_ )
+
+                                                        emptyExposing : Src.C2 Src.Exposing
+                                                        emptyExposing =
+                                                            ( ( [], [] ), Src.Explicit (A.At A.zero []) )
+                                                    in
                                                     P.oneOf E.ImportEnd
                                                         [ Space.checkFreshLine E.ImportEnd
-                                                            |> P.fmap (\_ -> ( preExposedComments, Src.Import name (Just ( ( trailingComments, postAliasComments ), alias_ )) ( ( [], [] ), Src.Explicit (A.At A.zero []) ) ))
+                                                            |> P.map (\_ -> ( preExposedComments, Src.Import name aliasWithComments emptyExposing ))
                                                         , Space.checkIndent end E.ImportEnd
-                                                            |> P.bind (\_ -> chompExposing name (Just ( postAliasComments, alias_ )) trailingComments preExposedComments)
+                                                            |> P.andThen (\_ -> chompExposing name (Just ( postAliasComments, alias_ )) trailingComments preExposedComments)
                                                         ]
                                                 )
                                     )
@@ -738,17 +829,38 @@ chompAs name trailingComments =
             )
 
 
-chompExposing : Src.C1 (A.Located Name.Name) -> Maybe (Src.C1 Name.Name) -> Src.FComments -> Src.FComments -> P.Parser E.Module (Src.C1 Src.Import)
+chompExposing :
+    Src.C1 (A.Located Name.Name)
+    -> Maybe (Src.C1 Name.Name)
+    -> Src.FComments
+    -> Src.FComments
+    -> P.Parser E.Module (Src.C1 Src.Import)
 chompExposing name maybeAlias trailingComments preExposedComments =
     Keyword.exposing_ E.ImportExposing
-        |> P.bind (\_ -> Space.chompAndCheckIndent E.ModuleSpace E.ImportIndentExposingList)
-        |> P.bind
+        |> P.andThen (\_ -> Space.chompAndCheckIndent E.ModuleSpace E.ImportIndentExposingList)
+        |> P.andThen
             (\postExposedComments ->
                 P.specialize E.ImportExposingList exposing_
-                    |> P.bind
+                    |> P.andThen
                         (\exposed ->
                             freshLine E.ImportEnd
-                                |> P.fmap (\comments -> ( comments, Src.Import name (Maybe.map (\( postAliasComments, alias_ ) -> ( ( trailingComments, postAliasComments ), alias_ )) maybeAlias) ( ( preExposedComments, postExposedComments ), exposed ) ))
+                                |> P.map
+                                    (\comments ->
+                                        let
+                                            aliasWithComments : Maybe (Src.C2 Name.Name)
+                                            aliasWithComments =
+                                                Maybe.map
+                                                    (\( postAliasComments, alias_ ) ->
+                                                        ( ( trailingComments, postAliasComments ), alias_ )
+                                                    )
+                                                    maybeAlias
+
+                                            exposedWithComments : Src.C2 Src.Exposing
+                                            exposedWithComments =
+                                                ( ( preExposedComments, postExposedComments ), exposed )
+                                        in
+                                        ( comments, Src.Import name aliasWithComments exposedWithComments )
+                                    )
                         )
             )
 
@@ -760,25 +872,25 @@ chompExposing name maybeAlias trailingComments preExposedComments =
 exposing_ : P.Parser E.Exposing Src.Exposing
 exposing_ =
     P.word1 '(' E.ExposingStart
-        |> P.bind (\_ -> P.getPosition)
-        |> P.bind
+        |> P.andThen (\_ -> P.getPosition)
+        |> P.andThen
             (\start ->
                 Space.chompAndCheckIndent E.ExposingSpace E.ExposingIndentValue
-                    |> P.bind
+                    |> P.andThen
                         (\preExposedComments ->
                             P.oneOf E.ExposingValue
                                 [ P.word2 '.' '.' E.ExposingValue
-                                    |> P.bind (\_ -> Space.chompAndCheckIndent E.ExposingSpace E.ExposingIndentEnd)
-                                    |> P.bind
+                                    |> P.andThen (\_ -> Space.chompAndCheckIndent E.ExposingSpace E.ExposingIndentEnd)
+                                    |> P.andThen
                                         (\postComments ->
                                             P.word1 ')' E.ExposingEnd
-                                                |> P.fmap (\_ -> Src.Open preExposedComments postComments)
+                                                |> P.map (\_ -> Src.Open preExposedComments postComments)
                                         )
                                 , chompExposed
-                                    |> P.bind
+                                    |> P.andThen
                                         (\exposed ->
                                             Space.chompAndCheckIndent E.ExposingSpace E.ExposingIndentEnd
-                                                |> P.bind
+                                                |> P.andThen
                                                     (\postExposedComments ->
                                                         P.loop (exposingHelp start) [ ( ( preExposedComments, postExposedComments ), exposed ) ]
                                                     )
@@ -792,56 +904,56 @@ exposingHelp : A.Position -> List (Src.C2 Src.Exposed) -> P.Parser E.Exposing (P
 exposingHelp start revExposed =
     P.oneOf E.ExposingEnd
         [ P.word1 ',' E.ExposingEnd
-            |> P.bind (\_ -> Space.chompAndCheckIndent E.ExposingSpace E.ExposingIndentValue)
-            |> P.bind
+            |> P.andThen (\_ -> Space.chompAndCheckIndent E.ExposingSpace E.ExposingIndentValue)
+            |> P.andThen
                 (\preExposedComments ->
                     chompExposed
-                        |> P.bind
+                        |> P.andThen
                             (\exposed ->
                                 Space.chompAndCheckIndent E.ExposingSpace E.ExposingIndentEnd
-                                    |> P.fmap
+                                    |> P.map
                                         (\postExposedComments ->
                                             P.Loop (( ( preExposedComments, postExposedComments ), exposed ) :: revExposed)
                                         )
                             )
                 )
         , P.word1 ')' E.ExposingEnd
-            |> P.bind (\_ -> P.getPosition)
-            |> P.fmap (\end -> P.Done (Src.Explicit (A.At (A.Region start end) (List.reverse revExposed))))
+            |> P.andThen (\_ -> P.getPosition)
+            |> P.map (\end -> P.Done (Src.Explicit (A.At (A.Region start end) (List.reverse revExposed))))
         ]
 
 
 chompExposed : P.Parser E.Exposing Src.Exposed
 chompExposed =
     P.getPosition
-        |> P.bind
+        |> P.andThen
             (\start ->
                 P.oneOf E.ExposingValue
                     [ Var.lower E.ExposingValue
-                        |> P.bind
+                        |> P.andThen
                             (\name ->
                                 P.getPosition
-                                    |> P.fmap (\end -> Src.Lower <| A.at start end name)
+                                    |> P.map (\end -> Src.Lower <| A.at start end name)
                             )
                     , P.word1 '(' E.ExposingValue
-                        |> P.bind (\_ -> Symbol.operator E.ExposingOperator E.ExposingOperatorReserved)
-                        |> P.bind
+                        |> P.andThen (\_ -> Symbol.operator E.ExposingOperator E.ExposingOperatorReserved)
+                        |> P.andThen
                             (\op ->
                                 P.word1 ')' E.ExposingOperatorRightParen
-                                    |> P.bind (\_ -> P.getPosition)
-                                    |> P.fmap (\end -> Src.Operator (A.Region start end) op)
+                                    |> P.andThen (\_ -> P.getPosition)
+                                    |> P.map (\end -> Src.Operator (A.Region start end) op)
                             )
                     , Var.upper E.ExposingValue
-                        |> P.bind
+                        |> P.andThen
                             (\name ->
                                 P.getPosition
-                                    |> P.bind
+                                    |> P.andThen
                                         (\end ->
                                             Space.chompAndCheckIndent E.ExposingSpace E.ExposingIndentEnd
-                                                |> P.bind
+                                                |> P.andThen
                                                     (\privacyComments ->
                                                         privacy
-                                                            |> P.fmap (Src.Upper (A.at start end name) << Tuple.pair privacyComments)
+                                                            |> P.map (Src.Upper (A.at start end name) << Tuple.pair privacyComments)
                                                     )
                                         )
                             )
@@ -853,17 +965,17 @@ privacy : P.Parser E.Exposing Src.Privacy
 privacy =
     P.oneOfWithFallback
         [ P.word1 '(' E.ExposingTypePrivacy
-            |> P.bind (\_ -> Space.chompAndCheckIndent E.ExposingSpace E.ExposingTypePrivacy)
-            |> P.bind (\_ -> P.getPosition)
-            |> P.bind
+            |> P.andThen (\_ -> Space.chompAndCheckIndent E.ExposingSpace E.ExposingTypePrivacy)
+            |> P.andThen (\_ -> P.getPosition)
+            |> P.andThen
                 (\start ->
                     P.word2 '.' '.' E.ExposingTypePrivacy
-                        |> P.bind (\_ -> P.getPosition)
-                        |> P.bind
+                        |> P.andThen (\_ -> P.getPosition)
+                        |> P.andThen
                             (\end ->
                                 Space.chompAndCheckIndent E.ExposingSpace E.ExposingTypePrivacy
-                                    |> P.bind (\_ -> P.word1 ')' E.ExposingTypePrivacy)
-                                    |> P.fmap (\_ -> Src.Public (A.Region start end))
+                                    |> P.andThen (\_ -> P.word1 ')' E.ExposingTypePrivacy)
+                                    |> P.map (\_ -> Src.Public (A.Region start end))
                             )
                 )
         ]

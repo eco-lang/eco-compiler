@@ -47,7 +47,7 @@ run args () =
     Reporting.attempt Exit.diffToReport
         (Task.run
             (getEnv
-                |> Task.bind (\env -> diff env args)
+                |> Task.andThen (\env -> diff env args)
             )
         )
 
@@ -60,22 +60,37 @@ type Env
     = Env (Maybe String) Stuff.PackageCache Http.Manager Registry.Registry
 
 
+type alias EnvSetup =
+    { maybeRoot : Maybe String
+    , cache : Stuff.PackageCache
+    , manager : Http.Manager
+    }
+
+
 getEnv : Task Exit.Diff Env
 getEnv =
     Task.io Stuff.findRoot
-        |> Task.bind
-            (\maybeRoot ->
-                Task.io Stuff.getPackageCache
-                    |> Task.bind
-                        (\cache ->
-                            Task.io Http.getManager
-                                |> Task.bind
-                                    (\manager ->
-                                        Task.eio Exit.DiffMustHaveLatestRegistry (Registry.latest manager cache)
-                                            |> Task.fmap (\registry -> Env maybeRoot cache manager registry)
-                                    )
-                        )
-            )
+        |> Task.andThen addPackageCache
+        |> Task.andThen addHttpManager
+        |> Task.andThen addRegistry
+
+
+addPackageCache : Maybe String -> Task Exit.Diff ( Maybe String, Stuff.PackageCache )
+addPackageCache maybeRoot =
+    Task.io Stuff.getPackageCache
+        |> Task.map (\cache -> ( maybeRoot, cache ))
+
+
+addHttpManager : ( Maybe String, Stuff.PackageCache ) -> Task Exit.Diff EnvSetup
+addHttpManager ( maybeRoot, cache ) =
+    Task.io Http.getManager
+        |> Task.map (\manager -> EnvSetup maybeRoot cache manager)
+
+
+addRegistry : EnvSetup -> Task Exit.Diff Env
+addRegistry setup =
+    Task.eio Exit.DiffMustHaveLatestRegistry (Registry.latest setup.manager setup.cache)
+        |> Task.map (\registry -> Env setup.maybeRoot setup.cache setup.manager registry)
 
 
 
@@ -86,53 +101,75 @@ diff : Env -> Args -> Task Exit.Diff ()
 diff ((Env _ _ _ registry) as env) args =
     case args of
         GlobalInquiry name v1 v2 ->
-            case Registry.getVersions_ name registry of
-                Ok vsns ->
-                    getDocs env name vsns (V.min v1 v2)
-                        |> Task.bind
-                            (\oldDocs ->
-                                getDocs env name vsns (V.max v1 v2)
-                                    |> Task.bind (\newDocs -> writeDiff oldDocs newDocs)
-                            )
-
-                Err suggestions ->
-                    Task.throw <| Exit.DiffUnknownPackage name suggestions
+            diffGlobalInquiry env registry name v1 v2
 
         LocalInquiry v1 v2 ->
-            readOutline env
-                |> Task.bind
-                    (\( name, vsns ) ->
-                        getDocs env name vsns (V.min v1 v2)
-                            |> Task.bind
-                                (\oldDocs ->
-                                    getDocs env name vsns (V.max v1 v2)
-                                        |> Task.bind (\newDocs -> writeDiff oldDocs newDocs)
-                                )
-                    )
+            diffLocalInquiry env v1 v2
 
         CodeVsLatest ->
-            readOutline env
-                |> Task.bind
-                    (\( name, vsns ) ->
-                        getLatestDocs env name vsns
-                            |> Task.bind
-                                (\oldDocs ->
-                                    generateDocs env
-                                        |> Task.bind (\newDocs -> writeDiff oldDocs newDocs)
-                                )
-                    )
+            diffCodeVsLatest env
 
         CodeVsExactly version ->
-            readOutline env
-                |> Task.bind
-                    (\( name, vsns ) ->
-                        getDocs env name vsns version
-                            |> Task.bind
-                                (\oldDocs ->
-                                    generateDocs env
-                                        |> Task.bind (\newDocs -> writeDiff oldDocs newDocs)
-                                )
-                    )
+            diffCodeVsExactly env version
+
+
+diffGlobalInquiry : Env -> Registry.Registry -> Pkg.Name -> V.Version -> V.Version -> Task Exit.Diff ()
+diffGlobalInquiry env registry name v1 v2 =
+    case Registry.getVersions_ name registry of
+        Ok vsns ->
+            getDocs env name vsns (V.min v1 v2)
+                |> Task.andThen (fetchNewDocsAndWrite env name vsns (V.max v1 v2))
+
+        Err suggestions ->
+            Task.throw (Exit.DiffUnknownPackage name suggestions)
+
+
+diffLocalInquiry : Env -> V.Version -> V.Version -> Task Exit.Diff ()
+diffLocalInquiry env v1 v2 =
+    readOutline env
+        |> Task.andThen (diffVersions env (V.min v1 v2) (V.max v1 v2))
+
+
+diffCodeVsLatest : Env -> Task Exit.Diff ()
+diffCodeVsLatest env =
+    readOutline env
+        |> Task.andThen (diffLatestVsGenerated env)
+
+
+diffCodeVsExactly : Env -> V.Version -> Task Exit.Diff ()
+diffCodeVsExactly env version =
+    readOutline env
+        |> Task.andThen (diffVersionVsGenerated env version)
+
+
+diffVersions : Env -> V.Version -> V.Version -> ( Pkg.Name, Registry.KnownVersions ) -> Task Exit.Diff ()
+diffVersions env oldVersion newVersion ( name, vsns ) =
+    getDocs env name vsns oldVersion
+        |> Task.andThen (fetchNewDocsAndWrite env name vsns newVersion)
+
+
+diffLatestVsGenerated : Env -> ( Pkg.Name, Registry.KnownVersions ) -> Task Exit.Diff ()
+diffLatestVsGenerated env ( name, vsns ) =
+    getLatestDocs env name vsns
+        |> Task.andThen (fetchGeneratedDocsAndWrite env)
+
+
+diffVersionVsGenerated : Env -> V.Version -> ( Pkg.Name, Registry.KnownVersions ) -> Task Exit.Diff ()
+diffVersionVsGenerated env version ( name, vsns ) =
+    getDocs env name vsns version
+        |> Task.andThen (fetchGeneratedDocsAndWrite env)
+
+
+fetchNewDocsAndWrite : Env -> Pkg.Name -> Registry.KnownVersions -> V.Version -> Docs.Documentation -> Task Exit.Diff ()
+fetchNewDocsAndWrite env name vsns newVersion oldDocs =
+    getDocs env name vsns newVersion
+        |> Task.andThen (writeDiff oldDocs)
+
+
+fetchGeneratedDocsAndWrite : Env -> Docs.Documentation -> Task Exit.Diff ()
+fetchGeneratedDocsAndWrite env oldDocs =
+    generateDocs env
+        |> Task.andThen (writeDiff oldDocs)
 
 
 
@@ -161,29 +198,36 @@ readOutline : Env -> Task Exit.Diff ( Pkg.Name, Registry.KnownVersions )
 readOutline (Env maybeRoot _ _ registry) =
     case maybeRoot of
         Nothing ->
-            Task.throw <| Exit.DiffNoOutline
+            Task.throw Exit.DiffNoOutline
 
         Just root ->
             Task.io (Outline.read root)
-                |> Task.bind
-                    (\result ->
-                        case result of
-                            Err err ->
-                                Task.throw <| Exit.DiffBadOutline err
+                |> Task.andThen (validateOutlineResult registry)
 
-                            Ok outline ->
-                                case outline of
-                                    Outline.App _ ->
-                                        Task.throw <| Exit.DiffApplication
 
-                                    Outline.Pkg (Outline.PkgOutline pkg _ _ _ _ _ _ _) ->
-                                        case Registry.getVersions pkg registry of
-                                            Just vsns ->
-                                                Task.pure ( pkg, vsns )
+validateOutlineResult : Registry.Registry -> Result Exit.Outline Outline.Outline -> Task Exit.Diff ( Pkg.Name, Registry.KnownVersions )
+validateOutlineResult registry result =
+    case result of
+        Err err ->
+            Task.throw (Exit.DiffBadOutline err)
 
-                                            Nothing ->
-                                                Task.throw Exit.DiffUnpublished
-                    )
+        Ok outline ->
+            validateOutline registry outline
+
+
+validateOutline : Registry.Registry -> Outline.Outline -> Task Exit.Diff ( Pkg.Name, Registry.KnownVersions )
+validateOutline registry outline =
+    case outline of
+        Outline.App _ ->
+            Task.throw Exit.DiffApplication
+
+        Outline.Pkg (Outline.PkgOutline pkg _ _ _ _ _ _ _) ->
+            case Registry.getVersions pkg registry of
+                Just vsns ->
+                    Task.succeed ( pkg, vsns )
+
+                Nothing ->
+                    Task.throw Exit.DiffUnpublished
 
 
 
@@ -194,26 +238,32 @@ generateDocs : Env -> Task Exit.Diff Docs.Documentation
 generateDocs (Env maybeRoot _ _ _) =
     case maybeRoot of
         Nothing ->
-            Task.throw <| Exit.DiffNoOutline
+            Task.throw Exit.DiffNoOutline
 
         Just root ->
-            Task.eio Exit.DiffBadDetails
-                (BW.withScope (\scope -> Details.load Reporting.silent scope root))
-                |> Task.bind
-                    (\((Details _ outline _ _ _ _) as details) ->
-                        case outline of
-                            Details.ValidApp _ ->
-                                Task.throw Exit.DiffApplication
+            Task.eio Exit.DiffBadDetails (BW.withScope (\scope -> Details.load Reporting.silent scope root))
+                |> Task.andThen (buildDocsFromDetails root)
 
-                            Details.ValidPkg _ exposed _ ->
-                                case exposed of
-                                    [] ->
-                                        Task.throw Exit.DiffNoExposed
 
-                                    e :: es ->
-                                        Task.eio Exit.DiffBadBuild <|
-                                            Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root details Build.keepDocs (NE.Nonempty e es)
-                    )
+buildDocsFromDetails : String -> Details -> Task Exit.Diff Docs.Documentation
+buildDocsFromDetails root ((Details _ outline _ _ _ _) as details) =
+    case outline of
+        Details.ValidApp _ ->
+            Task.throw Exit.DiffApplication
+
+        Details.ValidPkg _ exposed _ ->
+            buildDocsFromExposed root details exposed
+
+
+buildDocsFromExposed : String -> Details -> List Name.Name -> Task Exit.Diff Docs.Documentation
+buildDocsFromExposed root details exposed =
+    case exposed of
+        [] ->
+            Task.throw Exit.DiffNoExposed
+
+        e :: es ->
+            Task.eio Exit.DiffBadBuild <|
+                Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root details Build.keepDocs (NE.Nonempty e es)
 
 
 

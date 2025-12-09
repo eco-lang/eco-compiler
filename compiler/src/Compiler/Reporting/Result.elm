@@ -3,13 +3,12 @@ module Compiler.Reporting.Result exposing
     , RStep(..)
     , Step(..)
     , apply
-    , bind
-    , fmap
+    , andThen
+    , map
     , indexedTraverse
     , loop
     , mapTraverseWithKey
     , ok
-    , pure
     , run
     , throw
     , traverse
@@ -106,8 +105,8 @@ throw e =
 -- FANCY INSTANCE STUFF
 
 
-fmap : (a -> b) -> RResult i w e a -> RResult i w e b
-fmap func (RResult k) =
+map : (a -> b) -> RResult i w e a -> RResult i w e b
+map func (RResult k) =
     RResult <|
         \i w ->
             case k i w of
@@ -116,11 +115,6 @@ fmap func (RResult k) =
 
                 RErr i1 w1 e ->
                     RErr i1 w1 e
-
-
-pure : a -> RResult i w e a
-pure =
-    ok
 
 
 apply : RResult i w x a -> RResult i w x (a -> b) -> RResult i w x b
@@ -145,8 +139,8 @@ apply (RResult kv) (RResult kf) =
                             RErr i2 w2 (OneOrMore.more e1 e2)
 
 
-bind : (a -> RResult i w x b) -> RResult i w x a -> RResult i w x b
-bind callback (RResult ka) =
+andThen : (a -> RResult i w x b) -> RResult i w x a -> RResult i w x b
+andThen callback (RResult ka) =
     RResult <|
         \i w ->
             case ka i w of
@@ -186,8 +180,8 @@ traverse func =
                                 RErr i2 w2 e2 ->
                                     RErr i2 w2 (OneOrMore.more e1 e2)
         )
-        (pure [])
-        >> fmap List.reverse
+        (ok [])
+        >> map List.reverse
 
 
 mapTraverseWithKey : (k -> comparable) -> (k -> k -> Order) -> (k -> a -> RResult i w x b) -> Dict comparable k a -> RResult i w x (Dict comparable k b)
@@ -195,21 +189,25 @@ mapTraverseWithKey toComparable keyComparison f dict =
     loop (mapTraverseWithKeyHelp toComparable f) ( Dict.toList keyComparison dict, Dict.empty )
 
 
-mapTraverseWithKeyHelp : (k -> comparable) -> (k -> a -> RResult i w x b) -> ( List ( k, a ), Dict comparable k b ) -> RResult i w x (Step ( List ( k, a ), Dict comparable k b ) (Dict comparable k b))
+mapTraverseWithKeyHelp :
+    (k -> comparable)
+    -> (k -> a -> RResult i w x b)
+    -> ( List ( k, a ), Dict comparable k b )
+    -> RResult i w x (Step ( List ( k, a ), Dict comparable k b ) (Dict comparable k b))
 mapTraverseWithKeyHelp toComparable f ( pairs, result ) =
     case pairs of
         [] ->
-            pure (Done result)
+            ok (Done result)
 
         ( k, a ) :: rest ->
-            fmap (\b -> Loop ( rest, Dict.insert toComparable k b result )) (f k a)
+            map (\b -> Loop ( rest, Dict.insert toComparable k b result )) (f k a)
 
 
 traverseDict : (k -> comparable) -> (k -> k -> Order) -> (a -> RResult i w x b) -> Dict comparable k a -> RResult i w x (Dict comparable k b)
 traverseDict toComparable keyComparison func =
-    Dict.foldr keyComparison (\k a -> bind (\acc -> fmap (\b -> Dict.insert toComparable k b acc) (func a))) (ok Dict.empty)
+    Dict.foldr keyComparison (\k a -> andThen (\acc -> map (\b -> Dict.insert toComparable k b acc) (func a))) (ok Dict.empty)
 
 
 indexedTraverse : (Index.ZeroBased -> a -> RResult i w error b) -> List a -> RResult i w error (List b)
 indexedTraverse func xs =
-    List.foldr (\a -> bind (\acc -> fmap (\b -> b :: acc) a)) (ok []) (Index.indexedMap func xs)
+    List.foldr (\a -> andThen (\acc -> map (\b -> b :: acc) a)) (ok []) (Index.indexedMap func xs)

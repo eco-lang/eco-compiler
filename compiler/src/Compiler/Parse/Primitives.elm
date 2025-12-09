@@ -8,8 +8,8 @@ module Compiler.Parse.Primitives exposing
     , Step(..)
     , addEnd
     , addLocation
-    , bind
-    , fmap
+    , andThen
+    , map
     , fromByteString
     , fromSnippet
     , getCharWidth
@@ -32,7 +32,9 @@ module Compiler.Parse.Primitives exposing
 
 import Compiler.Reporting.Annotation as A
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Crash exposing (crash)
 
 
@@ -68,8 +70,8 @@ type alias Col =
 -- FUNCTOR
 
 
-fmap : (a -> b) -> Parser x a -> Parser x b
-fmap f (Parser parser) =
+map : (a -> b) -> Parser x a -> Parser x b
+map f (Parser parser) =
     Parser
         (\state ->
             case parser state of
@@ -151,8 +153,8 @@ pure value =
     Parser (\state -> Eok value state)
 
 
-bind : (a -> Parser x b) -> Parser x a -> Parser x b
-bind callback (Parser parserA) =
+andThen : (a -> Parser x b) -> Parser x a -> Parser x b
+andThen callback (Parser parserA) =
     Parser
         (\state ->
             case parserA state of
@@ -470,9 +472,9 @@ getCharWidth word =
 -- ENCODERS and DECODERS
 
 
-snippetEncoder : Snippet -> BE.Encoder
+snippetEncoder : Snippet -> Bytes.Encode.Encoder
 snippetEncoder (Snippet { fptr, offset, length, offRow, offCol }) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.string fptr
         , BE.int offset
         , BE.int length
@@ -481,9 +483,9 @@ snippetEncoder (Snippet { fptr, offset, length, offRow, offCol }) =
         ]
 
 
-snippetDecoder : BD.Decoder Snippet
+snippetDecoder : Bytes.Decode.Decoder Snippet
 snippetDecoder =
-    BD.map5
+    Bytes.Decode.map5
         (\fptr offset length offRow offCol ->
             Snippet
                 { fptr = fptr

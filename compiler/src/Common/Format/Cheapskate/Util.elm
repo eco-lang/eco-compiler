@@ -17,7 +17,7 @@ module Common.Format.Cheapskate.Util exposing
     , upToCountChars
     )
 
-import Common.Format.Cheapskate.ParserCombinators exposing (Parser, bind, char, column, count, endOfInput, fmap, getPosition, notFollowedBy, option, return, scan, skip, skipWhile)
+import Common.Format.Cheapskate.ParserCombinators exposing (Parser, andThen, char, column, count, endOfInput, map, getPosition, notFollowedBy, option, return, scan, skip, skipWhile)
 import List.Extra as List
 import Utils.Crash exposing (crash)
 
@@ -158,14 +158,14 @@ type alias Scanner =
 -}
 scanIndentSpace : Scanner
 scanIndentSpace =
-    fmap (\_ -> ()) (count 4 (skip ((==) ' ')))
+    map (\_ -> ()) (count 4 (skip ((==) ' ')))
 
 
 scanSpacesToColumn : Int -> Scanner
 scanSpacesToColumn col =
     getPosition
-        |> fmap column
-        |> bind
+        |> map column
+        |> andThen
             (\currentCol ->
                 let
                     n : Int
@@ -174,7 +174,7 @@ scanSpacesToColumn col =
                 in
                 if n >= 1 then
                     count n (skip ((==) ' '))
-                        |> fmap (\_ -> ())
+                        |> map (\_ -> ())
 
                 else
                     return ()
@@ -185,21 +185,21 @@ scanSpacesToColumn col =
 -}
 scanNonindentSpace : Scanner
 scanNonindentSpace =
-    fmap (\_ -> ()) (upToCountChars 3 ((==) ' '))
+    map (\_ -> ()) (upToCountChars 3 ((==) ' '))
 
 
 {-| Scan a specified character.
 -}
 scanChar : Char -> Scanner
 scanChar c =
-    skip ((==) c) |> bind (\_ -> return ())
+    skip ((==) c) |> andThen (\_ -> return ())
 
 
 {-| Scan a blankline.
 -}
 scanBlankline : Scanner
 scanBlankline =
-    scanSpaces |> bind (\_ -> endOfInput)
+    scanSpaces |> andThen (\_ -> endOfInput)
 
 
 {-| Scan 0 or more spaces
@@ -214,7 +214,7 @@ and more spaces.
 -}
 scanSpnl : Scanner
 scanSpnl =
-    scanSpaces |> bind (\_ -> option () (char '\n' |> bind (\_ -> scanSpaces)))
+    scanSpaces |> andThen (\_ -> option () (char '\n' |> andThen (\_ -> scanSpaces)))
 
 
 {-| Not followed by: Succeed without consuming input if the specified

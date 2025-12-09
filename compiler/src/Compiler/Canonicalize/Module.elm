@@ -18,7 +18,7 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Parse.SyntaxVersion exposing (SyntaxVersion)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
-import Compiler.Reporting.Result as R
+import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
 import Data.Graph as Graph
 import Data.Map as Dict exposing (Dict)
@@ -31,7 +31,7 @@ import Utils.Crash exposing (crash)
 
 
 type alias MResult i w a =
-    R.RResult i w Error.Error a
+    ReportingResult.RResult i w Error.Error a
 
 
 
@@ -50,17 +50,17 @@ canonicalize pkg ifaces ((Src.Module syntaxVersion _ exports docs imports values
             Dict.fromList identity (List.map canonicalizeBinop binops)
     in
     Foreign.createInitialEnv home ifaces imports
-        |> R.bind (Local.add modul)
-        |> R.bind
+        |> ReportingResult.andThen (Local.add modul)
+        |> ReportingResult.andThen
             (\( env, cunions, caliases ) ->
                 canonicalizeValues syntaxVersion env values
-                    |> R.bind
+                    |> ReportingResult.andThen
                         (\cvalues ->
                             Effects.canonicalize syntaxVersion env values cunions effects
-                                |> R.bind
+                                |> ReportingResult.andThen
                                     (\ceffects ->
                                         canonicalizeExports values cunions caliases cbinops ceffects exports
-                                            |> R.fmap
+                                            |> ReportingResult.map
                                                 (\cexports ->
                                                     Can.Module home cexports docs cvalues cunions caliases cbinops ceffects
                                                 )
@@ -90,31 +90,31 @@ canonicalizeBinop (A.At _ (Src.Infix ( _, op ) ( _, associativity ) ( _, precede
 
 canonicalizeValues : SyntaxVersion -> Env.Env -> List (A.Located Src.Value) -> MResult i (List W.Warning) Can.Decls
 canonicalizeValues syntaxVersion env values =
-    R.traverse (toNodeOne syntaxVersion env) values
-        |> R.bind (\nodes -> detectCycles (Graph.stronglyConnComp nodes))
+    ReportingResult.traverse (toNodeOne syntaxVersion env) values
+        |> ReportingResult.andThen (\nodes -> detectCycles (Graph.stronglyConnComp nodes))
 
 
 detectCycles : List (Graph.SCC NodeTwo) -> MResult i w Can.Decls
 detectCycles sccs =
     case sccs of
         [] ->
-            R.ok Can.SaveTheEnvironment
+            ReportingResult.ok Can.SaveTheEnvironment
 
         scc :: otherSccs ->
             case scc of
                 Graph.AcyclicSCC ( def, _, _ ) ->
-                    R.fmap (Can.Declare def) (detectCycles otherSccs)
+                    ReportingResult.map (Can.Declare def) (detectCycles otherSccs)
 
                 Graph.CyclicSCC subNodes ->
-                    R.traverse detectBadCycles (Graph.stronglyConnComp subNodes)
-                        |> R.bind
+                    ReportingResult.traverse detectBadCycles (Graph.stronglyConnComp subNodes)
+                        |> ReportingResult.andThen
                             (\defs ->
                                 case defs of
                                     [] ->
                                         detectCycles otherSccs
 
                                     d :: ds ->
-                                        R.fmap (Can.DeclareRec d ds) (detectCycles otherSccs)
+                                        ReportingResult.map (Can.DeclareRec d ds) (detectCycles otherSccs)
                             )
 
 
@@ -122,7 +122,7 @@ detectBadCycles : Graph.SCC Can.Def -> MResult i w Can.Def
 detectBadCycles scc =
     case scc of
         Graph.AcyclicSCC def ->
-            R.ok def
+            ReportingResult.ok def
 
         Graph.CyclicSCC [] ->
             crash "The definition of Data.Graph.SCC should not allow empty CyclicSCC!"
@@ -136,7 +136,7 @@ detectBadCycles scc =
                 names =
                     List.map (A.toValue << extractDefName) defs
             in
-            R.throw (Error.RecursiveDecl region name names)
+            ReportingResult.throw (Error.RecursiveDecl region name names)
 
 
 extractDefName : Can.Def -> A.Located Name
@@ -176,14 +176,14 @@ toNodeOne syntaxVersion env (A.At _ (Src.Value _ ( _, (A.At _ name) as aname ) s
     case maybeType of
         Nothing ->
             Pattern.verify (Error.DPFuncArgs name)
-                (R.traverse (Pattern.canonicalize syntaxVersion env) (List.map Src.c1Value srcArgs))
-                |> R.bind
+                (ReportingResult.traverse (Pattern.canonicalize syntaxVersion env) (List.map Src.c1Value srcArgs))
+                |> ReportingResult.andThen
                     (\( args, argBindings ) ->
                         Env.addLocals argBindings env
-                            |> R.bind
+                            |> ReportingResult.andThen
                                 (\newEnv ->
                                     Expr.verifyBindings W.Pattern argBindings (Expr.canonicalize syntaxVersion newEnv body)
-                                        |> R.fmap
+                                        |> ReportingResult.map
                                             (\( cbody, freeLocals ) ->
                                                 let
                                                     def : Can.Def
@@ -200,17 +200,17 @@ toNodeOne syntaxVersion env (A.At _ (Src.Value _ ( _, (A.At _ name) as aname ) s
 
         Just ( _, ( _, srcType ) ) ->
             Type.toAnnotation syntaxVersion env srcType
-                |> R.bind
+                |> ReportingResult.andThen
                     (\(Can.Forall freeVars tipe) ->
                         Pattern.verify (Error.DPFuncArgs name)
                             (Expr.gatherTypedArgs syntaxVersion env name (List.map Src.c1Value srcArgs) tipe Index.first [])
-                            |> R.bind
+                            |> ReportingResult.andThen
                                 (\( ( args, resultType ), argBindings ) ->
                                     Env.addLocals argBindings env
-                                        |> R.bind
+                                        |> ReportingResult.andThen
                                             (\newEnv ->
                                                 Expr.verifyBindings W.Pattern argBindings (Expr.canonicalize syntaxVersion newEnv body)
-                                                    |> R.fmap
+                                                    |> ReportingResult.map
                                                         (\( cbody, freeLocals ) ->
                                                             let
                                                                 def : Can.Def
@@ -261,7 +261,7 @@ canonicalizeExports :
 canonicalizeExports values unions aliases binops effects (A.At region exposing_) =
     case exposing_ of
         Src.Open _ _ ->
-            R.ok (Can.ExportEverything region)
+            ReportingResult.ok (Can.ExportEverything region)
 
         Src.Explicit (A.At _ exposeds) ->
             let
@@ -269,11 +269,11 @@ canonicalizeExports values unions aliases binops effects (A.At region exposing_)
                 names =
                     Dict.fromList identity (List.map valueToName values)
             in
-            R.traverse (checkExposed names unions aliases binops effects) (List.map Src.c2Value exposeds)
-                |> R.bind
+            ReportingResult.traverse (checkExposed names unions aliases binops effects) (List.map Src.c2Value exposeds)
+                |> ReportingResult.andThen
                     (\infos ->
                         Dups.detect Error.ExportDuplicate (Dups.unions infos)
-                            |> R.fmap Can.Export
+                            |> ReportingResult.map Can.Export
                     )
 
 
@@ -302,24 +302,24 @@ checkExposed values unions aliases binops effects exposed =
                         ok name region Can.ExportPort
 
                     Just ports ->
-                        R.throw (Error.ExportNotFound region Error.BadVar name (ports ++ Dict.keys compare values))
+                        ReportingResult.throw (Error.ExportNotFound region Error.BadVar name (ports ++ Dict.keys compare values))
 
         Src.Operator region name ->
             if Dict.member identity name binops then
                 ok name region Can.ExportBinop
 
             else
-                R.throw (Error.ExportNotFound region Error.BadOp name (Dict.keys compare binops))
+                ReportingResult.throw (Error.ExportNotFound region Error.BadOp name (Dict.keys compare binops))
 
         Src.Upper (A.At region name) ( _, Src.Public dotDotRegion ) ->
             if Dict.member identity name unions then
                 ok name region Can.ExportUnionOpen
 
             else if Dict.member identity name aliases then
-                R.throw (Error.ExportOpenAlias dotDotRegion name)
+                ReportingResult.throw (Error.ExportOpenAlias dotDotRegion name)
 
             else
-                R.throw (Error.ExportNotFound region Error.BadType name (Dict.keys compare unions ++ Dict.keys compare aliases))
+                ReportingResult.throw (Error.ExportNotFound region Error.BadType name (Dict.keys compare unions ++ Dict.keys compare aliases))
 
         Src.Upper (A.At region name) ( _, Src.Private ) ->
             if Dict.member identity name unions then
@@ -329,7 +329,7 @@ checkExposed values unions aliases binops effects exposed =
                 ok name region Can.ExportAlias
 
             else
-                R.throw (Error.ExportNotFound region Error.BadType name (Dict.keys compare unions ++ Dict.keys compare aliases))
+                ReportingResult.throw (Error.ExportNotFound region Error.BadType name (Dict.keys compare unions ++ Dict.keys compare aliases))
 
 
 checkPorts : Can.Effects -> Name -> Maybe (List Name)
@@ -351,4 +351,4 @@ checkPorts effects name =
 
 ok : Name -> A.Region -> Can.Export -> MResult i w (Dups.Tracker (A.Located Can.Export))
 ok name region export =
-    R.ok (Dups.one name region (A.At region export))
+    ReportingResult.ok (Dups.one name region (A.At region export))

@@ -42,7 +42,7 @@ toEncoder tipe =
 
         Can.TUnit ->
             encode "null"
-                |> Names.fmap
+                |> Names.map
                     (\nullEncoder ->
                         let
                             funcType : Can.Type
@@ -105,7 +105,7 @@ toEncoder tipe =
                 encodeField : ( Name, Can.FieldType ) -> Names.Tracker TOpt.Expr
                 encodeField ( name, Can.FieldType _ fieldType ) =
                     toEncoder fieldType
-                        |> Names.fmap
+                        |> Names.map
                             (\encoder ->
                                 let
                                     accessExpr : TOpt.Expr
@@ -124,10 +124,10 @@ toEncoder tipe =
                             )
             in
             encode "object"
-                |> Names.bind
+                |> Names.andThen
                     (\object ->
                         Names.traverse encodeField (Dict.toList compare fields)
-                            |> Names.bind
+                            |> Names.andThen
                                 (\keyValuePairs ->
                                     let
                                         listType : Can.Type
@@ -159,10 +159,10 @@ encodeMaybe argType =
             Can.TType ModuleName.maybe "Maybe" [ argType ]
     in
     encode "null"
-        |> Names.bind
+        |> Names.andThen
             (\null ->
                 toEncoder argType
-                    |> Names.bind
+                    |> Names.andThen
                         (\encoder ->
                             let
                                 destructType : Can.Type
@@ -174,7 +174,7 @@ encodeMaybe argType =
                                     Can.TLambda maybeType jsonValueType
                             in
                             Names.registerGlobal A.zero ModuleName.maybe "destruct" destructType
-                                |> Names.fmap
+                                |> Names.map
                                     (\destruct ->
                                         TOpt.Function [ ( Name.dollar, maybeType ) ]
                                             (TOpt.Call A.zero
@@ -199,10 +199,10 @@ encodeList argType =
             Can.TType ModuleName.list "List" [ argType ]
     in
     encode "list"
-        |> Names.bind
+        |> Names.andThen
             (\list ->
                 toEncoder argType
-                    |> Names.fmap
+                    |> Names.map
                         (\encoder ->
                             TOpt.Call A.zero list [ encoder ] (Can.TLambda listType jsonValueType)
                         )
@@ -217,10 +217,10 @@ encodeArray argType =
             Can.TType ModuleName.array "Array" [ argType ]
     in
     encode "array"
-        |> Names.bind
+        |> Names.andThen
             (\array ->
                 toEncoder argType
-                    |> Names.fmap
+                    |> Names.map
                         (\encoder ->
                             TOpt.Call A.zero array [ encoder ] (Can.TLambda arrayType jsonValueType)
                         )
@@ -255,10 +255,10 @@ encodeTuple a b cs =
         encodeArg : Name -> Can.Type -> Names.Tracker TOpt.Expr
         encodeArg arg elemType =
             toEncoder elemType
-                |> Names.fmap (\encoder -> TOpt.Call A.zero encoder [ TOpt.VarLocal arg elemType ] jsonValueType)
+                |> Names.map (\encoder -> TOpt.Call A.zero encoder [ TOpt.VarLocal arg elemType ] jsonValueType)
     in
     encode "list"
-        |> Names.bind
+        |> Names.andThen
             (\list ->
                 let
                     identityType : Can.Type
@@ -266,11 +266,11 @@ encodeTuple a b cs =
                         Can.TLambda jsonValueType jsonValueType
                 in
                 Names.registerGlobal A.zero ModuleName.basics Name.identity_ identityType
-                    |> Names.bind
+                    |> Names.andThen
                         (\identity ->
-                            Names.bind
+                            Names.andThen
                                 (\arg1 ->
-                                    Names.bind
+                                    Names.andThen
                                         (\arg2 ->
                                             let
                                                 ( _, indexedCs ) =
@@ -281,12 +281,12 @@ encodeTuple a b cs =
                                             in
                                             List.foldl
                                                 (\( _, i, elemType ) acc ->
-                                                    Names.bind (\encodedArg -> Names.fmap (flip (++) [ encodedArg ]) acc)
+                                                    Names.andThen (\encodedArg -> Names.map (flip (++) [ encodedArg ]) acc)
                                                         (encodeArg (JsName.fromIndex i) elemType)
                                                 )
                                                 (Names.pure [ arg1, arg2 ])
                                                 indexedCs
-                                                |> Names.fmap
+                                                |> Names.map
                                                     (\args ->
                                                         let
                                                             listType : Can.Type
@@ -329,7 +329,7 @@ toFlagsDecoder tipe =
     case tipe of
         Can.TUnit ->
             decode "succeed"
-                |> Names.fmap
+                |> Names.map
                     (\succeed ->
                         TOpt.Call A.zero succeed [ TOpt.Unit Can.TUnit ] (decoderType Can.TUnit)
                     )
@@ -416,22 +416,22 @@ decodeMaybe argType =
             Can.TLambda argType maybeType
     in
     Names.registerGlobal A.zero ModuleName.maybe "Nothing" nothingType
-        |> Names.bind
+        |> Names.andThen
             (\nothing ->
                 Names.registerGlobal A.zero ModuleName.maybe "Just" justType
-                    |> Names.bind
+                    |> Names.andThen
                         (\just ->
                             decode "oneOf"
-                                |> Names.bind
+                                |> Names.andThen
                                     (\oneOf ->
                                         decode "null"
-                                            |> Names.bind
+                                            |> Names.andThen
                                                 (\null ->
                                                     decode "map"
-                                                        |> Names.bind
+                                                        |> Names.andThen
                                                             (\map_ ->
                                                                 toDecoder argType
-                                                                    |> Names.fmap
+                                                                    |> Names.map
                                                                         (\subDecoder ->
                                                                             let
                                                                                 listType : Can.Type
@@ -467,10 +467,10 @@ decodeList argType =
             Can.TType ModuleName.list "List" [ argType ]
     in
     decode "list"
-        |> Names.bind
+        |> Names.andThen
             (\list ->
                 toDecoder argType
-                    |> Names.fmap
+                    |> Names.map
                         (\argDecoder ->
                             TOpt.Call A.zero list [ argDecoder ] (decoderType listType)
                         )
@@ -489,10 +489,10 @@ decodeArray argType =
             Can.TType ModuleName.array "Array" [ argType ]
     in
     decode "array"
-        |> Names.bind
+        |> Names.andThen
             (\array ->
                 toDecoder argType
-                    |> Names.fmap
+                    |> Names.map
                         (\argDecoder ->
                             TOpt.Call A.zero array [ argDecoder ] (decoderType arrayType)
                         )
@@ -506,7 +506,7 @@ decodeArray argType =
 decodeTuple0 : Names.Tracker TOpt.Expr
 decodeTuple0 =
     decode "null"
-        |> Names.fmap
+        |> Names.map
             (\null ->
                 TOpt.Call A.zero null [ TOpt.Unit Can.TUnit ] (decoderType Can.TUnit)
             )
@@ -520,7 +520,7 @@ decodeTuple a b cs =
             Can.TTuple a b cs
     in
     decode "succeed"
-        |> Names.bind
+        |> Names.andThen
             (\succeed ->
                 let
                     ( allElems, lastElem ) =
@@ -535,7 +535,7 @@ decodeTuple a b cs =
                     tuple =
                         TOpt.Tuple A.zero (toLocal 0 a) (toLocal 1 b) (List.indexedMap (\i cType -> toLocal (i + 2) cType) cs) tupleType
                 in
-                List.foldr (\( i, cType ) -> Names.bind (indexAndThen i cType))
+                List.foldr (\( i, cType ) -> Names.andThen (indexAndThen i cType))
                     (indexAndThen (List.length cs + 1) lastElem (TOpt.Call A.zero succeed [ tuple ] (decoderType tupleType)))
                     (List.indexedMap Tuple.pair allElems)
             )
@@ -554,13 +554,13 @@ indexAndThen i argType decoder =
             getDecoderResultType (TOpt.typeOf decoder)
     in
     decode "andThen"
-        |> Names.bind
+        |> Names.andThen
             (\andThen ->
                 decode "index"
-                    |> Names.bind
+                    |> Names.andThen
                         (\index ->
                             toDecoder argType
-                                |> Names.fmap
+                                |> Names.map
                                     (\typeDecoder ->
                                         let
                                             funcType : Can.Type
@@ -594,12 +594,12 @@ decodeRecord recordType fields =
             TOpt.Record (Dict.map toFieldExpr fields) recordType
     in
     decode "succeed"
-        |> Names.bind
+        |> Names.andThen
             (\succeed ->
                 Names.registerFieldDict fields (Dict.toList compare fields)
-                    |> Names.bind
+                    |> Names.andThen
                         (\fieldDecoders ->
-                            List.foldl (\fieldDecoder -> Names.bind (\optCall -> fieldAndThen recordType optCall fieldDecoder))
+                            List.foldl (\fieldDecoder -> Names.andThen (\optCall -> fieldAndThen recordType optCall fieldDecoder))
                                 (Names.pure (TOpt.Call A.zero succeed [ record ] (decoderType recordType)))
                                 fieldDecoders
                         )
@@ -609,13 +609,13 @@ decodeRecord recordType fields =
 fieldAndThen : Can.Type -> TOpt.Expr -> ( Name.Name, Can.FieldType ) -> Names.Tracker TOpt.Expr
 fieldAndThen recordType decoder ( key, Can.FieldType _ fieldType ) =
     decode "andThen"
-        |> Names.bind
+        |> Names.andThen
             (\andThen ->
                 decode "field"
-                    |> Names.bind
+                    |> Names.andThen
                         (\field ->
                             toDecoder fieldType
-                                |> Names.fmap
+                                |> Names.map
                                     (\typeDecoder ->
                                         let
                                             funcType : Can.Type

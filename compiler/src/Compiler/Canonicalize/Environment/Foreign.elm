@@ -9,7 +9,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
-import Compiler.Reporting.Result as R
+import Compiler.Reporting.Result as ReportingResult
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
@@ -17,13 +17,13 @@ import Utils.Main as Utils
 
 
 type alias FResult i w a =
-    R.RResult i w Error.Error a
+    ReportingResult.RResult i w Error.Error a
 
 
 createInitialEnv : IO.Canonical -> Dict String ModuleName.Raw I.Interface -> List Src.Import -> FResult i w Env.Env
 createInitialEnv home ifaces imports =
     Utils.foldM (addImport ifaces) emptyState (toSafeImports home imports)
-        |> R.fmap
+        |> ReportingResult.map
             (\{ vars, types, ctors, binops, q_vars, q_types, q_ctors } ->
                 Env.Env home
                     (Dict.map (\_ -> infoToVar) vars)
@@ -171,7 +171,7 @@ addImport ifaces state (Src.Import ( _, A.At _ name ) maybeAlias ( _, exposing_ 
                 bs2 =
                     addExposed state.binops (Dict.map (binopToBinop home) binops)
             in
-            R.ok (State vs2 ts2 cs2 bs2 qvs2 qts2 qcs2)
+            ReportingResult.ok (State vs2 ts2 cs2 bs2 qvs2 qts2 qcs2)
 
         Src.Explicit (A.At _ exposedList) ->
             Utils.foldM
@@ -270,10 +270,10 @@ addExposedValue home vars types binops state exposed =
         Src.Lower (A.At region name) ->
             case Dict.get identity name vars of
                 Just info ->
-                    R.ok { state | vars = Utils.mapInsertWith identity Env.mergeInfo name info state.vars }
+                    ReportingResult.ok { state | vars = Utils.mapInsertWith identity Env.mergeInfo name info state.vars }
 
                 Nothing ->
-                    R.throw (Error.ImportExposingNotFound region home name (Dict.keys compare vars))
+                    ReportingResult.throw (Error.ImportExposingNotFound region home name (Dict.keys compare vars))
 
         Src.Upper (A.At region name) ( _, privacy ) ->
             case privacy of
@@ -287,7 +287,7 @@ addExposedValue home vars types binops state exposed =
                                         ts2 =
                                             Dict.insert identity name (Env.Specific home tipe) state.types
                                     in
-                                    R.ok { state | types = ts2 }
+                                    ReportingResult.ok { state | types = ts2 }
 
                                 Env.Alias _ _ _ _ ->
                                     let
@@ -299,15 +299,15 @@ addExposedValue home vars types binops state exposed =
                                         cs2 =
                                             addExposed state.ctors ctors
                                     in
-                                    R.ok { state | types = ts2, ctors = cs2 }
+                                    ReportingResult.ok { state | types = ts2, ctors = cs2 }
 
                         Nothing ->
                             case checkForCtorMistake name types of
                                 tipe :: _ ->
-                                    R.throw <| Error.ImportCtorByName region name tipe
+                                    ReportingResult.throw <| Error.ImportCtorByName region name tipe
 
                                 [] ->
-                                    R.throw <| Error.ImportExposingNotFound region home name (Dict.keys compare types)
+                                    ReportingResult.throw <| Error.ImportExposingNotFound region home name (Dict.keys compare types)
 
                 Src.Public dotDotRegion ->
                     case Dict.get identity name types of
@@ -323,13 +323,13 @@ addExposedValue home vars types binops state exposed =
                                         cs2 =
                                             addExposed state.ctors ctors
                                     in
-                                    R.ok { state | types = ts2, ctors = cs2 }
+                                    ReportingResult.ok { state | types = ts2, ctors = cs2 }
 
                                 Env.Alias _ _ _ _ ->
-                                    R.throw (Error.ImportOpenAlias dotDotRegion name)
+                                    ReportingResult.throw (Error.ImportOpenAlias dotDotRegion name)
 
                         Nothing ->
-                            R.throw (Error.ImportExposingNotFound region home name (Dict.keys compare types))
+                            ReportingResult.throw (Error.ImportExposingNotFound region home name (Dict.keys compare types))
 
         Src.Operator region op ->
             case Dict.get identity op binops of
@@ -339,10 +339,10 @@ addExposedValue home vars types binops state exposed =
                         bs2 =
                             Dict.insert identity op (binopToBinop home op binop) state.binops
                     in
-                    R.ok { state | binops = bs2 }
+                    ReportingResult.ok { state | binops = bs2 }
 
                 Nothing ->
-                    R.throw (Error.ImportExposingNotFound region home op (Dict.keys compare binops))
+                    ReportingResult.throw (Error.ImportExposingNotFound region home op (Dict.keys compare binops))
 
 
 checkForCtorMistake : Name -> Dict String Name ( Env.Type, Env.Exposed Env.Ctor ) -> List Name

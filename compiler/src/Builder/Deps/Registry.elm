@@ -24,7 +24,9 @@ import Compiler.Parse.Primitives as P
 import Data.Map as Dict exposing (Dict)
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Task.Extra as Task
 
 
@@ -71,7 +73,7 @@ fetch manager cache =
                     Stuff.registry cache
             in
             File.writeBinary registryEncoder path registry
-                |> Task.fmap (\_ -> registry)
+                |> Task.map (\_ -> registry)
 
 
 addEntry : KnownVersions -> Int -> Int
@@ -99,7 +101,7 @@ allPkgsDecoder =
                 [] ->
                     D.failure ()
     in
-    D.dict identity keyDecoder (D.bind toKnownVersions versionsDecoder)
+    D.dict identity keyDecoder (D.andThen toKnownVersions versionsDecoder)
 
 
 
@@ -112,7 +114,7 @@ update manager cache ((Registry size packages) as oldRegistry) =
         \news ->
             case news of
                 [] ->
-                    Task.pure oldRegistry
+                    Task.succeed oldRegistry
 
                 _ :: _ ->
                     let
@@ -129,7 +131,7 @@ update manager cache ((Registry size packages) as oldRegistry) =
                             Registry newSize newPkgs
                     in
                     File.writeBinary registryEncoder (Stuff.registry cache) newRegistry
-                        |> Task.fmap (\_ -> newRegistry)
+                        |> Task.map (\_ -> newRegistry)
 
 
 addNew : ( Pkg.Name, V.Version ) -> Dict ( String, String ) Pkg.Name KnownVersions -> Dict ( String, String ) Pkg.Name KnownVersions
@@ -159,11 +161,11 @@ newPkgDecoder =
 newPkgParser : P.Parser () ( Pkg.Name, V.Version )
 newPkgParser =
     P.specialize (\_ _ _ -> ()) Pkg.parser
-        |> P.bind
+        |> P.andThen
             (\pkg ->
                 P.word1 '@' bail
-                    |> P.bind (\_ -> P.specialize (\_ _ _ -> ()) V.parser)
-                    |> P.fmap (\vsn -> ( pkg, vsn ))
+                    |> P.andThen (\_ -> P.specialize (\_ _ _ -> ()) V.parser)
+                    |> P.map (\vsn -> ( pkg, vsn ))
             )
 
 
@@ -179,7 +181,7 @@ bail _ _ =
 latest : Http.Manager -> Stuff.PackageCache -> Task Never (Result Exit.RegistryProblem Registry)
 latest manager cache =
     read cache
-        |> Task.bind
+        |> Task.andThen
             (\maybeOldRegistry ->
                 case maybeOldRegistry of
                     Just oldRegistry ->
@@ -216,16 +218,16 @@ getVersions_ name (Registry _ versions) =
 post : Http.Manager -> String -> D.Decoder x a -> (a -> Task Never b) -> Task Never (Result Exit.RegistryProblem b)
 post manager path decoder callback =
     Website.route path []
-        |> Task.bind
+        |> Task.andThen
             (\url ->
                 Http.post manager url [] Exit.RP_Http <|
                     \body ->
                         case D.fromByteString decoder body of
                             Ok a ->
-                                Task.fmap Ok (callback a)
+                                Task.map Ok (callback a)
 
                             Err _ ->
-                                Task.pure <| Err <| Exit.RP_Data url body
+                                Task.succeed <| Err <| Exit.RP_Data url body
             )
 
 
@@ -233,31 +235,31 @@ post manager path decoder callback =
 -- ENCODERS and DECODERS
 
 
-registryDecoder : BD.Decoder Registry
+registryDecoder : Bytes.Decode.Decoder Registry
 registryDecoder =
-    BD.map2 Registry
+    Bytes.Decode.map2 Registry
         BD.int
         (BD.assocListDict identity Pkg.nameDecoder knownVersionsDecoder)
 
 
-registryEncoder : Registry -> BE.Encoder
+registryEncoder : Registry -> Bytes.Encode.Encoder
 registryEncoder (Registry size versions) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.int size
         , BE.assocListDict Pkg.compareName Pkg.nameEncoder knownVersionsEncoder versions
         ]
 
 
-knownVersionsDecoder : BD.Decoder KnownVersions
+knownVersionsDecoder : Bytes.Decode.Decoder KnownVersions
 knownVersionsDecoder =
-    BD.map2 KnownVersions
+    Bytes.Decode.map2 KnownVersions
         V.versionDecoder
         (BD.list V.versionDecoder)
 
 
-knownVersionsEncoder : KnownVersions -> BE.Encoder
+knownVersionsEncoder : KnownVersions -> Bytes.Encode.Encoder
 knownVersionsEncoder (KnownVersions version versions) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ V.versionEncoder version
         , BE.list V.versionEncoder versions
         ]

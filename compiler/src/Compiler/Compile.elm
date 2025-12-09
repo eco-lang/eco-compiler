@@ -19,7 +19,7 @@ import Compiler.Optimize.Module as Optimize
 import Compiler.Optimize.TypedModule as TypedOptimize
 import Compiler.Reporting.Error as E
 import Compiler.Reporting.Render.Type.Localizer as Localizer
-import Compiler.Reporting.Result as R
+import Compiler.Reporting.Result as ReportingResult
 import Compiler.Type.Constrain.Module as Type
 import Compiler.Type.Solve as Type
 import Data.Map exposing (Dict)
@@ -44,8 +44,8 @@ type TypedArtifacts
 
 compile : Pkg.Name -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never (Result E.Error Artifacts)
 compile pkg ifaces modul =
-    Task.pure (canonicalize pkg ifaces modul)
-        |> Task.fmap
+    Task.succeed (canonicalize pkg ifaces modul)
+        |> Task.map
             (\canonicalResult ->
                 case canonicalResult of
                     Ok canonical ->
@@ -68,8 +68,8 @@ Produces both Opt.LocalGraph and TOpt.LocalGraph.
 -}
 compileTyped : Pkg.Name -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never (Result E.Error TypedArtifacts)
 compileTyped pkg ifaces modul =
-    Task.pure (canonicalize pkg ifaces modul)
-        |> Task.fmap
+    Task.succeed (canonicalize pkg ifaces modul)
+        |> Task.map
             (\canonicalResult ->
                 case canonicalResult of
                     Ok canonical ->
@@ -97,7 +97,7 @@ compileTyped pkg ifaces modul =
 
 canonicalize : Pkg.Name -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Result E.Error Can.Module
 canonicalize pkg ifaces modul =
-    case Tuple.second (R.run (Canonicalize.canonicalize pkg ifaces modul)) of
+    case Tuple.second (ReportingResult.run (Canonicalize.canonicalize pkg ifaces modul)) of
         Ok canonical ->
             Ok canonical
 
@@ -107,7 +107,7 @@ canonicalize pkg ifaces modul =
 
 typeCheck : Src.Module -> Can.Module -> Result E.Error (Dict String Name Can.Annotation)
 typeCheck modul canonical =
-    case TypeCheck.unsafePerformIO (TypeCheck.bind Type.run (Type.constrain canonical)) of
+    case TypeCheck.unsafePerformIO (TypeCheck.andThen Type.run (Type.constrain canonical)) of
         Ok annotations ->
             Ok annotations
 
@@ -127,7 +127,7 @@ nitpick canonical =
 
 optimize : Src.Module -> Dict String Name.Name Can.Annotation -> Can.Module -> Result E.Error Opt.LocalGraph
 optimize modul annotations canonical =
-    case Tuple.second (R.run (Optimize.optimize annotations canonical)) of
+    case Tuple.second (ReportingResult.run (Optimize.optimize annotations canonical)) of
         Ok localGraph ->
             Ok localGraph
 
@@ -139,7 +139,7 @@ optimize modul annotations canonical =
 -}
 typedOptimize : Src.Module -> Dict String Name.Name Can.Annotation -> Can.Module -> Result E.Error TOpt.LocalGraph
 typedOptimize modul annotations canonical =
-    case Tuple.second (R.run (TypedOptimize.optimize annotations canonical)) of
+    case Tuple.second (ReportingResult.run (TypedOptimize.optimize annotations canonical)) of
         Ok localGraph ->
             Ok localGraph
 

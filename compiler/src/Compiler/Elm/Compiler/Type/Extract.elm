@@ -22,7 +22,9 @@ import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Main as Utils
 
 
@@ -52,7 +54,7 @@ extract astType =
 
         Can.TRecord fields ext ->
             traverse (tupleTraverse extract) (Can.fieldsToList fields)
-                |> fmap (\efields -> T.Record efields ext)
+                |> map (\efields -> T.Record efields ext)
 
         Can.TUnit ->
             pure T.Unit
@@ -65,12 +67,12 @@ extract astType =
 
         Can.TAlias home name args aliasType ->
             addAlias (Opt.Global home name) ()
-                |> bind
+                |> andThen
                     (\_ ->
                         extract (Type.dealias args aliasType)
-                            |> bind
+                            |> andThen
                                 (\_ ->
-                                    fmap (T.Type (toPublicName home name))
+                                    map (T.Type (toPublicName home name))
                                         (traverse (extract << Tuple.second) args)
                                 )
                     )
@@ -188,7 +190,7 @@ extractAlias (Types dict) (Opt.Global home name) =
                 |> (\(Types_ _ aliasInfo) -> aliasInfo)
                 |> Utils.find identity name
     in
-    fmap (T.Alias (toPublicName home name) args) (extract aliasType)
+    map (T.Alias (toPublicName home name) args) (extract aliasType)
 
 
 extractUnion : Types -> Opt.Global -> Extractor T.Union
@@ -207,12 +209,12 @@ extractUnion (Types dict) (Opt.Global home name) =
                     |> (\(Types_ unionInfo _) -> unionInfo)
                     |> Utils.find identity name
         in
-        fmap (T.Union pname vars) (traverse extractCtor ctors)
+        map (T.Union pname vars) (traverse extractCtor ctors)
 
 
 extractCtor : Can.Ctor -> Extractor ( Name.Name, List T.Type )
 extractCtor (Can.Ctor ctor _ _ args) =
-    fmap (Tuple.pair ctor) (traverse extract args)
+    map (Tuple.pair ctor) (traverse extract args)
 
 
 
@@ -261,8 +263,8 @@ addUnion union value =
             EResult aliases (EverySet.insert Opt.toComparableGlobal union unions) value
 
 
-fmap : (a -> b) -> Extractor a -> Extractor b
-fmap func (Extractor k) =
+map : (a -> b) -> Extractor a -> Extractor b
+map func (Extractor k) =
     Extractor <|
         \aliases unions ->
             case k aliases unions of
@@ -286,8 +288,8 @@ apply (Extractor kv) (Extractor kf) =
                             EResult a2 u2 (func value)
 
 
-bind : (a -> Extractor b) -> Extractor a -> Extractor b
-bind callback (Extractor ka) =
+andThen : (a -> Extractor b) -> Extractor a -> Extractor b
+andThen callback (Extractor ka) =
     Extractor <|
         \aliases unions ->
             case ka aliases unions of
@@ -299,39 +301,39 @@ bind callback (Extractor ka) =
 
 traverse : (a -> Extractor b) -> List a -> Extractor (List b)
 traverse f =
-    List.foldr (\a -> bind (\c -> fmap (\va -> va :: c) (f a)))
+    List.foldr (\a -> andThen (\c -> map (\va -> va :: c) (f a)))
         (pure [])
 
 
 tupleTraverse : (b -> Extractor c) -> ( a, b ) -> Extractor ( a, c )
 tupleTraverse f ( a, b ) =
-    fmap (Tuple.pair a) (f b)
+    map (Tuple.pair a) (f b)
 
 
 
 -- ENCODERS and DECODERS
 
 
-typesEncoder : Types -> BE.Encoder
+typesEncoder : Types -> Bytes.Encode.Encoder
 typesEncoder (Types types) =
     BE.assocListDict ModuleName.compareCanonical ModuleName.canonicalEncoder types_Encoder types
 
 
-typesDecoder : BD.Decoder Types
+typesDecoder : Bytes.Decode.Decoder Types
 typesDecoder =
-    BD.map Types (BD.assocListDict ModuleName.toComparableCanonical ModuleName.canonicalDecoder types_Decoder)
+    Bytes.Decode.map Types (BD.assocListDict ModuleName.toComparableCanonical ModuleName.canonicalDecoder types_Decoder)
 
 
-types_Encoder : Types_ -> BE.Encoder
+types_Encoder : Types_ -> Bytes.Encode.Encoder
 types_Encoder (Types_ unionInfo aliasInfo) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.assocListDict compare BE.string Can.unionEncoder unionInfo
         , BE.assocListDict compare BE.string Can.aliasEncoder aliasInfo
         ]
 
 
-types_Decoder : BD.Decoder Types_
+types_Decoder : Bytes.Decode.Decoder Types_
 types_Decoder =
-    BD.map2 Types_
+    Bytes.Decode.map2 Types_
         (BD.assocListDict identity BD.string Can.unionDecoder)
         (BD.assocListDict identity BD.string Can.aliasDecoder)

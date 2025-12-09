@@ -29,7 +29,9 @@ import Compiler.Json.Decode as D
 import Data.Map as Dict exposing (Dict)
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 import Utils.Task.Extra as Task
@@ -87,7 +89,7 @@ verify cache connection registry constraints =
         case try constraints of
             Solver solver ->
                 solver (State cache connection registry Dict.empty)
-                    |> Task.fmap
+                    |> Task.map
                         (\result ->
                             case result of
                                 ISOk s a ->
@@ -129,7 +131,12 @@ type AppSolution
     = AppSolution (Dict ( String, String ) Pkg.Name V.Version) (Dict ( String, String ) Pkg.Name V.Version) Outline.AppOutline
 
 
-getTransitive : Dict ( ( String, String ), ( Int, Int, Int ) ) ( Pkg.Name, V.Version ) Constraints -> Dict ( String, String ) Pkg.Name V.Version -> List ( Pkg.Name, V.Version ) -> Dict ( String, String ) Pkg.Name V.Version -> Dict ( String, String ) Pkg.Name V.Version
+getTransitive :
+    Dict ( ( String, String ), ( Int, Int, Int ) ) ( Pkg.Name, V.Version ) Constraints
+    -> Dict ( String, String ) Pkg.Name V.Version
+    -> List ( Pkg.Name, V.Version )
+    -> Dict ( String, String ) Pkg.Name V.Version
+    -> Dict ( String, String ) Pkg.Name V.Version
 getTransitive constraints solution unvisited visited =
     case unvisited of
         [] ->
@@ -191,7 +198,7 @@ addToApp cache connection registry pkg (Outline.AppOutline elm srcDirs direct in
         of
             Solver solver ->
                 solver (State cache connection registry Dict.empty)
-                    |> Task.fmap
+                    |> Task.map
                         (\result ->
                             case result of
                                 ISOk (State _ _ _ constraints) new ->
@@ -265,7 +272,7 @@ addToTestApp cache connection registry pkg con (Outline.AppOutline elm srcDirs d
         of
             Solver solver ->
                 solver (State cache connection registry Dict.empty)
-                    |> Task.fmap
+                    |> Task.map
                         (\result ->
                             case result of
                                 ISOk (State _ _ _ constraints) new ->
@@ -311,7 +318,7 @@ removeFromApp cache connection registry pkg (Outline.AppOutline elm srcDirs dire
         case try (Dict.map (\_ -> C.exactly) (Dict.remove identity pkg allDirects)) of
             Solver solver ->
                 solver (State cache connection registry Dict.empty)
-                    |> Task.fmap
+                    |> Task.map
                         (\result ->
                             case result of
                                 ISOk (State _ _ _ constraints) new ->
@@ -389,18 +396,18 @@ exploreGoals (Goals pending solved) =
                     addVersion goals1 name
             in
             getRelevantVersions name constraint
-                |> bind (\( v, vs ) -> oneOf (addVsn v) (List.map addVsn vs))
-                |> bind (\goals2 -> exploreGoals goals2)
+                |> andThen (\( v, vs ) -> oneOf (addVsn v) (List.map addVsn vs))
+                |> andThen (\goals2 -> exploreGoals goals2)
 
 
 addVersion : Goals -> Pkg.Name -> V.Version -> Solver Goals
 addVersion (Goals pending solved) name version =
     getConstraints name version
-        |> bind
+        |> andThen
             (\(Constraints elm deps) ->
                 if C.goodElm elm then
                     foldM (addConstraint solved) pending (Dict.toList compare deps)
-                        |> fmap
+                        |> map
                             (\newPending ->
                                 Goals newPending (Dict.insert identity name version solved)
                             )
@@ -450,13 +457,13 @@ getRelevantVersions name constraint =
                 Just (Registry.KnownVersions newest previous) ->
                     case List.filter (C.satisfies constraint) (newest :: previous) of
                         [] ->
-                            Task.pure (ISBack state)
+                            Task.succeed (ISBack state)
 
                         v :: vs ->
-                            Task.pure (ISOk state ( v, vs ))
+                            Task.succeed (ISOk state ( v, vs ))
 
                 Nothing ->
-                    Task.pure (ISBack state)
+                    Task.succeed (ISBack state)
 
 
 
@@ -474,85 +481,146 @@ getConstraints pkg vsn =
             in
             case Dict.get (Tuple.mapSecond V.toComparable) key cDict of
                 Just cs ->
-                    Task.pure (ISOk state cs)
+                    Task.succeed (ISOk state cs)
 
                 Nothing ->
                     let
-                        toNewState : Constraints -> State
-                        toNewState cs =
-                            State cache connection registry (Dict.insert (Tuple.mapSecond V.toComparable) key cs cDict)
-
-                        home : String
-                        home =
-                            Stuff.package cache pkg vsn
-
-                        path : String
-                        path =
-                            home ++ "/elm.json"
+                        ctx : ConstraintLoadContext
+                        ctx =
+                            { state = state
+                            , cache = cache
+                            , connection = connection
+                            , registry = registry
+                            , cDict = cDict
+                            , key = key
+                            , pkg = pkg
+                            , vsn = vsn
+                            , home = Stuff.package cache pkg vsn
+                            , path = Stuff.package cache pkg vsn ++ "/elm.json"
+                            }
                     in
-                    File.exists path
-                        |> Task.bind
-                            (\outlineExists ->
-                                if outlineExists then
-                                    File.readUtf8 path
-                                        |> Task.bind
-                                            (\bytes ->
-                                                case D.fromByteString constraintsDecoder bytes of
-                                                    Ok cs ->
-                                                        case connection of
-                                                            Online _ ->
-                                                                Task.pure (ISOk (toNewState cs) cs)
+                    File.exists ctx.path
+                        |> Task.andThen (loadConstraintsFromCacheOrNetwork ctx)
 
-                                                            Offline ->
-                                                                Utils.dirDoesDirectoryExist (Stuff.package cache pkg vsn ++ "/src")
-                                                                    |> Task.fmap
-                                                                        (\srcExists ->
-                                                                            if srcExists then
-                                                                                ISOk (toNewState cs) cs
 
-                                                                            else
-                                                                                ISBack state
-                                                                        )
+type alias ConstraintLoadContext =
+    { state : State
+    , cache : Stuff.PackageCache
+    , connection : Connection
+    , registry : Registry.Registry
+    , cDict : Dict ( ( String, String ), ( Int, Int, Int ) ) ( Pkg.Name, V.Version ) Constraints
+    , key : ( Pkg.Name, V.Version )
+    , pkg : Pkg.Name
+    , vsn : V.Version
+    , home : String
+    , path : String
+    }
 
-                                                    Err _ ->
-                                                        File.remove path
-                                                            |> Task.fmap (\_ -> ISErr (Exit.SolverBadCacheData pkg vsn))
-                                            )
 
-                                else
-                                    case connection of
-                                        Offline ->
-                                            Task.pure (ISBack state)
+loadConstraintsFromCacheOrNetwork : ConstraintLoadContext -> Bool -> Task Never (InnerSolver Constraints)
+loadConstraintsFromCacheOrNetwork ctx outlineExists =
+    if outlineExists then
+        loadConstraintsFromCache ctx
 
-                                        Online manager ->
-                                            Website.metadata pkg vsn "elm.json"
-                                                |> Task.bind
-                                                    (\url ->
-                                                        Http.get manager url [] identity (Task.pure << Ok)
-                                                            |> Task.bind
-                                                                (\result ->
-                                                                    case result of
-                                                                        Err httpProblem ->
-                                                                            Task.pure (ISErr (Exit.SolverBadHttp pkg vsn httpProblem))
+    else
+        loadConstraintsFromNetwork ctx
 
-                                                                        Ok body ->
-                                                                            case D.fromByteString constraintsDecoder body of
-                                                                                Ok cs ->
-                                                                                    Utils.dirCreateDirectoryIfMissing True home
-                                                                                        |> Task.bind (\_ -> File.writeUtf8 path body)
-                                                                                        |> Task.fmap (\_ -> ISOk (toNewState cs) cs)
 
-                                                                                Err _ ->
-                                                                                    Task.pure (ISErr (Exit.SolverBadHttpData pkg vsn url))
-                                                                )
-                                                    )
-                            )
+loadConstraintsFromCache : ConstraintLoadContext -> Task Never (InnerSolver Constraints)
+loadConstraintsFromCache ctx =
+    File.readUtf8 ctx.path
+        |> Task.andThen (parseAndValidateCachedConstraints ctx)
+
+
+parseAndValidateCachedConstraints : ConstraintLoadContext -> String -> Task Never (InnerSolver Constraints)
+parseAndValidateCachedConstraints ctx bytes =
+    case D.fromByteString constraintsDecoder bytes of
+        Ok cs ->
+            validateCachedConstraints ctx cs
+
+        Err _ ->
+            File.remove ctx.path
+                |> Task.map (\_ -> ISErr (Exit.SolverBadCacheData ctx.pkg ctx.vsn))
+
+
+validateCachedConstraints : ConstraintLoadContext -> Constraints -> Task Never (InnerSolver Constraints)
+validateCachedConstraints ctx cs =
+    let
+        newState : State
+        newState =
+            State ctx.cache ctx.connection ctx.registry (Dict.insert (Tuple.mapSecond V.toComparable) ctx.key cs ctx.cDict)
+    in
+    case ctx.connection of
+        Online _ ->
+            Task.succeed (ISOk newState cs)
+
+        Offline ->
+            Utils.dirDoesDirectoryExist (ctx.home ++ "/src")
+                |> Task.map (checkSrcExists ctx.state newState cs)
+
+
+checkSrcExists : State -> State -> Constraints -> Bool -> InnerSolver Constraints
+checkSrcExists oldState newState cs srcExists =
+    if srcExists then
+        ISOk newState cs
+
+    else
+        ISBack oldState
+
+
+loadConstraintsFromNetwork : ConstraintLoadContext -> Task Never (InnerSolver Constraints)
+loadConstraintsFromNetwork ctx =
+    case ctx.connection of
+        Offline ->
+            Task.succeed (ISBack ctx.state)
+
+        Online manager ->
+            Website.metadata ctx.pkg ctx.vsn "elm.json"
+                |> Task.andThen (fetchAndCacheConstraints ctx manager)
+
+
+fetchAndCacheConstraints : ConstraintLoadContext -> Http.Manager -> String -> Task Never (InnerSolver Constraints)
+fetchAndCacheConstraints ctx manager url =
+    Http.get manager url [] identity (Task.succeed << Ok)
+        |> Task.andThen (handleHttpResult ctx url)
+
+
+handleHttpResult : ConstraintLoadContext -> String -> Result Http.Error String -> Task Never (InnerSolver Constraints)
+handleHttpResult ctx url result =
+    case result of
+        Err httpProblem ->
+            Task.succeed (ISErr (Exit.SolverBadHttp ctx.pkg ctx.vsn httpProblem))
+
+        Ok body ->
+            parseAndCacheConstraints ctx url body
+
+
+parseAndCacheConstraints : ConstraintLoadContext -> String -> String -> Task Never (InnerSolver Constraints)
+parseAndCacheConstraints ctx url body =
+    case D.fromByteString constraintsDecoder body of
+        Ok cs ->
+            cacheConstraintsAndReturn ctx cs body
+
+        Err _ ->
+            Task.succeed (ISErr (Exit.SolverBadHttpData ctx.pkg ctx.vsn url))
+
+
+cacheConstraintsAndReturn : ConstraintLoadContext -> Constraints -> String -> Task Never (InnerSolver Constraints)
+cacheConstraintsAndReturn ctx cs body =
+    let
+        newState : State
+        newState =
+            State ctx.cache ctx.connection ctx.registry (Dict.insert (Tuple.mapSecond V.toComparable) ctx.key cs ctx.cDict)
+    in
+    Utils.dirCreateDirectoryIfMissing True ctx.home
+        |> Task.andThen (\_ -> File.writeUtf8 ctx.path body)
+        |> Task.map (\_ -> ISOk newState cs)
 
 
 constraintsDecoder : D.Decoder () Constraints
 constraintsDecoder =
     D.mapError (\_ -> ()) Outline.decoder
-        |> D.bind
+        |> D.andThen
             (\outline ->
                 case outline of
                     Outline.Pkg (Outline.PkgOutline _ _ _ _ _ deps _ elmConstraint) ->
@@ -574,50 +642,71 @@ type Env
 initEnv : Task Never (Result Exit.RegistryProblem Env)
 initEnv =
     Utils.newEmptyMVar
-        |> Task.bind
-            (\mvar ->
-                Utils.forkIO (Task.bind (Utils.putMVar Http.managerEncoder mvar) Http.getManager)
-                    |> Task.bind
-                        (\_ ->
-                            Stuff.getPackageCache
-                                |> Task.bind
-                                    (\cache ->
-                                        Stuff.withRegistryLock cache
-                                            (Registry.read cache
-                                                |> Task.bind
-                                                    (\maybeRegistry ->
-                                                        Utils.readMVar Http.managerDecoder mvar
-                                                            |> Task.bind
-                                                                (\manager ->
-                                                                    case maybeRegistry of
-                                                                        Nothing ->
-                                                                            Registry.fetch manager cache
-                                                                                |> Task.fmap
-                                                                                    (\eitherRegistry ->
-                                                                                        case eitherRegistry of
-                                                                                            Ok latestRegistry ->
-                                                                                                Ok <| Env cache manager (Online manager) latestRegistry
+        |> Task.andThen forkHttpManagerAndInitCache
 
-                                                                                            Err problem ->
-                                                                                                Err problem
-                                                                                    )
 
-                                                                        Just cachedRegistry ->
-                                                                            Registry.update manager cache cachedRegistry
-                                                                                |> Task.fmap
-                                                                                    (\eitherRegistry ->
-                                                                                        case eitherRegistry of
-                                                                                            Ok latestRegistry ->
-                                                                                                Ok <| Env cache manager (Online manager) latestRegistry
+forkHttpManagerAndInitCache : Utils.MVar Http.Manager -> Task Never (Result Exit.RegistryProblem Env)
+forkHttpManagerAndInitCache mvar =
+    Utils.forkIO (Http.getManager |> Task.andThen (Utils.putMVar Http.managerEncoder mvar))
+        |> Task.andThen (\_ -> Stuff.getPackageCache)
+        |> Task.andThen (\cache -> initEnvWithCache cache mvar)
 
-                                                                                            Err _ ->
-                                                                                                Ok <| Env cache manager Offline cachedRegistry
-                                                                                    )
-                                                                )
-                                                    )
-                                            )
-                                    )
-                        )
+
+{-| Initialize environment with a package cache.
+-}
+initEnvWithCache : Stuff.PackageCache -> Utils.MVar Http.Manager -> Task Never (Result Exit.RegistryProblem Env)
+initEnvWithCache cache mvar =
+    Stuff.withRegistryLock cache
+        (Registry.read cache
+            |> Task.andThen (loadRegistry cache mvar)
+        )
+
+
+{-| Load or fetch the registry.
+-}
+loadRegistry : Stuff.PackageCache -> Utils.MVar Http.Manager -> Maybe Registry.Registry -> Task Never (Result Exit.RegistryProblem Env)
+loadRegistry cache mvar maybeRegistry =
+    Utils.readMVar Http.managerDecoder mvar
+        |> Task.andThen
+            (\manager ->
+                case maybeRegistry of
+                    Nothing ->
+                        fetchNewRegistry cache manager
+
+                    Just cachedRegistry ->
+                        updateCachedRegistry cache manager cachedRegistry
+            )
+
+
+{-| Fetch a new registry when none is cached.
+-}
+fetchNewRegistry : Stuff.PackageCache -> Http.Manager -> Task Never (Result Exit.RegistryProblem Env)
+fetchNewRegistry cache manager =
+    Registry.fetch manager cache
+        |> Task.map
+            (\eitherRegistry ->
+                case eitherRegistry of
+                    Ok latestRegistry ->
+                        Ok <| Env cache manager (Online manager) latestRegistry
+
+                    Err problem ->
+                        Err problem
+            )
+
+
+{-| Update a cached registry, falling back to offline mode on failure.
+-}
+updateCachedRegistry : Stuff.PackageCache -> Http.Manager -> Registry.Registry -> Task Never (Result Exit.RegistryProblem Env)
+updateCachedRegistry cache manager cachedRegistry =
+    Registry.update manager cache cachedRegistry
+        |> Task.map
+            (\eitherRegistry ->
+                case eitherRegistry of
+                    Ok latestRegistry ->
+                        Ok <| Env cache manager (Online manager) latestRegistry
+
+                    Err _ ->
+                        Ok <| Env cache manager Offline cachedRegistry
             )
 
 
@@ -625,12 +714,12 @@ initEnv =
 -- INSTANCES
 
 
-fmap : (a -> b) -> Solver a -> Solver b
-fmap func (Solver solver) =
+map : (a -> b) -> Solver a -> Solver b
+map func (Solver solver) =
     Solver <|
         \state ->
             solver state
-                |> Task.fmap
+                |> Task.map
                     (\result ->
                         case result of
                             ISOk stateA arg ->
@@ -646,15 +735,15 @@ fmap func (Solver solver) =
 
 pure : a -> Solver a
 pure a =
-    Solver (\state -> Task.pure (ISOk state a))
+    Solver (\state -> Task.succeed (ISOk state a))
 
 
-bind : (a -> Solver b) -> Solver a -> Solver b
-bind callback (Solver solverA) =
+andThen : (a -> Solver b) -> Solver a -> Solver b
+andThen callback (Solver solverA) =
     Solver <|
         \state ->
             solverA state
-                |> Task.bind
+                |> Task.andThen
                     (\resA ->
                         case resA of
                             ISOk stateA a ->
@@ -663,10 +752,10 @@ bind callback (Solver solverA) =
                                         solverB stateA
 
                             ISBack stateA ->
-                                Task.pure (ISBack stateA)
+                                Task.succeed (ISBack stateA)
 
                             ISErr e ->
-                                Task.pure (ISErr e)
+                                Task.succeed (ISErr e)
                     )
 
 
@@ -680,11 +769,11 @@ oneOf ((Solver solverHead) as solver) solvers =
             Solver <|
                 \state0 ->
                     solverHead state0
-                        |> Task.bind
+                        |> Task.andThen
                             (\result ->
                                 case result of
                                     ISOk stateA arg ->
-                                        Task.pure (ISOk stateA arg)
+                                        Task.succeed (ISOk stateA arg)
 
                                     ISBack stateA ->
                                         let
@@ -694,7 +783,7 @@ oneOf ((Solver solverHead) as solver) solvers =
                                         solverTail stateA
 
                                     ISErr e ->
-                                        Task.pure (ISErr e)
+                                        Task.succeed (ISErr e)
                             )
 
 
@@ -702,21 +791,21 @@ backtrack : Solver a
 backtrack =
     Solver <|
         \state ->
-            Task.pure (ISBack state)
+            Task.succeed (ISBack state)
 
 
 foldM : (b -> a -> Solver b) -> b -> List a -> Solver b
 foldM f b =
-    List.foldl (\a -> bind (\acc -> f acc a)) (pure b)
+    List.foldl (\a -> andThen (\acc -> f acc a)) (pure b)
 
 
 
 -- ENCODERS and DECODERS
 
 
-envEncoder : Env -> BE.Encoder
+envEncoder : Env -> Bytes.Encode.Encoder
 envEncoder (Env cache manager connection registry) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ Stuff.packageCacheEncoder cache
         , Http.managerEncoder manager
         , connectionEncoder connection
@@ -724,40 +813,40 @@ envEncoder (Env cache manager connection registry) =
         ]
 
 
-envDecoder : BD.Decoder Env
+envDecoder : Bytes.Decode.Decoder Env
 envDecoder =
-    BD.map4 Env
+    Bytes.Decode.map4 Env
         Stuff.packageCacheDecoder
         Http.managerDecoder
         connectionDecoder
         Registry.registryDecoder
 
 
-connectionEncoder : Connection -> BE.Encoder
+connectionEncoder : Connection -> Bytes.Encode.Encoder
 connectionEncoder connection =
     case connection of
         Online manager ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , Http.managerEncoder manager
                 ]
 
         Offline ->
-            BE.unsignedInt8 1
+            Bytes.Encode.unsignedInt8 1
 
 
-connectionDecoder : BD.Decoder Connection
+connectionDecoder : Bytes.Decode.Decoder Connection
 connectionDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map Online Http.managerDecoder
+                        Bytes.Decode.map Online Http.managerDecoder
 
                     1 ->
-                        BD.succeed Offline
+                        Bytes.Decode.succeed Offline
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

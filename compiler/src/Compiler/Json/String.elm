@@ -2,20 +2,10 @@ module Compiler.Json.String exposing
     ( fromComment
     , fromName
     , fromSnippet
-    , isEmpty
     )
 
 import Compiler.Data.Name as Name
 import Compiler.Parse.Primitives as P
-
-
-
--- JSON STRINGS
-
-
-isEmpty : String -> Bool
-isEmpty =
-    String.isEmpty
 
 
 

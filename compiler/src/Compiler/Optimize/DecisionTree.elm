@@ -30,7 +30,9 @@ import Hex.Convert
 import Prelude
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
@@ -310,12 +312,12 @@ testsAtPath selectedPath branches =
 
         skipVisited : Test -> ( List Test, EverySet.EverySet String Test ) -> ( List Test, EverySet.EverySet String Test )
         skipVisited test (( uniqueTests, visitedTests ) as curr) =
-            if EverySet.member (Hex.Convert.toString << BE.encode << testEncoder) test visitedTests then
+            if EverySet.member (Hex.Convert.toString << Bytes.Encode.encode << testEncoder) test visitedTests then
                 curr
 
             else
                 ( test :: uniqueTests
-                , EverySet.insert (Hex.Convert.toString << BE.encode << testEncoder) test visitedTests
+                , EverySet.insert (Hex.Convert.toString << Bytes.Encode.encode << testEncoder) test visitedTests
                 )
     in
     Tuple.first (List.foldr skipVisited ( [], EverySet.empty ) allTests)
@@ -692,54 +694,54 @@ smallBranchingFactor branches path =
 -- ENCODERS and DECODERS
 
 
-pathEncoder : Path -> BE.Encoder
+pathEncoder : Path -> Bytes.Encode.Encoder
 pathEncoder path_ =
     case path_ of
         Index index path ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , Index.zeroBasedEncoder index
                 , pathEncoder path
                 ]
 
         Unbox path ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , pathEncoder path
                 ]
 
         Empty ->
-            BE.unsignedInt8 2
+            Bytes.Encode.unsignedInt8 2
 
 
-pathDecoder : BD.Decoder Path
+pathDecoder : Bytes.Decode.Decoder Path
 pathDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map2 Index
+                        Bytes.Decode.map2 Index
                             Index.zeroBasedDecoder
                             pathDecoder
 
                     1 ->
-                        BD.map Unbox pathDecoder
+                        Bytes.Decode.map Unbox pathDecoder
 
                     2 ->
-                        BD.succeed Empty
+                        Bytes.Decode.succeed Empty
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-testEncoder : Test -> BE.Encoder
+testEncoder : Test -> Bytes.Encode.Encoder
 testEncoder test =
     case test of
         IsCtor home name index numAlts opts ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , ModuleName.canonicalEncoder home
                 , BE.string name
                 , Index.zeroBasedEncoder index
@@ -748,47 +750,47 @@ testEncoder test =
                 ]
 
         IsCons ->
-            BE.unsignedInt8 1
+            Bytes.Encode.unsignedInt8 1
 
         IsNil ->
-            BE.unsignedInt8 2
+            Bytes.Encode.unsignedInt8 2
 
         IsTuple ->
-            BE.unsignedInt8 3
+            Bytes.Encode.unsignedInt8 3
 
         IsInt value ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.int value
                 ]
 
         IsChr value ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.string value
                 ]
 
         IsStr value ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , BE.string value
                 ]
 
         IsBool value ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , BE.bool value
                 ]
 
 
-testDecoder : BD.Decoder Test
+testDecoder : Bytes.Decode.Decoder Test
 testDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map5 IsCtor
+                        Bytes.Decode.map5 IsCtor
                             ModuleName.canonicalDecoder
                             BD.string
                             Index.zeroBasedDecoder
@@ -796,26 +798,26 @@ testDecoder =
                             Can.ctorOptsDecoder
 
                     1 ->
-                        BD.succeed IsCons
+                        Bytes.Decode.succeed IsCons
 
                     2 ->
-                        BD.succeed IsNil
+                        Bytes.Decode.succeed IsNil
 
                     3 ->
-                        BD.succeed IsTuple
+                        Bytes.Decode.succeed IsTuple
 
                     4 ->
-                        BD.map IsInt BD.int
+                        Bytes.Decode.map IsInt BD.int
 
                     5 ->
-                        BD.map IsChr BD.string
+                        Bytes.Decode.map IsChr BD.string
 
                     6 ->
-                        BD.map IsStr BD.string
+                        Bytes.Decode.map IsStr BD.string
 
                     7 ->
-                        BD.map IsBool BD.bool
+                        Bytes.Decode.map IsBool BD.bool
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

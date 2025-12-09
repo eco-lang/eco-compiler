@@ -29,19 +29,19 @@ constrain (Can.Module home _ _ decls _ _ _ effects) =
             case manager of
                 Can.Cmd cmdName ->
                     constrainEffects home r0 r1 r2 manager
-                        |> IO.bind (constrainDecls decls)
-                        |> IO.bind (letCmd home cmdName)
+                        |> IO.andThen (constrainDecls decls)
+                        |> IO.andThen (letCmd home cmdName)
 
                 Can.Sub subName ->
                     constrainEffects home r0 r1 r2 manager
-                        |> IO.bind (constrainDecls decls)
-                        |> IO.bind (letSub home subName)
+                        |> IO.andThen (constrainDecls decls)
+                        |> IO.andThen (letSub home subName)
 
                 Can.Fx cmdName subName ->
                     constrainEffects home r0 r1 r2 manager
-                        |> IO.bind (constrainDecls decls)
-                        |> IO.bind (letSub home subName)
-                        |> IO.bind (letCmd home cmdName)
+                        |> IO.andThen (constrainDecls decls)
+                        |> IO.andThen (letSub home subName)
+                        |> IO.andThen (letCmd home cmdName)
 
 
 
@@ -57,10 +57,10 @@ constrainDeclsHelp : Can.Decls -> Constraint -> (IO Constraint -> IO Constraint)
 constrainDeclsHelp decls finalConstraint cont =
     case decls of
         Can.Declare def otherDecls ->
-            constrainDeclsHelp otherDecls finalConstraint (IO.bind (Expr.constrainDef Dict.empty def) >> cont)
+            constrainDeclsHelp otherDecls finalConstraint (IO.andThen (Expr.constrainDef Dict.empty def) >> cont)
 
         Can.DeclareRec def defs otherDecls ->
-            constrainDeclsHelp otherDecls finalConstraint (IO.bind (Expr.constrainRecursiveDefs Dict.empty (def :: defs)) >> cont)
+            constrainDeclsHelp otherDecls finalConstraint (IO.andThen (Expr.constrainRecursiveDefs Dict.empty (def :: defs)) >> cont)
 
         Can.SaveTheEnvironment ->
             cont (IO.pure finalConstraint)
@@ -75,33 +75,33 @@ letPort name port_ makeConstraint =
     case port_ of
         Can.Incoming { freeVars, func } ->
             IO.traverseMapWithKey identity compare (\k _ -> nameToRigid k) freeVars
-                |> IO.bind
+                |> IO.andThen
                     (\vars ->
                         Instantiate.fromSrcType (Dict.map (\_ v -> VarN v) vars) func
-                            |> IO.bind
+                            |> IO.andThen
                                 (\tipe ->
                                     let
                                         header : Dict String Name (A.Located Type)
                                         header =
                                             Dict.singleton identity name (A.At A.zero tipe)
                                     in
-                                    IO.fmap (CLet (Dict.values compare vars) [] header CTrue) makeConstraint
+                                    IO.map (CLet (Dict.values compare vars) [] header CTrue) makeConstraint
                                 )
                     )
 
         Can.Outgoing { freeVars, func } ->
             IO.traverseMapWithKey identity compare (\k _ -> nameToRigid k) freeVars
-                |> IO.bind
+                |> IO.andThen
                     (\vars ->
                         Instantiate.fromSrcType (Dict.map (\_ v -> VarN v) vars) func
-                            |> IO.bind
+                            |> IO.andThen
                                 (\tipe ->
                                     let
                                         header : Dict String Name (A.Located Type)
                                         header =
                                             Dict.singleton identity name (A.At A.zero tipe)
                                     in
-                                    IO.fmap (CLet (Dict.values compare vars) [] header CTrue) makeConstraint
+                                    IO.map (CLet (Dict.values compare vars) [] header CTrue) makeConstraint
                                 )
                     )
 
@@ -113,7 +113,7 @@ letPort name port_ makeConstraint =
 letCmd : IO.Canonical -> Name -> Constraint -> IO Constraint
 letCmd home tipe constraint =
     mkFlexVar
-        |> IO.fmap
+        |> IO.map
             (\msgVar ->
                 let
                     msg : Type
@@ -135,7 +135,7 @@ letCmd home tipe constraint =
 letSub : IO.Canonical -> Name -> Constraint -> IO Constraint
 letSub home tipe constraint =
     mkFlexVar
-        |> IO.fmap
+        |> IO.map
             (\msgVar ->
                 let
                     msg : Type
@@ -157,25 +157,25 @@ letSub home tipe constraint =
 constrainEffects : IO.Canonical -> A.Region -> A.Region -> A.Region -> Can.Manager -> IO Constraint
 constrainEffects home r0 r1 r2 manager =
     mkFlexVar
-        |> IO.bind
+        |> IO.andThen
             (\s0 ->
                 mkFlexVar
-                    |> IO.bind
+                    |> IO.andThen
                         (\s1 ->
                             mkFlexVar
-                                |> IO.bind
+                                |> IO.andThen
                                     (\s2 ->
                                         mkFlexVar
-                                            |> IO.bind
+                                            |> IO.andThen
                                                 (\m1 ->
                                                     mkFlexVar
-                                                        |> IO.bind
+                                                        |> IO.andThen
                                                             (\m2 ->
                                                                 mkFlexVar
-                                                                    |> IO.bind
+                                                                    |> IO.andThen
                                                                         (\sm1 ->
                                                                             mkFlexVar
-                                                                                |> IO.bind
+                                                                                |> IO.andThen
                                                                                     (\sm2 ->
                                                                                         let
                                                                                             state0 : Type
@@ -210,17 +210,30 @@ constrainEffects home r0 r1 r2 manager =
                                                                                             onSelfMsg =
                                                                                                 Type.funType (router msg2 self2) (Type.funType self2 (Type.funType state2 (task state2)))
 
+                                                                                            routerArg : Type
+                                                                                            routerArg =
+                                                                                                router msg1 self1
+
+                                                                                            stateToTask : Type
+                                                                                            stateToTask =
+                                                                                                Type.funType state1 (task state1)
+
                                                                                             onEffects : Type
                                                                                             onEffects =
                                                                                                 case manager of
                                                                                                     Can.Cmd cmd ->
-                                                                                                        Type.funType (router msg1 self1) (Type.funType (effectList home cmd msg1) (Type.funType state1 (task state1)))
+                                                                                                        Type.funType routerArg
+                                                                                                            (Type.funType (effectList home cmd msg1) stateToTask)
 
                                                                                                     Can.Sub sub ->
-                                                                                                        Type.funType (router msg1 self1) (Type.funType (effectList home sub msg1) (Type.funType state1 (task state1)))
+                                                                                                        Type.funType routerArg
+                                                                                                            (Type.funType (effectList home sub msg1) stateToTask)
 
                                                                                                     Can.Fx cmd sub ->
-                                                                                                        Type.funType (router msg1 self1) (Type.funType (effectList home cmd msg1) (Type.funType (effectList home sub msg1) (Type.funType state1 (task state1))))
+                                                                                                        Type.funType routerArg
+                                                                                                            (Type.funType (effectList home cmd msg1)
+                                                                                                                (Type.funType (effectList home sub msg1) stateToTask)
+                                                                                                            )
 
                                                                                             effectCons : Constraint
                                                                                             effectCons =
@@ -233,7 +246,7 @@ constrainEffects home r0 r1 r2 manager =
                                                                                                     , CEqual r2 E.Effects self1 (E.NoExpectation self2)
                                                                                                     ]
                                                                                         in
-                                                                                        IO.fmap (CLet [] [ s0, s1, s2, m1, m2, sm1, sm2 ] Dict.empty effectCons)
+                                                                                        IO.map (CLet [] [ s0, s1, s2, m1, m2, sm1, sm2 ] Dict.empty effectCons)
                                                                                             (case manager of
                                                                                                 Can.Cmd cmd ->
                                                                                                     checkMap "cmdMap" home cmd CSaveTheEnvironment
@@ -242,7 +255,7 @@ constrainEffects home r0 r1 r2 manager =
                                                                                                     checkMap "subMap" home sub CSaveTheEnvironment
 
                                                                                                 Can.Fx cmd sub ->
-                                                                                                    IO.bind (checkMap "cmdMap" home cmd)
+                                                                                                    IO.andThen (checkMap "cmdMap" home cmd)
                                                                                                         (checkMap "subMap" home sub CSaveTheEnvironment)
                                                                                             )
                                                                                     )
@@ -272,10 +285,10 @@ router msg self =
 checkMap : Name -> IO.Canonical -> Name -> Constraint -> IO Constraint
 checkMap name home tipe constraint =
     mkFlexVar
-        |> IO.bind
+        |> IO.andThen
             (\a ->
                 mkFlexVar
-                    |> IO.fmap
+                    |> IO.map
                         (\b ->
                             let
                                 mapType : Type

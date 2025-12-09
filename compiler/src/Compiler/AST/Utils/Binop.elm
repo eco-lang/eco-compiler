@@ -14,7 +14,9 @@ module Compiler.AST.Utils.Binop exposing
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 
@@ -82,19 +84,19 @@ jsonAssociativityDecoder =
 -- ENCODERS and DECODERS
 
 
-precedenceEncoder : Precedence -> BE.Encoder
+precedenceEncoder : Precedence -> Bytes.Encode.Encoder
 precedenceEncoder =
     BE.int
 
 
-precedenceDecoder : BD.Decoder Precedence
+precedenceDecoder : Bytes.Decode.Decoder Precedence
 precedenceDecoder =
     BD.int
 
 
-associativityEncoder : Associativity -> BE.Encoder
+associativityEncoder : Associativity -> Bytes.Encode.Encoder
 associativityEncoder associativity =
-    BE.unsignedInt8
+    Bytes.Encode.unsignedInt8
         (case associativity of
             Left ->
                 0
@@ -107,21 +109,21 @@ associativityEncoder associativity =
         )
 
 
-associativityDecoder : BD.Decoder Associativity
+associativityDecoder : Bytes.Decode.Decoder Associativity
 associativityDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed Left
+                        Bytes.Decode.succeed Left
 
                     1 ->
-                        BD.succeed Non
+                        Bytes.Decode.succeed Non
 
                     2 ->
-                        BD.succeed Right
+                        Bytes.Decode.succeed Right
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

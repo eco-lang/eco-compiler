@@ -30,15 +30,15 @@ import Utils.Main as Utils
 run : Constraint -> IO (Result (NE.Nonempty Error.Error) (Dict String Name.Name Can.Annotation))
 run constraint =
     MVector.replicate 8 []
-        |> IO.bind
+        |> IO.andThen
             (\pools ->
                 solve Dict.empty Type.outermostRank pools emptyState constraint
-                    |> IO.bind
+                    |> IO.andThen
                         (\(State env _ errors) ->
                             case errors of
                                 [] ->
                                     IO.traverseMap identity compare Type.toAnnotation env
-                                        |> IO.fmap Ok
+                                        |> IO.map Ok
 
                                 e :: es ->
                                     IO.pure (Err (NE.Nonempty e es))
@@ -76,31 +76,31 @@ solveHelp : ( ( Env, Int ), ( Pools, State ), ( Type.Constraint, IO State -> IO 
 solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constraint, cont ) ) =
     case constraint of
         CTrue ->
-            IO.fmap IO.Done <| cont <| IO.pure state
+            IO.map IO.Done <| cont <| IO.pure state
 
         CSaveTheEnvironment ->
-            IO.fmap IO.Done <| cont <| IO.pure (State env sMark sErrors)
+            IO.map IO.Done <| cont <| IO.pure (State env sMark sErrors)
 
         CEqual region category tipe expectation ->
             typeToVariable rank pools tipe
-                |> IO.bind
+                |> IO.andThen
                     (\actual ->
                         expectedToVariable rank pools expectation
-                            |> IO.bind
+                            |> IO.andThen
                                 (\expected ->
                                     Unify.unify actual expected
-                                        |> IO.bind
+                                        |> IO.andThen
                                             (\answer ->
                                                 case answer of
                                                     Unify.AnswerOk vars ->
                                                         introduce rank pools vars
-                                                            |> IO.bind (\_ -> IO.fmap IO.Done <| cont <| IO.pure state)
+                                                            |> IO.andThen (\_ -> IO.map IO.Done <| cont <| IO.pure state)
 
                                                     Unify.AnswerErr vars actualType expectedType ->
                                                         introduce rank pools vars
-                                                            |> IO.bind
+                                                            |> IO.andThen
                                                                 (\_ ->
-                                                                    IO.fmap IO.Done <|
+                                                                    IO.map IO.Done <|
                                                                         cont <|
                                                                             IO.pure <|
                                                                                 addError state <|
@@ -113,24 +113,24 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
 
         CLocal region name expectation ->
             makeCopy rank pools (Utils.find identity name env)
-                |> IO.bind
+                |> IO.andThen
                     (\actual ->
                         expectedToVariable rank pools expectation
-                            |> IO.bind
+                            |> IO.andThen
                                 (\expected ->
                                     Unify.unify actual expected
-                                        |> IO.bind
+                                        |> IO.andThen
                                             (\answer ->
                                                 case answer of
                                                     Unify.AnswerOk vars ->
                                                         introduce rank pools vars
-                                                            |> IO.bind (\_ -> IO.fmap IO.Done <| cont <| IO.pure state)
+                                                            |> IO.andThen (\_ -> IO.map IO.Done <| cont <| IO.pure state)
 
                                                     Unify.AnswerErr vars actualType expectedType ->
                                                         introduce rank pools vars
-                                                            |> IO.bind
+                                                            |> IO.andThen
                                                                 (\_ ->
-                                                                    IO.fmap IO.Done <|
+                                                                    IO.map IO.Done <|
                                                                         cont <|
                                                                             IO.pure <|
                                                                                 addError state <|
@@ -143,24 +143,24 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
 
         CForeign region name (Can.Forall freeVars srcType) expectation ->
             srcTypeToVariable rank pools freeVars srcType
-                |> IO.bind
+                |> IO.andThen
                     (\actual ->
                         expectedToVariable rank pools expectation
-                            |> IO.bind
+                            |> IO.andThen
                                 (\expected ->
                                     Unify.unify actual expected
-                                        |> IO.bind
+                                        |> IO.andThen
                                             (\answer ->
                                                 case answer of
                                                     Unify.AnswerOk vars ->
                                                         introduce rank pools vars
-                                                            |> IO.bind (\_ -> IO.fmap IO.Done <| cont <| IO.pure state)
+                                                            |> IO.andThen (\_ -> IO.map IO.Done <| cont <| IO.pure state)
 
                                                     Unify.AnswerErr vars actualType expectedType ->
                                                         introduce rank pools vars
-                                                            |> IO.bind
+                                                            |> IO.andThen
                                                                 (\_ ->
-                                                                    IO.fmap IO.Done <|
+                                                                    IO.map IO.Done <|
                                                                         cont <|
                                                                             IO.pure <|
                                                                                 addError state <|
@@ -173,24 +173,24 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
 
         CPattern region category tipe expectation ->
             typeToVariable rank pools tipe
-                |> IO.bind
+                |> IO.andThen
                     (\actual ->
                         patternExpectationToVariable rank pools expectation
-                            |> IO.bind
+                            |> IO.andThen
                                 (\expected ->
                                     Unify.unify actual expected
-                                        |> IO.bind
+                                        |> IO.andThen
                                             (\answer ->
                                                 case answer of
                                                     Unify.AnswerOk vars ->
                                                         introduce rank pools vars
-                                                            |> IO.bind (\_ -> IO.fmap IO.Done <| cont <| IO.pure state)
+                                                            |> IO.andThen (\_ -> IO.map IO.Done <| cont <| IO.pure state)
 
                                                     Unify.AnswerErr vars actualType expectedType ->
                                                         introduce rank pools vars
-                                                            |> IO.bind
+                                                            |> IO.andThen
                                                                 (\_ ->
-                                                                    IO.fmap IO.Done <|
+                                                                    IO.map IO.Done <|
                                                                         cont <|
                                                                             IO.pure <|
                                                                                 addError state <|
@@ -204,18 +204,18 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                     )
 
         CAnd constraints ->
-            IO.fmap IO.Done <| cont <| IO.foldM (solve env rank pools) state constraints
+            IO.map IO.Done <| cont <| IO.foldM (solve env rank pools) state constraints
 
         CLet [] flexs _ headerCon CTrue ->
             introduce rank pools flexs
-                |> IO.fmap (\_ -> IO.Loop ( ( env, rank ), ( pools, state ), ( headerCon, cont ) ))
+                |> IO.map (\_ -> IO.Loop ( ( env, rank ), ( pools, state ), ( headerCon, cont ) ))
 
         CLet [] [] header headerCon subCon ->
             solve env rank pools state headerCon
-                |> IO.bind
+                |> IO.andThen
                     (\state1 ->
                         IO.traverseMap identity compare (A.traverse (typeToVariable rank pools)) header
-                            |> IO.fmap
+                            |> IO.map
                                 (\locals ->
                                     let
                                         newEnv : Env
@@ -226,7 +226,7 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                         ( ( newEnv, rank )
                                         , ( pools, state1 )
                                         , ( subCon
-                                          , IO.bind
+                                          , IO.andThen
                                                 (\state2 ->
                                                     IO.foldM occurs state2 (Dict.toList compare locals)
                                                 )
@@ -244,7 +244,7 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                     rank + 1
             in
             MVector.length pools
-                |> IO.bind
+                |> IO.andThen
                     (\poolsLength ->
                         (if nextRank < poolsLength then
                             IO.pure pools
@@ -252,7 +252,7 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                          else
                             MVector.grow pools poolsLength
                         )
-                            |> IO.bind
+                            |> IO.andThen
                                 (\nextPools ->
                                     let
                                         -- introduce variables
@@ -266,17 +266,17 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                                 \(Descriptor content _ mark copy) ->
                                                     Descriptor content nextRank mark copy
                                         )
-                                        |> IO.bind
+                                        |> IO.andThen
                                             (\_ ->
                                                 MVector.write nextPools nextRank vars
-                                                    |> IO.bind
+                                                    |> IO.andThen
                                                         (\_ ->
                                                             -- run solver in next pool
                                                             IO.traverseMap identity compare (A.traverse (typeToVariable nextRank nextPools)) header
-                                                                |> IO.bind
+                                                                |> IO.andThen
                                                                     (\locals ->
                                                                         solve env nextRank nextPools state headerCon
-                                                                            |> IO.bind
+                                                                            |> IO.andThen
                                                                                 (\(State savedEnv mark errors) ->
                                                                                     let
                                                                                         youngMark : Mark
@@ -293,14 +293,14 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                                                                     in
                                                                                     -- pop pool
                                                                                     generalize youngMark visitMark nextRank nextPools
-                                                                                        |> IO.bind
+                                                                                        |> IO.andThen
                                                                                             (\_ ->
                                                                                                 MVector.write nextPools nextRank []
-                                                                                                    |> IO.bind
+                                                                                                    |> IO.andThen
                                                                                                         (\_ ->
                                                                                                             -- check that things went well
                                                                                                             IO.mapM_ isGeneric rigids
-                                                                                                                |> IO.fmap
+                                                                                                                |> IO.map
                                                                                                                     (\_ ->
                                                                                                                         let
                                                                                                                             newEnv : Env
@@ -315,7 +315,7 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                                                                                                             ( ( newEnv, rank )
                                                                                                                             , ( nextPools, tempState )
                                                                                                                             , ( subCon
-                                                                                                                              , IO.bind
+                                                                                                                              , IO.andThen
                                                                                                                                     (\newState ->
                                                                                                                                         IO.foldM occurs newState (Dict.toList compare locals)
                                                                                                                                     )
@@ -340,14 +340,14 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
 isGeneric : Variable -> IO ()
 isGeneric var =
     UF.get var
-        |> IO.bind
+        |> IO.andThen
             (\(Descriptor _ rank _ _) ->
                 if rank == Type.noRank then
                     IO.pure ()
 
                 else
                     Type.toErrorType var
-                        |> IO.bind
+                        |> IO.andThen
                             (\tipe ->
                                 crash <|
                                     "You ran into a compiler bug. Here are some details for the developers:\n\n"
@@ -406,17 +406,17 @@ addError (State savedEnv rank errors) err =
 occurs : State -> ( Name.Name, A.Located Variable ) -> IO State
 occurs state ( name, A.At region variable ) =
     Occurs.occurs variable
-        |> IO.bind
+        |> IO.andThen
             (\hasOccurred ->
                 if hasOccurred then
                     Type.toErrorType variable
-                        |> IO.bind
+                        |> IO.andThen
                             (\errorType ->
                                 UF.get variable
-                                    |> IO.bind
+                                    |> IO.andThen
                                         (\(Descriptor _ rank mark copy) ->
                                             UF.set variable (Descriptor IO.Error rank mark copy)
-                                                |> IO.fmap (\_ -> addError state (Error.InfiniteType region name errorType))
+                                                |> IO.map (\_ -> addError state (Error.InfiniteType region name errorType))
                                         )
                             )
 
@@ -435,10 +435,10 @@ This sorts variables into the young and old pools accordingly.
 generalize : Mark -> Mark -> Int -> Pools -> IO ()
 generalize youngMark visitMark youngRank pools =
     MVector.read pools youngRank
-        |> IO.bind
+        |> IO.andThen
             (\youngVars ->
                 poolToRankTable youngMark youngRank youngVars
-                    |> IO.bind
+                    |> IO.andThen
                         (\rankTable ->
                             -- get the ranks right for each entry.
                             -- start at low ranks so that we only have to pass
@@ -448,7 +448,7 @@ generalize youngMark visitMark youngRank pools =
                                     IO.mapM_ (adjustRank youngMark visitMark rank) table
                                 )
                                 rankTable
-                                |> IO.bind
+                                |> IO.andThen
                                     (\_ ->
                                         -- For variables that have rank lowerer than youngRank, register them in
                                         -- the appropriate old pool if they are not redundant.
@@ -457,39 +457,39 @@ generalize youngMark visitMark youngRank pools =
                                                 IO.forM_ vars
                                                     (\var ->
                                                         UF.redundant var
-                                                            |> IO.bind
+                                                            |> IO.andThen
                                                                 (\isRedundant ->
                                                                     if isRedundant then
                                                                         IO.pure ()
 
                                                                     else
                                                                         UF.get var
-                                                                            |> IO.bind
+                                                                            |> IO.andThen
                                                                                 (\(Descriptor _ rank _ _) ->
                                                                                     MVector.modify pools ((::) var) rank
                                                                                 )
                                                                 )
                                                     )
                                             )
-                                            |> IO.bind
+                                            |> IO.andThen
                                                 (\_ ->
                                                     -- For variables with rank youngRank
                                                     --   If rank < youngRank: register in oldPool
                                                     --   otherwise generalize
                                                     Vector.unsafeLast rankTable
-                                                        |> IO.bind
+                                                        |> IO.andThen
                                                             (\lastRankTable ->
                                                                 IO.forM_ lastRankTable <|
                                                                     \var ->
                                                                         UF.redundant var
-                                                                            |> IO.bind
+                                                                            |> IO.andThen
                                                                                 (\isRedundant ->
                                                                                     if isRedundant then
                                                                                         IO.pure ()
 
                                                                                     else
                                                                                         UF.get var
-                                                                                            |> IO.bind
+                                                                                            |> IO.andThen
                                                                                                 (\(Descriptor content rank mark copy) ->
                                                                                                     if rank < youngRank then
                                                                                                         MVector.modify pools ((::) var) rank
@@ -508,22 +508,22 @@ generalize youngMark visitMark youngRank pools =
 poolToRankTable : Mark -> Int -> List Variable -> IO (IORef (Array (Maybe (List Variable))))
 poolToRankTable youngMark youngRank youngInhabitants =
     MVector.replicate (youngRank + 1) []
-        |> IO.bind
+        |> IO.andThen
             (\mutableTable ->
                 -- Sort the youngPool variables into buckets by rank.
                 IO.forM_ youngInhabitants
                     (\var ->
                         UF.get var
-                            |> IO.bind
+                            |> IO.andThen
                                 (\(Descriptor content rank _ copy) ->
                                     UF.set var (Descriptor content rank youngMark copy)
-                                        |> IO.bind
+                                        |> IO.andThen
                                             (\_ ->
                                                 MVector.modify mutableTable ((::) var) rank
                                             )
                                 )
                     )
-                    |> IO.bind (\_ -> Vector.unsafeFreeze mutableTable)
+                    |> IO.andThen (\_ -> Vector.unsafeFreeze mutableTable)
             )
 
 
@@ -538,18 +538,18 @@ poolToRankTable youngMark youngRank youngInhabitants =
 adjustRank : Mark -> Mark -> Int -> Variable -> IO Int
 adjustRank youngMark visitMark groupRank var =
     UF.get var
-        |> IO.bind
+        |> IO.andThen
             (\(Descriptor content rank mark copy) ->
                 if mark == youngMark then
                     -- Set the variable as marked first because it may be cyclic.
                     UF.set var (Descriptor content rank visitMark copy)
-                        |> IO.bind
+                        |> IO.andThen
                             (\_ ->
                                 adjustRankContent youngMark visitMark groupRank content
-                                    |> IO.bind
+                                    |> IO.andThen
                                         (\maxRank ->
                                             UF.set var (Descriptor content maxRank visitMark copy)
-                                                |> IO.fmap (\_ -> maxRank)
+                                                |> IO.map (\_ -> maxRank)
                                         )
                             )
 
@@ -564,7 +564,7 @@ adjustRank youngMark visitMark groupRank var =
                     in
                     -- TODO how can minRank ever be groupRank?
                     UF.set var (Descriptor content minRank visitMark copy)
-                        |> IO.fmap (\_ -> minRank)
+                        |> IO.map (\_ -> minRank)
             )
 
 
@@ -591,7 +591,7 @@ adjustRankContent youngMark visitMark groupRank content =
         IO.Structure flatType ->
             case flatType of
                 IO.App1 _ _ args ->
-                    IO.foldM (\rank arg -> IO.fmap (max rank) (go arg)) Type.outermostRank args
+                    IO.foldM (\rank arg -> IO.map (max rank) (go arg)) Type.outermostRank args
 
                 IO.Fun1 arg result ->
                     IO.pure max
@@ -604,9 +604,9 @@ adjustRankContent youngMark visitMark groupRank content =
 
                 IO.Record1 fields extension ->
                     go extension
-                        |> IO.bind
+                        |> IO.andThen
                             (\extRank ->
-                                IO.foldMDict compare (\rank field -> IO.fmap (max rank) (go field)) extRank fields
+                                IO.foldMDict compare (\rank field -> IO.map (max rank) (go field)) extRank fields
                             )
 
                 IO.Unit1 ->
@@ -615,18 +615,18 @@ adjustRankContent youngMark visitMark groupRank content =
 
                 IO.Tuple1 a b cs ->
                     go a
-                        |> IO.bind
+                        |> IO.andThen
                             (\ma ->
                                 go b
-                                    |> IO.bind
+                                    |> IO.andThen
                                         (\mb ->
-                                            IO.foldM (\rank -> IO.fmap (max rank) << go) (max ma mb) cs
+                                            IO.foldM (\rank -> IO.map (max rank) << go) (max ma mb) cs
                                         )
                             )
 
         IO.Alias _ _ args _ ->
             -- THEORY: anything in the realVar would be outermostRank
-            IO.foldM (\rank ( _, argVar ) -> IO.fmap (max rank) (go argVar)) Type.outermostRank args
+            IO.foldM (\rank ( _, argVar ) -> IO.map (max rank) (go argVar)) Type.outermostRank args
 
         IO.Error ->
             IO.pure groupRank
@@ -641,7 +641,7 @@ introduce rank pools variables =
     MVector.modify pools
         (\a -> variables ++ a)
         rank
-        |> IO.bind
+        |> IO.andThen
             (\_ ->
                 IO.forM_ variables
                     (\var ->
@@ -684,17 +684,17 @@ typeToVar rank pools aliasDict tipe =
 
         Type.AppN home name args ->
             IO.traverseList go args
-                |> IO.bind
+                |> IO.andThen
                     (\argVars ->
                         register rank pools (IO.Structure (IO.App1 home name argVars))
                     )
 
         Type.FunN a b ->
             go a
-                |> IO.bind
+                |> IO.andThen
                     (\aVar ->
                         go b
-                            |> IO.bind
+                            |> IO.andThen
                                 (\bVar ->
                                     register rank pools (IO.Structure (IO.Fun1 aVar bVar))
                                 )
@@ -702,10 +702,10 @@ typeToVar rank pools aliasDict tipe =
 
         Type.AliasN home name args aliasType ->
             IO.traverseList (IO.traverseTuple go) args
-                |> IO.bind
+                |> IO.andThen
                     (\argVars ->
                         typeToVar rank pools (Dict.fromList identity argVars) aliasType
-                            |> IO.bind
+                            |> IO.andThen
                                 (\aliasVar ->
                                     register rank pools (IO.Alias home name argVars aliasVar)
                                 )
@@ -716,10 +716,10 @@ typeToVar rank pools aliasDict tipe =
 
         Type.RecordN fields ext ->
             IO.traverseMap identity compare go fields
-                |> IO.bind
+                |> IO.andThen
                     (\fieldVars ->
                         go ext
-                            |> IO.bind
+                            |> IO.andThen
                                 (\extVar ->
                                     register rank pools (IO.Structure (IO.Record1 fieldVars extVar))
                                 )
@@ -733,13 +733,13 @@ typeToVar rank pools aliasDict tipe =
 
         Type.TupleN a b cs ->
             go a
-                |> IO.bind
+                |> IO.andThen
                     (\aVar ->
                         go b
-                            |> IO.bind
+                            |> IO.andThen
                                 (\bVar ->
                                     IO.traverseList go cs
-                                        |> IO.bind
+                                        |> IO.andThen
                                             (\cVars ->
                                                 register rank pools (IO.Structure (IO.Tuple1 aVar bVar cVars))
                                             )
@@ -750,10 +750,10 @@ typeToVar rank pools aliasDict tipe =
 register : Int -> Pools -> Content -> IO Variable
 register rank pools content =
     UF.fresh (Descriptor content rank Type.noMark Nothing)
-        |> IO.bind
+        |> IO.andThen
             (\var ->
                 MVector.modify pools ((::) var) rank
-                    |> IO.fmap (\_ -> var)
+                    |> IO.map (\_ -> var)
             )
 
 
@@ -796,10 +796,10 @@ srcTypeToVariable rank pools freeVars srcType =
             UF.fresh (Descriptor (nameToContent name) rank Type.noMark Nothing)
     in
     IO.traverseMapWithKey identity compare makeVar freeVars
-        |> IO.bind
+        |> IO.andThen
             (\flexVars ->
                 MVector.modify pools (\a -> Dict.values compare flexVars ++ a) rank
-                    |> IO.bind (\_ -> srcTypeToVar rank pools flexVars srcType)
+                    |> IO.andThen (\_ -> srcTypeToVar rank pools flexVars srcType)
             )
 
 
@@ -813,10 +813,10 @@ srcTypeToVar rank pools flexVars srcType =
     case srcType of
         Can.TLambda argument result ->
             go argument
-                |> IO.bind
+                |> IO.andThen
                     (\argVar ->
                         go result
-                            |> IO.bind
+                            |> IO.andThen
                                 (\resultVar ->
                                     register rank pools (IO.Structure (IO.Fun1 argVar resultVar))
                                 )
@@ -827,14 +827,14 @@ srcTypeToVar rank pools flexVars srcType =
 
         Can.TType home name args ->
             IO.traverseList go args
-                |> IO.bind
+                |> IO.andThen
                     (\argVars ->
                         register rank pools (IO.Structure (IO.App1 home name argVars))
                     )
 
         Can.TRecord fields maybeExt ->
             IO.traverseMap identity compare (srcFieldTypeToVar rank pools flexVars) fields
-                |> IO.bind
+                |> IO.andThen
                     (\fieldVars ->
                         (case maybeExt of
                             Nothing ->
@@ -843,7 +843,7 @@ srcTypeToVar rank pools flexVars srcType =
                             Just ext ->
                                 IO.pure (Utils.find identity ext flexVars)
                         )
-                            |> IO.bind
+                            |> IO.andThen
                                 (\extVar ->
                                     register rank pools (IO.Structure (IO.Record1 fieldVars extVar))
                                 )
@@ -854,13 +854,13 @@ srcTypeToVar rank pools flexVars srcType =
 
         Can.TTuple a b cs ->
             go a
-                |> IO.bind
+                |> IO.andThen
                     (\aVar ->
                         go b
-                            |> IO.bind
+                            |> IO.andThen
                                 (\bVar ->
                                     IO.traverseList go cs
-                                        |> IO.bind
+                                        |> IO.andThen
                                             (\cVars ->
                                                 register rank pools (IO.Structure (IO.Tuple1 aVar bVar cVars))
                                             )
@@ -869,7 +869,7 @@ srcTypeToVar rank pools flexVars srcType =
 
         Can.TAlias home name args aliasType ->
             IO.traverseList (IO.traverseTuple go) args
-                |> IO.bind
+                |> IO.andThen
                     (\argVars ->
                         (case aliasType of
                             Can.Holey tipe ->
@@ -878,7 +878,7 @@ srcTypeToVar rank pools flexVars srcType =
                             Can.Filled tipe ->
                                 go tipe
                         )
-                            |> IO.bind
+                            |> IO.andThen
                                 (\aliasVar ->
                                     register rank pools (IO.Alias home name argVars aliasVar)
                                 )
@@ -897,17 +897,17 @@ srcFieldTypeToVar rank pools flexVars (Can.FieldType _ srcTipe) =
 makeCopy : Int -> Pools -> Variable -> IO Variable
 makeCopy rank pools var =
     makeCopyHelp rank pools var
-        |> IO.bind
+        |> IO.andThen
             (\copy ->
                 restore var
-                    |> IO.fmap (\_ -> copy)
+                    |> IO.map (\_ -> copy)
             )
 
 
 makeCopyHelp : Int -> Pools -> Variable -> IO Variable
 makeCopyHelp maxRank pools variable =
     UF.get variable
-        |> IO.bind
+        |> IO.andThen
             (\(Descriptor content rank _ maybeCopy) ->
                 case maybeCopy of
                     Just copy ->
@@ -924,17 +924,17 @@ makeCopyHelp maxRank pools variable =
                                     Descriptor c maxRank Type.noMark Nothing
                             in
                             UF.fresh (makeDescriptor content)
-                                |> IO.bind
+                                |> IO.andThen
                                     (\copy ->
                                         MVector.modify pools ((::) copy) maxRank
-                                            |> IO.bind
+                                            |> IO.andThen
                                                 (\_ ->
                                                     -- Link the original variable to the new variable. This lets us
                                                     -- avoid making multiple copies of the variable we are instantiating.
                                                     --
                                                     -- Need to do this before recursively copying to avoid looping.
                                                     UF.set variable (Descriptor content rank Type.noMark (Just copy))
-                                                        |> IO.bind
+                                                        |> IO.andThen
                                                             (\_ ->
                                                                 -- Now we recursively copy the content of the variable.
                                                                 -- We have already marked the variable as copied, so we
@@ -942,10 +942,10 @@ makeCopyHelp maxRank pools variable =
                                                                 case content of
                                                                     IO.Structure term ->
                                                                         traverseFlatType (makeCopyHelp maxRank pools) term
-                                                                            |> IO.bind
+                                                                            |> IO.andThen
                                                                                 (\newTerm ->
                                                                                     UF.set copy (makeDescriptor (IO.Structure newTerm))
-                                                                                        |> IO.fmap (\_ -> copy)
+                                                                                        |> IO.map (\_ -> copy)
                                                                                 )
 
                                                                     IO.FlexVar _ ->
@@ -956,21 +956,21 @@ makeCopyHelp maxRank pools variable =
 
                                                                     IO.RigidVar name ->
                                                                         UF.set copy (makeDescriptor (IO.FlexVar (Just name)))
-                                                                            |> IO.fmap (\_ -> copy)
+                                                                            |> IO.map (\_ -> copy)
 
                                                                     IO.RigidSuper super name ->
                                                                         UF.set copy (makeDescriptor (IO.FlexSuper super (Just name)))
-                                                                            |> IO.fmap (\_ -> copy)
+                                                                            |> IO.map (\_ -> copy)
 
                                                                     IO.Alias home name args realType ->
                                                                         IO.mapM (IO.traverseTuple (makeCopyHelp maxRank pools)) args
-                                                                            |> IO.bind
+                                                                            |> IO.andThen
                                                                                 (\newArgs ->
                                                                                     makeCopyHelp maxRank pools realType
-                                                                                        |> IO.bind
+                                                                                        |> IO.andThen
                                                                                             (\newRealType ->
                                                                                                 UF.set copy (makeDescriptor (IO.Alias home name newArgs newRealType))
-                                                                                                    |> IO.fmap (\_ -> copy)
+                                                                                                    |> IO.map (\_ -> copy)
                                                                                             )
                                                                                 )
 
@@ -989,7 +989,7 @@ makeCopyHelp maxRank pools variable =
 restore : Variable -> IO ()
 restore variable =
     UF.get variable
-        |> IO.bind
+        |> IO.andThen
             (\(Descriptor content _ _ maybeCopy) ->
                 case maybeCopy of
                     Nothing ->
@@ -997,7 +997,7 @@ restore variable =
 
                     Just _ ->
                         UF.set variable (Descriptor content Type.noRank Type.noMark Nothing)
-                            |> IO.bind (\_ -> restoreContent content)
+                            |> IO.andThen (\_ -> restoreContent content)
             )
 
 
@@ -1023,25 +1023,25 @@ restoreContent content =
 
                 IO.Fun1 arg result ->
                     restore arg
-                        |> IO.bind (\_ -> restore result)
+                        |> IO.andThen (\_ -> restore result)
 
                 IO.EmptyRecord1 ->
                     IO.pure ()
 
                 IO.Record1 fields ext ->
                     IO.mapM_ restore (Dict.values compare fields)
-                        |> IO.bind (\_ -> restore ext)
+                        |> IO.andThen (\_ -> restore ext)
 
                 IO.Unit1 ->
                     IO.pure ()
 
                 IO.Tuple1 a b cs ->
                     IO.traverseList restore (a :: b :: cs)
-                        |> IO.fmap (\_ -> ())
+                        |> IO.map (\_ -> ())
 
         IO.Alias _ _ args var ->
             IO.mapM_ restore (List.map Tuple.second args)
-                |> IO.bind (\_ -> restore var)
+                |> IO.andThen (\_ -> restore var)
 
         IO.Error ->
             IO.pure ()
@@ -1055,7 +1055,7 @@ traverseFlatType : (Variable -> IO Variable) -> IO.FlatType -> IO IO.FlatType
 traverseFlatType f flatType =
     case flatType of
         IO.App1 home name args ->
-            IO.fmap (IO.App1 home name) (IO.traverseList f args)
+            IO.map (IO.App1 home name) (IO.traverseList f args)
 
         IO.Fun1 a b ->
             IO.pure IO.Fun1

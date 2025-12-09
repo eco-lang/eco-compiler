@@ -19,7 +19,9 @@ import System.IO as IO
 import Task exposing (Task)
 import Time
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Impure as Impure
 import Utils.Main as Utils exposing (FilePath)
 import Utils.Task.Extra as Task
@@ -35,7 +37,7 @@ type Time
 
 getTime : FilePath -> Task Never Time
 getTime path =
-    Task.fmap Time (Utils.dirGetModificationTime path)
+    Task.map Time (Utils.dirGetModificationTime path)
 
 
 zeroTime : Time
@@ -47,7 +49,7 @@ zeroTime =
 -- BINARY
 
 
-writeBinary : (a -> BE.Encoder) -> FilePath -> a -> Task Never ()
+writeBinary : (a -> Bytes.Encode.Encoder) -> FilePath -> a -> Task Never ()
 writeBinary toEncoder path value =
     let
         dir : FilePath
@@ -55,21 +57,21 @@ writeBinary toEncoder path value =
             Utils.fpDropFileName path
     in
     Utils.dirCreateDirectoryIfMissing True dir
-        |> Task.bind (\_ -> Utils.binaryEncodeFile toEncoder path value)
+        |> Task.andThen (\_ -> Utils.binaryEncodeFile toEncoder path value)
 
 
-readBinary : BD.Decoder a -> FilePath -> Task Never (Maybe a)
+readBinary : Bytes.Decode.Decoder a -> FilePath -> Task Never (Maybe a)
 readBinary decoder path =
     Utils.dirDoesFileExist path
-        |> Task.bind
+        |> Task.andThen
             (\pathExists ->
                 if pathExists then
                     Utils.binaryDecodeFileOrFail decoder path
-                        |> Task.bind
+                        |> Task.andThen
                             (\result ->
                                 case result of
                                     Ok a ->
-                                        Task.pure (Just a)
+                                        Task.succeed (Just a)
 
                                     Err ( offset, message ) ->
                                         IO.hPutStrLn IO.stderr
@@ -84,11 +86,11 @@ readBinary decoder path =
                                                 , "+-------------------------------------------------------------------------------"
                                                 ]
                                             )
-                                            |> Task.fmap (\_ -> Nothing)
+                                            |> Task.map (\_ -> Nothing)
                             )
 
                 else
-                    Task.pure Nothing
+                    Task.succeed Nothing
             )
 
 
@@ -123,7 +125,7 @@ writePackage : FilePath -> Zip.Archive -> Task Never ()
 writePackage destination archive =
     case Zip.zEntries archive of
         [] ->
-            Task.pure ()
+            Task.succeed ()
 
         entry :: entries ->
             let
@@ -154,7 +156,7 @@ writeEntry destination root entry =
             writeUtf8 (Utils.fpCombine destination path) (Zip.fromEntry entry)
 
     else
-        Task.pure ()
+        Task.succeed ()
 
 
 
@@ -173,13 +175,13 @@ exists path =
 remove : FilePath -> Task Never ()
 remove path =
     Utils.dirDoesFileExist path
-        |> Task.bind
+        |> Task.andThen
             (\exists_ ->
                 if exists_ then
                     Utils.dirRemoveFile path
 
                 else
-                    Task.pure ()
+                    Task.succeed ()
             )
 
 
@@ -187,11 +189,11 @@ remove path =
 -- ENCODERS and DECODERS
 
 
-timeEncoder : Time -> BE.Encoder
+timeEncoder : Time -> Bytes.Encode.Encoder
 timeEncoder (Time posix) =
     BE.int (Time.posixToMillis posix)
 
 
-timeDecoder : BD.Decoder Time
+timeDecoder : Bytes.Decode.Decoder Time
 timeDecoder =
-    BD.map (Time << Time.millisToPosix) BD.int
+    Bytes.Decode.map (Time << Time.millisToPosix) BD.int

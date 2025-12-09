@@ -26,28 +26,28 @@ run : Pkg.Name -> Task Never ()
 run pkg =
     Reporting.attempt Exit.installToReport
         (Stuff.findRoot
-            |> Task.bind
+            |> Task.andThen
                 (\maybeRoot ->
                     case maybeRoot of
                         Nothing ->
-                            Task.pure (Err Exit.InstallNoOutline)
+                            Task.succeed (Err Exit.InstallNoOutline)
 
                         Just root ->
                             Task.run
                                 (Task.eio Exit.InstallBadRegistry Solver.initEnv
-                                    |> Task.bind
+                                    |> Task.andThen
                                         (\env ->
                                             Task.eio Exit.InstallBadOutline (Outline.read root)
-                                                |> Task.bind
+                                                |> Task.andThen
                                                     (\oldOutline ->
                                                         case oldOutline of
                                                             Outline.App outline ->
                                                                 makeAppPlan env pkg outline
-                                                                    |> Task.bind (\changes -> attemptChanges root env oldOutline V.toChars changes)
+                                                                    |> Task.andThen (\changes -> attemptChanges root env oldOutline V.toChars changes)
 
                                                             Outline.Pkg outline ->
                                                                 makePkgPlan env pkg outline
-                                                                    |> Task.bind (\changes -> attemptChanges root env oldOutline C.toChars changes)
+                                                                    |> Task.andThen (\changes -> attemptChanges root env oldOutline C.toChars changes)
                                                     )
                                         )
                                 )
@@ -88,17 +88,17 @@ attemptChangesHelp root env oldOutline newOutline =
         BW.withScope
             (\scope ->
                 Outline.write root newOutline
-                    |> Task.bind (\_ -> Details.verifyInstall scope root env newOutline)
-                    |> Task.bind
+                    |> Task.andThen (\_ -> Details.verifyInstall scope root env newOutline)
+                    |> Task.andThen
                         (\result ->
                             case result of
                                 Err exit ->
                                     Outline.write root oldOutline
-                                        |> Task.fmap (\_ -> Err exit)
+                                        |> Task.map (\_ -> Err exit)
 
                                 Ok () ->
                                     IO.putStrLn "Success!"
-                                        |> Task.fmap (\_ -> Ok ())
+                                        |> Task.map (\_ -> Ok ())
                         )
             )
 
@@ -110,13 +110,13 @@ attemptChangesHelp root env oldOutline newOutline =
 makeAppPlan : Solver.Env -> Pkg.Name -> Outline.AppOutline -> Task Exit.Install (Changes V.Version)
 makeAppPlan (Solver.Env cache _ connection registry) pkg ((Outline.AppOutline elmVersion sourceDirs direct indirect testDirect testIndirect) as outline) =
     if Dict.member identity pkg direct then
-        Task.pure AlreadyInstalled
+        Task.succeed AlreadyInstalled
 
     else
         -- is it already indirect?
         case Dict.get identity pkg indirect of
             Just vsn ->
-                Task.pure <|
+                Task.succeed <|
                     PromoteIndirect <|
                         Outline.App <|
                             Outline.AppOutline elmVersion
@@ -130,7 +130,7 @@ makeAppPlan (Solver.Env cache _ connection registry) pkg ((Outline.AppOutline el
                 -- is it already a test dependency?
                 case Dict.get identity pkg testDirect of
                     Just vsn ->
-                        Task.pure <|
+                        Task.succeed <|
                             PromoteTest <|
                                 Outline.App <|
                                     Outline.AppOutline elmVersion
@@ -144,7 +144,7 @@ makeAppPlan (Solver.Env cache _ connection registry) pkg ((Outline.AppOutline el
                         -- is it already an indirect test dependency?
                         case Dict.get identity pkg testIndirect of
                             Just vsn ->
-                                Task.pure <|
+                                Task.succeed <|
                                     PromoteTest <|
                                         Outline.App <|
                                             Outline.AppOutline elmVersion
@@ -167,11 +167,11 @@ makeAppPlan (Solver.Env cache _ connection registry) pkg ((Outline.AppOutline el
 
                                     Ok _ ->
                                         Task.io (Solver.addToApp cache connection registry pkg outline False)
-                                            |> Task.bind
+                                            |> Task.andThen
                                                 (\result ->
                                                     case result of
                                                         Solver.SolverOk (Solver.AppSolution _ _ app) ->
-                                                            Task.pure (Changes (Outline.App app))
+                                                            Task.succeed (Changes (Outline.App app))
 
                                                         Solver.NoSolution ->
                                                             Task.throw (Exit.InstallNoOnlineAppSolution pkg)
@@ -191,13 +191,13 @@ makeAppPlan (Solver.Env cache _ connection registry) pkg ((Outline.AppOutline el
 makePkgPlan : Solver.Env -> Pkg.Name -> Outline.PkgOutline -> Task Exit.Install (Changes C.Constraint)
 makePkgPlan (Solver.Env cache _ connection registry) pkg (Outline.PkgOutline name summary license version exposed deps test elmVersion) =
     if Dict.member identity pkg deps then
-        Task.pure AlreadyInstalled
+        Task.succeed AlreadyInstalled
 
     else
         -- is already in test dependencies?
         case Dict.get identity pkg test of
             Just con ->
-                Task.pure <|
+                Task.succeed <|
                     PromoteTest <|
                         Outline.Pkg <|
                             Outline.PkgOutline name
@@ -231,7 +231,7 @@ makePkgPlan (Solver.Env cache _ connection registry) pkg (Outline.PkgOutline nam
                                 Dict.insert identity pkg C.anything old
                         in
                         Task.io (Solver.verify cache connection registry cons)
-                            |> Task.bind
+                            |> Task.andThen
                                 (\result ->
                                     case result of
                                         Solver.SolverOk solution ->
@@ -255,7 +255,7 @@ makePkgPlan (Solver.Env cache _ connection registry) pkg (Outline.PkgOutline nam
                                                 news =
                                                     Utils.mapMapMaybe identity Pkg.compareName keepNew changes
                                             in
-                                            Task.pure <|
+                                            Task.succeed <|
                                                 Changes <|
                                                     Outline.Pkg <|
                                                         Outline.PkgOutline name

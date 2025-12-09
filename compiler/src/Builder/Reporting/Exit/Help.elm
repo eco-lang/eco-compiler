@@ -112,11 +112,6 @@ reportToJson report_ =
 -- OUTPUT
 
 
-toString : D.Doc -> String
-toString =
-    D.toString
-
-
 toStdout : D.Doc -> Task Never ()
 toStdout doc =
     toHandle IO.stdout doc
@@ -130,11 +125,11 @@ toStderr doc =
 toHandle : IO.Handle -> D.Doc -> Task Never ()
 toHandle handle doc =
     IO.hIsTerminalDevice handle
-        |> Task.bind
+        |> Task.andThen
             (\isTerminal ->
                 if isTerminal then
                     D.toAnsi handle doc
 
                 else
-                    IO.hPutStr handle (toString doc)
+                    IO.hPutStr handle (D.toString doc)
             )

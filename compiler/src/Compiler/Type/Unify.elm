@@ -28,7 +28,7 @@ unify v1 v2 =
     case guardedUnify v1 v2 of
         Unify k ->
             k []
-                |> IO.bind
+                |> IO.andThen
                     (\result ->
                         case result of
                             Ok (UnifyOk vars ()) ->
@@ -36,13 +36,13 @@ unify v1 v2 =
 
                             Err (UnifyErr vars ()) ->
                                 Type.toErrorType v1
-                                    |> IO.bind
+                                    |> IO.andThen
                                         (\t1 ->
                                             Type.toErrorType v2
-                                                |> IO.bind
+                                                |> IO.andThen
                                                     (\t2 ->
                                                         UF.union v1 v2 errorDescriptor
-                                                            |> IO.fmap (\_ -> AnswerErr vars t1 t2)
+                                                            |> IO.map (\_ -> AnswerErr vars t1 t2)
                                                     )
                                         )
                     )
@@ -74,11 +74,11 @@ type UnifyErr
     = UnifyErr (List IO.Variable) ()
 
 
-fmap : (a -> b) -> Unify a -> Unify b
-fmap func (Unify kv) =
+map : (a -> b) -> Unify a -> Unify b
+map func (Unify kv) =
     Unify <|
         \vars ->
-            IO.fmap
+            IO.map
                 (Result.map
                     (\(UnifyOk vars1 value) ->
                         UnifyOk vars1 (func value)
@@ -92,11 +92,11 @@ pure a =
     Unify (\vars -> IO.pure (Ok (UnifyOk vars a)))
 
 
-bind : (a -> Unify b) -> Unify a -> Unify b
-bind callback (Unify ka) =
+andThen : (a -> Unify b) -> Unify a -> Unify b
+andThen callback (Unify ka) =
     Unify <|
         \vars ->
-            IO.bind
+            IO.andThen
                 (\result ->
                     case result of
                         Ok (UnifyOk vars1 a) ->
@@ -114,7 +114,7 @@ register : IO IO.Variable -> Unify IO.Variable
 register mkVar =
     Unify
         (\vars ->
-            IO.fmap
+            IO.map
                 (\var ->
                     Ok (UnifyOk (var :: vars) var)
                 )
@@ -150,7 +150,7 @@ merge (Context var1 (IO.Descriptor _ rank1 _ _) var2 (IO.Descriptor _ rank2 _ _)
     Unify
         (\vars ->
             UF.union var1 var2 (IO.Descriptor content (min rank1 rank2) Type.noMark Nothing)
-                |> IO.fmap (Ok << UnifyOk vars)
+                |> IO.map (Ok << UnifyOk vars)
         )
 
 
@@ -170,17 +170,17 @@ guardedUnify left right =
     Unify
         (\vars ->
             UF.equivalent left right
-                |> IO.bind
+                |> IO.andThen
                     (\equivalent ->
                         if equivalent then
                             IO.pure (Ok (UnifyOk vars ()))
 
                         else
                             UF.get left
-                                |> IO.bind
+                                |> IO.andThen
                                     (\leftDesc ->
                                         UF.get right
-                                            |> IO.bind
+                                            |> IO.andThen
                                                 (\rightDesc ->
                                                     case actuallyUnify (Context left leftDesc right rightDesc) of
                                                         Unify k ->
@@ -204,7 +204,7 @@ subUnifyTuple cs zs context otherContent =
 
         ( c :: restCs, z :: restZs ) ->
             subUnify c z
-                |> bind (\_ -> subUnifyTuple restCs restZs context otherContent)
+                |> andThen (\_ -> subUnifyTuple restCs restZs context otherContent)
 
         _ ->
             mismatch
@@ -449,13 +449,13 @@ unifyFlexSuperStructure context super flatType =
 
                     IO.Comparable ->
                         comparableOccursCheck context
-                            |> bind (\_ -> unifyComparableRecursive variable)
-                            |> bind (\_ -> merge context (IO.Structure flatType))
+                            |> andThen (\_ -> unifyComparableRecursive variable)
+                            |> andThen (\_ -> merge context (IO.Structure flatType))
 
                     IO.CompAppend ->
                         comparableOccursCheck context
-                            |> bind (\_ -> unifyComparableRecursive variable)
-                            |> bind (\_ -> merge context (IO.Structure flatType))
+                            |> andThen (\_ -> unifyComparableRecursive variable)
+                            |> andThen (\_ -> merge context (IO.Structure flatType))
 
             else
                 mismatch
@@ -470,7 +470,7 @@ unifyFlexSuperStructure context super flatType =
 
                 IO.Comparable ->
                     List.foldl (\var _ -> unifyComparableRecursive var) (comparableOccursCheck context) (a :: b :: cs)
-                        |> bind (\_ -> merge context (IO.Structure flatType))
+                        |> andThen (\_ -> merge context (IO.Structure flatType))
 
                 IO.CompAppend ->
                     mismatch
@@ -489,7 +489,7 @@ comparableOccursCheck (Context _ _ var _) =
     Unify
         (\vars ->
             Occurs.occurs var
-                |> IO.fmap
+                |> IO.map
                     (\hasOccurred ->
                         if hasOccurred then
                             Err (UnifyErr vars ())
@@ -504,12 +504,12 @@ unifyComparableRecursive : IO.Variable -> Unify ()
 unifyComparableRecursive var =
     register
         (UF.get var
-            |> IO.bind
+            |> IO.andThen
                 (\(IO.Descriptor _ rank _ _) ->
                     UF.fresh (IO.Descriptor (Type.unnamedFlexSuper IO.Comparable) rank Type.noMark Nothing)
                 )
         )
-        |> bind (\compVar -> guardedUnify compVar var)
+        |> andThen (\compVar -> guardedUnify compVar var)
 
 
 
@@ -536,7 +536,7 @@ unifyAlias ((Context _ _ second _) as context) home name args realVar otherConte
                 Unify
                     (\vars ->
                         unifyAliasArgs vars args otherArgs
-                            |> IO.bind
+                            |> IO.andThen
                                 (\res ->
                                     case res of
                                         Ok (UnifyOk vars1 ()) ->
@@ -568,7 +568,7 @@ unifyAliasArgs vars args1 args2 =
                     case subUnify arg1 arg2 of
                         Unify k ->
                             k vars
-                                |> IO.bind
+                                |> IO.andThen
                                     (\res1 ->
                                         case res1 of
                                             Ok (UnifyOk vs ()) ->
@@ -576,7 +576,7 @@ unifyAliasArgs vars args1 args2 =
 
                                             Err (UnifyErr vs ()) ->
                                                 unifyAliasArgs vs others1 others2
-                                                    |> IO.fmap
+                                                    |> IO.map
                                                         (\res2 ->
                                                             case res2 of
                                                                 Ok (UnifyOk vs_ ()) ->
@@ -628,7 +628,7 @@ unifyStructure ((Context first _ second _) as context) flatType content otherCon
                         Unify
                             (\vars ->
                                 unifyArgs vars args otherArgs
-                                    |> IO.bind
+                                    |> IO.andThen
                                         (\unifiedArgs ->
                                             case unifiedArgs of
                                                 Ok (UnifyOk vars1 ()) ->
@@ -646,8 +646,8 @@ unifyStructure ((Context first _ second _) as context) flatType content otherCon
 
                 ( IO.Fun1 arg1 res1, IO.Fun1 arg2 res2 ) ->
                     subUnify arg1 arg2
-                        |> bind (\_ -> subUnify res1 res2)
-                        |> bind (\_ -> merge context otherContent)
+                        |> andThen (\_ -> subUnify res1 res2)
+                        |> andThen (\_ -> merge context otherContent)
 
                 ( IO.EmptyRecord1, IO.EmptyRecord1 ) ->
                     merge context otherContent
@@ -670,10 +670,10 @@ unifyStructure ((Context first _ second _) as context) flatType content otherCon
                     Unify
                         (\vars ->
                             gatherFields fields1 ext1
-                                |> IO.bind
+                                |> IO.andThen
                                     (\structure1 ->
                                         gatherFields fields2 ext2
-                                            |> IO.bind
+                                            |> IO.andThen
                                                 (\structure2 ->
                                                     case unifyRecord context structure1 structure2 of
                                                         Unify k ->
@@ -684,8 +684,8 @@ unifyStructure ((Context first _ second _) as context) flatType content otherCon
 
                 ( IO.Tuple1 a b cs, IO.Tuple1 x y zs ) ->
                     subUnify a x
-                        |> bind (\_ -> subUnify b y)
-                        |> bind (\_ -> subUnifyTuple cs zs context otherContent)
+                        |> andThen (\_ -> subUnify b y)
+                        |> andThen (\_ -> subUnifyTuple cs zs context otherContent)
 
                 ( IO.Unit1, IO.Unit1 ) ->
                     merge context otherContent
@@ -710,7 +710,7 @@ unifyArgs vars args1 args2 =
                     case subUnify arg1 arg2 of
                         Unify k ->
                             k vars
-                                |> IO.bind
+                                |> IO.andThen
                                     (\result ->
                                         case result of
                                             Ok (UnifyOk vs ()) ->
@@ -718,7 +718,7 @@ unifyArgs vars args1 args2 =
 
                                             Err (UnifyErr vs ()) ->
                                                 unifyArgs vs others1 others2
-                                                    |> IO.fmap
+                                                    |> IO.map
                                                         (Result.andThen
                                                             (\(UnifyOk vs_ ()) ->
                                                                 Err (UnifyErr vs_ ())
@@ -760,22 +760,22 @@ unifyRecord context (RecordStructure fields1 ext1) (RecordStructure fields2 ext2
     if Dict.isEmpty uniqueFields1 then
         if Dict.isEmpty uniqueFields2 then
             subUnify ext1 ext2
-                |> bind (\_ -> unifySharedFields context sharedFields Dict.empty ext1)
+                |> andThen (\_ -> unifySharedFields context sharedFields Dict.empty ext1)
 
         else
             fresh context (IO.Structure (IO.Record1 uniqueFields2 ext2))
-                |> bind
+                |> andThen
                     (\subRecord ->
                         subUnify ext1 subRecord
-                            |> bind (\_ -> unifySharedFields context sharedFields Dict.empty subRecord)
+                            |> andThen (\_ -> unifySharedFields context sharedFields Dict.empty subRecord)
                     )
 
     else if Dict.isEmpty uniqueFields2 then
         fresh context (IO.Structure (IO.Record1 uniqueFields1 ext1))
-            |> bind
+            |> andThen
                 (\subRecord ->
                     subUnify subRecord ext2
-                        |> bind (\_ -> unifySharedFields context sharedFields Dict.empty subRecord)
+                        |> andThen (\_ -> unifySharedFields context sharedFields Dict.empty subRecord)
                 )
 
     else
@@ -785,17 +785,17 @@ unifyRecord context (RecordStructure fields1 ext1) (RecordStructure fields2 ext2
                 Dict.union uniqueFields1 uniqueFields2
         in
         fresh context Type.unnamedFlexVar
-            |> bind
+            |> andThen
                 (\ext ->
                     fresh context (IO.Structure (IO.Record1 uniqueFields1 ext))
-                        |> bind
+                        |> andThen
                             (\sub1 ->
                                 fresh context (IO.Structure (IO.Record1 uniqueFields2 ext))
-                                    |> bind
+                                    |> andThen
                                         (\sub2 ->
                                             subUnify ext1 sub2
-                                                |> bind (\_ -> subUnify sub1 ext2)
-                                                |> bind (\_ -> unifySharedFields context sharedFields otherFields ext)
+                                                |> andThen (\_ -> subUnify sub1 ext2)
+                                                |> andThen (\_ -> unifySharedFields context sharedFields otherFields ext)
                                         )
                             )
                 )
@@ -804,7 +804,7 @@ unifyRecord context (RecordStructure fields1 ext1) (RecordStructure fields2 ext2
 unifySharedFields : Context -> Dict String Name.Name ( IO.Variable, IO.Variable ) -> Dict String Name.Name IO.Variable -> IO.Variable -> Unify ()
 unifySharedFields context sharedFields otherFields ext =
     traverseMaybe identity compare unifyField sharedFields
-        |> bind
+        |> andThen
             (\matchingFields ->
                 if Dict.size sharedFields == Dict.size matchingFields then
                     merge context (IO.Structure (IO.Record1 (Dict.union matchingFields otherFields) ext))
@@ -818,9 +818,9 @@ traverseMaybe : (a -> comparable) -> (a -> a -> Order) -> (a -> b -> Unify (Mayb
 traverseMaybe toComparable keyComparison func =
     Dict.foldl keyComparison
         (\a b ->
-            bind
+            andThen
                 (\acc ->
-                    fmap
+                    map
                         (\maybeC ->
                             maybeC
                                 |> Maybe.map (\c -> Dict.insert toComparable a c acc)
@@ -839,7 +839,7 @@ unifyField _ ( actual, expected ) =
             case subUnify actual expected of
                 Unify k ->
                     k vars
-                        |> IO.fmap
+                        |> IO.map
                             (\result ->
                                 case result of
                                     Ok (UnifyOk vs ()) ->
@@ -862,7 +862,7 @@ type RecordStructure
 gatherFields : Dict String Name.Name IO.Variable -> IO.Variable -> IO RecordStructure
 gatherFields fields variable =
     UF.get variable
-        |> IO.bind
+        |> IO.andThen
             (\(IO.Descriptor content _ _ _) ->
                 case content of
                     IO.Structure (IO.Record1 subFields subExt) ->

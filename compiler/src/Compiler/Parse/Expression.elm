@@ -27,16 +27,16 @@ import Compiler.Reporting.Error.Syntax as E
 term : SyntaxVersion -> P.Parser E.Expr Src.Expr
 term syntaxVersion =
     P.getPosition
-        |> P.bind
+        |> P.andThen
             (\start ->
                 P.oneOf E.Start
-                    [ variable start |> P.bind (accessible start)
+                    [ variable start |> P.andThen (accessible start)
                     , string syntaxVersion start
                     , number syntaxVersion start
                     , Shader.shader start
                     , list syntaxVersion start
-                    , record syntaxVersion start |> P.bind (accessible start)
-                    , tuple syntaxVersion start |> P.bind (accessible start)
+                    , record syntaxVersion start |> P.andThen (accessible start)
+                    , tuple syntaxVersion start |> P.andThen (accessible start)
                     , accessor start
                     , character syntaxVersion start
                     ]
@@ -46,19 +46,19 @@ term syntaxVersion =
 string : SyntaxVersion -> A.Position -> P.Parser E.Expr Src.Expr
 string syntaxVersion start =
     String.string syntaxVersion E.Start E.String_
-        |> P.bind (\( str, representation ) -> P.addEnd start (Src.Str str representation))
+        |> P.andThen (\( str, representation ) -> P.addEnd start (Src.Str str representation))
 
 
 character : SyntaxVersion -> A.Position -> P.Parser E.Expr Src.Expr
 character syntaxVersion start =
     String.character syntaxVersion E.Start E.Char
-        |> P.bind (\chr -> P.addEnd start (Src.Chr chr))
+        |> P.andThen (\chr -> P.addEnd start (Src.Chr chr))
 
 
 number : SyntaxVersion -> A.Position -> P.Parser E.Expr Src.Expr
 number syntaxVersion start =
     Number.number syntaxVersion E.Start E.Number
-        |> P.bind
+        |> P.andThen
             (\nmbr ->
                 P.addEnd start <|
                     case nmbr of
@@ -73,36 +73,34 @@ number syntaxVersion start =
 accessor : A.Position -> P.Parser E.Expr Src.Expr
 accessor start =
     P.word1 '.' E.Dot
-        |> P.bind (\_ -> Var.lower E.Access)
-        |> P.bind (\field -> P.addEnd start (Src.Accessor field))
+        |> P.andThen (\_ -> Var.lower E.Access)
+        |> P.andThen (\field -> P.addEnd start (Src.Accessor field))
 
 
 variable : A.Position -> P.Parser E.Expr Src.Expr
 variable start =
     Var.foreignAlpha E.Start
-        |> P.bind (\var -> P.addEnd start var)
+        |> P.andThen (\var -> P.addEnd start var)
 
 
 accessible : A.Position -> Src.Expr -> P.Parser E.Expr Src.Expr
 accessible start expr =
     P.oneOfWithFallback
         [ P.word1 '.' E.Dot
-            |> P.bind (\_ -> P.getPosition)
-            |> P.bind
-                (\pos ->
-                    Var.lower E.Access
-                        |> P.bind
-                            (\field ->
-                                P.getPosition
-                                    |> P.bind
-                                        (\end ->
-                                            accessible start <|
-                                                A.at start end (Src.Access expr (A.at pos end field))
-                                        )
-                            )
-                )
+            |> P.andThen (\_ -> P.getPosition)
+            |> P.andThen (\pos -> chompAccessField start expr pos)
         ]
         expr
+
+
+chompAccessField : A.Position -> Src.Expr -> A.Position -> P.Parser E.Expr Src.Expr
+chompAccessField start expr pos =
+    Var.lower E.Access
+        |> P.andThen (\field -> P.getPosition |> P.map (\end -> ( field, end )))
+        |> P.andThen
+            (\( field, end ) ->
+                accessible start (A.at start end (Src.Access expr (A.at pos end field)))
+            )
 
 
 
@@ -113,17 +111,17 @@ list : SyntaxVersion -> A.Position -> P.Parser E.Expr Src.Expr
 list syntaxVersion start =
     P.inContext E.List (P.word1 '[' E.Start) <|
         (Space.chompAndCheckIndent E.ListSpace E.ListIndentOpen
-            |> P.bind
+            |> P.andThen
                 (\comments ->
                     P.oneOf E.ListOpen
                         [ P.specialize E.ListExpr (expression syntaxVersion)
-                            |> P.bind
+                            |> P.andThen
                                 (\( ( postEntryComments, entry ), end ) ->
                                     Space.checkIndent end E.ListIndentEnd
-                                        |> P.bind (\_ -> P.loop (chompListEnd syntaxVersion start) ( postEntryComments, [ ( ( [], comments, Nothing ), entry ) ] ))
+                                        |> P.andThen (\_ -> P.loop (chompListEnd syntaxVersion start) ( postEntryComments, [ ( ( [], comments, Nothing ), entry ) ] ))
                                 )
                         , P.word1 ']' E.ListOpen
-                            |> P.bind (\_ -> P.addEnd start (Src.List [] comments))
+                            |> P.andThen (\_ -> P.addEnd start (Src.List [] comments))
                         ]
                 )
         )
@@ -133,19 +131,19 @@ chompListEnd : SyntaxVersion -> A.Position -> Src.C1 (List (Src.C2Eol Src.Expr))
 chompListEnd syntaxVersion start ( trailingComments, entries ) =
     P.oneOf E.ListEnd
         [ P.word1 ',' E.ListEnd
-            |> P.bind (\_ -> Space.chompAndCheckIndent E.ListSpace E.ListIndentExpr)
-            |> P.bind
+            |> P.andThen (\_ -> Space.chompAndCheckIndent E.ListSpace E.ListIndentExpr)
+            |> P.andThen
                 (\postComments ->
                     P.specialize E.ListExpr (expression syntaxVersion)
-                        |> P.bind
+                        |> P.andThen
                             (\( ( preComments, entry ), end ) ->
                                 Space.checkIndent end E.ListIndentEnd
-                                    |> P.fmap (\_ -> P.Loop ( preComments, ( ( trailingComments, postComments, Nothing ), entry ) :: entries ))
+                                    |> P.map (\_ -> P.Loop ( preComments, ( ( trailingComments, postComments, Nothing ), entry ) :: entries ))
                             )
                 )
         , P.word1 ']' E.ListEnd
-            |> P.bind (\_ -> P.addEnd start (Src.List (List.reverse entries) trailingComments))
-            |> P.fmap P.Done
+            |> P.andThen (\_ -> P.addEnd start (Src.List (List.reverse entries) trailingComments))
+            |> P.map P.Done
         ]
 
 
@@ -157,37 +155,37 @@ tuple : SyntaxVersion -> A.Position -> P.Parser E.Expr Src.Expr
 tuple syntaxVersion ((A.Position row col) as start) =
     P.inContext E.Tuple (P.word1 '(' E.Start) <|
         (P.getPosition
-            |> P.bind
+            |> P.andThen
                 (\before ->
                     Space.chompAndCheckIndent E.TupleSpace E.TupleIndentExpr1
-                        |> P.bind
+                        |> P.andThen
                             (\preEntryComments ->
                                 P.getPosition
-                                    |> P.bind
+                                    |> P.andThen
                                         (\after ->
                                             if before /= after then
                                                 P.specialize E.TupleExpr (expression syntaxVersion)
-                                                    |> P.bind
+                                                    |> P.andThen
                                                         (\( ( postEntryComments, entry ), end ) ->
                                                             Space.checkIndent end E.TupleIndentEnd
-                                                                |> P.bind (\_ -> chompTupleEnd syntaxVersion start ( ( preEntryComments, postEntryComments ), entry ) [])
+                                                                |> P.andThen (\_ -> chompTupleEnd syntaxVersion start ( ( preEntryComments, postEntryComments ), entry ) [])
                                                         )
 
                                             else
                                                 P.oneOf E.TupleIndentExpr1
                                                     [ Symbol.operator E.TupleIndentExpr1 E.TupleOperatorReserved
-                                                        |> P.bind
+                                                        |> P.andThen
                                                             (\op ->
                                                                 if op == "-" then
                                                                     P.oneOf E.TupleOperatorClose
                                                                         [ P.word1 ')' E.TupleOperatorClose
-                                                                            |> P.bind (\_ -> P.addEnd start (Src.Op op))
+                                                                            |> P.andThen (\_ -> P.addEnd start (Src.Op op))
                                                                         , P.specialize E.TupleExpr
                                                                             (term syntaxVersion
-                                                                                |> P.bind
+                                                                                |> P.andThen
                                                                                     (\((A.At (A.Region _ end) _) as negatedExpr) ->
                                                                                         Space.chomp E.Space
-                                                                                            |> P.bind
+                                                                                            |> P.andThen
                                                                                                 (\postTermComments ->
                                                                                                     let
                                                                                                         exprStart : A.Position
@@ -211,24 +209,24 @@ tuple syntaxVersion ((A.Position row col) as start) =
                                                                                                 )
                                                                                     )
                                                                             )
-                                                                            |> P.bind
+                                                                            |> P.andThen
                                                                                 (\( ( postEntryComments, entry ), end ) ->
                                                                                     Space.checkIndent end E.TupleIndentEnd
-                                                                                        |> P.bind (\_ -> chompTupleEnd syntaxVersion start ( ( preEntryComments, postEntryComments ), entry ) [])
+                                                                                        |> P.andThen (\_ -> chompTupleEnd syntaxVersion start ( ( preEntryComments, postEntryComments ), entry ) [])
                                                                                 )
                                                                         ]
 
                                                                 else
                                                                     P.word1 ')' E.TupleOperatorClose
-                                                                        |> P.bind (\_ -> P.addEnd start (Src.Op op))
+                                                                        |> P.andThen (\_ -> P.addEnd start (Src.Op op))
                                                             )
                                                     , P.word1 ')' E.TupleIndentExpr1
-                                                        |> P.bind (\_ -> P.addEnd start Src.Unit)
+                                                        |> P.andThen (\_ -> P.addEnd start Src.Unit)
                                                     , P.specialize E.TupleExpr (expression syntaxVersion)
-                                                        |> P.bind
+                                                        |> P.andThen
                                                             (\( ( postEntryComments, entry ), end ) ->
                                                                 Space.checkIndent end E.TupleIndentEnd
-                                                                    |> P.bind (\_ -> chompTupleEnd syntaxVersion start ( ( preEntryComments, postEntryComments ), entry ) [])
+                                                                    |> P.andThen (\_ -> chompTupleEnd syntaxVersion start ( ( preEntryComments, postEntryComments ), entry ) [])
                                                             )
                                                     ]
                                         )
@@ -241,21 +239,21 @@ chompTupleEnd : SyntaxVersion -> A.Position -> Src.C2 Src.Expr -> List (Src.C2 S
 chompTupleEnd syntaxVersion start firstExpr revExprs =
     P.oneOf E.TupleEnd
         [ P.word1 ',' E.TupleEnd
-            |> P.bind
+            |> P.andThen
                 (\_ ->
                     Space.chompAndCheckIndent E.TupleSpace E.TupleIndentExprN
-                        |> P.bind
+                        |> P.andThen
                             (\preEntryComments ->
                                 P.specialize E.TupleExpr (expression syntaxVersion)
-                                    |> P.bind
+                                    |> P.andThen
                                         (\( ( postEntryComments, entry ), end ) ->
                                             Space.checkIndent end E.TupleIndentEnd
-                                                |> P.bind (\_ -> chompTupleEnd syntaxVersion start firstExpr (( ( preEntryComments, postEntryComments ), entry ) :: revExprs))
+                                                |> P.andThen (\_ -> chompTupleEnd syntaxVersion start firstExpr (( ( preEntryComments, postEntryComments ), entry ) :: revExprs))
                                         )
                             )
                 )
         , P.word1 ')' E.TupleEnd
-            |> P.bind
+            |> P.andThen
                 (\_ ->
                     case List.reverse revExprs of
                         [] ->
@@ -277,36 +275,51 @@ record syntaxVersion start =
         SV.Elm ->
             P.inContext E.Record (P.word1 '{' E.Start) <|
                 (Space.chompAndCheckIndent E.RecordSpace E.RecordIndentOpen
-                    |> P.bind
+                    |> P.andThen
                         (\preStarterNameComments ->
                             P.oneOf E.RecordOpen
                                 [ P.word1 '}' E.RecordOpen
-                                    |> P.bind (\_ -> P.addEnd start (Src.Record ( preStarterNameComments, [] )))
+                                    |> P.andThen (\_ -> P.addEnd start (Src.Record ( preStarterNameComments, [] )))
                                 , P.addLocation (Var.lower E.RecordField)
-                                    |> P.bind
+                                    |> P.andThen
                                         (\((A.At starterPosition starterName) as starter) ->
                                             Space.chompAndCheckIndent E.RecordSpace E.RecordIndentEquals
-                                                |> P.bind
+                                                |> P.andThen
                                                     (\postStarterNameComments ->
                                                         P.oneOf E.RecordEquals
                                                             [ P.word1 '|' E.RecordEquals
-                                                                |> P.bind (\_ -> Space.chompAndCheckIndent E.RecordSpace E.RecordIndentField)
-                                                                |> P.bind
+                                                                |> P.andThen (\_ -> Space.chompAndCheckIndent E.RecordSpace E.RecordIndentField)
+                                                                |> P.andThen
                                                                     (\postPipeComments ->
                                                                         chompField syntaxVersion [] postPipeComments
                                                                     )
-                                                                |> P.bind (\( postFirstFieldComments, firstField ) -> chompFields syntaxVersion postFirstFieldComments [ firstField ])
-                                                                |> P.bind (\fields -> P.addEnd start (Src.Update ( ( preStarterNameComments, postStarterNameComments ), A.At starterPosition (Src.Var Src.LowVar starterName) ) fields))
+                                                                |> P.andThen (\( postFirstFieldComments, firstField ) -> chompFields syntaxVersion postFirstFieldComments [ firstField ])
+                                                                |> P.andThen
+                                                                    (\fields ->
+                                                                        let
+                                                                            starterExpr : Src.Expr
+                                                                            starterExpr =
+                                                                                A.At starterPosition (Src.Var Src.LowVar starterName)
+                                                                        in
+                                                                        P.addEnd start (Src.Update ( ( preStarterNameComments, postStarterNameComments ), starterExpr ) fields)
+                                                                    )
                                                             , P.word1 '=' E.RecordEquals
-                                                                |> P.bind (\_ -> Space.chompAndCheckIndent E.RecordSpace E.RecordIndentExpr)
-                                                                |> P.bind
+                                                                |> P.andThen (\_ -> Space.chompAndCheckIndent E.RecordSpace E.RecordIndentExpr)
+                                                                |> P.andThen
                                                                     (\preValueComments ->
                                                                         P.specialize E.RecordExpr (expression syntaxVersion)
-                                                                            |> P.bind
+                                                                            |> P.andThen
                                                                                 (\( ( postValueComments, value ), end ) ->
+                                                                                    let
+                                                                                        firstField : Field
+                                                                                        firstField =
+                                                                                            ( ( [], preStarterNameComments, Nothing )
+                                                                                            , ( ( postStarterNameComments, starter ), ( preValueComments, value ) )
+                                                                                            )
+                                                                                    in
                                                                                     Space.checkIndent end E.RecordIndentEnd
-                                                                                        |> P.bind (\_ -> chompFields syntaxVersion postValueComments [ ( ( [], preStarterNameComments, Nothing ), ( ( postStarterNameComments, starter ), ( preValueComments, value ) ) ) ])
-                                                                                        |> P.bind (\fields -> P.addEnd start (Src.Record fields))
+                                                                                        |> P.andThen (\_ -> chompFields syntaxVersion postValueComments [ firstField ])
+                                                                                        |> P.andThen (\fields -> P.addEnd start (Src.Record fields))
                                                                                 )
                                                                     )
                                                             ]
@@ -319,46 +332,56 @@ record syntaxVersion start =
         SV.Guida ->
             P.inContext E.Record (P.word1 '{' E.Start) <|
                 (Space.chompAndCheckIndent E.RecordSpace E.RecordIndentOpen
-                    |> P.bind
+                    |> P.andThen
                         (\preStarterNameComments ->
                             P.oneOf E.RecordOpen
                                 [ P.word1 '}' E.RecordOpen
-                                    |> P.bind (\_ -> P.addEnd start (Src.Record ( preStarterNameComments, [] )))
+                                    |> P.andThen (\_ -> P.addEnd start (Src.Record ( preStarterNameComments, [] )))
                                 , P.getPosition
-                                    |> P.bind
+                                    |> P.andThen
                                         (\nameStart ->
                                             foreignAlpha E.RecordField
-                                                |> P.bind (\var -> P.addEnd nameStart var)
-                                                |> P.bind (accessibleRecord nameStart)
-                                                |> P.bind
+                                                |> P.andThen (\var -> P.addEnd nameStart var)
+                                                |> P.andThen (accessibleRecord nameStart)
+                                                |> P.andThen
                                                     (\starter ->
                                                         Space.chompAndCheckIndent E.RecordSpace E.RecordIndentEquals
-                                                            |> P.bind
+                                                            |> P.andThen
                                                                 (\postStarterNameComments ->
                                                                     P.word1 '|' E.RecordEquals
-                                                                        |> P.bind (\_ -> Space.chompAndCheckIndent E.RecordSpace E.RecordIndentField)
-                                                                        |> P.bind (\postPipeComments -> chompField syntaxVersion [] postPipeComments)
-                                                                        |> P.bind (\( postFirstFieldComments, firstField ) -> chompFields syntaxVersion postFirstFieldComments [ firstField ])
-                                                                        |> P.bind (\fields -> P.addEnd start (Src.Update ( ( preStarterNameComments, postStarterNameComments ), starter ) fields))
+                                                                        |> P.andThen (\_ -> Space.chompAndCheckIndent E.RecordSpace E.RecordIndentField)
+                                                                        |> P.andThen (\postPipeComments -> chompField syntaxVersion [] postPipeComments)
+                                                                        |> P.andThen (\( postFirstFieldComments, firstField ) -> chompFields syntaxVersion postFirstFieldComments [ firstField ])
+                                                                        |> P.andThen
+                                                                            (\fields ->
+                                                                                P.addEnd start (Src.Update ( ( preStarterNameComments, postStarterNameComments ), starter ) fields)
+                                                                            )
                                                                 )
                                                     )
                                         )
                                 , P.addLocation (Var.lower E.RecordField)
-                                    |> P.bind
+                                    |> P.andThen
                                         (\starter ->
                                             Space.chompAndCheckIndent E.RecordSpace E.RecordIndentEquals
-                                                |> P.bind
+                                                |> P.andThen
                                                     (\postStarterNameComments ->
                                                         P.word1 '=' E.RecordEquals
-                                                            |> P.bind (\_ -> Space.chompAndCheckIndent E.RecordSpace E.RecordIndentExpr)
-                                                            |> P.bind
+                                                            |> P.andThen (\_ -> Space.chompAndCheckIndent E.RecordSpace E.RecordIndentExpr)
+                                                            |> P.andThen
                                                                 (\preValueComments ->
                                                                     P.specialize E.RecordExpr (expression syntaxVersion)
-                                                                        |> P.bind
+                                                                        |> P.andThen
                                                                             (\( ( postValueComments, value ), end ) ->
+                                                                                let
+                                                                                    firstField : Field
+                                                                                    firstField =
+                                                                                        ( ( [], preStarterNameComments, Nothing )
+                                                                                        , ( ( postStarterNameComments, starter ), ( preValueComments, value ) )
+                                                                                        )
+                                                                                in
                                                                                 Space.checkIndent end E.RecordIndentEnd
-                                                                                    |> P.bind (\_ -> chompFields syntaxVersion postValueComments [ ( ( [], preStarterNameComments, Nothing ), ( ( postStarterNameComments, starter ), ( preValueComments, value ) ) ) ])
-                                                                                    |> P.bind (\fields -> P.addEnd start (Src.Record fields))
+                                                                                    |> P.andThen (\_ -> chompFields syntaxVersion postValueComments [ firstField ])
+                                                                                    |> P.andThen (\fields -> P.addEnd start (Src.Record fields))
                                                                             )
                                                                 )
                                                     )
@@ -372,22 +395,20 @@ accessibleRecord : A.Position -> Src.Expr -> P.Parser E.Record Src.Expr
 accessibleRecord start expr =
     P.oneOfWithFallback
         [ P.word1 '.' E.RecordOpen
-            |> P.bind (\_ -> P.getPosition)
-            |> P.bind
-                (\pos ->
-                    Var.lower E.RecordOpen
-                        |> P.bind
-                            (\field ->
-                                P.getPosition
-                                    |> P.bind
-                                        (\end ->
-                                            accessibleRecord start <|
-                                                A.at start end (Src.Access expr (A.at pos end field))
-                                        )
-                            )
-                )
+            |> P.andThen (\_ -> P.getPosition)
+            |> P.andThen (\pos -> chompRecordAccessField start expr pos)
         ]
         expr
+
+
+chompRecordAccessField : A.Position -> Src.Expr -> A.Position -> P.Parser E.Record Src.Expr
+chompRecordAccessField start expr pos =
+    Var.lower E.RecordOpen
+        |> P.andThen (\field -> P.getPosition |> P.map (\end -> ( field, end )))
+        |> P.andThen
+            (\( field, end ) ->
+                accessibleRecord start (A.at start end (Src.Access expr (A.at pos end field)))
+            )
 
 
 
@@ -468,31 +489,31 @@ chompFields : SyntaxVersion -> Src.FComments -> List Field -> P.Parser E.Record 
 chompFields syntaxVersion trailingComments fields =
     P.oneOf E.RecordEnd
         [ P.word1 ',' E.RecordEnd
-            |> P.bind (\_ -> Space.chompAndCheckIndent E.RecordSpace E.RecordIndentField)
-            |> P.bind (\postCommaComments -> chompField syntaxVersion trailingComments postCommaComments)
-            |> P.bind (\( postFieldComments, f ) -> chompFields syntaxVersion postFieldComments (f :: fields))
+            |> P.andThen (\_ -> Space.chompAndCheckIndent E.RecordSpace E.RecordIndentField)
+            |> P.andThen (\postCommaComments -> chompField syntaxVersion trailingComments postCommaComments)
+            |> P.andThen (\( postFieldComments, f ) -> chompFields syntaxVersion postFieldComments (f :: fields))
         , P.word1 '}' E.RecordEnd
-            |> P.fmap (\_ -> ( trailingComments, List.reverse fields ))
+            |> P.map (\_ -> ( trailingComments, List.reverse fields ))
         ]
 
 
 chompField : SyntaxVersion -> Src.FComments -> Src.FComments -> P.Parser E.Record (Src.C1 Field)
 chompField syntaxVersion preCommaComents postCommaComments =
     P.addLocation (Var.lower E.RecordField)
-        |> P.bind
+        |> P.andThen
             (\key ->
                 Space.chompAndCheckIndent E.RecordSpace E.RecordIndentEquals
-                    |> P.bind
+                    |> P.andThen
                         (\preEqualSignComments ->
                             P.word1 '=' E.RecordEquals
-                                |> P.bind (\_ -> Space.chompAndCheckIndent E.RecordSpace E.RecordIndentExpr)
-                                |> P.bind
+                                |> P.andThen (\_ -> Space.chompAndCheckIndent E.RecordSpace E.RecordIndentExpr)
+                                |> P.andThen
                                     (\postEqualSignComments ->
                                         P.specialize E.RecordExpr (expression syntaxVersion)
-                                            |> P.bind
+                                            |> P.andThen
                                                 (\( ( postFieldComments, value ), end ) ->
                                                     Space.checkIndent end E.RecordIndentEnd
-                                                        |> P.fmap
+                                                        |> P.map
                                                             (\_ ->
                                                                 ( postFieldComments
                                                                 , ( ( preCommaComents, postCommaComments, Nothing ), ( ( preEqualSignComments, key ), ( postEqualSignComments, value ) ) )
@@ -511,7 +532,7 @@ chompField syntaxVersion preCommaComents postCommaComments =
 expression : SyntaxVersion -> Space.Parser E.Expr (Src.C1 Src.Expr)
 expression syntaxVersion =
     P.getPosition
-        |> P.bind
+        |> P.andThen
             (\start ->
                 P.oneOf E.Start
                     [ let_ syntaxVersion start
@@ -519,13 +540,13 @@ expression syntaxVersion =
                     , case_ syntaxVersion start
                     , function syntaxVersion start
                     , possiblyNegativeTerm syntaxVersion start
-                        |> P.bind
+                        |> P.andThen
                             (\expr ->
                                 P.getPosition
-                                    |> P.bind
+                                    |> P.andThen
                                         (\end ->
                                             Space.chomp E.Space
-                                                |> P.bind
+                                                |> P.andThen
                                                     (\comments ->
                                                         chompExprEnd syntaxVersion
                                                             start
@@ -558,14 +579,14 @@ chompExprEnd syntaxVersion start (State { ops, expr, args, end }) comments =
     P.oneOfWithFallback
         [ -- argument
           Space.checkIndent end E.Start
-            |> P.bind (\_ -> term syntaxVersion)
-            |> P.bind
+            |> P.andThen (\_ -> term syntaxVersion)
+            |> P.andThen
                 (\arg ->
                     P.getPosition
-                        |> P.bind
+                        |> P.andThen
                             (\newEnd ->
                                 Space.chomp E.Space
-                                    |> P.bind
+                                    |> P.andThen
                                         (\trailingComments ->
                                             chompExprEnd syntaxVersion
                                                 start
@@ -582,25 +603,25 @@ chompExprEnd syntaxVersion start (State { ops, expr, args, end }) comments =
                 )
         , -- operator
           Space.checkIndent end E.Start
-            |> P.bind (\_ -> P.addLocation (Symbol.operator E.Start E.OperatorReserved))
-            |> P.bind
+            |> P.andThen (\_ -> P.addLocation (Symbol.operator E.Start E.OperatorReserved))
+            |> P.andThen
                 (\((A.At (A.Region opStart opEnd) opName) as op) ->
                     Space.chompAndCheckIndent E.Space (E.IndentOperatorRight opName)
-                        |> P.bind
+                        |> P.andThen
                             (\postOpComments ->
                                 P.getPosition
-                                    |> P.bind
+                                    |> P.andThen
                                         (\newStart ->
                                             if "-" == opName && end /= opStart && opEnd == newStart then
                                                 -- negative terms
                                                 term syntaxVersion
-                                                    |> P.bind
+                                                    |> P.andThen
                                                         (\negatedExpr ->
                                                             P.getPosition
-                                                                |> P.bind
+                                                                |> P.andThen
                                                                     (\newEnd ->
                                                                         Space.chomp E.Space
-                                                                            |> P.bind
+                                                                            |> P.andThen
                                                                                 (\postNegatedExprComments ->
                                                                                     let
                                                                                         arg : Src.C1 (A.Located Src.Expr_)
@@ -630,13 +651,13 @@ chompExprEnd syntaxVersion start (State { ops, expr, args, end }) comments =
                                                 P.oneOf err
                                                     [ -- term
                                                       possiblyNegativeTerm syntaxVersion newStart
-                                                        |> P.bind
+                                                        |> P.andThen
                                                             (\newExpr ->
                                                                 P.getPosition
-                                                                    |> P.bind
+                                                                    |> P.andThen
                                                                         (\newEnd ->
                                                                             Space.chomp E.Space
-                                                                                |> P.bind
+                                                                                |> P.andThen
                                                                                     (\trailingComments ->
                                                                                         let
                                                                                             newOps : List ( Src.Expr, Src.C2 (A.Located Name.Name) )
@@ -663,7 +684,7 @@ chompExprEnd syntaxVersion start (State { ops, expr, args, end }) comments =
                                                         , if_ syntaxVersion newStart
                                                         , function syntaxVersion newStart
                                                         ]
-                                                        |> P.fmap
+                                                        |> P.map
                                                             (\( ( trailingComments, newLast ), newEnd ) ->
                                                                 let
                                                                     newOps : List ( Src.Expr, Src.C2 (A.Located Name.Name) )
@@ -699,10 +720,10 @@ possiblyNegativeTerm : SyntaxVersion -> A.Position -> P.Parser E.Expr Src.Expr
 possiblyNegativeTerm syntaxVersion start =
     P.oneOf E.Start
         [ P.word1 '-' E.Start
-            |> P.bind
+            |> P.andThen
                 (\_ ->
                     term syntaxVersion
-                        |> P.bind
+                        |> P.andThen
                             (\expr ->
                                 P.addEnd start (Src.Negate expr)
                             )
@@ -734,56 +755,118 @@ if_ syntaxVersion start =
 chompIfEnd : SyntaxVersion -> A.Position -> Src.FComments -> List (Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr )) -> Space.Parser E.If (Src.C1 Src.Expr)
 chompIfEnd syntaxVersion start comments branches =
     Space.chompAndCheckIndent E.IfSpace E.IfIndentCondition
-        |> P.bind
-            (\preConditionComments ->
-                P.specialize E.IfCondition (expression syntaxVersion)
-                    |> P.bind
-                        (\( ( postConditionComments, condition ), condEnd ) ->
-                            Space.checkIndent condEnd E.IfIndentThen
-                                |> P.bind (\_ -> Keyword.then_ E.IfThen)
-                                |> P.bind (\_ -> Space.chompAndCheckIndent E.IfSpace E.IfIndentThenBranch)
-                                |> P.bind
-                                    (\preThenBranchComments ->
-                                        P.specialize E.IfThenBranch (expression syntaxVersion)
-                                            |> P.bind
-                                                (\( ( postThenBranchComments, thenBranch ), thenEnd ) ->
-                                                    Space.checkIndent thenEnd E.IfIndentElse
-                                                        |> P.bind (\_ -> Keyword.else_ E.IfElse)
-                                                        |> P.bind (\_ -> Space.chompAndCheckIndent E.IfSpace E.IfIndentElseBranch)
-                                                        |> P.bind
-                                                            (\trailingComments ->
-                                                                let
-                                                                    newBranch : Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr )
-                                                                    newBranch =
-                                                                        ( comments, ( ( ( preConditionComments, postConditionComments ), condition ), ( ( preThenBranchComments, postThenBranchComments ), thenBranch ) ) )
+        |> P.andThen (\preConditionComments -> chompIfCondition syntaxVersion start comments branches preConditionComments)
 
-                                                                    newBranches : List (Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr ))
-                                                                    newBranches =
-                                                                        newBranch :: branches
-                                                                in
-                                                                P.oneOf E.IfElseBranchStart
-                                                                    [ Keyword.if_ E.IfElseBranchStart
-                                                                        |> P.bind (\_ -> chompIfEnd syntaxVersion start trailingComments newBranches)
-                                                                    , P.specialize E.IfElseBranch (expression syntaxVersion)
-                                                                        |> P.fmap
-                                                                            (\( ( postElseBranch, elseBranch ), elseEnd ) ->
-                                                                                let
-                                                                                    reversedBranches : List (Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr ))
-                                                                                    reversedBranches =
-                                                                                        List.reverse newBranches
 
-                                                                                    ifExpr : Src.Expr_
-                                                                                    ifExpr =
-                                                                                        Src.If (Maybe.withDefault newBranch (List.head reversedBranches)) (Maybe.withDefault [] (List.tail reversedBranches)) ( trailingComments, elseBranch )
-                                                                                in
-                                                                                ( ( postElseBranch, A.at start elseEnd ifExpr ), elseEnd )
-                                                                            )
-                                                                    ]
-                                                            )
-                                                )
-                                    )
+chompIfCondition :
+    SyntaxVersion
+    -> A.Position
+    -> Src.FComments
+    -> List (Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr ))
+    -> Src.FComments
+    -> Space.Parser E.If (Src.C1 Src.Expr)
+chompIfCondition syntaxVersion start comments branches preConditionComments =
+    P.specialize E.IfCondition (expression syntaxVersion)
+        |> P.andThen
+            (\( ( postConditionComments, condition ), condEnd ) ->
+                Space.checkIndent condEnd E.IfIndentThen
+                    |> P.andThen (\_ -> Keyword.then_ E.IfThen)
+                    |> P.andThen (\_ -> Space.chompAndCheckIndent E.IfSpace E.IfIndentThenBranch)
+                    |> P.andThen (\preThenBranchComments -> chompIfThen syntaxVersion start comments branches preConditionComments postConditionComments condition preThenBranchComments)
+            )
+
+
+chompIfThen :
+    SyntaxVersion
+    -> A.Position
+    -> Src.FComments
+    -> List (Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr ))
+    -> Src.FComments
+    -> Src.FComments
+    -> Src.Expr
+    -> Src.FComments
+    -> Space.Parser E.If (Src.C1 Src.Expr)
+chompIfThen syntaxVersion start comments branches preConditionComments postConditionComments condition preThenBranchComments =
+    P.specialize E.IfThenBranch (expression syntaxVersion)
+        |> P.andThen
+            (\( ( postThenBranchComments, thenBranch ), thenEnd ) ->
+                Space.checkIndent thenEnd E.IfIndentElse
+                    |> P.andThen (\_ -> Keyword.else_ E.IfElse)
+                    |> P.andThen (\_ -> Space.chompAndCheckIndent E.IfSpace E.IfIndentElseBranch)
+                    |> P.andThen
+                        (\trailingComments ->
+                            chompIfElse syntaxVersion start comments branches
+                                preConditionComments postConditionComments condition
+                                preThenBranchComments postThenBranchComments thenBranch trailingComments
                         )
             )
+
+
+chompIfElse :
+    SyntaxVersion
+    -> A.Position
+    -> Src.FComments
+    -> List (Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr ))
+    -> Src.FComments
+    -> Src.FComments
+    -> Src.Expr
+    -> Src.FComments
+    -> Src.FComments
+    -> Src.Expr
+    -> Src.FComments
+    -> Space.Parser E.If (Src.C1 Src.Expr)
+chompIfElse syntaxVersion start comments branches preConditionComments postConditionComments condition preThenBranchComments postThenBranchComments thenBranch trailingComments =
+    let
+        conditionPair : Src.C2 Src.Expr
+        conditionPair =
+            ( ( preConditionComments, postConditionComments ), condition )
+
+        thenPair : Src.C2 Src.Expr
+        thenPair =
+            ( ( preThenBranchComments, postThenBranchComments ), thenBranch )
+
+        newBranch : Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr )
+        newBranch =
+            ( comments, ( conditionPair, thenPair ) )
+
+        newBranches : List (Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr ))
+        newBranches =
+            newBranch :: branches
+    in
+    P.oneOf E.IfElseBranchStart
+        [ Keyword.if_ E.IfElseBranchStart
+            |> P.andThen (\_ -> chompIfEnd syntaxVersion start trailingComments newBranches)
+        , P.specialize E.IfElseBranch (expression syntaxVersion)
+            |> P.map (buildIfExpr start newBranch newBranches trailingComments)
+        ]
+
+
+buildIfExpr :
+    A.Position
+    -> Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr )
+    -> List (Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr ))
+    -> Src.FComments
+    -> ( Src.C1 Src.Expr, A.Position )
+    -> ( Src.C1 Src.Expr, A.Position )
+buildIfExpr start newBranch newBranches trailingComments ( ( postElseBranch, elseBranch ), elseEnd ) =
+    let
+        reversedBranches : List (Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr ))
+        reversedBranches =
+            List.reverse newBranches
+
+        firstBranch : Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr )
+        firstBranch =
+            Maybe.withDefault newBranch (List.head reversedBranches)
+
+        restBranches : List (Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr ))
+        restBranches =
+            Maybe.withDefault [] (List.tail reversedBranches)
+
+        ifExpr : Src.Expr_
+        ifExpr =
+            Src.If firstBranch restBranches ( trailingComments, elseBranch )
+    in
+    ( ( postElseBranch, A.at start elseEnd ifExpr ), elseEnd )
 
 
 
@@ -794,47 +877,55 @@ function : SyntaxVersion -> A.Position -> Space.Parser E.Expr (Src.C1 Src.Expr)
 function syntaxVersion start =
     P.inContext E.Func (P.word1 '\\' E.Start) <|
         (Space.chompAndCheckIndent E.FuncSpace E.FuncIndentArg
-            |> P.bind
-                (\preArgComments ->
-                    P.specialize E.FuncArg (Pattern.term syntaxVersion)
-                        |> P.bind
-                            (\arg ->
-                                Space.chompAndCheckIndent E.FuncSpace E.FuncIndentArrow
-                                    |> P.bind (\trailingComments -> chompArgs syntaxVersion trailingComments [ ( preArgComments, arg ) ])
-                                    |> P.bind
-                                        (\( trailingComments, revArgs ) ->
-                                            Space.chompAndCheckIndent E.FuncSpace E.FuncIndentBody
-                                                |> P.bind
-                                                    (\preComments ->
-                                                        P.specialize E.FuncBody (expression syntaxVersion)
-                                                            |> P.fmap (Tuple.mapFirst (\( afterBodyComments, body ) -> ( afterBodyComments, ( preComments, body ) )))
-                                                    )
-                                                |> P.fmap
-                                                    (\( ( afterBodyComments, body ), end ) ->
-                                                        let
-                                                            funcExpr : Src.Expr_
-                                                            funcExpr =
-                                                                Src.Lambda ( trailingComments, List.reverse revArgs ) body
-                                                        in
-                                                        ( ( afterBodyComments, A.at start end funcExpr ), end )
-                                                    )
-                                        )
-                            )
-                )
+            |> P.andThen (\preArgComments -> chompFunctionFirstArg syntaxVersion start preArgComments)
         )
+
+
+chompFunctionFirstArg : SyntaxVersion -> A.Position -> Src.FComments -> Space.Parser E.Func (Src.C1 Src.Expr)
+chompFunctionFirstArg syntaxVersion start preArgComments =
+    P.specialize E.FuncArg (Pattern.term syntaxVersion)
+        |> P.andThen (\arg -> chompFunctionArgs syntaxVersion start preArgComments arg)
+
+
+chompFunctionArgs : SyntaxVersion -> A.Position -> Src.FComments -> Src.Pattern -> Space.Parser E.Func (Src.C1 Src.Expr)
+chompFunctionArgs syntaxVersion start preArgComments arg =
+    Space.chompAndCheckIndent E.FuncSpace E.FuncIndentArrow
+        |> P.andThen (\trailingComments -> chompArgs syntaxVersion trailingComments [ ( preArgComments, arg ) ])
+        |> P.andThen (\( trailingComments, revArgs ) -> chompFunctionBody syntaxVersion start trailingComments revArgs)
+
+
+chompFunctionBody : SyntaxVersion -> A.Position -> Src.FComments -> List (Src.C1 Src.Pattern) -> Space.Parser E.Func (Src.C1 Src.Expr)
+chompFunctionBody syntaxVersion start trailingComments revArgs =
+    Space.chompAndCheckIndent E.FuncSpace E.FuncIndentBody
+        |> P.andThen
+            (\preComments ->
+                P.specialize E.FuncBody (expression syntaxVersion)
+                    |> P.map (\( ( afterBodyComments, body ), end ) -> ( afterBodyComments, ( preComments, body ), end ))
+            )
+        |> P.map (\( afterBodyComments, body, end ) -> buildFunctionExpr start trailingComments revArgs afterBodyComments body end)
+
+
+buildFunctionExpr : A.Position -> Src.FComments -> List (Src.C1 Src.Pattern) -> Src.FComments -> Src.C1 Src.Expr -> A.Position -> ( Src.C1 Src.Expr, A.Position )
+buildFunctionExpr start trailingComments revArgs afterBodyComments body end =
+    let
+        funcExpr : Src.Expr_
+        funcExpr =
+            Src.Lambda ( trailingComments, List.reverse revArgs ) body
+    in
+    ( ( afterBodyComments, A.at start end funcExpr ), end )
 
 
 chompArgs : SyntaxVersion -> Src.FComments -> List (Src.C1 Src.Pattern) -> P.Parser E.Func (Src.C1 (List (Src.C1 Src.Pattern)))
 chompArgs syntaxVersion trailingComments revArgs =
     P.oneOf E.FuncArrow
         [ P.specialize E.FuncArg (Pattern.term syntaxVersion)
-            |> P.bind
+            |> P.andThen
                 (\arg ->
                     Space.chompAndCheckIndent E.FuncSpace E.FuncIndentArrow
-                        |> P.bind (\postArgComments -> chompArgs syntaxVersion postArgComments (( trailingComments, arg ) :: revArgs))
+                        |> P.andThen (\postArgComments -> chompArgs syntaxVersion postArgComments (( trailingComments, arg ) :: revArgs))
                 )
         , P.word2 '-' '>' E.FuncArrow
-            |> P.fmap (\_ -> ( trailingComments, revArgs ))
+            |> P.map (\_ -> ( trailingComments, revArgs ))
         ]
 
 
@@ -846,66 +937,83 @@ case_ : SyntaxVersion -> A.Position -> Space.Parser E.Expr (Src.C1 Src.Expr)
 case_ syntaxVersion start =
     P.inContext E.Case (Keyword.case_ E.Start) <|
         (Space.chompAndCheckIndent E.CaseSpace E.CaseIndentExpr
-            |> P.bind
-                (\preExprComments ->
-                    P.specialize E.CaseExpr (expression syntaxVersion)
-                        |> P.bind
-                            (\( ( postExprComments, expr ), exprEnd ) ->
-                                Space.checkIndent exprEnd E.CaseIndentOf
-                                    |> P.bind (\_ -> Keyword.of_ E.CaseOf)
-                                    |> P.bind (\_ -> Space.chompAndCheckIndent E.CaseSpace E.CaseIndentPattern)
-                                    |> P.bind
-                                        (\comments ->
-                                            P.withIndent
-                                                (chompBranch syntaxVersion comments
-                                                    |> P.bind
-                                                        (\( ( trailingComments, firstBranch ), firstEnd ) ->
-                                                            chompCaseEnd syntaxVersion trailingComments [ firstBranch ] firstEnd
-                                                                |> P.fmap
-                                                                    (\( ( branchesTrailingComments, branches ), end ) ->
-                                                                        ( ( branchesTrailingComments, A.at start end (Src.Case ( ( preExprComments, postExprComments ), expr ) branches) )
-                                                                        , end
-                                                                        )
-                                                                    )
-                                                        )
-                                                )
-                                        )
-                            )
+            |> P.andThen (\preExprComments -> chompCaseExpr syntaxVersion start preExprComments)
+        )
+
+
+chompCaseExpr : SyntaxVersion -> A.Position -> Src.FComments -> Space.Parser E.Case (Src.C1 Src.Expr)
+chompCaseExpr syntaxVersion start preExprComments =
+    P.specialize E.CaseExpr (expression syntaxVersion)
+        |> P.andThen
+            (\( ( postExprComments, expr ), exprEnd ) ->
+                chompCaseOf syntaxVersion start preExprComments postExprComments expr exprEnd
+            )
+
+
+chompCaseOf : SyntaxVersion -> A.Position -> Src.FComments -> Src.FComments -> Src.Expr -> A.Position -> Space.Parser E.Case (Src.C1 Src.Expr)
+chompCaseOf syntaxVersion start preExprComments postExprComments expr exprEnd =
+    Space.checkIndent exprEnd E.CaseIndentOf
+        |> P.andThen (\_ -> Keyword.of_ E.CaseOf)
+        |> P.andThen (\_ -> Space.chompAndCheckIndent E.CaseSpace E.CaseIndentPattern)
+        |> P.andThen (\comments -> chompCaseBranches syntaxVersion start preExprComments postExprComments expr comments)
+
+
+chompCaseBranches : SyntaxVersion -> A.Position -> Src.FComments -> Src.FComments -> Src.Expr -> Src.FComments -> Space.Parser E.Case (Src.C1 Src.Expr)
+chompCaseBranches syntaxVersion start preExprComments postExprComments expr comments =
+    P.withIndent
+        (chompBranch syntaxVersion comments
+            |> P.andThen
+                (\( ( trailingComments, firstBranch ), firstEnd ) ->
+                    chompCaseEnd syntaxVersion trailingComments [ firstBranch ] firstEnd
+                        |> P.map (buildCaseExpr start preExprComments postExprComments expr)
                 )
         )
+
+
+buildCaseExpr : A.Position -> Src.FComments -> Src.FComments -> Src.Expr -> ( Src.C1 (List ( Src.C2 Src.Pattern, Src.C1 Src.Expr )), A.Position ) -> ( Src.C1 Src.Expr, A.Position )
+buildCaseExpr start preExprComments postExprComments expr ( ( branchesTrailingComments, branches ), end ) =
+    ( ( branchesTrailingComments, A.at start end (Src.Case ( ( preExprComments, postExprComments ), expr ) branches) )
+    , end
+    )
 
 
 chompBranch : SyntaxVersion -> Src.FComments -> Space.Parser E.Case (Src.C1 ( Src.C2 Src.Pattern, Src.C1 Src.Expr ))
 chompBranch syntaxVersion prePatternComments =
     P.specialize E.CasePattern (Pattern.expression syntaxVersion)
-        |> P.bind
-            (\( ( postPatternComments, pattern ), patternEnd ) ->
-                Space.checkIndent patternEnd E.CaseIndentArrow
-                    |> P.bind (\_ -> P.word2 '-' '>' E.CaseArrow)
-                    |> P.bind (\_ -> Space.chompAndCheckIndent E.CaseSpace E.CaseIndentBranch)
-                    |> P.bind
-                        (\preBranchExprComments ->
-                            P.specialize E.CaseBranch (expression syntaxVersion)
-                                |> P.fmap
-                                    (\( ( trailingComments, branchExpr ), end ) ->
-                                        ( ( trailingComments
-                                          , ( ( ( prePatternComments, postPatternComments ), pattern )
-                                            , ( preBranchExprComments, branchExpr )
-                                            )
-                                          )
-                                        , end
-                                        )
-                                    )
-                        )
-            )
+        |> P.andThen (\( ( postPatternComments, pattern ), patternEnd ) -> chompBranchArrow syntaxVersion prePatternComments postPatternComments pattern patternEnd)
+
+
+chompBranchArrow : SyntaxVersion -> Src.FComments -> Src.FComments -> Src.Pattern -> A.Position -> Space.Parser E.Case (Src.C1 ( Src.C2 Src.Pattern, Src.C1 Src.Expr ))
+chompBranchArrow syntaxVersion prePatternComments postPatternComments pattern patternEnd =
+    Space.checkIndent patternEnd E.CaseIndentArrow
+        |> P.andThen (\_ -> P.word2 '-' '>' E.CaseArrow)
+        |> P.andThen (\_ -> Space.chompAndCheckIndent E.CaseSpace E.CaseIndentBranch)
+        |> P.andThen (\preBranchExprComments -> chompBranchExpr syntaxVersion prePatternComments postPatternComments pattern preBranchExprComments)
+
+
+chompBranchExpr : SyntaxVersion -> Src.FComments -> Src.FComments -> Src.Pattern -> Src.FComments -> Space.Parser E.Case (Src.C1 ( Src.C2 Src.Pattern, Src.C1 Src.Expr ))
+chompBranchExpr syntaxVersion prePatternComments postPatternComments pattern preBranchExprComments =
+    P.specialize E.CaseBranch (expression syntaxVersion)
+        |> P.map (buildBranchResult prePatternComments postPatternComments pattern preBranchExprComments)
+
+
+buildBranchResult : Src.FComments -> Src.FComments -> Src.Pattern -> Src.FComments -> ( Src.C1 Src.Expr, A.Position ) -> ( Src.C1 ( Src.C2 Src.Pattern, Src.C1 Src.Expr ), A.Position )
+buildBranchResult prePatternComments postPatternComments pattern preBranchExprComments ( ( trailingComments, branchExpr ), end ) =
+    ( ( trailingComments
+      , ( ( ( prePatternComments, postPatternComments ), pattern )
+        , ( preBranchExprComments, branchExpr )
+        )
+      )
+    , end
+    )
 
 
 chompCaseEnd : SyntaxVersion -> Src.FComments -> List ( Src.C2 Src.Pattern, Src.C1 Src.Expr ) -> A.Position -> Space.Parser E.Case (Src.C1 (List ( Src.C2 Src.Pattern, Src.C1 Src.Expr )))
 chompCaseEnd syntaxVersion prePatternComments branches end =
     P.oneOfWithFallback
         [ Space.checkAligned E.CasePatternAlignment
-            |> P.bind (\_ -> chompBranch syntaxVersion prePatternComments)
-            |> P.bind (\( ( comments, branch ), newEnd ) -> chompCaseEnd syntaxVersion comments (branch :: branches) newEnd)
+            |> P.andThen (\_ -> chompBranch syntaxVersion prePatternComments)
+            |> P.andThen (\( ( comments, branch ), newEnd ) -> chompCaseEnd syntaxVersion comments (branch :: branches) newEnd)
         ]
         ( ( prePatternComments, List.reverse branches ), end )
 
@@ -919,38 +1027,46 @@ let_ syntaxVersion start =
     P.inContext E.Let (Keyword.let_ E.Start) <|
         ((P.withBacksetIndent 3 <|
             (Space.chompAndCheckIndent E.LetSpace E.LetIndentDef
-                |> P.bind
-                    (\preDefComments ->
-                        P.withIndent <|
-                            (chompLetDef syntaxVersion
-                                |> P.bind (\( ( postDefComments, def ), end ) -> chompLetDefs syntaxVersion [ ( ( preDefComments, postDefComments ), def ) ] end)
-                            )
-                    )
+                |> P.andThen (\preDefComments -> chompLetFirstDef syntaxVersion preDefComments)
             )
          )
-            |> P.bind
-                (\( defs, defsEnd ) ->
-                    Space.checkIndent defsEnd E.LetIndentIn
-                        |> P.bind (\_ -> Keyword.in_ E.LetIn)
-                        |> P.bind (\_ -> Space.chompAndCheckIndent E.LetSpace E.LetIndentBody)
-                        |> P.bind
-                            (\bodyComments ->
-                                P.specialize E.LetBody (expression syntaxVersion)
-                                    |> P.fmap
-                                        (\( ( trailingComments, body ), end ) ->
-                                            ( ( trailingComments, A.at start end (Src.Let defs bodyComments body) ), end )
-                                        )
-                            )
-                )
+            |> P.andThen (\( defs, defsEnd ) -> chompLetIn syntaxVersion start defs defsEnd)
         )
+
+
+chompLetFirstDef : SyntaxVersion -> Src.FComments -> Space.Parser E.Let (List (Src.C2 (A.Located Src.Def)))
+chompLetFirstDef syntaxVersion preDefComments =
+    P.withIndent <|
+        (chompLetDef syntaxVersion
+            |> P.andThen (\( ( postDefComments, def ), end ) -> chompLetDefs syntaxVersion [ ( ( preDefComments, postDefComments ), def ) ] end)
+        )
+
+
+chompLetIn : SyntaxVersion -> A.Position -> List (Src.C2 (A.Located Src.Def)) -> A.Position -> Space.Parser E.Let (Src.C1 Src.Expr)
+chompLetIn syntaxVersion start defs defsEnd =
+    Space.checkIndent defsEnd E.LetIndentIn
+        |> P.andThen (\_ -> Keyword.in_ E.LetIn)
+        |> P.andThen (\_ -> Space.chompAndCheckIndent E.LetSpace E.LetIndentBody)
+        |> P.andThen (\bodyComments -> chompLetBody syntaxVersion start defs bodyComments)
+
+
+chompLetBody : SyntaxVersion -> A.Position -> List (Src.C2 (A.Located Src.Def)) -> Src.FComments -> Space.Parser E.Let (Src.C1 Src.Expr)
+chompLetBody syntaxVersion start defs bodyComments =
+    P.specialize E.LetBody (expression syntaxVersion)
+        |> P.map (buildLetExpr start defs bodyComments)
+
+
+buildLetExpr : A.Position -> List (Src.C2 (A.Located Src.Def)) -> Src.FComments -> ( Src.C1 Src.Expr, A.Position ) -> ( Src.C1 Src.Expr, A.Position )
+buildLetExpr start defs bodyComments ( ( trailingComments, body ), end ) =
+    ( ( trailingComments, A.at start end (Src.Let defs bodyComments body) ), end )
 
 
 chompLetDefs : SyntaxVersion -> List (Src.C2 (A.Located Src.Def)) -> A.Position -> Space.Parser E.Let (List (Src.C2 (A.Located Src.Def)))
 chompLetDefs syntaxVersion revDefs end =
     P.oneOfWithFallback
         [ Space.checkAligned E.LetDefAlignment
-            |> P.bind (\_ -> chompLetDef syntaxVersion)
-            |> P.bind (\( ( postDefComments, def ), newEnd ) -> chompLetDefs syntaxVersion (( ( [], postDefComments ), def ) :: revDefs) newEnd)
+            |> P.andThen (\_ -> chompLetDef syntaxVersion)
+            |> P.andThen (\( ( postDefComments, def ), newEnd ) -> chompLetDefs syntaxVersion (( ( [], postDefComments ), def ) :: revDefs) newEnd)
         ]
         ( List.reverse revDefs, end )
 
@@ -974,54 +1090,71 @@ chompLetDef syntaxVersion =
 definition : SyntaxVersion -> Space.Parser E.Let (Src.C1 (A.Located Src.Def))
 definition syntaxVersion =
     P.addLocation (Var.lower E.LetDefName)
-        |> P.bind
-            (\((A.At (A.Region start _) name) as aname) ->
-                P.specialize (E.LetDef name) <|
-                    (Space.chompAndCheckIndent E.DefSpace E.DefIndentEquals
-                        |> P.bind
-                            (\postNameComments ->
-                                P.oneOf E.DefEquals
-                                    [ P.word1 ':' E.DefEquals
-                                        |> P.bind (\_ -> Space.chompAndCheckIndent E.DefSpace E.DefIndentType)
-                                        |> P.bind
-                                            (\preTypeComments ->
-                                                P.specialize E.DefType (Type.expression preTypeComments)
-                                            )
-                                        |> P.bind
-                                            (\( ( ( preTipeComments, postTipeComments, _ ), tipe ), _ ) ->
-                                                Space.checkAligned E.DefAlignment
-                                                    |> P.bind (\_ -> chompMatchingName name)
-                                                    |> P.bind
-                                                        (\defName ->
-                                                            Space.chompAndCheckIndent E.DefSpace E.DefIndentEquals
-                                                                |> P.bind
-                                                                    (\trailingComments ->
-                                                                        chompDefArgsAndBody syntaxVersion start defName (Just ( postTipeComments, ( ( postNameComments, preTipeComments ), tipe ) )) trailingComments []
-                                                                    )
-                                                        )
-                                            )
-                                    , chompDefArgsAndBody syntaxVersion start aname Nothing postNameComments []
-                                    ]
-                            )
-                    )
+        |> P.andThen (\aname -> chompDefinitionBody syntaxVersion aname)
+
+
+chompDefinitionBody : SyntaxVersion -> A.Located Name.Name -> Space.Parser E.Let (Src.C1 (A.Located Src.Def))
+chompDefinitionBody syntaxVersion ((A.At (A.Region start _) name) as aname) =
+    P.specialize (E.LetDef name) <|
+        (Space.chompAndCheckIndent E.DefSpace E.DefIndentEquals
+            |> P.andThen (\postNameComments -> chompDefinitionEqualsOrType syntaxVersion start name aname postNameComments)
+        )
+
+
+chompDefinitionEqualsOrType : SyntaxVersion -> A.Position -> Name.Name -> A.Located Name.Name -> Src.FComments -> Space.Parser E.Def (Src.C1 (A.Located Src.Def))
+chompDefinitionEqualsOrType syntaxVersion start name aname postNameComments =
+    P.oneOf E.DefEquals
+        [ P.word1 ':' E.DefEquals
+            |> P.andThen (\_ -> Space.chompAndCheckIndent E.DefSpace E.DefIndentType)
+            |> P.andThen (\preTypeComments -> P.specialize E.DefType (Type.expression preTypeComments))
+            |> P.andThen (\( ( ( preTipeComments, postTipeComments, _ ), tipe ), _ ) -> chompDefinitionAfterType syntaxVersion start name postNameComments preTipeComments postTipeComments tipe)
+        , chompDefArgsAndBody syntaxVersion start aname Nothing postNameComments []
+        ]
+
+
+chompDefinitionAfterType : SyntaxVersion -> A.Position -> Name.Name -> Src.FComments -> Src.FComments -> Src.FComments -> Src.Type -> Space.Parser E.Def (Src.C1 (A.Located Src.Def))
+chompDefinitionAfterType syntaxVersion start name postNameComments preTipeComments postTipeComments tipe =
+    Space.checkAligned E.DefAlignment
+        |> P.andThen (\_ -> chompMatchingName name)
+        |> P.andThen (\defName -> chompDefinitionWithType syntaxVersion start defName postNameComments preTipeComments postTipeComments tipe)
+
+
+chompDefinitionWithType : SyntaxVersion -> A.Position -> A.Located Name.Name -> Src.FComments -> Src.FComments -> Src.FComments -> Src.Type -> Space.Parser E.Def (Src.C1 (A.Located Src.Def))
+chompDefinitionWithType syntaxVersion start defName postNameComments preTipeComments postTipeComments tipe =
+    Space.chompAndCheckIndent E.DefSpace E.DefIndentEquals
+        |> P.andThen
+            (\trailingComments ->
+                let
+                    typeAnnotation : Maybe (Src.C1 (Src.C2 Src.Type))
+                    typeAnnotation =
+                        Just ( postTipeComments, ( ( postNameComments, preTipeComments ), tipe ) )
+                in
+                chompDefArgsAndBody syntaxVersion start defName typeAnnotation trailingComments []
             )
 
 
-chompDefArgsAndBody : SyntaxVersion -> A.Position -> A.Located Name.Name -> Maybe (Src.C1 (Src.C2 Src.Type)) -> Src.FComments -> List (Src.C1 Src.Pattern) -> Space.Parser E.Def (Src.C1 (A.Located Src.Def))
+chompDefArgsAndBody :
+    SyntaxVersion
+    -> A.Position
+    -> A.Located Name.Name
+    -> Maybe (Src.C1 (Src.C2 Src.Type))
+    -> Src.FComments
+    -> List (Src.C1 Src.Pattern)
+    -> Space.Parser E.Def (Src.C1 (A.Located Src.Def))
 chompDefArgsAndBody syntaxVersion start name tipe trailingComments revArgs =
     P.oneOf E.DefEquals
         [ P.specialize E.DefArg (Pattern.term syntaxVersion)
-            |> P.bind
+            |> P.andThen
                 (\arg ->
                     Space.chompAndCheckIndent E.DefSpace E.DefIndentEquals
-                        |> P.bind (\comments -> chompDefArgsAndBody syntaxVersion start name tipe comments (( trailingComments, arg ) :: revArgs))
+                        |> P.andThen (\comments -> chompDefArgsAndBody syntaxVersion start name tipe comments (( trailingComments, arg ) :: revArgs))
                 )
         , P.word1 '=' E.DefEquals
-            |> P.bind (\_ -> Space.chompAndCheckIndent E.DefSpace E.DefIndentBody)
-            |> P.bind
+            |> P.andThen (\_ -> Space.chompAndCheckIndent E.DefSpace E.DefIndentBody)
+            |> P.andThen
                 (\preExpressionComments ->
                     P.specialize E.DefBody (expression syntaxVersion)
-                        |> P.fmap
+                        |> P.map
                             (\( ( comments, body ), end ) ->
                                 ( ( comments, A.at start end (Src.Define name (List.reverse revArgs) ( trailingComments ++ preExpressionComments, body ) tipe) )
                                 , end
@@ -1069,27 +1202,37 @@ destructure : SyntaxVersion -> Space.Parser E.Let (Src.C1 (A.Located Src.Def))
 destructure syntaxVersion =
     P.specialize E.LetDestruct <|
         (P.getPosition
-            |> P.bind
-                (\start ->
-                    P.specialize E.DestructPattern (Pattern.term syntaxVersion)
-                        |> P.bind
-                            (\pattern ->
-                                Space.chompAndCheckIndent E.DestructSpace E.DestructIndentEquals
-                                    |> P.bind
-                                        (\preEqualSignComments ->
-                                            P.word1 '=' E.DestructEquals
-                                                |> P.bind (\_ -> Space.chompAndCheckIndent E.DestructSpace E.DestructIndentBody)
-                                                |> P.bind
-                                                    (\preExpressionComments ->
-                                                        P.specialize E.DestructBody (expression syntaxVersion)
-                                                            |> P.fmap
-                                                                (\( ( comments, expr ), end ) ->
-                                                                    ( ( comments, A.at start end (Src.Destruct pattern ( preEqualSignComments ++ preExpressionComments, expr )) )
-                                                                    , end
-                                                                    )
-                                                                )
-                                                    )
-                                        )
-                            )
-                )
+            |> P.andThen (\start -> chompDestructPattern syntaxVersion start)
         )
+
+
+chompDestructPattern : SyntaxVersion -> A.Position -> Space.Parser E.Destruct (Src.C1 (A.Located Src.Def))
+chompDestructPattern syntaxVersion start =
+    P.specialize E.DestructPattern (Pattern.term syntaxVersion)
+        |> P.andThen (\pattern -> chompDestructEquals syntaxVersion start pattern)
+
+
+chompDestructEquals : SyntaxVersion -> A.Position -> Src.Pattern -> Space.Parser E.Destruct (Src.C1 (A.Located Src.Def))
+chompDestructEquals syntaxVersion start pattern =
+    Space.chompAndCheckIndent E.DestructSpace E.DestructIndentEquals
+        |> P.andThen (\preEqualSignComments -> chompDestructBody syntaxVersion start pattern preEqualSignComments)
+
+
+chompDestructBody : SyntaxVersion -> A.Position -> Src.Pattern -> Src.FComments -> Space.Parser E.Destruct (Src.C1 (A.Located Src.Def))
+chompDestructBody syntaxVersion start pattern preEqualSignComments =
+    P.word1 '=' E.DestructEquals
+        |> P.andThen (\_ -> Space.chompAndCheckIndent E.DestructSpace E.DestructIndentBody)
+        |> P.andThen (\preExpressionComments -> chompDestructExpr syntaxVersion start pattern preEqualSignComments preExpressionComments)
+
+
+chompDestructExpr : SyntaxVersion -> A.Position -> Src.Pattern -> Src.FComments -> Src.FComments -> Space.Parser E.Destruct (Src.C1 (A.Located Src.Def))
+chompDestructExpr syntaxVersion start pattern preEqualSignComments preExpressionComments =
+    P.specialize E.DestructBody (expression syntaxVersion)
+        |> P.map (buildDestructDef start pattern preEqualSignComments preExpressionComments)
+
+
+buildDestructDef : A.Position -> Src.Pattern -> Src.FComments -> Src.FComments -> ( Src.C1 Src.Expr, A.Position ) -> ( Src.C1 (A.Located Src.Def), A.Position )
+buildDestructDef start pattern preEqualSignComments preExpressionComments ( ( comments, expr ), end ) =
+    ( ( comments, A.at start end (Src.Destruct pattern ( preEqualSignComments ++ preExpressionComments, expr )) )
+    , end
+    )

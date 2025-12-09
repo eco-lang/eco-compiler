@@ -25,28 +25,28 @@ run : Pkg.Name -> Task Never ()
 run pkg =
     Reporting.attempt Exit.uninstallToReport
         (Stuff.findRoot
-            |> Task.bind
+            |> Task.andThen
                 (\maybeRoot ->
                     case maybeRoot of
                         Nothing ->
-                            Task.pure (Err Exit.UninstallNoOutline)
+                            Task.succeed (Err Exit.UninstallNoOutline)
 
                         Just root ->
                             Task.run
                                 (Task.eio Exit.UninstallBadRegistry Solver.initEnv
-                                    |> Task.bind
+                                    |> Task.andThen
                                         (\env ->
                                             Task.eio Exit.UninstallBadOutline (Outline.read root)
-                                                |> Task.bind
+                                                |> Task.andThen
                                                     (\oldOutline ->
                                                         case oldOutline of
                                                             Outline.App outline ->
                                                                 makeAppPlan env pkg outline
-                                                                    |> Task.bind (\changes -> attemptChanges root env oldOutline changes)
+                                                                    |> Task.andThen (\changes -> attemptChanges root env oldOutline changes)
 
                                                             Outline.Pkg outline ->
                                                                 makePkgPlan pkg outline
-                                                                    |> Task.bind (\changes -> attemptChanges root env oldOutline changes)
+                                                                    |> Task.andThen (\changes -> attemptChanges root env oldOutline changes)
                                                     )
                                         )
                                 )
@@ -79,17 +79,17 @@ attemptChangesHelp root env oldOutline newOutline =
         BW.withScope
             (\scope ->
                 Outline.write root newOutline
-                    |> Task.bind (\_ -> Details.verifyInstall scope root env newOutline)
-                    |> Task.bind
+                    |> Task.andThen (\_ -> Details.verifyInstall scope root env newOutline)
+                    |> Task.andThen
                         (\result ->
                             case result of
                                 Err exit ->
                                     Outline.write root oldOutline
-                                        |> Task.fmap (\_ -> Err exit)
+                                        |> Task.map (\_ -> Err exit)
 
                                 Ok () ->
                                     IO.putStrLn "Success!"
-                                        |> Task.fmap (\_ -> Ok ())
+                                        |> Task.map (\_ -> Ok ())
                         )
             )
 
@@ -103,11 +103,11 @@ makeAppPlan (Solver.Env cache _ connection registry) pkg ((Outline.AppOutline _ 
     case Dict.get identity pkg (Dict.union direct testDirect) of
         Just _ ->
             Task.io (Solver.removeFromApp cache connection registry pkg outline)
-                |> Task.bind
+                |> Task.andThen
                     (\result ->
                         case result of
                             Solver.SolverOk (Solver.AppSolution _ _ app) ->
-                                Task.pure (Changes (Outline.App app))
+                                Task.succeed (Changes (Outline.App app))
 
                             Solver.NoSolution ->
                                 Task.throw (Exit.UninstallNoOnlineAppSolution pkg)
@@ -120,7 +120,7 @@ makeAppPlan (Solver.Env cache _ connection registry) pkg ((Outline.AppOutline _ 
                     )
 
         Nothing ->
-            Task.pure AlreadyNotPresent
+            Task.succeed AlreadyNotPresent
 
 
 
@@ -135,7 +135,7 @@ makePkgPlan pkg (Outline.PkgOutline name summary license version exposed deps te
             Dict.union deps test
     in
     if Dict.member identity pkg old then
-        Task.pure <|
+        Task.succeed <|
             Changes <|
                 Outline.Pkg <|
                     Outline.PkgOutline name
@@ -148,4 +148,4 @@ makePkgPlan pkg (Outline.PkgOutline name summary license version exposed deps te
                         elmVersion
 
     else
-        Task.pure AlreadyNotPresent
+        Task.succeed AlreadyNotPresent

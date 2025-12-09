@@ -66,7 +66,7 @@ add (A.At region pattern) expectation state =
 
         Can.PList patterns ->
             Type.mkFlexVar
-                |> IO.bind
+                |> IO.andThen
                     (\entryVar ->
                         let
                             entryType : Type
@@ -78,7 +78,7 @@ add (A.At region pattern) expectation state =
                                 Type.AppN ModuleName.list Name.list [ entryType ]
                         in
                         IO.foldM (addEntry region entryType) state (Index.indexedMap Tuple.pair patterns)
-                            |> IO.fmap
+                            |> IO.map
                                 (\(State headers vars revCons) ->
                                     let
                                         listCon : Type.Constraint
@@ -91,7 +91,7 @@ add (A.At region pattern) expectation state =
 
         Can.PCons headPattern tailPattern ->
             Type.mkFlexVar
-                |> IO.bind
+                |> IO.andThen
                     (\entryVar ->
                         let
                             entryType : Type
@@ -111,8 +111,8 @@ add (A.At region pattern) expectation state =
                                 E.PFromContext region E.PTail listType
                         in
                         add tailPattern tailExpectation state
-                            |> IO.bind (add headPattern headExpectation)
-                            |> IO.fmap
+                            |> IO.andThen (add headPattern headExpectation)
+                            |> IO.map
                                 (\(State headers vars revCons) ->
                                     let
                                         listCon : Type.Constraint
@@ -125,15 +125,15 @@ add (A.At region pattern) expectation state =
 
         Can.PRecord fields ->
             Type.mkFlexVar
-                |> IO.bind
+                |> IO.andThen
                     (\extVar ->
                         let
                             extType : Type
                             extType =
                                 Type.VarN extVar
                         in
-                        IO.traverseList (\field -> IO.fmap (Tuple.pair field) Type.mkFlexVar) fields
-                            |> IO.fmap
+                        IO.traverseList (\field -> IO.map (Tuple.pair field) Type.mkFlexVar) fields
+                            |> IO.map
                                 (\fieldVars ->
                                     let
                                         fieldTypes : Dict String Name.Name Type
@@ -257,10 +257,10 @@ addEntry listRegion tipe state ( index, pattern ) =
 addTuple : A.Region -> Can.Pattern -> Can.Pattern -> List Can.Pattern -> E.PExpected Type -> State -> IO State
 addTuple region a b cs expectation state =
     Type.mkFlexVar
-        |> IO.bind
+        |> IO.andThen
             (\aVar ->
                 Type.mkFlexVar
-                    |> IO.bind
+                    |> IO.andThen
                         (\bVar ->
                             let
                                 aType : Type
@@ -272,21 +272,21 @@ addTuple region a b cs expectation state =
                                     Type.VarN bVar
                             in
                             simpleAdd a aType state
-                                |> IO.bind (simpleAdd b bType)
-                                |> IO.bind
+                                |> IO.andThen (simpleAdd b bType)
+                                |> IO.andThen
                                     (\updatedState ->
                                         IO.foldM
                                             (\( cVars, s ) c ->
                                                 Type.mkFlexVar
-                                                    |> IO.bind
+                                                    |> IO.andThen
                                                         (\cVar ->
                                                             simpleAdd c (Type.VarN cVar) s
-                                                                |> IO.fmap (Tuple.pair (cVar :: cVars))
+                                                                |> IO.map (Tuple.pair (cVar :: cVars))
                                                         )
                                             )
                                             ( [], updatedState )
                                             cs
-                                            |> IO.fmap
+                                            |> IO.map
                                                 (\( cVars, State headers vars revCons ) ->
                                                     let
                                                         tupleCon : Type.Constraint
@@ -311,8 +311,8 @@ simpleAdd pattern patternType state =
 
 addCtor : A.Region -> IO.Canonical -> Name.Name -> List Name.Name -> Name.Name -> List Can.PatternCtorArg -> E.PExpected Type -> State -> IO State
 addCtor region home typeName typeVarNames ctorName args expectation state =
-    IO.traverseList (\var -> IO.fmap (Tuple.pair var) (Type.nameToFlex var)) typeVarNames
-        |> IO.bind
+    IO.traverseList (\var -> IO.map (Tuple.pair var) (Type.nameToFlex var)) typeVarNames
+        |> IO.andThen
             (\varPairs ->
                 let
                     typePairs : List ( Name.Name, Type )
@@ -324,7 +324,7 @@ addCtor region home typeName typeVarNames ctorName args expectation state =
                         Dict.fromList identity typePairs
                 in
                 IO.foldM (addCtorArg region ctorName freeVarDict) state args
-                    |> IO.bind
+                    |> IO.andThen
                         (\(State headers vars revCons) ->
                             let
                                 ctorType : Type
@@ -346,7 +346,7 @@ addCtor region home typeName typeVarNames ctorName args expectation state =
 addCtorArg : A.Region -> Name.Name -> Dict String Name.Name Type -> State -> Can.PatternCtorArg -> IO State
 addCtorArg region ctorName freeVarDict state (Can.PatternCtorArg index srcType pattern) =
     Instantiate.fromSrcType freeVarDict srcType
-        |> IO.bind
+        |> IO.andThen
             (\tipe ->
                 let
                     expectation : E.PExpected Type

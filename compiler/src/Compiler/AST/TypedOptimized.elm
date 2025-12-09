@@ -53,7 +53,9 @@ import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 
@@ -351,26 +353,26 @@ addLocalGraph (LocalGraph _ nodes1 fields1 ann1) (GlobalGraph nodes2 fields2 ann
 -- ENCODERS and DECODERS
 
 
-globalGraphEncoder : GlobalGraph -> BE.Encoder
+globalGraphEncoder : GlobalGraph -> Bytes.Encode.Encoder
 globalGraphEncoder (GlobalGraph nodes fields annotations) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.assocListDict compareGlobal globalEncoder nodeEncoder nodes
         , BE.assocListDict compare BE.string BE.int fields
         , BE.assocListDict compare BE.string Can.annotationEncoder annotations
         ]
 
 
-globalGraphDecoder : BD.Decoder GlobalGraph
+globalGraphDecoder : Bytes.Decode.Decoder GlobalGraph
 globalGraphDecoder =
-    BD.map3 GlobalGraph
+    Bytes.Decode.map3 GlobalGraph
         (BD.assocListDict toComparableGlobal globalDecoder nodeDecoder)
         (BD.assocListDict identity BD.string BD.int)
         (BD.assocListDict identity BD.string Can.annotationDecoder)
 
 
-localGraphEncoder : LocalGraph -> BE.Encoder
+localGraphEncoder : LocalGraph -> Bytes.Encode.Encoder
 localGraphEncoder (LocalGraph main nodes fields annotations) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.maybe mainEncoder main
         , BE.assocListDict compareGlobal globalEncoder nodeEncoder nodes
         , BE.assocListDict compare BE.string BE.int fields
@@ -378,77 +380,77 @@ localGraphEncoder (LocalGraph main nodes fields annotations) =
         ]
 
 
-localGraphDecoder : BD.Decoder LocalGraph
+localGraphDecoder : Bytes.Decode.Decoder LocalGraph
 localGraphDecoder =
-    BD.map4 LocalGraph
+    Bytes.Decode.map4 LocalGraph
         (BD.maybe mainDecoder)
         (BD.assocListDict toComparableGlobal globalDecoder nodeDecoder)
         (BD.assocListDict identity BD.string BD.int)
         (BD.assocListDict identity BD.string Can.annotationDecoder)
 
 
-mainEncoder : Main -> BE.Encoder
+mainEncoder : Main -> Bytes.Encode.Encoder
 mainEncoder main_ =
     case main_ of
         Static ->
-            BE.unsignedInt8 0
+            Bytes.Encode.unsignedInt8 0
 
         Dynamic msgType decoder ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , Can.typeEncoder msgType
                 , exprEncoder decoder
                 ]
 
 
-mainDecoder : BD.Decoder Main
+mainDecoder : Bytes.Decode.Decoder Main
 mainDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed Static
+                        Bytes.Decode.succeed Static
 
                     1 ->
-                        BD.map2 Dynamic
+                        Bytes.Decode.map2 Dynamic
                             Can.typeDecoder
                             exprDecoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-globalEncoder : Global -> BE.Encoder
+globalEncoder : Global -> Bytes.Encode.Encoder
 globalEncoder (Global home name) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ ModuleName.canonicalEncoder home
         , BE.string name
         ]
 
 
-globalDecoder : BD.Decoder Global
+globalDecoder : Bytes.Decode.Decoder Global
 globalDecoder =
-    BD.map2 Global
+    Bytes.Decode.map2 Global
         ModuleName.canonicalDecoder
         BD.string
 
 
-nodeEncoder : Node -> BE.Encoder
+nodeEncoder : Node -> Bytes.Encode.Encoder
 nodeEncoder node =
     case node of
         Define expr deps tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , exprEncoder expr
                 , BE.everySet compareGlobal globalEncoder deps
                 , Can.typeEncoder tipe
                 ]
 
         TrackedDefine region expr deps tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , A.regionEncoder region
                 , exprEncoder expr
                 , BE.everySet compareGlobal globalEncoder deps
@@ -456,8 +458,8 @@ nodeEncoder node =
                 ]
 
         DefineTailFunc region argNames body deps tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , A.regionEncoder region
                 , BE.list typedLocatedNameEncoder argNames
                 , exprEncoder body
@@ -466,35 +468,35 @@ nodeEncoder node =
                 ]
 
         Ctor index arity tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , Index.zeroBasedEncoder index
                 , BE.int arity
                 , Can.typeEncoder tipe
                 ]
 
         Enum index tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , Index.zeroBasedEncoder index
                 , Can.typeEncoder tipe
                 ]
 
         Box tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , Can.typeEncoder tipe
                 ]
 
         Link linkedGlobal ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , globalEncoder linkedGlobal
                 ]
 
         Cycle names values functions deps ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , BE.list BE.string names
                 , BE.list (BE.jsonPair BE.string exprEncoder) values
                 , BE.list defEncoder functions
@@ -502,56 +504,56 @@ nodeEncoder node =
                 ]
 
         Manager effectsType ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , effectsTypeEncoder effectsType
                 ]
 
         Kernel chunks deps ->
-            BE.sequence
-                [ BE.unsignedInt8 9
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
                 , BE.list K.chunkEncoder chunks
                 , BE.everySet compareGlobal globalEncoder deps
                 ]
 
         PortIncoming decoder deps tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 10
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 10
                 , exprEncoder decoder
                 , BE.everySet compareGlobal globalEncoder deps
                 , Can.typeEncoder tipe
                 ]
 
         PortOutgoing encoder deps tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 11
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 11
                 , exprEncoder encoder
                 , BE.everySet compareGlobal globalEncoder deps
                 , Can.typeEncoder tipe
                 ]
 
 
-nodeDecoder : BD.Decoder Node
+nodeDecoder : Bytes.Decode.Decoder Node
 nodeDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 Define
+                        Bytes.Decode.map3 Define
                             exprDecoder
                             (BD.everySet toComparableGlobal globalDecoder)
                             Can.typeDecoder
 
                     1 ->
-                        BD.map4 TrackedDefine
+                        Bytes.Decode.map4 TrackedDefine
                             A.regionDecoder
                             exprDecoder
                             (BD.everySet toComparableGlobal globalDecoder)
                             Can.typeDecoder
 
                     2 ->
-                        BD.map5 DefineTailFunc
+                        Bytes.Decode.map5 DefineTailFunc
                             A.regionDecoder
                             (BD.list typedLocatedNameDecoder)
                             exprDecoder
@@ -559,153 +561,153 @@ nodeDecoder =
                             Can.typeDecoder
 
                     3 ->
-                        BD.map3 Ctor
+                        Bytes.Decode.map3 Ctor
                             Index.zeroBasedDecoder
                             BD.int
                             Can.typeDecoder
 
                     4 ->
-                        BD.map2 Enum
+                        Bytes.Decode.map2 Enum
                             Index.zeroBasedDecoder
                             Can.typeDecoder
 
                     5 ->
-                        BD.map Box Can.typeDecoder
+                        Bytes.Decode.map Box Can.typeDecoder
 
                     6 ->
-                        BD.map Link globalDecoder
+                        Bytes.Decode.map Link globalDecoder
 
                     7 ->
-                        BD.map4 Cycle
+                        Bytes.Decode.map4 Cycle
                             (BD.list BD.string)
                             (BD.list (BD.jsonPair BD.string exprDecoder))
                             (BD.list defDecoder)
                             (BD.everySet toComparableGlobal globalDecoder)
 
                     8 ->
-                        BD.map Manager effectsTypeDecoder
+                        Bytes.Decode.map Manager effectsTypeDecoder
 
                     9 ->
-                        BD.map2 Kernel
+                        Bytes.Decode.map2 Kernel
                             (BD.list K.chunkDecoder)
                             (BD.everySet toComparableGlobal globalDecoder)
 
                     10 ->
-                        BD.map3 PortIncoming
+                        Bytes.Decode.map3 PortIncoming
                             exprDecoder
                             (BD.everySet toComparableGlobal globalDecoder)
                             Can.typeDecoder
 
                     11 ->
-                        BD.map3 PortOutgoing
+                        Bytes.Decode.map3 PortOutgoing
                             exprDecoder
                             (BD.everySet toComparableGlobal globalDecoder)
                             Can.typeDecoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-typedLocatedNameEncoder : ( A.Located Name, Can.Type ) -> BE.Encoder
+typedLocatedNameEncoder : ( A.Located Name, Can.Type ) -> Bytes.Encode.Encoder
 typedLocatedNameEncoder ( locName, tipe ) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ A.locatedEncoder BE.string locName
         , Can.typeEncoder tipe
         ]
 
 
-typedLocatedNameDecoder : BD.Decoder ( A.Located Name, Can.Type )
+typedLocatedNameDecoder : Bytes.Decode.Decoder ( A.Located Name, Can.Type )
 typedLocatedNameDecoder =
-    BD.map2 Tuple.pair
+    Bytes.Decode.map2 Tuple.pair
         (A.locatedDecoder BD.string)
         Can.typeDecoder
 
 
-typedNameEncoder : ( Name, Can.Type ) -> BE.Encoder
+typedNameEncoder : ( Name, Can.Type ) -> Bytes.Encode.Encoder
 typedNameEncoder ( name, tipe ) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.string name
         , Can.typeEncoder tipe
         ]
 
 
-typedNameDecoder : BD.Decoder ( Name, Can.Type )
+typedNameDecoder : Bytes.Decode.Decoder ( Name, Can.Type )
 typedNameDecoder =
-    BD.map2 Tuple.pair
+    Bytes.Decode.map2 Tuple.pair
         BD.string
         Can.typeDecoder
 
 
-exprEncoder : Expr -> BE.Encoder
+exprEncoder : Expr -> Bytes.Encode.Encoder
 exprEncoder expr =
     case expr of
         Bool region value tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , A.regionEncoder region
                 , BE.bool value
                 , Can.typeEncoder tipe
                 ]
 
         Chr region value tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , A.regionEncoder region
                 , BE.string value
                 , Can.typeEncoder tipe
                 ]
 
         Str region value tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , A.regionEncoder region
                 , BE.string value
                 , Can.typeEncoder tipe
                 ]
 
         Int region value tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , A.regionEncoder region
                 , BE.int value
                 , Can.typeEncoder tipe
                 ]
 
         Float region value tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , A.regionEncoder region
                 , BE.float value
                 , Can.typeEncoder tipe
                 ]
 
         VarLocal value tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.string value
                 , Can.typeEncoder tipe
                 ]
 
         TrackedVarLocal region value tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , A.regionEncoder region
                 , BE.string value
                 , Can.typeEncoder tipe
                 ]
 
         VarGlobal region value tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , A.regionEncoder region
                 , globalEncoder value
                 , Can.typeEncoder tipe
                 ]
 
         VarEnum region global index tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , A.regionEncoder region
                 , globalEncoder global
                 , Index.zeroBasedEncoder index
@@ -713,16 +715,16 @@ exprEncoder expr =
                 ]
 
         VarBox region value tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 9
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
                 , A.regionEncoder region
                 , globalEncoder value
                 , Can.typeEncoder tipe
                 ]
 
         VarCycle region home name tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 10
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 10
                 , A.regionEncoder region
                 , ModuleName.canonicalEncoder home
                 , BE.string name
@@ -730,8 +732,8 @@ exprEncoder expr =
                 ]
 
         VarDebug region name home unhandledValueName tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 11
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 11
                 , A.regionEncoder region
                 , BE.string name
                 , ModuleName.canonicalEncoder home
@@ -740,8 +742,8 @@ exprEncoder expr =
                 ]
 
         VarKernel region home name tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 12
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 12
                 , A.regionEncoder region
                 , BE.string home
                 , BE.string name
@@ -749,32 +751,32 @@ exprEncoder expr =
                 ]
 
         List region value tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 13
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 13
                 , A.regionEncoder region
                 , BE.list exprEncoder value
                 , Can.typeEncoder tipe
                 ]
 
         Function args body tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 14
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 14
                 , BE.list typedNameEncoder args
                 , exprEncoder body
                 , Can.typeEncoder tipe
                 ]
 
         TrackedFunction args body tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 15
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 15
                 , BE.list typedLocatedNameEncoder args
                 , exprEncoder body
                 , Can.typeEncoder tipe
                 ]
 
         Call region func args tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 16
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 16
                 , A.regionEncoder region
                 , exprEncoder func
                 , BE.list exprEncoder args
@@ -782,40 +784,40 @@ exprEncoder expr =
                 ]
 
         TailCall name args tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 17
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 17
                 , BE.string name
                 , BE.list (BE.jsonPair BE.string exprEncoder) args
                 , Can.typeEncoder tipe
                 ]
 
         If branches final tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 18
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 18
                 , BE.list (BE.jsonPair exprEncoder exprEncoder) branches
                 , exprEncoder final
                 , Can.typeEncoder tipe
                 ]
 
         Let def body tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 19
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 19
                 , defEncoder def
                 , exprEncoder body
                 , Can.typeEncoder tipe
                 ]
 
         Destruct destructor body tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 20
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 20
                 , destructorEncoder destructor
                 , exprEncoder body
                 , Can.typeEncoder tipe
                 ]
 
         Case label root decider jumps tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 21
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 21
                 , BE.string label
                 , BE.string root
                 , deciderEncoder choiceEncoder decider
@@ -824,16 +826,16 @@ exprEncoder expr =
                 ]
 
         Accessor region field tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 22
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 22
                 , A.regionEncoder region
                 , BE.string field
                 , Can.typeEncoder tipe
                 ]
 
         Access record region field tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 23
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 23
                 , exprEncoder record
                 , A.regionEncoder region
                 , BE.string field
@@ -841,8 +843,8 @@ exprEncoder expr =
                 ]
 
         Update region record fields tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 24
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 24
                 , A.regionEncoder region
                 , exprEncoder record
                 , BE.assocListDict A.compareLocated (A.locatedEncoder BE.string) exprEncoder fields
@@ -850,29 +852,29 @@ exprEncoder expr =
                 ]
 
         Record value tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 25
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 25
                 , BE.assocListDict compare BE.string exprEncoder value
                 , Can.typeEncoder tipe
                 ]
 
         TrackedRecord region value tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 26
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 26
                 , A.regionEncoder region
                 , BE.assocListDict A.compareLocated (A.locatedEncoder BE.string) exprEncoder value
                 , Can.typeEncoder tipe
                 ]
 
         Unit tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 27
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 27
                 , Can.typeEncoder tipe
                 ]
 
         Tuple region a b cs tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 28
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 28
                 , A.regionEncoder region
                 , exprEncoder a
                 , exprEncoder b
@@ -881,8 +883,8 @@ exprEncoder expr =
                 ]
 
         Shader src attributes uniforms tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 29
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 29
                 , Shader.sourceEncoder src
                 , BE.everySet compare BE.string attributes
                 , BE.everySet compare BE.string uniforms
@@ -890,81 +892,81 @@ exprEncoder expr =
                 ]
 
 
-exprDecoder : BD.Decoder Expr
+exprDecoder : Bytes.Decode.Decoder Expr
 exprDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 Bool
+                        Bytes.Decode.map3 Bool
                             A.regionDecoder
                             BD.bool
                             Can.typeDecoder
 
                     1 ->
-                        BD.map3 Chr
+                        Bytes.Decode.map3 Chr
                             A.regionDecoder
                             BD.string
                             Can.typeDecoder
 
                     2 ->
-                        BD.map3 Str
+                        Bytes.Decode.map3 Str
                             A.regionDecoder
                             BD.string
                             Can.typeDecoder
 
                     3 ->
-                        BD.map3 Int
+                        Bytes.Decode.map3 Int
                             A.regionDecoder
                             BD.int
                             Can.typeDecoder
 
                     4 ->
-                        BD.map3 Float
+                        Bytes.Decode.map3 Float
                             A.regionDecoder
                             BD.float
                             Can.typeDecoder
 
                     5 ->
-                        BD.map2 VarLocal
+                        Bytes.Decode.map2 VarLocal
                             BD.string
                             Can.typeDecoder
 
                     6 ->
-                        BD.map3 TrackedVarLocal
+                        Bytes.Decode.map3 TrackedVarLocal
                             A.regionDecoder
                             BD.string
                             Can.typeDecoder
 
                     7 ->
-                        BD.map3 VarGlobal
+                        Bytes.Decode.map3 VarGlobal
                             A.regionDecoder
                             globalDecoder
                             Can.typeDecoder
 
                     8 ->
-                        BD.map4 VarEnum
+                        Bytes.Decode.map4 VarEnum
                             A.regionDecoder
                             globalDecoder
                             Index.zeroBasedDecoder
                             Can.typeDecoder
 
                     9 ->
-                        BD.map3 VarBox
+                        Bytes.Decode.map3 VarBox
                             A.regionDecoder
                             globalDecoder
                             Can.typeDecoder
 
                     10 ->
-                        BD.map4 VarCycle
+                        Bytes.Decode.map4 VarCycle
                             A.regionDecoder
                             ModuleName.canonicalDecoder
                             BD.string
                             Can.typeDecoder
 
                     11 ->
-                        BD.map5 VarDebug
+                        Bytes.Decode.map5 VarDebug
                             A.regionDecoder
                             BD.string
                             ModuleName.canonicalDecoder
@@ -972,63 +974,63 @@ exprDecoder =
                             Can.typeDecoder
 
                     12 ->
-                        BD.map4 VarKernel
+                        Bytes.Decode.map4 VarKernel
                             A.regionDecoder
                             BD.string
                             BD.string
                             Can.typeDecoder
 
                     13 ->
-                        BD.map3 List
+                        Bytes.Decode.map3 List
                             A.regionDecoder
                             (BD.list exprDecoder)
                             Can.typeDecoder
 
                     14 ->
-                        BD.map3 Function
+                        Bytes.Decode.map3 Function
                             (BD.list typedNameDecoder)
                             exprDecoder
                             Can.typeDecoder
 
                     15 ->
-                        BD.map3 TrackedFunction
+                        Bytes.Decode.map3 TrackedFunction
                             (BD.list typedLocatedNameDecoder)
                             exprDecoder
                             Can.typeDecoder
 
                     16 ->
-                        BD.map4 Call
+                        Bytes.Decode.map4 Call
                             A.regionDecoder
                             exprDecoder
                             (BD.list exprDecoder)
                             Can.typeDecoder
 
                     17 ->
-                        BD.map3 TailCall
+                        Bytes.Decode.map3 TailCall
                             BD.string
                             (BD.list (BD.jsonPair BD.string exprDecoder))
                             Can.typeDecoder
 
                     18 ->
-                        BD.map3 If
+                        Bytes.Decode.map3 If
                             (BD.list (BD.jsonPair exprDecoder exprDecoder))
                             exprDecoder
                             Can.typeDecoder
 
                     19 ->
-                        BD.map3 Let
+                        Bytes.Decode.map3 Let
                             defDecoder
                             exprDecoder
                             Can.typeDecoder
 
                     20 ->
-                        BD.map3 Destruct
+                        Bytes.Decode.map3 Destruct
                             destructorDecoder
                             exprDecoder
                             Can.typeDecoder
 
                     21 ->
-                        BD.map5 Case
+                        Bytes.Decode.map5 Case
                             BD.string
                             BD.string
                             (deciderDecoder choiceDecoder)
@@ -1036,41 +1038,41 @@ exprDecoder =
                             Can.typeDecoder
 
                     22 ->
-                        BD.map3 Accessor
+                        Bytes.Decode.map3 Accessor
                             A.regionDecoder
                             BD.string
                             Can.typeDecoder
 
                     23 ->
-                        BD.map4 Access
+                        Bytes.Decode.map4 Access
                             exprDecoder
                             A.regionDecoder
                             BD.string
                             Can.typeDecoder
 
                     24 ->
-                        BD.map4 Update
+                        Bytes.Decode.map4 Update
                             A.regionDecoder
                             exprDecoder
                             (BD.assocListDict A.toValue (A.locatedDecoder BD.string) exprDecoder)
                             Can.typeDecoder
 
                     25 ->
-                        BD.map2 Record
+                        Bytes.Decode.map2 Record
                             (BD.assocListDict identity BD.string exprDecoder)
                             Can.typeDecoder
 
                     26 ->
-                        BD.map3 TrackedRecord
+                        Bytes.Decode.map3 TrackedRecord
                             A.regionDecoder
                             (BD.assocListDict A.toValue (A.locatedDecoder BD.string) exprDecoder)
                             Can.typeDecoder
 
                     27 ->
-                        BD.map Unit Can.typeDecoder
+                        Bytes.Decode.map Unit Can.typeDecoder
 
                     28 ->
-                        BD.map5 Tuple
+                        Bytes.Decode.map5 Tuple
                             A.regionDecoder
                             exprDecoder
                             exprDecoder
@@ -1078,23 +1080,23 @@ exprDecoder =
                             Can.typeDecoder
 
                     29 ->
-                        BD.map4 Shader
+                        Bytes.Decode.map4 Shader
                             Shader.sourceDecoder
                             (BD.everySet identity BD.string)
                             (BD.everySet identity BD.string)
                             Can.typeDecoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-defEncoder : Def -> BE.Encoder
+defEncoder : Def -> Bytes.Encode.Encoder
 defEncoder def =
     case def of
         Def region name expr tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , A.regionEncoder region
                 , BE.string name
                 , exprEncoder expr
@@ -1102,8 +1104,8 @@ defEncoder def =
                 ]
 
         TailDef region name args expr tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , A.regionEncoder region
                 , BE.string name
                 , BE.list typedLocatedNameEncoder args
@@ -1112,21 +1114,21 @@ defEncoder def =
                 ]
 
 
-defDecoder : BD.Decoder Def
+defDecoder : Bytes.Decode.Decoder Def
 defDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map4 Def
+                        Bytes.Decode.map4 Def
                             A.regionDecoder
                             BD.string
                             exprDecoder
                             Can.typeDecoder
 
                     1 ->
-                        BD.map5 TailDef
+                        Bytes.Decode.map5 TailDef
                             A.regionDecoder
                             BD.string
                             (BD.list typedLocatedNameDecoder)
@@ -1134,184 +1136,184 @@ defDecoder =
                             Can.typeDecoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-destructorEncoder : Destructor -> BE.Encoder
+destructorEncoder : Destructor -> Bytes.Encode.Encoder
 destructorEncoder (Destructor name path tipe) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.string name
         , pathEncoder path
         , Can.typeEncoder tipe
         ]
 
 
-destructorDecoder : BD.Decoder Destructor
+destructorDecoder : Bytes.Decode.Decoder Destructor
 destructorDecoder =
-    BD.map3 Destructor
+    Bytes.Decode.map3 Destructor
         BD.string
         pathDecoder
         Can.typeDecoder
 
 
-deciderEncoder : (a -> BE.Encoder) -> Decider a -> BE.Encoder
+deciderEncoder : (a -> Bytes.Encode.Encoder) -> Decider a -> Bytes.Encode.Encoder
 deciderEncoder encoder decider =
     case decider of
         Leaf value ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , encoder value
                 ]
 
         Chain testChain success failure ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.list (BE.jsonPair DT.pathEncoder DT.testEncoder) testChain
                 , deciderEncoder encoder success
                 , deciderEncoder encoder failure
                 ]
 
         FanOut path edges fallback ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , DT.pathEncoder path
                 , BE.list (BE.jsonPair DT.testEncoder (deciderEncoder encoder)) edges
                 , deciderEncoder encoder fallback
                 ]
 
 
-deciderDecoder : BD.Decoder a -> BD.Decoder (Decider a)
+deciderDecoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (Decider a)
 deciderDecoder decoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map Leaf decoder
+                        Bytes.Decode.map Leaf decoder
 
                     1 ->
-                        BD.map3 Chain
+                        Bytes.Decode.map3 Chain
                             (BD.list (BD.jsonPair DT.pathDecoder DT.testDecoder))
                             (deciderDecoder decoder)
                             (deciderDecoder decoder)
 
                     2 ->
-                        BD.map3 FanOut
+                        Bytes.Decode.map3 FanOut
                             DT.pathDecoder
                             (BD.list (BD.jsonPair DT.testDecoder (deciderDecoder decoder)))
                             (deciderDecoder decoder)
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-choiceEncoder : Choice -> BE.Encoder
+choiceEncoder : Choice -> Bytes.Encode.Encoder
 choiceEncoder choice =
     case choice of
         Inline value ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , exprEncoder value
                 ]
 
         Jump value ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int value
                 ]
 
 
-choiceDecoder : BD.Decoder Choice
+choiceDecoder : Bytes.Decode.Decoder Choice
 choiceDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map Inline exprDecoder
+                        Bytes.Decode.map Inline exprDecoder
 
                     1 ->
-                        BD.map Jump BD.int
+                        Bytes.Decode.map Jump BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-pathEncoder : Path -> BE.Encoder
+pathEncoder : Path -> Bytes.Encode.Encoder
 pathEncoder path =
     case path of
         Index index subPath ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , Index.zeroBasedEncoder index
                 , pathEncoder subPath
                 ]
 
         ArrayIndex index subPath ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int index
                 , pathEncoder subPath
                 ]
 
         Field field subPath ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.string field
                 , pathEncoder subPath
                 ]
 
         Unbox subPath ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , pathEncoder subPath
                 ]
 
         Root name ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.string name
                 ]
 
 
-pathDecoder : BD.Decoder Path
+pathDecoder : Bytes.Decode.Decoder Path
 pathDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map2 Index
+                        Bytes.Decode.map2 Index
                             Index.zeroBasedDecoder
                             pathDecoder
 
                     1 ->
-                        BD.map2 ArrayIndex
+                        Bytes.Decode.map2 ArrayIndex
                             BD.int
                             pathDecoder
 
                     2 ->
-                        BD.map2 Field
+                        Bytes.Decode.map2 Field
                             BD.string
                             pathDecoder
 
                     3 ->
-                        BD.map Unbox pathDecoder
+                        Bytes.Decode.map Unbox pathDecoder
 
                     4 ->
-                        BD.map Root BD.string
+                        Bytes.Decode.map Root BD.string
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-effectsTypeEncoder : EffectsType -> BE.Encoder
+effectsTypeEncoder : EffectsType -> Bytes.Encode.Encoder
 effectsTypeEncoder effectsType =
-    BE.unsignedInt8
+    Bytes.Encode.unsignedInt8
         (case effectsType of
             Cmd ->
                 0
@@ -1324,21 +1326,21 @@ effectsTypeEncoder effectsType =
         )
 
 
-effectsTypeDecoder : BD.Decoder EffectsType
+effectsTypeDecoder : Bytes.Decode.Decoder EffectsType
 effectsTypeDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed Cmd
+                        Bytes.Decode.succeed Cmd
 
                     1 ->
-                        BD.succeed Sub
+                        Bytes.Decode.succeed Sub
 
                     2 ->
-                        BD.succeed Fx
+                        Bytes.Decode.succeed Fx
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

@@ -40,13 +40,15 @@ import Compiler.Parse.Symbol as Symbol
 import Compiler.Parse.Variable as Var
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Docs as E
-import Compiler.Reporting.Result as Result
+import Compiler.Reporting.Result as ReportingResult
 import Data.Map as Dict exposing (Dict)
 import Json.Decode as Decode
 import Json.Encode as Encode
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Main as Utils
 
 
@@ -111,7 +113,7 @@ type Error
 
 decoder : D.Decoder Error Documentation
 decoder =
-    D.fmap toDict (D.list moduleDecoder)
+    D.map toDict (D.list moduleDecoder)
 
 
 toDict : List Module -> Documentation
@@ -126,7 +128,7 @@ toDictHelp ((Module name _ _ _ _ _) as modul) =
 
 moduleDecoder : D.Decoder Error Module
 moduleDecoder =
-    D.fmap Module (D.field "name" moduleNameDecoder)
+    D.map Module (D.field "name" moduleNameDecoder)
         |> D.apply (D.field "comment" D.string)
         |> D.apply (D.field "unions" (dictDecoder union))
         |> D.apply (D.field "aliases" (dictDecoder alias_))
@@ -136,12 +138,12 @@ moduleDecoder =
 
 dictDecoder : D.Decoder Error a -> D.Decoder Error (Dict String Name a)
 dictDecoder entryDecoder =
-    D.fmap (Dict.fromList identity) (D.list (named entryDecoder))
+    D.map (Dict.fromList identity) (D.list (named entryDecoder))
 
 
 named : D.Decoder Error a -> D.Decoder Error ( Name.Name, a )
 named entryDecoder =
-    D.fmap Tuple.pair (D.field "name" nameDecoder)
+    D.map Tuple.pair (D.field "name" nameDecoder)
         |> D.apply entryDecoder
 
 
@@ -176,7 +178,7 @@ encodeUnion ( name, Union comment args cases ) =
 
 union : D.Decoder Error Union
 union =
-    D.fmap Union (D.field "comment" D.string)
+    D.map Union (D.field "comment" D.string)
         |> D.apply (D.field "args" (D.list nameDecoder))
         |> D.apply (D.field "cases" (D.list caseDecoder))
 
@@ -207,7 +209,7 @@ encodeAlias ( name, Alias comment args tipe ) =
 
 alias_ : D.Decoder Error Alias
 alias_ =
-    D.fmap Alias (D.field "comment" D.string)
+    D.map Alias (D.field "comment" D.string)
         |> D.apply (D.field "args" (D.list nameDecoder))
         |> D.apply (D.field "type" typeDecoder)
 
@@ -227,7 +229,7 @@ encodeValue ( name, Value comment tipe ) =
 
 value : D.Decoder Error Value
 value =
-    D.fmap Value (D.field "comment" D.string)
+    D.map Value (D.field "comment" D.string)
         |> D.apply (D.field "type" typeDecoder)
 
 
@@ -248,7 +250,7 @@ encodeBinop ( name, Binop comment tipe assoc prec ) =
 
 binop : D.Decoder Error Binop
 binop =
-    D.fmap Binop (D.field "comment" D.string)
+    D.map Binop (D.field "comment" D.string)
         |> D.apply (D.field "type" typeDecoder)
         |> D.apply (D.field "associativity" assocDecoder)
         |> D.apply (D.field "precedence" precDecoder)
@@ -287,7 +289,7 @@ assocDecoder =
             "right"
     in
     D.string
-        |> D.bind
+        |> D.andThen
             (\str ->
                 if str == left then
                     D.pure Binop.Left
@@ -364,12 +366,12 @@ chompOverview =
 chompOverviewHelp : List (A.Located Name.Name) -> Parser (P.Step (List (A.Located Name.Name)) (List (A.Located Name.Name)))
 chompOverviewHelp names =
     chompUntilDocs
-        |> P.bind
+        |> P.andThen
             (\isDocs ->
                 if isDocs then
                     Space.chomp E.Space
-                        |> P.bind (\_ -> chompDocs names)
-                        |> P.fmap P.Loop
+                        |> P.andThen (\_ -> chompDocs names)
+                        |> P.map P.Loop
 
                 else
                     P.pure (P.Done names)
@@ -390,23 +392,23 @@ chompDocsHelp names =
             , chompOperator
             ]
         )
-        |> P.bind
+        |> P.andThen
             (\name ->
                 Space.chomp E.Space
-                    |> P.bind
+                    |> P.andThen
                         (\_ ->
                             P.oneOfWithFallback
                                 [ P.getPosition
-                                    |> P.bind
+                                    |> P.andThen
                                         (\pos ->
                                             Space.checkIndent pos E.Comma
-                                                |> P.bind
+                                                |> P.andThen
                                                     (\_ ->
                                                         word1 ',' E.Comma
-                                                            |> P.bind
+                                                            |> P.andThen
                                                                 (\_ ->
                                                                     Space.chomp E.Space
-                                                                        |> P.fmap (\_ -> P.Loop (name :: names))
+                                                                        |> P.map (\_ -> P.Loop (name :: names))
                                                                 )
                                                     )
                                         )
@@ -419,13 +421,13 @@ chompDocsHelp names =
 chompOperator : Parser Name
 chompOperator =
     word1 '(' E.Op
-        |> P.bind
+        |> P.andThen
             (\_ ->
                 Symbol.operator E.Op E.OpBad
-                    |> P.bind
+                    |> P.andThen
                         (\op ->
                             word1 ')' E.Op
-                                |> P.fmap (\_ -> op)
+                                |> P.map (\_ -> op)
                         )
             )
 
@@ -502,19 +504,19 @@ checkNames exports names =
         docs =
             List.foldl addName Dict.empty names
 
-        loneExport : Name -> A.Located Can.Export -> Result.RResult i w E.NameProblem A.Region -> Result.RResult i w E.NameProblem A.Region
+        loneExport : Name -> A.Located Can.Export -> ReportingResult.RResult i w E.NameProblem A.Region -> ReportingResult.RResult i w E.NameProblem A.Region
         loneExport name export_ _ =
             onlyInExports name export_
 
-        checkBoth : Name -> A.Located Can.Export -> OneOrMore.OneOrMore A.Region -> Result.RResult i w E.NameProblem A.Region -> Result.RResult i w E.NameProblem A.Region
+        checkBoth : Name -> A.Located Can.Export -> OneOrMore.OneOrMore A.Region -> ReportingResult.RResult i w E.NameProblem A.Region -> ReportingResult.RResult i w E.NameProblem A.Region
         checkBoth n _ r _ =
             isUnique n r
 
-        loneDoc : Name -> OneOrMore.OneOrMore A.Region -> Result.RResult i w E.NameProblem A.Region -> Result.RResult i w E.NameProblem A.Region
+        loneDoc : Name -> OneOrMore.OneOrMore A.Region -> ReportingResult.RResult i w E.NameProblem A.Region -> ReportingResult.RResult i w E.NameProblem A.Region
         loneDoc name regions _ =
             onlyInDocs name regions
     in
-    case Result.run (Dict.merge compare loneExport checkBoth loneDoc exports docs (Result.ok A.zero)) of
+    case ReportingResult.run (Dict.merge compare loneExport checkBoth loneDoc exports docs (ReportingResult.ok A.zero)) of
         ( _, Ok _ ) ->
             Ok ()
 
@@ -531,32 +533,32 @@ addName (A.At region name) dict =
     Utils.mapInsertWith identity OneOrMore.more name (OneOrMore.one region) dict
 
 
-isUnique : Name -> OneOrMore.OneOrMore A.Region -> Result.RResult i w E.NameProblem A.Region
+isUnique : Name -> OneOrMore.OneOrMore A.Region -> ReportingResult.RResult i w E.NameProblem A.Region
 isUnique name regions =
     case regions of
         OneOrMore.One region ->
-            Result.ok region
+            ReportingResult.ok region
 
         OneOrMore.More left right ->
             let
                 ( r1, r2 ) =
                     OneOrMore.getFirstTwo left right
             in
-            Result.throw (E.NameDuplicate name r1 r2)
+            ReportingResult.throw (E.NameDuplicate name r1 r2)
 
 
-onlyInDocs : Name -> OneOrMore.OneOrMore A.Region -> Result.RResult i w E.NameProblem a
+onlyInDocs : Name -> OneOrMore.OneOrMore A.Region -> ReportingResult.RResult i w E.NameProblem a
 onlyInDocs name regions =
     isUnique name regions
-        |> Result.bind
+        |> ReportingResult.andThen
             (\region ->
-                Result.throw (E.NameOnlyInDocs name region)
+                ReportingResult.throw (E.NameOnlyInDocs name region)
             )
 
 
-onlyInExports : Name -> A.Located Can.Export -> Result.RResult i w E.NameProblem a
+onlyInExports : Name -> A.Located Can.Export -> ReportingResult.RResult i w E.NameProblem a
 onlyInExports name (A.At region _) =
-    Result.throw (E.NameOnlyInExports name region)
+    ReportingResult.throw (E.NameOnlyInExports name region)
 
 
 
@@ -574,7 +576,7 @@ checkDefs exportDict overview comments (Can.Module name _ _ decls unions aliases
         info =
             Info comments types unions aliases infixes effects
     in
-    case Result.run (Result.mapTraverseWithKey identity compare (checkExport info) exportDict) of
+    case ReportingResult.run (ReportingResult.mapTraverseWithKey identity compare (checkExport info) exportDict) of
         ( _, Err problems ) ->
             Err (E.DefProblems (OneOrMore.destruct NE.Nonempty problems))
 
@@ -588,20 +590,26 @@ emptyModule (IO.Canonical _ name) (Src.Comment overview) =
 
 
 type Info
-    = Info (Dict String Name.Name Src.Comment) (Dict String Name.Name (Result A.Region Can.Type)) (Dict String Name.Name Can.Union) (Dict String Name.Name Can.Alias) (Dict String Name.Name Can.Binop) Can.Effects
+    = Info
+        (Dict String Name.Name Src.Comment)
+        (Dict String Name.Name (Result A.Region Can.Type))
+        (Dict String Name.Name Can.Union)
+        (Dict String Name.Name Can.Alias)
+        (Dict String Name.Name Can.Binop)
+        Can.Effects
 
 
-checkExport : Info -> Name -> A.Located Can.Export -> Result.RResult i w E.DefProblem (Module -> Module)
+checkExport : Info -> Name -> A.Located Can.Export -> ReportingResult.RResult i w E.DefProblem (Module -> Module)
 checkExport ((Info _ _ iUnions iAliases iBinops _) as info) name (A.At region export) =
     case export of
         Can.ExportValue ->
             getType name info
-                |> Result.bind
+                |> ReportingResult.andThen
                     (\tipe ->
                         getComment region name info
-                            |> Result.bind
+                            |> ReportingResult.andThen
                                 (\comment ->
-                                    Result.ok
+                                    ReportingResult.ok
                                         (\(Module mName mComment mUnions mAliases mValues mBinops) ->
                                             Module
                                                 mName
@@ -620,12 +628,12 @@ checkExport ((Info _ _ iUnions iAliases iBinops _) as info) name (A.At region ex
                     Utils.find identity name iBinops
             in
             getType realName info
-                |> Result.bind
+                |> ReportingResult.andThen
                     (\tipe ->
                         getComment region realName info
-                            |> Result.bind
+                            |> ReportingResult.andThen
                                 (\comment ->
-                                    Result.ok
+                                    ReportingResult.ok
                                         (\(Module mName mComment mUnions mAliases mValues mBinops) ->
                                             Module
                                                 mName
@@ -644,9 +652,9 @@ checkExport ((Info _ _ iUnions iAliases iBinops _) as info) name (A.At region ex
                     Utils.find identity name iAliases
             in
             getComment region name info
-                |> Result.bind
+                |> ReportingResult.andThen
                     (\comment ->
-                        Result.ok
+                        ReportingResult.ok
                             (\(Module mName mComment mUnions mAliases mValues mBinops) ->
                                 Module mName
                                     mComment
@@ -663,9 +671,9 @@ checkExport ((Info _ _ iUnions iAliases iBinops _) as info) name (A.At region ex
                     Utils.find identity name iUnions
             in
             getComment region name info
-                |> Result.bind
+                |> ReportingResult.andThen
                     (\comment ->
-                        Result.ok
+                        ReportingResult.ok
                             (\(Module mName mComment mUnions mAliases mValues mBinops) ->
                                 Module mName
                                     mComment
@@ -682,9 +690,9 @@ checkExport ((Info _ _ iUnions iAliases iBinops _) as info) name (A.At region ex
                     Utils.find identity name iUnions
             in
             getComment region name info
-                |> Result.bind
+                |> ReportingResult.andThen
                     (\comment ->
-                        Result.ok
+                        ReportingResult.ok
                             (\(Module mName mComment mUnions mAliases mValues mBinops) ->
                                 Module mName
                                     mComment
@@ -697,12 +705,12 @@ checkExport ((Info _ _ iUnions iAliases iBinops _) as info) name (A.At region ex
 
         Can.ExportPort ->
             getType name info
-                |> Result.bind
+                |> ReportingResult.andThen
                     (\tipe ->
                         getComment region name info
-                            |> Result.bind
+                            |> ReportingResult.andThen
                                 (\comment ->
-                                    Result.ok
+                                    ReportingResult.ok
                                         (\(Module mName mComment mUnions mAliases mValues mBinops) ->
                                             Module mName
                                                 mComment
@@ -715,24 +723,24 @@ checkExport ((Info _ _ iUnions iAliases iBinops _) as info) name (A.At region ex
                     )
 
 
-getComment : A.Region -> Name.Name -> Info -> Result.RResult i w E.DefProblem Comment
+getComment : A.Region -> Name.Name -> Info -> ReportingResult.RResult i w E.DefProblem Comment
 getComment region name (Info iComments _ _ _ _ _) =
     case Dict.get identity name iComments of
         Nothing ->
-            Result.throw (E.NoComment name region)
+            ReportingResult.throw (E.NoComment name region)
 
         Just (Src.Comment snippet) ->
-            Result.ok (Json.fromComment snippet)
+            ReportingResult.ok (Json.fromComment snippet)
 
 
-getType : Name.Name -> Info -> Result.RResult i w E.DefProblem Type.Type
+getType : Name.Name -> Info -> ReportingResult.RResult i w E.DefProblem Type.Type
 getType name (Info _ iValues _ _ _ _) =
     case Utils.find identity name iValues of
         Err region ->
-            Result.throw (E.NoAnnotation name region)
+            ReportingResult.throw (E.NoAnnotation name region)
 
         Ok tipe ->
-            Result.ok (Extract.fromType tipe)
+            ReportingResult.ok (Extract.fromType tipe)
 
 
 dector : Can.Ctor -> ( Name, List Type.Type )
@@ -885,19 +893,19 @@ jsonBinopDecoder =
 -- ENCODERS and DECODERS
 
 
-bytesEncoder : Documentation -> BE.Encoder
+bytesEncoder : Documentation -> Bytes.Encode.Encoder
 bytesEncoder docs =
     BE.list bytesModuleEncoder (Dict.values compare docs)
 
 
-bytesDecoder : BD.Decoder Documentation
+bytesDecoder : Bytes.Decode.Decoder Documentation
 bytesDecoder =
-    BD.map toDict (BD.list bytesModuleDecoder)
+    Bytes.Decode.map toDict (BD.list bytesModuleDecoder)
 
 
-bytesModuleEncoder : Module -> BE.Encoder
+bytesModuleEncoder : Module -> Bytes.Encode.Encoder
 bytesModuleEncoder (Module name comment unions aliases values binops) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.string name
         , BE.string comment
         , BE.assocListDict compare BE.string bytesUnionEncoder unions
@@ -907,7 +915,7 @@ bytesModuleEncoder (Module name comment unions aliases values binops) =
         ]
 
 
-bytesModuleDecoder : BD.Decoder Module
+bytesModuleDecoder : Bytes.Decode.Decoder Module
 bytesModuleDecoder =
     BD.map6 Module
         BD.string
@@ -918,58 +926,58 @@ bytesModuleDecoder =
         (BD.assocListDict identity BD.string bytesBinopDecoder)
 
 
-bytesUnionEncoder : Union -> BE.Encoder
+bytesUnionEncoder : Union -> Bytes.Encode.Encoder
 bytesUnionEncoder (Union comment args cases) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.string comment
         , BE.list BE.string args
         , BE.list (BE.jsonPair BE.string (BE.list Type.bytesEncoder)) cases
         ]
 
 
-bytesUnionDecoder : BD.Decoder Union
+bytesUnionDecoder : Bytes.Decode.Decoder Union
 bytesUnionDecoder =
-    BD.map3 Union
+    Bytes.Decode.map3 Union
         BD.string
         (BD.list BD.string)
         (BD.list (BD.jsonPair BD.string (BD.list Type.bytesDecoder)))
 
 
-bytesAliasEncoder : Alias -> BE.Encoder
+bytesAliasEncoder : Alias -> Bytes.Encode.Encoder
 bytesAliasEncoder (Alias comment args type_) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.string comment
         , BE.list BE.string args
         , Type.bytesEncoder type_
         ]
 
 
-bytesAliasDecoder : BD.Decoder Alias
+bytesAliasDecoder : Bytes.Decode.Decoder Alias
 bytesAliasDecoder =
-    BD.map3 Alias
+    Bytes.Decode.map3 Alias
         BD.string
         (BD.list BD.string)
         Type.bytesDecoder
 
 
-bytesValueEncoder : Value -> BE.Encoder
+bytesValueEncoder : Value -> Bytes.Encode.Encoder
 bytesValueEncoder (Value comment type_) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.string comment
         , Type.bytesEncoder type_
         ]
 
 
-bytesValueDecoder : BD.Decoder Value
+bytesValueDecoder : Bytes.Decode.Decoder Value
 bytesValueDecoder =
-    BD.map2 Value
+    Bytes.Decode.map2 Value
         BD.string
         Type.bytesDecoder
 
 
-bytesBinopEncoder : Binop -> BE.Encoder
+bytesBinopEncoder : Binop -> Bytes.Encode.Encoder
 bytesBinopEncoder (Binop comment type_ associativity precedence) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.string comment
         , Type.bytesEncoder type_
         , Binop.associativityEncoder associativity
@@ -977,9 +985,9 @@ bytesBinopEncoder (Binop comment type_ associativity precedence) =
         ]
 
 
-bytesBinopDecoder : BD.Decoder Binop
+bytesBinopDecoder : Bytes.Decode.Decoder Binop
 bytesBinopDecoder =
-    BD.map4 Binop
+    Bytes.Decode.map4 Binop
         BD.string
         Type.bytesDecoder
         Binop.associativityDecoder

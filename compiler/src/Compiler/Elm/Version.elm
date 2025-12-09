@@ -28,7 +28,9 @@ import Compiler.Parse.Primitives as P exposing (Col, Row)
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 
@@ -162,15 +164,15 @@ encode version =
 parser : P.Parser ( Row, Col ) Version
 parser =
     numberParser
-        |> P.bind
+        |> P.andThen
             (\major_ ->
                 P.word1 '.' Tuple.pair
-                    |> P.bind (\_ -> numberParser)
-                    |> P.bind
+                    |> P.andThen (\_ -> numberParser)
+                    |> P.andThen
                         (\minor ->
                             P.word1 '.' Tuple.pair
-                                |> P.bind (\_ -> numberParser)
-                                |> P.fmap
+                                |> P.andThen (\_ -> numberParser)
+                                |> P.map
                                     (\patch ->
                                         Version major_ minor patch
                                     )
@@ -260,18 +262,18 @@ jsonDecoder =
             )
 
 
-versionEncoder : Version -> BE.Encoder
+versionEncoder : Version -> Bytes.Encode.Encoder
 versionEncoder (Version major_ minor_ patch_) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.int major_
         , BE.int minor_
         , BE.int patch_
         ]
 
 
-versionDecoder : BD.Decoder Version
+versionDecoder : Bytes.Decode.Decoder Version
 versionDecoder =
-    BD.map3 Version
+    Bytes.Decode.map3 Version
         BD.int
         BD.int
         BD.int

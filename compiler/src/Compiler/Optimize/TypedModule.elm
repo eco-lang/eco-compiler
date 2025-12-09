@@ -21,7 +21,7 @@ import Compiler.Optimize.TypedNames as Names
 import Compiler.Optimize.TypedPort as Port
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Main as E
-import Compiler.Reporting.Result as R
+import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
@@ -34,7 +34,7 @@ import Utils.Main as Utils
 
 
 type alias MResult i w a =
-    R.RResult i w E.Error a
+    ReportingResult.RResult i w E.Error a
 
 
 type alias Annotations =
@@ -290,15 +290,15 @@ addToGraph name node fieldCounts (TOpt.LocalGraph main nodes fields ann) =
 
 addDecls : IO.Canonical -> Annotations -> Can.Decls -> TOpt.LocalGraph -> MResult i (List W.Warning) TOpt.LocalGraph
 addDecls home annotations decls graph =
-    R.loop (addDeclsHelp home annotations) ( decls, graph )
+    ReportingResult.loop (addDeclsHelp home annotations) ( decls, graph )
 
 
-addDeclsHelp : IO.Canonical -> Annotations -> ( Can.Decls, TOpt.LocalGraph ) -> MResult i (List W.Warning) (R.Step ( Can.Decls, TOpt.LocalGraph ) TOpt.LocalGraph)
+addDeclsHelp : IO.Canonical -> Annotations -> ( Can.Decls, TOpt.LocalGraph ) -> MResult i (List W.Warning) (ReportingResult.Step ( Can.Decls, TOpt.LocalGraph ) TOpt.LocalGraph)
 addDeclsHelp home annotations ( decls, graph ) =
     case decls of
         Can.Declare def subDecls ->
             addDef home annotations def graph
-                |> R.fmap (R.Loop << Tuple.pair subDecls)
+                |> ReportingResult.map (ReportingResult.Loop << Tuple.pair subDecls)
 
         Can.DeclareRec d ds subDecls ->
             let
@@ -308,13 +308,13 @@ addDeclsHelp home annotations ( decls, graph ) =
             in
             case findMain defs of
                 Nothing ->
-                    R.pure (R.Loop ( subDecls, addRecDefs home annotations defs graph ))
+                    ReportingResult.ok (ReportingResult.Loop ( subDecls, addRecDefs home annotations defs graph ))
 
                 Just region ->
-                    R.throw <| E.BadCycle region (defToName d) (List.map defToName ds)
+                    ReportingResult.throw <| E.BadCycle region (defToName d) (List.map defToName ds)
 
         Can.SaveTheEnvironment ->
-            R.ok (R.Done graph)
+            ReportingResult.ok (ReportingResult.Done graph)
 
 
 findMain : List Can.Def -> Maybe A.Region
@@ -362,17 +362,26 @@ addDef home annotations def graph =
                 (Can.Forall _ tipe) =
                     Utils.find identity name annotations
             in
-            R.warn (W.MissingTypeAnnotation region name tipe)
-                |> R.bind (\_ -> addDefHelp region annotations home name args body Nothing graph)
+            ReportingResult.warn (W.MissingTypeAnnotation region name tipe)
+                |> ReportingResult.andThen (\_ -> addDefHelp region annotations home name args body Nothing graph)
 
         Can.TypedDef (A.At region name) _ typedArgs body resultType ->
             addDefHelp region annotations home name (List.map Tuple.first typedArgs) body (Just ( typedArgs, resultType )) graph
 
 
-addDefHelp : A.Region -> Annotations -> IO.Canonical -> Name.Name -> List Can.Pattern -> Can.Expr -> Maybe ( List ( Can.Pattern, Can.Type ), Can.Type ) -> TOpt.LocalGraph -> MResult i w TOpt.LocalGraph
+addDefHelp :
+    A.Region
+    -> Annotations
+    -> IO.Canonical
+    -> Name.Name
+    -> List Can.Pattern
+    -> Can.Expr
+    -> Maybe ( List ( Can.Pattern, Can.Type ), Can.Type )
+    -> TOpt.LocalGraph
+    -> MResult i w TOpt.LocalGraph
 addDefHelp region annotations home name args body maybeTypedArgs ((TOpt.LocalGraph _ nodes fieldCounts ann) as graph) =
     if name /= Name.main_ then
-        R.ok (addDefNode home annotations region name args body maybeTypedArgs EverySet.empty graph)
+        ReportingResult.ok (addDefNode home annotations region name args body maybeTypedArgs EverySet.empty graph)
 
     else
         let
@@ -387,28 +396,38 @@ addDefHelp region annotations home name args body maybeTypedArgs ((TOpt.LocalGra
         case Type.deepDealias tipe of
             Can.TType hm nm [ _ ] ->
                 if hm == ModuleName.virtualDom && nm == Name.node then
-                    R.ok <| addMain <| Names.run annotations <| Names.registerKernel Name.virtualDom TOpt.Static
+                    ReportingResult.ok <| addMain <| Names.run annotations <| Names.registerKernel Name.virtualDom TOpt.Static
 
                 else
-                    R.throw (E.BadType region tipe)
+                    ReportingResult.throw (E.BadType region tipe)
 
             Can.TType hm nm [ flags, _, message ] ->
                 if hm == ModuleName.platform && nm == Name.program then
                     case Effects.checkPayload flags of
                         Ok () ->
-                            R.ok <| addMain <| Names.run annotations <| Names.fmap (TOpt.Dynamic message) <| Port.toFlagsDecoder flags
+                            ReportingResult.ok <| addMain <| Names.run annotations <| Names.map (TOpt.Dynamic message) <| Port.toFlagsDecoder flags
 
                         Err ( subType, invalidPayload ) ->
-                            R.throw (E.BadFlags region subType invalidPayload)
+                            ReportingResult.throw (E.BadFlags region subType invalidPayload)
 
                 else
-                    R.throw (E.BadType region tipe)
+                    ReportingResult.throw (E.BadType region tipe)
 
             _ ->
-                R.throw (E.BadType region tipe)
+                ReportingResult.throw (E.BadType region tipe)
 
 
-addDefNode : IO.Canonical -> Annotations -> A.Region -> Name.Name -> List Can.Pattern -> Can.Expr -> Maybe ( List ( Can.Pattern, Can.Type ), Can.Type ) -> EverySet (List String) TOpt.Global -> TOpt.LocalGraph -> TOpt.LocalGraph
+addDefNode :
+    IO.Canonical
+    -> Annotations
+    -> A.Region
+    -> Name.Name
+    -> List Can.Pattern
+    -> Can.Expr
+    -> Maybe ( List ( Can.Pattern, Can.Type ), Can.Type )
+    -> EverySet (List String) TOpt.Global
+    -> TOpt.LocalGraph
+    -> TOpt.LocalGraph
 addDefNode home annotations region name args body maybeTypedArgs mainDeps graph =
     let
         defType : Can.Type
@@ -420,14 +439,14 @@ addDefNode home annotations region name args body maybeTypedArgs mainDeps graph 
                 case ( args, maybeTypedArgs ) of
                     ( [], _ ) ->
                         Expr.optimize EverySet.empty annotations body
-                            |> Names.fmap
+                            |> Names.map
                                 (\oexpr ->
                                     TOpt.TrackedFunction [] oexpr defType
                                 )
 
                     ( _, Just ( typedArgs, resultType ) ) ->
                         Expr.destructArgs annotations args
-                            |> Names.bind
+                            |> Names.andThen
                                 (\( typedArgNames, destructors ) ->
                                     let
                                         argBindings : List ( Name.Name, Can.Type )
@@ -436,7 +455,7 @@ addDefNode home annotations region name args body maybeTypedArgs mainDeps graph 
                                     in
                                     Names.withVarTypes argBindings
                                         (Expr.optimize EverySet.empty annotations body)
-                                        |> Names.fmap
+                                        |> Names.map
                                             (\obody ->
                                                 let
                                                     wrappedBody : TOpt.Expr
@@ -449,7 +468,7 @@ addDefNode home annotations region name args body maybeTypedArgs mainDeps graph 
 
                     ( _, Nothing ) ->
                         Expr.destructArgs annotations args
-                            |> Names.bind
+                            |> Names.andThen
                                 (\( typedArgNames, destructors ) ->
                                     let
                                         argBindings : List ( Name.Name, Can.Type )
@@ -462,7 +481,7 @@ addDefNode home annotations region name args body maybeTypedArgs mainDeps graph 
                                     in
                                     Names.withVarTypes argBindings
                                         (Expr.optimize EverySet.empty annotations body)
-                                        |> Names.fmap
+                                        |> Names.map
                                             (\obody ->
                                                 let
                                                     wrappedBody : TOpt.Expr
@@ -526,7 +545,7 @@ addRecDefs home annotations defs (TOpt.LocalGraph main nodes fieldCounts ann) =
 
         ( deps, localFields, State { values, functions } ) =
             Names.run annotations <|
-                List.foldl (\def -> Names.bind (\state -> addRecDef cycle annotations state def))
+                List.foldl (\def -> Names.andThen (\state -> addRecDef cycle annotations state def))
                     (Names.pure (State { values = [], functions = [] }))
                     defs
     in
@@ -599,7 +618,7 @@ addRecDefHelp cycle annotations region (State { values, functions }) name args b
     case args of
         [] ->
             Expr.optimize cycle annotations body
-                |> Names.fmap
+                |> Names.map
                     (\obody ->
                         State
                             { values = ( name, obody ) :: values
@@ -609,7 +628,7 @@ addRecDefHelp cycle annotations region (State { values, functions }) name args b
 
         _ :: _ ->
             Expr.optimizePotentialTailCall cycle annotations region name args body
-                |> Names.fmap
+                |> Names.map
                     (\odef ->
                         State
                             { values = values

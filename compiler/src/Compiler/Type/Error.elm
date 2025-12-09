@@ -26,7 +26,9 @@ import Data.Map as Dict exposing (Dict)
 import Prelude
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 
@@ -196,8 +198,8 @@ type Direction
     | Need
 
 
-fmapDiff : (a -> b) -> Diff a -> Diff b
-fmapDiff func (Diff a b status) =
+mapDiff : (a -> b) -> Diff a -> Diff b
+mapDiff func (Diff a b status) =
     Diff (func a) (func b) status
 
 
@@ -213,7 +215,7 @@ applyDiff (Diff aArg bArg status2) (Diff aFunc bFunc status1) =
 
 liftA2 : (a -> b -> c) -> Diff a -> Diff b -> Diff c
 liftA2 f x y =
-    applyDiff y (fmapDiff f x)
+    applyDiff y (mapDiff f x)
 
 
 merge : Status -> Status -> Status
@@ -308,7 +310,7 @@ toDiff localizer ctx tipe1 tipe2 =
         ( Lambda a b cs, Lambda x y zs ) ->
             if List.length cs == List.length zs then
                 toDiff localizer RT.Func a x
-                    |> fmapDiff (RT.lambda ctx)
+                    |> mapDiff (RT.lambda ctx)
                     |> applyDiff (toDiff localizer RT.Func b y)
                     |> applyDiff
                         (List.map2 (toDiff localizer RT.Func) cs zs
@@ -336,7 +338,7 @@ toDiff localizer ctx tipe1 tipe2 =
             if home1 == home2 && name1 == name2 then
                 List.map2 (toDiff localizer RT.App) args1 args2
                     |> List.foldr (liftA2 (::)) (pureDiff [])
-                    |> fmapDiff (RT.apply ctx (L.toDoc localizer home1 name1))
+                    |> mapDiff (RT.apply ctx (L.toDoc localizer home1 name1))
 
             else if L.toChars localizer home1 name1 == L.toChars localizer home2 name2 then
                 -- start trying to find specific problems (this used to be down on the list)
@@ -352,7 +354,7 @@ toDiff localizer ctx tipe1 tipe2 =
             if home1 == home2 && name1 == name2 then
                 List.map2 (toDiff localizer RT.App) (List.map Tuple.second args1) (List.map Tuple.second args2)
                     |> List.foldr (liftA2 (::)) (pureDiff [])
-                    |> fmapDiff (RT.apply ctx (L.toDoc localizer home1 name1))
+                    |> mapDiff (RT.apply ctx (L.toDoc localizer home1 name1))
 
             else
                 toDiffOtherwise localizer ctx ( tipe1, tipe2 )
@@ -439,12 +441,12 @@ toDiffTuple localizer ctx pair ( a, b, cs ) ( x, y, zs ) diffCs =
     case ( cs, zs ) of
         ( [], [] ) ->
             toDiff localizer RT.None a x
-                |> fmapDiff RT.tuple
+                |> mapDiff RT.tuple
                 |> applyDiff (toDiff localizer RT.None b y)
                 |> applyDiff diffCs
 
         ( c :: restCs, z :: restZs ) ->
-            fmapDiff (::) (toDiff localizer RT.None c z)
+            mapDiff (::) (toDiff localizer RT.None c z)
                 |> applyDiff diffCs
                 |> toDiffTuple localizer ctx pair ( a, b, restCs ) ( x, y, restZs )
 
@@ -662,7 +664,7 @@ diffRecord localizer fields1 ext1 fields2 ext2 =
 
         toOverlapDocs : Name -> Type -> Type -> Diff ( D.Doc, D.Doc )
         toOverlapDocs field t1 t2 =
-            fmapDiff (Tuple.pair (D.fromName field)) <| toDiff localizer RT.None t1 t2
+            mapDiff (Tuple.pair (D.fromName field)) <| toDiff localizer RT.None t1 t2
 
         left : Dict String Name ( D.Doc, D.Doc )
         left =
@@ -690,7 +692,7 @@ diffRecord localizer fields1 ext1 fields2 ext2 =
 
                         sequenceA : Dict String Name (Diff ( D.Doc, D.Doc )) -> Diff (Dict String Name ( D.Doc, D.Doc ))
                         sequenceA =
-                            Dict.foldr compare (\k x acc -> applyDiff acc (fmapDiff (Dict.insert identity k) x)) (pureDiff Dict.empty)
+                            Dict.foldr compare (\k x acc -> applyDiff acc (mapDiff (Dict.insert identity k) x)) (pureDiff Dict.empty)
                     in
                     if Dict.isEmpty left && Dict.isEmpty right then
                         sequenceA both
@@ -700,11 +702,11 @@ diffRecord localizer fields1 ext1 fields2 ext2 =
                             (sequenceA both)
                             (Diff left right (Different Bag.empty))
             in
-            fmapDiff (Dict.values compare) fieldsDiffDict
+            mapDiff (Dict.values compare) fieldsDiffDict
 
         (Diff doc1 doc2 status) =
             fieldsDiff
-                |> fmapDiff RT.record
+                |> mapDiff RT.record
                 |> applyDiff (extToDiff ext1 ext2)
     in
     Diff doc1 doc2 <|
@@ -840,78 +842,78 @@ extToStatus ext1 ext2 =
 -- ENCODERS and DECODERS
 
 
-typeEncoder : Type -> BE.Encoder
+typeEncoder : Type -> Bytes.Encode.Encoder
 typeEncoder type_ =
     case type_ of
         Lambda x y zs ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , typeEncoder x
                 , typeEncoder y
                 , BE.list typeEncoder zs
                 ]
 
         Infinite ->
-            BE.unsignedInt8 1
+            Bytes.Encode.unsignedInt8 1
 
         Error ->
-            BE.unsignedInt8 2
+            Bytes.Encode.unsignedInt8 2
 
         FlexVar name ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.string name
                 ]
 
         FlexSuper s x ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , superEncoder s
                 , BE.string x
                 ]
 
         RigidVar name ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.string name
                 ]
 
         RigidSuper s x ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , superEncoder s
                 , BE.string x
                 ]
 
         Type home name args ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , ModuleName.canonicalEncoder home
                 , BE.string name
                 , BE.list typeEncoder args
                 ]
 
         Record msgType decoder ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , BE.assocListDict compare BE.string typeEncoder msgType
                 , extensionEncoder decoder
                 ]
 
         Unit ->
-            BE.unsignedInt8 9
+            Bytes.Encode.unsignedInt8 9
 
         Tuple a b cs ->
-            BE.sequence
-                [ BE.unsignedInt8 10
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 10
                 , typeEncoder a
                 , typeEncoder b
                 , BE.list typeEncoder cs
                 ]
 
         Alias home name args tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 11
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 11
                 , ModuleName.canonicalEncoder home
                 , BE.string name
                 , BE.list (BE.jsonPair BE.string typeEncoder) args
@@ -919,75 +921,75 @@ typeEncoder type_ =
                 ]
 
 
-typeDecoder : BD.Decoder Type
+typeDecoder : Bytes.Decode.Decoder Type
 typeDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 Lambda
+                        Bytes.Decode.map3 Lambda
                             typeDecoder
                             typeDecoder
                             (BD.list typeDecoder)
 
                     1 ->
-                        BD.succeed Infinite
+                        Bytes.Decode.succeed Infinite
 
                     2 ->
-                        BD.succeed Error
+                        Bytes.Decode.succeed Error
 
                     3 ->
-                        BD.map FlexVar BD.string
+                        Bytes.Decode.map FlexVar BD.string
 
                     4 ->
-                        BD.map2 FlexSuper
+                        Bytes.Decode.map2 FlexSuper
                             superDecoder
                             BD.string
 
                     5 ->
-                        BD.map RigidVar BD.string
+                        Bytes.Decode.map RigidVar BD.string
 
                     6 ->
-                        BD.map2 RigidSuper
+                        Bytes.Decode.map2 RigidSuper
                             superDecoder
                             BD.string
 
                     7 ->
-                        BD.map3 Type
+                        Bytes.Decode.map3 Type
                             ModuleName.canonicalDecoder
                             BD.string
                             (BD.list typeDecoder)
 
                     8 ->
-                        BD.map2 Record
+                        Bytes.Decode.map2 Record
                             (BD.assocListDict identity BD.string typeDecoder)
                             extensionDecoder
 
                     9 ->
-                        BD.succeed Unit
+                        Bytes.Decode.succeed Unit
 
                     10 ->
-                        BD.map3 Tuple
+                        Bytes.Decode.map3 Tuple
                             typeDecoder
                             typeDecoder
                             (BD.list typeDecoder)
 
                     11 ->
-                        BD.map4 Alias
+                        Bytes.Decode.map4 Alias
                             ModuleName.canonicalDecoder
                             BD.string
                             (BD.list (BD.jsonPair BD.string typeDecoder))
                             typeDecoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-superEncoder : Super -> BE.Encoder
+superEncoder : Super -> Bytes.Encode.Encoder
 superEncoder super =
-    BE.unsignedInt8
+    Bytes.Encode.unsignedInt8
         (case super of
             Number ->
                 0
@@ -1003,63 +1005,63 @@ superEncoder super =
         )
 
 
-superDecoder : BD.Decoder Super
+superDecoder : Bytes.Decode.Decoder Super
 superDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed Number
+                        Bytes.Decode.succeed Number
 
                     1 ->
-                        BD.succeed Comparable
+                        Bytes.Decode.succeed Comparable
 
                     2 ->
-                        BD.succeed Appendable
+                        Bytes.Decode.succeed Appendable
 
                     3 ->
-                        BD.succeed CompAppend
+                        Bytes.Decode.succeed CompAppend
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-extensionEncoder : Extension -> BE.Encoder
+extensionEncoder : Extension -> Bytes.Encode.Encoder
 extensionEncoder extension =
     case extension of
         Closed ->
-            BE.unsignedInt8 0
+            Bytes.Encode.unsignedInt8 0
 
         FlexOpen x ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.string x
                 ]
 
         RigidOpen x ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.string x
                 ]
 
 
-extensionDecoder : BD.Decoder Extension
+extensionDecoder : Bytes.Decode.Decoder Extension
 extensionDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed Closed
+                        Bytes.Decode.succeed Closed
 
                     1 ->
-                        BD.map FlexOpen BD.string
+                        Bytes.Decode.map FlexOpen BD.string
 
                     2 ->
-                        BD.map RigidOpen BD.string
+                        Bytes.Decode.map RigidOpen BD.string
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

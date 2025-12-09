@@ -14,7 +14,9 @@ module Compiler.Data.Index exposing
     )
 
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 
@@ -103,11 +105,11 @@ indexedZipWithHelp func index listX listY revListZ =
 -- ENCODERS and DECODERS
 
 
-zeroBasedEncoder : ZeroBased -> BE.Encoder
+zeroBasedEncoder : ZeroBased -> Bytes.Encode.Encoder
 zeroBasedEncoder (ZeroBased zeroBased) =
     BE.int zeroBased
 
 
-zeroBasedDecoder : BD.Decoder ZeroBased
+zeroBasedDecoder : Bytes.Decode.Decoder ZeroBased
 zeroBasedDecoder =
-    BD.map ZeroBased BD.int
+    Bytes.Decode.map ZeroBased BD.int

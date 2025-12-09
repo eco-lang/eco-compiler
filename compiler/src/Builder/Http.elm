@@ -30,7 +30,9 @@ import Json.Encode as Encode
 import Task exposing (Task)
 import Url.Builder
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Impure as Impure
 import Utils.Main as Utils exposing (SomeException)
 import Utils.Task.Extra as Task
@@ -44,29 +46,29 @@ type Manager
     = Manager
 
 
-managerEncoder : Manager -> BE.Encoder
+managerEncoder : Manager -> Bytes.Encode.Encoder
 managerEncoder _ =
-    BE.unsignedInt8 0
+    Bytes.Encode.unsignedInt8 0
 
 
-managerDecoder : BD.Decoder Manager
+managerDecoder : Bytes.Decode.Decoder Manager
 managerDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed Manager
+                        Bytes.Decode.succeed Manager
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
 getManager : Task Never Manager
 getManager =
     -- TODO newManager tlsManagerSettings
-    Task.pure Manager
+    Task.succeed Manager
 
 
 
@@ -251,52 +253,52 @@ stringPart name string =
 -- ENCODERS and DECODERS
 
 
-errorEncoder : Error -> BE.Encoder
+errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
     case error of
         BadUrl url reason ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.string url
                 , BE.string reason
                 ]
 
         BadHttp url httpExceptionContent ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.string url
                 , Utils.httpExceptionContentEncoder httpExceptionContent
                 ]
 
         BadMystery url someException ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.string url
                 , Utils.someExceptionEncoder someException
                 ]
 
 
-errorDecoder : BD.Decoder Error
+errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map2 BadUrl
+                        Bytes.Decode.map2 BadUrl
                             BD.string
                             BD.string
 
                     1 ->
-                        BD.map2 BadHttp
+                        Bytes.Decode.map2 BadHttp
                             BD.string
                             Utils.httpExceptionContentDecoder
 
                     2 ->
-                        BD.map2 BadMystery
+                        Bytes.Decode.map2 BadMystery
                             BD.string
                             Utils.someExceptionDecoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

@@ -39,38 +39,52 @@ run : Args -> Flags -> Task Never ()
 run args (Flags autoYes) =
     Reporting.attempt Exit.uninstallToReport
         (Stuff.findRoot
-            |> Task.bind
-                (\maybeRoot ->
-                    case maybeRoot of
-                        Nothing ->
-                            Task.pure (Err Exit.UninstallNoOutline)
-
-                        Just root ->
-                            case args of
-                                NoArgs ->
-                                    Task.pure (Err Exit.UninstallNoArgs)
-
-                                Uninstall pkg ->
-                                    Task.run
-                                        (Task.eio Exit.UninstallBadRegistry Solver.initEnv
-                                            |> Task.bind
-                                                (\env ->
-                                                    Task.eio Exit.UninstallBadOutline (Outline.read root)
-                                                        |> Task.bind
-                                                            (\oldOutline ->
-                                                                case oldOutline of
-                                                                    Outline.App outline ->
-                                                                        makeAppPlan env pkg outline
-                                                                            |> Task.bind (\changes -> attemptChanges root env oldOutline V.toChars changes autoYes)
-
-                                                                    Outline.Pkg outline ->
-                                                                        makePkgPlan pkg outline
-                                                                            |> Task.bind (\changes -> attemptChanges root env oldOutline C.toChars changes autoYes)
-                                                            )
-                                                )
-                                        )
-                )
+            |> Task.andThen (handleRoot args autoYes)
         )
+
+
+handleRoot : Args -> Bool -> Maybe FilePath -> Task Never (Result Exit.Uninstall ())
+handleRoot args autoYes maybeRoot =
+    case maybeRoot of
+        Nothing ->
+            Task.succeed (Err Exit.UninstallNoOutline)
+
+        Just root ->
+            handleArgs root args autoYes
+
+
+handleArgs : FilePath -> Args -> Bool -> Task Never (Result Exit.Uninstall ())
+handleArgs root args autoYes =
+    case args of
+        NoArgs ->
+            Task.succeed (Err Exit.UninstallNoArgs)
+
+        Uninstall pkg ->
+            Task.run (uninstallPackage root pkg autoYes)
+
+
+uninstallPackage : FilePath -> Pkg.Name -> Bool -> Task Exit.Uninstall ()
+uninstallPackage root pkg autoYes =
+    Task.eio Exit.UninstallBadRegistry Solver.initEnv
+        |> Task.andThen (uninstallWithEnv root pkg autoYes)
+
+
+uninstallWithEnv : FilePath -> Pkg.Name -> Bool -> Solver.Env -> Task Exit.Uninstall ()
+uninstallWithEnv root pkg autoYes env =
+    Task.eio Exit.UninstallBadOutline (Outline.read root)
+        |> Task.andThen (uninstallWithOutline root pkg autoYes env)
+
+
+uninstallWithOutline : FilePath -> Pkg.Name -> Bool -> Solver.Env -> Outline.Outline -> Task Exit.Uninstall ()
+uninstallWithOutline root pkg autoYes env oldOutline =
+    case oldOutline of
+        Outline.App outline ->
+            makeAppPlan env pkg outline
+                |> Task.andThen (\changes -> attemptChanges root env oldOutline V.toChars changes autoYes)
+
+        Outline.Pkg outline ->
+            makePkgPlan pkg outline
+                |> Task.andThen (\changes -> attemptChanges root env oldOutline C.toChars changes autoYes)
 
 
 
@@ -112,38 +126,42 @@ attemptChangesHelp root env oldOutline newOutline autoYes question =
     Task.eio Exit.UninstallBadDetails <|
         BW.withScope
             (\scope ->
-                let
-                    askQuestion : Task Never Bool
-                    askQuestion =
-                        if autoYes then
-                            Task.pure True
-
-                        else
-                            Reporting.ask question
-                in
-                askQuestion
-                    |> Task.bind
-                        (\approved ->
-                            if approved then
-                                Outline.write root newOutline
-                                    |> Task.bind (\_ -> Details.verifyInstall scope root env newOutline)
-                                    |> Task.bind
-                                        (\result ->
-                                            case result of
-                                                Err exit ->
-                                                    Outline.write root oldOutline
-                                                        |> Task.fmap (\_ -> Err exit)
-
-                                                Ok () ->
-                                                    IO.putStrLn "Success!"
-                                                        |> Task.fmap (\_ -> Ok ())
-                                        )
-
-                            else
-                                IO.putStrLn "Okay, I did not change anything!"
-                                    |> Task.fmap (\_ -> Ok ())
-                        )
+                askUninstallQuestion autoYes question
+                    |> Task.andThen (applyUninstallChanges scope root env oldOutline newOutline)
             )
+
+
+askUninstallQuestion : Bool -> D.Doc -> Task Never Bool
+askUninstallQuestion autoYes question =
+    if autoYes then
+        Task.succeed True
+
+    else
+        Reporting.ask question
+
+
+applyUninstallChanges : BW.Scope -> FilePath -> Solver.Env -> Outline.Outline -> Outline.Outline -> Bool -> Task Never (Result Exit.Details ())
+applyUninstallChanges scope root env oldOutline newOutline approved =
+    if approved then
+        Outline.write root newOutline
+            |> Task.andThen (\_ -> Details.verifyInstall scope root env newOutline)
+            |> Task.andThen (handleUninstallResult root oldOutline)
+
+    else
+        IO.putStrLn "Okay, I did not change anything!"
+            |> Task.map (\_ -> Ok ())
+
+
+handleUninstallResult : FilePath -> Outline.Outline -> Result Exit.Details () -> Task Never (Result Exit.Details ())
+handleUninstallResult root oldOutline result =
+    case result of
+        Err exit ->
+            Outline.write root oldOutline
+                |> Task.map (\_ -> Err exit)
+
+        Ok () ->
+            IO.putStrLn "Success!"
+                |> Task.map (\_ -> Ok ())
 
 
 
@@ -155,24 +173,26 @@ makeAppPlan (Solver.Env cache _ connection registry) pkg ((Outline.AppOutline _ 
     case Dict.get identity pkg (Dict.union direct testDirect) of
         Just _ ->
             Task.io (Solver.removeFromApp cache connection registry pkg outline)
-                |> Task.bind
-                    (\result ->
-                        case result of
-                            Solver.SolverOk (Solver.AppSolution old new app) ->
-                                Task.pure (Changes (detectChanges old new) (Outline.App app))
-
-                            Solver.NoSolution ->
-                                Task.throw (Exit.UninstallNoOnlineAppSolution pkg)
-
-                            Solver.NoOfflineSolution ->
-                                Task.throw (Exit.UninstallNoOfflineAppSolution pkg)
-
-                            Solver.SolverErr exit ->
-                                Task.throw (Exit.UninstallHadSolverTrouble exit)
-                    )
+                |> Task.andThen (handleAppSolverResult pkg)
 
         Nothing ->
-            Task.pure AlreadyNotPresent
+            Task.succeed AlreadyNotPresent
+
+
+handleAppSolverResult : Pkg.Name -> Solver.SolverResult Solver.AppSolution -> Task Exit.Uninstall (Changes V.Version)
+handleAppSolverResult pkg result =
+    case result of
+        Solver.SolverOk (Solver.AppSolution old new app) ->
+            Task.succeed (Changes (detectChanges old new) (Outline.App app))
+
+        Solver.NoSolution ->
+            Task.throw (Exit.UninstallNoOnlineAppSolution pkg)
+
+        Solver.NoOfflineSolution ->
+            Task.throw (Exit.UninstallNoOfflineAppSolution pkg)
+
+        Solver.SolverErr exit ->
+            Task.throw (Exit.UninstallHadSolverTrouble exit)
 
 
 
@@ -196,7 +216,7 @@ makePkgPlan pkg (Outline.PkgOutline name summary license version exposed deps te
             changes =
                 detectChanges old new
         in
-        Task.pure <|
+        Task.succeed <|
             Changes changes <|
                 Outline.Pkg <|
                     Outline.PkgOutline name
@@ -209,7 +229,7 @@ makePkgPlan pkg (Outline.PkgOutline name summary license version exposed deps te
                         elmVersion
 
     else
-        Task.pure AlreadyNotPresent
+        Task.succeed AlreadyNotPresent
 
 
 

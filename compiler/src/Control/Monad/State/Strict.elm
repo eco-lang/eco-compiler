@@ -1,7 +1,7 @@
 module Control.Monad.State.Strict exposing
     ( StateT(..)
     , evalStateT
-    , fmap
+    , map
     , get
     , liftIO
     , put
@@ -36,12 +36,12 @@ type StateT s a
 
 evalStateT : StateT s a -> s -> Task Never a
 evalStateT (StateT f) =
-    f >> Task.fmap Tuple.first
+    f >> Task.map Tuple.first
 
 
 liftIO : Task Never a -> StateT s a
 liftIO io =
-    StateT (\s -> Task.fmap (\a -> ( a, s )) io)
+    StateT (\s -> Task.map (\a -> ( a, s )) io)
 
 
 apply : StateT s a -> StateT s (a -> b) -> StateT s b
@@ -49,22 +49,22 @@ apply (StateT arg) (StateT func) =
     StateT
         (\s ->
             arg s
-                |> Task.bind
+                |> Task.andThen
                     (\( a, sa ) ->
                         func sa
-                            |> Task.fmap (\( fb, sb ) -> ( fb a, sb ))
+                            |> Task.map (\( fb, sb ) -> ( fb a, sb ))
                     )
         )
 
 
-fmap : (a -> b) -> StateT s a -> StateT s b
-fmap func argStateT =
+map : (a -> b) -> StateT s a -> StateT s b
+map func argStateT =
     apply argStateT (pure func)
 
 
 pure : a -> StateT s a
 pure value =
-    StateT (\s -> Task.pure ( value, s ))
+    StateT (\s -> Task.succeed ( value, s ))
 
 
 get : StateT s IO.ReplState

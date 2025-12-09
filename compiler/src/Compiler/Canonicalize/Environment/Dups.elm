@@ -19,7 +19,7 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Data.OneOrMore as OneOrMore exposing (OneOrMore)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error exposing (Error)
-import Compiler.Reporting.Result as R
+import Compiler.Reporting.Result as ReportingResult
 import Data.Map as Dict exposing (Dict)
 import Utils.Main as Utils
 
@@ -44,21 +44,21 @@ type alias ToError =
     Name -> A.Region -> A.Region -> Error
 
 
-detect : ToError -> Tracker a -> R.RResult i w Error (Dict String Name a)
+detect : ToError -> Tracker a -> ReportingResult.RResult i w Error (Dict String Name a)
 detect toError dict =
     Dict.foldl compare
         (\name values ->
-            R.bind
+            ReportingResult.andThen
                 (\acc ->
-                    R.fmap (\b -> Dict.insert identity name b acc)
+                    ReportingResult.map (\b -> Dict.insert identity name b acc)
                         (detectHelp toError name values)
                 )
         )
-        (R.ok Dict.empty)
+        (ReportingResult.ok Dict.empty)
         dict
 
 
-detectLocated : ToError -> Tracker a -> R.RResult i w Error (Dict String (A.Located Name) a)
+detectLocated : ToError -> Tracker a -> ReportingResult.RResult i w Error (Dict String (A.Located Name) a)
 detectLocated toError dict =
     let
         nameLocations : Dict String Name A.Region
@@ -67,7 +67,7 @@ detectLocated toError dict =
     in
     dict
         |> Utils.mapMapKeys A.toValue compare (\k -> A.At (Maybe.withDefault A.zero <| Dict.get identity k nameLocations) k)
-        |> R.mapTraverseWithKey A.toValue A.compareLocated (\(A.At _ name) values -> detectHelp toError name values)
+        |> ReportingResult.mapTraverseWithKey A.toValue A.compareLocated (\(A.At _ name) values -> detectHelp toError name values)
 
 
 extractLocation : OneOrMore.OneOrMore (Info a) -> Maybe A.Region
@@ -80,30 +80,30 @@ extractLocation oneOrMore =
             Nothing
 
 
-detectHelp : ToError -> Name -> OneOrMore (Info a) -> R.RResult i w Error a
+detectHelp : ToError -> Name -> OneOrMore (Info a) -> ReportingResult.RResult i w Error a
 detectHelp toError name values =
     case values of
         OneOrMore.One (Info _ value) ->
-            R.ok value
+            ReportingResult.ok value
 
         OneOrMore.More left right ->
             let
                 ( Info r1 _, Info r2 _ ) =
                     OneOrMore.getFirstTwo left right
             in
-            R.throw (toError name r1 r2)
+            ReportingResult.throw (toError name r1 r2)
 
 
 
 -- CHECK FIELDS
 
 
-checkLocatedFields : List ( A.Located Name, a ) -> R.RResult i w Error (Dict String (A.Located Name) a)
+checkLocatedFields : List ( A.Located Name, a ) -> ReportingResult.RResult i w Error (Dict String (A.Located Name) a)
 checkLocatedFields fields =
     detectLocated Error.DuplicateField (List.foldr addField none fields)
 
 
-checkFields : List ( A.Located Name, a ) -> R.RResult i w Error (Dict String Name a)
+checkFields : List ( A.Located Name, a ) -> ReportingResult.RResult i w Error (Dict String Name a)
 checkFields fields =
     detect Error.DuplicateField (List.foldr addField none fields)
 
@@ -113,12 +113,12 @@ addField ( A.At region name, value ) dups =
     Utils.mapInsertWith identity OneOrMore.more name (OneOrMore.one (Info region value)) dups
 
 
-checkLocatedFields_ : (A.Region -> a -> b) -> List ( A.Located Name, a ) -> R.RResult i w Error (Dict String (A.Located Name) b)
+checkLocatedFields_ : (A.Region -> a -> b) -> List ( A.Located Name, a ) -> ReportingResult.RResult i w Error (Dict String (A.Located Name) b)
 checkLocatedFields_ toValue fields =
     detectLocated Error.DuplicateField (List.foldr (addField_ toValue) none fields)
 
 
-checkFields_ : (A.Region -> a -> b) -> List ( A.Located Name, a ) -> R.RResult i w Error (Dict String Name b)
+checkFields_ : (A.Region -> a -> b) -> List ( A.Located Name, a ) -> ReportingResult.RResult i w Error (Dict String Name b)
 checkFields_ toValue fields =
     detect Error.DuplicateField (List.foldr (addField_ toValue) none fields)
 

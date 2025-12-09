@@ -10,7 +10,9 @@ import Json.Decode as Decode
 import Json.Encode as Encode
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Crash exposing (crash)
 
 
@@ -18,14 +20,14 @@ type Body
     = EmptyBody
     | StringBody String
     | JsonBody Encode.Value
-    | BytesBody BE.Encoder
+    | BytesBody Bytes.Encode.Encoder
 
 
 type Resolver a
     = Always a
     | StringResolver (String -> a)
     | DecoderResolver (Decode.Decoder a)
-    | BytesResolver (BD.Decoder a)
+    | BytesResolver (Bytes.Decode.Decoder a)
     | Crash
 
 
@@ -47,7 +49,7 @@ customTask method url headers body resolver =
                     Http.jsonBody value
 
                 BytesBody encoder ->
-                    Http.bytesBody "application/octet-stream" (BE.encode encoder)
+                    Http.bytesBody "application/octet-stream" (Bytes.Encode.encode encoder)
         , resolver =
             case resolver of
                 Always x ->
@@ -115,7 +117,7 @@ customTask method url headers body resolver =
                                     crash ("Unexpected BadStatus. Status code: " ++ String.fromInt metadata.statusCode)
 
                                 Http.GoodStatus_ _ body_ ->
-                                    case BD.decode decoder body_ of
+                                    case Bytes.Decode.decode decoder body_ of
                                         Just value ->
                                             Ok value
 

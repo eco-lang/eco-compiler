@@ -848,9 +848,30 @@ formatModu modu =
                                             [ ( ( ( preSubComments, preEqualComments ), "subscription" ), ( ( postEqualComments, postSubComments ), subType ) )
                                             ]
 
-                                        Src.Fx ( ( preCmdComments, postCmdComments ), ( ( preEqualCmdComments, postEqualCmdComments ), A.At (A.Region (A.Position cmdTypeStart cmdTypeEnd) _) cmdType ) ) ( ( preSubComments, postSubComments ), ( ( preEqualSubComments, postEqualSubComments ), A.At (A.Region (A.Position subTypeStart subTypeEnd) _) subType ) ) ->
-                                            [ ( ( cmdTypeStart, cmdTypeEnd ), ( ( ( preCmdComments, preEqualCmdComments ), "command" ), ( ( postEqualCmdComments, postCmdComments ), cmdType ) ) )
-                                            , ( ( subTypeStart, subTypeEnd ), ( ( ( preSubComments, preEqualSubComments ), "subscription" ), ( ( postEqualSubComments, postSubComments ), subType ) ) )
+                                        Src.Fx cmdArg subArg ->
+                                            let
+                                                ( ( preCmdComments, postCmdComments ), ( ( preEqualCmdComments, postEqualCmdComments ), cmdLocated ) ) =
+                                                    cmdArg
+
+                                                ( A.At (A.Region (A.Position cmdTypeStart cmdTypeEnd) _) cmdType ) =
+                                                    cmdLocated
+
+                                                ( ( preSubComments, postSubComments ), ( ( preEqualSubComments, postEqualSubComments ), subLocated ) ) =
+                                                    subArg
+
+                                                ( A.At (A.Region (A.Position subTypeStart subTypeEnd) _) subType ) =
+                                                    subLocated
+                                            in
+                                            [ ( ( cmdTypeStart, cmdTypeEnd )
+                                              , ( ( ( preCmdComments, preEqualCmdComments ), "command" )
+                                                , ( ( postEqualCmdComments, postCmdComments ), cmdType )
+                                                )
+                                              )
+                                            , ( ( subTypeStart, subTypeEnd )
+                                              , ( ( ( preSubComments, preEqualSubComments ), "subscription" )
+                                                , ( ( postEqualSubComments, postSubComments ), subType )
+                                                )
+                                              )
                                             ]
                                                 |> List.sortBy Tuple.first
                                                 |> List.map Tuple.second

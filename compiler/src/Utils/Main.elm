@@ -132,7 +132,7 @@ module Utils.Main exposing
 import Basics.Extra exposing (flip)
 import Compiler.Data.Index as Index
 import Compiler.Data.NonEmptyList as NE
-import Compiler.Reporting.Result as R
+import Compiler.Reporting.Result as ReportingResult
 import Control.Monad.State.Strict as State
 import Data.Map as Map exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
@@ -147,7 +147,9 @@ import System.IO as IO
 import Task exposing (Task)
 import Time
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Crash exposing (crash)
 import Utils.Impure as Impure
 import Utils.Task.Extra as Task
@@ -209,7 +211,7 @@ mapFromListWith toComparable f =
         Map.empty
 
 
-maybeEncoder : (a -> BE.Encoder) -> Maybe a -> BE.Encoder
+maybeEncoder : (a -> Bytes.Encode.Encoder) -> Maybe a -> Bytes.Encode.Encoder
 maybeEncoder =
     BE.maybe
 
@@ -238,7 +240,7 @@ filterM p =
     List.foldr
         (\x acc ->
             Task.apply acc
-                (Task.fmap
+                (Task.map
                     (\flg ->
                         if flg then
                             (::) x
@@ -249,7 +251,7 @@ filterM p =
                     (p x)
                 )
         )
-        (Task.pure [])
+        (Task.succeed [])
 
 
 find : (k -> comparable) -> k -> Dict comparable k a -> a
@@ -322,30 +324,30 @@ mapUnions =
     List.foldr Map.union Map.empty
 
 
-foldM : (b -> a -> R.RResult info warnings error b) -> b -> List a -> R.RResult info warnings error b
+foldM : (b -> a -> ReportingResult.RResult info warnings error b) -> b -> List a -> ReportingResult.RResult info warnings error b
 foldM f b =
-    List.foldl (\a -> R.bind (\acc -> f acc a)) (R.ok b)
+    List.foldl (\a -> ReportingResult.andThen (\acc -> f acc a)) (ReportingResult.ok b)
 
 
-indexedZipWithA : (Index.ZeroBased -> a -> b -> R.RResult info warnings error c) -> List a -> List b -> R.RResult info warnings error (Index.VerifiedList c)
+indexedZipWithA : (Index.ZeroBased -> a -> b -> ReportingResult.RResult info warnings error c) -> List a -> List b -> ReportingResult.RResult info warnings error (Index.VerifiedList c)
 indexedZipWithA func listX listY =
     case Index.indexedZipWith func listX listY of
         Index.LengthMatch xs ->
             sequenceAList xs
-                |> R.fmap Index.LengthMatch
+                |> ReportingResult.map Index.LengthMatch
 
         Index.LengthMismatch x y ->
-            R.pure (Index.LengthMismatch x y)
+            ReportingResult.ok (Index.LengthMismatch x y)
 
 
-sequenceADict : (k -> comparable) -> (k -> k -> Order) -> Dict comparable k (R.RResult i w e v) -> R.RResult i w e (Dict comparable k v)
+sequenceADict : (k -> comparable) -> (k -> k -> Order) -> Dict comparable k (ReportingResult.RResult i w e v) -> ReportingResult.RResult i w e (Dict comparable k v)
 sequenceADict toComparable keyComparison =
-    Map.foldr keyComparison (\k x acc -> R.apply acc (R.fmap (Map.insert toComparable k) x)) (R.pure Map.empty)
+    Map.foldr keyComparison (\k x acc -> ReportingResult.apply acc (ReportingResult.map (Map.insert toComparable k) x)) (ReportingResult.ok Map.empty)
 
 
-sequenceAList : List (R.RResult i w e v) -> R.RResult i w e (List v)
+sequenceAList : List (ReportingResult.RResult i w e v) -> ReportingResult.RResult i w e (List v)
 sequenceAList =
-    List.foldr (\x acc -> R.apply acc (R.fmap (::) x)) (R.pure [])
+    List.foldr (\x acc -> ReportingResult.apply acc (ReportingResult.map (::) x)) (ReportingResult.ok [])
 
 
 sequenceDictMaybe : (k -> comparable) -> (k -> k -> Order) -> Dict comparable k (Maybe a) -> Maybe (Dict comparable k a)
@@ -393,9 +395,9 @@ mapM_ f =
     let
         c : a -> Task Never () -> Task Never ()
         c x k =
-            Task.bind (\_ -> k) (f x)
+            Task.andThen (\_ -> k) (f x)
     in
-    List.foldr c (Task.pure ())
+    List.foldr c (Task.succeed ())
 
 
 dictMapM_ : (k -> k -> Order) -> (a -> Task Never b) -> Dict c k a -> Task Never ()
@@ -403,9 +405,9 @@ dictMapM_ keyComparison f =
     let
         c : k -> a -> Task Never () -> Task Never ()
         c _ x k =
-            Task.bind (\_ -> k) (f x)
+            Task.andThen (\_ -> k) (f x)
     in
-    Map.foldl keyComparison c (Task.pure ())
+    Map.foldl keyComparison c (Task.succeed ())
 
 
 maybeMapM : (a -> Maybe b) -> List a -> Maybe (List b)
@@ -443,8 +445,8 @@ mapTraverse toComparable keyComparison f =
 mapTraverseWithKey : (k -> comparable) -> (k -> k -> Order) -> (k -> a -> Task Never b) -> Dict comparable k a -> Task Never (Dict comparable k b)
 mapTraverseWithKey toComparable keyComparison f =
     Map.foldl keyComparison
-        (\k a -> Task.bind (\c -> Task.fmap (\va -> Map.insert toComparable k va c) (f k a)))
-        (Task.pure Map.empty)
+        (\k a -> Task.andThen (\c -> Task.map (\va -> Map.insert toComparable k va c) (f k a)))
+        (Task.succeed Map.empty)
 
 
 mapTraverseResult : (k -> comparable) -> (k -> k -> Order) -> (a -> Result e b) -> Dict comparable k a -> Result e (Dict comparable k b)
@@ -472,25 +474,25 @@ listMaybeTraverse f =
 
 nonEmptyListTraverse : (a -> Task Never b) -> NE.Nonempty a -> Task Never (NE.Nonempty b)
 nonEmptyListTraverse f (NE.Nonempty x list) =
-    List.foldl (\a -> Task.bind (\c -> Task.fmap (\va -> NE.cons va c) (f a)))
-        (Task.fmap NE.singleton (f x))
+    List.foldl (\a -> Task.andThen (\c -> Task.map (\va -> NE.cons va c) (f a)))
+        (Task.map NE.singleton (f x))
         list
 
 
 listTraverse_ : (a -> Task Never b) -> List a -> Task Never ()
 listTraverse_ f =
     listTraverse f
-        >> Task.fmap (\_ -> ())
+        >> Task.map (\_ -> ())
 
 
 maybeTraverseTask : (a -> Task x b) -> Maybe a -> Task x (Maybe b)
 maybeTraverseTask f a =
     case Maybe.map f a of
         Just b ->
-            Task.fmap Just b
+            Task.map Just b
 
         Nothing ->
-            Task.pure Nothing
+            Task.succeed Nothing
 
 
 zipWithM : (a -> b -> Maybe c) -> List a -> List b -> Maybe (List c)
@@ -744,11 +746,11 @@ lockWithFileLock path mode ioFunc =
     case mode of
         LockExclusive ->
             lockFile path
-                |> Task.bind ioFunc
-                |> Task.bind
+                |> Task.andThen ioFunc
+                |> Task.andThen
                     (\a ->
                         unlockFile path
-                            |> Task.fmap (\_ -> a)
+                            |> Task.map (\_ -> a)
                     )
 
 
@@ -861,7 +863,7 @@ dirCanonicalizePath path =
 dirWithCurrentDirectory : FilePath -> Task Never a -> Task Never a
 dirWithCurrentDirectory dir action =
     dirGetCurrentDirectory
-        |> Task.bind
+        |> Task.andThen
             (\currentDir ->
                 bracket_
                     (Impure.task "dirWithCurrentDirectory"
@@ -900,7 +902,7 @@ envLookupEnv name =
 
 envGetProgName : Task Never String
 envGetProgName =
-    Task.pure "guida"
+    Task.succeed "guida"
 
 
 envGetArgs : Task Never (List String)
@@ -986,13 +988,13 @@ type AsyncException
 bracket : Task Never a -> (a -> Task Never b) -> (a -> Task Never c) -> Task Never c
 bracket before after thing =
     before
-        |> Task.bind
+        |> Task.andThen
             (\a ->
                 thing a
-                    |> Task.bind
+                    |> Task.andThen
                         (\r ->
                             after a
-                                |> Task.fmap (\_ -> r)
+                                |> Task.map (\_ -> r)
                         )
             )
 
@@ -1023,17 +1025,17 @@ type MVar a
     = MVar Int
 
 
-newMVar : (a -> BE.Encoder) -> a -> Task Never (MVar a)
+newMVar : (a -> Bytes.Encode.Encoder) -> a -> Task Never (MVar a)
 newMVar toEncoder value =
     newEmptyMVar
-        |> Task.bind
+        |> Task.andThen
             (\mvar ->
                 putMVar toEncoder mvar value
-                    |> Task.fmap (\_ -> mvar)
+                    |> Task.map (\_ -> mvar)
             )
 
 
-readMVar : BD.Decoder a -> MVar a -> Task Never a
+readMVar : Bytes.Decode.Decoder a -> MVar a -> Task Never a
 readMVar decoder (MVar ref) =
     Impure.task "readMVar"
         []
@@ -1041,18 +1043,18 @@ readMVar decoder (MVar ref) =
         (Impure.BytesResolver decoder)
 
 
-modifyMVar : BD.Decoder a -> (a -> BE.Encoder) -> MVar a -> (a -> Task Never ( a, b )) -> Task Never b
+modifyMVar : Bytes.Decode.Decoder a -> (a -> Bytes.Encode.Encoder) -> MVar a -> (a -> Task Never ( a, b )) -> Task Never b
 modifyMVar decoder toEncoder m io =
     takeMVar decoder m
-        |> Task.bind io
-        |> Task.bind
+        |> Task.andThen io
+        |> Task.andThen
             (\( a, b ) ->
                 putMVar toEncoder m a
-                    |> Task.fmap (\_ -> b)
+                    |> Task.map (\_ -> b)
             )
 
 
-takeMVar : BD.Decoder a -> MVar a -> Task Never a
+takeMVar : Bytes.Decode.Decoder a -> MVar a -> Task Never a
 takeMVar decoder (MVar ref) =
     Impure.task "takeMVar"
         []
@@ -1060,7 +1062,7 @@ takeMVar decoder (MVar ref) =
         (Impure.BytesResolver decoder)
 
 
-putMVar : (a -> BE.Encoder) -> MVar a -> a -> Task Never ()
+putMVar : (a -> Bytes.Encode.Encoder) -> MVar a -> a -> Task Never ()
 putMVar encoder (MVar ref) value =
     Impure.task "putMVar"
         [ Http.header "id" (String.fromInt ref) ]
@@ -1092,16 +1094,16 @@ type ChItem a
     = ChItem a (Stream a)
 
 
-newChan : (MVar (ChItem a) -> BE.Encoder) -> Task Never (Chan a)
+newChan : (MVar (ChItem a) -> Bytes.Encode.Encoder) -> Task Never (Chan a)
 newChan toEncoder =
     newEmptyMVar
-        |> Task.bind
+        |> Task.andThen
             (\hole ->
                 newMVar toEncoder hole
-                    |> Task.bind
+                    |> Task.andThen
                         (\readVar ->
                             newMVar toEncoder hole
-                                |> Task.fmap
+                                |> Task.map
                                     (\writeVar ->
                                         Chan readVar writeVar
                                     )
@@ -1109,12 +1111,12 @@ newChan toEncoder =
             )
 
 
-readChan : BD.Decoder a -> Chan a -> Task Never a
+readChan : Bytes.Decode.Decoder a -> Chan a -> Task Never a
 readChan decoder (Chan readVar _) =
     modifyMVar mVarDecoder mVarEncoder readVar <|
         \read_end ->
             readMVar (chItemDecoder decoder) read_end
-                |> Task.fmap
+                |> Task.map
                     (\(ChItem val new_read_end) ->
                         -- Use readMVar here, not takeMVar,
                         -- else dupChan doesn't work
@@ -1122,16 +1124,16 @@ readChan decoder (Chan readVar _) =
                     )
 
 
-writeChan : (a -> BE.Encoder) -> Chan a -> a -> Task Never ()
+writeChan : (a -> Bytes.Encode.Encoder) -> Chan a -> a -> Task Never ()
 writeChan toEncoder (Chan _ writeVar) val =
     newEmptyMVar
-        |> Task.bind
+        |> Task.andThen
             (\new_hole ->
                 takeMVar mVarDecoder writeVar
-                    |> Task.bind
+                    |> Task.andThen
                         (\old_hole ->
                             putMVar (chItemEncoder toEncoder) old_hole (ChItem val new_hole)
-                                |> Task.bind (\_ -> putMVar mVarEncoder writeVar new_hole)
+                                |> Task.andThen (\_ -> putMVar mVarEncoder writeVar new_hole)
                         )
             )
 
@@ -1149,15 +1151,15 @@ builderHPutBuilder =
 -- Data.Binary
 
 
-binaryDecodeFileOrFail : BD.Decoder a -> FilePath -> Task Never (Result ( Int, String ) a)
+binaryDecodeFileOrFail : Bytes.Decode.Decoder a -> FilePath -> Task Never (Result ( Int, String ) a)
 binaryDecodeFileOrFail decoder filename =
     Impure.task "binaryDecodeFileOrFail"
         []
         (Impure.StringBody filename)
-        (Impure.BytesResolver (BD.map Ok decoder))
+        (Impure.BytesResolver (Bytes.Decode.map Ok decoder))
 
 
-binaryEncodeFile : (a -> BE.Encoder) -> FilePath -> a -> Task Never ()
+binaryEncodeFile : (a -> Bytes.Encode.Encoder) -> FilePath -> a -> Task Never ()
 binaryEncodeFile toEncoder path value =
     Impure.task "write"
         [ Http.header "path" path ]
@@ -1242,53 +1244,53 @@ nodeMathRandom =
 -- ENCODERS and DECODERS
 
 
-mVarDecoder : BD.Decoder (MVar a)
+mVarDecoder : Bytes.Decode.Decoder (MVar a)
 mVarDecoder =
-    BD.map MVar BD.int
+    Bytes.Decode.map MVar BD.int
 
 
-mVarEncoder : MVar a -> BE.Encoder
+mVarEncoder : MVar a -> Bytes.Encode.Encoder
 mVarEncoder (MVar ref) =
     BE.int ref
 
 
-chItemEncoder : (a -> BE.Encoder) -> ChItem a -> BE.Encoder
+chItemEncoder : (a -> Bytes.Encode.Encoder) -> ChItem a -> Bytes.Encode.Encoder
 chItemEncoder valueEncoder (ChItem value hole) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ valueEncoder value
         , mVarEncoder hole
         ]
 
 
-chItemDecoder : BD.Decoder a -> BD.Decoder (ChItem a)
+chItemDecoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (ChItem a)
 chItemDecoder decoder =
-    BD.map2 ChItem
+    Bytes.Decode.map2 ChItem
         decoder
         mVarDecoder
 
 
-someExceptionEncoder : SomeException -> BE.Encoder
+someExceptionEncoder : SomeException -> Bytes.Encode.Encoder
 someExceptionEncoder _ =
-    BE.unsignedInt8 0
+    Bytes.Encode.unsignedInt8 0
 
 
-someExceptionDecoder : BD.Decoder SomeException
+someExceptionDecoder : Bytes.Decode.Decoder SomeException
 someExceptionDecoder =
-    BD.unsignedInt8
-        |> BD.map (\_ -> SomeException)
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.map (\_ -> SomeException)
 
 
-httpResponseEncoder : HttpResponse body -> BE.Encoder
+httpResponseEncoder : HttpResponse body -> Bytes.Encode.Encoder
 httpResponseEncoder (HttpResponse httpResponse) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ httpStatusEncoder httpResponse.responseStatus
         , httpResponseHeadersEncoder httpResponse.responseHeaders
         ]
 
 
-httpResponseDecoder : BD.Decoder (HttpResponse body)
+httpResponseDecoder : Bytes.Decode.Decoder (HttpResponse body)
 httpResponseDecoder =
-    BD.map2
+    Bytes.Decode.map2
         (\responseStatus responseHeaders ->
             HttpResponse
                 { responseStatus = responseStatus
@@ -1299,71 +1301,71 @@ httpResponseDecoder =
         httpResponseHeadersDecoder
 
 
-httpStatusEncoder : HttpStatus -> BE.Encoder
+httpStatusEncoder : HttpStatus -> Bytes.Encode.Encoder
 httpStatusEncoder (HttpStatus statusCode statusMessage) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.int statusCode
         , BE.string statusMessage
         ]
 
 
-httpStatusDecoder : BD.Decoder HttpStatus
+httpStatusDecoder : Bytes.Decode.Decoder HttpStatus
 httpStatusDecoder =
-    BD.map2 HttpStatus
+    Bytes.Decode.map2 HttpStatus
         BD.int
         BD.string
 
 
-httpResponseHeadersEncoder : HttpResponseHeaders -> BE.Encoder
+httpResponseHeadersEncoder : HttpResponseHeaders -> Bytes.Encode.Encoder
 httpResponseHeadersEncoder =
     BE.list (BE.jsonPair BE.string BE.string)
 
 
-httpResponseHeadersDecoder : BD.Decoder HttpResponseHeaders
+httpResponseHeadersDecoder : Bytes.Decode.Decoder HttpResponseHeaders
 httpResponseHeadersDecoder =
     BD.list (BD.jsonPair BD.string BD.string)
 
 
-httpExceptionContentEncoder : HttpExceptionContent -> BE.Encoder
+httpExceptionContentEncoder : HttpExceptionContent -> Bytes.Encode.Encoder
 httpExceptionContentEncoder httpExceptionContent =
     case httpExceptionContent of
         StatusCodeException response body ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , httpResponseEncoder response
                 , BE.string body
                 ]
 
         TooManyRedirects responses ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.list httpResponseEncoder responses
                 ]
 
         ConnectionFailure someException ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , someExceptionEncoder someException
                 ]
 
 
-httpExceptionContentDecoder : BD.Decoder HttpExceptionContent
+httpExceptionContentDecoder : Bytes.Decode.Decoder HttpExceptionContent
 httpExceptionContentDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map2 StatusCodeException
+                        Bytes.Decode.map2 StatusCodeException
                             httpResponseDecoder
                             BD.string
 
                     1 ->
-                        BD.map TooManyRedirects (BD.list httpResponseDecoder)
+                        Bytes.Decode.map TooManyRedirects (BD.list httpResponseDecoder)
 
                     2 ->
-                        BD.map ConnectionFailure someExceptionDecoder
+                        Bytes.Decode.map ConnectionFailure someExceptionDecoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

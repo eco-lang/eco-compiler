@@ -1,9 +1,65 @@
 module Common.Format.Cheapskate.Parse exposing (markdown)
 
 import Common.Format.Cheapskate.Inlines exposing (pHtmlTag, pLinkLabel, pReference, parseInlines)
-import Common.Format.Cheapskate.ParserCombinators exposing (Parser, Position(..), apply, bind, char, count, endOfInput, fmap, getPosition, guard, lookAhead, many, notFollowedBy, oneOf, option, parse, pure, return, satisfy, setPosition, showParseError, skip, skipWhile, string, takeText, takeWhile, takeWhile1, unless)
-import Common.Format.Cheapskate.Types exposing (Block(..), Blocks, CodeAttr(..), Doc(..), HtmlTagType(..), ListType(..), NumWrapper(..), Options, ReferenceMap)
-import Common.Format.Cheapskate.Util exposing (Scanner, isWhitespace, joinLines, nfb, normalizeReference, scanBlankline, scanChar, scanIndentSpace, scanNonindentSpace, scanSpaces, scanSpacesToColumn, tabFilter, upToCountChars)
+import Common.Format.Cheapskate.ParserCombinators
+    exposing
+        ( Parser
+        , Position(..)
+        , apply
+        , andThen
+        , char
+        , count
+        , endOfInput
+        , map
+        , getPosition
+        , guard
+        , lookAhead
+        , many
+        , notFollowedBy
+        , oneOf
+        , option
+        , parse
+        , pure
+        , return
+        , satisfy
+        , setPosition
+        , showParseError
+        , skip
+        , skipWhile
+        , string
+        , takeText
+        , takeWhile
+        , takeWhile1
+        , unless
+        )
+import Common.Format.Cheapskate.Types
+    exposing
+        ( Block(..)
+        , Blocks
+        , CodeAttr(..)
+        , Doc(..)
+        , HtmlTagType(..)
+        , ListType(..)
+        , NumWrapper(..)
+        , Options
+        , ReferenceMap
+        )
+import Common.Format.Cheapskate.Util
+    exposing
+        ( Scanner
+        , isWhitespace
+        , joinLines
+        , nfb
+        , normalizeReference
+        , scanBlankline
+        , scanChar
+        , scanIndentSpace
+        , scanNonindentSpace
+        , scanSpaces
+        , scanSpacesToColumn
+        , tabFilter
+        , upToCountChars
+        )
 import Common.Format.RWS as RWS exposing (RWS)
 import Data.Map as Dict
 import List.Extra as List
@@ -94,7 +150,7 @@ containerContinue : Container -> Scanner
 containerContinue (Container containerType _) =
     case containerType of
         BlockQuote ->
-            scanNonindentSpace |> bind (\_ -> scanBlockquoteStart)
+            scanNonindentSpace |> andThen (\_ -> scanBlockquoteStart)
 
         IndentedCode ->
             scanIndentSpace
@@ -108,13 +164,13 @@ containerContinue (Container containerType _) =
         ListItem { markerColumn, padding } ->
             oneOf scanBlankline
                 (scanSpacesToColumn (markerColumn + 1)
-                    |> bind (\_ -> upToCountChars (padding - 1) ((==) ' '))
-                    |> bind (\_ -> return ())
+                    |> andThen (\_ -> upToCountChars (padding - 1) ((==) ' '))
+                    |> andThen (\_ -> return ())
                 )
 
         Reference ->
             nfb scanBlankline
-                |> bind (\_ -> nfb (scanNonindentSpace |> bind (\_ -> scanReference)))
+                |> andThen (\_ -> nfb (scanNonindentSpace |> andThen (\_ -> scanReference)))
 
         _ ->
             return ()
@@ -127,9 +183,9 @@ containerContinue (Container containerType _) =
 containerStart : Bool -> Parser ContainerType
 containerStart _ =
     scanNonindentSpace
-        |> bind
+        |> andThen
             (\_ ->
-                oneOf (fmap (\_ -> BlockQuote) scanBlockquoteStart)
+                oneOf (map (\_ -> BlockQuote) scanBlockquoteStart)
                     parseListMarker
             )
 
@@ -142,20 +198,20 @@ containerStart _ =
 verbatimContainerStart : Bool -> Parser ContainerType
 verbatimContainerStart lastLineIsText =
     scanNonindentSpace
-        |> bind
+        |> andThen
             (\_ ->
                 oneOf parseCodeFence
                     (oneOf
                         (guard (not lastLineIsText)
-                            |> bind
+                            |> andThen
                                 (\_ ->
                                     nfb scanBlankline
-                                        |> bind (\_ -> char ' ')
-                                        |> fmap (\_ -> IndentedCode)
+                                        |> andThen (\_ -> char ' ')
+                                        |> map (\_ -> IndentedCode)
                                 )
                         )
-                        (oneOf (guard (not lastLineIsText) |> bind (\_ -> fmap (\_ -> RawHtmlBlock) parseHtmlBlockStart))
-                            (guard (not lastLineIsText) |> bind (\_ -> fmap (\_ -> Reference) scanReference))
+                        (oneOf (guard (not lastLineIsText) |> andThen (\_ -> map (\_ -> RawHtmlBlock) parseHtmlBlockStart))
+                            (guard (not lastLineIsText) |> andThen (\_ -> map (\_ -> Reference) scanReference))
                         )
                     )
             )
@@ -184,13 +240,13 @@ type alias ContainerM a =
 closeStack : ContainerM Container
 closeStack =
     RWS.get
-        |> RWS.bind
+        |> RWS.andThen
             (\(ContainerStack top rest) ->
                 if List.isEmpty rest then
                     RWS.return top
 
                 else
-                    closeContainer |> RWS.bind (\_ -> closeStack)
+                    closeContainer |> RWS.andThen (\_ -> closeStack)
             )
 
 
@@ -204,14 +260,14 @@ closeStack =
 closeContainer : ContainerM ()
 closeContainer =
     RWS.get
-        |> RWS.bind
+        |> RWS.andThen
             (\(ContainerStack top rest) ->
                 case top of
                     Container Reference cs__ ->
                         case parse pReference (String.trim <| joinLines <| List.map extractText cs__) of
                             Ok ( lab, lnk, tit ) ->
                                 RWS.tell (Dict.singleton identity (normalizeReference lab) ( lnk, tit ))
-                                    |> RWS.bind
+                                    |> RWS.andThen
                                         (\_ ->
                                             case rest of
                                                 (Container ct_ cs_) :: rs ->
@@ -270,7 +326,7 @@ closeContainer =
 addLeaf : LineNumber -> Leaf -> ContainerM ()
 addLeaf lineNum lf =
     RWS.get
-        |> RWS.bind
+        |> RWS.andThen
             (\(ContainerStack top rest) ->
                 case ( top, lf ) of
                     ( Container ((ListItem _) as ct) cs, BlankLine _ ) ->
@@ -278,7 +334,7 @@ addLeaf lineNum lf =
                             (L _ (BlankLine _)) :: _ ->
                                 -- two blanks break out of list item:
                                 closeContainer
-                                    |> RWS.bind (\_ -> addLeaf lineNum lf)
+                                    |> RWS.andThen (\_ -> addLeaf lineNum lf)
 
                             _ ->
                                 RWS.put (ContainerStack (Container ct (L lineNum lf :: cs)) rest)
@@ -307,10 +363,10 @@ addContainer ct =
 {-| Convert Document container and reference map into an AST.
 -}
 processDocument : ( Container, ReferenceMap ) -> Blocks
-processDocument ( Container ct cs, refmap ) =
+processDocument ( Container ct cs, remap ) =
     case ct of
         Document ->
-            processElts refmap cs
+            processElts remap cs
 
         _ ->
             crash "top level container is not Document"
@@ -322,7 +378,7 @@ and list items into lists, handling blank lines,
 parsing inline contents of texts and resolving referencess.
 -}
 processElts : ReferenceMap -> List Elt -> Blocks
-processElts refmap elts =
+processElts remap elts =
     case elts of
         [] ->
             []
@@ -360,7 +416,7 @@ processElts refmap elts =
                                             stripped
                             in
                             (ElmDocs <| List.filter ((/=) []) <| List.map (List.filter ((/=) "") << List.map String.trim << String.split ",") docs)
-                                :: processElts refmap rest_
+                                :: processElts remap rest_
 
                         Nothing ->
                             -- Gobble text lines and make them into a Para:
@@ -384,25 +440,25 @@ processElts refmap elts =
                                         _ ->
                                             False
                             in
-                            Para (parseInlines refmap txt)
-                                :: processElts refmap rest_
+                            Para (parseInlines remap txt)
+                                :: processElts remap rest_
 
                 -- Blanks at outer level are ignored:
                 BlankLine _ ->
-                    processElts refmap rest
+                    processElts remap rest
 
                 -- Headers:
                 ATXHeader lvl t ->
-                    (Header lvl <| parseInlines refmap t)
-                        :: processElts refmap rest
+                    (Header lvl <| parseInlines remap t)
+                        :: processElts remap rest
 
                 SetextHeader lvl t ->
-                    (Header lvl <| parseInlines refmap t)
-                        :: processElts refmap rest
+                    (Header lvl <| parseInlines remap t)
+                        :: processElts remap rest
 
                 -- Horizontal rule:
                 Rule ->
-                    HRule :: processElts refmap rest
+                    HRule :: processElts remap rest
 
         (C (Container ct cs)) :: rest ->
             let
@@ -429,8 +485,8 @@ processElts refmap elts =
                     crash "Document container found inside Document"
 
                 BlockQuote ->
-                    (Blockquote <| processElts refmap cs)
-                        :: processElts refmap rest
+                    (Blockquote <| processElts remap cs)
+                        :: processElts remap rest
 
                 -- List item?  Gobble up following list items of the same type
                 -- (skipping blank lines), determine whether the list is tight or
@@ -506,13 +562,13 @@ processElts refmap elts =
 
                         items_ : List Blocks
                         items_ =
-                            List.map (processElts refmap) items
+                            List.map (processElts remap) items
 
                         isTight : Bool
                         isTight =
                             tightListItem xs && List.all tightListItem items
                     in
-                    List isTight listType items_ :: processElts refmap rest_
+                    List isTight listType items_ :: processElts remap rest_
 
                 FencedCode { info } ->
                     let
@@ -528,7 +584,7 @@ processElts refmap elts =
                             stringBreak ((==) ' ') info
                     in
                     CodeBlock attr txt
-                        :: processElts refmap rest
+                        :: processElts remap rest
 
                 IndentedCode ->
                     let
@@ -578,7 +634,7 @@ processElts refmap elts =
                                     False
                     in
                     CodeBlock (CodeAttr { codeLang = "", codeInfo = "" }) txt
-                        :: processElts refmap rest_
+                        :: processElts remap rest_
 
                 RawHtmlBlock ->
                     let
@@ -586,7 +642,7 @@ processElts refmap elts =
                         txt =
                             joinLines (List.map extractText cs)
                     in
-                    HtmlBlock txt :: processElts refmap rest
+                    HtmlBlock txt :: processElts remap rest
 
                 -- References have already been taken into account in the reference map,
                 -- so we just skip.
@@ -613,7 +669,7 @@ processElts refmap elts =
 
                                 _ ->
                                     (ReferencesBlock <| List.concat <| List.reverse acc)
-                                        :: processElts refmap pass
+                                        :: processElts remap pass
                     in
                     processElts_ [] (C (Container ct cs) :: rest)
 
@@ -643,7 +699,7 @@ processLines t =
         startState =
             ContainerStack (Container Document []) []
     in
-    RWS.evalRWS (RWS.mapM_ processLine lns |> RWS.bind (\_ -> closeStack)) () startState
+    RWS.evalRWS (RWS.mapM_ processLine lns |> RWS.andThen (\_ -> closeStack)) () startState
 
 
 
@@ -655,7 +711,7 @@ processLines t =
 processLine : ( LineNumber, String ) -> ContainerM ()
 processLine ( lineNumber, txt ) =
     RWS.get
-        |> RWS.bind
+        |> RWS.andThen
             (\(ContainerStack ((Container ct cs) as top) rest) ->
                 -- Apply the line-start scanners appropriate for each nested container.
                 -- Return the remainder of the string, and the number of unmatched
@@ -679,7 +735,7 @@ processLine ( lineNumber, txt ) =
                     addNew : ( List ContainerType, Leaf ) -> () -> ContainerStack -> ( (), ContainerStack, Dict.Dict String String ( String, String ) )
                     addNew ( ns, lf ) =
                         RWS.mapM_ addContainer ns
-                            |> RWS.bind
+                            |> RWS.andThen
                                 (\_ ->
                                     case ( List.reverse ns, lf ) of
                                         -- don't add extra blank at beginning of fenced code block
@@ -717,7 +773,7 @@ processLine ( lineNumber, txt ) =
                                 tryNewContainers lastLineIsText (String.length txt - String.length t_) t_
                         in
                         closeContainer
-                            |> RWS.bind (\_ -> addNew ( ns, lf ))
+                            |> RWS.andThen (\_ -> addNew ( ns, lf ))
 
                     -- otherwise, parse the remainder to see if we have new container starts:
                     _ ->
@@ -743,7 +799,7 @@ processLine ( lineNumber, txt ) =
                                 else
                                     -- close unmatched containers, add new ones
                                     RWS.replicateM numUnmatched closeContainer
-                                        |> RWS.bind (\_ -> addNew ( ns, lf ))
+                                        |> RWS.andThen (\_ -> addNew ( ns, lf ))
 
                             -- if it's a setext header line and the top container has a textline
                             -- as last child, add a setext header:
@@ -768,14 +824,14 @@ processLine ( lineNumber, txt ) =
                                 else
                                     -- close unmatched containers, add new ones
                                     RWS.replicateM numUnmatched closeContainer
-                                        |> RWS.bind (\_ -> addNew ( ns, lf ))
+                                        |> RWS.andThen (\_ -> addNew ( ns, lf ))
 
                             -- otherwise, close all the unmatched containers, add the new
                             -- containers, and finally add the new leaf:
                             ( ns, lf ) ->
                                 -- close unmatched containers, add new ones
                                 RWS.replicateM numUnmatched closeContainer
-                                    |> RWS.bind (\_ -> addNew ( ns, lf ))
+                                    |> RWS.andThen (\_ -> addNew ( ns, lf ))
             )
 
 
@@ -798,7 +854,7 @@ tryOpenContainers cs t =
                         |> apply (pure 0)
 
                 p :: ps ->
-                    oneOf (p |> bind (\_ -> scanners ps)) (fmap Tuple.pair takeText |> apply (pure (List.length (p :: ps))))
+                    oneOf (p |> andThen (\_ -> scanners ps)) (map Tuple.pair takeText |> apply (pure (List.length (p :: ps))))
     in
     case parse (scanners <| List.map containerContinue cs) t of
         Ok ( t_, n ) ->
@@ -821,22 +877,22 @@ tryNewContainers lastLineIsText offset t =
         newContainers : Parser ( List ContainerType, Leaf )
         newContainers =
             getPosition
-                |> bind
+                |> andThen
                     (\(Position ln _) ->
                         setPosition (Position ln (offset + 1))
-                            |> bind
+                            |> andThen
                                 (\_ ->
                                     many (containerStart lastLineIsText)
-                                        |> bind
+                                        |> andThen
                                             (\regContainers ->
                                                 option [] (count 1 (verbatimContainerStart lastLineIsText))
-                                                    |> bind
+                                                    |> andThen
                                                         (\verbatimContainers ->
                                                             if List.isEmpty verbatimContainers then
-                                                                fmap (Tuple.pair regContainers) (leaf lastLineIsText)
+                                                                map (Tuple.pair regContainers) (leaf lastLineIsText)
 
                                                             else
-                                                                fmap (Tuple.pair (regContainers ++ verbatimContainers)) textLineOrBlank
+                                                                map (Tuple.pair (regContainers ++ verbatimContainers)) textLineOrBlank
                                                         )
                                             )
                                 )
@@ -861,7 +917,7 @@ textLineOrBlank =
             else
                 TextLine ts
     in
-    fmap consolidate takeText
+    map consolidate takeText
 
 
 
@@ -871,7 +927,7 @@ textLineOrBlank =
 leaf : Bool -> Parser Leaf
 leaf lastLineIsText =
     scanNonindentSpace
-        |> bind
+        |> andThen
             (\_ ->
                 let
                     removeATXSuffix : String -> String
@@ -889,18 +945,18 @@ leaf lastLineIsText =
                 oneOf
                     (pure ATXHeader
                         |> apply parseAtxHeaderStart
-                        |> apply (fmap (String.trim << removeATXSuffix) takeText)
+                        |> apply (map (String.trim << removeATXSuffix) takeText)
                     )
                     (oneOf
                         (guard lastLineIsText
-                            |> bind
+                            |> andThen
                                 (\_ ->
                                     pure SetextHeader
                                         |> apply parseSetextHeaderLine
                                         |> apply (pure "")
                                 )
                         )
-                        (oneOf (fmap (\_ -> Rule) scanHRuleLine)
+                        (oneOf (map (\_ -> Rule) scanHRuleLine)
                             textLineOrBlank
                         )
                     )
@@ -913,7 +969,7 @@ leaf lastLineIsText =
 
 scanReference : Scanner
 scanReference =
-    fmap (\_ -> ()) (lookAhead (pLinkLabel |> bind (\_ -> scanChar ':')))
+    map (\_ -> ()) (lookAhead (pLinkLabel |> andThen (\_ -> scanChar ':')))
 
 
 
@@ -924,7 +980,7 @@ scanReference =
 scanBlockquoteStart : Scanner
 scanBlockquoteStart =
     scanChar '>'
-        |> bind (\_ -> option () (scanChar ' '))
+        |> andThen (\_ -> option () (scanChar ' '))
 
 
 
@@ -941,19 +997,19 @@ scanBlockquoteStart =
 parseAtxHeaderStart : Parser Int
 parseAtxHeaderStart =
     char '#'
-        |> bind (\_ -> upToCountChars 5 ((==) '#'))
-        |> bind
+        |> andThen (\_ -> upToCountChars 5 ((==) '#'))
+        |> andThen
             (\hashes ->
                 -- hashes must be followed by space unless empty header:
                 notFollowedBy (skip ((/=) ' '))
-                    |> fmap (\_ -> String.length hashes + 1)
+                    |> map (\_ -> String.length hashes + 1)
             )
 
 
 parseSetextHeaderLine : Parser Int
 parseSetextHeaderLine =
     satisfy (\c -> c == '-' || c == '=')
-        |> bind
+        |> andThen
             (\d ->
                 let
                     lev : Int
@@ -965,8 +1021,8 @@ parseSetextHeaderLine =
                             2
                 in
                 skipWhile ((==) d)
-                    |> bind (\_ -> scanBlankline)
-                    |> fmap (\_ -> lev)
+                    |> andThen (\_ -> scanBlankline)
+                    |> map (\_ -> lev)
             )
 
 
@@ -979,12 +1035,12 @@ parseSetextHeaderLine =
 scanHRuleLine : Scanner
 scanHRuleLine =
     satisfy (\c -> c == '*' || c == '_' || c == '-')
-        |> bind
+        |> andThen
             (\c ->
                 count 2 scanSpaces
-                    |> bind (\_ -> skip ((==) c))
-                    |> bind (\_ -> skipWhile (\x -> x == ' ' || x == c))
-                    |> bind (\_ -> endOfInput)
+                    |> andThen (\_ -> skip ((==) c))
+                    |> andThen (\_ -> skipWhile (\x -> x == ' ' || x == c))
+                    |> andThen (\_ -> endOfInput)
             )
 
 
@@ -996,18 +1052,18 @@ scanHRuleLine =
 parseCodeFence : Parser ContainerType
 parseCodeFence =
     getPosition
-        |> bind
+        |> andThen
             (\(Position _ col) ->
                 oneOf (takeWhile1 ((==) '`')) (takeWhile1 ((==) '~'))
-                    |> bind
+                    |> andThen
                         (\cs ->
                             guard (String.length cs >= 3)
-                                |> bind (\_ -> scanSpaces)
-                                |> bind (\_ -> takeWhile (\c -> c /= '`' && c /= '~'))
-                                |> bind
+                                |> andThen (\_ -> scanSpaces)
+                                |> andThen (\_ -> takeWhile (\c -> c /= '`' && c /= '~'))
+                                |> andThen
                                     (\rawattr ->
                                         endOfInput
-                                            |> fmap
+                                            |> map
                                                 (\_ ->
                                                     FencedCode
                                                         { startColumn = col
@@ -1044,15 +1100,15 @@ parseHtmlBlockStart =
     lookAhead
         (oneOf
             (pHtmlTag
-                |> bind
+                |> andThen
                     (\t ->
                         guard (f (Tuple.first t))
-                            |> fmap (\_ -> Tuple.second t)
+                            |> map (\_ -> Tuple.second t)
                     )
             )
             (oneOf (string "<!--") (string "-->"))
         )
-        |> fmap (\_ -> ())
+        |> map (\_ -> ())
 
 
 
@@ -1119,23 +1175,23 @@ blockHtmlTags =
 parseListMarker : Parser ContainerType
 parseListMarker =
     getPosition
-        |> bind
+        |> andThen
             (\(Position _ col) ->
                 oneOf parseBullet parseListNumber
-                    |> bind
+                    |> andThen
                         (\ty ->
                             -- padding is 1 if list marker followed by a blank line
                             -- or indented code.  otherwise it's the length of the
                             -- whitespace between the list marker and the following text:
-                            oneOf (fmap (\_ -> 1) scanBlankline)
-                                (oneOf (fmap (\_ -> 1) (skip ((==) ' ') |> bind (\_ -> lookAhead (count 4 (char ' ')))))
-                                    (fmap String.length (takeWhile ((==) ' ')))
+                            oneOf (map (\_ -> 1) scanBlankline)
+                                (oneOf (map (\_ -> 1) (skip ((==) ' ') |> andThen (\_ -> lookAhead (count 4 (char ' ')))))
+                                    (map String.length (takeWhile ((==) ' ')))
                                 )
-                                |> bind
+                                |> andThen
                                     (\padding_ ->
                                         -- text can't immediately follow the list marker:
                                         guard (padding_ > 0)
-                                            |> bind
+                                            |> andThen
                                                 (\() ->
                                                     return
                                                         (ListItem
@@ -1177,15 +1233,15 @@ listMarkerWidth listType =
 parseBullet : Parser ListType
 parseBullet =
     satisfy (\c -> c == '+' || c == '*' || c == '-')
-        |> bind
+        |> andThen
             (\c ->
-                unless (c == '+') (nfb (count 2 scanSpaces |> bind (\_ -> skip ((==) c))))
-                    |> bind
+                unless (c == '+') (nfb (count 2 scanSpaces |> andThen (\_ -> skip ((==) c))))
+                    |> andThen
                         (\_ ->
                             -- hrule
-                            skipWhile (\x -> x == ' ' || x == c) |> bind (\_ -> endOfInput)
+                            skipWhile (\x -> x == ' ' || x == c) |> andThen (\_ -> endOfInput)
                         )
-                    |> bind (\_ -> return (Bullet c))
+                    |> andThen (\_ -> return (Bullet c))
             )
 
 
@@ -1196,12 +1252,12 @@ parseBullet =
 parseListNumber : Parser ListType
 parseListNumber =
     takeWhile1 Char.isDigit
-        |> bind
+        |> andThen
             (\numStr ->
                 case String.toInt numStr of
                     Just num ->
-                        oneOf (fmap (\_ -> PeriodFollowing) (skip ((==) '.'))) (fmap (\_ -> ParenFollowing) (skip ((==) ')')))
-                            |> bind (\wrap -> return (Numbered wrap num))
+                        oneOf (map (\_ -> PeriodFollowing) (skip ((==) '.'))) (map (\_ -> ParenFollowing) (skip ((==) ')')))
+                            |> andThen (\wrap -> return (Numbered wrap num))
 
                     Nothing ->
                         crash "Exception: Prelude.read: no parse"

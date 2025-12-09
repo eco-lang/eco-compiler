@@ -18,7 +18,9 @@ import Compiler.Reporting.Suggest as Suggest
 import Data.Map as Dict
 import Data.Set as EverySet exposing (EverySet)
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 
@@ -166,10 +168,16 @@ toReport source (Error region name unimportedModules problem) =
                             D.indent 4 <|
                                 D.vcat <|
                                     List.map (D.fromChars << Pkg.toChars) (pkg1 :: pkg2 :: pkgs)
-                        , D.reflow
-                            "There is no way to disambiguate in cases like this right now. Of the known name clashes, they are usually for packages with similar purposes, so the current recommendation is to pick just one of them."
-                        , D.toSimpleNote
-                            "It seems possible to resolve this with new syntax in imports, but that is more complicated than it sounds. Right now, our module names are tied to GitHub repos, but we may want to get rid of that dependency for a variety of reasons. That would in turn have implications for our package infrastructure, hosting costs, and possibly on how package names are specified. The particular syntax chosen seems like it would interact with all these factors in ways that are difficult to predict, potentially leading to harder problems later on. So more design work and planning is needed on these topics."
+                        , D.reflow <|
+                            "There is no way to disambiguate in cases like this right now. Of the known name clashes, "
+                                ++ "they are usually for packages with similar purposes, so the current recommendation is to pick just one of them."
+                        , D.toSimpleNote <|
+                            "It seems possible to resolve this with new syntax in imports, but that is more complicated than it sounds. "
+                                ++ "Right now, our module names are tied to GitHub repos, but we may want to get rid of that dependency "
+                                ++ "for a variety of reasons. That would in turn have implications for our package infrastructure, "
+                                ++ "hosting costs, and possibly on how package names are specified. The particular syntax chosen "
+                                ++ "seems like it would interact with all these factors in ways that are difficult to predict, "
+                                ++ "potentially leading to harder problems later on. So more design work and planning is needed on these topics."
                         ]
                     )
 
@@ -184,15 +192,15 @@ toSuggestions name unimportedModules =
 -- ENCODERS and DECODERS
 
 
-problemEncoder : Problem -> BE.Encoder
+problemEncoder : Problem -> Bytes.Encode.Encoder
 problemEncoder problem =
     case problem of
         NotFound ->
-            BE.unsignedInt8 0
+            Bytes.Encode.unsignedInt8 0
 
         Ambiguous path paths pkg pkgs ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.string path
                 , BE.list BE.string paths
                 , Pkg.nameEncoder pkg
@@ -200,58 +208,58 @@ problemEncoder problem =
                 ]
 
         AmbiguousLocal path1 path2 paths ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.string path1
                 , BE.string path2
                 , BE.list BE.string paths
                 ]
 
         AmbiguousForeign pkg1 pkg2 pkgs ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , Pkg.nameEncoder pkg1
                 , Pkg.nameEncoder pkg2
                 , BE.list Pkg.nameEncoder pkgs
                 ]
 
 
-problemDecoder : BD.Decoder Problem
+problemDecoder : Bytes.Decode.Decoder Problem
 problemDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed NotFound
+                        Bytes.Decode.succeed NotFound
 
                     1 ->
-                        BD.map4 Ambiguous
+                        Bytes.Decode.map4 Ambiguous
                             BD.string
                             (BD.list BD.string)
                             Pkg.nameDecoder
                             (BD.list Pkg.nameDecoder)
 
                     2 ->
-                        BD.map3 AmbiguousLocal
+                        Bytes.Decode.map3 AmbiguousLocal
                             BD.string
                             BD.string
                             (BD.list BD.string)
 
                     3 ->
-                        BD.map3 AmbiguousForeign
+                        Bytes.Decode.map3 AmbiguousForeign
                             Pkg.nameDecoder
                             Pkg.nameDecoder
                             (BD.list Pkg.nameDecoder)
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-errorEncoder : Error -> BE.Encoder
+errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder (Error region name unimportedModules problem) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ A.regionEncoder region
         , ModuleName.rawEncoder name
         , BE.everySet compare ModuleName.rawEncoder unimportedModules
@@ -259,9 +267,9 @@ errorEncoder (Error region name unimportedModules problem) =
         ]
 
 
-errorDecoder : BD.Decoder Error
+errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
-    BD.map4 Error
+    Bytes.Decode.map4 Error
         A.regionDecoder
         ModuleName.rawDecoder
         (BD.everySet identity ModuleName.rawDecoder)

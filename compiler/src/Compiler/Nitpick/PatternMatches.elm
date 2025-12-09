@@ -25,7 +25,9 @@ import Data.Map as Dict exposing (Dict)
 import List.Extra as List
 import Prelude
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
@@ -724,52 +726,52 @@ collectCtorsHelp ctors row =
 -- ENCODERS and DECODERS
 
 
-errorEncoder : Error -> BE.Encoder
+errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
     case error of
         Incomplete region context unhandled ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , A.regionEncoder region
                 , contextEncoder context
                 , BE.list patternEncoder unhandled
                 ]
 
         Redundant caseRegion patternRegion index ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , A.regionEncoder caseRegion
                 , A.regionEncoder patternRegion
                 , BE.int index
                 ]
 
 
-errorDecoder : BD.Decoder Error
+errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 Incomplete
+                        Bytes.Decode.map3 Incomplete
                             A.regionDecoder
                             contextDecoder
                             (BD.list patternDecoder)
 
                     1 ->
-                        BD.map3 Redundant
+                        Bytes.Decode.map3 Redundant
                             A.regionDecoder
                             A.regionDecoder
                             BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-contextEncoder : Context -> BE.Encoder
+contextEncoder : Context -> Bytes.Encode.Encoder
 contextEncoder context =
-    BE.unsignedInt8
+    Bytes.Encode.unsignedInt8
         (case context of
             BadArg ->
                 0
@@ -782,107 +784,107 @@ contextEncoder context =
         )
 
 
-contextDecoder : BD.Decoder Context
+contextDecoder : Bytes.Decode.Decoder Context
 contextDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\str ->
                 case str of
                     0 ->
-                        BD.succeed BadArg
+                        Bytes.Decode.succeed BadArg
 
                     1 ->
-                        BD.succeed BadDestruct
+                        Bytes.Decode.succeed BadDestruct
 
                     2 ->
-                        BD.succeed BadCase
+                        Bytes.Decode.succeed BadCase
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-patternEncoder : Pattern -> BE.Encoder
+patternEncoder : Pattern -> Bytes.Encode.Encoder
 patternEncoder pattern =
     case pattern of
         Anything ->
-            BE.unsignedInt8 0
+            Bytes.Encode.unsignedInt8 0
 
         Literal index ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , literalEncoder index
                 ]
 
         Ctor union name args ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , Can.unionEncoder union
                 , BE.string name
                 , BE.list patternEncoder args
                 ]
 
 
-patternDecoder : BD.Decoder Pattern
+patternDecoder : Bytes.Decode.Decoder Pattern
 patternDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed Anything
+                        Bytes.Decode.succeed Anything
 
                     1 ->
-                        BD.map Literal literalDecoder
+                        Bytes.Decode.map Literal literalDecoder
 
                     2 ->
-                        BD.map3 Ctor
+                        Bytes.Decode.map3 Ctor
                             Can.unionDecoder
                             BD.string
                             (BD.list patternDecoder)
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-literalEncoder : Literal -> BE.Encoder
+literalEncoder : Literal -> Bytes.Encode.Encoder
 literalEncoder literal =
     case literal of
         Chr value ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.string value
                 ]
 
         Str value ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.string value
                 ]
 
         Int value ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.int value
                 ]
 
 
-literalDecoder : BD.Decoder Literal
+literalDecoder : Bytes.Decode.Decoder Literal
 literalDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map Chr BD.string
+                        Bytes.Decode.map Chr BD.string
 
                     1 ->
-                        BD.map Str BD.string
+                        Bytes.Decode.map Str BD.string
 
                     2 ->
-                        BD.map Int BD.int
+                        Bytes.Decode.map Int BD.int
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

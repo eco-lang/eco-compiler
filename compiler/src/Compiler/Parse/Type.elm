@@ -19,15 +19,15 @@ import Compiler.Reporting.Error.Syntax as E
 term : P.Parser E.Type Src.Type
 term =
     P.getPosition
-        |> P.bind
+        |> P.andThen
             (\start ->
                 P.oneOf E.TStart
                     [ -- types with no arguments (Int, Float, etc.)
                       Var.foreignUpper E.TStart
-                        |> P.bind
+                        |> P.andThen
                             (\upper ->
                                 P.getPosition
-                                    |> P.fmap
+                                    |> P.map
                                         (\end ->
                                             let
                                                 region : A.Region
@@ -45,7 +45,7 @@ term =
                             )
                     , -- type variables
                       Var.lower E.TStart
-                        |> P.bind
+                        |> P.andThen
                             (\var ->
                                 P.addEnd start (Src.TVar var)
                             )
@@ -53,61 +53,76 @@ term =
                       P.inContext E.TTuple (P.word1 '(' E.TStart) <|
                         P.oneOf E.TTupleOpen
                             [ P.word1 ')' E.TTupleOpen
-                                |> P.bind (\_ -> P.addEnd start Src.TUnit)
+                                |> P.andThen (\_ -> P.addEnd start Src.TUnit)
                             , Space.chompAndCheckIndent E.TTupleSpace E.TTupleIndentType1
-                                |> P.bind
+                                |> P.andThen
                                     (\trailingComments ->
                                         P.specialize E.TTupleType (expression trailingComments)
-                                            |> P.bind
+                                            |> P.andThen
                                                 (\( tipe, end ) ->
                                                     Space.checkIndent end E.TTupleIndentEnd
-                                                        |> P.bind (\_ -> chompTupleEnd start tipe [])
+                                                        |> P.andThen (\_ -> chompTupleEnd start tipe [])
                                                 )
                                     )
                             ]
                     , -- records
                       P.inContext E.TRecord (P.word1 '{' E.TStart) <|
                         (Space.chompAndCheckIndent E.TRecordSpace E.TRecordIndentOpen
-                            |> P.bind
+                            |> P.andThen
                                 (\initialComments ->
                                     P.oneOf E.TRecordOpen
                                         [ P.word1 '}' E.TRecordEnd
-                                            |> P.bind (\_ -> P.addEnd start (Src.TRecord [] Nothing initialComments))
+                                            |> P.andThen (\_ -> P.addEnd start (Src.TRecord [] Nothing initialComments))
                                         , P.addLocation (Var.lower E.TRecordField)
-                                            |> P.bind
+                                            |> P.andThen
                                                 (\name ->
                                                     Space.chompAndCheckIndent E.TRecordSpace E.TRecordIndentColon
-                                                        |> P.bind
+                                                        |> P.andThen
                                                             (\postNameComments ->
                                                                 P.oneOf E.TRecordColon
                                                                     [ P.word1 '|' E.TRecordColon
-                                                                        |> P.bind
+                                                                        |> P.andThen
                                                                             (\_ ->
                                                                                 Space.chompAndCheckIndent E.TRecordSpace E.TRecordIndentField
-                                                                                    |> P.bind
+                                                                                    |> P.andThen
                                                                                         (\preFieldComments ->
                                                                                             chompField
-                                                                                                |> P.bind
+                                                                                                |> P.andThen
                                                                                                     (\( postFieldComments, field ) ->
                                                                                                         chompRecordEnd postFieldComments [ ( ( [], preFieldComments ), field ) ]
-                                                                                                            |> P.bind (\( trailingComments, fields ) -> P.addEnd start (Src.TRecord fields (Just ( ( initialComments, postNameComments ), name )) trailingComments))
+                                                                                                            |> P.andThen
+                                                                                                                (\( trailingComments, fields ) ->
+                                                                                                                    let
+                                                                                                                        extRecord : Maybe (Src.C2 (A.Located Name))
+                                                                                                                        extRecord =
+                                                                                                                            Just ( ( initialComments, postNameComments ), name )
+                                                                                                                    in
+                                                                                                                    P.addEnd start (Src.TRecord fields extRecord trailingComments)
+                                                                                                                )
                                                                                                     )
                                                                                         )
                                                                             )
                                                                     , P.word1 ':' E.TRecordColon
-                                                                        |> P.bind
+                                                                        |> P.andThen
                                                                             (\_ ->
                                                                                 Space.chompAndCheckIndent E.TRecordSpace E.TRecordIndentType
-                                                                                    |> P.bind
+                                                                                    |> P.andThen
                                                                                         (\preTypeComments ->
                                                                                             P.specialize E.TRecordType (expression [])
-                                                                                                |> P.bind
+                                                                                                |> P.andThen
                                                                                                     (\( ( ( _, postExpressionComments, _ ), tipe ), end ) ->
+                                                                                                        let
+                                                                                                            firstField : Src.C2 Field
+                                                                                                            firstField =
+                                                                                                                ( ( [], initialComments )
+                                                                                                                , ( ( postNameComments, name ), ( preTypeComments, tipe ) )
+                                                                                                                )
+                                                                                                        in
                                                                                                         Space.checkIndent end E.TRecordIndentEnd
-                                                                                                            |> P.bind
-                                                                                                                (\_ ->
-                                                                                                                    chompRecordEnd postExpressionComments [ ( ( [], initialComments ), ( ( postNameComments, name ), ( preTypeComments, tipe ) ) ) ]
-                                                                                                                        |> P.bind (\( trailingComments, fields ) -> P.addEnd start (Src.TRecord fields Nothing trailingComments))
+                                                                                                            |> P.andThen (\_ -> chompRecordEnd postExpressionComments [ firstField ])
+                                                                                                            |> P.andThen
+                                                                                                                (\( trailingComments, fields ) ->
+                                                                                                                    P.addEnd start (Src.TRecord fields Nothing trailingComments)
                                                                                                                 )
                                                                                                     )
                                                                                         )
@@ -129,37 +144,37 @@ term =
 expression : Src.FComments -> Space.Parser E.Type (Src.C2Eol Src.Type)
 expression trailingComments =
     P.getPosition
-        |> P.bind
+        |> P.andThen
             (\start ->
                 P.oneOf E.TStart
                     [ app start
                     , term
-                        |> P.bind
+                        |> P.andThen
                             (\eterm ->
                                 P.getPosition
-                                    |> P.bind
+                                    |> P.andThen
                                         (\end ->
                                             Space.chomp E.TSpace
-                                                |> P.fmap (\postTermComments -> ( ( postTermComments, eterm ), end ))
+                                                |> P.map (\postTermComments -> ( ( postTermComments, eterm ), end ))
                                         )
                             )
                     ]
-                    |> P.bind
+                    |> P.andThen
                         (\( ( postTipe1comments, tipe1 ), end1 ) ->
                             P.oneOfWithFallback
                                 [ -- should never trigger
                                   Space.checkIndent end1 E.TIndentStart
-                                    |> P.bind
+                                    |> P.andThen
                                         (\_ ->
                                             -- could just be another type instead
                                             P.word2 '-' '>' E.TStart
-                                                |> P.bind
+                                                |> P.andThen
                                                     (\_ ->
                                                         Space.chompAndCheckIndent E.TSpace E.TIndentStart
-                                                            |> P.bind
+                                                            |> P.andThen
                                                                 (\postArrowComments ->
                                                                     expression postArrowComments
-                                                                        |> P.fmap
+                                                                        |> P.map
                                                                             (\( ( ( preTipe2Comments, postTipe2Comments, tipe2Eol ), tipe2 ), end2 ) ->
                                                                                 let
                                                                                     tipe : Src.Type
@@ -184,16 +199,16 @@ expression trailingComments =
 app : A.Position -> Space.Parser E.Type (Src.C1 Src.Type)
 app start =
     Var.foreignUpper E.TStart
-        |> P.bind
+        |> P.andThen
             (\upper ->
                 P.getPosition
-                    |> P.bind
+                    |> P.andThen
                         (\upperEnd ->
                             Space.chomp E.TSpace
-                                |> P.bind
+                                |> P.andThen
                                     (\postUpperComments ->
                                         chompArgs postUpperComments [] upperEnd
-                                            |> P.fmap
+                                            |> P.map
                                                 (\( ( comments, args ), end ) ->
                                                     let
                                                         region : A.Region
@@ -220,16 +235,16 @@ chompArgs : Src.FComments -> List (Src.C1 Src.Type) -> A.Position -> Space.Parse
 chompArgs preComments args end =
     P.oneOfWithFallback
         [ Space.checkIndent end E.TIndentStart
-            |> P.bind
+            |> P.andThen
                 (\_ ->
                     term
-                        |> P.bind
+                        |> P.andThen
                             (\arg ->
                                 P.getPosition
-                                    |> P.bind
+                                    |> P.andThen
                                         (\newEnd ->
                                             Space.chomp E.TSpace
-                                                |> P.bind
+                                                |> P.andThen
                                                     (\comments ->
                                                         chompArgs comments (( preComments, arg ) :: args) newEnd
                                                     )
@@ -248,16 +263,16 @@ chompTupleEnd : A.Position -> Src.C2Eol Src.Type -> List (Src.C2Eol Src.Type) ->
 chompTupleEnd start ( firstTimeComments, firstType ) revTypes =
     P.oneOf E.TTupleEnd
         [ P.word1 ',' E.TTupleEnd
-            |> P.bind
+            |> P.andThen
                 (\_ ->
                     Space.chompAndCheckIndent E.TTupleSpace E.TTupleIndentTypeN
-                        |> P.bind
+                        |> P.andThen
                             (\preExpressionComments ->
                                 P.specialize E.TTupleType (expression preExpressionComments)
-                                    |> P.bind
+                                    |> P.andThen
                                         (\( tipe, end ) ->
                                             Space.checkIndent end E.TTupleIndentEnd
-                                                |> P.bind
+                                                |> P.andThen
                                                     (\_ ->
                                                         chompTupleEnd start ( firstTimeComments, firstType ) (tipe :: revTypes)
                                                     )
@@ -265,8 +280,8 @@ chompTupleEnd start ( firstTimeComments, firstType ) revTypes =
                             )
                 )
         , P.word1 ')' E.TTupleEnd
-            |> P.bind (\_ -> P.getPosition)
-            |> P.bind
+            |> P.andThen (\_ -> P.getPosition)
+            |> P.andThen
                 (\end ->
                     case List.reverse revTypes of
                         [] ->
@@ -295,42 +310,42 @@ chompRecordEnd : Src.FComments -> List (Src.C2 Field) -> P.Parser E.TRecord (Src
 chompRecordEnd comments fields =
     P.oneOf E.TRecordEnd
         [ P.word1 ',' E.TRecordEnd
-            |> P.bind
+            |> P.andThen
                 (\_ ->
                     Space.chompAndCheckIndent E.TRecordSpace E.TRecordIndentField
-                        |> P.bind
+                        |> P.andThen
                             (\preNameComments ->
                                 chompField
-                                    |> P.bind
+                                    |> P.andThen
                                         (\( postFieldComments, field ) ->
                                             chompRecordEnd postFieldComments (( ( comments, preNameComments ), field ) :: fields)
                                         )
                             )
                 )
         , P.word1 '}' E.TRecordEnd
-            |> P.fmap (\_ -> ( comments, List.reverse fields ))
+            |> P.map (\_ -> ( comments, List.reverse fields ))
         ]
 
 
 chompField : P.Parser E.TRecord (Src.C1 Field)
 chompField =
     P.addLocation (Var.lower E.TRecordField)
-        |> P.bind
+        |> P.andThen
             (\name ->
                 Space.chompAndCheckIndent E.TRecordSpace E.TRecordIndentColon
-                    |> P.bind
+                    |> P.andThen
                         (\postNameComments ->
                             P.word1 ':' E.TRecordColon
-                                |> P.bind
+                                |> P.andThen
                                     (\_ ->
                                         Space.chompAndCheckIndent E.TRecordSpace E.TRecordIndentType
-                                            |> P.bind
+                                            |> P.andThen
                                                 (\preTypeComments ->
                                                     P.specialize E.TRecordType (expression [])
-                                                        |> P.bind
+                                                        |> P.andThen
                                                             (\( ( ( _, x1, _ ), tipe ), end ) ->
                                                                 Space.checkIndent end E.TRecordIndentEnd
-                                                                    |> P.fmap (\_ -> ( x1, ( ( postNameComments, name ), ( preTypeComments, tipe ) ) ))
+                                                                    |> P.map (\_ -> ( x1, ( ( postNameComments, name ), ( preTypeComments, tipe ) ) ))
                                                             )
                                                 )
                                     )
@@ -345,13 +360,13 @@ chompField =
 variant : Src.FComments -> Space.Parser E.CustomType (Src.C2Eol ( A.Located Name, List (Src.C1 Src.Type) ))
 variant trailingComments =
     P.addLocation (Var.upper E.CT_Variant)
-        |> P.bind
+        |> P.andThen
             (\((A.At (A.Region _ nameEnd) _) as name) ->
                 Space.chomp E.CT_Space
-                    |> P.bind
+                    |> P.andThen
                         (\preArgComments ->
                             P.specialize E.CT_VariantArg (chompArgs preArgComments [] nameEnd)
-                                |> P.fmap
+                                |> P.map
                                     (\( ( postArgsComments, args ), end ) ->
                                         ( ( ( trailingComments, postArgsComments, Nothing ), ( name, args ) ), end )
                                     )

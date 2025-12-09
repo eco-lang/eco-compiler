@@ -5,7 +5,37 @@ module Common.Format.Cheapskate.Inlines exposing
     , parseInlines
     )
 
-import Common.Format.Cheapskate.ParserCombinators exposing (Parser, anyChar, bind, char, endOfInput, fail, fmap, guard, lazy, leftSequence, many, manyTill, mzero, notAfter, notInClass, oneOf, option, parse, peekChar, return, satisfy, scan, showParseError, skip, string, takeTill, takeWhile, takeWhile1)
+import Common.Format.Cheapskate.ParserCombinators
+    exposing
+        ( Parser
+        , anyChar
+        , andThen
+        , char
+        , endOfInput
+        , fail
+        , map
+        , guard
+        , lazy
+        , leftSequence
+        , many
+        , manyTill
+        , mzero
+        , notAfter
+        , notInClass
+        , oneOf
+        , option
+        , parse
+        , peekChar
+        , return
+        , satisfy
+        , scan
+        , showParseError
+        , skip
+        , string
+        , takeTill
+        , takeWhile
+        , takeWhile1
+        )
 import Common.Format.Cheapskate.Types exposing (HtmlTagType(..), Inline(..), Inlines, LinkTarget(..), ReferenceMap)
 import Common.Format.Cheapskate.Util exposing (isEscapable, isWhitespace, nfb, nfbChar, scanSpaces, scanSpnl)
 import Set exposing (Set)
@@ -17,14 +47,14 @@ import Utils.Crash exposing (crash)
 pHtmlTag : Parser ( HtmlTagType, String )
 pHtmlTag =
     char '<'
-        |> bind
+        |> andThen
             (\_ ->
                 -- do not end the tag with a > character in a quoted attribute.
-                oneOf (char '/' |> fmap (\_ -> True)) (return False)
-                    |> bind
+                oneOf (char '/' |> map (\_ -> True)) (return False)
+                    |> andThen
                         (\closing ->
                             takeWhile1 (\c -> isAsciiAlphaNum c || c == '?' || c == '!')
-                                |> bind
+                                |> andThen
                                     (\tagname ->
                                         let
                                             tagname_ : String
@@ -34,17 +64,17 @@ pHtmlTag =
                                             attr : Parser String
                                             attr =
                                                 takeWhile isSpace
-                                                    |> bind
+                                                    |> andThen
                                                         (\ss ->
                                                             satisfy Char.isAlpha
-                                                                |> bind
+                                                                |> andThen
                                                                     (\x ->
                                                                         takeWhile (\c -> isAsciiAlphaNum c || c == ':')
-                                                                            |> bind
+                                                                            |> andThen
                                                                                 (\xs ->
                                                                                     skip ((==) '=')
-                                                                                        |> bind (\_ -> oneOf (pQuoted '"') (oneOf (pQuoted '\'') (oneOf (takeWhile1 Char.isAlphaNum) (return ""))))
-                                                                                        |> fmap
+                                                                                        |> andThen (\_ -> oneOf (pQuoted '"') (oneOf (pQuoted '\'') (oneOf (takeWhile1 Char.isAlphaNum) (return ""))))
+                                                                                        |> map
                                                                                             (\v ->
                                                                                                 ss ++ String.fromChar x ++ xs ++ "=" ++ v
                                                                                             )
@@ -53,14 +83,14 @@ pHtmlTag =
                                                         )
                                         in
                                         many attr
-                                            |> fmap String.concat
-                                            |> bind
+                                            |> map String.concat
+                                            |> andThen
                                                 (\attrs ->
                                                     takeWhile (\c -> isSpace c || c == '/')
-                                                        |> bind
+                                                        |> andThen
                                                             (\final ->
                                                                 char '>'
-                                                                    |> bind
+                                                                    |> andThen
                                                                         (\_ ->
                                                                             let
                                                                                 tagtype : HtmlTagType
@@ -119,11 +149,11 @@ stringStripSuffix p t =
 pQuoted : Char -> Parser String
 pQuoted c =
     skip ((==) c)
-        |> bind (\_ -> takeTill ((==) c))
-        |> bind
+        |> andThen (\_ -> takeTill ((==) c))
+        |> andThen
             (\contents ->
                 skip ((==) c)
-                    |> fmap (\_ -> String.fromChar c ++ contents ++ String.fromChar c)
+                    |> map (\_ -> String.fromChar c ++ contents ++ String.fromChar c)
             )
 
 
@@ -133,8 +163,8 @@ do for now.
 pHtmlComment : Parser String
 pHtmlComment =
     string "<!--"
-        |> bind (\_ -> manyTill anyChar (string "-->"))
-        |> bind (\rest -> return ("<!--" ++ String.fromList rest ++ "-->"))
+        |> andThen (\_ -> manyTill anyChar (string "-->"))
+        |> andThen (\rest -> return ("<!--" ++ String.fromList rest ++ "-->"))
 
 
 {-| A link label [like this]. Note the precedence: code backticks have
@@ -155,21 +185,21 @@ pLinkLabel =
 
         codeChunk : Parser String
         codeChunk =
-            fmap Tuple.second pCode_
+            map Tuple.second pCode_
 
         bracketed : Parser String
         bracketed =
             lazy (\() -> pLinkLabel)
-                |> fmap inBrackets
+                |> map inBrackets
 
         inBrackets : String -> String
         inBrackets t =
             "[" ++ t ++ "]"
     in
     char '['
-        |> bind
+        |> andThen
             (\_ ->
-                fmap String.concat
+                map String.concat
                     (manyTill (oneOf regChunk (oneOf pEscaped (oneOf bracketed codeChunk))) (char ']'))
             )
 
@@ -180,12 +210,12 @@ aren't allowed. Newlines aren't allowed in any case.
 -}
 pLinkUrl : Parser String
 pLinkUrl =
-    oneOf (char '<' |> bind (\_ -> return True)) (return False)
-        |> bind
+    oneOf (char '<' |> andThen (\_ -> return True)) (return False)
+        |> andThen
             (\inPointy ->
                 if inPointy then
                     manyTill (pSatisfy (\c -> c /= '\u{000D}' && c /= '\n')) (char '>')
-                        |> fmap String.fromList
+                        |> map String.fromList
 
                 else
                     let
@@ -196,14 +226,14 @@ pLinkUrl =
                         parenChunk : () -> Parser String
                         parenChunk () =
                             char '('
-                                |> bind (\_ -> manyTill (oneOf regChunk (lazy parenChunk)) (char ')'))
-                                |> fmap (parenthesize << String.concat)
+                                |> andThen (\_ -> manyTill (oneOf regChunk (lazy parenChunk)) (char ')'))
+                                |> map (parenthesize << String.concat)
 
                         parenthesize : String -> String
                         parenthesize x =
                             "(" ++ x ++ ")"
                     in
-                    fmap String.concat (many (oneOf regChunk (parenChunk ())))
+                    map String.concat (many (oneOf regChunk (parenChunk ())))
             )
 
 
@@ -215,10 +245,10 @@ arbitrary, so we remove it here.
 pLinkTitle : Parser String
 pLinkTitle =
     satisfy (\c -> c == '"' || c == '\'' || c == '(')
-        |> bind
+        |> andThen
             (\c ->
                 peekChar
-                    |> bind
+                    |> andThen
                         (\next ->
                             case next of
                                 Nothing ->
@@ -234,7 +264,7 @@ pLinkTitle =
                                     else
                                         return ()
                         )
-                    |> bind
+                    |> andThen
                         (\_ ->
                             let
                                 ender : Char
@@ -247,7 +277,7 @@ pLinkTitle =
 
                                 pEnder : Parser Char
                                 pEnder =
-                                    bind (\_ -> char ender) (nfb (skip Char.isAlphaNum))
+                                    andThen (\_ -> char ender) (nfb (skip Char.isAlphaNum))
 
                                 regChunk : Parser String
                                 regChunk =
@@ -256,9 +286,9 @@ pLinkTitle =
                                 nestedChunk : Parser String
                                 nestedChunk =
                                     lazy (\() -> pLinkTitle)
-                                        |> fmap (\x -> String.fromChar c ++ x ++ String.fromChar ender)
+                                        |> map (\x -> String.fromChar c ++ x ++ String.fromChar ender)
                             in
-                            fmap String.concat (manyTill (oneOf regChunk nestedChunk) pEnder)
+                            map String.concat (manyTill (oneOf regChunk nestedChunk) pEnder)
                         )
             )
 
@@ -271,18 +301,18 @@ pre-stripped, with no leading/trailing spaces.)
 pReference : Parser ( String, String, String )
 pReference =
     pLinkLabel
-        |> bind
+        |> andThen
             (\lab ->
                 char ':'
-                    |> bind (\_ -> scanSpnl)
-                    |> bind (\_ -> pLinkUrl)
-                    |> bind
+                    |> andThen (\_ -> scanSpnl)
+                    |> andThen (\_ -> pLinkUrl)
+                    |> andThen
                         (\url ->
-                            option "" (scanSpnl |> bind (\_ -> pLinkTitle))
-                                |> bind
+                            option "" (scanSpnl |> andThen (\_ -> pLinkTitle))
+                                |> andThen
                                     (\tit ->
                                         endOfInput
-                                            |> fmap (\_ -> ( lab, url, tit ))
+                                            |> map (\_ -> ( lab, url, tit ))
                                     )
                         )
             )
@@ -292,7 +322,7 @@ pReference =
 -}
 pEscaped : Parser String
 pEscaped =
-    fmap String.fromChar (skip ((==) '\\') |> bind (\_ -> satisfy isEscapable))
+    map String.fromChar (skip ((==) '\\') |> andThen (\_ -> satisfy isEscapable))
 
 
 {-| Parses a (possibly escaped) character satisfying the predicate.
@@ -300,15 +330,15 @@ pEscaped =
 pSatisfy : (Char -> Bool) -> Parser Char
 pSatisfy p =
     oneOf (satisfy (\c -> c /= '\\' && p c))
-        (char '\\' |> bind (\_ -> satisfy (\c -> isEscapable c && p c)))
+        (char '\\' |> andThen (\_ -> satisfy (\c -> isEscapable c && p c)))
 
 
 {-| Parse a text into inlines, resolving reference links
 using the reference map.
 -}
 parseInlines : ReferenceMap -> String -> Inlines
-parseInlines refmap t =
-    case parse (fmap List.concat (leftSequence (many (pInline refmap)) endOfInput)) t of
+parseInlines remap t =
+    case parse (map List.concat (leftSequence (many (pInline remap)) endOfInput)) t of
         Err e ->
             -- should not happen
             crash ("parseInlines: " ++ showParseError e)
@@ -318,15 +348,15 @@ parseInlines refmap t =
 
 
 pInline : ReferenceMap -> Parser Inlines
-pInline refmap =
+pInline remap =
     oneOf pAsciiStr
         (oneOf pSpace
             -- strong/emph
-            (oneOf (pEnclosure '*' refmap)
-                (oneOf (notAfter Char.isAlphaNum |> bind (\_ -> pEnclosure '_' refmap))
+            (oneOf (pEnclosure '*' remap)
+                (oneOf (notAfter Char.isAlphaNum |> andThen (\_ -> pEnclosure '_' remap))
                     (oneOf pCode
-                        (oneOf (pLink refmap)
-                            (oneOf (pImage refmap)
+                        (oneOf (pLink remap)
+                            (oneOf (pImage remap)
                                 (oneOf pRawHtml
                                     (oneOf pAutolink
                                         (oneOf pEntity pSym)
@@ -348,7 +378,7 @@ before).
 pSpace : Parser Inlines
 pSpace =
     takeWhile1 isWhitespace
-        |> bind
+        |> andThen
             (\ss ->
                 return
                     (List.singleton
@@ -376,10 +406,10 @@ isAsciiAlphaNum c =
 pAsciiStr : Parser Inlines
 pAsciiStr =
     takeWhile1 isAsciiAlphaNum
-        |> bind
+        |> andThen
             (\t ->
                 peekChar
-                    |> bind
+                    |> andThen
                         (\mbc ->
                             case mbc of
                                 Just ':' ->
@@ -401,7 +431,7 @@ newline, or any remaining symbol character.
 pSym : Parser Inlines
 pSym =
     anyChar
-        |> bind
+        |> andThen
             (\c ->
                 let
                     ch : Char -> List Inline
@@ -409,8 +439,8 @@ pSym =
                         List.singleton << Str << String.fromChar
                 in
                 if c == '\\' then
-                    oneOf (fmap ch (satisfy isEscapable))
-                        (oneOf (fmap (\_ -> List.singleton LineBreak) (satisfy ((==) '\n')))
+                    oneOf (map ch (satisfy isEscapable))
+                        (oneOf (map (\_ -> List.singleton LineBreak) (satisfy ((==) '\n')))
                             (return (ch '\\'))
                         )
 
@@ -608,11 +638,11 @@ schemeSet =
 pUri : String -> Parser Inlines
 pUri scheme =
     char ':'
-        |> bind (\_ -> scan (OpenParens 0) uriScanner)
-        |> bind
+        |> andThen (\_ -> scan (OpenParens 0) uriScanner)
+        |> andThen
             (\x ->
                 guard (not (String.isEmpty x))
-                    |> bind
+                    |> andThen
                         (\_ ->
                             let
                                 ( rawuri, endingpunct ) =
@@ -682,21 +712,21 @@ uriScanner st c =
 Designed to avoid backtracking.
 -}
 pEnclosure : Char -> ReferenceMap -> Parser Inlines
-pEnclosure c refmap =
+pEnclosure c remap =
     takeWhile1 ((==) c)
-        |> bind
+        |> andThen
             (\cs ->
                 oneOf
-                    (pSpace |> fmap ((::) (Str cs)))
+                    (pSpace |> map ((::) (Str cs)))
                     (case String.length cs of
                         3 ->
-                            pThree c refmap
+                            pThree c remap
 
                         2 ->
-                            pTwo c refmap []
+                            pTwo c remap []
 
                         1 ->
-                            pOne c refmap []
+                            pOne c remap []
 
                         _ ->
                             return (List.singleton (Str cs))
@@ -719,19 +749,19 @@ single constructor ils =
 if you never hit a c, emit '\*' + inlines parsed.
 -}
 pOne : Char -> ReferenceMap -> Inlines -> Parser Inlines
-pOne c refmap prefix =
-    fmap List.concat
+pOne c remap prefix =
+    map List.concat
         (many
-            (oneOf (nfbChar c |> bind (\_ -> pInline refmap))
+            (oneOf (nfbChar c |> andThen (\_ -> pInline remap))
                 (string (String.fromList [ c, c ])
-                    |> bind (\_ -> nfbChar c)
-                    |> bind (\_ -> pTwo c refmap [])
+                    |> andThen (\_ -> nfbChar c)
+                    |> andThen (\_ -> pTwo c remap [])
                 )
             )
         )
-        |> bind
+        |> andThen
             (\contents ->
-                oneOf (char c |> bind (\_ -> return (single Emph (prefix ++ contents))))
+                oneOf (char c |> andThen (\_ -> return (single Emph (prefix ++ contents))))
                     (return (Str (String.fromChar c) :: (prefix ++ contents)))
             )
 
@@ -740,16 +770,16 @@ pOne c refmap prefix =
 if you never do hit two c's, emit '\*\*' plus + inlines parsed.
 -}
 pTwo : Char -> ReferenceMap -> Inlines -> Parser Inlines
-pTwo c refmap prefix =
+pTwo c remap prefix =
     let
         ender : Parser String
         ender =
             string (String.fromList [ c, c ])
     in
-    fmap List.concat (many (nfb ender |> bind (\_ -> pInline refmap)))
-        |> bind
+    map List.concat (many (nfb ender |> andThen (\_ -> pInline remap)))
+        |> andThen
             (\contents ->
-                oneOf (ender |> fmap (\_ -> single Strong (prefix ++ contents)))
+                oneOf (ender |> map (\_ -> single Strong (prefix ++ contents)))
                     (return (Str (String.fromList [ c, c ]) :: (prefix ++ contents)))
             )
 
@@ -759,12 +789,12 @@ If one c, emit Emph and then parse pTwo.
 if two c's, emit Strong and then parse pOne.
 -}
 pThree : Char -> ReferenceMap -> Parser Inlines
-pThree c refmap =
-    fmap List.concat (many (nfbChar c |> bind (\_ -> pInline refmap)))
-        |> bind
+pThree c remap =
+    map List.concat (many (nfbChar c |> andThen (\_ -> pInline remap)))
+        |> andThen
             (\contents ->
-                oneOf (string (String.fromList [ c, c ]) |> bind (\_ -> pOne c refmap (single Strong contents)))
-                    (oneOf (char c |> bind (\_ -> pTwo c refmap (single Emph contents)))
+                oneOf (string (String.fromList [ c, c ]) |> andThen (\_ -> pOne c remap (single Strong contents)))
+                    (oneOf (char c |> andThen (\_ -> pTwo c remap (single Emph contents)))
                         (return (Str (String.fromList [ c, c, c ]) :: contents))
                     )
             )
@@ -774,7 +804,7 @@ pThree c refmap =
 -}
 pCode : Parser Inlines
 pCode =
-    fmap Tuple.first pCode_
+    map Tuple.first pCode_
 
 
 {-| this is factored out because it needed in pLinkLabel.
@@ -782,12 +812,12 @@ pCode =
 pCode_ : Parser ( Inlines, String )
 pCode_ =
     takeWhile1 ((==) '`')
-        |> bind
+        |> andThen
             (\ticks ->
                 let
                     end : Parser ()
                     end =
-                        string ticks |> bind (\_ -> nfb (char '`'))
+                        string ticks |> andThen (\_ -> nfb (char '`'))
 
                     nonBacktickSpan : Parser String
                     nonBacktickSpan =
@@ -798,8 +828,8 @@ pCode_ =
                         takeWhile1 ((==) '`')
                 in
                 manyTill (oneOf nonBacktickSpan backtickSpan) end
-                    |> fmap String.concat
-                    |> fmap
+                    |> map String.concat
+                    |> map
                         (\contents ->
                             ( List.singleton (Code (String.trim contents)), ticks ++ contents ++ ticks )
                         )
@@ -807,16 +837,16 @@ pCode_ =
 
 
 pLink : ReferenceMap -> Parser Inlines
-pLink refmap =
+pLink remap =
     pLinkLabel
-        |> bind
+        |> andThen
             (\lab ->
                 let
                     lab_ : Inlines
                     lab_ =
-                        parseInlines refmap lab
+                        parseInlines remap lab
                 in
-                oneOf (oneOf (pInlineLink lab_) (pReferenceLink refmap lab lab_))
+                oneOf (oneOf (pInlineLink lab_) (pReferenceLink remap lab lab_))
                     -- fallback without backtracking if it's not a link:
                     (return (Str "[" :: lab_ ++ [ Str "]" ]))
             )
@@ -827,18 +857,18 @@ pLink refmap =
 pInlineLink : Inlines -> Parser Inlines
 pInlineLink lab =
     char '('
-        |> bind
+        |> andThen
             (\_ ->
                 scanSpaces
-                    |> bind (\_ -> pLinkUrl)
-                    |> bind
+                    |> andThen (\_ -> pLinkUrl)
+                    |> andThen
                         (\url ->
                             -- tit <- option "" $ scanSpnl *> pLinkTitle <* scanSpaces
-                            option "" (scanSpnl |> bind (\_ -> bind (\_ -> pLinkTitle) scanSpaces))
-                                |> bind
+                            option "" (scanSpnl |> andThen (\_ -> andThen (\_ -> pLinkTitle) scanSpaces))
+                                |> andThen
                                     (\tit ->
                                         char ')'
-                                            |> fmap (\_ -> [ Link lab (Url url) tit ])
+                                            |> map (\_ -> [ Link lab (Url url) tit ])
                                     )
                         )
             )
@@ -848,18 +878,18 @@ pInlineLink lab =
 -}
 pReferenceLink : ReferenceMap -> String -> Inlines -> Parser Inlines
 pReferenceLink _ rawlab lab =
-    option rawlab (scanSpnl |> bind (\_ -> pLinkLabel))
-        |> fmap (\ref -> [ Link lab (Ref ref) "" ])
+    option rawlab (scanSpnl |> andThen (\_ -> pLinkLabel))
+        |> map (\ref -> [ Link lab (Ref ref) "" ])
 
 
 {-| An image: ! followed by a link.
 -}
 pImage : ReferenceMap -> Parser Inlines
-pImage refmap =
+pImage remap =
     char '!'
-        |> bind
+        |> andThen
             (\_ ->
-                oneOf (fmap linkToImage (pLink refmap)) (return [ Str "!" ])
+                oneOf (map linkToImage (pLink remap)) (return [ Str "!" ])
             )
 
 
@@ -881,11 +911,11 @@ convert them to characters and store them as Str inlines.
 pEntity : Parser Inlines
 pEntity =
     char '&'
-        |> bind (\_ -> oneOf pCharEntity (oneOf pDecEntity pHexEntity))
-        |> bind
+        |> andThen (\_ -> oneOf pCharEntity (oneOf pDecEntity pHexEntity))
+        |> andThen
             (\res ->
                 char ';'
-                    |> bind (\_ -> return (List.singleton (Entity ("&" ++ res ++ ";"))))
+                    |> andThen (\_ -> return (List.singleton (Entity ("&" ++ res ++ ";"))))
             )
 
 
@@ -897,18 +927,18 @@ pCharEntity =
 pDecEntity : Parser String
 pDecEntity =
     char '#'
-        |> bind (\_ -> takeWhile1 Char.isDigit)
-        |> bind (\res -> return ("#" ++ res))
+        |> andThen (\_ -> takeWhile1 Char.isDigit)
+        |> andThen (\res -> return ("#" ++ res))
 
 
 pHexEntity : Parser String
 pHexEntity =
     char '#'
-        |> bind (\_ -> oneOf (char 'X') (char 'x'))
-        |> bind
+        |> andThen (\_ -> oneOf (char 'X') (char 'x'))
+        |> andThen
             (\x ->
                 takeWhile1 Char.isHexDigit
-                    |> bind
+                    |> andThen
                         (\res ->
                             return ("#" ++ String.fromChar x ++ res)
                         )
@@ -921,7 +951,7 @@ pHexEntity =
 
 pRawHtml : Parser Inlines
 pRawHtml =
-    fmap (List.singleton << RawHtml) (oneOf (fmap Tuple.second pHtmlTag) pHtmlComment)
+    map (List.singleton << RawHtml) (oneOf (map Tuple.second pHtmlTag) pHtmlComment)
 
 
 {-| A link like this: <http://whatever.com> or [me@mydomain.edu](mailto:me@mydomain.edu).
@@ -930,14 +960,14 @@ Markdown.pl does email obfuscation; we don't bother with that here.
 pAutolink : Parser Inlines
 pAutolink =
     skip ((==) '<')
-        |> bind (\_ -> takeWhile1 (\c -> c /= ':' && c /= '@'))
-        |> bind
+        |> andThen (\_ -> takeWhile1 (\c -> c /= ':' && c /= '@'))
+        |> andThen
             (\s ->
                 takeWhile1 (\c -> c /= '>' && c /= ' ')
-                    |> bind
+                    |> andThen
                         (\rest ->
                             skip ((==) '>')
-                                |> bind
+                                |> andThen
                                     (\_ ->
                                         if String.startsWith "@" rest then
                                             return (emailLink (s ++ rest))
@@ -966,12 +996,12 @@ autoLink t =
 
         pToInlines : Parser Inlines
         pToInlines =
-            fmap List.concat (many strOrEntity)
+            map List.concat (many strOrEntity)
 
         strOrEntity : Parser Inlines
         strOrEntity =
-            oneOf (fmap (List.singleton << Str) (takeWhile1 ((/=) '&')))
-                (oneOf pEntity (fmap (List.singleton << Str) (string "&")))
+            oneOf (map (List.singleton << Str) (takeWhile1 ((/=) '&')))
+                (oneOf pEntity (map (List.singleton << Str) (string "&")))
     in
     List.singleton <| Link (toInlines t) (Url t) ""
 

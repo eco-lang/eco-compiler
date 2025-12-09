@@ -18,7 +18,9 @@ import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 
@@ -130,56 +132,56 @@ addType exposed types =
 -- ENCODERS and DECODERS
 
 
-localizerEncoder : Localizer -> BE.Encoder
+localizerEncoder : Localizer -> Bytes.Encode.Encoder
 localizerEncoder (Localizer localizer) =
     BE.assocListDict compare BE.string importEncoder localizer
 
 
-localizerDecoder : BD.Decoder Localizer
+localizerDecoder : Bytes.Decode.Decoder Localizer
 localizerDecoder =
-    BD.map Localizer (BD.assocListDict identity BD.string importDecoder)
+    Bytes.Decode.map Localizer (BD.assocListDict identity BD.string importDecoder)
 
 
-importEncoder : Import -> BE.Encoder
+importEncoder : Import -> Bytes.Encode.Encoder
 importEncoder import_ =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.maybe BE.string import_.alias
         , exposingEncoder import_.exposing_
         ]
 
 
-importDecoder : BD.Decoder Import
+importDecoder : Bytes.Decode.Decoder Import
 importDecoder =
-    BD.map2 Import
+    Bytes.Decode.map2 Import
         (BD.maybe BD.string)
         exposingDecoder
 
 
-exposingEncoder : Exposing -> BE.Encoder
+exposingEncoder : Exposing -> Bytes.Encode.Encoder
 exposingEncoder exposing_ =
     case exposing_ of
         All ->
-            BE.unsignedInt8 0
+            Bytes.Encode.unsignedInt8 0
 
         Only set ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.everySet compare BE.string set
                 ]
 
 
-exposingDecoder : BD.Decoder Exposing
+exposingDecoder : Bytes.Decode.Decoder Exposing
 exposingDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\type_ ->
                 case type_ of
                     0 ->
-                        BD.succeed All
+                        Bytes.Decode.succeed All
 
                     1 ->
-                        BD.map Only (BD.everySet identity BD.string)
+                        Bytes.Decode.map Only (BD.everySet identity BD.string)
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

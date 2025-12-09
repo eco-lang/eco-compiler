@@ -1,6 +1,6 @@
 module System.TypeCheck.IO exposing
     ( unsafePerformIO
-    , IO, State, pure, apply, fmap, bind, foldrM, foldM, traverseMap, traverseMapWithKey, forM_, mapM_
+    , IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMap, traverseMapWithKey, forM_, mapM_
     , foldMDict, indexedForA, mapM, traverseIndexed, traverseList, traverseMaybe, traverseTuple
     , Step(..), loop
     , Point(..), PointInfo(..)
@@ -15,7 +15,7 @@ module System.TypeCheck.IO exposing
 
 # The IO monad
 
-@docs IO, State, pure, apply, fmap, bind, foldrM, foldM, traverseMap, traverseMapWithKey, forM_, mapM_
+@docs IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMap, traverseMapWithKey, forM_, mapM_
 @docs foldMDict, indexedForA, mapM, traverseIndexed, traverseList, traverseMaybe, traverseTuple
 
 
@@ -98,11 +98,11 @@ pure x =
 
 apply : IO a -> IO (a -> b) -> IO b
 apply ma mf =
-    bind (\f -> bind (pure << f) ma) mf
+    andThen (\f -> andThen (pure << f) ma) mf
 
 
-fmap : (a -> b) -> IO a -> IO b
-fmap fn ma s0 =
+map : (a -> b) -> IO a -> IO b
+map fn ma s0 =
     let
         ( s1, a ) =
             ma s0
@@ -110,8 +110,8 @@ fmap fn ma s0 =
     ( s1, fn a )
 
 
-bind : (a -> IO b) -> IO a -> IO b
-bind f ma =
+andThen : (a -> IO b) -> IO a -> IO b
+andThen f ma =
     \s0 ->
         let
             ( s1, a ) =
@@ -132,7 +132,7 @@ foldrMHelp callback ( list, result ) =
             pure (Done result)
 
         a :: rest ->
-            fmap (\b -> Loop ( rest, b )) (callback a result)
+            map (\b -> Loop ( rest, b )) (callback a result)
 
 
 foldM : (b -> a -> IO b) -> b -> List a -> IO b
@@ -147,7 +147,7 @@ foldMHelp callback ( list, result ) =
             pure (Done result)
 
         a :: rest ->
-            fmap (\b -> Loop ( rest, b )) (callback result a)
+            map (\b -> Loop ( rest, b )) (callback result a)
 
 
 traverseMap : (k -> comparable) -> (k -> k -> Order) -> (a -> IO b) -> Dict comparable k a -> IO (Dict comparable k b)
@@ -167,7 +167,7 @@ traverseWithKeyHelp toComparable callback ( pairs, result ) =
             pure (Done result)
 
         ( k, a ) :: rest ->
-            fmap (\b -> Loop ( rest, Dict.insert toComparable k b result )) (callback k a)
+            map (\b -> Loop ( rest, Dict.insert toComparable k b result )) (callback k a)
 
 
 mapM_ : (a -> IO b) -> List a -> IO ()
@@ -179,10 +179,10 @@ mapMHelp_ : (a -> IO b) -> ( List a, IO () ) -> IO (Step ( List a, IO () ) ())
 mapMHelp_ callback ( list, result ) =
     case list of
         [] ->
-            fmap Done result
+            map Done result
 
         a :: rest ->
-            fmap (\_ -> Loop ( rest, result )) (callback a)
+            map (\_ -> Loop ( rest, result )) (callback a)
 
 
 forM_ : List a -> (a -> IO b) -> IO ()
@@ -192,25 +192,25 @@ forM_ list f =
 
 foldMDict : (k -> k -> Order) -> (b -> a -> IO b) -> b -> Dict c k a -> IO b
 foldMDict keyComparison f b =
-    Dict.foldl keyComparison (\_ a -> bind (\acc -> f acc a)) (pure b)
+    Dict.foldl keyComparison (\_ a -> andThen (\acc -> f acc a)) (pure b)
 
 
 traverseList : (a -> IO b) -> List a -> IO (List b)
 traverseList f =
-    List.foldr (\a -> bind (\c -> fmap (\va -> va :: c) (f a)))
+    List.foldr (\a -> andThen (\c -> map (\va -> va :: c) (f a)))
         (pure [])
 
 
 traverseTuple : (b -> IO c) -> ( a, b ) -> IO ( a, c )
 traverseTuple f ( a, b ) =
-    fmap (Tuple.pair a) (f b)
+    map (Tuple.pair a) (f b)
 
 
 traverseMaybe : (a -> IO b) -> Maybe a -> IO (Maybe b)
 traverseMaybe f a =
     case Maybe.map f a of
         Just b ->
-            fmap Just b
+            map Just b
 
         Nothing ->
             pure Nothing
@@ -233,7 +233,7 @@ indexedForA xs func =
 
 sequenceAList : List (IO a) -> IO (List a)
 sequenceAList =
-    List.foldr (\x acc -> apply acc (fmap (::) x)) (pure [])
+    List.foldr (\x acc -> apply acc (map (::) x)) (pure [])
 
 
 

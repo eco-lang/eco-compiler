@@ -35,14 +35,14 @@ fromSrcType freeVars sourceType =
             IO.pure (Utils.find identity name freeVars)
 
         Can.TType home name args ->
-            IO.fmap (AppN home name)
+            IO.map (AppN home name)
                 (IO.traverseList (fromSrcType freeVars) args)
 
         Can.TAlias home name args aliasedType ->
             IO.traverseList (IO.traverseTuple (fromSrcType freeVars)) args
-                |> IO.bind
+                |> IO.andThen
                     (\targs ->
-                        IO.fmap (AliasN home name targs)
+                        IO.map (AliasN home name targs)
                             (case aliasedType of
                                 Can.Filled realType ->
                                     fromSrcType freeVars realType

@@ -112,10 +112,10 @@ writeIORefMVector (IORef ref) value =
 modifyIORefDescriptor : IORef IO.Descriptor -> (IO.Descriptor -> IO.Descriptor) -> IO ()
 modifyIORefDescriptor ioRef func =
     readIORefDescriptor ioRef
-        |> IO.bind (\value -> writeIORefDescriptor ioRef (func value))
+        |> IO.andThen (\value -> writeIORefDescriptor ioRef (func value))
 
 
 modifyIORefMVector : IORef (Array (Maybe (List IO.Variable))) -> (Array (Maybe (List IO.Variable)) -> Array (Maybe (List IO.Variable))) -> IO ()
 modifyIORefMVector ioRef func =
     readIORefMVector ioRef
-        |> IO.bind (\value -> writeIORefMVector ioRef (func value))
+        |> IO.andThen (\value -> writeIORefMVector ioRef (func value))

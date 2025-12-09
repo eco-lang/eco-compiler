@@ -1,9 +1,9 @@
 module Control.Monad.State.TypeCheck.Strict exposing
     ( StateT(..)
     , apply
-    , bind
+    , andThen
     , evalStateT
-    , fmap
+    , map
     , gets
     , liftIO
     , modify
@@ -45,12 +45,12 @@ runStateT (StateT f) =
 
 evalStateT : StateT s a -> s -> IO a
 evalStateT (StateT f) =
-    f >> IO.fmap Tuple.first
+    f >> IO.map Tuple.first
 
 
 liftIO : IO a -> StateT s a
 liftIO io =
-    StateT (\s -> IO.fmap (\a -> ( a, s )) io)
+    StateT (\s -> IO.map (\a -> ( a, s )) io)
 
 
 apply : StateT s a -> StateT s (a -> b) -> StateT s b
@@ -58,25 +58,25 @@ apply (StateT arg) (StateT func) =
     StateT
         (\s ->
             arg s
-                |> IO.bind
+                |> IO.andThen
                     (\( a, sa ) ->
                         func sa
-                            |> IO.fmap (\( fb, sb ) -> ( fb a, sb ))
+                            |> IO.map (\( fb, sb ) -> ( fb a, sb ))
                     )
         )
 
 
-fmap : (a -> b) -> StateT s a -> StateT s b
-fmap func argStateT =
+map : (a -> b) -> StateT s a -> StateT s b
+map func argStateT =
     apply argStateT (pure func)
 
 
-bind : (a -> StateT s b) -> StateT s a -> StateT s b
-bind func (StateT arg) =
+andThen : (a -> StateT s b) -> StateT s a -> StateT s b
+andThen func (StateT arg) =
     StateT
         (\s ->
             arg s
-                |> IO.bind
+                |> IO.andThen
                     (\( a, sa ) ->
                         case func a of
                             StateT fb ->
@@ -102,13 +102,13 @@ modify f =
 
 traverseList : (a -> StateT s b) -> List a -> StateT s (List b)
 traverseList f =
-    List.foldr (\a -> bind (\c -> fmap (\va -> va :: c) (f a)))
+    List.foldr (\a -> andThen (\c -> map (\va -> va :: c) (f a)))
         (pure [])
 
 
 traverseTuple : (b -> StateT s c) -> ( a, b ) -> StateT s ( a, c )
 traverseTuple f ( a, b ) =
-    fmap (Tuple.pair a) (f b)
+    map (Tuple.pair a) (f b)
 
 
 traverseMap : (k -> k -> Order) -> (k -> comparable) -> (a -> StateT s b) -> Dict comparable k a -> StateT s (Dict comparable k b)
@@ -119,7 +119,7 @@ traverseMap keyComparison toComparable f =
 traverseMapWithKey : (k -> k -> Order) -> (k -> comparable) -> (k -> a -> StateT s b) -> Dict comparable k a -> StateT s (Dict comparable k b)
 traverseMapWithKey keyComparison toComparable f =
     Dict.foldl keyComparison
-        (\k a -> bind (\c -> fmap (\va -> Dict.insert toComparable k va c) (f k a)))
+        (\k a -> andThen (\c -> map (\va -> Dict.insert toComparable k va c) (f k a)))
         (pure Dict.empty)
 
 
@@ -127,7 +127,7 @@ traverseMaybe : (a -> StateT s b) -> Maybe a -> StateT s (Maybe b)
 traverseMaybe f a =
     case Maybe.map f a of
         Just b ->
-            fmap Just b
+            map Just b
 
         Nothing ->
             pure Nothing

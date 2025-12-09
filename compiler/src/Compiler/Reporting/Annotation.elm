@@ -20,7 +20,9 @@ module Compiler.Reporting.Annotation exposing
 
 import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 
@@ -38,7 +40,7 @@ compareLocated (At _ a) (At _ b) =
 
 traverse : (a -> IO b) -> Located a -> IO (Located b)
 traverse func (At region value) =
-    IO.fmap (At region) (func value)
+    IO.map (At region) (func value)
 
 
 toValue : Located a -> a
@@ -101,46 +103,46 @@ isMultiline (Region (Position startRow _) (Position endRow _)) =
 -- ENCODERS and DECODERS
 
 
-regionEncoder : Region -> BE.Encoder
+regionEncoder : Region -> Bytes.Encode.Encoder
 regionEncoder (Region start end) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ positionEncoder start
         , positionEncoder end
         ]
 
 
-regionDecoder : BD.Decoder Region
+regionDecoder : Bytes.Decode.Decoder Region
 regionDecoder =
-    BD.map2 Region
+    Bytes.Decode.map2 Region
         positionDecoder
         positionDecoder
 
 
-positionEncoder : Position -> BE.Encoder
+positionEncoder : Position -> Bytes.Encode.Encoder
 positionEncoder (Position start end) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.int start
         , BE.int end
         ]
 
 
-positionDecoder : BD.Decoder Position
+positionDecoder : Bytes.Decode.Decoder Position
 positionDecoder =
-    BD.map2 Position
+    Bytes.Decode.map2 Position
         BD.int
         BD.int
 
 
-locatedEncoder : (a -> BE.Encoder) -> Located a -> BE.Encoder
+locatedEncoder : (a -> Bytes.Encode.Encoder) -> Located a -> Bytes.Encode.Encoder
 locatedEncoder encoder (At region value) =
-    BE.sequence
+    Bytes.Encode.sequence
         [ regionEncoder region
         , encoder value
         ]
 
 
-locatedDecoder : BD.Decoder a -> BD.Decoder (Located a)
+locatedDecoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (Located a)
 locatedDecoder decoder =
-    BD.map2 At
+    Bytes.Decode.map2 At
         regionDecoder
         (BD.lazy (\_ -> decoder))

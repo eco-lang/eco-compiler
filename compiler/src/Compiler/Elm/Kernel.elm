@@ -20,7 +20,9 @@ import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Crash exposing (crash)
 
 
@@ -107,14 +109,14 @@ fromByteString pkg foreigns bytes =
 parser : Pkg.Name -> Foreigns -> P.Parser () Content
 parser pkg foreigns =
     P.word2 '/' '*' toError
-        |> P.bind (\_ -> Space.chomp ignoreError)
-        |> P.bind (\_ -> Space.checkFreshLine toError)
-        |> P.bind (\_ -> P.specialize ignoreError (Module.chompImports []))
-        |> P.bind
+        |> P.andThen (\_ -> Space.chomp ignoreError)
+        |> P.andThen (\_ -> Space.checkFreshLine toError)
+        |> P.andThen (\_ -> P.specialize ignoreError (Module.chompImports []))
+        |> P.andThen
             (\imports ->
                 P.word2 '*' '/' toError
-                    |> P.bind (\_ -> parseChunks (toVarTable pkg foreigns imports) Dict.empty Dict.empty)
-                    |> P.fmap (\chunks -> Content imports chunks)
+                    |> P.andThen (\_ -> parseChunks (toVarTable pkg foreigns imports) Dict.empty Dict.empty)
+                    |> P.map (\chunks -> Content imports chunks)
             )
 
 
@@ -417,88 +419,88 @@ toName exposed =
 -- ENCODERS and DECODERS
 
 
-chunkEncoder : Chunk -> BE.Encoder
+chunkEncoder : Chunk -> Bytes.Encode.Encoder
 chunkEncoder chunk =
     case chunk of
         JS javascript ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.string javascript
                 ]
 
         ElmVar home name ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , ModuleName.canonicalEncoder home
                 , BE.string name
                 ]
 
         JsVar home name ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.string home
                 , BE.string name
                 ]
 
         ElmField name ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.string name
                 ]
 
         JsField int ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.int int
                 ]
 
         JsEnum int ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.int int
                 ]
 
         Debug ->
-            BE.unsignedInt8 6
+            Bytes.Encode.unsignedInt8 6
 
         Prod ->
-            BE.unsignedInt8 7
+            Bytes.Encode.unsignedInt8 7
 
 
-chunkDecoder : BD.Decoder Chunk
+chunkDecoder : Bytes.Decode.Decoder Chunk
 chunkDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map JS BD.string
+                        Bytes.Decode.map JS BD.string
 
                     1 ->
-                        BD.map2 ElmVar
+                        Bytes.Decode.map2 ElmVar
                             ModuleName.canonicalDecoder
                             BD.string
 
                     2 ->
-                        BD.map2 JsVar
+                        Bytes.Decode.map2 JsVar
                             BD.string
                             BD.string
 
                     3 ->
-                        BD.map ElmField BD.string
+                        Bytes.Decode.map ElmField BD.string
 
                     4 ->
-                        BD.map JsField BD.int
+                        Bytes.Decode.map JsField BD.int
 
                     5 ->
-                        BD.map JsEnum BD.int
+                        Bytes.Decode.map JsEnum BD.int
 
                     6 ->
-                        BD.succeed Debug
+                        Bytes.Decode.succeed Debug
 
                     7 ->
-                        BD.succeed Prod
+                        Bytes.Decode.succeed Prod
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

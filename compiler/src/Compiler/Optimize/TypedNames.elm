@@ -1,8 +1,8 @@
 module Compiler.Optimize.TypedNames exposing
     ( Context
     , Tracker
-    , bind
-    , fmap
+    , andThen
+    , map
     , generate
     , getAnnotations
     , getVarType
@@ -133,13 +133,13 @@ withVarType name tipe (Tracker k) =
 {-| Insert multiple local variable types into context for a sub-computation.
 -}
 withVarTypes : List ( Name, Can.Type ) -> Tracker a -> Tracker a
-withVarTypes bindings (Tracker k) =
+withVarTypes andThenings (Tracker k) =
     Tracker <|
         \ctx uid deps fields ->
             let
                 newLocals : Dict String Name Can.Type
                 newLocals =
-                    List.foldl (\( n, t ) acc -> Dict.insert identity n t acc) ctx.locals bindings
+                    List.foldl (\( n, t ) acc -> Dict.insert identity n t acc) ctx.locals andThenings
 
                 newCtx : Context
                 newCtx =
@@ -148,7 +148,7 @@ withVarTypes bindings (Tracker k) =
             k newCtx uid deps fields
 
 
-{-| Insert a variable type into the context permanently (for let bindings)
+{-| Insert a variable type into the context permanently (for let andThenings)
 -}
 insertVarType : Name -> Can.Type -> Tracker ()
 insertVarType name tipe =
@@ -167,7 +167,7 @@ insertVarType name tipe =
 {-| Insert multiple variable types
 -}
 insertVarTypes : List ( Name, Can.Type ) -> Tracker ()
-insertVarTypes bindings =
+insertVarTypes andThenings =
     Tracker <|
         \_ uid deps fields ->
             TResult uid deps fields ()
@@ -312,8 +312,8 @@ addOne name fields =
 -- INSTANCES
 
 
-fmap : (a -> b) -> Tracker a -> Tracker b
-fmap func (Tracker kv) =
+map : (a -> b) -> Tracker a -> Tracker b
+map func (Tracker kv) =
     Tracker <|
         \ctx n d f ->
             case kv ctx n d f of
@@ -326,8 +326,8 @@ pure value =
     Tracker (\_ n d f -> TResult n d f value)
 
 
-bind : (a -> Tracker b) -> Tracker a -> Tracker b
-bind callback (Tracker k) =
+andThen : (a -> Tracker b) -> Tracker a -> Tracker b
+andThen callback (Tracker k) =
     Tracker <|
         \ctx n d f ->
             case k ctx n d f of
@@ -339,9 +339,9 @@ bind callback (Tracker k) =
 
 traverse : (a -> Tracker b) -> List a -> Tracker (List b)
 traverse func =
-    List.foldl (\a -> bind (\acc -> fmap (\b -> acc ++ [ b ]) (func a))) (pure [])
+    List.foldl (\a -> andThen (\acc -> map (\b -> acc ++ [ b ]) (func a))) (pure [])
 
 
 mapTraverse : (k -> comparable) -> (k -> k -> Order) -> (a -> Tracker b) -> Dict comparable k a -> Tracker (Dict comparable k b)
 mapTraverse toComparable keyComparison func =
-    Dict.foldl keyComparison (\k a -> bind (\c -> fmap (\va -> Dict.insert toComparable k va c) (func a))) (pure Dict.empty)
+    Dict.foldl keyComparison (\k a -> andThen (\c -> map (\va -> Dict.insert toComparable k va c) (func a))) (pure Dict.empty)

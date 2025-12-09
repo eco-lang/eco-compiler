@@ -1669,7 +1669,7 @@ generateLet ctx def body =
                 exprResult =
                     generateExpr ctx expr
 
-                -- Create an alias: %name = eco.construct(%exprVar) for the binding
+                -- Create an alias: %name = eco.construct(%exprVar) for the andThening
                 aliasOp : MlirOp
                 aliasOp =
                     ecoConstruct exprResult.ctx ("%" ++ name) 0 1 [ exprResult.resultVar ]

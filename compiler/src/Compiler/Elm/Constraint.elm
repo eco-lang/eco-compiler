@@ -212,31 +212,31 @@ type Error
 parser : P.Parser Error Constraint
 parser =
     parseVersion
-        |> P.bind
+        |> P.andThen
             (\lower ->
                 P.word1 ' ' BadFormat
-                    |> P.bind
+                    |> P.andThen
                         (\_ ->
                             parseOp
-                                |> P.bind
+                                |> P.andThen
                                     (\loOp ->
                                         P.word1 ' ' BadFormat
-                                            |> P.bind
+                                            |> P.andThen
                                                 (\_ ->
                                                     P.word1 'v' BadFormat
-                                                        |> P.bind
+                                                        |> P.andThen
                                                             (\_ ->
                                                                 P.word1 ' ' BadFormat
-                                                                    |> P.bind
+                                                                    |> P.andThen
                                                                         (\_ ->
                                                                             parseOp
-                                                                                |> P.bind
+                                                                                |> P.andThen
                                                                                     (\hiOp ->
                                                                                         P.word1 ' ' BadFormat
-                                                                                            |> P.bind
+                                                                                            |> P.andThen
                                                                                                 (\_ ->
                                                                                                     parseVersion
-                                                                                                        |> P.bind
+                                                                                                        |> P.andThen
                                                                                                             (\higher ->
                                                                                                                 P.Parser <|
                                                                                                                     \((P.State _ _ _ _ row col) as state) ->
@@ -264,11 +264,11 @@ parseVersion =
 parseOp : P.Parser Error Op
 parseOp =
     P.word1 '<' BadFormat
-        |> P.bind
+        |> P.andThen
             (\_ ->
                 P.oneOfWithFallback
                     [ P.word1 '=' BadFormat
-                        |> P.fmap (\_ -> LessOrEqual)
+                        |> P.map (\_ -> LessOrEqual)
                     ]
                     Less
             )

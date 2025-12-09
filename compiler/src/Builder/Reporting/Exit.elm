@@ -63,7 +63,9 @@ import Compiler.Reporting.Render.Code as Code
 import Data.Map as Dict exposing (Dict)
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Main as Utils exposing (FilePath)
 
 
@@ -103,7 +105,9 @@ initToReport exit =
                 [ D.indent 4 <|
                     D.vcat <|
                         List.map (D.dullyellow << D.fromChars << Pkg.toChars) pkgs
-                , D.reflow "I could not find compatible versions though! This should not happen, so please ask around one of the community forums at https://elm-lang.org/community to learn what is going on!"
+                , D.reflow <|
+                    "I could not find compatible versions though! This should not happen, so please ask around "
+                        ++ "one of the community forums at https://elm-lang.org/community to learn what is going on!"
                 ]
 
         InitNoOfflineSolution pkgs ->
@@ -113,7 +117,10 @@ initToReport exit =
                 [ D.indent 4 <|
                     D.vcat <|
                         List.map (D.dullyellow << D.fromChars << Pkg.toChars) pkgs
-                , D.reflow "I could not find compatible versions though, but that may be because I could not connect to https://package.elm-lang.org to get the latest list of packages. Are you able to connect to the internet? Please ask around one of the community forums at https://elm-lang.org/community for help!"
+                , D.reflow <|
+                    "I could not find compatible versions though, but that may be because I could not connect to "
+                        ++ "https://package.elm-lang.org to get the latest list of packages. Are you able to connect to "
+                        ++ "the internet? Please ask around one of the community forums at https://elm-lang.org/community for help!"
                 ]
 
         InitSolverProblem solver ->
@@ -283,7 +290,9 @@ bumpToReport bump =
                 Nothing
                 "I cannot find an elm.json so I am not sure what you want me to bump."
                 [ D.reflow <|
-                    "Elm packages always have an elm.json that says the current version number. If you run this command from a directory with an elm.json file, I will try to bump the version in there based on the API changes."
+                    "Elm packages always have an elm.json that says the current version number. If you run this "
+                        ++ "command from a directory with an elm.json file, I will try to bump the version in there "
+                        ++ "based on the API changes."
                 ]
 
         BumpBadOutline outline ->
@@ -742,7 +751,10 @@ publishToReport publish =
                 (Just "LICENSE")
                 "By publishing a package you are inviting the Elm community to build upon your work. But without knowing your license, we have no idea if that is legal!"
                 [ D.reflow <|
-                    "Once you pick an OSI approved license from <https://spdx.org/licenses/>, you must share that choice in two places. First, the license identifier must appear in your elm.json file. Second, the full license text must appear in the root of your project in a file named LICENSE. Add that file and you will be all set!"
+                    "Once you pick an OSI approved license from <https://spdx.org/licenses/>, you must share that "
+                        ++ "choice in two places. First, the license identifier must appear in your elm.json file. Second, "
+                        ++ "the full license text must appear in the root of your project in a file named LICENSE. Add that "
+                        ++ "file and you will be all set!"
                 ]
 
         PublishBuildProblem buildProblem ->
@@ -843,7 +855,10 @@ publishToReport publish =
                             else
                                 String.left 73 body ++ "..."
                 , D.reflow <|
-                    "Does this error keep showing up? Maybe there is something weird with your internet connection. We have gotten reports that schools, businesses, airports, etc. sometimes intercept requests and add things to the body or change its contents entirely. Could that be the problem?"
+                    "Does this error keep showing up? Maybe there is something weird with your internet "
+                        ++ "connection. We have gotten reports that schools, businesses, airports, etc. sometimes "
+                        ++ "intercept requests and add things to the body or change its contents entirely. Could "
+                        ++ "that be the problem?"
                 ]
 
         PublishCannotGetZip httpError ->
@@ -856,7 +871,9 @@ publishToReport publish =
                 "I need to check that folks can download and build the source code when they install this package, so I downloaded the code from:"
                 [ D.indent 4 <| D.dullyellow <| D.fromChars url
                 , D.reflow <|
-                    "I was unable to unzip the archive though. Maybe there is something weird with your internet connection. We have gotten reports that schools, businesses, airports, etc. sometimes intercept requests and add things to the body or change its contents entirely. Could that be the problem?"
+                    "I was unable to unzip the archive though. Maybe there is something weird with your internet "
+                        ++ "connection. We have gotten reports that schools, businesses, airports, etc. sometimes intercept "
+                        ++ "requests and add things to the body or change its contents entirely. Could that be the problem?"
                 ]
 
         PublishCannotGetDocs old new docsProblem ->
@@ -876,7 +893,9 @@ publishToReport publish =
                 Nothing
                 "I searched your PATH environment variable for `git` and could not find it. Is it available through your PATH?"
                 [ D.reflow <|
-                    "Who cares about this? Well, I currently use `git` to check if there are any local changes in your code. Local changes are a good sign that some important improvements have gotten mistagged, so this check can be extremely helpful for package authors!"
+                    "Who cares about this? Well, I currently use `git` to check if there are any local changes in your code. "
+                        ++ "Local changes are a good sign that some important improvements have gotten mistagged, so this check "
+                        ++ "can be extremely helpful for package authors!"
                 , D.toSimpleNote <|
                     "We plan to do this without the `git` binary in a future release."
                 ]
@@ -956,7 +975,11 @@ toBadReadmeReport title summary =
         , D.reflow <|
             "So I recommend starting your README with a small example of the most common usage scenario. Show people what they can expect if they learn more!"
         , D.toSimpleNote <|
-            "By publishing your package, you are inviting people to invest time in understanding your work. Spending an hour on your README to communicate your knowledge more clearly can save the community days or weeks of time in aggregate, and saving time in aggregate is the whole point of publishing packages! People really appreciate it, and it makes the whole ecosystem feel nicer!"
+            "By publishing your package, you are inviting people to invest time in understanding "
+                ++ "your work. Spending an hour on your README to communicate your knowledge more clearly "
+                ++ "can save the community days or weeks of time in aggregate, and saving time in aggregate "
+                ++ "is the whole point of publishing packages! People really appreciate it, and it makes "
+                ++ "the whole ecosystem feel nicer!"
         ]
 
 
@@ -964,7 +987,9 @@ badZipReport : Help.Report
 badZipReport =
     Help.report "PROBLEM VERIFYING PACKAGE"
         Nothing
-        "Before publishing packages, I download the code from GitHub and try to build it from scratch. That way I can be more confident that it will work for other people too. But I am not able to build it!"
+        ("Before publishing packages, I download the code from GitHub and try to build it from scratch. "
+            ++ "That way I can be more confident that it will work for other people too. But I am not able to build it!"
+        )
         [ D.reflow <|
             "I was just able to build your local copy though. Is there some way the version on GitHub could be different?"
         ]
@@ -1010,7 +1035,10 @@ toDocsProblemReport problem context =
                             else
                                 String.left 73 body ++ "..."
                 , D.reflow <|
-                    "Does this error keep showing up? Maybe there is something weird with your internet connection. We have gotten reports that schools, businesses, airports, etc. sometimes intercept requests and add things to the body or change its contents entirely. Could that be the problem?"
+                    "Does this error keep showing up? Maybe there is something weird with your internet "
+                        ++ "connection. We have gotten reports that schools, businesses, airports, etc. sometimes "
+                        ++ "intercept requests and add things to the body or change its contents entirely. Could "
+                        ++ "that be the problem?"
                 ]
 
         DP_Cache ->
@@ -1018,7 +1046,9 @@ toDocsProblemReport problem context =
                 Nothing
                 (context ++ ", but the local copy seems to be corrupted.")
                 [ D.reflow <|
-                    "I deleted the cached version, so the next run should download a fresh copy of the docs. Hopefully that will get you unstuck, but it will not resolve the root problem if, for example, a 3rd party editor plugin is modifing cached files for some reason."
+                    "I deleted the cached version, so the next run should download a fresh copy of the docs. "
+                        ++ "Hopefully that will get you unstuck, but it will not resolve the root problem if, for example, "
+                        ++ "a 3rd party editor plugin is modifing cached files for some reason."
                 ]
 
 
@@ -1164,11 +1194,21 @@ installToReport exit =
                 (Just "elm.json")
                 ("I cannot find a version of " ++ Pkg.toChars pkg ++ " that is compatible with your existing dependencies.")
                 [ D.reflow <|
-                    "I checked all the published versions. When that failed, I tried to find any compatible combination of these packages, even if it meant changing all your existing dependencies! That did not work either!"
+                    "I checked all the published versions. When that failed, I tried to find any compatible "
+                        ++ "combination of these packages, even if it meant changing all your existing dependencies! "
+                        ++ "That did not work either!"
                 , D.reflow <|
-                    "This is most likely to happen when a package is not upgraded yet. Maybe a new version of Elm came out recently? Maybe a common package was changed recently? Maybe a better package came along, so there was no need to upgrade this one? Try asking around https://elm-lang.org/community to learn what might be going on with this package."
+                    "This is most likely to happen when a package is not upgraded yet. Maybe a new version of "
+                        ++ "Elm came out recently? Maybe a common package was changed recently? Maybe a better package "
+                        ++ "came along, so there was no need to upgrade this one? Try asking around "
+                        ++ "https://elm-lang.org/community to learn what might be going on with this package."
                 , D.toSimpleNote <|
-                    "Whatever the case, please be kind to the relevant package authors! Having friendly interactions with users is great motivation, and conversely, getting berated by strangers on the internet sucks your soul dry. Furthermore, package authors are humans with families, friends, jobs, vacations, responsibilities, goals, etc. They face obstacles outside of their technical work you will never know about, so please assume the best and try to be patient and supportive!"
+                    "Whatever the case, please be kind to the relevant package authors! Having friendly "
+                        ++ "interactions with users is great motivation, and conversely, getting berated by strangers "
+                        ++ "on the internet sucks your soul dry. Furthermore, package authors are humans with families, "
+                        ++ "friends, jobs, vacations, responsibilities, goals, etc. They face obstacles outside of their "
+                        ++ "technical work you will never know about, so please assume the best and try to be patient "
+                        ++ "and supportive!"
                 ]
 
         InstallNoOfflineAppSolution pkg ->
@@ -1186,9 +1226,15 @@ installToReport exit =
                 (Just "elm.json")
                 ("I cannot find a version of " ++ Pkg.toChars pkg ++ " that is compatible with your existing constraints.")
                 [ D.reflow <|
-                    "With applications, I try to broaden the constraints to see if anything works, but messing with package constraints is much more delicate business. E.g. making your constraints stricter may make it harder for applications to find compatible dependencies. So fixing something here may break it for a lot of other people!"
+                    "With applications, I try to broaden the constraints to see if anything works, but messing "
+                        ++ "with package constraints is much more delicate business. E.g. making your constraints stricter "
+                        ++ "may make it harder for applications to find compatible dependencies. So fixing something here "
+                        ++ "may break it for a lot of other people!"
                 , D.reflow <|
-                    "So I recommend making an application with the same dependencies as your package. See if there is a solution at all. From there it may be easier to figure out how to proceed in a way that will disrupt your users as little as possible. And the solution may be to help other package authors to get their packages updated, or to drop a dependency entirely."
+                    "So I recommend making an application with the same dependencies as your package. See if "
+                        ++ "there is a solution at all. From there it may be easier to figure out how to proceed in a way "
+                        ++ "that will disrupt your users as little as possible. And the solution may be to help other "
+                        ++ "package authors to get their packages updated, or to drop a dependency entirely."
                 ]
 
         InstallNoOfflinePkgSolution pkg ->
@@ -1301,11 +1347,21 @@ uninstallToReport exit =
                 (Just "elm.json")
                 ("I cannot find a version of " ++ Pkg.toChars pkg ++ " that is compatible with your existing dependencies.")
                 [ D.reflow <|
-                    "I checked all the published versions. When that failed, I tried to find any compatible combination of these packages, even if it meant changing all your existing dependencies! That did not work either!"
+                    "I checked all the published versions. When that failed, I tried to find any compatible "
+                        ++ "combination of these packages, even if it meant changing all your existing dependencies! "
+                        ++ "That did not work either!"
                 , D.reflow <|
-                    "This is most likely to happen when a package is not upgraded yet. Maybe a new version of Elm came out recently? Maybe a common package was changed recently? Maybe a better package came along, so there was no need to upgrade this one? Try asking around https://elm-lang.org/community to learn what might be going on with this package."
+                    "This is most likely to happen when a package is not upgraded yet. Maybe a new version of "
+                        ++ "Elm came out recently? Maybe a common package was changed recently? Maybe a better package "
+                        ++ "came along, so there was no need to upgrade this one? Try asking around "
+                        ++ "https://elm-lang.org/community to learn what might be going on with this package."
                 , D.toSimpleNote <|
-                    "Whatever the case, please be kind to the relevant package authors! Having friendly interactions with users is great motivation, and conversely, getting berated by strangers on the internet sucks your soul dry. Furthermore, package authors are humans with families, friends, jobs, vacations, responsibilities, goals, etc. They face obstacles outside of their technical work you will never know about, so please assume the best and try to be patient and supportive!"
+                    "Whatever the case, please be kind to the relevant package authors! Having friendly "
+                        ++ "interactions with users is great motivation, and conversely, getting berated by strangers "
+                        ++ "on the internet sucks your soul dry. Furthermore, package authors are humans with families, "
+                        ++ "friends, jobs, vacations, responsibilities, goals, etc. They face obstacles outside of their "
+                        ++ "technical work you will never know about, so please assume the best and try to be patient "
+                        ++ "and supportive!"
                 ]
 
         UninstallNoOfflineAppSolution pkg ->
@@ -1341,18 +1397,32 @@ toSolverReport problem =
         SolverBadCacheData pkg vsn ->
             Help.report "PROBLEM SOLVING PACKAGE CONSTRAINTS"
                 Nothing
-                ("I need the elm.json of " ++ Pkg.toChars pkg ++ " " ++ V.toChars vsn ++ " to help me search for a set of compatible packages. I had it cached locally, but it looks like the file was corrupted!")
+                ("I need the elm.json of "
+                    ++ Pkg.toChars pkg
+                    ++ " "
+                    ++ V.toChars vsn
+                    ++ " to help me search for a set of compatible packages. I had it cached locally, but it looks like the file was corrupted!"
+                )
                 [ D.reflow <|
-                    "I deleted the cached version, so the next run should download a fresh copy. Hopefully that will get you unstuck, but it will not resolve the root problem if a 3rd party tool is modifing cached files for some reason."
+                    "I deleted the cached version, so the next run should download a fresh copy. "
+                        ++ "Hopefully that will get you unstuck, but it will not resolve the root problem "
+                        ++ "if a 3rd party tool is modifing cached files for some reason."
                 ]
 
         SolverBadHttpData pkg vsn url ->
             Help.report "PROBLEM SOLVING PACKAGE CONSTRAINTS"
                 Nothing
-                ("I need the elm.json of " ++ Pkg.toChars pkg ++ " " ++ V.toChars vsn ++ " to help me search for a set of compatible packages, but I ran into corrupted information from:")
+                ("I need the elm.json of "
+                    ++ Pkg.toChars pkg
+                    ++ " "
+                    ++ V.toChars vsn
+                    ++ " to help me search for a set of compatible packages, but I ran into corrupted information from:"
+                )
                 [ D.indent 4 <| D.dullyellow <| D.fromChars url
                 , D.reflow <|
-                    "Is something weird with your internet connection. We have gotten reports that schools, businesses, airports, etc. sometimes intercept requests and add things to the body or change its contents entirely. Could that be the problem?"
+                    "Is something weird with your internet connection. "
+                        ++ "We have gotten reports that schools, businesses, airports, etc. sometimes intercept requests "
+                        ++ "and add things to the body or change its contents entirely. Could that be the problem?"
                 ]
 
         SolverBadHttp pkg vsn httpError ->
@@ -1450,7 +1520,9 @@ toOutlineReport problem =
                 (Just "elm.json")
                 "I need to see an \"elm/core\" dependency your elm.json file. The default imports of `List` and `Maybe` do not work without it."
                 [ D.reflow <|
-                    "If you modified your elm.json by hand, try to change it back! And if you are having trouble getting back to a working elm.json, it may be easier to find a working package and start fresh with their elm.json file."
+                    "If you modified your elm.json by hand, try to change it back! "
+                        ++ "And if you are having trouble getting back to a working elm.json, "
+                        ++ "it may be easier to find a working package and start fresh with their elm.json file."
                 ]
 
         OutlineNoAppCore ->
@@ -1458,7 +1530,9 @@ toOutlineReport problem =
                 (Just "elm.json")
                 "I need to see an \"elm/core\" dependency your elm.json file. The default imports of `List` and `Maybe` do not work without it."
                 [ D.reflow <|
-                    "If you modified your elm.json by hand, try to change it back! And if you are having trouble getting back to a working elm.json, it may be easier to delete it and use `elm init` to start fresh."
+                    "If you modified your elm.json by hand, try to change it back! "
+                        ++ "And if you are having trouble getting back to a working elm.json, "
+                        ++ "it may be easier to delete it and use `elm init` to start fresh."
                 ]
 
         OutlineNoAppJson ->
@@ -1466,7 +1540,9 @@ toOutlineReport problem =
                 (Just "elm.json")
                 "I need to see an \"elm/json\" dependency your elm.json file. It helps me handle flags and ports."
                 [ D.reflow <|
-                    "If you modified your elm.json by hand, try to change it back! And if you are having trouble getting back to a working elm.json, it may be easier to delete it and use `elm init` to start fresh."
+                    "If you modified your elm.json by hand, try to change it back! "
+                        ++ "And if you are having trouble getting back to a working elm.json, "
+                        ++ "it may be easier to delete it and use `elm init` to start fresh."
                 ]
 
 
@@ -1599,7 +1675,9 @@ toOutlineProblemReport path source _ region problem =
                                 , D.fromChars "bounds."
                                 ]
                             , D.toSimpleNote <|
-                                "The spaces in there are required! Taking them out will confuse me. Adding extra spaces confuses me too. I recommend starting with a valid example and just changing the version numbers."
+                                "The spaces in there are required! Taking them out will confuse me. "
+                                    ++ "Adding extra spaces confuses me too. "
+                                    ++ "I recommend starting with a valid example and just changing the version numbers."
                             ]
                         )
 
@@ -1755,8 +1833,9 @@ toOutlineProblemReport path source _ region problem =
                         , D.fromChars "package"
                         , D.fromChars "website!"
                         ]
-                    , D.toSimpleNote
-                        "I count the length in bytes, so using non-ASCII characters costs extra. Please report your case at https://github.com/elm/compiler/issues if this seems overly restrictive for your needs."
+                    , D.toSimpleNote <|
+                        "I count the length in bytes, so using non-ASCII characters costs extra. "
+                            ++ "Please report your case at https://github.com/elm/compiler/issues if this seems overly restrictive for your needs."
                     ]
                 )
 
@@ -1876,8 +1955,9 @@ toOutlineProblemReport path source _ region problem =
                         , D.fromChars "package"
                         , D.fromChars "website!"
                         ]
-                    , D.toSimpleNote
-                        "I count the length in bytes, so using non-ASCII characters costs extra. Please report your case at https://github.com/elm/compiler/issues if this seems overly restrictive for your needs."
+                    , D.toSimpleNote <|
+                        "I count the length in bytes, so using non-ASCII characters costs extra. "
+                            ++ "Please report your case at https://github.com/elm/compiler/issues if this seems overly restrictive for your needs."
                     ]
                 )
 
@@ -2096,15 +2176,20 @@ toDetailsReport details =
                                 "I ran into a compilation error when trying to build the following package:"
                                 [ D.indent 4 <| D.red <| D.fromChars <| Pkg.toChars pkg ++ " " ++ V.toChars vsn
                                 , D.reflow <|
-                                    "This probably means it has package constraints that are too wide. It may be possible to tweak your elm.json to avoid the root problem as a stopgap. Head over to https://elm-lang.org/community to get help figuring out how to take this path!"
+                                    "This probably means it has package constraints that are too wide. "
+                                        ++ "It may be possible to tweak your elm.json to avoid the root problem as a stopgap. "
+                                        ++ "Head over to https://elm-lang.org/community to get help figuring out how to take this path!"
                                 , D.toSimpleNote <|
-                                    "To help with the root problem, please report this to the package author along with the following information:"
+                                    "To help with the root problem, please report this to the package author "
+                                        ++ "along with the following information:"
                                 , D.indent 4 <|
                                     D.vcat <|
                                         List.map (\( p, v ) -> D.fromChars <| Pkg.toChars p ++ " " ++ V.toChars v) <|
                                             Dict.toList compare fingerprint
                                 , D.reflow <|
-                                    "If you want to help out even more, try building the package locally. That should give you much more specific information about why this package is failing to build, which will in turn make it easier for the package author to fix it!"
+                                    "If you want to help out even more, try building the package locally. "
+                                        ++ "That should give you much more specific information about why this package is failing to build, "
+                                        ++ "which will in turn make it easier for the package author to fix it!"
                                 ]
 
 
@@ -2151,7 +2236,9 @@ toPackageProblemReport pkg vsn problem =
                 ("I need to find the latest download link for " ++ thePackage ++ ", but I ran into corrupted information from:")
                 [ D.indent 4 <| D.dullyellow <| D.fromChars url
                 , D.reflow <|
-                    "Is something weird with your internet connection. We have gotten reports that schools, businesses, airports, etc. sometimes intercept requests and add things to the body or change its contents entirely. Could that be the problem?"
+                    "Is something weird with your internet connection. "
+                        ++ "We have gotten reports that schools, businesses, airports, etc. sometimes intercept requests "
+                        ++ "and add things to the body or change its contents entirely. Could that be the problem?"
                 ]
 
         PP_BadArchiveRequest httpError ->
@@ -2165,7 +2252,9 @@ toPackageProblemReport pkg vsn problem =
                 ("I downloaded the source code for " ++ thePackage ++ " from:")
                 [ D.indent 4 <| D.dullyellow <| D.fromChars url
                 , D.reflow <|
-                    "But I was unable to unzip the data. Maybe there is something weird with your internet connection. We have gotten reports that schools, businesses, airports, etc. sometimes intercept requests and add things to the body or change its contents entirely. Could that be the problem?"
+                    "But I was unable to unzip the data. Maybe there is something weird with your internet connection. "
+                        ++ "We have gotten reports that schools, businesses, airports, etc. sometimes intercept requests "
+                        ++ "and add things to the body or change its contents entirely. Could that be the problem?"
                 ]
 
         PP_BadArchiveHash url expectedHash actualHash ->
@@ -2223,7 +2312,10 @@ toRegistryProblemReport title problem context =
                             else
                                 String.left 73 body ++ "..."
                 , D.reflow <|
-                    "Does this error keep showing up? Maybe there is something weird with your internet connection. We have gotten reports that schools, businesses, airports, etc. sometimes intercept requests and add things to the body or change its contents entirely. Could that be the problem?"
+                    "Does this error keep showing up? Maybe there is something weird with your internet "
+                        ++ "connection. We have gotten reports that schools, businesses, airports, etc. sometimes "
+                        ++ "intercept requests and add things to the body or change its contents entirely. Could "
+                        ++ "that be the problem?"
                 ]
 
 
@@ -2243,7 +2335,9 @@ toHttpErrorReport title err context =
                 [ D.reflow <| "But my HTTP library is saying this is not a valid URL. It is saying:"
                 , D.indent 4 <| D.fromChars reason
                 , D.reflow <|
-                    "This may indicate that there is some problem in the compiler, so please open an issue at https://github.com/elm/compiler/issues listing your operating system, Elm version, the command you ran, the terminal output, and any additional information that might help others reproduce the error."
+                    "This may indicate that there is some problem in the compiler, so please open an issue at "
+                        ++ "https://github.com/elm/compiler/issues listing your operating system, Elm version, the command "
+                        ++ "you ran, the terminal output, and any additional information that might help others reproduce the error."
                 ]
 
         Http.BadHttp url httpExceptionContent ->
@@ -2266,7 +2360,10 @@ toHttpErrorReport title err context =
                                 ++ List.map D.fromChars (String.words message)
                         , D.indent 4 <| D.reflow <| body
                         , D.reflow <|
-                            "This may mean some online endpoint changed in an unexpected way, so if does not seem like something on your side is causing this (e.g. firewall) please report this to https://github.com/elm/compiler/issues with your operating system, Elm version, the command you ran, the terminal output, and any additional information that can help others reproduce the error!"
+                            "This may mean some online endpoint changed in an unexpected way, so if does not seem like "
+                                ++ "something on your side is causing this (e.g. firewall) please report this to "
+                                ++ "https://github.com/elm/compiler/issues with your operating system, Elm version, "
+                                ++ "the command you ran, the terminal output, and any additional information that can help others reproduce the error!"
                         ]
 
                 Utils.TooManyRedirects responses ->
@@ -2278,7 +2375,9 @@ toHttpErrorReport title err context =
                                 ++ " redirects:"
                         , D.indent 4 <| D.vcat <| List.map toRedirectDoc responses
                         , D.reflow <|
-                            "Is it possible that your internet connection intercepts certain requests? That sometimes causes problems for folks in schools, businesses, airports, hotels, and certain countries. Try asking for help locally or in a community forum!"
+                            "Is it possible that your internet connection intercepts certain requests? "
+                                ++ "That sometimes causes problems for folks in schools, businesses, airports, hotels, and certain countries. "
+                                ++ "Try asking for help locally or in a community forum!"
                         ]
 
                 _ ->
@@ -2287,7 +2386,10 @@ toHttpErrorReport title err context =
                         [ D.reflow <| "But my HTTP library is giving me the following error message:"
                         , D.indent 4 <| D.fromChars "TODO"
                         , D.reflow <|
-                            "Are you somewhere with a slow internet connection? Or no internet? Does the link I am trying to fetch work in your browser? Maybe the site is down? Does your internet connection have a firewall that blocks certain domains? It is usually something like that!"
+                            "Are you somewhere with a slow internet connection? Or no internet? "
+                                ++ "Does the link I am trying to fetch work in your browser? "
+                                ++ "Maybe the site is down? Does your internet connection have a firewall that blocks certain domains? "
+                                ++ "It is usually something like that!"
                         ]
 
         Http.BadMystery url Utils.SomeException ->
@@ -2296,7 +2398,9 @@ toHttpErrorReport title err context =
                 [ D.reflow <| "But I ran into something weird! I was able to extract this error message:"
                 , D.indent 4 <| D.fromChars "SomeException"
                 , D.reflow <|
-                    "Is it possible that your internet connection intercepts certain requests? That sometimes causes problems for folks in schools, businesses, airports, hotels, and certain countries. Try asking for help locally or in a community forum!"
+                    "Is it possible that your internet connection intercepts certain requests? "
+                        ++ "That sometimes causes problems for folks in schools, businesses, airports, hotels, and certain countries. "
+                        ++ "Try asking for help locally or in a community forum!"
                 ]
 
 
@@ -2360,8 +2464,9 @@ makeToReport make =
                     , D.fromChars "time."
                     ]
                 )
-                [ D.reflow
-                    "I need to take away information to optimize things, and I need to add information to add the debugger. It is impossible to do both at once though! Pick just one of those flags and it should work!"
+                [ D.reflow <|
+                    "I need to take away information to optimize things, and I need to add information to add the debugger. "
+                        ++ "It is impossible to do both at once though! Pick just one of those flags and it should work!"
                 ]
 
         MakeBadDetails detailsProblem ->
@@ -2511,7 +2616,7 @@ makeToReport make =
                     Help.report "NO MAIN"
                         Nothing
                         ("When producing a JS file, I require that the given file has a `main` value. That way Elm."
-                            ++ String.fromList (ModuleName.toChars m)
+                            ++ String.fromList (N.toChars m)
                             ++ ".init() is definitely defined in the resulting file!"
                         )
                         [ D.reflow <|
@@ -2543,7 +2648,7 @@ makeToReport make =
                     Help.report "NO MAIN"
                         Nothing
                         ("When producing a JS file, I require that given files all have `main` values. That way functions like Elm."
-                            ++ String.fromList (ModuleName.toChars m)
+                            ++ String.fromList (N.toChars m)
                             ++ ".init() are definitely defined in the resulting file. I am missing `main` values in:"
                         )
                         [ D.indent 4 <| D.red <| D.vcat <| List.map D.fromName (m :: ms)
@@ -2620,7 +2725,8 @@ toProjectProblemReport projectProblem =
                 [ D.indent 4 <| D.red <| D.fromChars path
                 , D.reflow <| "Is there a typo?"
                 , D.toSimpleNote <|
-                    "If you are just getting started, try working through the examples in the official guide https://guide.elm-lang.org to get an idea of the kinds of things that typically go in a src/Main.elm file."
+                    "If you are just getting started, try working through the examples in the official guide "
+                        ++ "https://guide.elm-lang.org to get an idea of the kinds of things that typically go in a src/Main.elm file."
                 ]
 
         BP_WithBadExtension path ->
@@ -2637,7 +2743,9 @@ toProjectProblemReport projectProblem =
                 "I am getting confused when I try to compile this file:"
                 [ D.indent 4 <| D.red <| D.fromChars path
                 , D.reflow <|
-                    "I always check if files appear in any of the \"source-directories\" listed in your elm.json to see if there might be some cached information about them. That can help me compile faster! But in this case, it looks like this file may be in either of these directories:"
+                    "I always check if files appear in any of the \"source-directories\" listed in your elm.json "
+                        ++ "to see if there might be some cached information about them. That can help me compile faster! "
+                        ++ "But in this case, it looks like this file may be in either of these directories:"
                 , D.indent 4 <| D.red <| D.vcat <| List.map D.fromChars [ srcDir1, srcDir2 ]
                 , D.reflow <|
                     "Try to make it so no source directory contains another source directory!"
@@ -2650,10 +2758,14 @@ toProjectProblemReport projectProblem =
                 [ D.indent 4 <| D.red <| D.vcat <| List.map D.fromChars [ path1, path2 ]
                 , D.reflow <|
                     if path1 == path2 then
-                        "Why are you telling me twice? Is something weird going on with a script? I figured I would let you know about it just in case something is wrong. Only list it once and you should be all set!"
+                        "Why are you telling me twice? Is something weird going on with a script? "
+                            ++ "I figured I would let you know about it just in case something is wrong. "
+                            ++ "Only list it once and you should be all set!"
 
                     else
-                        "But seem to be the same file though... It makes me think something tricky is going on with symlinks in your project, so I figured I would let you know about it just in case. Remove one of these files from your command to get unstuck!"
+                        "But seem to be the same file though... It makes me think something tricky is going on with symlinks "
+                            ++ "in your project, so I figured I would let you know about it just in case. "
+                            ++ "Remove one of these files from your command to get unstuck!"
                 ]
 
         BP_RootNameDuplicate name outsidePath otherPath ->
@@ -2663,7 +2775,7 @@ toProjectProblemReport projectProblem =
                 [ D.indent 4 <| D.red <| D.vcat <| List.map D.fromChars [ outsidePath, otherPath ]
                 , D.reflow <|
                     "They both say `module "
-                        ++ String.fromList (ModuleName.toChars name)
+                        ++ String.fromList (N.toChars name)
                         ++ " exposing (..)` up at the top, but they cannot have the same name!"
                 , D.reflow <|
                     "Try changing to a different module name in one of them!"
@@ -2682,7 +2794,8 @@ toProjectProblemReport projectProblem =
                 , D.reflow <|
                     "Notice that the names always start with capital letters! Can you make your file use this naming convention?"
                 , D.toSimpleNote <|
-                    "Having a strict naming convention like this makes it a lot easier to find things in large projects. If you see a module imported, you know where to look for the corresponding file every time!"
+                    "Having a strict naming convention like this makes it a lot easier to find things in large projects. "
+                        ++ "If you see a module imported, you know where to look for the corresponding file every time!"
                 ]
 
         BP_CannotLoadDependencies ->
@@ -2830,18 +2943,22 @@ toGenerateReport problem =
             Help.report "DEBUG REMNANTS"
                 Nothing
                 "There are uses of the `Debug` module in the following modules:"
-                [ D.indent 4 <| D.red <| D.vcat <| List.map (D.fromChars << String.fromList << ModuleName.toChars) (m :: ms)
+                [ D.indent 4 <| D.red <| D.vcat <| List.map (D.fromChars << String.fromList << N.toChars) (m :: ms)
                 , D.reflow "But the --optimize flag only works if all `Debug` functions are removed!"
                 , D.toSimpleNote <|
                     "The issue is that --optimize strips out info needed by `Debug` functions. Here are two examples:"
                 , D.indent 4 <|
                     D.reflow <|
-                        "(1) It shortens record field names. This makes the generated JavaScript smaller, but `Debug.toString` cannot know the real field names anymore."
+                        "(1) It shortens record field names. This makes the generated JavaScript smaller, "
+                            ++ "but `Debug.toString` cannot know the real field names anymore."
                 , D.indent 4 <|
                     D.reflow <|
-                        "(2) Values like `type Height = Height Float` are unboxed. This reduces allocation, but it also means that `Debug.toString` cannot tell if it is looking at a `Height` or `Float` value."
+                        "(2) Values like `type Height = Height Float` are unboxed. This reduces allocation, "
+                            ++ "but it also means that `Debug.toString` cannot tell if it is looking at a `Height` or `Float` value."
                 , D.reflow <|
-                    "There are a few other cases like that, and it will be much worse once we start inlining code. That optimization could move `Debug.log` and `Debug.todo` calls, resulting in unpredictable behavior. I hope that clarifies why this restriction exists!"
+                    "There are a few other cases like that, and it will be much worse once we start inlining code. "
+                        ++ "That optimization could move `Debug.log` and `Debug.todo` calls, resulting in unpredictable behavior. "
+                        ++ "I hope that clarifies why this restriction exists!"
                 ]
 
         GenerateMonomorphizationError errorMessage ->
@@ -2866,7 +2983,8 @@ corruptCacheReport =
         [ D.reflow <|
             "Try deleting your guida-stuff/ directory to get unstuck."
         , D.toSimpleNote <|
-            "This almost certainly means that a 3rd party tool (or editor plugin) is causing problems to the guida-stuff/ directory. Try disabling 3rd party tools one by one until you figure out which it is!"
+            "This almost certainly means that a 3rd party tool (or editor plugin) is causing problems "
+                ++ "to the guida-stuff/ directory. Try disabling 3rd party tools one by one until you figure out which it is!"
         ]
 
 
@@ -2952,11 +3070,21 @@ testToReport test =
                 (Just "elm.json")
                 ("I cannot find a version of " ++ Pkg.toChars pkg ++ " that is compatible with your existing dependencies.")
                 [ D.reflow <|
-                    "I checked all the published versions. When that failed, I tried to find any compatible combination of these packages, even if it meant changing all your existing dependencies! That did not work either!"
+                    "I checked all the published versions. When that failed, I tried to find any compatible "
+                        ++ "combination of these packages, even if it meant changing all your existing dependencies! "
+                        ++ "That did not work either!"
                 , D.reflow <|
-                    "This is most likely to happen when a package is not upgraded yet. Maybe a new version of Elm came out recently? Maybe a common package was changed recently? Maybe a better package came along, so there was no need to upgrade this one? Try asking around https://elm-lang.org/community to learn what might be going on with this package."
+                    "This is most likely to happen when a package is not upgraded yet. Maybe a new version of "
+                        ++ "Elm came out recently? Maybe a common package was changed recently? Maybe a better package "
+                        ++ "came along, so there was no need to upgrade this one? Try asking around "
+                        ++ "https://elm-lang.org/community to learn what might be going on with this package."
                 , D.toSimpleNote <|
-                    "Whatever the case, please be kind to the relevant package authors! Having friendly interactions with users is great motivation, and conversely, getting berated by strangers on the internet sucks your soul dry. Furthermore, package authors are humans with families, friends, jobs, vacations, responsibilities, goals, etc. They face obstacles outside of their technical work you will never know about, so please assume the best and try to be patient and supportive!"
+                    "Whatever the case, please be kind to the relevant package authors! Having friendly "
+                        ++ "interactions with users is great motivation, and conversely, getting berated by strangers "
+                        ++ "on the internet sucks your soul dry. Furthermore, package authors are humans with families, "
+                        ++ "friends, jobs, vacations, responsibilities, goals, etc. They face obstacles outside of their "
+                        ++ "technical work you will never know about, so please assume the best and try to be patient "
+                        ++ "and supportive!"
                 ]
 
         TestNoOfflineAppSolution pkg ->
@@ -2974,9 +3102,15 @@ testToReport test =
                 (Just "elm.json")
                 ("I cannot find a version of " ++ Pkg.toChars pkg ++ " that is compatible with your existing constraints.")
                 [ D.reflow <|
-                    "With applications, I try to broaden the constraints to see if anything works, but messing with package constraints is much more delicate business. E.g. making your constraints stricter may make it harder for applications to find compatible dependencies. So fixing something here may break it for a lot of other people!"
+                    "With applications, I try to broaden the constraints to see if anything works, but messing "
+                        ++ "with package constraints is much more delicate business. E.g. making your constraints stricter "
+                        ++ "may make it harder for applications to find compatible dependencies. So fixing something here "
+                        ++ "may break it for a lot of other people!"
                 , D.reflow <|
-                    "So I recommend making an application with the same dependencies as your package. See if there is a solution at all. From there it may be easier to figure out how to proceed in a way that will disrupt your users as little as possible. And the solution may be to help other package authors to get their packages updated, or to drop a dependency entirely."
+                    "So I recommend making an application with the same dependencies as your package. See if "
+                        ++ "there is a solution at all. From there it may be easier to figure out how to proceed in a way "
+                        ++ "that will disrupt your users as little as possible. And the solution may be to help other "
+                        ++ "package authors to get their packages updated, or to drop a dependency entirely."
                 ]
 
         TestNoOfflinePkgSolution pkg ->
@@ -3048,300 +3182,300 @@ testToReport test =
 -- ENCODERS and DECODERS
 
 
-detailsBadDepEncoder : DetailsBadDep -> BE.Encoder
+detailsBadDepEncoder : DetailsBadDep -> Bytes.Encode.Encoder
 detailsBadDepEncoder detailsBadDep =
     case detailsBadDep of
         BD_BadDownload pkg vsn packageProblem ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , Pkg.nameEncoder pkg
                 , V.versionEncoder vsn
                 , packageProblemEncoder packageProblem
                 ]
 
         BD_BadBuild pkg vsn fingerprint ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , Pkg.nameEncoder pkg
                 , V.versionEncoder vsn
                 , BE.assocListDict compare Pkg.nameEncoder V.versionEncoder fingerprint
                 ]
 
 
-detailsBadDepDecoder : BD.Decoder DetailsBadDep
+detailsBadDepDecoder : Bytes.Decode.Decoder DetailsBadDep
 detailsBadDepDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 BD_BadDownload
+                        Bytes.Decode.map3 BD_BadDownload
                             Pkg.nameDecoder
                             V.versionDecoder
                             packageProblemDecoder
 
                     1 ->
-                        BD.map3 BD_BadBuild
+                        Bytes.Decode.map3 BD_BadBuild
                             Pkg.nameDecoder
                             V.versionDecoder
                             (BD.assocListDict identity Pkg.nameDecoder V.versionDecoder)
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-buildProblemEncoder : BuildProblem -> BE.Encoder
+buildProblemEncoder : BuildProblem -> Bytes.Encode.Encoder
 buildProblemEncoder buildProblem =
     case buildProblem of
         BuildBadModules root e es ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.string root
                 , Error.moduleEncoder e
                 , BE.list Error.moduleEncoder es
                 ]
 
         BuildProjectProblem problem ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , buildProjectProblemEncoder problem
                 ]
 
 
-buildProblemDecoder : BD.Decoder BuildProblem
+buildProblemDecoder : Bytes.Decode.Decoder BuildProblem
 buildProblemDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map3 BuildBadModules
+                        Bytes.Decode.map3 BuildBadModules
                             BD.string
                             Error.moduleDecoder
                             (BD.list Error.moduleDecoder)
 
                     1 ->
-                        BD.map BuildProjectProblem buildProjectProblemDecoder
+                        Bytes.Decode.map BuildProjectProblem buildProjectProblemDecoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-buildProjectProblemEncoder : BuildProjectProblem -> BE.Encoder
+buildProjectProblemEncoder : BuildProjectProblem -> Bytes.Encode.Encoder
 buildProjectProblemEncoder buildProjectProblem =
     case buildProjectProblem of
         BP_PathUnknown path ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.string path
                 ]
 
         BP_WithBadExtension path ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.string path
                 ]
 
         BP_WithAmbiguousSrcDir path srcDir1 srcDir2 ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.string path
                 , BE.string srcDir1
                 , BE.string srcDir2
                 ]
 
         BP_MainPathDuplicate path1 path2 ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.string path1
                 , BE.string path2
                 ]
 
         BP_RootNameDuplicate name outsidePath otherPath ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , ModuleName.rawEncoder name
                 , BE.string outsidePath
                 , BE.string otherPath
                 ]
 
         BP_RootNameInvalid givenPath srcDir names ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , BE.string givenPath
                 , BE.string srcDir
                 , BE.list BE.string names
                 ]
 
         BP_CannotLoadDependencies ->
-            BE.unsignedInt8 6
+            Bytes.Encode.unsignedInt8 6
 
         BP_Cycle name names ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , ModuleName.rawEncoder name
                 , BE.list ModuleName.rawEncoder names
                 ]
 
         BP_MissingExposed problems ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , BE.nonempty (BE.jsonPair ModuleName.rawEncoder Import.problemEncoder) problems
                 ]
 
 
-buildProjectProblemDecoder : BD.Decoder BuildProjectProblem
+buildProjectProblemDecoder : Bytes.Decode.Decoder BuildProjectProblem
 buildProjectProblemDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map BP_PathUnknown BD.string
+                        Bytes.Decode.map BP_PathUnknown BD.string
 
                     1 ->
-                        BD.map BP_WithBadExtension BD.string
+                        Bytes.Decode.map BP_WithBadExtension BD.string
 
                     2 ->
-                        BD.map3 BP_WithAmbiguousSrcDir
+                        Bytes.Decode.map3 BP_WithAmbiguousSrcDir
                             BD.string
                             BD.string
                             BD.string
 
                     3 ->
-                        BD.map2 BP_MainPathDuplicate
+                        Bytes.Decode.map2 BP_MainPathDuplicate
                             BD.string
                             BD.string
 
                     4 ->
-                        BD.map3 BP_RootNameDuplicate
+                        Bytes.Decode.map3 BP_RootNameDuplicate
                             ModuleName.rawDecoder
                             BD.string
                             BD.string
 
                     5 ->
-                        BD.map3 BP_RootNameInvalid
+                        Bytes.Decode.map3 BP_RootNameInvalid
                             BD.string
                             BD.string
                             (BD.list BD.string)
 
                     6 ->
-                        BD.succeed BP_CannotLoadDependencies
+                        Bytes.Decode.succeed BP_CannotLoadDependencies
 
                     7 ->
-                        BD.map2 BP_Cycle
+                        Bytes.Decode.map2 BP_Cycle
                             ModuleName.rawDecoder
                             (BD.list ModuleName.rawDecoder)
 
                     8 ->
-                        BD.map BP_MissingExposed
+                        Bytes.Decode.map BP_MissingExposed
                             (BD.nonempty
                                 (BD.jsonPair ModuleName.rawDecoder Import.problemDecoder)
                             )
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-registryProblemEncoder : RegistryProblem -> BE.Encoder
+registryProblemEncoder : RegistryProblem -> Bytes.Encode.Encoder
 registryProblemEncoder registryProblem =
     case registryProblem of
         RP_Http err ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , Http.errorEncoder err
                 ]
 
         RP_Data url body ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.string url
                 , BE.string body
                 ]
 
 
-registryProblemDecoder : BD.Decoder RegistryProblem
+registryProblemDecoder : Bytes.Decode.Decoder RegistryProblem
 registryProblemDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map RP_Http Http.errorDecoder
+                        Bytes.Decode.map RP_Http Http.errorDecoder
 
                     1 ->
-                        BD.map2 RP_Data
+                        Bytes.Decode.map2 RP_Data
                             BD.string
                             BD.string
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-packageProblemEncoder : PackageProblem -> BE.Encoder
+packageProblemEncoder : PackageProblem -> Bytes.Encode.Encoder
 packageProblemEncoder packageProblem =
     case packageProblem of
         PP_BadEndpointRequest httpError ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , Http.errorEncoder httpError
                 ]
 
         PP_BadEndpointContent url ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.string url
                 ]
 
         PP_BadArchiveRequest httpError ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , Http.errorEncoder httpError
                 ]
 
         PP_BadArchiveContent url ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.string url
                 ]
 
         PP_BadArchiveHash url expectedHash actualHash ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.string url
                 , BE.string expectedHash
                 , BE.string actualHash
                 ]
 
 
-packageProblemDecoder : BD.Decoder PackageProblem
+packageProblemDecoder : Bytes.Decode.Decoder PackageProblem
 packageProblemDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map PP_BadEndpointRequest Http.errorDecoder
+                        Bytes.Decode.map PP_BadEndpointRequest Http.errorDecoder
 
                     1 ->
-                        BD.map PP_BadEndpointContent BD.string
+                        Bytes.Decode.map PP_BadEndpointContent BD.string
 
                     2 ->
-                        BD.map PP_BadArchiveRequest Http.errorDecoder
+                        Bytes.Decode.map PP_BadArchiveRequest Http.errorDecoder
 
                     3 ->
-                        BD.map PP_BadArchiveContent BD.string
+                        Bytes.Decode.map PP_BadArchiveContent BD.string
 
                     4 ->
-                        BD.map3 PP_BadArchiveHash
+                        Bytes.Decode.map3 PP_BadArchiveHash
                             BD.string
                             BD.string
                             BD.string
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

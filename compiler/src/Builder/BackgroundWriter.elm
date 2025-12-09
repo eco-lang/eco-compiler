@@ -7,7 +7,9 @@ module Builder.BackgroundWriter exposing
 import Builder.File as File
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Main as Utils
 import Utils.Task.Extra as Task
 
@@ -23,41 +25,51 @@ type Scope
 withScope : (Scope -> Task Never a) -> Task Never a
 withScope callback =
     Utils.newMVar (BE.list (\_ -> BE.unit ())) []
-        |> Task.bind
-            (\workList ->
-                callback (Scope workList)
-                    |> Task.bind
-                        (\result ->
-                            Utils.takeMVar (BD.list Utils.mVarDecoder) workList
-                                |> Task.bind
-                                    (\mvars ->
-                                        Utils.listTraverse_ (Utils.takeMVar (BD.succeed ())) mvars
-                                            |> Task.fmap (\_ -> result)
-                                    )
-                        )
-            )
+        |> Task.andThen (runCallbackAndWait callback)
 
 
-writeBinary : (a -> BE.Encoder) -> Scope -> String -> a -> Task Never ()
+runCallbackAndWait : (Scope -> Task Never a) -> Utils.MVar (List (Utils.MVar ())) -> Task Never a
+runCallbackAndWait callback workList =
+    callback (Scope workList)
+        |> Task.andThen (waitForAllWork workList)
+
+
+waitForAllWork : Utils.MVar (List (Utils.MVar ())) -> a -> Task Never a
+waitForAllWork workList result =
+    Utils.takeMVar (BD.list Utils.mVarDecoder) workList
+        |> Task.andThen (waitForMVars result)
+
+
+waitForMVars : a -> List (Utils.MVar ()) -> Task Never a
+waitForMVars result mvars =
+    Utils.listTraverse_ (Utils.takeMVar (Bytes.Decode.succeed ())) mvars
+        |> Task.map (\_ -> result)
+
+
+writeBinary : (a -> Bytes.Encode.Encoder) -> Scope -> String -> a -> Task Never ()
 writeBinary toEncoder (Scope workList) path value =
     Utils.newEmptyMVar
-        |> Task.bind
-            (\mvar ->
-                Utils.forkIO
-                    (File.writeBinary toEncoder path value
-                        |> Task.bind (\_ -> Utils.putMVar BE.unit mvar ())
-                    )
-                    |> Task.bind
-                        (\_ ->
-                            Utils.takeMVar (BD.list Utils.mVarDecoder) workList
-                                |> Task.bind
-                                    (\oldWork ->
-                                        let
-                                            newWork : List (Utils.MVar ())
-                                            newWork =
-                                                mvar :: oldWork
-                                        in
-                                        Utils.putMVar (BE.list Utils.mVarEncoder) workList newWork
-                                    )
-                        )
-            )
+        |> Task.andThen (forkWriteAndAddToWorkList toEncoder workList path value)
+
+
+forkWriteAndAddToWorkList : (a -> Bytes.Encode.Encoder) -> Utils.MVar (List (Utils.MVar ())) -> String -> a -> Utils.MVar () -> Task Never ()
+forkWriteAndAddToWorkList toEncoder workList path value mvar =
+    Utils.forkIO (writeAndSignalComplete toEncoder path value mvar)
+        |> Task.andThen (\_ -> addMVarToWorkList workList mvar)
+
+
+writeAndSignalComplete : (a -> Bytes.Encode.Encoder) -> String -> a -> Utils.MVar () -> Task Never ()
+writeAndSignalComplete toEncoder path value mvar =
+    File.writeBinary toEncoder path value
+        |> Task.andThen (\_ -> Utils.putMVar BE.unit mvar ())
+
+
+addMVarToWorkList : Utils.MVar (List (Utils.MVar ())) -> Utils.MVar () -> Task Never ()
+addMVarToWorkList workList mvar =
+    Utils.takeMVar (BD.list Utils.mVarDecoder) workList
+        |> Task.andThen (prependAndPutBack workList mvar)
+
+
+prependAndPutBack : Utils.MVar (List (Utils.MVar ())) -> Utils.MVar () -> List (Utils.MVar ()) -> Task Never ()
+prependAndPutBack workList mvar oldWork =
+    Utils.putMVar (BE.list Utils.mVarEncoder) workList (mvar :: oldWork)

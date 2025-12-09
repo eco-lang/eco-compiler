@@ -1,19 +1,9 @@
 module Compiler.Reporting.Suggest exposing
-    ( distance
-    , rank
+    ( rank
     , sort
     )
 
 import Levenshtein
-
-
-
--- DISTANCE
-
-
-distance : String -> String -> Int
-distance =
-    Levenshtein.distance
 
 
 
@@ -23,7 +13,7 @@ distance =
 sort : String -> (a -> String) -> List a -> List a
 sort target toString =
     List.sortBy
-        (distance (String.toLower target)
+        (Levenshtein.distance (String.toLower target)
             << String.toLower
             << toString
         )
@@ -38,7 +28,7 @@ rank target toString values =
     let
         toRank : a -> Int
         toRank v =
-            distance (String.toLower target) (String.toLower (toString v))
+            Levenshtein.distance (String.toLower target) (String.toLower (toString v))
 
         addRank : a -> ( Int, a )
         addRank v =

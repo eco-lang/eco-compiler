@@ -6,7 +6,7 @@ module Common.Format.Cheapskate.ParserCombinators exposing
     , advance
     , anyChar
     , apply
-    , bind
+    , andThen
     , char
     , charClass
     , column
@@ -16,7 +16,7 @@ module Common.Format.Cheapskate.ParserCombinators exposing
     , endOfInput
     , fail
     , failure
-    , fmap
+    , map
     , getPosition
     , guard
     , inClass
@@ -136,8 +136,8 @@ type Parser a
 -- instance Functor Parser where
 
 
-fmap : (a -> b) -> Parser a -> Parser b
-fmap f (Parser g) =
+map : (a -> b) -> Parser a -> Parser b
+map f (Parser g) =
     Parser
         (\st ->
             case g st of
@@ -189,7 +189,7 @@ unless p s =
 -}
 leftSequence : Parser a -> Parser b -> Parser a
 leftSequence p1 p2 =
-    p1 |> bind (\res -> p2 |> fmap (\_ -> res))
+    p1 |> andThen (\res -> p2 |> map (\_ -> res))
 
 
 
@@ -248,8 +248,8 @@ return x =
     Parser (\st -> Ok ( st, x ))
 
 
-bind : (a -> Parser b) -> Parser a -> Parser b
-bind g (Parser p) =
+andThen : (a -> Parser b) -> Parser a -> Parser b
+andThen g (Parser p) =
     Parser
         (\st ->
             case p st of
@@ -346,7 +346,7 @@ peekLastChar =
 notAfter : (Char -> Bool) -> Parser ()
 notAfter f =
     peekLastChar
-        |> bind
+        |> andThen
             (\mbc ->
                 case mbc of
                     Nothing ->
@@ -603,24 +603,24 @@ manyTill p end =
     let
         go : () -> Parser (List a)
         go () =
-            oneOf (end |> bind (\_ -> pure [])) (liftA2 (::) p (lazy go))
+            oneOf (end |> andThen (\_ -> pure [])) (liftA2 (::) p (lazy go))
     in
     go ()
 
 
 skipMany : Parser a -> Parser ()
 skipMany p =
-    many (skipP p) |> fmap (\_ -> ())
+    many (skipP p) |> map (\_ -> ())
 
 
 skipP : Parser a -> Parser ()
 skipP p =
-    p |> fmap (\_ -> ())
+    p |> map (\_ -> ())
 
 
 skipMany1 : Parser a -> Parser ()
 skipMany1 p =
-    p |> bind (\_ -> skipMany p)
+    p |> andThen (\_ -> skipMany p)
 
 
 count : Int -> Parser a -> Parser (List a)
@@ -634,7 +634,7 @@ count n p =
 
 lazy : (() -> Parser a) -> Parser a
 lazy f =
-    bind f (pure ())
+    andThen f (pure ())
 
 
 many : Parser a -> Parser (List a)
@@ -655,8 +655,8 @@ many (Parser p) =
 liftA2 : (a -> b -> c) -> Parser a -> Parser b -> Parser c
 liftA2 f pa pb =
     pa
-        |> fmap f
-        |> bind (\fApplied -> fmap fApplied pb)
+        |> map f
+        |> andThen (\fApplied -> map fApplied pb)
 
 
 sequence : List (Parser a) -> Parser (List a)

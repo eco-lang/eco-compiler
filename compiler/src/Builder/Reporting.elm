@@ -20,6 +20,7 @@ module Builder.Reporting exposing
 
 import Builder.Reporting.Exit as Exit
 import Builder.Reporting.Exit.Help as Help
+import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
@@ -30,7 +31,9 @@ import System.Exit as Exit
 import System.IO as IO
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 import Utils.Main as Utils exposing (Chan, MVar)
 import Utils.Task.Extra as Task
 
@@ -57,7 +60,7 @@ json =
 
 terminal : Task Never Style
 terminal =
-    Task.fmap Terminal (Utils.newMVar (\_ -> BE.bool True) ())
+    Task.map Terminal (Utils.newMVar (\_ -> BE.bool True) ())
 
 
 
@@ -68,42 +71,66 @@ attempt : (x -> Help.Report) -> Task Never (Result x a) -> Task Never a
 attempt toReport work =
     work
         -- |> IO.catch reportExceptionsNicely
-        |> Task.bind
-            (\result ->
-                case result of
-                    Ok a ->
-                        Task.pure a
+        |> Task.andThen (handleAttemptResult toReport)
 
-                    Err x ->
-                        Exit.toStderr (toReport x)
-                            |> Task.bind (\_ -> Exit.exitFailure)
-            )
+
+handleAttemptResult : (x -> Help.Report) -> Result x a -> Task Never a
+handleAttemptResult toReport result =
+    case result of
+        Ok a ->
+            Task.succeed a
+
+        Err x ->
+            reportErrorAndExit (toReport x)
+
+
+reportErrorAndExit : Help.Report -> Task Never a
+reportErrorAndExit helpReport =
+    Exit.toStderr helpReport
+        |> Task.andThen (\_ -> Exit.exitFailure)
 
 
 attemptWithStyle : Style -> (x -> Help.Report) -> Task Never (Result x a) -> Task Never a
 attemptWithStyle style toReport work =
     work
         -- |> IO.catch reportExceptionsNicely
-        |> Task.bind
-            (\result ->
-                case result of
-                    Ok a ->
-                        Task.pure a
+        |> Task.andThen (handleStyledResult style toReport)
 
-                    Err x ->
-                        case style of
-                            Silent ->
-                                Exit.exitFailure
 
-                            Json ->
-                                Utils.builderHPutBuilder IO.stderr (Encode.encodeUgly (Exit.toJson (toReport x)))
-                                    |> Task.bind (\_ -> Exit.exitFailure)
+handleStyledResult : Style -> (x -> Help.Report) -> Result x a -> Task Never a
+handleStyledResult style toReport result =
+    case result of
+        Ok a ->
+            Task.succeed a
 
-                            Terminal mvar ->
-                                Utils.readMVar (BD.map (\_ -> ()) BD.bool) mvar
-                                    |> Task.bind (\_ -> Exit.toStderr (toReport x))
-                                    |> Task.bind (\_ -> Exit.exitFailure)
-            )
+        Err x ->
+            exitWithError style (toReport x)
+
+
+exitWithError : Style -> Help.Report -> Task Never a
+exitWithError style helpReport =
+    case style of
+        Silent ->
+            Exit.exitFailure
+
+        Json ->
+            exitWithJsonError helpReport
+
+        Terminal mvar ->
+            exitWithTerminalError mvar helpReport
+
+
+exitWithJsonError : Help.Report -> Task Never a
+exitWithJsonError helpReport =
+    Utils.builderHPutBuilder IO.stderr (Encode.encodeUgly (Exit.toJson helpReport))
+        |> Task.andThen (\_ -> Exit.exitFailure)
+
+
+exitWithTerminalError : MVar () -> Help.Report -> Task Never a
+exitWithTerminalError mvar helpReport =
+    Utils.readMVar (Bytes.Decode.map (\_ -> ()) BD.bool) mvar
+        |> Task.andThen (\_ -> Exit.toStderr helpReport)
+        |> Task.andThen (\_ -> Exit.exitFailure)
 
 
 
@@ -153,7 +180,7 @@ report (Key send) msg =
 
 ignorer : Key msg
 ignorer =
-    Key (\_ -> Task.pure ())
+    Key (\_ -> Task.succeed ())
 
 
 
@@ -163,32 +190,39 @@ ignorer =
 ask : D.Doc -> Task Never Bool
 ask doc =
     Help.toStdout doc
-        |> Task.bind (\_ -> askHelp)
+        |> Task.andThen (\_ -> askHelp)
 
 
 askHelp : Task Never Bool
 askHelp =
     IO.hFlush IO.stdout
-        |> Task.bind (\_ -> IO.getLine)
-        |> Task.bind
-            (\input ->
-                case input of
-                    "" ->
-                        Task.pure True
+        |> Task.andThen (\_ -> IO.getLine)
+        |> Task.andThen parseYesNoResponse
 
-                    "Y" ->
-                        Task.pure True
 
-                    "y" ->
-                        Task.pure True
+parseYesNoResponse : String -> Task Never Bool
+parseYesNoResponse input =
+    case input of
+        "" ->
+            Task.succeed True
 
-                    "n" ->
-                        Task.pure False
+        "Y" ->
+            Task.succeed True
 
-                    _ ->
-                        IO.putStr "Must type 'y' for yes or 'n' for no: "
-                            |> Task.bind (\_ -> askHelp)
-            )
+        "y" ->
+            Task.succeed True
+
+        "n" ->
+            Task.succeed False
+
+        _ ->
+            promptAndRetry
+
+
+promptAndRetry : Task Never Bool
+promptAndRetry =
+    IO.putStr "Must type 'y' for yes or 'n' for no: "
+        |> Task.andThen (\_ -> askHelp)
 
 
 
@@ -203,57 +237,74 @@ trackDetails : Style -> (DKey -> Task Never a) -> Task Never a
 trackDetails style callback =
     case style of
         Silent ->
-            callback (Key (\_ -> Task.pure ()))
+            callback (Key (\_ -> Task.succeed ()))
 
         Json ->
-            callback (Key (\_ -> Task.pure ()))
+            callback (Key (\_ -> Task.succeed ()))
 
         Terminal mvar ->
             Utils.newChan Utils.mVarEncoder
-                |> Task.bind
-                    (\chan ->
-                        Utils.forkIO
-                            (Utils.takeMVar (BD.succeed ()) mvar
-                                |> Task.bind (\_ -> detailsLoop chan (DState 0 0 0 0 0 0 0))
-                                |> Task.bind (\_ -> Utils.putMVar (\_ -> BE.bool True) mvar ())
-                            )
-                            |> Task.bind
-                                (\_ ->
-                                    let
-                                        encoder : Maybe DMsg -> BE.Encoder
-                                        encoder =
-                                            BE.maybe dMsgEncoder
-                                    in
-                                    callback (Key (Utils.writeChan encoder chan << Just))
-                                        |> Task.bind
-                                            (\answer ->
-                                                Utils.writeChan encoder chan Nothing
-                                                    |> Task.fmap (\_ -> answer)
-                                            )
-                                )
-                    )
+                |> Task.andThen (trackDetailsWithChan mvar callback)
+
+
+trackDetailsWithChan : MVar () -> (DKey -> Task Never a) -> Chan (Maybe DMsg) -> Task Never a
+trackDetailsWithChan mvar callback chan =
+    Utils.forkIO (runDetailsWorker mvar chan)
+        |> Task.andThen (\_ -> runDetailsCallback chan callback)
+
+
+runDetailsWorker : MVar () -> Chan (Maybe DMsg) -> Task Never ()
+runDetailsWorker mvar chan =
+    Utils.takeMVar (Bytes.Decode.succeed ()) mvar
+        |> Task.andThen (\_ -> detailsLoop chan (DState 0 0 0 0 0 0 0))
+        |> Task.andThen (\_ -> Utils.putMVar (\_ -> BE.bool True) mvar ())
+
+
+runDetailsCallback : Chan (Maybe DMsg) -> (DKey -> Task Never a) -> Task Never a
+runDetailsCallback chan callback =
+    let
+        encoder : Maybe DMsg -> Bytes.Encode.Encoder
+        encoder =
+            BE.maybe dMsgEncoder
+    in
+    callback (Key (Utils.writeChan encoder chan << Just))
+        |> Task.andThen (signalDetailsComplete encoder chan)
+
+
+signalDetailsComplete : (Maybe DMsg -> Bytes.Encode.Encoder) -> Chan (Maybe DMsg) -> a -> Task Never a
+signalDetailsComplete encoder chan answer =
+    Utils.writeChan encoder chan Nothing
+        |> Task.map (\_ -> answer)
 
 
 detailsLoop : Chan (Maybe DMsg) -> DState -> Task Never ()
 detailsLoop chan ((DState total _ _ _ _ built _) as state) =
     Utils.readChan (BD.maybe dMsgDecoder) chan
-        |> Task.bind
-            (\msg ->
-                case msg of
-                    Just dmsg ->
-                        Task.bind (detailsLoop chan) (detailsStep dmsg state)
+        |> Task.andThen (handleDetailsMessage chan state total built)
 
-                    Nothing ->
-                        IO.putStrLn
-                            (clear (toBuildProgress total total)
-                                (if built == total then
-                                    "Dependencies ready!"
 
-                                 else
-                                    "Dependency problem!"
-                                )
-                            )
+handleDetailsMessage : Chan (Maybe DMsg) -> DState -> Int -> Int -> Maybe DMsg -> Task Never ()
+handleDetailsMessage chan state total built msg =
+    case msg of
+        Just dmsg ->
+            detailsStep dmsg state
+                |> Task.andThen (detailsLoop chan)
+
+        Nothing ->
+            printFinalDetailsStatus total built
+
+
+printFinalDetailsStatus : Int -> Int -> Task Never ()
+printFinalDetailsStatus total built =
+    IO.putStrLn
+        (clear (toBuildProgress total total)
+            (if built == total then
+                "Dependencies ready!"
+
+             else
+                "Dependency problem!"
             )
+        )
 
 
 type DState
@@ -274,7 +325,7 @@ detailsStep : DMsg -> DState -> Task Never DState
 detailsStep msg (DState total cached rqst rcvd failed built broken) =
     case msg of
         DStart numDependencies ->
-            Task.pure (DState numDependencies 0 0 0 0 0 0)
+            Task.succeed (DState numDependencies 0 0 0 0 0 0)
 
         DCached ->
             putTransition (DState total (cached + 1) rqst rcvd failed built broken)
@@ -284,17 +335,17 @@ detailsStep msg (DState total cached rqst rcvd failed built broken) =
                 IO.putStrLn "Starting downloads...\n"
 
              else
-                Task.pure ()
+                Task.succeed ()
             )
-                |> Task.fmap (\_ -> DState total cached (rqst + 1) rcvd failed built broken)
+                |> Task.map (\_ -> DState total cached (rqst + 1) rcvd failed built broken)
 
         DReceived pkg vsn ->
             putDownload goodMark pkg vsn
-                |> Task.bind (\_ -> putTransition (DState total cached rqst (rcvd + 1) failed built broken))
+                |> Task.andThen (\_ -> putTransition (DState total cached rqst (rcvd + 1) failed built broken))
 
         DFailed pkg vsn ->
             putDownload badMark pkg vsn
-                |> Task.bind (\_ -> putTransition (DState total cached rqst rcvd (failed + 1) built broken))
+                |> Task.andThen (\_ -> putTransition (DState total cached rqst rcvd (failed + 1) built broken))
 
         DBuilt ->
             putBuilt (DState total cached rqst rcvd failed (built + 1) broken)
@@ -318,7 +369,7 @@ putDownload mark pkg vsn =
 putTransition : DState -> Task Never DState
 putTransition ((DState total cached _ rcvd failed built broken) as state) =
     if cached + rcvd + failed < total then
-        Task.pure state
+        Task.succeed state
 
     else
         let
@@ -331,7 +382,7 @@ putTransition ((DState total cached _ rcvd failed built broken) as state) =
                     '\n'
         in
         putStrFlush (String.cons char (toBuildProgress (built + broken + failed) total))
-            |> Task.fmap (\_ -> state)
+            |> Task.map (\_ -> state)
 
 
 putBuilt : DState -> Task Never DState
@@ -340,9 +391,9 @@ putBuilt ((DState total cached _ rcvd failed built broken) as state) =
         putStrFlush (String.cons '\u{000D}' (toBuildProgress (built + broken + failed) total))
 
      else
-        Task.pure ()
+        Task.succeed ()
     )
-        |> Task.fmap (\_ -> state)
+        |> Task.map (\_ -> state)
 
 
 toBuildProgress : Int -> Int -> String
@@ -370,77 +421,91 @@ type alias BResult a =
     Result Exit.BuildProblem a
 
 
-trackBuild : BD.Decoder a -> (a -> BE.Encoder) -> Style -> (BKey -> Task Never (BResult a)) -> Task Never (BResult a)
+trackBuild : Bytes.Decode.Decoder a -> (a -> Bytes.Encode.Encoder) -> Style -> (BKey -> Task Never (BResult a)) -> Task Never (BResult a)
 trackBuild decoder encoder style callback =
     case style of
         Silent ->
-            callback (Key (\_ -> Task.pure ()))
+            callback (Key (\_ -> Task.succeed ()))
 
         Json ->
-            callback (Key (\_ -> Task.pure ()))
+            callback (Key (\_ -> Task.succeed ()))
 
         Terminal mvar ->
             Utils.newChan Utils.mVarEncoder
-                |> Task.bind
-                    (\chan ->
-                        let
-                            chanEncoder : Result BMsg (BResult a) -> BE.Encoder
-                            chanEncoder =
-                                BE.result bMsgEncoder (bResultEncoder encoder)
-                        in
-                        Utils.forkIO
-                            (Utils.takeMVar (BD.succeed ()) mvar
-                                |> Task.bind (\_ -> putStrFlush "Compiling ...")
-                                |> Task.bind (\_ -> buildLoop decoder chan 0)
-                                |> Task.bind (\_ -> Utils.putMVar (\_ -> BE.bool True) mvar ())
-                            )
-                            |> Task.bind (\_ -> callback (Key (Utils.writeChan chanEncoder chan << Err)))
-                            |> Task.bind
-                                (\result ->
-                                    Utils.writeChan chanEncoder chan (Ok result)
-                                        |> Task.fmap (\_ -> result)
-                                )
-                    )
+                |> Task.andThen (trackBuildWithChan decoder encoder mvar callback)
+
+
+trackBuildWithChan : Bytes.Decode.Decoder a -> (a -> Bytes.Encode.Encoder) -> MVar () -> (BKey -> Task Never (BResult a)) -> Chan (Result BMsg (BResult a)) -> Task Never (BResult a)
+trackBuildWithChan decoder encoder mvar callback chan =
+    let
+        chanEncoder : Result BMsg (BResult a) -> Bytes.Encode.Encoder
+        chanEncoder =
+            BE.result bMsgEncoder (bResultEncoder encoder)
+    in
+    Utils.forkIO (runBuildWorker decoder mvar chan)
+        |> Task.andThen (\_ -> callback (Key (Utils.writeChan chanEncoder chan << Err)))
+        |> Task.andThen (signalBuildComplete chanEncoder chan)
+
+
+runBuildWorker : Bytes.Decode.Decoder a -> MVar () -> Chan (Result BMsg (BResult a)) -> Task Never ()
+runBuildWorker decoder mvar chan =
+    Utils.takeMVar (Bytes.Decode.succeed ()) mvar
+        |> Task.andThen (\_ -> putStrFlush "Compiling ...")
+        |> Task.andThen (\_ -> buildLoop decoder chan 0)
+        |> Task.andThen (\_ -> Utils.putMVar (\_ -> BE.bool True) mvar ())
+
+
+signalBuildComplete : (Result BMsg (BResult a) -> Bytes.Encode.Encoder) -> Chan (Result BMsg (BResult a)) -> BResult a -> Task Never (BResult a)
+signalBuildComplete chanEncoder chan result =
+    Utils.writeChan chanEncoder chan (Ok result)
+        |> Task.map (\_ -> result)
 
 
 type BMsg
     = BDone
 
 
-buildLoop : BD.Decoder a -> Chan (Result BMsg (BResult a)) -> Int -> Task Never ()
+buildLoop : Bytes.Decode.Decoder a -> Chan (Result BMsg (BResult a)) -> Int -> Task Never ()
 buildLoop decoder chan done =
     Utils.readChan (BD.result bMsgDecoder (bResultDecoder decoder)) chan
-        |> Task.bind
-            (\msg ->
-                case msg of
-                    Err BDone ->
-                        let
-                            done1 : Int
-                            done1 =
-                                done + 1
-                        in
-                        putStrFlush ("\u{000D}Compiling (" ++ String.fromInt done1 ++ ")")
-                            |> Task.bind (\_ -> buildLoop decoder chan done1)
+        |> Task.andThen (handleBuildMessage decoder chan done)
 
-                    Ok result ->
-                        let
-                            message : String
-                            message =
-                                toFinalMessage done result
 
-                            width : Int
-                            width =
-                                12 + String.length (String.fromInt done)
-                        in
-                        IO.putStrLn
-                            (if String.length message < width then
-                                String.cons '\u{000D}' (String.repeat width " ")
-                                    ++ String.cons '\u{000D}' message
+handleBuildMessage : Bytes.Decode.Decoder a -> Chan (Result BMsg (BResult a)) -> Int -> Result BMsg (BResult a) -> Task Never ()
+handleBuildMessage decoder chan done msg =
+    case msg of
+        Err BDone ->
+            updateBuildProgress decoder chan (done + 1)
 
-                             else
-                                String.cons '\u{000D}' message
-                            )
-            )
+        Ok result ->
+            printFinalBuildMessage done result
+
+
+updateBuildProgress : Bytes.Decode.Decoder a -> Chan (Result BMsg (BResult a)) -> Int -> Task Never ()
+updateBuildProgress decoder chan done =
+    putStrFlush ("\u{000D}Compiling (" ++ String.fromInt done ++ ")")
+        |> Task.andThen (\_ -> buildLoop decoder chan done)
+
+
+printFinalBuildMessage : Int -> BResult a -> Task Never ()
+printFinalBuildMessage done result =
+    let
+        message : String
+        message =
+            toFinalMessage done result
+
+        width : Int
+        width =
+            12 + String.length (String.fromInt done)
+    in
+    IO.putStrLn
+        (if String.length message < width then
+            String.cons '\u{000D}' (String.repeat width " ")
+                ++ String.cons '\u{000D}' message
+
+         else
+            String.cons '\u{000D}' message
+        )
 
 
 toFinalMessage : Int -> BResult a -> String
@@ -477,22 +542,24 @@ reportGenerate : Style -> NE.Nonempty ModuleName.Raw -> String -> Task Never ()
 reportGenerate style names output =
     case style of
         Silent ->
-            Task.pure ()
+            Task.succeed ()
 
         Json ->
-            Task.pure ()
+            Task.succeed ()
 
         Terminal mvar ->
-            Utils.readMVar (BD.map (\_ -> ()) BD.bool) mvar
-                |> Task.bind
-                    (\_ ->
-                        let
-                            cnames : NE.Nonempty String
-                            cnames =
-                                NE.map (ModuleName.toChars >> String.fromList) names
-                        in
-                        IO.putStrLn (String.cons '\n' (toGenDiagram cnames output))
-                    )
+            Utils.readMVar (Bytes.Decode.map (\_ -> ()) BD.bool) mvar
+                |> Task.andThen (\_ -> printGenerateDiagram names output)
+
+
+printGenerateDiagram : NE.Nonempty ModuleName.Raw -> String -> Task Never ()
+printGenerateDiagram names output =
+    let
+        cnames : NE.Nonempty String
+        cnames =
+            NE.map (Name.toChars >> String.fromList) names
+    in
+    IO.putStrLn (String.cons '\n' (toGenDiagram cnames output))
 
 
 toGenDiagram : NE.Nonempty String -> String -> String
@@ -564,109 +631,109 @@ vbottom =
 putStrFlush : String -> Task Never ()
 putStrFlush str =
     IO.hPutStr IO.stdout str
-        |> Task.bind (\_ -> IO.hFlush IO.stdout)
+        |> Task.andThen (\_ -> IO.hFlush IO.stdout)
 
 
 
 -- ENCODERS and DECODERS
 
 
-dMsgEncoder : DMsg -> BE.Encoder
+dMsgEncoder : DMsg -> Bytes.Encode.Encoder
 dMsgEncoder dMsg =
     case dMsg of
         DStart numDependencies ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.int numDependencies
                 ]
 
         DCached ->
-            BE.unsignedInt8 1
+            Bytes.Encode.unsignedInt8 1
 
         DRequested ->
-            BE.unsignedInt8 2
+            Bytes.Encode.unsignedInt8 2
 
         DReceived pkg vsn ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , Pkg.nameEncoder pkg
                 , V.versionEncoder vsn
                 ]
 
         DFailed pkg vsn ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , Pkg.nameEncoder pkg
                 , V.versionEncoder vsn
                 ]
 
         DBuilt ->
-            BE.unsignedInt8 5
+            Bytes.Encode.unsignedInt8 5
 
         DBroken ->
-            BE.unsignedInt8 6
+            Bytes.Encode.unsignedInt8 6
 
 
-dMsgDecoder : BD.Decoder DMsg
+dMsgDecoder : Bytes.Decode.Decoder DMsg
 dMsgDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map DStart BD.int
+                        Bytes.Decode.map DStart BD.int
 
                     1 ->
-                        BD.succeed DCached
+                        Bytes.Decode.succeed DCached
 
                     2 ->
-                        BD.succeed DRequested
+                        Bytes.Decode.succeed DRequested
 
                     3 ->
-                        BD.map2 DReceived
+                        Bytes.Decode.map2 DReceived
                             Pkg.nameDecoder
                             V.versionDecoder
 
                     4 ->
-                        BD.map2 DFailed
+                        Bytes.Decode.map2 DFailed
                             Pkg.nameDecoder
                             V.versionDecoder
 
                     5 ->
-                        BD.succeed DBuilt
+                        Bytes.Decode.succeed DBuilt
 
                     6 ->
-                        BD.succeed DBroken
+                        Bytes.Decode.succeed DBroken
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-bMsgEncoder : BMsg -> BE.Encoder
+bMsgEncoder : BMsg -> Bytes.Encode.Encoder
 bMsgEncoder _ =
-    BE.unsignedInt8 0
+    Bytes.Encode.unsignedInt8 0
 
 
-bMsgDecoder : BD.Decoder BMsg
+bMsgDecoder : Bytes.Decode.Decoder BMsg
 bMsgDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed BDone
+                        Bytes.Decode.succeed BDone
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-bResultEncoder : (a -> BE.Encoder) -> BResult a -> BE.Encoder
+bResultEncoder : (a -> Bytes.Encode.Encoder) -> BResult a -> Bytes.Encode.Encoder
 bResultEncoder encoder bResult =
     BE.result Exit.buildProblemEncoder encoder bResult
 
 
-bResultDecoder : BD.Decoder a -> BD.Decoder (BResult a)
+bResultDecoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (BResult a)
 bResultDecoder decoder =
     BD.result Exit.buildProblemDecoder decoder

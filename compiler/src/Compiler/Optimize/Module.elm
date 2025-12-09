@@ -15,7 +15,7 @@ import Compiler.Optimize.Names as Names
 import Compiler.Optimize.Port as Port
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Main as E
-import Compiler.Reporting.Result as R
+import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
@@ -28,7 +28,7 @@ import Utils.Main as Utils
 
 
 type alias MResult i w a =
-    R.RResult i w E.Error a
+    ReportingResult.RResult i w E.Error a
 
 
 type alias Annotations =
@@ -212,15 +212,15 @@ addToGraph name node fields (Opt.LocalGraph main nodes fieldCounts) =
 
 addDecls : IO.Canonical -> Annotations -> Can.Decls -> Opt.LocalGraph -> MResult i (List W.Warning) Opt.LocalGraph
 addDecls home annotations decls graph =
-    R.loop (addDeclsHelp home annotations) ( decls, graph )
+    ReportingResult.loop (addDeclsHelp home annotations) ( decls, graph )
 
 
-addDeclsHelp : IO.Canonical -> Annotations -> ( Can.Decls, Opt.LocalGraph ) -> MResult i (List W.Warning) (R.Step ( Can.Decls, Opt.LocalGraph ) Opt.LocalGraph)
+addDeclsHelp : IO.Canonical -> Annotations -> ( Can.Decls, Opt.LocalGraph ) -> MResult i (List W.Warning) (ReportingResult.Step ( Can.Decls, Opt.LocalGraph ) Opt.LocalGraph)
 addDeclsHelp home annotations ( decls, graph ) =
     case decls of
         Can.Declare def subDecls ->
             addDef home annotations def graph
-                |> R.fmap (R.Loop << Tuple.pair subDecls)
+                |> ReportingResult.map (ReportingResult.Loop << Tuple.pair subDecls)
 
         Can.DeclareRec d ds subDecls ->
             let
@@ -230,13 +230,13 @@ addDeclsHelp home annotations ( decls, graph ) =
             in
             case findMain defs of
                 Nothing ->
-                    R.pure (R.Loop ( subDecls, addRecDefs home defs graph ))
+                    ReportingResult.ok (ReportingResult.Loop ( subDecls, addRecDefs home defs graph ))
 
                 Just region ->
-                    R.throw <| E.BadCycle region (defToName d) (List.map defToName ds)
+                    ReportingResult.throw <| E.BadCycle region (defToName d) (List.map defToName ds)
 
         Can.SaveTheEnvironment ->
-            R.ok (R.Done graph)
+            ReportingResult.ok (ReportingResult.Done graph)
 
 
 findMain : List Can.Def -> Maybe A.Region
@@ -284,8 +284,8 @@ addDef home annotations def graph =
                 (Can.Forall _ tipe) =
                     Utils.find identity name annotations
             in
-            R.warn (W.MissingTypeAnnotation region name tipe)
-                |> R.bind (\_ -> addDefHelp region annotations home name args body graph)
+            ReportingResult.warn (W.MissingTypeAnnotation region name tipe)
+                |> ReportingResult.andThen (\_ -> addDefHelp region annotations home name args body graph)
 
         Can.TypedDef (A.At region name) _ typedArgs body _ ->
             addDefHelp region annotations home name (List.map Tuple.first typedArgs) body graph
@@ -294,7 +294,7 @@ addDef home annotations def graph =
 addDefHelp : A.Region -> Annotations -> IO.Canonical -> Name.Name -> List Can.Pattern -> Can.Expr -> Opt.LocalGraph -> MResult i w Opt.LocalGraph
 addDefHelp region annotations home name args body ((Opt.LocalGraph _ nodes fieldCounts) as graph) =
     if name /= Name.main_ then
-        R.ok (addDefNode home region name args body EverySet.empty graph)
+        ReportingResult.ok (addDefNode home region name args body EverySet.empty graph)
 
     else
         let
@@ -309,25 +309,25 @@ addDefHelp region annotations home name args body ((Opt.LocalGraph _ nodes field
         case Type.deepDealias tipe of
             Can.TType hm nm [ _ ] ->
                 if hm == ModuleName.virtualDom && nm == Name.node then
-                    R.ok <| addMain <| Names.run <| Names.registerKernel Name.virtualDom Opt.Static
+                    ReportingResult.ok <| addMain <| Names.run <| Names.registerKernel Name.virtualDom Opt.Static
 
                 else
-                    R.throw (E.BadType region tipe)
+                    ReportingResult.throw (E.BadType region tipe)
 
             Can.TType hm nm [ flags, _, message ] ->
                 if hm == ModuleName.platform && nm == Name.program then
                     case Effects.checkPayload flags of
                         Ok () ->
-                            R.ok <| addMain <| Names.run <| Names.fmap (Opt.Dynamic message) <| Port.toFlagsDecoder flags
+                            ReportingResult.ok <| addMain <| Names.run <| Names.map (Opt.Dynamic message) <| Port.toFlagsDecoder flags
 
                         Err ( subType, invalidPayload ) ->
-                            R.throw (E.BadFlags region subType invalidPayload)
+                            ReportingResult.throw (E.BadFlags region subType invalidPayload)
 
                 else
-                    R.throw (E.BadType region tipe)
+                    ReportingResult.throw (E.BadType region tipe)
 
             _ ->
-                R.throw (E.BadType region tipe)
+                ReportingResult.throw (E.BadType region tipe)
 
 
 addDefNode : IO.Canonical -> A.Region -> Name.Name -> List Can.Pattern -> Can.Expr -> EverySet (List String) Opt.Global -> Opt.LocalGraph -> Opt.LocalGraph
@@ -341,10 +341,10 @@ addDefNode home region name args body mainDeps graph =
 
                     _ ->
                         Expr.destructArgs args
-                            |> Names.bind
+                            |> Names.andThen
                                 (\( argNames, destructors ) ->
                                     Expr.optimize EverySet.empty body
-                                        |> Names.fmap
+                                        |> Names.map
                                             (\obody ->
                                                 Opt.TrackedFunction argNames <|
                                                     List.foldr Opt.Destruct obody destructors
@@ -386,7 +386,7 @@ addRecDefs home defs (Opt.LocalGraph main nodes fieldCounts) =
 
         ( deps, fields, State { values, functions } ) =
             Names.run <|
-                List.foldl (\def -> Names.bind (\state -> addRecDef cycle state def))
+                List.foldl (\def -> Names.andThen (\state -> addRecDef cycle state def))
                     (Names.pure (State { values = [], functions = [] }))
                     defs
     in
@@ -453,7 +453,7 @@ addRecDefHelp cycle region (State { values, functions }) name args body =
     case args of
         [] ->
             Expr.optimize cycle body
-                |> Names.fmap
+                |> Names.map
                     (\obody ->
                         State
                             { values = ( name, obody ) :: values
@@ -463,7 +463,7 @@ addRecDefHelp cycle region (State { values, functions }) name args body =
 
         _ :: _ ->
             Expr.optimizePotentialTailCall cycle region name args body
-                |> Names.fmap
+                |> Names.map
                     (\odef ->
                         State
                             { values = values

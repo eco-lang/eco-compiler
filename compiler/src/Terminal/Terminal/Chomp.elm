@@ -3,7 +3,7 @@ module Terminal.Terminal.Chomp exposing
     , Chunk
     , Suggest
     , apply
-    , bind
+    , andThen
     , checkForUnknownFlags
     , chomp
     , chompArg
@@ -11,7 +11,7 @@ module Terminal.Terminal.Chomp exposing
     , chompMultiple
     , chompNormalFlag
     , chompOnOffFlag
-    , fmap
+    , map
     , pure
     )
 
@@ -38,7 +38,7 @@ chomp maybeIndex strings args (Chomper flagChomper) =
             Tuple.mapSecond (Result.map (\a -> ( a, flagValue ))) (chompArgs suggest chunks args)
 
         ChomperErr suggest flagError ->
-            ( addSuggest (Task.pure []) suggest, Err (BadFlag flagError) )
+            ( addSuggest (Task.succeed []) suggest, Err (BadFlag flagError) )
 
 
 toChunks : List String -> List Chunk
@@ -115,7 +115,7 @@ chompArgsHelp :
 chompArgsHelp suggest chunks completeArgsList revSuggest revArgErrors =
     case completeArgsList of
         [] ->
-            ( List.foldl (flip addSuggest) (Task.pure []) revSuggest
+            ( List.foldl (flip addSuggest) (Task.succeed []) revSuggest
             , Err (BadArgs (List.reverse revArgErrors))
             )
 
@@ -125,7 +125,7 @@ chompArgsHelp suggest chunks completeArgsList revSuggest revArgErrors =
                     chompArgsHelp suggest chunks others (s1 :: revSuggest) (argError :: revArgErrors)
 
                 ( s1, Ok value ) ->
-                    ( addSuggest (Task.pure []) s1
+                    ( addSuggest (Task.succeed []) s1
                     , Ok value
                     )
 
@@ -140,7 +140,7 @@ addSuggest everything suggest =
             everything
 
         Suggestions newStuff ->
-            Task.pure (++)
+            Task.succeed (++)
                 |> Task.apply newStuff
                 |> Task.apply everything
 
@@ -391,7 +391,7 @@ suggestFlag unknownFlags flags targetIndex =
 
         (Chunk index string) :: otherUnknownFlags ->
             if index == targetIndex then
-                Just (Task.pure (List.filter (String.startsWith string) (getFlagNames flags [])))
+                Just (Task.succeed (List.filter (String.startsWith string) (getFlagNames flags [])))
 
             else
                 suggestFlag otherUnknownFlags flags targetIndex
@@ -426,8 +426,8 @@ getFlagName flag =
 -- CHOMPER INSTANCES
 
 
-fmap : (a -> b) -> Chomper x a -> Chomper x b
-fmap func (Chomper chomper) =
+map : (a -> b) -> Chomper x a -> Chomper x b
+map func (Chomper chomper) =
     Chomper <|
         \i w ->
             case chomper i w of
@@ -467,8 +467,8 @@ apply (Chomper argChomper) (Chomper funcChomper) =
                     ChomperErr s1 err
 
 
-bind : (a -> Chomper x b) -> Chomper x a -> Chomper x b
-bind callback (Chomper aChomper) =
+andThen : (a -> Chomper x b) -> Chomper x a -> Chomper x b
+andThen callback (Chomper aChomper) =
     Chomper <|
         \s cs ->
             case aChomper s cs of

@@ -38,7 +38,8 @@ toReport source err =
                                 [ D.fromChars "Other possibilities include:"
                                 , unhandledPatternsToDocBlock unhandled
                                 , D.reflow <|
-                                    "I would have to crash if I saw one of those! So rather than pattern matching in function arguments, put a `case` in the function body to account for all possibilities."
+                                    "I would have to crash if I saw one of those! So rather than pattern matching in function arguments, "
+                                        ++ "put a `case` in the function body to account for all possibilities."
                                 ]
                             )
 
@@ -52,7 +53,8 @@ toReport source err =
                                 [ D.fromChars "Other possibilities include:"
                                 , unhandledPatternsToDocBlock unhandled
                                 , D.reflow <|
-                                    "I would have to crash if I saw one of those! You can use `let` to deconstruct values only if there is ONE possibility. Switch to a `case` expression to account for all possibilities."
+                                    "I would have to crash if I saw one of those! You can use `let` to deconstruct values only if there is ONE possibility. "
+                                        ++ "Switch to a `case` expression to account for all possibilities."
                                 , D.toSimpleHint <|
                                     "Are you calling a function that definitely returns values with a very specific shape? Try making the return type of that function more specific!"
                                 ]

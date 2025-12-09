@@ -15,7 +15,7 @@ import Utils.Crash exposing (crash)
 unsafeLast : IORef (Array (Maybe (List Variable))) -> IO (List Variable)
 unsafeLast ioRef =
     IORef.readIORefMVector ioRef
-        |> IO.fmap
+        |> IO.map
             (\array ->
                 case Array.get (Array.length array - 1) array of
                     Just (Just value) ->
@@ -37,15 +37,15 @@ unsafeInit =
 imapM_ : (Int -> List Variable -> IO b) -> IORef (Array (Maybe (List IO.Variable))) -> IO ()
 imapM_ action ioRef =
     IORef.readIORefMVector ioRef
-        |> IO.bind
+        |> IO.andThen
             (\value ->
                 Array.foldl
                     (\( i, maybeX ) ioAcc ->
                         case maybeX of
                             Just x ->
-                                IO.bind
+                                IO.andThen
                                     (\acc ->
-                                        IO.fmap (\newX -> Array.push (Just newX) acc)
+                                        IO.map (\newX -> Array.push (Just newX) acc)
                                             (action i x)
                                     )
                                     ioAcc
@@ -55,7 +55,7 @@ imapM_ action ioRef =
                     )
                     (IO.pure Array.empty)
                     (Array.indexedMap Tuple.pair value)
-                    |> IO.fmap (\_ -> ())
+                    |> IO.map (\_ -> ())
             )
 
 

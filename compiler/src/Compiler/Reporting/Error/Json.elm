@@ -90,7 +90,9 @@ parseErrorToReport path source parseError reason =
                         , D.fromChars "hints!"
                         ]
                     , D.toSimpleNote <|
-                        "The JSON specification does not allow trailing commas, so you can sometimes get this error in arrays that have an extra comma at the end. In that case, remove that last comma or add another array entry after it!"
+                        "The JSON specification does not allow trailing commas, so you can sometimes get this error "
+                            ++ "in arrays that have an extra comma at the end. In that case, remove that last comma "
+                            ++ "or add another array entry after it!"
                     ]
                 )
 
@@ -127,7 +129,9 @@ parseErrorToReport path source parseError reason =
                         , D.fromChars "next."
                         ]
                     , D.reflow <|
-                        "This error is commonly caused by trailing commas in JSON objects. Those are actually disallowed by <https://json.org> so check the previous line for a trailing comma that may need to be deleted."
+                        "This error is commonly caused by trailing commas in JSON objects. "
+                            ++ "Those are actually disallowed by <https://json.org> so check the previous line "
+                            ++ "for a trailing comma that may need to be deleted."
                     , objectNote
                     ]
                 )
@@ -201,8 +205,10 @@ parseErrorToReport path source parseError reason =
                         row
                         col
                         ( "I ran into a control character unexpectedly:"
-                        , D.reflow
-                            "These are characters that represent tabs, backspaces, newlines, and a bunch of other invisible characters. They all come before 20 in the ASCII range, and they are disallowed by the JSON specificaiton. Maybe a copy/paste added one of these invisible characters to your JSON?"
+                        , D.reflow <|
+                            "These are characters that represent tabs, backspaces, newlines, and a bunch of other invisible characters. "
+                                ++ "They all come before 20 in the ASCII range, and they are disallowed by the JSON specificaiton. "
+                                ++ "Maybe a copy/paste added one of these invisible characters to your JSON?"
                         )
 
                 BadStringEscapeChar ->

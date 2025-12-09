@@ -29,7 +29,9 @@ import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 
@@ -692,14 +694,19 @@ toReport source err =
 
                     Function ->
                         ( "a function"
-                        , D.reflow
-                            "But functions cannot be sent in and out ports. If we allowed functions in from JS they may perform some side-effects. If we let functions out, they could produce incorrect results because Elm optimizations assume there are no side-effects."
+                        , D.reflow <|
+                            "But functions cannot be sent in and out ports. If we allowed functions in from JS "
+                                ++ "they may perform some side-effects. If we let functions out, they could produce "
+                                ++ "incorrect results because Elm optimizations assume there are no side-effects."
                         )
 
                     TypeVariable name ->
                         ( "an unspecified type"
-                        , D.reflow
-                            ("But type variables like `" ++ name ++ "` cannot flow through ports. I need to know exactly what type of data I am getting, so I can guarantee that unexpected data cannot sneak in and crash the Elm program.")
+                        , D.reflow <|
+                            "But type variables like `"
+                                ++ name
+                                ++ "` cannot flow through ports. I need to know exactly what type of data I am getting, "
+                                ++ "so I can guarantee that unexpected data cannot sneak in and crash the Elm program."
                         )
 
                     UnsupportedType name ->
@@ -709,8 +716,9 @@ toReport source err =
                             , D.indent 4 <|
                                 D.reflow
                                     "Ints, Floats, Bools, Strings, Maybes, Lists, Arrays, tuples, records, JSON values, and Bytes."
-                            , D.reflow
-                                "Since JSON values can flow through, you can use JSON encoders and decoders to allow other types through as well. More advanced users often just do everything with encoders and decoders for more control and better errors."
+                            , D.reflow <|
+                                "Since JSON values can flow through, you can use JSON encoders and decoders to allow other types "
+                                    ++ "through as well. More advanced users often just do everything with encoders and decoders for more control and better errors."
                             ]
                         )
 
@@ -769,8 +777,10 @@ toReport source err =
                             [ D.reflow
                                 "To receive messages from JavaScript, you need to define a port like this:"
                             , D.indent 4 <| D.dullyellow <| D.fromChars <| "port " ++ name ++ " : (Int -> msg) -> Sub msg"
-                            , D.reflow
-                                "Now every time JS sends an `Int` to this port, it is converted to a `msg`. And if you subscribe, those `msg` values will be piped into your `update` function. The only thing you can customize here is the `Int` type."
+                            , D.reflow <|
+                                "Now every time JS sends an `Int` to this port, it is converted to a `msg`. "
+                                    ++ "And if you subscribe, those `msg` values will be piped into your `update` function. "
+                                    ++ "The only thing you can customize here is the `Int` type."
                             ]
                         )
 
@@ -795,9 +805,24 @@ toReport source err =
                         [] ->
                             ( D.reflow <| "The `" ++ name ++ "` value is defined directly in terms of itself, causing an infinite loop."
                             , D.stack
-                                [ makeTheory "Are you trying to mutate a variable?" <| "Elm does not have mutation, so when I see " ++ name ++ " defined in terms of " ++ name ++ ", I treat it as a recursive definition. Try giving the new value a new name!"
-                                , makeTheory "Maybe you DO want a recursive value?" <| "To define " ++ name ++ " we need to know what " ++ name ++ " is, so let’s expand it. Wait, but now we need to know what " ++ name ++ " is, so let’s expand it... This will keep going infinitely!"
-                                , D.link "Hint" "The root problem is often a typo in some variable name, but I recommend reading" "bad-recursion" "for more detailed advice, especially if you actually do need a recursive value."
+                                [ makeTheory "Are you trying to mutate a variable?" <|
+                                    "Elm does not have mutation, so when I see "
+                                        ++ name
+                                        ++ " defined in terms of "
+                                        ++ name
+                                        ++ ", I treat it as a recursive definition. Try giving the new value a new name!"
+                                , makeTheory "Maybe you DO want a recursive value?" <|
+                                    "To define "
+                                        ++ name
+                                        ++ " we need to know what "
+                                        ++ name
+                                        ++ " is, so let's expand it. Wait, but now we need to know what "
+                                        ++ name
+                                        ++ " is, so let's expand it... This will keep going infinitely!"
+                                , D.link "Hint"
+                                    "The root problem is often a typo in some variable name, but I recommend reading"
+                                    "bad-recursion"
+                                    "for more detailed advice, especially if you actually do need a recursive value."
                                 ]
                             )
 
@@ -806,7 +831,10 @@ toReport source err =
                             , D.stack
                                 [ D.reflow <| "The `" ++ name ++ "` value depends on itself through the following chain of definitions:"
                                 , D.cycle 4 name names
-                                , D.link "Hint" "The root problem is often a typo in some variable name, but I recommend reading" "bad-recursion" "for more detailed advice, especially if you actually do want mutually recursive values."
+                                , D.link "Hint"
+                                    "The root problem is often a typo in some variable name, but I recommend reading"
+                                    "bad-recursion"
+                                    "for more detailed advice, especially if you actually do want mutually recursive values."
                                 ]
                             )
 
@@ -818,13 +846,30 @@ toReport source err =
                             let
                                 makeTheory : String -> String -> D.Doc
                                 makeTheory question details =
-                                    D.fillSep <| List.map (D.dullyellow << D.fromChars) (String.words question) ++ List.map D.fromChars (String.words details)
+                                    D.fillSep <|
+                                        List.map (D.dullyellow << D.fromChars) (String.words question)
+                                            ++ List.map D.fromChars (String.words details)
                             in
                             ( D.reflow <| "The `" ++ name ++ "` value is defined directly in terms of itself, causing an infinite loop."
                             , D.stack
-                                [ makeTheory "Are you trying to mutate a variable?" <| "Elm does not have mutation, so when I see " ++ name ++ " defined in terms of " ++ name ++ ", I treat it as a recursive definition. Try giving the new value a new name!"
-                                , makeTheory "Maybe you DO want a recursive value?" <| "To define " ++ name ++ " we need to know what " ++ name ++ " is, so let’s expand it. Wait, but now we need to know what " ++ name ++ " is, so let’s expand it... This will keep going infinitely!"
-                                , D.link "Hint" "The root problem is often a typo in some variable name, but I recommend reading" "bad-recursion" "for more detailed advice, especially if you actually do need a recursive value."
+                                [ makeTheory "Are you trying to mutate a variable?" <|
+                                    "Elm does not have mutation, so when I see "
+                                        ++ name
+                                        ++ " defined in terms of "
+                                        ++ name
+                                        ++ ", I treat it as a recursive definition. Try giving the new value a new name!"
+                                , makeTheory "Maybe you DO want a recursive value?" <|
+                                    "To define "
+                                        ++ name
+                                        ++ " we need to know what "
+                                        ++ name
+                                        ++ " is, so let's expand it. Wait, but now we need to know what "
+                                        ++ name
+                                        ++ " is, so let's expand it... This will keep going infinitely!"
+                                , D.link "Hint"
+                                    "The root problem is often a typo in some variable name, but I recommend reading"
+                                    "bad-recursion"
+                                    "for more detailed advice, especially if you actually do need a recursive value."
                                 ]
                             )
 
@@ -833,7 +878,10 @@ toReport source err =
                             , D.stack
                                 [ D.reflow <| "The `" ++ name ++ "` value depends on itself through the following chain of definitions:"
                                 , D.cycle 4 name names
-                                , D.link "Hint" "The root problem is often a typo in some variable name, but I recommend reading" "bad-recursion" "for more detailed advice, especially if you actually do want mutually recursive values."
+                                , D.link "Hint"
+                                    "The root problem is often a typo in some variable name, but I recommend reading"
+                                    "bad-recursion"
+                                    "for more detailed advice, especially if you actually do want mutually recursive values."
                                 ]
                             )
 
@@ -931,9 +979,18 @@ toReport source err =
                             subRegion
                             ( D.fillSep overview
                             , D.stack
-                                [ D.fillSep <| [ D.fromChars "I", D.fromChars "recommend", D.fromChars "removing" ] ++ stuff ++ [ D.fromChars "from", D.fromChars "the", D.fromChars "declaration,", D.fromChars "like", D.fromChars "this:" ]
-                                , D.indent 4 <| D.hsep <| [ D.fromChars "type", D.fromChars "alias", D.green (D.fromName typeName) ] ++ List.map D.fromName (List.filter (\var -> not (List.member var allUnusedNames)) allVars) ++ [ D.fromChars "=", D.fromChars "..." ]
-                                , D.reflow <| "Why? Well, if I allowed `type alias Height a = Float` I would need to answer some weird questions. Is `Height Bool` the same as `Float`? Is `Height Bool` the same as `Height Int`? My solution is to not need to ask them!"
+                                [ D.fillSep <|
+                                    [ D.fromChars "I", D.fromChars "recommend", D.fromChars "removing" ]
+                                        ++ stuff
+                                        ++ [ D.fromChars "from", D.fromChars "the", D.fromChars "declaration,", D.fromChars "like", D.fromChars "this:" ]
+                                , D.indent 4 <|
+                                    D.hsep <|
+                                        [ D.fromChars "type", D.fromChars "alias", D.green (D.fromName typeName) ]
+                                            ++ List.map D.fromName (List.filter (\var -> not (List.member var allUnusedNames)) allVars)
+                                            ++ [ D.fromChars "=", D.fromChars "..." ]
+                                , D.reflow <|
+                                    "Why? Well, if I allowed `type alias Height a = Float` I would need to answer some weird questions. "
+                                        ++ "Is `Height Bool` the same as `Float`? Is `Height Bool` the same as `Height Int`? My solution is to not need to ask them!"
                                 ]
                             )
 
@@ -1023,7 +1080,12 @@ toReport source err =
                             , D.stack
                                 [ D.fillSep <| theseAreUsed ++ butTheseAreUnused
                                 , D.reflow <| "My guess is that a definition like this will work better:"
-                                , D.indent 4 <| D.hsep <| [ D.fromChars "type", D.fromChars "alias", D.fromName typeName ] ++ List.map D.fromName (List.filter (\var -> not (List.member var unused)) allVars) ++ List.map (D.green << D.fromName) unbound ++ [ D.fromChars "=", D.fromChars "..." ]
+                                , D.indent 4 <|
+                                    D.hsep <|
+                                        [ D.fromChars "type", D.fromChars "alias", D.fromName typeName ]
+                                            ++ List.map D.fromName (List.filter (\var -> not (List.member var unused)) allVars)
+                                            ++ List.map (D.green << D.fromName) unbound
+                                            ++ [ D.fromChars "=", D.fromChars "..." ]
                                 ]
                             )
 
@@ -1137,7 +1199,9 @@ ambiguousName source region maybePrefix name h hs thing =
                                 ++ String.fromInt (List.length possibleHomes)
                                 ++ " of your imports, so I am not sure which one to use:"
                         , D.indent 4 <| D.vcat (List.map homeToYellowDoc possibleHomes)
-                        , D.reflow "I recommend using qualified names for imported values. I also recommend having at most one `exposing (..)` per file to make name clashes like this less common in the long run."
+                        , D.reflow <|
+                            "I recommend using qualified names for imported values. I also recommend having at most one "
+                                ++ "`exposing (..)` per file to make name clashes like this less common in the long run."
                         , D.link "Note" "Check out" "imports" "for more info on the import syntax."
                         ]
                     )
@@ -1296,12 +1360,12 @@ aliasToUnionDoc name args tipe =
 -- ENCODERS and DECODERS
 
 
-errorEncoder : Error -> BE.Encoder
+errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
     case error of
         AnnotationTooShort region name index leftovers ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , A.regionEncoder region
                 , BE.string name
                 , Index.zeroBasedEncoder index
@@ -1309,8 +1373,8 @@ errorEncoder error =
                 ]
 
         AmbiguousVar region maybePrefix name h hs ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , A.regionEncoder region
                 , BE.maybe BE.string maybePrefix
                 , BE.string name
@@ -1319,8 +1383,8 @@ errorEncoder error =
                 ]
 
         AmbiguousType region maybePrefix name h hs ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , A.regionEncoder region
                 , BE.maybe BE.string maybePrefix
                 , BE.string name
@@ -1329,8 +1393,8 @@ errorEncoder error =
                 ]
 
         AmbiguousVariant region maybePrefix name h hs ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , A.regionEncoder region
                 , BE.maybe BE.string maybePrefix
                 , BE.string name
@@ -1339,8 +1403,8 @@ errorEncoder error =
                 ]
 
         AmbiguousBinop region name h hs ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , A.regionEncoder region
                 , BE.string name
                 , ModuleName.canonicalEncoder h
@@ -1348,8 +1412,8 @@ errorEncoder error =
                 ]
 
         BadArity region badArityContext name expected actual ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , A.regionEncoder region
                 , badArityContextEncoder badArityContext
                 , BE.string name
@@ -1358,56 +1422,56 @@ errorEncoder error =
                 ]
 
         Binop region op1 op2 ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , A.regionEncoder region
                 , BE.string op1
                 , BE.string op2
                 ]
 
         DuplicateDecl name r1 r2 ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , BE.string name
                 , A.regionEncoder r1
                 , A.regionEncoder r2
                 ]
 
         DuplicateType name r1 r2 ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , BE.string name
                 , A.regionEncoder r1
                 , A.regionEncoder r2
                 ]
 
         DuplicateCtor name r1 r2 ->
-            BE.sequence
-                [ BE.unsignedInt8 9
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
                 , BE.string name
                 , A.regionEncoder r1
                 , A.regionEncoder r2
                 ]
 
         DuplicateBinop name r1 r2 ->
-            BE.sequence
-                [ BE.unsignedInt8 10
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 10
                 , BE.string name
                 , A.regionEncoder r1
                 , A.regionEncoder r2
                 ]
 
         DuplicateField name r1 r2 ->
-            BE.sequence
-                [ BE.unsignedInt8 11
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 11
                 , BE.string name
                 , A.regionEncoder r1
                 , A.regionEncoder r2
                 ]
 
         DuplicateAliasArg typeName name r1 r2 ->
-            BE.sequence
-                [ BE.unsignedInt8 12
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 12
                 , BE.string typeName
                 , BE.string name
                 , A.regionEncoder r1
@@ -1415,8 +1479,8 @@ errorEncoder error =
                 ]
 
         DuplicateUnionArg typeName name r1 r2 ->
-            BE.sequence
-                [ BE.unsignedInt8 13
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 13
                 , BE.string typeName
                 , BE.string name
                 , A.regionEncoder r1
@@ -1424,8 +1488,8 @@ errorEncoder error =
                 ]
 
         DuplicatePattern context name r1 r2 ->
-            BE.sequence
-                [ BE.unsignedInt8 14
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 14
                 , duplicatePatternContextEncoder context
                 , BE.string name
                 , A.regionEncoder r1
@@ -1433,30 +1497,30 @@ errorEncoder error =
                 ]
 
         EffectNotFound region name ->
-            BE.sequence
-                [ BE.unsignedInt8 15
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 15
                 , A.regionEncoder region
                 , BE.string name
                 ]
 
         EffectFunctionNotFound region name ->
-            BE.sequence
-                [ BE.unsignedInt8 16
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 16
                 , A.regionEncoder region
                 , BE.string name
                 ]
 
         ExportDuplicate name r1 r2 ->
-            BE.sequence
-                [ BE.unsignedInt8 17
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 17
                 , BE.string name
                 , A.regionEncoder r1
                 , A.regionEncoder r2
                 ]
 
         ExportNotFound region kind rawName possibleNames ->
-            BE.sequence
-                [ BE.unsignedInt8 18
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 18
                 , A.regionEncoder region
                 , varKindEncoder kind
                 , BE.string rawName
@@ -1464,38 +1528,38 @@ errorEncoder error =
                 ]
 
         ExportOpenAlias region name ->
-            BE.sequence
-                [ BE.unsignedInt8 19
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 19
                 , A.regionEncoder region
                 , BE.string name
                 ]
 
         ImportCtorByName region ctor tipe ->
-            BE.sequence
-                [ BE.unsignedInt8 20
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 20
                 , A.regionEncoder region
                 , BE.string ctor
                 , BE.string tipe
                 ]
 
         ImportNotFound region name suggestions ->
-            BE.sequence
-                [ BE.unsignedInt8 21
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 21
                 , A.regionEncoder region
                 , BE.string name
                 , BE.list ModuleName.canonicalEncoder suggestions
                 ]
 
         ImportOpenAlias region name ->
-            BE.sequence
-                [ BE.unsignedInt8 22
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 22
                 , A.regionEncoder region
                 , BE.string name
                 ]
 
         ImportExposingNotFound region home value possibleNames ->
-            BE.sequence
-                [ BE.unsignedInt8 23
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 23
                 , A.regionEncoder region
                 , ModuleName.canonicalEncoder home
                 , BE.string value
@@ -1503,8 +1567,8 @@ errorEncoder error =
                 ]
 
         NotFoundVar region prefix name possibleNames ->
-            BE.sequence
-                [ BE.unsignedInt8 24
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 24
                 , A.regionEncoder region
                 , BE.maybe BE.string prefix
                 , BE.string name
@@ -1512,8 +1576,8 @@ errorEncoder error =
                 ]
 
         NotFoundType region prefix name possibleNames ->
-            BE.sequence
-                [ BE.unsignedInt8 25
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 25
                 , A.regionEncoder region
                 , BE.maybe BE.string prefix
                 , BE.string name
@@ -1521,8 +1585,8 @@ errorEncoder error =
                 ]
 
         NotFoundVariant region prefix name possibleNames ->
-            BE.sequence
-                [ BE.unsignedInt8 26
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 26
                 , A.regionEncoder region
                 , BE.maybe BE.string prefix
                 , BE.string name
@@ -1530,23 +1594,23 @@ errorEncoder error =
                 ]
 
         NotFoundBinop region op locals ->
-            BE.sequence
-                [ BE.unsignedInt8 27
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 27
                 , A.regionEncoder region
                 , BE.string op
                 , BE.everySet compare BE.string locals
                 ]
 
         PatternHasRecordCtor region name ->
-            BE.sequence
-                [ BE.unsignedInt8 28
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 28
                 , A.regionEncoder region
                 , BE.string name
                 ]
 
         PortPayloadInvalid region portName badType invalidPayload ->
-            BE.sequence
-                [ BE.unsignedInt8 29
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 29
                 , A.regionEncoder region
                 , BE.string portName
                 , Can.typeEncoder badType
@@ -1554,16 +1618,16 @@ errorEncoder error =
                 ]
 
         PortTypeInvalid region name portProblem ->
-            BE.sequence
-                [ BE.unsignedInt8 30
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 30
                 , A.regionEncoder region
                 , BE.string name
                 , portProblemEncoder portProblem
                 ]
 
         RecursiveAlias region name args tipe others ->
-            BE.sequence
-                [ BE.unsignedInt8 31
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 31
                 , A.regionEncoder region
                 , BE.string name
                 , BE.list BE.string args
@@ -1572,37 +1636,37 @@ errorEncoder error =
                 ]
 
         RecursiveDecl region name names ->
-            BE.sequence
-                [ BE.unsignedInt8 32
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 32
                 , A.regionEncoder region
                 , BE.string name
                 , BE.list BE.string names
                 ]
 
         RecursiveLet name names ->
-            BE.sequence
-                [ BE.unsignedInt8 33
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 33
                 , A.locatedEncoder BE.string name
                 , BE.list BE.string names
                 ]
 
         Shadowing name r1 r2 ->
-            BE.sequence
-                [ BE.unsignedInt8 34
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 34
                 , BE.string name
                 , A.regionEncoder r1
                 , A.regionEncoder r2
                 ]
 
         TupleLargerThanThree region ->
-            BE.sequence
-                [ BE.unsignedInt8 35
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 35
                 , A.regionEncoder region
                 ]
 
         TypeVarsUnboundInUnion unionRegion typeName allVars unbound unbounds ->
-            BE.sequence
-                [ BE.unsignedInt8 36
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 36
                 , A.regionEncoder unionRegion
                 , BE.string typeName
                 , BE.list BE.string allVars
@@ -1611,8 +1675,8 @@ errorEncoder error =
                 ]
 
         TypeVarsMessedUpInAlias aliasRegion typeName allVars unusedVars unboundVars ->
-            BE.sequence
-                [ BE.unsignedInt8 37
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 37
                 , A.regionEncoder aliasRegion
                 , BE.string typeName
                 , BE.list BE.string allVars
@@ -1621,21 +1685,21 @@ errorEncoder error =
                 ]
 
 
-errorDecoder : BD.Decoder Error
+errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map4 AnnotationTooShort
+                        Bytes.Decode.map4 AnnotationTooShort
                             A.regionDecoder
                             BD.string
                             Index.zeroBasedDecoder
                             BD.int
 
                     1 ->
-                        BD.map5 AmbiguousVar
+                        Bytes.Decode.map5 AmbiguousVar
                             A.regionDecoder
                             (BD.maybe BD.string)
                             BD.string
@@ -1643,7 +1707,7 @@ errorDecoder =
                             (BD.oneOrMore ModuleName.canonicalDecoder)
 
                     2 ->
-                        BD.map5 AmbiguousType
+                        Bytes.Decode.map5 AmbiguousType
                             A.regionDecoder
                             (BD.maybe BD.string)
                             BD.string
@@ -1651,7 +1715,7 @@ errorDecoder =
                             (BD.oneOrMore ModuleName.canonicalDecoder)
 
                     3 ->
-                        BD.map5 AmbiguousVariant
+                        Bytes.Decode.map5 AmbiguousVariant
                             A.regionDecoder
                             (BD.maybe BD.string)
                             BD.string
@@ -1659,14 +1723,14 @@ errorDecoder =
                             (BD.oneOrMore ModuleName.canonicalDecoder)
 
                     4 ->
-                        BD.map4 AmbiguousBinop
+                        Bytes.Decode.map4 AmbiguousBinop
                             A.regionDecoder
                             BD.string
                             ModuleName.canonicalDecoder
                             (BD.oneOrMore ModuleName.canonicalDecoder)
 
                     5 ->
-                        BD.map5 BadArity
+                        Bytes.Decode.map5 BadArity
                             A.regionDecoder
                             badArityContextDecoder
                             BD.string
@@ -1674,161 +1738,161 @@ errorDecoder =
                             BD.int
 
                     6 ->
-                        BD.map3 Binop
+                        Bytes.Decode.map3 Binop
                             A.regionDecoder
                             BD.string
                             BD.string
 
                     7 ->
-                        BD.map3 DuplicateDecl
+                        Bytes.Decode.map3 DuplicateDecl
                             BD.string
                             A.regionDecoder
                             A.regionDecoder
 
                     8 ->
-                        BD.map3 DuplicateType
+                        Bytes.Decode.map3 DuplicateType
                             BD.string
                             A.regionDecoder
                             A.regionDecoder
 
                     9 ->
-                        BD.map3 DuplicateCtor
+                        Bytes.Decode.map3 DuplicateCtor
                             BD.string
                             A.regionDecoder
                             A.regionDecoder
 
                     10 ->
-                        BD.map3 DuplicateBinop
+                        Bytes.Decode.map3 DuplicateBinop
                             BD.string
                             A.regionDecoder
                             A.regionDecoder
 
                     11 ->
-                        BD.map3 DuplicateField
+                        Bytes.Decode.map3 DuplicateField
                             BD.string
                             A.regionDecoder
                             A.regionDecoder
 
                     12 ->
-                        BD.map4 DuplicateAliasArg
+                        Bytes.Decode.map4 DuplicateAliasArg
                             BD.string
                             BD.string
                             A.regionDecoder
                             A.regionDecoder
 
                     13 ->
-                        BD.map4 DuplicateUnionArg
+                        Bytes.Decode.map4 DuplicateUnionArg
                             BD.string
                             BD.string
                             A.regionDecoder
                             A.regionDecoder
 
                     14 ->
-                        BD.map4 DuplicatePattern
+                        Bytes.Decode.map4 DuplicatePattern
                             duplicatePatternContextDecoder
                             BD.string
                             A.regionDecoder
                             A.regionDecoder
 
                     15 ->
-                        BD.map2 EffectNotFound
+                        Bytes.Decode.map2 EffectNotFound
                             A.regionDecoder
                             BD.string
 
                     16 ->
-                        BD.map2 EffectFunctionNotFound
+                        Bytes.Decode.map2 EffectFunctionNotFound
                             A.regionDecoder
                             BD.string
 
                     17 ->
-                        BD.map3 ExportDuplicate
+                        Bytes.Decode.map3 ExportDuplicate
                             BD.string
                             A.regionDecoder
                             A.regionDecoder
 
                     18 ->
-                        BD.map4 ExportNotFound
+                        Bytes.Decode.map4 ExportNotFound
                             A.regionDecoder
                             varKindDecoder
                             BD.string
                             (BD.list BD.string)
 
                     19 ->
-                        BD.map2 ExportOpenAlias
+                        Bytes.Decode.map2 ExportOpenAlias
                             A.regionDecoder
                             BD.string
 
                     20 ->
-                        BD.map3 ImportCtorByName
+                        Bytes.Decode.map3 ImportCtorByName
                             A.regionDecoder
                             BD.string
                             BD.string
 
                     21 ->
-                        BD.map3 ImportNotFound
+                        Bytes.Decode.map3 ImportNotFound
                             A.regionDecoder
                             BD.string
                             (BD.list ModuleName.canonicalDecoder)
 
                     22 ->
-                        BD.map2 ImportOpenAlias
+                        Bytes.Decode.map2 ImportOpenAlias
                             A.regionDecoder
                             BD.string
 
                     23 ->
-                        BD.map4 ImportExposingNotFound
+                        Bytes.Decode.map4 ImportExposingNotFound
                             A.regionDecoder
                             ModuleName.canonicalDecoder
                             BD.string
                             (BD.list BD.string)
 
                     24 ->
-                        BD.map4 NotFoundVar
+                        Bytes.Decode.map4 NotFoundVar
                             A.regionDecoder
                             (BD.maybe BD.string)
                             BD.string
                             possibleNamesDecoder
 
                     25 ->
-                        BD.map4 NotFoundType
+                        Bytes.Decode.map4 NotFoundType
                             A.regionDecoder
                             (BD.maybe BD.string)
                             BD.string
                             possibleNamesDecoder
 
                     26 ->
-                        BD.map4 NotFoundVariant
+                        Bytes.Decode.map4 NotFoundVariant
                             A.regionDecoder
                             (BD.maybe BD.string)
                             BD.string
                             possibleNamesDecoder
 
                     27 ->
-                        BD.map3 NotFoundBinop
+                        Bytes.Decode.map3 NotFoundBinop
                             A.regionDecoder
                             BD.string
                             (BD.everySet identity BD.string)
 
                     28 ->
-                        BD.map2 PatternHasRecordCtor
+                        Bytes.Decode.map2 PatternHasRecordCtor
                             A.regionDecoder
                             BD.string
 
                     29 ->
-                        BD.map4 PortPayloadInvalid
+                        Bytes.Decode.map4 PortPayloadInvalid
                             A.regionDecoder
                             BD.string
                             Can.typeDecoder
                             invalidPayloadDecoder
 
                     30 ->
-                        BD.map3 PortTypeInvalid
+                        Bytes.Decode.map3 PortTypeInvalid
                             A.regionDecoder
                             BD.string
                             portProblemDecoder
 
                     31 ->
-                        BD.map5 RecursiveAlias
+                        Bytes.Decode.map5 RecursiveAlias
                             A.regionDecoder
                             BD.string
                             (BD.list BD.string)
@@ -1836,27 +1900,27 @@ errorDecoder =
                             (BD.list BD.string)
 
                     32 ->
-                        BD.map3 RecursiveDecl
+                        Bytes.Decode.map3 RecursiveDecl
                             A.regionDecoder
                             BD.string
                             (BD.list BD.string)
 
                     33 ->
-                        BD.map2 RecursiveLet
+                        Bytes.Decode.map2 RecursiveLet
                             (A.locatedDecoder BD.string)
                             (BD.list BD.string)
 
                     34 ->
-                        BD.map3 Shadowing
+                        Bytes.Decode.map3 Shadowing
                             BD.string
                             A.regionDecoder
                             A.regionDecoder
 
                     35 ->
-                        BD.map TupleLargerThanThree A.regionDecoder
+                        Bytes.Decode.map TupleLargerThanThree A.regionDecoder
 
                     36 ->
-                        BD.map5 TypeVarsUnboundInUnion
+                        Bytes.Decode.map5 TypeVarsUnboundInUnion
                             A.regionDecoder
                             BD.string
                             (BD.list BD.string)
@@ -1864,7 +1928,7 @@ errorDecoder =
                             (BD.list (BD.jsonPair BD.string A.regionDecoder))
 
                     37 ->
-                        BD.map5 TypeVarsMessedUpInAlias
+                        Bytes.Decode.map5 TypeVarsMessedUpInAlias
                             A.regionDecoder
                             BD.string
                             (BD.list BD.string)
@@ -1872,13 +1936,13 @@ errorDecoder =
                             (BD.list (BD.jsonPair BD.string A.regionDecoder))
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-badArityContextEncoder : BadArityContext -> BE.Encoder
+badArityContextEncoder : BadArityContext -> Bytes.Encode.Encoder
 badArityContextEncoder badArityContext =
-    BE.unsignedInt8
+    Bytes.Encode.unsignedInt8
         (case badArityContext of
             TypeArity ->
                 0
@@ -1888,74 +1952,74 @@ badArityContextEncoder badArityContext =
         )
 
 
-badArityContextDecoder : BD.Decoder BadArityContext
+badArityContextDecoder : Bytes.Decode.Decoder BadArityContext
 badArityContextDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed TypeArity
+                        Bytes.Decode.succeed TypeArity
 
                     1 ->
-                        BD.succeed PatternArity
+                        Bytes.Decode.succeed PatternArity
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-duplicatePatternContextEncoder : DuplicatePatternContext -> BE.Encoder
+duplicatePatternContextEncoder : DuplicatePatternContext -> Bytes.Encode.Encoder
 duplicatePatternContextEncoder duplicatePatternContext =
     case duplicatePatternContext of
         DPLambdaArgs ->
-            BE.unsignedInt8 0
+            Bytes.Encode.unsignedInt8 0
 
         DPFuncArgs funcName ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.string funcName
                 ]
 
         DPCaseBranch ->
-            BE.unsignedInt8 2
+            Bytes.Encode.unsignedInt8 2
 
         DPLetBinding ->
-            BE.unsignedInt8 3
+            Bytes.Encode.unsignedInt8 3
 
         DPDestruct ->
-            BE.unsignedInt8 4
+            Bytes.Encode.unsignedInt8 4
 
 
-duplicatePatternContextDecoder : BD.Decoder DuplicatePatternContext
+duplicatePatternContextDecoder : Bytes.Decode.Decoder DuplicatePatternContext
 duplicatePatternContextDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed DPLambdaArgs
+                        Bytes.Decode.succeed DPLambdaArgs
 
                     1 ->
-                        BD.map DPFuncArgs BD.string
+                        Bytes.Decode.map DPFuncArgs BD.string
 
                     2 ->
-                        BD.succeed DPCaseBranch
+                        Bytes.Decode.succeed DPCaseBranch
 
                     3 ->
-                        BD.succeed DPLetBinding
+                        Bytes.Decode.succeed DPLetBinding
 
                     4 ->
-                        BD.succeed DPDestruct
+                        Bytes.Decode.succeed DPDestruct
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-varKindEncoder : VarKind -> BE.Encoder
+varKindEncoder : VarKind -> Bytes.Encode.Encoder
 varKindEncoder varKind =
-    BE.unsignedInt8
+    Bytes.Encode.unsignedInt8
         (case varKind of
             BadOp ->
                 0
@@ -1971,132 +2035,132 @@ varKindEncoder varKind =
         )
 
 
-varKindDecoder : BD.Decoder VarKind
+varKindDecoder : Bytes.Decode.Decoder VarKind
 varKindDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed BadOp
+                        Bytes.Decode.succeed BadOp
 
                     1 ->
-                        BD.succeed BadVar
+                        Bytes.Decode.succeed BadVar
 
                     2 ->
-                        BD.succeed BadPattern
+                        Bytes.Decode.succeed BadPattern
 
                     3 ->
-                        BD.succeed BadType
+                        Bytes.Decode.succeed BadType
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-possibleNamesEncoder : PossibleNames -> BE.Encoder
+possibleNamesEncoder : PossibleNames -> Bytes.Encode.Encoder
 possibleNamesEncoder possibleNames =
-    BE.sequence
+    Bytes.Encode.sequence
         [ BE.everySet compare BE.string possibleNames.locals
         , BE.assocListDict compare BE.string (BE.everySet compare BE.string) possibleNames.quals
         ]
 
 
-possibleNamesDecoder : BD.Decoder PossibleNames
+possibleNamesDecoder : Bytes.Decode.Decoder PossibleNames
 possibleNamesDecoder =
-    BD.map2 PossibleNames
+    Bytes.Decode.map2 PossibleNames
         (BD.everySet identity BD.string)
         (BD.assocListDict identity BD.string (BD.everySet identity BD.string))
 
 
-invalidPayloadEncoder : InvalidPayload -> BE.Encoder
+invalidPayloadEncoder : InvalidPayload -> Bytes.Encode.Encoder
 invalidPayloadEncoder invalidPayload =
     case invalidPayload of
         ExtendedRecord ->
-            BE.unsignedInt8 0
+            Bytes.Encode.unsignedInt8 0
 
         Function ->
-            BE.unsignedInt8 1
+            Bytes.Encode.unsignedInt8 1
 
         TypeVariable name ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.string name
                 ]
 
         UnsupportedType name ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.string name
                 ]
 
 
-invalidPayloadDecoder : BD.Decoder InvalidPayload
+invalidPayloadDecoder : Bytes.Decode.Decoder InvalidPayload
 invalidPayloadDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed ExtendedRecord
+                        Bytes.Decode.succeed ExtendedRecord
 
                     1 ->
-                        BD.succeed Function
+                        Bytes.Decode.succeed Function
 
                     2 ->
-                        BD.map TypeVariable BD.string
+                        Bytes.Decode.map TypeVariable BD.string
 
                     3 ->
-                        BD.map UnsupportedType BD.string
+                        Bytes.Decode.map UnsupportedType BD.string
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-portProblemEncoder : PortProblem -> BE.Encoder
+portProblemEncoder : PortProblem -> Bytes.Encode.Encoder
 portProblemEncoder portProblem =
     case portProblem of
         CmdNoArg ->
-            BE.unsignedInt8 0
+            Bytes.Encode.unsignedInt8 0
 
         CmdExtraArgs n ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.int n
                 ]
 
         CmdBadMsg ->
-            BE.unsignedInt8 2
+            Bytes.Encode.unsignedInt8 2
 
         SubBad ->
-            BE.unsignedInt8 3
+            Bytes.Encode.unsignedInt8 3
 
         NotCmdOrSub ->
-            BE.unsignedInt8 4
+            Bytes.Encode.unsignedInt8 4
 
 
-portProblemDecoder : BD.Decoder PortProblem
+portProblemDecoder : Bytes.Decode.Decoder PortProblem
 portProblemDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed CmdNoArg
+                        Bytes.Decode.succeed CmdNoArg
 
                     1 ->
-                        BD.map CmdExtraArgs BD.int
+                        Bytes.Decode.map CmdExtraArgs BD.int
 
                     2 ->
-                        BD.succeed CmdBadMsg
+                        Bytes.Decode.succeed CmdBadMsg
 
                     3 ->
-                        BD.succeed SubBad
+                        Bytes.Decode.succeed SubBad
 
                     4 ->
-                        BD.succeed NotCmdOrSub
+                        Bytes.Decode.succeed NotCmdOrSub
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

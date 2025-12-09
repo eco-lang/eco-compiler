@@ -10,7 +10,9 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Parse.Primitives as P exposing (Col, Parser, Row)
 import Data.Set as EverySet exposing (EverySet)
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 
@@ -95,9 +97,9 @@ binopCharSet =
 -- ENCODERS and DECODERS
 
 
-badOperatorEncoder : BadOperator -> BE.Encoder
+badOperatorEncoder : BadOperator -> Bytes.Encode.Encoder
 badOperatorEncoder badOperator =
-    BE.unsignedInt8
+    Bytes.Encode.unsignedInt8
         (case badOperator of
             BadDot ->
                 0
@@ -116,27 +118,27 @@ badOperatorEncoder badOperator =
         )
 
 
-badOperatorDecoder : BD.Decoder BadOperator
+badOperatorDecoder : Bytes.Decode.Decoder BadOperator
 badOperatorDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed BadDot
+                        Bytes.Decode.succeed BadDot
 
                     1 ->
-                        BD.succeed BadPipe
+                        Bytes.Decode.succeed BadPipe
 
                     2 ->
-                        BD.succeed BadArrow
+                        Bytes.Decode.succeed BadArrow
 
                     3 ->
-                        BD.succeed BadEquals
+                        Bytes.Decode.succeed BadEquals
 
                     4 ->
-                        BD.succeed BadHasType
+                        Bytes.Decode.succeed BadHasType
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

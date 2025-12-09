@@ -13,7 +13,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Parse.SyntaxVersion exposing (SyntaxVersion)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
-import Compiler.Reporting.Result as R
+import Compiler.Reporting.Result as ReportingResult
 import Data.Map as Dict exposing (Dict)
 import Maybe exposing (Maybe(..))
 import System.TypeCheck.IO as IO
@@ -24,7 +24,7 @@ import System.TypeCheck.IO as IO
 
 
 type alias EResult i w a =
-    R.RResult i w Error.Error a
+    ReportingResult.RResult i w Error.Error a
 
 
 
@@ -41,11 +41,11 @@ canonicalize :
 canonicalize syntaxVersion env values unions effects =
     case effects of
         Src.NoEffects ->
-            R.ok Can.NoEffects
+            ReportingResult.ok Can.NoEffects
 
         Src.Ports ports ->
-            R.traverse (canonicalizePort syntaxVersion env) ports
-                |> R.fmap (Can.Ports << Dict.fromList identity)
+            ReportingResult.traverse (canonicalizePort syntaxVersion env) ports
+                |> ReportingResult.map (Can.Ports << Dict.fromList identity)
 
         Src.Manager region manager ->
             let
@@ -53,39 +53,39 @@ canonicalize syntaxVersion env values unions effects =
                 dict =
                     Dict.fromList identity (List.map toNameRegion values)
             in
-            R.fmap Can.Manager (verifyManager region dict "init")
-                |> R.apply (verifyManager region dict "onEffects")
-                |> R.apply (verifyManager region dict "onSelfMsg")
-                |> R.apply
+            ReportingResult.map Can.Manager (verifyManager region dict "init")
+                |> ReportingResult.apply (verifyManager region dict "onEffects")
+                |> ReportingResult.apply (verifyManager region dict "onSelfMsg")
+                |> ReportingResult.apply
                     (case manager of
                         Src.Cmd ( _, ( _, cmdType ) ) ->
-                            R.fmap Can.Cmd (verifyEffectType cmdType unions)
-                                |> R.bind
+                            ReportingResult.map Can.Cmd (verifyEffectType cmdType unions)
+                                |> ReportingResult.andThen
                                     (\result ->
                                         verifyManager region dict "cmdMap"
-                                            |> R.fmap (\_ -> result)
+                                            |> ReportingResult.map (\_ -> result)
                                     )
 
                         Src.Sub ( _, ( _, subType ) ) ->
-                            R.fmap Can.Sub (verifyEffectType subType unions)
-                                |> R.bind
+                            ReportingResult.map Can.Sub (verifyEffectType subType unions)
+                                |> ReportingResult.andThen
                                     (\result ->
                                         verifyManager region dict "subMap"
-                                            |> R.fmap (\_ -> result)
+                                            |> ReportingResult.map (\_ -> result)
                                     )
 
                         Src.Fx ( _, ( _, cmdType ) ) ( _, ( _, subType ) ) ->
-                            R.fmap Can.Fx (verifyEffectType cmdType unions)
-                                |> R.apply (verifyEffectType subType unions)
-                                |> R.bind
+                            ReportingResult.map Can.Fx (verifyEffectType cmdType unions)
+                                |> ReportingResult.apply (verifyEffectType subType unions)
+                                |> ReportingResult.andThen
                                     (\result ->
                                         verifyManager region dict "cmdMap"
-                                            |> R.fmap (\_ -> result)
+                                            |> ReportingResult.map (\_ -> result)
                                     )
-                                |> R.bind
+                                |> ReportingResult.andThen
                                     (\result ->
                                         verifyManager region dict "subMap"
-                                            |> R.fmap (\_ -> result)
+                                            |> ReportingResult.map (\_ -> result)
                                     )
                     )
 
@@ -97,21 +97,21 @@ canonicalize syntaxVersion env values unions effects =
 canonicalizePort : SyntaxVersion -> Env.Env -> Src.Port -> EResult i w ( Name.Name, Can.Port )
 canonicalizePort syntaxVersion env (Src.Port _ ( _, A.At region portName ) tipe) =
     Type.toAnnotation syntaxVersion env tipe
-        |> R.bind
+        |> ReportingResult.andThen
             (\(Can.Forall freeVars ctipe) ->
                 case List.reverse (Type.delambda (Type.deepDealias ctipe)) of
                     (Can.TType home name [ msg ]) :: revArgs ->
                         if home == ModuleName.cmd && name == Name.cmd then
                             case revArgs of
                                 [] ->
-                                    R.throw (Error.PortTypeInvalid region portName Error.CmdNoArg)
+                                    ReportingResult.throw (Error.PortTypeInvalid region portName Error.CmdNoArg)
 
                                 [ outgoingType ] ->
                                     case msg of
                                         Can.TVar _ ->
                                             case checkPayload outgoingType of
                                                 Ok () ->
-                                                    R.ok
+                                                    ReportingResult.ok
                                                         ( portName
                                                         , Can.Outgoing
                                                             { freeVars = freeVars
@@ -121,13 +121,13 @@ canonicalizePort syntaxVersion env (Src.Port _ ( _, A.At region portName ) tipe)
                                                         )
 
                                                 Err ( badType, err ) ->
-                                                    R.throw (Error.PortPayloadInvalid region portName badType err)
+                                                    ReportingResult.throw (Error.PortPayloadInvalid region portName badType err)
 
                                         _ ->
-                                            R.throw (Error.PortTypeInvalid region portName Error.CmdBadMsg)
+                                            ReportingResult.throw (Error.PortTypeInvalid region portName Error.CmdBadMsg)
 
                                 _ ->
-                                    R.throw (Error.PortTypeInvalid region portName (Error.CmdExtraArgs (List.length revArgs)))
+                                    ReportingResult.throw (Error.PortTypeInvalid region portName (Error.CmdExtraArgs (List.length revArgs)))
 
                         else if home == ModuleName.sub && name == Name.sub then
                             case revArgs of
@@ -137,7 +137,7 @@ canonicalizePort syntaxVersion env (Src.Port _ ( _, A.At region portName ) tipe)
                                             if msg1 == msg2 then
                                                 case checkPayload incomingType of
                                                     Ok () ->
-                                                        R.ok
+                                                        ReportingResult.ok
                                                             ( portName
                                                             , Can.Incoming
                                                                 { freeVars = freeVars
@@ -147,22 +147,22 @@ canonicalizePort syntaxVersion env (Src.Port _ ( _, A.At region portName ) tipe)
                                                             )
 
                                                     Err ( badType, err ) ->
-                                                        R.throw (Error.PortPayloadInvalid region portName badType err)
+                                                        ReportingResult.throw (Error.PortPayloadInvalid region portName badType err)
 
                                             else
-                                                R.throw (Error.PortTypeInvalid region portName Error.SubBad)
+                                                ReportingResult.throw (Error.PortTypeInvalid region portName Error.SubBad)
 
                                         _ ->
-                                            R.throw (Error.PortTypeInvalid region portName Error.SubBad)
+                                            ReportingResult.throw (Error.PortTypeInvalid region portName Error.SubBad)
 
                                 _ ->
-                                    R.throw (Error.PortTypeInvalid region portName Error.SubBad)
+                                    ReportingResult.throw (Error.PortTypeInvalid region portName Error.SubBad)
 
                         else
-                            R.throw (Error.PortTypeInvalid region portName Error.NotCmdOrSub)
+                            ReportingResult.throw (Error.PortTypeInvalid region portName Error.NotCmdOrSub)
 
                     _ ->
-                        R.throw (Error.PortTypeInvalid region portName Error.NotCmdOrSub)
+                        ReportingResult.throw (Error.PortTypeInvalid region portName Error.NotCmdOrSub)
             )
 
 
@@ -173,10 +173,10 @@ canonicalizePort syntaxVersion env (Src.Port _ ( _, A.At region portName ) tipe)
 verifyEffectType : A.Located Name.Name -> Dict String Name.Name a -> EResult i w Name.Name
 verifyEffectType (A.At region name) unions =
     if Dict.member identity name unions then
-        R.ok name
+        ReportingResult.ok name
 
     else
-        R.throw (Error.EffectNotFound region name)
+        ReportingResult.throw (Error.EffectNotFound region name)
 
 
 toNameRegion : A.Located Src.Value -> ( Name.Name, A.Region )
@@ -188,10 +188,10 @@ verifyManager : A.Region -> Dict String Name.Name A.Region -> Name.Name -> EResu
 verifyManager tagRegion values name =
     case Dict.get identity name values of
         Just region ->
-            R.ok region
+            ReportingResult.ok region
 
         Nothing ->
-            R.throw (Error.EffectFunctionNotFound tagRegion name)
+            ReportingResult.throw (Error.EffectFunctionNotFound tagRegion name)
 
 
 

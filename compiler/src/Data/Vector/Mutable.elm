@@ -17,7 +17,7 @@ import Utils.Crash exposing (crash)
 length : IORef (Array (Maybe (List Variable))) -> IO Int
 length =
     IORef.readIORefMVector
-        >> IO.fmap Array.length
+        >> IO.map Array.length
 
 
 replicate : Int -> List Variable -> IO (IORef (Array (Maybe (List Variable))))
@@ -28,18 +28,18 @@ replicate n e =
 grow : IORef (Array (Maybe (List Variable))) -> Int -> IO (IORef (Array (Maybe (List Variable))))
 grow ioRef length_ =
     IORef.readIORefMVector ioRef
-        |> IO.bind
+        |> IO.andThen
             (\value ->
                 IORef.writeIORefMVector ioRef
                     (Array.append value (Array.repeat length_ Nothing))
             )
-        |> IO.fmap (\_ -> ioRef)
+        |> IO.map (\_ -> ioRef)
 
 
 read : IORef (Array (Maybe (List Variable))) -> Int -> IO (List Variable)
 read ioRef i =
     IORef.readIORefMVector ioRef
-        |> IO.fmap
+        |> IO.map
             (\array ->
                 case Array.get i array of
                     Just (Just value) ->

@@ -8,13 +8,13 @@ module Compiler.Json.Decode exposing
     , StringProblem(..)
     , apply
     , assocListDict
-    , bind
+    , andThen
     , customString
     , dict
     , everySet
     , failure
     , field
-    , fmap
+    , map
     , fromByteString
     , int
     , jsonPair
@@ -164,8 +164,8 @@ type DecodeExpectation
 -- INSTANCES
 
 
-fmap : (a -> b) -> Decoder x a -> Decoder x b
-fmap func (Decoder decodeA) =
+map : (a -> b) -> Decoder x a -> Decoder x b
+map func (Decoder decodeA) =
     Decoder (Result.map func << decodeA)
 
 
@@ -186,8 +186,8 @@ apply (Decoder decodeArg) (Decoder decodeFunc) =
                 (decodeArg ast)
 
 
-bind : (a -> Decoder x b) -> Decoder x a -> Decoder x b
-bind callback (Decoder decodeA) =
+andThen : (a -> Decoder x b) -> Decoder x a -> Decoder x b
+andThen callback (Decoder decodeA) =
     Decoder <|
         \ast ->
             Result.andThen
@@ -333,7 +333,7 @@ type KeyDecoder x a
 
 dict : (k -> comparable) -> KeyDecoder x k -> Decoder x a -> Decoder x (Dict comparable k a)
 dict toComparable keyDecoder valueDecoder =
-    fmap (Dict.fromList toComparable) (pairs keyDecoder valueDecoder)
+    map (Dict.fromList toComparable) (pairs keyDecoder valueDecoder)
 
 
 pairs : KeyDecoder x k -> Decoder x a -> Decoder x (List ( k, a ))
@@ -550,10 +550,10 @@ type StringProblem
 pFile : Parser AST
 pFile =
     spaces
-        |> P.bind (\_ -> pValue)
-        |> P.bind
+        |> P.andThen (\_ -> pValue)
+        |> P.andThen
             (\value ->
-                P.fmap (\_ -> value) spaces
+                P.map (\_ -> value) spaces
             )
 
 
@@ -561,13 +561,13 @@ pValue : Parser AST
 pValue =
     P.addLocation <|
         P.oneOf Start
-            [ P.fmap String (pString Start)
+            [ P.map String (pString Start)
             , pObject
             , pArray
             , pInt
-            , P.fmap (\_ -> TRUE) (K.k4 't' 'r' 'u' 'e' Start)
-            , P.fmap (\_ -> FALSE) (K.k5 'f' 'a' 'l' 's' 'e' Start)
-            , P.fmap (\_ -> NULL) (K.k4 'n' 'u' 'l' 'l' Start)
+            , P.map (\_ -> TRUE) (K.k4 't' 'r' 'u' 'e' Start)
+            , P.map (\_ -> FALSE) (K.k5 'f' 'a' 'l' 's' 'e' Start)
+            , P.map (\_ -> NULL) (K.k4 'n' 'u' 'l' 'l' Start)
             ]
 
 
@@ -578,18 +578,18 @@ pValue =
 pObject : Parser AST_
 pObject =
     P.word1 '{' Start
-        |> P.bind (\_ -> spaces)
-        |> P.bind
+        |> P.andThen (\_ -> spaces)
+        |> P.andThen
             (\_ ->
                 P.oneOf ObjectField
                     [ pField
-                        |> P.bind
+                        |> P.andThen
                             (\entry ->
                                 spaces
-                                    |> P.bind (\_ -> P.loop pObjectHelp [ entry ])
+                                    |> P.andThen (\_ -> P.loop pObjectHelp [ entry ])
                             )
                     , P.word1 '}' ObjectEnd
-                        |> P.fmap (\_ -> Object [])
+                        |> P.map (\_ -> Object [])
                     ]
             )
 
@@ -598,28 +598,28 @@ pObjectHelp : List ( P.Snippet, AST ) -> Parser (P.Step (List ( P.Snippet, AST )
 pObjectHelp revEntries =
     P.oneOf ObjectEnd
         [ P.word1 ',' ObjectEnd
-            |> P.bind (\_ -> spaces)
-            |> P.bind (\_ -> pField)
-            |> P.bind
+            |> P.andThen (\_ -> spaces)
+            |> P.andThen (\_ -> pField)
+            |> P.andThen
                 (\entry ->
                     spaces
-                        |> P.fmap (\_ -> P.Loop (entry :: revEntries))
+                        |> P.map (\_ -> P.Loop (entry :: revEntries))
                 )
         , P.word1 '}' ObjectEnd
-            |> P.fmap (\_ -> P.Done (Object (List.reverse revEntries)))
+            |> P.map (\_ -> P.Done (Object (List.reverse revEntries)))
         ]
 
 
 pField : Parser ( P.Snippet, AST )
 pField =
     pString ObjectField
-        |> P.bind
+        |> P.andThen
             (\key ->
                 spaces
-                    |> P.bind (\_ -> P.word1 ':' ObjectColon)
-                    |> P.bind (\_ -> spaces)
-                    |> P.bind (\_ -> pValue)
-                    |> P.fmap (\value -> ( key, value ))
+                    |> P.andThen (\_ -> P.word1 ':' ObjectColon)
+                    |> P.andThen (\_ -> spaces)
+                    |> P.andThen (\_ -> pValue)
+                    |> P.map (\value -> ( key, value ))
             )
 
 
@@ -630,18 +630,18 @@ pField =
 pArray : Parser AST_
 pArray =
     P.word1 '[' Start
-        |> P.bind (\_ -> spaces)
-        |> P.bind
+        |> P.andThen (\_ -> spaces)
+        |> P.andThen
             (\_ ->
                 P.oneOf Start
                     [ pValue
-                        |> P.bind
+                        |> P.andThen
                             (\entry ->
                                 spaces
-                                    |> P.bind (\_ -> pArrayHelp [ entry ])
+                                    |> P.andThen (\_ -> pArrayHelp [ entry ])
                             )
                     , P.word1 ']' ArrayEnd
-                        |> P.fmap (\_ -> Array [])
+                        |> P.map (\_ -> Array [])
                     ]
             )
 
@@ -650,15 +650,15 @@ pArrayHelp : List AST -> Parser AST_
 pArrayHelp revEntries =
     P.oneOf ArrayEnd
         [ P.word1 ',' ArrayEnd
-            |> P.bind (\_ -> spaces)
-            |> P.bind (\_ -> pValue)
-            |> P.bind
+            |> P.andThen (\_ -> spaces)
+            |> P.andThen (\_ -> pValue)
+            |> P.andThen
                 (\entry ->
                     spaces
-                        |> P.bind (\_ -> pArrayHelp (entry :: revEntries))
+                        |> P.andThen (\_ -> pArrayHelp (entry :: revEntries))
                 )
         , P.word1 ']' ArrayEnd
-            |> P.fmap (\_ -> Array (List.reverse revEntries))
+            |> P.map (\_ -> Array (List.reverse revEntries))
         ]
 
 

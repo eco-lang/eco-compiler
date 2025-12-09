@@ -28,7 +28,9 @@ import Compiler.Reporting.Suggest as Suggest
 import Compiler.Type.Error as T
 import Data.Map as Dict exposing (Dict)
 import Utils.Bytes.Decode as BD
+import Bytes.Decode
 import Utils.Bytes.Encode as BE
+import Bytes.Encode
 
 
 
@@ -1239,7 +1241,8 @@ toExprReport source localizer exprRegion category tipe expected =
 
                             else
                                 [ D.toSimpleHint <|
-                                    "I always figure out the argument types from left to right. If an argument is acceptable, I assume it is “correct” and move on. So the problem may actually be in one of the previous arguments!"
+                                    "I always figure out the argument types from left to right. If an argument is acceptable, "
+                                        ++ "I assume it is \"correct\" and move on. So the problem may actually be in one of the previous arguments!"
                                 ]
                           )
                         )
@@ -1309,8 +1312,9 @@ toExprReport source localizer exprRegion category tipe expected =
                                           )
                                         , ( "The record is"
                                           , "But this update needs it to be compatable with:"
-                                          , [ D.reflow
-                                                "Do you mind creating an <http://sscce.org/> that produces this error message and sharing it at <https://github.com/elm/error-message-catalog/issues> so we can try to give better advice here?"
+                                          , [ D.reflow <|
+                                                "Do you mind creating an <http://sscce.org/> that produces this error message and sharing it at "
+                                                    ++ "<https://github.com/elm/error-message-catalog/issues> so we can try to give better advice here?"
                                             ]
                                           )
                                         )
@@ -2514,12 +2518,12 @@ toInfiniteReport source localizer region name overallType =
 -- ENCODERS and DECODERS
 
 
-errorEncoder : Error -> BE.Encoder
+errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
     case error of
         BadExpr region category actualType expected ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , A.regionEncoder region
                 , categoryEncoder category
                 , T.typeEncoder actualType
@@ -2527,8 +2531,8 @@ errorEncoder error =
                 ]
 
         BadPattern region category tipe expected ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , A.regionEncoder region
                 , pCategoryEncoder category
                 , T.typeEncoder tipe
@@ -2536,203 +2540,203 @@ errorEncoder error =
                 ]
 
         InfiniteType region name overallType ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , A.regionEncoder region
                 , BE.string name
                 , T.typeEncoder overallType
                 ]
 
 
-errorDecoder : BD.Decoder Error
+errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map4 BadExpr
+                        Bytes.Decode.map4 BadExpr
                             A.regionDecoder
                             categoryDecoder
                             T.typeDecoder
                             (expectedDecoder T.typeDecoder)
 
                     1 ->
-                        BD.map4 BadPattern
+                        Bytes.Decode.map4 BadPattern
                             A.regionDecoder
                             pCategoryDecoder
                             T.typeDecoder
                             (pExpectedDecoder T.typeDecoder)
 
                     2 ->
-                        BD.map3 InfiniteType
+                        Bytes.Decode.map3 InfiniteType
                             A.regionDecoder
                             BD.string
                             T.typeDecoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-categoryEncoder : Category -> BE.Encoder
+categoryEncoder : Category -> Bytes.Encode.Encoder
 categoryEncoder category =
     case category of
         List ->
-            BE.unsignedInt8 0
+            Bytes.Encode.unsignedInt8 0
 
         Number ->
-            BE.unsignedInt8 1
+            Bytes.Encode.unsignedInt8 1
 
         Float ->
-            BE.unsignedInt8 2
+            Bytes.Encode.unsignedInt8 2
 
         String ->
-            BE.unsignedInt8 3
+            Bytes.Encode.unsignedInt8 3
 
         Char ->
-            BE.unsignedInt8 4
+            Bytes.Encode.unsignedInt8 4
 
         If ->
-            BE.unsignedInt8 5
+            Bytes.Encode.unsignedInt8 5
 
         Case ->
-            BE.unsignedInt8 6
+            Bytes.Encode.unsignedInt8 6
 
         CallResult maybeName ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , maybeNameEncoder maybeName
                 ]
 
         Lambda ->
-            BE.unsignedInt8 8
+            Bytes.Encode.unsignedInt8 8
 
         Accessor field ->
-            BE.sequence
-                [ BE.unsignedInt8 9
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
                 , BE.string field
                 ]
 
         Access field ->
-            BE.sequence
-                [ BE.unsignedInt8 10
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 10
                 , BE.string field
                 ]
 
         Record ->
-            BE.unsignedInt8 11
+            Bytes.Encode.unsignedInt8 11
 
         Tuple ->
-            BE.unsignedInt8 12
+            Bytes.Encode.unsignedInt8 12
 
         Unit ->
-            BE.unsignedInt8 13
+            Bytes.Encode.unsignedInt8 13
 
         Shader ->
-            BE.unsignedInt8 14
+            Bytes.Encode.unsignedInt8 14
 
         Effects ->
-            BE.unsignedInt8 15
+            Bytes.Encode.unsignedInt8 15
 
         Local name ->
-            BE.sequence
-                [ BE.unsignedInt8 16
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 16
                 , BE.string name
                 ]
 
         Foreign name ->
-            BE.sequence
-                [ BE.unsignedInt8 17
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 17
                 , BE.string name
                 ]
 
 
-categoryDecoder : BD.Decoder Category
+categoryDecoder : Bytes.Decode.Decoder Category
 categoryDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed List
+                        Bytes.Decode.succeed List
 
                     1 ->
-                        BD.succeed Number
+                        Bytes.Decode.succeed Number
 
                     2 ->
-                        BD.succeed Float
+                        Bytes.Decode.succeed Float
 
                     3 ->
-                        BD.succeed String
+                        Bytes.Decode.succeed String
 
                     4 ->
-                        BD.succeed Char
+                        Bytes.Decode.succeed Char
 
                     5 ->
-                        BD.succeed If
+                        Bytes.Decode.succeed If
 
                     6 ->
-                        BD.succeed Case
+                        Bytes.Decode.succeed Case
 
                     7 ->
-                        BD.map CallResult maybeNameDecoder
+                        Bytes.Decode.map CallResult maybeNameDecoder
 
                     8 ->
-                        BD.succeed Lambda
+                        Bytes.Decode.succeed Lambda
 
                     9 ->
-                        BD.map Accessor BD.string
+                        Bytes.Decode.map Accessor BD.string
 
                     10 ->
-                        BD.map Access BD.string
+                        Bytes.Decode.map Access BD.string
 
                     11 ->
-                        BD.succeed Record
+                        Bytes.Decode.succeed Record
 
                     12 ->
-                        BD.succeed Tuple
+                        Bytes.Decode.succeed Tuple
 
                     13 ->
-                        BD.succeed Unit
+                        Bytes.Decode.succeed Unit
 
                     14 ->
-                        BD.succeed Shader
+                        Bytes.Decode.succeed Shader
 
                     15 ->
-                        BD.succeed Effects
+                        Bytes.Decode.succeed Effects
 
                     16 ->
-                        BD.map Local BD.string
+                        Bytes.Decode.map Local BD.string
 
                     17 ->
-                        BD.map Foreign BD.string
+                        Bytes.Decode.map Foreign BD.string
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-expectedEncoder : (a -> BE.Encoder) -> Expected a -> BE.Encoder
+expectedEncoder : (a -> Bytes.Encode.Encoder) -> Expected a -> Bytes.Encode.Encoder
 expectedEncoder encoder expected =
     case expected of
         NoExpectation expectedType ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , encoder expectedType
                 ]
 
         FromContext region context expectedType ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , A.regionEncoder region
                 , contextEncoder context
                 , encoder expectedType
                 ]
 
         FromAnnotation name arity subContext expectedType ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.string name
                 , BE.int arity
                 , subContextEncoder subContext
@@ -2740,90 +2744,90 @@ expectedEncoder encoder expected =
                 ]
 
 
-expectedDecoder : BD.Decoder a -> BD.Decoder (Expected a)
+expectedDecoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (Expected a)
 expectedDecoder decoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map NoExpectation
+                        Bytes.Decode.map NoExpectation
                             decoder
 
                     1 ->
-                        BD.map3 FromContext
+                        Bytes.Decode.map3 FromContext
                             A.regionDecoder
                             contextDecoder
                             decoder
 
                     2 ->
-                        BD.map4 FromAnnotation
+                        Bytes.Decode.map4 FromAnnotation
                             BD.string
                             BD.int
                             subContextDecoder
                             decoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-contextEncoder : Context -> BE.Encoder
+contextEncoder : Context -> Bytes.Encode.Encoder
 contextEncoder context =
     case context of
         ListEntry index ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , Index.zeroBasedEncoder index
                 ]
 
         Negate ->
-            BE.unsignedInt8 1
+            Bytes.Encode.unsignedInt8 1
 
         OpLeft op ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.string op
                 ]
 
         OpRight op ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , BE.string op
                 ]
 
         IfCondition ->
-            BE.unsignedInt8 4
+            Bytes.Encode.unsignedInt8 4
 
         IfBranch index ->
-            BE.sequence
-                [ BE.unsignedInt8 5
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 5
                 , Index.zeroBasedEncoder index
                 ]
 
         CaseBranch index ->
-            BE.sequence
-                [ BE.unsignedInt8 6
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 6
                 , Index.zeroBasedEncoder index
                 ]
 
         CallArity maybeFuncName numGivenArgs ->
-            BE.sequence
-                [ BE.unsignedInt8 7
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 7
                 , maybeNameEncoder maybeFuncName
                 , BE.int numGivenArgs
                 ]
 
         CallArg maybeFuncName index ->
-            BE.sequence
-                [ BE.unsignedInt8 8
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
                 , maybeNameEncoder maybeFuncName
                 , Index.zeroBasedEncoder index
                 ]
 
         RecordAccess recordRegion maybeName fieldRegion field ->
-            BE.sequence
-                [ BE.unsignedInt8 9
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 9
                 , A.regionEncoder recordRegion
                 , BE.maybe BE.string maybeName
                 , A.regionEncoder fieldRegion
@@ -2831,335 +2835,335 @@ contextEncoder context =
                 ]
 
         RecordUpdateKeys expectedFields ->
-            BE.sequence
-                [ BE.unsignedInt8 10
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 10
                 , BE.assocListDict compare BE.string Can.fieldUpdateEncoder expectedFields
                 ]
 
         RecordUpdateValue field ->
-            BE.sequence
-                [ BE.unsignedInt8 11
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 11
                 , BE.string field
                 ]
 
         Destructure ->
-            BE.unsignedInt8 12
+            Bytes.Encode.unsignedInt8 12
 
 
-contextDecoder : BD.Decoder Context
+contextDecoder : Bytes.Decode.Decoder Context
 contextDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map ListEntry Index.zeroBasedDecoder
+                        Bytes.Decode.map ListEntry Index.zeroBasedDecoder
 
                     1 ->
-                        BD.succeed Negate
+                        Bytes.Decode.succeed Negate
 
                     2 ->
-                        BD.map OpLeft BD.string
+                        Bytes.Decode.map OpLeft BD.string
 
                     3 ->
-                        BD.map OpRight BD.string
+                        Bytes.Decode.map OpRight BD.string
 
                     4 ->
-                        BD.succeed IfCondition
+                        Bytes.Decode.succeed IfCondition
 
                     5 ->
-                        BD.map IfBranch Index.zeroBasedDecoder
+                        Bytes.Decode.map IfBranch Index.zeroBasedDecoder
 
                     6 ->
-                        BD.map CaseBranch Index.zeroBasedDecoder
+                        Bytes.Decode.map CaseBranch Index.zeroBasedDecoder
 
                     7 ->
-                        BD.map2 CallArity
+                        Bytes.Decode.map2 CallArity
                             maybeNameDecoder
                             BD.int
 
                     8 ->
-                        BD.map2 CallArg
+                        Bytes.Decode.map2 CallArg
                             maybeNameDecoder
                             Index.zeroBasedDecoder
 
                     9 ->
-                        BD.map4 RecordAccess
+                        Bytes.Decode.map4 RecordAccess
                             A.regionDecoder
                             (BD.maybe BD.string)
                             A.regionDecoder
                             BD.string
 
                     10 ->
-                        BD.map RecordUpdateKeys
+                        Bytes.Decode.map RecordUpdateKeys
                             (BD.assocListDict identity BD.string Can.fieldUpdateDecoder)
 
                     11 ->
-                        BD.map RecordUpdateValue BD.string
+                        Bytes.Decode.map RecordUpdateValue BD.string
 
                     12 ->
-                        BD.succeed Destructure
+                        Bytes.Decode.succeed Destructure
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-subContextEncoder : SubContext -> BE.Encoder
+subContextEncoder : SubContext -> Bytes.Encode.Encoder
 subContextEncoder subContext =
     case subContext of
         TypedIfBranch index ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , Index.zeroBasedEncoder index
                 ]
 
         TypedCaseBranch index ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , Index.zeroBasedEncoder index
                 ]
 
         TypedBody ->
-            BE.unsignedInt8 2
+            Bytes.Encode.unsignedInt8 2
 
 
-subContextDecoder : BD.Decoder SubContext
+subContextDecoder : Bytes.Decode.Decoder SubContext
 subContextDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map TypedIfBranch Index.zeroBasedDecoder
+                        Bytes.Decode.map TypedIfBranch Index.zeroBasedDecoder
 
                     1 ->
-                        BD.map TypedCaseBranch Index.zeroBasedDecoder
+                        Bytes.Decode.map TypedCaseBranch Index.zeroBasedDecoder
 
                     2 ->
-                        BD.succeed TypedBody
+                        Bytes.Decode.succeed TypedBody
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-pCategoryEncoder : PCategory -> BE.Encoder
+pCategoryEncoder : PCategory -> Bytes.Encode.Encoder
 pCategoryEncoder pCategory =
     case pCategory of
         PRecord ->
-            BE.unsignedInt8 0
+            Bytes.Encode.unsignedInt8 0
 
         PUnit ->
-            BE.unsignedInt8 1
+            Bytes.Encode.unsignedInt8 1
 
         PTuple ->
-            BE.unsignedInt8 2
+            Bytes.Encode.unsignedInt8 2
 
         PList ->
-            BE.unsignedInt8 3
+            Bytes.Encode.unsignedInt8 3
 
         PCtor name ->
-            BE.sequence
-                [ BE.unsignedInt8 4
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 4
                 , BE.string name
                 ]
 
         PInt ->
-            BE.unsignedInt8 5
+            Bytes.Encode.unsignedInt8 5
 
         PStr ->
-            BE.unsignedInt8 6
+            Bytes.Encode.unsignedInt8 6
 
         PChr ->
-            BE.unsignedInt8 7
+            Bytes.Encode.unsignedInt8 7
 
         PBool ->
-            BE.unsignedInt8 8
+            Bytes.Encode.unsignedInt8 8
 
 
-pCategoryDecoder : BD.Decoder PCategory
+pCategoryDecoder : Bytes.Decode.Decoder PCategory
 pCategoryDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.succeed PRecord
+                        Bytes.Decode.succeed PRecord
 
                     1 ->
-                        BD.succeed PUnit
+                        Bytes.Decode.succeed PUnit
 
                     2 ->
-                        BD.succeed PTuple
+                        Bytes.Decode.succeed PTuple
 
                     3 ->
-                        BD.succeed PList
+                        Bytes.Decode.succeed PList
 
                     4 ->
-                        BD.map PCtor BD.string
+                        Bytes.Decode.map PCtor BD.string
 
                     5 ->
-                        BD.succeed PInt
+                        Bytes.Decode.succeed PInt
 
                     6 ->
-                        BD.succeed PStr
+                        Bytes.Decode.succeed PStr
 
                     7 ->
-                        BD.succeed PChr
+                        Bytes.Decode.succeed PChr
 
                     8 ->
-                        BD.succeed PBool
+                        Bytes.Decode.succeed PBool
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-pExpectedEncoder : (a -> BE.Encoder) -> PExpected a -> BE.Encoder
+pExpectedEncoder : (a -> Bytes.Encode.Encoder) -> PExpected a -> Bytes.Encode.Encoder
 pExpectedEncoder encoder pExpected =
     case pExpected of
         PNoExpectation expectedType ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , encoder expectedType
                 ]
 
         PFromContext region context expectedType ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , A.regionEncoder region
                 , pContextEncoder context
                 , encoder expectedType
                 ]
 
 
-pExpectedDecoder : BD.Decoder a -> BD.Decoder (PExpected a)
+pExpectedDecoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (PExpected a)
 pExpectedDecoder decoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map PNoExpectation decoder
+                        Bytes.Decode.map PNoExpectation decoder
 
                     1 ->
-                        BD.map3 PFromContext
+                        Bytes.Decode.map3 PFromContext
                             A.regionDecoder
                             pContextDecoder
                             decoder
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-maybeNameEncoder : MaybeName -> BE.Encoder
+maybeNameEncoder : MaybeName -> Bytes.Encode.Encoder
 maybeNameEncoder maybeName =
     case maybeName of
         FuncName name ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.string name
                 ]
 
         CtorName name ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , BE.string name
                 ]
 
         OpName op ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.string op
                 ]
 
         NoName ->
-            BE.unsignedInt8 3
+            Bytes.Encode.unsignedInt8 3
 
 
-maybeNameDecoder : BD.Decoder MaybeName
+maybeNameDecoder : Bytes.Decode.Decoder MaybeName
 maybeNameDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map FuncName BD.string
+                        Bytes.Decode.map FuncName BD.string
 
                     1 ->
-                        BD.map CtorName BD.string
+                        Bytes.Decode.map CtorName BD.string
 
                     2 ->
-                        BD.map OpName BD.string
+                        Bytes.Decode.map OpName BD.string
 
                     3 ->
-                        BD.succeed NoName
+                        Bytes.Decode.succeed NoName
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )
 
 
-pContextEncoder : PContext -> BE.Encoder
+pContextEncoder : PContext -> Bytes.Encode.Encoder
 pContextEncoder pContext =
     case pContext of
         PTypedArg name index ->
-            BE.sequence
-                [ BE.unsignedInt8 0
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
                 , BE.string name
                 , Index.zeroBasedEncoder index
                 ]
 
         PCaseMatch index ->
-            BE.sequence
-                [ BE.unsignedInt8 1
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
                 , Index.zeroBasedEncoder index
                 ]
 
         PCtorArg name index ->
-            BE.sequence
-                [ BE.unsignedInt8 2
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
                 , BE.string name
                 , Index.zeroBasedEncoder index
                 ]
 
         PListEntry index ->
-            BE.sequence
-                [ BE.unsignedInt8 3
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
                 , Index.zeroBasedEncoder index
                 ]
 
         PTail ->
-            BE.unsignedInt8 4
+            Bytes.Encode.unsignedInt8 4
 
 
-pContextDecoder : BD.Decoder PContext
+pContextDecoder : Bytes.Decode.Decoder PContext
 pContextDecoder =
-    BD.unsignedInt8
-        |> BD.andThen
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        BD.map2 PTypedArg
+                        Bytes.Decode.map2 PTypedArg
                             BD.string
                             Index.zeroBasedDecoder
 
                     1 ->
-                        BD.map PCaseMatch Index.zeroBasedDecoder
+                        Bytes.Decode.map PCaseMatch Index.zeroBasedDecoder
 
                     2 ->
-                        BD.map2 PCtorArg
+                        Bytes.Decode.map2 PCtorArg
                             BD.string
                             Index.zeroBasedDecoder
 
                     3 ->
-                        BD.map PListEntry Index.zeroBasedDecoder
+                        Bytes.Decode.map PListEntry Index.zeroBasedDecoder
 
                     4 ->
-                        BD.succeed PTail
+                        Bytes.Decode.succeed PTail
 
                     _ ->
-                        BD.fail
+                        Bytes.Decode.fail
             )

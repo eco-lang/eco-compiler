@@ -1,6 +1,6 @@
 module Common.Format.RWS exposing
     ( RWS
-    , bind
+    , andThen
     , error
     , evalRWS
     , get
@@ -52,8 +52,8 @@ mapM_ f xs =
             xs
 
 
-bind : (a -> RWS r s b) -> RWS r s a -> RWS r s b
-bind f rwsa =
+andThen : (a -> RWS r s b) -> RWS r s a -> RWS r s b
+andThen f rwsa =
     \r s0 ->
         let
             ( a, s1, w1 ) =
@@ -97,10 +97,10 @@ replicateM n rws =
 
     else
         rws
-            |> bind
+            |> andThen
                 (\a ->
                     replicateM (n - 1) rws
-                        |> bind (\list -> return (a :: list))
+                        |> andThen (\list -> return (a :: list))
                 )
 
 

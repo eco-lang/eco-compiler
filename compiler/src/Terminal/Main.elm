@@ -26,7 +26,7 @@ main : IO.Program
 main =
     IO.run
         (app
-            |> Task.bind
+            |> Task.andThen
                 (\() ->
                     Impure.task "exitWith"
                         []
@@ -120,10 +120,10 @@ init =
                 (Chomp.pure Init.Flags
                     |> Chomp.apply (Chomp.chompOnOffFlag "package")
                     |> Chomp.apply (Chomp.chompOnOffFlag "yes")
-                    |> Chomp.bind
+                    |> Chomp.andThen
                         (\value ->
                             Chomp.checkForUnknownFlags initFlags
-                                |> Chomp.fmap (\_ -> value)
+                                |> Chomp.map (\_ -> value)
                         )
                 )
                 |> Tuple.second
@@ -148,13 +148,21 @@ repl =
         example : D.Doc
         example =
             reflow
-                "Start working through <https://guide.elm-lang.org> to learn how to use this! It has a whole chapter that uses the REPL for everything, so that is probably the quickest way to get started."
+                ("Start working through <https://guide.elm-lang.org> to learn how to use this! "
+                    ++ "It has a whole chapter that uses the REPL for everything, so that is probably the quickest way to get started."
+                )
 
         replFlags : Terminal.Flags
         replFlags =
             Terminal.flags
                 |> Terminal.more (Terminal.flag "interpreter" interpreter "Path to a alternate JS interpreter, like node or nodejs.")
-                |> Terminal.more (Terminal.onOff "no-colors" "Turn off the colors in the REPL. This can help if you are having trouble reading the values. Some terminals use a custom color scheme that diverges significantly from the standard ANSI colors, so another path may be to pick a more standard color scheme.")
+                |> Terminal.more
+                    (Terminal.onOff "no-colors"
+                        ("Turn off the colors in the REPL. This can help if you are having trouble reading the values. "
+                            ++ "Some terminals use a custom color scheme that diverges significantly from the standard ANSI colors, "
+                            ++ "so another path may be to pick a more standard color scheme."
+                        )
+                    )
     in
     Terminal.Command "repl" (Terminal.Common summary) details example Terminal.noArgs replFlags <|
         \chunks ->
@@ -165,10 +173,10 @@ repl =
                 (Chomp.pure Repl.Flags
                     |> Chomp.apply (Chomp.chompNormalFlag "interpreter" interpreter Just)
                     |> Chomp.apply (Chomp.chompOnOffFlag "no-colors")
-                    |> Chomp.bind
+                    |> Chomp.andThen
                         (\value ->
                             Chomp.checkForUnknownFlags replFlags
-                                |> Chomp.fmap (\_ -> value)
+                                |> Chomp.map (\_ -> value)
                         )
                 )
                 |> Tuple.second
@@ -180,8 +188,8 @@ interpreter =
     Terminal.Parser
         { singular = "interpreter"
         , plural = "interpreters"
-        , suggest = \_ -> Task.pure []
-        , examples = \_ -> Task.pure [ "node", "nodejs" ]
+        , suggest = \_ -> Task.succeed []
+        , examples = \_ -> Task.succeed [ "node", "nodejs" ]
         }
 
 
@@ -201,18 +209,47 @@ make =
             stack
                 [ reflow "For example:"
                 , D.indent 4 <| D.green (D.fromChars "guida make src/Main.guida")
-                , reflow "This tries to compile an Guida (and Elm) file named src/Main.guida, generating an index.html file if possible."
+                , reflow
+                    "This tries to compile an Guida (and Elm) file named src/Main.guida, generating an index.html file if possible."
                 ]
 
         makeFlags : Terminal.Flags
         makeFlags =
             Terminal.flags
-                |> Terminal.more (Terminal.onOff "debug" "Turn on the time-travelling debugger. It allows you to rewind and replay events. The events can be imported/exported into a file, which makes for very precise bug reports!")
-                |> Terminal.more (Terminal.onOff "optimize" "Turn on optimizations to make code smaller and faster. For example, the compiler renames record fields to be as short as possible and unboxes values to reduce allocation.")
+                |> Terminal.more
+                    (Terminal.onOff "debug"
+                        ("Turn on the time-travelling debugger. It allows you to rewind and replay events. "
+                            ++ "The events can be imported/exported into a file, which makes for very precise bug reports!"
+                        )
+                    )
+                |> Terminal.more
+                    (Terminal.onOff "optimize"
+                        ("Turn on optimizations to make code smaller and faster. For example, the compiler renames "
+                            ++ "record fields to be as short as possible and unboxes values to reduce allocation."
+                        )
+                    )
                 |> Terminal.more (Terminal.onOff "sourcemaps" "Add source maps to resulting JavaScript code.")
-                |> Terminal.more (Terminal.flag "output" Make.output "Specify the name of the resulting JS file. For example --output=assets/guida.js to generate the JS at assets/guida.js or --output=/dev/null to generate no output at all!")
-                |> Terminal.more (Terminal.flag "report" Make.reportType "You can say --report=json to get error messages as JSON. This is only really useful if you are an editor plugin. Humans should avoid it!")
-                |> Terminal.more (Terminal.flag "docs" Make.docsFile "Generate a JSON file of documentation for a package. Eventually it will be possible to preview docs with `reactor` because it is quite hard to deal with these JSON files directly.")
+                |> Terminal.more
+                    (Terminal.flag "output"
+                        Make.output
+                        ("Specify the name of the resulting JS file. For example --output=assets/guida.js "
+                            ++ "to generate the JS at assets/guida.js or --output=/dev/null to generate no output at all!"
+                        )
+                    )
+                |> Terminal.more
+                    (Terminal.flag "report"
+                        Make.reportType
+                        ("You can say --report=json to get error messages as JSON. "
+                            ++ "This is only really useful if you are an editor plugin. Humans should avoid it!"
+                        )
+                    )
+                |> Terminal.more
+                    (Terminal.flag "docs"
+                        Make.docsFile
+                        ("Generate a JSON file of documentation for a package. Eventually it will be possible to preview docs "
+                            ++ "with `reactor` because it is quite hard to deal with these JSON files directly."
+                        )
+                    )
     in
     Terminal.Command "make" Terminal.Uncommon details example (Terminal.zeroOrMore Terminal.guidaOrElmFile) makeFlags <|
         \chunks ->
@@ -227,10 +264,10 @@ make =
                     |> Chomp.apply (Chomp.chompNormalFlag "output" Make.output Make.parseOutput)
                     |> Chomp.apply (Chomp.chompNormalFlag "report" Make.reportType Make.parseReportType)
                     |> Chomp.apply (Chomp.chompNormalFlag "docs" Make.docsFile Make.parseDocsFile)
-                    |> Chomp.bind
+                    |> Chomp.andThen
                         (\value ->
                             Chomp.checkForUnknownFlags makeFlags
-                                |> Chomp.fmap (\_ -> value)
+                                |> Chomp.map (\_ -> value)
                         )
                 )
                 |> Tuple.second
@@ -285,20 +322,20 @@ install =
                 [ Chomp.chompExactly (Chomp.pure Install.NoArgs)
                 , Chomp.chompExactly
                     (Chomp.pure Install.Install
-                        |> Chomp.bind
+                        |> Chomp.andThen
                             (\func ->
                                 Chomp.chompArg (List.length chunks) Terminal.package Terminal.parsePackage
-                                    |> Chomp.fmap (\arg -> func arg)
+                                    |> Chomp.map (\arg -> func arg)
                             )
                     )
                 ]
                 (Chomp.pure Install.Flags
                     |> Chomp.apply (Chomp.chompOnOffFlag "test")
                     |> Chomp.apply (Chomp.chompOnOffFlag "yes")
-                    |> Chomp.bind
+                    |> Chomp.andThen
                         (\value ->
                             Chomp.checkForUnknownFlags installFlags
-                                |> Chomp.fmap (\_ -> value)
+                                |> Chomp.map (\_ -> value)
                         )
                 )
                 |> Tuple.second
@@ -348,19 +385,19 @@ uninstall =
                 [ Chomp.chompExactly (Chomp.pure Uninstall.NoArgs)
                 , Chomp.chompExactly
                     (Chomp.pure Uninstall.Uninstall
-                        |> Chomp.bind
+                        |> Chomp.andThen
                             (\func ->
                                 Chomp.chompArg (List.length chunks) Terminal.package Terminal.parsePackage
-                                    |> Chomp.fmap (\arg -> func arg)
+                                    |> Chomp.map (\arg -> func arg)
                             )
                     )
                 ]
                 (Chomp.pure Uninstall.Flags
                     |> Chomp.apply (Chomp.chompOnOffFlag "yes")
-                    |> Chomp.bind
+                    |> Chomp.andThen
                         (\value ->
                             Chomp.checkForUnknownFlags uninstallFlags
-                                |> Chomp.fmap (\_ -> value)
+                                |> Chomp.map (\_ -> value)
                         )
                 )
                 |> Tuple.second
@@ -376,17 +413,25 @@ publish =
     let
         details : String
         details =
-            "The `publish` command publishes your package on <https://package.elm-lang.org> so that anyone in the Elm community can use it."
+            "The `publish` command publishes your package on <https://package.elm-lang.org> "
+                ++ "so that anyone in the Elm community can use it."
 
         example : D.Doc
         example =
             stack
                 [ reflow
                     "Think hard if you are ready to publish NEW packages though!"
-                , reflow
-                    "Part of what makes Elm great is the packages ecosystem. The fact that there is usually one option (usually very well done) makes it way easier to pick packages and become productive. So having a million packages would be a failure in Elm. We do not need twenty of everything, all coded in a single weekend."
-                , reflow
-                    "So as community members gain wisdom through experience, we want them to share that through thoughtful API design and excellent documentation. It is more about sharing ideas and insights than just sharing code! The first step may be asking for advice from people you respect, or in community forums. The second step may be using it at work to see if it is as nice as you think. Maybe it ends up as an experiment on GitHub only. Point is, try to be respectful of the community and package ecosystem!"
+                , reflow <|
+                    "Part of what makes Elm great is the packages ecosystem. The fact that there is usually one option "
+                        ++ "(usually very well done) makes it way easier to pick packages and become productive. "
+                        ++ "So having a million packages would be a failure in Elm. We do not need twenty of everything, "
+                        ++ "all coded in a single weekend."
+                , reflow <|
+                    "So as community members gain wisdom through experience, we want them to share that through thoughtful API design "
+                        ++ "and excellent documentation. It is more about sharing ideas and insights than just sharing code! "
+                        ++ "The first step may be asking for advice from people you respect, or in community forums. "
+                        ++ "The second step may be using it at work to see if it is as nice as you think. Maybe it ends up "
+                        ++ "as an experiment on GitHub only. Point is, try to be respectful of the community and package ecosystem!"
                 , reflow
                     "Check out <https://package.elm-lang.org/help/design-guidelines> for guidance on how to create great packages!"
                 ]
@@ -398,10 +443,10 @@ publish =
                 [ Chomp.chompExactly (Chomp.pure ())
                 ]
                 (Chomp.pure ()
-                    |> Chomp.bind
+                    |> Chomp.andThen
                         (\value ->
                             Chomp.checkForUnknownFlags Terminal.noFlags
-                                |> Chomp.fmap (\_ -> value)
+                                |> Chomp.map (\_ -> value)
                         )
                 )
                 |> Tuple.second
@@ -421,8 +466,11 @@ bump =
 
         example : D.Doc
         example =
-            reflow
-                "Say you just published version 1.0.0, but then decided to remove a function. I will compare the published API to what you have locally, figure out that it is a MAJOR change, and bump your version number to 2.0.0. I do this with all packages, so there cannot be MAJOR changes hiding in PATCH releases in Elm!"
+            reflow <|
+                "Say you just published version 1.0.0, but then decided to remove a function. "
+                    ++ "I will compare the published API to what you have locally, figure out that it is a MAJOR change, "
+                    ++ "and bump your version number to 2.0.0. I do this with all packages, "
+                    ++ "so there cannot be MAJOR changes hiding in PATCH releases in Elm!"
     in
     Terminal.Command "bump" Terminal.Uncommon details example Terminal.noArgs Terminal.noFlags <|
         \chunks ->
@@ -431,10 +479,10 @@ bump =
                 [ Chomp.chompExactly (Chomp.pure ())
                 ]
                 (Chomp.pure ()
-                    |> Chomp.bind
+                    |> Chomp.andThen
                         (\value ->
                             Chomp.checkForUnknownFlags Terminal.noFlags
-                                |> Chomp.fmap (\_ -> value)
+                                |> Chomp.map (\_ -> value)
                         )
                 )
                 |> Tuple.second
@@ -478,49 +526,49 @@ diff =
                 [ Chomp.chompExactly (Chomp.pure Diff.CodeVsLatest)
                 , Chomp.chompExactly
                     (Chomp.pure Diff.CodeVsExactly
-                        |> Chomp.bind
+                        |> Chomp.andThen
                             (\func ->
                                 Chomp.chompArg (List.length chunks) Terminal.version Terminal.parseVersion
-                                    |> Chomp.fmap (\arg -> func arg)
+                                    |> Chomp.map (\arg -> func arg)
                             )
                     )
                 , Chomp.chompExactly
                     (Chomp.pure Diff.LocalInquiry
-                        |> Chomp.bind
+                        |> Chomp.andThen
                             (\func ->
                                 Chomp.chompArg (List.length chunks) Terminal.version Terminal.parseVersion
-                                    |> Chomp.fmap (\arg -> func arg)
+                                    |> Chomp.map (\arg -> func arg)
                             )
-                        |> Chomp.bind
+                        |> Chomp.andThen
                             (\func ->
                                 Chomp.chompArg (List.length chunks) Terminal.version Terminal.parseVersion
-                                    |> Chomp.fmap (\arg -> func arg)
+                                    |> Chomp.map (\arg -> func arg)
                             )
                     )
                 , Chomp.chompExactly
                     (Chomp.pure Diff.GlobalInquiry
-                        |> Chomp.bind
+                        |> Chomp.andThen
                             (\func ->
                                 Chomp.chompArg (List.length chunks) Terminal.package Terminal.parsePackage
-                                    |> Chomp.fmap (\arg -> func arg)
+                                    |> Chomp.map (\arg -> func arg)
                             )
-                        |> Chomp.bind
+                        |> Chomp.andThen
                             (\func ->
                                 Chomp.chompArg (List.length chunks) Terminal.version Terminal.parseVersion
-                                    |> Chomp.fmap (\arg -> func arg)
+                                    |> Chomp.map (\arg -> func arg)
                             )
-                        |> Chomp.bind
+                        |> Chomp.andThen
                             (\func ->
                                 Chomp.chompArg (List.length chunks) Terminal.version Terminal.parseVersion
-                                    |> Chomp.fmap (\arg -> func arg)
+                                    |> Chomp.map (\arg -> func arg)
                             )
                     )
                 ]
                 (Chomp.pure ()
-                    |> Chomp.bind
+                    |> Chomp.andThen
                         (\value ->
                             Chomp.checkForUnknownFlags Terminal.noFlags
-                                |> Chomp.fmap (\_ -> value)
+                                |> Chomp.map (\_ -> value)
                         )
                 )
                 |> Tuple.second
@@ -569,10 +617,10 @@ format =
                     |> Chomp.apply (Chomp.chompOnOffFlag "yes")
                     |> Chomp.apply (Chomp.chompOnOffFlag "validate")
                     |> Chomp.apply (Chomp.chompOnOffFlag "stdin")
-                    |> Chomp.bind
+                    |> Chomp.andThen
                         (\value ->
                             Chomp.checkForUnknownFlags formatFlags
-                                |> Chomp.fmap (\_ -> value)
+                                |> Chomp.map (\_ -> value)
                         )
                 )
                 |> Tuple.second
@@ -584,8 +632,8 @@ output =
     Terminal.Parser
         { singular = "output"
         , plural = "outputs"
-        , suggest = \_ -> Task.pure []
-        , examples = \_ -> Task.pure []
+        , suggest = \_ -> Task.succeed []
+        , examples = \_ -> Task.succeed []
         }
 
 
@@ -631,10 +679,10 @@ test =
                     |> Chomp.apply (Chomp.chompNormalFlag "seed" int parseInt)
                     |> Chomp.apply (Chomp.chompNormalFlag "fuzz" int parseInt)
                     |> Chomp.apply (Chomp.chompNormalFlag "report" Test.format Test.parseReport)
-                    |> Chomp.bind
+                    |> Chomp.andThen
                         (\value ->
                             Chomp.checkForUnknownFlags testFlags
-                                |> Chomp.fmap (\_ -> value)
+                                |> Chomp.map (\_ -> value)
                         )
                 )
                 |> Tuple.second
@@ -646,8 +694,8 @@ int =
     Terminal.Parser
         { singular = "int"
         , plural = "ints"
-        , suggest = \_ -> Task.pure []
-        , examples = \_ -> Task.pure []
+        , suggest = \_ -> Task.succeed []
+        , examples = \_ -> Task.succeed []
         }
 
 
