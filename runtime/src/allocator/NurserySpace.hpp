@@ -157,6 +157,7 @@ private:
     void checkAndGrow();
 
     void evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
+    void evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
     void evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
     void scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
 

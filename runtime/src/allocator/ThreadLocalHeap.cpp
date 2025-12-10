@@ -92,12 +92,13 @@ void ThreadLocalHeap::majorGC() {
 
     // Collect all roots from this thread.
     std::unordered_set<HPointer*> roots = collectRoots();
+    const std::unordered_set<uint64_t*>& jit_roots = nursery_.getRootSet().getJitRoots();
 
     // Start marking phase.
 #if ENABLE_GC_STATS
-    old_gen_.startMark(roots, *parent_, stats_);
+    old_gen_.startMark(roots, jit_roots, *parent_, stats_);
 #else
-    old_gen_.startMark(roots, *parent_);
+    old_gen_.startMark(roots, jit_roots, *parent_);
 #endif
 
     // Continue with marking and sweep.

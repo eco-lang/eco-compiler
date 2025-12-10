@@ -14,6 +14,7 @@ add_executable(test
         allocator/StringOpsTest.cpp
         allocator/ListOpsTest.cpp
         allocator/BytesOpsTest.cpp
+        allocator/RuntimeExportsTest.cpp
         ../runtime/src/allocator/RootSet.cpp
         ../runtime/src/allocator/OldGenSpace.cpp
         ../runtime/src/allocator/NurserySpace.cpp
@@ -23,6 +24,7 @@ add_executable(test
         ../runtime/src/allocator/StringOps.cpp
         ../runtime/src/allocator/ListOps.cpp
         ../runtime/src/allocator/BytesOps.cpp
+        ../runtime/src/allocator/RuntimeExports.cpp
 )
 
 target_compile_features(test PRIVATE cxx_std_20)

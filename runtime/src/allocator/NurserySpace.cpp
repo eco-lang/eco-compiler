@@ -417,6 +417,11 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
         evacuate(*root, oldgen, &promoted_objects);
     }
 
+    // Phase 1c: Evacuate JIT roots (raw 64-bit pointers from JIT-compiled globals).
+    for (uint64_t *root: root_set.getJitRoots()) {
+        evacuateJitPtr(*root, oldgen, &promoted_objects);
+    }
+
     // Phase 2: Cheney's algorithm - scan to-space objects breadth-first.
     // When use_hybrid_dfs is enabled, list spine copying provides locality optimization
     // within scanObject() without requiring a separate DFS stack.
@@ -572,6 +577,97 @@ void NurserySpace::evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace 
     if (is_boxed) {
         evacuate(val.p, oldgen, promoted_objects);
     }
+}
+
+/**
+ * Evacuates a JIT root containing a raw 64-bit heap pointer.
+ *
+ * In JIT mode, globals store full 64-bit heap pointers rather than
+ * HPointer-encoded values. This function handles evacuation for such roots.
+ *
+ * Embedded constants are identified by having zero in the lower 40 bits
+ * and a value 1-7 in bits 40-43.
+ */
+void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
+    // Check for embedded constants: lower 40 bits = 0, bits 40-43 = 1-7.
+    uint64_t ptr_part = ptr & 0xFFFFFFFFFFULL;  // Lower 40 bits.
+    uint64_t const_part = (ptr >> 40) & 0xF;     // Bits 40-43.
+
+    if (ptr_part == 0 && const_part >= 1 && const_part <= 7) {
+        return;  // It's an embedded constant.
+    }
+
+    // Treat as raw pointer.
+    void *obj = reinterpret_cast<void*>(ptr);
+    if (!obj)
+        return;
+
+    char *heap_base = allocator_->getHeapBase();
+
+    // Validate pointer is within heap bounds.
+    if (static_cast<char*>(obj) < heap_base ||
+        static_cast<char*>(obj) >= heap_base + allocator_->getHeapReserved()) {
+        // Pointer is outside the heap - could be a foreign pointer or error.
+        // For now, skip it to avoid crashes.
+        return;
+    }
+
+    Header *hdr = getHeader(obj);
+
+    // Check for forwarding pointer.
+    if (hdr->tag == Tag_Forward) {
+        Forward *fwd = static_cast<Forward *>(obj);
+        uintptr_t byte_offset = static_cast<uintptr_t>(fwd->header.forward_ptr) << 3;
+        ptr = reinterpret_cast<uint64_t>(heap_base + byte_offset);
+        return;
+    }
+
+    // Only evacuate if in from-space.
+    if (!isInFromSpace(obj))
+        return;
+
+    size_t size = getObjectSize(obj);
+    void *new_obj = nullptr;
+
+    // Promote to old gen if age >= promotion_age.
+    if (hdr->age >= config_->promotion_age) {
+        new_obj = oldgen.allocate(size);
+        assert(new_obj && "Failed to allocate in old gen during promotion");
+
+        std::memcpy(new_obj, obj, size);
+
+        Header *new_hdr = getHeader(new_obj);
+        new_hdr->age = 0;
+
+        if (promoted_objects) {
+            promoted_objects->push_back(new_obj);
+        }
+
+        GC_STATS_MINOR_INC_PROMOTED(stats);
+    }
+
+    // Copy to to_space if not promoted.
+    if (!new_obj) {
+        new_obj = copyToSpace(size);
+        assert(new_obj && "Failed to copy to to-space during evacuation!");
+
+        std::memcpy(new_obj, obj, size);
+
+        Header *new_hdr = getHeader(new_obj);
+        new_hdr->age++;
+
+        GC_STATS_MINOR_INC_SURVIVORS(stats);
+    }
+
+    // Leave forwarding pointer.
+    Forward *fwd = static_cast<Forward *>(obj);
+    fwd->header.tag = Tag_Forward;
+    uintptr_t byte_offset = static_cast<char *>(new_obj) - heap_base;
+    fwd->header.forward_ptr = byte_offset >> 3;
+    fwd->header.unused = 0;
+
+    // Update the root with the new raw pointer.
+    ptr = reinterpret_cast<uint64_t>(new_obj);
 }
 
 /**

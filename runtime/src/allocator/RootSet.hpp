@@ -2,6 +2,7 @@
 #define ECO_ROOTSET_H
 
 #include <cstddef>
+#include <cstdint>
 #include <unordered_set>
 #include <vector>
 #include "Heap.hpp"
@@ -30,6 +31,19 @@ public:
     // Returns the set of registered root pointers.
     const std::unordered_set<HPointer *> &getRoots() const { return roots; }
 
+    // ===== JIT roots (raw 64-bit pointers) =====
+    // In JIT mode, globals store full 64-bit heap pointers rather than
+    // HPointer-encoded values. These need separate handling.
+
+    // Registers a JIT root (location storing a raw 64-bit heap pointer).
+    void addJitRoot(uint64_t *root);
+
+    // Unregisters a JIT root.
+    void removeJitRoot(uint64_t *root);
+
+    // Returns the set of JIT root pointers.
+    const std::unordered_set<uint64_t *> &getJitRoots() const { return jit_roots; }
+
     // ===== Stack roots (temporary, frame-based) =====
 
     // Returns the current stack root point (for later restoration).
@@ -57,8 +71,9 @@ public:
     void reset();
 
 private:
-    std::unordered_set<HPointer *> roots; // Long-lived roots (O(1) add/remove).
-    std::vector<HPointer *> stack_roots;  // Temporary stack roots.
+    std::unordered_set<HPointer *> roots;     // Long-lived roots (O(1) add/remove).
+    std::unordered_set<uint64_t *> jit_roots; // JIT roots storing raw 64-bit pointers.
+    std::vector<HPointer *> stack_roots;      // Temporary stack roots.
 };
 
 } // namespace Elm

@@ -21,9 +21,20 @@ void RootSet::removeRoot(HPointer *root) {
     roots.erase(root);
 }
 
+// Registers a JIT root (raw 64-bit pointer location). O(1) average.
+void RootSet::addJitRoot(uint64_t *root) {
+    jit_roots.insert(root);
+}
+
+// Unregisters a JIT root. O(1) average.
+void RootSet::removeJitRoot(uint64_t *root) {
+    jit_roots.erase(root);
+}
+
 // Clears all roots. Used for testing.
 void RootSet::reset() {
     roots.clear();
+    jit_roots.clear();
     stack_roots.clear();
 }
 

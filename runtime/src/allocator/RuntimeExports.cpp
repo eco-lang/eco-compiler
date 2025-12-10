@@ -33,6 +33,36 @@ extern "C" void* eco_alloc_custom(uint32_t ctor_tag, uint32_t field_count, uint3
     return obj;
 }
 
+extern "C" void eco_set_unboxed(void* obj, uint64_t bitmap) {
+    Header* header = static_cast<Header*>(obj);
+    switch (header->tag) {
+        case Tag_Custom: {
+            Custom* custom = static_cast<Custom*>(obj);
+            custom->unboxed = static_cast<u32>(bitmap);
+            break;
+        }
+        case Tag_Tuple2: {
+            Tuple2* tuple = static_cast<Tuple2*>(obj);
+            tuple->header.unboxed = static_cast<u8>(bitmap);
+            break;
+        }
+        case Tag_Tuple3: {
+            Tuple3* tuple = static_cast<Tuple3*>(obj);
+            tuple->header.unboxed = static_cast<u8>(bitmap);
+            break;
+        }
+        case Tag_Cons: {
+            Cons* cons = static_cast<Cons*>(obj);
+            cons->header.unboxed = static_cast<u8>(bitmap);
+            break;
+        }
+        default:
+            // For other types, set in header
+            header->unboxed = static_cast<u8>(bitmap);
+            break;
+    }
+}
+
 extern "C" void* eco_alloc_cons() {
     size_t size = sizeof(Cons);
     void* obj = Allocator::instance().allocate(size, Tag_Cons);
@@ -108,6 +138,13 @@ extern "C" void* eco_alloc_char(uint32_t value) {
     ElmChar* elmChar = static_cast<ElmChar*>(obj);
     elmChar->value = static_cast<u16>(value);
 
+    return obj;
+}
+
+extern "C" void* eco_allocate(uint64_t size, uint32_t tag) {
+    // Generic allocation with specified size and tag.
+    // The tag should be one of the Tag enum values from Heap.hpp.
+    void* obj = Allocator::instance().allocate(static_cast<size_t>(size), static_cast<Tag>(tag));
     return obj;
 }
 
@@ -253,11 +290,89 @@ extern "C" void* eco_apply_closure(void* closure_ptr, uint64_t* args, uint32_t n
 }
 
 extern "C" void* eco_pap_extend(void* closure_ptr, uint64_t* args, uint32_t num_newargs) {
-    // TODO: Implement PAP extension
-    // Similar to eco_apply_closure but for extending existing PAPs
+    Closure* old_closure = static_cast<Closure*>(closure_ptr);
 
-    fprintf(stderr, "eco_pap_extend: not yet implemented\n");
-    return nullptr;
+    // Get the current state of the closure.
+    uint32_t old_n_values = old_closure->n_values;
+    uint32_t max_values = old_closure->max_values;
+    uint64_t old_unboxed = old_closure->unboxed;
+
+    // Calculate new n_values.
+    uint32_t new_n_values = old_n_values + num_newargs;
+
+    // Sanity check: should not exceed max_values for partial application.
+    // (Saturated calls should use eco_closure_call_saturated instead.)
+    if (new_n_values > max_values) {
+        fprintf(stderr, "eco_pap_extend: new_n_values (%u) exceeds max_values (%u)\n",
+                new_n_values, max_values);
+        return nullptr;
+    }
+
+    // Allocate a new closure with room for all captured values.
+    size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + new_n_values * sizeof(Unboxable);
+    void* obj = Allocator::instance().allocate(size, Tag_Closure);
+    if (!obj) return nullptr;
+
+    Closure* new_closure = static_cast<Closure*>(obj);
+
+    // Copy metadata from old closure.
+    new_closure->n_values = new_n_values;
+    new_closure->max_values = max_values;
+    new_closure->evaluator = old_closure->evaluator;
+
+    // Build the new unboxed bitmap: old bits + new args (assume all new args are boxed).
+    // New args are treated as boxed pointers for GC tracing purposes.
+    new_closure->unboxed = old_unboxed;
+
+    // Copy old captured values.
+    for (uint32_t i = 0; i < old_n_values; i++) {
+        new_closure->values[i] = old_closure->values[i];
+    }
+
+    // Copy new arguments.
+    for (uint32_t i = 0; i < num_newargs; i++) {
+        new_closure->values[old_n_values + i].i = static_cast<i64>(args[i]);
+    }
+
+    return new_closure;
+}
+
+extern "C" uint64_t eco_closure_call_saturated(void* closure_ptr, uint64_t* new_args, uint32_t num_newargs) {
+    Closure* closure = static_cast<Closure*>(closure_ptr);
+
+    // Get the closure state.
+    uint32_t n_values = closure->n_values;
+    uint32_t max_values = closure->max_values;
+
+    // Sanity check: n_values + num_newargs should equal max_values for a saturated call.
+    if (n_values + num_newargs != max_values) {
+        fprintf(stderr, "eco_closure_call_saturated: argument count mismatch "
+                "(n_values=%u + num_newargs=%u != max_values=%u)\n",
+                n_values, num_newargs, max_values);
+        return 0;
+    }
+
+    // Build the combined argument array.
+    // Stack-allocate for small arities, heap-allocate for large.
+    void* stack_args[16];
+    void** combined_args = (max_values <= 16) ? stack_args :
+                           static_cast<void**>(alloca(max_values * sizeof(void*)));
+
+    // Copy captured values from closure.
+    for (uint32_t i = 0; i < n_values; i++) {
+        combined_args[i] = reinterpret_cast<void*>(closure->values[i].i);
+    }
+
+    // Copy new arguments.
+    for (uint32_t i = 0; i < num_newargs; i++) {
+        combined_args[n_values + i] = reinterpret_cast<void*>(new_args[i]);
+    }
+
+    // Call the evaluator function.
+    EvalFunction evaluator = closure->evaluator;
+    void* result = evaluator(combined_args);
+
+    return reinterpret_cast<uint64_t>(result);
 }
 
 //===----------------------------------------------------------------------===//
@@ -572,19 +687,20 @@ static void print_custom(Custom* custom, int depth) {
             } else {
                 // Read as full 64-bit value for JIT mode
                 uint64_t val = static_cast<uint64_t>(custom->values[i].i);
-                // Wrap complex values in parens
-                bool needs_parens = false;
-                // Check if this is a non-constant pointer to a Custom with fields
+
+                // Try to print as constant first (print_if_constant both checks AND prints)
                 if (!print_if_constant(val)) {
+                    // Not a constant - it's a pointer, print via print_value
                     void* ptr = reinterpret_cast<void*>(val);
+                    bool needs_parens = false;
                     if (ptr) {
                         Header* h = static_cast<Header*>(ptr);
                         needs_parens = (h->tag == Tag_Custom && static_cast<Custom*>(ptr)->header.size > 0);
                     }
+                    if (needs_parens) fputc('(', stderr);
+                    print_value(val, depth + 1);
+                    if (needs_parens) fputc(')', stderr);
                 }
-                if (needs_parens) fputc('(', stderr);
-                print_value(val, depth + 1);
-                if (needs_parens) fputc(')', stderr);
             }
         }
     }
@@ -791,6 +907,23 @@ extern "C" void eco_dbg_print(uint64_t* args, uint32_t num_args) {
     fprintf(stderr, "\n");
 }
 
+// Debug print for unboxed integer (i64)
+extern "C" void eco_dbg_print_int(int64_t value) {
+    fprintf(stderr, "[eco.dbg] %lld\n", (long long)value);
+}
+
+// Debug print for unboxed float (f64)
+extern "C" void eco_dbg_print_float(double value) {
+    fprintf(stderr, "[eco.dbg] %g\n", value);
+}
+
+// Debug print for unboxed char (i32 Unicode code point)
+extern "C" void eco_dbg_print_char(int32_t value) {
+    fprintf(stderr, "[eco.dbg] ");
+    print_char(static_cast<u16>(value));
+    fprintf(stderr, "\n");
+}
+
 //===----------------------------------------------------------------------===//
 // GC Interface
 //===----------------------------------------------------------------------===//
@@ -808,6 +941,18 @@ extern "C" void eco_major_gc() {
     Allocator::instance().majorGC();
 }
 
+extern "C" void eco_gc_add_root(uint64_t* root_ptr) {
+    Allocator::instance().getRootSet().addJitRoot(root_ptr);
+}
+
+extern "C" void eco_gc_remove_root(uint64_t* root_ptr) {
+    Allocator::instance().getRootSet().removeJitRoot(root_ptr);
+}
+
+extern "C" uint64_t eco_gc_jit_root_count() {
+    return Allocator::instance().getRootSet().getJitRoots().size();
+}
+
 //===----------------------------------------------------------------------===//
 // Tag Extraction
 //===----------------------------------------------------------------------===//
@@ -820,4 +965,32 @@ extern "C" uint32_t eco_get_header_tag(void* obj) {
 extern "C" uint32_t eco_get_custom_ctor(void* obj) {
     Custom* custom = static_cast<Custom*>(obj);
     return custom->ctor;
+}
+
+//===----------------------------------------------------------------------===//
+// Arithmetic Helpers
+//===----------------------------------------------------------------------===//
+
+// Integer exponentiation: base^exp
+// Returns 0 for negative exponents (caller handles this)
+extern "C" int64_t eco_int_pow(int64_t base, int64_t exp) {
+    if (exp < 0) {
+        // Negative exponent returns 0 (caller should prevent this,
+        // but handle defensively)
+        return 0;
+    }
+    if (exp == 0) {
+        return 1;
+    }
+
+    // Binary exponentiation for efficiency
+    int64_t result = 1;
+    while (exp > 0) {
+        if (exp & 1) {
+            result *= base;
+        }
+        base *= base;
+        exp >>= 1;
+    }
+    return result;
 }

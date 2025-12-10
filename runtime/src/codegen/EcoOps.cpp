@@ -46,6 +46,30 @@ LogicalResult ConstructOp::verify() {
            << ") must match size attribute ("
            << size << ")";
   }
+
+  // Verify that unboxed_bitmap only has bits set for unboxed fields.
+  // Unboxed types are: i64 (integers), f64 (floats), i32 (chars).
+  // !eco.value fields (including constants) must be marked as boxed (bit = 0).
+  if (auto bitmap = getUnboxedBitmap()) {
+    int64_t unboxedBits = bitmap.value();
+    auto fields = getFields();
+    for (size_t i = 0; i < fields.size(); i++) {
+      bool bitmapSaysUnboxed = (unboxedBits & (1LL << i)) != 0;
+      Type fieldType = fields[i].getType();
+
+      // Check if field type is actually unboxed (primitive type)
+      bool isUnboxedType = fieldType.isInteger(64) ||  // i64 int
+                           fieldType.isF64() ||         // f64 float
+                           fieldType.isInteger(32);     // i32 char
+
+      if (bitmapSaysUnboxed && !isUnboxedType) {
+        return emitOpError("unboxed_bitmap bit ")
+               << i << " is set but field has boxed type "
+               << fieldType << "; constants and !eco.value must be boxed";
+      }
+    }
+  }
+
   return success();
 }
 
@@ -67,6 +91,148 @@ LogicalResult PapCreateOp::verify() {
            << ") must be less than arity ("
            << arity << ")";
   }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// Custom Assembly Format: CaseOp
+//===----------------------------------------------------------------------===//
+
+// Format: eco.case %scrutinee [tag0, tag1, ...] { region0 }, { region1 }, ...
+void CaseOp::print(OpAsmPrinter &p) {
+  p << " " << getScrutinee() << " [";
+  llvm::interleaveComma(getTags(), p);
+  p << "]";
+
+  for (Region &region : getAlternatives()) {
+    p << " ";
+    p.printRegion(region, /*printEntryBlockArgs=*/false,
+                  /*printBlockTerminators=*/true);
+    if (&region != &getAlternatives().back())
+      p << ",";
+  }
+  p.printOptionalAttrDict((*this)->getAttrs(), {"tags"});
+}
+
+ParseResult CaseOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand scrutinee;
+  if (parser.parseOperand(scrutinee))
+    return failure();
+
+  // Parse [tag0, tag1, ...]
+  SmallVector<int64_t> tags;
+  if (parser.parseLSquare())
+    return failure();
+
+  int64_t tag;
+  if (parser.parseInteger(tag))
+    return failure();
+  tags.push_back(tag);
+
+  while (succeeded(parser.parseOptionalComma())) {
+    if (parser.parseInteger(tag))
+      return failure();
+    tags.push_back(tag);
+  }
+
+  if (parser.parseRSquare())
+    return failure();
+
+  result.addAttribute("tags", parser.getBuilder().getDenseI64ArrayAttr(tags));
+
+  // Parse each region
+  for (size_t i = 0; i < tags.size(); ++i) {
+    Region *region = result.addRegion();
+    if (parser.parseRegion(*region, /*arguments=*/{}, /*argTypes=*/{}))
+      return failure();
+
+    // Parse optional comma between regions
+    if (i < tags.size() - 1) {
+      if (parser.parseComma())
+        return failure();
+    }
+  }
+
+  // Parse optional attr-dict
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  // Resolve scrutinee operand
+  Type valueType = eco::ValueType::get(parser.getContext());
+  if (parser.resolveOperand(scrutinee, valueType, result.operands))
+    return failure();
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// Custom Assembly Format: JoinpointOp
+//===----------------------------------------------------------------------===//
+
+// Format: eco.joinpoint id(%arg0: type0, %arg1: type1) { body } continuation { cont }
+void JoinpointOp::print(OpAsmPrinter &p) {
+  p << " " << getId();
+
+  // Print block arguments if any
+  Block &bodyEntry = getBody().front();
+  if (!bodyEntry.getArguments().empty()) {
+    p << "(";
+    llvm::interleaveComma(bodyEntry.getArguments(), p, [&](BlockArgument arg) {
+      p << arg << ": " << arg.getType();
+    });
+    p << ")";
+  }
+
+  p << " ";
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
+                /*printBlockTerminators=*/true);
+
+  p << " continuation ";
+  p.printRegion(getContinuation(), /*printEntryBlockArgs=*/false,
+                /*printBlockTerminators=*/true);
+
+  p.printOptionalAttrDict((*this)->getAttrs(), {"id"});
+}
+
+ParseResult JoinpointOp::parse(OpAsmParser &parser, OperationState &result) {
+  // Parse the joinpoint id
+  int64_t id;
+  if (parser.parseInteger(id))
+    return failure();
+  result.addAttribute("id", parser.getBuilder().getI64IntegerAttr(id));
+
+  // Parse optional block arguments: (arg0: type0, arg1: type1)
+  SmallVector<OpAsmParser::Argument> regionArgs;
+  if (succeeded(parser.parseOptionalLParen())) {
+    do {
+      OpAsmParser::Argument arg;
+      if (parser.parseArgument(arg) || parser.parseColon() ||
+          parser.parseType(arg.type))
+        return failure();
+      regionArgs.push_back(arg);
+    } while (succeeded(parser.parseOptionalComma()));
+
+    if (parser.parseRParen())
+      return failure();
+  }
+
+  // Parse body region with arguments
+  Region *body = result.addRegion();
+  if (parser.parseRegion(*body, regionArgs))
+    return failure();
+
+  // Parse "continuation" keyword and continuation region
+  if (parser.parseKeyword("continuation"))
+    return failure();
+
+  Region *continuation = result.addRegion();
+  if (parser.parseRegion(*continuation, /*arguments=*/{}, /*argTypes=*/{}))
+    return failure();
+
+  // Parse optional attr-dict
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
 
   return success();
 }

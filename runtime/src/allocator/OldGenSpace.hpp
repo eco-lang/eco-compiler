@@ -250,10 +250,15 @@ private:
 
     // Begins incremental marking phase.
     // Pushes all root pointers onto the mark stack for processing.
+    // jit_roots contains raw 64-bit heap pointers from JIT-compiled globals.
 #if ENABLE_GC_STATS
-    void startMark(const std::unordered_set<HPointer*> &roots, Allocator &alloc, GCStats &stats);
+    void startMark(const std::unordered_set<HPointer*> &roots,
+                   const std::unordered_set<uint64_t*> &jit_roots,
+                   Allocator &alloc, GCStats &stats);
 #else
-    void startMark(const std::unordered_set<HPointer*> &roots, Allocator &alloc);
+    void startMark(const std::unordered_set<HPointer*> &roots,
+                   const std::unordered_set<uint64_t*> &jit_roots,
+                   Allocator &alloc);
 #endif
 
     // Performs incremental marking work (processes work_units worth of objects).
@@ -318,7 +323,14 @@ public:
 #if ENABLE_GC_STATS
     static void startMark(OldGenSpace& oldgen, const std::unordered_set<HPointer*>& roots,
                           Allocator& alloc, GCStats& stats) {
-        oldgen.startMark(roots, alloc, stats);
+        std::unordered_set<uint64_t*> empty_jit_roots;
+        oldgen.startMark(roots, empty_jit_roots, alloc, stats);
+    }
+
+    static void startMark(OldGenSpace& oldgen, const std::unordered_set<HPointer*>& roots,
+                          const std::unordered_set<uint64_t*>& jit_roots,
+                          Allocator& alloc, GCStats& stats) {
+        oldgen.startMark(roots, jit_roots, alloc, stats);
     }
 
     static bool incrementalMark(OldGenSpace& oldgen, size_t work_units, GCStats& stats) {
@@ -331,7 +343,14 @@ public:
 #else
     static void startMark(OldGenSpace& oldgen, const std::unordered_set<HPointer*>& roots,
                           Allocator& alloc) {
-        oldgen.startMark(roots, alloc);
+        std::unordered_set<uint64_t*> empty_jit_roots;
+        oldgen.startMark(roots, empty_jit_roots, alloc);
+    }
+
+    static void startMark(OldGenSpace& oldgen, const std::unordered_set<HPointer*>& roots,
+                          const std::unordered_set<uint64_t*>& jit_roots,
+                          Allocator& alloc) {
+        oldgen.startMark(roots, jit_roots, alloc);
     }
 
     static bool incrementalMark(OldGenSpace& oldgen, size_t work_units) {

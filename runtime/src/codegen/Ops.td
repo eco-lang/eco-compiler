@@ -59,6 +59,9 @@ def Eco_ValueType : Eco_Type<"Value", "value"> {
     - GC metadata: color, age, refcount
     - size: type-specific size information
   }];
+
+  // Builder call enables auto-generation in assembly formats
+  let builderCall = "$_builder.getType<eco::ValueType>()";
 }
 
 //===----------------------------------------------------------------------===//
@@ -68,7 +71,8 @@ def Eco_ValueType : Eco_Type<"Value", "value"> {
 // Boxed heap value
 def Eco_Value : Type<CPred<"llvm::isa<eco::ValueType>($_self)">,
                      "eco.value",
-                     "eco::ValueType">;
+                     "eco::ValueType">,
+                     BuildableType<"$_builder.getType<eco::ValueType>()">;
 
 //===----------------------------------------------------------------------===//
 // Constant Attribute Definition
@@ -142,6 +146,7 @@ def Eco_CaseOp : Eco_Op<"case", [
   let results = (outs);
 
   let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
 }
 
 def Eco_ReturnOp : Eco_Op<"return", [
@@ -169,6 +174,8 @@ def Eco_ReturnOp : Eco_Op<"return", [
       build($_builder, $_state, ValueRange{});
     }]>
   ];
+
+  let assemblyFormat = "($results^ `:` type($results))? attr-dict";
 }
 
 def Eco_JoinpointOp : Eco_Op<"joinpoint", [
@@ -185,8 +192,8 @@ def Eco_JoinpointOp : Eco_Op<"joinpoint", [
 
     Example:
     ```mlir
-    eco.joinpoint @loop(%acc: i64, %n: i64) {
-      // Loop body - can jump back to @loop or fall through
+    eco.joinpoint 0(%acc: i64, %n: i64) {
+      // Loop body - can jump back or fall through
       %done = arith.cmpi eq, %n, %c0 : i64
       cf.cond_br %done, ^exit, ^recurse
     ^exit:
@@ -194,7 +201,7 @@ def Eco_JoinpointOp : Eco_Op<"joinpoint", [
     ^recurse:
       %new_acc = arith.addi %acc, %n : i64
       %new_n = arith.subi %n, %c1 : i64
-      eco.jump @loop(%new_acc, %new_n : i64, i64)
+      eco.jump 0(%new_acc, %new_n : i64, i64)
     } continuation {
       // Code after joinpoint definition
     }
@@ -209,6 +216,7 @@ def Eco_JoinpointOp : Eco_Op<"joinpoint", [
   let results = (outs);
 
   let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
 }
 
 def Eco_JumpOp : Eco_Op<"jump", [Terminator]> {
@@ -219,7 +227,7 @@ def Eco_JumpOp : Eco_Op<"jump", [Terminator]> {
 
     Example:
     ```mlir
-    eco.jump @loop(%new_acc, %new_n : i64, i64)
+    eco.jump 0(%new_acc, %new_n : i64, i64)
     ```
   }];
 
@@ -228,6 +236,8 @@ def Eco_JumpOp : Eco_Op<"jump", [Terminator]> {
     Variadic<Eco_AnyValue>:$args
   );
   let results = (outs);
+
+  let assemblyFormat = "$target `(` $args `:` type($args) `)` attr-dict";
 }
 
 def Eco_CrashOp : Eco_Op<"crash", [Terminator]> {
@@ -244,6 +254,8 @@ def Eco_CrashOp : Eco_Op<"crash", [Terminator]> {
 
   let arguments = (ins Eco_Value:$message);
   let results = (outs);
+
+  let assemblyFormat = "$message attr-dict `:` type($message)";
 }
 
 def Eco_ExpectOp : Eco_Op<"expect"> {
@@ -255,8 +267,7 @@ def Eco_ExpectOp : Eco_Op<"expect"> {
 
     Example:
     ```mlir
-    %result = eco.expect %cond, %msg, %value
-      : i1, !eco.value, !eco.value -> !eco.value
+    %result = eco.expect %cond, %msg, %value : !eco.value -> !eco.value
     ```
   }];
 
@@ -266,6 +277,8 @@ def Eco_ExpectOp : Eco_Op<"expect"> {
     Eco_AnyValue:$passthrough
   );
   let results = (outs Eco_AnyValue:$result);
+
+  let assemblyFormat = "$condition `,` $message `,` $passthrough attr-dict `:` type($passthrough) `->` type($result)";
 }
 
 def Eco_DbgOp : Eco_Op<"dbg"> {
@@ -350,6 +363,8 @@ def Eco_ProjectOp : Eco_Op<"project", [Pure]> {
     I64Attr:$index
   );
   let results = (outs Eco_AnyValue:$field);
+
+  let assemblyFormat = "$value `[` $index `]` attr-dict `:` type($value) `->` type($field)";
 }
 
 //===----------------------------------------------------------------------===//
@@ -372,6 +387,8 @@ def Eco_StringLiteralOp : Eco_Op<"string_literal", [Pure]> {
 
   let arguments = (ins StrAttr:$value);
   let results = (outs Eco_Value:$result);
+
+  let assemblyFormat = "$value attr-dict `:` type($result)";
 }
 
 //===----------------------------------------------------------------------===//
@@ -446,17 +463,23 @@ def Eco_PapExtendOp : Eco_Op<"papExtend"> {
     triggers the actual function call and returns the result. Otherwise,
     returns a new closure with the additional captured arguments.
 
+    The remaining_arity attribute specifies the closure's remaining arity
+    before this application. This is known statically from Elm's type system.
+    If remaining_arity == newargs.size(), this is a saturated call.
+
     Example:
     ```mlir
-    // Apply one more argument to a partially applied function
-    %result = eco.papExtend %closure(%arg1, %arg2)
-      : !eco.value, (!eco.value, i64) -> !eco.value
+    // Apply one more argument to a partially applied function (arity 1 remaining)
+    // This saturates the closure, so it becomes a direct call
+    %result = eco.papExtend %closure(%arg) {remaining_arity = 1 : i64}
+      : !eco.value, (i64) -> !eco.value
     ```
   }];
 
   let arguments = (ins
     Eco_Value:$closure,
-    Variadic<Eco_AnyValue>:$newargs
+    Variadic<Eco_AnyValue>:$newargs,
+    I64Attr:$remaining_arity
   );
   let results = (outs Eco_AnyValue:$result);
 }
@@ -490,6 +513,8 @@ def Eco_AllocateOp : Eco_Op<"allocate"> {
     BoolAttr:$needs_root
   );
   let results = (outs Eco_Value:$result);
+
+  let assemblyFormat = "$size attr-dict `:` type($size) `->` type($result)";
 }
 
 def Eco_AllocateCtorOp : Eco_Op<"allocate_ctor"> {
@@ -518,6 +543,8 @@ def Eco_AllocateCtorOp : Eco_Op<"allocate_ctor"> {
     I64Attr:$scalar_bytes
   );
   let results = (outs Eco_Value:$result);
+
+  let assemblyFormat = "attr-dict `:` type($result)";
 }
 
 def Eco_AllocateStringOp : Eco_Op<"allocate_string"> {
@@ -534,6 +561,8 @@ def Eco_AllocateStringOp : Eco_Op<"allocate_string"> {
 
   let arguments = (ins I64Attr:$length);
   let results = (outs Eco_Value:$result);
+
+  let assemblyFormat = "attr-dict `:` type($result)";
 }
 
 def Eco_AllocateClosureOp : Eco_Op<"allocate_closure"> {
@@ -557,6 +586,8 @@ def Eco_AllocateClosureOp : Eco_Op<"allocate_closure"> {
     I64Attr:$num_captures
   );
   let results = (outs Eco_Value:$result);
+
+  let assemblyFormat = "attr-dict `:` type($result)";
 }
 
 def Eco_SafepointOp : Eco_Op<"safepoint"> {
@@ -601,6 +632,8 @@ def Eco_GlobalOp : Eco_Op<"global", [Symbol]> {
     OptionalAttr<FlatSymbolRefAttr>:$initializer
   );
   let results = (outs);
+
+  let assemblyFormat = "$sym_name (`=` $initializer^)? attr-dict";
 }
 
 def Eco_LoadGlobalOp : Eco_Op<"load_global"> {
@@ -616,6 +649,8 @@ def Eco_LoadGlobalOp : Eco_Op<"load_global"> {
 
   let arguments = (ins FlatSymbolRefAttr:$global);
   let results = (outs Eco_Value:$result);
+
+  let assemblyFormat = "$global attr-dict";
 }
 
 def Eco_StoreGlobalOp : Eco_Op<"store_global"> {
@@ -634,6 +669,8 @@ def Eco_StoreGlobalOp : Eco_Op<"store_global"> {
     FlatSymbolRefAttr:$global
   );
   let results = (outs);
+
+  let assemblyFormat = "$value `,` $global attr-dict";
 }
 
 //===----------------------------------------------------------------------===//
@@ -674,6 +711,8 @@ def Eco_UnboxOp : Eco_Op<"unbox", [Pure]> {
 
   let arguments = (ins Eco_Value:$value);
   let results = (outs Eco_AnyValue:$result);
+
+  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
 }
 
 //===----------------------------------------------------------------------===//
@@ -710,7 +749,581 @@ def Eco_ConstantOp : Eco_Op<"constant", [Pure]> {
 }
 
 //===----------------------------------------------------------------------===//
-// 9. Reference Counting Placeholders (Future Perceus Support)
+// 9. Arithmetic Operations
+//===----------------------------------------------------------------------===//
+//
+// Eco-specific arithmetic operations with Elm semantics.
+// All ops work on unboxed primitives (i64, f64) for efficiency.
+// Key Elm semantics:
+//   - Division by zero returns 0 (not exception)
+//   - Integer to negative power returns 0
+//   - modBy uses floored (Euclidean) modulo
+//   - Integer overflow wraps (wrong answer preferred over exception)
+//
+
+//===----------------------------------------------------------------------===//
+// 9.1 Integer Arithmetic
+//===----------------------------------------------------------------------===//
+
+def Eco_IntAddOp : Eco_Op<"int.add", [Pure, Commutative]> {
+  let summary = "Elm integer addition";
+  let description = [{
+    Add two 64-bit signed integers. Overflow wraps.
+
+    Example:
+    ```mlir
+    %sum = eco.int.add %a, %b : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$lhs, Eco_Int:$rhs);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+def Eco_IntSubOp : Eco_Op<"int.sub", [Pure]> {
+  let summary = "Elm integer subtraction";
+  let description = [{
+    Subtract two 64-bit signed integers. Overflow wraps.
+
+    Example:
+    ```mlir
+    %diff = eco.int.sub %a, %b : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$lhs, Eco_Int:$rhs);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+def Eco_IntMulOp : Eco_Op<"int.mul", [Pure, Commutative]> {
+  let summary = "Elm integer multiplication";
+  let description = [{
+    Multiply two 64-bit signed integers. Overflow wraps.
+
+    Example:
+    ```mlir
+    %prod = eco.int.mul %a, %b : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$lhs, Eco_Int:$rhs);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+def Eco_IntDivOp : Eco_Op<"int.div", [Pure]> {
+  let summary = "Elm integer division (returns 0 on divide-by-zero)";
+  let description = [{
+    Integer division with Elm semantics: division by zero returns 0
+    instead of throwing an exception. Truncates toward zero.
+
+    Examples:
+      7 // 3 = 2
+      7 // 0 = 0 (Elm semantics)
+      -7 // 3 = -2 (truncated toward zero)
+
+    ```mlir
+    %quot = eco.int.div %a, %b : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$lhs, Eco_Int:$rhs);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+def Eco_IntModByOp : Eco_Op<"int.modby", [Pure]> {
+  let summary = "Elm modBy (floored/Euclidean modulo)";
+  let description = [{
+    Floored modulo operation. Result has same sign as modulus.
+    Returns 0 if modulus is 0.
+
+    Examples:
+      modBy 4 7 = 3
+      modBy 4 (-7) = 1  (not -3, floored)
+      modBy (-4) 7 = -1 (not 3, floored)
+      modBy 0 7 = 0     (Elm semantics)
+
+    ```mlir
+    %rem = eco.int.modby %modulus, %x : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$modulus, Eco_Int:$x);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$modulus `,` $x attr-dict `:` type($result)";
+}
+
+def Eco_IntRemainderByOp : Eco_Op<"int.remainderby", [Pure]> {
+  let summary = "Elm remainderBy (truncated modulo)";
+  let description = [{
+    Truncated modulo operation. Result has same sign as dividend.
+    Returns 0 if divisor is 0.
+
+    Examples:
+      remainderBy 4 7 = 3
+      remainderBy 4 (-7) = -3 (not 1, truncated)
+      remainderBy 0 7 = 0     (Elm semantics)
+
+    ```mlir
+    %rem = eco.int.remainderby %divisor, %x : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$divisor, Eco_Int:$x);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$divisor `,` $x attr-dict `:` type($result)";
+}
+
+def Eco_IntNegateOp : Eco_Op<"int.negate", [Pure]> {
+  let summary = "Elm integer negation";
+  let description = [{
+    Negate an integer. Overflow wraps (MIN_INT negates to MIN_INT).
+
+    ```mlir
+    %neg = eco.int.negate %x : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$value);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
+def Eco_IntAbsOp : Eco_Op<"int.abs", [Pure]> {
+  let summary = "Elm integer absolute value";
+  let description = [{
+    Absolute value of an integer. Note: abs(MIN_INT) = MIN_INT (overflow wraps).
+
+    ```mlir
+    %abs = eco.int.abs %x : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$value);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
+def Eco_IntPowOp : Eco_Op<"int.pow", [Pure]> {
+  let summary = "Elm integer exponentiation";
+  let description = [{
+    Integer exponentiation. Returns 0 if exponent is negative
+    (since true result would be fractional, breaking Int type).
+    Overflow wraps.
+
+    Examples:
+      2 ^ 3 = 8
+      2 ^ 0 = 1
+      2 ^ -1 = 0 (mathematically 0.5, returns 0 to preserve Int)
+
+    ```mlir
+    %pow = eco.int.pow %base, %exp : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$base, Eco_Int:$exp);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$base `,` $exp attr-dict `:` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// 9.2 Float Arithmetic
+//===----------------------------------------------------------------------===//
+
+def Eco_FloatAddOp : Eco_Op<"float.add", [Pure, Commutative]> {
+  let summary = "Elm float addition";
+  let description = [{
+    Add two IEEE 754 double-precision floats.
+
+    ```mlir
+    %sum = eco.float.add %a, %b : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$lhs, Eco_Float:$rhs);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+def Eco_FloatSubOp : Eco_Op<"float.sub", [Pure]> {
+  let summary = "Elm float subtraction";
+  let description = [{
+    Subtract two IEEE 754 double-precision floats.
+
+    ```mlir
+    %diff = eco.float.sub %a, %b : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$lhs, Eco_Float:$rhs);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+def Eco_FloatMulOp : Eco_Op<"float.mul", [Pure, Commutative]> {
+  let summary = "Elm float multiplication";
+  let description = [{
+    Multiply two IEEE 754 double-precision floats.
+
+    ```mlir
+    %prod = eco.float.mul %a, %b : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$lhs, Eco_Float:$rhs);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+def Eco_FloatDivOp : Eco_Op<"float.div", [Pure]> {
+  let summary = "Elm float division (IEEE 754)";
+  let description = [{
+    Float division with IEEE 754 semantics.
+    Division by zero returns Infinity or -Infinity.
+    0/0 returns NaN.
+
+    ```mlir
+    %quot = eco.float.div %a, %b : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$lhs, Eco_Float:$rhs);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+def Eco_FloatNegateOp : Eco_Op<"float.negate", [Pure]> {
+  let summary = "Elm float negation";
+  let description = [{
+    Negate a float (flip sign bit).
+
+    ```mlir
+    %neg = eco.float.negate %x : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$value);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
+def Eco_FloatAbsOp : Eco_Op<"float.abs", [Pure]> {
+  let summary = "Elm float absolute value";
+  let description = [{
+    Absolute value of a float (clear sign bit).
+
+    ```mlir
+    %abs = eco.float.abs %x : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$value);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
+def Eco_FloatPowOp : Eco_Op<"float.pow", [Pure]> {
+  let summary = "Elm float exponentiation";
+  let description = [{
+    Float exponentiation. Follows IEEE 754 semantics.
+    (-2.0) ^ 0.5 returns NaN.
+
+    ```mlir
+    %pow = eco.float.pow %base, %exp : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$base, Eco_Float:$exp);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$base `,` $exp attr-dict `:` type($result)";
+}
+
+def Eco_FloatSqrtOp : Eco_Op<"float.sqrt", [Pure]> {
+  let summary = "Elm square root";
+  let description = [{
+    Square root of a float. Returns NaN for negative inputs.
+
+    ```mlir
+    %sqrt = eco.float.sqrt %x : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$value);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// 9.3 Type Conversions
+//===----------------------------------------------------------------------===//
+
+def Eco_IntToFloatOp : Eco_Op<"int.toFloat", [Pure]> {
+  let summary = "Convert Int to Float";
+  let description = [{
+    Convert a 64-bit integer to IEEE 754 double.
+    May lose precision for large integers.
+
+    ```mlir
+    %f = eco.int.toFloat %i : i64 -> f64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$value);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
+}
+
+def Eco_FloatRoundOp : Eco_Op<"float.round", [Pure]> {
+  let summary = "Round Float to nearest Int";
+  let description = [{
+    Round float to nearest integer (half away from zero).
+
+    ```mlir
+    %i = eco.float.round %f : f64 -> i64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$value);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
+}
+
+def Eco_FloatFloorOp : Eco_Op<"float.floor", [Pure]> {
+  let summary = "Round Float down to Int";
+  let description = [{
+    Round float down (toward negative infinity) to integer.
+
+    ```mlir
+    %i = eco.float.floor %f : f64 -> i64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$value);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
+}
+
+def Eco_FloatCeilingOp : Eco_Op<"float.ceiling", [Pure]> {
+  let summary = "Round Float up to Int";
+  let description = [{
+    Round float up (toward positive infinity) to integer.
+
+    ```mlir
+    %i = eco.float.ceiling %f : f64 -> i64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$value);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
+}
+
+def Eco_FloatTruncateOp : Eco_Op<"float.truncate", [Pure]> {
+  let summary = "Truncate Float toward zero to Int";
+  let description = [{
+    Truncate float toward zero to integer.
+
+    ```mlir
+    %i = eco.float.truncate %f : f64 -> i64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$value);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// 9.4 Comparison Operations
+//===----------------------------------------------------------------------===//
+
+// Comparison predicate enum
+def Eco_CmpPredicate : I32EnumAttr<"CmpPredicate", "comparison predicate", [
+  I32EnumAttrCase<"lt", 0>,   // less than
+  I32EnumAttrCase<"le", 1>,   // less or equal
+  I32EnumAttrCase<"gt", 2>,   // greater than
+  I32EnumAttrCase<"ge", 3>,   // greater or equal
+  I32EnumAttrCase<"eq", 4>,   // equal
+  I32EnumAttrCase<"ne", 5>    // not equal
+]> {
+  let cppNamespace = "::eco";
+}
+
+def Eco_IntCmpOp : Eco_Op<"int.cmp", [Pure]> {
+  let summary = "Elm integer comparison";
+  let description = [{
+    Compare two integers. Returns i1 (Bool).
+
+    ```mlir
+    %lt = eco.int.cmp lt %a, %b : i64
+    ```
+  }];
+  let arguments = (ins Eco_CmpPredicate:$predicate, Eco_Int:$lhs, Eco_Int:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$predicate $lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_FloatCmpOp : Eco_Op<"float.cmp", [Pure]> {
+  let summary = "Elm float comparison";
+  let description = [{
+    Compare two floats. Returns i1 (Bool).
+    NaN comparisons follow IEEE 754 (NaN != NaN, etc).
+
+    ```mlir
+    %lt = eco.float.cmp lt %a, %b : f64
+    ```
+  }];
+  let arguments = (ins Eco_CmpPredicate:$predicate, Eco_Float:$lhs, Eco_Float:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$predicate $lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_IntMinOp : Eco_Op<"int.min", [Pure, Commutative]> {
+  let summary = "Elm integer minimum";
+  let description = [{
+    Return the smaller of two integers.
+
+    ```mlir
+    %min = eco.int.min %a, %b : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$lhs, Eco_Int:$rhs);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+def Eco_IntMaxOp : Eco_Op<"int.max", [Pure, Commutative]> {
+  let summary = "Elm integer maximum";
+  let description = [{
+    Return the larger of two integers.
+
+    ```mlir
+    %max = eco.int.max %a, %b : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$lhs, Eco_Int:$rhs);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+def Eco_FloatMinOp : Eco_Op<"float.min", [Pure, Commutative]> {
+  let summary = "Elm float minimum";
+  let description = [{
+    Return the smaller of two floats.
+    If either is NaN, returns NaN.
+
+    ```mlir
+    %min = eco.float.min %a, %b : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$lhs, Eco_Float:$rhs);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+def Eco_FloatMaxOp : Eco_Op<"float.max", [Pure, Commutative]> {
+  let summary = "Elm float maximum";
+  let description = [{
+    Return the larger of two floats.
+    If either is NaN, returns NaN.
+
+    ```mlir
+    %max = eco.float.max %a, %b : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$lhs, Eco_Float:$rhs);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// 9.5 Bitwise Operations
+//===----------------------------------------------------------------------===//
+
+def Eco_IntAndOp : Eco_Op<"int.and", [Pure, Commutative]> {
+  let summary = "Bitwise AND";
+  let description = [{
+    Bitwise AND of two integers.
+
+    ```mlir
+    %and = eco.int.and %a, %b : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$lhs, Eco_Int:$rhs);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+def Eco_IntOrOp : Eco_Op<"int.or", [Pure, Commutative]> {
+  let summary = "Bitwise OR";
+  let description = [{
+    Bitwise OR of two integers.
+
+    ```mlir
+    %or = eco.int.or %a, %b : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$lhs, Eco_Int:$rhs);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+def Eco_IntXorOp : Eco_Op<"int.xor", [Pure, Commutative]> {
+  let summary = "Bitwise XOR";
+  let description = [{
+    Bitwise XOR of two integers.
+
+    ```mlir
+    %xor = eco.int.xor %a, %b : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$lhs, Eco_Int:$rhs);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+def Eco_IntComplementOp : Eco_Op<"int.complement", [Pure]> {
+  let summary = "Bitwise NOT (complement)";
+  let description = [{
+    Bitwise complement (NOT) of an integer.
+
+    ```mlir
+    %not = eco.int.complement %x : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$value);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
+def Eco_IntShiftLeftOp : Eco_Op<"int.shl", [Pure]> {
+  let summary = "Shift left by n bits";
+  let description = [{
+    Shift left by n bits. Matches Elm's Bitwise.shiftLeftBy.
+    Note: Elm argument order is (amount, value).
+
+    ```mlir
+    %shl = eco.int.shl %amount, %value : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$amount, Eco_Int:$value);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$amount `,` $value attr-dict `:` type($result)";
+}
+
+def Eco_IntShiftRightOp : Eco_Op<"int.shr", [Pure]> {
+  let summary = "Arithmetic shift right by n bits";
+  let description = [{
+    Arithmetic shift right by n bits (preserves sign).
+    Matches Elm's Bitwise.shiftRightBy.
+
+    ```mlir
+    %shr = eco.int.shr %amount, %value : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$amount, Eco_Int:$value);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$amount `,` $value attr-dict `:` type($result)";
+}
+
+def Eco_IntShiftRightZfOp : Eco_Op<"int.shru", [Pure]> {
+  let summary = "Logical shift right by n bits (zero-fill)";
+  let description = [{
+    Logical shift right by n bits (fills with zeros).
+    Matches Elm's Bitwise.shiftRightZfBy.
+
+    ```mlir
+    %shru = eco.int.shru %amount, %value : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$amount, Eco_Int:$value);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$amount `,` $value attr-dict `:` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// 10. Reference Counting Placeholders (Future Perceus Support)
 //===----------------------------------------------------------------------===//
 //
 // Note: The current GC design uses tracing GC, not reference counting.

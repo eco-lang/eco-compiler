@@ -283,9 +283,13 @@ void* OldGenSpace::bumpAllocate(size_t size) {
  * Pushes all roots onto the mark stack and prepares for incremental marking.
  */
 #if ENABLE_GC_STATS
-void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots, Allocator &alloc, GCStats &stats) {
+void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
+                            const std::unordered_set<uint64_t*> &jit_roots,
+                            Allocator &alloc, GCStats &stats) {
 #else
-void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots, Allocator &alloc) {
+void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
+                            const std::unordered_set<uint64_t*> &jit_roots,
+                            Allocator &alloc) {
 #endif
     if (marking_active)
         return;
@@ -302,6 +306,24 @@ void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots, Allocato
     // This is harmless since minor GC uses forwarding pointers, not colors.
     for (HPointer *root: roots) {
         void *obj = Allocator::fromPointerRaw(*root);
+        if (obj && alloc.isInHeap(obj)) {
+            mark_stack.push_back(obj);
+        }
+    }
+
+    // Push JIT roots (raw 64-bit heap pointers from JIT-compiled globals).
+    // These are full heap addresses, not HPointer-encoded values.
+    for (uint64_t *root: jit_roots) {
+        uint64_t val = *root;
+
+        // Check for embedded constants: lower 40 bits = 0, bits 40-43 = 1-7.
+        uint64_t ptr_part = val & 0xFFFFFFFFFFULL;
+        uint64_t const_part = (val >> 40) & 0xF;
+        if (ptr_part == 0 && const_part >= 1 && const_part <= 7) {
+            continue;  // Skip embedded constants.
+        }
+
+        void *obj = reinterpret_cast<void*>(val);
         if (obj && alloc.isInHeap(obj)) {
             mark_stack.push_back(obj);
         }
