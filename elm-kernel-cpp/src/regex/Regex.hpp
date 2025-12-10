@@ -1,5 +1,5 @@
-#ifndef ELM_KERNEL_REGEX_HPP
-#define ELM_KERNEL_REGEX_HPP
+#ifndef ECO_REGEX_HPP
+#define ECO_REGEX_HPP
 
 /**
  * Elm Kernel Regex Module - Runtime Heap Integration
@@ -69,4 +69,4 @@ HPointer splitAtMost(i64 n, RegexPtr regex, void* str);
 
 } // namespace Elm::Kernel::Regex
 
-#endif // ELM_KERNEL_REGEX_HPP
+#endif // ECO_REGEX_HPP

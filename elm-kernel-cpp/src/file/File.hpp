@@ -1,5 +1,5 @@
-#ifndef ELM_KERNEL_FILE_HPP
-#define ELM_KERNEL_FILE_HPP
+#ifndef ECO_FILE_HPP
+#define ECO_FILE_HPP
 
 /**
  * Elm Kernel File Module - Runtime Heap Integration
@@ -112,4 +112,4 @@ TaskPtr downloadUrl(void* fileName, void* url);
 
 } // namespace Elm::Kernel::File
 
-#endif // ELM_KERNEL_FILE_HPP
+#endif // ECO_FILE_HPP

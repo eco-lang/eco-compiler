@@ -14,17 +14,17 @@ using namespace eco;
 #include "eco/EcoDialect.cpp.inc"
 
 //===----------------------------------------------------------------------===//
-// Eco dialect initialization
+// Dialect Initialization
 //===----------------------------------------------------------------------===//
 
 void EcoDialect::initialize() {
-  // Register types
+  // Register types.
   addTypes<
 #define GET_TYPEDEF_LIST
 #include "eco/EcoTypes.cpp.inc"
       >();
 
-  // Register operations
+  // Register operations.
   addOperations<
 #define GET_OP_LIST
 #include "eco/EcoOps.cpp.inc"

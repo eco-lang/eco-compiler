@@ -1,5 +1,5 @@
-#ifndef ELM_KERNEL_UTILS_HPP
-#define ELM_KERNEL_UTILS_HPP
+#ifndef ECO_UTILS_HPP
+#define ECO_UTILS_HPP
 
 /**
  * Elm Kernel Utils Module - Runtime Heap Integration
@@ -68,4 +68,4 @@ HPointer append(void* a, void* b);
 
 } // namespace Elm::Kernel::Utils
 
-#endif // ELM_KERNEL_UTILS_HPP
+#endif // ECO_UTILS_HPP

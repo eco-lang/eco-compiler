@@ -1,14 +1,14 @@
-#ifndef ELM_KERNEL_PROCESS_HPP
-#define ELM_KERNEL_PROCESS_HPP
+#ifndef ECO_PROCESS_HPP
+#define ECO_PROCESS_HPP
 
 namespace Elm::Kernel::Process {
 
-// Forward declarations
+// Forward declarations.
 struct Task;
 
-// Sleep for a given number of milliseconds
+// Creates a task that sleeps for the given number of milliseconds.
 Task* sleep(double time);
 
 } // namespace Elm::Kernel::Process
 
-#endif // ELM_KERNEL_PROCESS_HPP
+#endif // ECO_PROCESS_HPP

@@ -1,6 +1,6 @@
 //===- EcoTypes.h - Eco type declarations ---------------------------------===//
 //
-// Defines the custom types for the Eco MLIR dialect.
+// This file defines the custom types for the Eco MLIR dialect.
 //
 //===----------------------------------------------------------------------===//
 
@@ -13,7 +13,7 @@
 
 #include "EcoDialect.h"
 
-// Include the auto-generated type declarations
+// Include the auto-generated type declarations.
 #define GET_TYPEDEF_CLASSES
 #include "eco/EcoTypes.h.inc"
 

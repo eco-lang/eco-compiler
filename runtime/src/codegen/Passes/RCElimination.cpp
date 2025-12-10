@@ -1,8 +1,8 @@
 //===- RCElimination.cpp - Remove reference counting placeholders ---------===//
 //
-// This pass removes/errors on reference counting placeholder operations
-// (incref, decref, free, reset, reset_ref). These are not used in tracing
-// GC mode and should not appear in the IR.
+// This pass removes or errors on reference counting placeholder operations
+// (incref, decref, free, reset, reset_ref). These operations are not used in
+// tracing GC mode and should not appear in the IR after this pass.
 //
 //===----------------------------------------------------------------------===//
 
@@ -34,8 +34,9 @@ struct RCEliminationPass
         ModuleOp module = getOperation();
         bool hasErrors = false;
 
+        // Walk the module and check for reference counting operations.
+        // These should not appear in IR that targets tracing GC.
         module.walk([&](Operation *op) {
-            // Check for RC operations that should not exist in tracing GC mode
             if (isa<IncrefOp>(op)) {
                 op->emitError("eco.incref is not supported in tracing GC mode");
                 hasErrors = true;

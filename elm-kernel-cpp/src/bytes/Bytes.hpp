@@ -1,5 +1,5 @@
-#ifndef ELM_KERNEL_BYTES_HPP
-#define ELM_KERNEL_BYTES_HPP
+#ifndef ECO_BYTES_HPP
+#define ECO_BYTES_HPP
 
 /**
  * Elm Kernel Bytes Module - Runtime Heap Integration
@@ -90,4 +90,4 @@ HPointer encode(HPointer encoderList);
 
 } // namespace Elm::Kernel::Bytes
 
-#endif // ELM_KERNEL_BYTES_HPP
+#endif // ECO_BYTES_HPP

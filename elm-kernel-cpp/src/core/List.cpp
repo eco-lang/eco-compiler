@@ -24,8 +24,7 @@ HPointer fromArray(const std::vector<HPointer>& array) {
 }
 
 std::vector<HPointer> toArray(HPointer list) {
-    // ListOps::toVector returns vector<pair<Unboxable, bool>>
-    // We need to convert to vector<HPointer>, boxing unboxed values
+    // Convert list to vector, boxing any unboxed values.
     auto pairs = ListOps::toVector(list);
     std::vector<HPointer> result;
     result.reserve(pairs.size());
@@ -34,7 +33,6 @@ std::vector<HPointer> toArray(HPointer list) {
         if (is_boxed) {
             result.push_back(val.p);
         } else {
-            // Box the unboxed value
             result.push_back(alloc::allocInt(val.i));
         }
     }
@@ -65,7 +63,7 @@ HPointer map2(Map2Func func, HPointer xs, HPointer ys) {
         Header* hdrX = static_cast<Header*>(cellX);
         Header* hdrY = static_cast<Header*>(cellY);
 
-        // Resolve elements (box if unboxed)
+        // Resolve elements, boxing unboxed values.
         void* elemX;
         void* elemY;
 
@@ -83,7 +81,6 @@ HPointer map2(Map2Func func, HPointer xs, HPointer ys) {
             elemY = allocator.resolve(boxed);
         }
 
-        // Apply the function
         HPointer result = func(elemX, elemY);
         results.push_back(result);
 
@@ -119,7 +116,7 @@ HPointer map3(Map3Func func, HPointer xs, HPointer ys, HPointer zs) {
         Header* hdrY = static_cast<Header*>(cellY);
         Header* hdrZ = static_cast<Header*>(cellZ);
 
-        // Resolve elements
+        // Resolve elements, boxing unboxed values.
         void* elemX = (!(hdrX->unboxed & 1)) ? allocator.resolve(cX->head.p)
                      : allocator.resolve(alloc::allocInt(cX->head.i));
         void* elemY = (!(hdrY->unboxed & 1)) ? allocator.resolve(cY->head.p)

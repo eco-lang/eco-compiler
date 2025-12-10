@@ -1,5 +1,5 @@
-#ifndef ELM_KERNEL_URL_HPP
-#define ELM_KERNEL_URL_HPP
+#ifndef ECO_URL_HPP
+#define ECO_URL_HPP
 
 /**
  * Elm Kernel Url Module - Runtime Heap Integration
@@ -26,4 +26,4 @@ HPointer percentDecode(void* str);
 
 } // namespace Elm::Kernel::Url
 
-#endif // ELM_KERNEL_URL_HPP
+#endif // ECO_URL_HPP

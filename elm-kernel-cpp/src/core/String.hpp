@@ -1,5 +1,5 @@
-#ifndef ELM_KERNEL_STRING_HPP
-#define ELM_KERNEL_STRING_HPP
+#ifndef ECO_STRING_HPP
+#define ECO_STRING_HPP
 
 /**
  * Elm Kernel String Module - Runtime Heap Integration
@@ -224,4 +224,4 @@ HPointer fromNumber(void* n);
 
 } // namespace Elm::Kernel::String
 
-#endif // ELM_KERNEL_STRING_HPP
+#endif // ECO_STRING_HPP

@@ -1,5 +1,5 @@
-#ifndef ELM_KERNEL_PARSER_HPP
-#define ELM_KERNEL_PARSER_HPP
+#ifndef ECO_PARSER_HPP
+#define ECO_PARSER_HPP
 
 /**
  * Elm Kernel Parser Module - Runtime Heap Integration
@@ -59,4 +59,4 @@ i64 chompBase10(i64 offset, void* str);
 
 } // namespace Elm::Kernel::Parser
 
-#endif // ELM_KERNEL_PARSER_HPP
+#endif // ECO_PARSER_HPP

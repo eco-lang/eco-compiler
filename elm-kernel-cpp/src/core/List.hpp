@@ -1,5 +1,5 @@
-#ifndef ELM_KERNEL_LIST_HPP
-#define ELM_KERNEL_LIST_HPP
+#ifndef ECO_LIST_HPP
+#define ECO_LIST_HPP
 
 /**
  * Elm Kernel List Module - Runtime Heap Integration
@@ -105,4 +105,4 @@ HPointer sortWith(CmpFunc cmpFunc, HPointer list);
 
 } // namespace Elm::Kernel::List
 
-#endif // ELM_KERNEL_LIST_HPP
+#endif // ECO_LIST_HPP

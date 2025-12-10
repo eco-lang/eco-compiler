@@ -20,7 +20,7 @@
 #include "EcoDialect.h"
 #include "EcoTypes.h"
 
-// Include enum declarations (must be before op classes)
+// Include enum declarations (must be before op classes).
 #include "eco/EcoEnums.h.inc"
 
 #define GET_OP_CLASSES

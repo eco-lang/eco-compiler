@@ -1,5 +1,5 @@
-#ifndef ELM_KERNEL_DEBUGGER_HPP
-#define ELM_KERNEL_DEBUGGER_HPP
+#ifndef ECO_DEBUGGER_HPP
+#define ECO_DEBUGGER_HPP
 
 /**
  * Elm Kernel Debugger Module - Runtime Heap Integration
@@ -16,14 +16,14 @@ namespace Elm::Kernel::Debugger {
 
 using TaskPtr = Scheduler::TaskPtr;
 
-// Expando types for debugger value display
+// Expando types for debugger value display.
 enum class ExpandoTag {
-    Primitive,    // Primitive value (number, bool, etc.)
-    S,            // String value
-    Constructor,  // Custom type constructor
-    Sequence,     // List, Array, Set
-    Dictionary,   // Dict
-    Record        // Record
+    Primitive,    // Primitive value (number, bool, etc.).
+    S,            // String value.
+    Constructor,  // Custom type constructor.
+    Sequence,     // List, Array, Set.
+    Dictionary,   // Dict.
+    Record        // Record.
 };
 
 enum class SequenceTag {
@@ -32,46 +32,30 @@ enum class SequenceTag {
     SetSeq
 };
 
-/**
- * Initialize a value for debugger display (converts to Expando).
- */
+// Initializes a value for debugger display (converts to Expando).
 HPointer init(HPointer value);
 
-/**
- * Check if debugger window is open.
- */
+// Checks if debugger window is open.
 bool isOpen(HPointer popout);
 
-/**
- * Open the debugger popout window.
- */
+// Opens the debugger popout window.
 TaskPtr open(HPointer popout);
 
-/**
- * Scroll debugger sidebar to bottom.
- */
+// Scrolls debugger sidebar to bottom.
 TaskPtr scroll(HPointer popout);
 
-/**
- * Convert a message value to display string.
- */
+// Converts a message value to display string.
 HPointer messageToString(HPointer message);
 
-/**
- * Download history as JSON file.
- */
+// Downloads history as JSON file.
 TaskPtr download(i64 historyLength, HPointer json);
 
-/**
- * Upload history file.
- */
+// Uploads history file.
 TaskPtr upload();
 
-/**
- * Identity function (for internal type coercion).
- */
+// Identity function (for internal type coercion).
 HPointer unsafeCoerce(HPointer value);
 
 } // namespace Elm::Kernel::Debugger
 
-#endif // ELM_KERNEL_DEBUGGER_HPP
+#endif // ECO_DEBUGGER_HPP

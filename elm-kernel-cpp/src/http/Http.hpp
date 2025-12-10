@@ -1,5 +1,5 @@
-#ifndef ELM_KERNEL_HTTP_HPP
-#define ELM_KERNEL_HTTP_HPP
+#ifndef ECO_HTTP_HPP
+#define ECO_HTTP_HPP
 
 /**
  * Elm Kernel Http Module - Runtime Heap Integration
@@ -79,4 +79,4 @@ HPointer toFormData(HPointer parts);
 
 } // namespace Elm::Kernel::Http
 
-#endif // ELM_KERNEL_HTTP_HPP
+#endif // ECO_HTTP_HPP

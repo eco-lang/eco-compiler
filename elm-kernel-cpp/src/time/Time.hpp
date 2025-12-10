@@ -1,5 +1,5 @@
-#ifndef ELM_KERNEL_TIME_HPP
-#define ELM_KERNEL_TIME_HPP
+#ifndef ECO_TIME_HPP
+#define ECO_TIME_HPP
 
 /**
  * Elm Kernel Time Module - Runtime Heap Integration
@@ -37,4 +37,4 @@ TaskPtr setInterval(f64 intervalMs, TaskPtr task);
 
 } // namespace Elm::Kernel::Time
 
-#endif // ELM_KERNEL_TIME_HPP
+#endif // ECO_TIME_HPP

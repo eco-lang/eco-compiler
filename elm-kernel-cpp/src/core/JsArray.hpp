@@ -1,5 +1,5 @@
-#ifndef ELM_KERNEL_JSARRAY_HPP
-#define ELM_KERNEL_JSARRAY_HPP
+#ifndef ECO_JSARRAY_HPP
+#define ECO_JSARRAY_HPP
 
 /**
  * Elm Kernel JsArray Module - Runtime Heap Integration
@@ -150,4 +150,4 @@ HPointer appendN(u32 n, void* dest, void* source);
 
 } // namespace Elm::Kernel::JsArray
 
-#endif // ELM_KERNEL_JSARRAY_HPP
+#endif // ECO_JSARRAY_HPP

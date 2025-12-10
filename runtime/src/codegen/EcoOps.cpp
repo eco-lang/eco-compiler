@@ -15,11 +15,11 @@ using namespace mlir;
 using namespace eco;
 
 //===----------------------------------------------------------------------===//
-// Verifiers
+// Operation Verifiers
 //===----------------------------------------------------------------------===//
 
 LogicalResult CaseOp::verify() {
-  // Verify that the number of regions matches the number of tags
+  // Verify that the number of alternative regions matches the number of tags.
   if (getTags().size() != getAlternatives().size()) {
     return emitOpError("number of tags (")
            << getTags().size()
@@ -30,7 +30,7 @@ LogicalResult CaseOp::verify() {
 }
 
 LogicalResult JoinpointOp::verify() {
-  // Verify that the body region has exactly one block
+  // Verify that the body region is not empty.
   if (getBody().empty()) {
     return emitOpError("body region must not be empty");
   }
@@ -38,7 +38,7 @@ LogicalResult JoinpointOp::verify() {
 }
 
 LogicalResult ConstructOp::verify() {
-  // Verify that the number of fields matches the size attribute
+  // Verify that the number of field operands matches the size attribute.
   int64_t size = getSize();
   if (static_cast<int64_t>(getFields().size()) != size) {
     return emitOpError("number of fields (")
@@ -50,7 +50,7 @@ LogicalResult ConstructOp::verify() {
 }
 
 LogicalResult PapCreateOp::verify() {
-  // Verify that num_captured matches the number of captured operands
+  // Verify that num_captured matches the number of captured operands.
   int64_t numCaptured = getNumCaptured();
   if (static_cast<int64_t>(getCaptured().size()) != numCaptured) {
     return emitOpError("number of captured operands (")
@@ -59,7 +59,7 @@ LogicalResult PapCreateOp::verify() {
            << numCaptured << ")";
   }
 
-  // Verify that num_captured is less than arity
+  // Verify that num_captured is less than arity (PAPs have fewer args than arity).
   int64_t arity = getArity();
   if (numCaptured >= arity) {
     return emitOpError("num_captured (")
@@ -72,10 +72,10 @@ LogicalResult PapCreateOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
-// Include the auto-generated definitions
+// Auto-generated Definitions
 //===----------------------------------------------------------------------===//
 
-// Include enum definitions
+// Include enum definitions.
 #include "eco/EcoEnums.cpp.inc"
 
 #define GET_OP_CLASSES

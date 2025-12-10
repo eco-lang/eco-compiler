@@ -65,7 +65,7 @@
 #include "EcoOps.h"
 #include "Passes.h"
 
-// Include runtime exports for JIT symbol registration
+// Include runtime exports for JIT symbol registration.
 #include "../allocator/RuntimeExports.h"
 #include "../allocator/Allocator.hpp"
 
@@ -141,27 +141,27 @@ static OwningOpRef<ModuleOp> loadMLIR(MLIRContext &context,
 static int runPipeline(ModuleOp module, bool lowerToLLVM) {
     PassManager pm(module->getName());
 
-    // Apply any generic pass manager command line options
+    // Apply any generic pass manager command line options.
     if (failed(applyPassManagerCLOptions(pm)))
         return 1;
 
     if (emitAction >= DumpMLIREco) {
-        // Stage 1: Eco -> Eco transformations
-        // TODO: Add construct lowering pass
+        // Stage 1: Eco -> Eco transformations.
+        // TODO: Add construct lowering pass.
         // pm.addPass(eco::createConstructLoweringPass());
         pm.addPass(eco::createRCEliminationPass());
     }
 
     if (lowerToLLVM) {
-        // Stage 2: Eco -> Standard MLIR (func/cf/arith)
-        // TODO: Add control flow lowering pass
+        // Stage 2: Eco -> Standard MLIR (func/cf/arith).
+        // TODO: Add control flow lowering pass.
         // pm.addPass(eco::createControlFlowLoweringPass());
         pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
 
-        // Stage 3: Eco -> LLVM Dialect
+        // Stage 3: Eco -> LLVM Dialect.
         pm.addPass(eco::createEcoToLLVMPass());
 
-        // Standard conversions to LLVM
+        // Standard MLIR dialect conversions to LLVM.
         pm.addPass(createConvertFuncToLLVMPass());
         pm.addPass(createConvertControlFlowToLLVMPass());
         pm.addPass(createArithToLLVMConversionPass());
@@ -178,11 +178,11 @@ static int runPipeline(ModuleOp module, bool lowerToLLVM) {
 //===----------------------------------------------------------------------===//
 
 static int dumpLLVMIR(ModuleOp module) {
-    // Register the translation to LLVM IR
+    // Register the translation from MLIR to LLVM IR.
     registerBuiltinDialectTranslation(*module->getContext());
     registerLLVMDialectTranslation(*module->getContext());
 
-    // Convert to LLVM IR
+    // Convert MLIR module to LLVM IR.
     llvm::LLVMContext llvmContext;
     auto llvmModule = translateModuleToLLVMIR(module, llvmContext);
     if (!llvmModule) {
@@ -190,11 +190,11 @@ static int dumpLLVMIR(ModuleOp module) {
         return 1;
     }
 
-    // Initialize LLVM targets
+    // Initialize LLVM targets for the host platform.
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
 
-    // Create target machine
+    // Create target machine for the host.
     auto tmBuilderOrError = llvm::orc::JITTargetMachineBuilder::detectHost();
     if (!tmBuilderOrError) {
         llvm::errs() << "Could not create JITTargetMachineBuilder\n";
@@ -210,7 +210,7 @@ static int dumpLLVMIR(ModuleOp module) {
     ExecutionEngine::setupTargetTripleAndDataLayout(llvmModule.get(),
                                                      tmOrError.get().get());
 
-    // Optionally optimize
+    // Optionally run LLVM optimization passes.
     if (enableOpt) {
         auto optPipeline = makeOptimizingTransformer(3, 0, nullptr);
         if (auto err = optPipeline(llvmModule.get())) {
@@ -228,21 +228,21 @@ static int dumpLLVMIR(ModuleOp module) {
 //===----------------------------------------------------------------------===//
 
 static int runJIT(ModuleOp module) {
-    // Initialize LLVM targets
+    // Initialize LLVM targets for the host platform.
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
 
-    // Register translation to LLVM IR
+    // Register translation from MLIR to LLVM IR.
     registerBuiltinDialectTranslation(*module->getContext());
     registerLLVMDialectTranslation(*module->getContext());
 
-    // Set up execution engine options
+    // Set up execution engine options with optional optimization.
     ExecutionEngineOptions options;
     options.transformer = enableOpt
         ? makeOptimizingTransformer(3, 0, nullptr)
         : makeOptimizingTransformer(0, 0, nullptr);
 
-    // Create the execution engine
+    // Create the JIT execution engine.
     auto maybeEngine = ExecutionEngine::create(module, options);
     if (!maybeEngine) {
         llvm::errs() << "Failed to create execution engine: "
@@ -252,11 +252,11 @@ static int runJIT(ModuleOp module) {
 
     auto &engine = maybeEngine.get();
 
-    // Register runtime symbols
+    // Register runtime function symbols for JIT linking.
     engine->registerSymbols([](llvm::orc::MangleAndInterner interner) {
         llvm::orc::SymbolMap symbolMap;
 
-        // Allocation functions
+        // Heap allocation functions.
         symbolMap[interner("eco_alloc_custom")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_custom),
@@ -294,7 +294,7 @@ static int runJIT(ModuleOp module) {
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_char),
                 llvm::JITSymbolFlags::Exported);
 
-        // Field store functions
+        // Field store functions.
         symbolMap[interner("eco_store_field")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_store_field),
@@ -308,7 +308,7 @@ static int runJIT(ModuleOp module) {
                 llvm::orc::ExecutorAddr::fromPtr(&eco_store_field_f64),
                 llvm::JITSymbolFlags::Exported);
 
-        // Closure operations
+        // Closure operations.
         symbolMap[interner("eco_apply_closure")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_apply_closure),
@@ -318,7 +318,7 @@ static int runJIT(ModuleOp module) {
                 llvm::orc::ExecutorAddr::fromPtr(&eco_pap_extend),
                 llvm::JITSymbolFlags::Exported);
 
-        // Runtime utilities
+        // Runtime utilities.
         symbolMap[interner("eco_crash")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_crash),
@@ -328,7 +328,7 @@ static int runJIT(ModuleOp module) {
                 llvm::orc::ExecutorAddr::fromPtr(&eco_dbg_print),
                 llvm::JITSymbolFlags::Exported);
 
-        // GC interface
+        // GC interface.
         symbolMap[interner("eco_safepoint")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_safepoint),
@@ -342,7 +342,7 @@ static int runJIT(ModuleOp module) {
                 llvm::orc::ExecutorAddr::fromPtr(&eco_major_gc),
                 llvm::JITSymbolFlags::Exported);
 
-        // Tag extraction
+        // Tag extraction.
         symbolMap[interner("eco_get_header_tag")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_get_header_tag),
@@ -355,12 +355,12 @@ static int runJIT(ModuleOp module) {
         return symbolMap;
     });
 
-    // Initialize the runtime
+    // Initialize the runtime GC and thread-local allocator.
     Elm::Allocator::instance().initialize();
     Elm::Allocator::instance().initThread();
 
-    // Invoke the main function
-    // invokePacked expects pointers to result storage followed by argument values
+    // Invoke the main function with packed calling convention.
+    // invokePacked expects pointers to result storage followed by argument values.
     int64_t result = 0;
     void *args[] = { &result };
     auto error = engine->invokePacked("main", args);
@@ -371,7 +371,7 @@ static int runJIT(ModuleOp module) {
     }
     llvm::outs() << "main() returned: " << result << "\n";
 
-    // Cleanup
+    // Cleanup thread-local allocator state.
     Elm::Allocator::instance().cleanupThread();
 
     llvm::outs() << "JIT execution completed successfully\n";
@@ -383,10 +383,10 @@ static int runJIT(ModuleOp module) {
 //===----------------------------------------------------------------------===//
 
 int main(int argc, char **argv) {
-    // Initialize LLVM
+    // Initialize LLVM infrastructure.
     llvm::InitLLVM initLLVM(argc, argv);
 
-    // Register command line options
+    // Register command line options.
     registerAsmPrinterCLOptions();
     registerMLIRContextCLOptions();
     registerPassManagerCLOptions();
@@ -395,14 +395,14 @@ int main(int argc, char **argv) {
         "This tool compiles MLIR files containing the Eco dialect,\n"
         "lowering them to LLVM IR and optionally JIT-executing them.\n");
 
-    // Set up MLIR context
+    // Set up MLIR context with required dialect extensions.
     DialectRegistry registry;
     func::registerAllExtensions(registry);
     LLVM::registerInlinerInterface(registry);
 
     MLIRContext context(registry);
 
-    // Load dialects
+    // Load required dialects.
     context.getOrLoadDialect<eco::EcoDialect>();
     context.getOrLoadDialect<func::FuncDialect>();
     context.getOrLoadDialect<cf::ControlFlowDialect>();
@@ -410,10 +410,10 @@ int main(int argc, char **argv) {
     context.getOrLoadDialect<scf::SCFDialect>();
     context.getOrLoadDialect<LLVM::LLVMDialect>();
 
-    // Allow unregistered dialects for flexibility
+    // Allow unregistered dialects for flexibility during development.
     context.allowUnregisteredDialects();
 
-    // Load input file
+    // Load input file.
     std::string errorMessage;
     auto inputFile = openInputFile(inputFilename, &errorMessage);
     if (!inputFile) {
@@ -424,29 +424,29 @@ int main(int argc, char **argv) {
     llvm::SourceMgr sourceMgr;
     sourceMgr.AddNewSourceBuffer(std::move(inputFile), llvm::SMLoc());
 
-    // Parse the MLIR
+    // Parse the MLIR input file.
     auto module = loadMLIR(context, sourceMgr);
     if (!module)
         return 1;
 
-    // Verify the module
+    // Verify the module structure.
     if (failed(verify(*module))) {
         llvm::errs() << "Error: Module verification failed\n";
         return 1;
     }
 
-    // Just dump input MLIR if requested
+    // Dump input MLIR without any lowering if requested.
     if (emitAction == DumpMLIR) {
         module->dump();
         return 0;
     }
 
-    // Run the lowering pipeline
+    // Run the lowering pipeline.
     bool lowerToLLVM = emitAction >= DumpMLIRLLVM;
     if (runPipeline(*module, lowerToLLVM) != 0)
         return 1;
 
-    // Handle output
+    // Handle different output modes.
     if (emitAction == DumpMLIREco || emitAction == DumpMLIRLLVM) {
         module->dump();
         return 0;

@@ -22,52 +22,52 @@ namespace eco {
 // Pass Declarations
 //===----------------------------------------------------------------------===//
 
-/// Stage 1: Eco -> Eco transformations
+// ========== Stage 1: Eco -> Eco transformations ==========
 
-/// Lowers eco.construct to eco.allocate_ctor + field stores.
+// Lowers eco.construct to eco.allocate_ctor + field stores.
 std::unique_ptr<mlir::Pass> createConstructLoweringPass();
 
-/// Removes/errors on reference counting placeholder ops (incref, decref, etc.)
-/// These are not used in tracing GC mode.
+// Removes/errors on reference counting placeholder ops (incref, decref, etc).
+// These are not used in tracing GC mode.
 std::unique_ptr<mlir::Pass> createRCEliminationPass();
 
-/// Stage 2: Eco -> Standard MLIR (func/cf/arith)
+// ========== Stage 2: Eco -> Standard MLIR (func/cf/arith) ==========
 
-/// Lowers eco control flow ops (case, joinpoint, jump, return) to cf dialect.
+// Lowers eco control flow ops (case, joinpoint, jump, return) to cf dialect.
 std::unique_ptr<mlir::Pass> createControlFlowLoweringPass();
 
-/// Stage 3: Eco -> LLVM Dialect
+// ========== Stage 3: Eco -> LLVM Dialect ==========
 
-/// Lowers eco heap operations (allocate_*, project, box, unbox) to LLVM.
+// Lowers eco heap operations (allocate_*, project, box, unbox) to LLVM.
 std::unique_ptr<mlir::Pass> createHeapOpsToLLVMPass();
 
-/// Lowers eco.constant to LLVM constants.
+// Lowers eco.constant to LLVM constants.
 std::unique_ptr<mlir::Pass> createConstantToLLVMPass();
 
-/// Lowers eco.call and closure operations to LLVM.
+// Lowers eco.call and closure operations to LLVM.
 std::unique_ptr<mlir::Pass> createCallLoweringPass();
 
-/// Lowers eco.safepoint (currently no-op).
+// Lowers eco.safepoint (currently no-op).
 std::unique_ptr<mlir::Pass> createSafepointLoweringPass();
 
-/// Lowers eco.string_literal to LLVM global constants (UTF-8 -> UTF-16).
+// Lowers eco.string_literal to LLVM global constants (UTF-8 -> UTF-16).
 std::unique_ptr<mlir::Pass> createStringLiteralLoweringPass();
 
-/// Combined pass that runs all eco-to-LLVM lowering.
+// Combined pass that runs all eco-to-LLVM lowering.
 std::unique_ptr<mlir::Pass> createEcoToLLVMPass();
 
 //===----------------------------------------------------------------------===//
 // Pattern Population
 //===----------------------------------------------------------------------===//
 
-/// Populates patterns for lowering eco heap ops to LLVM.
+// Populates patterns for lowering eco heap ops to LLVM.
 void populateEcoHeapOpsToLLVMPatterns(mlir::TypeConverter &typeConverter,
                                        mlir::RewritePatternSet &patterns);
 
-/// Populates patterns for lowering eco control flow to cf dialect.
+// Populates patterns for lowering eco control flow to cf dialect.
 void populateEcoControlFlowToStandardPatterns(mlir::RewritePatternSet &patterns);
 
-/// Populates patterns for lowering eco calls to LLVM.
+// Populates patterns for lowering eco calls to LLVM.
 void populateEcoCallToLLVMPatterns(mlir::TypeConverter &typeConverter,
                                     mlir::RewritePatternSet &patterns);
 
@@ -75,15 +75,15 @@ void populateEcoCallToLLVMPatterns(mlir::TypeConverter &typeConverter,
 // Type Converter
 //===----------------------------------------------------------------------===//
 
-/// Creates the type converter for eco types to LLVM types.
-/// eco.value -> i64 (tagged pointer representation)
+// Creates the type converter for eco types to LLVM types.
+// Converts eco.value -> i64 (tagged pointer representation).
 std::unique_ptr<mlir::TypeConverter> createEcoToLLVMTypeConverter(mlir::MLIRContext *ctx);
 
 //===----------------------------------------------------------------------===//
 // Pass Registration
 //===----------------------------------------------------------------------===//
 
-/// Registers all eco passes with the pass manager.
+// Registers all eco passes with the pass manager.
 void registerEcoPasses();
 
 } // namespace eco

@@ -14,6 +14,6 @@
 using namespace mlir;
 using namespace eco;
 
-// Include the auto-generated type definitions
+// Include the auto-generated type definitions.
 #define GET_TYPEDEF_CLASSES
 #include "eco/EcoTypes.cpp.inc"

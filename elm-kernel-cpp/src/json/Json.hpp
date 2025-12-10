@@ -1,5 +1,5 @@
-#ifndef ELM_KERNEL_JSON_HPP
-#define ELM_KERNEL_JSON_HPP
+#ifndef ECO_JSON_HPP
+#define ECO_JSON_HPP
 
 /**
  * Elm Kernel Json Module - Runtime Heap Integration
@@ -138,4 +138,4 @@ JsonValuePtr addField(void* key, JsonValuePtr value, JsonValuePtr object);
 
 } // namespace Elm::Kernel::Json
 
-#endif // ELM_KERNEL_JSON_HPP
+#endif // ECO_JSON_HPP

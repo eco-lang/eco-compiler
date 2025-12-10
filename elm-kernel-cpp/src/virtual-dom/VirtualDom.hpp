@@ -1,5 +1,5 @@
-#ifndef ELM_KERNEL_VIRTUALDOM_HPP
-#define ELM_KERNEL_VIRTUALDOM_HPP
+#ifndef ECO_VIRTUALDOM_HPP
+#define ECO_VIRTUALDOM_HPP
 
 /**
  * Elm Kernel VirtualDom Module - Runtime Heap Integration
@@ -231,4 +231,4 @@ VNodePtr unwrapVNode(void* value);
 
 } // namespace Elm::Kernel::VirtualDom
 
-#endif // ELM_KERNEL_VIRTUALDOM_HPP
+#endif // ECO_VIRTUALDOM_HPP
