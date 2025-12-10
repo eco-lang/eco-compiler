@@ -69,6 +69,12 @@ mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoTypes.h.inc -gen-typedef-decls)
 # Generate type definitions
 mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoTypes.cpp.inc -gen-typedef-defs)
 
+# Generate enum attribute declarations
+mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoEnums.h.inc -gen-enum-decls)
+
+# Generate enum attribute definitions
+mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoEnums.cpp.inc -gen-enum-defs)
+
 # Create a target that depends on all generated files
 add_public_tablegen_target(EcoOpsIncGen)
 
@@ -80,6 +86,8 @@ add_mlir_dialect_library(EcoDialect
     EcoDialect.cpp
     EcoOps.cpp
     EcoTypes.cpp
+
+    PARTIAL_SOURCES_INTENDED
 
     ADDITIONAL_HEADER_DIRS
     ${CMAKE_CURRENT_BINARY_DIR}/include/eco
@@ -98,11 +106,48 @@ add_mlir_dialect_library(EcoDialect
 target_compile_features(obj.EcoDialect PRIVATE cxx_std_17)
 
 #------------------------------------------------------------------------------
-# Build the ecogen executable
+# Create a library for Eco passes
+#------------------------------------------------------------------------------
+
+add_mlir_library(EcoPasses
+    Passes/RCElimination.cpp
+    Passes/EcoToLLVM.cpp
+
+    PARTIAL_SOURCES_INTENDED
+
+    ADDITIONAL_HEADER_DIRS
+    ${CMAKE_CURRENT_BINARY_DIR}/include/eco
+
+    DEPENDS
+    EcoOpsIncGen
+
+    LINK_LIBS PUBLIC
+    EcoDialect
+    MLIRIR
+    MLIRSupport
+    MLIRPass
+    MLIRTransforms
+    MLIRFuncDialect
+    MLIRArithDialect
+    MLIRControlFlowDialect
+    MLIRSCFDialect
+    MLIRLLVMDialect
+    MLIRLLVMCommonConversion
+    MLIRFuncToLLVM
+    MLIRArithToLLVM
+    MLIRControlFlowToLLVM
+    MLIRSCFToControlFlow
+)
+
+target_compile_features(obj.EcoPasses PRIVATE cxx_std_17)
+
+#------------------------------------------------------------------------------
+# Build the ecogen executable (legacy, for parsing only)
 #------------------------------------------------------------------------------
 
 add_llvm_executable(ecogen
     ../ecogen.cpp
+    PARTIAL_SOURCES_INTENDED
 )
 
 target_include_directories(ecogen PRIVATE
@@ -120,6 +165,66 @@ target_link_libraries(ecogen PRIVATE
 )
 
 target_compile_features(ecogen PRIVATE cxx_std_17)
+
+#------------------------------------------------------------------------------
+# Build the ecoc executable (full compiler with lowering and JIT)
+#------------------------------------------------------------------------------
+
+add_llvm_executable(ecoc
+    ecoc.cpp
+    ../allocator/RuntimeExports.cpp
+    ../allocator/Allocator.cpp
+    ../allocator/NurserySpace.cpp
+    ../allocator/OldGenSpace.cpp
+    ../allocator/RootSet.cpp
+    ../allocator/ThreadLocalHeap.cpp
+    ../allocator/GCStats.cpp
+    PARTIAL_SOURCES_INTENDED
+)
+
+target_include_directories(ecoc PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_BINARY_DIR}/include
+)
+
+target_link_libraries(ecoc PRIVATE
+    EcoDialect
+    EcoPasses
+    MLIRIR
+    MLIRParser
+    MLIRPass
+    MLIRSupport
+    MLIRTransforms
+    MLIRFuncDialect
+    MLIRFuncAllExtensions
+    MLIRArithDialect
+    MLIRControlFlowDialect
+    MLIRSCFDialect
+    MLIRLLVMDialect
+    MLIRLLVMCommonConversion
+    MLIRFuncToLLVM
+    MLIRArithToLLVM
+    MLIRControlFlowToLLVM
+    MLIRSCFToControlFlow
+    MLIRExecutionEngine
+    MLIRTargetLLVMIRExport
+    MLIRBuiltinToLLVMIRTranslation
+    MLIRLLVMToLLVMIRTranslation
+    LLVMSupport
+    LLVMCore
+    LLVMOrcJIT
+)
+
+target_compile_features(ecoc PRIVATE cxx_std_20)
+
+# The runtime code uses exceptions, so we need to enable them
+# (LLVM/MLIR disables exceptions by default)
+target_compile_options(ecoc PRIVATE -fexceptions)
+
+# Need pthreads for the runtime
+find_package(Threads REQUIRED)
+target_link_libraries(ecoc PRIVATE Threads::Threads)
 
 #------------------------------------------------------------------------------
 # Usage instructions

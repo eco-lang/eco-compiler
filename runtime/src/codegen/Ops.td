@@ -11,6 +11,7 @@
 
 include "mlir/IR/OpBase.td"
 include "mlir/IR/SymbolInterfaces.td"
+include "mlir/IR/EnumAttr.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 
@@ -68,6 +69,24 @@ def Eco_ValueType : Eco_Type<"Value", "value"> {
 def Eco_Value : Type<CPred<"llvm::isa<eco::ValueType>($_self)">,
                      "eco.value",
                      "eco::ValueType">;
+
+//===----------------------------------------------------------------------===//
+// Constant Attribute Definition
+//===----------------------------------------------------------------------===//
+
+// ConstantKind enum matching Heap.hpp Constant enum
+// Values 1-7 (0 means regular pointer, not a constant)
+def Eco_ConstantKind : I32EnumAttr<"ConstantKind", "Eco embedded constant kind", [
+  I32EnumAttrCase<"Unit", 1>,        // Const_Unit
+  I32EnumAttrCase<"EmptyRec", 2>,    // Const_EmptyRec
+  I32EnumAttrCase<"True", 3>,        // Const_True
+  I32EnumAttrCase<"False", 4>,       // Const_False
+  I32EnumAttrCase<"Nil", 5>,         // Const_Nil
+  I32EnumAttrCase<"Nothing", 6>,     // Const_Nothing
+  I32EnumAttrCase<"EmptyString", 7>  // Const_EmptyString
+]> {
+  let cppNamespace = "::eco";
+}
 
 // Unboxed primitive types matching Elm semantics
 def Eco_Int   : I<64>;   // Elm Int (64-bit signed)
@@ -263,6 +282,8 @@ def Eco_DbgOp : Eco_Op<"dbg"> {
 
   let arguments = (ins Variadic<Eco_AnyValue>:$args);
   let results = (outs);
+
+  let assemblyFormat = "($args^ `:` type($args))? attr-dict";
 }
 
 //===----------------------------------------------------------------------===//
@@ -300,6 +321,8 @@ def Eco_ConstructOp : Eco_Op<"construct", [Pure]> {
   let results = (outs Eco_Value:$result);
 
   let hasVerifier = 1;
+
+  let assemblyFormat = "`(` $fields `)` attr-dict `:` functional-type($fields, $result)";
 }
 
 def Eco_ProjectOp : Eco_Op<"project", [Pure]> {
@@ -632,6 +655,8 @@ def Eco_BoxOp : Eco_Op<"box", [Pure]> {
 
   let arguments = (ins Eco_AnyValue:$value);
   let results = (outs Eco_Value:$result);
+
+  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
 }
 
 def Eco_UnboxOp : Eco_Op<"unbox", [Pure]> {
@@ -652,7 +677,40 @@ def Eco_UnboxOp : Eco_Op<"unbox", [Pure]> {
 }
 
 //===----------------------------------------------------------------------===//
-// 8. Reference Counting Placeholders (Future Perceus Support)
+// 8. Constant Values (Embedded in Tagged Pointer)
+//===----------------------------------------------------------------------===//
+
+def Eco_ConstantOp : Eco_Op<"constant", [Pure]> {
+  let summary = "Create embedded constant value";
+  let description = [{
+    Creates an embedded constant value that is stored directly in the pointer
+    representation without heap allocation. These correspond to the Constant
+    enum in Heap.hpp: Unit, EmptyRec, True, False, Nil, Nothing, EmptyString.
+
+    The constant is encoded in bits 40-43 of the i64 representation, with
+    the pointer field (bits 0-39) set to 0.
+
+    Example:
+    ```mlir
+    %nil = eco.constant Nil : !eco.value
+    %true = eco.constant True : !eco.value
+    %unit = eco.constant Unit : !eco.value
+    ```
+
+    Lowering produces an i64 with the constant field set appropriately:
+    - Nil → 5 << 40 = 5497558138880
+    - True → 3 << 40 = 3298534883328
+    - Unit → 1 << 40 = 1099511627776
+  }];
+
+  let arguments = (ins Eco_ConstantKind:$kind);
+  let results = (outs Eco_Value:$result);
+
+  let assemblyFormat = "$kind attr-dict `:` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// 9. Reference Counting Placeholders (Future Perceus Support)
 //===----------------------------------------------------------------------===//
 //
 // Note: The current GC design uses tracing GC, not reference counting.

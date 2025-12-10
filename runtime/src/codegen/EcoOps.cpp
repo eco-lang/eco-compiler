@@ -72,8 +72,11 @@ LogicalResult PapCreateOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
-// Include the auto-generated op definitions
+// Include the auto-generated definitions
 //===----------------------------------------------------------------------===//
+
+// Include enum definitions
+#include "eco/EcoEnums.cpp.inc"
 
 #define GET_OP_CLASSES
 #include "eco/EcoOps.cpp.inc"
