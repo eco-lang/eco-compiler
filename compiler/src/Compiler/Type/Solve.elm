@@ -263,8 +263,8 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                     IO.forM_ vars
                                         (\var ->
                                             UF.modify var <|
-                                                \(Descriptor content _ mark copy) ->
-                                                    Descriptor content nextRank mark copy
+                                                \(Descriptor props) ->
+                                                    IO.makeDescriptor props.content nextRank props.mark props.copy
                                         )
                                         |> IO.andThen
                                             (\_ ->
@@ -341,8 +341,8 @@ isGeneric : Variable -> IO ()
 isGeneric var =
     UF.get var
         |> IO.andThen
-            (\(Descriptor _ rank _ _) ->
-                if rank == Type.noRank then
+            (\(Descriptor props) ->
+                if props.rank == Type.noRank then
                     IO.pure ()
 
                 else
@@ -354,7 +354,7 @@ isGeneric var =
                                         ++ "    "
                                         ++ Doc.toString (ET.toDoc L.empty RT.None tipe)
                                         ++ " [rank = "
-                                        ++ String.fromInt rank
+                                        ++ String.fromInt props.rank
                                         ++ "]\n\n"
                                         ++ "Please create an <http://sscce.org/> and then report it\nat <https://github.com/elm/compiler/issues>\n\n"
                             )
@@ -414,8 +414,8 @@ occurs state ( name, A.At region variable ) =
                             (\errorType ->
                                 UF.get variable
                                     |> IO.andThen
-                                        (\(Descriptor _ rank mark copy) ->
-                                            UF.set variable (Descriptor IO.Error rank mark copy)
+                                        (\(Descriptor props) ->
+                                            UF.set variable (IO.makeDescriptor IO.Error props.rank props.mark props.copy)
                                                 |> IO.map (\_ -> addError state (Error.InfiniteType region name errorType))
                                         )
                             )
@@ -465,8 +465,8 @@ generalize youngMark visitMark youngRank pools =
                                                                     else
                                                                         UF.get var
                                                                             |> IO.andThen
-                                                                                (\(Descriptor _ rank _ _) ->
-                                                                                    MVector.modify pools ((::) var) rank
+                                                                                (\(Descriptor props) ->
+                                                                                    MVector.modify pools ((::) var) props.rank
                                                                                 )
                                                                 )
                                                     )
@@ -490,12 +490,12 @@ generalize youngMark visitMark youngRank pools =
                                                                                     else
                                                                                         UF.get var
                                                                                             |> IO.andThen
-                                                                                                (\(Descriptor content rank mark copy) ->
-                                                                                                    if rank < youngRank then
-                                                                                                        MVector.modify pools ((::) var) rank
+                                                                                                (\(Descriptor props) ->
+                                                                                                    if props.rank < youngRank then
+                                                                                                        MVector.modify pools ((::) var) props.rank
 
                                                                                                     else
-                                                                                                        UF.set var <| Descriptor content Type.noRank mark copy
+                                                                                                        UF.set var <| IO.makeDescriptor props.content Type.noRank props.mark props.copy
                                                                                                 )
                                                                                 )
                                                             )
@@ -515,11 +515,11 @@ poolToRankTable youngMark youngRank youngInhabitants =
                     (\var ->
                         UF.get var
                             |> IO.andThen
-                                (\(Descriptor content rank _ copy) ->
-                                    UF.set var (Descriptor content rank youngMark copy)
+                                (\(Descriptor props) ->
+                                    UF.set var (IO.makeDescriptor props.content props.rank youngMark props.copy)
                                         |> IO.andThen
                                             (\_ ->
-                                                MVector.modify mutableTable ((::) var) rank
+                                                MVector.modify mutableTable ((::) var) props.rank
                                             )
                                 )
                     )
@@ -539,31 +539,31 @@ adjustRank : Mark -> Mark -> Int -> Variable -> IO Int
 adjustRank youngMark visitMark groupRank var =
     UF.get var
         |> IO.andThen
-            (\(Descriptor content rank mark copy) ->
-                if mark == youngMark then
+            (\(Descriptor props) ->
+                if props.mark == youngMark then
                     -- Set the variable as marked first because it may be cyclic.
-                    UF.set var (Descriptor content rank visitMark copy)
+                    UF.set var (IO.makeDescriptor props.content props.rank visitMark props.copy)
                         |> IO.andThen
                             (\_ ->
-                                adjustRankContent youngMark visitMark groupRank content
+                                adjustRankContent youngMark visitMark groupRank props.content
                                     |> IO.andThen
                                         (\maxRank ->
-                                            UF.set var (Descriptor content maxRank visitMark copy)
+                                            UF.set var (IO.makeDescriptor props.content maxRank visitMark props.copy)
                                                 |> IO.map (\_ -> maxRank)
                                         )
                             )
 
-                else if mark == visitMark then
-                    IO.pure rank
+                else if props.mark == visitMark then
+                    IO.pure props.rank
 
                 else
                     let
                         minRank : Int
                         minRank =
-                            min groupRank rank
+                            min groupRank props.rank
                     in
                     -- TODO how can minRank ever be groupRank?
-                    UF.set var (Descriptor content minRank visitMark copy)
+                    UF.set var (IO.makeDescriptor props.content minRank visitMark props.copy)
                         |> IO.map (\_ -> minRank)
             )
 
@@ -646,8 +646,8 @@ introduce rank pools variables =
                 IO.forM_ variables
                     (\var ->
                         UF.modify var <|
-                            \(Descriptor content _ mark copy) ->
-                                Descriptor content rank mark copy
+                            \(Descriptor props) ->
+                                IO.makeDescriptor props.content rank props.mark props.copy
                     )
             )
 
@@ -749,7 +749,7 @@ typeToVar rank pools aliasDict tipe =
 
 register : Int -> Pools -> Content -> IO Variable
 register rank pools content =
-    UF.fresh (Descriptor content rank Type.noMark Nothing)
+    UF.fresh (IO.makeDescriptor content rank Type.noMark Nothing)
         |> IO.andThen
             (\var ->
                 MVector.modify pools ((::) var) rank
@@ -793,7 +793,7 @@ srcTypeToVariable rank pools freeVars srcType =
 
         makeVar : Name.Name -> b -> IO Variable
         makeVar name _ =
-            UF.fresh (Descriptor (nameToContent name) rank Type.noMark Nothing)
+            UF.fresh (IO.makeDescriptor (nameToContent name) rank Type.noMark Nothing)
     in
     IO.traverseMapWithKey identity compare makeVar freeVars
         |> IO.andThen
@@ -908,22 +908,22 @@ makeCopyHelp : Int -> Pools -> Variable -> IO Variable
 makeCopyHelp maxRank pools variable =
     UF.get variable
         |> IO.andThen
-            (\(Descriptor content rank _ maybeCopy) ->
-                case maybeCopy of
-                    Just copy ->
-                        IO.pure copy
+            (\(Descriptor props) ->
+                case props.copy of
+                    Just copiedVar ->
+                        IO.pure copiedVar
 
                     Nothing ->
-                        if rank /= Type.noRank then
+                        if props.rank /= Type.noRank then
                             IO.pure variable
 
                         else
                             let
-                                makeDescriptor : Content -> Descriptor
-                                makeDescriptor c =
-                                    Descriptor c maxRank Type.noMark Nothing
+                                makeDesc : Content -> Descriptor
+                                makeDesc c =
+                                    IO.makeDescriptor c maxRank Type.noMark Nothing
                             in
-                            UF.fresh (makeDescriptor content)
+                            UF.fresh (makeDesc props.content)
                                 |> IO.andThen
                                     (\copy ->
                                         MVector.modify pools ((::) copy) maxRank
@@ -933,18 +933,18 @@ makeCopyHelp maxRank pools variable =
                                                     -- avoid making multiple copies of the variable we are instantiating.
                                                     --
                                                     -- Need to do this before recursively copying to avoid looping.
-                                                    UF.set variable (Descriptor content rank Type.noMark (Just copy))
+                                                    UF.set variable (IO.makeDescriptor props.content props.rank Type.noMark (Just copy))
                                                         |> IO.andThen
                                                             (\_ ->
                                                                 -- Now we recursively copy the content of the variable.
                                                                 -- We have already marked the variable as copied, so we
                                                                 -- will not repeat this work or crawl this variable again.
-                                                                case content of
+                                                                case props.content of
                                                                     IO.Structure term ->
                                                                         traverseFlatType (makeCopyHelp maxRank pools) term
                                                                             |> IO.andThen
                                                                                 (\newTerm ->
-                                                                                    UF.set copy (makeDescriptor (IO.Structure newTerm))
+                                                                                    UF.set copy (makeDesc (IO.Structure newTerm))
                                                                                         |> IO.map (\_ -> copy)
                                                                                 )
 
@@ -955,11 +955,11 @@ makeCopyHelp maxRank pools variable =
                                                                         IO.pure copy
 
                                                                     IO.RigidVar name ->
-                                                                        UF.set copy (makeDescriptor (IO.FlexVar (Just name)))
+                                                                        UF.set copy (makeDesc (IO.FlexVar (Just name)))
                                                                             |> IO.map (\_ -> copy)
 
                                                                     IO.RigidSuper super name ->
-                                                                        UF.set copy (makeDescriptor (IO.FlexSuper super (Just name)))
+                                                                        UF.set copy (makeDesc (IO.FlexSuper super (Just name)))
                                                                             |> IO.map (\_ -> copy)
 
                                                                     IO.Alias home name args realType ->
@@ -969,7 +969,7 @@ makeCopyHelp maxRank pools variable =
                                                                                     makeCopyHelp maxRank pools realType
                                                                                         |> IO.andThen
                                                                                             (\newRealType ->
-                                                                                                UF.set copy (makeDescriptor (IO.Alias home name newArgs newRealType))
+                                                                                                UF.set copy (makeDesc (IO.Alias home name newArgs newRealType))
                                                                                                     |> IO.map (\_ -> copy)
                                                                                             )
                                                                                 )
@@ -990,14 +990,14 @@ restore : Variable -> IO ()
 restore variable =
     UF.get variable
         |> IO.andThen
-            (\(Descriptor content _ _ maybeCopy) ->
-                case maybeCopy of
+            (\(Descriptor props) ->
+                case props.copy of
                     Nothing ->
                         IO.pure ()
 
                     Just _ ->
-                        UF.set variable (Descriptor content Type.noRank Type.noMark Nothing)
-                            |> IO.andThen (\_ -> restoreContent content)
+                        UF.set variable (IO.makeDescriptor props.content Type.noRank Type.noMark Nothing)
+                            |> IO.andThen (\_ -> restoreContent props.content)
             )
 
 

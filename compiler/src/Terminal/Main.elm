@@ -683,7 +683,7 @@ format =
                     chunks
                     [ Chomp.chompMultiple (Chomp.pure identity) Terminal.filePath Terminal.parseFilePath
                     ]
-                    (Chomp.pure Format.Flags
+                    (Chomp.pure Format.makeFlags
                         |> Chomp.apply (Chomp.chompNormalFlag "output" output Just)
                         |> Chomp.apply (Chomp.chompOnOffFlag "yes")
                         |> Chomp.apply (Chomp.chompOnOffFlag "validate")

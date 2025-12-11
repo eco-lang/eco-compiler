@@ -57,7 +57,20 @@ run args () =
 
 
 type Env
-    = Env (Maybe String) Stuff.PackageCache Http.Manager Registry.Registry
+    = Env EnvProps
+
+
+type alias EnvProps =
+    { maybeRoot : Maybe String
+    , cache : Stuff.PackageCache
+    , manager : Http.Manager
+    , registry : Registry.Registry
+    }
+
+
+makeEnv : Maybe String -> Stuff.PackageCache -> Http.Manager -> Registry.Registry -> Env
+makeEnv maybeRoot cache manager registry =
+    Env { maybeRoot = maybeRoot, cache = cache, manager = manager, registry = registry }
 
 
 type alias EnvSetup =
@@ -90,7 +103,7 @@ addHttpManager ( maybeRoot, cache ) =
 addRegistry : EnvSetup -> Task Exit.Diff Env
 addRegistry setup =
     Task.eio Exit.DiffMustHaveLatestRegistry (Registry.latest setup.manager setup.cache)
-        |> Task.map (\registry -> Env setup.maybeRoot setup.cache setup.manager registry)
+        |> Task.map (\registry -> makeEnv setup.maybeRoot setup.cache setup.manager registry)
 
 
 
@@ -98,10 +111,10 @@ addRegistry setup =
 
 
 diff : Env -> Args -> Task Exit.Diff ()
-diff ((Env _ _ _ registry) as env) args =
+diff ((Env props) as env) args =
     case args of
         GlobalInquiry name v1 v2 ->
-            diffGlobalInquiry env registry name v1 v2
+            diffGlobalInquiry env props.registry name v1 v2
 
         LocalInquiry v1 v2 ->
             diffLocalInquiry env v1 v2
@@ -177,17 +190,17 @@ fetchGeneratedDocsAndWrite env oldDocs =
 
 
 getDocs : Env -> Pkg.Name -> Registry.KnownVersions -> V.Version -> Task Exit.Diff Docs.Documentation
-getDocs (Env _ cache manager _) name (Registry.KnownVersions latest previous) version =
+getDocs (Env props) name (Registry.KnownVersions latest previous) version =
     if latest == version || List.member version previous then
-        Task.eio (Exit.DiffDocsProblem version) <| DD.getDocs cache manager name version
+        Task.eio (Exit.DiffDocsProblem version) <| DD.getDocs props.cache props.manager name version
 
     else
         Task.throw <| Exit.DiffUnknownVersion version (latest :: previous)
 
 
 getLatestDocs : Env -> Pkg.Name -> Registry.KnownVersions -> Task Exit.Diff Docs.Documentation
-getLatestDocs (Env _ cache manager _) name (Registry.KnownVersions latest _) =
-    Task.eio (Exit.DiffDocsProblem latest) <| DD.getDocs cache manager name latest
+getLatestDocs (Env props) name (Registry.KnownVersions latest _) =
+    Task.eio (Exit.DiffDocsProblem latest) <| DD.getDocs props.cache props.manager name latest
 
 
 
@@ -195,14 +208,14 @@ getLatestDocs (Env _ cache manager _) name (Registry.KnownVersions latest _) =
 
 
 readOutline : Env -> Task Exit.Diff ( Pkg.Name, Registry.KnownVersions )
-readOutline (Env maybeRoot _ _ registry) =
-    case maybeRoot of
+readOutline (Env props) =
+    case props.maybeRoot of
         Nothing ->
             Task.throw Exit.DiffNoOutline
 
         Just root ->
             Task.io (Outline.read root)
-                |> Task.andThen (validateOutlineResult registry)
+                |> Task.andThen (validateOutlineResult props.registry)
 
 
 validateOutlineResult : Registry.Registry -> Result Exit.Outline Outline.Outline -> Task Exit.Diff ( Pkg.Name, Registry.KnownVersions )
@@ -235,8 +248,8 @@ validateOutline registry outline =
 
 
 generateDocs : Env -> Task Exit.Diff Docs.Documentation
-generateDocs (Env maybeRoot _ _ _) =
-    case maybeRoot of
+generateDocs (Env props) =
+    case props.maybeRoot of
         Nothing ->
             Task.throw Exit.DiffNoOutline
 

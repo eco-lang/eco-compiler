@@ -513,8 +513,11 @@ toDeclPosition src decl r c =
         report =
             ES.toReport SV.Guida (Code.toSource src) err
 
-        (Report.Report _ (A.Region (A.Position row col) _) _ _) =
+        (Report.Report props) =
             report
+
+        (A.Region (A.Position row col) _) =
+            props.region
     in
     ( row, col )
 

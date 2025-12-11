@@ -85,7 +85,7 @@ type Type
 
 makeDescriptor : Content -> Descriptor
 makeDescriptor content =
-    Descriptor content noRank noMark Nothing
+    IO.makeDescriptor content noRank noMark Nothing
 
 
 
@@ -293,8 +293,8 @@ variableToCanType : Variable -> State.StateT NameState Can.Type
 variableToCanType variable =
     liftIO (UF.get variable)
         |> State.andThen
-            (\(Descriptor content _ _ _) ->
-                case content of
+            (\(Descriptor descProps) ->
+                case descProps.content of
                     Structure term ->
                         termToCanType term
 
@@ -309,8 +309,8 @@ variableToCanType variable =
                                         (\name ->
                                             liftIO
                                                 (UF.modify variable
-                                                    (\(Descriptor _ rank mark copy) ->
-                                                        Descriptor (FlexVar (Just name)) rank mark copy
+                                                    (\(Descriptor props) ->
+                                                        IO.makeDescriptor (FlexVar (Just name)) props.rank props.mark props.copy
                                                     )
                                                 )
                                                 |> State.map (\_ -> Can.TVar name)
@@ -327,8 +327,8 @@ variableToCanType variable =
                                         (\name ->
                                             liftIO
                                                 (UF.modify variable
-                                                    (\(Descriptor _ rank mark copy) ->
-                                                        Descriptor (FlexSuper super (Just name)) rank mark copy
+                                                    (\(Descriptor props) ->
+                                                        IO.makeDescriptor (FlexSuper super (Just name)) props.rank props.mark props.copy
                                                     )
                                                 )
                                                 |> State.map (\_ -> Can.TVar name)
@@ -424,18 +424,18 @@ variableToErrorType : Variable -> StateT NameState ET.Type
 variableToErrorType variable =
     liftIO (UF.get variable)
         |> State.andThen
-            (\(Descriptor content _ mark _) ->
-                if mark == occursMark then
+            (\(Descriptor descProps) ->
+                if descProps.mark == occursMark then
                     State.pure ET.Infinite
 
                 else
-                    liftIO (UF.modify variable (\(Descriptor content_ rank_ _ copy_) -> Descriptor content_ rank_ occursMark copy_))
+                    liftIO (UF.modify variable (\(Descriptor props) -> IO.makeDescriptor props.content props.rank occursMark props.copy))
                         |> State.andThen
                             (\_ ->
-                                contentToErrorType variable content
+                                contentToErrorType variable descProps.content
                                     |> State.andThen
                                         (\errType ->
-                                            liftIO (UF.modify variable (\(Descriptor content_ rank_ _ copy_) -> Descriptor content_ rank_ mark copy_))
+                                            liftIO (UF.modify variable (\(Descriptor props) -> IO.makeDescriptor props.content props.rank descProps.mark props.copy))
                                                 |> State.map (\_ -> errType)
                                         )
                             )
@@ -459,8 +459,8 @@ contentToErrorType variable content =
                             (\name ->
                                 liftIO
                                     (UF.modify variable
-                                        (\(Descriptor _ rank mark copy) ->
-                                            Descriptor (FlexVar (Just name)) rank mark copy
+                                        (\(Descriptor props) ->
+                                            IO.makeDescriptor (FlexVar (Just name)) props.rank props.mark props.copy
                                         )
                                     )
                                     |> State.map (\_ -> ET.FlexVar name)
@@ -477,8 +477,8 @@ contentToErrorType variable content =
                             (\name ->
                                 liftIO
                                     (UF.modify variable
-                                        (\(Descriptor _ rank mark copy) ->
-                                            Descriptor (FlexSuper super (Just name)) rank mark copy
+                                        (\(Descriptor props) ->
+                                            IO.makeDescriptor (FlexSuper super (Just name)) props.rank props.mark props.copy
                                         )
                                     )
                                     |> State.map (\_ -> ET.FlexSuper (superToSuper super) name)
@@ -721,15 +721,15 @@ getVarNames : Variable -> Dict String Name Variable -> IO (Dict String Name Vari
 getVarNames var takenNames =
     UF.get var
         |> IO.andThen
-            (\(Descriptor content rank mark copy) ->
-                if mark == getVarNamesMark then
+            (\(Descriptor descProps) ->
+                if descProps.mark == getVarNamesMark then
                     IO.pure takenNames
 
                 else
-                    UF.set var (Descriptor content rank getVarNamesMark copy)
+                    UF.set var (IO.makeDescriptor descProps.content descProps.rank getVarNamesMark descProps.copy)
                         |> IO.andThen
                             (\_ ->
-                                case content of
+                                case descProps.content of
                                     Error ->
                                         IO.pure takenNames
 
@@ -800,8 +800,8 @@ addName index givenName var makeContent takenNames =
 
              else
                 UF.modify var
-                    (\(Descriptor _ rank mark copy) ->
-                        Descriptor (makeContent indexedName) rank mark copy
+                    (\(Descriptor props) ->
+                        IO.makeDescriptor (makeContent indexedName) props.rank props.mark props.copy
                     )
             )
                 |> IO.map (\_ -> Dict.insert identity indexedName var takenNames)

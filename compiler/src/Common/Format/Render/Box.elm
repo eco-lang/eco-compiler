@@ -36,12 +36,25 @@ type alias Module =
 
 
 type Header
-    = Header SourceTag (Src.C2 (List Name)) (Maybe (Src.C2 SourceSettings)) (Maybe (Src.C2 (Listing DetailedListing)))
+    = Header HeaderProps
+
+
+type alias HeaderProps =
+    { srcTag : SourceTag
+    , name : Src.C2 (List Name)
+    , moduleSettings : Maybe (Src.C2 SourceSettings)
+    , exports : Maybe (Src.C2 (Listing DetailedListing))
+    }
+
+
+makeHeader : SourceTag -> Src.C2 (List Name) -> Maybe (Src.C2 SourceSettings) -> Maybe (Src.C2 (Listing DetailedListing)) -> Header
+makeHeader srcTag name moduleSettings exports =
+    Header { srcTag = srcTag, name = name, moduleSettings = moduleSettings, exports = exports }
 
 
 defaultHeader : Header
 defaultHeader =
-    Header Normal ( ( [], [] ), [ "Main" ] ) Nothing Nothing
+    makeHeader Normal ( ( [], [] ), [ "Main" ] ) Nothing Nothing
 
 
 type alias SourceSettings =
@@ -483,11 +496,13 @@ formatModuleHeader addDefaultHeader modu =
         exportsList : Listing DetailedListing
         exportsList =
             case Maybe.withDefault defaultHeader maybeHeader of
-                Header _ _ _ (Just ( _, e )) ->
-                    e
+                Header props ->
+                    case props.exports of
+                        Just ( _, e ) ->
+                            e
 
-                Header _ _ _ Nothing ->
-                    ClosedListing
+                        Nothing ->
+                            ClosedListing
 
         detailedListingToSet : Listing DetailedListing -> EverySet String (Src.C2 Value)
         detailedListingToSet value =
@@ -529,7 +544,7 @@ formatModuleHeader addDefaultHeader modu =
 
         varsToExpose : EverySet String (Src.C2 Value)
         varsToExpose =
-            case Maybe.andThen (\(Header _ _ _ exports) -> exports) maybeHeader of
+            case Maybe.andThen (\(Header props) -> props.exports) maybeHeader of
                 Nothing ->
                     let
                         definedVars : EverySet String (Src.C2 Value)
@@ -609,17 +624,17 @@ formatModuleHeader addDefaultHeader modu =
                     []
 
         formatModuleLine_ : Header -> Box
-        formatModuleLine_ (Header srcTag name moduleSettings exports) =
+        formatModuleLine_ (Header props) =
             let
                 ( preExposing, postExposing ) =
-                    case exports of
+                    case props.exports of
                         Nothing ->
                             ( [], [] )
 
                         Just ( ( pre, post ), _ ) ->
                             ( pre, post )
             in
-            formatModuleLine sortedExports srcTag name moduleSettings preExposing postExposing
+            formatModuleLine sortedExports props.srcTag props.name props.moduleSettings preExposing postExposing
 
         docs : Maybe Box
         docs =
@@ -913,7 +928,7 @@ formatModu modu =
                             )
                             header.exports
                 in
-                Header sourceTag (Src.c2map (String.split "." << A.toValue) header.name) sourceSettings (Just exportsListing)
+                makeHeader sourceTag (Src.c2map (String.split "." << A.toValue) header.name) sourceSettings (Just exportsListing)
             )
             modu.header
     , docs =
@@ -2116,7 +2131,7 @@ formatExpression importInfo (A.At region aexpr) =
                 ( left, clauses ) =
                     List.foldr
                         (\( currExpr, ( ( preOpComments, postOpComments ), A.At _ currOp ) ) ( leftAcc, clausesAcc ) ->
-                            ( currExpr, BinopsClause preOpComments (OpRef currOp) postOpComments leftAcc :: clausesAcc )
+                            ( currExpr, makeBinopsClause preOpComments (OpRef currOp) postOpComments leftAcc :: clausesAcc )
                         )
                         ( final, [] )
                         ops
@@ -2613,18 +2628,31 @@ mapIsLast f l =
 
 
 type BinopsClause varRef expr
-    = BinopsClause Src.FComments varRef Src.FComments expr
+    = BinopsClause (BinopsClauseProps varRef expr)
+
+
+type alias BinopsClauseProps varRef expr =
+    { preOpComments : Src.FComments
+    , op : varRef
+    , postOpComments : Src.FComments
+    , expr : expr
+    }
+
+
+makeBinopsClause : Src.FComments -> varRef -> Src.FComments -> expr -> BinopsClause varRef expr
+makeBinopsClause preOpComments op postOpComments expr =
+    BinopsClause { preOpComments = preOpComments, op = op, postOpComments = postOpComments, expr = expr }
 
 
 formatBinops : ImportInfo -> Src.Expr -> List (BinopsClause (Ref (List String)) Src.Expr) -> Bool -> Box
 formatBinops importInfo left ops multiline =
     let
         formatPair_ : Bool -> BinopsClause (Ref (List String)) Src.Expr -> ( ( Bool, Src.FComments, Box ), Box )
-        formatPair_ isLast (BinopsClause po o pe e) =
+        formatPair_ isLast (BinopsClause props) =
             let
                 isLeftPipe : Bool
                 isLeftPipe =
-                    o == OpRef "<|"
+                    props.op == OpRef "<|"
 
                 formatContext : SyntaxContext
                 formatContext =
@@ -2635,10 +2663,10 @@ formatBinops importInfo left ops multiline =
                         InfixSeparated
             in
             ( ( isLeftPipe
-              , po
-              , (Box.line << formatInfixVar) o
+              , props.preOpComments
+              , (Box.line << formatInfixVar) props.op
               )
-            , formatCommentedApostrophe pe <| syntaxParens formatContext <| formatExpression importInfo e
+            , formatCommentedApostrophe props.postOpComments <| syntaxParens formatContext <| formatExpression importInfo props.expr
             )
     in
     formatBinary

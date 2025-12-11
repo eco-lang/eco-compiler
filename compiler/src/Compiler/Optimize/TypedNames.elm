@@ -78,28 +78,42 @@ type Tracker a
 
 
 type TResult a
-    = TResult Int (EverySet (List String) TOpt.Global) (Dict String Name Int) a
+    = TResult TResultProps a
+
+
+type alias TResultProps =
+    { uid : Int
+    , deps : EverySet (List String) TOpt.Global
+    , fields : Dict String Name Int
+    }
+
+
+{-| Helper to construct TResult with positional args (for internal use)
+-}
+tResult : Int -> EverySet (List String) TOpt.Global -> Dict String Name Int -> a -> TResult a
+tResult uid deps fields value =
+    TResult { uid = uid, deps = deps, fields = fields } value
 
 
 run : TOpt.Annotations -> Tracker a -> ( EverySet (List String) TOpt.Global, Dict String Name Int, a )
 run annotations (Tracker k) =
     case k (emptyContext annotations) 0 EverySet.empty Dict.empty of
-        TResult _ deps fields value ->
-            ( deps, fields, value )
+        TResult props value ->
+            ( props.deps, props.fields, value )
 
 
 generate : Tracker Name
 generate =
     Tracker <|
         \_ uid deps fields ->
-            TResult (uid + 1) deps fields (Name.fromVarIndex uid)
+            tResult (uid + 1) deps fields (Name.fromVarIndex uid)
 
 
 getAnnotations : Tracker TOpt.Annotations
 getAnnotations =
     Tracker <|
         \ctx uid deps fields ->
-            TResult uid deps fields ctx.annotations
+            tResult uid deps fields ctx.annotations
 
 
 
@@ -113,7 +127,7 @@ getVarType : Name -> Tracker (Maybe Can.Type)
 getVarType name =
     Tracker <|
         \ctx uid deps fields ->
-            TResult uid deps fields (Dict.get identity name ctx.locals)
+            tResult uid deps fields (Dict.get identity name ctx.locals)
 
 
 {-| Insert a local variable type into context for a sub-computation.
@@ -161,7 +175,7 @@ insertVarType name tipe =
             in
             -- Note: This won't actually persist since Tracker is immutable
             -- We need to use withVarType pattern instead
-            TResult uid deps fields ()
+            tResult uid deps fields ()
 
 
 {-| Insert multiple variable types
@@ -170,7 +184,7 @@ insertVarTypes : List ( Name, Can.Type ) -> Tracker ()
 insertVarTypes andThenings =
     Tracker <|
         \_ uid deps fields ->
-            TResult uid deps fields ()
+            tResult uid deps fields ()
 
 
 {-| Look up the type of a global variable from annotations.
@@ -185,7 +199,7 @@ lookupGlobalType name =
                     Dict.get identity name ctx.annotations
                         |> Maybe.map (\(Can.Forall _ t) -> t)
             in
-            TResult uid deps fields tipe
+            tResult uid deps fields tipe
 
 
 
@@ -196,7 +210,7 @@ registerKernel : Name -> a -> Tracker a
 registerKernel home value =
     Tracker <|
         \_ uid deps fields ->
-            TResult uid (EverySet.insert TOpt.toComparableGlobal (TOpt.toKernelGlobal home) deps) fields value
+            tResult uid (EverySet.insert TOpt.toComparableGlobal (TOpt.toKernelGlobal home) deps) fields value
 
 
 
@@ -213,7 +227,7 @@ registerGlobal region home name tipe =
                 global =
                     TOpt.Global home name
             in
-            TResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields (TOpt.VarGlobal region global tipe)
+            tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields (TOpt.VarGlobal region global tipe)
 
 
 registerDebug : Name -> IO.Canonical -> A.Region -> Can.Type -> Tracker TOpt.Expr
@@ -225,7 +239,7 @@ registerDebug name home region tipe =
                 global =
                     TOpt.Global ModuleName.debug name
             in
-            TResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields (TOpt.VarDebug region name home Nothing tipe)
+            tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields (TOpt.VarDebug region name home Nothing tipe)
 
 
 registerCtor : A.Region -> IO.Canonical -> A.Located Name -> Index.ZeroBased -> Can.CtorOpts -> Can.Type -> Tracker TOpt.Expr
@@ -243,10 +257,10 @@ registerCtor region home (A.At _ name) index opts tipe =
             in
             case opts of
                 Can.Normal ->
-                    TResult uid newDeps fields (TOpt.VarGlobal region global tipe)
+                    tResult uid newDeps fields (TOpt.VarGlobal region global tipe)
 
                 Can.Enum ->
-                    TResult uid newDeps fields <|
+                    tResult uid newDeps fields <|
                         case name of
                             "True" ->
                                 if home == ModuleName.basics then
@@ -266,7 +280,7 @@ registerCtor region home (A.At _ name) index opts tipe =
                                 TOpt.VarEnum region global index tipe
 
                 Can.Unbox ->
-                    TResult uid (EverySet.insert TOpt.toComparableGlobal identityGlobal newDeps) fields (TOpt.VarBox region global tipe)
+                    tResult uid (EverySet.insert TOpt.toComparableGlobal identityGlobal newDeps) fields (TOpt.VarBox region global tipe)
 
 
 identityGlobal : TOpt.Global
@@ -278,14 +292,14 @@ registerField : Name -> a -> Tracker a
 registerField name value =
     Tracker <|
         \_ uid d fields ->
-            TResult uid d (Utils.mapInsertWith Basics.identity (+) name 1 fields) value
+            tResult uid d (Utils.mapInsertWith Basics.identity (+) name 1 fields) value
 
 
 registerFieldDict : Dict String Name v -> a -> Tracker a
 registerFieldDict newFields value =
     Tracker <|
         \_ uid d fields ->
-            TResult uid
+            tResult uid
                 d
                 (Utils.mapUnionWith Basics.identity compare (+) fields (Dict.map (\_ -> toOne) newFields))
                 value
@@ -300,7 +314,7 @@ registerFieldList : List Name -> a -> Tracker a
 registerFieldList names value =
     Tracker <|
         \_ uid deps fields ->
-            TResult uid deps (List.foldr addOne fields names) value
+            tResult uid deps (List.foldr addOne fields names) value
 
 
 addOne : Name -> Dict String Name Int -> Dict String Name Int
@@ -317,13 +331,13 @@ map func (Tracker kv) =
     Tracker <|
         \ctx n d f ->
             case kv ctx n d f of
-                TResult n1 d1 f1 value ->
-                    TResult n1 d1 f1 (func value)
+                TResult props value ->
+                    tResult props.uid props.deps props.fields (func value)
 
 
 pure : a -> Tracker a
 pure value =
-    Tracker (\_ n d f -> TResult n d f value)
+    Tracker (\_ n d f -> tResult n d f value)
 
 
 andThen : (a -> Tracker b) -> Tracker a -> Tracker b
@@ -331,10 +345,10 @@ andThen callback (Tracker k) =
     Tracker <|
         \ctx n d f ->
             case k ctx n d f of
-                TResult n1 d1 f1 a ->
+                TResult props a ->
                     case callback a of
                         Tracker kb ->
-                            kb ctx n1 d1 f1
+                            kb ctx props.uid props.deps props.fields
 
 
 traverse : (a -> Tracker b) -> List a -> Tracker (List b)

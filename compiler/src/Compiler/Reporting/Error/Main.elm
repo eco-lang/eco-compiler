@@ -38,7 +38,7 @@ toReport : L.Localizer -> Code.Source -> Error -> Report.Report
 toReport localizer source err =
     case err of
         BadType region tipe ->
-            Report.Report "BAD MAIN TYPE" region [] <|
+            Report.report "BAD MAIN TYPE" region [] <|
                 Code.toSnippet source region Nothing <|
                     ( D.fromChars "I cannot handle this type of `main` value:"
                     , D.stack
@@ -49,7 +49,7 @@ toReport localizer source err =
                     )
 
         BadCycle region name names ->
-            Report.Report "BAD MAIN" region [] <|
+            Report.report "BAD MAIN" region [] <|
                 Code.toSnippet source region Nothing <|
                     ( D.fromChars "A `main` definition cannot be defined in terms of itself."
                     , D.stack
@@ -62,7 +62,7 @@ toReport localizer source err =
             let
                 formatDetails : ( String, D.Doc ) -> Report.Report
                 formatDetails ( aBadKindOfThing, butThatIsNoGood ) =
-                    Report.Report "BAD FLAGS" region [] <|
+                    Report.report "BAD FLAGS" region [] <|
                         Code.toSnippet source region Nothing <|
                             ( D.reflow ("Your `main` program wants " ++ aBadKindOfThing ++ " from JavaScript.")
                             , butThatIsNoGood

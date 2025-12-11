@@ -166,11 +166,11 @@ moduleToDoc root { absolutePath, source, error } =
 
 
 reportToDoc : String -> Report.Report -> D.Doc
-reportToDoc relativePath (Report.Report title _ _ message) =
+reportToDoc relativePath (Report.Report props) =
     D.vcat
-        [ toMessageBar title relativePath
+        [ toMessageBar props.title relativePath
         , D.fromChars ""
-        , message
+        , props.doc
         , D.fromChars ""
         ]
 
@@ -211,11 +211,11 @@ toJson { name, absolutePath, source, error } =
 
 
 reportToJson : Report.Report -> E.Value
-reportToJson (Report.Report title region _ message) =
+reportToJson (Report.Report props) =
     E.object
-        [ ( "title", E.string title )
-        , ( "region", encodeRegion region )
-        , ( "message", D.encode message )
+        [ ( "title", E.string props.title )
+        , ( "region", encodeRegion props.region )
+        , ( "message", D.encode props.doc )
         ]
 
 

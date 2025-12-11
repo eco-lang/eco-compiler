@@ -12,6 +12,7 @@
     "build": "npm-run-all --sequential build:*",
     "build:api": "./scripts/build.sh api",
     "build:bin": "./scripts/build.sh bin",
+    "build:self": "./scripts/build-self.sh bin",
     "watch": "onchange \"src/**/*.elm\" -- npm run build:bin",
     "test": "npm-run-all --sequential test:*",
     "test:eslint": "eslint",

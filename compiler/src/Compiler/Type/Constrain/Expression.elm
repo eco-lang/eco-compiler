@@ -206,18 +206,22 @@ constrainLambda : RTV -> A.Region -> List Can.Pattern -> Can.Expr -> E.Expected 
 constrainLambda rtv region args body expected =
     constrainArgs args
         |> IO.andThen
-            (\(Args vars tipe resultType (Pattern.State headers pvars revCons)) ->
-                constrain rtv body (NoExpectation resultType)
+            (\(Args props) ->
+                let
+                    (Pattern.State headers pvars revCons) =
+                        props.state
+                in
+                constrain rtv body (NoExpectation props.result)
                     |> IO.map
                         (\bodyCon ->
-                            Type.exists vars <|
+                            Type.exists props.vars <|
                                 CAnd
                                     [ CLet []
                                         pvars
                                         headers
                                         (CAnd (List.reverse revCons))
                                         bodyCon
-                                    , CEqual region Lambda tipe expected
+                                    , CEqual region Lambda props.tipe expected
                                     ]
                         )
             )
@@ -842,13 +846,17 @@ constrainDef rtv def bodyCon =
         Can.Def (A.At region name) args expr ->
             constrainArgs args
                 |> IO.andThen
-                    (\(Args vars tipe resultType (Pattern.State headers pvars revCons)) ->
-                        constrain rtv expr (NoExpectation resultType)
+                    (\(Args props) ->
+                        let
+                            (Pattern.State headers pvars revCons) =
+                                props.state
+                        in
+                        constrain rtv expr (NoExpectation props.result)
                             |> IO.map
                                 (\exprCon ->
                                     CLet []
-                                        vars
-                                        (Dict.singleton identity name (A.At region tipe))
+                                        props.vars
+                                        (Dict.singleton identity name (A.At region props.tipe))
                                         (CLet []
                                             pvars
                                             headers
@@ -942,8 +950,12 @@ recDefsHelp rtv defs bodyCon rigidInfo flexInfo =
                     in
                     argsHelp args (Pattern.State Dict.empty flexVars [])
                         |> IO.andThen
-                            (\(Args newFlexVars tipe resultType (Pattern.State headers pvars revCons)) ->
-                                constrain rtv expr (NoExpectation resultType)
+                            (\(Args props) ->
+                                let
+                                    (Pattern.State headers pvars revCons) =
+                                        props.state
+                                in
+                                constrain rtv expr (NoExpectation props.result)
                                     |> IO.andThen
                                         (\exprCon ->
                                             let
@@ -956,9 +968,9 @@ recDefsHelp rtv defs bodyCon rigidInfo flexInfo =
                                                         exprCon
                                             in
                                             recDefsHelp rtv otherDefs bodyCon rigidInfo <|
-                                                Info newFlexVars
+                                                Info props.vars
                                                     (defCon :: flexCons)
-                                                    (Dict.insert identity name (A.At region tipe) flexHeaders)
+                                                    (Dict.insert identity name (A.At region props.tipe) flexHeaders)
                                         )
                             )
 
@@ -1013,7 +1025,22 @@ recDefsHelp rtv defs bodyCon rigidInfo flexInfo =
 
 
 type Args
-    = Args (List IO.Variable) Type Type Pattern.State
+    = Args ArgsProps
+
+
+type alias ArgsProps =
+    { vars : List IO.Variable
+    , tipe : Type
+    , result : Type
+    , state : Pattern.State
+    }
+
+
+{-| Helper to construct Args with positional args
+-}
+makeArgs : List IO.Variable -> Type -> Type -> Pattern.State -> Args
+makeArgs vars tipe result state =
+    Args { vars = vars, tipe = tipe, result = result, state = state }
 
 
 constrainArgs : List Can.Pattern -> IO Args
@@ -1033,7 +1060,7 @@ argsHelp args state =
                             resultType =
                                 VarN resultVar
                         in
-                        Args [ resultVar ] resultType resultType state
+                        makeArgs [ resultVar ] resultType resultType state
                     )
 
         pattern :: otherArgs ->
@@ -1048,8 +1075,8 @@ argsHelp args state =
                         Pattern.add pattern (PNoExpectation argType) state
                             |> IO.andThen (argsHelp otherArgs)
                             |> IO.map
-                                (\(Args vars tipe result newState) ->
-                                    Args (argVar :: vars) (FunN argType tipe) result newState
+                                (\(Args props) ->
+                                    makeArgs (argVar :: props.vars) (FunN argType props.tipe) props.result props.state
                                 )
                     )
 

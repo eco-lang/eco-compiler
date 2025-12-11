@@ -32,7 +32,22 @@ generateHelp leadingLines kernelLeadingLines moduleSources mappings =
 
 
 type Mappings
-    = Mappings (OrderedListBuilder (List String) IO.Canonical) (OrderedListBuilder String JSName.Name) SegmentAccounting String
+    = Mappings MappingsProps
+
+
+type alias MappingsProps =
+    { sources : OrderedListBuilder (List String) IO.Canonical
+    , names : OrderedListBuilder String JSName.Name
+    , segmentAccounting : SegmentAccounting
+    , vlqs : String
+    }
+
+
+{-| Helper to construct Mappings with positional args
+-}
+makeMappings : OrderedListBuilder (List String) IO.Canonical -> OrderedListBuilder String JSName.Name -> SegmentAccounting -> String -> Mappings
+makeMappings sources names segmentAccounting vlqs =
+    Mappings { sources = sources, names = names, segmentAccounting = segmentAccounting, vlqs = vlqs }
 
 
 type alias SegmentAccountingData =
@@ -61,7 +76,7 @@ parseMappings mappings =
                 mappings
     in
     parseMappingsHelp 1 (Tuple.first (Utils.findMax compare mappingMap)) mappingMap <|
-        Mappings emptyOrderedListBuilder emptyOrderedListBuilder (SegmentAccounting { prevCol = Nothing, prevSourceIdx = Nothing, prevSourceLine = Nothing, prevSourceCol = Nothing, prevNameIdx = Nothing }) ""
+        makeMappings emptyOrderedListBuilder emptyOrderedListBuilder (SegmentAccounting { prevCol = Nothing, prevSourceIdx = Nothing, prevSourceLine = Nothing, prevSourceCol = Nothing, prevNameIdx = Nothing }) ""
 
 
 mappingMapUpdater : JS.Mapping -> Maybe (List JS.Mapping) -> Maybe (List JS.Mapping)
@@ -100,20 +115,27 @@ parseMappingsHelp currentLine lastLine mappingMap acc =
 
 
 prepareForNewLine : Mappings -> Mappings
-prepareForNewLine (Mappings srcs nms (SegmentAccounting sa) vlqs) =
-    Mappings
-        srcs
-        nms
+prepareForNewLine (Mappings props) =
+    let
+        (SegmentAccounting sa) =
+            props.segmentAccounting
+    in
+    makeMappings
+        props.sources
+        props.names
         (SegmentAccounting { sa | prevCol = Nothing })
-        (vlqs ++ ";")
+        (props.vlqs ++ ";")
 
 
 encodeSegment : JS.Mapping -> Mappings -> Mappings
-encodeSegment (JS.Mapping segmentData) (Mappings srcs nms (SegmentAccounting sa) vlqs) =
+encodeSegment (JS.Mapping segmentData) (Mappings props) =
     let
+        (SegmentAccounting sa) =
+            props.segmentAccounting
+
         newSources : OrderedListBuilder (List String) IO.Canonical
         newSources =
-            insertIntoOrderedListBuilder ModuleName.toComparableCanonical segmentData.srcModule srcs
+            insertIntoOrderedListBuilder ModuleName.toComparableCanonical segmentData.srcModule props.sources
 
         genCol : Int
         genCol =
@@ -165,7 +187,7 @@ encodeSegment (JS.Mapping segmentData) (Mappings srcs nms (SegmentAccounting sa)
             let
                 newNames : OrderedListBuilder JSName.Name JSName.Name
                 newNames =
-                    insertIntoOrderedListBuilder identity segmentName nms
+                    insertIntoOrderedListBuilder identity segmentName props.names
 
                 nameIdx : Int
                 nameIdx =
@@ -175,8 +197,8 @@ encodeSegment (JS.Mapping segmentData) (Mappings srcs nms (SegmentAccounting sa)
                 nameIdxDelta =
                     nameIdx - Maybe.withDefault 0 sa.prevNameIdx
             in
-            Mappings newSources newNames (SegmentAccounting { prevCol = Just genCol, prevSourceIdx = Just moduleIdx, prevSourceLine = Just sourceLine, prevSourceCol = Just sourceCol, prevNameIdx = Just nameIdx }) <|
-                vlqs
+            makeMappings newSources newNames (SegmentAccounting { prevCol = Just genCol, prevSourceIdx = Just moduleIdx, prevSourceLine = Just sourceLine, prevSourceCol = Just sourceCol, prevNameIdx = Just nameIdx }) <|
+                props.vlqs
                     ++ vlqPrefix
                     ++ VLQ.encode
                         [ genColDelta
@@ -187,8 +209,8 @@ encodeSegment (JS.Mapping segmentData) (Mappings srcs nms (SegmentAccounting sa)
                         ]
 
         Nothing ->
-            Mappings newSources nms updatedSa <|
-                vlqs
+            makeMappings newSources props.names updatedSa <|
+                props.vlqs
                     ++ vlqPrefix
                     ++ VLQ.encode
                         [ genColDelta
@@ -236,11 +258,11 @@ orderedListBuilderToList keyComparison (OrderedListBuilder _ values) =
 
 
 mappingsToJson : Dict (List String) IO.Canonical String -> Mappings -> Encode.Value
-mappingsToJson moduleSources (Mappings sources names _ vlqs) =
+mappingsToJson moduleSources (Mappings props) =
     let
         moduleNames : List IO.Canonical
         moduleNames =
-            orderedListBuilderToList ModuleName.compareCanonical sources
+            orderedListBuilderToList ModuleName.compareCanonical props.sources
     in
     Encode.object
         [ ( "version", Encode.int 3 )
@@ -254,6 +276,6 @@ mappingsToJson moduleSources (Mappings sources names _ vlqs) =
                 )
                 moduleNames
           )
-        , ( "names", Encode.list (\jsName -> Encode.string jsName) (orderedListBuilderToList compare names) )
-        , ( "mappings", Encode.string vlqs )
+        , ( "names", Encode.list (\jsName -> Encode.string jsName) (orderedListBuilderToList compare props.names) )
+        , ( "mappings", Encode.string props.vlqs )
         ]

@@ -26,12 +26,27 @@ import Compiler.Parse.Primitives as P exposing (Col, Row)
 
 
 type Constraint
-    = Range V.Version Op Op V.Version
+    = Range RangeProps
+
+
+type alias RangeProps =
+    { lower : V.Version
+    , lowerOp : Op
+    , upperOp : Op
+    , upper : V.Version
+    }
 
 
 type Op
     = Less
     | LessOrEqual
+
+
+{-| Helper to construct Range with positional args
+-}
+range : V.Version -> Op -> Op -> V.Version -> Constraint
+range lower lowerOp upperOp upper =
+    Range { lower = lower, lowerOp = lowerOp, upperOp = upperOp, upper = upper }
 
 
 
@@ -40,12 +55,12 @@ type Op
 
 exactly : V.Version -> Constraint
 exactly version =
-    Range version LessOrEqual LessOrEqual version
+    range version LessOrEqual LessOrEqual version
 
 
 anything : Constraint
 anything =
-    Range V.one LessOrEqual LessOrEqual V.maxVersion
+    range V.one LessOrEqual LessOrEqual V.maxVersion
 
 
 
@@ -53,8 +68,8 @@ anything =
 
 
 lowerBound : Constraint -> V.Version
-lowerBound (Range lower _ _ _) =
-    lower
+lowerBound (Range props) =
+    props.lower
 
 
 
@@ -64,7 +79,7 @@ lowerBound (Range lower _ _ _) =
 toChars : Constraint -> String
 toChars constraint =
     case constraint of
-        Range lower lowerOp upperOp upper ->
+        Range { lower, lowerOp, upperOp, upper } ->
             V.toChars lower ++ opToChars lowerOp ++ "v" ++ opToChars upperOp ++ V.toChars upper
 
 
@@ -85,7 +100,7 @@ opToChars op =
 satisfies : Constraint -> V.Version -> Bool
 satisfies constraint version =
     case constraint of
-        Range lower lowerOp upperOp upper ->
+        Range { lower, lowerOp, upperOp, upper } ->
             isLess lowerOp lower version
                 && isLess upperOp version upper
 
@@ -107,16 +122,16 @@ isLess op =
 
 
 intersect : Constraint -> Constraint -> Maybe Constraint
-intersect (Range lo lop hop hi) (Range lo_ lop_ hop_ hi_) =
+intersect (Range r1) (Range r2) =
     let
         ( newLo, newLop ) =
-            case V.compare lo lo_ of
+            case V.compare r1.lower r2.lower of
                 LT ->
-                    ( lo_, lop_ )
+                    ( r2.lower, r2.lowerOp )
 
                 EQ ->
-                    ( lo
-                    , if List.member Less [ lop, lop_ ] then
+                    ( r1.lower
+                    , if List.member Less [ r1.lowerOp, r2.lowerOp ] then
                         Less
 
                       else
@@ -124,16 +139,16 @@ intersect (Range lo lop hop hi) (Range lo_ lop_ hop_ hi_) =
                     )
 
                 GT ->
-                    ( lo, lop )
+                    ( r1.lower, r1.lowerOp )
 
         ( newHi, newHop ) =
-            case V.compare hi hi_ of
+            case V.compare r1.upper r2.upper of
                 LT ->
-                    ( hi, hop )
+                    ( r1.upper, r1.upperOp )
 
                 EQ ->
-                    ( hi
-                    , if List.member Less [ hop, hop_ ] then
+                    ( r1.upper
+                    , if List.member Less [ r1.upperOp, r2.upperOp ] then
                         Less
 
                       else
@@ -141,10 +156,10 @@ intersect (Range lo lop hop hi) (Range lo_ lop_ hop_ hi_) =
                     )
 
                 GT ->
-                    ( hi_, hop_ )
+                    ( r2.upper, r2.upperOp )
     in
     if V.compare newLo newHi /= GT then
-        Just (Range newLo newLop newHop newHi)
+        Just (range newLo newLop newHop newHi)
 
     else
         Nothing
@@ -178,12 +193,12 @@ defaultElm =
 
 untilNextMajor : V.Version -> Constraint
 untilNextMajor version =
-    Range version LessOrEqual Less (V.bumpMajor version)
+    range version LessOrEqual Less (V.bumpMajor version)
 
 
 untilNextMinor : V.Version -> Constraint
 untilNextMinor version =
-    Range version LessOrEqual Less (V.bumpMinor version)
+    range version LessOrEqual Less (V.bumpMinor version)
 
 
 
@@ -241,7 +256,7 @@ parser =
                                                                                                                 P.Parser <|
                                                                                                                     \((P.State st) as state) ->
                                                                                                                         if V.compare lower higher == LT then
-                                                                                                                            P.Eok (Range lower loOp hiOp higher) state
+                                                                                                                            P.Eok (range lower loOp hiOp higher) state
 
                                                                                                                         else
                                                                                                                             P.Eerr st.row st.col (\_ _ -> InvalidRange lower higher)

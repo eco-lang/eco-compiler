@@ -4,7 +4,7 @@ module System.TypeCheck.IO exposing
     , foldMDict, indexedForA, mapM, traverseIndexed, traverseList, traverseMaybe, traverseTuple
     , Step(..), loop
     , Point(..), PointInfo(..)
-    , Descriptor(..), Content(..), SuperType(..), Mark(..), Variable, FlatType(..)
+    , Descriptor(..), DescriptorProps, makeDescriptor, Content(..), SuperType(..), Mark(..), Variable, FlatType(..)
     , Canonical(..)
     )
 
@@ -260,7 +260,20 @@ type PointInfo
 {-| FIXME Compiler.Type.Type
 -}
 type Descriptor
-    = Descriptor Content Int Mark (Maybe Variable)
+    = Descriptor DescriptorProps
+
+
+type alias DescriptorProps =
+    { content : Content
+    , rank : Int
+    , mark : Mark
+    , copy : Maybe Variable
+    }
+
+
+makeDescriptor : Content -> Int -> Mark -> Maybe Variable -> Descriptor
+makeDescriptor content rank mark copy =
+    Descriptor { content = content, rank = rank, mark = mark, copy = copy }
 
 
 {-| FIXME Compiler.Type.Type

@@ -14,7 +14,7 @@ toReport : Code.Source -> P.Error -> Report.Report
 toReport source err =
     case err of
         P.Redundant caseRegion patternRegion index ->
-            Report.Report "REDUNDANT PATTERN" patternRegion [] <|
+            Report.report "REDUNDANT PATTERN" patternRegion [] <|
                 Code.toSnippet source
                     caseRegion
                     (Just patternRegion)
@@ -29,7 +29,7 @@ toReport source err =
         P.Incomplete region context unhandled ->
             case context of
                 P.BadArg ->
-                    Report.Report "UNSAFE PATTERN" region [] <|
+                    Report.report "UNSAFE PATTERN" region [] <|
                         Code.toSnippet source
                             region
                             Nothing
@@ -44,7 +44,7 @@ toReport source err =
                             )
 
                 P.BadDestruct ->
-                    Report.Report "UNSAFE PATTERN" region [] <|
+                    Report.report "UNSAFE PATTERN" region [] <|
                         Code.toSnippet source
                             region
                             Nothing
@@ -61,7 +61,7 @@ toReport source err =
                             )
 
                 P.BadCase ->
-                    Report.Report "MISSING PATTERNS" region [] <|
+                    Report.report "MISSING PATTERNS" region [] <|
                         Code.toSnippet source
                             region
                             Nothing

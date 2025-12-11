@@ -42,28 +42,42 @@ type Tracker a
 
 
 type TResult a
-    = TResult Int (EverySet (List String) Opt.Global) (Dict String Name Int) a
+    = TResult TResultProps a
+
+
+type alias TResultProps =
+    { uid : Int
+    , deps : EverySet (List String) Opt.Global
+    , fields : Dict String Name Int
+    }
+
+
+{-| Helper to construct TResult with positional args
+-}
+tResult : Int -> EverySet (List String) Opt.Global -> Dict String Name Int -> a -> TResult a
+tResult uid deps fields value =
+    TResult { uid = uid, deps = deps, fields = fields } value
 
 
 run : Tracker a -> ( EverySet (List String) Opt.Global, Dict String Name Int, a )
 run (Tracker k) =
     case k 0 EverySet.empty Dict.empty of
-        TResult _ deps fields value ->
-            ( deps, fields, value )
+        TResult props value ->
+            ( props.deps, props.fields, value )
 
 
 generate : Tracker Name
 generate =
     Tracker <|
         \uid deps fields ->
-            TResult (uid + 1) deps fields (Name.fromVarIndex uid)
+            tResult (uid + 1) deps fields (Name.fromVarIndex uid)
 
 
 registerKernel : Name -> a -> Tracker a
 registerKernel home value =
     Tracker <|
         \uid deps fields ->
-            TResult uid (EverySet.insert Opt.toComparableGlobal (Opt.toKernelGlobal home) deps) fields value
+            tResult uid (EverySet.insert Opt.toComparableGlobal (Opt.toKernelGlobal home) deps) fields value
 
 
 registerGlobal : A.Region -> IO.Canonical -> Name -> Tracker Opt.Expr
@@ -75,7 +89,7 @@ registerGlobal region home name =
                 global =
                     Opt.Global home name
             in
-            TResult uid (EverySet.insert Opt.toComparableGlobal global deps) fields (Opt.VarGlobal region global)
+            tResult uid (EverySet.insert Opt.toComparableGlobal global deps) fields (Opt.VarGlobal region global)
 
 
 registerDebug : Name -> IO.Canonical -> A.Region -> Tracker Opt.Expr
@@ -87,7 +101,7 @@ registerDebug name home region =
                 global =
                     Opt.Global ModuleName.debug name
             in
-            TResult uid (EverySet.insert Opt.toComparableGlobal global deps) fields (Opt.VarDebug region name home Nothing)
+            tResult uid (EverySet.insert Opt.toComparableGlobal global deps) fields (Opt.VarDebug region name home Nothing)
 
 
 registerCtor : A.Region -> IO.Canonical -> A.Located Name -> Index.ZeroBased -> Can.CtorOpts -> Tracker Opt.Expr
@@ -105,10 +119,10 @@ registerCtor region home (A.At _ name) index opts =
             in
             case opts of
                 Can.Normal ->
-                    TResult uid newDeps fields (Opt.VarGlobal region global)
+                    tResult uid newDeps fields (Opt.VarGlobal region global)
 
                 Can.Enum ->
-                    TResult uid newDeps fields <|
+                    tResult uid newDeps fields <|
                         case name of
                             "True" ->
                                 if home == ModuleName.basics then
@@ -128,7 +142,7 @@ registerCtor region home (A.At _ name) index opts =
                                 Opt.VarEnum region global index
 
                 Can.Unbox ->
-                    TResult uid (EverySet.insert Opt.toComparableGlobal identity newDeps) fields (Opt.VarBox region global)
+                    tResult uid (EverySet.insert Opt.toComparableGlobal identity newDeps) fields (Opt.VarBox region global)
 
 
 identity : Opt.Global
@@ -140,14 +154,14 @@ registerField : Name -> a -> Tracker a
 registerField name value =
     Tracker <|
         \uid d fields ->
-            TResult uid d (Utils.mapInsertWith Basics.identity (+) name 1 fields) value
+            tResult uid d (Utils.mapInsertWith Basics.identity (+) name 1 fields) value
 
 
 registerFieldDict : Dict String Name v -> a -> Tracker a
 registerFieldDict newFields value =
     Tracker <|
         \uid d fields ->
-            TResult uid
+            tResult uid
                 d
                 (Utils.mapUnionWith Basics.identity compare (+) fields (Dict.map (\_ -> toOne) newFields))
                 value
@@ -162,7 +176,7 @@ registerFieldList : List Name -> a -> Tracker a
 registerFieldList names value =
     Tracker <|
         \uid deps fields ->
-            TResult uid deps (List.foldr addOne fields names) value
+            tResult uid deps (List.foldr addOne fields names) value
 
 
 addOne : Name -> Dict String Name Int -> Dict String Name Int
@@ -179,13 +193,13 @@ map func (Tracker kv) =
     Tracker <|
         \n d f ->
             case kv n d f of
-                TResult n1 d1 f1 value ->
-                    TResult n1 d1 f1 (func value)
+                TResult props value ->
+                    tResult props.uid props.deps props.fields (func value)
 
 
 pure : a -> Tracker a
 pure value =
-    Tracker (\n d f -> TResult n d f value)
+    Tracker (\n d f -> tResult n d f value)
 
 
 andThen : (a -> Tracker b) -> Tracker a -> Tracker b
@@ -193,10 +207,10 @@ andThen callback (Tracker k) =
     Tracker <|
         \n d f ->
             case k n d f of
-                TResult n1 d1 f1 a ->
+                TResult props a ->
                     case callback a of
                         Tracker kb ->
-                            kb n1 d1 f1
+                            kb props.uid props.deps props.fields
 
 
 traverse : (a -> Tracker b) -> List a -> Tracker (List b)

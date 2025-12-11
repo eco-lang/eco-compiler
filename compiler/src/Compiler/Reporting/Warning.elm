@@ -12,7 +12,7 @@ import Compiler.Reporting.Doc as D
 import Compiler.Reporting.Render.Code as Code
 import Compiler.Reporting.Render.Type as RT
 import Compiler.Reporting.Render.Type.Localizer as L
-import Compiler.Reporting.Report exposing (Report(..))
+import Compiler.Reporting.Report as Report exposing (Report)
 
 
 
@@ -38,7 +38,7 @@ toReport : L.Localizer -> Code.Source -> Warning -> Report
 toReport localizer source warning =
     case warning of
         UnusedImport region moduleName ->
-            Report "unused import" region [] <|
+            Report.report "unused import" region [] <|
                 Code.toSnippet source region Nothing <|
                     ( D.reflow ("Nothing from the `" ++ moduleName ++ "` module is used in this file.")
                     , D.fromChars "I recommend removing unused imports."
@@ -50,7 +50,7 @@ toReport localizer source warning =
                 title =
                     defOrPat context "unused definition" "unused variable"
             in
-            Report title region [] <|
+            Report.report title region [] <|
                 Code.toSnippet source region Nothing <|
                     ( D.reflow ("You are not using `" ++ name ++ "` anywhere.")
                     , D.stack
@@ -69,7 +69,7 @@ toReport localizer source warning =
                     )
 
         MissingTypeAnnotation region name inferredType ->
-            Report "missing type annotation" region [] <|
+            Report.report "missing type annotation" region [] <|
                 Code.toSnippet source region Nothing <|
                     ( D.reflow <|
                         case Type.deepDealias inferredType of

@@ -1,5 +1,6 @@
 module Compiler.Reporting.Error.Import exposing
     ( Error(..)
+    , ErrorProps
     , Problem(..)
     , errorDecoder
     , errorEncoder
@@ -28,7 +29,15 @@ import Utils.Bytes.Encode as BE
 
 
 type Error
-    = Error A.Region ModuleName.Raw (EverySet String ModuleName.Raw) Problem
+    = Error ErrorProps
+
+
+type alias ErrorProps =
+    { region : A.Region
+    , name : ModuleName.Raw
+    , unimportedModules : EverySet String ModuleName.Raw
+    , problem : Problem
+    }
 
 
 type Problem
@@ -43,10 +52,10 @@ type Problem
 
 
 toReport : Code.Source -> Error -> Report.Report
-toReport source (Error region name unimportedModules problem) =
+toReport source (Error { region, name, unimportedModules, problem }) =
     case problem of
         NotFound ->
-            Report.Report "MODULE NOT FOUND" region [] <|
+            Report.report "MODULE NOT FOUND" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -90,7 +99,7 @@ toReport source (Error region name unimportedModules problem) =
                     )
 
         Ambiguous path _ pkg _ ->
-            Report.Report "AMBIGUOUS IMPORT" region [] <|
+            Report.report "AMBIGUOUS IMPORT" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -136,7 +145,7 @@ toReport source (Error region name unimportedModules problem) =
                     )
 
         AmbiguousLocal path1 path2 paths ->
-            Report.Report "AMBIGUOUS IMPORT" region [] <|
+            Report.report "AMBIGUOUS IMPORT" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -155,7 +164,7 @@ toReport source (Error region name unimportedModules problem) =
                     )
 
         AmbiguousForeign pkg1 pkg2 pkgs ->
-            Report.Report "AMBIGUOUS IMPORT" region [] <|
+            Report.report "AMBIGUOUS IMPORT" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -258,7 +267,7 @@ problemDecoder =
 
 
 errorEncoder : Error -> Bytes.Encode.Encoder
-errorEncoder (Error region name unimportedModules problem) =
+errorEncoder (Error { region, name, unimportedModules, problem }) =
     Bytes.Encode.sequence
         [ A.regionEncoder region
         , ModuleName.rawEncoder name
@@ -269,7 +278,15 @@ errorEncoder (Error region name unimportedModules problem) =
 
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
-    Bytes.Decode.map4 Error
+    Bytes.Decode.map4
+        (\region name unimportedModules problem ->
+            Error
+                { region = region
+                , name = name
+                , unimportedModules = unimportedModules
+                , problem = problem
+                }
+        )
         A.regionDecoder
         ModuleName.rawDecoder
         (BD.everySet identity ModuleName.rawDecoder)

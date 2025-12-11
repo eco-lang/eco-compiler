@@ -177,7 +177,7 @@ toReport source err =
                 numDefArgs =
                     numTypeArgs + leftovers
             in
-            Report.Report "BAD TYPE ANNOTATION" region [] <|
+            Report.report "BAD TYPE ANNOTATION" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -226,7 +226,7 @@ toReport source err =
                             "variant"
             in
             if actual < expected then
-                Report.Report "TOO FEW ARGS" region [] <|
+                Report.report "TOO FEW ARGS" region [] <|
                     Code.toSnippet source
                         region
                         Nothing
@@ -246,7 +246,7 @@ toReport source err =
                         )
 
             else
-                Report.Report "TOO MANY ARGS" region [] <|
+                Report.report "TOO MANY ARGS" region [] <|
                     Code.toSnippet source
                         region
                         Nothing
@@ -269,7 +269,7 @@ toReport source err =
                         )
 
         Binop region op1 op2 ->
-            Report.Report "INFIX PROBLEM" region [] <|
+            Report.report "INFIX PROBLEM" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -344,7 +344,7 @@ toReport source err =
                         "This pattern contains multiple `" ++ name ++ "` variables."
 
         EffectNotFound region name ->
-            Report.Report "EFFECT PROBLEM" region [] <|
+            Report.report "EFFECT PROBLEM" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -355,7 +355,7 @@ toReport source err =
                     )
 
         EffectFunctionNotFound region name ->
-            Report.Report "EFFECT PROBLEM" region [] <|
+            Report.report "EFFECT PROBLEM" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -371,7 +371,7 @@ toReport source err =
                 messageThatEndsWithPunctuation =
                     "You are trying to expose `" ++ name ++ "` multiple times!"
             in
-            Report.Report "REDUNDANT EXPORT" r2 [] <|
+            Report.report "REDUNDANT EXPORT" r2 [] <|
                 Code.toPair source
                     r1
                     r2
@@ -389,7 +389,7 @@ toReport source err =
                 suggestions =
                     List.take 4 <| Suggest.sort rawName identity possibleNames
             in
-            Report.Report "UNKNOWN EXPORT" region suggestions <|
+            Report.report "UNKNOWN EXPORT" region suggestions <|
                 let
                     ( a, thing, name ) =
                         toKindInfo kind rawName
@@ -433,7 +433,7 @@ toReport source err =
                     ]
 
         ExportOpenAlias region name ->
-            Report.Report "BAD EXPORT" region [] <|
+            Report.report "BAD EXPORT" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -447,7 +447,7 @@ toReport source err =
                     )
 
         ImportCtorByName region ctor tipe ->
-            Report.Report "BAD IMPORT" region [] <|
+            Report.report "BAD IMPORT" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -487,7 +487,7 @@ toReport source err =
             -- NOTE: this should always be detected by `builder`
             -- So this error should never actually get printed out.
             --
-            Report.Report "UNKNOWN IMPORT" region [] <|
+            Report.report "UNKNOWN IMPORT" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -497,7 +497,7 @@ toReport source err =
                     )
 
         ImportOpenAlias region name ->
-            Report.Report "BAD IMPORT" region [] <|
+            Report.report "BAD IMPORT" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -513,7 +513,7 @@ toReport source err =
                 suggestions =
                     List.take 4 <| Suggest.sort home identity possibleNames
             in
-            Report.Report "BAD IMPORT" region suggestions <|
+            Report.report "BAD IMPORT" region suggestions <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -555,7 +555,7 @@ toReport source err =
 
         NotFoundBinop region op locals ->
             if op == "===" then
-                Report.Report "UNKNOWN OPERATOR" region [ "==" ] <|
+                Report.report "UNKNOWN OPERATOR" region [ "==" ] <|
                     Code.toSnippet source
                         region
                         Nothing
@@ -564,7 +564,7 @@ toReport source err =
                         )
 
             else if op == "!=" || op == "!==" then
-                Report.Report "UNKNOWN OPERATOR" region [ "/=" ] <|
+                Report.report "UNKNOWN OPERATOR" region [ "/=" ] <|
                     Code.toSnippet source
                         region
                         Nothing
@@ -581,7 +581,7 @@ toReport source err =
                         )
 
             else if op == "**" then
-                Report.Report "UNKNOWN OPERATOR" region [ "^", "*" ] <|
+                Report.report "UNKNOWN OPERATOR" region [ "^", "*" ] <|
                     Code.toSnippet source
                         region
                         Nothing
@@ -592,7 +592,7 @@ toReport source err =
                         )
 
             else if op == "%" then
-                Report.Report "UNKNOWN OPERATOR" region [] <|
+                Report.report "UNKNOWN OPERATOR" region [] <|
                     Code.toSnippet source
                         region
                         Nothing
@@ -622,7 +622,7 @@ toReport source err =
                                 |> D.a (D.fromChars ")")
                             )
                 in
-                Report.Report "UNKNOWN OPERATOR" region suggestions <|
+                Report.report "UNKNOWN OPERATOR" region suggestions <|
                     Code.toSnippet source
                         region
                         Nothing
@@ -652,7 +652,7 @@ toReport source err =
                         )
 
         PatternHasRecordCtor region name ->
-            Report.Report "BAD PATTERN" region [] <|
+            Report.report "BAD PATTERN" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -669,7 +669,7 @@ toReport source err =
             let
                 formatDetails : ( String, D.Doc ) -> Report.Report
                 formatDetails ( aBadKindOfThing, elaboration ) =
-                    Report.Report "PORT ERROR" region [] <|
+                    Report.report "PORT ERROR" region [] <|
                         Code.toSnippet source
                             region
                             Nothing
@@ -726,7 +726,7 @@ toReport source err =
             let
                 formatDetails : ( String, D.Doc ) -> Report.Report
                 formatDetails ( before, after ) =
-                    Report.Report "BAD PORT" region [] <|
+                    Report.report "BAD PORT" region [] <|
                         Code.toSnippet source
                             region
                             Nothing
@@ -799,7 +799,7 @@ toReport source err =
                 makeTheory question details =
                     D.fillSep <| List.map (D.dullyellow << D.fromChars) (String.words question) ++ List.map D.fromChars (String.words details)
             in
-            Report.Report "CYCLIC DEFINITION" region [] <|
+            Report.report "CYCLIC DEFINITION" region [] <|
                 Code.toSnippet source region Nothing <|
                     case names of
                         [] ->
@@ -839,7 +839,7 @@ toReport source err =
                             )
 
         RecursiveLet (A.At region name) names ->
-            Report.Report "CYCLIC VALUE" region [] <|
+            Report.report "CYCLIC VALUE" region [] <|
                 Code.toSnippet source region Nothing <|
                     case names of
                         [] ->
@@ -894,7 +894,7 @@ toReport source err =
                         , D.link "Note" "Linters advise against shadowing, so Elm makes “best practices” the default. Read" "shadowing" "for more details on this choice."
                         ]
             in
-            Report.Report "SHADOWING" r2 [] <|
+            Report.report "SHADOWING" r2 [] <|
                 Code.toPair source
                     r1
                     r2
@@ -907,7 +907,7 @@ toReport source err =
                     )
 
         TupleLargerThanThree region ->
-            Report.Report "BAD TUPLE" region [] <|
+            Report.report "BAD TUPLE" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -973,7 +973,7 @@ toReport source err =
                                       )
                                     )
                     in
-                    Report.Report title aliasRegion [] <|
+                    Report.report title aliasRegion [] <|
                         Code.toSnippet source
                             aliasRegion
                             subRegion
@@ -1072,7 +1072,7 @@ toReport source err =
                                         ++ D.commaSep (D.fromChars "and") D.dullyellow (List.map D.fromName unused)
                                         ++ [ D.fromChars "are", D.fromChars "delared,", D.fromChars "but", D.fromChars "not", D.fromChars "used." ]
                     in
-                    Report.Report "TYPE VARIABLE PROBLEMS" aliasRegion [] <|
+                    Report.report "TYPE VARIABLE PROBLEMS" aliasRegion [] <|
                         Code.toSnippet source
                             aliasRegion
                             Nothing
@@ -1133,7 +1133,7 @@ unboundTypeVars source declRegion tipe typeName allVars ( unboundVar, varRegion 
                         ++ [ D.fromChars "definition:" ]
                     )
     in
-    Report.Report title declRegion [] <|
+    Report.report title declRegion [] <|
         Code.toSnippet source
             declRegion
             subRegion
@@ -1159,7 +1159,7 @@ unboundTypeVars source declRegion tipe typeName allVars ( unboundVar, varRegion 
 
 nameClash : Code.Source -> A.Region -> A.Region -> String -> Report.Report
 nameClash source r1 r2 messageThatEndsWithPunctuation =
-    Report.Report "NAME CLASH" r2 [] <|
+    Report.report "NAME CLASH" r2 [] <|
         Code.toPair source
             r1
             r2
@@ -1179,7 +1179,7 @@ ambiguousName source region maybePrefix name h hs thing =
         possibleHomes =
             List.sortWith ModuleName.compareCanonical (h :: OneOrMore.destruct (::) hs)
     in
-    Report.Report "AMBIGUOUS NAME" region [] <|
+    Report.report "AMBIGUOUS NAME" region [] <|
         Code.toSnippet source region Nothing <|
             case maybePrefix of
                 Nothing ->
@@ -1278,7 +1278,7 @@ notFound source region maybePrefix name thing { locals, quals } =
                         , D.link "Hint" "Read" "imports" "to see how `import` declarations work in Elm."
                         ]
     in
-    Report.Report "NAMING ERROR" region nearbyNames <|
+    Report.report "NAMING ERROR" region nearbyNames <|
         Code.toSnippet source
             region
             Nothing
@@ -1316,7 +1316,7 @@ aliasRecursionReport : Code.Source -> A.Region -> Name -> List Name -> Src.Type 
 aliasRecursionReport source region name args tipe others =
     case others of
         [] ->
-            Report.Report "ALIAS PROBLEM" region [] <|
+            Report.report "ALIAS PROBLEM" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -1329,7 +1329,7 @@ aliasRecursionReport source region name args tipe others =
                     )
 
         _ ->
-            Report.Report "ALIAS PROBLEM" region [] <|
+            Report.report "ALIAS PROBLEM" region [] <|
                 Code.toSnippet source
                     region
                     Nothing

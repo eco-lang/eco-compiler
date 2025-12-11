@@ -56,7 +56,7 @@ toReports source err =
     case err of
         NoDocs region ->
             NE.singleton <|
-                Report.Report "NO DOCS" region [] <|
+                Report.report "NO DOCS" region [] <|
                     Code.toSnippet source
                         region
                         Nothing
@@ -66,7 +66,7 @@ toReports source err =
 
         ImplicitExposing region ->
             NE.singleton <|
-                Report.Report "IMPLICIT EXPOSING" region [] <|
+                Report.report "IMPLICIT EXPOSING" region [] <|
                     Code.toSnippet source
                         region
                         Nothing
@@ -98,7 +98,7 @@ toSyntaxProblemReport source problem =
                 region =
                     toRegion row col
             in
-            Report.Report "PROBLEM IN DOCS" region [] <|
+            Report.report "PROBLEM IN DOCS" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -143,7 +143,7 @@ toNameProblemReport : Code.Source -> NameProblem -> Report.Report
 toNameProblemReport source problem =
     case problem of
         NameDuplicate name r1 r2 ->
-            Report.Report "DUPLICATE DOCS" r2 [] <|
+            Report.report "DUPLICATE DOCS" r2 [] <|
                 Code.toPair source
                     r1
                     r2
@@ -156,7 +156,7 @@ toNameProblemReport source problem =
                     )
 
         NameOnlyInDocs name region ->
-            Report.Report "DOCS MISTAKE" region [] <|
+            Report.report "DOCS MISTAKE" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -165,7 +165,7 @@ toNameProblemReport source problem =
                     )
 
         NameOnlyInExports name region ->
-            Report.Report "DOCS MISTAKE" region [] <|
+            Report.report "DOCS MISTAKE" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -181,7 +181,7 @@ toDefProblemReport : Code.Source -> DefProblem -> Report.Report
 toDefProblemReport source problem =
     case problem of
         NoComment name region ->
-            Report.Report "NO DOCS" region [] <|
+            Report.report "NO DOCS" region [] <|
                 Code.toSnippet source
                     region
                     Nothing
@@ -193,7 +193,7 @@ toDefProblemReport source problem =
                     )
 
         NoAnnotation name region ->
-            Report.Report "NO TYPE ANNOTATION" region [] <|
+            Report.report "NO TYPE ANNOTATION" region [] <|
                 Code.toSnippet source
                     region
                     Nothing

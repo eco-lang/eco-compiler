@@ -1,5 +1,6 @@
 module Terminal.Format exposing
     ( Flags(..)
+    , makeFlags
     , run
     )
 
@@ -24,14 +25,27 @@ import Utils.Task.Extra as Task
 
 
 type Flags
-    = Flags (Maybe FilePath) Bool Bool Bool
+    = Flags FlagsProps
+
+
+type alias FlagsProps =
+    { maybeOutput : Maybe FilePath
+    , autoYes : Bool
+    , doValidate : Bool
+    , stdin : Bool
+    }
+
+
+makeFlags : Maybe FilePath -> Bool -> Bool -> Bool -> Flags
+makeFlags maybeOutput autoYes doValidate stdin =
+    Flags { maybeOutput = maybeOutput, autoYes = autoYes, doValidate = doValidate, stdin = stdin }
 
 
 run : List String -> Flags -> Task Never ()
-run paths ((Flags _ autoYes _ _) as flags) =
+run paths ((Flags props) as flags) =
     resolveElmFiles paths
         |> Task.andThen (determineFromConfig flags)
-        |> Task.andThen (doIt autoYes)
+        |> Task.andThen (doIt props.autoYes)
         |> Task.andThen handleResult
 
 
@@ -142,14 +156,14 @@ determineWhatToDo source destination mode =
 
 
 determineWhatToDoFromConfig : Flags -> Result (List Error) (List FilePath) -> Result ErrorMessage WhatToDo
-determineWhatToDoFromConfig (Flags maybeOutput _ doValidate stdin) resolvedInputFiles =
-    determineSource stdin resolvedInputFiles
+determineWhatToDoFromConfig (Flags props) resolvedInputFiles =
+    determineSource props.stdin resolvedInputFiles
         |> Result.andThen
             (\source ->
-                determineDestination maybeOutput
+                determineDestination props.maybeOutput
                     |> Result.andThen
                         (\destination ->
-                            determineWhatToDo source destination (determineMode doValidate)
+                            determineWhatToDo source destination (determineMode props.doValidate)
                         )
             )
 

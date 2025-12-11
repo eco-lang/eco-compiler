@@ -1043,7 +1043,12 @@ toImportErrors (Env envData) results imports problems =
 
         toError : ( Name.Name, Import.Problem ) -> Import.Error
         toError ( name, problem ) =
-            Import.Error (Utils.find identity name regionDict) name unimportedModules problem
+            Import.Error
+                { region = Utils.find identity name regionDict
+                , name = name
+                , unimportedModules = unimportedModules
+                , problem = problem
+                }
     in
     NE.map toError problems
 
