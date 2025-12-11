@@ -1,9 +1,7 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
 // Test eco.allocate_closure with proper function pointer lookup.
-// XFAIL: *
-// This test exposes that eco.allocate_closure uses a null function pointer
-// instead of looking up the actual function symbol.
+// Tests that the closure evaluator is correctly set to the target function.
 
 module {
   // Evaluator function that doubles its argument
@@ -31,12 +29,11 @@ module {
   llvm.func @eco_alloc_int(i64) -> !llvm.ptr
 
   func.func @main() -> i64 {
-    // Allocate a closure for @double_eval with 0 captures
+    // Allocate a closure for @double_eval with arity=1 (takes 1 argument)
     // The lowering should set the evaluator to point to @double_eval
-    // BUG: Currently sets evaluator to null
     %closure = "eco.allocate_closure"() {
       function = @double_eval,
-      num_captures = 0 : i64
+      arity = 1 : i64
     } : () -> !eco.value
 
     // Box argument

@@ -336,9 +336,22 @@ struct UnboxOpLowering : public OpConversionPattern<UnboxOp> {
         auto i64Ty = IntegerType::get(ctx, 64);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
         auto i8Ty = IntegerType::get(ctx, 8);
+        auto i1Ty = IntegerType::get(ctx, 1);
 
         Value input = adaptor.getValue();
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+
+        // Special case for i1 (Bool): boxed bools are embedded constants, not heap objects.
+        // True = encodeConstant(3) = 3 << 40, False = encodeConstant(4) = 4 << 40.
+        // To unbox, compare with True constant.
+        if (resultType == i1Ty) {
+            auto trueConst = rewriter.create<LLVM::ConstantOp>(
+                loc, i64Ty, encodeConstant(3));  // True
+            Value result = rewriter.create<LLVM::ICmpOp>(
+                loc, LLVM::ICmpPredicate::eq, input, trueConst);
+            rewriter.replaceOp(op, result);
+            return success();
+        }
 
         // Convert tagged i64 to pointer.
         auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, input);
@@ -601,17 +614,17 @@ struct AllocateClosureOpLowering : public OpConversionPattern<AllocateClosureOp>
         getOrInsertFunc(module, rewriter, "eco_alloc_closure", funcTy);
 
         // Get function address for the closure.
-        // TODO: For now, use a null pointer. Need to look up the function symbol.
-        auto funcPtr = rewriter.create<LLVM::ZeroOp>(loc, ptrTy);
+        auto funcSymbol = op.getFunction();
+        Value funcPtr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, funcSymbol);
 
-        // Create num_captures constant
-        auto numCaptures = rewriter.create<LLVM::ConstantOp>(
-            loc, i32Ty, static_cast<int32_t>(op.getNumCaptures()));
+        // Create arity constant (max_values for the closure)
+        auto arityConst = rewriter.create<LLVM::ConstantOp>(
+            loc, i32Ty, static_cast<int32_t>(op.getArity()));
 
-        // Call eco_alloc_closure
+        // Call eco_alloc_closure(func_ptr, arity)
         auto call = rewriter.create<LLVM::CallOp>(
             loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_closure"),
-            ValueRange{funcPtr, numCaptures});
+            ValueRange{funcPtr, arityConst});
 
         // Convert ptr to i64
         auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, call.getResult());
@@ -980,9 +993,11 @@ struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
         auto structTy = LLVM::LLVMStructType::getLiteral(ctx, {i64Ty, charArrayTy});
 
         // Build the initializer for the global string.
+        // Use APInt to handle surrogate pairs (values > 32767) correctly.
         SmallVector<Attribute> charAttrs;
         for (uint16_t c : utf16) {
-            charAttrs.push_back(rewriter.getI16IntegerAttr(c));
+            llvm::APInt charInt(16, c, /*isSigned=*/false);
+            charAttrs.push_back(rewriter.getIntegerAttr(i16Ty, charInt));
         }
 
         OpBuilder::InsertionGuard guard(rewriter);
@@ -1013,10 +1028,14 @@ struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
                 loc, structTy, undef, headerVal, ArrayRef<int64_t>{0});
 
             // Insert each UTF-16 character into the array at index 1.
+            // Note: Use APInt to avoid signedness issues with surrogate pairs
+            // (UTF-16 code units in 0xD800-0xDFFF range are > 32767).
             Value current = withHeader;
             for (size_t i = 0; i < utf16.size(); i++) {
-                auto charVal = rewriter.create<LLVM::ConstantOp>(
-                    loc, i16Ty, static_cast<int16_t>(utf16[i]));
+                // Create APInt with 16 bits, treating value as unsigned
+                llvm::APInt charInt(16, utf16[i], /*isSigned=*/false);
+                auto charAttr = rewriter.getIntegerAttr(i16Ty, charInt);
+                auto charVal = rewriter.create<LLVM::ConstantOp>(loc, i16Ty, charAttr);
                 current = rewriter.create<LLVM::InsertValueOp>(
                     loc, structTy, current, charVal,
                     ArrayRef<int64_t>{1, static_cast<int64_t>(i)});
@@ -1456,44 +1475,56 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             ArrayRef<int32_t>(caseValuesI32),
             caseBlocks, caseOperands);
 
-        // Create mapping from original scrutinee to converted value.
-        // Operations inside regions may reference the scrutinee.
-        IRMapping mapping;
-        mapping.map(op.getScrutinee(), scrutinee);
+        // Get the original scrutinee (before type conversion) for use replacement.
+        // Note: Use getOperand(0) instead of getScrutinee() to avoid type cast
+        // issues when CaseOp is inside a joinpoint body where types are converted.
+        Value originalScrutinee = op->getOperand(0);
 
         // Now inline each alternative region into its case block.
+        // We MOVE operations instead of cloning to handle nested CaseOps correctly.
+        // Cloning doesn't apply IRMapping to operations inside nested regions,
+        // which causes "operation destroyed but still has uses" errors.
         for (size_t i = 0; i < alternatives.size(); ++i) {
             Region &altRegion = alternatives[i];
             Block *caseBlock = caseBlocks[i];
 
-            // Clone the region's operations into the case block.
-            rewriter.setInsertionPointToEnd(caseBlock);
+            if (altRegion.empty()) {
+                // Empty region - just add branch to merge block.
+                rewriter.setInsertionPointToEnd(caseBlock);
+                rewriter.create<cf::BranchOp>(loc, mergeBlock);
+                continue;
+            }
 
-            // Inline the region's blocks.
-            if (!altRegion.empty()) {
-                Block &entryBlock = altRegion.front();
+            Block &entryBlock = altRegion.front();
 
-                // Clone operations from the entry block with value mapping.
-                for (Operation &innerOp : llvm::make_early_inc_range(entryBlock)) {
-                    if (isa<ReturnOp>(&innerOp)) {
-                        // Replace eco.return with branch to merge block.
-                        rewriter.create<cf::BranchOp>(loc, mergeBlock);
-                    } else if (isa<JumpOp>(&innerOp)) {
-                        // JumpOp will be handled by JumpOpLowering.
-                        rewriter.clone(innerOp, mapping);
-                    } else {
-                        // Clone with mapping and update mapping for results.
-                        Operation *cloned = rewriter.clone(innerOp, mapping);
-                        for (auto [oldResult, newResult] :
-                             llvm::zip(innerOp.getResults(), cloned->getResults())) {
-                            mapping.map(oldResult, newResult);
-                        }
-                    }
-                }
+            // Move all operations from the region block to the case block.
+            // This preserves SSA references correctly, even for nested CaseOps.
+            rewriter.inlineBlockBefore(&entryBlock, caseBlock, caseBlock->end());
+        }
+
+        // After inlining all regions, replace uses of original scrutinee with
+        // converted scrutinee in all case blocks.
+        for (Block *caseBlock : caseBlocks) {
+            for (Operation &op : *caseBlock) {
+                op.replaceUsesOfWith(originalScrutinee, scrutinee);
             }
         }
 
-        // Erase the original eco.case operation.
+        // Now fix up terminators: replace eco.return with cf.br to merge block.
+        for (Block *caseBlock : caseBlocks) {
+            if (caseBlock->empty())
+                continue;
+
+            Operation *term = caseBlock->getTerminator();
+            if (isa<ReturnOp>(term)) {
+                rewriter.setInsertionPoint(term);
+                rewriter.create<cf::BranchOp>(loc, mergeBlock);
+                rewriter.eraseOp(term);
+            }
+            // JumpOps are handled by JumpOpLowering - leave them alone.
+        }
+
+        // Safe to erase - regions are now empty (operations were moved out).
         rewriter.eraseOp(op);
         return success();
     }
@@ -1510,6 +1541,110 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
 // Global map for joinpoint blocks (populated during lowering).
 // This is a simplification - in production we'd use a proper pass-local state.
 static llvm::DenseMap<int64_t, Block*> joinpointBlocks;
+
+// Forward declaration for recursive helper
+static void lowerJoinpointRegion(
+    Block &sourceBlock, Block *targetBlock, Block *exitBlock,
+    IRMapping &mapping, ConversionPatternRewriter &rewriter,
+    const TypeConverter *typeConverter, bool isBodyRegion);
+
+// Helper to lower a nested JoinpointOp found during region inlining
+static void lowerNestedJoinpoint(
+    JoinpointOp nestedJP, Block *outerExitBlock,
+    IRMapping &mapping, ConversionPatternRewriter &rewriter,
+    const TypeConverter *typeConverter) {
+
+    auto loc = nestedJP.getLoc();
+    int64_t jpId = nestedJP.getId();
+
+    // Get the current insertion point's block and parent region
+    Block *insertBlock = rewriter.getInsertionBlock();
+    Region *parentRegion = insertBlock->getParent();
+
+    // Create exit block for nested joinpoint (code after it flows here)
+    // NOTE: createBlock changes the insertion point, so we must save insertBlock first
+    Block *nestedExitBlock = rewriter.createBlock(parentRegion);
+
+    // Create the joinpoint body block
+    Block *jpBlock = rewriter.createBlock(parentRegion);
+    jpBlock->moveBefore(nestedExitBlock);
+
+    // Add block arguments matching the body region's entry block
+    Region &bodyRegion = nestedJP.getBody();
+    Block &bodyEntry = bodyRegion.front();
+    for (BlockArgument arg : bodyEntry.getArguments()) {
+        Type convertedType = typeConverter->convertType(arg.getType());
+        jpBlock->addArgument(convertedType, loc);
+    }
+
+    // Store the block in our map for eco.jump to find
+    joinpointBlocks[jpId] = jpBlock;
+
+    // Create continuation block
+    Block *contBlock = rewriter.createBlock(parentRegion);
+    contBlock->moveBefore(jpBlock);
+
+    // Branch from the ORIGINAL insertion block (not contBlock!) to continuation
+    // This is the control flow: code before nested JP -> continuation -> body -> exit
+    rewriter.setInsertionPointToEnd(insertBlock);
+    rewriter.create<cf::BranchOp>(loc, contBlock);
+
+    // Create mapping for body region arguments
+    IRMapping bodyMapping(mapping);
+    for (auto [oldArg, newArg] : llvm::zip(bodyEntry.getArguments(),
+                                            jpBlock->getArguments())) {
+        bodyMapping.map(oldArg, newArg);
+    }
+
+    // Lower body region into jpBlock
+    rewriter.setInsertionPointToEnd(jpBlock);
+    lowerJoinpointRegion(bodyEntry, jpBlock, nestedExitBlock, bodyMapping,
+                         rewriter, typeConverter, /*isBodyRegion=*/true);
+
+    // Lower continuation region into contBlock
+    rewriter.setInsertionPointToEnd(contBlock);
+    Region &contRegion = nestedJP.getContinuation();
+    if (!contRegion.empty()) {
+        Block &contEntry = contRegion.front();
+        IRMapping contMapping(mapping);
+        lowerJoinpointRegion(contEntry, contBlock, nestedExitBlock, contMapping,
+                             rewriter, typeConverter, /*isBodyRegion=*/false);
+    }
+
+    // Set insertion point to nestedExitBlock for any operations that follow
+    // the nested joinpoint in the source. The caller will add those operations
+    // (and their terminators) here.
+    rewriter.setInsertionPointToEnd(nestedExitBlock);
+}
+
+// Helper to lower operations from a region block into a target block
+static void lowerJoinpointRegion(
+    Block &sourceBlock, Block *targetBlock, Block *exitBlock,
+    IRMapping &mapping, ConversionPatternRewriter &rewriter,
+    const TypeConverter *typeConverter, bool isBodyRegion) {
+
+    auto loc = sourceBlock.getParentOp()->getLoc();
+
+    for (Operation &innerOp : llvm::make_early_inc_range(sourceBlock)) {
+        if (isa<ReturnOp>(&innerOp)) {
+            // eco.return exits to the exit block
+            rewriter.create<cf::BranchOp>(loc, exitBlock);
+        } else if (isa<JumpOp>(&innerOp)) {
+            // eco.jump - clone with mapping (will be converted by JumpOpLowering)
+            rewriter.clone(innerOp, mapping);
+        } else if (auto nestedJP = dyn_cast<JoinpointOp>(&innerOp)) {
+            // Handle nested joinpoint recursively
+            lowerNestedJoinpoint(nestedJP, exitBlock, mapping, rewriter, typeConverter);
+        } else {
+            // Clone other ops with mapping
+            Operation *cloned = rewriter.clone(innerOp, mapping);
+            for (auto [oldResult, newResult] :
+                 llvm::zip(innerOp.getResults(), cloned->getResults())) {
+                mapping.map(oldResult, newResult);
+            }
+        }
+    }
+}
 
 struct JoinpointOpLowering : public OpConversionPattern<JoinpointOp> {
     using OpConversionPattern::OpConversionPattern;
@@ -1561,9 +1696,6 @@ struct JoinpointOpLowering : public OpConversionPattern<JoinpointOp> {
         rewriter.setInsertionPointToEnd(currentBlock);
         rewriter.create<cf::BranchOp>(loc, contBlock);
 
-        // Inline the body region into the joinpoint block.
-        rewriter.setInsertionPointToEnd(jpBlock);
-
         // Create a mapping from old block arguments to new ones.
         IRMapping mapping;
         for (auto [oldArg, newArg] : llvm::zip(bodyEntry.getArguments(),
@@ -1571,40 +1703,19 @@ struct JoinpointOpLowering : public OpConversionPattern<JoinpointOp> {
             mapping.map(oldArg, newArg);
         }
 
-        // Clone operations from body, replacing terminators appropriately.
-        for (Operation &innerOp : llvm::make_early_inc_range(bodyEntry)) {
-            if (isa<ReturnOp>(&innerOp)) {
-                // eco.return in joinpoint body exits to after the joinpoint.
-                rewriter.create<cf::BranchOp>(loc, exitBlock);
-            } else if (isa<JumpOp>(&innerOp)) {
-                // eco.jump - clone with mapping (will be converted by JumpOpLowering).
-                rewriter.clone(innerOp, mapping);
-            } else {
-                // Clone other ops with mapping.
-                Operation *cloned = rewriter.clone(innerOp, mapping);
-                for (auto [oldResult, newResult] :
-                     llvm::zip(innerOp.getResults(), cloned->getResults())) {
-                    mapping.map(oldResult, newResult);
-                }
-            }
-        }
+        // Lower body region into joinpoint block (handles nested joinpoints)
+        rewriter.setInsertionPointToEnd(jpBlock);
+        lowerJoinpointRegion(bodyEntry, jpBlock, exitBlock, mapping,
+                             rewriter, getTypeConverter(), /*isBodyRegion=*/true);
 
-        // Inline continuation region into continuation block.
+        // Lower continuation region into continuation block
         rewriter.setInsertionPointToEnd(contBlock);
         Region &contRegion = op.getContinuation();
         if (!contRegion.empty()) {
             Block &contEntry = contRegion.front();
-            for (Operation &innerOp : llvm::make_early_inc_range(contEntry)) {
-                if (isa<JumpOp>(&innerOp)) {
-                    rewriter.clone(innerOp);
-                } else {
-                    Operation *cloned = rewriter.clone(innerOp);
-                    for (auto [oldResult, newResult] :
-                         llvm::zip(innerOp.getResults(), cloned->getResults())) {
-                        mapping.map(oldResult, newResult);
-                    }
-                }
-            }
+            IRMapping contMapping;
+            lowerJoinpointRegion(contEntry, contBlock, exitBlock, contMapping,
+                                 rewriter, getTypeConverter(), /*isBodyRegion=*/false);
         }
 
         rewriter.eraseOp(op);

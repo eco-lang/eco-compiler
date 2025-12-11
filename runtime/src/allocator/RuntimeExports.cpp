@@ -608,7 +608,8 @@ static void print_list(uint64_t val, int depth) {
         // Native Cons type uses Tag_Cons
         if (header->tag == Tag_Custom) {
             Custom* custom = static_cast<Custom*>(ptr);
-            if (custom->ctor != 0 || custom->header.size != 2) {
+            // A valid list cons cell has ctor=0, size=2, and tail (field 1) not unboxed
+            if (custom->ctor != 0 || custom->header.size != 2 || (custom->unboxed & 2)) {
                 if (!first) output_text(", ");
                 output_text("<non_cons_custom>");
                 break;
@@ -886,8 +887,13 @@ static void print_value(uint64_t val, int depth) {
 
         case Tag_Custom: {
             Custom* custom = static_cast<Custom*>(ptr);
-            // Check if this is a list cons cell (ctor=0, size=2)
-            if (custom->ctor == 0 && custom->header.size == 2) {
+            // Check if this is a list cons cell (ctor=0, size=2, tail not unboxed)
+            // A list cons cell has: ctor=0, exactly 2 fields, and the tail (field 1)
+            // must be a pointer (not unboxed) since it points to the next cell or Nil.
+            bool isList = (custom->ctor == 0 &&
+                          custom->header.size == 2 &&
+                          !(custom->unboxed & 2));  // tail must be a pointer
+            if (isList) {
                 print_list(val, depth);
             } else {
                 print_custom(custom, depth);

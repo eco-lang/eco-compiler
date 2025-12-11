@@ -31,15 +31,15 @@
   - [ ] 2.4 I/O Kernel Package C++ Implementation → [§2.4](#24-io-kernel-package-c-implementation)
 
 - [ ] **3. MLIR/LLVM Integration** → [§3](#3-mlirllvm-integration)
-  - [ ] 3.1 ECO MLIR Dialect → [§3.1](#31-eco-mlir-dialect)
+  - [ ] 3.1 ECO MLIR Dialect → [§3.1](#31-eco-mlir-dialect) *(substantially complete)*
     - [x] 3.1.1 Research & Reference Implementation → [§3.1.1](#311-research--reference-implementation)
     - [x] 3.1.2 Dialect Definition → [§3.1.2](#312-dialect-definition)
-    - [ ] 3.1.3 Operations → [§3.1.3](#313-operations) *(in progress - skeletal ops defined)*
+    - [x] 3.1.3 Operations → [§3.1.3](#313-operations) *(59 ops, 53 lowered, 46 tests)*
     - [ ] 3.1.4 Type System → [§3.1.4](#314-type-system)
-    - [ ] 3.1.5 GC Integration Hooks → [§3.1.5](#315-gc-integration-hooks) *(in progress - refcount ops defined)*
+    - [x] 3.1.5 GC Integration Hooks → [§3.1.5](#315-gc-integration-hooks)
     - [ ] 3.1.6 Process Primitives → [§3.1.6](#316-process-primitives)
-    - [ ] 3.1.7 Test Programs → [§3.1.7](#317-test-programs)
-  - [ ] 3.2 Lowering Pipeline → [§3.2](#32-lowering-pipeline)
+    - [x] 3.1.7 Test Programs → [§3.1.7](#317-test-programs) *(46 codegen tests)*
+  - [ ] 3.2 Lowering Pipeline → [§3.2](#32-lowering-pipeline) *(core complete - EcoToLLVM)*
   - [ ] 3.3 GC Stack Root Tracing → [§3.3](#33-gc-stack-root-tracing)
   - [ ] 3.4 Multi-target Support → [§3.4](#34-multi-target-support)
 
@@ -612,7 +612,7 @@ The compilation pipeline uses MLIR for high-level optimization and LLVM for code
 
 ### 3.1 ECO MLIR Dialect
 
-**Status**: In Progress
+**Status**: Substantially Complete
 
 Design and implement a custom MLIR dialect called "eco" for Elm compilation.
 
@@ -620,10 +620,12 @@ Design and implement a custom MLIR dialect called "eco" for Elm compilation.
 
 **Deliverables**:
 - [x] `ECODialect.cpp/hpp`: Dialect definition
-- [x] Operation definitions (skeletal)
-- [ ] Type system implementation
-- [ ] MLIR dialect documentation
-- [ ] Test programs demonstrating dialect usage
+- [x] Operation definitions (59 ops in Ops.td, 53 lowered to LLVM)
+- [x] LLVM lowering pass (EcoToLLVM.cpp - 57 patterns)
+- [x] JIT execution engine (EcoRunner)
+- [x] Test programs (46 codegen tests)
+- [ ] Type system implementation (eco.value used as opaque pointer)
+- [ ] Process primitives (§3.1.6)
 
 #### 3.1.1 Research & Reference Implementation
 
@@ -660,29 +662,68 @@ Create the core dialect infrastructure.
 
 #### 3.1.3 Operations
 
-**Status**: In Progress
+**Status**: Complete
 
 Define custom operations representing Elm semantics.
 
-**Current Implementation** *(runtime/src/codegen/Ops.td - ~30 ops defined)*:
-- Control flow: `eco.func`, `eco.let`, `eco.switch`, `eco.ret`, `eco.joinpoint`, `eco.jump`, `eco.crash`, `eco.expect`, `eco.dbg`
-- Values/ADTs: `eco.string_literal`, `eco.struct`, `eco.struct_extract`, `eco.tag_construct`, `eco.tag_get_id`, `eco.tag_extract`, `eco.list_literal`, `eco.empty_list`, `eco.erased.pack`, `eco.erased.unpack`
-- Calls: `eco.call`, `eco.call_indirect`, `eco.call_foreign`, `eco.call_lowlevel`, `eco.call_ho`
-- Reference counting (Perceus-style): `eco.incref`, `eco.decref`, `eco.decref_shallow`, `eco.free`, `eco.reset`, `eco.reset_ref`
+**Current Implementation** *(runtime/src/codegen/Ops.td - 59 ops defined, 53 lowered to LLVM)*:
+
+| Category | Operations | Status |
+|----------|------------|--------|
+| **Control Flow** | `case`, `return`, `joinpoint`, `jump`, `crash`, `expect`, `dbg` | ✅ Lowered + Tested |
+| **ADT** | `construct`, `project` | ✅ Lowered + Tested |
+| **Strings** | `string_literal` | ✅ Lowered + Tested |
+| **Calls/Closures** | `call`, `papCreate`, `papExtend` | ✅ Lowered + Tested |
+| **Allocation** | `allocate`, `allocate_ctor`, `allocate_string`, `allocate_closure` | ✅ Lowered + Tested |
+| **GC** | `safepoint` | ✅ Lowered + Tested |
+| **Globals** | `global`, `load_global`, `store_global` | ✅ Lowered + Tested |
+| **Boxing** | `box`, `unbox`, `constant` | ✅ Lowered + Tested |
+| **Int Arithmetic** | `int.add`, `int.sub`, `int.mul`, `int.div`, `int.modby`, `int.remainderby`, `int.negate`, `int.abs`, `int.pow` | ✅ Lowered + Tested |
+| **Float Arithmetic** | `float.add`, `float.sub`, `float.mul`, `float.div`, `float.negate`, `float.abs`, `float.pow`, `float.sqrt` | ✅ Lowered + Tested |
+| **Conversions** | `int.toFloat`, `float.round`, `float.floor`, `float.ceiling`, `float.truncate` | ✅ Lowered + Tested |
+| **Comparisons** | `int.cmp`, `float.cmp`, `int.min`, `int.max`, `float.min`, `float.max` | ✅ Lowered + Tested |
+| **Bitwise** | `int.and`, `int.or`, `int.xor`, `int.complement`, `int.shl`, `int.shr`, `int.shru` | ✅ Lowered + Tested |
+| **RC Placeholders** | `incref`, `decref`, `decref_shallow`, `free`, `reset`, `reset_ref` | ⏸️ Intentionally not lowered (for future Perceus) |
+
+**Test Coverage** *(46 codegen tests in test/codegen/)*:
+- `arithmetic_*.mlir` - Integer, float, comparison, and bitwise operations
+- `box_*.mlir`, `unbox_*.mlir` - Boxing/unboxing roundtrips
+- `constant*.mlir` - Embedded constants (Nil, True, False, Unit, etc.)
+- `construct_*.mlir` - ADT construction (tuples, lists, custom types)
+- `project_fields.mlir` - Field projection
+- `string_literal_*.mlir` - String literals including Unicode
+- `call_*.mlir`, `pap_*.mlir`, `closure_*.mlir` - Calls and closures
+- `case_*.mlir` - Pattern matching
+- `joinpoint_loop.mlir` - Joinpoints and loops
+- `global_*.mlir` - Global variables and GC root registration
+- `crash.mlir`, `expect_*.mlir` - Error handling
+- `dbg_all_values.mlir` - Debug output
+- `allocate_*.mlir` - Low-level allocation
+- `integration_map.mlir`, `map_closure.mlir` - Integration tests
 
 **Tasks**:
 - [x] Function definition and application operations
-- [x] Pattern matching operations (switch, joinpoint/jump)
-- [x] Data constructor operations (tag_construct, tag_get_id, tag_extract)
-- [x] Record operations (struct, struct_extract)
-- [x] Let bindings and variable references
-- [ ] Closure creation and invocation (not yet defined)
-- [ ] Add parser/printer/builder/verification for all ops
+- [x] Pattern matching operations (case, joinpoint/jump)
+- [x] Data constructor operations (construct, project)
+- [x] String operations (string_literal)
+- [x] Closure creation and invocation (papCreate, papExtend, indirect call)
+- [x] Allocation operations (allocate, allocate_ctor, allocate_string, allocate_closure)
+- [x] Global variable operations (global, load_global, store_global)
+- [x] Type conversion operations (box, unbox, constant)
+- [x] Integer arithmetic with Elm semantics (div-by-zero → 0, floored modulo)
+- [x] Float arithmetic (IEEE 754)
+- [x] Comparison operations
+- [x] Bitwise operations
+- [x] Add parser/printer/builder/verification for all ops
+- [x] LLVM lowering patterns for all active ops
+- [x] Comprehensive test suite
 
 **Deliverables**:
-- [x] Operation definitions in TableGen *(Ops.td)*
+- [x] Operation definitions in TableGen *(Ops.td - 59 ops)*
 - [x] Operation implementation files *(EcoOps.cpp/h)*
-- [ ] Complete operation semantics and verification
+- [x] LLVM lowering pass *(Passes/EcoToLLVM.cpp - 57 lowering patterns)*
+- [x] Complete operation semantics and verification
+- [x] Test suite *(test/codegen/ - 46 tests)*
 
 #### 3.1.4 Type System
 
@@ -703,24 +744,28 @@ Implement MLIR types matching Elm's type system.
 
 #### 3.1.5 GC Integration Hooks
 
-**Status**: In Progress
+**Status**: Complete
 
 Define operations for garbage collection integration.
 
 **Current Implementation**:
-- Reference counting ops defined: `eco.incref`, `eco.decref`, `eco.decref_shallow`, `eco.free`, `eco.reset`, `eco.reset_ref`
+- Allocation ops: `eco.allocate`, `eco.allocate_ctor`, `eco.allocate_string`, `eco.allocate_closure` - all lowered to runtime calls
+- GC safepoint: `eco.safepoint` - lowered (currently no-op, ready for stack map integration)
+- Global root registration: `eco.global` lowering generates `__eco_init_globals` constructor that calls `eco_gc_add_root` for each global
+- Reference counting placeholders: `eco.incref`, `eco.decref`, etc. - defined but not lowered (for future Perceus)
 
 **Tasks**:
-- [ ] Allocation operations (nursery, old gen)
-- [ ] GC safepoint operations
-- [ ] Root registration/deregistration operations
-- [ ] Write barrier operations (if needed for future concurrent GC)
-- [x] Reference counting operations (Perceus-style reuse)
+- [x] Allocation operations (nursery via runtime allocator)
+- [x] GC safepoint operations (placeholder for stack maps)
+- [x] Root registration operations (global root auto-registration)
+- [ ] Write barrier operations (not needed - Elm's immutability guarantees no old→young pointers)
+- [x] Reference counting operations (Perceus-style reuse) - placeholder definitions
 
 **Deliverables**:
-- [x] Reference counting operation definitions *(in Ops.td)*
-- [ ] Allocation operation definitions
-- [ ] Documentation on GC integration points
+- [x] Reference counting operation definitions *(in Ops.td - placeholders)*
+- [x] Allocation operation definitions and lowerings *(EcoToLLVM.cpp)*
+- [x] Global root registration code generation
+- [x] Documentation on GC integration points *(design_docs/eco-lowering.md)*
 
 #### 3.1.6 Process Primitives
 
@@ -739,46 +784,62 @@ Define operations for Elm process and task handling.
 
 #### 3.1.7 Test Programs
 
-**Status**: Not Started
+**Status**: Complete
 
 Create small test programs to validate the dialect.
 
+**Current Implementation**:
+- 46 `.mlir` test files in `test/codegen/` covering all implemented operations
+- Tests use `// RUN:` directives and `// CHECK:` patterns for validation
+- In-process test execution via EcoRunner (JIT compilation)
+- Subprocess execution for crash tests and IR dump tests
+- Test discovery and execution integrated into main test binary
+
 **Tasks**:
-- [ ] Write small programs directly in ECO MLIR dialect
-- [ ] Compile through MLIR pipeline to LLVM IR
-- [ ] Link with ECO runtime and execute
-- [ ] Validate correctness of generated code
-- [ ] Create test suite covering all operations and types
+- [x] Write small programs directly in ECO MLIR dialect
+- [x] Compile through MLIR pipeline to LLVM IR
+- [x] Link with ECO runtime and execute (via JIT)
+- [x] Validate correctness of generated code (CHECK patterns)
+- [x] Create test suite covering all operations and types
 
 **Deliverables**:
-- [ ] Suite of ECO MLIR test programs
-- [ ] Test harness for dialect validation
-- [ ] Documentation of test coverage
+- [x] Suite of ECO MLIR test programs *(test/codegen/*.mlir - 46 tests)*
+- [x] Test harness for dialect validation *(test/codegen/CodegenTest.hpp)*
+- [x] In-process execution engine *(EcoRunner)*
+- [x] Documentation of test coverage *(see §3.1.3)*
 
 ### 3.2 Lowering Pipeline
 
-**Status**: Not Started
+**Status**: In Progress (Core Complete)
 
 Implement a lowering pipeline that transforms eco dialect to LLVM IR.
 
 **Pipeline Stages**:
-1. **High-level eco**: Direct representation of Elm semantics
-2. **Lowered eco**: Explicit memory management, GC calls
-3. **LLVM IR**: Target-independent intermediate representation
-4. **Native code**: x86, ARM, WebAssembly, etc.
+1. **High-level eco**: Direct representation of Elm semantics ✅
+2. **Lowered eco → LLVM**: EcoToLLVM pass converts eco ops to LLVM dialect ✅
+3. **LLVM IR**: Target-independent intermediate representation ✅
+4. **JIT Execution**: MLIR ExecutionEngine for in-process execution ✅
+5. **Native code**: AOT compilation to x86 (via ecoc -emit=llvm) ✅
+
+**Current Implementation** *(runtime/src/codegen/)*:
+- `EcoToLLVM.cpp`: 57 lowering patterns converting eco ops to LLVM dialect
+- `ecoc.cpp`: Driver supporting `-emit=jit`, `-emit=llvm`, `-emit=mlir-llvm`, `-emit=mlir`
+- `EcoRunner.cpp/hpp`: In-process JIT execution engine for tests
+- Pass pipeline: eco → (RCElimination) → EcoToLLVM → LLVM dialect → LLVM IR → JIT/native
 
 **Transformations**:
-- [ ] Pattern matching to control flow
-- [ ] Closure conversion
-- [ ] Heap allocation insertion
-- [ ] GC safepoint insertion
-- [ ] Tail call optimization
+- [x] Pattern matching to control flow (eco.case → switch on tag)
+- [x] Closure conversion (papCreate/papExtend → runtime calls)
+- [x] Heap allocation insertion (construct → allocate + stores)
+- [x] GC safepoint insertion (eco.safepoint → placeholder for stack maps)
+- [ ] Tail call optimization (musttail attribute defined, lowering pending)
 
 **Deliverables**:
-- [ ] Lowering passes in C++
-- [ ] Pass pipeline configuration
-- [ ] Optimization passes
-- [ ] Testing framework for transformations
+- [x] Lowering passes in C++ *(Passes/EcoToLLVM.cpp, Passes/RCElimination.cpp)*
+- [x] Pass pipeline configuration *(ecoc.cpp)*
+- [x] JIT execution support *(EcoRunner.cpp)*
+- [x] Testing framework for transformations *(test/codegen/)*
+- [ ] Advanced optimizations (inlining, dead code elimination)
 
 ### 3.3 GC Stack Root Tracing
 
@@ -1392,8 +1453,8 @@ Runtime Foundation (§1)
 
 ## Project Status
 
-**Current Phase**: Compiler Backend Complete, MLIR Code Generation Ready
-**Last Updated**: 2025-12-10
+**Current Phase**: ECO MLIR Dialect & Lowering Substantially Complete
+**Last Updated**: 2025-12-11
 
 **Completed**:
 - Heap model design (§1.1)
@@ -1409,39 +1470,36 @@ Runtime Foundation (§1)
 - Lean/lz MLIR dialect research (§3.1.1) - see design_docs/lean_mlir_research.md
 - Guida I/O audit (§2.1.1) - see design_docs/guida-io-operations.md and guida-io-ops.csv
 - ECO MLIR dialect definition (§3.1.2) - core infrastructure in runtime/src/codegen/
-- ECO MLIR operations skeleton (§3.1.3) - ~30 ops defined in Ops.td
+- **ECO MLIR operations complete (§3.1.3)** - 59 ops defined, 53 lowered to LLVM, 46 tests
+- **ECO MLIR lowering pipeline (§3.2)** - EcoToLLVM pass with 57 lowering patterns
+- **GC integration hooks (§3.1.5)** - allocation, safepoint, global root registration
+- **Test programs (§3.1.7)** - 46 codegen tests with JIT execution via EcoRunner
 - Bytes over Ports support (§2.1.0) - enables binary data through Elm ports
 - Pluggable backend architecture (§4.1.1) - `CodeGen`, `TypedCodeGen`, `MonoCodeGen` interfaces
 - Global AST analysis & monomorphization (§4.1.2) - TypedOptimized AST and Mono pass
 - Dual backend implementation (§4.1.3) - JS and MLIR backends with extension-based selection
 
 **Recent Changes**:
-- Completed compiler backend refactoring (§4.1)
-  - Implemented pluggable backend architecture with three backend types
-  - Created TypedOptimized AST (`TOpt.LocalGraph`, `TOpt.GlobalGraph`) preserving full type info
-  - Implemented monomorphization pass (`Compiler/Optimize/Mono.elm`)
-  - Added MLIR code generation backends (typed and monomorphized variants)
-  - Fixed root module typed compilation for MLIR output
-  - Backend selection via output file extension (`.js`, `.html`, `.mlir`)
-- Modified `Builder/Build.elm` to support typed optimization in root modules
-  - Extended `RootResult` and `Root` types to include typed graphs
-  - Added `needsTypedOpt` flag to compilation environment
-  - `compileOutside` now uses `Compile.compileTyped` when targeting MLIR
-- Modified `Builder/Generate.elm` to include root typed graphs in monomorphized output
-  - Added `addRootTypedGraph` helper function
-  - Fixed `monoDev` to properly collect typed graphs from all roots
-- MLIR compilation now works for example programs (Hello.elm, Buttons.elm, Clock.elm, Numbers.elm)
+- **Completed full ECO MLIR dialect implementation**:
+  - 59 operations defined in Ops.td covering: control flow, ADT, strings, closures, allocation, GC, globals, boxing, arithmetic, comparisons, bitwise
+  - 57 lowering patterns in EcoToLLVM.cpp (all active ops fully lowered)
+  - All arithmetic ops implement Elm semantics (div-by-zero → 0, floored modulo, etc.)
+  - EcoRunner: In-process JIT execution engine for fast test execution
+  - 46 comprehensive codegen tests covering all operation categories
+  - GC stats now properly accumulate across all tests
+- Compiler backend complete (§4.1) with pluggable architecture
+- MLIR compilation works for example programs (Hello.elm, Buttons.elm, Clock.elm, Numbers.elm)
 
 **Next Steps**:
-- Complete ECO MLIR operations (§3.1.3) - add closure ops, parser/printer/verification
-- ECO MLIR type system (§3.1.4)
-- Connect MLIR output to LLVM lowering pipeline (§3.2)
-- LLVM stack map implementation (§1.2.3)
+- ECO MLIR type system (§3.1.4) - currently using eco.value as opaque pointer
+- Process primitives (§3.1.6) - for Elm concurrency support
+- LLVM stack map implementation (§1.2.3) - precise GC root tracing
+- Connect Guida MLIR output to ECO dialect (§4.2) - wire up compiler backend
 - Rationalize Guida I/O design (§2.1.1)
 - Elm kernel JavaScript audit (§2.2) - catalog all kernel functions for C++ porting
 - Elm kernel C++ implementation (§2.3) - independent workstream for native runtime
 
 **Active Workstreams**:
-1. MLIR lowering pipeline (§3.2) - connect Guida MLIR output to LLVM
+1. Wire Guida MLIR output to ECO dialect (§4.2) - code generation from Elm AST
 2. Guida I/O refactoring (§2.1) - kernel package design
 3. Elm kernel C++ porting (§2.2, §2.3) - can run in parallel with above

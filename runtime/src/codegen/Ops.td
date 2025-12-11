@@ -114,8 +114,7 @@ class Eco_Op<string mnemonic, list<Trait> traits = []>
 //===----------------------------------------------------------------------===//
 
 def Eco_CaseOp : Eco_Op<"case", [
-    RecursiveMemoryEffects,
-    SingleBlockImplicitTerminator<"ReturnOp">
+    RecursiveMemoryEffects
 ]> {
   let summary = "Pattern match on ADT constructor tag";
   let description = [{
@@ -574,21 +573,21 @@ def Eco_AllocateClosureOp : Eco_Op<"allocate_closure"> {
   let summary = "Allocate closure object";
   let description = [{
     Allocate a closure object for the specified function with space for
-    captured values. The closure's evaluator function pointer and capture
-    slots must be initialized separately.
+    values. The `arity` specifies the total number of value slots (max_values),
+    which should equal num_captured + num_remaining_args.
 
     Example:
     ```mlir
     %closure = eco.allocate_closure {
       function = @my_func,
-      num_captures = 3 : i32
+      arity = 3 : i64
     } : !eco.value
     ```
   }];
 
   let arguments = (ins
     FlatSymbolRefAttr:$function,
-    I64Attr:$num_captures
+    I64Attr:$arity
   );
   let results = (outs Eco_Value:$result);
 

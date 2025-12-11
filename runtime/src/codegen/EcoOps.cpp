@@ -26,6 +26,30 @@ LogicalResult CaseOp::verify() {
            << ") must match number of alternative regions ("
            << getAlternatives().size() << ")";
   }
+
+  // Verify that each region has exactly one block with a valid terminator.
+  // Valid terminators are: eco.return or eco.jump
+  for (auto &region : getAlternatives()) {
+    if (region.empty()) {
+      return emitOpError("alternative region must not be empty");
+    }
+    if (!region.hasOneBlock()) {
+      return emitOpError("alternative region must have exactly one block");
+    }
+    Block &block = region.front();
+    if (block.empty()) {
+      return emitOpError("alternative block must not be empty");
+    }
+    Operation *terminator = block.getTerminator();
+    if (!terminator) {
+      return emitOpError("alternative block must have a terminator");
+    }
+    if (!isa<ReturnOp, JumpOp>(terminator)) {
+      return emitOpError("alternative block must terminate with eco.return or eco.jump, got ")
+             << terminator->getName();
+    }
+  }
+
   return success();
 }
 
