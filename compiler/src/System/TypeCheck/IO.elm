@@ -4,8 +4,9 @@ module System.TypeCheck.IO exposing
     , foldMDict, indexedForA, mapM, traverseIndexed, traverseList, traverseMaybe, traverseTuple
     , Step(..), loop
     , Point(..), PointInfo(..)
-    , Descriptor(..), DescriptorProps, makeDescriptor, Content(..), SuperType(..), Mark(..), Variable, FlatType(..)
+    , Descriptor(..), Content(..), SuperType(..), Mark(..), Variable, FlatType(..)
     , Canonical(..)
+    , DescriptorProps, makeDescriptor
     )
 
 {-| Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>

@@ -706,11 +706,13 @@ chompExprEnd syntaxVersion start (State { ops, expr, args, end }) comments =
         (case ops of
             [] ->
                 ( ( comments, toCall expr args )
-                , end )
+                , end
+                )
 
             _ ->
                 ( ( comments, A.at start end (Src.Binops (List.reverse ops) (toCall expr args)) )
-                , end )
+                , end
+                )
         )
 
 
@@ -979,7 +981,8 @@ chompCaseBranches syntaxVersion start preExprComments postExprComments expr comm
 buildCaseExpr : A.Position -> Src.FComments -> Src.FComments -> Src.Expr -> ( Src.C1 (List ( Src.C2 Src.Pattern, Src.C1 Src.Expr )), A.Position ) -> ( Src.C1 Src.Expr, A.Position )
 buildCaseExpr start preExprComments postExprComments expr ( ( branchesTrailingComments, branches ), end ) =
     ( ( branchesTrailingComments, A.at start end (Src.Case ( ( preExprComments, postExprComments ), expr ) branches) )
-    , end )
+    , end
+    )
 
 
 chompBranch : SyntaxVersion -> Src.FComments -> Space.Parser E.Case (Src.C1 ( Src.C2 Src.Pattern, Src.C1 Src.Expr ))
@@ -1009,7 +1012,8 @@ buildBranchResult prePatternComments postPatternComments pattern preBranchExprCo
         , ( preBranchExprComments, branchExpr )
         )
       )
-    , end )
+    , end
+    )
 
 
 chompCaseEnd : SyntaxVersion -> Src.FComments -> List ( Src.C2 Src.Pattern, Src.C1 Src.Expr ) -> A.Position -> Space.Parser E.Case (Src.C1 (List ( Src.C2 Src.Pattern, Src.C1 Src.Expr )))
@@ -1161,7 +1165,8 @@ chompDefArgsAndBody syntaxVersion start name tipe trailingComments revArgs =
                         |> P.map
                             (\( ( comments, body ), end ) ->
                                 ( ( comments, A.at start end (Src.Define name (List.reverse revArgs) ( trailingComments ++ preExpressionComments, body ) tipe) )
-                                , end )
+                                , end
+                                )
                             )
                 )
         ]
@@ -1237,4 +1242,5 @@ chompDestructExpr syntaxVersion start pattern preEqualSignComments preExpression
 buildDestructDef : A.Position -> Src.Pattern -> Src.FComments -> Src.FComments -> ( Src.C1 Src.Expr, A.Position ) -> ( Src.C1 (A.Located Src.Def), A.Position )
 buildDestructDef start pattern preEqualSignComments preExpressionComments ( ( comments, expr ), end ) =
     ( ( comments, A.at start end (Src.Destruct pattern ( preEqualSignComments ++ preExpressionComments, expr )) )
-    , end )
+    , end
+    )

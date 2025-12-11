@@ -358,7 +358,8 @@ exprHelp syntaxVersion start revPatterns ( ( prePatternComments, pattern ), end 
                 )
         ]
         ( ( prePatternComments, List.foldl cons pattern revPatterns )
-        , end )
+        , end
+        )
 
 
 cons : Src.C2 Src.Pattern -> Src.Pattern -> Src.Pattern
@@ -414,6 +415,7 @@ exprTermHelp syntaxVersion region upper start revArgs =
                                             Var.Qualified home name ->
                                                 Src.PCtorQual region home name (List.reverse revArgs)
                                   )
-                                , end )
+                                , end
+                                )
                         )
             )

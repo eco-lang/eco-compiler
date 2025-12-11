@@ -221,7 +221,8 @@ typeDecl maybeDocs start =
                                                                 let
                                                                     alias_ : A.Located Src.Alias
                                                                     alias_ =
-                                                                        A.at start end
+                                                                        A.at start
+                                                                            end
                                                                             (Src.Alias
                                                                                 { comments = postTypeComments
                                                                                 , name = ( ( preComments, postComments ), name )
