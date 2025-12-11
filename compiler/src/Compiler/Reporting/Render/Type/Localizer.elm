@@ -9,6 +9,8 @@ module Compiler.Reporting.Render.Type.Localizer exposing
     , toDoc
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.AST.Source as Src
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
@@ -18,9 +20,7 @@ import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 
 
 
@@ -92,10 +92,10 @@ fromNames names =
 
 
 fromModule : Src.Module -> Localizer
-fromModule ((Src.Module _ _ _ _ imports _ _ _ _ _) as modul) =
+fromModule ((Src.Module srcData) as modul) =
     Localizer <|
         Dict.fromList identity <|
-            (( Src.getName modul, { alias = Nothing, exposing_ = All } ) :: List.map toPair imports)
+            (( Src.getName modul, { alias = Nothing, exposing_ = All } ) :: List.map toPair srcData.imports)
 
 
 toPair : Src.Import -> ( Name, Import )

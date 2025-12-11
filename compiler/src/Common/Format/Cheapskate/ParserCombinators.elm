@@ -4,9 +4,9 @@ module Common.Format.Cheapskate.ParserCombinators exposing
     , ParserState(..)
     , Position(..)
     , advance
+    , andThen
     , anyChar
     , apply
-    , andThen
     , char
     , charClass
     , column
@@ -16,7 +16,6 @@ module Common.Format.Cheapskate.ParserCombinators exposing
     , endOfInput
     , fail
     , failure
-    , map
     , getPosition
     , guard
     , inClass
@@ -27,6 +26,7 @@ module Common.Format.Cheapskate.ParserCombinators exposing
     , many
     , many1
     , manyTill
+    , map
     , mzero
     , notAfter
     , notFollowedBy

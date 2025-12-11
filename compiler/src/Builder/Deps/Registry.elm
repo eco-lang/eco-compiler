@@ -17,6 +17,8 @@ import Builder.File as File
 import Builder.Http as Http
 import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Compiler.Json.Decode as D
@@ -24,9 +26,7 @@ import Compiler.Parse.Primitives as P
 import Data.Map as Dict exposing (Dict)
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Task.Extra as Task
 
 

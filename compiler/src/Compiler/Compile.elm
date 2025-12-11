@@ -1,6 +1,7 @@
 module Compiler.Compile exposing
     ( Artifacts(..)
     , TypedArtifacts(..)
+    , TypedArtifactsData
     , compile
     , compileTyped
     )
@@ -38,8 +39,16 @@ type Artifacts
 
 {-| Artifacts that include typed optimization output for MLIR backend.
 -}
+type alias TypedArtifactsData =
+    { canonical : Can.Module
+    , annotations : Dict String Name Can.Annotation
+    , objects : Opt.LocalGraph
+    , typedObjects : TOpt.LocalGraph
+    }
+
+
 type TypedArtifacts
-    = TypedArtifacts Can.Module (Dict String Name Can.Annotation) Opt.LocalGraph TOpt.LocalGraph
+    = TypedArtifacts TypedArtifactsData
 
 
 compile : Pkg.Name -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never (Result E.Error Artifacts)
@@ -82,7 +91,7 @@ compileTyped pkg ifaces modul =
                                         |> Result.andThen
                                             (\objects ->
                                                 typedOptimize modul annotations canonical
-                                                    |> Result.map (\typedObjects -> TypedArtifacts canonical annotations objects typedObjects)
+                                                    |> Result.map (\typedObjects -> TypedArtifacts { canonical = canonical, annotations = annotations, objects = objects, typedObjects = typedObjects })
                                             )
                                 )
 

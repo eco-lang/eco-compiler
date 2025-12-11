@@ -482,7 +482,7 @@ generateMainEntry ctx mainSpecId =
         region =
             mkRegion [] [ callOp ] returnOp
     in
-    funcFunc ctx "main" (-1) [] ecoValue region
+    funcFunc ctx "main" -1 [] ecoValue region
 
 
 

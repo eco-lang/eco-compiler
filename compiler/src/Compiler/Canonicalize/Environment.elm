@@ -1,5 +1,6 @@
 module Compiler.Canonicalize.Environment exposing
     ( Binop(..)
+    , BinopData
     , Ctor(..)
     , EResult
     , Env
@@ -129,8 +130,18 @@ type Ctor
 -- BINOPS
 
 
+type alias BinopData =
+    { op : Name.Name
+    , home : Canonical
+    , name : Name.Name
+    , annotation : Can.Annotation
+    , associativity : Binop.Associativity
+    , precedence : Binop.Precedence
+    }
+
+
 type Binop
-    = Binop Name.Name Canonical Name.Name Can.Annotation Binop.Associativity Binop.Precedence
+    = Binop BinopData
 
 
 

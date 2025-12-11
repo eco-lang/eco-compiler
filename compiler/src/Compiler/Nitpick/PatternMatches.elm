@@ -15,6 +15,8 @@ module Compiler.Nitpick.PatternMatches exposing
 
 -}
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
@@ -25,9 +27,7 @@ import Data.Map as Dict exposing (Dict)
 import List.Extra as List
 import Prelude
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
@@ -128,9 +128,9 @@ unit =
     let
         ctor : Can.Ctor
         ctor =
-            Can.Ctor unitName Index.first 0 []
+            Can.Ctor { name = unitName, index = Index.first, numArgs = 0, args = [] }
     in
-    Can.Union [] [ ctor ] 1 Can.Normal
+    Can.Union { vars = [], alts = [ ctor ], numAlts = 1, opts = Can.Normal }
 
 
 pair : Can.Union
@@ -138,9 +138,9 @@ pair =
     let
         ctor : Can.Ctor
         ctor =
-            Can.Ctor pairName Index.first 2 [ Can.TVar "a", Can.TVar "b" ]
+            Can.Ctor { name = pairName, index = Index.first, numArgs = 2, args = [ Can.TVar "a", Can.TVar "b" ] }
     in
-    Can.Union [ "a", "b" ] [ ctor ] 1 Can.Normal
+    Can.Union { vars = [ "a", "b" ], alts = [ ctor ], numAlts = 1, opts = Can.Normal }
 
 
 triple : Can.Union
@@ -148,9 +148,9 @@ triple =
     let
         ctor : Can.Ctor
         ctor =
-            Can.Ctor tripleName Index.first 3 [ Can.TVar "a", Can.TVar "b", Can.TVar "c" ]
+            Can.Ctor { name = tripleName, index = Index.first, numArgs = 3, args = [ Can.TVar "a", Can.TVar "b", Can.TVar "c" ] }
     in
-    Can.Union [ "a", "b", "c" ] [ ctor ] 1 Can.Normal
+    Can.Union { vars = [ "a", "b", "c" ], alts = [ ctor ], numAlts = 1, opts = Can.Normal }
 
 
 nTuple : Can.Union
@@ -158,9 +158,9 @@ nTuple =
     let
         ctor : Can.Ctor
         ctor =
-            Can.Ctor nTupleName Index.first 3 [ Can.TVar "a", Can.TVar "b", Can.TVar "cs" ]
+            Can.Ctor { name = nTupleName, index = Index.first, numArgs = 3, args = [ Can.TVar "a", Can.TVar "b", Can.TVar "cs" ] }
     in
-    Can.Union [ "a", "b", "cs" ] [ ctor ] 1 Can.Normal
+    Can.Union { vars = [ "a", "b", "cs" ], alts = [ ctor ], numAlts = 1, opts = Can.Normal }
 
 
 list : Can.Union
@@ -168,18 +168,21 @@ list =
     let
         nilCtor : Can.Ctor
         nilCtor =
-            Can.Ctor nilName Index.first 0 []
+            Can.Ctor { name = nilName, index = Index.first, numArgs = 0, args = [] }
 
         consCtor : Can.Ctor
         consCtor =
-            Can.Ctor consName
-                Index.second
-                2
-                [ Can.TVar "a"
-                , Can.TType ModuleName.list Name.list [ Can.TVar "a" ]
-                ]
+            Can.Ctor
+                { name = consName
+                , index = Index.second
+                , numArgs = 2
+                , args =
+                    [ Can.TVar "a"
+                    , Can.TType ModuleName.list Name.list [ Can.TVar "a" ]
+                    ]
+                }
     in
-    Can.Union [ "a" ] [ nilCtor, consCtor ] 2 Can.Normal
+    Can.Union { vars = [ "a" ], alts = [ nilCtor, consCtor ], numAlts = 2, opts = Can.Normal }
 
 
 unitName : Name.Name
@@ -232,8 +235,8 @@ type Context
 
 
 check : Can.Module -> Result (NE.Nonempty Error) ()
-check (Can.Module _ _ _ decls _ _ _ _) =
-    case checkDecls decls [] identity of
+check (Can.Module canData) =
+    case checkDecls canData.decls [] identity of
         [] ->
             Ok ()
 
@@ -472,34 +475,34 @@ isExhaustive matrix n =
 
                 else
                     let
-                        ((Can.Union _ altList numAlts _) as alts) =
+                        ((Can.Union altsData) as alts) =
                             Tuple.second (Utils.mapFindMin ctors)
                     in
-                    if numSeen < numAlts then
-                        List.filterMap (isMissing alts ctors) altList
+                    if numSeen < altsData.numAlts then
+                        List.filterMap (isMissing alts ctors) altsData.alts
                             |> List.map (::)
                             |> List.andMap (isExhaustive (List.filterMap specializeRowByAnything matrix) (n - 1))
 
                     else
                         let
                             isAltExhaustive : Can.Ctor -> List (List Pattern)
-                            isAltExhaustive (Can.Ctor name _ arity _) =
-                                List.map (recoverCtor alts name arity)
+                            isAltExhaustive (Can.Ctor c) =
+                                List.map (recoverCtor alts c.name c.numArgs)
                                     (isExhaustive
-                                        (List.filterMap (specializeRowByCtor name arity) matrix)
-                                        (arity + n - 1)
+                                        (List.filterMap (specializeRowByCtor c.name c.numArgs) matrix)
+                                        (c.numArgs + n - 1)
                                     )
                         in
-                        List.concatMap isAltExhaustive altList
+                        List.concatMap isAltExhaustive altsData.alts
 
 
 isMissing : Can.Union -> Dict String Name.Name a -> Can.Ctor -> Maybe Pattern
-isMissing union ctors (Can.Ctor name _ arity _) =
-    if Dict.member identity name ctors then
+isMissing union ctors (Can.Ctor c) =
+    if Dict.member identity c.name ctors then
         Nothing
 
     else
-        Just (Ctor union name (List.repeat arity Anything))
+        Just (Ctor union c.name (List.repeat c.numArgs Anything))
 
 
 recoverCtor : Can.Union -> Name.Name -> Int -> List Pattern -> List Pattern
@@ -584,10 +587,10 @@ isUseful matrix vector =
                                     -- that make them less general? If so, this actually is useful!
                                     let
                                         isUsefulAlt : Can.Ctor -> Bool
-                                        isUsefulAlt (Can.Ctor name _ arity _) =
+                                        isUsefulAlt (Can.Ctor c) =
                                             isUseful
-                                                (List.filterMap (specializeRowByCtor name arity) matrix)
-                                                (List.repeat arity Anything ++ patterns)
+                                                (List.filterMap (specializeRowByCtor c.name c.numArgs) matrix)
+                                                (List.repeat c.numArgs Anything ++ patterns)
                                     in
                                     List.any isUsefulAlt alts
 
@@ -693,11 +696,11 @@ isComplete matrix =
 
     else
         let
-            (Can.Union _ alts numAlts _) =
+            (Can.Union unionData) =
                 Tuple.second (Utils.mapFindMin ctors)
         in
-        if numSeen == numAlts then
-            Yes alts
+        if numSeen == unionData.numAlts then
+            Yes unionData.alts
 
         else
             No

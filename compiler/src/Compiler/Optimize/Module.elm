@@ -36,11 +36,11 @@ type alias Annotations =
 
 
 optimize : Annotations -> Can.Module -> MResult i (List W.Warning) Opt.LocalGraph
-optimize annotations (Can.Module home _ _ decls unions aliases _ effects) =
-    addDecls home annotations decls <|
-        addEffects home effects <|
-            addUnions home unions <|
-                addAliases home aliases <|
+optimize annotations (Can.Module canData) =
+    addDecls canData.name annotations canData.decls <|
+        addEffects canData.name canData.effects <|
+            addUnions canData.name canData.unions <|
+                addAliases canData.name canData.aliases <|
                     Opt.LocalGraph Nothing Dict.empty Dict.empty
 
 
@@ -58,26 +58,26 @@ addUnions home unions (Opt.LocalGraph main nodes fields) =
 
 
 addUnion : IO.Canonical -> Can.Union -> Nodes -> Nodes
-addUnion home (Can.Union _ ctors _ opts) nodes =
-    List.foldl (addCtorNode home opts) nodes ctors
+addUnion home (Can.Union unionData) nodes =
+    List.foldl (addCtorNode home unionData.opts) nodes unionData.alts
 
 
 addCtorNode : IO.Canonical -> Can.CtorOpts -> Can.Ctor -> Nodes -> Nodes
-addCtorNode home opts (Can.Ctor name index numArgs _) nodes =
+addCtorNode home opts (Can.Ctor c) nodes =
     let
         node : Opt.Node
         node =
             case opts of
                 Can.Normal ->
-                    Opt.Ctor index numArgs
+                    Opt.Ctor c.index c.numArgs
 
                 Can.Unbox ->
                     Opt.Box
 
                 Can.Enum ->
-                    Opt.Enum index
+                    Opt.Enum c.index
     in
-    Dict.insert Opt.toComparableGlobal (Opt.Global home name) node nodes
+    Dict.insert Opt.toComparableGlobal (Opt.Global home c.name) node nodes
 
 
 

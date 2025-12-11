@@ -105,7 +105,7 @@ isNormal (Src.Import ( _, A.At _ name ) maybeAlias _) =
 addImport : Dict String ModuleName.Raw I.Interface -> State -> Src.Import -> FResult i w State
 addImport ifaces state (Src.Import ( _, A.At _ name ) maybeAlias ( _, exposing_ )) =
     let
-        (I.Interface pkg defs unions aliases binops) =
+        (I.Interface iface) =
             Utils.find identity name ifaces
 
         prefix : Name
@@ -114,23 +114,23 @@ addImport ifaces state (Src.Import ( _, A.At _ name ) maybeAlias ( _, exposing_ 
 
         home : IO.Canonical
         home =
-            IO.Canonical pkg name
+            IO.Canonical iface.home name
 
         rawTypeInfo : Dict String Name ( Env.Type, Env.Exposed Env.Ctor )
         rawTypeInfo =
             Dict.union
-                (Dict.toList compare unions
+                (Dict.toList compare iface.unions
                     |> List.filterMap (\( k, a ) -> Maybe.map (Tuple.pair k) (unionToType home k a))
                     |> Dict.fromList identity
                 )
-                (Dict.toList compare aliases
+                (Dict.toList compare iface.aliases
                     |> List.filterMap (\( k, a ) -> Maybe.map (Tuple.pair k) (aliasToType home k a))
                     |> Dict.fromList identity
                 )
 
         vars : Dict String Name (Env.Info Can.Annotation)
         vars =
-            Dict.map (\_ -> Env.Specific home) defs
+            Dict.map (\_ -> Env.Specific home) iface.values
 
         types : Dict String Name (Env.Info Env.Type)
         types =
@@ -169,13 +169,13 @@ addImport ifaces state (Src.Import ( _, A.At _ name ) maybeAlias ( _, exposing_ 
 
                 bs2 : Env.Exposed Env.Binop
                 bs2 =
-                    addExposed state.binops (Dict.map (binopToBinop home) binops)
+                    addExposed state.binops (Dict.map (binopToBinop home) iface.binops)
             in
             ReportingResult.ok (State vs2 ts2 cs2 bs2 qvs2 qts2 qcs2)
 
         Src.Explicit (A.At _ exposedList) ->
             Utils.foldM
-                (addExposedValue home vars rawTypeInfo binops)
+                (addExposedValue home vars rawTypeInfo iface.binops)
                 (State state.vars state.types state.ctors state.binops qvs2 qts2 qcs2)
                 (List.map Src.c2Value exposedList)
 
@@ -200,14 +200,14 @@ unionToType home name union =
 
 
 unionToTypeHelp : IO.Canonical -> Name -> Can.Union -> ( Env.Type, Env.Exposed Env.Ctor )
-unionToTypeHelp home name ((Can.Union vars ctors _ _) as union) =
+unionToTypeHelp home name ((Can.Union unionData) as union) =
     let
         addCtor : Can.Ctor -> Dict String Name (Env.Info Env.Ctor) -> Dict String Name (Env.Info Env.Ctor)
-        addCtor (Can.Ctor ctor index _ args) dict =
-            Dict.insert identity ctor (Env.Specific home (Env.Ctor home name union index args)) dict
+        addCtor (Can.Ctor c) dict =
+            Dict.insert identity c.name (Env.Specific home (Env.Ctor home name union c.index c.args)) dict
     in
-    ( Env.Union (List.length vars) home
-    , List.foldl addCtor Dict.empty ctors
+    ( Env.Union (List.length unionData.vars) home
+    , List.foldl addCtor Dict.empty unionData.alts
     )
 
 
@@ -249,8 +249,8 @@ aliasToTypeHelp home name (Can.Alias vars tipe) =
 
 
 binopToBinop : IO.Canonical -> Name -> I.Binop -> Env.Info Env.Binop
-binopToBinop home op (I.Binop name annotation associativity precedence) =
-    Env.Specific home (Env.Binop op home name annotation associativity precedence)
+binopToBinop home op (I.Binop data) =
+    Env.Specific home (Env.Binop { op = op, home = home, name = data.name, annotation = data.annotation, associativity = data.associativity, precedence = data.precedence })
 
 
 

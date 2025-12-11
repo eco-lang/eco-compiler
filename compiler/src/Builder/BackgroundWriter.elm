@@ -5,11 +5,11 @@ module Builder.BackgroundWriter exposing
     )
 
 import Builder.File as File
+import Bytes.Decode
+import Bytes.Encode
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Main as Utils
 import Utils.Task.Extra as Task
 

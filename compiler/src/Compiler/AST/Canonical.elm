@@ -5,6 +5,7 @@ module Compiler.AST.Canonical exposing
     , Binop(..)
     , CaseBranch(..)
     , Ctor(..)
+    , CtorData
     , CtorOpts(..)
     , Decls(..)
     , Def(..)
@@ -24,6 +25,7 @@ module Compiler.AST.Canonical exposing
     , Port(..)
     , Type(..)
     , Union(..)
+    , UnionData
     , aliasDecoder
     , aliasEncoder
     , annotationDecoder
@@ -58,6 +60,8 @@ module Compiler.AST.Canonical exposing
    So it is clear why the data is kept around.
 -}
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.AST.Source as Src
 import Compiler.AST.Utils.Binop as Binop
 import Compiler.AST.Utils.Shader as Shader
@@ -68,9 +72,7 @@ import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 
 
 
@@ -240,8 +242,20 @@ fieldsToList fields =
 -- MODULES
 
 
+type alias ModuleData =
+    { name : IO.Canonical
+    , exports : Exports
+    , docs : Src.Docs
+    , decls : Decls
+    , unions : Dict String Name Union
+    , aliases : Dict String Name Alias
+    , binops : Dict String Name Binop
+    , effects : Effects
+    }
+
+
 type Module
-    = Module IO.Canonical Exports Src.Docs Decls (Dict String Name Union) (Dict String Name Alias) (Dict String Name Binop) Effects
+    = Module ModuleData
 
 
 type Alias
@@ -252,14 +266,16 @@ type Binop
     = Binop_ Binop.Associativity Binop.Precedence Name
 
 
+type alias UnionData =
+    { vars : List Name
+    , alts : List Ctor
+    , numAlts : Int -- CACHE for exhaustiveness checking
+    , opts : CtorOpts -- CACHE which optimizations are available
+    }
+
+
 type Union
-    = Union
-        (List Name)
-        (List Ctor)
-        -- CACHE numAlts for exhaustiveness checking
-        Int
-        -- CACHE which optimizations are available
-        CtorOpts
+    = Union UnionData
 
 
 type CtorOpts
@@ -268,8 +284,16 @@ type CtorOpts
     | Unbox
 
 
+type alias CtorData =
+    { name : Name
+    , index : Index.ZeroBased
+    , numArgs : Int -- CACHE length args
+    , args : List Type
+    }
+
+
 type Ctor
-    = Ctor Name Index.ZeroBased Int (List Type) -- CACHE length args
+    = Ctor CtorData
 
 
 
@@ -507,18 +531,18 @@ aliasTypeDecoder =
 
 
 unionEncoder : Union -> Bytes.Encode.Encoder
-unionEncoder (Union vars ctors numAlts opts) =
+unionEncoder (Union u) =
     Bytes.Encode.sequence
-        [ BE.list BE.string vars
-        , BE.list ctorEncoder ctors
-        , BE.int numAlts
-        , ctorOptsEncoder opts
+        [ BE.list BE.string u.vars
+        , BE.list ctorEncoder u.alts
+        , BE.int u.numAlts
+        , ctorOptsEncoder u.opts
         ]
 
 
 unionDecoder : Bytes.Decode.Decoder Union
 unionDecoder =
-    Bytes.Decode.map4 Union
+    Bytes.Decode.map4 (\vars_ alts_ numAlts_ opts_ -> Union { vars = vars_, alts = alts_, numAlts = numAlts_, opts = opts_ })
         (BD.list BD.string)
         (BD.list ctorDecoder)
         BD.int
@@ -526,18 +550,18 @@ unionDecoder =
 
 
 ctorEncoder : Ctor -> Bytes.Encode.Encoder
-ctorEncoder (Ctor ctor index numArgs args) =
+ctorEncoder (Ctor c) =
     Bytes.Encode.sequence
-        [ BE.string ctor
-        , Index.zeroBasedEncoder index
-        , BE.int numArgs
-        , BE.list typeEncoder args
+        [ BE.string c.name
+        , Index.zeroBasedEncoder c.index
+        , BE.int c.numArgs
+        , BE.list typeEncoder c.args
         ]
 
 
 ctorDecoder : Bytes.Decode.Decoder Ctor
 ctorDecoder =
-    Bytes.Decode.map4 Ctor
+    Bytes.Decode.map4 (\name_ index_ numArgs_ args_ -> Ctor { name = name_, index = index_, numArgs = numArgs_, args = args_ })
         BD.string
         Index.zeroBasedDecoder
         BD.int

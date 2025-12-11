@@ -22,15 +22,15 @@ module Compiler.Elm.Version exposing
     , versionEncoder
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.Json.Decode as D
 import Compiler.Json.Encode as E
 import Compiler.Parse.Primitives as P exposing (Col, Row)
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 
 
 
@@ -183,37 +183,37 @@ parser =
 numberParser : P.Parser ( Row, Col ) Int
 numberParser =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
-            if pos >= end then
-                P.Eerr row col Tuple.pair
+        \(P.State st) ->
+            if st.pos >= st.end then
+                P.Eerr st.row st.col Tuple.pair
 
             else
                 let
                     word : Char
                     word =
-                        P.unsafeIndex src pos
+                        P.unsafeIndex st.src st.pos
                 in
                 if word == '0' then
                     let
                         newState : P.State
                         newState =
-                            P.State src (pos + 1) end indent row (col + 1)
+                            P.State { st | pos = st.pos + 1, col = st.col + 1 }
                     in
                     P.Cok 0 newState
 
                 else if isDigit word then
                     let
                         ( total, newPos ) =
-                            chompWord16 src (pos + 1) end (Char.toCode word - 0x30)
+                            chompWord16 st.src (st.pos + 1) st.end (Char.toCode word - 0x30)
 
                         newState : P.State
                         newState =
-                            P.State src newPos end indent row (col + (newPos - pos))
+                            P.State { st | pos = newPos, col = st.col + (newPos - st.pos) }
                     in
                     P.Cok total newState
 
                 else
-                    P.Eerr row col Tuple.pair
+                    P.Eerr st.row st.col Tuple.pair
 
 
 chompWord16 : String -> Int -> Int -> Int -> ( Int, Int )

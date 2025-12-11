@@ -1,6 +1,7 @@
 module Builder.Deps.Diff exposing
     ( Changes(..)
     , ModuleChanges(..)
+    , ModuleChangesData
     , PackageChanges(..)
     , bump
     , diff
@@ -34,8 +35,16 @@ type PackageChanges
     = PackageChanges (List ModuleName.Raw) (Dict String ModuleName.Raw ModuleChanges) (List ModuleName.Raw)
 
 
+type alias ModuleChangesData =
+    { unions : Changes String Name.Name Docs.Union
+    , aliases : Changes String Name.Name Docs.Alias
+    , values : Changes String Name.Name Docs.Value
+    , binops : Changes String Name.Name Docs.Binop
+    }
+
+
 type ModuleChanges
-    = ModuleChanges (Changes String Name.Name Docs.Union) (Changes String Name.Name Docs.Alias) (Changes String Name.Name Docs.Value) (Changes String Name.Name Docs.Binop)
+    = ModuleChanges ModuleChangesData
 
 
 type Changes c k v
@@ -80,12 +89,13 @@ diff oldDocs newDocs =
 
 
 diffModule : ( Docs.Module, Docs.Module ) -> ModuleChanges
-diffModule ( Docs.Module _ _ u1 a1 v1 b1, Docs.Module _ _ u2 a2 v2 b2 ) =
+diffModule ( Docs.Module m1, Docs.Module m2 ) =
     ModuleChanges
-        (getChanges identity compare isEquivalentUnion u1 u2)
-        (getChanges identity compare isEquivalentAlias a1 a2)
-        (getChanges identity compare isEquivalentValue v1 v2)
-        (getChanges identity compare isEquivalentBinop b1 b2)
+        { unions = getChanges identity compare isEquivalentUnion m1.unions m2.unions
+        , aliases = getChanges identity compare isEquivalentAlias m1.aliases m2.aliases
+        , values = getChanges identity compare isEquivalentValue m1.values m2.values
+        , binops = getChanges identity compare isEquivalentBinop m1.binops m2.binops
+        }
 
 
 
@@ -130,10 +140,10 @@ isEquivalentValue (Docs.Value c1 t1) (Docs.Value c2 t2) =
 
 
 isEquivalentBinop : Docs.Binop -> Docs.Binop -> Bool
-isEquivalentBinop (Docs.Binop c1 t1 a1 p1) (Docs.Binop c2 t2 a2 p2) =
-    isEquivalentAlias (Docs.Alias c1 [] t1) (Docs.Alias c2 [] t2)
-        && (a1 == a2)
-        && (p1 == p2)
+isEquivalentBinop (Docs.Binop data1) (Docs.Binop data2) =
+    isEquivalentAlias (Docs.Alias data1.comment [] data1.tipe) (Docs.Alias data2.comment [] data2.tipe)
+        && (data1.associativity == data2.associativity)
+        && (data1.precedence == data2.precedence)
 
 
 
@@ -371,12 +381,12 @@ toMagnitude (PackageChanges added changed removed) =
 
 
 moduleChangeMagnitude : ModuleChanges -> M.Magnitude
-moduleChangeMagnitude (ModuleChanges unions aliases values binops) =
+moduleChangeMagnitude (ModuleChanges changes) =
     Utils.listMaximum M.compare
-        [ changeMagnitude unions
-        , changeMagnitude aliases
-        , changeMagnitude values
-        , changeMagnitude binops
+        [ changeMagnitude changes.unions
+        , changeMagnitude changes.aliases
+        , changeMagnitude changes.values
+        , changeMagnitude changes.binops
         ]
 
 

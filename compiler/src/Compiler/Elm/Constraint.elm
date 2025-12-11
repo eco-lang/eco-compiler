@@ -239,12 +239,12 @@ parser =
                                                                                                         |> P.andThen
                                                                                                             (\higher ->
                                                                                                                 P.Parser <|
-                                                                                                                    \((P.State _ _ _ _ row col) as state) ->
+                                                                                                                    \((P.State st) as state) ->
                                                                                                                         if V.compare lower higher == LT then
                                                                                                                             P.Eok (Range lower loOp hiOp higher) state
 
                                                                                                                         else
-                                                                                                                            P.Eerr row col (\_ _ -> InvalidRange lower higher)
+                                                                                                                            P.Eerr st.row st.col (\_ _ -> InvalidRange lower higher)
                                                                                                             )
                                                                                                 )
                                                                                     )

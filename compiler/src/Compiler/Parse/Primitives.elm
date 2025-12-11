@@ -5,11 +5,11 @@ module Compiler.Parse.Primitives exposing
     , Row
     , Snippet(..)
     , State(..)
+    , StateData
     , Step(..)
     , addEnd
     , addLocation
     , andThen
-    , map
     , fromByteString
     , fromSnippet
     , getCharWidth
@@ -17,6 +17,7 @@ module Compiler.Parse.Primitives exposing
     , inContext
     , isWord
     , loop
+    , map
     , oneOf
     , oneOfWithFallback
     , pure
@@ -30,11 +31,11 @@ module Compiler.Parse.Primitives exposing
     , word2
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.Reporting.Annotation as A
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Crash exposing (crash)
 
 
@@ -53,9 +54,19 @@ type PStep x a
     | Eerr Row Col (Row -> Col -> x)
 
 
+type alias StateData =
+    { src : String
+    , pos : Int
+    , end : Int
+    , indent : Int
+    , row : Row
+    , col : Col
+    }
+
+
 type State
     = -- PERF try taking some out to avoid allocation
-      State String Int Int Int Row Col
+      State StateData
 
 
 type alias Row =
@@ -114,10 +125,10 @@ oneOfHelp state toError parsers =
 
         [] ->
             let
-                (State _ _ _ _ row col) =
+                (State s) =
                     state
             in
-            Eerr row col toError
+            Eerr s.row s.col toError
 
 
 
@@ -193,7 +204,7 @@ fromByteString (Parser parser) toBadEnd src =
     let
         initialState : State
         initialState =
-            State src 0 (String.length src) 0 1 1
+            State { src = src, pos = 0, end = String.length src, indent = 0, row = 1, col = 1 }
     in
     case parser initialState of
         Cok a state ->
@@ -210,12 +221,12 @@ fromByteString (Parser parser) toBadEnd src =
 
 
 toOk : (Row -> Col -> x) -> a -> State -> Result x a
-toOk toBadEnd a (State _ pos end _ row col) =
-    if pos == end then
+toOk toBadEnd a (State s) =
+    if s.pos == s.end then
         Ok a
 
     else
-        Err (toBadEnd row col)
+        Err (toBadEnd s.row s.col)
 
 
 toErr : Row -> Col -> (Row -> Col -> x) -> Result x a
@@ -242,7 +253,7 @@ fromSnippet (Parser parser) toBadEnd (Snippet { fptr, offset, length, offRow, of
     let
         initialState : State
         initialState =
-            State fptr offset (offset + length) 0 offRow offCol
+            State { src = fptr, pos = offset, end = offset + length, indent = 0, row = offRow, col = offCol }
     in
     case parser initialState of
         Cok a state ->
@@ -265,21 +276,21 @@ fromSnippet (Parser parser) toBadEnd (Snippet { fptr, offset, length, offRow, of
 getPosition : Parser x A.Position
 getPosition =
     Parser
-        (\((State _ _ _ _ row col) as state) ->
-            Eok (A.Position row col) state
+        (\((State s) as state) ->
+            Eok (A.Position s.row s.col) state
         )
 
 
 addLocation : Parser x a -> Parser x (A.Located a)
 addLocation (Parser parser) =
     Parser
-        (\((State _ _ _ _ sr sc) as state) ->
+        (\((State startS) as state) ->
             case parser state of
-                Cok a ((State _ _ _ _ er ec) as s) ->
-                    Cok (A.At (A.Region (A.Position sr sc) (A.Position er ec)) a) s
+                Cok a ((State endS) as s) ->
+                    Cok (A.At (A.Region (A.Position startS.row startS.col) (A.Position endS.row endS.col)) a) s
 
-                Eok a ((State _ _ _ _ er ec) as s) ->
-                    Eok (A.At (A.Region (A.Position sr sc) (A.Position er ec)) a) s
+                Eok a ((State endS) as s) ->
+                    Eok (A.At (A.Region (A.Position startS.row startS.col) (A.Position endS.row endS.col)) a) s
 
                 Cerr r c t ->
                     Cerr r c t
@@ -292,8 +303,8 @@ addLocation (Parser parser) =
 addEnd : A.Position -> a -> Parser x (A.Located a)
 addEnd start value =
     Parser
-        (\((State _ _ _ _ row col) as state) ->
-            Eok (A.at start (A.Position row col) value) state
+        (\((State s) as state) ->
+            Eok (A.at start (A.Position s.row s.col) value) state
         )
 
 
@@ -304,13 +315,13 @@ addEnd start value =
 withIndent : Parser x a -> Parser x a
 withIndent (Parser parser) =
     Parser
-        (\(State src pos end oldIndent row col) ->
-            case parser (State src pos end col row col) of
-                Cok a (State s p e _ r c) ->
-                    Cok a (State s p e oldIndent r c)
+        (\(State st) ->
+            case parser (State { st | indent = st.col }) of
+                Cok a (State newS) ->
+                    Cok a (State { newS | indent = st.indent })
 
-                Eok a (State s p e _ r c) ->
-                    Eok a (State s p e oldIndent r c)
+                Eok a (State newS) ->
+                    Eok a (State { newS | indent = st.indent })
 
                 err ->
                     err
@@ -320,13 +331,13 @@ withIndent (Parser parser) =
 withBacksetIndent : Int -> Parser x a -> Parser x a
 withBacksetIndent backset (Parser parser) =
     Parser
-        (\(State src pos end oldIndent row col) ->
-            case parser (State src pos end (col - backset) row col) of
-                Cok a (State s p e _ r c) ->
-                    Cok a (State s p e oldIndent r c)
+        (\(State st) ->
+            case parser (State { st | indent = st.col - backset }) of
+                Cok a (State newS) ->
+                    Cok a (State { newS | indent = st.indent })
 
-                Eok a (State s p e _ r c) ->
-                    Eok a (State s p e oldIndent r c)
+                Eok a (State newS) ->
+                    Eok a (State { newS | indent = st.indent })
 
                 err ->
                     err
@@ -340,7 +351,7 @@ withBacksetIndent backset (Parser parser) =
 inContext : (x -> Row -> Col -> y) -> Parser y start -> Parser x a -> Parser y a
 inContext addContext (Parser parserStart) (Parser parserA) =
     Parser
-        (\((State _ _ _ _ row col) as state) ->
+        (\((State st) as state) ->
             case parserStart state of
                 Cok _ s ->
                     case parserA s of
@@ -351,10 +362,10 @@ inContext addContext (Parser parserStart) (Parser parserA) =
                             Cok a s_
 
                         Cerr r c tx ->
-                            Cerr row col (addContext (tx r c))
+                            Cerr st.row st.col (addContext (tx r c))
 
                         Eerr r c tx ->
-                            Cerr row col (addContext (tx r c))
+                            Cerr st.row st.col (addContext (tx r c))
 
                 Eok _ s ->
                     case parserA s of
@@ -365,10 +376,10 @@ inContext addContext (Parser parserStart) (Parser parserA) =
                             Eok a s_
 
                         Cerr r c tx ->
-                            Cerr row col (addContext (tx r c))
+                            Cerr st.row st.col (addContext (tx r c))
 
                         Eerr r c tx ->
-                            Eerr row col (addContext (tx r c))
+                            Eerr st.row st.col (addContext (tx r c))
 
                 Cerr r c t ->
                     Cerr r c t
@@ -381,7 +392,7 @@ inContext addContext (Parser parserStart) (Parser parserA) =
 specialize : (x -> Row -> Col -> y) -> Parser x a -> Parser y a
 specialize addContext (Parser parser) =
     Parser
-        (\((State _ _ _ _ row col) as state) ->
+        (\((State st) as state) ->
             case parser state of
                 Cok a s ->
                     Cok a s
@@ -390,10 +401,10 @@ specialize addContext (Parser parser) =
                     Eok a s
 
                 Cerr r c tx ->
-                    Cerr row col (addContext (tx r c))
+                    Cerr st.row st.col (addContext (tx r c))
 
                 Eerr r c tx ->
-                    Eerr row col (addContext (tx r c))
+                    Eerr st.row st.col (addContext (tx r c))
         )
 
 
@@ -404,39 +415,39 @@ specialize addContext (Parser parser) =
 word1 : Char -> (Row -> Col -> x) -> Parser x ()
 word1 word toError =
     Parser
-        (\(State src pos end indent row col) ->
-            if pos < end && unsafeIndex src pos == word then
+        (\(State st) ->
+            if st.pos < st.end && unsafeIndex st.src st.pos == word then
                 let
                     newState : State
                     newState =
-                        State src (pos + 1) end indent row (col + 1)
+                        State { st | pos = st.pos + 1, col = st.col + 1 }
                 in
                 Cok () newState
 
             else
-                Eerr row col toError
+                Eerr st.row st.col toError
         )
 
 
 word2 : Char -> Char -> (Row -> Col -> x) -> Parser x ()
 word2 w1 w2 toError =
     Parser
-        (\(State src pos end indent row col) ->
+        (\(State st) ->
             let
                 pos1 : Int
                 pos1 =
-                    pos + 1
+                    st.pos + 1
             in
-            if pos1 < end && unsafeIndex src pos == w1 && unsafeIndex src pos1 == w2 then
+            if pos1 < st.end && unsafeIndex st.src st.pos == w1 && unsafeIndex st.src pos1 == w2 then
                 let
                     newState : State
                     newState =
-                        State src (pos + 2) end indent row (col + 2)
+                        State { st | pos = st.pos + 2, col = st.col + 2 }
                 in
                 Cok () newState
 
             else
-                Eerr row col toError
+                Eerr st.row st.col toError
         )
 
 

@@ -2,13 +2,13 @@ module Compiler.Optimize.TypedNames exposing
     ( Context
     , Tracker
     , andThen
-    , map
     , generate
     , getAnnotations
     , getVarType
     , insertVarType
     , insertVarTypes
     , lookupGlobalType
+    , map
     , mapTraverse
     , pure
     , registerCtor

@@ -8,17 +8,17 @@ module Common.Format.Cheapskate.Inlines exposing
 import Common.Format.Cheapskate.ParserCombinators
     exposing
         ( Parser
-        , anyChar
         , andThen
+        , anyChar
         , char
         , endOfInput
         , fail
-        , map
         , guard
         , lazy
         , leftSequence
         , many
         , manyTill
+        , map
         , mzero
         , notAfter
         , notInClass
@@ -173,7 +173,7 @@ precedence over label bracket markers, which have precedence over
 So, 2 below contains a link while 1 does not:
 
 1.  [a link `with a ](/url)` character
-2.  [a link \*with emphasized ](/url) text\*
+2.  [a link *with emphasized ](/url) text\*
 
 -}
 pLinkLabel : Parser String

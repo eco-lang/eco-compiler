@@ -37,8 +37,18 @@ import Utils.Task.Extra as Task
 -- FLAGS
 
 
+type alias FlagsData =
+    { debug : Bool
+    , optimize : Bool
+    , withSourceMaps : Bool
+    , output : Maybe Output
+    , report : Maybe ReportType
+    , docs : Maybe String
+    }
+
+
 type Flags
-    = Flags Bool Bool Bool (Maybe Output) (Maybe ReportType) (Maybe String)
+    = Flags FlagsData
 
 
 type Output
@@ -57,8 +67,8 @@ type ReportType
 
 
 run : List String -> Flags -> Task Never ()
-run paths ((Flags _ _ _ _ report _) as flags) =
-    getStyle report
+run paths ((Flags flagsData) as flags) =
+    getStyle flagsData.report
         |> Task.andThen (runWithStyle paths flags)
 
 
@@ -97,8 +107,8 @@ type alias BuildContext =
 
 
 runHelp : String -> List String -> Reporting.Style -> Flags -> Task Never (Result Exit.Make ())
-runHelp root paths style (Flags debug optimize withSourceMaps maybeOutput _ maybeDocs) =
-    BW.withScope (runHelpWithScope root paths style debug optimize withSourceMaps maybeOutput maybeDocs)
+runHelp root paths style (Flags flagsData) =
+    BW.withScope (runHelpWithScope root paths style flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs)
 
 
 runHelpWithScope : FilePath -> List String -> Reporting.Style -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> BW.Scope -> Task Never (Result Exit.Make ())
@@ -248,8 +258,8 @@ getMode debug optimize =
 
 
 getExposed : Details.Details -> Task Exit.Make (NE.Nonempty ModuleName.Raw)
-getExposed (Details.Details _ validOutline _ _ _ _) =
-    case validOutline of
+getExposed (Details.Details detailsData) =
+    case detailsData.outline of
         Details.ValidApp _ ->
             Task.throw Exit.MakeAppNeedsFileNames
 
@@ -294,8 +304,8 @@ buildPaths style root details needsTypedOpt paths =
 
 
 getMains : Build.Artifacts -> List ModuleName.Raw
-getMains (Build.Artifacts _ _ roots modules) =
-    List.filterMap (getMain modules) (NE.toList roots)
+getMains (Build.Artifacts artifacts) =
+    List.filterMap (getMain artifacts.modules) (NE.toList artifacts.roots)
 
 
 getMain : List Build.Module -> Build.Root -> Maybe ModuleName.Raw
@@ -328,10 +338,10 @@ isMain targetName modul =
 
 
 hasOneMain : Build.Artifacts -> Task Exit.Make ModuleName.Raw
-hasOneMain (Build.Artifacts _ _ roots modules) =
-    case roots of
+hasOneMain (Build.Artifacts artifacts) =
+    case artifacts.roots of
         NE.Nonempty root [] ->
-            Task.mio Exit.MakeNoMain (Task.succeed <| getMain modules root)
+            Task.mio Exit.MakeNoMain (Task.succeed <| getMain artifacts.modules root)
 
         NE.Nonempty _ (_ :: _) ->
             Task.throw Exit.MakeMultipleFilesIntoHtml
@@ -342,8 +352,8 @@ hasOneMain (Build.Artifacts _ _ roots modules) =
 
 
 getNoMains : Build.Artifacts -> List ModuleName.Raw
-getNoMains (Build.Artifacts _ _ roots modules) =
-    List.filterMap (getNoMain modules) (NE.toList roots)
+getNoMains (Build.Artifacts artifacts) =
+    List.filterMap (getNoMain artifacts.modules) (NE.toList artifacts.roots)
 
 
 getNoMain : List Build.Module -> Build.Root -> Maybe ModuleName.Raw
@@ -431,6 +441,7 @@ toMonoBuilder backend withSourceMaps leadingLines root details desiredMode artif
 
                 Prod ->
                     Generate.monoDev backend withSourceMaps leadingLines root details artifacts
+
 
 
 -- PARSERS

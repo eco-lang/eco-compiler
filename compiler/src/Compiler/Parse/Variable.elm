@@ -29,21 +29,21 @@ import Data.Set as EverySet exposing (EverySet)
 upper : (Row -> Col -> x) -> P.Parser x Name
 upper toError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 ( newPos, newCol ) =
-                    chompUpper src pos end col
+                    chompUpper st.src st.pos st.end st.col
             in
-            if newPos == pos then
-                P.Eerr row col toError
+            if newPos == st.pos then
+                P.Eerr st.row st.col toError
 
             else
                 let
                     name : Name
                     name =
-                        Name.fromPtr src pos newPos
+                        Name.fromPtr st.src st.pos newPos
                 in
-                P.Cok name (P.State src newPos end indent row newCol)
+                P.Cok name (P.State { st | pos = newPos, col = newCol })
 
 
 
@@ -53,28 +53,28 @@ upper toError =
 lower : (Row -> Col -> x) -> P.Parser x Name
 lower toError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 ( newPos, newCol ) =
-                    chompLower src pos end col
+                    chompLower st.src st.pos st.end st.col
             in
-            if newPos == pos then
-                P.Eerr row col toError
+            if newPos == st.pos then
+                P.Eerr st.row st.col toError
 
             else
                 let
                     name : Name
                     name =
-                        Name.fromPtr src pos newPos
+                        Name.fromPtr st.src st.pos newPos
                 in
                 if isReservedWord name then
-                    P.Eerr row col toError
+                    P.Eerr st.row st.col toError
 
                 else
                     let
                         newState : P.State
                         newState =
-                            P.State src newPos end indent row newCol
+                            P.State { st | pos = newPos, col = newCol }
                     in
                     P.Cok name newState
 
@@ -111,34 +111,34 @@ reservedWords =
 moduleName : (Row -> Col -> x) -> P.Parser x Name
 moduleName toError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 ( pos1, col1 ) =
-                    chompUpper src pos end col
+                    chompUpper st.src st.pos st.end st.col
             in
-            if pos == pos1 then
-                P.Eerr row col toError
+            if st.pos == pos1 then
+                P.Eerr st.row st.col toError
 
             else
                 let
                     ( status, newPos, newCol ) =
-                        moduleNameHelp src pos1 end col1
+                        moduleNameHelp st.src pos1 st.end col1
                 in
                 case status of
                     Good ->
                         let
                             name : Name
                             name =
-                                Name.fromPtr src pos newPos
+                                Name.fromPtr st.src st.pos newPos
 
                             newState : P.State
                             newState =
-                                P.State src newPos end indent row newCol
+                                P.State { st | pos = newPos, col = newCol }
                         in
                         P.Cok name newState
 
                     Bad ->
-                        P.Cerr row newCol toError
+                        P.Cerr st.row newCol toError
 
 
 type ModuleNameStatus
@@ -179,34 +179,34 @@ type Upper
 foreignUpper : (Row -> Col -> x) -> P.Parser x Upper
 foreignUpper toError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 ( upperStart, upperEnd, newCol ) =
-                    foreignUpperHelp src pos end col
+                    foreignUpperHelp st.src st.pos st.end st.col
             in
             if upperStart == upperEnd then
-                P.Eerr row newCol toError
+                P.Eerr st.row newCol toError
 
             else
                 let
                     newState : P.State
                     newState =
-                        P.State src upperEnd end indent row newCol
+                        P.State { st | pos = upperEnd, col = newCol }
 
                     name : Name
                     name =
-                        Name.fromPtr src upperStart upperEnd
+                        Name.fromPtr st.src upperStart upperEnd
 
                     upperName : Upper
                     upperName =
-                        if upperStart == pos then
+                        if upperStart == st.pos then
                             Unqualified name
 
                         else
                             let
                                 home : Name
                                 home =
-                                    Name.fromPtr src pos (upperStart + -1)
+                                    Name.fromPtr st.src st.pos (upperStart + -1)
                             in
                             Qualified home name
                 in
@@ -236,27 +236,27 @@ foreignUpperHelp src pos end col =
 foreignAlpha : (Row -> Col -> x) -> P.Parser x Src.Expr_
 foreignAlpha toError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 ( ( alphaStart, alphaEnd ), ( newCol, varType ) ) =
-                    foreignAlphaHelp src pos end col
+                    foreignAlphaHelp st.src st.pos st.end st.col
             in
             if alphaStart == alphaEnd then
-                P.Eerr row newCol toError
+                P.Eerr st.row newCol toError
 
             else
                 let
                     name : Name
                     name =
-                        Name.fromPtr src alphaStart alphaEnd
+                        Name.fromPtr st.src alphaStart alphaEnd
 
                     newState : P.State
                     newState =
-                        P.State src alphaEnd end indent row newCol
+                        P.State { st | pos = alphaEnd, col = newCol }
                 in
-                if alphaStart == pos then
+                if alphaStart == st.pos then
                     if isReservedWord name then
-                        P.Eerr row col toError
+                        P.Eerr st.row st.col toError
 
                     else
                         P.Cok (Src.Var varType name) newState
@@ -265,7 +265,7 @@ foreignAlpha toError =
                     let
                         home : Name
                         home =
-                            Name.fromPtr src pos (alphaStart + -1)
+                            Name.fromPtr st.src st.pos (alphaStart + -1)
                     in
                     P.Cok (Src.VarQual varType home name) newState
 

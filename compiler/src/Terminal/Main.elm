@@ -111,23 +111,31 @@ init =
                 |> Terminal.more (Terminal.onOff "package" "Creates a starter elm.json file for a package project.")
                 |> Terminal.more (Terminal.onOff "yes" "Reply 'yes' to all automated prompts.")
     in
-    Terminal.Command "init" (Terminal.Common summary) details example Terminal.noArgs initFlags <|
-        \chunks ->
-            Chomp.chomp Nothing
-                chunks
-                [ Chomp.chompExactly (Chomp.pure ())
-                ]
-                (Chomp.pure Init.Flags
-                    |> Chomp.apply (Chomp.chompOnOffFlag "package")
-                    |> Chomp.apply (Chomp.chompOnOffFlag "yes")
-                    |> Chomp.andThen
-                        (\value ->
-                            Chomp.checkForUnknownFlags initFlags
-                                |> Chomp.map (\_ -> value)
-                        )
-                )
-                |> Tuple.second
-                |> Result.map (\( args, flags ) -> Init.run args flags)
+    Terminal.Command
+        { name = "init"
+        , summary = Terminal.Common summary
+        , details = details
+        , example = example
+        , args = Terminal.noArgs
+        , flags = initFlags
+        , run =
+            \chunks ->
+                Chomp.chomp Nothing
+                    chunks
+                    [ Chomp.chompExactly (Chomp.pure ())
+                    ]
+                    (Chomp.pure Init.Flags
+                        |> Chomp.apply (Chomp.chompOnOffFlag "package")
+                        |> Chomp.apply (Chomp.chompOnOffFlag "yes")
+                        |> Chomp.andThen
+                            (\value ->
+                                Chomp.checkForUnknownFlags initFlags
+                                    |> Chomp.map (\_ -> value)
+                            )
+                    )
+                    |> Tuple.second
+                    |> Result.map (\( args, flags ) -> Init.run args flags)
+        }
 
 
 
@@ -164,23 +172,31 @@ repl =
                         )
                     )
     in
-    Terminal.Command "repl" (Terminal.Common summary) details example Terminal.noArgs replFlags <|
-        \chunks ->
-            Chomp.chomp Nothing
-                chunks
-                [ Chomp.chompExactly (Chomp.pure ())
-                ]
-                (Chomp.pure Repl.Flags
-                    |> Chomp.apply (Chomp.chompNormalFlag "interpreter" interpreter Just)
-                    |> Chomp.apply (Chomp.chompOnOffFlag "no-colors")
-                    |> Chomp.andThen
-                        (\value ->
-                            Chomp.checkForUnknownFlags replFlags
-                                |> Chomp.map (\_ -> value)
-                        )
-                )
-                |> Tuple.second
-                |> Result.map (\( args, flags ) -> Repl.run args flags)
+    Terminal.Command
+        { name = "repl"
+        , summary = Terminal.Common summary
+        , details = details
+        , example = example
+        , args = Terminal.noArgs
+        , flags = replFlags
+        , run =
+            \chunks ->
+                Chomp.chomp Nothing
+                    chunks
+                    [ Chomp.chompExactly (Chomp.pure ())
+                    ]
+                    (Chomp.pure Repl.Flags
+                        |> Chomp.apply (Chomp.chompNormalFlag "interpreter" interpreter Just)
+                        |> Chomp.apply (Chomp.chompOnOffFlag "no-colors")
+                        |> Chomp.andThen
+                            (\value ->
+                                Chomp.checkForUnknownFlags replFlags
+                                    |> Chomp.map (\_ -> value)
+                            )
+                    )
+                    |> Tuple.second
+                    |> Result.map (\( args, flags ) -> Repl.run args flags)
+        }
 
 
 interpreter : Terminal.Parser
@@ -251,27 +267,35 @@ make =
                         )
                     )
     in
-    Terminal.Command "make" Terminal.Uncommon details example (Terminal.zeroOrMore Terminal.guidaOrElmFile) makeFlags <|
-        \chunks ->
-            Chomp.chomp Nothing
-                chunks
-                [ Chomp.chompMultiple (Chomp.pure identity) Terminal.guidaOrElmFile Terminal.parseGuidaOrElmFile
-                ]
-                (Chomp.pure Make.Flags
-                    |> Chomp.apply (Chomp.chompOnOffFlag "debug")
-                    |> Chomp.apply (Chomp.chompOnOffFlag "optimize")
-                    |> Chomp.apply (Chomp.chompOnOffFlag "sourcemaps")
-                    |> Chomp.apply (Chomp.chompNormalFlag "output" Make.output Make.parseOutput)
-                    |> Chomp.apply (Chomp.chompNormalFlag "report" Make.reportType Make.parseReportType)
-                    |> Chomp.apply (Chomp.chompNormalFlag "docs" Make.docsFile Make.parseDocsFile)
-                    |> Chomp.andThen
-                        (\value ->
-                            Chomp.checkForUnknownFlags makeFlags
-                                |> Chomp.map (\_ -> value)
-                        )
-                )
-                |> Tuple.second
-                |> Result.map (\( args, flags ) -> Make.run args flags)
+    Terminal.Command
+        { name = "make"
+        , summary = Terminal.Uncommon
+        , details = details
+        , example = example
+        , args = Terminal.zeroOrMore Terminal.guidaOrElmFile
+        , flags = makeFlags
+        , run =
+            \chunks ->
+                Chomp.chomp Nothing
+                    chunks
+                    [ Chomp.chompMultiple (Chomp.pure identity) Terminal.guidaOrElmFile Terminal.parseGuidaOrElmFile
+                    ]
+                    (Chomp.pure (\debug_ optimize_ withSourceMaps_ output_ report_ docs_ -> Make.Flags { debug = debug_, optimize = optimize_, withSourceMaps = withSourceMaps_, output = output_, report = report_, docs = docs_ })
+                        |> Chomp.apply (Chomp.chompOnOffFlag "debug")
+                        |> Chomp.apply (Chomp.chompOnOffFlag "optimize")
+                        |> Chomp.apply (Chomp.chompOnOffFlag "sourcemaps")
+                        |> Chomp.apply (Chomp.chompNormalFlag "output" Make.output Make.parseOutput)
+                        |> Chomp.apply (Chomp.chompNormalFlag "report" Make.reportType Make.parseReportType)
+                        |> Chomp.apply (Chomp.chompNormalFlag "docs" Make.docsFile Make.parseDocsFile)
+                        |> Chomp.andThen
+                            (\value ->
+                                Chomp.checkForUnknownFlags makeFlags
+                                    |> Chomp.map (\_ -> value)
+                            )
+                    )
+                    |> Tuple.second
+                    |> Result.map (\( args, flags ) -> Make.run args flags)
+        }
 
 
 
@@ -315,31 +339,39 @@ install =
                 |> Terminal.more (Terminal.onOff "test" "Install as a test-dependency.")
                 |> Terminal.more (Terminal.onOff "yes" "Reply 'yes' to all automated prompts.")
     in
-    Terminal.Command "install" Terminal.Uncommon details example installArgs installFlags <|
-        \chunks ->
-            Chomp.chomp Nothing
-                chunks
-                [ Chomp.chompExactly (Chomp.pure Install.NoArgs)
-                , Chomp.chompExactly
-                    (Chomp.pure Install.Install
+    Terminal.Command
+        { name = "install"
+        , summary = Terminal.Uncommon
+        , details = details
+        , example = example
+        , args = installArgs
+        , flags = installFlags
+        , run =
+            \chunks ->
+                Chomp.chomp Nothing
+                    chunks
+                    [ Chomp.chompExactly (Chomp.pure Install.NoArgs)
+                    , Chomp.chompExactly
+                        (Chomp.pure Install.Install
+                            |> Chomp.andThen
+                                (\func ->
+                                    Chomp.chompArg (List.length chunks) Terminal.package Terminal.parsePackage
+                                        |> Chomp.map (\arg -> func arg)
+                                )
+                        )
+                    ]
+                    (Chomp.pure Install.Flags
+                        |> Chomp.apply (Chomp.chompOnOffFlag "test")
+                        |> Chomp.apply (Chomp.chompOnOffFlag "yes")
                         |> Chomp.andThen
-                            (\func ->
-                                Chomp.chompArg (List.length chunks) Terminal.package Terminal.parsePackage
-                                    |> Chomp.map (\arg -> func arg)
+                            (\value ->
+                                Chomp.checkForUnknownFlags installFlags
+                                    |> Chomp.map (\_ -> value)
                             )
                     )
-                ]
-                (Chomp.pure Install.Flags
-                    |> Chomp.apply (Chomp.chompOnOffFlag "test")
-                    |> Chomp.apply (Chomp.chompOnOffFlag "yes")
-                    |> Chomp.andThen
-                        (\value ->
-                            Chomp.checkForUnknownFlags installFlags
-                                |> Chomp.map (\_ -> value)
-                        )
-                )
-                |> Tuple.second
-                |> Result.map (\( args, flags ) -> Install.run args flags)
+                    |> Tuple.second
+                    |> Result.map (\( args, flags ) -> Install.run args flags)
+        }
 
 
 
@@ -378,30 +410,38 @@ uninstall =
             Terminal.flags
                 |> Terminal.more (Terminal.onOff "yes" "Reply 'yes' to all automated prompts.")
     in
-    Terminal.Command "uninstall" Terminal.Uncommon details example uninstallArgs uninstallFlags <|
-        \chunks ->
-            Chomp.chomp Nothing
-                chunks
-                [ Chomp.chompExactly (Chomp.pure Uninstall.NoArgs)
-                , Chomp.chompExactly
-                    (Chomp.pure Uninstall.Uninstall
+    Terminal.Command
+        { name = "uninstall"
+        , summary = Terminal.Uncommon
+        , details = details
+        , example = example
+        , args = uninstallArgs
+        , flags = uninstallFlags
+        , run =
+            \chunks ->
+                Chomp.chomp Nothing
+                    chunks
+                    [ Chomp.chompExactly (Chomp.pure Uninstall.NoArgs)
+                    , Chomp.chompExactly
+                        (Chomp.pure Uninstall.Uninstall
+                            |> Chomp.andThen
+                                (\func ->
+                                    Chomp.chompArg (List.length chunks) Terminal.package Terminal.parsePackage
+                                        |> Chomp.map (\arg -> func arg)
+                                )
+                        )
+                    ]
+                    (Chomp.pure Uninstall.Flags
+                        |> Chomp.apply (Chomp.chompOnOffFlag "yes")
                         |> Chomp.andThen
-                            (\func ->
-                                Chomp.chompArg (List.length chunks) Terminal.package Terminal.parsePackage
-                                    |> Chomp.map (\arg -> func arg)
+                            (\value ->
+                                Chomp.checkForUnknownFlags uninstallFlags
+                                    |> Chomp.map (\_ -> value)
                             )
                     )
-                ]
-                (Chomp.pure Uninstall.Flags
-                    |> Chomp.apply (Chomp.chompOnOffFlag "yes")
-                    |> Chomp.andThen
-                        (\value ->
-                            Chomp.checkForUnknownFlags uninstallFlags
-                                |> Chomp.map (\_ -> value)
-                        )
-                )
-                |> Tuple.second
-                |> Result.map (\( args, flags ) -> Uninstall.run args flags)
+                    |> Tuple.second
+                    |> Result.map (\( args, flags ) -> Uninstall.run args flags)
+        }
 
 
 
@@ -436,21 +476,29 @@ publish =
                     "Check out <https://package.elm-lang.org/help/design-guidelines> for guidance on how to create great packages!"
                 ]
     in
-    Terminal.Command "publish" Terminal.Uncommon details example Terminal.noArgs Terminal.noFlags <|
-        \chunks ->
-            Chomp.chomp Nothing
-                chunks
-                [ Chomp.chompExactly (Chomp.pure ())
-                ]
-                (Chomp.pure ()
-                    |> Chomp.andThen
-                        (\value ->
-                            Chomp.checkForUnknownFlags Terminal.noFlags
-                                |> Chomp.map (\_ -> value)
-                        )
-                )
-                |> Tuple.second
-                |> Result.map (\( args, flags ) -> Publish.run args flags)
+    Terminal.Command
+        { name = "publish"
+        , summary = Terminal.Uncommon
+        , details = details
+        , example = example
+        , args = Terminal.noArgs
+        , flags = Terminal.noFlags
+        , run =
+            \chunks ->
+                Chomp.chomp Nothing
+                    chunks
+                    [ Chomp.chompExactly (Chomp.pure ())
+                    ]
+                    (Chomp.pure ()
+                        |> Chomp.andThen
+                            (\value ->
+                                Chomp.checkForUnknownFlags Terminal.noFlags
+                                    |> Chomp.map (\_ -> value)
+                            )
+                    )
+                    |> Tuple.second
+                    |> Result.map (\( args, flags ) -> Publish.run args flags)
+        }
 
 
 
@@ -472,21 +520,29 @@ bump =
                     ++ "and bump your version number to 2.0.0. I do this with all packages, "
                     ++ "so there cannot be MAJOR changes hiding in PATCH releases in Elm!"
     in
-    Terminal.Command "bump" Terminal.Uncommon details example Terminal.noArgs Terminal.noFlags <|
-        \chunks ->
-            Chomp.chomp Nothing
-                chunks
-                [ Chomp.chompExactly (Chomp.pure ())
-                ]
-                (Chomp.pure ()
-                    |> Chomp.andThen
-                        (\value ->
-                            Chomp.checkForUnknownFlags Terminal.noFlags
-                                |> Chomp.map (\_ -> value)
-                        )
-                )
-                |> Tuple.second
-                |> Result.map (\( args, flags ) -> Bump.run args flags)
+    Terminal.Command
+        { name = "bump"
+        , summary = Terminal.Uncommon
+        , details = details
+        , example = example
+        , args = Terminal.noArgs
+        , flags = Terminal.noFlags
+        , run =
+            \chunks ->
+                Chomp.chomp Nothing
+                    chunks
+                    [ Chomp.chompExactly (Chomp.pure ())
+                    ]
+                    (Chomp.pure ()
+                        |> Chomp.andThen
+                            (\value ->
+                                Chomp.checkForUnknownFlags Terminal.noFlags
+                                    |> Chomp.map (\_ -> value)
+                            )
+                    )
+                    |> Tuple.second
+                    |> Result.map (\( args, flags ) -> Bump.run args flags)
+        }
 
 
 
@@ -519,60 +575,68 @@ diff =
                 , Terminal.require3 Terminal.package Terminal.version Terminal.version
                 ]
     in
-    Terminal.Command "diff" Terminal.Uncommon details example diffArgs Terminal.noFlags <|
-        \chunks ->
-            Chomp.chomp Nothing
-                chunks
-                [ Chomp.chompExactly (Chomp.pure Diff.CodeVsLatest)
-                , Chomp.chompExactly
-                    (Chomp.pure Diff.CodeVsExactly
-                        |> Chomp.andThen
-                            (\func ->
-                                Chomp.chompArg (List.length chunks) Terminal.version Terminal.parseVersion
-                                    |> Chomp.map (\arg -> func arg)
-                            )
-                    )
-                , Chomp.chompExactly
-                    (Chomp.pure Diff.LocalInquiry
-                        |> Chomp.andThen
-                            (\func ->
-                                Chomp.chompArg (List.length chunks) Terminal.version Terminal.parseVersion
-                                    |> Chomp.map (\arg -> func arg)
-                            )
-                        |> Chomp.andThen
-                            (\func ->
-                                Chomp.chompArg (List.length chunks) Terminal.version Terminal.parseVersion
-                                    |> Chomp.map (\arg -> func arg)
-                            )
-                    )
-                , Chomp.chompExactly
-                    (Chomp.pure Diff.GlobalInquiry
-                        |> Chomp.andThen
-                            (\func ->
-                                Chomp.chompArg (List.length chunks) Terminal.package Terminal.parsePackage
-                                    |> Chomp.map (\arg -> func arg)
-                            )
-                        |> Chomp.andThen
-                            (\func ->
-                                Chomp.chompArg (List.length chunks) Terminal.version Terminal.parseVersion
-                                    |> Chomp.map (\arg -> func arg)
-                            )
-                        |> Chomp.andThen
-                            (\func ->
-                                Chomp.chompArg (List.length chunks) Terminal.version Terminal.parseVersion
-                                    |> Chomp.map (\arg -> func arg)
-                            )
-                    )
-                ]
-                (Chomp.pure ()
-                    |> Chomp.andThen
-                        (\value ->
-                            Chomp.checkForUnknownFlags Terminal.noFlags
-                                |> Chomp.map (\_ -> value)
+    Terminal.Command
+        { name = "diff"
+        , summary = Terminal.Uncommon
+        , details = details
+        , example = example
+        , args = diffArgs
+        , flags = Terminal.noFlags
+        , run =
+            \chunks ->
+                Chomp.chomp Nothing
+                    chunks
+                    [ Chomp.chompExactly (Chomp.pure Diff.CodeVsLatest)
+                    , Chomp.chompExactly
+                        (Chomp.pure Diff.CodeVsExactly
+                            |> Chomp.andThen
+                                (\func ->
+                                    Chomp.chompArg (List.length chunks) Terminal.version Terminal.parseVersion
+                                        |> Chomp.map (\arg -> func arg)
+                                )
                         )
-                )
-                |> Tuple.second
-                |> Result.map (\( args, flags ) -> Diff.run args flags)
+                    , Chomp.chompExactly
+                        (Chomp.pure Diff.LocalInquiry
+                            |> Chomp.andThen
+                                (\func ->
+                                    Chomp.chompArg (List.length chunks) Terminal.version Terminal.parseVersion
+                                        |> Chomp.map (\arg -> func arg)
+                                )
+                            |> Chomp.andThen
+                                (\func ->
+                                    Chomp.chompArg (List.length chunks) Terminal.version Terminal.parseVersion
+                                        |> Chomp.map (\arg -> func arg)
+                                )
+                        )
+                    , Chomp.chompExactly
+                        (Chomp.pure Diff.GlobalInquiry
+                            |> Chomp.andThen
+                                (\func ->
+                                    Chomp.chompArg (List.length chunks) Terminal.package Terminal.parsePackage
+                                        |> Chomp.map (\arg -> func arg)
+                                )
+                            |> Chomp.andThen
+                                (\func ->
+                                    Chomp.chompArg (List.length chunks) Terminal.version Terminal.parseVersion
+                                        |> Chomp.map (\arg -> func arg)
+                                )
+                            |> Chomp.andThen
+                                (\func ->
+                                    Chomp.chompArg (List.length chunks) Terminal.version Terminal.parseVersion
+                                        |> Chomp.map (\arg -> func arg)
+                                )
+                        )
+                    ]
+                    (Chomp.pure ()
+                        |> Chomp.andThen
+                            (\value ->
+                                Chomp.checkForUnknownFlags Terminal.noFlags
+                                    |> Chomp.map (\_ -> value)
+                            )
+                    )
+                    |> Tuple.second
+                    |> Result.map (\( args, flags ) -> Diff.run args flags)
+        }
 
 
 
@@ -606,25 +670,33 @@ format =
                 |> Terminal.more (Terminal.onOff "validate" "Check if files are formatted without changing them.")
                 |> Terminal.more (Terminal.onOff "stdin" "Read from stdin, output to stdout.")
     in
-    Terminal.Command "format" Terminal.Uncommon details example formatArgs formatFlags <|
-        \chunks ->
-            Chomp.chomp Nothing
-                chunks
-                [ Chomp.chompMultiple (Chomp.pure identity) Terminal.filePath Terminal.parseFilePath
-                ]
-                (Chomp.pure Format.Flags
-                    |> Chomp.apply (Chomp.chompNormalFlag "output" output Just)
-                    |> Chomp.apply (Chomp.chompOnOffFlag "yes")
-                    |> Chomp.apply (Chomp.chompOnOffFlag "validate")
-                    |> Chomp.apply (Chomp.chompOnOffFlag "stdin")
-                    |> Chomp.andThen
-                        (\value ->
-                            Chomp.checkForUnknownFlags formatFlags
-                                |> Chomp.map (\_ -> value)
-                        )
-                )
-                |> Tuple.second
-                |> Result.map (\( args, flags ) -> Format.run args flags)
+    Terminal.Command
+        { name = "format"
+        , summary = Terminal.Uncommon
+        , details = details
+        , example = example
+        , args = formatArgs
+        , flags = formatFlags
+        , run =
+            \chunks ->
+                Chomp.chomp Nothing
+                    chunks
+                    [ Chomp.chompMultiple (Chomp.pure identity) Terminal.filePath Terminal.parseFilePath
+                    ]
+                    (Chomp.pure Format.Flags
+                        |> Chomp.apply (Chomp.chompNormalFlag "output" output Just)
+                        |> Chomp.apply (Chomp.chompOnOffFlag "yes")
+                        |> Chomp.apply (Chomp.chompOnOffFlag "validate")
+                        |> Chomp.apply (Chomp.chompOnOffFlag "stdin")
+                        |> Chomp.andThen
+                            (\value ->
+                                Chomp.checkForUnknownFlags formatFlags
+                                    |> Chomp.map (\_ -> value)
+                            )
+                    )
+                    |> Tuple.second
+                    |> Result.map (\( args, flags ) -> Format.run args flags)
+        }
 
 
 output : Terminal.Parser
@@ -669,24 +741,32 @@ test =
                 |> Terminal.more (Terminal.flag "seed" int "Define how many times each fuzz-test should run (default: 100)")
                 |> Terminal.more (Terminal.flag "report" Test.format "Specify which format to use for reporting test results (choices: \"json\", \"junit\", \"console\", default: \"console\")")
     in
-    Terminal.Command "test" Terminal.Uncommon details example testArgs testFlags <|
-        \chunks ->
-            Chomp.chomp Nothing
-                chunks
-                [ Chomp.chompMultiple (Chomp.pure identity) Terminal.filePath Terminal.parseFilePath
-                ]
-                (Chomp.pure Test.Flags
-                    |> Chomp.apply (Chomp.chompNormalFlag "seed" int parseInt)
-                    |> Chomp.apply (Chomp.chompNormalFlag "fuzz" int parseInt)
-                    |> Chomp.apply (Chomp.chompNormalFlag "report" Test.format Test.parseReport)
-                    |> Chomp.andThen
-                        (\value ->
-                            Chomp.checkForUnknownFlags testFlags
-                                |> Chomp.map (\_ -> value)
-                        )
-                )
-                |> Tuple.second
-                |> Result.map (\( args, flags ) -> Test.run args flags)
+    Terminal.Command
+        { name = "test"
+        , summary = Terminal.Uncommon
+        , details = details
+        , example = example
+        , args = testArgs
+        , flags = testFlags
+        , run =
+            \chunks ->
+                Chomp.chomp Nothing
+                    chunks
+                    [ Chomp.chompMultiple (Chomp.pure identity) Terminal.filePath Terminal.parseFilePath
+                    ]
+                    (Chomp.pure Test.Flags
+                        |> Chomp.apply (Chomp.chompNormalFlag "seed" int parseInt)
+                        |> Chomp.apply (Chomp.chompNormalFlag "fuzz" int parseInt)
+                        |> Chomp.apply (Chomp.chompNormalFlag "report" Test.format Test.parseReport)
+                        |> Chomp.andThen
+                            (\value ->
+                                Chomp.checkForUnknownFlags testFlags
+                                    |> Chomp.map (\_ -> value)
+                            )
+                    )
+                    |> Tuple.second
+                    |> Result.map (\( args, flags ) -> Test.run args flags)
+        }
 
 
 int : Terminal.Parser

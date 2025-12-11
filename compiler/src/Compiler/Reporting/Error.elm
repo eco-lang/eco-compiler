@@ -9,6 +9,8 @@ module Compiler.Reporting.Error exposing
     )
 
 import Builder.File as File
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore exposing (OneOrMore)
 import Compiler.Elm.ModuleName as ModuleName
@@ -29,9 +31,7 @@ import Compiler.Reporting.Render.Type.Localizer as L
 import Compiler.Reporting.Report as Report
 import Time
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Main as Utils
 
 

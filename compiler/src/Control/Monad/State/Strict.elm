@@ -1,9 +1,9 @@
 module Control.Monad.State.Strict exposing
     ( StateT(..)
     , evalStateT
-    , map
     , get
     , liftIO
+    , map
     , put
     )
 

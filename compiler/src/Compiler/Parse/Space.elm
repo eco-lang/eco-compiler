@@ -29,17 +29,17 @@ type alias Parser x a =
 chomp : (E.Space -> Row -> Col -> x) -> P.Parser x Src.FComments
 chomp toError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 ( ( status, comments, newPos ), ( newRow, newCol ) ) =
-                    eat EatSpaces [] src pos end row col
+                    eat EatSpaces [] st.src st.pos st.end st.row st.col
             in
             case status of
                 Good ->
                     let
                         newState : P.State
                         newState =
-                            P.State src newPos end indent newRow newCol
+                            P.State { st | pos = newPos, row = newRow, col = newCol }
                     in
                     P.Cok (List.reverse comments) newState
 
@@ -57,8 +57,8 @@ chomp toError =
 checkIndent : A.Position -> (Int -> Int -> x) -> P.Parser x ()
 checkIndent (A.Position endRow endCol) toError =
     P.Parser <|
-        \((P.State _ _ _ indent _ col) as state) ->
-            if col > indent && col > 1 then
+        \((P.State st) as state) ->
+            if st.col > st.indent && st.col > 1 then
                 P.Eok () state
 
             else
@@ -68,23 +68,23 @@ checkIndent (A.Position endRow endCol) toError =
 checkAligned : (Int -> Int -> Int -> x) -> P.Parser x ()
 checkAligned toError =
     P.Parser <|
-        \((P.State _ _ _ indent row col) as state) ->
-            if col == indent then
+        \((P.State st) as state) ->
+            if st.col == st.indent then
                 P.Eok () state
 
             else
-                P.Eerr row col (toError indent)
+                P.Eerr st.row st.col (toError st.indent)
 
 
 checkFreshLine : (Row -> Col -> x) -> P.Parser x ()
 checkFreshLine toError =
     P.Parser <|
-        \((P.State _ _ _ _ row col) as state) ->
-            if col == 1 then
+        \((P.State st) as state) ->
+            if st.col == 1 then
                 P.Eok () state
 
             else
-                P.Eerr row col toError
+                P.Eerr st.row st.col toError
 
 
 
@@ -94,23 +94,23 @@ checkFreshLine toError =
 chompAndCheckIndent : (E.Space -> Row -> Col -> x) -> (Row -> Col -> x) -> P.Parser x Src.FComments
 chompAndCheckIndent toSpaceError toIndentError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 ( ( status, comments, newPos ), ( newRow, newCol ) ) =
-                    eat EatSpaces [] src pos end row col
+                    eat EatSpaces [] st.src st.pos st.end st.row st.col
             in
             case status of
                 Good ->
-                    if newCol > indent && newCol > 1 then
+                    if newCol > st.indent && newCol > 1 then
                         let
                             newState : P.State
                             newState =
-                                P.State src newPos end indent newRow newCol
+                                P.State { st | pos = newPos, row = newRow, col = newCol }
                         in
                         P.Cok (List.reverse comments) newState
 
                     else
-                        P.Cerr row col toIndentError
+                        P.Cerr st.row st.col toIndentError
 
                 HasTab ->
                     P.Cerr newRow newCol (toSpaceError E.HasTab)
@@ -302,25 +302,25 @@ eatMultiCommentHelp src pos end row col openComments =
 docComment : (Int -> Int -> x) -> (E.Space -> Int -> Int -> x) -> P.Parser x Src.Comment
 docComment toExpectation toSpaceError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 pos3 : Int
                 pos3 =
-                    pos + 3
+                    st.pos + 3
             in
             if
-                (pos3 <= end)
-                    && (P.unsafeIndex src pos == '{')
-                    && (P.unsafeIndex src (pos + 1) == '-')
-                    && (P.unsafeIndex src (pos + 2) == '|')
+                (pos3 <= st.end)
+                    && (P.unsafeIndex st.src st.pos == '{')
+                    && (P.unsafeIndex st.src (st.pos + 1) == '-')
+                    && (P.unsafeIndex st.src (st.pos + 2) == '|')
             then
                 let
                     col3 : Col
                     col3 =
-                        col + 3
+                        st.col + 3
 
                     ( ( status, newPos ), ( newRow, newCol ) ) =
-                        eatMultiCommentHelp src pos3 end row col3 1
+                        eatMultiCommentHelp st.src pos3 st.end st.row col3 1
                 in
                 case status of
                     MultiGood ->
@@ -336,10 +336,10 @@ docComment toExpectation toSpaceError =
                             snippet : P.Snippet
                             snippet =
                                 P.Snippet
-                                    { fptr = src
+                                    { fptr = st.src
                                     , offset = off
                                     , length = len
-                                    , offRow = row
+                                    , offRow = st.row
                                     , offCol = col3
                                     }
 
@@ -349,7 +349,7 @@ docComment toExpectation toSpaceError =
 
                             newState : P.State
                             newState =
-                                P.State src newPos end indent newRow newCol
+                                P.State { st | pos = newPos, row = newRow, col = newCol }
                         in
                         P.Cok comment newState
 
@@ -357,7 +357,7 @@ docComment toExpectation toSpaceError =
                         P.Cerr newRow newCol (toSpaceError E.HasTab)
 
                     MultiEndless ->
-                        P.Cerr row col (toSpaceError E.EndlessMultiComment)
+                        P.Cerr st.row st.col (toSpaceError E.EndlessMultiComment)
 
             else
-                P.Eerr row col toExpectation
+                P.Eerr st.row st.col toExpectation

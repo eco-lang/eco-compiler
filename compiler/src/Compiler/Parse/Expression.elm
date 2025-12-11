@@ -418,13 +418,13 @@ chompRecordAccessField start expr pos =
 foreignAlpha : (Row -> Col -> x) -> P.Parser x Src.Expr_
 foreignAlpha toError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 ( ( alphaStart, alphaEnd ), ( newCol, varType ) ) =
-                    foreignAlphaHelp src pos end col
+                    foreignAlphaHelp st.src st.pos st.end st.col
             in
             if alphaStart == alphaEnd then
-                P.Eerr row newCol toError
+                P.Eerr st.row newCol toError
 
             else
                 case varType of
@@ -432,15 +432,15 @@ foreignAlpha toError =
                         let
                             name : Name
                             name =
-                                Name.fromPtr src alphaStart alphaEnd
+                                Name.fromPtr st.src alphaStart alphaEnd
 
                             newState : P.State
                             newState =
-                                P.State src alphaEnd end indent row newCol
+                                P.State { st | pos = alphaEnd, col = newCol }
                         in
-                        if alphaStart == pos then
+                        if alphaStart == st.pos then
                             if Var.isReservedWord name then
-                                P.Eerr row col toError
+                                P.Eerr st.row st.col toError
 
                             else
                                 P.Cok (Src.Var varType name) newState
@@ -449,12 +449,12 @@ foreignAlpha toError =
                             let
                                 home : Name
                                 home =
-                                    Name.fromPtr src pos (alphaStart + -1)
+                                    Name.fromPtr st.src st.pos (alphaStart + -1)
                             in
                             P.Cok (Src.VarQual varType home name) newState
 
                     Src.CapVar ->
-                        P.Eerr row col toError
+                        P.Eerr st.row st.col toError
 
 
 foreignAlphaHelp : String -> Int -> Int -> Col -> ( ( Int, Int ), ( Col, Src.VarType ) )
@@ -706,13 +706,11 @@ chompExprEnd syntaxVersion start (State { ops, expr, args, end }) comments =
         (case ops of
             [] ->
                 ( ( comments, toCall expr args )
-                , end
-                )
+                , end )
 
             _ ->
                 ( ( comments, A.at start end (Src.Binops (List.reverse ops) (toCall expr args)) )
-                , end
-                )
+                , end )
         )
 
 
@@ -795,9 +793,17 @@ chompIfThen syntaxVersion start comments branches preConditionComments postCondi
                     |> P.andThen (\_ -> Space.chompAndCheckIndent E.IfSpace E.IfIndentElseBranch)
                     |> P.andThen
                         (\trailingComments ->
-                            chompIfElse syntaxVersion start comments branches
-                                preConditionComments postConditionComments condition
-                                preThenBranchComments postThenBranchComments thenBranch trailingComments
+                            chompIfElse syntaxVersion
+                                start
+                                comments
+                                branches
+                                preConditionComments
+                                postConditionComments
+                                condition
+                                preThenBranchComments
+                                postThenBranchComments
+                                thenBranch
+                                trailingComments
                         )
             )
 
@@ -973,8 +979,7 @@ chompCaseBranches syntaxVersion start preExprComments postExprComments expr comm
 buildCaseExpr : A.Position -> Src.FComments -> Src.FComments -> Src.Expr -> ( Src.C1 (List ( Src.C2 Src.Pattern, Src.C1 Src.Expr )), A.Position ) -> ( Src.C1 Src.Expr, A.Position )
 buildCaseExpr start preExprComments postExprComments expr ( ( branchesTrailingComments, branches ), end ) =
     ( ( branchesTrailingComments, A.at start end (Src.Case ( ( preExprComments, postExprComments ), expr ) branches) )
-    , end
-    )
+    , end )
 
 
 chompBranch : SyntaxVersion -> Src.FComments -> Space.Parser E.Case (Src.C1 ( Src.C2 Src.Pattern, Src.C1 Src.Expr ))
@@ -1004,8 +1009,7 @@ buildBranchResult prePatternComments postPatternComments pattern preBranchExprCo
         , ( preBranchExprComments, branchExpr )
         )
       )
-    , end
-    )
+    , end )
 
 
 chompCaseEnd : SyntaxVersion -> Src.FComments -> List ( Src.C2 Src.Pattern, Src.C1 Src.Expr ) -> A.Position -> Space.Parser E.Case (Src.C1 (List ( Src.C2 Src.Pattern, Src.C1 Src.Expr )))
@@ -1157,8 +1161,7 @@ chompDefArgsAndBody syntaxVersion start name tipe trailingComments revArgs =
                         |> P.map
                             (\( ( comments, body ), end ) ->
                                 ( ( comments, A.at start end (Src.Define name (List.reverse revArgs) ( trailingComments ++ preExpressionComments, body ) tipe) )
-                                , end
-                                )
+                                , end )
                             )
                 )
         ]
@@ -1171,21 +1174,21 @@ chompMatchingName expectedName =
             Var.lower E.DefNameRepeat
     in
     P.Parser <|
-        \((P.State _ _ _ _ sr sc) as state) ->
+        \((P.State st) as state) ->
             case parserL state of
-                P.Cok name ((P.State _ _ _ _ er ec) as newState) ->
+                P.Cok name ((P.State st2) as newState) ->
                     if expectedName == name then
-                        P.Cok (A.At (A.Region (A.Position sr sc) (A.Position er ec)) name) newState
+                        P.Cok (A.At (A.Region (A.Position st.row st.col) (A.Position st2.row st2.col)) name) newState
 
                     else
-                        P.Cerr sr sc (E.DefNameMatch name)
+                        P.Cerr st.row st.col (E.DefNameMatch name)
 
-                P.Eok name ((P.State _ _ _ _ er ec) as newState) ->
+                P.Eok name ((P.State st2) as newState) ->
                     if expectedName == name then
-                        P.Eok (A.At (A.Region (A.Position sr sc) (A.Position er ec)) name) newState
+                        P.Eok (A.At (A.Region (A.Position st.row st.col) (A.Position st2.row st2.col)) name) newState
 
                     else
-                        P.Eerr sr sc (E.DefNameMatch name)
+                        P.Eerr st.row st.col (E.DefNameMatch name)
 
                 P.Cerr r c t ->
                     P.Cerr r c t
@@ -1234,5 +1237,4 @@ chompDestructExpr syntaxVersion start pattern preEqualSignComments preExpression
 buildDestructDef : A.Position -> Src.Pattern -> Src.FComments -> Src.FComments -> ( Src.C1 Src.Expr, A.Position ) -> ( Src.C1 (A.Located Src.Def), A.Position )
 buildDestructDef start pattern preEqualSignComments preExpressionComments ( ( comments, expr ), end ) =
     ( ( comments, A.at start end (Src.Destruct pattern ( preEqualSignComments ++ preExpressionComments, expr )) )
-    , end
-    )
+    , end )

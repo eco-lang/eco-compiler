@@ -8,6 +8,8 @@ module Compiler.Reporting.Error.Import exposing
     , toReport
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
@@ -18,9 +20,7 @@ import Compiler.Reporting.Suggest as Suggest
 import Data.Map as Dict
 import Data.Set as EverySet exposing (EverySet)
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 
 
 

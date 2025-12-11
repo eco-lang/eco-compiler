@@ -1,10 +1,12 @@
 module Builder.Elm.Details exposing
     ( BuildID
     , Details(..)
+    , DetailsData
     , Extras
     , Foreign(..)
     , Interfaces
     , Local(..)
+    , LocalData
     , Status
     , ValidOutline(..)
     , detailsEncoder
@@ -27,10 +29,12 @@ import Builder.Http as Http
 import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
-import Compiler.AST.TypedOptimized as TOpt
 import Compiler.AST.Source as Src
+import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Compile as Compile
 import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
@@ -52,9 +56,7 @@ import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils exposing (FilePath, MVar)
 import Utils.Task.Extra as Task
@@ -64,8 +66,18 @@ import Utils.Task.Extra as Task
 -- DETAILS
 
 
+type alias DetailsData =
+    { time : File.Time
+    , outline : ValidOutline
+    , buildID : BuildID
+    , locals : Dict String ModuleName.Raw Local
+    , foreigns : Dict String ModuleName.Raw Foreign
+    , extras : Extras
+    }
+
+
 type Details
-    = Details File.Time ValidOutline BuildID (Dict String ModuleName.Raw Local) (Dict String ModuleName.Raw Foreign) Extras
+    = Details DetailsData
 
 
 type alias BuildID =
@@ -93,8 +105,18 @@ type ValidOutline
 --
 
 
+type alias LocalData =
+    { path : FilePath
+    , time : File.Time
+    , deps : List ModuleName.Raw
+    , hasMain : Bool
+    , lastChange : BuildID
+    , lastCompile : BuildID
+    }
+
+
 type Local
-    = Local FilePath File.Time (List ModuleName.Raw) Bool BuildID BuildID
+    = Local LocalData
 
 
 type Foreign
@@ -115,7 +137,11 @@ type alias Interfaces =
 
 
 loadObjects : FilePath -> Details -> Task Never (MVar (Maybe Opt.GlobalGraph))
-loadObjects root (Details _ _ _ _ _ extras) =
+loadObjects root (Details detailsData) =
+    let
+        extras =
+            detailsData.extras
+    in
     case extras of
         ArtifactsFresh _ o ->
             Utils.newMVar (Utils.maybeEncoder Opt.globalGraphEncoder) (Just o)
@@ -147,8 +173,8 @@ loadTypedObjects root _ =
 
 
 loadInterfaces : FilePath -> Details -> Task Never (MVar (Maybe Interfaces))
-loadInterfaces root (Details _ _ _ _ _ extras) =
-    case extras of
+loadInterfaces root (Details detailsData) =
+    case detailsData.extras of
         ArtifactsFresh i _ ->
             Utils.newMVar (Utils.maybeEncoder interfacesEncoder) (Just i)
 
@@ -161,9 +187,9 @@ loadInterfaces root (Details _ _ _ _ _ extras) =
 
 
 verifyInstall : BW.Scope -> FilePath -> Solver.Env -> Outline.Outline -> Task Never (Result Exit.Details ())
-verifyInstall scope root (Solver.Env cache manager connection registry) outline =
+verifyInstall scope root (Solver.Env env) outline =
     File.getTime (root ++ "/elm.json")
-        |> Task.andThen (runVerifyInstall scope root cache manager connection registry outline)
+        |> Task.andThen (runVerifyInstall scope root env.cache env.manager env.connection env.registry outline)
 
 
 runVerifyInstall : BW.Scope -> FilePath -> Stuff.PackageCache -> Http.Manager -> Solver.Connection -> Registry.Registry -> Outline.Outline -> File.Time -> Task Never (Result Exit.Details ())
@@ -175,7 +201,7 @@ runVerifyInstall scope root cache manager connection registry outline time =
 
         env : Env
         env =
-            Env key scope root cache manager connection registry
+            Env { key = key, scope = scope, root = root, cache = cache, manager = manager, connection = connection, registry = registry }
     in
     case outline of
         Outline.Pkg pkg ->
@@ -207,9 +233,9 @@ handleCachedDetails style scope root newTime maybeDetails =
         Nothing ->
             generate style scope root newTime
 
-        Just (Details oldTime outline buildID locals foreigns extras) ->
-            if oldTime == newTime then
-                Task.succeed (Ok (Details oldTime outline (buildID + 1) locals foreigns extras))
+        Just (Details detailsData) ->
+            if detailsData.time == newTime then
+                Task.succeed (Ok (Details { detailsData | buildID = detailsData.buildID + 1 }))
 
             else
                 generate style scope root newTime
@@ -247,8 +273,19 @@ verifyOutline time result =
 -- ENV
 
 
+type alias EnvData =
+    { key : Reporting.DKey
+    , scope : BW.Scope
+    , root : FilePath
+    , cache : Stuff.PackageCache
+    , manager : Http.Manager
+    , connection : Solver.Connection
+    , registry : Registry.Registry
+    }
+
+
 type Env
-    = Env Reporting.DKey BW.Scope FilePath Stuff.PackageCache Http.Manager Solver.Connection Registry.Registry
+    = Env EnvData
 
 
 initEnv : Reporting.DKey -> BW.Scope -> FilePath -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
@@ -280,8 +317,8 @@ combineEnvAndOutline key scope root outline maybeEnv =
         Err problem ->
             Err (Exit.DetailsCannotGetRegistry problem)
 
-        Ok (Solver.Env cache manager connection registry) ->
-            Ok ( Env key scope root cache manager connection registry, outline )
+        Ok (Solver.Env env) ->
+            Ok ( Env { key = key, scope = scope, root = root, cache = env.cache, manager = env.manager, connection = env.connection, registry = env.registry }, outline )
 
 
 
@@ -289,16 +326,16 @@ combineEnvAndOutline key scope root outline maybeEnv =
 
 
 verifyPkg : Env -> File.Time -> Outline.PkgOutline -> Task Exit.Details Details
-verifyPkg env time (Outline.PkgOutline pkg _ _ _ exposed direct testDirect elm) =
-    if Con.goodElm elm then
-        union identity Pkg.compareName noDups direct testDirect
+verifyPkg env time (Outline.PkgOutline pkgData) =
+    if Con.goodElm pkgData.elm then
+        union identity Pkg.compareName noDups pkgData.deps pkgData.testDeps
             |> Task.andThen (verifyConstraints env)
             |> Task.andThen
                 (\solution ->
                     let
                         exposedList : List ModuleName.Raw
                         exposedList =
-                            Outline.flattenExposed exposed
+                            Outline.flattenExposed pkgData.exposed
 
                         exactDeps : Dict ( String, String ) Pkg.Name V.Version
                         exactDeps =
@@ -306,16 +343,16 @@ verifyPkg env time (Outline.PkgOutline pkg _ _ _ exposed direct testDirect elm) 
 
                         -- for pkg docs in reactor
                     in
-                    verifyDependencies env time (ValidPkg pkg exposedList exactDeps) solution direct
+                    verifyDependencies env time (ValidPkg pkgData.name exposedList exactDeps) solution pkgData.deps
                 )
 
     else
-        Task.throw (Exit.DetailsBadElmInPkg elm)
+        Task.throw (Exit.DetailsBadElmInPkg pkgData.elm)
 
 
 verifyApp : Env -> File.Time -> Outline.AppOutline -> Task Exit.Details Details
-verifyApp env time ((Outline.AppOutline elmVersion srcDirs direct _ _ _) as outline) =
-    if elmVersion == V.elmCompiler then
+verifyApp env time ((Outline.AppOutline appData) as outline) =
+    if appData.elm == V.elmCompiler then
         checkAppDeps outline
             |> Task.andThen
                 (\stated ->
@@ -323,7 +360,7 @@ verifyApp env time ((Outline.AppOutline elmVersion srcDirs direct _ _ _) as outl
                         |> Task.andThen
                             (\actual ->
                                 if Dict.size stated == Dict.size actual then
-                                    verifyDependencies env time (ValidApp srcDirs) actual direct
+                                    verifyDependencies env time (ValidApp appData.srcDirs) actual appData.depsDirect
 
                                 else
                                     Task.throw Exit.DetailsHandEditedDependencies
@@ -331,15 +368,15 @@ verifyApp env time ((Outline.AppOutline elmVersion srcDirs direct _ _ _) as outl
                 )
 
     else
-        Task.throw (Exit.DetailsBadElmInAppOutline elmVersion)
+        Task.throw (Exit.DetailsBadElmInAppOutline appData.elm)
 
 
 checkAppDeps : Outline.AppOutline -> Task Exit.Details (Dict ( String, String ) Pkg.Name V.Version)
-checkAppDeps (Outline.AppOutline _ _ direct indirect testDirect testIndirect) =
-    union identity Pkg.compareName allowEqualDups indirect testDirect
+checkAppDeps (Outline.AppOutline appData) =
+    union identity Pkg.compareName allowEqualDups appData.depsIndirect appData.testDirect
         |> Task.andThen
             (\x ->
-                union identity Pkg.compareName noDups direct testIndirect
+                union identity Pkg.compareName noDups appData.depsDirect appData.testIndirect
                     |> Task.andThen (\y -> union identity Pkg.compareName noDups x y)
             )
 
@@ -349,8 +386,8 @@ checkAppDeps (Outline.AppOutline _ _ direct indirect testDirect testIndirect) =
 
 
 verifyConstraints : Env -> Dict ( String, String ) Pkg.Name Con.Constraint -> Task Exit.Details (Dict ( String, String ) Pkg.Name Solver.Details)
-verifyConstraints (Env _ _ _ cache _ connection registry) constraints =
-    Task.io (Solver.verify cache connection registry constraints)
+verifyConstraints (Env envData) constraints =
+    Task.io (Solver.verify envData.cache envData.connection envData.registry constraints)
         |> Task.andThen
             (\result ->
                 case result of
@@ -419,20 +456,20 @@ fork encoder work =
 
 
 verifyDependencies : Env -> File.Time -> ValidOutline -> Dict ( String, String ) Pkg.Name Solver.Details -> Dict ( String, String ) Pkg.Name a -> Task Exit.Details Details
-verifyDependencies ((Env key scope root cache _ _ _) as env) time outline solution directDeps =
+verifyDependencies ((Env envData) as env) time outline solution directDeps =
     Task.eio identity
-        (Reporting.report key (Reporting.DStart (Dict.size solution))
+        (Reporting.report envData.key (Reporting.DStart (Dict.size solution))
             |> Task.andThen (\_ -> Utils.newEmptyMVar)
             |> Task.andThen (verifyAllDeps env solution)
-            |> Task.andThen (finalizeDependencies scope root time outline directDeps)
+            |> Task.andThen (finalizeDependencies envData.scope envData.root time outline directDeps)
         )
 
 
 {-| Fork verification of all dependencies.
 -}
 verifyAllDeps : Env -> Dict ( String, String ) Pkg.Name Solver.Details -> MVar (Dict ( String, String ) Pkg.Name (MVar Dep)) -> Task Never (Dict ( String, String ) Pkg.Name Dep)
-verifyAllDeps ((Env _ _ _ cache _ _ _) as env) solution mvar =
-    Stuff.withRegistryLock cache
+verifyAllDeps ((Env envData) as env) solution mvar =
+    Stuff.withRegistryLock envData.cache
         (Utils.mapTraverseWithKey identity Pkg.compareName (\k v -> fork depEncoder (verifyDep env mvar solution k v)) solution)
         |> Task.andThen
             (\mvars ->
@@ -486,7 +523,14 @@ writeVerifiedArtifacts scope root time outline directDeps artifacts =
 
         details : Details
         details =
-            Details time outline 0 Dict.empty foreigns (ArtifactsFresh ifaces objs)
+            Details
+                { time = time
+                , outline = outline
+                , buildID = 0
+                , locals = Dict.empty
+                , foreigns = foreigns
+                , extras = ArtifactsFresh ifaces objs
+                }
     in
     BW.writeBinary Opt.globalGraphEncoder scope (Stuff.objects root) objs
         |> Task.andThen (\_ -> BW.writeBinary interfacesEncoder scope (Stuff.interfaces root) ifaces)
@@ -559,7 +603,7 @@ type alias VerifyDepContext =
 
 
 verifyDep : Env -> MVar (Dict ( String, String ) Pkg.Name (MVar Dep)) -> Dict ( String, String ) Pkg.Name Solver.Details -> Pkg.Name -> Solver.Details -> Task Never Dep
-verifyDep (Env key _ _ cache manager _ _) depsMVar solution pkg ((Solver.Details vsn directDeps) as details) =
+verifyDep (Env envData) depsMVar solution pkg ((Solver.Details vsn directDeps) as details) =
     let
         fingerprint : Dict ( String, String ) Pkg.Name V.Version
         fingerprint =
@@ -567,9 +611,9 @@ verifyDep (Env key _ _ cache manager _ _) depsMVar solution pkg ((Solver.Details
 
         ctx : VerifyDepContext
         ctx =
-            { key = key, cache = cache, manager = manager, depsMVar = depsMVar, pkg = pkg, vsn = vsn, details = details, fingerprint = fingerprint }
+            { key = envData.key, cache = envData.cache, manager = envData.manager, depsMVar = depsMVar, pkg = pkg, vsn = vsn, details = details, fingerprint = fingerprint }
     in
-    Utils.dirDoesDirectoryExist (Stuff.package cache pkg vsn ++ "/src")
+    Utils.dirDoesDirectoryExist (Stuff.package envData.cache pkg vsn ++ "/src")
         |> Task.andThen (handleDepExistence ctx)
 
 
@@ -691,8 +735,8 @@ build key cache depsMVar pkg (Solver.Details vsn _) f fs =
                     Ok (Outline.App _) ->
                         reportBuildBroken ctx
 
-                    Ok (Outline.Pkg (Outline.PkgOutline _ _ _ _ exposed deps _ _)) ->
-                        buildPackage ctx depsMVar exposed deps
+                    Ok (Outline.Pkg (Outline.PkgOutline pkgData)) ->
+                        buildPackage ctx depsMVar pkgData.exposed pkgData.deps
             )
 
 
@@ -1051,13 +1095,18 @@ crawlFile syntaxVersion foreignDeps mvar pkg src docsStatus expectedName path =
 parseAndCrawlFile : SyntaxVersion -> Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> String -> Task Never (Maybe Status)
 parseAndCrawlFile syntaxVersion foreignDeps mvar pkg src docsStatus expectedName bytes =
     case Parse.fromByteString syntaxVersion (Parse.Package pkg) bytes of
-        Ok ((Src.Module _ (Just (A.At _ actualName)) _ _ imports _ _ _ _ _) as modul) ->
-            if expectedName == actualName then
-                crawlImports foreignDeps mvar pkg src imports
-                    |> Task.map (\deps -> Just (SLocal docsStatus deps modul))
+        Ok ((Src.Module srcData) as modul) ->
+            case srcData.name of
+                Just (A.At _ actualName) ->
+                    if expectedName == actualName then
+                        crawlImports foreignDeps mvar pkg src srcData.imports
+                            |> Task.map (\deps -> Just (SLocal docsStatus deps modul))
 
-            else
-                Task.succeed Nothing
+                    else
+                        Task.succeed Nothing
+
+                Nothing ->
+                    Task.succeed Nothing
 
         _ ->
             Task.succeed Nothing
@@ -1126,8 +1175,8 @@ parseAndCrawlKernel foreignDeps mvar pkg src bytes =
 getDepHome : ForeignInterface -> Maybe Pkg.Name
 getDepHome fi =
     case fi of
-        ForeignSpecific (I.Interface pkg _ _ _ _) ->
-            Just pkg
+        ForeignSpecific (I.Interface iface) ->
+            Just iface.home
 
         ForeignAmbiguous ->
             Nothing
@@ -1319,20 +1368,20 @@ endpointDecoder =
 
 
 detailsEncoder : Details -> Bytes.Encode.Encoder
-detailsEncoder (Details oldTime outline buildID locals foreigns extras) =
+detailsEncoder (Details detailsData) =
     Bytes.Encode.sequence
-        [ File.timeEncoder oldTime
-        , validOutlineEncoder outline
-        , BE.int buildID
-        , BE.assocListDict compare ModuleName.rawEncoder localEncoder locals
-        , BE.assocListDict compare ModuleName.rawEncoder foreignEncoder foreigns
-        , extrasEncoder extras
+        [ File.timeEncoder detailsData.time
+        , validOutlineEncoder detailsData.outline
+        , BE.int detailsData.buildID
+        , BE.assocListDict compare ModuleName.rawEncoder localEncoder detailsData.locals
+        , BE.assocListDict compare ModuleName.rawEncoder foreignEncoder detailsData.foreigns
+        , extrasEncoder detailsData.extras
         ]
 
 
 detailsDecoder : Bytes.Decode.Decoder Details
 detailsDecoder =
-    BD.map6 Details
+    BD.map6 (\time outline buildID locals foreigns extras -> Details { time = time, outline = outline, buildID = buildID, locals = locals, foreigns = foreigns, extras = extras })
         File.timeDecoder
         validOutlineDecoder
         BD.int
@@ -1540,20 +1589,20 @@ statusDictDecoder =
 
 
 localEncoder : Local -> Bytes.Encode.Encoder
-localEncoder (Local path time deps hasMain lastChange lastCompile) =
+localEncoder (Local localData) =
     Bytes.Encode.sequence
-        [ BE.string path
-        , File.timeEncoder time
-        , BE.list ModuleName.rawEncoder deps
-        , BE.bool hasMain
-        , BE.int lastChange
-        , BE.int lastCompile
+        [ BE.string localData.path
+        , File.timeEncoder localData.time
+        , BE.list ModuleName.rawEncoder localData.deps
+        , BE.bool localData.hasMain
+        , BE.int localData.lastChange
+        , BE.int localData.lastCompile
         ]
 
 
 localDecoder : Bytes.Decode.Decoder Local
 localDecoder =
-    BD.map6 Local
+    BD.map6 (\path time deps hasMain lastChange lastCompile -> Local { path = path, time = time, deps = deps, hasMain = hasMain, lastChange = lastChange, lastCompile = lastCompile })
         BD.string
         File.timeDecoder
         (BD.list ModuleName.rawDecoder)

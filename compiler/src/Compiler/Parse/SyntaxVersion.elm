@@ -8,10 +8,10 @@ module Compiler.Parse.SyntaxVersion exposing
 {-| Compiler.Parse.SyntaxVersion
 -}
 
-import Utils.Bytes.Decode as BD
 import Bytes.Decode
-import Utils.Bytes.Encode as BE
 import Bytes.Encode
+import Utils.Bytes.Decode as BD
+import Utils.Bytes.Encode as BE
 
 
 {-| The `SyntaxVersion` type is used to specify which syntax version to work

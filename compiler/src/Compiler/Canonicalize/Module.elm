@@ -39,7 +39,7 @@ type alias MResult i w a =
 
 
 canonicalize : Pkg.Name -> Dict String ModuleName.Raw I.Interface -> Src.Module -> MResult i (List W.Warning) Can.Module
-canonicalize pkg ifaces ((Src.Module syntaxVersion _ exports docs imports values _ _ binops effects) as modul) =
+canonicalize pkg ifaces ((Src.Module srcData) as modul) =
     let
         home : IO.Canonical
         home =
@@ -47,22 +47,31 @@ canonicalize pkg ifaces ((Src.Module syntaxVersion _ exports docs imports values
 
         cbinops : Dict String Name Can.Binop
         cbinops =
-            Dict.fromList identity (List.map canonicalizeBinop binops)
+            Dict.fromList identity (List.map canonicalizeBinop srcData.infixes)
     in
-    Foreign.createInitialEnv home ifaces imports
+    Foreign.createInitialEnv home ifaces srcData.imports
         |> ReportingResult.andThen (Local.add modul)
         |> ReportingResult.andThen
             (\( env, cunions, caliases ) ->
-                canonicalizeValues syntaxVersion env values
+                canonicalizeValues srcData.syntaxVersion env srcData.values
                     |> ReportingResult.andThen
                         (\cvalues ->
-                            Effects.canonicalize syntaxVersion env values cunions effects
+                            Effects.canonicalize srcData.syntaxVersion env srcData.values cunions srcData.effects
                                 |> ReportingResult.andThen
                                     (\ceffects ->
-                                        canonicalizeExports values cunions caliases cbinops ceffects exports
+                                        canonicalizeExports srcData.values cunions caliases cbinops ceffects srcData.exports
                                             |> ReportingResult.map
                                                 (\cexports ->
-                                                    Can.Module home cexports docs cvalues cunions caliases cbinops ceffects
+                                                    Can.Module
+                                                        { name = home
+                                                        , exports = cexports
+                                                        , docs = srcData.docs
+                                                        , decls = cvalues
+                                                        , unions = cunions
+                                                        , aliases = caliases
+                                                        , binops = cbinops
+                                                        , effects = ceffects
+                                                        }
                                                 )
                                     )
                         )
@@ -74,7 +83,20 @@ canonicalize pkg ifaces ((Src.Module syntaxVersion _ exports docs imports values
 
 
 canonicalizeBinop : A.Located Src.Infix -> ( Name, Can.Binop )
-canonicalizeBinop (A.At _ (Src.Infix ( _, op ) ( _, associativity ) ( _, precedence ) ( _, func ))) =
+canonicalizeBinop (A.At _ (Src.Infix data)) =
+    let
+        ( _, op ) =
+            data.op
+
+        ( _, associativity ) =
+            data.associativity
+
+        ( _, precedence ) =
+            data.precedence
+
+        ( _, func ) =
+            data.name
+    in
     ( op, Can.Binop_ associativity precedence func )
 
 
@@ -172,8 +194,18 @@ type alias NodeTwo =
 
 
 toNodeOne : SyntaxVersion -> Env.Env -> A.Located Src.Value -> MResult i (List W.Warning) NodeOne
-toNodeOne syntaxVersion env (A.At _ (Src.Value _ ( _, (A.At _ name) as aname ) srcArgs ( _, body ) maybeType)) =
-    case maybeType of
+toNodeOne syntaxVersion env (A.At _ (Src.Value valueData)) =
+    let
+        ( _, (A.At _ name) as aname ) =
+            valueData.name
+
+        srcArgs =
+            valueData.args
+
+        ( _, body ) =
+            valueData.body
+    in
+    case valueData.tipe of
         Nothing ->
             Pattern.verify (Error.DPFuncArgs name)
                 (ReportingResult.traverse (Pattern.canonicalize syntaxVersion env) (List.map Src.c1Value srcArgs))
@@ -278,7 +310,11 @@ canonicalizeExports values unions aliases binops effects (A.At region exposing_)
 
 
 valueToName : A.Located Src.Value -> ( Name, () )
-valueToName (A.At _ (Src.Value _ ( _, A.At _ name ) _ _ _)) =
+valueToName (A.At _ (Src.Value v)) =
+    let
+        ( _, A.At _ name ) =
+            v.name
+    in
     ( name, () )
 
 

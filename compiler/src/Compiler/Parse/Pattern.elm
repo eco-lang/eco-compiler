@@ -73,14 +73,14 @@ termHelp syntaxVersion start =
 
                                     Number.Float float _ ->
                                         P.Parser <|
-                                            \(P.State _ _ _ _ row col) ->
+                                            \(P.State st) ->
                                                 let
                                                     width : Int
                                                     width =
                                                         String.fromFloat float
                                                             |> String.length
                                                 in
-                                                P.Cerr row (col - width) (E.PFloat width)
+                                                P.Cerr st.row (st.col - width) (E.PFloat width)
                             )
                 )
         , String.string syntaxVersion E.PStart E.PString
@@ -97,46 +97,46 @@ termHelp syntaxVersion start =
 wildcard : SyntaxVersion -> P.Parser E.Pattern Name.Name
 wildcard syntaxVersion =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
-            if pos == end || P.unsafeIndex src pos /= '_' then
-                P.Eerr row col E.PStart
+        \(P.State st) ->
+            if st.pos == st.end || P.unsafeIndex st.src st.pos /= '_' then
+                P.Eerr st.row st.col E.PStart
 
             else
                 let
                     newPos : Int
                     newPos =
-                        pos + 1
+                        st.pos + 1
 
                     newCol : P.Col
                     newCol =
-                        col + 1
+                        st.col + 1
                 in
-                if Var.getInnerWidth src newPos end > 0 then
+                if Var.getInnerWidth st.src newPos st.end > 0 then
                     case syntaxVersion of
                         SV.Elm ->
                             let
                                 ( badPos, badCol ) =
-                                    Var.chompInnerChars src newPos end newCol
+                                    Var.chompInnerChars st.src newPos st.end newCol
                             in
-                            P.Cerr row col (E.PWildcardNotVar (Name.fromPtr src pos badPos) (badCol - col))
+                            P.Cerr st.row st.col (E.PWildcardNotVar (Name.fromPtr st.src st.pos badPos) (badCol - st.col))
 
                         SV.Guida ->
                             let
                                 ( lowerPos, lowerCol ) =
-                                    Var.chompLower src newPos end newCol
+                                    Var.chompLower st.src newPos st.end newCol
 
                                 name : String
                                 name =
-                                    Name.fromPtr src newPos lowerPos
+                                    Name.fromPtr st.src newPos lowerPos
                             in
                             if Var.isReservedWord name then
-                                P.Cerr row col (E.PWildcardReservedWord (Name.fromPtr src newPos lowerPos) (lowerCol - col))
+                                P.Cerr st.row st.col (E.PWildcardReservedWord (Name.fromPtr st.src newPos lowerPos) (lowerCol - st.col))
 
                             else
                                 let
                                     newState : P.State
                                     newState =
-                                        P.State src lowerPos end indent row lowerCol
+                                        P.State { st | pos = lowerPos, col = lowerCol }
                                 in
                                 P.Cok name newState
 
@@ -144,7 +144,7 @@ wildcard syntaxVersion =
                     let
                         newState : P.State
                         newState =
-                            P.State src newPos end indent row newCol
+                            P.State { st | pos = newPos, col = newCol }
                     in
                     P.Cok "" newState
 
@@ -358,8 +358,7 @@ exprHelp syntaxVersion start revPatterns ( ( prePatternComments, pattern ), end 
                 )
         ]
         ( ( prePatternComments, List.foldl cons pattern revPatterns )
-        , end
-        )
+        , end )
 
 
 cons : Src.C2 Src.Pattern -> Src.Pattern -> Src.Pattern
@@ -415,7 +414,6 @@ exprTermHelp syntaxVersion region upper start revArgs =
                                             Var.Qualified home name ->
                                                 Src.PCtorQual region home name (List.reverse revArgs)
                                   )
-                                , end
-                                )
+                                , end )
                         )
             )

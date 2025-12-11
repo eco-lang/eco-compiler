@@ -2,8 +2,8 @@ module Terminal.Terminal.Chomp exposing
     ( Chomper
     , Chunk
     , Suggest
-    , apply
     , andThen
+    , apply
     , checkForUnknownFlags
     , chomp
     , chompArg

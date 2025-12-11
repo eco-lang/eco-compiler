@@ -11,13 +11,13 @@ module Compiler.AST.Utils.Shader exposing
     , unescape
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.Data.Name exposing (Name)
 import Data.Map exposing (Dict)
 import Regex
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 
 
 

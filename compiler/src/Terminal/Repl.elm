@@ -16,7 +16,6 @@ import Builder.Generate as Generate
 import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
-import Compiler.Generate.CodeGen as CodeGen
 import Compiler.AST.Source as Src
 import Compiler.Data.Name as N
 import Compiler.Elm.Constraint as C
@@ -24,6 +23,7 @@ import Compiler.Elm.Licenses as Licenses
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
+import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Parse.Declaration as PD
 import Compiler.Parse.Expression as PE
 import Compiler.Parse.Module as PM
@@ -396,13 +396,21 @@ attemptDeclOrExpr lines =
     case P.fromByteString declParser Tuple.pair src of
         Ok ( decl, _ ) ->
             case decl of
-                PD.Value _ (A.At _ (Src.Value _ ( _, A.At _ name ) _ _ _)) ->
+                PD.Value _ (A.At _ (Src.Value v)) ->
+                    let
+                        ( _, A.At _ name ) =
+                            v.name
+                    in
                     ifDone lines (Decl name src)
 
                 PD.Union _ (A.At _ (Src.Union ( _, A.At _ name ) _ _)) ->
                     ifDone lines (Type name src)
 
-                PD.Alias _ (A.At _ (Src.Alias _ ( _, A.At _ name ) _ _)) ->
+                PD.Alias _ (A.At _ (Src.Alias aliasData)) ->
+                    let
+                        ( _, A.At _ name ) =
+                            aliasData.name
+                    in
                     ifDone lines (Type name src)
 
                 PD.Port _ _ ->
@@ -791,14 +799,15 @@ writeTempOutline root =
     Outline.write root <|
         Outline.Pkg <|
             Outline.PkgOutline
-                Pkg.dummyName
-                Outline.defaultSummary
-                Licenses.bsd3
-                V.one
-                (Outline.ExposedList [])
-                defaultDeps
-                Map.empty
-                C.defaultElm
+                { name = Pkg.dummyName
+                , summary = Outline.defaultSummary
+                , license = Licenses.bsd3
+                , version = V.one
+                , exposed = Outline.ExposedList []
+                , deps = defaultDeps
+                , testDeps = Map.empty
+                , elm = C.defaultElm
+                }
 
 
 defaultDeps : Dict ( String, String ) Pkg.Name C.Constraint

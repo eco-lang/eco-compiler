@@ -1,8 +1,8 @@
 module Compiler.Optimize.Names exposing
     ( Tracker
     , andThen
-    , map
     , generate
+    , map
     , mapTraverse
     , pure
     , registerCtor

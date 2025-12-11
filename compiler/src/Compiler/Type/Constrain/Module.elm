@@ -17,31 +17,31 @@ import System.TypeCheck.IO as IO exposing (IO)
 
 
 constrain : Can.Module -> IO Constraint
-constrain (Can.Module home _ _ decls _ _ _ effects) =
-    case effects of
+constrain (Can.Module canData) =
+    case canData.effects of
         Can.NoEffects ->
-            constrainDecls decls CSaveTheEnvironment
+            constrainDecls canData.decls CSaveTheEnvironment
 
         Can.Ports ports ->
-            Dict.foldr compare letPort (constrainDecls decls CSaveTheEnvironment) ports
+            Dict.foldr compare letPort (constrainDecls canData.decls CSaveTheEnvironment) ports
 
         Can.Manager r0 r1 r2 manager ->
             case manager of
                 Can.Cmd cmdName ->
-                    constrainEffects home r0 r1 r2 manager
-                        |> IO.andThen (constrainDecls decls)
-                        |> IO.andThen (letCmd home cmdName)
+                    constrainEffects canData.name r0 r1 r2 manager
+                        |> IO.andThen (constrainDecls canData.decls)
+                        |> IO.andThen (letCmd canData.name cmdName)
 
                 Can.Sub subName ->
-                    constrainEffects home r0 r1 r2 manager
-                        |> IO.andThen (constrainDecls decls)
-                        |> IO.andThen (letSub home subName)
+                    constrainEffects canData.name r0 r1 r2 manager
+                        |> IO.andThen (constrainDecls canData.decls)
+                        |> IO.andThen (letSub canData.name subName)
 
                 Can.Fx cmdName subName ->
-                    constrainEffects home r0 r1 r2 manager
-                        |> IO.andThen (constrainDecls decls)
-                        |> IO.andThen (letSub home subName)
-                        |> IO.andThen (letCmd home cmdName)
+                    constrainEffects canData.name r0 r1 r2 manager
+                        |> IO.andThen (constrainDecls canData.decls)
+                        |> IO.andThen (letSub canData.name subName)
+                        |> IO.andThen (letCmd canData.name cmdName)
 
 
 

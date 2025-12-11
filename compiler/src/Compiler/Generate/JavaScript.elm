@@ -261,8 +261,8 @@ emptyState startingLine =
 
 
 stateToBuilder : State -> String
-stateToBuilder (State (JS.Builder revKernels code _ _ _) _) =
-    prependBuilders revKernels (bytesForPorts ++ code)
+stateToBuilder (State (JS.Builder b) _) =
+    prependBuilders b.revKernels (bytesForPorts ++ b.revBuilders)
 
 
 bytesForPorts : String
@@ -294,13 +294,13 @@ prependBuilders revBuilders monolith =
 
 
 stateToMappings : State -> List JS.Mapping
-stateToMappings (State (JS.Builder _ _ _ _ mappings) _) =
-    mappings
+stateToMappings (State (JS.Builder b) _) =
+    b.mappings
 
 
 stateKernels : State -> List String
-stateKernels (State (JS.Builder revKernels _ _ _ _) _) =
-    revKernels
+stateKernels (State (JS.Builder b) _) =
+    b.revKernels
 
 
 addGlobal : Mode.Mode -> Graph -> State -> Opt.Global -> State
@@ -685,11 +685,11 @@ generateExports mode (Trie maybeMain subs) =
 
                 Just ( home, main ) ->
                     let
-                        (JS.Builder _ code _ _ _) =
+                        (JS.Builder builderData) =
                             JS.exprToBuilder (Expr.generateMain mode home main) (JS.emptyBuilder 0)
                     in
                     "{'init':"
-                        ++ code
+                        ++ builderData.revBuilders
                         ++ end
     in
     case Dict.toList compare subs of

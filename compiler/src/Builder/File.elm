@@ -14,14 +14,14 @@ module Builder.File exposing
     , zeroTime
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Codec.Archive.Zip as Zip
 import System.IO as IO
 import Task exposing (Task)
 import Time
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Impure as Impure
 import Utils.Main as Utils exposing (FilePath)
 import Utils.Task.Extra as Task

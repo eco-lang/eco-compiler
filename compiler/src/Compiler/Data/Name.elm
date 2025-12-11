@@ -24,12 +24,12 @@ module Compiler.Data.Name exposing
     , identity_
     , int
     , isAppendableType
-    , json
     , isCompappendType
     , isComparableType
     , isKernel
     , isNumberType
     , jsArray
+    , json
     , list
     , mainModule
     , main_

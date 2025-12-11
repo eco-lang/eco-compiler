@@ -169,10 +169,10 @@ handleUninstallResult root oldOutline result =
 
 
 makeAppPlan : Solver.Env -> Pkg.Name -> Outline.AppOutline -> Task Exit.Uninstall (Changes V.Version)
-makeAppPlan (Solver.Env cache _ connection registry) pkg ((Outline.AppOutline _ _ direct _ testDirect _) as outline) =
-    case Dict.get identity pkg (Dict.union direct testDirect) of
+makeAppPlan (Solver.Env env) pkg ((Outline.AppOutline appData) as outline) =
+    case Dict.get identity pkg (Dict.union appData.depsDirect appData.testDirect) of
         Just _ ->
-            Task.io (Solver.removeFromApp cache connection registry pkg outline)
+            Task.io (Solver.removeFromApp env.cache env.connection env.registry pkg outline)
                 |> Task.andThen (handleAppSolverResult pkg)
 
         Nothing ->
@@ -200,11 +200,11 @@ handleAppSolverResult pkg result =
 
 
 makePkgPlan : Pkg.Name -> Outline.PkgOutline -> Task Exit.Uninstall (Changes C.Constraint)
-makePkgPlan pkg (Outline.PkgOutline name summary license version exposed deps test elmVersion) =
+makePkgPlan pkg (Outline.PkgOutline pkgData) =
     let
         old : Dict ( String, String ) Pkg.Name C.Constraint
         old =
-            Dict.union deps test
+            Dict.union pkgData.deps pkgData.testDeps
     in
     if Dict.member identity pkg old then
         let
@@ -219,14 +219,11 @@ makePkgPlan pkg (Outline.PkgOutline name summary license version exposed deps te
         Task.succeed <|
             Changes changes <|
                 Outline.Pkg <|
-                    Outline.PkgOutline name
-                        summary
-                        license
-                        version
-                        exposed
-                        (Dict.remove identity pkg deps)
-                        (Dict.remove identity pkg test)
-                        elmVersion
+                    Outline.PkgOutline
+                        { pkgData
+                            | deps = Dict.remove identity pkg pkgData.deps
+                            , testDeps = Dict.remove identity pkg pkgData.testDeps
+                        }
 
     else
         Task.succeed AlreadyNotPresent

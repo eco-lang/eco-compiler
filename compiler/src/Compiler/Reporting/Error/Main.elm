@@ -5,6 +5,8 @@ module Compiler.Reporting.Error.Main exposing
     , toReport
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
@@ -15,9 +17,7 @@ import Compiler.Reporting.Render.Type as RT
 import Compiler.Reporting.Render.Type.Localizer as L
 import Compiler.Reporting.Report as Report
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 
 
 

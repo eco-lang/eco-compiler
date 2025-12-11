@@ -1,8 +1,10 @@
 module Compiler.Elm.Interface exposing
     ( Alias(..)
     , Binop(..)
+    , BinopData
     , DependencyInterface(..)
     , Interface(..)
+    , InterfaceData
     , Union(..)
     , dependencyInterfaceDecoder
     , dependencyInterfaceEncoder
@@ -18,6 +20,8 @@ module Compiler.Elm.Interface exposing
     , toPublicUnion
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Utils.Binop as Binop
 import Compiler.Data.Name as Name
@@ -25,9 +29,7 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
@@ -36,8 +38,17 @@ import Utils.Main as Utils
 -- INTERFACE
 
 
+type alias InterfaceData =
+    { home : Pkg.Name
+    , values : Dict String Name.Name Can.Annotation
+    , unions : Dict String Name.Name Union
+    , aliases : Dict String Name.Name Alias
+    , binops : Dict String Name.Name Binop
+    }
+
+
 type Interface
-    = Interface Pkg.Name (Dict String Name.Name Can.Annotation) (Dict String Name.Name Union) (Dict String Name.Name Alias) (Dict String Name.Name Binop)
+    = Interface InterfaceData
 
 
 type Union
@@ -51,8 +62,16 @@ type Alias
     | PrivateAlias Can.Alias
 
 
+type alias BinopData =
+    { name : Name.Name
+    , annotation : Can.Annotation
+    , associativity : Binop.Associativity
+    , precedence : Binop.Precedence
+    }
+
+
 type Binop
-    = Binop Name.Name Can.Annotation Binop.Associativity Binop.Precedence
+    = Binop BinopData
 
 
 
@@ -60,12 +79,14 @@ type Binop
 
 
 fromModule : Pkg.Name -> Can.Module -> Dict String Name.Name Can.Annotation -> Interface
-fromModule home (Can.Module _ exports _ _ unions aliases binops _) annotations =
-    Interface home
-        (restrict exports annotations)
-        (restrictUnions exports unions)
-        (restrictAliases exports aliases)
-        (restrict exports (Dict.map (\_ -> toOp annotations) binops))
+fromModule home (Can.Module canData) annotations =
+    Interface
+        { home = home
+        , values = restrict canData.exports annotations
+        , unions = restrictUnions canData.exports canData.unions
+        , aliases = restrictAliases canData.exports canData.aliases
+        , binops = restrict canData.exports (Dict.map (\_ -> toOp annotations) canData.binops)
+        }
 
 
 restrict : Can.Exports -> Dict String Name.Name a -> Dict String Name.Name a
@@ -80,7 +101,12 @@ restrict exports dict =
 
 toOp : Dict String Name.Name Can.Annotation -> Can.Binop -> Binop
 toOp types (Can.Binop_ associativity precedence name) =
-    Binop name (Utils.find identity name types) associativity precedence
+    Binop
+        { name = name
+        , annotation = Utils.find identity name types
+        , associativity = associativity
+        , precedence = precedence
+        }
 
 
 restrictUnions : Can.Exports -> Dict String Name.Name Can.Union -> Dict String Name.Name Union
@@ -135,8 +161,8 @@ toPublicUnion iUnion =
         OpenUnion union ->
             Just union
 
-        ClosedUnion (Can.Union vars _ _ opts) ->
-            Just (Can.Union vars [] 0 opts)
+        ClosedUnion (Can.Union unionData) ->
+            Just (Can.Union { vars = unionData.vars, alts = [], numAlts = 0, opts = unionData.opts })
 
         PrivateUnion _ ->
             Nothing
@@ -167,8 +193,8 @@ public =
 
 
 private : Interface -> DependencyInterface
-private (Interface pkg _ unions aliases _) =
-    Private pkg (Dict.map (\_ -> extractUnion) unions) (Dict.map (\_ -> extractAlias) aliases)
+private (Interface i) =
+    Private i.home (Dict.map (\_ -> extractUnion) i.unions) (Dict.map (\_ -> extractAlias) i.aliases)
 
 
 extractUnion : Union -> Can.Union
@@ -209,19 +235,19 @@ privatize di =
 
 
 interfaceEncoder : Interface -> Bytes.Encode.Encoder
-interfaceEncoder (Interface home values unions aliases binops) =
+interfaceEncoder (Interface i) =
     Bytes.Encode.sequence
-        [ Pkg.nameEncoder home
-        , BE.assocListDict compare BE.string Can.annotationEncoder values
-        , BE.assocListDict compare BE.string unionEncoder unions
-        , BE.assocListDict compare BE.string aliasEncoder aliases
-        , BE.assocListDict compare BE.string binopEncoder binops
+        [ Pkg.nameEncoder i.home
+        , BE.assocListDict compare BE.string Can.annotationEncoder i.values
+        , BE.assocListDict compare BE.string unionEncoder i.unions
+        , BE.assocListDict compare BE.string aliasEncoder i.aliases
+        , BE.assocListDict compare BE.string binopEncoder i.binops
         ]
 
 
 interfaceDecoder : Bytes.Decode.Decoder Interface
 interfaceDecoder =
-    Bytes.Decode.map5 Interface
+    Bytes.Decode.map5 (\home_ values_ unions_ aliases_ binops_ -> Interface { home = home_, values = values_, unions = unions_, aliases = aliases_, binops = binops_ })
         Pkg.nameDecoder
         (BD.assocListDict identity BD.string Can.annotationDecoder)
         (BD.assocListDict identity BD.string unionDecoder)
@@ -305,18 +331,21 @@ aliasDecoder =
 
 
 binopEncoder : Binop -> Bytes.Encode.Encoder
-binopEncoder (Binop name annotation associativity precedence) =
+binopEncoder (Binop data) =
     Bytes.Encode.sequence
-        [ BE.string name
-        , Can.annotationEncoder annotation
-        , Binop.associativityEncoder associativity
-        , Binop.precedenceEncoder precedence
+        [ BE.string data.name
+        , Can.annotationEncoder data.annotation
+        , Binop.associativityEncoder data.associativity
+        , Binop.precedenceEncoder data.precedence
         ]
 
 
 binopDecoder : Bytes.Decode.Decoder Binop
 binopDecoder =
-    Bytes.Decode.map4 Binop
+    Bytes.Decode.map4
+        (\name annotation associativity precedence ->
+            Binop { name = name, annotation = annotation, associativity = associativity, precedence = precedence }
+        )
         BD.string
         Can.annotationDecoder
         Binop.associativityDecoder

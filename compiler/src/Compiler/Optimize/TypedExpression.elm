@@ -269,7 +269,8 @@ optimize cycle annotations (A.At region expression) =
                                     ( defName, defType ) =
                                         getDefNameAndType def annotations
                                 in
-                                Names.withVarType defName defType
+                                Names.withVarType defName
+                                    defType
                                     (optimize cycle annotations body)
                                     |> Names.map
                                         (\obody ->
@@ -292,7 +293,8 @@ optimize cycle annotations (A.At region expression) =
                         optimize cycle annotations expr
                             |> Names.andThen
                                 (\oexpr ->
-                                    Names.withVarType name patternType
+                                    Names.withVarType name
+                                        patternType
                                         (optimize cycle annotations body)
                                         |> Names.map
                                             (\obody ->
@@ -345,17 +347,20 @@ optimize cycle annotations (A.At region expression) =
                                     in
                                     case oexpr of
                                         TOpt.VarLocal root tipe ->
-                                            Names.withVarType root tipe
+                                            Names.withVarType root
+                                                tipe
                                                 (Names.traverse (optimizeBranch root) branches)
                                                 |> Names.map (Case.optimize temp root)
 
                                         TOpt.TrackedVarLocal _ root tipe ->
-                                            Names.withVarType root tipe
+                                            Names.withVarType root
+                                                tipe
                                                 (Names.traverse (optimizeBranch root) branches)
                                                 |> Names.map (Case.optimize temp root)
 
                                         _ ->
-                                            Names.withVarType temp scrutineeType
+                                            Names.withVarType temp
+                                                scrutineeType
                                                 (Names.traverse (optimizeBranch temp) branches)
                                                 |> Names.map
                                                     (\obranches ->
@@ -648,7 +653,8 @@ optimizeDefHelp cycle annotations region name args expr body =
                             exprType =
                                 TOpt.typeOf oexpr
                         in
-                        Names.withVarType name exprType
+                        Names.withVarType name
+                            exprType
                             (optimize cycle annotations body)
                             |> Names.map
                                 (\obody ->
@@ -689,7 +695,8 @@ optimizeDefHelp cycle annotations region name args expr body =
                                                 (List.foldr (wrapDestruct bodyType) oexpr destructors)
                                                 funcType
                                     in
-                                    Names.withVarType name funcType
+                                    Names.withVarType name
+                                        funcType
                                         (optimize cycle annotations body)
                                         |> Names.map
                                             (\obody ->
@@ -711,7 +718,8 @@ optimizeTypedDefHelp cycle annotations region name typedArgs expr resultType bod
             optimize cycle annotations expr
                 |> Names.andThen
                     (\oexpr ->
-                        Names.withVarType name resultType
+                        Names.withVarType name
+                            resultType
                             (optimize cycle annotations body)
                             |> Names.map
                                 (\obody ->
@@ -748,7 +756,8 @@ optimizeTypedDefHelp cycle annotations region name typedArgs expr resultType bod
                                                 (List.foldr (wrapDestruct resultType) oexpr destructors)
                                                 funcType
                                     in
-                                    Names.withVarType name funcType
+                                    Names.withVarType name
+                                        funcType
                                         (optimize cycle annotations body)
                                         |> Names.map
                                             (\obody ->
@@ -1030,7 +1039,7 @@ getPatternType _ (A.At _ pattern) =
 
         Can.PCtor { union, name } ->
             let
-                (Can.Union vars _ _ _) =
+                (Can.Union _) =
                     union
             in
             -- Use the constructor's type from the union
@@ -1185,10 +1194,10 @@ destructHelp path tipe (A.At _ pattern) revDs =
             case args of
                 [ Can.PatternCtorArg _ argType arg ] ->
                     let
-                        (Can.Union _ _ _ opts) =
+                        (Can.Union unionData) =
                             union
                     in
-                    case opts of
+                    case unionData.opts of
                         Can.Normal ->
                             destructHelp (TOpt.Index Index.first path) argType arg revDs
 
@@ -1275,7 +1284,9 @@ destructHelpCollectBindings path tipe (A.At _ pattern) ( revDs, andThenings ) =
             Names.registerFieldList fields ( List.map toDestruct fields ++ revDs, newBindings ++ andThenings )
 
         Can.PAlias subPattern name ->
-            destructHelpCollectBindings (TOpt.Root name) tipe subPattern
+            destructHelpCollectBindings (TOpt.Root name)
+                tipe
+                subPattern
                 ( TOpt.Destructor name path tipe :: revDs, ( name, tipe ) :: andThenings )
 
         _ ->
@@ -1433,7 +1444,8 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
                     optimizeDefForTail cycle annotations defRegion defName defArgs defExpr defType
                         |> Names.andThen
                             (\odef ->
-                                Names.withVarType defName defType
+                                Names.withVarType defName
+                                    defType
                                     (optimizeTail cycle annotations rootName typedArgNames returnType body)
                                     |> Names.map
                                         (\obody ->
@@ -1450,7 +1462,8 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
                     optimizeTypedDefForTail cycle annotations defRegion defName defTypedArgs defExpr defResultType
                         |> Names.andThen
                             (\odef ->
-                                Names.withVarType defName defType
+                                Names.withVarType defName
+                                    defType
                                     (optimizeTail cycle annotations rootName typedArgNames returnType body)
                                     |> Names.map
                                         (\obody ->
@@ -1473,7 +1486,8 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
                                     ( defName, defType ) =
                                         getDefNameAndType def annotations
                                 in
-                                Names.withVarType defName defType
+                                Names.withVarType defName
+                                    defType
                                     (optimizeTail cycle annotations rootName typedArgNames returnType body)
                                     |> Names.map
                                         (\obody ->
@@ -1497,7 +1511,8 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
                         optimize cycle annotations expr
                             |> Names.andThen
                                 (\oexpr ->
-                                    Names.withVarType dname patternType
+                                    Names.withVarType dname
+                                        patternType
                                         (optimizeTail cycle annotations rootName typedArgNames returnType body)
                                         |> Names.map
                                             (\obody ->
@@ -1546,17 +1561,20 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
                                     in
                                     case oexpr of
                                         TOpt.VarLocal root tipe ->
-                                            Names.withVarType root tipe
+                                            Names.withVarType root
+                                                tipe
                                                 (Names.traverse (optimizeBranch root) branches)
                                                 |> Names.map (Case.optimize temp root)
 
                                         TOpt.TrackedVarLocal _ root tipe ->
-                                            Names.withVarType root tipe
+                                            Names.withVarType root
+                                                tipe
                                                 (Names.traverse (optimizeBranch root) branches)
                                                 |> Names.map (Case.optimize temp root)
 
                                         _ ->
-                                            Names.withVarType temp exprType
+                                            Names.withVarType temp
+                                                exprType
                                                 (Names.traverse (optimizeBranch temp) branches)
                                                 |> Names.map
                                                     (\obranches ->

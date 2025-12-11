@@ -20,6 +20,8 @@ module Compiler.Optimize.DecisionTree exposing
    as SML/NJ to get nice trees.
 -}
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
@@ -30,9 +32,7 @@ import Hex.Convert
 import Prelude
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
@@ -184,10 +184,10 @@ flatten (( path, A.At region pattern ) as pathPattern) otherPathPatterns =
 
         Can.PCtor { union, args } ->
             let
-                (Can.Union _ _ numAlts _) =
+                (Can.Union unionData) =
                     union
             in
-            if numAlts == 1 then
+            if unionData.numAlts == 1 then
                 case List.map dearg args of
                     [ arg ] ->
                         flatten ( Unbox path, arg ) otherPathPatterns
@@ -331,10 +331,10 @@ testAtPath selectedPath (Branch _ pathPatterns) =
                 case pattern of
                     Can.PCtor { home, union, name, index } ->
                         let
-                            (Can.Union _ _ numAlts opts) =
+                            (Can.Union unionData) =
                                 union
                         in
-                        Just (IsCtor home name index numAlts opts)
+                        Just (IsCtor home name index unionData.numAlts unionData.opts)
 
                     Can.PList ps ->
                         Just
@@ -406,10 +406,10 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
                                         case List.map dearg args of
                                             (arg :: []) as args_ ->
                                                 let
-                                                    (Can.Union _ _ numAlts _) =
+                                                    (Can.Union unionData) =
                                                         union
                                                 in
-                                                if numAlts == 1 then
+                                                if unionData.numAlts == 1 then
                                                     start ++ (( Unbox path, arg ) :: end)
 
                                                 else

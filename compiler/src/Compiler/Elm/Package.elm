@@ -31,15 +31,15 @@ module Compiler.Elm.Package exposing
     , webgl
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.Json.Decode as D
 import Compiler.Json.Encode as E
 import Compiler.Parse.Primitives as P exposing (Col, Row)
-import Levenshtein
 import Data.Map as Dict exposing (Dict)
+import Levenshtein
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 
 
 
@@ -305,42 +305,42 @@ parser =
 parseName : (Char -> Bool) -> (Char -> Bool) -> P.Parser ( Row, Col ) String
 parseName isGoodStart isGoodInner =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
-            if pos >= end then
-                P.Eerr row col Tuple.pair
+        \(P.State st) ->
+            if st.pos >= st.end then
+                P.Eerr st.row st.col Tuple.pair
 
             else
                 let
                     word : Char
                     word =
-                        P.unsafeIndex src pos
+                        P.unsafeIndex st.src st.pos
                 in
                 if not (isGoodStart word) then
-                    P.Eerr row col Tuple.pair
+                    P.Eerr st.row st.col Tuple.pair
 
                 else
                     let
                         ( isGood, newPos ) =
-                            chompName isGoodInner src (pos + 1) end False
+                            chompName isGoodInner st.src (st.pos + 1) st.end False
 
                         len : Int
                         len =
-                            newPos - pos
+                            newPos - st.pos
 
                         newCol : Col
                         newCol =
-                            col + len
+                            st.col + len
                     in
                     if isGood && len < 256 then
                         let
                             newState : P.State
                             newState =
-                                P.State src newPos end indent row newCol
+                                P.State { st | pos = newPos, col = newCol }
                         in
-                        P.Cok (String.slice pos newPos src) newState
+                        P.Cok (String.slice st.pos newPos st.src) newState
 
                     else
-                        P.Cerr row newCol Tuple.pair
+                        P.Cerr st.row newCol Tuple.pair
 
 
 isLowerOrDigit : Char -> Bool

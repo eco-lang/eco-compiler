@@ -180,7 +180,11 @@ verifyEffectType (A.At region name) unions =
 
 
 toNameRegion : A.Located Src.Value -> ( Name.Name, A.Region )
-toNameRegion (A.At _ (Src.Value _ ( _, A.At region name ) _ _ _)) =
+toNameRegion (A.At _ (Src.Value v)) =
+    let
+        ( _, A.At region name ) =
+            v.name
+    in
     ( name, region )
 
 

@@ -16,6 +16,8 @@ module Compiler.Type.Error exposing
     , typeEncoder
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.Data.Bag as Bag
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
@@ -26,9 +28,7 @@ import Data.Map as Dict exposing (Dict)
 import Prelude
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 
 
 

@@ -38,8 +38,17 @@ run () () =
 -- ENV
 
 
+type alias EnvData =
+    { root : FilePath
+    , cache : Stuff.PackageCache
+    , manager : Http.Manager
+    , registry : Registry.Registry
+    , outline : Outline.PkgOutline
+    }
+
+
 type Env
-    = Env FilePath Stuff.PackageCache Http.Manager Registry.Registry Outline.PkgOutline
+    = Env EnvData
 
 
 type alias EnvSetup =
@@ -100,7 +109,7 @@ validateOutline setup registry outline =
             Task.throw Exit.BumpApplication
 
         Outline.Pkg pkgOutline ->
-            Task.succeed (Env setup.root setup.cache setup.manager registry pkgOutline)
+            Task.succeed (Env { root = setup.root, cache = setup.cache, manager = setup.manager, registry = registry, outline = pkgOutline })
 
 
 
@@ -108,24 +117,28 @@ validateOutline setup registry outline =
 
 
 bump : Env -> Task Exit.Bump ()
-bump ((Env root _ _ registry ((Outline.PkgOutline pkg _ _ vsn _ _ _ _) as outline)) as env) =
-    case Registry.getVersions pkg registry of
+bump ((Env envData) as env) =
+    let
+        (Outline.PkgOutline pkgData) =
+            envData.outline
+    in
+    case Registry.getVersions pkgData.name envData.registry of
         Just knownVersions ->
             let
                 bumpableVersions : List V.Version
                 bumpableVersions =
                     List.map (\( old, _, _ ) -> old) (Bump.getPossibilities knownVersions)
             in
-            if List.member vsn bumpableVersions then
+            if List.member pkgData.version bumpableVersions then
                 suggestVersion env
 
             else
                 Task.throw <|
-                    Exit.BumpUnexpectedVersion vsn <|
+                    Exit.BumpUnexpectedVersion pkgData.version <|
                         List.map Prelude.head (Utils.listGroupBy (==) (List.sortWith V.compare bumpableVersions))
 
         Nothing ->
-            Task.io <| checkNewPackage root outline
+            Task.io <| checkNewPackage envData.root envData.outline
 
 
 
@@ -133,9 +146,9 @@ bump ((Env root _ _ registry ((Outline.PkgOutline pkg _ _ vsn _ _ _ _) as outlin
 
 
 checkNewPackage : FilePath -> Outline.PkgOutline -> Task Never ()
-checkNewPackage root ((Outline.PkgOutline _ _ _ version _ _ _ _) as outline) =
+checkNewPackage root ((Outline.PkgOutline pkgData) as outline) =
     IO.putStrLn Exit.newPackageOverview
-        |> Task.andThen (\_ -> validateNewPackageVersion root outline version)
+        |> Task.andThen (\_ -> validateNewPackageVersion root outline pkgData.version)
 
 
 validateNewPackageVersion : FilePath -> Outline.PkgOutline -> V.Version -> Task Never ()
@@ -166,9 +179,13 @@ type alias VersionSuggestion =
 
 
 suggestVersion : Env -> Task Exit.Bump ()
-suggestVersion (Env root cache manager _ ((Outline.PkgOutline pkg _ _ vsn _ _ _ _) as outline)) =
-    Task.eio (Exit.BumpCannotFindDocs vsn) (Diff.getDocs cache manager pkg vsn)
-        |> Task.andThen (initVersionSuggestion root outline vsn)
+suggestVersion (Env envData) =
+    let
+        (Outline.PkgOutline pkgData) =
+            envData.outline
+    in
+    Task.eio (Exit.BumpCannotFindDocs pkgData.version) (Diff.getDocs envData.cache envData.manager pkgData.name pkgData.version)
+        |> Task.andThen (initVersionSuggestion envData.root envData.outline pkgData.version)
         |> Task.andThen addNewDocs
         |> Task.andThen promptVersionChange
 
@@ -228,9 +245,9 @@ promptVersionChange ( suggestion, newDocs ) =
 
 
 generateDocs : FilePath -> Outline.PkgOutline -> Task Exit.Bump Docs.Documentation
-generateDocs root (Outline.PkgOutline _ _ _ _ exposed _ _ _) =
+generateDocs root (Outline.PkgOutline pkgData) =
     Task.eio Exit.BumpBadDetails (BW.withScope (\scope -> Details.load Reporting.silent scope root))
-        |> Task.andThen (buildDocsFromExposed root exposed)
+        |> Task.andThen (buildDocsFromExposed root pkgData.exposed)
 
 
 buildDocsFromExposed : FilePath -> Outline.Exposed -> Details.Details -> Task Exit.Bump Docs.Documentation
@@ -265,10 +282,10 @@ applyVersionChange root outline targetVersion approved =
 
 
 writeNewOutline : FilePath -> Outline.PkgOutline -> V.Version -> Task Never ()
-writeNewOutline root (Outline.PkgOutline name summary license _ exposed deps testDeps elmVersion) targetVersion =
+writeNewOutline root (Outline.PkgOutline pkgData) targetVersion =
     Outline.write root
         (Outline.Pkg
-            (Outline.PkgOutline name summary license targetVersion exposed deps testDeps elmVersion)
+            (Outline.PkgOutline { pkgData | version = targetVersion })
         )
 
 

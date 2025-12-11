@@ -9,6 +9,7 @@ module Compiler.AST.TypedOptimized exposing
     , Global(..)
     , GlobalGraph(..)
     , LocalGraph(..)
+    , LocalGraphData
     , Main(..)
     , Node(..)
     , Path(..)
@@ -40,6 +41,8 @@ The key difference from Optimized:
 
 -}
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Index as Index
@@ -53,9 +56,7 @@ import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 
 
 
@@ -274,18 +275,27 @@ type Choice
 
 
 type GlobalGraph
-    = GlobalGraph
-        (Dict (List String) Global Node)
-        (Dict String Name Int)
-        Annotations -- Include annotations for the whole graph
+    = GlobalGraph (Dict (List String) Global Node) (Dict String Name Int) Annotations
+
+
+
+-- Include annotations for the whole graph
+
+
+type alias LocalGraphData =
+    { main : Maybe Main
+    , nodes : Dict (List String) Global Node
+    , fields : Dict String Name Int
+    , annotations : Annotations
+    }
 
 
 type LocalGraph
-    = LocalGraph
-        (Maybe Main)
-        (Dict (List String) Global Node)
-        (Dict String Name Int)
-        Annotations -- Include annotations for this module
+    = LocalGraph LocalGraphData
+
+
+
+-- Include annotations for this module
 
 
 type Main
@@ -330,7 +340,7 @@ emptyGlobalGraph =
 
 emptyLocalGraph : LocalGraph
 emptyLocalGraph =
-    LocalGraph Nothing Dict.empty Dict.empty Dict.empty
+    LocalGraph { main = Nothing, nodes = Dict.empty, fields = Dict.empty, annotations = Dict.empty }
 
 
 addGlobalGraph : GlobalGraph -> GlobalGraph -> GlobalGraph
@@ -342,11 +352,11 @@ addGlobalGraph (GlobalGraph nodes1 fields1 ann1) (GlobalGraph nodes2 fields2 ann
 
 
 addLocalGraph : LocalGraph -> GlobalGraph -> GlobalGraph
-addLocalGraph (LocalGraph _ nodes1 fields1 ann1) (GlobalGraph nodes2 fields2 ann2) =
+addLocalGraph (LocalGraph data) (GlobalGraph nodes2 fields2 ann2) =
     GlobalGraph
-        (Dict.union nodes1 nodes2)
-        (Dict.union fields1 fields2)
-        (Dict.union ann1 ann2)
+        (Dict.union data.nodes nodes2)
+        (Dict.union data.fields fields2)
+        (Dict.union data.annotations ann2)
 
 
 
@@ -371,18 +381,21 @@ globalGraphDecoder =
 
 
 localGraphEncoder : LocalGraph -> Bytes.Encode.Encoder
-localGraphEncoder (LocalGraph main nodes fields annotations) =
+localGraphEncoder (LocalGraph data) =
     Bytes.Encode.sequence
-        [ BE.maybe mainEncoder main
-        , BE.assocListDict compareGlobal globalEncoder nodeEncoder nodes
-        , BE.assocListDict compare BE.string BE.int fields
-        , BE.assocListDict compare BE.string Can.annotationEncoder annotations
+        [ BE.maybe mainEncoder data.main
+        , BE.assocListDict compareGlobal globalEncoder nodeEncoder data.nodes
+        , BE.assocListDict compare BE.string BE.int data.fields
+        , BE.assocListDict compare BE.string Can.annotationEncoder data.annotations
         ]
 
 
 localGraphDecoder : Bytes.Decode.Decoder LocalGraph
 localGraphDecoder =
-    Bytes.Decode.map4 LocalGraph
+    Bytes.Decode.map4
+        (\main nodes fields annotations ->
+            LocalGraph { main = main, nodes = nodes, fields = fields, annotations = annotations }
+        )
         (BD.maybe mainDecoder)
         (BD.assocListDict toComparableGlobal globalDecoder nodeDecoder)
         (BD.assocListDict identity BD.string BD.int)

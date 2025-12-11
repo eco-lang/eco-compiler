@@ -443,10 +443,10 @@ destructHelp path (A.At region pattern) revDs =
             case args of
                 [ Can.PatternCtorArg _ _ arg ] ->
                     let
-                        (Can.Union _ _ _ opts) =
+                        (Can.Union unionData) =
                             union
                     in
-                    case opts of
+                    case unionData.opts of
                         Can.Normal ->
                             destructHelp (Opt.Index Index.first path) arg revDs
 

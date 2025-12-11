@@ -283,8 +283,8 @@ toAnnotation variable =
             (\userNames ->
                 State.runStateT (variableToCanType variable) (makeNameState userNames)
                     |> IO.map
-                        (\( tipe, NameState freeVars _ _ _ _ _ ) ->
-                            Can.Forall freeVars tipe
+                        (\( tipe, NameState nsData ) ->
+                            Can.Forall nsData.taken tipe
                         )
             )
 
@@ -584,13 +584,23 @@ termToErrorType term =
 -- MANAGE FRESH VARIABLE NAMES
 
 
+type alias NameStateData =
+    { taken : Dict String Name ()
+    , normals : Int
+    , numbers : Int
+    , comparables : Int
+    , appendables : Int
+    , compAppends : Int
+    }
+
+
 type NameState
-    = NameState (Dict String Name ()) Int Int Int Int Int
+    = NameState NameStateData
 
 
 makeNameState : Dict String Name Variable -> NameState
-makeNameState taken =
-    NameState (Dict.map (\_ _ -> ()) taken) 0 0 0 0 0
+makeNameState takenNames =
+    NameState { taken = Dict.map (\_ _ -> ()) takenNames, normals = 0, numbers = 0, comparables = 0, appendables = 0, compAppends = 0 }
 
 
 
@@ -599,10 +609,10 @@ makeNameState taken =
 
 getFreshVarName : StateT NameState Name
 getFreshVarName =
-    State.gets (\(NameState _ normals _ _ _ _) -> normals)
+    State.gets (\(NameState ns) -> ns.normals)
         |> State.andThen
             (\index ->
-                State.gets (\(NameState taken _ _ _ _ _) -> taken)
+                State.gets (\(NameState ns) -> ns.taken)
                     |> State.andThen
                         (\taken ->
                             let
@@ -610,8 +620,8 @@ getFreshVarName =
                                     getFreshVarNameHelp index taken
                             in
                             State.modify
-                                (\(NameState _ _ numbers comparables appendables compAppends) ->
-                                    NameState newTaken newIndex numbers comparables appendables compAppends
+                                (\(NameState ns) ->
+                                    NameState { ns | taken = newTaken, normals = newIndex }
                                 )
                                 |> State.map (\_ -> name)
                         )
@@ -641,30 +651,30 @@ getFreshSuperName super =
     case super of
         Number ->
             getFreshSuper "number"
-                (\(NameState _ _ numbers _ _ _) -> numbers)
-                (\index (NameState taken normals _ comparables appendables compAppends) ->
-                    NameState taken normals index comparables appendables compAppends
+                (\(NameState ns) -> ns.numbers)
+                (\index (NameState ns) ->
+                    NameState { ns | numbers = index }
                 )
 
         Comparable ->
             getFreshSuper "comparable"
-                (\(NameState _ _ _ comparables _ _) -> comparables)
-                (\index (NameState taken normals numbers _ appendables compAppends) ->
-                    NameState taken normals numbers index appendables compAppends
+                (\(NameState ns) -> ns.comparables)
+                (\index (NameState ns) ->
+                    NameState { ns | comparables = index }
                 )
 
         Appendable ->
             getFreshSuper "appendable"
-                (\(NameState _ _ _ _ appendables _) -> appendables)
-                (\index (NameState taken normals numbers comparables _ compAppends) ->
-                    NameState taken normals numbers comparables index compAppends
+                (\(NameState ns) -> ns.appendables)
+                (\index (NameState ns) ->
+                    NameState { ns | appendables = index }
                 )
 
         CompAppend ->
             getFreshSuper "compappend"
-                (\(NameState _ _ _ _ _ compAppends) -> compAppends)
-                (\index (NameState taken normals numbers comparables appendables _) ->
-                    NameState taken normals numbers comparables appendables index
+                (\(NameState ns) -> ns.compAppends)
+                (\index (NameState ns) ->
+                    NameState { ns | compAppends = index }
                 )
 
 
@@ -673,7 +683,7 @@ getFreshSuper prefix getter setter =
     State.gets getter
         |> State.andThen
             (\index ->
-                State.gets (\(NameState taken _ _ _ _ _) -> taken)
+                State.gets (\(NameState ns) -> ns.taken)
                     |> State.andThen
                         (\taken ->
                             let
@@ -681,8 +691,8 @@ getFreshSuper prefix getter setter =
                                     getFreshSuperHelp prefix index taken
                             in
                             State.modify
-                                (\(NameState _ normals numbers comparables appendables compAppends) ->
-                                    setter newIndex (NameState newTaken normals numbers comparables appendables compAppends)
+                                (\(NameState ns) ->
+                                    setter newIndex (NameState { ns | taken = newTaken })
                                 )
                                 |> State.map (\_ -> name)
                         )

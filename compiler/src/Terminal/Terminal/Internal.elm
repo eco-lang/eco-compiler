@@ -2,6 +2,7 @@ module Terminal.Terminal.Internal exposing
     ( ArgError(..)
     , Args(..)
     , Command(..)
+    , CommandData
     , CompleteArgs(..)
     , Error(..)
     , Expectation(..)
@@ -22,13 +23,24 @@ import Text.PrettyPrint.ANSI.Leijen exposing (Doc)
 -- COMMAND
 
 
+type alias CommandData =
+    { name : String
+    , summary : Summary
+    , details : String
+    , example : Doc
+    , args : Args
+    , flags : Flags
+    , run : List String -> Result Error (Task Never ())
+    }
+
+
 type Command
-    = Command String Summary String Doc Args Flags (List String -> Result Error (Task Never ()))
+    = Command CommandData
 
 
 toName : Command -> String
-toName (Command name _ _ _ _ _ _) =
-    name
+toName (Command cmdData) =
+    cmdData.name
 
 
 {-| The information that shows when you run the executable with no arguments.

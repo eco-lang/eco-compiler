@@ -1,5 +1,6 @@
 module Compiler.AST.Source exposing
     ( Alias(..)
+    , AliasData
     , C0Eol
     , C1
     , C1Eol
@@ -19,6 +20,7 @@ module Compiler.AST.Source exposing
     , ForceMultiline(..)
     , Import(..)
     , Infix(..)
+    , InfixData
     , Manager(..)
     , Module(..)
     , OpenCommentedList(..)
@@ -31,6 +33,7 @@ module Compiler.AST.Source exposing
     , Type_(..)
     , Union(..)
     , Value(..)
+    , ValueData
     , VarType(..)
     , c0EolDecoder
     , c0EolEncoder
@@ -59,6 +62,8 @@ module Compiler.AST.Source exposing
     , typeEncoder
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.AST.Utils.Binop as Binop
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Name as Name exposing (Name)
@@ -66,9 +71,7 @@ import Compiler.Parse.Primitives as P
 import Compiler.Parse.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Reporting.Annotation as A
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 
 
 
@@ -308,13 +311,27 @@ type Type_
 -- MODULE
 
 
+type alias ModuleData =
+    { syntaxVersion : SyntaxVersion
+    , name : Maybe (A.Located Name)
+    , exports : A.Located Exposing
+    , docs : Docs
+    , imports : List Import
+    , values : List (A.Located Value)
+    , unions : List (A.Located Union)
+    , aliases : List (A.Located Alias)
+    , infixes : List (A.Located Infix)
+    , effects : Effects
+    }
+
+
 type Module
-    = Module SyntaxVersion (Maybe (A.Located Name)) (A.Located Exposing) Docs (List Import) (List (A.Located Value)) (List (A.Located Union)) (List (A.Located Alias)) (List (A.Located Infix)) Effects
+    = Module ModuleData
 
 
 getName : Module -> Name
-getName (Module _ maybeName _ _ _ _ _ _ _ _) =
-    case maybeName of
+getName (Module data) =
+    case data.name of
         Just (A.At _ name) ->
             name
 
@@ -331,20 +348,45 @@ type Import
     = Import (C1 (A.Located Name)) (Maybe (C2 Name)) (C2 Exposing)
 
 
+type alias ValueData =
+    { comments : FComments
+    , name : C1 (A.Located Name)
+    , args : List (C1 Pattern)
+    , body : C1 Expr
+    , tipe : Maybe (C1 (C2 Type))
+    }
+
+
 type Value
-    = Value FComments (C1 (A.Located Name)) (List (C1 Pattern)) (C1 Expr) (Maybe (C1 (C2 Type)))
+    = Value ValueData
 
 
 type Union
     = Union (C2 (A.Located Name)) (List (C1 (A.Located Name))) (List (C2Eol ( A.Located Name, List (C1 Type) )))
 
 
+type alias AliasData =
+    { comments : FComments
+    , name : C2 (A.Located Name)
+    , args : List (C1 (A.Located Name))
+    , tipe : C1 Type
+    }
+
+
 type Alias
-    = Alias FComments (C2 (A.Located Name)) (List (C1 (A.Located Name))) (C1 Type)
+    = Alias AliasData
+
+
+type alias InfixData =
+    { op : C2 Name
+    , associativity : C1 Binop.Associativity
+    , precedence : C1 Binop.Precedence
+    , name : C1 Name
+    }
 
 
 type Infix
-    = Infix (C2 Name) (C1 Binop.Associativity) (C1 Binop.Precedence) (C1 Name)
+    = Infix InfixData
 
 
 type Port
@@ -651,24 +693,38 @@ internalTypeDecoder =
 
 
 moduleEncoder : Module -> Bytes.Encode.Encoder
-moduleEncoder (Module syntaxVersion maybeName exports docs imports values unions aliases binops effects) =
+moduleEncoder (Module data) =
     Bytes.Encode.sequence
-        [ SV.encoder syntaxVersion
-        , BE.maybe (A.locatedEncoder BE.string) maybeName
-        , A.locatedEncoder exposingEncoder exports
-        , docsEncoder docs
-        , BE.list importEncoder imports
-        , BE.list (A.locatedEncoder valueEncoder) values
-        , BE.list (A.locatedEncoder unionEncoder) unions
-        , BE.list (A.locatedEncoder aliasEncoder) aliases
-        , BE.list (A.locatedEncoder infixEncoder) binops
-        , effectsEncoder effects
+        [ SV.encoder data.syntaxVersion
+        , BE.maybe (A.locatedEncoder BE.string) data.name
+        , A.locatedEncoder exposingEncoder data.exports
+        , docsEncoder data.docs
+        , BE.list importEncoder data.imports
+        , BE.list (A.locatedEncoder valueEncoder) data.values
+        , BE.list (A.locatedEncoder unionEncoder) data.unions
+        , BE.list (A.locatedEncoder aliasEncoder) data.aliases
+        , BE.list (A.locatedEncoder infixEncoder) data.infixes
+        , effectsEncoder data.effects
         ]
 
 
 moduleDecoder : Bytes.Decode.Decoder Module
 moduleDecoder =
-    BD.map8 (\( syntaxVersion, maybeName ) ( exports, docs ) -> Module syntaxVersion maybeName exports docs)
+    BD.map8
+        (\( syntaxVersion, maybeName ) ( exports, docs ) imports values unions aliases infixes effects ->
+            Module
+                { syntaxVersion = syntaxVersion
+                , name = maybeName
+                , exports = exports
+                , docs = docs
+                , imports = imports
+                , values = values
+                , unions = unions
+                , aliases = aliases
+                , infixes = infixes
+                , effects = effects
+                }
+        )
         (BD.jsonPair SV.decoder (BD.maybe (A.locatedDecoder BD.string)))
         (BD.jsonPair (A.locatedDecoder exposingDecoder) docsDecoder)
         (BD.list importDecoder)
@@ -772,19 +828,19 @@ importDecoder =
 
 
 valueEncoder : Value -> Bytes.Encode.Encoder
-valueEncoder (Value formatComments name srcArgs body maybeType) =
+valueEncoder (Value v) =
     Bytes.Encode.sequence
-        [ fCommentsEncoder formatComments
-        , c1Encoder (A.locatedEncoder BE.string) name
-        , BE.list (c1Encoder patternEncoder) srcArgs
-        , c1Encoder exprEncoder body
-        , BE.maybe (c1Encoder (c2Encoder typeEncoder)) maybeType
+        [ fCommentsEncoder v.comments
+        , c1Encoder (A.locatedEncoder BE.string) v.name
+        , BE.list (c1Encoder patternEncoder) v.args
+        , c1Encoder exprEncoder v.body
+        , BE.maybe (c1Encoder (c2Encoder typeEncoder)) v.tipe
         ]
 
 
 valueDecoder : Bytes.Decode.Decoder Value
 valueDecoder =
-    Bytes.Decode.map5 Value
+    Bytes.Decode.map5 (\comments_ name_ args_ body_ tipe_ -> Value { comments = comments_, name = name_, args = args_, body = body_, tipe = tipe_ })
         fCommentsDecoder
         (c1Decoder (A.locatedDecoder BD.string))
         (BD.list (c1Decoder patternDecoder))
@@ -810,18 +866,21 @@ unionDecoder =
 
 
 aliasEncoder : Alias -> Bytes.Encode.Encoder
-aliasEncoder (Alias formatComments name args tipe) =
+aliasEncoder (Alias data) =
     Bytes.Encode.sequence
-        [ fCommentsEncoder formatComments
-        , c2Encoder (A.locatedEncoder BE.string) name
-        , BE.list (c1Encoder (A.locatedEncoder BE.string)) args
-        , c1Encoder typeEncoder tipe
+        [ fCommentsEncoder data.comments
+        , c2Encoder (A.locatedEncoder BE.string) data.name
+        , BE.list (c1Encoder (A.locatedEncoder BE.string)) data.args
+        , c1Encoder typeEncoder data.tipe
         ]
 
 
 aliasDecoder : Bytes.Decode.Decoder Alias
 aliasDecoder =
-    Bytes.Decode.map4 Alias
+    Bytes.Decode.map4
+        (\comments name args tipe ->
+            Alias { comments = comments, name = name, args = args, tipe = tipe }
+        )
         fCommentsDecoder
         (c2Decoder (A.locatedDecoder BD.string))
         (BD.list (c1Decoder (A.locatedDecoder BD.string)))
@@ -829,18 +888,21 @@ aliasDecoder =
 
 
 infixEncoder : Infix -> Bytes.Encode.Encoder
-infixEncoder (Infix op associativity precedence name) =
+infixEncoder (Infix data) =
     Bytes.Encode.sequence
-        [ c2Encoder BE.string op
-        , c1Encoder Binop.associativityEncoder associativity
-        , c1Encoder Binop.precedenceEncoder precedence
-        , c1Encoder BE.string name
+        [ c2Encoder BE.string data.op
+        , c1Encoder Binop.associativityEncoder data.associativity
+        , c1Encoder Binop.precedenceEncoder data.precedence
+        , c1Encoder BE.string data.name
         ]
 
 
 infixDecoder : Bytes.Decode.Decoder Infix
 infixDecoder =
-    Bytes.Decode.map4 Infix
+    Bytes.Decode.map4
+        (\op associativity precedence name ->
+            Infix { op = op, associativity = associativity, precedence = precedence, name = name }
+        )
         (c2Decoder BD.string)
         (c1Decoder Binop.associativityDecoder)
         (c1Decoder Binop.precedenceDecoder)

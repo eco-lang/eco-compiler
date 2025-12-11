@@ -5,14 +5,14 @@ module Utils.Impure exposing
     , task
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Http
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Crash exposing (crash)
 
 

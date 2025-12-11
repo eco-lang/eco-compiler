@@ -38,6 +38,8 @@ module Compiler.Reporting.Error.Syntax exposing
     , toSpaceReport
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Parse.Primitives exposing (Col, Row)
@@ -49,9 +51,7 @@ import Compiler.Reporting.Render.Code as Code
 import Compiler.Reporting.Report as Report
 import Hex
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 
 
 

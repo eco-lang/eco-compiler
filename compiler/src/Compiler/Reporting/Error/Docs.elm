@@ -8,6 +8,8 @@ module Compiler.Reporting.Error.Docs exposing
     , toReports
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Parse.Primitives exposing (Col, Row)
@@ -18,9 +20,7 @@ import Compiler.Reporting.Error.Syntax as E
 import Compiler.Reporting.Render.Code as Code
 import Compiler.Reporting.Report as Report
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 
 
 type Error

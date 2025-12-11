@@ -18,11 +18,11 @@ module Compiler.Reporting.Annotation exposing
     , zero
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 
 
 

@@ -143,35 +143,41 @@ checkModule syntaxVersion projectType module_ =
             in
             checkEffects projectType ports effects
                 |> Result.map
-                    (Src.Module syntaxVersion
-                        (Just name)
-                        exports
-                        (toDocs docs (List.map Src.c2Value module_.decls))
-                        (List.map Src.c1Value imports)
-                        values
-                        unions
-                        aliases
-                        (List.map Src.c1Value module_.infixes)
+                    (\checkedEffects ->
+                        Src.Module
+                            { syntaxVersion = syntaxVersion
+                            , name = Just name
+                            , exports = exports
+                            , docs = toDocs docs (List.map Src.c2Value module_.decls)
+                            , imports = List.map Src.c1Value imports
+                            , values = values
+                            , unions = unions
+                            , aliases = aliases
+                            , infixes = List.map Src.c1Value module_.infixes
+                            , effects = checkedEffects
+                            }
                     )
 
         Nothing ->
             Ok
-                (Src.Module syntaxVersion
-                    Nothing
-                    (A.At A.one (Src.Open [] []))
-                    (toDocs (Err A.one) (List.map Src.c2Value module_.decls))
-                    (List.map Src.c1Value imports)
-                    values
-                    unions
-                    aliases
-                    (List.map Src.c1Value module_.infixes)
-                    (case ports of
-                        [] ->
-                            Src.NoEffects
+                (Src.Module
+                    { syntaxVersion = syntaxVersion
+                    , name = Nothing
+                    , exports = A.At A.one (Src.Open [] [])
+                    , docs = toDocs (Err A.one) (List.map Src.c2Value module_.decls)
+                    , imports = List.map Src.c1Value imports
+                    , values = values
+                    , unions = unions
+                    , aliases = aliases
+                    , infixes = List.map Src.c1Value module_.infixes
+                    , effects =
+                        case ports of
+                            [] ->
+                                Src.NoEffects
 
-                        _ ->
-                            Src.Ports ports
-                    )
+                            _ ->
+                                Src.Ports ports
+                    }
                 )
 
 
@@ -266,14 +272,14 @@ getComments decls comments =
 
         decl :: otherDecls ->
             case decl of
-                Decl.Value c (A.At _ (Src.Value _ ( _, n ) _ _ _)) ->
-                    getComments otherDecls (addComment c n comments)
+                Decl.Value c (A.At _ (Src.Value v)) ->
+                    getComments otherDecls (addComment c (Tuple.second v.name) comments)
 
                 Decl.Union c (A.At _ (Src.Union ( _, n ) _ _)) ->
                     getComments otherDecls (addComment c n comments)
 
-                Decl.Alias c (A.At _ (Src.Alias _ ( _, n ) _ _)) ->
-                    getComments otherDecls (addComment c n comments)
+                Decl.Alias c (A.At _ (Src.Alias data)) ->
+                    getComments otherDecls (addComment c (Tuple.second data.name) comments)
 
                 Decl.Port c (Src.Port _ ( _, n ) _) ->
                     getComments otherDecls (addComment c n comments)
@@ -432,10 +438,16 @@ chompModuleHeaderCommon errCtx makeEffects initialComments start =
                                                                             chompModuleDocCommentSpace
                                                                                 |> P.map
                                                                                     (\docCommentResult ->
-                                                                                        buildHeader initialComments start effectEnd
-                                                                                            beforeNameComments name afterNameComments
-                                                                                            afterExportsComments exports
-                                                                                            (makeEffects start effectEnd) docCommentResult
+                                                                                        buildHeader initialComments
+                                                                                            start
+                                                                                            effectEnd
+                                                                                            beforeNameComments
+                                                                                            name
+                                                                                            afterNameComments
+                                                                                            afterExportsComments
+                                                                                            exports
+                                                                                            (makeEffects start effectEnd)
+                                                                                            docCommentResult
                                                                                     )
                                                                         )
                                                             )

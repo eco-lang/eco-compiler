@@ -39,24 +39,24 @@ shader ((A.Position row col) as start) =
 parseBlock : Parser E.Expr String
 parseBlock =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 pos6 : Int
                 pos6 =
-                    pos + 6
+                    st.pos + 6
             in
             if
-                (pos6 <= end)
-                    && (P.unsafeIndex src pos == '[')
-                    && (P.unsafeIndex src (pos + 1) == 'g')
-                    && (P.unsafeIndex src (pos + 2) == 'l')
-                    && (P.unsafeIndex src (pos + 3) == 's')
-                    && (P.unsafeIndex src (pos + 4) == 'l')
-                    && (P.unsafeIndex src (pos + 5) == '|')
+                (pos6 <= st.end)
+                    && (P.unsafeIndex st.src st.pos == '[')
+                    && (P.unsafeIndex st.src (st.pos + 1) == 'g')
+                    && (P.unsafeIndex st.src (st.pos + 2) == 'l')
+                    && (P.unsafeIndex st.src (st.pos + 3) == 's')
+                    && (P.unsafeIndex st.src (st.pos + 4) == 'l')
+                    && (P.unsafeIndex st.src (st.pos + 5) == '|')
             then
                 let
                     ( ( status, newPos ), ( newRow, newCol ) ) =
-                        eatShader src pos6 end row (col + 6)
+                        eatShader st.src pos6 st.end st.row (st.col + 6)
                 in
                 case status of
                     Good ->
@@ -71,19 +71,19 @@ parseBlock =
 
                             block : String
                             block =
-                                String.left len (String.dropLeft off src)
+                                String.left len (String.dropLeft off st.src)
 
                             newState : P.State
                             newState =
-                                P.State src (newPos + 2) end indent newRow (newCol + 2)
+                                P.State { st | pos = newPos + 2, row = newRow, col = newCol + 2 }
                         in
                         P.Cok block newState
 
                     Unending ->
-                        P.Cerr row col E.EndlessShader
+                        P.Cerr st.row st.col E.EndlessShader
 
             else
-                P.Eerr row col E.Start
+                P.Eerr st.row st.col E.Start
 
 
 type Status

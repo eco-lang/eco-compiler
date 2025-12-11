@@ -15,6 +15,8 @@ module Compiler.Reporting.Error.Type exposing
     , typeReplace
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
@@ -28,9 +30,7 @@ import Compiler.Reporting.Suggest as Suggest
 import Compiler.Type.Error as T
 import Data.Map as Dict exposing (Dict)
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 
 
 

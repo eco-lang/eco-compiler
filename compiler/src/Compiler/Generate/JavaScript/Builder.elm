@@ -1,10 +1,12 @@
 module Compiler.Generate.JavaScript.Builder exposing
     ( Builder(..)
+    , BuilderData
     , Case(..)
     , Expr(..)
     , InfixOp(..)
     , LValue(..)
     , Mapping(..)
+    , MappingData
     , PrefixOp(..)
     , Stmt(..)
     , addByteString
@@ -1012,31 +1014,50 @@ fromInfix op =
 -- BUILDER
 
 
+type alias BuilderData =
+    { revKernels : List String
+    , revBuilders : String
+    , currentLine : Int
+    , currentCol : Int
+    , mappings : List Mapping
+    }
+
+
 type Builder
-    = Builder (List String) String Int Int (List Mapping)
+    = Builder BuilderData
+
+
+type alias MappingData =
+    { srcLine : Int
+    , srcCol : Int
+    , srcModule : IO.Canonical
+    , srcName : Maybe Name.Name
+    , genLine : Int
+    , genCol : Int
+    }
 
 
 type Mapping
-    = Mapping Int Int IO.Canonical (Maybe Name.Name) Int Int
+    = Mapping MappingData
 
 
 emptyBuilder : Int -> Builder
-emptyBuilder currentLine =
-    Builder [] "" currentLine 1 []
+emptyBuilder startLine =
+    Builder { revKernels = [], revBuilders = "", currentLine = startLine, currentCol = 1, mappings = [] }
 
 
 addAscii : String -> Builder -> Builder
-addAscii ascii (Builder revKernels revBuilders currentLine currentCol mappings) =
-    Builder revKernels (revBuilders ++ ascii) currentLine (currentCol + String.length ascii) mappings
+addAscii ascii (Builder b) =
+    Builder { b | revBuilders = b.revBuilders ++ ascii, currentCol = b.currentCol + String.length ascii }
 
 
 addKernel : String -> Builder -> Builder
-addKernel kernel (Builder revKernels revBuilders currentLine currentCol mappings) =
-    Builder (kernel :: revKernels) revBuilders currentLine currentCol mappings
+addKernel kernel (Builder b) =
+    Builder { b | revKernels = kernel :: b.revKernels }
 
 
 addByteString : String -> Builder -> Builder
-addByteString str (Builder revKernels revBuilders currentLine currentCol mappings) =
+addByteString str (Builder b) =
     let
         bsLines : Int
         bsLines =
@@ -1048,14 +1069,14 @@ addByteString str (Builder revKernels revBuilders currentLine currentCol mapping
             bsSize =
                 String.length str
         in
-        Builder revKernels (revBuilders ++ str) currentLine (currentCol + bsSize) mappings
+        Builder { b | revBuilders = b.revBuilders ++ str, currentCol = b.currentCol + bsSize }
 
     else
-        Builder revKernels (revBuilders ++ str) (currentLine + bsLines) 1 mappings
+        Builder { b | revBuilders = b.revBuilders ++ str, currentLine = b.currentLine + bsLines, currentCol = 1 }
 
 
 addTrackedByteString : IO.Canonical -> A.Position -> String -> Builder -> Builder
-addTrackedByteString moduleName (A.Position line col) str (Builder revKernels revBuilders currentLine currentCol mappings) =
+addTrackedByteString moduleName (A.Position line col) str (Builder b) =
     let
         bsLines : Int
         bsLines =
@@ -1063,8 +1084,8 @@ addTrackedByteString moduleName (A.Position line col) str (Builder revKernels re
 
         newMappings : List Mapping
         newMappings =
-            Mapping line col moduleName Nothing currentLine currentCol
-                :: mappings
+            Mapping { srcLine = line, srcCol = col, srcModule = moduleName, srcName = Nothing, genLine = b.currentLine, genCol = b.currentCol }
+                :: b.mappings
     in
     if bsLines == 0 then
         let
@@ -1072,39 +1093,41 @@ addTrackedByteString moduleName (A.Position line col) str (Builder revKernels re
             bsSize =
                 String.length str
         in
-        Builder revKernels (revBuilders ++ str) currentLine (currentCol + bsSize) newMappings
+        Builder { b | revBuilders = b.revBuilders ++ str, currentCol = b.currentCol + bsSize, mappings = newMappings }
 
     else
-        Builder revKernels (revBuilders ++ str) (currentLine + bsLines) 1 newMappings
+        Builder { b | revBuilders = b.revBuilders ++ str, currentLine = b.currentLine + bsLines, currentCol = 1, mappings = newMappings }
 
 
 addName : IO.Canonical -> A.Position -> Name.Name -> Name.Name -> Builder -> Builder
-addName moduleName (A.Position line col) name genName (Builder revKernels revBuilders currentLine currentCol mappings) =
+addName moduleName (A.Position line col) name genName (Builder b) =
     let
         size : Int
         size =
             String.length genName
     in
-    Builder revKernels
-        (revBuilders ++ genName)
-        currentLine
-        (currentCol + size)
-        (Mapping line col moduleName (Just name) currentLine currentCol
-            :: mappings
-        )
+    Builder
+        { b
+            | revBuilders = b.revBuilders ++ genName
+            , currentCol = b.currentCol + size
+            , mappings =
+                Mapping { srcLine = line, srcCol = col, srcModule = moduleName, srcName = Just name, genLine = b.currentLine, genCol = b.currentCol }
+                    :: b.mappings
+        }
 
 
 addTrackedDot : IO.Canonical -> A.Position -> Builder -> Builder
-addTrackedDot moduleName (A.Position line col) (Builder revKernels revBuilders currentLine currentCol mappings) =
-    Builder revKernels
-        (revBuilders ++ ".")
-        currentLine
-        (currentCol + 1)
-        (Mapping line col moduleName Nothing currentLine currentCol
-            :: mappings
-        )
+addTrackedDot moduleName (A.Position line col) (Builder b) =
+    Builder
+        { b
+            | revBuilders = b.revBuilders ++ "."
+            , currentCol = b.currentCol + 1
+            , mappings =
+                Mapping { srcLine = line, srcCol = col, srcModule = moduleName, srcName = Nothing, genLine = b.currentLine, genCol = b.currentCol }
+                    :: b.mappings
+        }
 
 
 addLine : Builder -> Builder
-addLine (Builder revKernels revBuilders currentLine _ mappings) =
-    Builder revKernels (revBuilders ++ "\n") (currentLine + 1) 1 mappings
+addLine (Builder b) =
+    Builder { b | revBuilders = b.revBuilders ++ "\n", currentLine = b.currentLine + 1, currentCol = 1 }

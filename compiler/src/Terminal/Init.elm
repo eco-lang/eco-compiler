@@ -139,10 +139,10 @@ initWithEnv package eitherEnv =
         Err problem ->
             Task.succeed (Err (Exit.InitRegistryProblem problem))
 
-        Ok (Solver.Env cache _ connection registry) ->
+        Ok (Solver.Env solverEnv) ->
             let
                 env =
-                    InitEnv cache connection registry
+                    InitEnv solverEnv.cache solverEnv.connection solverEnv.registry
             in
             verify env.cache env.connection env.registry defaults
                 |> Task.andThen (verifyTestDefaults env package)
@@ -228,14 +228,15 @@ buildPackageOutline initDetails =
     in
     Outline.Pkg <|
         Outline.PkgOutline
-            Pkg.dummyName
-            Outline.defaultSummary
-            Licenses.bsd3
-            V.one
-            (Outline.ExposedList [])
-            directs
-            testDirects
-            Con.defaultElm
+            { name = Pkg.dummyName
+            , summary = Outline.defaultSummary
+            , license = Licenses.bsd3
+            , version = V.one
+            , exposed = Outline.ExposedList []
+            , deps = directs
+            , testDeps = testDirects
+            , elm = Con.defaultElm
+            }
 
 
 buildAppOutline : InitDetails -> Outline.Outline
@@ -268,12 +269,14 @@ buildAppOutline initDetails =
                 |> flip Dict.diff indirects
     in
     Outline.App <|
-        Outline.AppOutline V.elmCompiler
-            (NE.Nonempty (Outline.RelativeSrcDir "src") [])
-            directs
-            indirects
-            testDirects
-            testIndirects
+        Outline.AppOutline
+            { elm = V.elmCompiler
+            , srcDirs = NE.Nonempty (Outline.RelativeSrcDir "src") []
+            , depsDirect = directs
+            , depsIndirect = indirects
+            , testDirect = testDirects
+            , testIndirect = testIndirects
+            }
 
 
 verify :

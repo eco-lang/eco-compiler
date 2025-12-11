@@ -42,12 +42,12 @@ type alias Annotations =
 
 
 optimize : Annotations -> Can.Module -> MResult i (List W.Warning) TOpt.LocalGraph
-optimize annotations (Can.Module home _ _ decls unions aliases _ effects) =
-    addDecls home annotations decls <|
-        addEffects home annotations effects <|
-            addUnions home annotations unions <|
-                addAliases home annotations aliases <|
-                    TOpt.LocalGraph Nothing Dict.empty Dict.empty annotations
+optimize annotations (Can.Module canData) =
+    addDecls canData.name annotations canData.decls <|
+        addEffects canData.name annotations canData.effects <|
+            addUnions canData.name annotations canData.unions <|
+                addAliases canData.name annotations canData.aliases <|
+                    TOpt.LocalGraph { main = Nothing, nodes = Dict.empty, fields = Dict.empty, annotations = annotations }
 
 
 
@@ -59,36 +59,36 @@ type alias Nodes =
 
 
 addUnions : IO.Canonical -> Annotations -> Dict String Name.Name Can.Union -> TOpt.LocalGraph -> TOpt.LocalGraph
-addUnions home annotations unions (TOpt.LocalGraph main nodes fields ann) =
-    TOpt.LocalGraph main (Dict.foldr compare (\_ -> addUnion home annotations) nodes unions) fields ann
+addUnions home annotations unions (TOpt.LocalGraph data) =
+    TOpt.LocalGraph { data | nodes = Dict.foldr compare (\_ -> addUnion home annotations) data.nodes unions }
 
 
 addUnion : IO.Canonical -> Annotations -> Can.Union -> Nodes -> Nodes
-addUnion home annotations (Can.Union _ ctors _ opts) nodes =
-    List.foldl (addCtorNode home annotations opts) nodes ctors
+addUnion home annotations (Can.Union unionData) nodes =
+    List.foldl (addCtorNode home annotations unionData.opts) nodes unionData.alts
 
 
 addCtorNode : IO.Canonical -> Annotations -> Can.CtorOpts -> Can.Ctor -> Nodes -> Nodes
-addCtorNode home annotations opts (Can.Ctor name index numArgs ctorType) nodes =
+addCtorNode home annotations opts (Can.Ctor c) nodes =
     let
         -- Build the constructor type from its arguments and result type
         ctorFullType : Can.Type
         ctorFullType =
-            buildCtorType ctorType
+            buildCtorType c.args
 
         node : TOpt.Node
         node =
             case opts of
                 Can.Normal ->
-                    TOpt.Ctor index numArgs ctorFullType
+                    TOpt.Ctor c.index c.numArgs ctorFullType
 
                 Can.Unbox ->
                     TOpt.Box ctorFullType
 
                 Can.Enum ->
-                    TOpt.Enum index ctorFullType
+                    TOpt.Enum c.index ctorFullType
     in
-    Dict.insert TOpt.toComparableGlobal (TOpt.Global home name) node nodes
+    Dict.insert TOpt.toComparableGlobal (TOpt.Global home c.name) node nodes
 
 
 {-| Build the full constructor type.
@@ -117,7 +117,7 @@ addAliases home annotations aliases graph =
 
 
 addAlias : IO.Canonical -> Annotations -> Name.Name -> Can.Alias -> TOpt.LocalGraph -> TOpt.LocalGraph
-addAlias home annotations name (Can.Alias _ tipe) ((TOpt.LocalGraph main nodes fieldCounts ann) as graph) =
+addAlias home annotations name (Can.Alias _ tipe) ((TOpt.LocalGraph graphData) as graph) =
     case tipe of
         Can.TRecord fields Nothing ->
             let
@@ -153,10 +153,10 @@ addAlias home annotations name (Can.Alias _ tipe) ((TOpt.LocalGraph main nodes f
                     TOpt.Define function EverySet.empty funcType
             in
             TOpt.LocalGraph
-                main
-                (Dict.insert TOpt.toComparableGlobal (TOpt.Global home name) node nodes)
-                (Dict.foldr compare addRecordCtorField fieldCounts fields)
-                ann
+                { graphData
+                    | nodes = Dict.insert TOpt.toComparableGlobal (TOpt.Global home name) node graphData.nodes
+                    , fields = Dict.foldr compare addRecordCtorField graphData.fields fields
+                }
 
         _ ->
             graph
@@ -182,7 +182,7 @@ addRecordCtorField name _ fields =
 
 
 addEffects : IO.Canonical -> Annotations -> Can.Effects -> TOpt.LocalGraph -> TOpt.LocalGraph
-addEffects home annotations effects ((TOpt.LocalGraph main nodes fields ann) as graph) =
+addEffects home annotations effects ((TOpt.LocalGraph graphData) as graph) =
     case effects of
         Can.NoEffects ->
             graph
@@ -213,18 +213,18 @@ addEffects home annotations effects ((TOpt.LocalGraph main nodes fields ann) as 
                     case manager of
                         Can.Cmd _ ->
                             Dict.insert TOpt.toComparableGlobal cmd link <|
-                                Dict.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Cmd) nodes
+                                Dict.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Cmd) graphData.nodes
 
                         Can.Sub _ ->
                             Dict.insert TOpt.toComparableGlobal sub link <|
-                                Dict.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Sub) nodes
+                                Dict.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Sub) graphData.nodes
 
                         Can.Fx _ _ ->
                             Dict.insert TOpt.toComparableGlobal cmd link <|
                                 Dict.insert TOpt.toComparableGlobal sub link <|
-                                    Dict.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Fx) nodes
+                                    Dict.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Fx) graphData.nodes
             in
-            TOpt.LocalGraph main newNodes fields ann
+            TOpt.LocalGraph { graphData | nodes = newNodes }
 
 
 addPort : IO.Canonical -> Annotations -> Name.Name -> Can.Port -> TOpt.LocalGraph -> TOpt.LocalGraph
@@ -276,12 +276,12 @@ lookupAnnotationType name annotations =
 
 
 addToGraph : TOpt.Global -> TOpt.Node -> Dict String Name.Name Int -> TOpt.LocalGraph -> TOpt.LocalGraph
-addToGraph name node fieldCounts (TOpt.LocalGraph main nodes fields ann) =
+addToGraph name node fieldCounts (TOpt.LocalGraph data) =
     TOpt.LocalGraph
-        main
-        (Dict.insert TOpt.toComparableGlobal name node nodes)
-        (Utils.mapUnionWith identity compare (+) fieldCounts fields)
-        ann
+        { data
+            | nodes = Dict.insert TOpt.toComparableGlobal name node data.nodes
+            , fields = Utils.mapUnionWith identity compare (+) fieldCounts data.fields
+        }
 
 
 
@@ -379,7 +379,7 @@ addDefHelp :
     -> Maybe ( List ( Can.Pattern, Can.Type ), Can.Type )
     -> TOpt.LocalGraph
     -> MResult i w TOpt.LocalGraph
-addDefHelp region annotations home name args body maybeTypedArgs ((TOpt.LocalGraph _ nodes fieldCounts ann) as graph) =
+addDefHelp region annotations home name args body maybeTypedArgs ((TOpt.LocalGraph graphData) as graph) =
     if name /= Name.main_ then
         ReportingResult.ok (addDefNode home annotations region name args body maybeTypedArgs EverySet.empty graph)
 
@@ -391,7 +391,7 @@ addDefHelp region annotations home name args body maybeTypedArgs ((TOpt.LocalGra
             addMain : ( EverySet (List String) TOpt.Global, Dict String Name.Name Int, TOpt.Main ) -> TOpt.LocalGraph
             addMain ( deps, localFields, main ) =
                 addDefNode home annotations region name args body maybeTypedArgs deps <|
-                    TOpt.LocalGraph (Just main) nodes (Utils.mapUnionWith identity compare (+) localFields fieldCounts) ann
+                    TOpt.LocalGraph { graphData | main = Just main, fields = Utils.mapUnionWith identity compare (+) localFields graphData.fields }
         in
         case Type.deepDealias tipe of
             Can.TType hm nm [ _ ] ->
@@ -525,7 +525,7 @@ type State
 
 
 addRecDefs : IO.Canonical -> Annotations -> List Can.Def -> TOpt.LocalGraph -> TOpt.LocalGraph
-addRecDefs home annotations defs (TOpt.LocalGraph main nodes fieldCounts ann) =
+addRecDefs home annotations defs (TOpt.LocalGraph graphData) =
     let
         names : List Name.Name
         names =
@@ -550,10 +550,10 @@ addRecDefs home annotations defs (TOpt.LocalGraph main nodes fieldCounts ann) =
                     defs
     in
     TOpt.LocalGraph
-        main
-        (Dict.insert TOpt.toComparableGlobal cycleName (TOpt.Cycle names values functions deps) (Dict.union links nodes))
-        (Utils.mapUnionWith identity compare (+) localFields fieldCounts)
-        ann
+        { graphData
+            | nodes = Dict.insert TOpt.toComparableGlobal cycleName (TOpt.Cycle names values functions deps) (Dict.union links graphData.nodes)
+            , fields = Utils.mapUnionWith identity compare (+) localFields graphData.fields
+        }
 
 
 toName : Can.Def -> Name.Name

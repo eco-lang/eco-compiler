@@ -13,10 +13,10 @@ module Compiler.Data.Index exposing
     , zeroBasedEncoder
     )
 
-import Utils.Bytes.Decode as BD
 import Bytes.Decode
-import Utils.Bytes.Encode as BE
 import Bytes.Encode
+import Utils.Bytes.Decode as BD
+import Utils.Bytes.Encode as BE
 
 
 

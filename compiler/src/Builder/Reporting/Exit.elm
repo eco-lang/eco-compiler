@@ -44,6 +44,8 @@ module Builder.Reporting.Exit exposing
 import Builder.File as File
 import Builder.Http as Http
 import Builder.Reporting.Exit.Help as Help
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.Data.Name as N
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Elm.Constraint as C
@@ -63,9 +65,7 @@ import Compiler.Reporting.Render.Code as Code
 import Data.Map as Dict exposing (Dict)
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Main as Utils exposing (FilePath)
 
 

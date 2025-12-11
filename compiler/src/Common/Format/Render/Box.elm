@@ -815,8 +815,8 @@ formatModu modu =
         body =
             List.map BodyComment moduleHeaderComments
                 ++ List.concatMap
-                    (\( commments, A.At _ (Src.Infix op associativity precedence name) ) ->
-                        Entry (Fixity associativity precedence op name) :: List.map BodyComment commments
+                    (\( commments, A.At _ (Src.Infix data) ) ->
+                        Entry (Fixity data.associativity data.precedence data.op data.name) :: List.map BodyComment commments
                     )
                     (List.reverse modu.infixes)
                 ++ declarations
@@ -853,13 +853,13 @@ formatModu modu =
                                                 ( ( preCmdComments, postCmdComments ), ( ( preEqualCmdComments, postEqualCmdComments ), cmdLocated ) ) =
                                                     cmdArg
 
-                                                ( A.At (A.Region (A.Position cmdTypeStart cmdTypeEnd) _) cmdType ) =
+                                                (A.At (A.Region (A.Position cmdTypeStart cmdTypeEnd) _) cmdType) =
                                                     cmdLocated
 
                                                 ( ( preSubComments, postSubComments ), ( ( preEqualSubComments, postEqualSubComments ), subLocated ) ) =
                                                     subArg
 
-                                                ( A.At (A.Region (A.Position subTypeStart subTypeEnd) _) subType ) =
+                                                (A.At (A.Region (A.Position subTypeStart subTypeEnd) _) subType) =
                                                     subLocated
                                             in
                                             [ ( ( cmdTypeStart, cmdTypeEnd )
@@ -943,7 +943,23 @@ declToDeclarations : Src.C2 Decl.Decl -> List (TopLevelStructure Declaration)
 declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
     List.map BodyComment preDeclComments
         ++ (case decl of
-                Decl.Value maybeDocs (A.At _ (Src.Value preValueComments ( postNameComments, A.At nameRegion name ) srcArgs ( valueBodyComments, valueBody ) maybeType)) ->
+                Decl.Value maybeDocs (A.At _ (Src.Value valueData)) ->
+                    let
+                        preValueComments =
+                            valueData.comments
+
+                        ( postNameComments, A.At nameRegion name ) =
+                            valueData.name
+
+                        srcArgs =
+                            valueData.args
+
+                        ( valueBodyComments, valueBody ) =
+                            valueData.body
+
+                        maybeType =
+                            valueData.tipe
+                    in
                     (maybeDocs
                         |> Maybe.map
                             (\(Src.Comment (P.Snippet { fptr, offset, length })) ->
@@ -1019,15 +1035,15 @@ declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
                         ++ Entry (Datatype ( nameComments, NameWithArgs name (List.map (Src.c1map A.toValue) args) ) tags)
                         :: List.map BodyComment postTagsComments
 
-                Decl.Alias maybeDocs (A.At _ (Src.Alias comments name args tipe)) ->
+                Decl.Alias maybeDocs (A.At _ (Src.Alias aliasData)) ->
                     let
                         nameWithArgs : Src.C2 (NameWithArgs Name Name)
                         nameWithArgs =
                             Src.c2map
                                 (\(A.At _ n) ->
-                                    NameWithArgs n (List.map (Src.c1map A.toValue) args)
+                                    NameWithArgs n (List.map (Src.c1map A.toValue) aliasData.args)
                                 )
-                                name
+                                aliasData.name
                     in
                     (maybeDocs
                         |> Maybe.map
@@ -1049,7 +1065,7 @@ declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
                             )
                         |> Maybe.withDefault []
                     )
-                        ++ [ Entry (TypeAlias comments nameWithArgs tipe) ]
+                        ++ [ Entry (TypeAlias aliasData.comments nameWithArgs aliasData.tipe) ]
 
                 Decl.Port maybeDocs (Src.Port comments name tipe) ->
                     (maybeDocs

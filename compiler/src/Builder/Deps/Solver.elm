@@ -3,9 +3,11 @@ module Builder.Deps.Solver exposing
     , Connection(..)
     , Details(..)
     , Env(..)
+    , EnvData
     , Solver
     , SolverResult(..)
     , State
+    , StateData
     , addToApp
     , addToTestApp
     , envDecoder
@@ -22,6 +24,8 @@ import Builder.File as File
 import Builder.Http as Http
 import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.Elm.Constraint as C
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
@@ -29,9 +33,7 @@ import Compiler.Json.Decode as D
 import Data.Map as Dict exposing (Dict)
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 import Utils.Task.Extra as Task
@@ -51,8 +53,16 @@ type InnerSolver a
     | ISErr Exit.Solver
 
 
+type alias StateData =
+    { cache : Stuff.PackageCache
+    , connection : Connection
+    , registry : Registry.Registry
+    , cDict : Dict ( ( String, String ), ( Int, Int, Int ) ) ( Pkg.Name, V.Version ) Constraints
+    }
+
+
 type State
-    = State Stuff.PackageCache Connection Registry.Registry (Dict ( ( String, String ), ( Int, Int, Int ) ) ( Pkg.Name, V.Version ) Constraints)
+    = State StateData
 
 
 type Constraints
@@ -88,7 +98,7 @@ verify cache connection registry constraints =
     Stuff.withRegistryLock cache <|
         case try constraints of
             Solver solver ->
-                solver (State cache connection registry Dict.empty)
+                solver (State { cache = cache, connection = connection, registry = registry, cDict = Dict.empty })
                     |> Task.map
                         (\result ->
                             case result of
@@ -104,8 +114,8 @@ verify cache connection registry constraints =
 
 
 addDeps : State -> Pkg.Name -> V.Version -> Details
-addDeps (State _ _ _ constraints) name vsn =
-    case Dict.get (Tuple.mapSecond V.toComparable) ( name, vsn ) constraints of
+addDeps (State st) name vsn =
+    case Dict.get (Tuple.mapSecond V.toComparable) ( name, vsn ) st.cDict of
         Just (Constraints _ deps) ->
             Details vsn deps
 
@@ -168,16 +178,16 @@ getTransitive constraints solution unvisited visited =
 
 
 addToApp : Stuff.PackageCache -> Connection -> Registry.Registry -> Pkg.Name -> Outline.AppOutline -> Bool -> Task Never (SolverResult AppSolution)
-addToApp cache connection registry pkg (Outline.AppOutline elm srcDirs direct indirect testDirect testIndirect) forTest =
+addToApp cache connection registry pkg (Outline.AppOutline appData) forTest =
     Stuff.withRegistryLock cache <|
         let
             allIndirects : Dict ( String, String ) Pkg.Name V.Version
             allIndirects =
-                Dict.union indirect testIndirect
+                Dict.union appData.depsIndirect appData.testIndirect
 
             allDirects : Dict ( String, String ) Pkg.Name V.Version
             allDirects =
-                Dict.union direct testDirect
+                Dict.union appData.depsDirect appData.testDirect
 
             allDeps : Dict ( String, String ) Pkg.Name V.Version
             allDeps =
@@ -197,37 +207,37 @@ addToApp cache connection registry pkg (Outline.AppOutline elm srcDirs direct in
                 ]
         of
             Solver solver ->
-                solver (State cache connection registry Dict.empty)
+                solver (State { cache = cache, connection = connection, registry = registry, cDict = Dict.empty })
                     |> Task.map
                         (\result ->
                             case result of
-                                ISOk (State _ _ _ constraints) new ->
+                                ISOk (State st) new ->
                                     let
                                         d : Dict ( String, String ) Pkg.Name V.Version
                                         d =
                                             if forTest then
-                                                Dict.intersection Pkg.compareName new direct
+                                                Dict.intersection Pkg.compareName new appData.depsDirect
 
                                             else
-                                                Dict.intersection Pkg.compareName new (Dict.insert identity pkg V.one direct)
+                                                Dict.intersection Pkg.compareName new (Dict.insert identity pkg V.one appData.depsDirect)
 
                                         i : Dict ( String, String ) Pkg.Name V.Version
                                         i =
-                                            Dict.diff (getTransitive constraints new (Dict.toList compare d) Dict.empty) d
+                                            Dict.diff (getTransitive st.cDict new (Dict.toList compare d) Dict.empty) d
 
                                         td : Dict ( String, String ) Pkg.Name V.Version
                                         td =
                                             if forTest then
-                                                Dict.intersection Pkg.compareName new (Dict.insert identity pkg V.one testDirect)
+                                                Dict.intersection Pkg.compareName new (Dict.insert identity pkg V.one appData.testDirect)
 
                                             else
-                                                Dict.intersection Pkg.compareName new (Dict.remove identity pkg testDirect)
+                                                Dict.intersection Pkg.compareName new (Dict.remove identity pkg appData.testDirect)
 
                                         ti : Dict ( String, String ) Pkg.Name V.Version
                                         ti =
                                             Dict.diff new (Utils.mapUnions [ d, i, td ])
                                     in
-                                    SolverOk (AppSolution allDeps new (Outline.AppOutline elm srcDirs d i td ti))
+                                    SolverOk (AppSolution allDeps new (Outline.AppOutline { appData | depsDirect = d, depsIndirect = i, testDirect = td, testIndirect = ti }))
 
                                 ISBack _ ->
                                     noSolution connection
@@ -242,16 +252,16 @@ addToApp cache connection registry pkg (Outline.AppOutline elm srcDirs direct in
 
 
 addToTestApp : Stuff.PackageCache -> Connection -> Registry.Registry -> Pkg.Name -> C.Constraint -> Outline.AppOutline -> Task Never (SolverResult AppSolution)
-addToTestApp cache connection registry pkg con (Outline.AppOutline elm srcDirs direct indirect testDirect testIndirect) =
+addToTestApp cache connection registry pkg con (Outline.AppOutline appData) =
     Stuff.withRegistryLock cache <|
         let
             allIndirects : Dict ( String, String ) Pkg.Name V.Version
             allIndirects =
-                Dict.union indirect testIndirect
+                Dict.union appData.depsIndirect appData.testIndirect
 
             allDirects : Dict ( String, String ) Pkg.Name V.Version
             allDirects =
-                Dict.union direct testDirect
+                Dict.union appData.depsDirect appData.testDirect
 
             allDeps : Dict ( String, String ) Pkg.Name V.Version
             allDeps =
@@ -271,29 +281,29 @@ addToTestApp cache connection registry pkg con (Outline.AppOutline elm srcDirs d
                 ]
         of
             Solver solver ->
-                solver (State cache connection registry Dict.empty)
+                solver (State { cache = cache, connection = connection, registry = registry, cDict = Dict.empty })
                     |> Task.map
                         (\result ->
                             case result of
-                                ISOk (State _ _ _ constraints) new ->
+                                ISOk (State st) new ->
                                     let
                                         d : Dict ( String, String ) Pkg.Name V.Version
                                         d =
-                                            Dict.intersection Pkg.compareName new (Dict.insert identity pkg V.one direct)
+                                            Dict.intersection Pkg.compareName new (Dict.insert identity pkg V.one appData.depsDirect)
 
                                         i : Dict ( String, String ) Pkg.Name V.Version
                                         i =
-                                            Dict.diff (getTransitive constraints new (Dict.toList compare d) Dict.empty) d
+                                            Dict.diff (getTransitive st.cDict new (Dict.toList compare d) Dict.empty) d
 
                                         td : Dict ( String, String ) Pkg.Name V.Version
                                         td =
-                                            Dict.intersection Pkg.compareName new (Dict.remove identity pkg testDirect)
+                                            Dict.intersection Pkg.compareName new (Dict.remove identity pkg appData.testDirect)
 
                                         ti : Dict ( String, String ) Pkg.Name V.Version
                                         ti =
                                             Dict.diff new (Utils.mapUnions [ d, i, td ])
                                     in
-                                    SolverOk (AppSolution allDeps new (Outline.AppOutline elm srcDirs d i td ti))
+                                    SolverOk (AppSolution allDeps new (Outline.AppOutline { appData | depsDirect = d, depsIndirect = i, testDirect = td, testIndirect = ti }))
 
                                 ISBack _ ->
                                     noSolution connection
@@ -308,24 +318,24 @@ addToTestApp cache connection registry pkg con (Outline.AppOutline elm srcDirs d
 
 
 removeFromApp : Stuff.PackageCache -> Connection -> Registry.Registry -> Pkg.Name -> Outline.AppOutline -> Task Never (SolverResult AppSolution)
-removeFromApp cache connection registry pkg (Outline.AppOutline elm srcDirs direct indirect testDirect testIndirect) =
+removeFromApp cache connection registry pkg (Outline.AppOutline appData) =
     Stuff.withRegistryLock cache <|
         let
             allDirects : Dict ( String, String ) Pkg.Name V.Version
             allDirects =
-                Dict.union direct testDirect
+                Dict.union appData.depsDirect appData.testDirect
         in
         case try (Dict.map (\_ -> C.exactly) (Dict.remove identity pkg allDirects)) of
             Solver solver ->
-                solver (State cache connection registry Dict.empty)
+                solver (State { cache = cache, connection = connection, registry = registry, cDict = Dict.empty })
                     |> Task.map
                         (\result ->
                             case result of
-                                ISOk (State _ _ _ constraints) new ->
+                                ISOk (State st) new ->
                                     let
                                         allIndirects : Dict ( String, String ) Pkg.Name V.Version
                                         allIndirects =
-                                            Dict.union indirect testIndirect
+                                            Dict.union appData.depsIndirect appData.testIndirect
 
                                         allDeps : Dict ( String, String ) Pkg.Name V.Version
                                         allDeps =
@@ -333,21 +343,21 @@ removeFromApp cache connection registry pkg (Outline.AppOutline elm srcDirs dire
 
                                         d : Dict ( String, String ) Pkg.Name V.Version
                                         d =
-                                            Dict.remove identity pkg direct
+                                            Dict.remove identity pkg appData.depsDirect
 
                                         i : Dict ( String, String ) Pkg.Name V.Version
                                         i =
-                                            Dict.diff (getTransitive constraints new (Dict.toList compare d) Dict.empty) d
+                                            Dict.diff (getTransitive st.cDict new (Dict.toList compare d) Dict.empty) d
 
                                         td : Dict ( String, String ) Pkg.Name V.Version
                                         td =
-                                            Dict.remove identity pkg testDirect
+                                            Dict.remove identity pkg appData.testDirect
 
                                         ti : Dict ( String, String ) Pkg.Name V.Version
                                         ti =
                                             Dict.diff new (Utils.mapUnions [ d, i, td ])
                                     in
-                                    SolverOk (AppSolution allDeps new (Outline.AppOutline elm srcDirs d i td ti))
+                                    SolverOk (AppSolution allDeps new (Outline.AppOutline { appData | depsDirect = d, depsIndirect = i, testDirect = td, testIndirect = ti }))
 
                                 ISBack _ ->
                                     noSolution connection
@@ -452,8 +462,8 @@ addConstraint solved unsolved ( name, newConstraint ) =
 getRelevantVersions : Pkg.Name -> C.Constraint -> Solver ( V.Version, List V.Version )
 getRelevantVersions name constraint =
     Solver <|
-        \((State _ _ registry _) as state) ->
-            case Registry.getVersions name registry of
+        \((State st) as state) ->
+            case Registry.getVersions name st.registry of
                 Just (Registry.KnownVersions newest previous) ->
                     case List.filter (C.satisfies constraint) (newest :: previous) of
                         [] ->
@@ -473,13 +483,13 @@ getRelevantVersions name constraint =
 getConstraints : Pkg.Name -> V.Version -> Solver Constraints
 getConstraints pkg vsn =
     Solver <|
-        \((State cache connection registry cDict) as state) ->
+        \((State st) as state) ->
             let
                 key : ( Pkg.Name, V.Version )
                 key =
                     ( pkg, vsn )
             in
-            case Dict.get (Tuple.mapSecond V.toComparable) key cDict of
+            case Dict.get (Tuple.mapSecond V.toComparable) key st.cDict of
                 Just cs ->
                     Task.succeed (ISOk state cs)
 
@@ -488,15 +498,15 @@ getConstraints pkg vsn =
                         ctx : ConstraintLoadContext
                         ctx =
                             { state = state
-                            , cache = cache
-                            , connection = connection
-                            , registry = registry
-                            , cDict = cDict
+                            , cache = st.cache
+                            , connection = st.connection
+                            , registry = st.registry
+                            , cDict = st.cDict
                             , key = key
                             , pkg = pkg
                             , vsn = vsn
-                            , home = Stuff.package cache pkg vsn
-                            , path = Stuff.package cache pkg vsn ++ "/elm.json"
+                            , home = Stuff.package st.cache pkg vsn
+                            , path = Stuff.package st.cache pkg vsn ++ "/elm.json"
                             }
                     in
                     File.exists ctx.path
@@ -548,7 +558,7 @@ validateCachedConstraints ctx cs =
     let
         newState : State
         newState =
-            State ctx.cache ctx.connection ctx.registry (Dict.insert (Tuple.mapSecond V.toComparable) ctx.key cs ctx.cDict)
+            State { cache = ctx.cache, connection = ctx.connection, registry = ctx.registry, cDict = Dict.insert (Tuple.mapSecond V.toComparable) ctx.key cs ctx.cDict }
     in
     case ctx.connection of
         Online _ ->
@@ -610,7 +620,7 @@ cacheConstraintsAndReturn ctx cs body =
     let
         newState : State
         newState =
-            State ctx.cache ctx.connection ctx.registry (Dict.insert (Tuple.mapSecond V.toComparable) ctx.key cs ctx.cDict)
+            State { cache = ctx.cache, connection = ctx.connection, registry = ctx.registry, cDict = Dict.insert (Tuple.mapSecond V.toComparable) ctx.key cs ctx.cDict }
     in
     Utils.dirCreateDirectoryIfMissing True ctx.home
         |> Task.andThen (\_ -> File.writeUtf8 ctx.path body)
@@ -623,8 +633,8 @@ constraintsDecoder =
         |> D.andThen
             (\outline ->
                 case outline of
-                    Outline.Pkg (Outline.PkgOutline _ _ _ _ _ deps _ elmConstraint) ->
-                        D.pure (Constraints elmConstraint deps)
+                    Outline.Pkg (Outline.PkgOutline pkgData) ->
+                        D.pure (Constraints pkgData.elm pkgData.deps)
 
                     Outline.App _ ->
                         D.failure ()
@@ -635,8 +645,16 @@ constraintsDecoder =
 -- ENVIRONMENT
 
 
+type alias EnvData =
+    { cache : Stuff.PackageCache
+    , manager : Http.Manager
+    , connection : Connection
+    , registry : Registry.Registry
+    }
+
+
 type Env
-    = Env Stuff.PackageCache Http.Manager Connection Registry.Registry
+    = Env EnvData
 
 
 initEnv : Task Never (Result Exit.RegistryProblem Env)
@@ -687,7 +705,7 @@ fetchNewRegistry cache manager =
             (\eitherRegistry ->
                 case eitherRegistry of
                     Ok latestRegistry ->
-                        Ok <| Env cache manager (Online manager) latestRegistry
+                        Ok <| Env { cache = cache, manager = manager, connection = Online manager, registry = latestRegistry }
 
                     Err problem ->
                         Err problem
@@ -703,10 +721,10 @@ updateCachedRegistry cache manager cachedRegistry =
             (\eitherRegistry ->
                 case eitherRegistry of
                     Ok latestRegistry ->
-                        Ok <| Env cache manager (Online manager) latestRegistry
+                        Ok <| Env { cache = cache, manager = manager, connection = Online manager, registry = latestRegistry }
 
                     Err _ ->
-                        Ok <| Env cache manager Offline cachedRegistry
+                        Ok <| Env { cache = cache, manager = manager, connection = Offline, registry = cachedRegistry }
             )
 
 
@@ -804,18 +822,18 @@ foldM f b =
 
 
 envEncoder : Env -> Bytes.Encode.Encoder
-envEncoder (Env cache manager connection registry) =
+envEncoder (Env env) =
     Bytes.Encode.sequence
-        [ Stuff.packageCacheEncoder cache
-        , Http.managerEncoder manager
-        , connectionEncoder connection
-        , Registry.registryEncoder registry
+        [ Stuff.packageCacheEncoder env.cache
+        , Http.managerEncoder env.manager
+        , connectionEncoder env.connection
+        , Registry.registryEncoder env.registry
         ]
 
 
 envDecoder : Bytes.Decode.Decoder Env
 envDecoder =
-    Bytes.Decode.map4 Env
+    Bytes.Decode.map4 (\cache manager connection registry -> Env { cache = cache, manager = manager, connection = connection, registry = registry })
         Stuff.packageCacheDecoder
         Http.managerDecoder
         connectionDecoder

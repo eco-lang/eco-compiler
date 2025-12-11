@@ -140,8 +140,8 @@ buildPaths style root details paths =
 
 
 getMains : Build.Artifacts -> List ModuleName.Raw
-getMains (Build.Artifacts _ _ roots modules) =
-    List.filterMap (getMain modules) (NE.toList roots)
+getMains (Build.Artifacts artifactsData) =
+    List.filterMap (getMain artifactsData.modules) (NE.toList artifactsData.roots)
 
 
 getMain : List Build.Module -> Build.Root -> Maybe ModuleName.Raw

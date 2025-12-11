@@ -161,23 +161,27 @@ makeRelativePathsPortable srcDir =
 buildTestOutline : Solver.Env -> (NE.Nonempty Outline.SrcDir -> NE.Nonempty Outline.SrcDir) -> Outline.Outline -> Task Exit.Test Outline.AppOutline
 buildTestOutline env newSrcDirs baseOutline =
     case baseOutline of
-        Outline.App (Outline.AppOutline elm srcDirs depsDirect depsTrans testDirect testTrans) ->
-            Outline.AppOutline elm
-                (newSrcDirs srcDirs)
-                (Dict.union depsDirect testDirect)
-                (Dict.union depsTrans testTrans)
-                Dict.empty
-                Dict.empty
+        Outline.App (Outline.AppOutline appData) ->
+            Outline.AppOutline
+                { elm = appData.elm
+                , srcDirs = newSrcDirs appData.srcDirs
+                , depsDirect = Dict.union appData.depsDirect appData.testDirect
+                , depsIndirect = Dict.union appData.depsIndirect appData.testIndirect
+                , testDirect = Dict.empty
+                , testIndirect = Dict.empty
+                }
                 |> addRequiredTestPackages env
 
-        Outline.Pkg (Outline.PkgOutline _ _ _ _ _ deps test _) ->
-            Outline.AppOutline V.elmCompiler
-                (newSrcDirs (NE.singleton (Outline.RelativeSrcDir "src")))
-                Dict.empty
-                Dict.empty
-                Dict.empty
-                Dict.empty
-                |> makePkgPlan env (Dict.union deps test)
+        Outline.Pkg (Outline.PkgOutline pkgData) ->
+            Outline.AppOutline
+                { elm = V.elmCompiler
+                , srcDirs = newSrcDirs (NE.singleton (Outline.RelativeSrcDir "src"))
+                , depsDirect = Dict.empty
+                , depsIndirect = Dict.empty
+                , testDirect = Dict.empty
+                , testIndirect = Dict.empty
+                }
+                |> makePkgPlan env (Dict.union pkgData.deps pkgData.testDeps)
                 |> Task.andThen (addRequiredTestPackages env)
 
 
@@ -795,8 +799,13 @@ extractExposedPossiblyTests path =
 parseExposedValues : FilePath -> String -> Maybe ( String, List String )
 parseExposedValues path bytes =
     case Parse.fromByteString (SV.fileSyntaxVersion path) Parse.Application bytes of
-        Ok (Src.Module _ (Just (A.At _ name)) (A.At _ exposing_) _ _ _ _ _ _ _) ->
-            Just ( name, extractExposedNames exposing_ )
+        Ok (Src.Module srcData) ->
+            case srcData.name of
+                Just (A.At _ name) ->
+                    Just ( name, extractExposedNames (A.toValue srcData.exports) )
+
+                Nothing ->
+                    Nothing
 
         _ ->
             Nothing
@@ -1028,42 +1037,42 @@ attemptChanges root env appOutline =
 
 
 makeAppPlan : Solver.Env -> Pkg.Name -> Outline.AppOutline -> Task Exit.Test Outline.AppOutline
-makeAppPlan (Solver.Env cache _ connection registry) pkg ((Outline.AppOutline elmVersion sourceDirs direct indirect testDirect testIndirect) as outline) =
-    if Dict.member identity pkg direct then
+makeAppPlan (Solver.Env env) pkg ((Outline.AppOutline appData) as outline) =
+    if Dict.member identity pkg appData.depsDirect then
         Task.succeed outline
 
     else
-        case Dict.get identity pkg indirect of
+        case Dict.get identity pkg appData.depsIndirect of
             Just vsn ->
                 Task.succeed <|
-                    Outline.AppOutline elmVersion sourceDirs
-                        (Dict.insert identity pkg vsn direct)
-                        (Dict.remove identity pkg indirect)
-                        testDirect
-                        testIndirect
+                    Outline.AppOutline
+                        { appData
+                            | depsDirect = Dict.insert identity pkg vsn appData.depsDirect
+                            , depsIndirect = Dict.remove identity pkg appData.depsIndirect
+                        }
 
             Nothing ->
-                case Dict.get identity pkg testDirect of
+                case Dict.get identity pkg appData.testDirect of
                     Just vsn ->
                         Task.succeed <|
-                            Outline.AppOutline elmVersion sourceDirs
-                                (Dict.insert identity pkg vsn direct)
-                                indirect
-                                (Dict.remove identity pkg testDirect)
-                                testIndirect
+                            Outline.AppOutline
+                                { appData
+                                    | depsDirect = Dict.insert identity pkg vsn appData.depsDirect
+                                    , testDirect = Dict.remove identity pkg appData.testDirect
+                                }
 
                     Nothing ->
-                        case Dict.get identity pkg testIndirect of
+                        case Dict.get identity pkg appData.testIndirect of
                             Just vsn ->
                                 Task.succeed <|
-                                    Outline.AppOutline elmVersion sourceDirs
-                                        (Dict.insert identity pkg vsn direct)
-                                        indirect
-                                        testDirect
-                                        (Dict.remove identity pkg testIndirect)
+                                    Outline.AppOutline
+                                        { appData
+                                            | depsDirect = Dict.insert identity pkg vsn appData.depsDirect
+                                            , testIndirect = Dict.remove identity pkg appData.testIndirect
+                                        }
 
                             Nothing ->
-                                addAppPackageFromScratch cache connection registry pkg outline
+                                addAppPackageFromScratch env.cache env.connection env.registry pkg outline
 
 
 addAppPackageFromScratch :
@@ -1119,13 +1128,13 @@ makePkgPlan env cons outline =
 
 
 makePkgPlanHelp : Solver.Env -> List ( Pkg.Name, C.Constraint ) -> Outline.AppOutline -> Task Exit.Test Outline.AppOutline
-makePkgPlanHelp ((Solver.Env cache _ connection registry) as env) cons outline =
+makePkgPlanHelp ((Solver.Env envData) as env) cons outline =
     case cons of
         [] ->
             Task.succeed outline
 
         ( pkg, con ) :: remainingCons ->
-            Task.io (Solver.addToTestApp cache connection registry pkg con outline)
+            Task.io (Solver.addToTestApp envData.cache envData.connection envData.registry pkg con outline)
                 |> Task.andThen (handlePkgSolverResult env pkg remainingCons)
 
 

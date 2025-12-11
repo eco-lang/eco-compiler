@@ -39,54 +39,54 @@ type Number
 number : SyntaxVersion -> (Row -> Col -> x) -> (E.Number -> Row -> Col -> x) -> P.Parser x Number
 number syntaxVersion toExpectation toError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
-            if pos >= end then
-                P.Eerr row col toExpectation
+        \(P.State st) ->
+            if st.pos >= st.end then
+                P.Eerr st.row st.col toExpectation
 
             else
                 let
                     word : Char
                     word =
-                        charAtPos pos src
+                        charAtPos st.pos st.src
                 in
                 if word == '_' && syntaxVersion == SV.Guida then
-                    P.Cerr row col (toError E.NumberNoLeadingOrTrailingUnderscores)
+                    P.Cerr st.row st.col (toError E.NumberNoLeadingOrTrailingUnderscores)
 
                 else if not (isDecimalDigit word) then
-                    P.Eerr row col toExpectation
+                    P.Eerr st.row st.col toExpectation
 
                 else
                     let
                         outcome : Outcome
                         outcome =
                             if word == '0' then
-                                chompZero syntaxVersion src (pos + 1) end
+                                chompZero syntaxVersion st.src (st.pos + 1) st.end
 
                             else
-                                chompInt syntaxVersion src (pos + 1) end (Char.toCode word - Char.toCode '0')
+                                chompInt syntaxVersion st.src (st.pos + 1) st.end (Char.toCode word - Char.toCode '0')
                     in
                     case outcome of
                         Err_ newPos problem ->
                             let
                                 newCol : Col
                                 newCol =
-                                    col + (newPos - pos)
+                                    st.col + (newPos - st.pos)
                             in
-                            P.Cerr row newCol (toError problem)
+                            P.Cerr st.row newCol (toError problem)
 
                         OkInt newPos n ->
                             let
                                 newCol : Col
                                 newCol =
-                                    col + (newPos - pos)
+                                    st.col + (newPos - st.pos)
 
                                 integer : Number
                                 integer =
-                                    Int n (String.slice pos newPos src)
+                                    Int n (String.slice st.pos newPos st.src)
 
                                 newState : P.State
                                 newState =
-                                    P.State src newPos end indent row newCol
+                                    P.State { st | pos = newPos, col = newCol }
                             in
                             P.Cok integer newState
 
@@ -94,11 +94,11 @@ number syntaxVersion toExpectation toError =
                             let
                                 newCol : Col
                                 newCol =
-                                    col + (newPos - pos)
+                                    st.col + (newPos - st.pos)
 
                                 raw : String
                                 raw =
-                                    String.slice pos newPos src
+                                    String.slice st.pos newPos st.src
 
                                 parsed : Maybe Float
                                 parsed =
@@ -114,12 +114,12 @@ number syntaxVersion toExpectation toError =
                                     let
                                         newState : P.State
                                         newState =
-                                            P.State src newPos end indent row newCol
+                                            P.State { st | pos = newPos, col = newCol }
                                     in
                                     P.Cok (Float copy_ raw) newState
 
                                 Nothing ->
-                                    P.Eerr row newCol toExpectation
+                                    P.Eerr st.row newCol toExpectation
 
 
 
@@ -610,23 +610,23 @@ stepBin src pos end word acc =
 precedence : (Row -> Col -> x) -> P.Parser x Binop.Precedence
 precedence toExpectation =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
-            if pos >= end then
-                P.Eerr row col toExpectation
+        \(P.State st) ->
+            if st.pos >= st.end then
+                P.Eerr st.row st.col toExpectation
 
             else
                 let
                     word : Char
                     word =
-                        charAtPos pos src
+                        charAtPos st.pos st.src
                 in
                 if isDecimalDigit word then
                     P.Cok
                         (Char.toCode word - Char.toCode '0')
-                        (P.State src (pos + 1) end indent row (col + 1))
+                        (P.State { st | pos = st.pos + 1, col = st.col + 1 })
 
                 else
-                    P.Eerr row col toExpectation
+                    P.Eerr st.row st.col toExpectation
 
 
 

@@ -22,6 +22,8 @@ module Builder.Http exposing
     )
 
 import Basics.Extra exposing (uncurry)
+import Bytes.Decode
+import Bytes.Encode
 import Codec.Archive.Zip as Zip
 import Compiler.Elm.Version as V
 import Http
@@ -30,9 +32,7 @@ import Json.Encode as Encode
 import Task exposing (Task)
 import Url.Builder
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Impure as Impure
 import Utils.Main as Utils exposing (SomeException)
 import Utils.Task.Extra as Task

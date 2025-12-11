@@ -165,37 +165,37 @@ command_ tx =
 subscription_ : (Row -> Col -> x) -> Parser x ()
 subscription_ toError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 pos12 : Int
                 pos12 =
-                    pos + 12
+                    st.pos + 12
             in
             if
-                (pos12 <= end)
-                    && (P.unsafeIndex src pos == 's')
-                    && (P.unsafeIndex src (pos + 1) == 'u')
-                    && (P.unsafeIndex src (pos + 2) == 'b')
-                    && (P.unsafeIndex src (pos + 3) == 's')
-                    && (P.unsafeIndex src (pos + 4) == 'c')
-                    && (P.unsafeIndex src (pos + 5) == 'r')
-                    && (P.unsafeIndex src (pos + 6) == 'i')
-                    && (P.unsafeIndex src (pos + 7) == 'p')
-                    && (P.unsafeIndex src (pos + 8) == 't')
-                    && (P.unsafeIndex src (pos + 9) == 'i')
-                    && (P.unsafeIndex src (pos + 10) == 'o')
-                    && (P.unsafeIndex src (pos + 11) == 'n')
-                    && (Var.getInnerWidth src pos12 end == 0)
+                (pos12 <= st.end)
+                    && (P.unsafeIndex st.src st.pos == 's')
+                    && (P.unsafeIndex st.src (st.pos + 1) == 'u')
+                    && (P.unsafeIndex st.src (st.pos + 2) == 'b')
+                    && (P.unsafeIndex st.src (st.pos + 3) == 's')
+                    && (P.unsafeIndex st.src (st.pos + 4) == 'c')
+                    && (P.unsafeIndex st.src (st.pos + 5) == 'r')
+                    && (P.unsafeIndex st.src (st.pos + 6) == 'i')
+                    && (P.unsafeIndex st.src (st.pos + 7) == 'p')
+                    && (P.unsafeIndex st.src (st.pos + 8) == 't')
+                    && (P.unsafeIndex st.src (st.pos + 9) == 'i')
+                    && (P.unsafeIndex st.src (st.pos + 10) == 'o')
+                    && (P.unsafeIndex st.src (st.pos + 11) == 'n')
+                    && (Var.getInnerWidth st.src pos12 st.end == 0)
             then
                 let
                     s : P.State
                     s =
-                        P.State src pos12 end indent row (col + 12)
+                        P.State { st | pos = pos12, col = st.col + 12 }
                 in
                 P.Cok () s
 
             else
-                P.Eerr row col toError
+                P.Eerr st.row st.col toError
 
 
 
@@ -205,201 +205,201 @@ subscription_ toError =
 k2 : Char -> Char -> (Row -> Col -> x) -> Parser x ()
 k2 w1 w2 toError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 pos2 : Int
                 pos2 =
-                    pos + 2
+                    st.pos + 2
             in
             if
-                (pos2 <= end)
-                    && (P.unsafeIndex src pos == w1)
-                    && (P.unsafeIndex src (pos + 1) == w2)
-                    && (Var.getInnerWidth src pos2 end == 0)
+                (pos2 <= st.end)
+                    && (P.unsafeIndex st.src st.pos == w1)
+                    && (P.unsafeIndex st.src (st.pos + 1) == w2)
+                    && (Var.getInnerWidth st.src pos2 st.end == 0)
             then
                 let
                     s : P.State
                     s =
-                        P.State src pos2 end indent row (col + 2)
+                        P.State { st | pos = pos2, col = st.col + 2 }
                 in
                 P.Cok () s
 
             else
-                P.Eerr row col toError
+                P.Eerr st.row st.col toError
 
 
 k3 : Char -> Char -> Char -> (Row -> Col -> x) -> Parser x ()
 k3 w1 w2 w3 toError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 pos3 : Int
                 pos3 =
-                    pos + 3
+                    st.pos + 3
             in
             if
-                (pos3 <= end)
-                    && (P.unsafeIndex src pos == w1)
-                    && (P.unsafeIndex src (pos + 1) == w2)
-                    && (P.unsafeIndex src (pos + 2) == w3)
-                    && (Var.getInnerWidth src pos3 end == 0)
+                (pos3 <= st.end)
+                    && (P.unsafeIndex st.src st.pos == w1)
+                    && (P.unsafeIndex st.src (st.pos + 1) == w2)
+                    && (P.unsafeIndex st.src (st.pos + 2) == w3)
+                    && (Var.getInnerWidth st.src pos3 st.end == 0)
             then
                 let
                     s : P.State
                     s =
-                        P.State src pos3 end indent row (col + 3)
+                        P.State { st | pos = pos3, col = st.col + 3 }
                 in
                 P.Cok () s
 
             else
-                P.Eerr row col toError
+                P.Eerr st.row st.col toError
 
 
 k4 : Char -> Char -> Char -> Char -> (Row -> Col -> x) -> Parser x ()
 k4 w1 w2 w3 w4 toError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 pos4 : Int
                 pos4 =
-                    pos + 4
+                    st.pos + 4
             in
             if
-                (pos4 <= end)
-                    && (P.unsafeIndex src pos == w1)
-                    && (P.unsafeIndex src (pos + 1) == w2)
-                    && (P.unsafeIndex src (pos + 2) == w3)
-                    && (P.unsafeIndex src (pos + 3) == w4)
-                    && (Var.getInnerWidth src pos4 end == 0)
+                (pos4 <= st.end)
+                    && (P.unsafeIndex st.src st.pos == w1)
+                    && (P.unsafeIndex st.src (st.pos + 1) == w2)
+                    && (P.unsafeIndex st.src (st.pos + 2) == w3)
+                    && (P.unsafeIndex st.src (st.pos + 3) == w4)
+                    && (Var.getInnerWidth st.src pos4 st.end == 0)
             then
                 let
                     s : P.State
                     s =
-                        P.State src pos4 end indent row (col + 4)
+                        P.State { st | pos = pos4, col = st.col + 4 }
                 in
                 P.Cok () s
 
             else
-                P.Eerr row col toError
+                P.Eerr st.row st.col toError
 
 
 k5 : Char -> Char -> Char -> Char -> Char -> (Row -> Col -> x) -> Parser x ()
 k5 w1 w2 w3 w4 w5 toError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 pos5 : Int
                 pos5 =
-                    pos + 5
+                    st.pos + 5
             in
             if
-                (pos5 <= end)
-                    && (P.unsafeIndex src pos == w1)
-                    && (P.unsafeIndex src (pos + 1) == w2)
-                    && (P.unsafeIndex src (pos + 2) == w3)
-                    && (P.unsafeIndex src (pos + 3) == w4)
-                    && (P.unsafeIndex src (pos + 4) == w5)
-                    && (Var.getInnerWidth src pos5 end == 0)
+                (pos5 <= st.end)
+                    && (P.unsafeIndex st.src st.pos == w1)
+                    && (P.unsafeIndex st.src (st.pos + 1) == w2)
+                    && (P.unsafeIndex st.src (st.pos + 2) == w3)
+                    && (P.unsafeIndex st.src (st.pos + 3) == w4)
+                    && (P.unsafeIndex st.src (st.pos + 4) == w5)
+                    && (Var.getInnerWidth st.src pos5 st.end == 0)
             then
                 let
                     s : P.State
                     s =
-                        P.State src pos5 end indent row (col + 5)
+                        P.State { st | pos = pos5, col = st.col + 5 }
                 in
                 P.Cok () s
 
             else
-                P.Eerr row col toError
+                P.Eerr st.row st.col toError
 
 
 k6 : Char -> Char -> Char -> Char -> Char -> Char -> (Row -> Col -> x) -> Parser x ()
 k6 w1 w2 w3 w4 w5 w6 toError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 pos6 : Int
                 pos6 =
-                    pos + 6
+                    st.pos + 6
             in
             if
-                (pos6 <= end)
-                    && (P.unsafeIndex src pos == w1)
-                    && (P.unsafeIndex src (pos + 1) == w2)
-                    && (P.unsafeIndex src (pos + 2) == w3)
-                    && (P.unsafeIndex src (pos + 3) == w4)
-                    && (P.unsafeIndex src (pos + 4) == w5)
-                    && (P.unsafeIndex src (pos + 5) == w6)
-                    && (Var.getInnerWidth src pos6 end == 0)
+                (pos6 <= st.end)
+                    && (P.unsafeIndex st.src st.pos == w1)
+                    && (P.unsafeIndex st.src (st.pos + 1) == w2)
+                    && (P.unsafeIndex st.src (st.pos + 2) == w3)
+                    && (P.unsafeIndex st.src (st.pos + 3) == w4)
+                    && (P.unsafeIndex st.src (st.pos + 4) == w5)
+                    && (P.unsafeIndex st.src (st.pos + 5) == w6)
+                    && (Var.getInnerWidth st.src pos6 st.end == 0)
             then
                 let
                     s : P.State
                     s =
-                        P.State src pos6 end indent row (col + 6)
+                        P.State { st | pos = pos6, col = st.col + 6 }
                 in
                 P.Cok () s
 
             else
-                P.Eerr row col toError
+                P.Eerr st.row st.col toError
 
 
 k7 : Char -> Char -> Char -> Char -> Char -> Char -> Char -> (Row -> Col -> x) -> Parser x ()
 k7 w1 w2 w3 w4 w5 w6 w7 toError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 pos7 : Int
                 pos7 =
-                    pos + 7
+                    st.pos + 7
             in
             if
-                (pos7 <= end)
-                    && (P.unsafeIndex src pos == w1)
-                    && (P.unsafeIndex src (pos + 1) == w2)
-                    && (P.unsafeIndex src (pos + 2) == w3)
-                    && (P.unsafeIndex src (pos + 3) == w4)
-                    && (P.unsafeIndex src (pos + 4) == w5)
-                    && (P.unsafeIndex src (pos + 5) == w6)
-                    && (P.unsafeIndex src (pos + 6) == w7)
-                    && (Var.getInnerWidth src pos7 end == 0)
+                (pos7 <= st.end)
+                    && (P.unsafeIndex st.src st.pos == w1)
+                    && (P.unsafeIndex st.src (st.pos + 1) == w2)
+                    && (P.unsafeIndex st.src (st.pos + 2) == w3)
+                    && (P.unsafeIndex st.src (st.pos + 3) == w4)
+                    && (P.unsafeIndex st.src (st.pos + 4) == w5)
+                    && (P.unsafeIndex st.src (st.pos + 5) == w6)
+                    && (P.unsafeIndex st.src (st.pos + 6) == w7)
+                    && (Var.getInnerWidth st.src pos7 st.end == 0)
             then
                 let
                     s : P.State
                     s =
-                        P.State src pos7 end indent row (col + 7)
+                        P.State { st | pos = pos7, col = st.col + 7 }
                 in
                 P.Cok () s
 
             else
-                P.Eerr row col toError
+                P.Eerr st.row st.col toError
 
 
 k8 : Char -> Char -> Char -> Char -> Char -> Char -> Char -> Char -> (Row -> Col -> x) -> Parser x ()
 k8 w1 w2 w3 w4 w5 w6 w7 w8 toError =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 pos8 : Int
                 pos8 =
-                    pos + 8
+                    st.pos + 8
             in
             if
-                (pos8 <= end)
-                    && (P.unsafeIndex src pos == w1)
-                    && (P.unsafeIndex src (pos + 1) == w2)
-                    && (P.unsafeIndex src (pos + 2) == w3)
-                    && (P.unsafeIndex src (pos + 3) == w4)
-                    && (P.unsafeIndex src (pos + 4) == w5)
-                    && (P.unsafeIndex src (pos + 5) == w6)
-                    && (P.unsafeIndex src (pos + 6) == w7)
-                    && (P.unsafeIndex src (pos + 7) == w8)
-                    && (Var.getInnerWidth src pos8 end == 0)
+                (pos8 <= st.end)
+                    && (P.unsafeIndex st.src st.pos == w1)
+                    && (P.unsafeIndex st.src (st.pos + 1) == w2)
+                    && (P.unsafeIndex st.src (st.pos + 2) == w3)
+                    && (P.unsafeIndex st.src (st.pos + 3) == w4)
+                    && (P.unsafeIndex st.src (st.pos + 4) == w5)
+                    && (P.unsafeIndex st.src (st.pos + 5) == w6)
+                    && (P.unsafeIndex st.src (st.pos + 6) == w7)
+                    && (P.unsafeIndex st.src (st.pos + 7) == w8)
+                    && (Var.getInnerWidth st.src pos8 st.end == 0)
             then
                 let
                     s : P.State
                     s =
-                        P.State src pos8 end indent row (col + 8)
+                        P.State { st | pos = pos8, col = st.col + 8 }
                 in
                 P.Cok () s
 
             else
-                P.Eerr row col toError
+                P.Eerr st.row st.col toError

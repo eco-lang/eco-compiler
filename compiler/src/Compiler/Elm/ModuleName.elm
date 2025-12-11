@@ -35,6 +35,8 @@ module Compiler.Elm.ModuleName exposing
     , webgl
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Package as Pkg
 import Compiler.Json.Decode as D
@@ -43,9 +45,7 @@ import Compiler.Parse.Primitives as P
 import Compiler.Parse.Variable as Var
 import System.TypeCheck.IO exposing (Canonical(..))
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 
 
 
@@ -104,24 +104,24 @@ decoder =
 parser : P.Parser ( Int, Int ) Raw
 parser =
     P.Parser
-        (\(P.State src pos end indent row col) ->
+        (\(P.State st) ->
             let
                 ( isGood, newPos, newCol ) =
-                    chompStart src pos end col
+                    chompStart st.src st.pos st.end st.col
             in
-            if isGood && (newPos - pos) < 256 then
+            if isGood && (newPos - st.pos) < 256 then
                 let
                     newState : P.State
                     newState =
-                        P.State src newPos end indent row newCol
+                        P.State { st | pos = newPos, col = newCol }
                 in
-                P.Cok (String.slice pos newPos src) newState
+                P.Cok (String.slice st.pos newPos st.src) newState
 
-            else if col == newCol then
-                P.Eerr row newCol Tuple.pair
+            else if st.col == newCol then
+                P.Eerr st.row newCol Tuple.pair
 
             else
-                P.Cerr row newCol Tuple.pair
+                P.Cerr st.row newCol Tuple.pair
         )
 
 

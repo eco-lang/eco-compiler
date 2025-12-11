@@ -221,10 +221,10 @@ validateOutline registry outline =
         Outline.App _ ->
             Task.throw Exit.DiffApplication
 
-        Outline.Pkg (Outline.PkgOutline pkg _ _ _ _ _ _ _) ->
-            case Registry.getVersions pkg registry of
+        Outline.Pkg (Outline.PkgOutline pkgData) ->
+            case Registry.getVersions pkgData.name registry of
                 Just vsns ->
-                    Task.succeed ( pkg, vsns )
+                    Task.succeed ( pkgData.name, vsns )
 
                 Nothing ->
                     Task.throw Exit.DiffUnpublished
@@ -246,8 +246,8 @@ generateDocs (Env maybeRoot _ _ _) =
 
 
 buildDocsFromDetails : String -> Details -> Task Exit.Diff Docs.Documentation
-buildDocsFromDetails root ((Details _ outline _ _ _ _) as details) =
-    case outline of
+buildDocsFromDetails root ((Details detailsData) as details) =
+    case detailsData.outline of
         Details.ValidApp _ ->
             Task.throw Exit.DiffApplication
 
@@ -361,23 +361,23 @@ chunkToDoc (Chunk title magnitude details) =
 
 
 changesToChunk : L.Localizer -> ( Name.Name, ModuleChanges ) -> Chunk
-changesToChunk localizer ( name, (ModuleChanges unions aliases values binops) as changes ) =
+changesToChunk localizer ( name, (ModuleChanges changesData) as changes ) =
     let
         magnitude : M.Magnitude
         magnitude =
             DD.moduleChangeMagnitude changes
 
         ( unionAdd, unionChange, unionRemove ) =
-            changesToDocTriple compare (unionToDoc localizer) unions
+            changesToDocTriple compare (unionToDoc localizer) changesData.unions
 
         ( aliasAdd, aliasChange, aliasRemove ) =
-            changesToDocTriple compare (aliasToDoc localizer) aliases
+            changesToDocTriple compare (aliasToDoc localizer) changesData.aliases
 
         ( valueAdd, valueChange, valueRemove ) =
-            changesToDocTriple compare (valueToDoc localizer) values
+            changesToDocTriple compare (valueToDoc localizer) changesData.values
 
         ( binopAdd, binopChange, binopRemove ) =
-            changesToDocTriple compare (binopToDoc localizer) binops
+            changesToDocTriple compare (binopToDoc localizer) changesData.binops
     in
     Chunk name magnitude <|
         D.vcat <|
@@ -469,14 +469,14 @@ valueToDoc localizer name (Docs.Value _ tipe) =
 
 
 binopToDoc : L.Localizer -> Name.Name -> Docs.Binop -> D.Doc
-binopToDoc localizer name (Docs.Binop _ tipe associativity n) =
+binopToDoc localizer name (Docs.Binop data) =
     let
         details : D.Doc
         details =
             D.plus (D.fromChars "    (")
                 (D.plus (D.fromName assoc)
                     (D.plus (D.fromChars "/")
-                        (D.plus (D.fromInt n)
+                        (D.plus (D.fromInt data.precedence)
                             (D.fromChars ")")
                         )
                     )
@@ -484,7 +484,7 @@ binopToDoc localizer name (Docs.Binop _ tipe associativity n) =
 
         assoc : String
         assoc =
-            case associativity of
+            case data.associativity of
                 Binop.Left ->
                     "left"
 
@@ -498,7 +498,7 @@ binopToDoc localizer name (Docs.Binop _ tipe associativity n) =
         (D.plus (D.fromName name)
             (D.plus (D.fromChars ")")
                 (D.plus (D.fromChars ":")
-                    (D.plus (typeDoc localizer tipe)
+                    (D.plus (typeDoc localizer data.tipe)
                         (D.black details)
                     )
                 )

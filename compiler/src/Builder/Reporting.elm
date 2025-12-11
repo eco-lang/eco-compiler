@@ -20,6 +20,8 @@ module Builder.Reporting exposing
 
 import Builder.Reporting.Exit as Exit
 import Builder.Reporting.Exit.Help as Help
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Elm.ModuleName as ModuleName
@@ -31,9 +33,7 @@ import System.Exit as Exit
 import System.IO as IO
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Main as Utils exposing (Chan, MVar)
 import Utils.Task.Extra as Task
 
@@ -256,7 +256,7 @@ trackDetailsWithChan mvar callback chan =
 runDetailsWorker : MVar () -> Chan (Maybe DMsg) -> Task Never ()
 runDetailsWorker mvar chan =
     Utils.takeMVar (Bytes.Decode.succeed ()) mvar
-        |> Task.andThen (\_ -> detailsLoop chan (DState 0 0 0 0 0 0 0))
+        |> Task.andThen (\_ -> detailsLoop chan (DState { total = 0, cached = 0, requested = 0, received = 0, failed = 0, built = 0, broken = 0 }))
         |> Task.andThen (\_ -> Utils.putMVar (\_ -> BE.bool True) mvar ())
 
 
@@ -278,9 +278,9 @@ signalDetailsComplete encoder chan answer =
 
 
 detailsLoop : Chan (Maybe DMsg) -> DState -> Task Never ()
-detailsLoop chan ((DState total _ _ _ _ built _) as state) =
+detailsLoop chan ((DState ds) as state) =
     Utils.readChan (BD.maybe dMsgDecoder) chan
-        |> Task.andThen (handleDetailsMessage chan state total built)
+        |> Task.andThen (handleDetailsMessage chan state ds.total ds.built)
 
 
 handleDetailsMessage : Chan (Maybe DMsg) -> DState -> Int -> Int -> Maybe DMsg -> Task Never ()
@@ -307,8 +307,19 @@ printFinalDetailsStatus total built =
         )
 
 
+type alias DStateData =
+    { total : Int
+    , cached : Int
+    , requested : Int
+    , received : Int
+    , failed : Int
+    , built : Int
+    , broken : Int
+    }
+
+
 type DState
-    = DState Int Int Int Int Int Int Int
+    = DState DStateData
 
 
 type DMsg
@@ -322,36 +333,36 @@ type DMsg
 
 
 detailsStep : DMsg -> DState -> Task Never DState
-detailsStep msg (DState total cached rqst rcvd failed built broken) =
+detailsStep msg (DState ds) =
     case msg of
         DStart numDependencies ->
-            Task.succeed (DState numDependencies 0 0 0 0 0 0)
+            Task.succeed (DState { total = numDependencies, cached = 0, requested = 0, received = 0, failed = 0, built = 0, broken = 0 })
 
         DCached ->
-            putTransition (DState total (cached + 1) rqst rcvd failed built broken)
+            putTransition (DState { ds | cached = ds.cached + 1 })
 
         DRequested ->
-            (if rqst == 0 then
+            (if ds.requested == 0 then
                 IO.putStrLn "Starting downloads...\n"
 
              else
                 Task.succeed ()
             )
-                |> Task.map (\_ -> DState total cached (rqst + 1) rcvd failed built broken)
+                |> Task.map (\_ -> DState { ds | requested = ds.requested + 1 })
 
         DReceived pkg vsn ->
             putDownload goodMark pkg vsn
-                |> Task.andThen (\_ -> putTransition (DState total cached rqst (rcvd + 1) failed built broken))
+                |> Task.andThen (\_ -> putTransition (DState { ds | received = ds.received + 1 }))
 
         DFailed pkg vsn ->
             putDownload badMark pkg vsn
-                |> Task.andThen (\_ -> putTransition (DState total cached rqst rcvd (failed + 1) built broken))
+                |> Task.andThen (\_ -> putTransition (DState { ds | failed = ds.failed + 1 }))
 
         DBuilt ->
-            putBuilt (DState total cached rqst rcvd failed (built + 1) broken)
+            putBuilt (DState { ds | built = ds.built + 1 })
 
         DBroken ->
-            putBuilt (DState total cached rqst rcvd failed built (broken + 1))
+            putBuilt (DState { ds | broken = ds.broken + 1 })
 
 
 putDownload : D.Doc -> Pkg.Name -> V.Version -> Task Never ()
@@ -367,28 +378,28 @@ putDownload mark pkg vsn =
 
 
 putTransition : DState -> Task Never DState
-putTransition ((DState total cached _ rcvd failed built broken) as state) =
-    if cached + rcvd + failed < total then
+putTransition ((DState ds) as state) =
+    if ds.cached + ds.received + ds.failed < ds.total then
         Task.succeed state
 
     else
         let
             char : Char
             char =
-                if rcvd + failed == 0 then
+                if ds.received + ds.failed == 0 then
                     '\u{000D}'
 
                 else
                     '\n'
         in
-        putStrFlush (String.cons char (toBuildProgress (built + broken + failed) total))
+        putStrFlush (String.cons char (toBuildProgress (ds.built + ds.broken + ds.failed) ds.total))
             |> Task.map (\_ -> state)
 
 
 putBuilt : DState -> Task Never DState
-putBuilt ((DState total cached _ rcvd failed built broken) as state) =
-    (if total == cached + rcvd + failed then
-        putStrFlush (String.cons '\u{000D}' (toBuildProgress (built + broken + failed) total))
+putBuilt ((DState ds) as state) =
+    (if ds.total == ds.cached + ds.received + ds.failed then
+        putStrFlush (String.cons '\u{000D}' (toBuildProgress (ds.built + ds.broken + ds.failed) ds.total))
 
      else
         Task.succeed ()

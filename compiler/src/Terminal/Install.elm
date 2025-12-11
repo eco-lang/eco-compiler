@@ -240,12 +240,12 @@ handleInstallResult root oldOutline result =
 
 
 makeAppPlan : Solver.Env -> Pkg.Name -> Outline.AppOutline -> Bool -> Task Exit.Install (Changes V.Version)
-makeAppPlan (Solver.Env cache _ connection registry) pkg ((Outline.AppOutline elmVersion sourceDirs direct indirect testDirect testIndirect) as outline) forTest =
+makeAppPlan (Solver.Env env) pkg ((Outline.AppOutline appData) as outline) forTest =
     if forTest then
-        makeAppPlanForTest cache connection registry pkg elmVersion sourceDirs direct indirect testDirect testIndirect outline
+        makeAppPlanForTest env.cache env.connection env.registry pkg appData outline
 
     else
-        makeAppPlanForDeps cache connection registry pkg elmVersion sourceDirs direct indirect testDirect testIndirect outline
+        makeAppPlanForDeps env.cache env.connection env.registry pkg appData outline
 
 
 makeAppPlanForTest :
@@ -253,27 +253,24 @@ makeAppPlanForTest :
     -> Solver.Connection
     -> Registry.Registry
     -> Pkg.Name
-    -> V.Version
-    -> NE.Nonempty Outline.SrcDir
-    -> Dict ( String, String ) Pkg.Name V.Version
-    -> Dict ( String, String ) Pkg.Name V.Version
-    -> Dict ( String, String ) Pkg.Name V.Version
-    -> Dict ( String, String ) Pkg.Name V.Version
+    -> Outline.AppOutlineData
     -> Outline.AppOutline
     -> Task Exit.Install (Changes V.Version)
-makeAppPlanForTest cache connection registry pkg elmVersion sourceDirs direct indirect testDirect testIndirect outline =
-    if Dict.member identity pkg testDirect then
+makeAppPlanForTest cache connection registry pkg appData outline =
+    if Dict.member identity pkg appData.testDirect then
         Task.succeed AlreadyInstalled
 
     else
-        case Dict.get identity pkg testIndirect of
+        case Dict.get identity pkg appData.testIndirect of
             Just vsn ->
                 Task.succeed <|
                     PromoteTest <|
                         Outline.App <|
-                            Outline.AppOutline elmVersion sourceDirs direct indirect
-                                (Dict.insert identity pkg vsn testDirect)
-                                (Dict.remove identity pkg testIndirect)
+                            Outline.AppOutline
+                                { appData
+                                    | testDirect = Dict.insert identity pkg vsn appData.testDirect
+                                    , testIndirect = Dict.remove identity pkg appData.testIndirect
+                                }
 
             Nothing ->
                 addAppPackageFromScratch cache connection registry pkg outline True
@@ -284,53 +281,48 @@ makeAppPlanForDeps :
     -> Solver.Connection
     -> Registry.Registry
     -> Pkg.Name
-    -> V.Version
-    -> NE.Nonempty Outline.SrcDir
-    -> Dict ( String, String ) Pkg.Name V.Version
-    -> Dict ( String, String ) Pkg.Name V.Version
-    -> Dict ( String, String ) Pkg.Name V.Version
-    -> Dict ( String, String ) Pkg.Name V.Version
+    -> Outline.AppOutlineData
     -> Outline.AppOutline
     -> Task Exit.Install (Changes V.Version)
-makeAppPlanForDeps cache connection registry pkg elmVersion sourceDirs direct indirect testDirect testIndirect outline =
-    if Dict.member identity pkg direct then
+makeAppPlanForDeps cache connection registry pkg appData outline =
+    if Dict.member identity pkg appData.depsDirect then
         Task.succeed AlreadyInstalled
 
     else
-        case Dict.get identity pkg indirect of
+        case Dict.get identity pkg appData.depsIndirect of
             Just vsn ->
                 Task.succeed <|
                     PromoteIndirect <|
                         Outline.App <|
-                            Outline.AppOutline elmVersion sourceDirs
-                                (Dict.insert identity pkg vsn direct)
-                                (Dict.remove identity pkg indirect)
-                                testDirect
-                                testIndirect
+                            Outline.AppOutline
+                                { appData
+                                    | depsDirect = Dict.insert identity pkg vsn appData.depsDirect
+                                    , depsIndirect = Dict.remove identity pkg appData.depsIndirect
+                                }
 
             Nothing ->
-                case Dict.get identity pkg testDirect of
+                case Dict.get identity pkg appData.testDirect of
                     Just vsn ->
                         Task.succeed <|
                             PromoteTest <|
                                 Outline.App <|
-                                    Outline.AppOutline elmVersion sourceDirs
-                                        (Dict.insert identity pkg vsn direct)
-                                        indirect
-                                        (Dict.remove identity pkg testDirect)
-                                        testIndirect
+                                    Outline.AppOutline
+                                        { appData
+                                            | depsDirect = Dict.insert identity pkg vsn appData.depsDirect
+                                            , testDirect = Dict.remove identity pkg appData.testDirect
+                                        }
 
                     Nothing ->
-                        case Dict.get identity pkg testIndirect of
+                        case Dict.get identity pkg appData.testIndirect of
                             Just vsn ->
                                 Task.succeed <|
                                     PromoteTest <|
                                         Outline.App <|
-                                            Outline.AppOutline elmVersion sourceDirs
-                                                (Dict.insert identity pkg vsn direct)
-                                                indirect
-                                                testDirect
-                                                (Dict.remove identity pkg testIndirect)
+                                            Outline.AppOutline
+                                                { appData
+                                                    | depsDirect = Dict.insert identity pkg vsn appData.depsDirect
+                                                    , testIndirect = Dict.remove identity pkg appData.testIndirect
+                                                }
 
                             Nothing ->
                                 addAppPackageFromScratch cache connection registry pkg outline False
@@ -397,16 +389,16 @@ type alias PkgOutlineInfo =
 
 
 makePkgPlan : Solver.Env -> Pkg.Name -> Outline.PkgOutline -> Bool -> Task Exit.Install (Changes C.Constraint)
-makePkgPlan (Solver.Env cache _ connection registry) pkg (Outline.PkgOutline name summary license version exposed deps test elmVersion) forTest =
+makePkgPlan (Solver.Env env) pkg (Outline.PkgOutline pkgData) forTest =
     let
         info =
-            PkgOutlineInfo name summary license version exposed deps test elmVersion
+            PkgOutlineInfo pkgData.name pkgData.summary pkgData.license pkgData.version pkgData.exposed pkgData.deps pkgData.testDeps pkgData.elm
     in
     if forTest then
-        makePkgPlanForTest cache connection registry pkg info
+        makePkgPlanForTest env.cache env.connection env.registry pkg info
 
     else
-        makePkgPlanForDeps cache connection registry pkg info
+        makePkgPlanForDeps env.cache env.connection env.registry pkg info
 
 
 makePkgPlanForTest :
@@ -461,10 +453,16 @@ handlePkgTestSolverResult pkg info result =
             Task.succeed <|
                 Changes changes <|
                     Outline.Pkg <|
-                        Outline.PkgOutline info.name info.summary info.license info.version info.exposed
-                            info.deps
-                            (addNews (Just pkg) news info.test)
-                            info.elmVersion
+                        Outline.PkgOutline
+                            { name = info.name
+                            , summary = info.summary
+                            , license = info.license
+                            , version = info.version
+                            , exposed = info.exposed
+                            , deps = info.deps
+                            , testDeps = addNews (Just pkg) news info.test
+                            , elm = info.elmVersion
+                            }
 
         Solver.NoSolution ->
             Task.throw (Exit.InstallNoOnlinePkgSolution pkg)
@@ -493,10 +491,16 @@ makePkgPlanForDeps cache connection registry pkg info =
                 Task.succeed <|
                     PromoteTest <|
                         Outline.Pkg <|
-                            Outline.PkgOutline info.name info.summary info.license info.version info.exposed
-                                (Dict.insert identity pkg con info.deps)
-                                (Dict.remove identity pkg info.test)
-                                info.elmVersion
+                            Outline.PkgOutline
+                                { name = info.name
+                                , summary = info.summary
+                                , license = info.license
+                                , version = info.version
+                                , exposed = info.exposed
+                                , deps = Dict.insert identity pkg con info.deps
+                                , testDeps = Dict.remove identity pkg info.test
+                                , elm = info.elmVersion
+                                }
 
             Nothing ->
                 addPkgDependencyFromScratch cache connection registry pkg info
@@ -554,10 +558,16 @@ handlePkgDepsSolverResult pkg info old result =
             Task.succeed <|
                 Changes changes <|
                     Outline.Pkg <|
-                        Outline.PkgOutline info.name info.summary info.license info.version info.exposed
-                            (addNews (Just pkg) news info.deps)
-                            (addNews Nothing news info.test)
-                            info.elmVersion
+                        Outline.PkgOutline
+                            { name = info.name
+                            , summary = info.summary
+                            , license = info.license
+                            , version = info.version
+                            , exposed = info.exposed
+                            , deps = addNews (Just pkg) news info.deps
+                            , testDeps = addNews Nothing news info.test
+                            , elm = info.elmVersion
+                            }
 
         Solver.NoSolution ->
             Task.throw (Exit.InstallNoOnlinePkgSolution pkg)

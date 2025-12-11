@@ -93,8 +93,8 @@ canonicalize syntaxVersion env (A.At region expression) =
             Src.Op op ->
                 Env.findBinop region env op
                     |> ReportingResult.map
-                        (\(Env.Binop _ home name annotation _ _) ->
-                            Can.VarOperator op home name annotation
+                        (\(Env.Binop binopData) ->
+                            Can.VarOperator op binopData.home binopData.name binopData.annotation
                         )
 
             Src.Negate expr ->
@@ -266,17 +266,31 @@ runBinopStepper overallRegion step =
             runBinopStepper overallRegion <|
                 toBinopStep (toBinop op expr) op rest final
 
-        Error (Env.Binop op1 _ _ _ _ _) (Env.Binop op2 _ _ _ _ _) ->
-            ReportingResult.throw (Error.Binop overallRegion op1 op2)
+        Error (Env.Binop binopData1) (Env.Binop binopData2) ->
+            ReportingResult.throw (Error.Binop overallRegion binopData1.op binopData2.op)
 
 
 toBinopStep : (Can.Expr -> Can.Expr) -> Env.Binop -> List ( Can.Expr, Env.Binop ) -> Can.Expr -> Step
-toBinopStep makeBinop ((Env.Binop _ _ _ _ rootAssociativity rootPrecedence) as rootOp) middle final =
+toBinopStep makeBinop ((Env.Binop rootBinopData) as rootOp) middle final =
+    let
+        rootAssociativity =
+            rootBinopData.associativity
+
+        rootPrecedence =
+            rootBinopData.precedence
+    in
     case middle of
         [] ->
             Done (makeBinop final)
 
-        ( expr, (Env.Binop _ _ _ _ associativity precedence) as op ) :: rest ->
+        ( expr, (Env.Binop opBinopData) as op ) :: rest ->
+            let
+                associativity =
+                    opBinopData.associativity
+
+                precedence =
+                    opBinopData.precedence
+            in
             if precedence < rootPrecedence then
                 More (( makeBinop expr, op ) :: rest) final
 
@@ -304,8 +318,8 @@ toBinopStep makeBinop ((Env.Binop _ _ _ _ rootAssociativity rootPrecedence) as r
 
 
 toBinop : Env.Binop -> Can.Expr -> Can.Expr -> Can.Expr
-toBinop (Env.Binop op home name annotation _ _) left right =
-    A.merge left right (Can.Binop op home name annotation left right)
+toBinop (Env.Binop binopData) left right =
+    A.merge left right (Can.Binop binopData.op binopData.home binopData.name binopData.annotation left right)
 
 
 canonicalizeLet : SyntaxVersion -> A.Region -> Env.Env -> List (A.Located Src.Def) -> Src.Expr -> EResult FreeLocals (List W.Warning) Can.Expr
@@ -872,21 +886,21 @@ toPossibleNames exposed qualified =
 toVarCtor : Name -> Env.Ctor -> Can.Expr_
 toVarCtor name ctor =
     case ctor of
-        Env.Ctor home typeName (Can.Union vars _ _ opts) index args ->
+        Env.Ctor home typeName (Can.Union unionData) index args ->
             let
                 freeVars : Dict String Name ()
                 freeVars =
-                    Dict.fromList identity (List.map (\v -> ( v, () )) vars)
+                    Dict.fromList identity (List.map (\v -> ( v, () )) unionData.vars)
 
                 result : Can.Type
                 result =
-                    Can.TType home typeName (List.map Can.TVar vars)
+                    Can.TType home typeName (List.map Can.TVar unionData.vars)
 
                 tipe : Can.Type
                 tipe =
                     List.foldr Can.TLambda result args
             in
-            Can.VarCtor opts home name index (Can.Forall freeVars tipe)
+            Can.VarCtor unionData.opts home name index (Can.Forall freeVars tipe)
 
         Env.RecordCtor home vars tipe ->
             let

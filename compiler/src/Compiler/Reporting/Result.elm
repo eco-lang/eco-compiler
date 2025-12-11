@@ -2,11 +2,11 @@ module Compiler.Reporting.Result exposing
     ( RResult(..)
     , RStep(..)
     , Step(..)
-    , apply
     , andThen
-    , map
+    , apply
     , indexedTraverse
     , loop
+    , map
     , mapTraverseWithKey
     , ok
     , run

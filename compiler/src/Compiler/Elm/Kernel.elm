@@ -8,6 +8,8 @@ module Compiler.Elm.Kernel exposing
     , fromByteString
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.AST.Source as Src
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
@@ -20,9 +22,7 @@ import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Crash exposing (crash)
 
 
@@ -137,16 +137,16 @@ ignoreError _ _ _ =
 parseChunks : VarTable -> Enums -> Fields -> P.Parser () (List Chunk)
 parseChunks vtable enums fields =
     P.Parser
-        (\(P.State src pos end indent row col) ->
+        (\(P.State st) ->
             let
                 ( ( chunks, newPos ), ( newRow, newCol ) ) =
-                    chompChunks vtable enums fields src pos end row col pos []
+                    chompChunks vtable enums fields st.src st.pos st.end st.row st.col st.pos []
             in
-            if newPos == end then
-                P.Cok chunks (P.State src newPos end indent newRow newCol)
+            if newPos == st.end then
+                P.Cok chunks (P.State { st | pos = newPos, row = newRow, col = newCol })
 
             else
-                P.Cerr row col toError
+                P.Cerr st.row st.col toError
         )
 
 

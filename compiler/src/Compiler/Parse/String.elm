@@ -17,30 +17,30 @@ import Compiler.Reporting.Error.Syntax as E
 character : SyntaxVersion -> (Row -> Col -> x) -> (E.Char -> Row -> Col -> x) -> Parser x String
 character syntaxVersion toExpectation toError =
     Parser
-        (\(P.State src pos end indent row col) ->
-            if pos >= end || P.unsafeIndex src pos /= '\'' then
-                P.Eerr row col toExpectation
+        (\(P.State st) ->
+            if st.pos >= st.end || P.unsafeIndex st.src st.pos /= '\'' then
+                P.Eerr st.row st.col toExpectation
 
             else
-                case chompChar syntaxVersion src (pos + 1) end row (col + 1) 0 placeholder of
+                case chompChar syntaxVersion st.src (st.pos + 1) st.end st.row (st.col + 1) 0 placeholder of
                     Good newPos newCol numChars mostRecent ->
                         if numChars /= 1 then
-                            P.Cerr row col (toError (E.CharNotString (newCol - col)))
+                            P.Cerr st.row st.col (toError (E.CharNotString (newCol - st.col)))
 
                         else
                             let
                                 newState : P.State
                                 newState =
-                                    P.State src newPos end indent row newCol
+                                    P.State { st | pos = newPos, col = newCol }
 
                                 char : String
                                 char =
-                                    ES.fromChunks src [ mostRecent ]
+                                    ES.fromChunks st.src [ mostRecent ]
                             in
                             P.Cok char newState
 
                     CharEndless newCol ->
-                        P.Cerr row newCol (toError E.CharEndless)
+                        P.Cerr st.row newCol (toError E.CharEndless)
 
                     CharEscape r c escape ->
                         P.Cerr r c (toError (E.CharEscape escape))
@@ -107,43 +107,43 @@ chompChar syntaxVersion src pos end row col numChars mostRecent =
 string : SyntaxVersion -> (Row -> Col -> x) -> (E.String_ -> Row -> Col -> x) -> Parser x ( String, Bool )
 string syntaxVersion toExpectation toError =
     Parser
-        (\(P.State src pos end indent row col) ->
-            if isDoubleQuote src pos end then
+        (\(P.State st) ->
+            if isDoubleQuote st.src st.pos st.end then
                 let
                     pos1 : Int
                     pos1 =
-                        pos + 1
+                        st.pos + 1
                 in
                 case
-                    if isDoubleQuote src pos1 end then
+                    if isDoubleQuote st.src pos1 st.end then
                         let
                             pos2 : Int
                             pos2 =
-                                pos + 2
+                                st.pos + 2
                         in
-                        if isDoubleQuote src pos2 end then
+                        if isDoubleQuote st.src pos2 st.end then
                             let
                                 pos3 : Int
                                 pos3 =
-                                    pos + 3
+                                    st.pos + 3
 
                                 col3 : Col
                                 col3 =
-                                    col + 3
+                                    st.col + 3
                             in
-                            multiString syntaxVersion src pos3 end row col3 pos3 row col []
+                            multiString syntaxVersion st.src pos3 st.end st.row col3 pos3 st.row st.col []
 
                         else
-                            SROk pos2 row (col + 2) "" False
+                            SROk pos2 st.row (st.col + 2) "" False
 
                     else
-                        singleString syntaxVersion src pos1 end row (col + 1) pos1 []
+                        singleString syntaxVersion st.src pos1 st.end st.row (st.col + 1) pos1 []
                 of
                     SROk newPos newRow newCol utf8 multiline ->
                         let
                             newState : P.State
                             newState =
-                                P.State src newPos end indent newRow newCol
+                                P.State { st | pos = newPos, row = newRow, col = newCol }
                         in
                         P.Cok ( utf8, multiline ) newState
 
@@ -151,7 +151,7 @@ string syntaxVersion toExpectation toError =
                         P.Cerr r c (toError x)
 
             else
-                P.Eerr row col toExpectation
+                P.Eerr st.row st.col toExpectation
         )
 
 

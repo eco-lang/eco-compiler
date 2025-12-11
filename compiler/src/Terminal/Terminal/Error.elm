@@ -211,15 +211,19 @@ exitWithOverview intro outro commands =
 
 
 toSummary : String -> Command -> Maybe P.Doc
-toSummary exeName (Command name summary _ _ (Args args) _ _) =
-    case summary of
+toSummary exeName (Command cmdData) =
+    case cmdData.summary of
         Uncommon ->
             Nothing
 
         Common summaryString ->
+            let
+                (Args args) =
+                    cmdData.args
+            in
             Just <|
                 P.vcat
-                    [ P.cyan <| argsToDoc (exeName ++ " " ++ name) (Prelude.head args)
+                    [ P.cyan <| argsToDoc (exeName ++ " " ++ cmdData.name) (Prelude.head args)
                     , P.indent 4 <| reflow summaryString
                     ]
 

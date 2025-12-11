@@ -108,7 +108,20 @@ attemptChangesHelp root env oldOutline newOutline =
 
 
 makeAppPlan : Solver.Env -> Pkg.Name -> Outline.AppOutline -> Task Exit.Install (Changes V.Version)
-makeAppPlan (Solver.Env cache _ connection registry) pkg ((Outline.AppOutline elmVersion sourceDirs direct indirect testDirect testIndirect) as outline) =
+makeAppPlan (Solver.Env env) pkg ((Outline.AppOutline appData) as outline) =
+    let
+        direct =
+            appData.depsDirect
+
+        indirect =
+            appData.depsIndirect
+
+        testDirect =
+            appData.testDirect
+
+        testIndirect =
+            appData.testIndirect
+    in
     if Dict.member identity pkg direct then
         Task.succeed AlreadyInstalled
 
@@ -119,12 +132,11 @@ makeAppPlan (Solver.Env cache _ connection registry) pkg ((Outline.AppOutline el
                 Task.succeed <|
                     PromoteIndirect <|
                         Outline.App <|
-                            Outline.AppOutline elmVersion
-                                sourceDirs
-                                (Dict.insert identity pkg vsn direct)
-                                (Dict.remove identity pkg indirect)
-                                testDirect
-                                testIndirect
+                            Outline.AppOutline
+                                { appData
+                                    | depsDirect = Dict.insert identity pkg vsn direct
+                                    , depsIndirect = Dict.remove identity pkg indirect
+                                }
 
             Nothing ->
                 -- is it already a test dependency?
@@ -133,12 +145,11 @@ makeAppPlan (Solver.Env cache _ connection registry) pkg ((Outline.AppOutline el
                         Task.succeed <|
                             PromoteTest <|
                                 Outline.App <|
-                                    Outline.AppOutline elmVersion
-                                        sourceDirs
-                                        (Dict.insert identity pkg vsn direct)
-                                        indirect
-                                        (Dict.remove identity pkg testDirect)
-                                        testIndirect
+                                    Outline.AppOutline
+                                        { appData
+                                            | depsDirect = Dict.insert identity pkg vsn direct
+                                            , testDirect = Dict.remove identity pkg testDirect
+                                        }
 
                     Nothing ->
                         -- is it already an indirect test dependency?
@@ -147,18 +158,17 @@ makeAppPlan (Solver.Env cache _ connection registry) pkg ((Outline.AppOutline el
                                 Task.succeed <|
                                     PromoteTest <|
                                         Outline.App <|
-                                            Outline.AppOutline elmVersion
-                                                sourceDirs
-                                                (Dict.insert identity pkg vsn direct)
-                                                indirect
-                                                testDirect
-                                                (Dict.remove identity pkg testIndirect)
+                                            Outline.AppOutline
+                                                { appData
+                                                    | depsDirect = Dict.insert identity pkg vsn direct
+                                                    , testIndirect = Dict.remove identity pkg testIndirect
+                                                }
 
                             Nothing ->
                                 -- finally try to add it from scratch
-                                case Registry.getVersions_ pkg registry of
+                                case Registry.getVersions_ pkg env.registry of
                                     Err suggestions ->
-                                        case connection of
+                                        case env.connection of
                                             Solver.Online _ ->
                                                 Task.throw (Exit.InstallUnknownPackageOnline pkg suggestions)
 
@@ -166,7 +176,7 @@ makeAppPlan (Solver.Env cache _ connection registry) pkg ((Outline.AppOutline el
                                                 Task.throw (Exit.InstallUnknownPackageOffline pkg suggestions)
 
                                     Ok _ ->
-                                        Task.io (Solver.addToApp cache connection registry pkg outline False)
+                                        Task.io (Solver.addToApp env.cache env.connection env.registry pkg outline False)
                                             |> Task.andThen
                                                 (\result ->
                                                     case result of
@@ -189,31 +199,28 @@ makeAppPlan (Solver.Env cache _ connection registry) pkg ((Outline.AppOutline el
 
 
 makePkgPlan : Solver.Env -> Pkg.Name -> Outline.PkgOutline -> Task Exit.Install (Changes C.Constraint)
-makePkgPlan (Solver.Env cache _ connection registry) pkg (Outline.PkgOutline name summary license version exposed deps test elmVersion) =
-    if Dict.member identity pkg deps then
+makePkgPlan (Solver.Env env) pkg (Outline.PkgOutline pkgData) =
+    if Dict.member identity pkg pkgData.deps then
         Task.succeed AlreadyInstalled
 
     else
         -- is already in test dependencies?
-        case Dict.get identity pkg test of
+        case Dict.get identity pkg pkgData.testDeps of
             Just con ->
                 Task.succeed <|
                     PromoteTest <|
                         Outline.Pkg <|
-                            Outline.PkgOutline name
-                                summary
-                                license
-                                version
-                                exposed
-                                (Dict.insert identity pkg con deps)
-                                (Dict.remove identity pkg test)
-                                elmVersion
+                            Outline.PkgOutline
+                                { pkgData
+                                    | deps = Dict.insert identity pkg con pkgData.deps
+                                    , testDeps = Dict.remove identity pkg pkgData.testDeps
+                                }
 
             Nothing ->
                 -- try to add a new dependency
-                case Registry.getVersions_ pkg registry of
+                case Registry.getVersions_ pkg env.registry of
                     Err suggestions ->
-                        case connection of
+                        case env.connection of
                             Solver.Online _ ->
                                 Task.throw (Exit.InstallUnknownPackageOnline pkg suggestions)
 
@@ -224,13 +231,13 @@ makePkgPlan (Solver.Env cache _ connection registry) pkg (Outline.PkgOutline nam
                         let
                             old : Dict ( String, String ) Pkg.Name C.Constraint
                             old =
-                                Dict.union deps test
+                                Dict.union pkgData.deps pkgData.testDeps
 
                             cons : Dict ( String, String ) Pkg.Name C.Constraint
                             cons =
                                 Dict.insert identity pkg C.anything old
                         in
-                        Task.io (Solver.verify cache connection registry cons)
+                        Task.io (Solver.verify env.cache env.connection env.registry cons)
                             |> Task.andThen
                                 (\result ->
                                     case result of
@@ -258,14 +265,11 @@ makePkgPlan (Solver.Env cache _ connection registry) pkg (Outline.PkgOutline nam
                                             Task.succeed <|
                                                 Changes <|
                                                     Outline.Pkg <|
-                                                        Outline.PkgOutline name
-                                                            summary
-                                                            license
-                                                            version
-                                                            exposed
-                                                            (addNews (Just pkg) news deps)
-                                                            (addNews Nothing news test)
-                                                            elmVersion
+                                                        Outline.PkgOutline
+                                                            { pkgData
+                                                                | deps = addNews (Just pkg) news pkgData.deps
+                                                                , testDeps = addNews Nothing news pkgData.testDeps
+                                                            }
 
                                         Solver.NoSolution ->
                                             Task.throw (Exit.InstallNoOnlinePkgSolution pkg)

@@ -50,8 +50,17 @@ run () () =
 -- ENV
 
 
+type alias EnvData =
+    { root : FilePath
+    , cache : Stuff.PackageCache
+    , manager : Http.Manager
+    , registry : Registry.Registry
+    , outline : Outline.Outline
+    }
+
+
 type Env
-    = Env FilePath Stuff.PackageCache Http.Manager Registry.Registry Outline.Outline
+    = Env EnvData
 
 
 type alias EnvSetup =
@@ -91,7 +100,7 @@ addRegistry setup =
 readOutline : ( EnvSetup, Registry.Registry ) -> Task Exit.Publish Env
 readOutline ( setup, registry ) =
     Task.eio Exit.PublishBadOutline (Outline.read setup.root)
-        |> Task.map (\outline -> Env setup.root setup.cache setup.manager registry outline)
+        |> Task.map (\outline -> Env { root = setup.root, cache = setup.cache, manager = setup.manager, registry = registry, outline = outline })
 
 
 
@@ -121,25 +130,25 @@ type alias PublishData =
 
 
 publish : Env -> Task Exit.Publish ()
-publish ((Env root _ manager registry outline) as env) =
-    case outline of
+publish ((Env envData) as env) =
+    case envData.outline of
         Outline.App _ ->
             Task.throw Exit.PublishApplication
 
-        Outline.Pkg (Outline.PkgOutline pkg summary _ vsn exposed _ _ _) ->
+        Outline.Pkg (Outline.PkgOutline pkgData) ->
             let
                 info =
-                    PublishInfo env pkg vsn (Registry.getVersions pkg registry)
+                    PublishInfo env pkgData.name pkgData.version (Registry.getVersions pkgData.name envData.registry)
             in
-            reportPublishStart pkg vsn info.maybeKnownVersions
-                |> Task.andThen (\_ -> checkExposed exposed)
-                |> Task.andThen (\_ -> checkSummary summary)
-                |> Task.andThen (\_ -> verifyReadme root)
-                |> Task.andThen (\_ -> verifyLicense root)
-                |> Task.andThen (\_ -> verifyBuild root)
+            reportPublishStart pkgData.name pkgData.version info.maybeKnownVersions
+                |> Task.andThen (\_ -> checkExposed pkgData.exposed)
+                |> Task.andThen (\_ -> checkSummary pkgData.summary)
+                |> Task.andThen (\_ -> verifyReadme envData.root)
+                |> Task.andThen (\_ -> verifyLicense envData.root)
+                |> Task.andThen (\_ -> verifyBuild envData.root)
                 |> Task.andThen (verifyAndGetGit info)
-                |> Task.andThen (verifyTagAndChanges info manager)
-                |> Task.andThen (finalizePublish info manager)
+                |> Task.andThen (verifyTagAndChanges info envData.manager)
+                |> Task.andThen (finalizePublish info envData.manager)
 
 
 checkExposed : Outline.Exposed -> Task Exit.Publish ()
@@ -290,8 +299,8 @@ loadDetailsAndBuildDocs root scope =
 
 
 extractExposedAndBuildDocs : String -> Details.Details -> Task Exit.Publish Docs.Documentation
-extractExposedAndBuildDocs root ((Details.Details _ outline _ _ _ _) as details) =
-    getExposedModules outline
+extractExposedAndBuildDocs root ((Details.Details detailsData) as details) =
+    getExposedModules detailsData.outline
         |> Task.andThen (buildDocsFromExposed root details)
 
 
@@ -444,8 +453,8 @@ checkNoLocalChanges vsn exitCode =
 
 
 verifyZip : Env -> Pkg.Name -> V.Version -> Task Exit.Publish Http.Sha
-verifyZip (Env root _ manager _ _) pkg vsn =
-    withPrepublishDir root (downloadAndVerifyZip manager pkg vsn)
+verifyZip (Env envData) pkg vsn =
+    withPrepublishDir envData.root (downloadAndVerifyZip envData.manager pkg vsn)
 
 
 downloadAndVerifyZip : Http.Manager -> Pkg.Name -> V.Version -> String -> Task Exit.Publish Http.Sha
@@ -512,8 +521,8 @@ loadDetailsAndVerifyZip root scope =
 
 
 extractExposedAndBuildZip : FilePath -> Details.Details -> Task Exit.Publish ()
-extractExposedAndBuildZip root ((Details.Details _ outline _ _ _ _) as details) =
-    getZipExposedModules outline
+extractExposedAndBuildZip root ((Details.Details detailsData) as details) =
+    getZipExposedModules detailsData.outline
         |> Task.andThen (buildZipFromExposed root details)
 
 
@@ -566,7 +575,7 @@ verifyVersion env pkg vsn newDocs publishedVersions =
 
 
 verifyBump : Env -> Pkg.Name -> V.Version -> Docs.Documentation -> Registry.KnownVersions -> Task Never (Result Exit.Publish GoodVersion)
-verifyBump (Env _ cache manager _ _) pkg vsn newDocs ((Registry.KnownVersions latest _) as knownVersions) =
+verifyBump (Env envData) pkg vsn newDocs ((Registry.KnownVersions latest _) as knownVersions) =
     case List.find (\( _, new, _ ) -> vsn == new) (Bump.getPossibilities knownVersions) of
         Nothing ->
             Task.succeed <|
@@ -574,7 +583,7 @@ verifyBump (Env _ cache manager _ _) pkg vsn newDocs ((Registry.KnownVersions la
                     Exit.PublishInvalidBump vsn latest
 
         Just ( old, new, magnitude ) ->
-            Diff.getDocs cache manager pkg old
+            Diff.getDocs envData.cache envData.manager pkg old
                 |> Task.map
                     (\result ->
                         case result of

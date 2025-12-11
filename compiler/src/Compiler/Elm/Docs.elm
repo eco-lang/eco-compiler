@@ -2,9 +2,11 @@ module Compiler.Elm.Docs exposing
     ( Alias(..)
     , Binop(..)
     , Comment
+    , DocsBinopData
     , Documentation
     , Error(..)
     , Module(..)
+    , ModuleData
     , Union(..)
     , Value(..)
     , bytesDecoder
@@ -22,6 +24,8 @@ module Compiler.Elm.Docs exposing
     )
 
 import Basics.Extra exposing (flip)
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.AST.Utils.Binop as Binop
@@ -46,9 +50,7 @@ import Json.Decode as Decode
 import Json.Encode as Encode
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Main as Utils
 
 
@@ -60,8 +62,18 @@ type alias Documentation =
     Dict String Name Module
 
 
+type alias ModuleData =
+    { name : Name
+    , comment : Comment
+    , unions : Dict String Name Union
+    , aliases : Dict String Name Alias
+    , values : Dict String Name Value
+    , binops : Dict String Name Binop
+    }
+
+
 type Module
-    = Module Name Comment (Dict String Name Union) (Dict String Name Alias) (Dict String Name Value) (Dict String Name Binop)
+    = Module ModuleData
 
 
 type alias Comment =
@@ -80,8 +92,16 @@ type Value
     = Value Comment Type.Type
 
 
+type alias DocsBinopData =
+    { comment : Comment
+    , tipe : Type.Type
+    , associativity : Binop.Associativity
+    , precedence : Binop.Precedence
+    }
+
+
 type Binop
-    = Binop Comment Type.Type Binop.Associativity Binop.Precedence
+    = Binop DocsBinopData
 
 
 
@@ -94,14 +114,14 @@ encode docs =
 
 
 encodeModule : Module -> E.Value
-encodeModule (Module name comment unions aliases values binops) =
+encodeModule (Module moduleData) =
     E.object
-        [ ( "name", ModuleName.encode name )
-        , ( "comment", E.string comment )
-        , ( "unions", E.list encodeUnion (Dict.toList compare unions) )
-        , ( "aliases", E.list encodeAlias (Dict.toList compare aliases) )
-        , ( "values", E.list encodeValue (Dict.toList compare values) )
-        , ( "binops", E.list encodeBinop (Dict.toList compare binops) )
+        [ ( "name", ModuleName.encode moduleData.name )
+        , ( "comment", E.string moduleData.comment )
+        , ( "unions", E.list encodeUnion (Dict.toList compare moduleData.unions) )
+        , ( "aliases", E.list encodeAlias (Dict.toList compare moduleData.aliases) )
+        , ( "values", E.list encodeValue (Dict.toList compare moduleData.values) )
+        , ( "binops", E.list encodeBinop (Dict.toList compare moduleData.binops) )
         ]
 
 
@@ -122,13 +142,13 @@ toDict modules =
 
 
 toDictHelp : Module -> ( Name.Name, Module )
-toDictHelp ((Module name _ _ _ _ _) as modul) =
-    ( name, modul )
+toDictHelp ((Module moduleData) as modul) =
+    ( moduleData.name, modul )
 
 
 moduleDecoder : D.Decoder Error Module
 moduleDecoder =
-    D.map Module (D.field "name" moduleNameDecoder)
+    D.map (\name_ comment_ unions_ aliases_ values_ binops_ -> Module { name = name_, comment = comment_, unions = unions_, aliases = aliases_, values = values_, binops = binops_ }) (D.field "name" moduleNameDecoder)
         |> D.apply (D.field "comment" D.string)
         |> D.apply (D.field "unions" (dictDecoder union))
         |> D.apply (D.field "aliases" (dictDecoder alias_))
@@ -238,19 +258,19 @@ value =
 
 
 encodeBinop : ( Name, Binop ) -> E.Value
-encodeBinop ( name, Binop comment tipe assoc prec ) =
+encodeBinop ( name, Binop data ) =
     E.object
         [ ( "name", E.name name )
-        , ( "comment", E.string comment )
-        , ( "type", Type.encode tipe )
-        , ( "associativity", encodeAssoc assoc )
-        , ( "precedence", encodePrec prec )
+        , ( "comment", E.string data.comment )
+        , ( "type", Type.encode data.tipe )
+        , ( "associativity", encodeAssoc data.associativity )
+        , ( "precedence", encodePrec data.precedence )
         ]
 
 
 binop : D.Decoder Error Binop
 binop =
-    D.map Binop (D.field "comment" D.string)
+    D.map (\comment tipe assoc prec -> Binop { comment = comment, tipe = tipe, associativity = assoc, precedence = prec }) (D.field "comment" D.string)
         |> D.apply (D.field "type" typeDecoder)
         |> D.apply (D.field "associativity" assocDecoder)
         |> D.apply (D.field "precedence" precDecoder)
@@ -324,13 +344,13 @@ precDecoder =
 
 
 fromModule : Can.Module -> Result E.Error Module
-fromModule ((Can.Module _ exports docs _ _ _ _ _) as modul) =
-    case exports of
+fromModule ((Can.Module canData) as modul) =
+    case canData.exports of
         Can.ExportEverything region ->
             Err (E.ImplicitExposing region)
 
         Can.Export exportDict ->
-            case docs of
+            case canData.docs of
                 Src.NoDocs region _ ->
                     Err (E.NoDocs region)
 
@@ -440,14 +460,14 @@ chompOperator =
 chompUntilDocs : Parser Bool
 chompUntilDocs =
     P.Parser
-        (\(P.State src pos end indent row col) ->
+        (\(P.State st) ->
             let
                 ( ( isDocs, newPos ), ( newRow, newCol ) ) =
-                    untilDocs src pos end row col
+                    untilDocs st.src st.pos st.end st.row st.col
 
                 newState : P.State
                 newState =
-                    P.State src newPos end indent newRow newCol
+                    P.State { st | pos = newPos, row = newRow, col = newCol }
             in
             P.Cok isDocs newState
         )
@@ -566,41 +586,55 @@ onlyInExports name (A.At region _) =
 
 
 checkDefs : Dict String Name (A.Located Can.Export) -> Src.Comment -> Dict String Name Src.Comment -> Can.Module -> Result E.Error Module
-checkDefs exportDict overview comments (Can.Module name _ _ decls unions aliases infixes effects) =
+checkDefs exportDict overview comments (Can.Module canData) =
     let
         types : Types
         types =
-            gatherTypes decls Dict.empty
+            gatherTypes canData.decls Dict.empty
 
         info : Info
         info =
-            Info comments types unions aliases infixes effects
+            Info { comments = comments, types = types, unions = canData.unions, aliases = canData.aliases, binops = canData.binops, effects = canData.effects }
     in
     case ReportingResult.run (ReportingResult.mapTraverseWithKey identity compare (checkExport info) exportDict) of
         ( _, Err problems ) ->
             Err (E.DefProblems (OneOrMore.destruct NE.Nonempty problems))
 
         ( _, Ok inserters ) ->
-            Ok (Dict.foldr compare (\_ -> (<|)) (emptyModule name overview) inserters)
+            Ok (Dict.foldr compare (\_ -> (<|)) (emptyModule canData.name overview) inserters)
 
 
 emptyModule : IO.Canonical -> Src.Comment -> Module
 emptyModule (IO.Canonical _ name) (Src.Comment overview) =
-    Module name (Json.fromComment overview) Dict.empty Dict.empty Dict.empty Dict.empty
+    Module { name = name, comment = Json.fromComment overview, unions = Dict.empty, aliases = Dict.empty, values = Dict.empty, binops = Dict.empty }
+
+
+type alias InfoData =
+    { comments : Dict String Name.Name Src.Comment
+    , types : Dict String Name.Name (Result A.Region Can.Type)
+    , unions : Dict String Name.Name Can.Union
+    , aliases : Dict String Name.Name Can.Alias
+    , binops : Dict String Name.Name Can.Binop
+    , effects : Can.Effects
+    }
 
 
 type Info
-    = Info
-        (Dict String Name.Name Src.Comment)
-        (Dict String Name.Name (Result A.Region Can.Type))
-        (Dict String Name.Name Can.Union)
-        (Dict String Name.Name Can.Alias)
-        (Dict String Name.Name Can.Binop)
-        Can.Effects
+    = Info InfoData
 
 
 checkExport : Info -> Name -> A.Located Can.Export -> ReportingResult.RResult i w E.DefProblem (Module -> Module)
-checkExport ((Info _ _ iUnions iAliases iBinops _) as info) name (A.At region export) =
+checkExport ((Info infoData) as info) name (A.At region export) =
+    let
+        iUnions =
+            infoData.unions
+
+        iAliases =
+            infoData.aliases
+
+        iBinops =
+            infoData.binops
+    in
     case export of
         Can.ExportValue ->
             getType name info
@@ -610,14 +644,8 @@ checkExport ((Info _ _ iUnions iAliases iBinops _) as info) name (A.At region ex
                             |> ReportingResult.andThen
                                 (\comment ->
                                     ReportingResult.ok
-                                        (\(Module mName mComment mUnions mAliases mValues mBinops) ->
-                                            Module
-                                                mName
-                                                mComment
-                                                mUnions
-                                                mAliases
-                                                (Dict.insert identity name (Value comment tipe) mValues)
-                                                mBinops
+                                        (\(Module mData) ->
+                                            Module { mData | values = Dict.insert identity name (Value comment tipe) mData.values }
                                         )
                                 )
                     )
@@ -634,14 +662,8 @@ checkExport ((Info _ _ iUnions iAliases iBinops _) as info) name (A.At region ex
                             |> ReportingResult.andThen
                                 (\comment ->
                                     ReportingResult.ok
-                                        (\(Module mName mComment mUnions mAliases mValues mBinops) ->
-                                            Module
-                                                mName
-                                                mComment
-                                                mUnions
-                                                mAliases
-                                                mValues
-                                                (Dict.insert identity name (Binop comment tipe assoc prec) mBinops)
+                                        (\(Module mData) ->
+                                            Module { mData | binops = Dict.insert identity name (Binop { comment = comment, tipe = tipe, associativity = assoc, precedence = prec }) mData.binops }
                                         )
                                 )
                     )
@@ -655,51 +677,36 @@ checkExport ((Info _ _ iUnions iAliases iBinops _) as info) name (A.At region ex
                 |> ReportingResult.andThen
                     (\comment ->
                         ReportingResult.ok
-                            (\(Module mName mComment mUnions mAliases mValues mBinops) ->
-                                Module mName
-                                    mComment
-                                    mUnions
-                                    (Dict.insert identity name (Alias comment tvars (Extract.fromType tipe)) mAliases)
-                                    mValues
-                                    mBinops
+                            (\(Module mData) ->
+                                Module { mData | aliases = Dict.insert identity name (Alias comment tvars (Extract.fromType tipe)) mData.aliases }
                             )
                     )
 
         Can.ExportUnionOpen ->
             let
-                (Can.Union tvars ctors _ _) =
+                (Can.Union unionData) =
                     Utils.find identity name iUnions
             in
             getComment region name info
                 |> ReportingResult.andThen
                     (\comment ->
                         ReportingResult.ok
-                            (\(Module mName mComment mUnions mAliases mValues mBinops) ->
-                                Module mName
-                                    mComment
-                                    (Dict.insert identity name (Union comment tvars (List.map dector ctors)) mUnions)
-                                    mAliases
-                                    mValues
-                                    mBinops
+                            (\(Module mData) ->
+                                Module { mData | unions = Dict.insert identity name (Union comment unionData.vars (List.map dector unionData.alts)) mData.unions }
                             )
                     )
 
         Can.ExportUnionClosed ->
             let
-                (Can.Union tvars _ _ _) =
+                (Can.Union unionData) =
                     Utils.find identity name iUnions
             in
             getComment region name info
                 |> ReportingResult.andThen
                     (\comment ->
                         ReportingResult.ok
-                            (\(Module mName mComment mUnions mAliases mValues mBinops) ->
-                                Module mName
-                                    mComment
-                                    (Dict.insert identity name (Union comment tvars []) mUnions)
-                                    mAliases
-                                    mValues
-                                    mBinops
+                            (\(Module mData) ->
+                                Module { mData | unions = Dict.insert identity name (Union comment unionData.vars []) mData.unions }
                             )
                     )
 
@@ -711,21 +718,16 @@ checkExport ((Info _ _ iUnions iAliases iBinops _) as info) name (A.At region ex
                             |> ReportingResult.andThen
                                 (\comment ->
                                     ReportingResult.ok
-                                        (\(Module mName mComment mUnions mAliases mValues mBinops) ->
-                                            Module mName
-                                                mComment
-                                                mUnions
-                                                mAliases
-                                                (Dict.insert identity name (Value comment tipe) mValues)
-                                                mBinops
+                                        (\(Module mData) ->
+                                            Module { mData | values = Dict.insert identity name (Value comment tipe) mData.values }
                                         )
                                 )
                     )
 
 
 getComment : A.Region -> Name.Name -> Info -> ReportingResult.RResult i w E.DefProblem Comment
-getComment region name (Info iComments _ _ _ _ _) =
-    case Dict.get identity name iComments of
+getComment region name (Info infoData) =
+    case Dict.get identity name infoData.comments of
         Nothing ->
             ReportingResult.throw (E.NoComment name region)
 
@@ -734,8 +736,8 @@ getComment region name (Info iComments _ _ _ _ _) =
 
 
 getType : Name.Name -> Info -> ReportingResult.RResult i w E.DefProblem Type.Type
-getType name (Info _ iValues _ _ _ _) =
-    case Utils.find identity name iValues of
+getType name (Info infoData) =
+    case Utils.find identity name infoData.types of
         Err region ->
             ReportingResult.throw (E.NoAnnotation name region)
 
@@ -744,8 +746,8 @@ getType name (Info _ iValues _ _ _ _) =
 
 
 dector : Can.Ctor -> ( Name, List Type.Type )
-dector (Can.Ctor name _ _ args) =
-    ( name, List.map Extract.fromType args )
+dector (Can.Ctor c) =
+    ( c.name, List.map Extract.fromType c.args )
 
 
 
@@ -799,20 +801,20 @@ jsonDecoder =
 
 
 jsonModuleEncoder : Module -> Encode.Value
-jsonModuleEncoder (Module name comment unions aliases values binops) =
+jsonModuleEncoder (Module moduleData) =
     Encode.object
-        [ ( "name", Encode.string name )
-        , ( "comment", Encode.string comment )
-        , ( "unions", E.assocListDict compare Encode.string jsonUnionEncoder unions )
-        , ( "aliases", E.assocListDict compare Encode.string jsonAliasEncoder aliases )
-        , ( "values", E.assocListDict compare Encode.string jsonValueEncoder values )
-        , ( "binops", E.assocListDict compare Encode.string jsonBinopEncoder binops )
+        [ ( "name", Encode.string moduleData.name )
+        , ( "comment", Encode.string moduleData.comment )
+        , ( "unions", E.assocListDict compare Encode.string jsonUnionEncoder moduleData.unions )
+        , ( "aliases", E.assocListDict compare Encode.string jsonAliasEncoder moduleData.aliases )
+        , ( "values", E.assocListDict compare Encode.string jsonValueEncoder moduleData.values )
+        , ( "binops", E.assocListDict compare Encode.string jsonBinopEncoder moduleData.binops )
         ]
 
 
 jsonModuleDecoder : Decode.Decoder Module
 jsonModuleDecoder =
-    Decode.map6 Module
+    Decode.map6 (\name_ comment_ unions_ aliases_ values_ binops_ -> Module { name = name_, comment = comment_, unions = unions_, aliases = aliases_, values = values_, binops = binops_ })
         (Decode.field "name" Decode.string)
         (Decode.field "comment" Decode.string)
         (Decode.field "unions" (D.assocListDict identity Decode.string jsonUnionDecoder))
@@ -871,18 +873,21 @@ jsonValueDecoder =
 
 
 jsonBinopEncoder : Binop -> Encode.Value
-jsonBinopEncoder (Binop comment type_ associativity precedence) =
+jsonBinopEncoder (Binop data) =
     Encode.object
-        [ ( "comment", Encode.string comment )
-        , ( "type", Type.jsonEncoder type_ )
-        , ( "associativity", Binop.jsonAssociativityEncoder associativity )
-        , ( "precedence", Binop.jsonPrecedenceEncoder precedence )
+        [ ( "comment", Encode.string data.comment )
+        , ( "type", Type.jsonEncoder data.tipe )
+        , ( "associativity", Binop.jsonAssociativityEncoder data.associativity )
+        , ( "precedence", Binop.jsonPrecedenceEncoder data.precedence )
         ]
 
 
 jsonBinopDecoder : Decode.Decoder Binop
 jsonBinopDecoder =
-    Decode.map4 Binop
+    Decode.map4
+        (\comment tipe associativity precedence ->
+            Binop { comment = comment, tipe = tipe, associativity = associativity, precedence = precedence }
+        )
         (Decode.field "comment" Decode.string)
         (Decode.field "type" Type.jsonDecoder)
         (Decode.field "associativity" Binop.jsonAssociativityDecoder)
@@ -904,20 +909,20 @@ bytesDecoder =
 
 
 bytesModuleEncoder : Module -> Bytes.Encode.Encoder
-bytesModuleEncoder (Module name comment unions aliases values binops) =
+bytesModuleEncoder (Module moduleData) =
     Bytes.Encode.sequence
-        [ BE.string name
-        , BE.string comment
-        , BE.assocListDict compare BE.string bytesUnionEncoder unions
-        , BE.assocListDict compare BE.string bytesAliasEncoder aliases
-        , BE.assocListDict compare BE.string bytesValueEncoder values
-        , BE.assocListDict compare BE.string bytesBinopEncoder binops
+        [ BE.string moduleData.name
+        , BE.string moduleData.comment
+        , BE.assocListDict compare BE.string bytesUnionEncoder moduleData.unions
+        , BE.assocListDict compare BE.string bytesAliasEncoder moduleData.aliases
+        , BE.assocListDict compare BE.string bytesValueEncoder moduleData.values
+        , BE.assocListDict compare BE.string bytesBinopEncoder moduleData.binops
         ]
 
 
 bytesModuleDecoder : Bytes.Decode.Decoder Module
 bytesModuleDecoder =
-    BD.map6 Module
+    BD.map6 (\name_ comment_ unions_ aliases_ values_ binops_ -> Module { name = name_, comment = comment_, unions = unions_, aliases = aliases_, values = values_, binops = binops_ })
         BD.string
         BD.string
         (BD.assocListDict identity BD.string bytesUnionDecoder)
@@ -976,18 +981,21 @@ bytesValueDecoder =
 
 
 bytesBinopEncoder : Binop -> Bytes.Encode.Encoder
-bytesBinopEncoder (Binop comment type_ associativity precedence) =
+bytesBinopEncoder (Binop data) =
     Bytes.Encode.sequence
-        [ BE.string comment
-        , Type.bytesEncoder type_
-        , Binop.associativityEncoder associativity
-        , Binop.precedenceEncoder precedence
+        [ BE.string data.comment
+        , Type.bytesEncoder data.tipe
+        , Binop.associativityEncoder data.associativity
+        , Binop.precedenceEncoder data.precedence
         ]
 
 
 bytesBinopDecoder : Bytes.Decode.Decoder Binop
 bytesBinopDecoder =
-    Bytes.Decode.map4 Binop
+    Bytes.Decode.map4
+        (\comment tipe associativity precedence ->
+            Binop { comment = comment, tipe = tipe, associativity = associativity, precedence = precedence }
+        )
         BD.string
         Type.bytesDecoder
         Binop.associativityDecoder

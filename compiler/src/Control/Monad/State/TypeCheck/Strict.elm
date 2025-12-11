@@ -1,11 +1,11 @@
 module Control.Monad.State.TypeCheck.Strict exposing
     ( StateT(..)
-    , apply
     , andThen
+    , apply
     , evalStateT
-    , map
     , gets
     , liftIO
+    , map
     , modify
     , pure
     , runStateT

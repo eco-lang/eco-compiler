@@ -17,7 +17,7 @@ module Common.Format.Cheapskate.Util exposing
     , upToCountChars
     )
 
-import Common.Format.Cheapskate.ParserCombinators exposing (Parser, andThen, char, column, count, endOfInput, map, getPosition, notFollowedBy, option, return, scan, skip, skipWhile)
+import Common.Format.Cheapskate.ParserCombinators exposing (Parser, andThen, char, column, count, endOfInput, getPosition, map, notFollowedBy, option, return, scan, skip, skipWhile)
 import List.Extra as List
 import Utils.Crash exposing (crash)
 

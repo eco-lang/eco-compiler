@@ -155,7 +155,7 @@ chompDefArgsAndBody syntaxVersion maybeDocs docComments start name tipe preArgCo
                                 let
                                     value : Src.Value
                                     value =
-                                        Src.Value docComments ( preArgComments, name ) (List.reverse revArgs) ( preBodyComments, body ) tipe
+                                        Src.Value { comments = docComments, name = ( preArgComments, name ), args = List.reverse revArgs, body = ( preBodyComments, body ), tipe = tipe }
 
                                     avalue : A.Located Src.Value
                                     avalue =
@@ -174,21 +174,21 @@ chompMatchingName expectedName =
             Var.lower E.DeclDefNameRepeat
     in
     P.Parser <|
-        \((P.State _ _ _ _ sr sc) as state) ->
+        \((P.State st) as state) ->
             case parserL state of
-                P.Cok name ((P.State _ _ _ _ er ec) as newState) ->
+                P.Cok name ((P.State st2) as newState) ->
                     if expectedName == name then
-                        P.Cok (A.At (A.Region (A.Position sr sc) (A.Position er ec)) name) newState
+                        P.Cok (A.At (A.Region (A.Position st.row st.col) (A.Position st2.row st2.col)) name) newState
 
                     else
-                        P.Cerr sr sc (E.DeclDefNameMatch name)
+                        P.Cerr st.row st.col (E.DeclDefNameMatch name)
 
-                P.Eok name ((P.State _ _ _ _ er ec) as newState) ->
+                P.Eok name ((P.State st2) as newState) ->
                     if expectedName == name then
-                        P.Eok (A.At (A.Region (A.Position sr sc) (A.Position er ec)) name) newState
+                        P.Eok (A.At (A.Region (A.Position st.row st.col) (A.Position st2.row st2.col)) name) newState
 
                     else
-                        P.Eerr sr sc (E.DeclDefNameMatch name)
+                        P.Eerr st.row st.col (E.DeclDefNameMatch name)
 
                 P.Cerr r c t ->
                     P.Cerr r c t
@@ -221,7 +221,14 @@ typeDecl maybeDocs start =
                                                                 let
                                                                     alias_ : A.Located Src.Alias
                                                                     alias_ =
-                                                                        A.at start end (Src.Alias postTypeComments ( ( preComments, postComments ), name ) args ( preTypeComments, tipe ))
+                                                                        A.at start end
+                                                                            (Src.Alias
+                                                                                { comments = postTypeComments
+                                                                                , name = ( ( preComments, postComments ), name )
+                                                                                , args = args
+                                                                                , tipe = ( preTypeComments, tipe )
+                                                                                }
+                                                                            )
                                                                 in
                                                                 ( ( ( [], [] ), Alias maybeDocs alias_ ), end )
                                                             )
@@ -436,17 +443,14 @@ infix_ =
                                                                                                                     |> P.andThen
                                                                                                                         (\comments ->
                                                                                                                             let
-                                                                                                                                opWithComments : Src.C2 Name
-                                                                                                                                opWithComments =
-                                                                                                                                    ( ( preOpComments, postOpComments ), op )
-
-                                                                                                                                nameWithComments : Src.C1 Name
-                                                                                                                                nameWithComments =
-                                                                                                                                    ( preNameComments, name )
-
                                                                                                                                 infixDecl : Src.Infix
                                                                                                                                 infixDecl =
-                                                                                                                                    Src.Infix opWithComments associativity precedence nameWithComments
+                                                                                                                                    Src.Infix
+                                                                                                                                        { op = ( ( preOpComments, postOpComments ), op )
+                                                                                                                                        , associativity = associativity
+                                                                                                                                        , precedence = precedence
+                                                                                                                                        , name = ( preNameComments, name )
+                                                                                                                                        }
                                                                                                                             in
                                                                                                                             Space.checkFreshLine err
                                                                                                                                 |> P.map (\_ -> ( comments, A.at start end infixDecl ))

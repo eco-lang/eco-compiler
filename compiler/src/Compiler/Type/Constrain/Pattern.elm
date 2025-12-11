@@ -59,10 +59,10 @@ add (A.At region pattern) expectation state =
 
         Can.PCtor { home, type_, union, name, args } ->
             let
-                (Can.Union typeVars _ _ _) =
+                (Can.Union unionData) =
                     union
             in
-            addCtor region home type_ typeVars name args expectation state
+            addCtor region home type_ unionData.vars name args expectation state
 
         Can.PList patterns ->
             Type.mkFlexVar

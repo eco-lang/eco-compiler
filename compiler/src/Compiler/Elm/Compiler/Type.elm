@@ -13,6 +13,8 @@ module Compiler.Elm.Compiler.Type exposing
     , toDoc
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.AST.Source as Src
 import Compiler.Data.Name as Name
 import Compiler.Json.Decode as D exposing (Decoder)
@@ -27,9 +29,7 @@ import Compiler.Reporting.Render.Type.Localizer as L
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Crash exposing (crash)
 
 

@@ -75,10 +75,10 @@ mlirMonoBackend =
 
 
 debug : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
-debug backend withSourceMaps leadingLines root details (Build.Artifacts pkg ifaces roots modules) =
-    loadObjects root details modules
-        |> Task.andThen (loadTypesAndFinalize root ifaces modules)
-        |> Task.andThen (generateDebugOutput backend withSourceMaps leadingLines root pkg roots)
+debug backend withSourceMaps leadingLines root details (Build.Artifacts artifacts) =
+    loadObjects root details artifacts.modules
+        |> Task.andThen (loadTypesAndFinalize root artifacts.deps artifacts.modules)
+        |> Task.andThen (generateDebugOutput backend withSourceMaps leadingLines root artifacts.pkg artifacts.roots)
 
 
 loadTypesAndFinalize : FilePath -> Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List Build.Module -> LoadingObjects -> Task Exit.Generate ( Objects, Extract.Types )
@@ -121,10 +121,10 @@ generateWithBackend backend leadingLines mode graph mains sourceMaps =
 
 
 dev : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
-dev backend withSourceMaps leadingLines root details (Build.Artifacts pkg _ roots modules) =
-    loadObjects root details modules
+dev backend withSourceMaps leadingLines root details (Build.Artifacts artifacts) =
+    loadObjects root details artifacts.modules
         |> Task.andThen finalizeObjects
-        |> Task.andThen (generateDevOutput backend withSourceMaps leadingLines root pkg roots)
+        |> Task.andThen (generateDevOutput backend withSourceMaps leadingLines root artifacts.pkg artifacts.roots)
 
 
 generateDevOutput : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Pkg.Name -> NE.Nonempty Build.Root -> Objects -> Task Exit.Generate CodeGen.Output
@@ -144,10 +144,10 @@ generateDevOutput backend withSourceMaps leadingLines root pkg roots objects =
 
 
 prod : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
-prod backend withSourceMaps leadingLines root details (Build.Artifacts pkg _ roots modules) =
-    loadObjects root details modules
+prod backend withSourceMaps leadingLines root details (Build.Artifacts artifacts) =
+    loadObjects root details artifacts.modules
         |> Task.andThen finalizeObjects
-        |> Task.andThen (checkDebugAndGenerate backend withSourceMaps leadingLines root pkg roots)
+        |> Task.andThen (checkDebugAndGenerate backend withSourceMaps leadingLines root artifacts.pkg artifacts.roots)
 
 
 checkDebugAndGenerate : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Pkg.Name -> NE.Nonempty Build.Root -> Objects -> Task Exit.Generate CodeGen.Output
@@ -185,10 +185,10 @@ prepareSourceMaps withSourceMaps root =
 
 
 repl : CodeGen.CodeGen -> FilePath -> Details.Details -> Bool -> Build.ReplArtifacts -> N.Name -> Task Exit.Generate CodeGen.Output
-repl backend root details ansi (Build.ReplArtifacts home modules localizer annotations) name =
-    loadObjects root details modules
+repl backend root details ansi (Build.ReplArtifacts replArtifacts) name =
+    loadObjects root details replArtifacts.modules
         |> Task.andThen finalizeObjects
-        |> Task.map (generateReplOutput backend ansi localizer home name annotations)
+        |> Task.map (generateReplOutput backend ansi replArtifacts.localizer replArtifacts.home name replArtifacts.annotations)
 
 
 generateReplOutput : CodeGen.CodeGen -> Bool -> L.Localizer -> TypeCheck.Canonical -> N.Name -> Dict String N.Name Can.Annotation -> Objects -> CodeGen.Output
@@ -404,9 +404,9 @@ loadAndStoreInterfaceTypes root name mvar =
 
 
 typedDev : CodeGen.TypedCodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
-typedDev backend withSourceMaps leadingLines root details (Build.Artifacts pkg _ roots modules) =
-    Task.andThen finalizeTypedObjects (loadTypedObjects root details modules)
-        |> Task.andThen (generateTypedDevOutput backend withSourceMaps leadingLines root pkg roots)
+typedDev backend withSourceMaps leadingLines root details (Build.Artifacts artifacts) =
+    Task.andThen finalizeTypedObjects (loadTypedObjects root details artifacts.modules)
+        |> Task.andThen (generateTypedDevOutput backend withSourceMaps leadingLines root artifacts.pkg artifacts.roots)
 
 
 generateTypedDevOutput : CodeGen.TypedCodeGen -> Bool -> Int -> FilePath -> Pkg.Name -> NE.Nonempty Build.Root -> TypedObjects -> Task Exit.Generate CodeGen.Output
@@ -548,8 +548,8 @@ lookupTypedMain : Pkg.Name -> Dict String ModuleName.Raw TOpt.LocalGraph -> Buil
 lookupTypedMain pkg locals root =
     let
         toPair : N.Name -> TOpt.LocalGraph -> Maybe ( TypeCheck.Canonical, TOpt.Main )
-        toPair name (TOpt.LocalGraph maybeMain _ _ _) =
-            Maybe.map (Tuple.pair (TypeCheck.Canonical pkg name)) maybeMain
+        toPair name (TOpt.LocalGraph data) =
+            Maybe.map (Tuple.pair (TypeCheck.Canonical pkg name)) data.main
     in
     case root of
         Build.Inside name ->
@@ -565,10 +565,10 @@ lookupTypedMain pkg locals root =
 
 
 monoDev : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
-monoDev backend withSourceMaps leadingLines root details (Build.Artifacts pkg _ roots modules) =
-    loadTypedObjects root details modules
+monoDev backend withSourceMaps leadingLines root details (Build.Artifacts artifacts) =
+    loadTypedObjects root details artifacts.modules
         |> Task.andThen finalizeTypedObjects
-        |> Task.andThen (generateMonoDevOutput backend withSourceMaps leadingLines root roots)
+        |> Task.andThen (generateMonoDevOutput backend withSourceMaps leadingLines root artifacts.roots)
 
 
 generateMonoDevOutput : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> NE.Nonempty Build.Root -> TypedObjects -> Task Exit.Generate CodeGen.Output

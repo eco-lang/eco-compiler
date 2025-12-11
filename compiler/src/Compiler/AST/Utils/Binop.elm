@@ -11,12 +11,12 @@ module Compiler.AST.Utils.Binop exposing
     , precedenceEncoder
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 
 
 

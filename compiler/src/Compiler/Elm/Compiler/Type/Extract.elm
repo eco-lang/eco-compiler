@@ -11,6 +11,8 @@ module Compiler.Elm.Compiler.Type.Extract exposing
     , typesEncoder
     )
 
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Utils.Type as Type
@@ -22,9 +24,7 @@ import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Main as Utils
 
 
@@ -114,10 +114,10 @@ merge (Types types1) (Types types2) =
 
 
 fromInterface : ModuleName.Raw -> I.Interface -> Types
-fromInterface name (I.Interface pkg _ unions aliases _) =
+fromInterface name (I.Interface iface) =
     Types <|
-        Dict.singleton ModuleName.toComparableCanonical (IO.Canonical pkg name) <|
-            Types_ (Dict.map (\_ -> I.extractUnion) unions) (Dict.map (\_ -> I.extractAlias) aliases)
+        Dict.singleton ModuleName.toComparableCanonical (IO.Canonical iface.home name) <|
+            Types_ (Dict.map (\_ -> I.extractUnion) iface.unions) (Dict.map (\_ -> I.extractAlias) iface.aliases)
 
 
 fromDependencyInterface : IO.Canonical -> I.DependencyInterface -> Types
@@ -125,8 +125,8 @@ fromDependencyInterface home di =
     Types
         (Dict.singleton ModuleName.toComparableCanonical home <|
             case di of
-                I.Public (I.Interface _ _ unions aliases _) ->
-                    Types_ (Dict.map (\_ -> I.extractUnion) unions) (Dict.map (\_ -> I.extractAlias) aliases)
+                I.Public (I.Interface iface) ->
+                    Types_ (Dict.map (\_ -> I.extractUnion) iface.unions) (Dict.map (\_ -> I.extractAlias) iface.aliases)
 
                 I.Private _ unions aliases ->
                     Types_ unions aliases
@@ -204,17 +204,17 @@ extractUnion (Types dict) (Opt.Global home name) =
             pname =
                 toPublicName home name
 
-            (Can.Union vars ctors _ _) =
+            (Can.Union unionData) =
                 Utils.find ModuleName.toComparableCanonical home dict
                     |> (\(Types_ unionInfo _) -> unionInfo)
                     |> Utils.find identity name
         in
-        map (T.Union pname vars) (traverse extractCtor ctors)
+        map (T.Union pname unionData.vars) (traverse extractCtor unionData.alts)
 
 
 extractCtor : Can.Ctor -> Extractor ( Name.Name, List T.Type )
-extractCtor (Can.Ctor ctor _ _ args) =
-    map (Tuple.pair ctor) (traverse extract args)
+extractCtor (Can.Ctor c) =
+    map (Tuple.pair c.name) (traverse extract c.args)
 
 
 

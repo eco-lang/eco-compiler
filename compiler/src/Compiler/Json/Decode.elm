@@ -6,19 +6,19 @@ module Compiler.Json.Decode exposing
     , ParseError(..)
     , Problem(..)
     , StringProblem(..)
+    , andThen
     , apply
     , assocListDict
-    , andThen
     , customString
     , dict
     , everySet
     , failure
     , field
-    , map
     , fromByteString
     , int
     , jsonPair
     , list
+    , map
     , mapError
     , nonEmptyList
     , nonempty
@@ -669,26 +669,26 @@ pArrayHelp revEntries =
 pString : (Row -> Col -> ParseError) -> Parser P.Snippet
 pString start =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
-            if pos < end && P.unsafeIndex src pos == '"' then
+        \(P.State st) ->
+            if st.pos < st.end && P.unsafeIndex st.src st.pos == '"' then
                 let
                     pos1 : Int
                     pos1 =
-                        pos + 1
+                        st.pos + 1
 
                     col1 : Col
                     col1 =
-                        col + 1
+                        st.col + 1
 
                     ( ( status, newPos ), ( newRow, newCol ) ) =
-                        pStringHelp src pos1 end row col1
+                        pStringHelp st.src pos1 st.end st.row col1
                 in
                 case status of
                     GoodString ->
                         let
                             off : Int
                             off =
-                                -- FIXME pos1 - unsafeForeignPtrToPtr src
+                                -- FIXME pos1 - unsafeForeignPtrToPtr st.src
                                 pos1
 
                             len : Int
@@ -698,16 +698,16 @@ pString start =
                             snp : P.Snippet
                             snp =
                                 P.Snippet
-                                    { fptr = src
+                                    { fptr = st.src
                                     , offset = off
                                     , length = len
-                                    , offRow = row
+                                    , offRow = st.row
                                     , offCol = col1
                                     }
 
                             newState : P.State
                             newState =
-                                P.State src newPos end indent newRow newCol
+                                P.State { st | pos = newPos, row = newRow, col = newCol }
                         in
                         P.Cok snp newState
 
@@ -715,7 +715,7 @@ pString start =
                         P.Cerr newRow newCol (StringProblem problem)
 
             else
-                P.Eerr row col start
+                P.Eerr st.row st.col start
 
 
 type StringStatus
@@ -832,19 +832,19 @@ isHex word =
 spaces : Parser ()
 spaces =
     P.Parser <|
-        \((P.State src pos end indent row col) as state) ->
+        \((P.State st) as state) ->
             let
                 ( newPos, newRow, newCol ) =
-                    eatSpaces src pos end row col
+                    eatSpaces st.src st.pos st.end st.row st.col
             in
-            if pos == newPos then
+            if st.pos == newPos then
                 P.Eok () state
 
             else
                 let
                     newState : P.State
                     newState =
-                        P.State src newPos end indent newRow newCol
+                        P.State { st | pos = newPos, row = newRow, col = newCol }
                 in
                 P.Cok () newState
 
@@ -880,40 +880,40 @@ eatSpaces src pos end row col =
 pInt : Parser AST_
 pInt =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
-            if pos >= end then
-                P.Eerr row col Start
+        \(P.State st) ->
+            if st.pos >= st.end then
+                P.Eerr st.row st.col Start
 
             else
                 let
                     word : Char
                     word =
-                        P.unsafeIndex src pos
+                        P.unsafeIndex st.src st.pos
                 in
                 if not (isDecimalDigit word) then
-                    P.Eerr row col Start
+                    P.Eerr st.row st.col Start
 
                 else if word == '0' then
                     let
                         pos1 : Int
                         pos1 =
-                            pos + 1
+                            st.pos + 1
 
                         newState : P.State
                         newState =
-                            P.State src pos1 end indent row (col + 1)
+                            P.State { st | pos = pos1, col = st.col + 1 }
                     in
-                    if pos1 < end then
+                    if pos1 < st.end then
                         let
                             word1 : Char
                             word1 =
-                                P.unsafeIndex src pos1
+                                P.unsafeIndex st.src pos1
                         in
                         if isDecimalDigit word1 then
-                            P.Cerr row (col + 1) NoLeadingZeros
+                            P.Cerr st.row (st.col + 1) NoLeadingZeros
 
                         else if word1 == '.' then
-                            P.Cerr row (col + 1) NoFloats
+                            P.Cerr st.row (st.col + 1) NoFloats
 
                         else
                             P.Cok (Int 0) newState
@@ -924,23 +924,23 @@ pInt =
                 else
                     let
                         ( status, n, newPos ) =
-                            chompInt src (pos + 1) end (Char.toCode word - 0x30 {- 0 -})
+                            chompInt st.src (st.pos + 1) st.end (Char.toCode word - 0x30 {- 0 -})
 
                         len : Int
                         len =
-                            newPos - pos
+                            newPos - st.pos
                     in
                     case status of
                         GoodInt ->
                             let
                                 newState : P.State
                                 newState =
-                                    P.State src newPos end indent row (col + len)
+                                    P.State { st | pos = newPos, col = st.col + len }
                             in
                             P.Cok (Int n) newState
 
                         BadIntEnd ->
-                            P.Cerr row (col + len) NoFloats
+                            P.Cerr st.row (st.col + len) NoFloats
 
 
 type IntStatus

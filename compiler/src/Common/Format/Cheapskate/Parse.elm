@@ -5,16 +5,16 @@ import Common.Format.Cheapskate.ParserCombinators
     exposing
         ( Parser
         , Position(..)
-        , apply
         , andThen
+        , apply
         , char
         , count
         , endOfInput
-        , map
         , getPosition
         , guard
         , lookAhead
         , many
+        , map
         , notFollowedBy
         , oneOf
         , option

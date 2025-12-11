@@ -1,9 +1,11 @@
 module Builder.Elm.Outline exposing
     ( AppOutline(..)
+    , AppOutlineData
     , Decoder
     , Exposed(..)
     , Outline(..)
     , PkgOutline(..)
+    , PkgOutlineData
     , SrcDir(..)
     , decoder
     , defaultSummary
@@ -19,6 +21,8 @@ import Basics.Extra as Basics
 import Builder.File as File
 import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
@@ -34,9 +38,7 @@ import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Main as Utils exposing (FilePath)
 import Utils.Task.Extra as Task
 
@@ -50,18 +52,34 @@ type Outline
     | Pkg PkgOutline
 
 
+type alias AppOutlineData =
+    { elm : V.Version
+    , srcDirs : NE.Nonempty SrcDir
+    , depsDirect : Dict ( String, String ) Pkg.Name V.Version
+    , depsIndirect : Dict ( String, String ) Pkg.Name V.Version
+    , testDirect : Dict ( String, String ) Pkg.Name V.Version
+    , testIndirect : Dict ( String, String ) Pkg.Name V.Version
+    }
+
+
 type AppOutline
-    = AppOutline
-        V.Version
-        (NE.Nonempty SrcDir)
-        (Dict ( String, String ) Pkg.Name V.Version)
-        (Dict ( String, String ) Pkg.Name V.Version)
-        (Dict ( String, String ) Pkg.Name V.Version)
-        (Dict ( String, String ) Pkg.Name V.Version)
+    = AppOutline AppOutlineData
+
+
+type alias PkgOutlineData =
+    { name : Pkg.Name
+    , summary : String
+    , license : Licenses.License
+    , version : V.Version
+    , exposed : Exposed
+    , deps : Dict ( String, String ) Pkg.Name Con.Constraint
+    , testDeps : Dict ( String, String ) Pkg.Name Con.Constraint
+    , elm : Con.Constraint
+    }
 
 
 type PkgOutline
-    = PkgOutline Pkg.Name String Licenses.License V.Version Exposed (Dict ( String, String ) Pkg.Name Con.Constraint) (Dict ( String, String ) Pkg.Name Con.Constraint) Con.Constraint
+    = PkgOutline PkgOutlineData
 
 
 type Exposed
@@ -113,36 +131,36 @@ write root outline =
 encode : Outline -> E.Value
 encode outline =
     case outline of
-        App (AppOutline elm srcDirs depsDirect depsTrans testDirect testTrans) ->
+        App (AppOutline appData) ->
             E.object
                 [ ( "type", E.string "application" )
-                , ( "source-directories", E.list encodeSrcDir (NE.toList srcDirs) )
-                , ( "elm-version", V.encode elm )
+                , ( "source-directories", E.list encodeSrcDir (NE.toList appData.srcDirs) )
+                , ( "elm-version", V.encode appData.elm )
                 , ( "dependencies"
                   , E.object
-                        [ ( "direct", encodeDeps V.encode depsDirect )
-                        , ( "indirect", encodeDeps V.encode depsTrans )
+                        [ ( "direct", encodeDeps V.encode appData.depsDirect )
+                        , ( "indirect", encodeDeps V.encode appData.depsIndirect )
                         ]
                   )
                 , ( "test-dependencies"
                   , E.object
-                        [ ( "direct", encodeDeps V.encode testDirect )
-                        , ( "indirect", encodeDeps V.encode testTrans )
+                        [ ( "direct", encodeDeps V.encode appData.testDirect )
+                        , ( "indirect", encodeDeps V.encode appData.testIndirect )
                         ]
                   )
                 ]
 
-        Pkg (PkgOutline name summary license version exposed deps tests elm) ->
+        Pkg (PkgOutline pkgData) ->
             E.object
                 [ ( "type", E.string "package" )
-                , ( "name", Pkg.encode name )
-                , ( "summary", E.string summary )
-                , ( "license", Licenses.encode license )
-                , ( "version", V.encode version )
-                , ( "exposed-modules", encodeExposed exposed )
-                , ( "elm-version", Con.encode elm )
-                , ( "dependencies", encodeDeps Con.encode deps )
-                , ( "test-dependencies", encodeDeps Con.encode tests )
+                , ( "name", Pkg.encode pkgData.name )
+                , ( "summary", E.string pkgData.summary )
+                , ( "license", Licenses.encode pkgData.license )
+                , ( "version", V.encode pkgData.version )
+                , ( "exposed-modules", encodeExposed pkgData.exposed )
+                , ( "elm-version", Con.encode pkgData.elm )
+                , ( "dependencies", encodeDeps Con.encode pkgData.deps )
+                , ( "test-dependencies", encodeDeps Con.encode pkgData.testDeps )
                 ]
 
 
@@ -199,11 +217,11 @@ parseAndValidateOutline root bytes =
 validateOutline : FilePath -> Outline -> Task Never (Result Exit.Outline Outline)
 validateOutline root outline =
     case outline of
-        Pkg (PkgOutline pkg _ _ _ _ deps _ _) ->
-            validatePkgOutline pkg deps outline
+        Pkg (PkgOutline pkgData) ->
+            validatePkgOutline pkgData.name pkgData.deps outline
 
-        App (AppOutline _ srcDirs direct indirect _ _) ->
-            validateAppOutline root srcDirs direct indirect outline
+        App (AppOutline appData) ->
+            validateAppOutline root appData.srcDirs appData.depsDirect appData.depsIndirect outline
 
 
 validatePkgOutline : Pkg.Name -> Dict ( String, String ) Pkg.Name a -> Outline -> Task Never (Result Exit.Outline Outline)
@@ -317,25 +335,25 @@ getAllModulePaths root =
 
                     Ok outline ->
                         case outline of
-                            App (AppOutline _ srcDirs depsDirect indirect _ _) ->
+                            App (AppOutline appData) ->
                                 let
                                     deps : Dict ( String, String ) Pkg.Name V.Version
                                     deps =
-                                        Dict.union depsDirect indirect
+                                        Dict.union appData.depsDirect appData.depsIndirect
 
                                     absoluteSrcDirs : List FilePath
                                     absoluteSrcDirs =
-                                        List.map (toAbsolute root) (NE.toList srcDirs)
+                                        List.map (toAbsolute root) (NE.toList appData.srcDirs)
                                 in
                                 getAllModulePathsHelper Pkg.dummyName absoluteSrcDirs deps
 
-                            Pkg (PkgOutline name _ _ _ _ pkgDeps _ _) ->
+                            Pkg (PkgOutline pkgData) ->
                                 let
                                     deps : Dict ( String, String ) Pkg.Name V.Version
                                     deps =
-                                        Dict.map (\_ -> Con.lowerBound) pkgDeps
+                                        Dict.map (\_ -> Con.lowerBound) pkgData.deps
                                 in
-                                getAllModulePathsHelper name [ root ++ "/src" ] deps
+                                getAllModulePathsHelper pkgData.name [ root ++ "/st.src" ] deps
             )
 
 
@@ -347,7 +365,7 @@ getAllModulePathsHelper packageName packageSrcDirs deps =
                 Utils.mapTraverseWithKey identity compare resolvePackagePaths deps
                     |> Task.andThen
                         (\dependencyRoots ->
-                            Utils.mapTraverse identity compare (\( pkgName, pkgRoot ) -> getAllModulePathsHelper pkgName [ pkgRoot ++ "/src" ] Dict.empty) dependencyRoots
+                            Utils.mapTraverse identity compare (\( pkgName, pkgRoot ) -> getAllModulePathsHelper pkgName [ pkgRoot ++ "/st.src" ] Dict.empty) dependencyRoots
                                 |> Task.map
                                     (\dependencyMaps ->
                                         let
@@ -445,7 +463,7 @@ decoder =
 
 appDecoder : Decoder AppOutline
 appDecoder =
-    D.pure AppOutline
+    D.pure (\elm srcDirs depsDirect depsIndirect testDirect testIndirect -> AppOutline { elm = elm, srcDirs = srcDirs, depsDirect = depsDirect, depsIndirect = depsIndirect, testDirect = testDirect, testIndirect = testIndirect })
         |> D.apply (D.field "elm-version" versionDecoder)
         |> D.apply (D.field "source-directories" dirsDecoder)
         |> D.apply (D.field "dependencies" (D.field "direct" (depsDecoder versionDecoder)))
@@ -456,7 +474,7 @@ appDecoder =
 
 pkgDecoder : Decoder PkgOutline
 pkgDecoder =
-    D.pure PkgOutline
+    D.pure (\name summary license version exposed deps testDeps elm -> PkgOutline { name = name, summary = summary, license = license, version = version, exposed = exposed, deps = deps, testDeps = testDeps, elm = elm })
         |> D.apply (D.field "name" nameDecoder)
         |> D.apply (D.field "summary" summaryDecoder)
         |> D.apply (D.field "license" (Licenses.decoder Exit.OP_BadLicense))
@@ -543,21 +561,21 @@ headerKeyDecoder =
 boundParser : Int -> x -> P.Parser x String
 boundParser bound tooLong =
     P.Parser <|
-        \(P.State src pos end indent row col) ->
+        \(P.State st) ->
             let
                 len : Int
                 len =
-                    end - pos
+                    st.end - st.pos
 
                 newCol : P.Col
                 newCol =
-                    col + len
+                    st.col + len
             in
             if len < bound then
-                P.Cok (String.slice pos end src) (P.State src end end indent row newCol)
+                P.Cok (String.slice st.pos st.end st.src) (P.State { st | pos = st.end, col = newCol })
 
             else
-                P.Cerr row newCol (\_ _ -> tooLong)
+                P.Cerr st.row newCol (\_ _ -> tooLong)
 
 
 srcDirEncoder : SrcDir -> Bytes.Encode.Encoder

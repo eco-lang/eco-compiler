@@ -51,12 +51,12 @@ app intro outro commands =
                             Nothing ->
                                 Error.exitWithUnknown command (List.map toName commands)
 
-                            Just (Command _ _ details example args_ flags_ callback) ->
+                            Just (Command cmdData) ->
                                 if List.member "--help" chunks then
-                                    Error.exitWithHelp (Just command) details example args_ flags_
+                                    Error.exitWithHelp (Just command) cmdData.details cmdData.example cmdData.args cmdData.flags
 
                                 else
-                                    case callback chunks of
+                                    case cmdData.run chunks of
                                         Ok res ->
                                             res
 

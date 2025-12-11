@@ -130,6 +130,8 @@ module Utils.Main exposing
     )
 
 import Basics.Extra exposing (flip)
+import Bytes.Decode
+import Bytes.Encode
 import Compiler.Data.Index as Index
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Reporting.Result as ReportingResult
@@ -147,9 +149,7 @@ import System.IO as IO
 import Task exposing (Task)
 import Time
 import Utils.Bytes.Decode as BD
-import Bytes.Decode
 import Utils.Bytes.Encode as BE
-import Bytes.Encode
 import Utils.Crash exposing (crash)
 import Utils.Impure as Impure
 import Utils.Task.Extra as Task

@@ -60,14 +60,18 @@ addVars module_ env =
 
 
 collectVars : Src.Module -> LResult i w (Dict String Name.Name Env.Var)
-collectVars (Src.Module _ _ _ _ _ values _ _ _ effects) =
+collectVars (Src.Module srcData) =
     let
         addDecl : A.Located Src.Value -> Dups.Tracker Env.Var -> Dups.Tracker Env.Var
-        addDecl (A.At _ (Src.Value _ ( _, A.At region name ) _ _ _)) =
+        addDecl (A.At _ (Src.Value v)) =
+            let
+                ( _, A.At region name ) =
+                    v.name
+            in
             Dups.insert name region (Env.TopLevel region)
     in
     Dups.detect Error.DuplicateDecl <|
-        List.foldl addDecl (toEffectDups effects) values
+        List.foldl addDecl (toEffectDups srcData.effects) srcData.values
 
 
 toEffectDups : Src.Effects -> Dups.Tracker Env.Var
@@ -103,10 +107,14 @@ toEffectDups effects =
 
 
 addTypes : Src.Module -> Env.Env -> LResult i w Env.Env
-addTypes (Src.Module syntaxVersion _ _ _ _ _ unions aliases _ _) env =
+addTypes (Src.Module srcData) env =
     let
         addAliasDups : A.Located Src.Alias -> Dups.Tracker () -> Dups.Tracker ()
-        addAliasDups (A.At _ (Src.Alias _ ( _, A.At region name ) _ _)) =
+        addAliasDups (A.At _ (Src.Alias data)) =
+            let
+                ( _, A.At region name ) =
+                    data.name
+            in
             Dups.insert name region ()
 
         addUnionDups : A.Located Src.Union -> Dups.Tracker () -> Dups.Tracker ()
@@ -115,13 +123,13 @@ addTypes (Src.Module syntaxVersion _ _ _ _ _ unions aliases _ _) env =
 
         typeNameDups : Dups.Tracker ()
         typeNameDups =
-            List.foldl addUnionDups (List.foldl addAliasDups Dups.none aliases) unions
+            List.foldl addUnionDups (List.foldl addAliasDups Dups.none srcData.aliases) srcData.unions
     in
     Dups.detect Error.DuplicateType typeNameDups
         |> ReportingResult.andThen
             (\_ ->
-                Utils.foldM (addUnion env.home) env.types unions
-                    |> ReportingResult.andThen (\ts1 -> addAliases syntaxVersion aliases <| { env | types = ts1 })
+                Utils.foldM (addUnion env.home) env.types srcData.unions
+                    |> ReportingResult.andThen (\ts1 -> addAliases srcData.syntaxVersion srcData.aliases <| { env | types = ts1 })
             )
 
 
@@ -160,7 +168,14 @@ addAliases syntaxVersion aliases env =
 addAlias : SyntaxVersion -> Env.Env -> Graph.SCC (A.Located Src.Alias) -> LResult i w Env.Env
 addAlias syntaxVersion ({ home, vars, types, ctors, binops, q_vars, q_types, q_ctors } as env) scc =
     case scc of
-        Graph.AcyclicSCC ((A.At _ (Src.Alias _ ( _, A.At _ name ) _ ( _, tipe ))) as alias) ->
+        Graph.AcyclicSCC ((A.At _ (Src.Alias aliasData)) as alias) ->
+            let
+                ( _, A.At _ name ) =
+                    aliasData.name
+
+                ( _, tipe ) =
+                    aliasData.tipe
+            in
             checkAliasFreeVars alias
                 |> ReportingResult.andThen
                     (\args ->
@@ -183,13 +198,24 @@ addAlias syntaxVersion ({ home, vars, types, ctors, binops, q_vars, q_types, q_c
         Graph.CyclicSCC [] ->
             ReportingResult.ok env
 
-        Graph.CyclicSCC (((A.At _ (Src.Alias _ ( _, A.At region name1 ) _ ( _, tipe ))) as alias) :: others) ->
+        Graph.CyclicSCC (((A.At _ (Src.Alias aliasData)) as alias) :: others) ->
+            let
+                ( _, A.At region name1 ) =
+                    aliasData.name
+
+                ( _, tipe ) =
+                    aliasData.tipe
+            in
             checkAliasFreeVars alias
                 |> ReportingResult.andThen
                     (\args ->
                         let
                             toName : A.Located Src.Alias -> Name
-                            toName (A.At _ (Src.Alias _ ( _, A.At _ name ) _ _)) =
+                            toName (A.At _ (Src.Alias ad)) =
+                                let
+                                    ( _, A.At _ name ) =
+                                        ad.name
+                                in
                                 name
                         in
                         ReportingResult.throw (Error.RecursiveAlias region name1 args tipe (List.map toName others))
@@ -201,7 +227,14 @@ addAlias syntaxVersion ({ home, vars, types, ctors, binops, q_vars, q_types, q_c
 
 
 toNode : A.Located Src.Alias -> ( A.Located Src.Alias, Name.Name, List Name.Name )
-toNode ((A.At _ (Src.Alias _ ( _, A.At _ name ) _ ( _, tipe ))) as alias) =
+toNode ((A.At _ (Src.Alias aliasData)) as alias) =
+    let
+        ( _, A.At _ name ) =
+            aliasData.name
+
+        ( _, tipe ) =
+            aliasData.tipe
+    in
     ( alias, name, getEdges tipe [] )
 
 
@@ -267,13 +300,19 @@ checkUnionFreeVars (A.At unionRegion (Src.Union ( _, A.At _ name ) args ctors)) 
 
 
 checkAliasFreeVars : A.Located Src.Alias -> LResult i w (List Name.Name)
-checkAliasFreeVars (A.At aliasRegion (Src.Alias _ ( _, A.At _ name ) args ( _, tipe ))) =
+checkAliasFreeVars (A.At aliasRegion (Src.Alias aliasData)) =
     let
+        ( _, A.At _ name ) =
+            aliasData.name
+
+        ( _, tipe ) =
+            aliasData.tipe
+
         addArg : Src.C1 (A.Located Name) -> Dups.Tracker A.Region -> Dups.Tracker A.Region
         addArg ( _, A.At region arg ) dict =
             Dups.insert arg region region dict
     in
-    Dups.detect (Error.DuplicateAliasArg name) (List.foldr addArg Dups.none args)
+    Dups.detect (Error.DuplicateAliasArg name) (List.foldr addArg Dups.none aliasData.args)
         |> ReportingResult.andThen
             (\boundVars ->
                 let
@@ -286,13 +325,13 @@ checkAliasFreeVars (A.At aliasRegion (Src.Alias _ ( _, A.At _ name ) args ( _, t
                         Dict.size (Dict.intersection compare boundVars freeVars)
                 in
                 if Dict.size boundVars == overlap && Dict.size freeVars == overlap then
-                    ReportingResult.ok (List.map (Src.c1Value >> A.toValue) args)
+                    ReportingResult.ok (List.map (Src.c1Value >> A.toValue) aliasData.args)
 
                 else
                     ReportingResult.throw <|
                         Error.TypeVarsMessedUpInAlias aliasRegion
                             name
-                            (List.map (Src.c1Value >> A.toValue) args)
+                            (List.map (Src.c1Value >> A.toValue) aliasData.args)
                             (Dict.toList compare (Dict.diff boundVars freeVars))
                             (Dict.toList compare (Dict.diff freeVars boundVars))
             )
@@ -341,11 +380,11 @@ addFreeVars (A.At region tipe) freeVars =
 
 
 addCtors : Src.Module -> Env.Env -> LResult i w ( Env.Env, Unions, Aliases )
-addCtors (Src.Module syntaxVersion _ _ _ _ _ unions aliases _ _) env =
-    ReportingResult.traverse (canonicalizeUnion syntaxVersion env) unions
+addCtors (Src.Module srcData) env =
+    ReportingResult.traverse (canonicalizeUnion srcData.syntaxVersion env) srcData.unions
         |> ReportingResult.andThen
             (\unionInfo ->
-                ReportingResult.traverse (canonicalizeAlias syntaxVersion env) aliases
+                ReportingResult.traverse (canonicalizeAlias srcData.syntaxVersion env) srcData.aliases
                     |> ReportingResult.andThen
                         (\aliasInfo ->
                             (Dups.detect Error.DuplicateCtor <|
@@ -379,11 +418,17 @@ type alias CtorDups =
 
 
 canonicalizeAlias : SyntaxVersion -> Env.Env -> A.Located Src.Alias -> LResult i w ( ( Name.Name, Can.Alias ), CtorDups )
-canonicalizeAlias syntaxVersion ({ home } as env) (A.At _ (Src.Alias _ ( _, A.At region name ) args ( _, tipe ))) =
+canonicalizeAlias syntaxVersion ({ home } as env) (A.At _ (Src.Alias aliasData)) =
     let
+        ( _, A.At region name ) =
+            aliasData.name
+
+        ( _, tipe ) =
+            aliasData.tipe
+
         vars : List Name
         vars =
-            List.map (Src.c1Value >> A.toValue) args
+            List.map (Src.c1Value >> A.toValue) aliasData.args
     in
     Type.canonicalize syntaxVersion env tipe
         |> ReportingResult.andThen
@@ -437,7 +482,7 @@ canonicalizeUnion syntaxVersion ({ home } as env) (A.At _ (Src.Union ( _, A.At _
 
                     union : Can.Union
                     union =
-                        Can.Union vars alts (List.length alts) (toOpts ctors)
+                        Can.Union { vars = vars, alts = alts, numAlts = List.length alts, opts = toOpts ctors }
                 in
                 ReportingResult.ok ( ( name, union ), Dups.unions (List.map (toCtor home name union) cctors) )
             )
@@ -450,7 +495,7 @@ canonicalizeCtor syntaxVersion env index ( A.At region ctor, tipes ) =
             (\ctipes ->
                 ReportingResult.ok <|
                     A.At region <|
-                        Can.Ctor ctor index (List.length ctipes) ctipes
+                        Can.Ctor { name = ctor, index = index, numArgs = List.length ctipes, args = ctipes }
             )
 
 
@@ -469,7 +514,7 @@ toOpts ctors =
 
 
 toCtor : IO.Canonical -> Name.Name -> Can.Union -> A.Located Can.Ctor -> CtorDups
-toCtor home typeName union (A.At region (Can.Ctor name index _ args)) =
-    Dups.one name region <|
+toCtor home typeName union (A.At region (Can.Ctor c)) =
+    Dups.one c.name region <|
         Env.Specific home <|
-            Env.Ctor home typeName union index args
+            Env.Ctor home typeName union c.index c.args
