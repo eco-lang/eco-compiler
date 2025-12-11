@@ -35,8 +35,7 @@ import Simplify
 
 config : List Rule
 config =
-    [ --Docs.ReviewAtDocs.rule
-      NoConfusingPrefixOperator.rule
+    [ NoConfusingPrefixOperator.rule
     , NoDebug.Log.rule
     , NoDebug.TodoOrToString.rule
         |> Rule.ignoreErrorsForDirectories [ "tests/" ]
@@ -45,13 +44,15 @@ config =
     , NoMissingTypeAnnotation.rule
     , NoMissingTypeExpose.rule
     , NoSimpleLetBody.rule
-    -- , NoUnused.CustomTypeConstructors.rule []
-    -- , NoUnused.CustomTypeConstructorArgs.rule
     , NoUnused.Dependencies.rule
-    -- , NoUnused.Exports.rule
+    , NoUnused.Variables.rule
+    , NoUnused.Patterns.rule
+    , Simplify.rule Simplify.defaults
+    --, Docs.ReviewAtDocs.rule
+    --, NoUnused.CustomTypeConstructors.rule []
+    --, NoUnused.CustomTypeConstructorArgs.rule
+    --, NoUnused.Exports.rule
     --, NoUnused.Parameters.rule
     --    |> Rule.ignoreErrorsForFiles [ "src/Utils/Crash.elm" ]
-    , NoUnused.Patterns.rule
-    , NoUnused.Variables.rule
-    , Simplify.rule Simplify.defaults
+
     ]
