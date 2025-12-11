@@ -19,7 +19,6 @@ import Data.Map as Dict
 import Task exposing (Task)
 import Terminal.Terminal.Internal exposing (Parser(..))
 import Utils.Main as Utils exposing (FilePath)
-import Utils.Task.Extra as Task
 
 
 

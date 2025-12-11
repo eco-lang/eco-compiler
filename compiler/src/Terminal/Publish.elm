@@ -22,7 +22,6 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Compiler.Json.Decode as D
-import Compiler.Json.String as Json
 import Compiler.Reporting.Doc as D
 import List.Extra as List
 import System.Exit as Exit

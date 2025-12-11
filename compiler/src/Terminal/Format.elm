@@ -1,5 +1,6 @@
 module Terminal.Format exposing
     ( Flags(..)
+    , FlagsProps
     , makeFlags
     , run
     )

@@ -1,5 +1,6 @@
 module Terminal.Make exposing
     ( Flags(..)
+    , FlagsData
     , Output(..)
     , ReportType(..)
     , docsFile
@@ -405,25 +406,6 @@ toBuilder backend withSourceMaps leadingLines root details desiredMode artifacts
 
                 Prod ->
                     Generate.prod backend withSourceMaps leadingLines root details artifacts
-
-
-{-| Build using typed code generation (for MLIR backend)
--}
-toTypedBuilder : CodeGen.TypedCodeGen -> Bool -> Int -> FilePath -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
-toTypedBuilder backend withSourceMaps leadingLines root details desiredMode artifacts =
-    Task.mapError Exit.MakeBadGenerate <|
-        Task.map CodeGen.outputToString <|
-            case desiredMode of
-                Debug ->
-                    -- TODO: Add typed debug when needed
-                    Generate.typedDev backend withSourceMaps leadingLines root details artifacts
-
-                Dev ->
-                    Generate.typedDev backend withSourceMaps leadingLines root details artifacts
-
-                Prod ->
-                    -- TODO: Add typed prod when needed
-                    Generate.typedDev backend withSourceMaps leadingLines root details artifacts
 
 
 {-| Build using monomorphized code generation (for MLIR mono backend)

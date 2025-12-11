@@ -30,7 +30,6 @@ import Terminal.Terminal.Internal
         )
 import Text.PrettyPrint.ANSI.Leijen as P
 import Utils.Main as Utils
-import Utils.Task.Extra as Task
 
 
 

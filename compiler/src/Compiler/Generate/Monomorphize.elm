@@ -21,9 +21,9 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Data.Name exposing (Name)
 import Compiler.Optimize.DecisionTree as DT
-import Compiler.Reporting.Annotation as A exposing (Region)
+import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
@@ -210,7 +210,7 @@ processWorklist toptNodes state =
 specializeNode : TOpt.Node -> Mono.MonoType -> Maybe Mono.LambdaId -> MonoState -> ( Mono.MonoNode, MonoState )
 specializeNode node monoType maybeLambda state =
     case node of
-        TOpt.Define expr deps canType ->
+        TOpt.Define expr _ canType ->
             let
                 subst =
                     unify canType monoType
@@ -223,7 +223,7 @@ specializeNode node monoType maybeLambda state =
             in
             ( Mono.MonoDefine monoExpr depIds monoType, stateAfter )
 
-        TOpt.TrackedDefine _ expr deps canType ->
+        TOpt.TrackedDefine _ expr _ canType ->
             let
                 subst =
                     unify canType monoType
@@ -236,7 +236,7 @@ specializeNode node monoType maybeLambda state =
             in
             ( Mono.MonoDefine monoExpr depIds monoType, stateAfter )
 
-        TOpt.DefineTailFunc region args body deps returnType ->
+        TOpt.DefineTailFunc _ args body _ returnType ->
             let
                 funcType =
                     buildFuncType args returnType
@@ -258,14 +258,14 @@ specializeNode node monoType maybeLambda state =
             in
             ( Mono.MonoTailFunc monoArgs monoBody depIds monoReturnType, stateAfter )
 
-        TOpt.Ctor index arity ctorType ->
+        TOpt.Ctor _ _ _ ->
             let
                 layout =
                     buildCtorLayoutFromType monoType
             in
             ( Mono.MonoCtor layout monoType, state )
 
-        TOpt.Enum index enumType ->
+        TOpt.Enum index _ ->
             let
                 tag =
                     Index.toMachine index
@@ -296,7 +296,7 @@ specializeNode node monoType maybeLambda state =
         TOpt.Kernel _ _ ->
             ( Mono.MonoExtern monoType, state )
 
-        TOpt.PortIncoming expr deps canType ->
+        TOpt.PortIncoming expr _ canType ->
             let
                 subst =
                     unify canType monoType
@@ -309,7 +309,7 @@ specializeNode node monoType maybeLambda state =
             in
             ( Mono.MonoPortIncoming monoExpr depIds monoType, stateAfter )
 
-        TOpt.PortOutgoing expr deps canType ->
+        TOpt.PortOutgoing expr _ canType ->
             let
                 subst =
                     unify canType monoType
@@ -332,19 +332,19 @@ specializeNode node monoType maybeLambda state =
 specializeExpr : TOpt.Expr -> Substitution -> MonoState -> ( Mono.MonoExpr, MonoState )
 specializeExpr expr subst state =
     case expr of
-        TOpt.Bool region value _ ->
+        TOpt.Bool _ value _ ->
             ( Mono.MonoLiteral (Mono.LBool value) Mono.MBool, state )
 
-        TOpt.Chr region value _ ->
+        TOpt.Chr _ value _ ->
             ( Mono.MonoLiteral (Mono.LChar value) Mono.MChar, state )
 
-        TOpt.Str region value _ ->
+        TOpt.Str _ value _ ->
             ( Mono.MonoLiteral (Mono.LStr value) Mono.MString, state )
 
-        TOpt.Int region value _ ->
+        TOpt.Int _ value _ ->
             ( Mono.MonoLiteral (Mono.LInt value) Mono.MInt, state )
 
-        TOpt.Float region value _ ->
+        TOpt.Float _ value _ ->
             ( Mono.MonoLiteral (Mono.LFloat value) Mono.MFloat, state )
 
         TOpt.VarLocal name canType ->
@@ -383,7 +383,7 @@ specializeExpr expr subst state =
             in
             ( Mono.MonoVarGlobal region specId monoType, newState )
 
-        TOpt.VarEnum region global index canType ->
+        TOpt.VarEnum region global _ canType ->
             let
                 monoType =
                     applySubst subst canType
@@ -449,7 +449,7 @@ specializeExpr expr subst state =
             in
             ( Mono.MonoVarGlobal region specId monoType, newState )
 
-        TOpt.VarDebug region name canonical _ canType ->
+        TOpt.VarDebug region name _ _ canType ->
             let
                 monoType =
                     applySubst subst canType
@@ -610,7 +610,7 @@ specializeExpr expr subst state =
             in
             ( Mono.MonoAccessor region fieldName monoType, state )
 
-        TOpt.Access record region fieldName canType ->
+        TOpt.Access record _ fieldName canType ->
             let
                 monoType =
                     applySubst subst canType
@@ -626,7 +626,7 @@ specializeExpr expr subst state =
             in
             ( Mono.MonoRecordAccess monoRecord fieldName fieldIndex isUnboxed monoType, stateAfter )
 
-        TOpt.Update region record updates canType ->
+        TOpt.Update _ record updates canType ->
             let
                 monoType =
                     applySubst subst canType
@@ -658,7 +658,7 @@ specializeExpr expr subst state =
             in
             ( Mono.MonoRecordCreate monoFields layout monoType, stateAfter )
 
-        TOpt.TrackedRecord region fields canType ->
+        TOpt.TrackedRecord _ fields canType ->
             let
                 monoType =
                     applySubst subst canType
@@ -696,7 +696,7 @@ specializeExpr expr subst state =
             in
             ( Mono.MonoTupleCreate region allExprs layout monoType, state3 )
 
-        TOpt.Shader _ _ _ canType ->
+        TOpt.Shader _ _ _ _ ->
             -- Shaders are not supported in MLIR backend
             ( Mono.MonoUnit, state )
 
@@ -1017,7 +1017,7 @@ detectLambdaArg args =
         (Mono.MonoClosure info _ _) :: _ ->
             Just info.lambdaId
 
-        (Mono.MonoVarGlobal _ specId _) :: _ ->
+        (Mono.MonoVarGlobal _ _ _) :: _ ->
             -- This could be a named function passed as argument
             -- For now, we don't specialize for named function args
             Nothing
@@ -1114,7 +1114,7 @@ unifyHelp canType monoType subst =
             let
                 argSubst =
                     List.foldl
-                        (\( name, t ) s ->
+                        (\( _, t ) s ->
                             unifyHelp t (applySubst s t) s
                         )
                         subst
@@ -1195,7 +1195,7 @@ applySubst subst canType =
                 in
                 Mono.MCustom canonical name monoArgs layout
 
-        Can.TRecord fields maybeExt ->
+        Can.TRecord fields _ ->
             let
                 monoFields =
                     Dict.map (\_ (Can.FieldType _ t) -> applySubst subst t) fields
@@ -1386,11 +1386,8 @@ collectDepsHelp expr deps =
             let
                 deciderDeps =
                     collectDeciderDeps decider deps
-
-                jumpDeps =
-                    List.foldl (\( _, e ) d -> collectDepsHelp e d) deciderDeps jumps
             in
-            jumpDeps
+            List.foldl (\( _, e ) d -> collectDepsHelp e d) deciderDeps jumps
 
         Mono.MonoRecordCreate exprs _ _ ->
             List.foldl collectDepsHelp deps exprs

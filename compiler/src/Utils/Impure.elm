@@ -11,8 +11,6 @@ import Http
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Task exposing (Task)
-import Utils.Bytes.Decode as BD
-import Utils.Bytes.Encode as BE
 import Utils.Crash exposing (crash)
 
 

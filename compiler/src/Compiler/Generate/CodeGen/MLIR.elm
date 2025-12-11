@@ -12,10 +12,9 @@ import Data.Map as EveryDict
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
 import Mlir.Loc as Loc exposing (Loc)
-import Mlir.Mlir as Mlir
+import Mlir.Mlir
     exposing
         ( MlirAttr(..)
-        , MlirBlock
         , MlirModule
         , MlirOp
         , MlirRegion(..)
@@ -25,7 +24,6 @@ import Mlir.Mlir as Mlir
 import Mlir.Pretty as Pretty
 import OrderedDict
 import System.TypeCheck.IO as IO
-import Utils.Main as Utils
 
 
 
@@ -74,11 +72,6 @@ stateToOps (State ops _) =
 addOp : MlirOp -> State -> State
 addOp op (State ops seen) =
     State (op :: ops) seen
-
-
-addOps : List MlirOp -> State -> State
-addOps newOps (State ops seen) =
-    State (List.reverse newOps ++ ops) seen
 
 
 hasSeen : TOpt.Global -> State -> Bool
@@ -189,34 +182,14 @@ withResult ssa type_ builder =
     { builder | results = [ ( ssa, type_ ) ] }
 
 
-withResults : List ( String, MlirType ) -> OpBuilder -> OpBuilder
-withResults results builder =
-    { builder | results = results }
-
-
 withAttr : String -> MlirAttr -> OpBuilder -> OpBuilder
 withAttr key value builder =
     { builder | attrs = Dict.insert key value builder.attrs }
 
 
-withAttrs : Dict String MlirAttr -> OpBuilder -> OpBuilder
-withAttrs attrs builder =
-    { builder | attrs = Dict.union attrs builder.attrs }
-
-
 withRegion : MlirRegion -> OpBuilder -> OpBuilder
 withRegion region builder =
     { builder | regions = [ region ] }
-
-
-withRegions : List MlirRegion -> OpBuilder -> OpBuilder
-withRegions regions builder =
-    { builder | regions = regions }
-
-
-withLoc : Loc -> OpBuilder -> OpBuilder
-withLoc loc builder =
-    { builder | loc = loc }
 
 
 asTerminator : OpBuilder -> OpBuilder
@@ -542,23 +515,23 @@ addGlobalHelp mode graph ((TOpt.Global home name) as global) state =
             -- For links, we just need to ensure the linked global is generated
             addGlobal mode graph linkedGlobal state
 
-        Just (TOpt.Cycle names values funcs deps) ->
+        Just (TOpt.Cycle _ _ _ deps) ->
             -- TODO: Implement cycle handling
             addDeps deps state
 
-        Just (TOpt.Manager effectsType) ->
+        Just (TOpt.Manager _) ->
             -- TODO: Implement effects manager
             state
 
-        Just (TOpt.Kernel chunks deps) ->
+        Just (TOpt.Kernel _ deps) ->
             -- TODO: Implement kernel code
             addDeps deps state
 
-        Just (TOpt.PortIncoming _ deps portType) ->
+        Just (TOpt.PortIncoming _ deps _) ->
             -- TODO: Implement port incoming
             addDeps deps state
 
-        Just (TOpt.PortOutgoing _ deps portType) ->
+        Just (TOpt.PortOutgoing _ deps _) ->
             -- TODO: Implement port outgoing
             addDeps deps state
 
@@ -1444,7 +1417,7 @@ generateList ctx items =
                         ( [], nilVar, ctx2 )
                         items
             in
-            { ops = [ nilOp ] ++ consOps
+            { ops = nilOp :: consOps
             , resultVar = finalVar
             , ctx = finalCtx
             }
@@ -1686,14 +1659,9 @@ generateLet ctx def body =
             , ctx = bodyResult.ctx
             }
 
-        TOpt.TailDef _ name locatedArgs expr _ ->
+        TOpt.TailDef _ _ _ expr _ ->
             -- TODO: Implement local tail-recursive definition with joinpoint
-            let
-                bodyResult : ExprResult
-                bodyResult =
-                    generateExpr ctx expr
-            in
-            bodyResult
+            generateExpr ctx expr
 
 
 
@@ -1749,7 +1717,7 @@ generatePath ctx path =
             , ctx3
             )
 
-        TOpt.Field name subPath ->
+        TOpt.Field _ subPath ->
             let
                 ( subOps, subVar, ctx1 ) =
                     generatePath ctx subPath

@@ -14,7 +14,6 @@ import System.Exit as Exit
 import System.IO as IO
 import Task exposing (Task)
 import Utils.Impure as Impure
-import Utils.Task.Extra as Task
 
 
 type CmdSpec

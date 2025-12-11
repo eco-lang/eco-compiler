@@ -15,7 +15,7 @@ import Compiler.Generate.Mode as Mode
 import Data.Map as EveryDict
 import Dict exposing (Dict)
 import Mlir.Loc as Loc exposing (Loc)
-import Mlir.Mlir as Mlir
+import Mlir.Mlir
     exposing
         ( MlirAttr(..)
         , MlirModule
@@ -218,11 +218,6 @@ withResult ssa type_ builder =
     { builder | results = [ ( ssa, type_ ) ] }
 
 
-withResults : List ( String, MlirType ) -> OpBuilder -> OpBuilder
-withResults results builder =
-    { builder | results = results }
-
-
 withAttr : String -> MlirAttr -> OpBuilder -> OpBuilder
 withAttr key value builder =
     { builder | attrs = Dict.insert key value builder.attrs }
@@ -231,16 +226,6 @@ withAttr key value builder =
 withRegion : MlirRegion -> OpBuilder -> OpBuilder
 withRegion region builder =
     { builder | regions = [ region ] }
-
-
-withRegions : List MlirRegion -> OpBuilder -> OpBuilder
-withRegions regions builder =
-    { builder | regions = regions }
-
-
-withLoc : Loc -> OpBuilder -> OpBuilder
-withLoc loc builder =
-    { builder | loc = loc }
 
 
 asTerminator : OpBuilder -> OpBuilder
@@ -954,7 +939,7 @@ generateList ctx items =
                         ( [], nilVar, ctx1 )
                         items
             in
-            { ops = [ nilOp ] ++ consOps
+            { ops = nilOp :: consOps
             , resultVar = finalVar
             , ctx = finalCtx
             }
@@ -970,7 +955,7 @@ generateClosure ctx closureInfo body monoType =
     let
         ( captureOps, captureVars, ctx1 ) =
             List.foldl
-                (\( name, expr, isUnboxed ) ( accOps, accVars, accCtx ) ->
+                (\( _, expr, _ ) ( accOps, accVars, accCtx ) ->
                     let
                         result : ExprResult
                         result =
@@ -1199,14 +1184,9 @@ generateLet ctx def body =
             , ctx = bodyResult.ctx
             }
 
-        Mono.MonoTailDef _ name params expr _ ->
+        Mono.MonoTailDef _ _ _ _ _ ->
             -- TODO: Proper joinpoint handling
-            let
-                bodyResult : ExprResult
-                bodyResult =
-                    generateExpr ctx body
-            in
-            bodyResult
+            generateExpr ctx body
 
 
 
@@ -1252,7 +1232,7 @@ generateMonoPath ctx path =
             , ctx2
             )
 
-        Mono.MonoField name index subPath ->
+        Mono.MonoField _ index subPath ->
             let
                 ( subOps, subVar, ctx1 ) =
                     generateMonoPath ctx subPath

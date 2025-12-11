@@ -7,7 +7,6 @@ module Compiler.Data.Map.Utils exposing
 import Data.Map as Dict exposing (Dict)
 import Task exposing (Task)
 import Utils.Main as Utils
-import Utils.Task.Extra as Task
 
 
 

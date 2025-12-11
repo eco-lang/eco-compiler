@@ -12,7 +12,6 @@ import Builder.Elm.Outline as Outline
 import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
-import Compiler.Data.NonEmptyList as NE
 import Compiler.Elm.Constraint as C
 import Compiler.Elm.Licenses as Licenses
 import Compiler.Elm.Package as Pkg

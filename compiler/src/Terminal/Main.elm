@@ -19,7 +19,6 @@ import Terminal.Terminal.Internal as Terminal
 import Terminal.Test as Test
 import Terminal.Uninstall as Uninstall
 import Utils.Impure as Impure
-import Utils.Task.Extra as Task
 
 
 main : IO.Program

@@ -19,6 +19,7 @@ module Compiler.AST.Canonical exposing
     , FreeVars
     , Manager(..)
     , Module(..)
+    , ModuleData
     , Pattern
     , PatternCtorArg(..)
     , Pattern_(..)

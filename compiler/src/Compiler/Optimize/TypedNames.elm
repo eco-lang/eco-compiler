@@ -167,14 +167,7 @@ withVarTypes andThenings (Tracker k) =
 insertVarType : Name -> Can.Type -> Tracker ()
 insertVarType name tipe =
     Tracker <|
-        \ctx uid deps fields ->
-            let
-                newCtx : Context
-                newCtx =
-                    { ctx | locals = Dict.insert identity name tipe ctx.locals }
-            in
-            -- Note: This won't actually persist since Tracker is immutable
-            -- We need to use withVarType pattern instead
+        \_ uid deps fields ->
             tResult uid deps fields ()
 
 

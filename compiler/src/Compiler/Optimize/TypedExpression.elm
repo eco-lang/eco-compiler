@@ -1,5 +1,6 @@
 module Compiler.Optimize.TypedExpression exposing
-    ( Cycle
+    ( Annotations
+    , Cycle
     , destructArgs
     , optimize
     , optimizePotentialTailCall
@@ -638,11 +639,6 @@ optimizeDefAndBody cycle annotations def body =
 
 optimizeDefHelp : Cycle -> Annotations -> A.Region -> Name -> List Can.Pattern -> Can.Expr -> Can.Expr -> Names.Tracker TOpt.Expr
 optimizeDefHelp cycle annotations region name args expr body =
-    let
-        defType : Can.Type
-        defType =
-            lookupAnnotationType name annotations
-    in
     case args of
         [] ->
             optimize cycle annotations expr
@@ -921,14 +917,10 @@ destructTypedArgs typedArgs =
     Names.traverse destructTypedArg typedArgs
         |> Names.map
             (\results ->
-                let
-                    ( names, destructorLists ) =
-                        List.foldr
-                            (\( n, ds ) ( ns, dss ) -> ( n :: ns, ds ++ dss ))
-                            ( [], [] )
-                            results
-                in
-                ( names, destructorLists )
+                List.foldr
+                    (\( n, ds ) ( ns, dss ) -> ( n :: ns, ds ++ dss ))
+                    ( [], [] )
+                    results
             )
 
 
@@ -1037,13 +1029,7 @@ getPatternType _ (A.At _ pattern) =
         Can.PBool _ _ ->
             Can.TType ModuleName.basics "Bool" []
 
-        Can.PCtor { union, name } ->
-            let
-                (Can.Union _) =
-                    union
-            in
-            -- Use the constructor's type from the union
-            -- This is simplified - would need full type from annotation
+        Can.PCtor _ ->
             unknownType
 
 
@@ -1153,29 +1139,9 @@ destructHelp path tipe (A.At _ pattern) revDs =
             Names.pure revDs
 
         Can.PList (hd :: tl) ->
-            let
-                elemType : Can.Type
-                elemType =
-                    case tipe of
-                        Can.TType _ "List" [ t ] ->
-                            t
-
-                        _ ->
-                            unknownType
-            in
             destructTwo path tipe hd (A.At (A.Region (A.Position 0 0) (A.Position 0 0)) (Can.PList tl)) revDs
 
         Can.PCons hd tl ->
-            let
-                elemType : Can.Type
-                elemType =
-                    case tipe of
-                        Can.TType _ "List" [ t ] ->
-                            t
-
-                        _ ->
-                            unknownType
-            in
             destructTwo path tipe hd tl revDs
 
         Can.PChr _ ->

@@ -444,7 +444,7 @@ addDefNode home annotations region name args body maybeTypedArgs mainDeps graph 
                                     TOpt.TrackedFunction [] oexpr defType
                                 )
 
-                    ( _, Just ( typedArgs, resultType ) ) ->
+                    ( _, Just ( _, resultType ) ) ->
                         Expr.destructArgs annotations args
                             |> Names.andThen
                                 (\( typedArgNames, destructors ) ->
@@ -610,11 +610,6 @@ addRecDef cycle annotations state def =
 
 addRecDefHelp : EverySet String Name.Name -> Annotations -> A.Region -> State -> Name.Name -> List Can.Pattern -> Can.Expr -> Maybe ( List ( Can.Pattern, Can.Type ), Can.Type ) -> Names.Tracker State
 addRecDefHelp cycle annotations region (State { values, functions }) name args body maybeTypedArgs =
-    let
-        defType : Can.Type
-        defType =
-            lookupAnnotationType name annotations
-    in
     case args of
         [] ->
             Expr.optimize cycle annotations body

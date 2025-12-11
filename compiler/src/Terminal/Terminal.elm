@@ -23,7 +23,6 @@ import Task exposing (Task)
 import Terminal.Terminal.Error as Error
 import Terminal.Terminal.Internal exposing (Args(..), Command(..), CompleteArgs(..), Flag(..), Flags(..), Parser, RequiredArgs(..), toName)
 import Utils.Main as Utils
-import Utils.Task.Extra as Task
 
 
 

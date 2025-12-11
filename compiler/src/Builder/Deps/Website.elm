@@ -8,7 +8,6 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Task exposing (Task)
 import Utils.Main as Utils
-import Utils.Task.Extra as Task
 
 
 domain : Task Never String

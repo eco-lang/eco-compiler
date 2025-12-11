@@ -53,13 +53,12 @@ Key characteristics:
 
 -}
 
-import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Optimize.DecisionTree as DT
-import Compiler.Reporting.Annotation as A exposing (Region)
+import Compiler.Reporting.Annotation exposing (Region)
 import Data.Map as Dict exposing (Dict)
-import Data.Set as EverySet exposing (EverySet)
+import Data.Set exposing (EverySet)
 import System.TypeCheck.IO as IO
 
 
@@ -456,7 +455,7 @@ computeTupleLayout types =
                         0
                 )
                 elements
-                |> List.foldl (+) 0
+                |> List.sum
     in
     { arity = List.length types
     , unboxedBitmap = unboxedBitmap

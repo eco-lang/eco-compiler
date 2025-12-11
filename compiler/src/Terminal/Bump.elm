@@ -81,19 +81,19 @@ requireRoot maybeRoot =
 addPackageCache : FilePath -> Task Exit.Bump ( FilePath, Stuff.PackageCache )
 addPackageCache root =
     Task.io Stuff.getPackageCache
-        |> Task.andThen (\cache -> Task.succeed ( root, cache ))
+        |> Task.map (\cache -> ( root, cache ))
 
 
 addHttpManager : ( FilePath, Stuff.PackageCache ) -> Task Exit.Bump EnvSetup
 addHttpManager ( root, cache ) =
     Task.io Http.getManager
-        |> Task.andThen (\manager -> Task.succeed (EnvSetup root cache manager))
+        |> Task.map (\manager -> EnvSetup root cache manager)
 
 
 addRegistry : EnvSetup -> Task Exit.Bump ( EnvSetup, Registry.Registry )
 addRegistry setup =
     Task.eio Exit.BumpMustHaveLatestRegistry (Registry.latest setup.manager setup.cache)
-        |> Task.andThen (\registry -> Task.succeed ( setup, registry ))
+        |> Task.map (\registry -> ( setup, registry ))
 
 
 readAndValidateOutline : ( EnvSetup, Registry.Registry ) -> Task Exit.Bump Env
@@ -198,7 +198,7 @@ initVersionSuggestion root outline vsn oldDocs =
 addNewDocs : VersionSuggestion -> Task Exit.Bump ( VersionSuggestion, Docs.Documentation )
 addNewDocs suggestion =
     generateDocs suggestion.root suggestion.outline
-        |> Task.andThen (\newDocs -> Task.succeed ( suggestion, newDocs ))
+        |> Task.map (\newDocs -> ( suggestion, newDocs ))
 
 
 promptVersionChange : ( VersionSuggestion, Docs.Documentation ) -> Task Exit.Bump ()

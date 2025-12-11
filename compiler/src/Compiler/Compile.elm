@@ -26,7 +26,6 @@ import Compiler.Type.Solve as Type
 import Data.Map exposing (Dict)
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
-import Utils.Task.Extra as Task
 
 
 
@@ -53,23 +52,24 @@ type TypedArtifacts
 
 compile : Pkg.Name -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never (Result E.Error Artifacts)
 compile pkg ifaces modul =
-    Task.succeed (canonicalize pkg ifaces modul)
-        |> Task.map
-            (\canonicalResult ->
-                case canonicalResult of
-                    Ok canonical ->
-                        Result.map2 (\annotations () -> annotations)
-                            (typeCheck modul canonical)
-                            (nitpick canonical)
-                            |> Result.andThen
-                                (\annotations ->
-                                    optimize modul annotations canonical
-                                        |> Result.map (\objects -> Artifacts canonical annotations objects)
-                                )
+    Task.succeed
+        (canonicalize pkg ifaces modul
+            |> (\canonicalResult ->
+                    case canonicalResult of
+                        Ok canonical ->
+                            Result.map2 (\annotations () -> annotations)
+                                (typeCheck modul canonical)
+                                (nitpick canonical)
+                                |> Result.andThen
+                                    (\annotations ->
+                                        optimize modul annotations canonical
+                                            |> Result.map (\objects -> Artifacts canonical annotations objects)
+                                    )
 
-                    Err err ->
-                        Err err
-            )
+                        Err err ->
+                            Err err
+               )
+        )
 
 
 {-| Compile with typed optimization for MLIR backend.
@@ -77,27 +77,28 @@ Produces both Opt.LocalGraph and TOpt.LocalGraph.
 -}
 compileTyped : Pkg.Name -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never (Result E.Error TypedArtifacts)
 compileTyped pkg ifaces modul =
-    Task.succeed (canonicalize pkg ifaces modul)
-        |> Task.map
-            (\canonicalResult ->
-                case canonicalResult of
-                    Ok canonical ->
-                        Result.map2 (\annotations () -> annotations)
-                            (typeCheck modul canonical)
-                            (nitpick canonical)
-                            |> Result.andThen
-                                (\annotations ->
-                                    optimize modul annotations canonical
-                                        |> Result.andThen
-                                            (\objects ->
-                                                typedOptimize modul annotations canonical
-                                                    |> Result.map (\typedObjects -> TypedArtifacts { canonical = canonical, annotations = annotations, objects = objects, typedObjects = typedObjects })
-                                            )
-                                )
+    Task.succeed
+        (canonicalize pkg ifaces modul
+            |> (\canonicalResult ->
+                    case canonicalResult of
+                        Ok canonical ->
+                            Result.map2 (\annotations () -> annotations)
+                                (typeCheck modul canonical)
+                                (nitpick canonical)
+                                |> Result.andThen
+                                    (\annotations ->
+                                        optimize modul annotations canonical
+                                            |> Result.andThen
+                                                (\objects ->
+                                                    typedOptimize modul annotations canonical
+                                                        |> Result.map (\typedObjects -> TypedArtifacts { canonical = canonical, annotations = annotations, objects = objects, typedObjects = typedObjects })
+                                                )
+                                    )
 
-                    Err err ->
-                        Err err
-            )
+                        Err err ->
+                            Err err
+               )
+        )
 
 
 

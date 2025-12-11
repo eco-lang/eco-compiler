@@ -59,7 +59,6 @@ import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils exposing (FilePath, MVar(..))
-import Utils.Task.Extra as Task
 
 
 
@@ -1005,14 +1004,14 @@ checkDepsHelp root results deps new same cached importProblems isBlocked lastDep
 
                     else
                         loadInterfaces root same cached
-                            |> Task.andThen
+                            |> Task.map
                                 (\maybeLoaded ->
                                     case maybeLoaded of
                                         Nothing ->
-                                            Task.succeed DepsBlock
+                                            DepsBlock
 
                                         Just ifaces ->
-                                            Task.succeed <| DepsChange <| Dict.union (Dict.fromList identity new) ifaces
+                                            DepsChange <| Dict.union (Dict.fromList identity new) ifaces
                                 )
 
 
@@ -1063,14 +1062,14 @@ loadInterfaces root same cached =
         |> Task.andThen
             (\loading ->
                 Utils.listTraverse (Utils.readMVar maybeDepDecoder) loading
-                    |> Task.andThen
+                    |> Task.map
                         (\maybeLoaded ->
                             case Utils.sequenceListMaybe maybeLoaded of
                                 Nothing ->
-                                    Task.succeed Nothing
+                                    Nothing
 
                                 Just loaded ->
-                                    Task.succeed <| Just <| Dict.union (Dict.fromList identity loaded) (Dict.fromList identity same)
+                                    Just <| Dict.union (Dict.fromList identity loaded) (Dict.fromList identity same)
                         )
             )
 
@@ -1136,14 +1135,14 @@ checkMidpointAndRoots dmvar statuses sroots =
             case checkUniqueRoots statuses sroots of
                 Nothing ->
                     Utils.readMVar maybeDependenciesDecoder dmvar
-                        |> Task.andThen
+                        |> Task.map
                             (\maybeForeigns ->
                                 case maybeForeigns of
                                     Nothing ->
-                                        Task.succeed (Err Exit.BP_CannotLoadDependencies)
+                                        Err Exit.BP_CannotLoadDependencies
 
                                     Just fs ->
-                                        Task.succeed (Ok fs)
+                                        Ok fs
                             )
 
                 Just problem ->
@@ -1958,9 +1957,9 @@ findRoots env paths =
         |> Task.andThen
             (\mvars ->
                 Utils.nonEmptyListTraverse (Utils.readMVar resultBuildProjectProblemRootInfoDecoder) mvars
-                    |> Task.andThen
+                    |> Task.map
                         (\einfos ->
-                            Task.succeed (Result.andThen checkRoots (Utils.sequenceNonemptyListResult einfos))
+                            Result.andThen checkRoots (Utils.sequenceNonemptyListResult einfos)
                         )
             )
 
@@ -2034,7 +2033,7 @@ getRootInfoHelp (Env envData) path absolutePath =
                         String.join "." names
                 in
                 Utils.filterM (isInsideSrcDirByName names ext) envData.srcDirs
-                    |> Task.andThen
+                    |> Task.map
                         (\matchingDirs ->
                             case matchingDirs of
                                 d1 :: d2 :: _ ->
@@ -2047,10 +2046,10 @@ getRootInfoHelp (Env envData) path absolutePath =
                                         p2 =
                                             addRelative d2 (Utils.fpJoinPath names ++ ext)
                                     in
-                                    Task.succeed <| Err <| Exit.BP_RootNameDuplicate name p1 p2
+                                    Err <| Exit.BP_RootNameDuplicate name p1 p2
 
                                 _ ->
-                                    Task.succeed <| Ok <| RootInfo absolutePath path (LInside name)
+                                    Ok <| RootInfo absolutePath path (LInside name)
                         )
 
             [ ( s, Err names ) ] ->

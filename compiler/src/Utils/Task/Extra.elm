@@ -78,7 +78,7 @@ void =
 
 apply : Task x a -> Task x (a -> b) -> Task x b
 apply ma mf =
-    Task.andThen (\f -> Task.andThen (Task.succeed << f) ma) mf
+    Task.andThen (\f -> Task.map f ma) mf
 
 
 mapM : (a -> Task x b) -> List a -> Task x (List b)

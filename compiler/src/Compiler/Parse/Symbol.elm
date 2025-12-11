@@ -11,8 +11,6 @@ import Bytes.Encode
 import Compiler.Data.Name exposing (Name)
 import Compiler.Parse.Primitives as P exposing (Col, Parser, Row)
 import Data.Set as EverySet exposing (EverySet)
-import Utils.Bytes.Decode as BD
-import Utils.Bytes.Encode as BE
 
 
 

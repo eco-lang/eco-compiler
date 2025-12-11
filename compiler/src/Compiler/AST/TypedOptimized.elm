@@ -53,7 +53,7 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Optimize.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
-import Data.Set as EverySet exposing (EverySet)
+import Data.Set exposing (EverySet)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE

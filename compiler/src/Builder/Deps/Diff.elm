@@ -28,7 +28,6 @@ import Data.Set as EverySet
 import List
 import Task exposing (Task)
 import Utils.Main as Utils
-import Utils.Task.Extra as Task
 
 
 type PackageChanges

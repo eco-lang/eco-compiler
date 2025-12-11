@@ -23,6 +23,7 @@ module Compiler.AST.Source exposing
     , InfixData
     , Manager(..)
     , Module(..)
+    , ModuleData
     , OpenCommentedList(..)
     , Pair(..)
     , Pattern
