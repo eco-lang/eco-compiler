@@ -142,14 +142,14 @@ makePkgPlan pkg (Outline.PkgOutline pkgData) =
             Dict.union pkgData.deps pkgData.testDeps
     in
     if Dict.member identity pkg old then
-        Task.succeed <|
-            Changes <|
-                Outline.Pkg <|
-                    Outline.PkgOutline
-                        { pkgData
-                            | deps = Dict.remove identity pkg pkgData.deps
-                            , testDeps = Dict.remove identity pkg pkgData.testDeps
-                        }
+        Outline.PkgOutline
+            { pkgData
+                | deps = Dict.remove identity pkg pkgData.deps
+                , testDeps = Dict.remove identity pkg pkgData.testDeps
+            }
+            |> Outline.Pkg
+            |> Changes
+            |> Task.succeed
 
     else
         Task.succeed AlreadyNotPresent

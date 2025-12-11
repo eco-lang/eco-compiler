@@ -178,25 +178,25 @@ apply : Decoder x a -> Decoder x (a -> b) -> Decoder x b
 apply (Decoder decodeArg) (Decoder decodeFunc) =
     Decoder <|
         \ast ->
-            Result.andThen
-                (\a ->
-                    Result.map (\b -> a |> b)
-                        (decodeFunc ast)
-                )
-                (decodeArg ast)
+            decodeArg ast
+                |> Result.andThen
+                    (\a ->
+                        Result.map (\b -> a |> b)
+                            (decodeFunc ast)
+                    )
 
 
 andThen : (a -> Decoder x b) -> Decoder x a -> Decoder x b
 andThen callback (Decoder decodeA) =
     Decoder <|
         \ast ->
-            Result.andThen
-                (\a ->
-                    case callback a of
-                        Decoder decodeB ->
-                            decodeB ast
-                )
-                (decodeA ast)
+            decodeA ast
+                |> Result.andThen
+                    (\a ->
+                        case callback a of
+                            Decoder decodeB ->
+                                decodeB ast
+                    )
 
 
 
@@ -310,11 +310,11 @@ pair (Decoder decodeA) (Decoder decodeB) =
                 Array vs ->
                     case vs of
                         [ astA, astB ] ->
-                            Result.andThen
-                                (\a ->
-                                    Result.map (Tuple.pair a) (decodeB astB)
-                                )
-                                (decodeA astA)
+                            decodeA astA
+                                |> Result.andThen
+                                    (\a ->
+                                        Result.map (Tuple.pair a) (decodeB astB)
+                                    )
 
                         _ ->
                             Err (Expecting region (TArrayPair (List.length vs)))

@@ -180,42 +180,41 @@ encodeTuple a b cs =
                 Names.registerGlobal A.zero ModuleName.basics Name.identity_
                     |> Names.andThen
                         (\identity ->
-                            Names.andThen
-                                (\arg1 ->
-                                    Names.andThen
-                                        (\arg2 ->
-                                            let
-                                                ( _, indexedCs ) =
-                                                    List.foldl (\( i, c ) ( index, acc ) -> ( Index.next index, ( i, index, c ) :: acc ))
-                                                        ( Index.third, [] )
-                                                        (List.indexedMap Tuple.pair cs)
-                                                        |> Tuple.mapSecond List.reverse
-                                            in
-                                            List.foldl
-                                                (\( _, i, tipe ) acc ->
-                                                    Names.andThen (\encodedArg -> Names.map (flip (++) [ encodedArg ]) acc)
-                                                        (encodeArg (JsName.fromIndex i) tipe)
-                                                )
-                                                (Names.pure [ arg1, arg2 ])
-                                                indexedCs
-                                                |> Names.map
-                                                    (\args ->
-                                                        Opt.Function [ Name.dollar ]
-                                                            (let_ "a"
-                                                                Index.first
-                                                                (let_ "b"
-                                                                    Index.second
-                                                                    (List.foldr (\( i, index, _ ) -> letCs_ (JsName.fromIndex index) i)
-                                                                        (Opt.Call A.zero list [ identity, Opt.List A.zero args ])
-                                                                        indexedCs
+                            encodeArg "a" a
+                                |> Names.andThen
+                                    (\arg1 ->
+                                        encodeArg "b" b
+                                            |> Names.andThen
+                                                (\arg2 ->
+                                                    let
+                                                        ( _, indexedCs ) =
+                                                            List.foldl (\( i, c ) ( index, acc ) -> ( Index.next index, ( i, index, c ) :: acc ))
+                                                                ( Index.third, [] )
+                                                                (List.indexedMap Tuple.pair cs)
+                                                                |> Tuple.mapSecond List.reverse
+                                                    in
+                                                    List.foldl
+                                                        (\( _, i, tipe ) acc ->
+                                                            encodeArg (JsName.fromIndex i) tipe |> Names.andThen (\encodedArg -> Names.map (flip (++) [ encodedArg ]) acc)
+                                                        )
+                                                        (Names.pure [ arg1, arg2 ])
+                                                        indexedCs
+                                                        |> Names.map
+                                                            (\args ->
+                                                                Opt.Function [ Name.dollar ]
+                                                                    (let_ "a"
+                                                                        Index.first
+                                                                        (let_ "b"
+                                                                            Index.second
+                                                                            (List.foldr (\( i, index, _ ) -> letCs_ (JsName.fromIndex index) i)
+                                                                                (Opt.Call A.zero list [ identity, Opt.List A.zero args ])
+                                                                                indexedCs
+                                                                            )
+                                                                        )
                                                                     )
-                                                                )
                                                             )
-                                                    )
-                                        )
-                                        (encodeArg "b" b)
-                                )
-                                (encodeArg "a" a)
+                                                )
+                                    )
                         )
             )
 
@@ -302,37 +301,37 @@ toDecoder tipe =
 
 decodeMaybe : Can.Type -> Names.Tracker Opt.Expr
 decodeMaybe tipe =
-    Names.andThen
-        (\nothing ->
-            Names.andThen
-                (\just ->
-                    Names.andThen
-                        (\oneOf ->
-                            Names.andThen
-                                (\null ->
-                                    Names.andThen
-                                        (\map_ ->
-                                            Names.map
-                                                (\subDecoder ->
-                                                    Opt.Call A.zero
-                                                        oneOf
-                                                        [ Opt.List A.zero
-                                                            [ Opt.Call A.zero null [ nothing ]
-                                                            , Opt.Call A.zero map_ [ just, subDecoder ]
-                                                            ]
-                                                        ]
+    Names.registerGlobal A.zero ModuleName.maybe "Nothing"
+        |> Names.andThen
+            (\nothing ->
+                Names.registerGlobal A.zero ModuleName.maybe "Just"
+                    |> Names.andThen
+                        (\just ->
+                            decode "oneOf"
+                                |> Names.andThen
+                                    (\oneOf ->
+                                        decode "null"
+                                            |> Names.andThen
+                                                (\null ->
+                                                    decode "map"
+                                                        |> Names.andThen
+                                                            (\map_ ->
+                                                                Names.map
+                                                                    (\subDecoder ->
+                                                                        Opt.Call A.zero
+                                                                            oneOf
+                                                                            [ Opt.List A.zero
+                                                                                [ Opt.Call A.zero null [ nothing ]
+                                                                                , Opt.Call A.zero map_ [ just, subDecoder ]
+                                                                                ]
+                                                                            ]
+                                                                    )
+                                                                    (toDecoder tipe)
+                                                            )
                                                 )
-                                                (toDecoder tipe)
-                                        )
-                                        (decode "map")
-                                )
-                                (decode "null")
+                                    )
                         )
-                        (decode "oneOf")
-                )
-                (Names.registerGlobal A.zero ModuleName.maybe "Just")
-        )
-        (Names.registerGlobal A.zero ModuleName.maybe "Nothing")
+            )
 
 
 
@@ -341,12 +340,12 @@ decodeMaybe tipe =
 
 decodeList : Can.Type -> Names.Tracker Opt.Expr
 decodeList tipe =
-    Names.andThen
-        (\list ->
-            Names.map (Opt.Call A.zero list << List.singleton)
-                (toDecoder tipe)
-        )
-        (decode "list")
+    decode "list"
+        |> Names.andThen
+            (\list ->
+                Names.map (Opt.Call A.zero list << List.singleton)
+                    (toDecoder tipe)
+            )
 
 
 
@@ -355,12 +354,12 @@ decodeList tipe =
 
 decodeArray : Can.Type -> Names.Tracker Opt.Expr
 decodeArray tipe =
-    Names.andThen
-        (\array ->
-            Names.map (Opt.Call A.zero array << List.singleton)
-                (toDecoder tipe)
-        )
-        (decode "array")
+    decode "array"
+        |> Names.andThen
+            (\array ->
+                Names.map (Opt.Call A.zero array << List.singleton)
+                    (toDecoder tipe)
+            )
 
 
 
@@ -375,26 +374,26 @@ decodeTuple0 =
 
 decodeTuple : Can.Type -> Can.Type -> List Can.Type -> Names.Tracker Opt.Expr
 decodeTuple a b cs =
-    Names.andThen
-        (\succeed ->
-            let
-                ( allElems, lastElem ) =
-                    case List.reverse cs of
-                        c :: rest ->
-                            ( a :: b :: List.reverse rest, c )
+    decode "succeed"
+        |> Names.andThen
+            (\succeed ->
+                let
+                    ( allElems, lastElem ) =
+                        case List.reverse cs of
+                            c :: rest ->
+                                ( a :: b :: List.reverse rest, c )
 
-                        _ ->
-                            ( [ a ], b )
+                            _ ->
+                                ( [ a ], b )
 
-                tuple : Opt.Expr
-                tuple =
-                    Opt.Tuple A.zero (toLocal 0) (toLocal 1) (List.indexedMap (\i _ -> toLocal (i + 2)) cs)
-            in
-            List.foldr (\( i, c ) -> Names.andThen (indexAndThen i c))
-                (indexAndThen (List.length cs + 1) lastElem (Opt.Call A.zero succeed [ tuple ]))
-                (List.indexedMap Tuple.pair allElems)
-        )
-        (decode "succeed")
+                    tuple : Opt.Expr
+                    tuple =
+                        Opt.Tuple A.zero (toLocal 0) (toLocal 1) (List.indexedMap (\i _ -> toLocal (i + 2)) cs)
+                in
+                List.foldr (\( i, c ) -> Names.andThen (indexAndThen i c))
+                    (indexAndThen (List.length cs + 1) lastElem (Opt.Call A.zero succeed [ tuple ]))
+                    (List.indexedMap Tuple.pair allElems)
+            )
 
 
 toLocal : Int -> Opt.Expr
@@ -404,23 +403,23 @@ toLocal index =
 
 indexAndThen : Int -> Can.Type -> Opt.Expr -> Names.Tracker Opt.Expr
 indexAndThen i tipe decoder =
-    Names.andThen
-        (\andThen ->
-            Names.andThen
-                (\index ->
-                    Names.map
-                        (\typeDecoder ->
-                            Opt.Call A.zero
-                                andThen
-                                [ Opt.Function [ Name.fromVarIndex i ] decoder
-                                , Opt.Call A.zero index [ Opt.Int A.zero i, typeDecoder ]
-                                ]
+    decode "andThen"
+        |> Names.andThen
+            (\andThen ->
+                decode "index"
+                    |> Names.andThen
+                        (\index ->
+                            Names.map
+                                (\typeDecoder ->
+                                    Opt.Call A.zero
+                                        andThen
+                                        [ Opt.Function [ Name.fromVarIndex i ] decoder
+                                        , Opt.Call A.zero index [ Opt.Int A.zero i, typeDecoder ]
+                                        ]
+                                )
+                                (toDecoder tipe)
                         )
-                        (toDecoder tipe)
-                )
-                (decode "index")
-        )
-        (decode "andThen")
+            )
 
 
 
@@ -438,38 +437,38 @@ decodeRecord fields =
         record =
             Opt.Record (Dict.map toFieldExpr fields)
     in
-    Names.andThen
-        (\succeed ->
-            Names.registerFieldDict fields (Dict.toList compare fields)
-                |> Names.andThen
-                    (\fieldDecoders ->
-                        List.foldl (\fieldDecoder -> Names.andThen (\optCall -> fieldAndThen optCall fieldDecoder))
-                            (Names.pure (Opt.Call A.zero succeed [ record ]))
-                            fieldDecoders
-                    )
-        )
-        (decode "succeed")
+    decode "succeed"
+        |> Names.andThen
+            (\succeed ->
+                Names.registerFieldDict fields (Dict.toList compare fields)
+                    |> Names.andThen
+                        (\fieldDecoders ->
+                            List.foldl (\fieldDecoder -> Names.andThen (\optCall -> fieldAndThen optCall fieldDecoder))
+                                (Names.pure (Opt.Call A.zero succeed [ record ]))
+                                fieldDecoders
+                        )
+            )
 
 
 fieldAndThen : Opt.Expr -> ( Name.Name, Can.FieldType ) -> Names.Tracker Opt.Expr
 fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
-    Names.andThen
-        (\andThen ->
-            Names.andThen
-                (\field ->
-                    Names.map
-                        (\typeDecoder ->
-                            Opt.Call A.zero
-                                andThen
-                                [ Opt.Function [ key ] decoder
-                                , Opt.Call A.zero field [ Opt.Str A.zero (Name.toElmString key), typeDecoder ]
-                                ]
+    decode "andThen"
+        |> Names.andThen
+            (\andThen ->
+                decode "field"
+                    |> Names.andThen
+                        (\field ->
+                            Names.map
+                                (\typeDecoder ->
+                                    Opt.Call A.zero
+                                        andThen
+                                        [ Opt.Function [ key ] decoder
+                                        , Opt.Call A.zero field [ Opt.Str A.zero (Name.toElmString key), typeDecoder ]
+                                        ]
+                                )
+                                (toDecoder tipe)
                         )
-                        (toDecoder tipe)
-                )
-                (decode "field")
-        )
-        (decode "andThen")
+            )
 
 
 

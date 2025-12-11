@@ -87,7 +87,7 @@ get ((IO.Pt ref) as point) =
                                             IORef.readIORefDescriptor (IORef descRef)
 
                                         IO.Link _ ->
-                                            IO.andThen get (repr point)
+                                            repr point |> IO.andThen get
                                 )
             )
 

@@ -60,7 +60,7 @@ tabFilter =
                     in
                     String.padRight n ' ' t :: pad ts
     in
-    String.concat << pad << String.split "\t"
+    String.split "\t" >> pad >> String.concat
 
 
 {-| These are the whitespace characters that are significant in
@@ -102,7 +102,7 @@ and repeated spaces.
 -}
 normalizeReference : String -> String
 normalizeReference =
-    String.toLower << String.concat << split isWhitespace
+    split isWhitespace >> String.concat >> String.toLower
 
 
 span_ : (Char -> Bool) -> String -> ( String, String )
@@ -123,7 +123,7 @@ split p t =
             loop s =
                 let
                     ( l, s_ ) =
-                        span_ (not << p) s
+                        span_ (p >> not) s
                 in
                 if String.isEmpty s_ then
                     [ l ]

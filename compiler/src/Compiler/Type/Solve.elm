@@ -76,10 +76,10 @@ solveHelp : ( ( Env, Int ), ( Pools, State ), ( Type.Constraint, IO State -> IO 
 solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constraint, cont ) ) =
     case constraint of
         CTrue ->
-            IO.map IO.Done <| cont <| IO.pure state
+            IO.pure state |> cont |> IO.map IO.Done
 
         CSaveTheEnvironment ->
-            IO.map IO.Done <| cont <| IO.pure (State env sMark sErrors)
+            IO.pure (State env sMark sErrors) |> cont |> IO.map IO.Done
 
         CEqual region category tipe expectation ->
             typeToVariable rank pools tipe
@@ -94,18 +94,13 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                                 case answer of
                                                     Unify.AnswerOk vars ->
                                                         introduce rank pools vars
-                                                            |> IO.andThen (\_ -> IO.map IO.Done <| cont <| IO.pure state)
+                                                            |> IO.andThen (\_ -> IO.pure state |> cont |> IO.map IO.Done)
 
                                                     Unify.AnswerErr vars actualType expectedType ->
                                                         introduce rank pools vars
                                                             |> IO.andThen
                                                                 (\_ ->
-                                                                    IO.map IO.Done <|
-                                                                        cont <|
-                                                                            IO.pure <|
-                                                                                addError state <|
-                                                                                    Error.BadExpr region category actualType <|
-                                                                                        Error.typeReplace expectation expectedType
+                                                                    Error.typeReplace expectation expectedType |> Error.BadExpr region category actualType |> addError state |> IO.pure |> cont |> IO.map IO.Done
                                                                 )
                                             )
                                 )
@@ -124,18 +119,13 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                                 case answer of
                                                     Unify.AnswerOk vars ->
                                                         introduce rank pools vars
-                                                            |> IO.andThen (\_ -> IO.map IO.Done <| cont <| IO.pure state)
+                                                            |> IO.andThen (\_ -> IO.pure state |> cont |> IO.map IO.Done)
 
                                                     Unify.AnswerErr vars actualType expectedType ->
                                                         introduce rank pools vars
                                                             |> IO.andThen
                                                                 (\_ ->
-                                                                    IO.map IO.Done <|
-                                                                        cont <|
-                                                                            IO.pure <|
-                                                                                addError state <|
-                                                                                    Error.BadExpr region (Error.Local name) actualType <|
-                                                                                        Error.typeReplace expectation expectedType
+                                                                    Error.typeReplace expectation expectedType |> Error.BadExpr region (Error.Local name) actualType |> addError state |> IO.pure |> cont |> IO.map IO.Done
                                                                 )
                                             )
                                 )
@@ -154,18 +144,13 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                                 case answer of
                                                     Unify.AnswerOk vars ->
                                                         introduce rank pools vars
-                                                            |> IO.andThen (\_ -> IO.map IO.Done <| cont <| IO.pure state)
+                                                            |> IO.andThen (\_ -> IO.pure state |> cont |> IO.map IO.Done)
 
                                                     Unify.AnswerErr vars actualType expectedType ->
                                                         introduce rank pools vars
                                                             |> IO.andThen
                                                                 (\_ ->
-                                                                    IO.map IO.Done <|
-                                                                        cont <|
-                                                                            IO.pure <|
-                                                                                addError state <|
-                                                                                    Error.BadExpr region (Error.Foreign name) actualType <|
-                                                                                        Error.typeReplace expectation expectedType
+                                                                    Error.typeReplace expectation expectedType |> Error.BadExpr region (Error.Foreign name) actualType |> addError state |> IO.pure |> cont |> IO.map IO.Done
                                                                 )
                                             )
                                 )
@@ -184,27 +169,27 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                                 case answer of
                                                     Unify.AnswerOk vars ->
                                                         introduce rank pools vars
-                                                            |> IO.andThen (\_ -> IO.map IO.Done <| cont <| IO.pure state)
+                                                            |> IO.andThen (\_ -> IO.pure state |> cont |> IO.map IO.Done)
 
                                                     Unify.AnswerErr vars actualType expectedType ->
                                                         introduce rank pools vars
                                                             |> IO.andThen
                                                                 (\_ ->
-                                                                    IO.map IO.Done <|
-                                                                        cont <|
-                                                                            IO.pure <|
-                                                                                addError state <|
-                                                                                    Error.BadPattern region
-                                                                                        category
-                                                                                        actualType
-                                                                                        (Error.ptypeReplace expectation expectedType)
+                                                                    Error.BadPattern region
+                                                                        category
+                                                                        actualType
+                                                                        (Error.ptypeReplace expectation expectedType)
+                                                                        |> addError state
+                                                                        |> IO.pure
+                                                                        |> cont
+                                                                        |> IO.map IO.Done
                                                                 )
                                             )
                                 )
                     )
 
         CAnd constraints ->
-            IO.map IO.Done <| cont <| IO.foldM (solve env rank pools) state constraints
+            IO.foldM (solve env rank pools) state constraints |> cont |> IO.map IO.Done
 
         CLet [] flexs _ headerCon CTrue ->
             introduce rank pools flexs
@@ -495,7 +480,7 @@ generalize youngMark visitMark youngRank pools =
                                                                                                         MVector.modify pools ((::) var) props.rank
 
                                                                                                     else
-                                                                                                        UF.set var <| IO.makeDescriptor props.content Type.noRank props.mark props.copy
+                                                                                                        IO.makeDescriptor props.content Type.noRank props.mark props.copy |> UF.set var
                                                                                                 )
                                                                                 )
                                                             )
@@ -620,7 +605,7 @@ adjustRankContent youngMark visitMark groupRank content =
                                 go b
                                     |> IO.andThen
                                         (\mb ->
-                                            IO.foldM (\rank -> IO.map (max rank) << go) (max ma mb) cs
+                                            IO.foldM (\rank -> go >> IO.map (max rank)) (max ma mb) cs
                                         )
                             )
 

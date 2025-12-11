@@ -31,7 +31,7 @@ version =
         { singular = "version"
         , plural = "versions"
         , suggest = suggestVersion
-        , examples = Task.succeed << exampleVersions
+        , examples = exampleVersions >> Task.succeed
         }
 
 
@@ -172,8 +172,7 @@ suggestPackages given =
                                     []
 
                                 Just (Registry.Registry _ versions) ->
-                                    List.filter (String.startsWith given) <|
-                                        List.map Pkg.toChars (Dict.keys compare versions)
+                                    List.map Pkg.toChars (Dict.keys compare versions) |> List.filter (String.startsWith given)
                         )
             )
 
@@ -194,8 +193,6 @@ examplePackages given =
                                     ]
 
                                 Just (Registry.Registry _ versions) ->
-                                    List.map Pkg.toChars <|
-                                        List.take 4 <|
-                                            Suggest.sort given Pkg.toChars (Dict.keys compare versions)
+                                    Suggest.sort given Pkg.toChars (Dict.keys compare versions) |> List.take 4 |> List.map Pkg.toChars
                         )
             )

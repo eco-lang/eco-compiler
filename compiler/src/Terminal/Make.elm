@@ -296,8 +296,7 @@ buildExposed style root details maybeDocs exposed =
 
 buildPaths : Reporting.Style -> FilePath -> Details.Details -> Bool -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
 buildPaths style root details needsTypedOpt paths =
-    Task.eio Exit.MakeCannotBuild <|
-        Build.fromPaths style root details needsTypedOpt paths
+    Build.fromPaths style root details needsTypedOpt paths |> Task.eio Exit.MakeCannotBuild
 
 
 
@@ -395,34 +394,36 @@ generate style target builder names =
 
 toBuilder : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
 toBuilder backend withSourceMaps leadingLines root details desiredMode artifacts =
-    Task.mapError Exit.MakeBadGenerate <|
-        Task.map CodeGen.outputToString <|
-            case desiredMode of
-                Debug ->
-                    Generate.debug backend withSourceMaps leadingLines root details artifacts
+    (case desiredMode of
+        Debug ->
+            Generate.debug backend withSourceMaps leadingLines root details artifacts
 
-                Dev ->
-                    Generate.dev backend withSourceMaps leadingLines root details artifacts
+        Dev ->
+            Generate.dev backend withSourceMaps leadingLines root details artifacts
 
-                Prod ->
-                    Generate.prod backend withSourceMaps leadingLines root details artifacts
+        Prod ->
+            Generate.prod backend withSourceMaps leadingLines root details artifacts
+    )
+        |> Task.map CodeGen.outputToString
+        |> Task.mapError Exit.MakeBadGenerate
 
 
 {-| Build using monomorphized code generation (for MLIR mono backend)
 -}
 toMonoBuilder : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
 toMonoBuilder backend withSourceMaps leadingLines root details desiredMode artifacts =
-    Task.mapError Exit.MakeBadGenerate <|
-        Task.map CodeGen.outputToString <|
-            case desiredMode of
-                Debug ->
-                    Generate.monoDev backend withSourceMaps leadingLines root details artifacts
+    (case desiredMode of
+        Debug ->
+            Generate.monoDev backend withSourceMaps leadingLines root details artifacts
 
-                Dev ->
-                    Generate.monoDev backend withSourceMaps leadingLines root details artifacts
+        Dev ->
+            Generate.monoDev backend withSourceMaps leadingLines root details artifacts
 
-                Prod ->
-                    Generate.monoDev backend withSourceMaps leadingLines root details artifacts
+        Prod ->
+            Generate.monoDev backend withSourceMaps leadingLines root details artifacts
+    )
+        |> Task.map CodeGen.outputToString
+        |> Task.mapError Exit.MakeBadGenerate
 
 
 

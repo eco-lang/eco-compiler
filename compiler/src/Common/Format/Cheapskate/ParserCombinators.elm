@@ -380,7 +380,7 @@ charClass =
                 _ ->
                     []
     in
-    Set.fromList << go << String.toList
+    String.toList >> go >> Set.fromList
 
 
 inClass : String -> Char -> Bool
@@ -395,7 +395,7 @@ inClass s c =
 
 notInClass : String -> Char -> Bool
 notInClass s =
-    not << inClass s
+    inClass s >> not
 
 
 endOfInput : Parser ()
@@ -634,7 +634,7 @@ count n p =
 
 lazy : (() -> Parser a) -> Parser a
 lazy f =
-    andThen f (pure ())
+    pure () |> andThen f
 
 
 many : Parser a -> Parser (List a)

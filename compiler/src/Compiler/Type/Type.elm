@@ -242,16 +242,12 @@ unnamedFlexSuper super =
 
 nameToFlex : Name -> IO Variable
 nameToFlex name =
-    UF.fresh <|
-        makeDescriptor <|
-            Maybe.unwrap FlexVar FlexSuper (toSuper name) (Just name)
+    Maybe.unwrap FlexVar FlexSuper (toSuper name) (Just name) |> makeDescriptor |> UF.fresh
 
 
 nameToRigid : Name -> IO Variable
 nameToRigid name =
-    UF.fresh <|
-        makeDescriptor <|
-            Maybe.unwrap RigidVar RigidSuper (toSuper name) name
+    Maybe.unwrap RigidVar RigidSuper (toSuper name) name |> makeDescriptor |> UF.fresh
 
 
 toSuper : Name -> Maybe SuperType
@@ -739,7 +735,7 @@ getVarNames var takenNames =
                                                 IO.pure takenNames
 
                                             Just name ->
-                                                addName 0 name var (FlexVar << Just) takenNames
+                                                addName 0 name var (Just >> FlexVar) takenNames
 
                                     FlexSuper super maybeName ->
                                         case maybeName of
@@ -747,7 +743,7 @@ getVarNames var takenNames =
                                                 IO.pure takenNames
 
                                             Just name ->
-                                                addName 0 name var (FlexSuper super << Just) takenNames
+                                                addName 0 name var (Just >> FlexSuper super) takenNames
 
                                     RigidVar name ->
                                         addName 0 name var RigidVar takenNames
@@ -764,14 +760,13 @@ getVarNames var takenNames =
                                                 IO.foldrM getVarNames takenNames args
 
                                             Fun1 arg body ->
-                                                IO.andThen (getVarNames arg) (getVarNames body takenNames)
+                                                getVarNames body takenNames |> IO.andThen (getVarNames arg)
 
                                             EmptyRecord1 ->
                                                 IO.pure takenNames
 
                                             Record1 fields extension ->
-                                                IO.andThen (getVarNames extension)
-                                                    (IO.foldrM getVarNames takenNames (Dict.values compare fields))
+                                                Dict.values compare fields |> IO.foldrM getVarNames takenNames |> IO.andThen (getVarNames extension)
 
                                             Unit1 ->
                                                 IO.pure takenNames

@@ -75,8 +75,7 @@ parseMappings mappings =
                 Dict.empty
                 mappings
     in
-    parseMappingsHelp 1 (Tuple.first (Utils.findMax compare mappingMap)) mappingMap <|
-        makeMappings emptyOrderedListBuilder emptyOrderedListBuilder (SegmentAccounting { prevCol = Nothing, prevSourceIdx = Nothing, prevSourceLine = Nothing, prevSourceCol = Nothing, prevNameIdx = Nothing }) ""
+    makeMappings emptyOrderedListBuilder emptyOrderedListBuilder (SegmentAccounting { prevCol = Nothing, prevSourceIdx = Nothing, prevSourceLine = Nothing, prevSourceCol = Nothing, prevNameIdx = Nothing }) "" |> parseMappingsHelp 1 (Tuple.first (Utils.findMax compare mappingMap)) mappingMap
 
 
 mappingMapUpdater : JS.Mapping -> Maybe (List JS.Mapping) -> Maybe (List JS.Mapping)

@@ -145,7 +145,7 @@ addNew ( name, version ) versions =
                 Nothing ->
                     KnownVersions version []
     in
-    Dict.update identity name (Just << add) versions
+    Dict.update identity name (add >> Just) versions
 
 
 
@@ -226,7 +226,7 @@ post manager path decoder callback =
                                 Task.map Ok (callback a)
 
                             Err _ ->
-                                Task.succeed <| Err <| Exit.RP_Data url body
+                                Exit.RP_Data url body |> Err |> Task.succeed
             )
 
 

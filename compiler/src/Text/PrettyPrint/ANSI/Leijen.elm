@@ -286,7 +286,7 @@ align =
 
 cat : List Doc -> Doc
 cat =
-    P.group << vcat
+    vcat >> P.group
 
 
 empty : Doc
@@ -339,7 +339,7 @@ indent =
 
 sep : List Doc -> Doc
 sep =
-    P.group << P.lines
+    P.lines >> P.group
 
 
 vcat : List Doc -> Doc

@@ -41,8 +41,7 @@ optimization to skip builds in Elm.Details always valid
 -}
 run : () -> () -> Task Never ()
 run () () =
-    Reporting.attempt Exit.publishToReport <|
-        Task.run (Task.andThen publish getEnv)
+    Task.run (Task.andThen publish getEnv) |> Reporting.attempt Exit.publishToReport
 
 
 
@@ -216,7 +215,7 @@ noExposed exposed =
             List.isEmpty modules
 
         Outline.ExposedDict chunks ->
-            List.all (List.isEmpty << Tuple.second) chunks
+            List.all (Tuple.second >> List.isEmpty) chunks
 
 
 
@@ -285,8 +284,7 @@ verifyLicense root =
 
 verifyBuild : String -> Task Exit.Publish Docs.Documentation
 verifyBuild root =
-    reportBuildCheck <|
-        BW.withScope (loadDetailsAndBuildDocs root)
+    BW.withScope (loadDetailsAndBuildDocs root) |> reportBuildCheck
 
 
 loadDetailsAndBuildDocs : String -> BW.Scope -> Task Never (Result Exit.Publish Docs.Documentation)
@@ -318,8 +316,7 @@ getExposedModules outline =
 
 buildDocsFromExposed : String -> Details.Details -> NE.Nonempty ModuleName.Raw -> Task Exit.Publish Docs.Documentation
 buildDocsFromExposed root details exposed =
-    Task.eio Exit.PublishBuildProblem <|
-        Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root details Build.keepDocs exposed
+    Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root details Build.keepDocs exposed |> Task.eio Exit.PublishBuildProblem
 
 
 
@@ -482,9 +479,7 @@ writeAndVerifyArchive prepublishDir ( sha, archive ) =
 
 verifyDownloadedCode : String -> Task Exit.Publish ()
 verifyDownloadedCode prepublishDir =
-    reportZipBuildCheck <|
-        Utils.dirWithCurrentDirectory prepublishDir <|
-            verifyZipBuild prepublishDir
+    verifyZipBuild prepublishDir |> Utils.dirWithCurrentDirectory prepublishDir |> reportZipBuildCheck
 
 
 toZipUrl : Pkg.Name -> V.Version -> String
@@ -560,14 +555,14 @@ verifyVersion env pkg vsn newDocs publishedVersions =
         case publishedVersions of
             Nothing ->
                 if vsn == V.one then
-                    Task.succeed <| Ok GoodStart
+                    Ok GoodStart |> Task.succeed
 
                 else
-                    Task.succeed <| Err <| Exit.PublishNotInitialVersion vsn
+                    Exit.PublishNotInitialVersion vsn |> Err |> Task.succeed
 
             Just ((Registry.KnownVersions latest previous) as knownVersions) ->
                 if vsn == latest || List.member vsn previous then
-                    Task.succeed <| Err <| Exit.PublishAlreadyPublished vsn
+                    Exit.PublishAlreadyPublished vsn |> Err |> Task.succeed
 
                 else
                     verifyBump env pkg vsn newDocs knownVersions
@@ -577,9 +572,7 @@ verifyBump : Env -> Pkg.Name -> V.Version -> Docs.Documentation -> Registry.Know
 verifyBump (Env envData) pkg vsn newDocs ((Registry.KnownVersions latest _) as knownVersions) =
     case List.find (\( _, new, _ ) -> vsn == new) (Bump.getPossibilities knownVersions) of
         Nothing ->
-            Task.succeed <|
-                Err <|
-                    Exit.PublishInvalidBump vsn latest
+            Exit.PublishInvalidBump vsn latest |> Err |> Task.succeed
 
         Just ( old, new, magnitude ) ->
             Diff.getDocs envData.cache envData.manager pkg old
@@ -587,7 +580,7 @@ verifyBump (Env envData) pkg vsn newDocs ((Registry.KnownVersions latest _) as k
                     (\result ->
                         case result of
                             Err dp ->
-                                Err <| Exit.PublishCannotGetDocs old new dp
+                                Exit.PublishCannotGetDocs old new dp |> Err
 
                             Ok oldDocs ->
                                 let
@@ -600,11 +593,10 @@ verifyBump (Env envData) pkg vsn newDocs ((Registry.KnownVersions latest _) as k
                                         Diff.bump changes old
                                 in
                                 if new == realNew then
-                                    Ok <| GoodBump old magnitude
+                                    GoodBump old magnitude |> Ok
 
                                 else
-                                    Err <|
-                                        Exit.PublishBadBump old new magnitude realNew (Diff.toMagnitude changes)
+                                    Exit.PublishBadBump old new magnitude realNew (Diff.toMagnitude changes) |> Err
                     )
 
 
@@ -643,10 +635,10 @@ reportPublishStart pkg vsn maybeKnownVersions =
     Task.io <|
         case maybeKnownVersions of
             Nothing ->
-                IO.putStrLn <| Exit.newPackageOverview ++ "\nI will now verify that everything is in order...\n"
+                (Exit.newPackageOverview ++ "\nI will now verify that everything is in order...\n") |> IO.putStrLn
 
             Just _ ->
-                IO.putStrLn <| "Verifying " ++ Pkg.toChars pkg ++ " " ++ V.toChars vsn ++ " ...\n"
+                ("Verifying " ++ Pkg.toChars pkg ++ " " ++ V.toChars vsn ++ " ...\n") |> IO.putStrLn
 
 
 
@@ -709,7 +701,7 @@ reportSemverCheck version work =
                         ++ vsn
                         ++ ")"
     in
-    Task.void <| reportCustomCheck waiting success failure work
+    reportCustomCheck waiting success failure work |> Task.void
 
 
 reportTagCheck : V.Version -> Task Never (Result x a) -> Task x a

@@ -115,16 +115,13 @@ constrain rtv (A.At region expression) expected =
             constrainCase rtv region expr branches expected
 
         Can.Let def body ->
-            IO.andThen (constrainDef rtv def)
-                (constrain rtv body expected)
+            constrain rtv body expected |> IO.andThen (constrainDef rtv def)
 
         Can.LetRec defs body ->
-            IO.andThen (constrainRecursiveDefs rtv defs)
-                (constrain rtv body expected)
+            constrain rtv body expected |> IO.andThen (constrainRecursiveDefs rtv defs)
 
         Can.LetDestruct pattern expr body ->
-            IO.andThen (constrainDestruct rtv region pattern expr)
-                (constrain rtv body expected)
+            constrain rtv body expected |> IO.andThen (constrainDestruct rtv region pattern expr)
 
         Can.Accessor field ->
             Type.mkFlexVar
@@ -936,10 +933,7 @@ recDefsHelp rtv defs bodyCon rigidInfo flexInfo =
                 (Info flexVars flexCons flexHeaders) =
                     flexInfo
             in
-            IO.pure <|
-                CLet rigidVars [] rigidHeaders CTrue <|
-                    CLet [] flexVars flexHeaders (CLet [] [] flexHeaders CTrue (CAnd flexCons)) <|
-                        CAnd [ CAnd rigidCons, bodyCon ]
+            CAnd [ CAnd rigidCons, bodyCon ] |> CLet [] flexVars flexHeaders (CLet [] [] flexHeaders CTrue (CAnd flexCons)) |> CLet rigidVars [] rigidHeaders CTrue |> IO.pure
 
         def :: otherDefs ->
             case def of

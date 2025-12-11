@@ -156,7 +156,7 @@ detectBadCycles scc =
 
                 names : List Name
                 names =
-                    List.map (A.toValue << extractDefName) defs
+                    List.map (extractDefName >> A.toValue) defs
             in
             ReportingResult.throw (Error.RecursiveDecl region name names)
 

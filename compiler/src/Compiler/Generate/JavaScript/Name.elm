@@ -348,7 +348,7 @@ allBadFields =
     let
         add : String -> Dict Int Int BadFields -> Dict Int Int BadFields
         add keyword dict =
-            Dict.update identity (String.length keyword) (Just << addRenaming keyword) dict
+            Dict.update identity (String.length keyword) (addRenaming keyword >> Just) dict
     in
     Dict.values compare (EverySet.foldr compare add Dict.empty jsReservedWords)
 

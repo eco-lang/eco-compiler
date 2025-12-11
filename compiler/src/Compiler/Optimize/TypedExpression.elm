@@ -1056,8 +1056,7 @@ destructHelp path tipe (A.At _ pattern) revDs =
             Names.registerFieldList fields (List.map toDestruct fields ++ revDs)
 
         Can.PAlias subPattern name ->
-            destructHelp (TOpt.Root name) tipe subPattern <|
-                (TOpt.Destructor name path tipe :: revDs)
+            (TOpt.Destructor name path tipe :: revDs) |> destructHelp (TOpt.Root name) tipe subPattern
 
         Can.PUnit ->
             Names.pure revDs
@@ -1666,7 +1665,7 @@ hasTailCall expression =
             True
 
         TOpt.If branches finally _ ->
-            hasTailCall finally || List.any (hasTailCall << Tuple.second) branches
+            hasTailCall finally || List.any (Tuple.second >> hasTailCall) branches
 
         TOpt.Let _ body _ ->
             hasTailCall body
@@ -1675,7 +1674,7 @@ hasTailCall expression =
             hasTailCall body
 
         TOpt.Case _ _ decider jumps _ ->
-            deciderHasTailCall decider || List.any (hasTailCall << Tuple.second) jumps
+            deciderHasTailCall decider || List.any (Tuple.second >> hasTailCall) jumps
 
         _ ->
             False
@@ -1696,4 +1695,4 @@ deciderHasTailCall decider =
             deciderHasTailCall success || deciderHasTailCall failure
 
         TOpt.FanOut _ tests fallback ->
-            deciderHasTailCall fallback || List.any (deciderHasTailCall << Tuple.second) tests
+            deciderHasTailCall fallback || List.any (Tuple.second >> deciderHasTailCall) tests

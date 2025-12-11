@@ -62,7 +62,7 @@ toJsStringBuilder (Source src) =
 
 fromString : String -> Source
 fromString =
-    Source << escape
+    escape >> Source
 
 
 escape : String -> String

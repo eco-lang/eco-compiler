@@ -37,11 +37,7 @@ type alias Annotations =
 
 optimize : Annotations -> Can.Module -> MResult i (List W.Warning) Opt.LocalGraph
 optimize annotations (Can.Module canData) =
-    addDecls canData.name annotations canData.decls <|
-        addEffects canData.name canData.effects <|
-            addUnions canData.name canData.unions <|
-                addAliases canData.name canData.aliases <|
-                    Opt.LocalGraph Nothing Dict.empty Dict.empty
+    Opt.LocalGraph Nothing Dict.empty Dict.empty |> addAliases canData.name canData.aliases |> addUnions canData.name canData.unions |> addEffects canData.name canData.effects |> addDecls canData.name annotations canData.decls
 
 
 
@@ -96,9 +92,7 @@ addAlias home name (Can.Alias _ tipe) ((Opt.LocalGraph main nodes fieldCounts) a
             let
                 function : Opt.Expr
                 function =
-                    Opt.Function (List.map Tuple.first (Can.fieldsToList fields)) <|
-                        Opt.Record <|
-                            Dict.map (\field _ -> Opt.VarLocal field) fields
+                    Dict.map (\field _ -> Opt.VarLocal field) fields |> Opt.Record |> Opt.Function (List.map Tuple.first (Can.fieldsToList fields))
 
                 node : Opt.Node
                 node =
@@ -153,17 +147,13 @@ addEffects home effects ((Opt.LocalGraph main nodes fields) as graph) =
                 newNodes =
                     case manager of
                         Can.Cmd _ ->
-                            Dict.insert Opt.toComparableGlobal cmd link <|
-                                Dict.insert Opt.toComparableGlobal fx (Opt.Manager Opt.Cmd) nodes
+                            Dict.insert Opt.toComparableGlobal fx (Opt.Manager Opt.Cmd) nodes |> Dict.insert Opt.toComparableGlobal cmd link
 
                         Can.Sub _ ->
-                            Dict.insert Opt.toComparableGlobal sub link <|
-                                Dict.insert Opt.toComparableGlobal fx (Opt.Manager Opt.Sub) nodes
+                            Dict.insert Opt.toComparableGlobal fx (Opt.Manager Opt.Sub) nodes |> Dict.insert Opt.toComparableGlobal sub link
 
                         Can.Fx _ _ ->
-                            Dict.insert Opt.toComparableGlobal cmd link <|
-                                Dict.insert Opt.toComparableGlobal sub link <|
-                                    Dict.insert Opt.toComparableGlobal fx (Opt.Manager Opt.Fx) nodes
+                            Dict.insert Opt.toComparableGlobal fx (Opt.Manager Opt.Fx) nodes |> Dict.insert Opt.toComparableGlobal sub link |> Dict.insert Opt.toComparableGlobal cmd link
             in
             Opt.LocalGraph main newNodes fields
 
@@ -233,7 +223,7 @@ addDeclsHelp home annotations ( decls, graph ) =
                     ReportingResult.ok (ReportingResult.Loop ( subDecls, addRecDefs home defs graph ))
 
                 Just region ->
-                    ReportingResult.throw <| E.BadCycle region (defToName d) (List.map defToName ds)
+                    E.BadCycle region (defToName d) (List.map defToName ds) |> ReportingResult.throw
 
         Can.SaveTheEnvironment ->
             ReportingResult.ok (ReportingResult.Done graph)
@@ -303,13 +293,12 @@ addDefHelp region annotations home name args body ((Opt.LocalGraph _ nodes field
 
             addMain : ( EverySet (List String) Opt.Global, Dict String Name.Name Int, Opt.Main ) -> Opt.LocalGraph
             addMain ( deps, fields, main ) =
-                addDefNode home region name args body deps <|
-                    Opt.LocalGraph (Just main) nodes (Utils.mapUnionWith identity compare (+) fields fieldCounts)
+                Opt.LocalGraph (Just main) nodes (Utils.mapUnionWith identity compare (+) fields fieldCounts) |> addDefNode home region name args body deps
         in
         case Type.deepDealias tipe of
             Can.TType hm nm [ _ ] ->
                 if hm == ModuleName.virtualDom && nm == Name.node then
-                    ReportingResult.ok <| addMain <| Names.run <| Names.registerKernel Name.virtualDom Opt.Static
+                    Names.registerKernel Name.virtualDom Opt.Static |> Names.run |> addMain |> ReportingResult.ok
 
                 else
                     ReportingResult.throw (E.BadType region tipe)
@@ -318,7 +307,7 @@ addDefHelp region annotations home name args body ((Opt.LocalGraph _ nodes field
                 if hm == ModuleName.platform && nm == Name.program then
                     case Effects.checkPayload flags of
                         Ok () ->
-                            ReportingResult.ok <| addMain <| Names.run <| Names.map (Opt.Dynamic message) <| Port.toFlagsDecoder flags
+                            Port.toFlagsDecoder flags |> Names.map (Opt.Dynamic message) |> Names.run |> addMain |> ReportingResult.ok
 
                         Err ( subType, invalidPayload ) ->
                             ReportingResult.throw (E.BadFlags region subType invalidPayload)
@@ -346,8 +335,7 @@ addDefNode home region name args body mainDeps graph =
                                     Expr.optimize EverySet.empty body
                                         |> Names.map
                                             (\obody ->
-                                                Opt.TrackedFunction argNames <|
-                                                    List.foldr Opt.Destruct obody destructors
+                                                List.foldr Opt.Destruct obody destructors |> Opt.TrackedFunction argNames
                                             )
                                 )
     in

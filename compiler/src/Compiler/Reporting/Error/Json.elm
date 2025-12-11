@@ -218,19 +218,19 @@ parseErrorToReport path source parseError reason =
                         ( "Backslashes always start escaped characters, but I do not recognize this one:"
                         , D.stack
                             [ D.reflow "Valid escape characters include:"
-                            , D.dullyellow <|
-                                D.indent 4 <|
-                                    D.vcat
-                                        [ D.fromChars "\\\""
-                                        , D.fromChars "\\\\"
-                                        , D.fromChars "\\/"
-                                        , D.fromChars "\\b"
-                                        , D.fromChars "\\f"
-                                        , D.fromChars "\\n"
-                                        , D.fromChars "\\r"
-                                        , D.fromChars "\\t"
-                                        , D.fromChars "\\u003D"
-                                        ]
+                            , D.vcat
+                                [ D.fromChars "\\\""
+                                , D.fromChars "\\\\"
+                                , D.fromChars "\\/"
+                                , D.fromChars "\\b"
+                                , D.fromChars "\\f"
+                                , D.fromChars "\\n"
+                                , D.fromChars "\\r"
+                                , D.fromChars "\\t"
+                                , D.fromChars "\\u003D"
+                                ]
+                                |> D.indent 4
+                                |> D.dullyellow
                             , D.reflow "Do you want one of those instead? Maybe you need \\\\ to escape a backslash?"
                             ]
                         )
@@ -335,7 +335,7 @@ problemToReport path (FailureToReport ftr) source context problem reason =
             -- of JSON used by Elm, but probably would not work well in general.
             let
                 (NE.Nonempty prob _) =
-                    NE.sortBy (negate << getMaxDepth) (NE.Nonempty p ps)
+                    NE.Nonempty p ps |> NE.sortBy (negate << getMaxDepth)
             in
             problemToReport path (FailureToReport ftr) source context prob reason
 

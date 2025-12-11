@@ -625,7 +625,7 @@ chompEffectModuleExposing initialComments start effectEnd postEffectComments bef
                                                             ( ( beforeExportsComments, afterExportsComments ), exports )
                                                     in
                                                     ( ( initialComments, headerComments )
-                                                    , Just <| Header nameWithComments managerType exportsWithComments docComment
+                                                    , Header nameWithComments managerType exportsWithComments docComment |> Just
                                                     )
                                                 )
                                     )
@@ -945,7 +945,7 @@ chompExposed =
                         |> P.andThen
                             (\name ->
                                 P.getPosition
-                                    |> P.map (\end -> Src.Lower <| A.at start end name)
+                                    |> P.map (\end -> A.at start end name |> Src.Lower)
                             )
                     , P.word1 '(' E.ExposingValue
                         |> P.andThen (\_ -> Symbol.operator E.ExposingOperator E.ExposingOperatorReserved)

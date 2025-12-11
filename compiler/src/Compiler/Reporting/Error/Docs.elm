@@ -55,31 +55,30 @@ toReports : Code.Source -> Error -> NE.Nonempty Report.Report
 toReports source err =
     case err of
         NoDocs region ->
-            NE.singleton <|
-                Report.report "NO DOCS" region [] <|
-                    Code.toSnippet source
-                        region
-                        Nothing
-                        ( D.reflow "You must have a documentation comment between the module declaration and the imports."
-                        , D.reflow "Learn more at <https://package.elm-lang.org/help/documentation-format>"
-                        )
+            Code.toSnippet source
+                region
+                Nothing
+                ( D.reflow "You must have a documentation comment between the module declaration and the imports."
+                , D.reflow "Learn more at <https://package.elm-lang.org/help/documentation-format>"
+                )
+                |> Report.report "NO DOCS" region []
+                |> NE.singleton
 
         ImplicitExposing region ->
-            NE.singleton <|
-                Report.report "IMPLICIT EXPOSING" region [] <|
-                    Code.toSnippet source
-                        region
-                        Nothing
-                        ( D.reflow "I need you to be explicit about what this module exposes:"
-                        , D.reflow <|
-                            "A great API usually hides some implementation details, so it is rare that everything in the file should be exposed. "
-                                ++ "And requiring package authors to be explicit about this is a way of adding another quality check before code gets published. "
-                                ++ "So as you write out the public API, ask yourself if it will be easy to understand as people read the documentation!"
-                        )
+            Code.toSnippet source
+                region
+                Nothing
+                ( D.reflow "I need you to be explicit about what this module exposes:"
+                , D.reflow <|
+                    "A great API usually hides some implementation details, so it is rare that everything in the file should be exposed. "
+                        ++ "And requiring package authors to be explicit about this is a way of adding another quality check before code gets published. "
+                        ++ "So as you write out the public API, ask yourself if it will be easy to understand as people read the documentation!"
+                )
+                |> Report.report "IMPLICIT EXPOSING" region []
+                |> NE.singleton
 
         SyntaxProblem problem ->
-            NE.singleton <|
-                toSyntaxProblemReport source problem
+            toSyntaxProblemReport source problem |> NE.singleton
 
         NameProblems problems ->
             NE.map (toNameProblemReport source) problems

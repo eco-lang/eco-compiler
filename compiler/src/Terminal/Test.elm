@@ -68,13 +68,13 @@ runWithRoot paths flags maybeRoot =
 
 runHelp : String -> List String -> Flags -> Task Never (Result Exit.Test ())
 runHelp root testFileGlobs flags =
-    Stuff.withRootLock root <|
-        Task.run <|
-            (initTestDir root
-                |> Task.andThen (setupTestEnvironment root)
-                |> Task.andThen (\_ -> runTestsPhase root testFileGlobs flags)
-                |> Task.map (\_ -> ())
-            )
+    (initTestDir root
+        |> Task.andThen (setupTestEnvironment root)
+        |> Task.andThen (\_ -> runTestsPhase root testFileGlobs flags)
+        |> Task.map (\_ -> ())
+    )
+        |> Task.run
+        |> Stuff.withRootLock root
 
 
 {-| Initialize test directory and get node dirname
@@ -1223,8 +1223,7 @@ buildAndGenerate root path details =
 
 buildPaths : FilePath -> Details.Details -> NE.Nonempty FilePath -> Task Exit.Test Build.Artifacts
 buildPaths root details paths =
-    Task.eio Exit.TestCannotBuild <|
-        Build.fromPaths style root details False paths
+    Build.fromPaths style root details False paths |> Task.eio Exit.TestCannotBuild
 
 
 
@@ -1233,9 +1232,7 @@ buildPaths root details paths =
 
 toBuilder : Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Test String
 toBuilder leadingLines root details artifacts =
-    Task.mapError Exit.TestBadGenerate <|
-        Task.map CodeGen.outputToString <|
-            Generate.dev Generate.javascriptBackend False leadingLines root details artifacts
+    Generate.dev Generate.javascriptBackend False leadingLines root details artifacts |> Task.map CodeGen.outputToString |> Task.mapError Exit.TestBadGenerate
 
 
 

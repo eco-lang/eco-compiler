@@ -309,8 +309,7 @@ addGlobal mode graph ((State builder seen) as state) global =
         state
 
     else
-        addGlobalHelp mode graph global <|
-            State builder (EverySet.insert Opt.toComparableGlobal global seen)
+        State builder (EverySet.insert Opt.toComparableGlobal global seen) |> addGlobalHelp mode graph global
 
 
 addGlobalHelp : Mode.Mode -> Graph -> Opt.Global -> State -> State
@@ -413,8 +412,8 @@ isDebugger (Opt.Global (IO.Canonical _ home) _) =
 generateCycle : Mode.Mode -> Opt.Global -> List Name.Name -> List ( Name.Name, Opt.Expr ) -> List Opt.Def -> JS.Stmt
 generateCycle mode (Opt.Global ((IO.Canonical _ module_) as home) _) names values functions =
     JS.Block
-        [ JS.Block <| List.map (generateCycleFunc mode home) functions
-        , JS.Block <| List.map (generateSafeCycle mode home) values
+        [ List.map (generateCycleFunc mode home) functions |> JS.Block
+        , List.map (generateSafeCycle mode home) values |> JS.Block
         , case List.map (generateRealCycle home) values of
             [] ->
                 JS.EmptyStmt
@@ -425,16 +424,17 @@ generateCycle mode (Opt.Global ((IO.Canonical _ module_) as home) _) names value
                         JS.Block realBlock
 
                     Mode.Dev _ ->
-                        JS.Try (JS.Block realBlock) JsName.dollar <|
-                            JS.Throw <|
-                                JS.ExprString <|
-                                    "Some top-level definitions from `"
-                                        ++ module_
-                                        ++ "` are causing infinite recursion:\\n"
-                                        ++ drawCycle names
-                                        ++ "\\n\\nThese errors are very tricky, so read "
-                                        ++ D.makeNakedLink "bad-recursion"
-                                        ++ " to learn how to fix it!"
+                        ("Some top-level definitions from `"
+                            ++ module_
+                            ++ "` are causing infinite recursion:\\n"
+                            ++ drawCycle names
+                            ++ "\\n\\nThese errors are very tricky, so read "
+                            ++ D.makeNakedLink "bad-recursion"
+                            ++ " to learn how to fix it!"
+                        )
+                            |> JS.ExprString
+                            |> JS.Throw
+                            |> JS.Try (JS.Block realBlock) JsName.dollar
         ]
 
 
@@ -450,8 +450,7 @@ generateCycleFunc mode home def =
 
 generateSafeCycle : Mode.Mode -> IO.Canonical -> ( Name.Name, Opt.Expr ) -> JS.Stmt
 generateSafeCycle mode home ( name, expr ) =
-    JS.FunctionStmt (JsName.fromCycle home name) [] <|
-        Expr.codeToStmtList (Expr.generate mode home expr)
+    Expr.codeToStmtList (Expr.generate mode home expr) |> JS.FunctionStmt (JsName.fromCycle home name) []
 
 
 generateRealCycle : IO.Canonical -> ( Name.Name, expr ) -> JS.Stmt
@@ -467,9 +466,7 @@ generateRealCycle home ( name, _ ) =
     in
     JS.Block
         [ JS.Var realName (JS.ExprCall (JS.ExprRef safeName) [])
-        , JS.ExprStmt <|
-            JS.ExprAssign (JS.LRef safeName) <|
-                JS.ExprFunction Nothing [] [ JS.Return (JS.ExprRef realName) ]
+        , JS.ExprFunction Nothing [] [ JS.Return (JS.ExprRef realName) ] |> JS.ExprAssign (JS.LRef safeName) |> JS.ExprStmt
         ]
 
 
@@ -604,18 +601,14 @@ generateManager mode graph (Opt.Global ((IO.Canonical _ moduleName) as home) _) 
 
         createManager : JS.Stmt
         createManager =
-            JS.ExprStmt <|
-                JS.ExprAssign managerLVar <|
-                    JS.ExprCall (JS.ExprRef (JsName.fromKernel Name.platform "createManager")) args
+            JS.ExprCall (JS.ExprRef (JsName.fromKernel Name.platform "createManager")) args |> JS.ExprAssign managerLVar |> JS.ExprStmt
     in
-    addStmt (List.foldl (flip (addGlobal mode graph)) state deps) <|
-        JS.Block (createManager :: stmts)
+    JS.Block (createManager :: stmts) |> addStmt (List.foldl (flip (addGlobal mode graph)) state deps)
 
 
 generateLeaf : IO.Canonical -> Name.Name -> JS.Stmt
 generateLeaf ((IO.Canonical _ moduleName) as home) name =
-    JS.Var (JsName.fromGlobal home name) <|
-        JS.ExprCall leaf [ JS.ExprString moduleName ]
+    JS.ExprCall leaf [ JS.ExprString moduleName ] |> JS.Var (JsName.fromGlobal home name)
 
 
 leaf : JS.Expr
@@ -725,7 +718,7 @@ emptyTrie =
 
 addToTrie : IO.Canonical -> Opt.Main -> Trie -> Trie
 addToTrie ((IO.Canonical _ moduleName) as home) main trie =
-    merge trie <| segmentsToTrie home (Name.splitDots moduleName) main
+    segmentsToTrie home (Name.splitDots moduleName) main |> merge trie
 
 
 segmentsToTrie : IO.Canonical -> List Name.Name -> Opt.Main -> Trie

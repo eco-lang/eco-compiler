@@ -64,10 +64,7 @@ toReport source (Error { region, name, unimportedModules, problem }) =
                     , D.stack
                         [ D.reflow
                             "I checked the \"dependencies\" and \"source-directories\" listed in your elm.json, but I cannot find it! Maybe it is a typo for one of these names?"
-                        , D.dullyellow <|
-                            D.indent 4 <|
-                                D.vcat <|
-                                    List.map D.fromName (toSuggestions name unimportedModules)
+                        , List.map D.fromName (toSuggestions name unimportedModules) |> D.vcat |> D.indent 4 |> D.dullyellow
                         , case Dict.get identity name Pkg.suggestions of
                             Nothing ->
                                 D.toSimpleHint
@@ -154,10 +151,7 @@ toReport source (Error { region, name, unimportedModules, problem }) =
                     , D.stack
                         [ D.reflow
                             "But I found multiple files in your \"source-directories\" with that name:"
-                        , D.dullyellow <|
-                            D.indent 4 <|
-                                D.vcat <|
-                                    List.map D.fromChars (path1 :: path2 :: paths)
+                        , List.map D.fromChars (path1 :: path2 :: paths) |> D.vcat |> D.indent 4 |> D.dullyellow
                         , D.reflow
                             "Change the module names to be distinct!"
                         ]
@@ -173,10 +167,7 @@ toReport source (Error { region, name, unimportedModules, problem }) =
                     , D.stack
                         [ D.reflow
                             "But multiple packages in your \"dependencies\" that expose a module that name:"
-                        , D.dullyellow <|
-                            D.indent 4 <|
-                                D.vcat <|
-                                    List.map (D.fromChars << Pkg.toChars) (pkg1 :: pkg2 :: pkgs)
+                        , List.map (D.fromChars << Pkg.toChars) (pkg1 :: pkg2 :: pkgs) |> D.vcat |> D.indent 4 |> D.dullyellow
                         , D.reflow <|
                             "There is no way to disambiguate in cases like this right now. Of the known name clashes, "
                                 ++ "they are usually for packages with similar purposes, so the current recommendation is to pick just one of them."
@@ -193,8 +184,7 @@ toReport source (Error { region, name, unimportedModules, problem }) =
 
 toSuggestions : ModuleName.Raw -> EverySet String ModuleName.Raw -> List ModuleName.Raw
 toSuggestions name unimportedModules =
-    List.take 4 <|
-        Suggest.sort name identity (EverySet.toList compare unimportedModules)
+    Suggest.sort name identity (EverySet.toList compare unimportedModules) |> List.take 4
 
 
 

@@ -166,8 +166,7 @@ getTransitive constraints solution unvisited visited =
                     newVisited =
                         Dict.insert identity pkg vsn visited
                 in
-                getTransitive constraints solution infos <|
-                    getTransitive constraints solution newUnvisited newVisited
+                getTransitive constraints solution newUnvisited newVisited |> getTransitive constraints solution infos
 
 
 
@@ -702,7 +701,7 @@ fetchNewRegistry cache manager =
             (\eitherRegistry ->
                 case eitherRegistry of
                     Ok latestRegistry ->
-                        Ok <| Env { cache = cache, manager = manager, connection = Online manager, registry = latestRegistry }
+                        Env { cache = cache, manager = manager, connection = Online manager, registry = latestRegistry } |> Ok
 
                     Err problem ->
                         Err problem
@@ -718,10 +717,10 @@ updateCachedRegistry cache manager cachedRegistry =
             (\eitherRegistry ->
                 case eitherRegistry of
                     Ok latestRegistry ->
-                        Ok <| Env { cache = cache, manager = manager, connection = Online manager, registry = latestRegistry }
+                        Env { cache = cache, manager = manager, connection = Online manager, registry = latestRegistry } |> Ok
 
                     Err _ ->
-                        Ok <| Env { cache = cache, manager = manager, connection = Offline, registry = cachedRegistry }
+                        Env { cache = cache, manager = manager, connection = Offline, registry = cachedRegistry } |> Ok
             )
 
 

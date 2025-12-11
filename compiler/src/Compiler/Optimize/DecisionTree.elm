@@ -263,7 +263,7 @@ checkForMatch : List Branch -> Maybe Int
 checkForMatch branches =
     case branches of
         (Branch goal patterns) :: _ ->
-            if List.all (not << needsTests << Tuple.second) patterns then
+            if List.all (Tuple.second >> needsTests >> not) patterns then
                 Just goal
 
             else
@@ -312,12 +312,12 @@ testsAtPath selectedPath branches =
 
         skipVisited : Test -> ( List Test, EverySet.EverySet String Test ) -> ( List Test, EverySet.EverySet String Test )
         skipVisited test (( uniqueTests, visitedTests ) as curr) =
-            if EverySet.member (Hex.Convert.toString << Bytes.Encode.encode << testEncoder) test visitedTests then
+            if EverySet.member (testEncoder >> Bytes.Encode.encode >> Hex.Convert.toString) test visitedTests then
                 curr
 
             else
                 ( test :: uniqueTests
-                , EverySet.insert (Hex.Convert.toString << Bytes.Encode.encode << testEncoder) test visitedTests
+                , EverySet.insert (testEncoder >> Bytes.Encode.encode >> Hex.Convert.toString) test visitedTests
                 )
     in
     Tuple.first (List.foldr skipVisited ( [], EverySet.empty ) allTests)

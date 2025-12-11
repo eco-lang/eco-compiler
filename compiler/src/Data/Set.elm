@@ -65,21 +65,21 @@ empty =
 -}
 singleton : (a -> comparable) -> a -> EverySet comparable a
 singleton toComparable k =
-    EverySet <| Dict.singleton toComparable k ()
+    Dict.singleton toComparable k () |> EverySet
 
 
 {-| Insert a value into a set.
 -}
 insert : (a -> comparable) -> a -> EverySet comparable a -> EverySet comparable a
 insert toComparable k (EverySet d) =
-    EverySet <| Dict.insert toComparable k () d
+    Dict.insert toComparable k () d |> EverySet
 
 
 {-| Remove a value from a set. If the value is not found, no changes are made.
 -}
 remove : (a -> comparable) -> a -> EverySet comparable a -> EverySet comparable a
 remove toComparable k (EverySet d) =
-    EverySet <| Dict.remove toComparable k d
+    Dict.remove toComparable k d |> EverySet
 
 
 {-| Determine if a set is empty.
@@ -107,14 +107,14 @@ size (EverySet d) =
 -}
 union : EverySet comparable a -> EverySet comparable a -> EverySet comparable a
 union (EverySet d1) (EverySet d2) =
-    EverySet <| Dict.union d1 d2
+    Dict.union d1 d2 |> EverySet
 
 
 {-| Get the intersection of two sets. Keeps values that appear in both sets.
 -}
 intersect : (a -> a -> Order) -> EverySet comparable a -> EverySet comparable a -> EverySet comparable a
 intersect keyComparison (EverySet d1) (EverySet d2) =
-    EverySet <| Dict.intersection keyComparison d1 d2
+    Dict.intersection keyComparison d1 d2 |> EverySet
 
 
 {-| Get the difference between the first set and the second. Keeps values
@@ -122,7 +122,7 @@ that do not appear in the second set.
 -}
 diff : EverySet comparable a -> EverySet comparable a -> EverySet comparable a
 diff (EverySet d1) (EverySet d2) =
-    EverySet <| Dict.diff d1 d2
+    Dict.diff d1 d2 |> EverySet
 
 
 {-| Convert a set into a list, sorted from lowest to highest.
@@ -164,7 +164,7 @@ map keyComparison toString f s =
 -}
 filter : (a -> Bool) -> EverySet comparable a -> EverySet comparable a
 filter p (EverySet d) =
-    EverySet <| Dict.filter (\k _ -> p k) d
+    Dict.filter (\k _ -> p k) d |> EverySet
 
 
 {-| Create two new sets; the first consisting of elements which satisfy a

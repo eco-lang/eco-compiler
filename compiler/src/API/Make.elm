@@ -131,8 +131,7 @@ getMode debug optimize =
 
 buildPaths : Reporting.Style -> FilePath -> Details.Details -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
 buildPaths style root details paths =
-    Task.eio Exit.MakeCannotBuild <|
-        Build.fromPaths style root details False paths
+    Build.fromPaths style root details False paths |> Task.eio Exit.MakeCannotBuild
 
 
 
@@ -181,17 +180,18 @@ type DesiredMode
 
 toBuilder : Bool -> Int -> FilePath -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
 toBuilder withSourceMaps leadingLines root details desiredMode artifacts =
-    Task.mapError Exit.MakeBadGenerate <|
-        Task.map CodeGen.outputToString <|
-            case desiredMode of
-                Debug ->
-                    Generate.debug Generate.javascriptBackend withSourceMaps leadingLines root details artifacts
+    (case desiredMode of
+        Debug ->
+            Generate.debug Generate.javascriptBackend withSourceMaps leadingLines root details artifacts
 
-                Dev ->
-                    Generate.dev Generate.javascriptBackend withSourceMaps leadingLines root details artifacts
+        Dev ->
+            Generate.dev Generate.javascriptBackend withSourceMaps leadingLines root details artifacts
 
-                Prod ->
-                    Generate.prod Generate.javascriptBackend withSourceMaps leadingLines root details artifacts
+        Prod ->
+            Generate.prod Generate.javascriptBackend withSourceMaps leadingLines root details artifacts
+    )
+        |> Task.map CodeGen.outputToString
+        |> Task.mapError Exit.MakeBadGenerate
 
 
 

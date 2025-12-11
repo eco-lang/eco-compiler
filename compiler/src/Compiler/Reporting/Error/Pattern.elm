@@ -22,8 +22,7 @@ toReport source err =
                         "The "
                             ++ D.intToOrdinal index
                             ++ " pattern is redundant:"
-                    , D.reflow <|
-                        "Any value with this shape will be handled by a previous pattern, so it should be removed."
+                    , "Any value with this shape will be handled by a previous pattern, so it should be removed." |> D.reflow
                     )
 
         P.Incomplete region context unhandled ->
@@ -55,8 +54,7 @@ toReport source err =
                                 , D.reflow <|
                                     "I would have to crash if I saw one of those! You can use `let` to deconstruct values only if there is ONE possibility. "
                                         ++ "Switch to a `case` expression to account for all possibilities."
-                                , D.toSimpleHint <|
-                                    "Are you calling a function that definitely returns values with a very specific shape? Try making the return type of that function more specific!"
+                                , "Are you calling a function that definitely returns values with a very specific shape? Try making the return type of that function more specific!" |> D.toSimpleHint
                                 ]
                             )
 
@@ -69,8 +67,7 @@ toReport source err =
                             , D.stack
                                 [ D.fromChars "Missing possibilities include:"
                                 , unhandledPatternsToDocBlock unhandled
-                                , D.reflow <|
-                                    "I would have to crash if I saw one of those. Add branches for them!"
+                                , "I would have to crash if I saw one of those. Add branches for them!" |> D.reflow
                                 , D.link "Hint"
                                     "If you want to write the code for each branch later, use `Debug.todo` as a placeholder. Read"
                                     "missing-patterns"
@@ -85,10 +82,7 @@ toReport source err =
 
 unhandledPatternsToDocBlock : List P.Pattern -> D.Doc
 unhandledPatternsToDocBlock unhandledPatterns =
-    D.indent 4 <|
-        D.dullyellow <|
-            D.vcat <|
-                List.map (patternToDoc Unambiguous) unhandledPatterns
+    List.map (patternToDoc Unambiguous) unhandledPatterns |> D.vcat |> D.dullyellow |> D.indent 4
 
 
 type Context

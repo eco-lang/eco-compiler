@@ -387,7 +387,7 @@ toReport source err =
             let
                 suggestions : List String
                 suggestions =
-                    List.take 4 <| Suggest.sort rawName identity possibleNames
+                    Suggest.sort rawName identity possibleNames |> List.take 4
             in
             Report.report "UNKNOWN EXPORT" region suggestions <|
                 let
@@ -428,7 +428,7 @@ toReport source err =
                         alts ->
                             D.stack
                                 [ D.fromChars "These names seem close though:"
-                                , D.indent 4 <| D.vcat <| List.map D.dullyellow alts
+                                , List.map D.dullyellow alts |> D.vcat |> D.indent 4
                                 ]
                     ]
 
@@ -511,7 +511,7 @@ toReport source err =
             let
                 suggestions : List String
                 suggestions =
-                    List.take 4 <| Suggest.sort home identity possibleNames
+                    Suggest.sort home identity possibleNames |> List.take 4
             in
             Report.report "BAD IMPORT" region suggestions <|
                 Code.toSnippet source
@@ -540,7 +540,7 @@ toReport source err =
                         alts ->
                             D.stack
                                 [ D.fromChars "These names seem close though:"
-                                , D.indent 4 <| D.vcat <| List.map D.dullyellow alts
+                                , List.map D.dullyellow alts |> D.vcat |> D.indent 4
                                 ]
                     )
 
@@ -612,7 +612,7 @@ toReport source err =
                 let
                     suggestions : List String
                     suggestions =
-                        List.take 2 <| Suggest.sort op identity (EverySet.toList compare locals)
+                        Suggest.sort op identity (EverySet.toList compare locals) |> List.take 2
 
                     format : D.Doc -> D.Doc
                     format altOp =
@@ -762,7 +762,7 @@ toReport source err =
                                 else
                                     "these " ++ String.fromInt n ++ " items into a record"
                           in
-                          D.reflow <| "You can put " ++ theseItemsInSomething ++ " to send them out though."
+                          ("You can put " ++ theseItemsInSomething ++ " to send them out though.") |> D.reflow
                         )
 
                     CmdBadMsg ->
@@ -776,7 +776,7 @@ toReport source err =
                         , D.stack
                             [ D.reflow
                                 "To receive messages from JavaScript, you need to define a port like this:"
-                            , D.indent 4 <| D.dullyellow <| D.fromChars <| "port " ++ name ++ " : (Int -> msg) -> Sub msg"
+                            , ("port " ++ name ++ " : (Int -> msg) -> Sub msg") |> D.fromChars |> D.dullyellow |> D.indent 4
                             , D.reflow <|
                                 "Now every time JS sends an `Int` to this port, it is converted to a `msg`. "
                                     ++ "And if you subscribe, those `msg` values will be piped into your `update` function. "
@@ -797,100 +797,102 @@ toReport source err =
             let
                 makeTheory : String -> String -> D.Doc
                 makeTheory question details =
-                    D.fillSep <| List.map (D.dullyellow << D.fromChars) (String.words question) ++ List.map D.fromChars (String.words details)
+                    (List.map (D.dullyellow << D.fromChars) (String.words question) ++ List.map D.fromChars (String.words details)) |> D.fillSep
             in
-            Report.report "CYCLIC DEFINITION" region [] <|
-                Code.toSnippet source region Nothing <|
-                    case names of
-                        [] ->
-                            ( D.reflow <| "The `" ++ name ++ "` value is defined directly in terms of itself, causing an infinite loop."
-                            , D.stack
-                                [ makeTheory "Are you trying to mutate a variable?" <|
-                                    "Elm does not have mutation, so when I see "
-                                        ++ name
-                                        ++ " defined in terms of "
-                                        ++ name
-                                        ++ ", I treat it as a recursive definition. Try giving the new value a new name!"
-                                , makeTheory "Maybe you DO want a recursive value?" <|
-                                    "To define "
-                                        ++ name
-                                        ++ " we need to know what "
-                                        ++ name
-                                        ++ " is, so let's expand it. Wait, but now we need to know what "
-                                        ++ name
-                                        ++ " is, so let's expand it... This will keep going infinitely!"
-                                , D.link "Hint"
-                                    "The root problem is often a typo in some variable name, but I recommend reading"
-                                    "bad-recursion"
-                                    "for more detailed advice, especially if you actually do need a recursive value."
-                                ]
-                            )
+            (case names of
+                [] ->
+                    ( ("The `" ++ name ++ "` value is defined directly in terms of itself, causing an infinite loop.") |> D.reflow
+                    , D.stack
+                        [ makeTheory "Are you trying to mutate a variable?" <|
+                            "Elm does not have mutation, so when I see "
+                                ++ name
+                                ++ " defined in terms of "
+                                ++ name
+                                ++ ", I treat it as a recursive definition. Try giving the new value a new name!"
+                        , makeTheory "Maybe you DO want a recursive value?" <|
+                            "To define "
+                                ++ name
+                                ++ " we need to know what "
+                                ++ name
+                                ++ " is, so let's expand it. Wait, but now we need to know what "
+                                ++ name
+                                ++ " is, so let's expand it... This will keep going infinitely!"
+                        , D.link "Hint"
+                            "The root problem is often a typo in some variable name, but I recommend reading"
+                            "bad-recursion"
+                            "for more detailed advice, especially if you actually do need a recursive value."
+                        ]
+                    )
 
-                        _ :: _ ->
-                            ( D.reflow <| "The `" ++ name ++ "` definition is causing a very tricky infinite loop."
-                            , D.stack
-                                [ D.reflow <| "The `" ++ name ++ "` value depends on itself through the following chain of definitions:"
-                                , D.cycle 4 name names
-                                , D.link "Hint"
-                                    "The root problem is often a typo in some variable name, but I recommend reading"
-                                    "bad-recursion"
-                                    "for more detailed advice, especially if you actually do want mutually recursive values."
-                                ]
-                            )
+                _ :: _ ->
+                    ( ("The `" ++ name ++ "` definition is causing a very tricky infinite loop.") |> D.reflow
+                    , D.stack
+                        [ ("The `" ++ name ++ "` value depends on itself through the following chain of definitions:") |> D.reflow
+                        , D.cycle 4 name names
+                        , D.link "Hint"
+                            "The root problem is often a typo in some variable name, but I recommend reading"
+                            "bad-recursion"
+                            "for more detailed advice, especially if you actually do want mutually recursive values."
+                        ]
+                    )
+            )
+                |> Code.toSnippet source region Nothing
+                |> Report.report "CYCLIC DEFINITION" region []
 
         RecursiveLet (A.At region name) names ->
-            Report.report "CYCLIC VALUE" region [] <|
-                Code.toSnippet source region Nothing <|
-                    case names of
-                        [] ->
-                            let
-                                makeTheory : String -> String -> D.Doc
-                                makeTheory question details =
-                                    D.fillSep <|
-                                        List.map (D.dullyellow << D.fromChars) (String.words question)
-                                            ++ List.map D.fromChars (String.words details)
-                            in
-                            ( D.reflow <| "The `" ++ name ++ "` value is defined directly in terms of itself, causing an infinite loop."
-                            , D.stack
-                                [ makeTheory "Are you trying to mutate a variable?" <|
-                                    "Elm does not have mutation, so when I see "
-                                        ++ name
-                                        ++ " defined in terms of "
-                                        ++ name
-                                        ++ ", I treat it as a recursive definition. Try giving the new value a new name!"
-                                , makeTheory "Maybe you DO want a recursive value?" <|
-                                    "To define "
-                                        ++ name
-                                        ++ " we need to know what "
-                                        ++ name
-                                        ++ " is, so let's expand it. Wait, but now we need to know what "
-                                        ++ name
-                                        ++ " is, so let's expand it... This will keep going infinitely!"
-                                , D.link "Hint"
-                                    "The root problem is often a typo in some variable name, but I recommend reading"
-                                    "bad-recursion"
-                                    "for more detailed advice, especially if you actually do need a recursive value."
-                                ]
-                            )
+            (case names of
+                [] ->
+                    let
+                        makeTheory : String -> String -> D.Doc
+                        makeTheory question details =
+                            D.fillSep <|
+                                List.map (D.dullyellow << D.fromChars) (String.words question)
+                                    ++ List.map D.fromChars (String.words details)
+                    in
+                    ( ("The `" ++ name ++ "` value is defined directly in terms of itself, causing an infinite loop.") |> D.reflow
+                    , D.stack
+                        [ makeTheory "Are you trying to mutate a variable?" <|
+                            "Elm does not have mutation, so when I see "
+                                ++ name
+                                ++ " defined in terms of "
+                                ++ name
+                                ++ ", I treat it as a recursive definition. Try giving the new value a new name!"
+                        , makeTheory "Maybe you DO want a recursive value?" <|
+                            "To define "
+                                ++ name
+                                ++ " we need to know what "
+                                ++ name
+                                ++ " is, so let's expand it. Wait, but now we need to know what "
+                                ++ name
+                                ++ " is, so let's expand it... This will keep going infinitely!"
+                        , D.link "Hint"
+                            "The root problem is often a typo in some variable name, but I recommend reading"
+                            "bad-recursion"
+                            "for more detailed advice, especially if you actually do need a recursive value."
+                        ]
+                    )
 
-                        _ ->
-                            ( D.reflow <| "I do not allow cyclic values in `let` expressions."
-                            , D.stack
-                                [ D.reflow <| "The `" ++ name ++ "` value depends on itself through the following chain of definitions:"
-                                , D.cycle 4 name names
-                                , D.link "Hint"
-                                    "The root problem is often a typo in some variable name, but I recommend reading"
-                                    "bad-recursion"
-                                    "for more detailed advice, especially if you actually do want mutually recursive values."
-                                ]
-                            )
+                _ ->
+                    ( "I do not allow cyclic values in `let` expressions." |> D.reflow
+                    , D.stack
+                        [ ("The `" ++ name ++ "` value depends on itself through the following chain of definitions:") |> D.reflow
+                        , D.cycle 4 name names
+                        , D.link "Hint"
+                            "The root problem is often a typo in some variable name, but I recommend reading"
+                            "bad-recursion"
+                            "for more detailed advice, especially if you actually do want mutually recursive values."
+                        ]
+                    )
+            )
+                |> Code.toSnippet source region Nothing
+                |> Report.report "CYCLIC VALUE" region []
 
         Shadowing name r1 r2 ->
             let
                 advice : D.Doc
                 advice =
                     D.stack
-                        [ D.reflow <| "Think of a more helpful name for one of them and you should be all set!"
+                        [ "Think of a more helpful name for one of them and you should be all set!" |> D.reflow
                         , D.link "Note" "Linters advise against shadowing, so Elm makes “best practices” the default. Read" "shadowing" "for more details on this choice."
                         ]
             in
@@ -901,7 +903,7 @@ toReport source err =
                     ( D.fromChars "These variables cannot have the same name:"
                     , advice
                     )
-                    ( D.reflow <| "The name `" ++ name ++ "` is first defined here:"
+                    ( ("The name `" ++ name ++ "` is first defined here:") |> D.reflow
                     , D.fromChars "But then it is defined AGAIN over here:"
                     , advice
                     )
@@ -913,7 +915,7 @@ toReport source err =
                     Nothing
                     ( D.fromChars "I only accept tuples with two or three items. This has too many:"
                     , D.stack
-                        [ D.reflow <| "I recommend switching to records. Each item will be named, and you can use the `point.x` syntax to access them."
+                        [ "I recommend switching to records. Each item will be named, and you can use the `point.x` syntax to access them." |> D.reflow
                         , D.link "Note" "Read" "tuples" "for more comprehensive advice on working with large chunks of data in Elm."
                         ]
                     )
@@ -983,11 +985,12 @@ toReport source err =
                                     [ D.fromChars "I", D.fromChars "recommend", D.fromChars "removing" ]
                                         ++ stuff
                                         ++ [ D.fromChars "from", D.fromChars "the", D.fromChars "declaration,", D.fromChars "like", D.fromChars "this:" ]
-                                , D.indent 4 <|
-                                    D.hsep <|
-                                        [ D.fromChars "type", D.fromChars "alias", D.green (D.fromName typeName) ]
-                                            ++ List.map D.fromName (List.filter (\var -> not (List.member var allUnusedNames)) allVars)
-                                            ++ [ D.fromChars "=", D.fromChars "..." ]
+                                , ([ D.fromChars "type", D.fromChars "alias", D.green (D.fromName typeName) ]
+                                    ++ List.map D.fromName (List.filter (\var -> not (List.member var allUnusedNames)) allVars)
+                                    ++ [ D.fromChars "=", D.fromChars "..." ]
+                                  )
+                                    |> D.hsep
+                                    |> D.indent 4
                                 , D.reflow <|
                                     "Why? Well, if I allowed `type alias Height a = Float` I would need to answer some weird questions. "
                                         ++ "Is `Height Bool` the same as `Float`? Is `Height Bool` the same as `Height Int`? My solution is to not need to ask them!"
@@ -1076,16 +1079,17 @@ toReport source err =
                         Code.toSnippet source
                             aliasRegion
                             Nothing
-                            ( D.reflow <| "Type alias `" ++ typeName ++ "` has some type variable problems."
+                            ( ("Type alias `" ++ typeName ++ "` has some type variable problems.") |> D.reflow
                             , D.stack
-                                [ D.fillSep <| theseAreUsed ++ butTheseAreUnused
-                                , D.reflow <| "My guess is that a definition like this will work better:"
-                                , D.indent 4 <|
-                                    D.hsep <|
-                                        [ D.fromChars "type", D.fromChars "alias", D.fromName typeName ]
-                                            ++ List.map D.fromName (List.filter (\var -> not (List.member var unused)) allVars)
-                                            ++ List.map (D.green << D.fromName) unbound
-                                            ++ [ D.fromChars "=", D.fromChars "..." ]
+                                [ (theseAreUsed ++ butTheseAreUnused) |> D.fillSep
+                                , "My guess is that a definition like this will work better:" |> D.reflow
+                                , ([ D.fromChars "type", D.fromChars "alias", D.fromName typeName ]
+                                    ++ List.map D.fromName (List.filter (\var -> not (List.member var unused)) allVars)
+                                    ++ List.map (D.green << D.fromName) unbound
+                                    ++ [ D.fromChars "=", D.fromChars "..." ]
+                                  )
+                                    |> D.hsep
+                                    |> D.indent 4
                                 ]
                             )
 
@@ -1140,13 +1144,14 @@ unboundTypeVars source declRegion tipe typeName allVars ( unboundVar, varRegion 
             ( D.fillSep overview
             , D.stack
                 [ D.reflow "You probably need to change the declaration to something like this:"
-                , D.indent 4 <|
-                    D.hsep <|
-                        tipe
-                            ++ D.fromName typeName
-                            :: List.map D.fromName allVars
-                            ++ List.map (D.green << D.fromName) (unboundVar :: List.map Tuple.first unboundVars)
-                            ++ [ D.fromChars "=", D.fromChars "..." ]
+                , (tipe
+                    ++ D.fromName typeName
+                    :: List.map D.fromName allVars
+                    ++ List.map (D.green << D.fromName) (unboundVar :: List.map Tuple.first unboundVars)
+                    ++ [ D.fromChars "=", D.fromChars "..." ]
+                  )
+                    |> D.hsep
+                    |> D.indent 4
                 , D.reflow <|
                     "Why? Well, imagine one `"
                         ++ typeName
@@ -1179,67 +1184,68 @@ ambiguousName source region maybePrefix name h hs thing =
         possibleHomes =
             List.sortWith ModuleName.compareCanonical (h :: OneOrMore.destruct (::) hs)
     in
-    Report.report "AMBIGUOUS NAME" region [] <|
-        Code.toSnippet source region Nothing <|
-            case maybePrefix of
-                Nothing ->
-                    let
-                        homeToYellowDoc : IO.Canonical -> D.Doc
-                        homeToYellowDoc (IO.Canonical _ home) =
-                            D.dullyellow
-                                (D.fromName home
-                                    |> D.a (D.fromChars ".")
-                                    |> D.a (D.fromName name)
-                                )
-                    in
-                    ( D.reflow ("This usage of `" ++ name ++ "` is ambiguous:")
-                    , D.stack
-                        [ D.reflow <|
-                            "This name is exposed by "
-                                ++ String.fromInt (List.length possibleHomes)
-                                ++ " of your imports, so I am not sure which one to use:"
-                        , D.indent 4 <| D.vcat (List.map homeToYellowDoc possibleHomes)
-                        , D.reflow <|
-                            "I recommend using qualified names for imported values. I also recommend having at most one "
-                                ++ "`exposing (..)` per file to make name clashes like this less common in the long run."
-                        , D.link "Note" "Check out" "imports" "for more info on the import syntax."
-                        ]
-                    )
+    (case maybePrefix of
+        Nothing ->
+            let
+                homeToYellowDoc : IO.Canonical -> D.Doc
+                homeToYellowDoc (IO.Canonical _ home) =
+                    D.dullyellow
+                        (D.fromName home
+                            |> D.a (D.fromChars ".")
+                            |> D.a (D.fromName name)
+                        )
+            in
+            ( D.reflow ("This usage of `" ++ name ++ "` is ambiguous:")
+            , D.stack
+                [ D.reflow <|
+                    "This name is exposed by "
+                        ++ String.fromInt (List.length possibleHomes)
+                        ++ " of your imports, so I am not sure which one to use:"
+                , D.vcat (List.map homeToYellowDoc possibleHomes) |> D.indent 4
+                , D.reflow <|
+                    "I recommend using qualified names for imported values. I also recommend having at most one "
+                        ++ "`exposing (..)` per file to make name clashes like this less common in the long run."
+                , D.link "Note" "Check out" "imports" "for more info on the import syntax."
+                ]
+            )
 
-                Just prefix ->
-                    let
-                        homeToYellowDoc : IO.Canonical -> D.Doc
-                        homeToYellowDoc (IO.Canonical _ home) =
-                            if prefix == home then
-                                D.cyan (D.fromChars "import")
-                                    |> D.plus (D.fromName home)
+        Just prefix ->
+            let
+                homeToYellowDoc : IO.Canonical -> D.Doc
+                homeToYellowDoc (IO.Canonical _ home) =
+                    if prefix == home then
+                        D.cyan (D.fromChars "import")
+                            |> D.plus (D.fromName home)
 
-                            else
-                                D.cyan (D.fromChars "import")
-                                    |> D.plus (D.fromName home)
-                                    |> D.plus (D.cyan (D.fromChars "as"))
-                                    |> D.plus (D.fromName prefix)
+                    else
+                        D.cyan (D.fromChars "import")
+                            |> D.plus (D.fromName home)
+                            |> D.plus (D.cyan (D.fromChars "as"))
+                            |> D.plus (D.fromName prefix)
 
-                        eitherOrAny : String
-                        eitherOrAny =
-                            if List.length possibleHomes == 2 then
-                                "either"
+                eitherOrAny : String
+                eitherOrAny =
+                    if List.length possibleHomes == 2 then
+                        "either"
 
-                            else
-                                "any"
-                    in
-                    ( D.reflow ("This usage of `" ++ toQualString prefix name ++ "` is ambiguous.")
-                    , D.stack
-                        [ D.reflow <|
-                            "It could refer to a "
-                                ++ thing
-                                ++ " from "
-                                ++ eitherOrAny
-                                ++ " of these imports:"
-                        , D.indent 4 <| D.vcat (List.map homeToYellowDoc possibleHomes)
-                        , D.reflowLink "Read" "imports" "to learn how to clarify which one you want."
-                        ]
-                    )
+                    else
+                        "any"
+            in
+            ( D.reflow ("This usage of `" ++ toQualString prefix name ++ "` is ambiguous.")
+            , D.stack
+                [ D.reflow <|
+                    "It could refer to a "
+                        ++ thing
+                        ++ " from "
+                        ++ eitherOrAny
+                        ++ " of these imports:"
+                , D.vcat (List.map homeToYellowDoc possibleHomes) |> D.indent 4
+                , D.reflowLink "Read" "imports" "to learn how to clarify which one you want."
+                ]
+            )
+    )
+        |> Code.toSnippet source region Nothing
+        |> Report.report "AMBIGUOUS NAME" region []
 
 
 notFound : Code.Source -> A.Region -> Maybe Name.Name -> Name.Name -> String -> PossibleNames -> Report.Report
@@ -1274,7 +1280,7 @@ notFound source region maybePrefix name thing { locals, quals } =
                 suggestions ->
                     D.stack
                         [ D.reflow yesSuggestionDetails
-                        , D.indent 4 <| D.vcat (List.map D.dullyellow (List.map D.fromChars suggestions))
+                        , D.vcat (List.map D.dullyellow (List.map D.fromChars suggestions)) |> D.indent 4
                         , D.link "Hint" "Read" "imports" "to see how `import` declarations work in Elm."
                         ]
     in
@@ -1323,7 +1329,7 @@ aliasRecursionReport source region name args tipe others =
                     ( D.fromChars "This type alias is recursive, forming an infinite type!"
                     , D.stack
                         [ D.reflow "When I expand a recursive type alias, it just keeps getting bigger and bigger. So dealiasing results in an infinitely large type! Try this instead:"
-                        , D.indent 4 <| aliasToUnionDoc name args tipe
+                        , aliasToUnionDoc name args tipe |> D.indent 4
                         , D.link "Hint" "This is kind of a subtle distinction. I suggested the naive fix, but I recommend reading" "recursive-alias" "for ideas on how to do better."
                         ]
                     )
@@ -1351,8 +1357,8 @@ aliasToUnionDoc name args tipe =
                 |> D.plus (D.fromName name)
                 |> D.plus (List.foldr D.plus (D.fromChars "=") (List.map D.fromName args))
             )
-        , D.green <| D.indent 4 (D.fromChars name)
-        , D.dullyellow <| D.indent 8 (RT.srcToDoc RT.App tipe)
+        , D.indent 4 (D.fromChars name) |> D.green
+        , D.indent 8 (RT.srcToDoc RT.App tipe) |> D.dullyellow
         ]
 
 

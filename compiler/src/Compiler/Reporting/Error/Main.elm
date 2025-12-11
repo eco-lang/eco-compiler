@@ -38,35 +38,35 @@ toReport : L.Localizer -> Code.Source -> Error -> Report.Report
 toReport localizer source err =
     case err of
         BadType region tipe ->
-            Report.report "BAD MAIN TYPE" region [] <|
-                Code.toSnippet source region Nothing <|
-                    ( D.fromChars "I cannot handle this type of `main` value:"
-                    , D.stack
-                        [ D.fromChars "The type of `main` value I am seeing is:"
-                        , D.indent 4 <| D.dullyellow <| RT.canToDoc localizer RT.None tipe
-                        , D.reflow "I only know how to handle Html, Svg, and Programs though. Modify `main` to be one of those types of values!"
-                        ]
-                    )
+            ( D.fromChars "I cannot handle this type of `main` value:"
+            , D.stack
+                [ D.fromChars "The type of `main` value I am seeing is:"
+                , RT.canToDoc localizer RT.None tipe |> D.dullyellow |> D.indent 4
+                , D.reflow "I only know how to handle Html, Svg, and Programs though. Modify `main` to be one of those types of values!"
+                ]
+            )
+                |> Code.toSnippet source region Nothing
+                |> Report.report "BAD MAIN TYPE" region []
 
         BadCycle region name names ->
-            Report.report "BAD MAIN" region [] <|
-                Code.toSnippet source region Nothing <|
-                    ( D.fromChars "A `main` definition cannot be defined in terms of itself."
-                    , D.stack
-                        [ D.reflow "It should be a boring value with no recursion. But instead it is involved in this cycle of definitions:"
-                        , D.cycle 4 name names
-                        ]
-                    )
+            ( D.fromChars "A `main` definition cannot be defined in terms of itself."
+            , D.stack
+                [ D.reflow "It should be a boring value with no recursion. But instead it is involved in this cycle of definitions:"
+                , D.cycle 4 name names
+                ]
+            )
+                |> Code.toSnippet source region Nothing
+                |> Report.report "BAD MAIN" region []
 
         BadFlags region _ invalidPayload ->
             let
                 formatDetails : ( String, D.Doc ) -> Report.Report
                 formatDetails ( aBadKindOfThing, butThatIsNoGood ) =
-                    Report.report "BAD FLAGS" region [] <|
-                        Code.toSnippet source region Nothing <|
-                            ( D.reflow ("Your `main` program wants " ++ aBadKindOfThing ++ " from JavaScript.")
-                            , butThatIsNoGood
-                            )
+                    ( D.reflow ("Your `main` program wants " ++ aBadKindOfThing ++ " from JavaScript.")
+                    , butThatIsNoGood
+                    )
+                        |> Code.toSnippet source region Nothing
+                        |> Report.report "BAD FLAGS" region []
             in
             formatDetails <|
                 case invalidPayload of
@@ -93,8 +93,7 @@ toReport localizer source err =
                         ( "a `" ++ name ++ "` value"
                         , D.stack
                             [ D.reflow "I cannot handle that. The types that CAN be in flags include:"
-                            , D.indent 4 <|
-                                D.reflow "Ints, Floats, Bools, Strings, Maybes, Lists, Arrays, tuples, records, and JSON values."
+                            , D.reflow "Ints, Floats, Bools, Strings, Maybes, Lists, Arrays, tuples, records, and JSON values." |> D.indent 4
                             , D.reflow <|
                                 "Since JSON values can flow through, you can use JSON encoders and decoders to allow other types through as well. "
                                     ++ "More advanced users often just do everything with encoders and decoders for more control and better errors."

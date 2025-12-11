@@ -34,4 +34,4 @@ rank target toString values =
         addRank v =
             ( toRank v, v )
     in
-    List.sortBy Tuple.first (List.map addRank values)
+    List.map addRank values |> List.sortBy Tuple.first

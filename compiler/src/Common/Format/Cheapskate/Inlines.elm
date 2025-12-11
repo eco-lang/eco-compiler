@@ -277,7 +277,7 @@ pLinkTitle =
 
                                 pEnder : Parser Char
                                 pEnder =
-                                    andThen (\_ -> char ender) (nfb (skip Char.isAlphaNum))
+                                    skip Char.isAlphaNum |> nfb |> andThen (\_ -> char ender)
 
                                 regChunk : Parser String
                                 regChunk =
@@ -436,7 +436,7 @@ pSym =
                 let
                     ch : Char -> List Inline
                     ch =
-                        List.singleton << Str << String.fromChar
+                        String.fromChar >> Str >> List.singleton
                 in
                 if c == '\\' then
                     oneOf (map ch (satisfy isEscapable))
@@ -992,7 +992,7 @@ autoLink t =
                     r
 
                 Err e ->
-                    crash <| "autolink: " ++ showParseError e
+                    ("autolink: " ++ showParseError e) |> crash
 
         pToInlines : Parser Inlines
         pToInlines =
@@ -1003,7 +1003,7 @@ autoLink t =
             oneOf (map (List.singleton << Str) (takeWhile1 ((/=) '&')))
                 (oneOf pEntity (map (List.singleton << Str) (string "&")))
     in
-    List.singleton <| Link (toInlines t) (Url t) ""
+    Link (toInlines t) (Url t) "" |> List.singleton
 
 
 emailLink : String -> Inlines

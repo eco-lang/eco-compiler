@@ -66,7 +66,7 @@ detectLocated toError dict =
             Utils.mapMapMaybe identity compare extractLocation dict
     in
     dict
-        |> Utils.mapMapKeys A.toValue compare (\k -> A.At (Maybe.withDefault A.zero <| Dict.get identity k nameLocations) k)
+        |> Utils.mapMapKeys A.toValue compare (\k -> A.At (Dict.get identity k nameLocations |> Maybe.withDefault A.zero) k)
         |> ReportingResult.mapTraverseWithKey A.toValue A.compareLocated (\(A.At _ name) values -> detectHelp toError name values)
 
 

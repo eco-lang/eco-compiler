@@ -255,8 +255,7 @@ constrainEffects home r0 r1 r2 manager =
                                                                                                     checkMap "subMap" home sub CSaveTheEnvironment
 
                                                                                                 Can.Fx cmd sub ->
-                                                                                                    IO.andThen (checkMap "cmdMap" home cmd)
-                                                                                                        (checkMap "subMap" home sub CSaveTheEnvironment)
+                                                                                                    checkMap "subMap" home sub CSaveTheEnvironment |> IO.andThen (checkMap "cmdMap" home cmd)
                                                                                             )
                                                                                     )
                                                                         )

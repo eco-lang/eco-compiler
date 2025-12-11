@@ -70,8 +70,7 @@ collectVars (Src.Module srcData) =
             in
             Dups.insert name region (Env.TopLevel region)
     in
-    Dups.detect Error.DuplicateDecl <|
-        List.foldl addDecl (toEffectDups srcData.effects) srcData.values
+    List.foldl addDecl (toEffectDups srcData.effects) srcData.values |> Dups.detect Error.DuplicateDecl
 
 
 toEffectDups : Src.Effects -> Dups.Tracker Env.Var
@@ -129,7 +128,7 @@ addTypes (Src.Module srcData) env =
         |> ReportingResult.andThen
             (\_ ->
                 Utils.foldM (addUnion env.home) env.types srcData.unions
-                    |> ReportingResult.andThen (\ts1 -> addAliases srcData.syntaxVersion srcData.aliases <| { env | types = ts1 })
+                    |> ReportingResult.andThen (\ts1 -> { env | types = ts1 } |> addAliases srcData.syntaxVersion srcData.aliases)
             )
 
 
@@ -294,8 +293,7 @@ checkUnionFreeVars (A.At unionRegion (Src.Union ( _, A.At _ name ) args ctors)) 
                         ReportingResult.ok (List.length args)
 
                     unbound :: unbounds ->
-                        ReportingResult.throw <|
-                            Error.TypeVarsUnboundInUnion unionRegion name (List.map (Src.c1Value >> A.toValue) args) unbound unbounds
+                        Error.TypeVarsUnboundInUnion unionRegion name (List.map (Src.c1Value >> A.toValue) args) unbound unbounds |> ReportingResult.throw
             )
 
 
@@ -493,9 +491,7 @@ canonicalizeCtor syntaxVersion env index ( A.At region ctor, tipes ) =
     ReportingResult.traverse (Type.canonicalize syntaxVersion env) tipes
         |> ReportingResult.andThen
             (\ctipes ->
-                ReportingResult.ok <|
-                    A.At region <|
-                        Can.Ctor { name = ctor, index = index, numArgs = List.length ctipes, args = ctipes }
+                Can.Ctor { name = ctor, index = index, numArgs = List.length ctipes, args = ctipes } |> A.At region |> ReportingResult.ok
             )
 
 
@@ -515,6 +511,4 @@ toOpts ctors =
 
 toCtor : IO.Canonical -> Name.Name -> Can.Union -> A.Located Can.Ctor -> CtorDups
 toCtor home typeName union (A.At region (Can.Ctor c)) =
-    Dups.one c.name region <|
-        Env.Specific home <|
-            Env.Ctor home typeName union c.index c.args
+    Env.Ctor home typeName union c.index c.args |> Env.Specific home |> Dups.one c.name region

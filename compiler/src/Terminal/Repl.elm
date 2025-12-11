@@ -458,7 +458,7 @@ startsWithColon lines =
 
 toCommand : Lines -> Input
 toCommand lines =
-    case String.fromList <| List.drop 1 <| List.dropWhile ((==) ' ') (String.toList (getFirstLine lines)) of
+    case List.dropWhile ((==) ' ') (String.toList (getFirstLine lines)) |> List.drop 1 |> String.fromList of
         "reset" ->
             Reset
 
@@ -799,18 +799,18 @@ writeTempOutlineAndReturnRoot root =
 
 writeTempOutline : FilePath -> Task Never ()
 writeTempOutline root =
-    Outline.write root <|
-        Outline.Pkg <|
-            Outline.PkgOutline
-                { name = Pkg.dummyName
-                , summary = Outline.defaultSummary
-                , license = Licenses.bsd3
-                , version = V.one
-                , exposed = Outline.ExposedList []
-                , deps = defaultDeps
-                , testDeps = Map.empty
-                , elm = C.defaultElm
-                }
+    Outline.PkgOutline
+        { name = Pkg.dummyName
+        , summary = Outline.defaultSummary
+        , license = Licenses.bsd3
+        , version = V.one
+        , exposed = Outline.ExposedList []
+        , deps = defaultDeps
+        , testDeps = Map.empty
+        , elm = C.defaultElm
+        }
+        |> Outline.Pkg
+        |> Outline.write root
 
 
 defaultDeps : Dict ( String, String ) Pkg.Name C.Constraint
@@ -897,10 +897,7 @@ lookupCompletions string =
     State.get
         |> State.map
             (\(IO.ReplState imports types decls) ->
-                addMatches string False decls <|
-                    addMatches string False types <|
-                        addMatches string True imports <|
-                            addMatches string False commands []
+                addMatches string False commands [] |> addMatches string True imports |> addMatches string False types |> addMatches string False decls
             )
 
 

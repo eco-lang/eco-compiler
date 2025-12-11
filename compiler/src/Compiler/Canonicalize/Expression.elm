@@ -184,7 +184,7 @@ canonicalizeTupleExtras syntaxVersion region env extras =
             ReportingResult.ok []
 
         [ three ] ->
-            ReportingResult.map List.singleton <| canonicalize syntaxVersion env three
+            canonicalize syntaxVersion env three |> ReportingResult.map List.singleton
 
         _ ->
             case syntaxVersion of
@@ -241,10 +241,10 @@ canonicalizeBinops syntaxVersion overallRegion env ops final =
             ReportingResult.map Tuple.pair (canonicalize syntaxVersion env expr)
                 |> ReportingResult.apply (Env.findBinop region env op)
     in
-    ReportingResult.andThen (runBinopStepper overallRegion)
-        (ReportingResult.map More (ReportingResult.traverse canonicalizeHelp ops)
-            |> ReportingResult.apply (canonicalize syntaxVersion env final)
-        )
+    (ReportingResult.map More (ReportingResult.traverse canonicalizeHelp ops)
+        |> ReportingResult.apply (canonicalize syntaxVersion env final)
+    )
+        |> ReportingResult.andThen (runBinopStepper overallRegion)
 
 
 type Step
@@ -263,8 +263,7 @@ runBinopStepper overallRegion step =
             ReportingResult.ok expr
 
         More (( expr, op ) :: rest) final ->
-            runBinopStepper overallRegion <|
-                toBinopStep (toBinop op expr) op rest final
+            toBinopStep (toBinop op expr) op rest final |> runBinopStepper overallRegion
 
         Error (Env.Binop binopData1) (Env.Binop binopData2) ->
             ReportingResult.throw (Error.Binop overallRegion binopData1.op binopData2.op)
@@ -311,7 +310,7 @@ toBinopStep makeBinop ((Env.Binop rootBinopData) as rootOp) middle final =
                         toBinopStep (toBinop op (makeBinop expr)) op rest final
 
                     ( Binop.Right, Binop.Right ) ->
-                        toBinopStep (makeBinop << toBinop op expr) op rest final
+                        toBinopStep (toBinop op expr >> makeBinop) op rest final
 
                     _ ->
                         Error rootOp op
@@ -394,8 +393,7 @@ addBindingsHelp andThenings (A.At region pattern) =
             addBindingsHelp (addBindingsHelp andThenings hd) tl
 
         Src.PAlias ( _, aliasPattern ) ( _, A.At nameRegion name ) ->
-            Dups.insert name nameRegion nameRegion <|
-                addBindingsHelp andThenings aliasPattern
+            addBindingsHelp andThenings aliasPattern |> Dups.insert name nameRegion nameRegion
 
         Src.PChr _ ->
             andThenings
@@ -607,8 +605,7 @@ gatherTypedArgs syntaxVersion env name srcArgs tipe index revTypedArgs =
                     Pattern.canonicalize syntaxVersion env srcArg
                         |> ReportingResult.andThen
                             (\arg ->
-                                gatherTypedArgs syntaxVersion env name otherSrcArgs resultType (Index.next index) <|
-                                    (( arg, argType ) :: revTypedArgs)
+                                (( arg, argType ) :: revTypedArgs) |> gatherTypedArgs syntaxVersion env name otherSrcArgs resultType (Index.next index)
                             )
 
                 _ ->
@@ -766,8 +763,7 @@ verifyBindings context andThenings (ReportingResult.RResult k) =
                                 warnings1
 
                             else
-                                Dict.foldl compare (addUnusedWarning context) warnings1 <|
-                                    Dict.diff andThenings freeLocals
+                                Dict.diff andThenings freeLocals |> Dict.foldl compare (addUnusedWarning context) warnings1
                     in
                     ReportingResult.ROk info warnings2 ( value, outerFreeLocals )
 
@@ -868,7 +864,7 @@ findVarQual region env prefix name =
                     env.home
             in
             if Name.isKernel prefix && Pkg.isKernel pkg then
-                ReportingResult.ok <| Can.VarKernel (Name.getKernel prefix) name
+                Can.VarKernel (Name.getKernel prefix) name |> ReportingResult.ok
 
             else
                 ReportingResult.throw (Error.NotFoundVar region (Just prefix) name (toPossibleNames env.vars env.q_vars))

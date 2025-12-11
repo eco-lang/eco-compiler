@@ -96,18 +96,18 @@ andThen : (a -> Unify b) -> Unify a -> Unify b
 andThen callback (Unify ka) =
     Unify <|
         \vars ->
-            IO.andThen
-                (\result ->
-                    case result of
-                        Ok (UnifyOk vars1 a) ->
-                            case callback a of
-                                Unify kb ->
-                                    kb vars1
+            ka vars
+                |> IO.andThen
+                    (\result ->
+                        case result of
+                            Ok (UnifyOk vars1 a) ->
+                                case callback a of
+                                    Unify kb ->
+                                        kb vars1
 
-                        Err err ->
-                            IO.pure (Err err)
-                )
-                (ka vars)
+                            Err err ->
+                                IO.pure (Err err)
+                    )
 
 
 register : IO IO.Variable -> Unify IO.Variable
@@ -185,9 +185,7 @@ fresh (Context props) content =
         (IO.Descriptor desc2Props) =
             props.desc2
     in
-    register <|
-        UF.fresh <|
-            IO.makeDescriptor content (min desc1Props.rank desc2Props.rank) Type.noMark Nothing
+    IO.makeDescriptor content (min desc1Props.rank desc2Props.rank) Type.noMark Nothing |> UF.fresh |> register
 
 
 
@@ -404,7 +402,7 @@ unifyFlexSuper ((Context props) as ctx) super content otherContent =
                             merge ctx otherContent
 
                         IO.Appendable ->
-                            merge ctx <| Type.unnamedFlexSuper IO.CompAppend
+                            Type.unnamedFlexSuper IO.CompAppend |> merge ctx
 
                         IO.CompAppend ->
                             merge ctx otherContent
@@ -415,7 +413,7 @@ unifyFlexSuper ((Context props) as ctx) super content otherContent =
                             merge ctx otherContent
 
                         IO.Comparable ->
-                            merge ctx <| Type.unnamedFlexSuper IO.CompAppend
+                            Type.unnamedFlexSuper IO.CompAppend |> merge ctx
 
                         IO.CompAppend ->
                             merge ctx otherContent

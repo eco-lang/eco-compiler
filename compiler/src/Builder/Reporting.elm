@@ -577,7 +577,7 @@ toGenDiagram (NE.Nonempty name names) output =
     let
         width : Int
         width =
-            3 + List.foldr (max << String.length) (String.length name) names
+            3 + List.foldr (String.length >> max) (String.length name) names
     in
     case names of
         [] ->

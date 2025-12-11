@@ -40,7 +40,7 @@ nodeHasDebug node =
             False
 
         Opt.Cycle _ vs fs _ ->
-            List.any (hasDebug << Tuple.second) vs || List.any defHasDebug fs
+            List.any (Tuple.second >> hasDebug) vs || List.any defHasDebug fs
 
         Opt.Manager _ ->
             False
@@ -110,7 +110,7 @@ hasDebug expression =
             hasDebug e || List.any hasDebug es
 
         Opt.TailCall _ args ->
-            List.any (hasDebug << Tuple.second) args
+            List.any (Tuple.second >> hasDebug) args
 
         Opt.If conds finally ->
             List.any (\( c, e ) -> hasDebug c || hasDebug e) conds || hasDebug finally
@@ -122,7 +122,7 @@ hasDebug expression =
             hasDebug expr
 
         Opt.Case _ _ d jumps ->
-            deciderHasDebug d || List.any (hasDebug << Tuple.second) jumps
+            deciderHasDebug d || List.any (Tuple.second >> hasDebug) jumps
 
         Opt.Accessor _ _ ->
             False
@@ -172,4 +172,4 @@ deciderHasDebug decider =
             deciderHasDebug success || deciderHasDebug failure
 
         Opt.FanOut _ tests fallback ->
-            List.any (deciderHasDebug << Tuple.second) tests || deciderHasDebug fallback
+            List.any (Tuple.second >> deciderHasDebug) tests || deciderHasDebug fallback

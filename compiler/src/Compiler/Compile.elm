@@ -117,7 +117,7 @@ canonicalize pkg ifaces modul =
 
 typeCheck : Src.Module -> Can.Module -> Result E.Error (Dict String Name Can.Annotation)
 typeCheck modul canonical =
-    case TypeCheck.unsafePerformIO (TypeCheck.andThen Type.run (Type.constrain canonical)) of
+    case Type.constrain canonical |> TypeCheck.andThen Type.run |> TypeCheck.unsafePerformIO of
         Ok annotations ->
             Ok annotations
 

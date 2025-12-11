@@ -195,4 +195,4 @@ timeEncoder (Time posix) =
 
 timeDecoder : Bytes.Decode.Decoder Time
 timeDecoder =
-    Bytes.Decode.map (Time << Time.millisToPosix) BD.int
+    Bytes.Decode.map (Time.millisToPosix >> Time) BD.int

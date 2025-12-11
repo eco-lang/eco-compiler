@@ -207,7 +207,7 @@ parseAndValidateOutline : FilePath -> String -> Task Never (Result Exit.Outline 
 parseAndValidateOutline root bytes =
     case D.fromByteString decoder bytes of
         Err err ->
-            Task.succeed <| Err (Exit.OutlineHasBadStructure err)
+            Err (Exit.OutlineHasBadStructure err) |> Task.succeed
 
         Ok outline ->
             validateOutline root outline
@@ -236,10 +236,10 @@ validatePkgOutline pkg deps outline =
 validateAppOutline : FilePath -> NE.Nonempty SrcDir -> Dict ( String, String ) Pkg.Name a -> Dict ( String, String ) Pkg.Name b -> Outline -> Task Never (Result Exit.Outline Outline)
 validateAppOutline root srcDirs direct indirect outline =
     if not (Dict.member identity Pkg.core direct) then
-        Task.succeed <| Err Exit.OutlineNoAppCore
+        Err Exit.OutlineNoAppCore |> Task.succeed
 
     else if not (Dict.member identity Pkg.json direct) && not (Dict.member identity Pkg.json indirect) then
-        Task.succeed <| Err Exit.OutlineNoAppJson
+        Err Exit.OutlineNoAppJson |> Task.succeed
 
     else
         Utils.filterM (isSrcDirMissing root) (NE.toList srcDirs)
@@ -250,7 +250,7 @@ checkSrcDirsAndDuplicates : FilePath -> NE.Nonempty SrcDir -> Outline -> List Sr
 checkSrcDirsAndDuplicates root srcDirs outline badDirs =
     case List.map toGiven badDirs of
         d :: ds ->
-            Task.succeed <| Err (Exit.OutlineHasMissingSrcDirs d ds)
+            Err (Exit.OutlineHasMissingSrcDirs d ds) |> Task.succeed
 
         [] ->
             detectDuplicates root (NE.toList srcDirs)
@@ -297,9 +297,7 @@ detectDuplicates root srcDirs =
     Utils.listTraverse (toPair root) srcDirs
         |> Task.map
             (\pairs ->
-                Utils.mapLookupMin <|
-                    Utils.mapMapMaybe identity compare isDup <|
-                        Utils.mapFromListWith identity OneOrMore.more pairs
+                Utils.mapFromListWith identity OneOrMore.more pairs |> Utils.mapMapMaybe identity compare isDup |> Utils.mapLookupMin
             )
 
 

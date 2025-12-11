@@ -270,11 +270,12 @@ cycle indent_ name names =
         toLn n =
             P.append cycleLn (P.dullyellow (fromName n))
     in
-    P.indent indent_ <|
-        P.vcat <|
-            cycleTop
-                :: List.intersperse cycleMid (toLn name :: List.map toLn names)
-                ++ [ cycleEnd ]
+    (cycleTop
+        :: List.intersperse cycleMid (toLn name :: List.map toLn names)
+        ++ [ cycleEnd ]
+    )
+        |> P.vcat
+        |> P.indent indent_
 
 
 cycleTop : Doc

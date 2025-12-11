@@ -92,7 +92,7 @@ formatMarkdown_ formatCode isListItem needsInitialBlanks needsTrailingBlanks blo
      else
         ""
     )
-        ++ (String.concat <| intersperse <| mapWithPrev (\prev -> formatMardownBlock formatCode (contextFor prev)) blocks)
+        ++ (mapWithPrev (\prev -> formatMardownBlock formatCode (contextFor prev)) blocks |> intersperse |> String.concat)
         ++ (if needsTrailingBlanks then
                 "\n"
 
@@ -110,40 +110,38 @@ formatMardownBlock : (String -> Maybe String) -> Context -> Block -> String
 formatMardownBlock formatCode context block =
     case block of
         ElmDocs terms ->
-            (String.join "\n" <| List.map (\term -> "@docs " ++ String.join ", " term) terms) ++ "\n"
+            (List.map (\term -> "@docs " ++ String.join ", " term) terms |> String.join "\n") ++ "\n"
 
         Para inlines ->
-            (String.concat <| List.map (formatMarkdownInline True) inlines) ++ "\n"
+            (List.map (formatMarkdownInline True) inlines |> String.concat) ++ "\n"
 
         Header level inlines ->
-            "\n" ++ String.repeat level "#" ++ " " ++ (String.concat <| List.map (formatMarkdownInline True) inlines) ++ "\n"
+            "\n" ++ String.repeat level "#" ++ " " ++ (List.map (formatMarkdownInline True) inlines |> String.concat) ++ "\n"
 
         Blockquote blocks ->
             formatMarkdown_ formatCode False False False blocks
                 |> prefix_ "> " "> "
 
         List tight (Bullet _) items ->
-            String.concat <|
-                (if tight then
-                    identity
+            List.map (prefix_ "  - " "    " << formatMarkdown_ formatCode True False False) items
+                |> (if tight then
+                        identity
 
-                 else
-                    List.intersperse "\n"
-                )
-                <|
-                    List.map (prefix_ "  - " "    " << formatMarkdown_ formatCode True False False) items
+                    else
+                        List.intersperse "\n"
+                   )
+                |> String.concat
 
         List tight (Numbered _ _) items ->
-            String.concat <|
-                (if tight then
-                    identity
+            List.indexedMap Tuple.pair items
+                |> List.map (formatListItem formatCode)
+                |> (if tight then
+                        identity
 
-                 else
-                    List.intersperse "\n"
-                )
-                <|
-                    List.map (formatListItem formatCode) <|
-                        List.indexedMap Tuple.pair items
+                    else
+                        List.intersperse "\n"
+                   )
+                |> String.concat
 
         CodeBlock (CodeAttr { codeLang }) code ->
             let
@@ -178,7 +176,7 @@ formatMardownBlock formatCode context block =
                             False
             in
             if isElm && canIndent then
-                Utils.unlines <| List.map (\line -> "    " ++ line) <| lines formatted
+                lines formatted |> List.map (\line -> "    " ++ line) |> Utils.unlines
 
             else
                 "```" ++ codeLang ++ "\n" ++ formatted ++ "```\n"
@@ -190,7 +188,7 @@ formatMardownBlock formatCode context block =
             "---\n"
 
         ReferencesBlock refs ->
-            String.concat <| List.map formatRef refs
+            List.map formatRef refs |> String.concat
 
 
 lines : String -> List String
@@ -214,7 +212,7 @@ formatListItem formatCode ( i, item ) =
             else
                 String.fromInt i ++ ". "
     in
-    prefix_ pref "    " <| formatMarkdown_ formatCode True False False item
+    formatMarkdown_ formatCode True False False item |> prefix_ pref "    "
 
 
 formatRef : ( String, String, String ) -> String
@@ -234,7 +232,7 @@ formatRef ( label, url, title ) =
 
 prefix_ : String -> String -> String -> String
 prefix_ preFirst preRest =
-    Utils.unlines << prefix preFirst preRest << lines
+    lines >> prefix preFirst preRest >> Utils.unlines
 
 
 prefix : String -> String -> List String -> List String
@@ -280,7 +278,7 @@ formatMarkdownInline fixSpecialChars inline =
     case inline of
         Str text ->
             (if fixSpecialChars then
-                String.concat << List.map fix << String.toList
+                String.toList >> List.map fix >> String.concat
 
              else
                 identity
@@ -297,11 +295,11 @@ formatMarkdownInline fixSpecialChars inline =
             "\n"
 
         Emph inlines ->
-            "_" ++ (String.concat <| List.map (formatMarkdownInline True) <| inlines) ++ "_"
+            "_" ++ (inlines |> List.map (formatMarkdownInline True) |> String.concat) ++ "_"
 
         -- TODO: escaping
         Strong inlines ->
-            "**" ++ (String.concat <| List.map (formatMarkdownInline True) <| inlines) ++ "**"
+            "**" ++ (inlines |> List.map (formatMarkdownInline True) |> String.concat) ++ "**"
 
         -- TODO: escaping
         Code text ->
@@ -321,7 +319,7 @@ formatMarkdownInline fixSpecialChars inline =
             let
                 textRaw : String
                 textRaw =
-                    String.concat <| List.map (formatMarkdownInline False) inlines
+                    List.map (formatMarkdownInline False) inlines |> String.concat
 
                 isValidAutolink : String -> Bool
                 isValidAutolink =
@@ -338,7 +336,7 @@ formatMarkdownInline fixSpecialChars inline =
                 let
                     text : String
                     text =
-                        String.concat <| List.map (formatMarkdownInline fixSpecialChars) inlines
+                        List.map (formatMarkdownInline fixSpecialChars) inlines |> String.concat
                 in
                 "["
                     ++ text
@@ -356,7 +354,7 @@ formatMarkdownInline fixSpecialChars inline =
             let
                 text : String
                 text =
-                    String.concat <| List.map (formatMarkdownInline fixSpecialChars) inlines
+                    List.map (formatMarkdownInline fixSpecialChars) inlines |> String.concat
             in
             if text == ref || ref == "" then
                 "[" ++ text ++ "]"
@@ -366,7 +364,7 @@ formatMarkdownInline fixSpecialChars inline =
 
         Image inlines url title ->
             "!["
-                ++ (String.concat <| List.map (formatMarkdownInline fixSpecialChars) inlines)
+                ++ (List.map (formatMarkdownInline fixSpecialChars) inlines |> String.concat)
                 ++ "]("
                 ++ url
                 ++ (if title == "" then

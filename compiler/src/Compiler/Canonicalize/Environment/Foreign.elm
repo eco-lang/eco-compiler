@@ -134,11 +134,11 @@ addImport ifaces state (Src.Import ( _, A.At _ name ) maybeAlias ( _, exposing_ 
 
         types : Dict String Name (Env.Info Env.Type)
         types =
-            Dict.map (\_ -> Env.Specific home << Tuple.first) rawTypeInfo
+            Dict.map (\_ -> Tuple.first >> Env.Specific home) rawTypeInfo
 
         ctors : Env.Exposed Env.Ctor
         ctors =
-            Dict.foldr compare (\_ -> addExposed << Tuple.second) Dict.empty rawTypeInfo
+            Dict.foldr compare (\_ -> Tuple.second >> addExposed) Dict.empty rawTypeInfo
 
         qvs2 : Env.Qualified Can.Annotation
         qvs2 =
@@ -304,10 +304,10 @@ addExposedValue home vars types binops state exposed =
                         Nothing ->
                             case checkForCtorMistake name types of
                                 tipe :: _ ->
-                                    ReportingResult.throw <| Error.ImportCtorByName region name tipe
+                                    Error.ImportCtorByName region name tipe |> ReportingResult.throw
 
                                 [] ->
-                                    ReportingResult.throw <| Error.ImportExposingNotFound region home name (Dict.keys compare types)
+                                    Error.ImportExposingNotFound region home name (Dict.keys compare types) |> ReportingResult.throw
 
                 Src.Public dotDotRegion ->
                     case Dict.get identity name types of

@@ -45,8 +45,7 @@ type alias ShortFieldNames =
 
 shortenFieldNames : Opt.GlobalGraph -> ShortFieldNames
 shortenFieldNames (Opt.GlobalGraph _ frequencies) =
-    Dict.foldr compare (\_ -> addToShortNames) Dict.empty <|
-        Dict.foldr compare addToBuckets Dict.empty frequencies
+    Dict.foldr compare addToBuckets Dict.empty frequencies |> Dict.foldr compare (\_ -> addToShortNames) Dict.empty
 
 
 addToBuckets : Name.Name -> Int -> Dict Int Int (List Name.Name) -> Dict Int Int (List Name.Name)

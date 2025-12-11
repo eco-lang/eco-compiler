@@ -268,54 +268,53 @@ encodeTuple a b cs =
                 Names.registerGlobal A.zero ModuleName.basics Name.identity_ identityType
                     |> Names.andThen
                         (\identity ->
-                            Names.andThen
-                                (\arg1 ->
-                                    Names.andThen
-                                        (\arg2 ->
-                                            let
-                                                ( _, indexedCs ) =
-                                                    List.foldl (\( i, cType ) ( index, acc ) -> ( Index.next index, ( i, index, cType ) :: acc ))
-                                                        ( Index.third, [] )
-                                                        (List.indexedMap Tuple.pair cs)
-                                                        |> Tuple.mapSecond List.reverse
-                                            in
-                                            List.foldl
-                                                (\( _, i, elemType ) acc ->
-                                                    Names.andThen (\encodedArg -> Names.map (flip (++) [ encodedArg ]) acc)
-                                                        (encodeArg (JsName.fromIndex i) elemType)
-                                                )
-                                                (Names.pure [ arg1, arg2 ])
-                                                indexedCs
-                                                |> Names.map
-                                                    (\args ->
-                                                        let
-                                                            listType : Can.Type
-                                                            listType =
-                                                                Can.TType ModuleName.list "List" [ jsonValueType ]
+                            encodeArg "a" a
+                                |> Names.andThen
+                                    (\arg1 ->
+                                        encodeArg "b" b
+                                            |> Names.andThen
+                                                (\arg2 ->
+                                                    let
+                                                        ( _, indexedCs ) =
+                                                            List.foldl (\( i, cType ) ( index, acc ) -> ( Index.next index, ( i, index, cType ) :: acc ))
+                                                                ( Index.third, [] )
+                                                                (List.indexedMap Tuple.pair cs)
+                                                                |> Tuple.mapSecond List.reverse
+                                                    in
+                                                    List.foldl
+                                                        (\( _, i, elemType ) acc ->
+                                                            encodeArg (JsName.fromIndex i) elemType |> Names.andThen (\encodedArg -> Names.map (flip (++) [ encodedArg ]) acc)
+                                                        )
+                                                        (Names.pure [ arg1, arg2 ])
+                                                        indexedCs
+                                                        |> Names.map
+                                                            (\args ->
+                                                                let
+                                                                    listType : Can.Type
+                                                                    listType =
+                                                                        Can.TType ModuleName.list "List" [ jsonValueType ]
 
-                                                            funcType : Can.Type
-                                                            funcType =
-                                                                Can.TLambda tupleType jsonValueType
-                                                        in
-                                                        TOpt.Function [ ( Name.dollar, tupleType ) ]
-                                                            (let_ "a"
-                                                                Index.first
-                                                                a
-                                                                (let_ "b"
-                                                                    Index.second
-                                                                    b
-                                                                    (List.foldr (\( i, index, elemType ) -> letCs_ (JsName.fromIndex index) i elemType)
-                                                                        (TOpt.Call A.zero list [ identity, TOpt.List A.zero args listType ] jsonValueType)
-                                                                        indexedCs
+                                                                    funcType : Can.Type
+                                                                    funcType =
+                                                                        Can.TLambda tupleType jsonValueType
+                                                                in
+                                                                TOpt.Function [ ( Name.dollar, tupleType ) ]
+                                                                    (let_ "a"
+                                                                        Index.first
+                                                                        a
+                                                                        (let_ "b"
+                                                                            Index.second
+                                                                            b
+                                                                            (List.foldr (\( i, index, elemType ) -> letCs_ (JsName.fromIndex index) i elemType)
+                                                                                (TOpt.Call A.zero list [ identity, TOpt.List A.zero args listType ] jsonValueType)
+                                                                                indexedCs
+                                                                            )
+                                                                        )
                                                                     )
-                                                                )
+                                                                    funcType
                                                             )
-                                                            funcType
-                                                    )
-                                        )
-                                        (encodeArg "b" b)
-                                )
-                                (encodeArg "a" a)
+                                                )
+                                    )
                         )
             )
 

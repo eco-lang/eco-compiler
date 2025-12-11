@@ -34,8 +34,7 @@ backend : CodeGen.TypedCodeGen
 backend =
     { generate =
         \config ->
-            CodeGen.TextOutput <|
-                generateModule config.mode config.graph config.mains
+            generateModule config.mode config.graph config.mains |> CodeGen.TextOutput
     }
 
 

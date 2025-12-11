@@ -363,8 +363,7 @@ destructHelp path (A.At region pattern) revDs =
             Names.registerFieldList fields (List.map toDestruct fields ++ revDs)
 
         Can.PAlias subPattern name ->
-            destructHelp (Opt.Root name) subPattern <|
-                (Opt.Destructor name path :: revDs)
+            (Opt.Destructor name path :: revDs) |> destructHelp (Opt.Root name) subPattern
 
         Can.PUnit ->
             Names.pure revDs
@@ -674,7 +673,7 @@ hasTailCall expression =
             True
 
         Opt.If branches finally ->
-            hasTailCall finally || List.any (hasTailCall << Tuple.second) branches
+            hasTailCall finally || List.any (Tuple.second >> hasTailCall) branches
 
         Opt.Let _ body ->
             hasTailCall body
@@ -683,7 +682,7 @@ hasTailCall expression =
             hasTailCall body
 
         Opt.Case _ _ decider jumps ->
-            decidecHasTailCall decider || List.any (hasTailCall << Tuple.second) jumps
+            decidecHasTailCall decider || List.any (Tuple.second >> hasTailCall) jumps
 
         _ ->
             False
@@ -704,4 +703,4 @@ decidecHasTailCall decider =
             decidecHasTailCall success || decidecHasTailCall failure
 
         Opt.FanOut _ tests fallback ->
-            decidecHasTailCall fallback || List.any (decidecHasTailCall << Tuple.second) tests
+            decidecHasTailCall fallback || List.any (Tuple.second >> decidecHasTailCall) tests

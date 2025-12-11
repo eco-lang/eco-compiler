@@ -525,7 +525,7 @@ chr2 src pos firstWord =
 
         c1 : Int
         c1 =
-            Bitwise.shiftLeftBy 6 (i1 - 0xC0)
+            (i1 - 0xC0) |> Bitwise.shiftLeftBy 6
 
         c2 : Int
         c2 =
@@ -551,11 +551,11 @@ chr3 src pos firstWord =
 
         c1 : Int
         c1 =
-            Bitwise.shiftLeftBy 12 (i1 - 0xE0)
+            (i1 - 0xE0) |> Bitwise.shiftLeftBy 12
 
         c2 : Int
         c2 =
-            Bitwise.shiftLeftBy 6 (i2 - 0x80)
+            (i2 - 0x80) |> Bitwise.shiftLeftBy 6
 
         c3 : Int
         c3 =
@@ -585,15 +585,15 @@ chr4 src pos firstWord =
 
         c1 : Int
         c1 =
-            Bitwise.shiftLeftBy 18 (i1 - 0xF0)
+            (i1 - 0xF0) |> Bitwise.shiftLeftBy 18
 
         c2 : Int
         c2 =
-            Bitwise.shiftLeftBy 12 (i2 - 0x80)
+            (i2 - 0x80) |> Bitwise.shiftLeftBy 12
 
         c3 : Int
         c3 =
-            Bitwise.shiftLeftBy 6 (i3 - 0x80)
+            (i3 - 0x80) |> Bitwise.shiftLeftBy 6
 
         c4 : Int
         c4 =

@@ -240,7 +240,7 @@ lookupMain pkg locals root =
     in
     case root of
         Build.Inside name ->
-            Maybe.andThen (toPair name) (Dict.get identity name locals)
+            Dict.get identity name locals |> Maybe.andThen (toPair name)
 
         Build.Outside name _ g _ ->
             toPair name g
@@ -553,7 +553,7 @@ lookupTypedMain pkg locals root =
     in
     case root of
         Build.Inside name ->
-            Maybe.andThen (toPair name) (Dict.get identity name locals)
+            Dict.get identity name locals |> Maybe.andThen (toPair name)
 
         Build.Outside name _ _ maybeTypedGraph ->
             -- Outside roots now have typed graphs when typed optimization is enabled

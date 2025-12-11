@@ -240,7 +240,7 @@ formatBinary multiline left ops =
                 ElmStructure.forceableSpaceSepOrIndented multiline
                     (ElmStructure.spaceSepOrStack left
                         (List.concat
-                            [ Maybe.toList <| formatComments comments
+                            [ formatComments comments |> Maybe.toList
                             , [ op ]
                             ]
                         )
@@ -386,7 +386,7 @@ sortVars forceMultiline fromExposing fromDocs =
 
         allFromDocs : EverySet String String
         allFromDocs =
-            EverySet.fromList identity <| List.map varName <| List.concat listedInDocs
+            List.concat listedInDocs |> List.map varName |> EverySet.fromList identity
 
         inDocs : Src.C2 Value -> Bool
         inDocs x =
@@ -638,7 +638,7 @@ formatModuleHeader addDefaultHeader modu =
 
         docs : Maybe Box
         docs =
-            Maybe.map (formatDocComment modu.importInfo) <| A.toValue <| modu.docs
+            modu.docs |> A.toValue |> Maybe.map (formatDocComment modu.importInfo)
 
         imports : List Box
         imports =
@@ -693,19 +693,19 @@ formatModuleLine ( varsToExpose, extraComments ) srcTag name moduleSettings preE
 
                 Port comments ->
                     ElmStructure.spaceSepOrIndented
-                        (formatTailCommented ( comments, Box.line <| Box.keyword "port" ))
+                        (formatTailCommented ( comments, Box.keyword "port" |> Box.line ))
                         [ Box.line (Box.keyword "module") ]
 
                 Effect comments ->
                     ElmStructure.spaceSepOrIndented
-                        (formatTailCommented ( comments, Box.line <| Box.keyword "effect" ))
+                        (formatTailCommented ( comments, Box.keyword "effect" |> Box.line ))
                         [ Box.line (Box.keyword "module") ]
 
         exports : Box
         exports =
             case varsToExpose of
                 [] ->
-                    Box.line <| Box.keyword "(..)"
+                    Box.keyword "(..)" |> Box.line
 
                 [ oneGroup ] ->
                     oneGroup
@@ -719,7 +719,7 @@ formatModuleLine ( varsToExpose, extraComments ) srcTag name moduleSettings preE
 
         formatSetting : ( Src.C2 String, Src.C2 String ) -> Box
         formatSetting ( k, v ) =
-            formatRecordPair "=" (Box.line << formatUppercaseIdentifier) ( k, v, False )
+            formatRecordPair "=" (formatUppercaseIdentifier >> Box.line) ( k, v, False )
 
         formatSettings : List ( Src.C2 String, Src.C2 String ) -> Box
         formatSettings settings =
@@ -737,7 +737,7 @@ formatModuleLine ( varsToExpose, extraComments ) srcTag name moduleSettings preE
         nameClause =
             case
                 ( tag
-                , formatCommented <| Src.c2map (Box.line << formatQualifiedUppercaseIdentifier) name
+                , Src.c2map (Box.line << formatQualifiedUppercaseIdentifier) name |> formatCommented
                 )
             of
                 ( Box.SingleLine tag_, Box.SingleLine name_ ) ->
@@ -758,7 +758,7 @@ formatModuleLine ( varsToExpose, extraComments ) srcTag name moduleSettings preE
     ElmStructure.spaceSepOrIndented
         (ElmStructure.spaceSepOrIndented
             nameClause
-            (whereClause ++ [ formatCommented ( ( preExposing, postExposing ), Box.line <| Box.keyword "exposing" ) ])
+            (whereClause ++ [ formatCommented ( ( preExposing, postExposing ), Box.keyword "exposing" |> Box.line ) ])
         )
         [ exports ]
 
@@ -1142,7 +1142,7 @@ formatModule_ addDefaultHeader spacing modu =
             [ initialComments_
             , formatModuleHeader addDefaultHeader modu
             , List.repeat spaceBeforeBody Box.blankLine
-            , Maybe.toList <| formatModuleBody spacing modu.importInfo decls
+            , formatModuleBody spacing modu.importInfo decls |> Maybe.toList
             ]
 
 
@@ -1157,7 +1157,7 @@ formatModuleBody linesBetween importInfo body =
                         Definition (A.At _ pat) _ _ _ ->
                             case pat of
                                 Src.PVar name ->
-                                    BodyNamed <| VarRef () name
+                                    VarRef () name |> BodyNamed
 
                                 _ ->
                                     BodyUnnamed
@@ -1166,19 +1166,18 @@ formatModuleBody linesBetween importInfo body =
                             BodyNamed name
 
                 Datatype ( _, NameWithArgs name _ ) _ ->
-                    BodyNamed <| TagRef () name
+                    TagRef () name |> BodyNamed
 
                 TypeAlias _ ( _, NameWithArgs name _ ) _ ->
-                    BodyNamed <| TagRef () name
+                    TagRef () name |> BodyNamed
 
                 PortAnnotation ( _, name ) _ _ ->
-                    BodyNamed <| VarRef () name
+                    VarRef () name |> BodyNamed
 
                 Fixity _ _ _ _ ->
                     BodyFixity
     in
-    formatTopLevelBody linesBetween importInfo <|
-        List.map (topLevelStructureMap (\b -> ( entryType b, formatDeclaration importInfo b ))) body
+    List.map (topLevelStructureMap (\b -> ( entryType b, formatDeclaration importInfo b ))) body |> formatTopLevelBody linesBetween importInfo
 
 
 type BodyEntryType
@@ -1266,8 +1265,8 @@ formatTopLevelBody linesBetween importInfo body =
 
         boxes : List Box
         boxes =
-            intersperseMap (\a b -> extraLines <| spacer a b)
-                (formatTopLevelStructure importInfo << topLevelStructureMap Tuple.second)
+            intersperseMap (\a b -> spacer a b |> extraLines)
+                (topLevelStructureMap Tuple.second >> formatTopLevelStructure importInfo)
                 body
     in
     case boxes of
@@ -1275,7 +1274,7 @@ formatTopLevelBody linesBetween importInfo body =
             Nothing
 
         _ ->
-            Just <| Box.stack1 boxes
+            Box.stack1 boxes |> Just
 
 
 type ElmCodeBlock
@@ -1291,9 +1290,9 @@ formatDocComment importInfo blocks =
         parse source =
             source
                 |> Maybe.oneOf
-                    [ Maybe.map DeclarationsCode << Result.toMaybe << parseDeclarations
-                    , Maybe.map ExpressionsCode << Result.toMaybe << parseExpressions
-                    , Maybe.map ModuleCode << Result.toMaybe << parseModule
+                    [ parseDeclarations >> Result.toMaybe >> Maybe.map DeclarationsCode
+                    , parseExpressions >> Result.toMaybe >> Maybe.map ExpressionsCode
+                    , parseModule >> Result.toMaybe >> Maybe.map ModuleCode
                     ]
 
         format : ElmCodeBlock -> String
@@ -1363,18 +1362,18 @@ formatDocCommentString : String -> Box
 formatDocCommentString docs =
     case lines docs of
         [] ->
-            Box.line <| Box.row [ Box.punc "{-|", Box.space, Box.punc "-}" ]
+            Box.row [ Box.punc "{-|", Box.space, Box.punc "-}" ] |> Box.line
 
         [ first ] ->
             Box.stack1
-                [ Box.line <| Box.row [ Box.punc "{-|", Box.space, Box.literal first ]
-                , Box.line <| Box.punc "-}"
+                [ Box.row [ Box.punc "{-|", Box.space, Box.literal first ] |> Box.line
+                , Box.punc "-}" |> Box.line
                 ]
 
         first :: rest ->
             Box.line (Box.row [ Box.punc "{-|", Box.space, Box.literal first ])
                 |> Box.andThen (List.map (Box.line << Box.literal) rest)
-                |> Box.andThen [ Box.line <| Box.punc "-}" ]
+                |> Box.andThen [ Box.punc "-}" |> Box.line ]
 
 
 lines : String -> List String
@@ -1455,7 +1454,7 @@ formatImport ( ( _, rawName ) as name, (ImportMethod _ exposedVars) as method ) 
                     Just (pleaseReport "UNEXPECTED IMPORT" "import clause comments with no clause")
     in
     case
-        ( formatPreCommented <| Src.c1map (Box.line << formatQualifiedUppercaseIdentifier) name
+        ( Src.c1map (Box.line << formatQualifiedUppercaseIdentifier) name |> formatPreCommented
         , asVar
         , exposingVar
         )
@@ -1538,29 +1537,29 @@ formatImport ( ( _, rawName ) as name, (ImportMethod _ exposedVars) as method ) 
 
         ( name_, Just as_, Just exposing__ ) ->
             Box.stack1
-                [ Box.line <| Box.keyword "import"
+                [ Box.keyword "import" |> Box.line
                 , Box.indent name_
-                , Box.indent <| Box.indent as_
-                , Box.indent <| Box.indent exposing__
+                , Box.indent as_ |> Box.indent
+                , Box.indent exposing__ |> Box.indent
                 ]
 
         ( name_, Nothing, Just exposing__ ) ->
             Box.stack1
-                [ Box.line <| Box.keyword "import"
+                [ Box.keyword "import" |> Box.line
                 , Box.indent name_
-                , Box.indent <| Box.indent exposing__
+                , Box.indent exposing__ |> Box.indent
                 ]
 
         ( name_, Just as_, Nothing ) ->
             Box.stack1
-                [ Box.line <| Box.keyword "import"
+                [ Box.keyword "import" |> Box.line
                 , Box.indent name_
-                , Box.indent <| Box.indent as_
+                , Box.indent as_ |> Box.indent
                 ]
 
         ( name_, Nothing, Nothing ) ->
             Box.stack1
-                [ Box.line <| Box.keyword "import"
+                [ Box.keyword "import" |> Box.line
                 , Box.indent name_
                 ]
 
@@ -1572,7 +1571,7 @@ formatListing format listing =
             Nothing
 
         OpenListing ( comments, () ) ->
-            Just <| parens <| formatCommented <| ( comments, Box.line <| Box.keyword ".." )
+            ( comments, Box.keyword ".." |> Box.line ) |> formatCommented |> parens |> Just
 
         ExplicitListing vars multiline ->
             case format vars of
@@ -1580,7 +1579,7 @@ formatListing format listing =
                     Nothing
 
                 vars_ ->
-                    Just <| ElmStructure.group False "(" "," ")" multiline vars_
+                    ElmStructure.group False "(" "," ")" multiline vars_ |> Just
 
 
 
@@ -1637,10 +1636,10 @@ formatVarValue : Value -> Box
 formatVarValue aval =
     case aval of
         Value val ->
-            Box.line <| formatLowercaseIdentifier [] val
+            formatLowercaseIdentifier [] val |> Box.line
 
         OpValue name ->
-            Box.line <| Box.identifier <| "(" ++ name ++ ")"
+            ("(" ++ name ++ ")") |> Box.identifier |> Box.line
 
         Union name listing ->
             case
@@ -1650,13 +1649,13 @@ formatVarValue aval =
                         (Box.line << formatUppercaseIdentifier)
                     )
                     listing
-                , formatTailCommented <| Src.c1map (Box.line << formatUppercaseIdentifier) name
+                , Src.c1map (Box.line << formatUppercaseIdentifier) name |> formatTailCommented
                 , (\( c, _ ) -> c) name
                 )
             of
                 ( Just _, _, _ ) ->
                     formatTailCommented <|
-                        Src.c1map (\n -> Box.line <| Box.row [ formatUppercaseIdentifier n, Box.keyword "(..)" ])
+                        Src.c1map (\n -> Box.row [ formatUppercaseIdentifier n, Box.keyword "(..)" ] |> Box.line)
                             name
 
                 ( Nothing, name_, _ ) ->
@@ -1696,28 +1695,28 @@ formatDeclaration importInfo decl =
             let
                 ctor : NameWithArgs Name Src.Type -> Box
                 ctor (NameWithArgs tag args_) =
-                    case Box.allSingles <| List.map (formatPreCommented << Src.c1map (typeParens ForCtor << formatType)) args_ of
+                    case List.map (formatPreCommented << Src.c1map (typeParens ForCtor << formatType)) args_ |> Box.allSingles of
                         Ok args__ ->
-                            Box.line <| Box.row <| List.intersperse Box.space <| formatUppercaseIdentifier tag :: args__
+                            (formatUppercaseIdentifier tag :: args__) |> List.intersperse Box.space |> Box.row |> Box.line
 
                         Err [] ->
-                            Box.line <| formatUppercaseIdentifier tag
+                            formatUppercaseIdentifier tag |> Box.line
 
                         Err args__ ->
                             Box.stack1
-                                [ Box.line <| formatUppercaseIdentifier tag
+                                [ formatUppercaseIdentifier tag |> Box.line
                                 , Box.stack1 args__
                                     |> Box.indent
                                 ]
             in
             case
-                formatOpenCommentedList <| Src.openCommentedListMap ctor tags
+                Src.openCommentedListMap ctor tags |> formatOpenCommentedList
             of
                 [] ->
                     crash "List can't be empty"
 
                 first :: rest ->
-                    case formatCommented <| Src.c2map formatNameWithArgs nameWithArgs of
+                    case Src.c2map formatNameWithArgs nameWithArgs |> formatCommented of
                         Box.SingleLine nameWithArgs_ ->
                             Box.stack1
                                 [ Box.line <|
@@ -1734,7 +1733,7 @@ formatDeclaration importInfo decl =
 
                         nameWithArgs_ ->
                             Box.stack1
-                                [ Box.line <| Box.keyword "type"
+                                [ Box.keyword "type" |> Box.line
                                 , Box.indent nameWithArgs_
                                 , first
                                     |> Box.prefix (Box.row [ Box.punc "=", Box.space ])
@@ -1746,8 +1745,8 @@ formatDeclaration importInfo decl =
             ElmStructure.definition "="
                 True
                 (Box.line <| Box.keyword "type")
-                [ formatPreCommented ( preAlias, Box.line <| Box.keyword "alias" )
-                , formatCommented <| Src.c2map formatNameWithArgs nameWithArgs
+                [ formatPreCommented ( preAlias, Box.keyword "alias" |> Box.line )
+                , Src.c2map formatNameWithArgs nameWithArgs |> formatCommented
                 ]
                 (formatPreCommentedStack <| Src.c1map (typeParens NotRequired << formatType) typ)
 
@@ -1755,7 +1754,7 @@ formatDeclaration importInfo decl =
             ElmStructure.definition ":"
                 False
                 (Box.line <| Box.keyword "port")
-                [ formatCommented <| Src.c2map (Box.line << formatLowercaseIdentifier []) name ]
+                [ Src.c2map (Box.line << formatLowercaseIdentifier []) name |> formatCommented ]
                 (formatCommentedApostrophe typeComments <| typeParens NotRequired <| formatType typ)
 
         Fixity assoc precedence name value ->
@@ -1773,20 +1772,20 @@ formatDeclaration importInfo decl =
                             Box.keyword "non  "
             in
             ElmStructure.spaceSepOrIndented
-                (Box.line <| Box.keyword "infix")
-                [ formatPreCommented <| Src.c1map (Box.line << formatAssoc) assoc
-                , formatPreCommented <| Src.c1map (Box.line << Box.literal << String.fromInt) precedence
-                , formatCommented <| Src.c2map (Box.line << formatSymbolIdentifierInParens) name
-                , Box.line <| Box.keyword "="
-                , formatPreCommented <| Src.c1map (Box.line << Box.identifier << formatVarName) value
+                (Box.keyword "infix" |> Box.line)
+                [ Src.c1map (Box.line << formatAssoc) assoc |> formatPreCommented
+                , Src.c1map (Box.line << Box.literal << String.fromInt) precedence |> formatPreCommented
+                , Src.c2map (Box.line << formatSymbolIdentifierInParens) name |> formatCommented
+                , Box.keyword "=" |> Box.line
+                , Src.c1map (Box.line << Box.identifier << formatVarName) value |> formatPreCommented
                 ]
 
 
 formatNameWithArgs : NameWithArgs Name Name -> Box
 formatNameWithArgs (NameWithArgs name args) =
-    case Box.allSingles <| List.map (formatPreCommented << Src.c1map (Box.line << formatLowercaseIdentifier [])) args of
+    case List.map (formatPreCommented << Src.c1map (Box.line << formatLowercaseIdentifier [])) args |> Box.allSingles of
         Ok args_ ->
-            Box.line <| Box.row <| List.intersperse Box.space (formatUppercaseIdentifier name :: args_)
+            List.intersperse Box.space (formatUppercaseIdentifier name :: args_) |> Box.row |> Box.line
 
         Err args_ ->
             Box.stack1 <|
@@ -2168,7 +2167,7 @@ formatExpression importInfo (A.At region aexpr) =
                     Box.line <|
                         Box.row
                             [ Box.punc "\\"
-                            , Box.row <| List.intersperse Box.space patterns_
+                            , List.intersperse Box.space patterns_ |> Box.row
                             , Box.space
                             , Box.punc "->"
                             , Box.space
@@ -2184,10 +2183,11 @@ formatExpression importInfo (A.At region aexpr) =
                                 , Box.space
                                 , Box.punc "->"
                                 ]
-                        , Box.indent <|
-                            Box.stack1 <|
-                                List.map formatComment bodyComments
-                                    ++ [ expr_ ]
+                        , (List.map formatComment bodyComments
+                            ++ [ expr_ ]
+                          )
+                            |> Box.stack1
+                            |> Box.indent
                         ]
 
                 ( ( _, Err [] ), _ ) ->
@@ -2195,12 +2195,13 @@ formatExpression importInfo (A.At region aexpr) =
 
                 ( ( _, Err patterns_ ), ( _, expr_ ) ) ->
                     Box.stack1
-                        [ Box.prefix (Box.punc "\\") <| Box.stack1 patterns_
-                        , Box.line <| Box.punc "->"
-                        , Box.indent <|
-                            Box.stack1 <|
-                                List.map formatComment bodyComments
-                                    ++ [ expr_ ]
+                        [ Box.stack1 patterns_ |> Box.prefix (Box.punc "\\")
+                        , Box.punc "->" |> Box.line
+                        , (List.map formatComment bodyComments
+                            ++ [ expr_ ]
+                          )
+                            |> Box.stack1
+                            |> Box.indent
                         ]
             )
 
@@ -2259,7 +2260,7 @@ formatExpression importInfo (A.At region aexpr) =
                 formatIf ( cond, body ) =
                     Box.stack1
                         [ opening (Box.line (Box.keyword "if")) (formatCommentedExpression importInfo cond)
-                        , Box.indent <| formatCommented_ True <| Src.c2map (syntaxParens SyntaxSeparated << formatExpression importInfo) body
+                        , Src.c2map (syntaxParens SyntaxSeparated << formatExpression importInfo) body |> formatCommented_ True |> Box.indent
                         ]
 
                 formatElseIf : Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr ) -> Box
@@ -2269,7 +2270,7 @@ formatExpression importInfo (A.At region aexpr) =
                         key =
                             case formatPreCommented ( ifComments, Box.line (Box.keyword "if") ) of
                                 Box.SingleLine key_ ->
-                                    Box.line <| Box.row [ Box.keyword "else", Box.space, key_ ]
+                                    Box.row [ Box.keyword "else", Box.space, key_ ] |> Box.line
 
                                 key_ ->
                                     Box.stack1
@@ -2279,8 +2280,8 @@ formatExpression importInfo (A.At region aexpr) =
                     in
                     Box.stack1
                         [ Box.blankLine
-                        , opening key <| formatCommentedExpression importInfo cond
-                        , Box.indent <| formatCommented_ True <| Src.c2map (syntaxParens SyntaxSeparated << formatExpression importInfo) body
+                        , formatCommentedExpression importInfo cond |> opening key
+                        , Src.c2map (syntaxParens SyntaxSeparated << formatExpression importInfo) body |> formatCommented_ True |> Box.indent
                         ]
             in
             ( AmbiguousEnd
@@ -2289,7 +2290,7 @@ formatExpression importInfo (A.At region aexpr) =
                 |> Box.andThen
                     [ Box.blankLine
                     , Box.line (Box.keyword "else")
-                    , Box.indent <| formatCommented_ True <| Src.c2map (syntaxParens SyntaxSeparated << formatExpression importInfo) ( ( elsComments, [] ), els )
+                    , Src.c2map (syntaxParens SyntaxSeparated << formatExpression importInfo) ( ( elsComments, [] ), els ) |> formatCommented_ True |> Box.indent
                     ]
             )
 
@@ -2353,7 +2354,7 @@ formatExpression importInfo (A.At region aexpr) =
                     [ Box.line (Box.keyword "in")
                     , Box.stack1 <|
                         List.map formatComment bodyComments
-                            ++ [ syntaxParens SyntaxSeparated <| formatExpression importInfo expr ]
+                            ++ [ formatExpression importInfo expr |> syntaxParens SyntaxSeparated ]
                     ]
             )
 
@@ -2378,9 +2379,9 @@ formatExpression importInfo (A.At region aexpr) =
 
                         ( _, subject_ ) ->
                             Box.stack1
-                                [ Box.line <| Box.keyword "case"
+                                [ Box.keyword "case" |> Box.line
                                 , Box.indent subject_
-                                , Box.line <| Box.keyword "of"
+                                , Box.keyword "of" |> Box.line
                                 ]
 
                 clause : ( Src.C2 Src.Pattern, Src.C1 Src.Expr ) -> Box
@@ -2393,7 +2394,7 @@ formatExpression importInfo (A.At region aexpr) =
                           )
                         , ( formatCommentedStack (Src.c2map (syntaxParens SyntaxSeparated << formatPattern) ( ( prePat, postPat ), pat ))
                                 |> negativeCasePatternWorkaround pat
-                          , formatPreCommentedStack <| Src.c1map (syntaxParens SyntaxSeparated << formatExpression importInfo) ( preExpr, expr )
+                          , Src.c1map (syntaxParens SyntaxSeparated << formatExpression importInfo) ( preExpr, expr ) |> formatPreCommentedStack
                           )
                         )
                     of
@@ -2505,8 +2506,7 @@ formatExpression importInfo (A.At region aexpr) =
                     a :: b :: cs
             in
             ( SyntaxSeparated
-            , ElmStructure.group True "(" "," ")" multiline <|
-                List.map (formatCommentedExpression importInfo) exprs
+            , List.map (formatCommentedExpression importInfo) exprs |> ElmStructure.group True "(" "," ")" multiline
             )
 
         Src.Shader (Shader.Source src) _ ->
@@ -2548,7 +2548,7 @@ formatCommentedExpression importInfo ( ( pre, post ), e ) =
             --     _ ->
             ( ( pre, post ), e )
     in
-    formatCommented <| Src.c2map (syntaxParens SyntaxSeparated << formatExpression importInfo) commented_
+    Src.c2map (syntaxParens SyntaxSeparated << formatExpression importInfo) commented_ |> formatCommented
 
 
 formatPreCommentedExpression : ImportInfo -> SyntaxContext -> Src.C1 Src.Expr -> Box
@@ -2596,9 +2596,7 @@ formatSequence left delim maybeRight (Src.ForceMultiline multiline) trailing lis
             let
                 formatItem : Char -> Src.C2Eol Box -> Box
                 formatItem delim_ ( ( pre, post, eol ), item ) =
-                    Maybe.unwrap identity (Box.stack_ << Box.stack_ Box.blankLine) (formatComments pre) <|
-                        Box.prefix (Box.row [ Box.punc (String.fromChar delim_), Box.space ]) <|
-                            formatC2Eol ( ( post, [], eol ), item )
+                    formatC2Eol ( ( post, [], eol ), item ) |> Box.prefix (Box.row [ Box.punc (String.fromChar delim_), Box.space ]) |> Maybe.unwrap identity (Box.stack_ << Box.stack_ Box.blankLine) (formatComments pre)
             in
             ElmStructure.forceableSpaceSepOrStack multiline
                 (ElmStructure.forceableRowOrStack multiline
@@ -2664,9 +2662,9 @@ formatBinops importInfo left ops multiline =
             in
             ( ( isLeftPipe
               , props.preOpComments
-              , (Box.line << formatInfixVar) props.op
+              , (formatInfixVar >> Box.line) props.op
               )
-            , formatCommentedApostrophe props.postOpComments <| syntaxParens formatContext <| formatExpression importInfo props.expr
+            , formatExpression importInfo props.expr |> syntaxParens formatContext |> formatCommentedApostrophe props.postOpComments
             )
     in
     formatBinary
@@ -2679,16 +2677,16 @@ formatUnit : Char -> Char -> Src.FComments -> Box
 formatUnit left right comments =
     case ( left, comments ) of
         ( _, [] ) ->
-            Box.line <| Box.punc (String.fromList [ left, right ])
+            Box.punc (String.fromList [ left, right ]) |> Box.line
 
         ( '{', (Src.LineComment _) :: _ ) ->
-            surround left right <| Box.prefix Box.space <| Box.stack1 <| List.map formatComment comments
+            List.map formatComment comments |> Box.stack1 |> Box.prefix Box.space |> surround left right
 
         _ ->
             surround left right <|
-                case Box.allSingles <| List.map formatComment comments of
+                case List.map formatComment comments |> Box.allSingles of
                     Ok comments_ ->
-                        Box.line <| Box.row <| List.intersperse Box.space comments_
+                        List.intersperse Box.space comments_ |> Box.row |> Box.line
 
                     Err comments_ ->
                         Box.stack1 comments_
@@ -2746,10 +2744,10 @@ formatEolCommented ( post, inner ) =
             box
 
         ( Just eol, Box.SingleLine result ) ->
-            Box.mustBreak <| Box.row [ result, Box.space, Box.punc "--", Box.literal eol ]
+            Box.row [ result, Box.space, Box.punc "--", Box.literal eol ] |> Box.mustBreak
 
         ( Just eol, box ) ->
-            Box.stack1 [ box, formatComment <| Src.LineComment eol ]
+            Box.stack1 [ box, Src.LineComment eol |> formatComment ]
 
 
 formatCommentedStack : Src.C2 Box -> Box
@@ -2784,7 +2782,7 @@ formatComment comment =
         Src.BlockComment c ->
             case c of
                 [] ->
-                    Box.line <| Box.punc "{- -}"
+                    Box.punc "{- -}" |> Box.line
 
                 [ l ] ->
                     Box.line <|
@@ -2801,20 +2799,20 @@ formatComment comment =
                         [ Box.prefix
                             (Box.row [ Box.punc "{-", Box.space ])
                             (Box.stack1 <| List.map (Box.line << Box.literal) ls)
-                        , Box.line <| Box.punc "-}"
+                        , Box.punc "-}" |> Box.line
                         ]
 
         Src.LineComment c ->
-            Box.mustBreak <| Box.row [ Box.punc "--", Box.literal c ]
+            Box.row [ Box.punc "--", Box.literal c ] |> Box.mustBreak
 
         Src.CommentTrickOpener ->
-            Box.mustBreak <| Box.punc "{--}"
+            Box.punc "{--}" |> Box.mustBreak
 
         Src.CommentTrickCloser ->
-            Box.mustBreak <| Box.punc "--}"
+            Box.punc "--}" |> Box.mustBreak
 
         Src.CommentTrickBlock c ->
-            Box.mustBreak <| Box.row [ Box.punc "{--", Box.literal c, Box.punc "-}" ]
+            Box.row [ Box.punc "{--", Box.literal c, Box.punc "-}" ] |> Box.mustBreak
 
 
 type StringRepresentation
@@ -2847,10 +2845,10 @@ formatLiteral lit =
             Box.line (Box.literal f)
 
         Boolean True ->
-            Box.line <| Box.literal "True"
+            Box.literal "True" |> Box.line
 
         Boolean False ->
-            Box.line <| Box.literal "False"
+            Box.literal "False" |> Box.line
 
 
 type StringStyle
@@ -2879,7 +2877,7 @@ formatString style s =
             Box.line <|
                 Box.row
                     [ Box.punc quotes
-                    , Box.literal <| escaper fixedString
+                    , escaper fixedString |> Box.literal
                     , Box.punc quotes
                     ]
 
@@ -2993,7 +2991,7 @@ typeParensNeeded outer typeParensInner =
 
 formatTypeConstructor : String -> Box
 formatTypeConstructor name =
-    Box.line <| formatQualifiedUppercaseIdentifier (String.split "." name)
+    formatQualifiedUppercaseIdentifier (String.split "." name) |> Box.line
 
 
 formatType : Src.Type -> ( TypeParensInner, Box )
@@ -3041,9 +3039,7 @@ formatType (A.At region atype) =
 
         Src.TVar name ->
             ( NotNeeded
-            , Box.line <|
-                Box.identifier <|
-                    formatVarName name
+            , formatVarName name |> Box.identifier |> Box.line
             )
 
         Src.TType _ ctor args ->
@@ -3147,7 +3143,7 @@ formatType (A.At region atype) =
 
         Src.TParens type_ ->
             ( NotNeeded
-            , parens <| formatCommented <| Src.c2map (typeParens NotRequired << formatType) type_
+            , Src.c2map (typeParens NotRequired << formatType) type_ |> formatCommented |> parens
             )
 
 
@@ -3175,7 +3171,7 @@ formatVar var =
 
 formatSymbolIdentifierInParens : String -> Box.Line
 formatSymbolIdentifierInParens name =
-    Box.identifier <| "(" ++ name ++ ")"
+    ("(" ++ name ++ ")") |> Box.identifier
 
 
 formatInfixVar : Ref (List String) -> Box.Line
@@ -3220,9 +3216,7 @@ formatUppercaseIdentifier name =
 
 formatQualifiedUppercaseIdentifier : List String -> Box.Line
 formatQualifiedUppercaseIdentifier names =
-    Box.identifier <|
-        String.join "." <|
-            List.map formatVarName names
+    List.map formatVarName names |> String.join "." |> Box.identifier
 
 
 formatVarName : String -> String

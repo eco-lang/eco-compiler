@@ -192,15 +192,15 @@ fetchGeneratedDocsAndWrite env oldDocs =
 getDocs : Env -> Pkg.Name -> Registry.KnownVersions -> V.Version -> Task Exit.Diff Docs.Documentation
 getDocs (Env props) name (Registry.KnownVersions latest previous) version =
     if latest == version || List.member version previous then
-        Task.eio (Exit.DiffDocsProblem version) <| DD.getDocs props.cache props.manager name version
+        DD.getDocs props.cache props.manager name version |> Task.eio (Exit.DiffDocsProblem version)
 
     else
-        Task.throw <| Exit.DiffUnknownVersion version (latest :: previous)
+        Exit.DiffUnknownVersion version (latest :: previous) |> Task.throw
 
 
 getLatestDocs : Env -> Pkg.Name -> Registry.KnownVersions -> Task Exit.Diff Docs.Documentation
 getLatestDocs (Env props) name (Registry.KnownVersions latest _) =
-    Task.eio (Exit.DiffDocsProblem latest) <| DD.getDocs props.cache props.manager name latest
+    DD.getDocs props.cache props.manager name latest |> Task.eio (Exit.DiffDocsProblem latest)
 
 
 
@@ -275,8 +275,7 @@ buildDocsFromExposed root details exposed =
             Task.throw Exit.DiffNoExposed
 
         e :: es ->
-            Task.eio Exit.DiffBadBuild <|
-                Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root details Build.keepDocs (NE.Nonempty e es)
+            Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root details Build.keepDocs (NE.Nonempty e es) |> Task.eio Exit.DiffBadBuild
 
 
 
@@ -326,9 +325,7 @@ toDoc localizer ((PackageChanges added changed removed) as changes) =
                     []
 
                 else
-                    [ Chunk "ADDED MODULES" M.MINOR <|
-                        D.vcat <|
-                            List.map D.fromName added
+                    [ List.map D.fromName added |> D.vcat |> Chunk "ADDED MODULES" M.MINOR
                     ]
 
             removedChunk : List Chunk
@@ -337,9 +334,7 @@ toDoc localizer ((PackageChanges added changed removed) as changes) =
                     []
 
                 else
-                    [ Chunk "REMOVED MODULES" M.MAJOR <|
-                        D.vcat <|
-                            List.map D.fromName removed
+                    [ List.map D.fromName removed |> D.vcat |> Chunk "REMOVED MODULES" M.MAJOR
                     ]
 
             chunks : List Chunk
@@ -392,14 +387,14 @@ changesToChunk localizer ( name, (ModuleChanges changesData) as changes ) =
         ( binopAdd, binopChange, binopRemove ) =
             changesToDocTriple compare (binopToDoc localizer) changesData.binops
     in
-    Chunk name magnitude <|
-        D.vcat <|
-            List.intersperse (D.fromChars "") <|
-                List.filterMap identity <|
-                    [ changesToDoc "Added" unionAdd aliasAdd valueAdd binopAdd
-                    , changesToDoc "Removed" unionRemove aliasRemove valueRemove binopRemove
-                    , changesToDoc "Changed" unionChange aliasChange valueChange binopChange
-                    ]
+    [ changesToDoc "Added" unionAdd aliasAdd valueAdd binopAdd
+    , changesToDoc "Removed" unionRemove aliasRemove valueRemove binopRemove
+    , changesToDoc "Changed" unionChange aliasChange valueChange binopChange
+    ]
+        |> List.filterMap identity
+        |> List.intersperse (D.fromChars "")
+        |> D.vcat
+        |> Chunk name magnitude
 
 
 changesToDocTriple : (k -> k -> Order) -> (k -> v -> D.Doc) -> Changes comparable k v -> ( List D.Doc, List D.Doc, List D.Doc )
@@ -429,13 +424,14 @@ changesToDoc categoryName unions aliases values binops =
         Nothing
 
     else
-        Just <|
-            D.vcat <|
-                D.append (D.fromChars categoryName) (D.fromChars ":")
-                    :: unions
-                    ++ aliases
-                    ++ binops
-                    ++ values
+        (D.append (D.fromChars categoryName) (D.fromChars ":")
+            :: unions
+            ++ aliases
+            ++ binops
+            ++ values
+        )
+            |> D.vcat
+            |> Just
 
 
 unionToDoc : L.Localizer -> Name.Name -> Docs.Union -> D.Doc
@@ -478,7 +474,7 @@ aliasToDoc localizer name (Docs.Alias _ tvars tipe) =
 
 valueToDoc : L.Localizer -> Name.Name -> Docs.Value -> D.Doc
 valueToDoc localizer name (Docs.Value _ tipe) =
-    D.hang 4 <| D.sep [ D.fromName name |> D.plus (D.fromChars ":"), typeDoc localizer tipe ]
+    D.sep [ D.fromName name |> D.plus (D.fromChars ":"), typeDoc localizer tipe ] |> D.hang 4
 
 
 binopToDoc : L.Localizer -> Name.Name -> Docs.Binop -> D.Doc

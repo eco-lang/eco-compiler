@@ -205,4 +205,4 @@ oneOrMore decoder =
 
 lazy : (() -> BD.Decoder a) -> BD.Decoder a
 lazy f =
-    BD.andThen f (BD.succeed ())
+    BD.succeed () |> BD.andThen f

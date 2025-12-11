@@ -748,8 +748,7 @@ toCall func revArgs =
 
 if_ : SyntaxVersion -> A.Position -> Space.Parser E.Expr (Src.C1 Src.Expr)
 if_ syntaxVersion start =
-    P.inContext E.If (Keyword.if_ E.Start) <|
-        chompIfEnd syntaxVersion start [] []
+    chompIfEnd syntaxVersion start [] [] |> P.inContext E.If (Keyword.if_ E.Start)
 
 
 chompIfEnd : SyntaxVersion -> A.Position -> Src.FComments -> List (Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr )) -> Space.Parser E.If (Src.C1 Src.Expr)

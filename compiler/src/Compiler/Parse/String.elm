@@ -217,8 +217,7 @@ singleString syntaxVersion src pos end row col initialPos revChunks =
                 newPos =
                     pos + 1
             in
-            singleString syntaxVersion src newPos end row (col + 1) newPos <|
-                addEscape singleQuote initialPos pos revChunks
+            addEscape singleQuote initialPos pos revChunks |> singleString syntaxVersion src newPos end row (col + 1) newPos
 
         else if word == '\\' then
             case eatEscape syntaxVersion src (pos + 1) end row col of
@@ -231,8 +230,7 @@ singleString syntaxVersion src pos end row col initialPos revChunks =
                         newPos =
                             pos + delta
                     in
-                    singleString syntaxVersion src newPos end row (col + delta) newPos <|
-                        addEscape (ES.CodePoint code) initialPos pos revChunks
+                    addEscape (ES.CodePoint code) initialPos pos revChunks |> singleString syntaxVersion src newPos end row (col + delta) newPos
 
                 EscapeProblem r c x ->
                     SRErr r c (E.StringEscape x)
@@ -277,8 +275,7 @@ multiString syntaxVersion src pos end row col initialPos sr sc revChunks =
                 pos1 =
                     pos + 1
             in
-            multiString syntaxVersion src pos1 end row (col + 1) pos1 sr sc <|
-                addEscape singleQuote initialPos pos revChunks
+            addEscape singleQuote initialPos pos revChunks |> multiString syntaxVersion src pos1 end row (col + 1) pos1 sr sc
 
         else if word == '\n' then
             let
@@ -286,8 +283,7 @@ multiString syntaxVersion src pos end row col initialPos sr sc revChunks =
                 pos1 =
                     pos + 1
             in
-            multiString syntaxVersion src pos1 end (row + 1) 1 pos1 sr sc <|
-                addEscape newline initialPos pos revChunks
+            addEscape newline initialPos pos revChunks |> multiString syntaxVersion src pos1 end (row + 1) 1 pos1 sr sc
 
         else if word == '\u{000D}' then
             let
@@ -295,8 +291,7 @@ multiString syntaxVersion src pos end row col initialPos sr sc revChunks =
                 pos1 =
                     pos + 1
             in
-            multiString syntaxVersion src pos1 end row col pos1 sr sc <|
-                addEscape carriageReturn initialPos pos revChunks
+            addEscape carriageReturn initialPos pos revChunks |> multiString syntaxVersion src pos1 end row col pos1 sr sc
 
         else if word == '\\' then
             case eatEscape syntaxVersion src (pos + 1) end row col of
@@ -309,8 +304,7 @@ multiString syntaxVersion src pos end row col initialPos sr sc revChunks =
                         newPos =
                             pos + delta
                     in
-                    multiString syntaxVersion src newPos end row (col + delta) newPos sr sc <|
-                        addEscape (ES.CodePoint code) initialPos pos revChunks
+                    addEscape (ES.CodePoint code) initialPos pos revChunks |> multiString syntaxVersion src newPos end row (col + delta) newPos sr sc
 
                 EscapeProblem r c x ->
                     SRErr r c (E.StringEscape x)

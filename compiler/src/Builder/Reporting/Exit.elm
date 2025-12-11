@@ -102,9 +102,7 @@ initToReport exit =
             Help.report "NO SOLUTION"
                 Nothing
                 "I tried to create an elm.json with the following direct dependencies:"
-                [ D.indent 4 <|
-                    D.vcat <|
-                        List.map (D.dullyellow << D.fromChars << Pkg.toChars) pkgs
+                [ List.map (D.dullyellow << D.fromChars << Pkg.toChars) pkgs |> D.vcat |> D.indent 4
                 , D.reflow <|
                     "I could not find compatible versions though! This should not happen, so please ask around "
                         ++ "one of the community forums at https://elm-lang.org/community to learn what is going on!"
@@ -114,9 +112,7 @@ initToReport exit =
             Help.report "NO OFFLINE SOLUTION"
                 Nothing
                 "I tried to create an elm.json with the following direct dependencies:"
-                [ D.indent 4 <|
-                    D.vcat <|
-                        List.map (D.dullyellow << D.fromChars << Pkg.toChars) pkgs
+                [ List.map (D.dullyellow << D.fromChars << Pkg.toChars) pkgs |> D.vcat |> D.indent 4
                 , D.reflow <|
                     "I could not find compatible versions though, but that may be because I could not connect to "
                         ++ "https://package.elm-lang.org to get the latest list of packages. Are you able to connect to "
@@ -146,8 +142,7 @@ initToReport exit =
                 ]
 
         InitRegistryProblem problem ->
-            toRegistryProblemReport "PROBLEM LOADING PACKAGE LIST" problem <|
-                "I need the list of published packages before I can start initializing projects"
+            "I need the list of published packages before I can start initializing projects" |> toRegistryProblemReport "PROBLEM LOADING PACKAGE LIST" problem
 
 
 
@@ -175,8 +170,8 @@ diffToReport diff =
             Help.report "DIFF WHAT?"
                 Nothing
                 "I cannot find an elm.json so I am not sure what you want me to diff. Normally you run `elm diff` from within a project!"
-                [ D.reflow <| "If you are just curious to see a diff, try running this command:"
-                , D.indent 4 <| D.green <| D.fromChars "elm diff elm/http 1.0.0 2.0.0"
+                [ "If you are just curious to see a diff, try running this command:" |> D.reflow
+                , D.fromChars "elm diff elm/http 1.0.0 2.0.0" |> D.green |> D.indent 4
                 ]
 
         DiffBadOutline outline ->
@@ -186,16 +181,15 @@ diffToReport diff =
             Help.report "CANNOT DIFF APPLICATIONS"
                 (Just "elm.json")
                 "Your elm.json says this project is an application, but `elm diff` only works with packages. That way there are previously published versions of the API to diff against!"
-                [ D.reflow <| "If you are just curious to see a diff, try running this command:"
-                , D.indent 4 <| D.dullyellow <| D.fromChars "elm diff elm/json 1.0.0 1.1.2"
+                [ "If you are just curious to see a diff, try running this command:" |> D.reflow
+                , D.fromChars "elm diff elm/json 1.0.0 1.1.2" |> D.dullyellow |> D.indent 4
                 ]
 
         DiffNoExposed ->
             Help.report "NO EXPOSED MODULES"
                 (Just "elm.json")
                 "Your elm.json has no \"exposed-modules\" which means there is no public API at all right now! What am I supposed to diff?"
-                [ D.reflow <|
-                    "Try adding some modules back to the \"exposed-modules\" field."
+                [ "Try adding some modules back to the \"exposed-modules\" field." |> D.reflow
                 ]
 
         DiffUnpublished ->
@@ -208,9 +202,9 @@ diffToReport diff =
             Help.report "UNKNOWN PACKAGE"
                 Nothing
                 "I cannot find a package called:"
-                [ D.indent 4 <| D.red <| D.fromChars <| Pkg.toChars pkg
+                [ Pkg.toChars pkg |> D.fromChars |> D.red |> D.indent 4
                 , D.fromChars "Maybe you want one of these instead?"
-                , D.indent 4 <| D.dullyellow <| D.vcat <| List.map (D.fromChars << Pkg.toChars) suggestions
+                , List.map (D.fromChars << Pkg.toChars) suggestions |> D.vcat |> D.dullyellow |> D.indent 4
                 , D.fromChars "But check <https://package.elm-lang.org> to see all possibilities!"
                 ]
 
@@ -233,19 +227,20 @@ diffToReport diff =
                     ]
                 )
                 [ D.fromChars "Here are all the versions that HAVE been published:"
-                , D.indent 4 <|
-                    D.dullyellow <|
-                        D.vcat <|
-                            let
-                                sameMajor : V.Version -> V.Version -> Bool
-                                sameMajor v1 v2 =
-                                    V.major v1 == V.major v2
+                , (let
+                    sameMajor : V.Version -> V.Version -> Bool
+                    sameMajor v1 v2 =
+                        V.major v1 == V.major v2
 
-                                mkRow : List V.Version -> D.Doc
-                                mkRow vsns =
-                                    D.hsep <| List.map D.fromVersion vsns
-                            in
-                            List.map mkRow <| Utils.listGroupBy sameMajor (List.sortWith V.compare realVersions)
+                    mkRow : List V.Version -> D.Doc
+                    mkRow vsns =
+                        List.map D.fromVersion vsns |> D.hsep
+                   in
+                   Utils.listGroupBy sameMajor (List.sortWith V.compare realVersions) |> List.map mkRow
+                  )
+                    |> D.vcat
+                    |> D.dullyellow
+                    |> D.indent 4
                 , D.fromChars "Want one of those instead?"
                 ]
 
@@ -256,8 +251,7 @@ diffToReport diff =
                     ++ " to compute this diff"
 
         DiffMustHaveLatestRegistry problem ->
-            toRegistryProblemReport "PROBLEM UPDATING PACKAGE LIST" problem <|
-                "I need the latest list of published packages before I do this diff"
+            "I need the latest list of published packages before I do this diff" |> toRegistryProblemReport "PROBLEM UPDATING PACKAGE LIST" problem
 
         DiffBadDetails details ->
             toDetailsReport details
@@ -372,12 +366,11 @@ bumpToReport bump =
                                 , D.fromChars "these:"
                                 ]
                            )
-                , D.vcat <| List.map (D.green << D.fromVersion) versions
+                , List.map (D.green << D.fromVersion) versions |> D.vcat
                 ]
 
         BumpMustHaveLatestRegistry problem ->
-            toRegistryProblemReport "PROBLEM UPDATING PACKAGE LIST" problem <|
-                "I need the latest list of published packages before I can bump any versions"
+            "I need the latest list of published packages before I can bump any versions" |> toRegistryProblemReport "PROBLEM UPDATING PACKAGE LIST" problem
 
         BumpCannotFindDocs version problem ->
             toDocsProblemReport problem <|
@@ -410,8 +403,7 @@ bumpToReport bump =
                     , D.fromChars "module."
                     ]
                 )
-                [ D.reflow <|
-                    "Try adding some modules back to the \"exposed-modules\" field."
+                [ "Try adding some modules back to the \"exposed-modules\" field." |> D.reflow
                 ]
 
         BumpBadBuild problem ->
@@ -485,8 +477,7 @@ publishToReport publish =
             Help.report "PUBLISH WHAT?"
                 Nothing
                 "I cannot find an elm.json so I am not sure what you want me to publish."
-                [ D.reflow <|
-                    "Elm packages always have an elm.json that states the version number, dependencies, exposed modules, etc."
+                [ "Elm packages always have an elm.json that states the version number, dependencies, exposed modules, etc." |> D.reflow
                 ]
 
         PublishBadOutline outline ->
@@ -496,8 +487,7 @@ publishToReport publish =
             toDetailsReport problem
 
         PublishMustHaveLatestRegistry problem ->
-            toRegistryProblemReport "PROBLEM UPDATING PACKAGE LIST" problem <|
-                "I need the latest list of published packages to make sure this is safe to publish"
+            "I need the latest list of published packages to make sure this is safe to publish" |> toRegistryProblemReport "PROBLEM UPDATING PACKAGE LIST" problem
 
         PublishApplication ->
             Help.report "UNPUBLISHABLE" Nothing "I cannot publish applications, only packages!" []
@@ -553,9 +543,8 @@ publishToReport publish =
                     , D.fromChars "Try using the `bump` command:"
                     ]
                 )
-                [ D.dullyellow <| D.indent 4 (D.fromChars "elm bump")
-                , D.reflow <|
-                    "It computes the version number based on API changes, ensuring that no breaking changes end up in PATCH releases!"
+                [ D.indent 4 (D.fromChars "elm bump") |> D.dullyellow
+                , "It computes the version number based on API changes, ensuring that no breaking changes end up in PATCH releases!" |> D.reflow
                 ]
 
         PublishInvalidBump statedVersion latestVersion ->
@@ -608,9 +597,8 @@ publishToReport publish =
                     , D.fromChars "by"
                     , D.fromChars "running:"
                     ]
-                , D.indent 4 <| D.green (D.fromChars "elm bump")
-                , D.reflow <|
-                    "If you want more insight on the API changes Elm detects, you can run `elm diff` at this point as well."
+                , D.green (D.fromChars "elm bump") |> D.indent 4
+                , "If you want more insight on the API changes Elm detects, you can run `elm diff` at this point as well." |> D.reflow
                 ]
 
         PublishBadBump old new magnitude realNew realMagnitude ->
@@ -646,10 +634,11 @@ publishToReport publish =
                     , D.fromChars "by:"
                     ]
                 )
-                [ D.indent 4 <|
-                    D.fromChars <|
-                        "elm diff "
-                            ++ V.toChars old
+                [ ("elm diff "
+                    ++ V.toChars old
+                  )
+                    |> D.fromChars
+                    |> D.indent 4
                 , D.fillSep <|
                     [ D.fromChars "This"
                     , D.fromChars "command"
@@ -679,8 +668,7 @@ publishToReport publish =
                     , D.fromChars "you"
                     , D.fromChars "want!"
                     ]
-                , D.reflow <|
-                    "Also, next time use `elm bump` and I'll figure all this out for you!"
+                , "Also, next time use `elm bump` and I'll figure all this out for you!" |> D.reflow
                 ]
 
         PublishNoSummary ->
@@ -708,8 +696,7 @@ publishToReport publish =
                     , D.fromChars "project."
                     ]
                 )
-                [ D.reflow <|
-                    "The summary must be less than 80 characters. It should describe the concrete use of your package as clearly and as plainly as possible."
+                [ "The summary must be less than 80 characters. It should describe the concrete use of your package as clearly and as plainly as possible." |> D.reflow
                 ]
 
         PublishNoExposed ->
@@ -734,17 +721,14 @@ publishToReport publish =
                     , D.fromChars "module."
                     ]
                 )
-                [ D.reflow <|
-                    "Which modules do you want users of the package to have access to? Add their names to the \"exposed-modules\" list."
+                [ "Which modules do you want users of the package to have access to? Add their names to the \"exposed-modules\" list." |> D.reflow
                 ]
 
         PublishNoReadme ->
-            toBadReadmeReport "NO README" <|
-                "Every published package must have a helpful README.md file, but I do not see one in your project."
+            "Every published package must have a helpful README.md file, but I do not see one in your project." |> toBadReadmeReport "NO README"
 
         PublishShortReadme ->
-            toBadReadmeReport "SHORT README" <|
-                "This README.md is too short. Having more details will help people assess your package quickly and fairly."
+            "This README.md is too short. Having more details will help people assess your package quickly and fairly." |> toBadReadmeReport "SHORT README"
 
         PublishNoLicense ->
             Help.report "NO LICENSE FILE"
@@ -788,13 +772,13 @@ publishToReport publish =
                     [ D.fromChars "These tags make it possible to find this specific version on GitHub."
                     , D.fromChars "To tag the most recent commit and push it to GitHub, run this:"
                     ]
-                , D.indent 4 <|
-                    D.dullyellow <|
-                        D.vcat <|
-                            List.map D.fromChars <|
-                                [ "git tag -a " ++ vsn ++ " -m \"new release\""
-                                , "git push origin " ++ vsn
-                                ]
+                , [ "git tag -a " ++ vsn ++ " -m \"new release\""
+                  , "git push origin " ++ vsn
+                  ]
+                    |> List.map D.fromChars
+                    |> D.vcat
+                    |> D.dullyellow
+                    |> D.indent 4
                 , D.fromChars "The -m flag is for a helpful message. Try to make it more informative!"
                 ]
 
@@ -812,11 +796,12 @@ publishToReport publish =
                             ("You have version " ++ vsn ++ " tagged locally, but not on GitHub.")
                             [ D.reflow
                                 "Run the following command to make this tag available on GitHub:"
-                            , D.indent 4 <|
-                                D.dullyellow <|
-                                    D.fromChars <|
-                                        "git push origin "
-                                            ++ vsn
+                            , ("git push origin "
+                                ++ vsn
+                              )
+                                |> D.fromChars
+                                |> D.dullyellow
+                                |> D.indent 4
                             , D.reflow
                                 "This will make it possible to find your code online based on the version number."
                             ]
@@ -835,7 +820,7 @@ publishToReport publish =
             Help.report "PROBLEM VERIFYING TAG"
                 Nothing
                 ("I need to check that version " ++ V.toChars version ++ " is tagged on GitHub, so I fetched:")
-                [ D.indent 4 <| D.dullyellow <| D.fromChars url
+                [ D.fromChars url |> D.dullyellow |> D.indent 4
                 , D.reflow <|
                     "I got the data back, but it was not what I was expecting. The response body contains "
                         ++ String.fromInt (String.length body)
@@ -846,14 +831,15 @@ publishToReport publish =
                             else
                                 "beginning:"
                            )
-                , D.indent 4 <|
-                    D.dullyellow <|
-                        D.fromChars <|
-                            if String.length body <= 76 then
-                                body
+                , (if String.length body <= 76 then
+                    body
 
-                            else
-                                String.left 73 body ++ "..."
+                   else
+                    String.left 73 body ++ "..."
+                  )
+                    |> D.fromChars
+                    |> D.dullyellow
+                    |> D.indent 4
                 , D.reflow <|
                     "Does this error keep showing up? Maybe there is something weird with your internet "
                         ++ "connection. We have gotten reports that schools, businesses, airports, etc. sometimes "
@@ -862,14 +848,13 @@ publishToReport publish =
                 ]
 
         PublishCannotGetZip httpError ->
-            toHttpErrorReport "PROBLEM DOWNLOADING CODE" httpError <|
-                "I need to check that folks can download and build the source code when they install this package"
+            "I need to check that folks can download and build the source code when they install this package" |> toHttpErrorReport "PROBLEM DOWNLOADING CODE" httpError
 
         PublishCannotDecodeZip url ->
             Help.report "PROBLEM DOWNLOADING CODE"
                 Nothing
                 "I need to check that folks can download and build the source code when they install this package, so I downloaded the code from:"
-                [ D.indent 4 <| D.dullyellow <| D.fromChars url
+                [ D.fromChars url |> D.dullyellow |> D.indent 4
                 , D.reflow <|
                     "I was unable to unzip the archive though. Maybe there is something weird with your internet "
                         ++ "connection. We have gotten reports that schools, businesses, airports, etc. sometimes intercept "
@@ -885,8 +870,7 @@ publishToReport publish =
                     ++ " really does come next"
 
         PublishCannotRegister httpError ->
-            toHttpErrorReport "PROBLEM PUBLISHING PACKAGE" httpError <|
-                "I need to send information about your package to the package website"
+            "I need to send information about your package to the package website" |> toHttpErrorReport "PROBLEM PUBLISHING PACKAGE" httpError
 
         PublishNoGit ->
             Help.report "NO GIT"
@@ -896,8 +880,7 @@ publishToReport publish =
                     "Who cares about this? Well, I currently use `git` to check if there are any local changes in your code. "
                         ++ "Local changes are a good sign that some important improvements have gotten mistagged, so this check "
                         ++ "can be extremely helpful for package authors!"
-                , D.toSimpleNote <|
-                    "We plan to do this without the `git` binary in a future release."
+                , "We plan to do this without the `git` binary in a future release." |> D.toSimpleNote
                 ]
 
         PublishLocalChanges version ->
@@ -966,14 +949,12 @@ toBadReadmeReport title summary =
     Help.report title
         (Just "README.md")
         summary
-        [ D.reflow <|
-            "When people look at your README, they are wondering:"
+        [ "When people look at your README, they are wondering:" |> D.reflow
         , D.vcat
             [ D.fromChars "  - What does this package even do?"
             , D.fromChars "  - Will it help me solve MY problems?"
             ]
-        , D.reflow <|
-            "So I recommend starting your README with a small example of the most common usage scenario. Show people what they can expect if they learn more!"
+        , "So I recommend starting your README with a small example of the most common usage scenario. Show people what they can expect if they learn more!" |> D.reflow
         , D.toSimpleNote <|
             "By publishing your package, you are inviting people to invest time in understanding "
                 ++ "your work. Spending an hour on your README to communicate your knowledge more clearly "
@@ -990,8 +971,7 @@ badZipReport =
         ("Before publishing packages, I download the code from GitHub and try to build it from scratch. "
             ++ "That way I can be more confident that it will work for other people too. But I am not able to build it!"
         )
-        [ D.reflow <|
-            "I was just able to build your local copy though. Is there some way the version on GitHub could be different?"
+        [ "I was just able to build your local copy though. Is there some way the version on GitHub could be different?" |> D.reflow
         ]
 
 
@@ -1015,7 +995,7 @@ toDocsProblemReport problem context =
             Help.report "PROBLEM LOADING DOCS"
                 Nothing
                 (context ++ ", so I fetched:")
-                [ D.indent 4 <| D.dullyellow <| D.fromChars url
+                [ D.fromChars url |> D.dullyellow |> D.indent 4
                 , D.reflow <|
                     "I got the data back, but it was not what I was expecting. The response body contains "
                         ++ body
@@ -1026,14 +1006,15 @@ toDocsProblemReport problem context =
                             else
                                 "beginning:"
                            )
-                , D.indent 4 <|
-                    D.dullyellow <|
-                        D.fromChars <|
-                            if String.length body <= 76 then
-                                body
+                , (if String.length body <= 76 then
+                    body
 
-                            else
-                                String.left 73 body ++ "..."
+                   else
+                    String.left 73 body ++ "..."
+                  )
+                    |> D.fromChars
+                    |> D.dullyellow
+                    |> D.indent 4
                 , D.reflow <|
                     "Does this error keep showing up? Maybe there is something weird with your internet "
                         ++ "connection. We have gotten reports that schools, businesses, airports, etc. sometimes "
@@ -1078,7 +1059,7 @@ installToReport exit =
             Help.report "NEW PROJECT?"
                 Nothing
                 "Are you trying to start a new project? Try this command instead:"
-                [ D.indent 4 <| D.green (D.fromChars "guida init")
+                [ D.green (D.fromChars "guida init") |> D.indent 4
                 , D.reflow "It will help you get started!"
                 ]
 
@@ -1086,20 +1067,19 @@ installToReport exit =
             toOutlineReport outline
 
         InstallBadRegistry problem ->
-            toRegistryProblemReport "PROBLEM LOADING PACKAGE LIST" problem <|
-                "I need the list of published packages to figure out how to install things"
+            "I need the list of published packages to figure out how to install things" |> toRegistryProblemReport "PROBLEM LOADING PACKAGE LIST" problem
 
         InstallNoArgs elmHome ->
             Help.report "INSTALL WHAT?"
                 Nothing
                 "I am expecting commands like:"
-                [ D.green <|
-                    D.indent 4 <|
-                        D.vcat <|
-                            [ D.fromChars "guida install elm/http"
-                            , D.fromChars "guida install elm/json"
-                            , D.fromChars "guida install elm/random"
-                            ]
+                [ [ D.fromChars "guida install elm/http"
+                  , D.fromChars "guida install elm/json"
+                  , D.fromChars "guida install elm/random"
+                  ]
+                    |> D.vcat
+                    |> D.indent 4
+                    |> D.green
                 , D.toFancyHint
                     [ D.fromChars "In"
                     , D.fromChars "JavaScript"
@@ -1215,10 +1195,8 @@ installToReport exit =
             Help.report "CANNOT FIND COMPATIBLE VERSION LOCALLY"
                 (Just "elm.json")
                 ("I cannot find a version of " ++ Pkg.toChars pkg ++ " that is compatible with your existing dependencies.")
-                [ D.reflow <|
-                    "I was not able to connect to https://package.elm-lang.org/ though, so I was only able to look through packages that you have downloaded in the past."
-                , D.reflow <|
-                    "Try again later when you have internet!"
+                [ "I was not able to connect to https://package.elm-lang.org/ though, so I was only able to look through packages that you have downloaded in the past." |> D.reflow
+                , "Try again later when you have internet!" |> D.reflow
                 ]
 
         InstallNoOnlinePkgSolution pkg ->
@@ -1241,10 +1219,8 @@ installToReport exit =
             Help.report "CANNOT FIND COMPATIBLE VERSION LOCALLY"
                 (Just "elm.json")
                 ("I cannot find a version of " ++ Pkg.toChars pkg ++ " that is compatible with your existing constraints.")
-                [ D.reflow <|
-                    "I was not able to connect to https://package.elm-lang.org/ though, so I was only able to look through packages that you have downloaded in the past."
-                , D.reflow <|
-                    "Try again later when you have internet!"
+                [ "I was not able to connect to https://package.elm-lang.org/ though, so I was only able to look through packages that you have downloaded in the past." |> D.reflow
+                , "Try again later when you have internet!" |> D.reflow
                 ]
 
         InstallHadSolverTrouble solver ->
@@ -1264,10 +1240,9 @@ installToReport exit =
                         |> D.a (D.fromChars ".")
                     ]
                 )
-                [ D.reflow <|
-                    "I looked through https://package.elm-lang.org for packages with similar names and found these:"
-                , D.indent 4 <| D.dullyellow <| D.vcat <| List.map D.fromPackage suggestions
-                , D.reflow <| "Maybe you want one of these instead?"
+                [ "I looked through https://package.elm-lang.org for packages with similar names and found these:" |> D.reflow
+                , List.map D.fromPackage suggestions |> D.vcat |> D.dullyellow |> D.indent 4
+                , "Maybe you want one of these instead?" |> D.reflow
                 ]
 
         InstallUnknownPackageOffline pkg suggestions ->
@@ -1284,12 +1259,10 @@ installToReport exit =
                         |> D.a (D.fromChars ".")
                     ]
                 )
-                [ D.reflow <|
-                    "I could not connect to https://package.elm-lang.org though, so new packages may have been published since I last updated my local cache of package names."
-                , D.reflow <|
-                    "Looking through the locally cached names, the closest ones are:"
-                , D.indent 4 <| D.dullyellow <| D.vcat <| List.map D.fromPackage suggestions
-                , D.reflow <| "Maybe you want one of these instead?"
+                [ "I could not connect to https://package.elm-lang.org though, so new packages may have been published since I last updated my local cache of package names." |> D.reflow
+                , "Looking through the locally cached names, the closest ones are:" |> D.reflow
+                , List.map D.fromPackage suggestions |> D.vcat |> D.dullyellow |> D.indent 4
+                , "Maybe you want one of these instead?" |> D.reflow
                 ]
 
         InstallBadDetails details ->
@@ -1318,7 +1291,7 @@ uninstallToReport exit =
             Help.report "NEW PROJECT?"
                 Nothing
                 "Are you trying to start a new project? Try this command instead:"
-                [ D.indent 4 <| D.green (D.fromChars "guida init")
+                [ D.green (D.fromChars "guida init") |> D.indent 4
                 , D.reflow "It will help you get started!"
                 ]
 
@@ -1326,20 +1299,19 @@ uninstallToReport exit =
             toOutlineReport outline
 
         UninstallBadRegistry problem ->
-            toRegistryProblemReport "PROBLEM LOADING PACKAGE LIST" problem <|
-                "I need the list of published packages to figure out how to uninstall things"
+            "I need the list of published packages to figure out how to uninstall things" |> toRegistryProblemReport "PROBLEM LOADING PACKAGE LIST" problem
 
         UninstallNoArgs ->
             Help.report "UNINSTALL WHAT?"
                 Nothing
                 "I am expecting commands like:"
-                [ D.green <|
-                    D.indent 4 <|
-                        D.vcat <|
-                            [ D.fromChars "guida uninstall elm/http"
-                            , D.fromChars "guida uninstall elm/json"
-                            , D.fromChars "guida uninstall elm/random"
-                            ]
+                [ [ D.fromChars "guida uninstall elm/http"
+                  , D.fromChars "guida uninstall elm/json"
+                  , D.fromChars "guida uninstall elm/random"
+                  ]
+                    |> D.vcat
+                    |> D.indent 4
+                    |> D.green
                 ]
 
         UninstallNoOnlineAppSolution pkg ->
@@ -1368,10 +1340,8 @@ uninstallToReport exit =
             Help.report "CANNOT FIND COMPATIBLE VERSION LOCALLY"
                 (Just "elm.json")
                 ("I cannot find a version of " ++ Pkg.toChars pkg ++ " that is compatible with your existing dependencies.")
-                [ D.reflow <|
-                    "I was not able to connect to https://package.elm-lang.org/ though, so I was only able to look through packages that you have downloaded in the past."
-                , D.reflow <|
-                    "Try again later when you have internet!"
+                [ "I was not able to connect to https://package.elm-lang.org/ though, so I was only able to look through packages that you have downloaded in the past." |> D.reflow
+                , "Try again later when you have internet!" |> D.reflow
                 ]
 
         UninstallHadSolverTrouble solver ->
@@ -1418,7 +1388,7 @@ toSolverReport problem =
                     ++ V.toChars vsn
                     ++ " to help me search for a set of compatible packages, but I ran into corrupted information from:"
                 )
-                [ D.indent 4 <| D.dullyellow <| D.fromChars url
+                [ D.fromChars url |> D.dullyellow |> D.indent 4
                 , D.reflow <|
                     "Is something weird with your internet connection. "
                         ++ "We have gotten reports that schools, businesses, airports, etc. sometimes intercept requests "
@@ -1464,8 +1434,7 @@ toOutlineReport : Outline -> Help.Report
 toOutlineReport problem =
     case problem of
         OutlineHasBadStructure decodeError ->
-            Json.toReport "elm.json" (Json.FailureToReport toOutlineProblemReport) decodeError <|
-                Json.ExplicitReason "I ran into a problem with your elm.json file."
+            Json.ExplicitReason "I ran into a problem with your elm.json file." |> Json.toReport "elm.json" (Json.FailureToReport toOutlineProblemReport) decodeError
 
         OutlineHasMissingSrcDirs dir dirs ->
             case dirs of
@@ -1473,20 +1442,16 @@ toOutlineReport problem =
                     Help.report "MISSING SOURCE DIRECTORY"
                         (Just "elm.json")
                         "I need a valid elm.json file, but the \"source-directories\" field lists the following directory:"
-                        [ D.indent 4 <| D.red <| D.fromChars dir
-                        , D.reflow <|
-                            "I cannot find it though. Is it missing? Is there a typo?"
+                        [ D.fromChars dir |> D.red |> D.indent 4
+                        , "I cannot find it though. Is it missing? Is there a typo?" |> D.reflow
                         ]
 
                 _ :: _ ->
                     Help.report "MISSING SOURCE DIRECTORIES"
                         (Just "elm.json")
                         "I need a valid elm.json file, but the \"source-directories\" field lists the following directories:"
-                        [ D.indent 4 <|
-                            D.vcat <|
-                                List.map (D.red << D.fromChars) (dir :: dirs)
-                        , D.reflow <|
-                            "I cannot find them though. Are they missing? Are there typos?"
+                        [ List.map (D.red << D.fromChars) (dir :: dirs) |> D.vcat |> D.indent 4
+                        , "I cannot find them though. Are they missing? Are there typos?" |> D.reflow
                         ]
 
         OutlineHasDuplicateSrcDirs canonicalDir dir1 dir2 ->
@@ -1494,25 +1459,18 @@ toOutlineReport problem =
                 Help.report "REDUNDANT SOURCE DIRECTORIES"
                     (Just "elm.json")
                     "I need a valid elm.json file, but the \"source-directories\" field lists the same directory twice:"
-                    [ D.indent 4 <|
-                        D.vcat <|
-                            List.map (D.red << D.fromChars) [ dir1, dir2 ]
-                    , D.reflow <|
-                        "Remove one of the entries!"
+                    [ List.map (D.red << D.fromChars) [ dir1, dir2 ] |> D.vcat |> D.indent 4
+                    , "Remove one of the entries!" |> D.reflow
                     ]
 
             else
                 Help.report "REDUNDANT SOURCE DIRECTORIES"
                     (Just "elm.json")
                     "I need a valid elm.json file, but the \"source-directories\" field has some redundant directories:"
-                    [ D.indent 4 <|
-                        D.vcat <|
-                            List.map (D.red << D.fromChars) [ dir1, dir2 ]
-                    , D.reflow <|
-                        "These are two different ways of refering to the same directory:"
-                    , D.indent 4 <| D.dullyellow <| D.fromChars canonicalDir
-                    , D.reflow <|
-                        "Remove one of the redundant entries from your \"source-directories\" field."
+                    [ List.map (D.red << D.fromChars) [ dir1, dir2 ] |> D.vcat |> D.indent 4
+                    , "These are two different ways of refering to the same directory:" |> D.reflow
+                    , D.fromChars canonicalDir |> D.dullyellow |> D.indent 4
+                    , "Remove one of the redundant entries from your \"source-directories\" field." |> D.reflow
                     ]
 
         OutlineNoPkgCore ->
@@ -1551,19 +1509,17 @@ toOutlineProblemReport path source _ region problem =
     let
         toHighlight : Int -> Int -> Maybe A.Region
         toHighlight row col =
-            Just <| A.Region (A.Position row col) (A.Position row col)
+            A.Region (A.Position row col) (A.Position row col) |> Just
 
         toSnippet : String -> Maybe A.Region -> ( D.Doc, D.Doc ) -> Help.Report
         toSnippet title highlight pair =
-            Help.jsonReport title (Just path) <|
-                Code.toSnippet source region highlight pair
+            Code.toSnippet source region highlight pair |> Help.jsonReport title (Just path)
     in
     case problem of
         OP_BadType ->
             toSnippet "UNEXPECTED TYPE"
                 Nothing
-                ( D.reflow <|
-                    "I got stuck while reading your elm.json file. I cannot handle a \"type\" like this:"
+                ( "I got stuck while reading your elm.json file. I cannot handle a \"type\" like this:" |> D.reflow
                 , D.fillSep
                     [ D.fromChars "Try"
                     , D.fromChars "changing"
@@ -1580,8 +1536,7 @@ toOutlineProblemReport path source _ region problem =
         OP_BadPkgName row col ->
             toSnippet "INVALID PACKAGE NAME"
                 (toHighlight row col)
-                ( D.reflow <|
-                    "I got stuck while reading your elm.json file. I ran into trouble with the package name:"
+                ( "I got stuck while reading your elm.json file. I ran into trouble with the package name:" |> D.reflow
                 , D.stack
                     [ D.fillSep
                         [ D.fromChars "Package"
@@ -1600,40 +1555,38 @@ toOutlineProblemReport path source _ region problem =
                         , D.fromChars "something"
                         , D.fromChars "like:"
                         ]
-                    , D.dullyellow <|
-                        D.indent 4 <|
-                            D.vcat <|
-                                [ D.fromChars "\"mdgriffith/elm-ui\""
-                                , D.fromChars "\"w0rm/elm-physics\""
-                                , D.fromChars "\"Microsoft/elm-json-tree-view\""
-                                , D.fromChars "\"FordLabs/elm-star-rating\""
-                                , D.fromChars "\"1602/json-schema\""
-                                ]
+                    , [ D.fromChars "\"mdgriffith/elm-ui\""
+                      , D.fromChars "\"w0rm/elm-physics\""
+                      , D.fromChars "\"Microsoft/elm-json-tree-view\""
+                      , D.fromChars "\"FordLabs/elm-star-rating\""
+                      , D.fromChars "\"1602/json-schema\""
+                      ]
+                        |> D.vcat
+                        |> D.indent 4
+                        |> D.dullyellow
                     , D.reflow
                         "The author name should match your GitHub name exactly, and the project name needs to follow these rules:"
-                    , D.indent 4 <|
-                        D.vcat <|
-                            [ D.fromChars "+--------------------------------------+-----------+-----------+"
-                            , D.fromChars "| RULE                                 | BAD       | GOOD      |"
-                            , D.fromChars "+--------------------------------------+-----------+-----------+"
-                            , D.fromChars "| only lower case, digits, and hyphens | elm-HTTP  | elm-http  |"
-                            , D.fromChars "| no leading digits                    | 3D        | elm-3d    |"
-                            , D.fromChars "| no non-ASCII characters              | elm-bjørn | elm-bear  |"
-                            , D.fromChars "| no underscores                       | elm_ui    | elm-ui    |"
-                            , D.fromChars "| no double hyphens                    | elm--hash | elm-hash  |"
-                            , D.fromChars "| no starting or ending hyphen         | -elm-tar- | elm-tar   |"
-                            , D.fromChars "+--------------------------------------+-----------+-----------+"
-                            ]
-                    , D.toSimpleNote <|
-                        "These rules only apply to the project name, so you should never need to change your GitHub name!"
+                    , [ D.fromChars "+--------------------------------------+-----------+-----------+"
+                      , D.fromChars "| RULE                                 | BAD       | GOOD      |"
+                      , D.fromChars "+--------------------------------------+-----------+-----------+"
+                      , D.fromChars "| only lower case, digits, and hyphens | elm-HTTP  | elm-http  |"
+                      , D.fromChars "| no leading digits                    | 3D        | elm-3d    |"
+                      , D.fromChars "| no non-ASCII characters              | elm-bjørn | elm-bear  |"
+                      , D.fromChars "| no underscores                       | elm_ui    | elm-ui    |"
+                      , D.fromChars "| no double hyphens                    | elm--hash | elm-hash  |"
+                      , D.fromChars "| no starting or ending hyphen         | -elm-tar- | elm-tar   |"
+                      , D.fromChars "+--------------------------------------+-----------+-----------+"
+                      ]
+                        |> D.vcat
+                        |> D.indent 4
+                    , "These rules only apply to the project name, so you should never need to change your GitHub name!" |> D.toSimpleNote
                     ]
                 )
 
         OP_BadVersion row col ->
             toSnippet "PROBLEM WITH VERSION"
                 (toHighlight row col)
-                ( D.reflow <|
-                    "I got stuck while reading your elm.json file. I was expecting a version number here:"
+                ( "I got stuck while reading your elm.json file. I was expecting a version number here:" |> D.reflow
                 , D.fillSep
                     [ D.fromChars "I"
                     , D.fromChars "need"
@@ -1656,8 +1609,7 @@ toOutlineProblemReport path source _ region problem =
                 C.BadFormat row col ->
                     toSnippet "PROBLEM WITH CONSTRAINT"
                         (toHighlight row col)
-                        ( D.reflow <|
-                            "I got stuck while reading your elm.json file. I do not understand this version constraint:"
+                        ( "I got stuck while reading your elm.json file. I do not understand this version constraint:" |> D.reflow
                         , D.stack
                             [ D.fillSep
                                 [ D.fromChars "I"
@@ -1685,8 +1637,7 @@ toOutlineProblemReport path source _ region problem =
                     if before == after then
                         toSnippet "PROBLEM WITH CONSTRAINT"
                             Nothing
-                            ( D.reflow <|
-                                "I got stuck while reading your elm.json file. I ran into an invalid version constraint:"
+                            ( "I got stuck while reading your elm.json file. I ran into an invalid version constraint:" |> D.reflow
                             , D.fillSep
                                 [ D.fromChars "Elm"
                                 , D.fromChars "checks"
@@ -1732,8 +1683,7 @@ toOutlineProblemReport path source _ region problem =
                     else
                         toSnippet "PROBLEM WITH CONSTRAINT"
                             Nothing
-                            ( D.reflow <|
-                                "I got stuck while reading your elm.json file. I ran into an invalid version constraint:"
+                            ( "I got stuck while reading your elm.json file. I ran into an invalid version constraint:" |> D.reflow
                             , D.fillSep
                                 [ D.fromChars "Maybe"
                                 , D.fromChars "you"
@@ -1781,8 +1731,7 @@ toOutlineProblemReport path source _ region problem =
         OP_BadModuleName row col ->
             toSnippet "PROBLEM WITH MODULE NAME"
                 (toHighlight row col)
-                ( D.reflow <|
-                    "I got stuck while reading your elm.json file. I was expecting a module name here:"
+                ( "I got stuck while reading your elm.json file. I was expecting a module name here:" |> D.reflow
                 , D.fillSep
                     [ D.fromChars "I"
                     , D.fromChars "need"
@@ -1812,8 +1761,7 @@ toOutlineProblemReport path source _ region problem =
         OP_BadModuleHeaderTooLong ->
             toSnippet "HEADER TOO LONG"
                 Nothing
-                ( D.reflow <|
-                    "I got stuck while reading your elm.json file. This section header is too long:"
+                ( "I got stuck while reading your elm.json file. This section header is too long:" |> D.reflow
                 , D.stack
                     [ D.fillSep
                         [ D.fromChars "I"
@@ -1842,8 +1790,7 @@ toOutlineProblemReport path source _ region problem =
         OP_BadDependencyName row col ->
             toSnippet "PROBLEM WITH DEPENDENCY NAME"
                 (toHighlight row col)
-                ( D.reflow <|
-                    "I got stuck while reading your elm.json file. There is something wrong with this dependency name:"
+                ( "I got stuck while reading your elm.json file. There is something wrong with this dependency name:" |> D.reflow
                 , D.stack
                     [ D.fillSep
                         [ D.fromChars "Package"
@@ -1895,8 +1842,7 @@ toOutlineProblemReport path source _ region problem =
         OP_BadLicense suggestions ->
             toSnippet "UNKNOWN LICENSE"
                 Nothing
-                ( D.reflow <|
-                    "I got stuck while reading your elm.json file. I do not know about this type of license:"
+                ( "I got stuck while reading your elm.json file. I do not know about this type of license:" |> D.reflow
                 , D.stack
                     [ D.fillSep
                         [ D.fromChars "Elm"
@@ -1925,17 +1871,15 @@ toOutlineProblemReport path source _ region problem =
                         , D.fromChars "you"
                         , D.fromChars "wrote:"
                         ]
-                    , D.indent 4 <| D.dullyellow <| D.vcat <| List.map D.fromChars suggestions
-                    , D.reflow <|
-                        "Check out https://spdx.org/licenses/ for the full list of options."
+                    , List.map D.fromChars suggestions |> D.vcat |> D.dullyellow |> D.indent 4
+                    , "Check out https://spdx.org/licenses/ for the full list of options." |> D.reflow
                     ]
                 )
 
         OP_BadSummaryTooLong ->
             toSnippet "SUMMARY TOO LONG"
                 Nothing
-                ( D.reflow <|
-                    "I got stuck while reading your elm.json file. Your \"summary\" is too long:"
+                ( "I got stuck while reading your elm.json file. Your \"summary\" is too long:" |> D.reflow
                 , D.stack
                     [ D.fillSep
                         [ D.fromChars "I"
@@ -1964,8 +1908,7 @@ toOutlineProblemReport path source _ region problem =
         OP_NoSrcDirs ->
             toSnippet "NO SOURCE DIRECTORIES"
                 Nothing
-                ( D.reflow <|
-                    "I got stuck while reading your elm.json file. You do not have any \"source-directories\" listed here:"
+                ( "I got stuck while reading your elm.json file. You do not have any \"source-directories\" listed here:" |> D.reflow
                 , D.fillSep
                     [ D.fromChars "I"
                     , D.fromChars "need"
@@ -2037,16 +1980,14 @@ toDetailsReport details =
                     , D.green (D.fromChars "elm install")
                         |> D.a (D.fromChars ".")
                     ]
-                , D.reflow <|
-                    "Please ask for help on the community forums if you try those paths and are still having problems!"
+                , "Please ask for help on the community forums if you try those paths and are still having problems!" |> D.reflow
                 ]
 
         DetailsNoOfflineSolution ->
             Help.report "TROUBLE VERIFYING DEPENDENCIES"
                 (Just "elm.json")
                 "I could not connect to https://package.elm-lang.org to get the latest list of packages, and I was unable to verify your dependencies with the information I have cached locally."
-                [ D.reflow <|
-                    "Are you able to connect to the internet? These dependencies may work once you get access to the registry!"
+                [ "Are you able to connect to the internet? These dependencies may work once you get access to the registry!" |> D.reflow
                 , D.toFancyNote
                     [ D.fromChars "If"
                     , D.fromChars "you"
@@ -2081,7 +2022,7 @@ toDetailsReport details =
             Help.report "ELM VERSION MISMATCH"
                 (Just "elm.json")
                 "Your elm.json says this package needs a version of Elm in this range:"
-                [ D.indent 4 <| D.dullyellow <| D.fromChars <| C.toChars constraint
+                [ C.toChars constraint |> D.fromChars |> D.dullyellow |> D.indent 4
                 , D.fillSep
                     [ D.fromChars "But"
                     , D.fromChars "you"
@@ -2140,16 +2081,14 @@ toDetailsReport details =
                     , D.green (D.fromChars "elm install")
                         |> D.a (D.fromChars ".")
                     ]
-                , D.reflow <|
-                    "Please ask for help on the community forums if you try those paths and are still having problems!"
+                , "Please ask for help on the community forums if you try those paths and are still having problems!" |> D.reflow
                 ]
 
         DetailsBadOutline outline ->
             toOutlineReport outline
 
         DetailsCannotGetRegistry problem ->
-            toRegistryProblemReport "PROBLEM LOADING PACKAGE LIST" problem <|
-                "I need the list of published packages to verify your dependencies"
+            "I need the list of published packages to verify your dependencies" |> toRegistryProblemReport "PROBLEM LOADING PACKAGE LIST" problem
 
         DetailsBadDeps cacheDir deps ->
             case List.sortBy toBadDepRank deps of
@@ -2161,8 +2100,7 @@ toDetailsReport details =
                             "I would try deleting the "
                                 ++ cacheDir
                                 ++ " and guida-stuff/ directories, then trying to build again. That will work if some cached files got corrupted somehow."
-                        , D.reflow <|
-                            "If that does not work, go to https://elm-lang.org/community and ask for help. This is a weird case!"
+                        , "If that does not work, go to https://elm-lang.org/community and ask for help. This is a weird case!" |> D.reflow
                         ]
 
                 d :: _ ->
@@ -2174,7 +2112,7 @@ toDetailsReport details =
                             Help.report "PROBLEM BUILDING DEPENDENCIES"
                                 Nothing
                                 "I ran into a compilation error when trying to build the following package:"
-                                [ D.indent 4 <| D.red <| D.fromChars <| Pkg.toChars pkg ++ " " ++ V.toChars vsn
+                                [ (Pkg.toChars pkg ++ " " ++ V.toChars vsn) |> D.fromChars |> D.red |> D.indent 4
                                 , D.reflow <|
                                     "This probably means it has package constraints that are too wide. "
                                         ++ "It may be possible to tweak your elm.json to avoid the root problem as a stopgap. "
@@ -2182,10 +2120,7 @@ toDetailsReport details =
                                 , D.toSimpleNote <|
                                     "To help with the root problem, please report this to the package author "
                                         ++ "along with the following information:"
-                                , D.indent 4 <|
-                                    D.vcat <|
-                                        List.map (\( p, v ) -> D.fromChars <| Pkg.toChars p ++ " " ++ V.toChars v) <|
-                                            Dict.toList compare fingerprint
+                                , Dict.toList compare fingerprint |> List.map (\( p, v ) -> (Pkg.toChars p ++ " " ++ V.toChars v) |> D.fromChars) |> D.vcat |> D.indent 4
                                 , D.reflow <|
                                     "If you want to help out even more, try building the package locally. "
                                         ++ "That should give you much more specific information about why this package is failing to build, "
@@ -2234,7 +2169,7 @@ toPackageProblemReport pkg vsn problem =
             Help.report "PROBLEM DOWNLOADING PACKAGE"
                 Nothing
                 ("I need to find the latest download link for " ++ thePackage ++ ", but I ran into corrupted information from:")
-                [ D.indent 4 <| D.dullyellow <| D.fromChars url
+                [ D.fromChars url |> D.dullyellow |> D.indent 4
                 , D.reflow <|
                     "Is something weird with your internet connection. "
                         ++ "We have gotten reports that schools, businesses, airports, etc. sometimes intercept requests "
@@ -2250,7 +2185,7 @@ toPackageProblemReport pkg vsn problem =
             Help.report "PROBLEM DOWNLOADING PACKAGE"
                 Nothing
                 ("I downloaded the source code for " ++ thePackage ++ " from:")
-                [ D.indent 4 <| D.dullyellow <| D.fromChars url
+                [ D.fromChars url |> D.dullyellow |> D.indent 4
                 , D.reflow <|
                     "But I was unable to unzip the data. Maybe there is something weird with your internet connection. "
                         ++ "We have gotten reports that schools, businesses, airports, etc. sometimes intercept requests "
@@ -2261,15 +2196,14 @@ toPackageProblemReport pkg vsn problem =
             Help.report "CORRUPT PACKAGE DATA"
                 Nothing
                 ("I downloaded the source code for " ++ thePackage ++ " from:")
-                [ D.indent 4 <| D.dullyellow <| D.fromChars url
+                [ D.fromChars url |> D.dullyellow |> D.indent 4
                 , D.reflow "But it looks like the hash of the archive has changed since publication:"
-                , D.vcat <|
-                    List.map D.fromChars <|
-                        [ "  Expected: " ++ expectedHash
-                        , "    Actual: " ++ actualHash
-                        ]
-                , D.reflow <|
-                    "This usually means that the package author moved the version tag, so report it to them and see if that is the issue. Folks on Elm slack can probably help as well."
+                , [ "  Expected: " ++ expectedHash
+                  , "    Actual: " ++ actualHash
+                  ]
+                    |> List.map D.fromChars
+                    |> D.vcat
+                , "This usually means that the package author moved the version tag, so report it to them and see if that is the issue. Folks on Elm slack can probably help as well." |> D.reflow
                 ]
 
 
@@ -2292,7 +2226,7 @@ toRegistryProblemReport title problem context =
             Help.report title
                 Nothing
                 (context ++ ", so I fetched:")
-                [ D.indent 4 <| D.dullyellow <| D.fromChars url
+                [ D.fromChars url |> D.dullyellow |> D.indent 4
                 , D.reflow <|
                     "I got the data back, but it was not what I was expecting. The response body contains "
                         ++ String.fromInt (String.length body)
@@ -2303,14 +2237,15 @@ toRegistryProblemReport title problem context =
                             else
                                 "beginning:"
                            )
-                , D.indent 4 <|
-                    D.dullyellow <|
-                        D.fromChars <|
-                            if String.length body <= 76 then
-                                body
+                , (if String.length body <= 76 then
+                    body
 
-                            else
-                                String.left 73 body ++ "..."
+                   else
+                    String.left 73 body ++ "..."
+                  )
+                    |> D.fromChars
+                    |> D.dullyellow
+                    |> D.indent 4
                 , D.reflow <|
                     "Does this error keep showing up? Maybe there is something weird with your internet "
                         ++ "connection. We have gotten reports that schools, businesses, airports, etc. sometimes "
@@ -2332,8 +2267,8 @@ toHttpErrorReport title err context =
         Http.BadUrl url reason ->
             toHttpReport (context ++ ", so I wanted to fetch:")
                 url
-                [ D.reflow <| "But my HTTP library is saying this is not a valid URL. It is saying:"
-                , D.indent 4 <| D.fromChars reason
+                [ "But my HTTP library is saying this is not a valid URL. It is saying:" |> D.reflow
+                , D.fromChars reason |> D.indent 4
                 , D.reflow <|
                     "This may indicate that there is some problem in the compiler, so please open an issue at "
                         ++ "https://github.com/elm/compiler/issues listing your operating system, Elm version, the command "
@@ -2358,7 +2293,7 @@ toHttpErrorReport title err context =
                             , D.red (D.fromInt code)
                             ]
                                 ++ List.map D.fromChars (String.words message)
-                        , D.indent 4 <| D.reflow <| body
+                        , body |> D.reflow |> D.indent 4
                         , D.reflow <|
                             "This may mean some online endpoint changed in an unexpected way, so if does not seem like "
                                 ++ "something on your side is causing this (e.g. firewall) please report this to "
@@ -2373,7 +2308,7 @@ toHttpErrorReport title err context =
                             "But I gave up after following these "
                                 ++ String.fromInt (List.length responses)
                                 ++ " redirects:"
-                        , D.indent 4 <| D.vcat <| List.map toRedirectDoc responses
+                        , List.map toRedirectDoc responses |> D.vcat |> D.indent 4
                         , D.reflow <|
                             "Is it possible that your internet connection intercepts certain requests? "
                                 ++ "That sometimes causes problems for folks in schools, businesses, airports, hotels, and certain countries. "
@@ -2383,8 +2318,8 @@ toHttpErrorReport title err context =
                 _ ->
                     toHttpReport (context ++ ", so I tried to fetch:")
                         url
-                        [ D.reflow <| "But my HTTP library is giving me the following error message:"
-                        , D.indent 4 <| D.fromChars "TODO"
+                        [ "But my HTTP library is giving me the following error message:" |> D.reflow
+                        , D.fromChars "TODO" |> D.indent 4
                         , D.reflow <|
                             "Are you somewhere with a slow internet connection? Or no internet? "
                                 ++ "Does the link I am trying to fetch work in your browser? "
@@ -2395,8 +2330,8 @@ toHttpErrorReport title err context =
         Http.BadMystery url Utils.SomeException ->
             toHttpReport (context ++ ", so I tried to fetch:")
                 url
-                [ D.reflow <| "But I ran into something weird! I was able to extract this error message:"
-                , D.indent 4 <| D.fromChars "SomeException"
+                [ "But I ran into something weird! I was able to extract this error message:" |> D.reflow
+                , D.fromChars "SomeException" |> D.indent 4
                 , D.reflow <|
                     "Is it possible that your internet connection intercepts certain requests? "
                         ++ "That sometimes causes problems for folks in schools, businesses, airports, hotels, and certain countries. "
@@ -2442,9 +2377,8 @@ makeToReport make =
             Help.report "NO elm.json FILE"
                 Nothing
                 "It looks like you are starting a new Elm project. Very exciting! Try running:"
-                [ D.indent 4 <| D.green <| D.fromChars "elm init"
-                , D.reflow <|
-                    "It will help you get set up. It is really simple!"
+                [ D.fromChars "elm init" |> D.green |> D.indent 4
+                , "It will help you get set up. It is really simple!" |> D.reflow
                 ]
 
         MakeCannotOptimizeAndDebug ->
@@ -2477,11 +2411,10 @@ makeToReport make =
                 Nothing
                 "What should I make though? I need specific files like:"
                 [ D.vcat
-                    [ D.indent 4 <| D.green (D.fromChars "elm make src/Main.elm")
-                    , D.indent 4 <| D.green (D.fromChars "elm make src/This.elm src/That.elm")
+                    [ D.green (D.fromChars "elm make src/Main.elm") |> D.indent 4
+                    , D.green (D.fromChars "elm make src/This.elm src/That.elm") |> D.indent 4
                     ]
-                , D.reflow <|
-                    "I recommend reading through https://guide.elm-lang.org for guidance on what to actually put in those files!"
+                , "I recommend reading through https://guide.elm-lang.org for guidance on what to actually put in those files!" |> D.reflow
                 ]
 
         MakePkgNeedsExposing ->
@@ -2489,11 +2422,10 @@ makeToReport make =
                 Nothing
                 "What should I make though? I need specific files like:"
                 [ D.vcat
-                    [ D.indent 4 <| D.green (D.fromChars "elm make src/Main.elm")
-                    , D.indent 4 <| D.green (D.fromChars "elm make src/This.elm src/That.elm")
+                    [ D.green (D.fromChars "elm make src/Main.elm") |> D.indent 4
+                    , D.green (D.fromChars "elm make src/This.elm src/That.elm") |> D.indent 4
                     ]
-                , D.reflow <|
-                    "You can also entries to the \"exposed-modules\" list in your elm.json file, and I will try to compile the relevant files."
+                , "You can also entries to the \"exposed-modules\" list in your elm.json file, and I will try to compile the relevant files." |> D.reflow
                 ]
 
         MakeMultipleFilesIntoHtml ->
@@ -2585,10 +2517,8 @@ makeToReport make =
             Help.report "NO MAIN"
                 Nothing
                 "When producing an HTML file, I require that the given file has a `main` value. That way I have something to show on screen!"
-                [ D.reflow <|
-                    "Try adding a `main` value to your file? Or if you just want to verify that this module compiles, switch to --output=/dev/null to skip the code gen phase altogether."
-                , D.toSimpleNote <|
-                    "Adding a `main` value can be as brief as adding something like this:"
+                [ "Try adding a `main` value to your file? Or if you just want to verify that this module compiles, switch to --output=/dev/null to skip the code gen phase altogether." |> D.reflow
+                , "Adding a `main` value can be as brief as adding something like this:" |> D.toSimpleNote
                 , D.vcat
                     [ D.fillSep
                         [ D.cyan (D.fromChars "import")
@@ -2606,8 +2536,7 @@ makeToReport make =
                             , D.dullyellow (D.fromChars "\"Hello!\"")
                             ]
                     ]
-                , D.reflow <|
-                    "From there I can create an HTML file that says \"Hello!\" on screen. I recommend looking through https://guide.elm-lang.org for more guidance on how to fill in the `main` value."
+                , "From there I can create an HTML file that says \"Hello!\" on screen. I recommend looking through https://guide.elm-lang.org for more guidance on how to fill in the `main` value." |> D.reflow
                 ]
 
         MakeNonMainFilesIntoJavaScript m ms ->
@@ -2619,10 +2548,8 @@ makeToReport make =
                             ++ String.fromList (N.toChars m)
                             ++ ".init() is definitely defined in the resulting file!"
                         )
-                        [ D.reflow <|
-                            "Try adding a `main` value to your file? Or if you just want to verify that this module compiles, switch to --output=/dev/null to skip the code gen phase altogether."
-                        , D.toSimpleNote <|
-                            "Adding a `main` value can be as brief as adding something like this:"
+                        [ "Try adding a `main` value to your file? Or if you just want to verify that this module compiles, switch to --output=/dev/null to skip the code gen phase altogether." |> D.reflow
+                        , "Adding a `main` value can be as brief as adding something like this:" |> D.toSimpleNote
                         , D.vcat
                             [ D.fillSep
                                 [ D.cyan (D.fromChars "import")
@@ -2640,8 +2567,7 @@ makeToReport make =
                                     , D.dullyellow (D.fromChars "\"Hello!\"")
                                     ]
                             ]
-                        , D.reflow <|
-                            "Or use https://package.elm-lang.org/packages/elm/core/latest/Platform#worker to make a `main` with no user interface."
+                        , "Or use https://package.elm-lang.org/packages/elm/core/latest/Platform#worker to make a `main` with no user interface." |> D.reflow
                         ]
 
                 _ :: _ ->
@@ -2651,11 +2577,9 @@ makeToReport make =
                             ++ String.fromList (N.toChars m)
                             ++ ".init() are definitely defined in the resulting file. I am missing `main` values in:"
                         )
-                        [ D.indent 4 <| D.red <| D.vcat <| List.map D.fromName (m :: ms)
-                        , D.reflow <|
-                            "Try adding a `main` value to them? Or if you just want to verify that these modules compile, switch to --output=/dev/null to skip the code gen phase altogether."
-                        , D.toSimpleNote <|
-                            "Adding a `main` value can be as brief as adding something like this:"
+                        [ List.map D.fromName (m :: ms) |> D.vcat |> D.red |> D.indent 4
+                        , "Try adding a `main` value to them? Or if you just want to verify that these modules compile, switch to --output=/dev/null to skip the code gen phase altogether." |> D.reflow
+                        , "Adding a `main` value can be as brief as adding something like this:" |> D.toSimpleNote
                         , D.vcat
                             [ D.fillSep
                                 [ D.cyan (D.fromChars "import")
@@ -2673,8 +2597,7 @@ makeToReport make =
                                     , D.dullyellow (D.fromChars "\"Hello!\"")
                                     ]
                             ]
-                        , D.reflow <|
-                            "Or use https://package.elm-lang.org/packages/elm/core/latest/Platform#worker to make a `main` with no user interface."
+                        , "Or use https://package.elm-lang.org/packages/elm/core/latest/Platform#worker to make a `main` with no user interface." |> D.reflow
                         ]
 
         MakeCannotBuild buildProblem ->
@@ -2722,8 +2645,8 @@ toProjectProblemReport projectProblem =
             Help.report "FILE NOT FOUND"
                 Nothing
                 "I cannot find this file:"
-                [ D.indent 4 <| D.red <| D.fromChars path
-                , D.reflow <| "Is there a typo?"
+                [ D.fromChars path |> D.red |> D.indent 4
+                , "Is there a typo?" |> D.reflow
                 , D.toSimpleNote <|
                     "If you are just getting started, try working through the examples in the official guide "
                         ++ "https://guide.elm-lang.org to get an idea of the kinds of things that typically go in a src/Main.elm file."
@@ -2733,29 +2656,28 @@ toProjectProblemReport projectProblem =
             Help.report "UNEXPECTED FILE EXTENSION"
                 Nothing
                 "I can only compile Elm files (with a .elm extension) but you want me to compile:"
-                [ D.indent 4 <| D.red <| D.fromChars path
-                , D.reflow <| "Is there a typo? Can the file extension be changed?"
+                [ D.fromChars path |> D.red |> D.indent 4
+                , "Is there a typo? Can the file extension be changed?" |> D.reflow
                 ]
 
         BP_WithAmbiguousSrcDir path srcDir1 srcDir2 ->
             Help.report "CONFUSING FILE"
                 Nothing
                 "I am getting confused when I try to compile this file:"
-                [ D.indent 4 <| D.red <| D.fromChars path
+                [ D.fromChars path |> D.red |> D.indent 4
                 , D.reflow <|
                     "I always check if files appear in any of the \"source-directories\" listed in your elm.json "
                         ++ "to see if there might be some cached information about them. That can help me compile faster! "
                         ++ "But in this case, it looks like this file may be in either of these directories:"
-                , D.indent 4 <| D.red <| D.vcat <| List.map D.fromChars [ srcDir1, srcDir2 ]
-                , D.reflow <|
-                    "Try to make it so no source directory contains another source directory!"
+                , List.map D.fromChars [ srcDir1, srcDir2 ] |> D.vcat |> D.red |> D.indent 4
+                , "Try to make it so no source directory contains another source directory!" |> D.reflow
                 ]
 
         BP_MainPathDuplicate path1 path2 ->
             Help.report "CONFUSING FILES"
                 Nothing
                 "You are telling me to compile these two files:"
-                [ D.indent 4 <| D.red <| D.vcat <| List.map D.fromChars [ path1, path2 ]
+                [ List.map D.fromChars [ path1, path2 ] |> D.vcat |> D.red |> D.indent 4
                 , D.reflow <|
                     if path1 == path2 then
                         "Why are you telling me twice? Is something weird going on with a script? "
@@ -2772,27 +2694,25 @@ toProjectProblemReport projectProblem =
             Help.report "MODULE NAME CLASH"
                 Nothing
                 "These two files are causing a module name clash:"
-                [ D.indent 4 <| D.red <| D.vcat <| List.map D.fromChars [ outsidePath, otherPath ]
+                [ List.map D.fromChars [ outsidePath, otherPath ] |> D.vcat |> D.red |> D.indent 4
                 , D.reflow <|
                     "They both say `module "
                         ++ String.fromList (N.toChars name)
                         ++ " exposing (..)` up at the top, but they cannot have the same name!"
-                , D.reflow <|
-                    "Try changing to a different module name in one of them!"
+                , "Try changing to a different module name in one of them!" |> D.reflow
                 ]
 
         BP_RootNameInvalid givenPath srcDir _ ->
             Help.report "UNEXPECTED FILE NAME"
                 Nothing
                 "I am having trouble with this file name:"
-                [ D.indent 4 <| D.red <| D.fromChars givenPath
+                [ D.fromChars givenPath |> D.red |> D.indent 4
                 , D.reflow <|
                     "I found it in your "
                         ++ Utils.fpAddTrailingPathSeparator srcDir
                         ++ " directory which is good, but I expect all of the files in there to use the following module naming convention:"
                 , toModuleNameConventionTable srcDir [ "Main", "HomePage", "Http.Helpers" ]
-                , D.reflow <|
-                    "Notice that the names always start with capital letters! Can you make your file use this naming convention?"
+                , "Notice that the names always start with capital letters! Can you make your file use this naming convention?" |> D.reflow
                 , D.toSimpleNote <|
                     "Having a strict naming convention like this makes it a lot easier to find things in large projects. "
                         ++ "If you see a module imported, you know where to look for the corresponding file every time!"
@@ -2817,16 +2737,15 @@ toProjectProblemReport projectProblem =
                     Help.report "MISSING MODULE"
                         (Just "elm.json")
                         "The  \"exposed-modules\" of your elm.json lists the following module:"
-                        [ D.indent 4 <| D.red <| D.fromName name
-                        , D.reflow <|
-                            "But I cannot find it in your src/ directory. Is there a typo? Was it renamed?"
+                        [ D.fromName name |> D.red |> D.indent 4
+                        , "But I cannot find it in your src/ directory. Is there a typo? Was it renamed?" |> D.reflow
                         ]
 
                 Import.Ambiguous _ _ pkg _ ->
                     Help.report "AMBIGUOUS MODULE NAME"
                         (Just "elm.json")
                         "The  \"exposed-modules\" of your elm.json lists the following module:"
-                        [ D.indent 4 <| D.red <| D.fromName name
+                        [ D.fromName name |> D.red |> D.indent 4
                         , D.reflow <|
                             "But a module from "
                                 ++ Pkg.toChars pkg
@@ -2837,26 +2756,19 @@ toProjectProblemReport projectProblem =
                     Help.report "AMBIGUOUS MODULE NAME"
                         (Just "elm.json")
                         "The  \"exposed-modules\" of your elm.json lists the following module:"
-                        [ D.indent 4 <| D.red <| D.fromName name
-                        , D.reflow <|
-                            "But I found multiple files with that name:"
-                        , D.dullyellow <|
-                            D.indent 4 <|
-                                D.vcat <|
-                                    List.map D.fromChars (path1 :: path2 :: paths)
-                        , D.reflow <|
-                            "Change the module names to be distinct!"
+                        [ D.fromName name |> D.red |> D.indent 4
+                        , "But I found multiple files with that name:" |> D.reflow
+                        , List.map D.fromChars (path1 :: path2 :: paths) |> D.vcat |> D.indent 4 |> D.dullyellow
+                        , "Change the module names to be distinct!" |> D.reflow
                         ]
 
                 Import.AmbiguousForeign _ _ _ ->
                     Help.report "MISSING MODULE"
                         (Just "elm.json")
                         "The  \"exposed-modules\" of your elm.json lists the following module:"
-                        [ D.indent 4 <| D.red <| D.fromName name
-                        , D.reflow <|
-                            "But I cannot find it in your src/ directory. Is there a typo? Was it renamed?"
-                        , D.toSimpleNote <|
-                            "It is not possible to \"re-export\" modules from other packages. You can only expose modules that you define in your own code."
+                        [ D.fromName name |> D.red |> D.indent 4
+                        , "But I cannot find it in your src/ directory. Is there a typo? Was it renamed?" |> D.reflow
+                        , "It is not possible to \"re-export\" modules from other packages. You can only expose modules that you define in your own code." |> D.toSimpleNote
                         ]
 
 
@@ -2916,11 +2828,12 @@ toModuleNameConventionTable srcDir names =
                     ++ String.repeat pathWidth "-"
                     ++ "-+"
     in
-    D.indent 4 <|
-        D.vcat <|
-            [ bar, toRow ( "Module Name", "File Path" ), bar ]
-                ++ List.map toRow namePairs
-                ++ [ bar ]
+    ([ bar, toRow ( "Module Name", "File Path" ), bar ]
+        ++ List.map toRow namePairs
+        ++ [ bar ]
+    )
+        |> D.vcat
+        |> D.indent 4
 
 
 
@@ -2943,18 +2856,19 @@ toGenerateReport problem =
             Help.report "DEBUG REMNANTS"
                 Nothing
                 "There are uses of the `Debug` module in the following modules:"
-                [ D.indent 4 <| D.red <| D.vcat <| List.map (D.fromChars << String.fromList << N.toChars) (m :: ms)
+                [ List.map (D.fromChars << String.fromList << N.toChars) (m :: ms) |> D.vcat |> D.red |> D.indent 4
                 , D.reflow "But the --optimize flag only works if all `Debug` functions are removed!"
-                , D.toSimpleNote <|
-                    "The issue is that --optimize strips out info needed by `Debug` functions. Here are two examples:"
-                , D.indent 4 <|
-                    D.reflow <|
-                        "(1) It shortens record field names. This makes the generated JavaScript smaller, "
-                            ++ "but `Debug.toString` cannot know the real field names anymore."
-                , D.indent 4 <|
-                    D.reflow <|
-                        "(2) Values like `type Height = Height Float` are unboxed. This reduces allocation, "
-                            ++ "but it also means that `Debug.toString` cannot tell if it is looking at a `Height` or `Float` value."
+                , "The issue is that --optimize strips out info needed by `Debug` functions. Here are two examples:" |> D.toSimpleNote
+                , ("(1) It shortens record field names. This makes the generated JavaScript smaller, "
+                    ++ "but `Debug.toString` cannot know the real field names anymore."
+                  )
+                    |> D.reflow
+                    |> D.indent 4
+                , ("(2) Values like `type Height = Height Float` are unboxed. This reduces allocation, "
+                    ++ "but it also means that `Debug.toString` cannot tell if it is looking at a `Height` or `Float` value."
+                  )
+                    |> D.reflow
+                    |> D.indent 4
                 , D.reflow <|
                     "There are a few other cases like that, and it will be much worse once we start inlining code. "
                         ++ "That optimization could move `Debug.log` and `Debug.todo` calls, resulting in unpredictable behavior. "
@@ -2965,9 +2879,8 @@ toGenerateReport problem =
             Help.report "MONOMORPHIZATION ERROR"
                 Nothing
                 "An error occurred during monomorphization:"
-                [ D.indent 4 <| D.red <| D.fromChars errorMessage
-                , D.reflow <|
-                    "This is likely a compiler bug. Please report it with a minimal reproduction case."
+                [ D.fromChars errorMessage |> D.red |> D.indent 4
+                , "This is likely a compiler bug. Please report it with a minimal reproduction case." |> D.reflow
                 ]
 
 
@@ -2980,8 +2893,7 @@ corruptCacheReport =
     Help.report "CORRUPT CACHE"
         Nothing
         "It looks like some of the information cached in guida-stuff/ has been corrupted."
-        [ D.reflow <|
-            "Try deleting your guida-stuff/ directory to get unstuck."
+        [ "Try deleting your guida-stuff/ directory to get unstuck." |> D.reflow
         , D.toSimpleNote <|
             "This almost certainly means that a 3rd party tool (or editor plugin) is causing problems "
                 ++ "to the guida-stuff/ directory. Try disabling 3rd party tools one by one until you figure out which it is!"
@@ -3054,16 +2966,14 @@ testToReport test =
             Help.report "TEST WHAT?"
                 Nothing
                 "I cannot find an elm.json so I am not sure what you want me to test."
-                [ D.reflow <|
-                    "Elm packages always have an elm.json that states the version number, dependencies, exposed modules, etc."
+                [ "Elm packages always have an elm.json that states the version number, dependencies, exposed modules, etc." |> D.reflow
                 ]
 
         TestBadOutline outline ->
             toOutlineReport outline
 
         TestBadRegistry problem ->
-            toRegistryProblemReport "PROBLEM LOADING PACKAGE LIST" problem <|
-                "I need the list of published packages to figure out how to install things"
+            "I need the list of published packages to figure out how to install things" |> toRegistryProblemReport "PROBLEM LOADING PACKAGE LIST" problem
 
         TestNoOnlineAppSolution pkg ->
             Help.report "CANNOT FIND COMPATIBLE VERSION"
@@ -3091,10 +3001,8 @@ testToReport test =
             Help.report "CANNOT FIND COMPATIBLE VERSION LOCALLY"
                 (Just "elm.json")
                 ("I cannot find a version of " ++ Pkg.toChars pkg ++ " that is compatible with your existing dependencies.")
-                [ D.reflow <|
-                    "I was not able to connect to https://package.elm-lang.org/ though, so I was only able to look through packages that you have downloaded in the past."
-                , D.reflow <|
-                    "Try again later when you have internet!"
+                [ "I was not able to connect to https://package.elm-lang.org/ though, so I was only able to look through packages that you have downloaded in the past." |> D.reflow
+                , "Try again later when you have internet!" |> D.reflow
                 ]
 
         TestNoOnlinePkgSolution pkg ->
@@ -3117,10 +3025,8 @@ testToReport test =
             Help.report "CANNOT FIND COMPATIBLE VERSION LOCALLY"
                 (Just "elm.json")
                 ("I cannot find a version of " ++ Pkg.toChars pkg ++ " that is compatible with your existing constraints.")
-                [ D.reflow <|
-                    "I was not able to connect to https://package.elm-lang.org/ though, so I was only able to look through packages that you have downloaded in the past."
-                , D.reflow <|
-                    "Try again later when you have internet!"
+                [ "I was not able to connect to https://package.elm-lang.org/ though, so I was only able to look through packages that you have downloaded in the past." |> D.reflow
+                , "Try again later when you have internet!" |> D.reflow
                 ]
 
         TestHadSolverTrouble solver ->
@@ -3140,10 +3046,9 @@ testToReport test =
                         |> D.a (D.fromChars ".")
                     ]
                 )
-                [ D.reflow <|
-                    "I looked through https://package.elm-lang.org for packages with similar names and found these:"
-                , D.indent 4 <| D.dullyellow <| D.vcat <| List.map D.fromPackage suggestions
-                , D.reflow <| "Maybe you want one of these instead?"
+                [ "I looked through https://package.elm-lang.org for packages with similar names and found these:" |> D.reflow
+                , List.map D.fromPackage suggestions |> D.vcat |> D.dullyellow |> D.indent 4
+                , "Maybe you want one of these instead?" |> D.reflow
                 ]
 
         TestUnknownPackageOffline pkg suggestions ->
@@ -3160,12 +3065,10 @@ testToReport test =
                         |> D.a (D.fromChars ".")
                     ]
                 )
-                [ D.reflow <|
-                    "I could not connect to https://package.elm-lang.org though, so new packages may have been published since I last updated my local cache of package names."
-                , D.reflow <|
-                    "Looking through the locally cached names, the closest ones are:"
-                , D.indent 4 <| D.dullyellow <| D.vcat <| List.map D.fromPackage suggestions
-                , D.reflow <| "Maybe you want one of these instead?"
+                [ "I could not connect to https://package.elm-lang.org though, so new packages may have been published since I last updated my local cache of package names." |> D.reflow
+                , "Looking through the locally cached names, the closest ones are:" |> D.reflow
+                , List.map D.fromPackage suggestions |> D.vcat |> D.dullyellow |> D.indent 4
+                , "Maybe you want one of these instead?" |> D.reflow
                 ]
 
         TestBadDetails details ->

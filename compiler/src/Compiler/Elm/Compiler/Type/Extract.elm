@@ -115,9 +115,7 @@ merge (Types types1) (Types types2) =
 
 fromInterface : ModuleName.Raw -> I.Interface -> Types
 fromInterface name (I.Interface iface) =
-    Types <|
-        Dict.singleton ModuleName.toComparableCanonical (IO.Canonical iface.home name) <|
-            Types_ (Dict.map (\_ -> I.extractUnion) iface.unions) (Dict.map (\_ -> I.extractAlias) iface.aliases)
+    Types_ (Dict.map (\_ -> I.extractUnion) iface.unions) (Dict.map (\_ -> I.extractAlias) iface.aliases) |> Dict.singleton ModuleName.toComparableCanonical (IO.Canonical iface.home name) |> Types
 
 
 fromDependencyInterface : IO.Canonical -> I.DependencyInterface -> Types
@@ -196,7 +194,7 @@ extractAlias (Types dict) (Opt.Global home name) =
 extractUnion : Types -> Opt.Global -> Extractor T.Union
 extractUnion (Types dict) (Opt.Global home name) =
     if name == Name.list && home == ModuleName.list then
-        pure <| T.Union (toPublicName home name) [ "a" ] []
+        T.Union (toPublicName home name) [ "a" ] [] |> pure
 
     else
         let

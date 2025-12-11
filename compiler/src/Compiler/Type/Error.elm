@@ -468,44 +468,44 @@ toDiffOtherwise localizer ctx (( tipe1, tipe2 ) as pair) =
     different doc1 doc2 <|
         case pair of
             ( RigidVar x, other ) ->
-                Bag.one <| BadRigidVar x other
+                BadRigidVar x other |> Bag.one
 
             ( FlexSuper s _, other ) ->
-                Bag.one <| BadFlexSuper Have s other
+                BadFlexSuper Have s other |> Bag.one
 
             ( RigidSuper s x, other ) ->
-                Bag.one <| BadRigidSuper s x other
+                BadRigidSuper s x other |> Bag.one
 
             ( other, RigidVar x ) ->
-                Bag.one <| BadRigidVar x other
+                BadRigidVar x other |> Bag.one
 
             ( other, FlexSuper s _ ) ->
-                Bag.one <| BadFlexSuper Need s other
+                BadFlexSuper Need s other |> Bag.one
 
             ( other, RigidSuper s x ) ->
-                Bag.one <| BadRigidSuper s x other
+                BadRigidSuper s x other |> Bag.one
 
             ( Type home1 name1 [], Type home2 name2 [] ) ->
                 if isInt home1 name1 && isFloat home2 name2 then
-                    Bag.one <| IntFloat
+                    IntFloat |> Bag.one
 
                 else if isFloat home1 name1 && isInt home2 name2 then
-                    Bag.one <| IntFloat
+                    IntFloat |> Bag.one
 
                 else if isInt home1 name1 && isString home2 name2 then
-                    Bag.one <| StringFromInt
+                    StringFromInt |> Bag.one
 
                 else if isFloat home1 name1 && isString home2 name2 then
-                    Bag.one <| StringFromFloat
+                    StringFromFloat |> Bag.one
 
                 else if isString home1 name1 && isInt home2 name2 then
-                    Bag.one <| StringToInt
+                    StringToInt |> Bag.one
 
                 else if isString home1 name1 && isFloat home2 name2 then
-                    Bag.one <| StringToFloat
+                    StringToFloat |> Bag.one
 
                 else if isBool home2 name2 then
-                    Bag.one <| AnythingToBool
+                    AnythingToBool |> Bag.one
 
                 else
                     Bag.empty
@@ -664,7 +664,7 @@ diffRecord localizer fields1 ext1 fields2 ext2 =
 
         toOverlapDocs : Name -> Type -> Type -> Diff ( D.Doc, D.Doc )
         toOverlapDocs field t1 t2 =
-            mapDiff (Tuple.pair (D.fromName field)) <| toDiff localizer RT.None t1 t2
+            toDiff localizer RT.None t1 t2 |> mapDiff (Tuple.pair (D.fromName field))
 
         left : Dict String Name ( D.Doc, D.Doc )
         left =
@@ -709,60 +709,61 @@ diffRecord localizer fields1 ext1 fields2 ext2 =
                 |> mapDiff RT.record
                 |> applyDiff (extToDiff ext1 ext2)
     in
-    Diff doc1 doc2 <|
-        merge status <|
-            case ( hasFixedFields ext1, hasFixedFields ext2 ) of
-                ( True, True ) ->
-                    let
-                        minView : Maybe ( Name, ( D.Doc, D.Doc ) )
-                        minView =
-                            Dict.toList compare left
-                                |> List.sortBy Tuple.first
-                                |> List.head
-                    in
-                    case minView of
-                        Just ( f, _ ) ->
-                            Different (Bag.one (FieldTypo f (Dict.keys compare fields2)))
+    (case ( hasFixedFields ext1, hasFixedFields ext2 ) of
+        ( True, True ) ->
+            let
+                minView : Maybe ( Name, ( D.Doc, D.Doc ) )
+                minView =
+                    Dict.toList compare left
+                        |> List.sortBy Tuple.first
+                        |> List.head
+            in
+            case minView of
+                Just ( f, _ ) ->
+                    Different (Bag.one (FieldTypo f (Dict.keys compare fields2)))
 
-                        Nothing ->
-                            if Dict.isEmpty right then
-                                Similar
+                Nothing ->
+                    if Dict.isEmpty right then
+                        Similar
 
-                            else
-                                Different (Bag.one (FieldsMissing (Dict.keys compare right)))
+                    else
+                        Different (Bag.one (FieldsMissing (Dict.keys compare right)))
 
-                ( False, True ) ->
-                    let
-                        minView : Maybe ( Name, ( D.Doc, D.Doc ) )
-                        minView =
-                            Dict.toList compare left
-                                |> List.sortBy Tuple.first
-                                |> List.head
-                    in
-                    case minView of
-                        Just ( f, _ ) ->
-                            Different (Bag.one (FieldTypo f (Dict.keys compare fields2)))
+        ( False, True ) ->
+            let
+                minView : Maybe ( Name, ( D.Doc, D.Doc ) )
+                minView =
+                    Dict.toList compare left
+                        |> List.sortBy Tuple.first
+                        |> List.head
+            in
+            case minView of
+                Just ( f, _ ) ->
+                    Different (Bag.one (FieldTypo f (Dict.keys compare fields2)))
 
-                        Nothing ->
-                            Similar
-
-                ( True, False ) ->
-                    let
-                        minView : Maybe ( Name, ( D.Doc, D.Doc ) )
-                        minView =
-                            Dict.toList compare right
-                                |> List.sortBy Tuple.first
-                                |> List.head
-                    in
-                    case minView of
-                        Just ( f, _ ) ->
-                            Different (Bag.one (FieldTypo f (Dict.keys compare fields1)))
-
-                        Nothing ->
-                            Similar
-
-                ( False, False ) ->
+                Nothing ->
                     Similar
+
+        ( True, False ) ->
+            let
+                minView : Maybe ( Name, ( D.Doc, D.Doc ) )
+                minView =
+                    Dict.toList compare right
+                        |> List.sortBy Tuple.first
+                        |> List.head
+            in
+            case minView of
+                Just ( f, _ ) ->
+                    Different (Bag.one (FieldTypo f (Dict.keys compare fields1)))
+
+                Nothing ->
+                    Similar
+
+        ( False, False ) ->
+            Similar
+    )
+        |> merge status
+        |> Diff doc1 doc2
 
 
 hasFixedFields : Extension -> Bool

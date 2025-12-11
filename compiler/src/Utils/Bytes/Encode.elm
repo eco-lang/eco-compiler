@@ -105,7 +105,7 @@ result errEncoder successEncoder resultValue =
 
 assocListDict : (k -> k -> Order) -> (k -> BE.Encoder) -> (v -> BE.Encoder) -> Dict c k v -> BE.Encoder
 assocListDict keyComparison keyEncoder valueEncoder =
-    list (jsonPair keyEncoder valueEncoder) << List.reverse << Dict.toList keyComparison
+    Dict.toList keyComparison >> List.reverse >> list (jsonPair keyEncoder valueEncoder)
 
 
 jsonPair : (a -> BE.Encoder) -> (b -> BE.Encoder) -> ( a, b ) -> BE.Encoder
@@ -118,7 +118,7 @@ jsonPair encoderA encoderB ( a, b ) =
 
 everySet : (a -> a -> Order) -> (a -> BE.Encoder) -> EverySet c a -> BE.Encoder
 everySet keyComparison encoder =
-    list encoder << List.reverse << EverySet.toList keyComparison
+    EverySet.toList keyComparison >> List.reverse >> list encoder
 
 
 oneOrMore : (a -> BE.Encoder) -> OneOrMore a -> BE.Encoder

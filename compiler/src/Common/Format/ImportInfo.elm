@@ -131,7 +131,7 @@ fromImports knownContents rawImports =
         exposed : Dict String String String
         exposed =
             -- TODO: mark ambiguous names if multiple modules expose them
-            Dict.foldl compare (\k v a -> Dict.union a <| getExposed k v) Dict.empty imports
+            Dict.foldl compare (\k v a -> getExposed k v |> Dict.union a) Dict.empty imports
 
         aliases : Bimap String String
         aliases =

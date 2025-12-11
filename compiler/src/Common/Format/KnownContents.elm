@@ -30,7 +30,7 @@ fromFunction =
 
 isKnown : KnownContents -> String -> Bool
 isKnown (KnownContents lookup) =
-    Maybe.unwrap False (always True) << lookup
+    lookup >> Maybe.unwrap False (always True)
 
 
 get : String -> KnownContents -> Maybe (List String)

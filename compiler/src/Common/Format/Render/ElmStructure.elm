@@ -46,7 +46,7 @@ forceableSpaceSepOrStack forceMultiline first rest =
         ( forceMultiline, first, Box.allSingles rest )
     of
         ( False, Box.SingleLine first_, Ok rest_ ) ->
-            Box.line <| Box.row <| List.intersperse Box.space (first_ :: rest_)
+            List.intersperse Box.space (first_ :: rest_) |> Box.row |> Box.line
 
         _ ->
             Box.stack1 (first :: rest)
@@ -56,7 +56,7 @@ forceableRowOrStack : Bool -> Box -> List Box -> Box
 forceableRowOrStack forceMultiline first rest =
     case ( forceMultiline, first, Box.allSingles rest ) of
         ( False, Box.SingleLine first_, Ok rest_ ) ->
-            Box.line <| Box.row (first_ :: rest_)
+            Box.row (first_ :: rest_) |> Box.line
 
         _ ->
             Box.stack1 (first :: rest)
@@ -95,7 +95,7 @@ forceableSpaceSepOrIndented forceMultiline first rest =
         ( forceMultiline, first, Box.allSingles rest )
     of
         ( False, Box.SingleLine first_, Ok rest_ ) ->
-            Box.line <| Box.row <| List.intersperse Box.space (first_ :: rest_)
+            List.intersperse Box.space (first_ :: rest_) |> Box.row |> Box.line
 
         _ ->
             Box.stack1
@@ -117,7 +117,7 @@ spaceSepOrPrefix : Box -> Box -> Box
 spaceSepOrPrefix op rest =
     case ( op, rest ) of
         ( Box.SingleLine op_, Box.SingleLine rest_ ) ->
-            Box.line <| Box.row [ op_, Box.space, rest_ ]
+            Box.row [ op_, Box.space, rest_ ] |> Box.line
 
         ( Box.SingleLine op_, _ ) ->
             if Box.lineLength 0 op_ < 4 then
@@ -134,10 +134,10 @@ prefixOrIndented : Box -> Box -> Box
 prefixOrIndented a b =
     case ( a, b ) of
         ( Box.SingleLine a_, Box.SingleLine b_ ) ->
-            Box.line <| Box.row [ a_, Box.space, b_ ]
+            Box.row [ a_, Box.space, b_ ] |> Box.line
 
         ( Box.SingleLine a_, Box.MustBreak b_ ) ->
-            Box.mustBreak <| Box.row [ a_, Box.space, b_ ]
+            Box.row [ a_, Box.space, b_ ] |> Box.mustBreak
 
         _ ->
             Box.stack1 [ a, Box.indent b ]
@@ -178,14 +178,14 @@ equalsPair symbol forceMultiline left right =
 
         ( _, Box.SingleLine left_, right_ ) ->
             Box.stack1
-                [ Box.line <| Box.row [ left_, Box.space, Box.punc symbol ]
+                [ Box.row [ left_, Box.space, Box.punc symbol ] |> Box.line
                 , Box.indent right_
                 ]
 
         ( _, left_, right_ ) ->
             Box.stack1
                 [ left_
-                , Box.indent <| Box.line <| Box.punc symbol
+                , Box.punc symbol |> Box.line |> Box.indent
                 , Box.indent right_
                 ]
 
@@ -269,37 +269,37 @@ group_ : Bool -> String -> String -> List Box -> String -> Bool -> List Box -> B
 group_ innerSpaces left sep extraFooter right forceMultiline children =
     case ( forceMultiline, Box.allSingles children, Box.allSingles extraFooter ) of
         ( _, Ok [], Ok efs ) ->
-            Box.line <| Box.row <| List.concat [ [ Box.punc left ], efs, [ Box.punc right ] ]
+            List.concat [ [ Box.punc left ], efs, [ Box.punc right ] ] |> Box.row |> Box.line
 
         ( False, Ok ls, Ok efs ) ->
-            Box.line <|
-                Box.row <|
-                    List.concat
-                        [ if innerSpaces then
-                            [ Box.punc left, Box.space ]
+            List.concat
+                [ if innerSpaces then
+                    [ Box.punc left, Box.space ]
 
-                          else
-                            [ Box.punc left ]
-                        , List.intersperse (Box.row [ Box.punc sep, Box.space ]) (ls ++ efs)
-                        , if innerSpaces then
-                            [ Box.space, Box.punc right ]
+                  else
+                    [ Box.punc left ]
+                , List.intersperse (Box.row [ Box.punc sep, Box.space ]) (ls ++ efs)
+                , if innerSpaces then
+                    [ Box.space, Box.punc right ]
 
-                          else
-                            [ Box.punc right ]
-                        ]
+                  else
+                    [ Box.punc right ]
+                ]
+                |> Box.row
+                |> Box.line
 
         _ ->
             case children of
                 [] ->
                     -- TODO: might lose extraFooter in this case, but can that ever happen?
-                    Box.line <| Box.row [ Box.punc left, Box.punc right ]
+                    Box.row [ Box.punc left, Box.punc right ] |> Box.line
 
                 first :: rest ->
                     Box.stack1 <|
                         Box.prefix (Box.row [ Box.punc left, Box.space ]) first
                             :: List.map (Box.prefix <| Box.row [ Box.punc sep, Box.space ]) rest
                             ++ extraFooter
-                            ++ [ Box.line <| Box.punc right ]
+                            ++ [ Box.punc right |> Box.line ]
 
 
 {-| Formats as:
@@ -345,7 +345,7 @@ extensionGroup multiline base first rest =
                         :: List.map (Box.prefix (Box.row [ Box.punc ",", Box.space ])) rest
                     )
                     |> Box.indent
-                , Box.line <| Box.punc "}"
+                , Box.punc "}" |> Box.line
                 ]
 
 
@@ -358,20 +358,20 @@ extensionGroup_ multiline base fields =
         )
     of
         ( False, Box.SingleLine base_, Box.SingleLine fields_ ) ->
-            Box.line <|
-                Box.row <|
-                    List.intersperse Box.space
-                        [ Box.punc "{"
-                        , base_
-                        , fields_
-                        , Box.punc "}"
-                        ]
+            List.intersperse Box.space
+                [ Box.punc "{"
+                , base_
+                , fields_
+                , Box.punc "}"
+                ]
+                |> Box.row
+                |> Box.line
 
         _ ->
             Box.stack1
                 [ Box.prefix (Box.row [ Box.punc "{", Box.space ]) base
                 , Box.indent fields
-                , Box.line <| Box.punc "}"
+                , Box.punc "}" |> Box.line
                 ]
 
 

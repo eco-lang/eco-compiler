@@ -34,7 +34,7 @@ lambda context arg1 arg2 args =
     let
         lambdaDoc : D.Doc
         lambdaDoc =
-            D.align <| D.sep (arg1 :: List.map (\a -> D.plus a (D.fromChars "->")) (arg2 :: args))
+            D.sep (arg1 :: List.map (\a -> D.plus a (D.fromChars "->")) (arg2 :: args)) |> D.align
     in
     case context of
         None ->
@@ -57,7 +57,7 @@ apply context name args =
             let
                 applyDoc : D.Doc
                 applyDoc =
-                    D.hang 4 <| D.sep (name :: args)
+                    D.sep (name :: args) |> D.hang 4
             in
             case context of
                 App ->
@@ -77,7 +77,7 @@ tuple a b cs =
         entries =
             List.interweave (D.fromChars "( " :: List.repeat (List.length (b :: cs)) (D.fromChars ", ")) (a :: b :: cs)
     in
-    D.align <| D.sep [ D.cat entries, D.fromChars ")" ]
+    D.sep [ D.cat entries, D.fromChars ")" ] |> D.align
 
 
 record : List ( D.Doc, D.Doc ) -> Maybe D.Doc -> D.Doc
@@ -109,7 +109,7 @@ record entries maybeExt =
 
 entryToDoc : ( D.Doc, D.Doc ) -> D.Doc
 entryToDoc ( fieldName, fieldType ) =
-    D.hang 4 <| D.sep [ fieldName |> D.plus (D.fromChars ":"), fieldType ]
+    D.sep [ fieldName |> D.plus (D.fromChars ":"), fieldType ] |> D.hang 4
 
 
 vrecordSnippet : ( D.Doc, D.Doc ) -> List ( D.Doc, D.Doc ) -> D.Doc

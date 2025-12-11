@@ -39,7 +39,7 @@ import Task exposing (Task)
 
 assocListDict : (k -> k -> Order) -> (k -> Encode.Value) -> (v -> Encode.Value) -> Dict c k v -> Encode.Value
 assocListDict keyComparison keyEncoder valueEncoder =
-    Encode.list (jsonPair keyEncoder valueEncoder) << List.reverse << Dict.toList keyComparison
+    Dict.toList keyComparison >> List.reverse >> Encode.list (jsonPair keyEncoder valueEncoder)
 
 
 jsonPair : (a -> Encode.Value) -> (b -> Encode.Value) -> ( a, b ) -> Encode.Value
@@ -52,7 +52,7 @@ jsonPair firstEncoder secondEncoder ( a, b ) =
 
 everySet : (a -> a -> Order) -> (a -> Encode.Value) -> EverySet c a -> Encode.Value
 everySet keyComparison encoder =
-    Encode.list encoder << List.reverse << EverySet.toList keyComparison
+    EverySet.toList keyComparison >> List.reverse >> Encode.list encoder
 
 
 result : (x -> Encode.Value) -> (a -> Encode.Value) -> Result x a -> Encode.Value

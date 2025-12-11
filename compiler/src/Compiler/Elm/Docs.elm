@@ -792,7 +792,7 @@ addDef types def =
 
 jsonEncoder : Documentation -> Encode.Value
 jsonEncoder =
-    E.toJsonValue << encode
+    encode >> E.toJsonValue
 
 
 jsonDecoder : Decode.Decoder Documentation

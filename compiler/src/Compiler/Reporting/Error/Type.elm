@@ -220,15 +220,13 @@ toPatternReport source localizer patternRegion category tipe expected =
 
                         PCaseMatch index ->
                             if index == Index.first then
-                                ( D.reflow <|
-                                    "The 1st pattern in this `case` causing a mismatch:"
+                                ( "The 1st pattern in this `case` causing a mismatch:" |> D.reflow
                                 , patternTypeComparison localizer
                                     tipe
                                     expectedType
                                     (addPatternCategory "The first pattern is trying to match" category)
                                     "But the expression between `case` and `of` is:"
-                                    [ D.reflow <|
-                                        "These can never match! Is the pattern the problem? Or is it the expression?"
+                                    [ "These can never match! Is the pattern the problem? Or is it the expression?" |> D.reflow
                                     ]
                                 )
 
@@ -287,8 +285,7 @@ toPatternReport source localizer patternRegion category tipe expected =
                             )
 
                         PTail ->
-                            ( D.reflow <|
-                                "The pattern after (::) is causing issues."
+                            ( "The pattern after (::) is causing issues." |> D.reflow
                             , patternTypeComparison localizer
                                 tipe
                                 expectedType
@@ -562,8 +559,7 @@ problemToHint problem =
             ]
 
         T.AnythingToBool ->
-            [ D.toSimpleHint <|
-                "Elm does not have “truthiness” such that ints and strings and lists are automatically converted to booleans. Do that conversion explicitly!"
+            [ "Elm does not have “truthiness” such that ints and strings and lists are automatically converted to booleans. Do that conversion explicitly!" |> D.toSimpleHint
             ]
 
         T.AnythingFromMaybe ->
@@ -714,7 +710,7 @@ problemToHint problem =
                     badRigidSuper super ("a `" ++ n ++ "` value")
 
         T.FieldsMissing fields ->
-            case List.map (D.green << D.fromName) fields of
+            case List.map (D.fromName >> D.green) fields of
                 [] ->
                     []
 
@@ -836,8 +832,7 @@ badFlexSuper direction super tipe =
                     ]
 
                 _ ->
-                    [ D.toSimpleHint <|
-                        "I only know how to compare ints, floats, chars, strings, lists of comparable values, and tuples of comparable values."
+                    [ "I only know how to compare ints, floats, chars, strings, lists of comparable values, and tuples of comparable values." |> D.toSimpleHint
                     ]
 
         T.Appendable ->
@@ -1006,16 +1001,16 @@ toExprReport source localizer exprRegion category tipe expected =
                         TypedBody ->
                             "The body is"
             in
-            Report.report "TYPE MISMATCH" exprRegion [] <|
-                Code.toSnippet source exprRegion Nothing <|
-                    ( D.reflow ("Something is off with the " ++ thing)
-                    , typeComparison localizer
-                        tipe
-                        expectedType
-                        (addCategory itIs category)
-                        ("But the type annotation on `" ++ name ++ "` says it should be:")
-                        []
-                    )
+            ( D.reflow ("Something is off with the " ++ thing)
+            , typeComparison localizer
+                tipe
+                expectedType
+                (addCategory itIs category)
+                ("But the type annotation on `" ++ name ++ "` says it should be:")
+                []
+            )
+                |> Code.toSnippet source exprRegion Nothing
+                |> Report.report "TYPE MISMATCH" exprRegion []
 
         FromContext region context expectedType ->
             let
@@ -1041,8 +1036,7 @@ toExprReport source localizer exprRegion category tipe expected =
 
                 custom : Maybe A.Region -> ( D.Doc, D.Doc ) -> Report.Report
                 custom maybeHighlight docPair =
-                    Report.report "TYPE MISMATCH" exprRegion [] <|
-                        Code.toSnippet source region maybeHighlight docPair
+                    Code.toSnippet source region maybeHighlight docPair |> Report.report "TYPE MISMATCH" exprRegion []
             in
             case context of
                 ListEntry index ->
@@ -1089,8 +1083,7 @@ toExprReport source localizer exprRegion category tipe expected =
                         )
 
                 OpLeft op ->
-                    custom (Just exprRegion) <|
-                        opLeftToDocs localizer category op tipe expectedType
+                    opLeftToDocs localizer category op tipe expectedType |> custom (Just exprRegion)
 
                 OpRight op ->
                     case opRightToDocs localizer category op tipe expectedType of
@@ -1164,50 +1157,51 @@ toExprReport source localizer exprRegion category tipe expected =
                         )
 
                 CallArity maybeFuncName numGivenArgs ->
-                    Report.report "TOO MANY ARGS" exprRegion [] <|
-                        Code.toSnippet source region (Just exprRegion) <|
-                            case countArgs tipe of
-                                0 ->
-                                    let
-                                        thisValue : String
-                                        thisValue =
-                                            case maybeFuncName of
-                                                NoName ->
-                                                    "This value"
+                    (case countArgs tipe of
+                        0 ->
+                            let
+                                thisValue : String
+                                thisValue =
+                                    case maybeFuncName of
+                                        NoName ->
+                                            "This value"
 
-                                                FuncName name ->
-                                                    "The `" ++ name ++ "` value"
+                                        FuncName name ->
+                                            "The `" ++ name ++ "` value"
 
-                                                CtorName name ->
-                                                    "The `" ++ name ++ "` value"
+                                        CtorName name ->
+                                            "The `" ++ name ++ "` value"
 
-                                                OpName op ->
-                                                    "The (" ++ op ++ ") operator"
-                                    in
-                                    ( D.reflow <| thisValue ++ " is not a function, but it was given " ++ D.args numGivenArgs ++ "."
-                                    , D.reflow <| "Are there any missing commas? Or missing parentheses?"
-                                    )
+                                        OpName op ->
+                                            "The (" ++ op ++ ") operator"
+                            in
+                            ( (thisValue ++ " is not a function, but it was given " ++ D.args numGivenArgs ++ ".") |> D.reflow
+                            , "Are there any missing commas? Or missing parentheses?" |> D.reflow
+                            )
 
-                                n ->
-                                    let
-                                        thisFunction : String
-                                        thisFunction =
-                                            case maybeFuncName of
-                                                NoName ->
-                                                    "This function"
+                        n ->
+                            let
+                                thisFunction : String
+                                thisFunction =
+                                    case maybeFuncName of
+                                        NoName ->
+                                            "This function"
 
-                                                FuncName name ->
-                                                    "The `" ++ name ++ "` function"
+                                        FuncName name ->
+                                            "The `" ++ name ++ "` function"
 
-                                                CtorName name ->
-                                                    "The `" ++ name ++ "` constructor"
+                                        CtorName name ->
+                                            "The `" ++ name ++ "` constructor"
 
-                                                OpName op ->
-                                                    "The (" ++ op ++ ") operator"
-                                    in
-                                    ( D.reflow <| thisFunction ++ " expects " ++ D.args n ++ ", but it got " ++ String.fromInt numGivenArgs ++ " instead."
-                                    , D.reflow <| "Are there any missing commas? Or missing parentheses?"
-                                    )
+                                        OpName op ->
+                                            "The (" ++ op ++ ") operator"
+                            in
+                            ( (thisFunction ++ " expects " ++ D.args n ++ ", but it got " ++ String.fromInt numGivenArgs ++ " instead.") |> D.reflow
+                            , "Are there any missing commas? Or missing parentheses?" |> D.reflow
+                            )
+                    )
+                        |> Code.toSnippet source region (Just exprRegion)
+                        |> Report.report "TOO MANY ARGS" exprRegion []
 
                 CallArg maybeFuncName index ->
                     let
@@ -1304,7 +1298,7 @@ toExprReport source localizer exprRegion category tipe expected =
                 RecordUpdateKeys expectedFields ->
                     case T.iteratedDealias tipe of
                         T.Record actualFields ext ->
-                            case List.sortBy Tuple.first (Dict.toList compare (Dict.diff expectedFields actualFields)) of
+                            case Dict.diff expectedFields actualFields |> Dict.toList compare |> List.sortBy Tuple.first of
                                 [] ->
                                     mismatch
                                         ( ( Nothing
@@ -1332,12 +1326,11 @@ toExprReport source localizer exprRegion category tipe expected =
                                                 ++ " field:"
                                         , case Suggest.sort field Tuple.first (Dict.toList compare actualFields) of
                                             [] ->
-                                                D.reflow <| "In fact, it is a record with NO fields!"
+                                                "In fact, it is a record with NO fields!" |> D.reflow
 
                                             f :: fs ->
                                                 D.stack
-                                                    [ D.reflow <|
-                                                        "This is usually a typo. Here are the record fields that are most similar:"
+                                                    [ "This is usually a typo. Here are the record fields that are most similar:" |> D.reflow
                                                     , toNearbyRecord localizer f fs ext
                                                     , D.fillSep
                                                         [ D.fromChars "So"
@@ -1357,7 +1350,7 @@ toExprReport source localizer exprRegion category tipe expected =
                                   , "This is not a record, so it has no fields to update!"
                                   )
                                 , ( "It is"
-                                  , [ D.reflow <| "But I need a record!"
+                                  , [ "But I need a record!" |> D.reflow
                                     ]
                                   )
                                 )
@@ -2455,15 +2448,13 @@ badCompLeft localizer category op direction tipe expected =
 badCompRight : L.Localizer -> String -> T.Type -> T.Type -> RightDocs
 badCompRight localizer op tipe expected =
     EmphBoth
-        ( D.reflow <|
-            ("I need both sides of (" ++ op ++ ") to be the same type:")
+        ( ("I need both sides of (" ++ op ++ ") to be the same type:") |> D.reflow
         , typeComparison localizer
             expected
             tipe
             ("The left side of (" ++ op ++ ") is:")
             "But the right side is:"
-            [ D.reflow <|
-                ("I cannot compare different types though! Which side of (" ++ op ++ ") is the problem?")
+            [ ("I cannot compare different types though! Which side of (" ++ op ++ ") is the problem?") |> D.reflow
             ]
         )
 
@@ -2475,16 +2466,14 @@ badCompRight localizer op tipe expected =
 badEquality : L.Localizer -> String -> T.Type -> T.Type -> RightDocs
 badEquality localizer op tipe expected =
     EmphBoth
-        ( D.reflow <|
-            ("I need both sides of (" ++ op ++ ") to be the same type:")
+        ( ("I need both sides of (" ++ op ++ ") to be the same type:") |> D.reflow
         , typeComparison localizer
             expected
             tipe
             ("The left side of (" ++ op ++ ") is:")
             "But the right side is:"
             [ if isFloat tipe || isFloat expected then
-                D.toSimpleNote <|
-                    "Equality on floats is not 100% reliable due to the design of IEEE 754. I recommend a check like (abs (x - y) < 0.0001) instead."
+                "Equality on floats is not 100% reliable due to the design of IEEE 754. I recommend a check like (abs (x - y) < 0.0001) instead." |> D.toSimpleNote
 
               else
                 D.reflow "Different types can never be equal though! Which side is messed up?"
@@ -2498,20 +2487,18 @@ badEquality localizer op tipe expected =
 
 toInfiniteReport : Code.Source -> L.Localizer -> A.Region -> Name -> T.Type -> Report.Report
 toInfiniteReport source localizer region name overallType =
-    Report.report "INFINITE TYPE" region [] <|
-        Code.toSnippet source region Nothing <|
-            ( D.reflow <|
-                ("I am inferring a weird self-referential type for " ++ name ++ ":")
-            , D.stack
-                [ D.reflow <|
-                    "Here is my best effort at writing down the type. You will see ∞ for parts of the type that repeat something already printed out infinitely."
-                , D.indent 4 (D.dullyellow (T.toDoc localizer RT.None overallType))
-                , D.reflowLink
-                    "Staring at this type is usually not so helpful, so I recommend reading the hints at"
-                    "infinite-type"
-                    "to get unstuck!"
-                ]
-            )
+    ( ("I am inferring a weird self-referential type for " ++ name ++ ":") |> D.reflow
+    , D.stack
+        [ "Here is my best effort at writing down the type. You will see ∞ for parts of the type that repeat something already printed out infinitely." |> D.reflow
+        , D.indent 4 (D.dullyellow (T.toDoc localizer RT.None overallType))
+        , D.reflowLink
+            "Staring at this type is usually not so helpful, so I recommend reading the hints at"
+            "infinite-type"
+            "to get unstuck!"
+        ]
+    )
+        |> Code.toSnippet source region Nothing
+        |> Report.report "INFINITE TYPE" region []
 
 
 

@@ -216,14 +216,14 @@ makePkgPlan pkg (Outline.PkgOutline pkgData) =
             changes =
                 detectChanges old new
         in
-        Task.succeed <|
-            Changes changes <|
-                Outline.Pkg <|
-                    Outline.PkgOutline
-                        { pkgData
-                            | deps = Dict.remove identity pkg pkgData.deps
-                            , testDeps = Dict.remove identity pkg pkgData.testDeps
-                        }
+        Outline.PkgOutline
+            { pkgData
+                | deps = Dict.remove identity pkg pkgData.deps
+                , testDeps = Dict.remove identity pkg pkgData.testDeps
+            }
+            |> Outline.Pkg
+            |> Changes changes
+            |> Task.succeed
 
     else
         Task.succeed AlreadyNotPresent
@@ -276,13 +276,13 @@ type ChangeDocs
 
 viewChangeDocs : ChangeDocs -> D.Doc
 viewChangeDocs (Docs inserts changes removes) =
-    D.indent 2 <|
-        D.vcat <|
-            List.concat <|
-                [ viewNonZero "Add:" inserts
-                , viewNonZero "Change:" changes
-                , viewNonZero "Remove:" removes
-                ]
+    [ viewNonZero "Add:" inserts
+    , viewNonZero "Change:" changes
+    , viewNonZero "Remove:" removes
+    ]
+        |> List.concat
+        |> D.vcat
+        |> D.indent 2
 
 
 viewNonZero : String -> List D.Doc -> List D.Doc

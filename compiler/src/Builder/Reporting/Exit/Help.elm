@@ -29,12 +29,12 @@ type Report
 
 report : String -> Maybe String -> String -> List D.Doc -> Report
 report title path startString others =
-    Report title path <| D.stack (D.reflow startString :: others)
+    D.stack (D.reflow startString :: others) |> Report title path
 
 
 docReport : String -> Maybe String -> D.Doc -> List D.Doc -> Report
 docReport title path startDoc others =
-    Report title path <| D.stack (startDoc :: others)
+    D.stack (startDoc :: others) |> Report title path
 
 
 jsonReport : String -> Maybe String -> D.Doc -> Report

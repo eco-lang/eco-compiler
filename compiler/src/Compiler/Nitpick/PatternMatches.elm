@@ -77,8 +77,7 @@ simplify (A.At _ pattern) =
             Ctor nTuple nTupleName (List.map simplify (a :: b :: cs))
 
         Can.PCtor { union, name, args } ->
-            Ctor union name <|
-                List.map (\(Can.PatternCtorArg _ _ arg) -> simplify arg) args
+            List.map (\(Can.PatternCtorArg _ _ arg) -> simplify arg) args |> Ctor union name
 
         Can.PList entries ->
             List.foldr cons nil entries
@@ -351,8 +350,7 @@ checkExpr (A.At region expression) errors =
             List.foldr checkDef (checkExpr body errors) defs
 
         Can.LetDestruct ((A.At reg _) as pattern) expr body ->
-            checkPatterns reg BadDestruct [ pattern ] <|
-                checkExpr expr (checkExpr body errors)
+            checkExpr expr (checkExpr body errors) |> checkPatterns reg BadDestruct [ pattern ]
 
         Can.Case expr branches ->
             checkExpr expr (checkCases region branches errors)
@@ -364,7 +362,7 @@ checkExpr (A.At region expression) errors =
             checkExpr record errors
 
         Can.Update record fields ->
-            checkExpr record <| Dict.foldr A.compareLocated (\_ -> checkField) errors fields
+            Dict.foldr A.compareLocated (\_ -> checkField) errors fields |> checkExpr record
 
         Can.Record fields ->
             Dict.foldr A.compareLocated (\_ -> checkExpr) errors fields
@@ -619,8 +617,7 @@ specializeRowByCtor ctorName arity row =
             Just (List.repeat arity Anything ++ patterns)
 
         (Literal _) :: _ ->
-            crash <|
-                "Compiler bug! After type checking, constructors and literals should never align in pattern match exhaustiveness checks."
+            "Compiler bug! After type checking, constructors and literals should never align in pattern match exhaustiveness checks." |> crash
 
         [] ->
             crash "Compiler error! Empty matrices should not get specialized."
@@ -644,8 +641,7 @@ specializeRowByLiteral literal row =
             Just patterns
 
         (Ctor _ _ _) :: _ ->
-            crash <|
-                "Compiler bug! After type checking, constructors and literals should never align in pattern match exhaustiveness checks."
+            "Compiler bug! After type checking, constructors and literals should never align in pattern match exhaustiveness checks." |> crash
 
         [] ->
             crash "Compiler error! Empty matrices should not get specialized."

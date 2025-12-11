@@ -30,8 +30,7 @@ import Utils.Task.Extra as Task
 
 run : () -> () -> Task Never ()
 run () () =
-    Reporting.attempt Exit.bumpToReport <|
-        Task.run (Task.andThen bump getEnv)
+    Task.run (Task.andThen bump getEnv) |> Reporting.attempt Exit.bumpToReport
 
 
 
@@ -133,12 +132,10 @@ bump ((Env envData) as env) =
                 suggestVersion env
 
             else
-                Task.throw <|
-                    Exit.BumpUnexpectedVersion pkgData.version <|
-                        List.map Prelude.head (Utils.listGroupBy (==) (List.sortWith V.compare bumpableVersions))
+                List.map Prelude.head (Utils.listGroupBy (==) (List.sortWith V.compare bumpableVersions)) |> Exit.BumpUnexpectedVersion pkgData.version |> Task.throw
 
         Nothing ->
-            Task.io <| checkNewPackage envData.root envData.outline
+            checkNewPackage envData.root envData.outline |> Task.io
 
 
 
@@ -222,7 +219,7 @@ promptVersionChange ( suggestion, newDocs ) =
 
         mag : D.Doc
         mag =
-            D.fromChars <| M.toChars (Diff.toMagnitude changes)
+            M.toChars (Diff.toMagnitude changes) |> D.fromChars
 
         question : D.Doc
         question =
@@ -257,8 +254,7 @@ buildDocsFromExposed root exposed details =
             Task.throw Exit.BumpNoExposed
 
         e :: es ->
-            Task.eio Exit.BumpBadBuild <|
-                Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root details Build.keepDocs (NE.Nonempty e es)
+            Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root details Build.keepDocs (NE.Nonempty e es) |> Task.eio Exit.BumpBadBuild
 
 
 

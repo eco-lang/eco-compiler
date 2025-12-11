@@ -38,11 +38,11 @@ toReport : L.Localizer -> Code.Source -> Warning -> Report
 toReport localizer source warning =
     case warning of
         UnusedImport region moduleName ->
-            Report.report "unused import" region [] <|
-                Code.toSnippet source region Nothing <|
-                    ( D.reflow ("Nothing from the `" ++ moduleName ++ "` module is used in this file.")
-                    , D.fromChars "I recommend removing unused imports."
-                    )
+            ( D.reflow ("Nothing from the `" ++ moduleName ++ "` module is used in this file.")
+            , D.fromChars "I recommend removing unused imports."
+            )
+                |> Code.toSnippet source region Nothing
+                |> Report.report "unused import" region []
 
         UnusedVariable region context name ->
             let
@@ -50,44 +50,44 @@ toReport localizer source warning =
                 title =
                     defOrPat context "unused definition" "unused variable"
             in
-            Report.report title region [] <|
-                Code.toSnippet source region Nothing <|
-                    ( D.reflow ("You are not using `" ++ name ++ "` anywhere.")
-                    , D.stack
-                        [ D.reflow <|
-                            "Is there a typo? Maybe you intended to use `"
-                                ++ name
-                                ++ "` somewhere but typed another name instead?"
-                        , D.reflow <|
-                            defOrPat context
-                                "If you are sure there is no typo, remove the definition. This way future readers will not have to wonder why it is there!"
-                                ("If you are sure there is no typo, replace `"
-                                    ++ name
-                                    ++ "` with _ so future readers will not have to wonder why it is there!"
-                                )
-                        ]
-                    )
+            ( D.reflow ("You are not using `" ++ name ++ "` anywhere.")
+            , D.stack
+                [ D.reflow <|
+                    "Is there a typo? Maybe you intended to use `"
+                        ++ name
+                        ++ "` somewhere but typed another name instead?"
+                , D.reflow <|
+                    defOrPat context
+                        "If you are sure there is no typo, remove the definition. This way future readers will not have to wonder why it is there!"
+                        ("If you are sure there is no typo, replace `"
+                            ++ name
+                            ++ "` with _ so future readers will not have to wonder why it is there!"
+                        )
+                ]
+            )
+                |> Code.toSnippet source region Nothing
+                |> Report.report title region []
 
         MissingTypeAnnotation region name inferredType ->
-            Report.report "missing type annotation" region [] <|
-                Code.toSnippet source region Nothing <|
-                    ( D.reflow <|
-                        case Type.deepDealias inferredType of
-                            Can.TLambda _ _ ->
-                                "The `" ++ name ++ "` function has no type annotation."
+            ( D.reflow <|
+                case Type.deepDealias inferredType of
+                    Can.TLambda _ _ ->
+                        "The `" ++ name ++ "` function has no type annotation."
 
-                            _ ->
-                                "The `" ++ name ++ "` definition has no type annotation."
-                    , D.stack
-                        [ D.fromChars "I inferred the type annotation myself though! You can copy it into your code:"
-                        , D.green <|
-                            D.hang 4 <|
-                                D.sep
-                                    [ D.fromName name |> D.a (D.fromChars " :")
-                                    , RT.canToDoc localizer RT.None inferredType
-                                    ]
-                        ]
-                    )
+                    _ ->
+                        "The `" ++ name ++ "` definition has no type annotation."
+            , D.stack
+                [ D.fromChars "I inferred the type annotation myself though! You can copy it into your code:"
+                , D.sep
+                    [ D.fromName name |> D.a (D.fromChars " :")
+                    , RT.canToDoc localizer RT.None inferredType
+                    ]
+                    |> D.hang 4
+                    |> D.green
+                ]
+            )
+                |> Code.toSnippet source region Nothing
+                |> Report.report "missing type annotation" region []
 
 
 defOrPat : Context -> a -> a -> a

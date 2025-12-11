@@ -238,7 +238,7 @@ type ErrorMessage
 
 showFiles : List FilePath -> String
 showFiles =
-    unlines << List.map (\filename -> "    " ++ filename)
+    List.map (\filename -> "    " ++ filename) >> unlines
 
 
 toConsolePromptMessage : PromptMessage -> String
@@ -630,7 +630,7 @@ applyTransformation processingFile autoYes confirmPrompt transform mode =
                 formatFile : FilePath -> Task Never Bool
                 formatFile file =
                     readFromFile (onInfo << processingFile) file
-                        |> Task.andThen (\i -> logErrorOr onInfo updateFile <| Result.map (checkChange i) (transform i))
+                        |> Task.andThen (\i -> Result.map (checkChange i) (transform i) |> logErrorOr onInfo updateFile)
             in
             approve autoYes (confirmPrompt (first :: rest))
                 |> Task.andThen (formatFilesIfApproved formatFile first rest)

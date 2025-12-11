@@ -43,11 +43,7 @@ type alias Annotations =
 
 optimize : Annotations -> Can.Module -> MResult i (List W.Warning) TOpt.LocalGraph
 optimize annotations (Can.Module canData) =
-    addDecls canData.name annotations canData.decls <|
-        addEffects canData.name annotations canData.effects <|
-            addUnions canData.name annotations canData.unions <|
-                addAliases canData.name annotations canData.aliases <|
-                    TOpt.LocalGraph { main = Nothing, nodes = Dict.empty, fields = Dict.empty, annotations = annotations }
+    TOpt.LocalGraph { main = Nothing, nodes = Dict.empty, fields = Dict.empty, annotations = annotations } |> addAliases canData.name annotations canData.aliases |> addUnions canData.name annotations canData.unions |> addEffects canData.name annotations canData.effects |> addDecls canData.name annotations canData.decls
 
 
 
@@ -212,17 +208,13 @@ addEffects home annotations effects ((TOpt.LocalGraph graphData) as graph) =
                 newNodes =
                     case manager of
                         Can.Cmd _ ->
-                            Dict.insert TOpt.toComparableGlobal cmd link <|
-                                Dict.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Cmd) graphData.nodes
+                            Dict.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Cmd) graphData.nodes |> Dict.insert TOpt.toComparableGlobal cmd link
 
                         Can.Sub _ ->
-                            Dict.insert TOpt.toComparableGlobal sub link <|
-                                Dict.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Sub) graphData.nodes
+                            Dict.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Sub) graphData.nodes |> Dict.insert TOpt.toComparableGlobal sub link
 
                         Can.Fx _ _ ->
-                            Dict.insert TOpt.toComparableGlobal cmd link <|
-                                Dict.insert TOpt.toComparableGlobal sub link <|
-                                    Dict.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Fx) graphData.nodes
+                            Dict.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Fx) graphData.nodes |> Dict.insert TOpt.toComparableGlobal sub link |> Dict.insert TOpt.toComparableGlobal cmd link
             in
             TOpt.LocalGraph { graphData | nodes = newNodes }
 
@@ -311,7 +303,7 @@ addDeclsHelp home annotations ( decls, graph ) =
                     ReportingResult.ok (ReportingResult.Loop ( subDecls, addRecDefs home annotations defs graph ))
 
                 Just region ->
-                    ReportingResult.throw <| E.BadCycle region (defToName d) (List.map defToName ds)
+                    E.BadCycle region (defToName d) (List.map defToName ds) |> ReportingResult.throw
 
         Can.SaveTheEnvironment ->
             ReportingResult.ok (ReportingResult.Done graph)
@@ -390,13 +382,12 @@ addDefHelp region annotations home name args body maybeTypedArgs ((TOpt.LocalGra
 
             addMain : ( EverySet (List String) TOpt.Global, Dict String Name.Name Int, TOpt.Main ) -> TOpt.LocalGraph
             addMain ( deps, localFields, main ) =
-                addDefNode home annotations region name args body maybeTypedArgs deps <|
-                    TOpt.LocalGraph { graphData | main = Just main, fields = Utils.mapUnionWith identity compare (+) localFields graphData.fields }
+                TOpt.LocalGraph { graphData | main = Just main, fields = Utils.mapUnionWith identity compare (+) localFields graphData.fields } |> addDefNode home annotations region name args body maybeTypedArgs deps
         in
         case Type.deepDealias tipe of
             Can.TType hm nm [ _ ] ->
                 if hm == ModuleName.virtualDom && nm == Name.node then
-                    ReportingResult.ok <| addMain <| Names.run annotations <| Names.registerKernel Name.virtualDom TOpt.Static
+                    Names.registerKernel Name.virtualDom TOpt.Static |> Names.run annotations |> addMain |> ReportingResult.ok
 
                 else
                     ReportingResult.throw (E.BadType region tipe)
@@ -405,7 +396,7 @@ addDefHelp region annotations home name args body maybeTypedArgs ((TOpt.LocalGra
                 if hm == ModuleName.platform && nm == Name.program then
                     case Effects.checkPayload flags of
                         Ok () ->
-                            ReportingResult.ok <| addMain <| Names.run annotations <| Names.map (TOpt.Dynamic message) <| Port.toFlagsDecoder flags
+                            Port.toFlagsDecoder flags |> Names.map (TOpt.Dynamic message) |> Names.run annotations |> addMain |> ReportingResult.ok
 
                         Err ( subType, invalidPayload ) ->
                             ReportingResult.throw (E.BadFlags region subType invalidPayload)

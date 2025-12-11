@@ -242,8 +242,7 @@ chompTag vs es fs src pos end row col revChunks =
             name =
                 Name.fromPtr src pos newPos
         in
-        chompChunks vs es fs src newPos end row newCol newPos <|
-            (ElmField name :: revChunks)
+        (ElmField name :: revChunks) |> chompChunks vs es fs src newPos end row newCol newPos
 
     else
         let
@@ -260,16 +259,14 @@ chompTag vs es fs src pos end row col revChunks =
                 ( enum, newEnums ) =
                     lookupEnum (Char.fromCode (code - 0x30)) name es
             in
-            chompChunks vs newEnums fs src newPos end row newCol newPos <|
-                (JsEnum enum :: revChunks)
+            (JsEnum enum :: revChunks) |> chompChunks vs newEnums fs src newPos end row newCol newPos
 
         else if code >= 0x61 && code <= 0x7A then
             let
                 ( field, newFields ) =
                     lookupField name fs
             in
-            chompChunks vs es newFields src newPos end row newCol newPos <|
-                (JsField field :: revChunks)
+            (JsField field :: revChunks) |> chompChunks vs es newFields src newPos end row newCol newPos
 
         else if name == "DEBUG" then
             chompChunks vs es fs src newPos end row newCol newPos (Debug :: revChunks)

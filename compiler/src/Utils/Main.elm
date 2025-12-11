@@ -276,7 +276,7 @@ findMax keyComparison items =
 
 mapLookupMin : Dict comparable comparable a -> Maybe ( comparable, a )
 mapLookupMin dict =
-    case List.sortBy Tuple.first (Map.toList compare dict) of
+    case Map.toList compare dict |> List.sortBy Tuple.first of
         firstElem :: _ ->
             Just firstElem
 
@@ -286,7 +286,7 @@ mapLookupMin dict =
 
 mapFindMin : Dict comparable comparable a -> ( comparable, a )
 mapFindMin dict =
-    case List.sortBy Tuple.first (Map.toList compare dict) of
+    case Map.toList compare dict |> List.sortBy Tuple.first of
         firstElem :: _ ->
             firstElem
 
@@ -395,7 +395,7 @@ mapM_ f =
     let
         c : a -> Task Never () -> Task Never ()
         c x k =
-            Task.andThen (\_ -> k) (f x)
+            f x |> Task.andThen (\_ -> k)
     in
     List.foldr c (Task.succeed ())
 
@@ -405,7 +405,7 @@ dictMapM_ keyComparison f =
     let
         c : k -> a -> Task Never () -> Task Never ()
         c _ x k =
-            Task.andThen (\_ -> k) (f x)
+            f x |> Task.andThen (\_ -> k)
     in
     Map.foldl keyComparison c (Task.succeed ())
 
@@ -417,12 +417,12 @@ maybeMapM =
 
 mapMapKeys : (k2 -> comparable) -> (k1 -> k1 -> Order) -> (k1 -> k2) -> Dict comparable k1 a -> Dict comparable k2 a
 mapMapKeys toComparable keyComparison f =
-    Map.fromList toComparable << Map.foldl keyComparison (\k x xs -> ( f k, x ) :: xs) []
+    Map.foldl keyComparison (\k x xs -> ( f k, x ) :: xs) [] >> Map.fromList toComparable
 
 
 mapMinViewWithKey : (k -> comparable) -> (k -> k -> Order) -> (( k, a ) -> comparable) -> Dict comparable k a -> Maybe ( ( k, a ), Dict comparable k a )
 mapMinViewWithKey toComparable keyComparison compare dict =
-    case List.sortBy compare (Map.toList keyComparison dict) of
+    case Map.toList keyComparison dict |> List.sortBy compare of
         first :: tail ->
             Just ( first, Map.fromList toComparable tail )
 
@@ -689,7 +689,7 @@ fpPathSeparator =
 
 fpIsRelative : FilePath -> Bool
 fpIsRelative =
-    not << String.startsWith "/"
+    String.startsWith "/" >> not
 
 
 fpTakeFileName : FilePath -> FilePath
@@ -709,12 +709,12 @@ fpSplitFileName filename =
 
 fpTakeExtension : FilePath -> String
 fpTakeExtension =
-    Tuple.second << fpSplitExtension
+    fpSplitExtension >> Tuple.second
 
 
 fpDropExtension : FilePath -> FilePath
 fpDropExtension =
-    Tuple.first << fpSplitExtension
+    fpSplitExtension >> Tuple.first
 
 
 fpTakeDirectory : FilePath -> FilePath

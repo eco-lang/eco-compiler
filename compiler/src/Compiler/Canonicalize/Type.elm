@@ -112,12 +112,10 @@ canonicalizeType syntaxVersion env region name args info =
             (\cargs ->
                 case info of
                     Env.Alias arity home argNames aliasedType ->
-                        checkArity arity region name args <|
-                            Can.TAlias home name (List.map2 Tuple.pair argNames cargs) (Can.Holey aliasedType)
+                        Can.TAlias home name (List.map2 Tuple.pair argNames cargs) (Can.Holey aliasedType) |> checkArity arity region name args
 
                     Env.Union arity home ->
-                        checkArity arity region name args <|
-                            Can.TType home name cargs
+                        Can.TType home name cargs |> checkArity arity region name args
             )
 
 

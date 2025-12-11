@@ -37,8 +37,7 @@ backend : CodeGen.MonoCodeGen
 backend =
     { generate =
         \config ->
-            CodeGen.TextOutput <|
-                generateModule config.mode config.graph
+            generateModule config.mode config.graph |> CodeGen.TextOutput
     }
 
 

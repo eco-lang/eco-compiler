@@ -1015,8 +1015,7 @@ gatherForeignInterfaces directArtifacts =
                 I.Private _ _ _ ->
                     Nothing
     in
-    Dict.map (\_ -> OneOrMore.destruct finalize) <|
-        Dict.foldr compare gather Dict.empty directArtifacts
+    Dict.foldr compare gather Dict.empty directArtifacts |> Dict.map (\_ -> OneOrMore.destruct finalize)
 
 
 

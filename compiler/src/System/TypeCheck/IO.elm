@@ -99,7 +99,7 @@ pure x =
 
 apply : IO a -> IO (a -> b) -> IO b
 apply ma mf =
-    andThen (\f -> andThen (pure << f) ma) mf
+    andThen (\f -> andThen (f >> pure) ma) mf
 
 
 map : (a -> b) -> IO a -> IO b

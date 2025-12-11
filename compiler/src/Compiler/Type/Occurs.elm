@@ -47,24 +47,19 @@ occursHelp seen var foundCycle =
                                     IO.foldrM (occursHelp newSeen) foundCycle args
 
                                 IO.Fun1 a b ->
-                                    IO.andThen (occursHelp newSeen a)
-                                        (occursHelp newSeen b foundCycle)
+                                    occursHelp newSeen b foundCycle |> IO.andThen (occursHelp newSeen a)
 
                                 IO.EmptyRecord1 ->
                                     IO.pure foundCycle
 
                                 IO.Record1 fields ext ->
-                                    IO.andThen (occursHelp newSeen ext) <|
-                                        IO.foldrM (occursHelp newSeen) foundCycle (Dict.values compare fields)
+                                    IO.foldrM (occursHelp newSeen) foundCycle (Dict.values compare fields) |> IO.andThen (occursHelp newSeen ext)
 
                                 IO.Unit1 ->
                                     IO.pure foundCycle
 
                                 IO.Tuple1 a b cs ->
-                                    IO.andThen (occursHelp newSeen a)
-                                        (IO.andThen (occursHelp newSeen b)
-                                            (IO.foldrM (occursHelp newSeen) foundCycle cs)
-                                        )
+                                    IO.foldrM (occursHelp newSeen) foundCycle cs |> IO.andThen (occursHelp newSeen b) |> IO.andThen (occursHelp newSeen a)
 
                         IO.Alias _ _ args _ ->
                             IO.foldrM (occursHelp (var :: seen)) foundCycle (List.map Tuple.second args)

@@ -129,40 +129,40 @@ makeAppPlan (Solver.Env env) pkg ((Outline.AppOutline appData) as outline) =
         -- is it already indirect?
         case Dict.get identity pkg indirect of
             Just vsn ->
-                Task.succeed <|
-                    PromoteIndirect <|
-                        Outline.App <|
-                            Outline.AppOutline
-                                { appData
-                                    | depsDirect = Dict.insert identity pkg vsn direct
-                                    , depsIndirect = Dict.remove identity pkg indirect
-                                }
+                Outline.AppOutline
+                    { appData
+                        | depsDirect = Dict.insert identity pkg vsn direct
+                        , depsIndirect = Dict.remove identity pkg indirect
+                    }
+                    |> Outline.App
+                    |> PromoteIndirect
+                    |> Task.succeed
 
             Nothing ->
                 -- is it already a test dependency?
                 case Dict.get identity pkg testDirect of
                     Just vsn ->
-                        Task.succeed <|
-                            PromoteTest <|
-                                Outline.App <|
-                                    Outline.AppOutline
-                                        { appData
-                                            | depsDirect = Dict.insert identity pkg vsn direct
-                                            , testDirect = Dict.remove identity pkg testDirect
-                                        }
+                        Outline.AppOutline
+                            { appData
+                                | depsDirect = Dict.insert identity pkg vsn direct
+                                , testDirect = Dict.remove identity pkg testDirect
+                            }
+                            |> Outline.App
+                            |> PromoteTest
+                            |> Task.succeed
 
                     Nothing ->
                         -- is it already an indirect test dependency?
                         case Dict.get identity pkg testIndirect of
                             Just vsn ->
-                                Task.succeed <|
-                                    PromoteTest <|
-                                        Outline.App <|
-                                            Outline.AppOutline
-                                                { appData
-                                                    | depsDirect = Dict.insert identity pkg vsn direct
-                                                    , testIndirect = Dict.remove identity pkg testIndirect
-                                                }
+                                Outline.AppOutline
+                                    { appData
+                                        | depsDirect = Dict.insert identity pkg vsn direct
+                                        , testIndirect = Dict.remove identity pkg testIndirect
+                                    }
+                                    |> Outline.App
+                                    |> PromoteTest
+                                    |> Task.succeed
 
                             Nothing ->
                                 -- finally try to add it from scratch
@@ -207,14 +207,14 @@ makePkgPlan (Solver.Env env) pkg (Outline.PkgOutline pkgData) =
         -- is already in test dependencies?
         case Dict.get identity pkg pkgData.testDeps of
             Just con ->
-                Task.succeed <|
-                    PromoteTest <|
-                        Outline.Pkg <|
-                            Outline.PkgOutline
-                                { pkgData
-                                    | deps = Dict.insert identity pkg con pkgData.deps
-                                    , testDeps = Dict.remove identity pkg pkgData.testDeps
-                                }
+                Outline.PkgOutline
+                    { pkgData
+                        | deps = Dict.insert identity pkg con pkgData.deps
+                        , testDeps = Dict.remove identity pkg pkgData.testDeps
+                    }
+                    |> Outline.Pkg
+                    |> PromoteTest
+                    |> Task.succeed
 
             Nothing ->
                 -- try to add a new dependency
@@ -262,14 +262,14 @@ makePkgPlan (Solver.Env env) pkg (Outline.PkgOutline pkgData) =
                                                 news =
                                                     Utils.mapMapMaybe identity Pkg.compareName keepNew changes
                                             in
-                                            Task.succeed <|
-                                                Changes <|
-                                                    Outline.Pkg <|
-                                                        Outline.PkgOutline
-                                                            { pkgData
-                                                                | deps = addNews (Just pkg) news pkgData.deps
-                                                                , testDeps = addNews Nothing news pkgData.testDeps
-                                                            }
+                                            Outline.PkgOutline
+                                                { pkgData
+                                                    | deps = addNews (Just pkg) news pkgData.deps
+                                                    , testDeps = addNews Nothing news pkgData.testDeps
+                                                }
+                                                |> Outline.Pkg
+                                                |> Changes
+                                                |> Task.succeed
 
                                         Solver.NoSolution ->
                                             Task.throw (Exit.InstallNoOnlinePkgSolution pkg)

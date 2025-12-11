@@ -73,7 +73,7 @@ import Utils.Crash exposing (crash)
 
 markdown : Options -> String -> Doc
 markdown opts =
-    Doc opts << processDocument << processLines
+    processLines >> processDocument >> Doc opts
 
 
 
@@ -392,7 +392,7 @@ processElts remap elts =
                             let
                                 docs : List String
                                 docs =
-                                    terms1 :: List.map (cleanDoc << extractText) docLines
+                                    terms1 :: List.map (extractText >> cleanDoc) docLines
 
                                 ( docLines, rest_ ) =
                                     List.span isDocLine rest
@@ -415,7 +415,7 @@ processElts remap elts =
                                         Just stripped ->
                                             stripped
                             in
-                            (ElmDocs <| List.filter ((/=) []) <| List.map (List.filter ((/=) "") << List.map String.trim << String.split ",") docs)
+                            (List.map (List.filter ((/=) "") << List.map String.trim << String.split ",") docs |> List.filter ((/=) []) |> ElmDocs)
                                 :: processElts remap rest_
 
                         Nothing ->
@@ -423,10 +423,10 @@ processElts remap elts =
                             let
                                 txt : String
                                 txt =
-                                    String.trimRight <|
-                                        joinLines <|
-                                            List.map String.trimLeft
-                                                (t :: List.map extractText textlines)
+                                    List.map String.trimLeft
+                                        (t :: List.map extractText textlines)
+                                        |> joinLines
+                                        |> String.trimRight
 
                                 ( textlines, rest_ ) =
                                     List.span isTextLine rest
@@ -449,11 +449,11 @@ processElts remap elts =
 
                 -- Headers:
                 ATXHeader lvl t ->
-                    (Header lvl <| parseInlines remap t)
+                    (parseInlines remap t |> Header lvl)
                         :: processElts remap rest
 
                 SetextHeader lvl t ->
-                    (Header lvl <| parseInlines remap t)
+                    (parseInlines remap t |> Header lvl)
                         :: processElts remap rest
 
                 -- Horizontal rule:
@@ -478,14 +478,14 @@ processElts remap elts =
                             True
 
                         _ ->
-                            not <| List.any isBlankLine xs
+                            List.any isBlankLine xs |> not
             in
             case ct of
                 Document ->
                     crash "Document container found inside Document"
 
                 BlockQuote ->
-                    (Blockquote <| processElts remap cs)
+                    (processElts remap cs |> Blockquote)
                         :: processElts remap rest
 
                 -- List item?  Gobble up following list items of the same type
@@ -574,7 +574,7 @@ processElts remap elts =
                     let
                         txt : String
                         txt =
-                            joinLines <| List.map extractText cs
+                            List.map extractText cs |> joinLines
 
                         attr : CodeAttr
                         attr =
@@ -590,15 +590,11 @@ processElts remap elts =
                     let
                         txt : String
                         txt =
-                            joinLines <|
-                                stripTrailingEmpties <|
-                                    List.concatMap extractCode cbs
+                            List.concatMap extractCode cbs |> stripTrailingEmpties |> joinLines
 
                         stripTrailingEmpties : List String -> List String
                         stripTrailingEmpties =
-                            List.reverse
-                                << List.dropWhile (String.all ((==) ' '))
-                                << List.reverse
+                            List.reverse >> List.dropWhile (String.all ((==) ' ')) >> List.reverse
 
                         -- explanation for next line:  when we parsed
                         -- the blank line, we dropped 0-3 spaces.
@@ -650,7 +646,7 @@ processElts remap elts =
                     let
                         refs : List Elt -> List ( String, String, String )
                         refs cs_ =
-                            List.map (extractRef << extractText) cs_
+                            List.map (extractText >> extractRef) cs_
 
                         extractRef : String -> ( String, String, String )
                         extractRef t =
@@ -668,7 +664,7 @@ processElts remap elts =
                                     processElts_ (refs cs_ :: acc) rest_
 
                                 _ ->
-                                    (ReferencesBlock <| List.concat <| List.reverse acc)
+                                    (List.reverse acc |> List.concat |> ReferencesBlock)
                                         :: processElts remap pass
                     in
                     processElts_ [] (C (Container ct cs) :: rest)
@@ -856,7 +852,7 @@ tryOpenContainers cs t =
                 p :: ps ->
                     oneOf (p |> andThen (\_ -> scanners ps)) (map Tuple.pair takeText |> apply (pure (List.length (p :: ps))))
     in
-    case parse (scanners <| List.map containerContinue cs) t of
+    case parse (List.map containerContinue cs |> scanners) t of
         Ok ( t_, n ) ->
             ( t_, n )
 

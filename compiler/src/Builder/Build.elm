@@ -402,7 +402,7 @@ type alias PathCompileState =
 checkRootsAndCollect : Env -> NE.Nonempty RootStatus -> MVar ResultDict -> Dict String ModuleName.Raw (MVar BResult) -> Task Never PathCompileState
 checkRootsAndCollect env sroots rmvar resultsMVars =
     Utils.putMVar resultDictEncoder rmvar resultsMVars
-        |> Task.andThen (\_ -> Utils.nonEmptyListTraverse (fork rootResultEncoder << checkRoot env resultsMVars) sroots)
+        |> Task.andThen (\_ -> Utils.nonEmptyListTraverse (checkRoot env resultsMVars >> fork rootResultEncoder) sroots)
         |> Task.map (\rrootMVars -> { resultsMVars = resultsMVars, rrootMVars = rrootMVars })
 
 
@@ -532,7 +532,7 @@ crawlFoundPaths env mvar docsNeed name needsDocs root projectType buildID locals
             crawlSinglePath env mvar docsNeed name needsDocs buildID locals foreigns path
 
         p1 :: p2 :: ps ->
-            Task.succeed <| SBadImport <| Import.AmbiguousLocal (Utils.fpMakeRelative root p1) (Utils.fpMakeRelative root p2) (List.map (Utils.fpMakeRelative root) ps)
+            Import.AmbiguousLocal (Utils.fpMakeRelative root p1) (Utils.fpMakeRelative root p2) (List.map (Utils.fpMakeRelative root) ps) |> SBadImport |> Task.succeed
 
         [] ->
             crawlNoLocalPath name projectType foreigns
@@ -542,7 +542,7 @@ crawlSinglePath : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> Bool -
 crawlSinglePath env mvar docsNeed name needsDocs buildID locals foreigns path =
     case Dict.get identity name foreigns of
         Just (Details.Foreign dep deps) ->
-            Task.succeed <| SBadImport <| Import.Ambiguous path [] dep deps
+            Import.Ambiguous path [] dep deps |> SBadImport |> Task.succeed
 
         Nothing ->
             File.getTime path
@@ -569,17 +569,17 @@ crawlNoLocalPath name projectType foreigns =
         Just (Details.Foreign dep deps) ->
             case deps of
                 [] ->
-                    Task.succeed <| SForeign dep
+                    SForeign dep |> Task.succeed
 
                 d :: ds ->
-                    Task.succeed <| SBadImport <| Import.AmbiguousForeign dep d ds
+                    Import.AmbiguousForeign dep d ds |> SBadImport |> Task.succeed
 
         Nothing ->
             if Name.isKernel name && Parse.isKernel projectType then
                 checkKernelExists name
 
             else
-                Task.succeed <| SBadImport Import.NotFound
+                SBadImport Import.NotFound |> Task.succeed
 
 
 checkKernelExists : ModuleName.Raw -> Task Never Status
@@ -602,12 +602,12 @@ crawlFile ((Env envData) as env) mvar docsNeed expectedName path time lastChange
             (\source ->
                 case Parse.fromByteString (SV.fileSyntaxVersion path) envData.projectType source of
                     Err err ->
-                        Task.succeed <| SBadSyntax path time source err
+                        SBadSyntax path time source err |> Task.succeed
 
                     Ok ((Src.Module srcData) as modul) ->
                         case srcData.name of
                             Nothing ->
-                                Task.succeed <| SBadSyntax path time source (Syntax.ModuleNameUnspecified expectedName)
+                                SBadSyntax path time source (Syntax.ModuleNameUnspecified expectedName) |> Task.succeed
 
                             Just ((A.At _ actualName) as name) ->
                                 if expectedName == actualName then
@@ -630,7 +630,7 @@ crawlFile ((Env envData) as env) mvar docsNeed expectedName path time lastChange
                                     crawlDeps env mvar deps (SChanged local source modul docsNeed)
 
                                 else
-                                    Task.succeed <| SBadSyntax path time source (Syntax.ModuleNameMismatch expectedName name)
+                                    SBadSyntax path time source (Syntax.ModuleNameMismatch expectedName name) |> Task.succeed
             )
 
 
@@ -681,10 +681,7 @@ checkModule ((Env envData) as env) foreigns resultsMVar name status =
             Task.succeed (RNotFound importProblem)
 
         SBadSyntax path time source err ->
-            Task.succeed <|
-                RProblem <|
-                    Error.Module name path time source <|
-                        Error.BadSyntax err
+            Error.BadSyntax err |> Error.Module name path time source |> RProblem |> Task.succeed
 
         SForeign home ->
             case Utils.find ModuleName.toComparableCanonical (TypeCheck.Canonical home name) foreigns of
@@ -692,7 +689,7 @@ checkModule ((Env envData) as env) foreigns resultsMVar name status =
                     Task.succeed (RForeign iface)
 
                 I.Private _ _ _ ->
-                    crash <| "mistakenly seeing private interface for " ++ Pkg.toChars home ++ " " ++ name
+                    ("mistakenly seeing private interface for " ++ Pkg.toChars home ++ " " ++ name) |> crash
 
         SKernel ->
             Task.succeed RKernel
@@ -816,10 +813,7 @@ recompileCachedModule :
 recompileCachedModule env root projectType name path time deps ifaces source =
     case Parse.fromByteString (SV.fileSyntaxVersion path) projectType source of
         Err err ->
-            Task.succeed <|
-                RProblem <|
-                    Error.Module name path time source <|
-                        Error.BadSyntax err
+            Error.BadSyntax err |> Error.Module name path time source |> RProblem |> Task.succeed
 
         Ok ((Src.Module srcData) as modul) ->
             let
@@ -916,10 +910,7 @@ makeImportError :
     -> NE.Nonempty ( ModuleName.Raw, Import.Problem )
     -> Task Never BResult
 makeImportError env resultDict name path time source imports problems =
-    Task.succeed <|
-        RProblem <|
-            Error.Module name path time source <|
-                Error.BadImports (toImportErrors env resultDict imports problems)
+    Error.BadImports (toImportErrors env resultDict imports problems) |> Error.Module name path time source |> RProblem |> Task.succeed
 
 
 
@@ -993,14 +984,14 @@ checkDepsHelp root results deps new same cached importProblems isBlocked lastDep
         [] ->
             case List.reverse importProblems of
                 p :: ps ->
-                    Task.succeed <| DepsNotFound (NE.Nonempty p ps)
+                    DepsNotFound (NE.Nonempty p ps) |> Task.succeed
 
                 [] ->
                     if isBlocked then
-                        Task.succeed <| DepsBlock
+                        DepsBlock |> Task.succeed
 
                     else if List.isEmpty new && lastDepChange <= lastCompile then
-                        Task.succeed <| DepsSame same cached
+                        DepsSame same cached |> Task.succeed
 
                     else
                         loadInterfaces root same cached
@@ -1011,7 +1002,7 @@ checkDepsHelp root results deps new same cached importProblems isBlocked lastDep
                                             DepsBlock
 
                                         Just ifaces ->
-                                            DepsChange <| Dict.union (Dict.fromList identity new) ifaces
+                                            Dict.union (Dict.fromList identity new) ifaces |> DepsChange
                                 )
 
 
@@ -1069,7 +1060,7 @@ loadInterfaces root same cached =
                                     Nothing
 
                                 Just loaded ->
-                                    Just <| Dict.union (Dict.fromList identity loaded) (Dict.fromList identity same)
+                                    Dict.union (Dict.fromList identity loaded) (Dict.fromList identity same) |> Just
                         )
             )
 
@@ -1366,16 +1357,12 @@ handleCompileResult :
 handleCompileResult key root pkg buildID docsNeed path time deps main lastChange source modul maybeTypedObjects result =
     case result of
         Err err ->
-            Task.succeed <|
-                RProblem <|
-                    Error.Module (Src.getName modul) path time source err
+            Error.Module (Src.getName modul) path time source err |> RProblem |> Task.succeed
 
         Ok (Compile.Artifacts canonical annotations objects) ->
             case makeDocs docsNeed canonical of
                 Err err ->
-                    Task.succeed <|
-                        RProblem <|
-                            Error.Module (Src.getName modul) path time source (Error.BadDocs err)
+                    Error.Module (Src.getName modul) path time source (Error.BadDocs err) |> RProblem |> Task.succeed
 
                 Ok docs ->
                     let
@@ -1517,16 +1504,12 @@ handleTypedCompileResult :
 handleTypedCompileResult key root pkg buildID docsNeed path time deps main lastChange source modul result =
     case result of
         Err err ->
-            Task.succeed <|
-                RProblem <|
-                    Error.Module (Src.getName modul) path time source err
+            Error.Module (Src.getName modul) path time source err |> RProblem |> Task.succeed
 
         Ok (Compile.TypedArtifacts typedArtifacts) ->
             case makeDocs docsNeed typedArtifacts.canonical of
                 Err err ->
-                    Task.succeed <|
-                        RProblem <|
-                            Error.Module (Src.getName modul) path time source (Error.BadDocs err)
+                    Error.Module (Src.getName modul) path time source (Error.BadDocs err) |> RProblem |> Task.succeed
 
                 Ok docs ->
                     let
@@ -1565,8 +1548,7 @@ projectTypeToPkg projectType =
 
 writeDetails : FilePath -> Details.Details -> Dict String ModuleName.Raw BResult -> Task Never ()
 writeDetails root (Details.Details detailsData) results =
-    File.writeBinary Details.detailsEncoder (Stuff.details root) <|
-        Details.Details { detailsData | locals = Dict.foldr compare addNewLocal detailsData.locals results }
+    Details.Details { detailsData | locals = Dict.foldr compare addNewLocal detailsData.locals results } |> File.writeBinary Details.detailsEncoder (Stuff.details root)
 
 
 addNewLocal : ModuleName.Raw -> BResult -> Dict String ModuleName.Raw Details.Local -> Dict String ModuleName.Raw Details.Local
@@ -1605,7 +1587,7 @@ finalizeExposed : FilePath -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Dic
 finalizeExposed root docsGoal exposed results =
     case List.foldr (addImportProblems results) [] (NE.toList exposed) of
         p :: ps ->
-            Task.succeed <| Err <| Exit.BuildProjectProblem (Exit.BP_MissingExposed (NE.Nonempty p ps))
+            Exit.BuildProjectProblem (Exit.BP_MissingExposed (NE.Nonempty p ps)) |> Err |> Task.succeed
 
         [] ->
             case Dict.foldr compare (\_ -> addErrors) [] results of
@@ -1613,7 +1595,7 @@ finalizeExposed root docsGoal exposed results =
                     Task.map Ok (finalizeDocs docsGoal results)
 
                 e :: es ->
-                    Task.succeed <| Err <| Exit.BuildBadModules root e es
+                    Exit.BuildBadModules root e es |> Err |> Task.succeed
 
 
 addErrors : BResult -> List Error.Module -> List Error.Module
@@ -1732,7 +1714,7 @@ finalizeDocs : DocsGoal docs -> Dict String ModuleName.Raw BResult -> Task Never
 finalizeDocs goal results =
     case goal of
         KeepDocs f ->
-            Task.succeed <| f results
+            f results |> Task.succeed
 
         WriteDocs f ->
             f results
@@ -1795,7 +1777,7 @@ fromRepl root details source =
             (\((Env envData) as env) ->
                 case Parse.fromByteString SV.Guida envData.projectType source of
                     Err syntaxError ->
-                        Task.succeed <| Err <| Exit.ReplBadInput source <| Error.BadSyntax syntaxError
+                        Error.BadSyntax syntaxError |> Exit.ReplBadInput source |> Err |> Task.succeed
 
                     Ok ((Src.Module srcData) as modul) ->
                         let
@@ -1843,7 +1825,7 @@ compileRepl root details env source modul deps { dmvar, statuses } =
             (\midpoint ->
                 case midpoint of
                     Err problem ->
-                        Task.succeed <| Err <| Exit.ReplProjectProblem problem
+                        Exit.ReplProjectProblem problem |> Err |> Task.succeed
 
                     Ok foreigns ->
                         compileReplModules root details env source modul deps foreigns statuses
@@ -1899,10 +1881,10 @@ finalizeReplArtifacts ((Env envData) as env) source ((Src.Module srcData) as mod
                                     ms =
                                         Dict.foldr compare addInside [] results
                                 in
-                                Ok <| ReplArtifacts { home = h, modules = m :: ms, localizer = L.fromModule modul, annotations = annotations }
+                                ReplArtifacts { home = h, modules = m :: ms, localizer = L.fromModule modul, annotations = annotations } |> Ok
 
                             Err errors ->
-                                Err <| Exit.ReplBadInput source errors
+                                Exit.ReplBadInput source errors |> Err
                     )
     in
     case depsStatus of
@@ -1918,23 +1900,19 @@ finalizeReplArtifacts ((Env envData) as env) source ((Src.Module srcData) as mod
                                 compileInput ifaces
 
                             Nothing ->
-                                Task.succeed <| Err <| Exit.ReplBadCache
+                                Exit.ReplBadCache |> Err |> Task.succeed
                     )
 
         DepsBlock ->
             case Dict.foldr compare (\_ -> addErrors) [] results of
                 [] ->
-                    Task.succeed <| Err <| Exit.ReplBlocked
+                    Exit.ReplBlocked |> Err |> Task.succeed
 
                 e :: es ->
-                    Task.succeed <| Err <| Exit.ReplBadLocalDeps envData.root e es
+                    Exit.ReplBadLocalDeps envData.root e es |> Err |> Task.succeed
 
         DepsNotFound problems ->
-            Task.succeed <|
-                Err <|
-                    Exit.ReplBadInput source <|
-                        Error.BadImports <|
-                            toImportErrors env resultMVars srcData.imports problems
+            toImportErrors env resultMVars srcData.imports problems |> Error.BadImports |> Exit.ReplBadInput source |> Err |> Task.succeed
 
 
 
@@ -1959,7 +1937,7 @@ findRoots env paths =
                 Utils.nonEmptyListTraverse (Utils.readMVar resultBuildProjectProblemRootInfoDecoder) mvars
                     |> Task.map
                         (\einfos ->
-                            Result.andThen checkRoots (Utils.sequenceNonemptyListResult einfos)
+                            Utils.sequenceNonemptyListResult einfos |> Result.andThen checkRoots
                         )
             )
 
@@ -1980,10 +1958,7 @@ checkRoots infos =
                 (RootInfo _ relative2 _) :: _ ->
                     Err (Exit.BP_MainPathDuplicate relative relative2)
     in
-    Result.map (\_ -> NE.map (\(RootInfo _ _ location) -> location) infos) <|
-        Utils.mapTraverseResult identity compare (OneOrMore.destruct fromOneOrMore) <|
-            Utils.mapFromListWith identity OneOrMore.more <|
-                List.map toOneOrMore (NE.toList infos)
+    List.map toOneOrMore (NE.toList infos) |> Utils.mapFromListWith identity OneOrMore.more |> Utils.mapTraverseResult identity compare (OneOrMore.destruct fromOneOrMore) |> Result.map (\_ -> NE.map (\(RootInfo _ _ location) -> location) infos)
 
 
 
@@ -2000,7 +1975,7 @@ getRootInfo env path =
         |> Task.andThen
             (\exists ->
                 if exists then
-                    Task.andThen (getRootInfoHelp env path) (Utils.dirCanonicalizePath path)
+                    Utils.dirCanonicalizePath path |> Task.andThen (getRootInfoHelp env path)
 
                 else
                     Task.succeed (Err (Exit.BP_PathUnknown path))
@@ -2024,7 +1999,7 @@ getRootInfoHelp (Env envData) path absolutePath =
         in
         case List.filterMap (isInsideSrcDirByPath absoluteSegments) envData.srcDirs of
             [] ->
-                Task.succeed <| Ok <| RootInfo absolutePath path (LOutside path)
+                RootInfo absolutePath path (LOutside path) |> Ok |> Task.succeed
 
             [ ( _, Ok names ) ] ->
                 let
@@ -2046,20 +2021,20 @@ getRootInfoHelp (Env envData) path absolutePath =
                                         p2 =
                                             addRelative d2 (Utils.fpJoinPath names ++ ext)
                                     in
-                                    Err <| Exit.BP_RootNameDuplicate name p1 p2
+                                    Exit.BP_RootNameDuplicate name p1 p2 |> Err
 
                                 _ ->
-                                    Ok <| RootInfo absolutePath path (LInside name)
+                                    RootInfo absolutePath path (LInside name) |> Ok
                         )
 
             [ ( s, Err names ) ] ->
-                Task.succeed <| Err <| Exit.BP_RootNameInvalid path s names
+                Exit.BP_RootNameInvalid path s names |> Err |> Task.succeed
 
             ( s1, _ ) :: ( s2, _ ) :: _ ->
-                Task.succeed <| Err <| Exit.BP_WithAmbiguousSrcDir path s1 s2
+                Exit.BP_WithAmbiguousSrcDir path s1 s2 |> Err |> Task.succeed
 
     else
-        Task.succeed <| Err <| Exit.BP_WithBadExtension path
+        Exit.BP_WithBadExtension path |> Err |> Task.succeed
 
 
 isInsideSrcDirByName : List String -> String -> AbsoluteSrcDir -> Task Never Bool
@@ -2170,9 +2145,7 @@ crawlRoot ((Env envData) as env) mvar root =
                                             crawlDeps env mvar deps (SOutsideOk local source modul)
 
                                         Err syntaxError ->
-                                            Task.succeed <|
-                                                SOutsideErr <|
-                                                    Error.Module "???" path time source (Error.BadSyntax syntaxError)
+                                            Error.Module "???" path time source (Error.BadSyntax syntaxError) |> SOutsideErr |> Task.succeed
                                 )
                     )
 
@@ -2221,10 +2194,7 @@ checkRoot ((Env envData) as env) results rootStatus =
                                 Task.succeed ROutsideBlocked
 
                             DepsNotFound problems ->
-                                Task.succeed <|
-                                    ROutsideErr <|
-                                        Error.Module (Src.getName modul) localData.path localData.time source <|
-                                            Error.BadImports (toImportErrors env results srcData.imports problems)
+                                Error.BadImports (toImportErrors env results srcData.imports problems) |> Error.Module (Src.getName modul) localData.path localData.time source |> ROutsideErr |> Task.succeed
                     )
 
 
@@ -2252,7 +2222,7 @@ compileOutside (Env envData) (Details.Local localData) source ifaces modul =
                                     )
 
                         Err errors ->
-                            Task.succeed <| ROutsideErr <| Error.Module name localData.path localData.time source errors
+                            Error.Module name localData.path localData.time source errors |> ROutsideErr |> Task.succeed
                 )
 
     else
@@ -2265,7 +2235,7 @@ compileOutside (Env envData) (Details.Local localData) source ifaces modul =
                                 |> Task.map (\_ -> ROutsideOk name (I.fromModule pkg canonical annotations) objects Nothing)
 
                         Err errors ->
-                            Task.succeed <| ROutsideErr <| Error.Module name localData.path localData.time source errors
+                            Error.Module name localData.path localData.time source errors |> ROutsideErr |> Task.succeed
                 )
 
 

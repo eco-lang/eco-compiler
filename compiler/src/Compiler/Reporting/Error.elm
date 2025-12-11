@@ -99,15 +99,15 @@ toDoc : String -> Module -> List Module -> D.Doc
 toDoc root err errs =
     let
         (NE.Nonempty m ms) =
-            NE.sortBy
-                (\{ modificationTime } ->
-                    let
-                        (File.Time posix) =
-                            modificationTime
-                    in
-                    Time.posixToMillis posix
-                )
-                (NE.Nonempty err errs)
+            NE.Nonempty err errs
+                |> NE.sortBy
+                    (\{ modificationTime } ->
+                        let
+                            (File.Time posix) =
+                                modificationTime
+                        in
+                        Time.posixToMillis posix
+                    )
     in
     D.vcat (toDocHelp root m ms)
 
@@ -162,7 +162,7 @@ moduleToDoc root { absolutePath, source, error } =
         relativePath =
             Utils.fpMakeRelative root absolutePath
     in
-    D.vcat <| List.map (reportToDoc relativePath) (NE.toList reports)
+    List.map (reportToDoc relativePath) (NE.toList reports) |> D.vcat
 
 
 reportToDoc : String -> Report.Report -> D.Doc
@@ -182,14 +182,15 @@ toMessageBar title filePath =
         usedSpace =
             4 + String.length title + 1 + String.length filePath
     in
-    D.dullcyan <|
-        D.fromChars <|
-            "-- "
-                ++ title
-                ++ " "
-                ++ String.repeat (max 1 (80 - usedSpace)) "-"
-                ++ " "
-                ++ filePath
+    ("-- "
+        ++ title
+        ++ " "
+        ++ String.repeat (max 1 (80 - usedSpace)) "-"
+        ++ " "
+        ++ filePath
+    )
+        |> D.fromChars
+        |> D.dullcyan
 
 
 

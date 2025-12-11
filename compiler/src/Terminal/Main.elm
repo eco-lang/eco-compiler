@@ -223,7 +223,7 @@ make =
         example =
             stack
                 [ reflow "For example:"
-                , D.indent 4 <| D.green (D.fromChars "guida make src/Main.guida")
+                , D.green (D.fromChars "guida make src/Main.guida") |> D.indent 4
                 , reflow
                     "This tries to compile an Guida (and Elm) file named src/Main.guida, generating an index.html file if possible."
                 ]
@@ -313,12 +313,12 @@ install =
             stack
                 [ reflow
                     "For example, if you want to get packages for HTTP and JSON, you would say:"
-                , D.indent 4 <|
-                    D.green <|
-                        D.vcat <|
-                            [ D.fromChars "guida install elm/http"
-                            , D.fromChars "guida install elm/json"
-                            ]
+                , [ D.fromChars "guida install elm/http"
+                  , D.fromChars "guida install elm/json"
+                  ]
+                    |> D.vcat
+                    |> D.green
+                    |> D.indent 4
                 , reflow
                     "Notice that you must say the AUTHOR name and PROJECT name! After running those commands, you could say `import Http` or `import Json.Decode` in your code."
                 , reflow
@@ -389,12 +389,12 @@ uninstall =
             stack
                 [ reflow
                     "For example, if you want to remove the HTTP and JSON packages, you would say:"
-                , D.indent 4 <|
-                    D.green <|
-                        D.vcat <|
-                            [ D.fromChars "guida uninstall elm/http"
-                            , D.fromChars "guida uninstall elm/json"
-                            ]
+                , [ D.fromChars "guida uninstall elm/http"
+                  , D.fromChars "guida uninstall elm/json"
+                  ]
+                    |> D.vcat
+                    |> D.green
+                    |> D.indent 4
                 ]
 
         uninstallArgs : Terminal.Args
@@ -560,7 +560,7 @@ diff =
             stack
                 [ reflow
                     "For example, to see what changed in the HTML package between versions 1.0.0 and 2.0.0, you can say:"
-                , D.indent 4 <| D.green <| D.fromChars "elm diff elm/html 1.0.0 2.0.0"
+                , D.fromChars "elm diff elm/html 1.0.0 2.0.0" |> D.green |> D.indent 4
                 , reflow
                     "Sometimes a MAJOR change is not actually very big, so this can help you plan your upgrade timelines."
                 ]
@@ -653,7 +653,7 @@ format =
         example =
             stack
                 [ reflow "For example:"
-                , D.indent 4 <| D.green (D.fromChars "guida format src/Main.elm")
+                , D.green (D.fromChars "guida format src/Main.elm") |> D.indent 4
                 , reflow "This tries to format an Elm file named src/Main.elm, formatting it in place."
                 ]
 
@@ -723,9 +723,9 @@ test =
         example =
             stack
                 [ reflow "For example:"
-                , D.indent 4 <| D.green (D.fromChars "guida test")
+                , D.green (D.fromChars "guida test") |> D.indent 4
                 , reflow "Run tests in the tests/ folder."
-                , D.indent 4 <| D.green (D.fromChars "guida test src/Main.guida")
+                , D.green (D.fromChars "guida test src/Main.guida") |> D.indent 4
                 , reflow "Run tests in files matching the glob."
                 ]
 
@@ -789,9 +789,9 @@ parseInt =
 
 stack : List D.Doc -> D.Doc
 stack docs =
-    D.vcat <| List.intersperse (D.fromChars "") docs
+    List.intersperse (D.fromChars "") docs |> D.vcat
 
 
 reflow : String -> D.Doc
 reflow string =
-    D.fillSep <| List.map D.fromChars <| String.words string
+    String.words string |> List.map D.fromChars |> D.fillSep
