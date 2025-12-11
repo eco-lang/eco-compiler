@@ -12,8 +12,61 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sstream>
+#include <string>
 
 using namespace Elm;
+
+//===----------------------------------------------------------------------===//
+// Thread-Local Output Stream for Capture Support
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+/// Thread-local output stream. When non-null, print output goes here instead of stderr.
+thread_local std::ostringstream* tl_output_stream = nullptr;
+
+/// Helper to output text - either to capture stream or stderr.
+void output_text(const char* text) {
+    if (tl_output_stream) {
+        *tl_output_stream << text;
+    } else {
+        fputs(text, stderr);
+    }
+}
+
+/// Helper to output formatted text.
+template<typename... Args>
+void output_format(const char* fmt, Args... args) {
+    char buffer[256];
+    snprintf(buffer, sizeof(buffer), fmt, args...);
+    output_text(buffer);
+}
+
+/// Helper to output a single character.
+void output_char(char c) {
+    if (tl_output_stream) {
+        *tl_output_stream << c;
+    } else {
+        fputc(c, stderr);
+    }
+}
+
+} // namespace
+
+//===----------------------------------------------------------------------===//
+// Output Capture API Implementation
+//===----------------------------------------------------------------------===//
+
+extern "C" void* eco_set_output_stream(void* stream) {
+    void* prev = tl_output_stream;
+    tl_output_stream = static_cast<std::ostringstream*>(stream);
+    return prev;
+}
+
+extern "C" void* eco_get_output_stream() {
+    return tl_output_stream;
+}
 
 //===----------------------------------------------------------------------===//
 // Allocation Functions
@@ -402,50 +455,50 @@ extern "C" [[noreturn]] void eco_crash(void* message) {
 // Forward declaration for recursive printing
 static void print_value(uint64_t val, int depth);
 
-// Print a string value to stderr
+// Print a string value
 static void print_string(ElmString* str) {
     Header* header = &str->header;
-    fputc('"', stderr);
+    output_char('"');
     for (uint32_t i = 0; i < header->size; i++) {
         u16 c = str->chars[i];
         if (c == '"') {
-            fputs("\\\"", stderr);
+            output_text("\\\"");
         } else if (c == '\\') {
-            fputs("\\\\", stderr);
+            output_text("\\\\");
         } else if (c == '\n') {
-            fputs("\\n", stderr);
+            output_text("\\n");
         } else if (c == '\r') {
-            fputs("\\r", stderr);
+            output_text("\\r");
         } else if (c == '\t') {
-            fputs("\\t", stderr);
+            output_text("\\t");
         } else if (c < 32 || c >= 127) {
-            fprintf(stderr, "\\u%04X", c);
+            output_format("\\u%04X", c);
         } else {
-            fputc(static_cast<char>(c), stderr);
+            output_char(static_cast<char>(c));
         }
     }
-    fputc('"', stderr);
+    output_char('"');
 }
 
 // Print a character value in Elm syntax
 static void print_char(u16 c) {
-    fputc('\'', stderr);
+    output_char('\'');
     if (c == '\'') {
-        fputs("\\'", stderr);
+        output_text("\\'");
     } else if (c == '\\') {
-        fputs("\\\\", stderr);
+        output_text("\\\\");
     } else if (c == '\n') {
-        fputs("\\n", stderr);
+        output_text("\\n");
     } else if (c == '\r') {
-        fputs("\\r", stderr);
+        output_text("\\r");
     } else if (c == '\t') {
-        fputs("\\t", stderr);
+        output_text("\\t");
     } else if (c < 32 || c >= 127) {
-        fprintf(stderr, "\\u%04X", c);
+        output_format("\\u%04X", c);
     } else {
-        fputc(static_cast<char>(c), stderr);
+        output_char(static_cast<char>(c));
     }
-    fputc('\'', stderr);
+    output_char('\'');
 }
 
 // MLIR ConstantKind enum (1-based, from Ops.td)
@@ -485,25 +538,25 @@ static bool print_if_constant(uint64_t val) {
     if (const_part >= 1 && const_part <= 7) {
         switch (const_part) {
             case MlirConst_Unit:
-                fputs("()", stderr);
+                output_text("()");
                 return true;
             case MlirConst_EmptyRec:
-                fputs("{}", stderr);
+                output_text("{}");
                 return true;
             case MlirConst_True:
-                fputs("True", stderr);
+                output_text("True");
                 return true;
             case MlirConst_False:
-                fputs("False", stderr);
+                output_text("False");
                 return true;
             case MlirConst_Nil:
-                fputs("[]", stderr);
+                output_text("[]");
                 return true;
             case MlirConst_Nothing:
-                fputs("Nothing", stderr);
+                output_text("Nothing");
                 return true;
             case MlirConst_EmptyString:
-                fputs("\"\"", stderr);
+                output_text("\"\"");
                 return true;
         }
     }
@@ -519,7 +572,7 @@ static bool is_nil(uint64_t val) {
 
 // Print a list in Elm syntax: [1, 2, 3]
 static void print_list(uint64_t val, int depth) {
-    fputc('[', stderr);
+    output_char('[');
 
     bool first = true;
     uint64_t current = val;
@@ -536,16 +589,16 @@ static void print_list(uint64_t val, int depth) {
         uint64_t ptr_part = current & 0xFFFFFFFFFF;
         uint64_t const_part = current >> 40;
         if (ptr_part == 0 && const_part >= 1 && const_part <= 7) {
-            if (!first) fputs(", ", stderr);
-            fputs("<invalid_list_tail>", stderr);
+            if (!first) output_text(", ");
+            output_text("<invalid_list_tail>");
             break;
         }
 
         // Use full 64-bit pointer for JIT
         void* ptr = reinterpret_cast<void*>(current);
         if (!ptr) {
-            if (!first) fputs(", ", stderr);
-            fputs("<null>", stderr);
+            if (!first) output_text(", ");
+            output_text("<null>");
             break;
         }
 
@@ -556,20 +609,20 @@ static void print_list(uint64_t val, int depth) {
         if (header->tag == Tag_Custom) {
             Custom* custom = static_cast<Custom*>(ptr);
             if (custom->ctor != 0 || custom->header.size != 2) {
-                if (!first) fputs(", ", stderr);
-                fputs("<non_cons_custom>", stderr);
+                if (!first) output_text(", ");
+                output_text("<non_cons_custom>");
                 break;
             }
 
             if (!first) {
-                fputs(", ", stderr);
+                output_text(", ");
             }
             first = false;
 
             // Print the head element (field 0)
             // In JIT mode, values are stored as full 64-bit integers
             if (custom->unboxed & 1) {
-                fprintf(stderr, "%lld", (long long)custom->values[0].i);
+                output_format("%lld", (long long)custom->values[0].i);
             } else {
                 // Read the full 64-bit value
                 uint64_t head_val = static_cast<uint64_t>(custom->values[0].i);
@@ -582,13 +635,13 @@ static void print_list(uint64_t val, int depth) {
             Cons* cons = static_cast<Cons*>(ptr);
 
             if (!first) {
-                fputs(", ", stderr);
+                output_text(", ");
             }
             first = false;
 
             // Print the head element
             if (header->unboxed & 1) {
-                fprintf(stderr, "%lld", (long long)cons->head.i);
+                output_format("%lld", (long long)cons->head.i);
             } else {
                 uint64_t head_val = cons->head.p.ptr |
                                    (static_cast<uint64_t>(cons->head.p.constant) << 40);
@@ -598,8 +651,8 @@ static void print_list(uint64_t val, int depth) {
             // Move to tail
             current = cons->tail.ptr | (static_cast<uint64_t>(cons->tail.constant) << 40);
         } else {
-            if (!first) fputs(", ", stderr);
-            fprintf(stderr, "<non_cons_tag_%d>", header->tag);
+            if (!first) output_text(", ");
+            output_format("<non_cons_tag_%d>", header->tag);
             break;
         }
 
@@ -607,64 +660,64 @@ static void print_list(uint64_t val, int depth) {
     }
 
     if (count >= MAX_LIST_ITEMS) {
-        fputs(", ...", stderr);
+        output_text(", ...");
     }
 
-    fputc(']', stderr);
+    output_char(']');
 }
 
 // Print a tuple
 static void print_tuple2(Tuple2* tuple, int depth) {
-    fputc('(', stderr);
+    output_char('(');
 
     // Print first element - read as full 64-bit value for JIT mode
     if (tuple->header.unboxed & 1) {
-        fprintf(stderr, "%lld", (long long)tuple->a.i);
+        output_format("%lld", (long long)tuple->a.i);
     } else {
         print_value(static_cast<uint64_t>(tuple->a.i), depth + 1);
     }
 
-    fputs(", ", stderr);
+    output_text(", ");
 
     // Print second element
     if (tuple->header.unboxed & 2) {
-        fprintf(stderr, "%lld", (long long)tuple->b.i);
+        output_format("%lld", (long long)tuple->b.i);
     } else {
         print_value(static_cast<uint64_t>(tuple->b.i), depth + 1);
     }
 
-    fputc(')', stderr);
+    output_char(')');
 }
 
 static void print_tuple3(Tuple3* tuple, int depth) {
-    fputc('(', stderr);
+    output_char('(');
 
     // Print first element - read as full 64-bit value for JIT mode
     if (tuple->header.unboxed & 1) {
-        fprintf(stderr, "%lld", (long long)tuple->a.i);
+        output_format("%lld", (long long)tuple->a.i);
     } else {
         print_value(static_cast<uint64_t>(tuple->a.i), depth + 1);
     }
 
-    fputs(", ", stderr);
+    output_text(", ");
 
     // Print second element
     if (tuple->header.unboxed & 2) {
-        fprintf(stderr, "%lld", (long long)tuple->b.i);
+        output_format("%lld", (long long)tuple->b.i);
     } else {
         print_value(static_cast<uint64_t>(tuple->b.i), depth + 1);
     }
 
-    fputs(", ", stderr);
+    output_text(", ");
 
     // Print third element
     if (tuple->header.unboxed & 4) {
-        fprintf(stderr, "%lld", (long long)tuple->c.i);
+        output_format("%lld", (long long)tuple->c.i);
     } else {
         print_value(static_cast<uint64_t>(tuple->c.i), depth + 1);
     }
 
-    fputc(')', stderr);
+    output_char(')');
 }
 
 // Print a custom type constructor
@@ -673,17 +726,17 @@ static void print_custom(Custom* custom, int depth) {
     uint32_t size = custom->header.size;
 
     // Print constructor tag
-    fprintf(stderr, "Ctor%u", ctor);
+    output_format("Ctor%u", ctor);
 
     // Print fields if any
     if (size > 0) {
-        fputc(' ', stderr);
+        output_char(' ');
         for (uint32_t i = 0; i < size; i++) {
-            if (i > 0) fputc(' ', stderr);
+            if (i > 0) output_char(' ');
 
             // Check if field is unboxed
             if (custom->unboxed & (1ULL << i)) {
-                fprintf(stderr, "%lld", (long long)custom->values[i].i);
+                output_format("%lld", (long long)custom->values[i].i);
             } else {
                 // Read as full 64-bit value for JIT mode
                 uint64_t val = static_cast<uint64_t>(custom->values[i].i);
@@ -697,9 +750,9 @@ static void print_custom(Custom* custom, int depth) {
                         Header* h = static_cast<Header*>(ptr);
                         needs_parens = (h->tag == Tag_Custom && static_cast<Custom*>(ptr)->header.size > 0);
                     }
-                    if (needs_parens) fputc('(', stderr);
+                    if (needs_parens) output_char('(');
                     print_value(val, depth + 1);
-                    if (needs_parens) fputc(')', stderr);
+                    if (needs_parens) output_char(')');
                 }
             }
         }
@@ -710,34 +763,34 @@ static void print_custom(Custom* custom, int depth) {
 static void print_record(Record* record, int depth) {
     uint32_t size = record->header.size;
 
-    fputs("{ ", stderr);
+    output_text("{ ");
     for (uint32_t i = 0; i < size; i++) {
-        if (i > 0) fputs(", ", stderr);
+        if (i > 0) output_text(", ");
 
         // We don't have field names, so use numeric indices
-        fprintf(stderr, "f%u = ", i);
+        output_format("f%u = ", i);
 
         // Check if field is unboxed
         if (record->unboxed & (1ULL << i)) {
-            fprintf(stderr, "%lld", (long long)record->values[i].i);
+            output_format("%lld", (long long)record->values[i].i);
         } else {
             // Read as full 64-bit value for JIT mode
             print_value(static_cast<uint64_t>(record->values[i].i), depth + 1);
         }
     }
-    fputs(" }", stderr);
+    output_text(" }");
 }
 
 // Print a dynamic record
 static void print_dynrecord(DynRecord* dynrec, int depth) {
     uint32_t size = dynrec->header.size;
 
-    fputs("{ ", stderr);
+    output_text("{ ");
     for (uint32_t i = 0; i < size; i++) {
-        if (i > 0) fputs(", ", stderr);
+        if (i > 0) output_text(", ");
 
         // We don't have field names, so use numeric indices
-        fprintf(stderr, "f%u = ", i);
+        output_format("f%u = ", i);
 
         // DynRecord values are HPointer, not Unboxable
         // For JIT mode, we need to read the full pointer differently
@@ -747,30 +800,30 @@ static void print_dynrecord(DynRecord* dynrec, int depth) {
                       (static_cast<uint64_t>(dynrec->values[i].constant) << 40);
         print_value(val, depth + 1);
     }
-    fputs(" }", stderr);
+    output_text(" }");
 }
 
 // Print an array
 static void print_array(ElmArray* array, int depth) {
-    fputs("Array.fromList [", stderr);
+    output_text("Array.fromList [");
     for (uint32_t i = 0; i < array->length; i++) {
-        if (i > 0) fputs(", ", stderr);
+        if (i > 0) output_text(", ");
 
         if (array->unboxed & (1ULL << i)) {
-            fprintf(stderr, "%lld", (long long)array->elements[i].i);
+            output_format("%lld", (long long)array->elements[i].i);
         } else {
             // Read as full 64-bit value for JIT mode
             print_value(static_cast<uint64_t>(array->elements[i].i), depth + 1);
         }
     }
-    fputc(']', stderr);
+    output_char(']');
 }
 
 // Main value printer
 static void print_value(uint64_t val, int depth) {
     // Prevent infinite recursion
     if (depth > 50) {
-        fputs("...", stderr);
+        output_text("...");
         return;
     }
 
@@ -782,7 +835,7 @@ static void print_value(uint64_t val, int depth) {
     // Use full 64-bit pointer for JIT mode
     void* ptr = reinterpret_cast<void*>(val);
     if (!ptr) {
-        fputs("<null>", stderr);
+        output_text("<null>");
         return;
     }
 
@@ -791,13 +844,13 @@ static void print_value(uint64_t val, int depth) {
     switch (header->tag) {
         case Tag_Int: {
             ElmInt* intval = static_cast<ElmInt*>(ptr);
-            fprintf(stderr, "%lld", (long long)intval->value);
+            output_format("%lld", (long long)intval->value);
             break;
         }
 
         case Tag_Float: {
             ElmFloat* floatval = static_cast<ElmFloat*>(ptr);
-            fprintf(stderr, "%g", floatval->value);
+            output_format("%g", floatval->value);
             break;
         }
 
@@ -855,29 +908,29 @@ static void print_value(uint64_t val, int depth) {
         }
 
         case Tag_Closure: {
-            fputs("<fn>", stderr);
+            output_text("<fn>");
             break;
         }
 
         case Tag_Process: {
             Process* proc = static_cast<Process*>(ptr);
-            fprintf(stderr, "<process:%llu>", (unsigned long long)proc->id);
+            output_format("<process:%llu>", (unsigned long long)proc->id);
             break;
         }
 
         case Tag_Task: {
-            fputs("<task>", stderr);
+            output_text("<task>");
             break;
         }
 
         case Tag_FieldGroup: {
-            fputs("<fieldgroup>", stderr);
+            output_text("<fieldgroup>");
             break;
         }
 
         case Tag_ByteBuffer: {
             ByteBuffer* buf = static_cast<ByteBuffer*>(ptr);
-            fprintf(stderr, "<bytes:%u>", buf->header.size);
+            output_format("<bytes:%u>", buf->header.size);
             break;
         }
 
@@ -888,40 +941,40 @@ static void print_value(uint64_t val, int depth) {
         }
 
         case Tag_Forward: {
-            fputs("<forward>", stderr);
+            output_text("<forward>");
             break;
         }
 
         default:
-            fprintf(stderr, "<unknown_tag_%u>", header->tag);
+            output_format("<unknown_tag_%u>", header->tag);
             break;
     }
 }
 
 extern "C" void eco_dbg_print(uint64_t* args, uint32_t num_args) {
-    fprintf(stderr, "[eco.dbg] ");
+    output_text("[eco.dbg] ");
     for (uint32_t i = 0; i < num_args; i++) {
-        if (i > 0) fputc(' ', stderr);
+        if (i > 0) output_char(' ');
         print_value(args[i], 0);
     }
-    fprintf(stderr, "\n");
+    output_text("\n");
 }
 
 // Debug print for unboxed integer (i64)
 extern "C" void eco_dbg_print_int(int64_t value) {
-    fprintf(stderr, "[eco.dbg] %lld\n", (long long)value);
+    output_format("[eco.dbg] %lld\n", (long long)value);
 }
 
 // Debug print for unboxed float (f64)
 extern "C" void eco_dbg_print_float(double value) {
-    fprintf(stderr, "[eco.dbg] %g\n", value);
+    output_format("[eco.dbg] %g\n", value);
 }
 
 // Debug print for unboxed char (i32 Unicode code point)
 extern "C" void eco_dbg_print_char(int32_t value) {
-    fprintf(stderr, "[eco.dbg] ");
+    output_text("[eco.dbg] ");
     print_char(static_cast<u16>(value));
-    fprintf(stderr, "\n");
+    output_text("\n");
 }
 
 //===----------------------------------------------------------------------===//

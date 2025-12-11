@@ -13,6 +13,20 @@
 extern "C" {
 
 //===----------------------------------------------------------------------===//
+// Output Capture API (for EcoRunner)
+//===----------------------------------------------------------------------===//
+
+/// Sets the output stream for eco_dbg_print functions.
+/// Pass a pointer to an std::ostringstream to capture output.
+/// Pass nullptr to restore default behavior (output to stderr).
+/// Returns the previous stream pointer.
+void* eco_set_output_stream(void* stream);
+
+/// Gets the current output stream for eco_dbg_print functions.
+/// Returns nullptr if output goes to stderr.
+void* eco_get_output_stream();
+
+//===----------------------------------------------------------------------===//
 // Allocation Functions
 //===----------------------------------------------------------------------===//
 

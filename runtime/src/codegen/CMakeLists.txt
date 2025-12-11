@@ -227,6 +227,59 @@ find_package(Threads REQUIRED)
 target_link_libraries(ecoc PRIVATE Threads::Threads)
 
 #------------------------------------------------------------------------------
+# Build the EcoRunner library (for in-process test execution)
+#------------------------------------------------------------------------------
+
+add_mlir_library(EcoRunner
+    EcoRunner.cpp
+    ../allocator/RuntimeExports.cpp
+    ../allocator/Allocator.cpp
+    ../allocator/NurserySpace.cpp
+    ../allocator/OldGenSpace.cpp
+    ../allocator/RootSet.cpp
+    ../allocator/ThreadLocalHeap.cpp
+    ../allocator/GCStats.cpp
+    PARTIAL_SOURCES_INTENDED
+
+    ADDITIONAL_HEADER_DIRS
+    ${CMAKE_CURRENT_BINARY_DIR}/include/eco
+
+    DEPENDS
+    EcoOpsIncGen
+
+    LINK_LIBS PUBLIC
+    EcoDialect
+    EcoPasses
+    MLIRIR
+    MLIRParser
+    MLIRPass
+    MLIRSupport
+    MLIRTransforms
+    MLIRFuncDialect
+    MLIRFuncAllExtensions
+    MLIRArithDialect
+    MLIRControlFlowDialect
+    MLIRSCFDialect
+    MLIRLLVMDialect
+    MLIRLLVMCommonConversion
+    MLIRFuncToLLVM
+    MLIRArithToLLVM
+    MLIRControlFlowToLLVM
+    MLIRSCFToControlFlow
+    MLIRExecutionEngine
+    MLIRTargetLLVMIRExport
+    MLIRBuiltinToLLVMIRTranslation
+    MLIRLLVMToLLVMIRTranslation
+    LLVMSupport
+    LLVMCore
+    LLVMOrcJIT
+)
+
+target_compile_features(obj.EcoRunner PRIVATE cxx_std_20)
+target_compile_options(obj.EcoRunner PRIVATE -fexceptions)
+target_link_libraries(obj.EcoRunner PRIVATE Threads::Threads)
+
+#------------------------------------------------------------------------------
 # Usage instructions
 #------------------------------------------------------------------------------
 #

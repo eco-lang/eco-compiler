@@ -138,6 +138,11 @@ void Allocator::cleanupThread() {
     auto thread_id = std::this_thread::get_id();
     auto it = thread_heaps_.find(thread_id);
     if (it != thread_heaps_.end()) {
+#if ENABLE_GC_STATS
+        // Accumulate stats from this thread heap before destroying it.
+        accumulated_stats_.combine(it->second->getNursery().getStats());
+        accumulated_stats_.combine(it->second->getStats());
+#endif
         thread_heaps_.erase(it);
     }
 

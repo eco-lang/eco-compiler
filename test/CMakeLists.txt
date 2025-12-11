@@ -1,6 +1,21 @@
 include_directories(../runtime/src/allocator/)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
+# Find MLIR for codegen tests (EcoRunner depends on it)
+find_package(MLIR REQUIRED CONFIG)
+list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
+list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
+include_directories(${LLVM_INCLUDE_DIRS})
+include_directories(${MLIR_INCLUDE_DIRS})
+add_definitions(${LLVM_DEFINITIONS})
+
+# Include codegen headers (for EcoRunner)
+include_directories(../runtime/src/codegen)
+include_directories(${CMAKE_BINARY_DIR}/runtime/src/codegen/include)
+
+# Note: Allocator sources (Allocator.cpp, NurserySpace.cpp, etc.) are NOT included here
+# because they are already compiled into the EcoRunner library. This ensures there's
+# only one Allocator singleton so GC stats accumulate correctly across all tests.
 add_executable(test
         main.cpp
         allocator/HeapGenerators.cpp
@@ -15,17 +30,12 @@ add_executable(test
         allocator/ListOpsTest.cpp
         allocator/BytesOpsTest.cpp
         allocator/RuntimeExportsTest.cpp
-        ../runtime/src/allocator/RootSet.cpp
-        ../runtime/src/allocator/OldGenSpace.cpp
-        ../runtime/src/allocator/NurserySpace.cpp
-        ../runtime/src/allocator/Allocator.cpp
-        ../runtime/src/allocator/ThreadLocalHeap.cpp
-        ../runtime/src/allocator/GCStats.cpp
+        # String/List/Bytes ops - these are NOT in EcoRunner, so we compile them here
         ../runtime/src/allocator/StringOps.cpp
         ../runtime/src/allocator/ListOps.cpp
         ../runtime/src/allocator/BytesOps.cpp
-        ../runtime/src/allocator/RuntimeExports.cpp
 )
 
 target_compile_features(test PRIVATE cxx_std_20)
-target_link_libraries(test rapidcheck)
+target_compile_options(test PRIVATE -fexceptions)
+target_link_libraries(test rapidcheck EcoRunner)

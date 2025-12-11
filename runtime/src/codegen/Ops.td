@@ -407,11 +407,15 @@ def Eco_CallOp : Eco_Op<"call"> {
       : (!eco.value, i64) -> !eco.value
     ```
 
-    For closure calls, omit the callee and pass the closure as first operand:
+    For indirect calls, omit callee and pass closure as first operand.
+    The remaining_arity attribute specifies how many arguments the closure
+    needs. This must equal the number of additional operands (saturated call).
     ```mlir
-    %result = eco.call(%closure, %arg) {musttail = false}
+    %result = "eco.call"(%closure, %arg) {remaining_arity = 1 : i64}
       : (!eco.value, !eco.value) -> !eco.value
     ```
+
+    For partial application of closures, use eco.papExtend instead.
 
     Set musttail = true for tail calls that must be compiled as proper
     tail calls (for tail recursion). The call must be in tail position.
@@ -420,7 +424,8 @@ def Eco_CallOp : Eco_Op<"call"> {
   let arguments = (ins
     Variadic<Eco_AnyValue>:$operands,
     OptionalAttr<FlatSymbolRefAttr>:$callee,
-    OptionalAttr<BoolAttr>:$musttail
+    OptionalAttr<BoolAttr>:$musttail,
+    OptionalAttr<I64Attr>:$remaining_arity  // For indirect calls
   );
   let results = (outs Variadic<Eco_AnyValue>:$results);
 }
