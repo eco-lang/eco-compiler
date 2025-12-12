@@ -1,15 +1,20 @@
 module Compiler.Generate.CodeGen.MLIR exposing (backend)
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Index as Index
+{-| MLIR code generation backend for the Monomorphized IR.
+
+This backend generates MLIR from fully specialized, monomorphic code.
+All polymorphism has been resolved and layout information is embedded
+in the types.
+
+-}
+
+import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.Mode as Mode
-import Compiler.Reporting.Annotation as A
 import Data.Map as EveryDict
-import Data.Set as EverySet exposing (EverySet)
+import Data.Set as EverySet
 import Dict exposing (Dict)
 import Mlir.Loc as Loc exposing (Loc)
 import Mlir.Mlir
@@ -30,76 +35,112 @@ import System.TypeCheck.IO as IO
 -- BACKEND
 
 
-backend : CodeGen.TypedCodeGen
+backend : CodeGen.MonoCodeGen
 backend =
     { generate =
         \config ->
-            generateModule config.mode config.graph config.mains |> CodeGen.TextOutput
+            generateModule config.mode config.graph |> CodeGen.TextOutput
     }
 
 
 
--- ECO DIALECT TYPE
+-- ECO DIALECT TYPES
 
 
-{-| The eco.value type used for all Elm runtime values
+{-| eco.value - boxed runtime value
 -}
 ecoValue : MlirType
 ecoValue =
     NamedStruct "eco.value"
 
 
-
--- STATE
--- Tracks which globals have been generated (for dead code elimination)
-
-
-type State
-    = State (List MlirOp) (EverySet (List String) TOpt.Global)
+{-| eco.int - unboxed 64-bit signed integer
+-}
+ecoInt : MlirType
+ecoInt =
+    I64
 
 
-emptyState : State
-emptyState =
-    State [] EverySet.empty
+{-| eco.float - unboxed 64-bit float
+-}
+ecoFloat : MlirType
+ecoFloat =
+    F64
 
 
-stateToOps : State -> List MlirOp
-stateToOps (State ops _) =
-    List.reverse ops
+{-| eco.bool - unboxed boolean (i1)
+-}
+ecoBool : MlirType
+ecoBool =
+    I1
 
 
-addOp : MlirOp -> State -> State
-addOp op (State ops seen) =
-    State (op :: ops) seen
+{-| eco.char - unboxed character (i32 unicode codepoint)
+-}
+ecoChar : MlirType
+ecoChar =
+    I32
 
 
-hasSeen : TOpt.Global -> State -> Bool
-hasSeen global (State _ seen) =
-    EverySet.member TOpt.toComparableGlobal global seen
+
+-- CONVERT MONOTYPE TO MLIR TYPE
 
 
-markSeen : TOpt.Global -> State -> State
-markSeen global (State ops seen) =
-    State ops (EverySet.insert TOpt.toComparableGlobal global seen)
+monoTypeToMlir : Mono.MonoType -> MlirType
+monoTypeToMlir monoType =
+    case monoType of
+        Mono.MInt ->
+            ecoInt
+
+        Mono.MFloat ->
+            ecoFloat
+
+        Mono.MBool ->
+            ecoBool
+
+        Mono.MChar ->
+            ecoChar
+
+        Mono.MString ->
+            ecoValue
+
+        Mono.MUnit ->
+            ecoValue
+
+        Mono.MList _ ->
+            ecoValue
+
+        Mono.MTuple _ ->
+            ecoValue
+
+        Mono.MRecord _ ->
+            ecoValue
+
+        Mono.MCustom _ _ _ _ ->
+            ecoValue
+
+        Mono.MFunction _ _ ->
+            ecoValue
 
 
 
 -- CONTEXT
--- The context tracks SSA variable numbering and other state during expression generation
 
 
 type alias Context =
     { nextVar : Int
     , nextOpId : Int
     , mode : Mode.Mode
+    , registry : Mono.SpecializationRegistry
     }
 
 
-initContext : Mode.Mode -> Context
-initContext mode =
+initContext : Mode.Mode -> Mono.SpecializationRegistry -> Context
+initContext mode registry =
     { nextVar = 0
     , nextOpId = 0
     , mode = mode
+    , registry = registry
     }
 
 
@@ -135,7 +176,6 @@ emptyResult ctx var =
 
 
 -- OP BUILDER
--- A builder pattern for constructing MLIR ops more concisely
 
 
 type alias OpBuilder =
@@ -151,8 +191,6 @@ type alias OpBuilder =
     }
 
 
-{-| Start building an op with the given name. Uses the context to generate a fresh op ID.
--}
 mlirOp : String -> Context -> OpBuilder
 mlirOp name ctx =
     let
@@ -212,25 +250,36 @@ build builder =
 
 
 -- ECO DIALECT OP HELPERS
--- These use the builder pattern for cleaner construction
 
 
-{-| eco.construct - create an ADT value
+{-| eco.construct - create a heap object
 -}
-ecoConstruct : Context -> String -> Int -> Int -> List String -> MlirOp
-ecoConstruct ctx resultVar tag size operands =
+ecoConstruct : Context -> String -> Int -> Int -> Int -> List String -> MlirOp
+ecoConstruct ctx resultVar tag size unboxedBitmap operands =
     mlirOp "eco.construct" ctx
         |> withOperands operands
         |> withResult resultVar ecoValue
         |> withAttr "tag" (IntAttr tag)
         |> withAttr "size" (IntAttr size)
+        |> withAttr "unboxed_bitmap" (IntAttr unboxedBitmap)
         |> build
 
 
-{-| eco.call - call a function
+{-| eco.call - call a function by spec id
 -}
-ecoCall : Context -> String -> String -> List String -> MlirOp
-ecoCall ctx resultVar funcName operands =
+ecoCall : Context -> String -> Int -> List String -> MlirOp
+ecoCall ctx resultVar specId operands =
+    mlirOp "eco.call" ctx
+        |> withOperands operands
+        |> withResult resultVar ecoValue
+        |> withAttr "spec_id" (IntAttr specId)
+        |> build
+
+
+{-| eco.call\_named - call a function by name
+-}
+ecoCallNamed : Context -> String -> String -> List String -> MlirOp
+ecoCallNamed ctx resultVar funcName operands =
     mlirOp "eco.call" ctx
         |> withOperands operands
         |> withResult resultVar ecoValue
@@ -238,14 +287,23 @@ ecoCall ctx resultVar funcName operands =
         |> build
 
 
-{-| eco.project - extract a field/index from a value
+{-| eco.project - extract a field from a record/custom/tuple
 -}
-ecoProject : Context -> String -> Int -> String -> MlirOp
-ecoProject ctx resultVar index operand =
+ecoProject : Context -> String -> Int -> Bool -> String -> MlirOp
+ecoProject ctx resultVar index isUnboxed operand =
+    let
+        resultType =
+            if isUnboxed then
+                I64
+
+            else
+                ecoValue
+    in
     mlirOp "eco.project" ctx
         |> withOperands [ operand ]
-        |> withResult resultVar ecoValue
+        |> withResult resultVar resultType
         |> withAttr "index" (IntAttr index)
+        |> withAttr "unboxed" (BoolAttr isUnboxed)
         |> build
 
 
@@ -259,46 +317,13 @@ ecoReturn ctx operand =
         |> build
 
 
-{-| eco.string\_literal - create a string literal
+{-| eco.string\_literal - create a string constant
 -}
 ecoStringLiteral : Context -> String -> String -> MlirOp
 ecoStringLiteral ctx resultVar value =
     mlirOp "eco.string_literal" ctx
         |> withResult resultVar ecoValue
         |> withAttr "value" (StringAttr value)
-        |> build
-
-
-{-| eco.papCreate - create a partial application (closure)
--}
-ecoPapCreate : Context -> String -> String -> Int -> Int -> MlirOp
-ecoPapCreate ctx resultVar funcName arity numCaptured =
-    mlirOp "eco.papCreate" ctx
-        |> withResult resultVar ecoValue
-        |> withAttr "function" (SymbolRefAttr funcName)
-        |> withAttr "arity" (IntAttr arity)
-        |> withAttr "num_captured" (IntAttr numCaptured)
-        |> build
-
-
-{-| eco.papExtend - extend a partial application with more arguments
--}
-ecoPapExtend : Context -> String -> List String -> MlirOp
-ecoPapExtend ctx resultVar operands =
-    mlirOp "eco.papExtend" ctx
-        |> withOperands operands
-        |> withResult resultVar ecoValue
-        |> build
-
-
-{-| eco.jump - jump to a join point (for tail calls)
--}
-ecoJump : Context -> Int -> List String -> MlirOp
-ecoJump ctx joinPoint operands =
-    mlirOp "eco.jump" ctx
-        |> withOperands operands
-        |> withAttr "join_point" (IntAttr joinPoint)
-        |> asTerminator
         |> build
 
 
@@ -322,26 +347,55 @@ arithConstantFloat ctx resultVar value =
         |> build
 
 
+{-| arith.constant for booleans
+-}
+arithConstantBool : Context -> String -> Bool -> MlirOp
+arithConstantBool ctx resultVar value =
+    mlirOp "arith.constant" ctx
+        |> withResult resultVar I1
+        |> withAttr "value"
+            (IntAttr
+                (if value then
+                    1
+
+                 else
+                    0
+                )
+            )
+        |> build
+
+
+{-| arith.constant for characters
+-}
+arithConstantChar : Context -> String -> Int -> MlirOp
+arithConstantChar ctx resultVar codepoint =
+    mlirOp "arith.constant" ctx
+        |> withResult resultVar I32
+        |> withAttr "value" (IntAttr codepoint)
+        |> build
+
+
 {-| func.func - define a function
 -}
-funcFunc : Context -> String -> List ( String, MlirType ) -> MlirRegion -> MlirOp
-funcFunc ctx funcName args bodyRegion =
+funcFunc : Context -> String -> Int -> List ( String, MlirType ) -> MlirType -> MlirRegion -> MlirOp
+funcFunc ctx funcName specId args returnType bodyRegion =
     mlirOp "func.func" ctx
         |> withRegion bodyRegion
         |> withAttr "sym_name" (StringAttr funcName)
+        |> withAttr "spec_id" (IntAttr specId)
         |> withAttr "sym_visibility" (VisibilityAttr Private)
         |> withAttr "function_type"
             (TypeAttr
                 (FunctionType
                     { inputs = List.map Tuple.second args
-                    , results = [ ecoValue ]
+                    , results = [ returnType ]
                     }
                 )
             )
         |> build
 
 
-{-| Create a simple region with a single entry block
+{-| Create a region with a single entry block
 -}
 mkRegion : List ( String, MlirType ) -> List MlirOp -> MlirOp -> MlirRegion
 mkRegion args body terminator =
@@ -359,218 +413,160 @@ mkRegion args body terminator =
 -- GENERATE MODULE
 
 
-generateModule : Mode.Mode -> TOpt.GlobalGraph -> CodeGen.TypedMains -> String
-generateModule mode ((TOpt.GlobalGraph graph _ _) as globalGraph) mains =
+generateModule : Mode.Mode -> Mono.MonoGraph -> String
+generateModule mode ((Mono.MonoGraph { nodes, main, registry }) as monoGraph) =
     let
-        -- Start from mains and recursively add only reachable globals (dead code elimination)
-        state : State
-        state =
-            EveryDict.foldr ModuleName.compareCanonical (addMain mode graph) emptyState mains
+        ctx : Context
+        ctx =
+            initContext mode registry
 
+        -- Generate all nodes (they are already only reachable ones from monomorphization)
         ops : List MlirOp
         ops =
-            stateToOps state
+            EveryDict.foldl compare
+                (\specId node acc ->
+                    generateNode ctx specId node :: acc
+                )
+                []
+                nodes
+                |> List.reverse
+
+        -- Generate main entry point if present
+        mainOps : List MlirOp
+        mainOps =
+            case main of
+                Just mainInfo ->
+                    generateMainEntry ctx mainInfo
+
+                Nothing ->
+                    []
 
         mlirModule : MlirModule
         mlirModule =
-            { body = ops
+            { body = ops ++ mainOps
             , loc = Loc.unknown
             }
     in
     Pretty.ppModule mlirModule
 
 
-addMain : Mode.Mode -> Graph -> IO.Canonical -> TOpt.Main -> State -> State
-addMain mode graph home main state =
-    let
-        mainGlobal : TOpt.Global
-        mainGlobal =
-            TOpt.Global home "main"
-
-        stateWithMain : State
-        stateWithMain =
-            addGlobal mode graph mainGlobal state
-
-        ctx : Context
-        ctx =
-            initContext mode
-
-        funcName : String
-        funcName =
-            canonicalToMLIRName home ++ "_main"
-    in
-    case main of
-        TOpt.Static ->
+generateMainEntry : Context -> Mono.MainInfo -> List MlirOp
+generateMainEntry ctx mainInfo =
+    case mainInfo of
+        Mono.StaticMain mainSpecId ->
+            -- Simple main - just call it and return the result
             let
                 ( callVar, ctx1 ) =
                     freshVar ctx
 
                 callOp : MlirOp
                 callOp =
-                    ecoCall ctx1 callVar funcName []
-
-                ( _, ctx2 ) =
-                    freshOpId ctx1
+                    ecoCall ctx1 callVar mainSpecId []
 
                 returnOp : MlirOp
                 returnOp =
-                    ecoReturn ctx2 callVar
+                    ecoReturn ctx1 callVar
 
                 region : MlirRegion
                 region =
                     mkRegion [] [ callOp ] returnOp
-
-                mainFunc : MlirOp
-                mainFunc =
-                    funcFunc ctx (funcName ++ "_entry") [] region
             in
-            addOp mainFunc stateWithMain
+            [ funcFunc ctx "main" -1 [] ecoValue region ]
 
-        TOpt.Dynamic _ flagsDecoder ->
+        Mono.DynamicMain mainSpecId flagsDecoder ->
+            -- Dynamic main (Browser.element, etc.) - needs flags decoder
             let
-                exprResult : ExprResult
-                exprResult =
+                -- First generate the flags decoder expression
+                decoderResult : ExprResult
+                decoderResult =
                     generateExpr ctx flagsDecoder
 
-                ( callVar, ctx1 ) =
-                    freshVar exprResult.ctx
+                -- Then call Elm_Platform_initialize with the decoder and main
+                ( mainCallVar, ctx1 ) =
+                    freshVar decoderResult.ctx
 
-                callOp : MlirOp
-                callOp =
-                    ecoCall ctx1 callVar "Elm_Platform_initialize" [ exprResult.resultVar ]
+                mainCallOp : MlirOp
+                mainCallOp =
+                    ecoCall ctx1 mainCallVar mainSpecId []
 
-                ( _, ctx2 ) =
-                    freshOpId ctx1
+                ( initCallVar, ctx2 ) =
+                    freshVar ctx1
+
+                -- eco.call to platform initialize with decoder and main result
+                initCallOp : MlirOp
+                initCallOp =
+                    ecoCallNamed ctx2 initCallVar "Elm_Platform_initialize" [ decoderResult.resultVar, mainCallVar ]
 
                 returnOp : MlirOp
                 returnOp =
-                    ecoReturn ctx2 callVar
+                    ecoReturn ctx2 initCallVar
 
                 region : MlirRegion
                 region =
-                    mkRegion [] (exprResult.ops ++ [ callOp ]) returnOp
-
-                mainFunc : MlirOp
-                mainFunc =
-                    funcFunc ctx (funcName ++ "_entry") [] region
+                    mkRegion [] (decoderResult.ops ++ [ mainCallOp, initCallOp ]) returnOp
             in
-            addOp mainFunc stateWithMain
+            [ funcFunc ctx "main" -1 [] ecoValue region ]
 
 
-addGlobal : Mode.Mode -> Graph -> TOpt.Global -> State -> State
-addGlobal mode graph global state =
-    if hasSeen global state then
-        state
 
-    else
-        addGlobalHelp mode graph global (markSeen global state)
+-- GENERATE NODE
 
 
-addGlobalHelp : Mode.Mode -> Graph -> TOpt.Global -> State -> State
-addGlobalHelp mode graph ((TOpt.Global home name) as global) state =
+generateNode : Context -> Mono.SpecId -> Mono.MonoNode -> MlirOp
+generateNode ctx specId node =
     let
-        addDeps : EverySet (List String) TOpt.Global -> State -> State
-        addDeps deps someState =
-            let
-                sortedDeps : List TOpt.Global
-                sortedDeps =
-                    List.sortWith TOpt.compareGlobal (EverySet.toList TOpt.compareGlobal deps)
-            in
-            List.foldl (\dep st -> addGlobal mode graph dep st) someState sortedDeps
-
         funcName : String
         funcName =
-            globalToMLIRName global
-
-        ctx : Context
-        ctx =
-            initContext mode
+            specIdToFuncName ctx.registry specId
     in
-    case EveryDict.get TOpt.toComparableGlobal global graph of
+    case node of
+        Mono.MonoDefine expr _ monoType ->
+            generateDefine ctx funcName specId expr monoType
+
+        Mono.MonoTailFunc params expr _ monoType ->
+            generateTailFunc ctx funcName specId params expr monoType
+
+        Mono.MonoCtor ctorLayout monoType ->
+            generateCtor ctx funcName specId ctorLayout monoType
+
+        Mono.MonoEnum tag monoType ->
+            generateEnum ctx funcName specId tag monoType
+
+        Mono.MonoExtern monoType ->
+            generateExtern ctx funcName specId monoType
+
+        Mono.MonoPortIncoming expr _ monoType ->
+            generateDefine ctx funcName specId expr monoType
+
+        Mono.MonoPortOutgoing expr _ monoType ->
+            generateDefine ctx funcName specId expr monoType
+
+        Mono.MonoManager managerInfo monoType ->
+            generateManager ctx funcName specId managerInfo monoType
+
+        Mono.MonoCycle definitions _ monoType ->
+            generateCycle ctx funcName specId definitions monoType
+
+
+specIdToFuncName : Mono.SpecializationRegistry -> Mono.SpecId -> String
+specIdToFuncName registry specId =
+    case Mono.lookupSpecKey specId registry of
+        Just ( Mono.Global home name, _, _ ) ->
+            canonicalToMLIRName home ++ "_" ++ sanitizeName name ++ "_$_" ++ String.fromInt specId
+
         Nothing ->
-            -- Global not found - it's likely from a dependency or kernel module
-            -- For now, generate an extern declaration
-            addOp (generateExternDecl funcName) state
-
-        Just (TOpt.Define expr deps tipe) ->
-            addOp (generateTopLevelDef ctx funcName tipe expr) (addDeps deps state)
-
-        Just (TOpt.TrackedDefine _ expr deps tipe) ->
-            addOp (generateTopLevelDef ctx funcName tipe expr) (addDeps deps state)
-
-        Just (TOpt.DefineTailFunc _ typedArgNames body deps returnType) ->
-            addOp (generateTailFunc ctx funcName typedArgNames body returnType) (addDeps deps state)
-
-        Just (TOpt.Ctor index arity ctorType) ->
-            addOp (generateCtorFunc ctx funcName index arity ctorType) state
-
-        Just (TOpt.Enum index enumType) ->
-            addOp (generateEnumConstant ctx funcName index enumType) state
-
-        Just (TOpt.Box boxType) ->
-            addOp (generateBoxFunc ctx funcName boxType) state
-
-        Just (TOpt.Link linkedGlobal) ->
-            -- For links, we just need to ensure the linked global is generated
-            addGlobal mode graph linkedGlobal state
-
-        Just (TOpt.Cycle _ _ _ deps) ->
-            -- TODO: Implement cycle handling
-            addDeps deps state
-
-        Just (TOpt.Manager _) ->
-            -- TODO: Implement effects manager
-            state
-
-        Just (TOpt.Kernel _ deps) ->
-            -- TODO: Implement kernel code
-            addDeps deps state
-
-        Just (TOpt.PortIncoming _ deps _) ->
-            -- TODO: Implement port incoming
-            addDeps deps state
-
-        Just (TOpt.PortOutgoing _ deps _) ->
-            -- TODO: Implement port outgoing
-            addDeps deps state
+            "unknown_$_" ++ String.fromInt specId
 
 
 
--- GENERATE EXTERN DECLARATION
+-- GENERATE DEFINE
 
 
-{-| Generate an extern declaration for a function from a dependency module.
-This serves as a placeholder when we don't have the typed definition available.
--}
-generateExternDecl : String -> MlirOp
-generateExternDecl funcName =
-    -- Create a stub func.func with no body to represent an external reference
-    mlirOp "func.func" (initContext (Mode.Dev Nothing))
-        |> withAttr "sym_name" (StringAttr funcName)
-        |> withAttr "sym_visibility" (VisibilityAttr Private)
-        |> withAttr "function_type"
-            (TypeAttr
-                (FunctionType
-                    { inputs = []
-                    , results = [ ecoValue ]
-                    }
-                )
-            )
-        |> build
-
-
-
--- GENERATE TOP-LEVEL DEFINITION
-
-
-generateTopLevelDef : Context -> String -> Can.Type -> TOpt.Expr -> MlirOp
-generateTopLevelDef ctx funcName tipe expr =
+generateDefine : Context -> String -> Mono.SpecId -> Mono.MonoExpr -> Mono.MonoType -> MlirOp
+generateDefine ctx funcName specId expr monoType =
     case expr of
-        TOpt.Function args body _ ->
-            generateFuncDef ctx funcName args body
-
-        TOpt.TrackedFunction locatedArgs body _ ->
-            generateTypedFuncDef ctx funcName locatedArgs body
+        Mono.MonoClosure closureInfo body _ ->
+            generateClosureFunc ctx funcName specId closureInfo body monoType
 
         _ ->
             -- Value (thunk) - wrap in nullary function
@@ -587,20 +583,23 @@ generateTopLevelDef ctx funcName tipe expr =
                 region =
                     mkRegion [] exprResult.ops returnOp
             in
-            funcFunc ctx funcName [] region
+            funcFunc ctx funcName specId [] (monoTypeToMlir monoType) region
 
 
-generateFuncDef : Context -> String -> List ( Name.Name, Can.Type ) -> TOpt.Expr -> MlirOp
-generateFuncDef ctx funcName args body =
+generateClosureFunc : Context -> String -> Mono.SpecId -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> MlirOp
+generateClosureFunc ctx funcName specId closureInfo body monoType =
     let
+        -- Build arg pairs from params
         argPairs : List ( String, MlirType )
         argPairs =
-            List.map (\( name, _ ) -> ( "%" ++ name, ecoValue )) args
+            List.map
+                (\( name, ty ) -> ( "%" ++ name, monoTypeToMlir ty ))
+                closureInfo.params
 
-        -- Create context with args already bound
+        -- Create context with args bound
         ctxWithArgs : Context
         ctxWithArgs =
-            { ctx | nextVar = List.length args }
+            { ctx | nextVar = List.length closureInfo.params }
 
         exprResult : ExprResult
         exprResult =
@@ -614,450 +613,456 @@ generateFuncDef ctx funcName args body =
         region =
             mkRegion argPairs exprResult.ops returnOp
     in
-    funcFunc ctx funcName argPairs region
+    funcFunc ctx funcName specId argPairs (monoTypeToMlir monoType) region
 
 
-generateTypedFuncDef : Context -> String -> List ( A.Located Name.Name, Can.Type ) -> TOpt.Expr -> MlirOp
-generateTypedFuncDef ctx funcName locatedArgs body =
+
+-- GENERATE TAIL FUNC
+
+
+generateTailFunc : Context -> String -> Mono.SpecId -> List ( Name.Name, Mono.MonoType ) -> Mono.MonoExpr -> Mono.MonoType -> MlirOp
+generateTailFunc ctx funcName specId params expr monoType =
     let
-        args : List ( Name.Name, Can.Type )
-        args =
-            List.map (\( loc, tipe ) -> ( A.toValue loc, tipe )) locatedArgs
-    in
-    generateFuncDef ctx funcName args body
-
-
-generateTailFunc : Context -> String -> List ( A.Located Name.Name, Can.Type ) -> TOpt.Expr -> Can.Type -> MlirOp
-generateTailFunc ctx funcName locatedArgs body _ =
-    let
-        args : List ( Name.Name, Can.Type )
-        args =
-            List.map (\( loc, tipe ) -> ( A.toValue loc, tipe )) locatedArgs
-
         argPairs : List ( String, MlirType )
         argPairs =
-            List.map (\( name, _ ) -> ( "%" ++ name, ecoValue )) args
+            List.map
+                (\( name, ty ) -> ( "%" ++ name, monoTypeToMlir ty ))
+                params
 
         ctxWithArgs : Context
         ctxWithArgs =
-            { ctx | nextVar = List.length args }
+            { ctx | nextVar = List.length params }
 
         exprResult : ExprResult
         exprResult =
-            generateExpr ctxWithArgs body
+            generateExpr ctxWithArgs expr
 
         returnOp : MlirOp
         returnOp =
             ecoReturn exprResult.ctx exprResult.resultVar
 
-        -- TODO: Implement proper joinpoint region structure
         region : MlirRegion
         region =
             mkRegion argPairs exprResult.ops returnOp
     in
-    funcFunc ctx funcName argPairs region
+    funcFunc ctx funcName specId argPairs (monoTypeToMlir monoType) region
 
 
-generateCtorFunc : Context -> String -> Index.ZeroBased -> Int -> Can.Type -> MlirOp
-generateCtorFunc ctx funcName index arity _ =
+
+-- GENERATE CTOR
+
+
+generateCtor : Context -> String -> Mono.SpecId -> Mono.CtorLayout -> Mono.MonoType -> MlirOp
+generateCtor ctx funcName specId ctorLayout monoType =
     let
-        tag : Int
-        tag =
-            Index.toMachine index
+        arity : Int
+        arity =
+            List.length ctorLayout.fields
     in
     if arity == 0 then
-        -- Nullary constructor - return constant
+        -- Nullary constructor
         let
             ( resultVar, ctx1 ) =
                 freshVar ctx
 
             constructOp : MlirOp
             constructOp =
-                ecoConstruct ctx1 resultVar tag 0 []
-
-            ( _, ctx2 ) =
-                freshOpId ctx1
+                ecoConstruct ctx1 resultVar ctorLayout.tag 0 0 []
 
             returnOp : MlirOp
             returnOp =
-                ecoReturn ctx2 resultVar
+                ecoReturn ctx1 resultVar
 
             region : MlirRegion
             region =
                 mkRegion [] [ constructOp ] returnOp
         in
-        funcFunc ctx funcName [] region
+        funcFunc ctx funcName specId [] ecoValue region
 
     else
         -- Constructor with arguments
         let
             argNames : List String
             argNames =
-                List.range 0 (arity - 1)
-                    |> List.map (\i -> "%arg" ++ String.fromInt i)
+                List.indexedMap
+                    (\i _ -> "%arg" ++ String.fromInt i)
+                    ctorLayout.fields
+
+            argTypes : List MlirType
+            argTypes =
+                List.map
+                    (\field ->
+                        if field.isUnboxed then
+                            monoTypeToMlir field.monoType
+
+                        else
+                            ecoValue
+                    )
+                    ctorLayout.fields
 
             argPairs : List ( String, MlirType )
             argPairs =
-                List.map (\n -> ( n, ecoValue )) argNames
+                List.map2 Tuple.pair argNames argTypes
 
             ( resultVar, ctx1 ) =
                 freshVar { ctx | nextVar = arity }
 
             constructOp : MlirOp
             constructOp =
-                ecoConstruct ctx1 resultVar tag arity argNames
-
-            ( _, ctx2 ) =
-                freshOpId ctx1
+                ecoConstruct ctx1 resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argNames
 
             returnOp : MlirOp
             returnOp =
-                ecoReturn ctx2 resultVar
+                ecoReturn ctx1 resultVar
 
             region : MlirRegion
             region =
                 mkRegion argPairs [ constructOp ] returnOp
         in
-        funcFunc ctx funcName argPairs region
+        funcFunc ctx funcName specId argPairs ecoValue region
 
 
-generateEnumConstant : Context -> String -> Index.ZeroBased -> Can.Type -> MlirOp
-generateEnumConstant ctx funcName index _ =
+
+-- GENERATE ENUM
+
+
+generateEnum : Context -> String -> Mono.SpecId -> Int -> Mono.MonoType -> MlirOp
+generateEnum ctx funcName specId tag monoType =
     let
-        tag : Int
-        tag =
-            Index.toMachine index
-
         ( resultVar, ctx1 ) =
             freshVar ctx
 
         constructOp : MlirOp
         constructOp =
-            ecoConstruct ctx1 resultVar tag 0 []
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
+            ecoConstruct ctx1 resultVar tag 0 0 []
 
         returnOp : MlirOp
         returnOp =
-            ecoReturn ctx2 resultVar
+            ecoReturn ctx1 resultVar
 
         region : MlirRegion
         region =
             mkRegion [] [ constructOp ] returnOp
     in
-    funcFunc ctx funcName [] region
+    funcFunc ctx funcName specId [] ecoValue region
 
 
-generateBoxFunc : Context -> String -> Can.Type -> MlirOp
-generateBoxFunc ctx funcName _ =
+
+-- GENERATE EXTERN
+
+
+generateExtern : Context -> String -> Mono.SpecId -> Mono.MonoType -> MlirOp
+generateExtern ctx funcName specId monoType =
+    -- Generate an extern declaration (no body)
+    mlirOp "func.func" ctx
+        |> withAttr "sym_name" (StringAttr funcName)
+        |> withAttr "spec_id" (IntAttr specId)
+        |> withAttr "sym_visibility" (VisibilityAttr Private)
+        |> withAttr "function_type"
+            (TypeAttr
+                (FunctionType
+                    { inputs = []
+                    , results = [ monoTypeToMlir monoType ]
+                    }
+                )
+            )
+        |> build
+
+
+
+-- GENERATE MANAGER
+
+
+generateManager : Context -> String -> Mono.SpecId -> Mono.ManagerInfo -> Mono.MonoType -> MlirOp
+generateManager ctx funcName specId managerInfo monoType =
+    -- Generate an effects manager
+    -- This creates a record with init, onEffects, onSelfMsg, and optional cmdMap/subMap
     let
-        argPairs : List ( String, MlirType )
-        argPairs =
-            [ ( "%arg0", ecoValue ) ]
+        -- Generate each manager function
+        initResult : ExprResult
+        initResult =
+            generateExpr ctx managerInfo.init
+
+        onEffectsResult : ExprResult
+        onEffectsResult =
+            generateExpr initResult.ctx managerInfo.onEffects
+
+        onSelfMsgResult : ExprResult
+        onSelfMsgResult =
+            generateExpr onEffectsResult.ctx managerInfo.onSelfMsg
+
+        -- Generate optional cmdMap and subMap
+        ( cmdMapOps, cmdMapVar, ctx1 ) =
+            case managerInfo.cmdMap of
+                Just cmdMapExpr ->
+                    let
+                        result =
+                            generateExpr onSelfMsgResult.ctx cmdMapExpr
+                    in
+                    ( result.ops, result.resultVar, result.ctx )
+
+                Nothing ->
+                    let
+                        ( nullVar, c ) =
+                            freshVar onSelfMsgResult.ctx
+                    in
+                    ( [ ecoConstruct c nullVar 0 0 0 [] ], nullVar, c )
+
+        ( subMapOps, subMapVar, ctx2 ) =
+            case managerInfo.subMap of
+                Just subMapExpr ->
+                    let
+                        result =
+                            generateExpr ctx1 subMapExpr
+                    in
+                    ( result.ops, result.resultVar, result.ctx )
+
+                Nothing ->
+                    let
+                        ( nullVar, c ) =
+                            freshVar ctx1
+                    in
+                    ( [ ecoConstruct c nullVar 0 0 0 [] ], nullVar, c )
+
+        -- Create the manager record
+        ( resultVar, ctx3 ) =
+            freshVar ctx2
+
+        managerOp : MlirOp
+        managerOp =
+            ecoConstruct ctx3 resultVar 0 5 0
+                [ initResult.resultVar
+                , onEffectsResult.resultVar
+                , onSelfMsgResult.resultVar
+                , cmdMapVar
+                , subMapVar
+                ]
 
         returnOp : MlirOp
         returnOp =
-            ecoReturn ctx "%arg0"
+            ecoReturn ctx3 resultVar
+
+        allOps : List MlirOp
+        allOps =
+            initResult.ops
+                ++ onEffectsResult.ops
+                ++ onSelfMsgResult.ops
+                ++ cmdMapOps
+                ++ subMapOps
+                ++ [ managerOp ]
 
         region : MlirRegion
         region =
-            mkRegion argPairs [] returnOp
+            mkRegion [] allOps returnOp
     in
-    funcFunc ctx funcName argPairs region
+    funcFunc ctx funcName specId [] (monoTypeToMlir monoType) region
+
+
+
+-- GENERATE CYCLE
+
+
+generateCycle : Context -> String -> Mono.SpecId -> List ( Name.Name, Mono.MonoExpr ) -> Mono.MonoType -> MlirOp
+generateCycle ctx funcName specId definitions monoType =
+    -- Generate mutually recursive definitions
+    -- For now, generate a thunk that creates a record of all the cycle definitions
+    let
+        -- Generate each definition in the cycle
+        ( defOps, defVars, finalCtx ) =
+            List.foldl
+                (\( name, expr ) ( accOps, accVars, accCtx ) ->
+                    let
+                        result : ExprResult
+                        result =
+                            generateExpr accCtx expr
+                    in
+                    ( accOps ++ result.ops, accVars ++ [ result.resultVar ], result.ctx )
+                )
+                ( [], [], ctx )
+                definitions
+
+        -- Create a record containing all the cycle definitions
+        ( resultVar, ctx1 ) =
+            freshVar finalCtx
+
+        arity : Int
+        arity =
+            List.length definitions
+
+        cycleOp : MlirOp
+        cycleOp =
+            ecoConstruct ctx1 resultVar 0 arity 0 defVars
+
+        returnOp : MlirOp
+        returnOp =
+            ecoReturn ctx1 resultVar
+
+        region : MlirRegion
+        region =
+            mkRegion [] (defOps ++ [ cycleOp ]) returnOp
+    in
+    funcFunc ctx funcName specId [] (monoTypeToMlir monoType) region
 
 
 
 -- GENERATE EXPRESSION
 
 
-generateExpr : Context -> TOpt.Expr -> ExprResult
+generateExpr : Context -> Mono.MonoExpr -> ExprResult
 generateExpr ctx expr =
     case expr of
-        TOpt.Bool _ value _ ->
-            generateBoolExpr ctx value
+        Mono.MonoLiteral lit _ ->
+            generateLiteral ctx lit
 
-        TOpt.Chr _ value _ ->
-            generateChrExpr ctx value
+        Mono.MonoVarLocal name _ ->
+            emptyResult ctx ("%" ++ name)
 
-        TOpt.Str _ value _ ->
-            generateStrExpr ctx value
+        Mono.MonoVarGlobal _ specId _ ->
+            generateVarGlobal ctx specId
 
-        TOpt.Int _ value _ ->
-            generateIntExpr ctx value
+        Mono.MonoVarKernel _ home name _ ->
+            generateVarKernel ctx home name
 
-        TOpt.Float _ value _ ->
-            generateFloatExpr ctx value
+        Mono.MonoList _ items _ ->
+            generateList ctx items
 
-        TOpt.VarLocal name _ ->
-            generateVarLocalExpr ctx name
+        Mono.MonoClosure closureInfo body monoType ->
+            generateClosure ctx closureInfo body monoType
 
-        TOpt.TrackedVarLocal _ name _ ->
-            generateVarLocalExpr ctx name
+        Mono.MonoCall _ func args _ ->
+            generateCall ctx func args
 
-        TOpt.VarGlobal _ global _ ->
-            generateVarGlobalExpr ctx global
+        Mono.MonoTailCall name args _ ->
+            generateTailCall ctx name args
 
-        TOpt.VarEnum _ global index _ ->
-            generateVarEnumExpr ctx global index
+        Mono.MonoIf branches final _ ->
+            generateIf ctx branches final
 
-        TOpt.VarBox _ global _ ->
-            generateVarBoxExpr ctx global
+        Mono.MonoLet def body _ ->
+            generateLet ctx def body
 
-        TOpt.VarCycle _ home name _ ->
-            generateVarCycleExpr ctx home name
+        Mono.MonoDestruct destructor body _ ->
+            generateDestruct ctx destructor body
 
-        TOpt.VarDebug _ name home maybeName _ ->
-            generateVarDebugExpr ctx name home maybeName
+        Mono.MonoCase scrutinee1 scrutinee2 decider jumps _ ->
+            generateCase ctx scrutinee1 scrutinee2 decider jumps
 
-        TOpt.VarKernel _ home name _ ->
-            generateVarKernelExpr ctx home name
+        Mono.MonoRecordCreate fields layout _ ->
+            generateRecordCreate ctx fields layout
 
-        TOpt.Unit _ ->
-            generateUnitExpr ctx
+        Mono.MonoRecordAccess record fieldName index isUnboxed _ ->
+            generateRecordAccess ctx record fieldName index isUnboxed
 
-        TOpt.Tuple _ a b cs _ ->
-            generateTupleExpr ctx a b cs
+        Mono.MonoRecordUpdate record updates layout _ ->
+            generateRecordUpdate ctx record updates layout
 
-        TOpt.List _ items _ ->
-            generateListExpr ctx items
+        Mono.MonoTupleCreate _ elements layout _ ->
+            generateTupleCreate ctx elements layout
 
-        TOpt.Record fields _ ->
-            generateRecordExpr ctx fields
+        Mono.MonoTupleAccess tuple index isUnboxed _ ->
+            generateTupleAccess ctx tuple index isUnboxed
 
-        TOpt.TrackedRecord _ fields _ ->
-            generateTrackedRecordExpr ctx fields
+        Mono.MonoCustomCreate ctorName tag fields layout _ ->
+            generateCustomCreate ctx ctorName tag fields layout
 
-        TOpt.Function args body _ ->
-            generateFunctionExpr ctx args body
+        Mono.MonoUnit ->
+            generateUnit ctx
 
-        TOpt.TrackedFunction locatedArgs body _ ->
-            generateTrackedFunctionExpr ctx locatedArgs body
+        Mono.MonoAccessor _ fieldName _ ->
+            generateAccessor ctx fieldName
 
-        TOpt.Call _ func args _ ->
-            generateCallExpr ctx func args
+        Mono.MonoVarDebug _ name home maybeName _ ->
+            generateVarDebug ctx name home maybeName
 
-        TOpt.TailCall name args _ ->
-            generateTailCallExpr ctx name args
+        Mono.MonoVarCycle _ home name _ ->
+            generateVarCycle ctx home name
 
-        TOpt.If branches final _ ->
-            generateIfExpr ctx branches final
-
-        TOpt.Let def body _ ->
-            generateLetExpr ctx def body
-
-        TOpt.Destruct destructor body _ ->
-            generateDestructExpr ctx destructor body
-
-        TOpt.Case scrutinee1 scrutinee2 decider jumps _ ->
-            generateCaseExpr ctx scrutinee1 scrutinee2 decider jumps
-
-        TOpt.Accessor _ fieldName _ ->
-            generateAccessorExpr ctx fieldName
-
-        TOpt.Access record _ fieldName _ ->
-            generateAccessExpr ctx record fieldName
-
-        TOpt.Update _ record updates _ ->
-            generateUpdateExpr ctx record updates
-
-        TOpt.Shader _ _ _ _ ->
-            generateShaderExpr ctx
+        Mono.MonoShader _ shaderInfo _ ->
+            generateShader ctx shaderInfo
 
 
 
--- LITERAL EXPRESSIONS
+-- LITERAL GENERATION
 
 
-generateBoolExpr : Context -> Bool -> ExprResult
-generateBoolExpr ctx value =
+generateLiteral : Context -> Mono.Literal -> ExprResult
+generateLiteral ctx lit =
+    case lit of
+        Mono.LBool value ->
+            let
+                ( var, ctx1 ) =
+                    freshVar ctx
+            in
+            { ops = [ arithConstantBool ctx1 var value ]
+            , resultVar = var
+            , ctx = ctx1
+            }
+
+        Mono.LInt value ->
+            let
+                ( var, ctx1 ) =
+                    freshVar ctx
+            in
+            { ops = [ arithConstantInt ctx1 var value ]
+            , resultVar = var
+            , ctx = ctx1
+            }
+
+        Mono.LFloat value ->
+            let
+                ( var, ctx1 ) =
+                    freshVar ctx
+            in
+            { ops = [ arithConstantFloat ctx1 var value ]
+            , resultVar = var
+            , ctx = ctx1
+            }
+
+        Mono.LChar value ->
+            let
+                ( var, ctx1 ) =
+                    freshVar ctx
+
+                codepoint : Int
+                codepoint =
+                    String.uncons value
+                        |> Maybe.map (Tuple.first >> Char.toCode)
+                        |> Maybe.withDefault 0
+            in
+            { ops = [ arithConstantChar ctx1 var codepoint ]
+            , resultVar = var
+            , ctx = ctx1
+            }
+
+        Mono.LStr value ->
+            let
+                ( var, ctx1 ) =
+                    freshVar ctx
+            in
+            { ops = [ ecoStringLiteral ctx1 var value ]
+            , resultVar = var
+            , ctx = ctx1
+            }
+
+
+
+-- VARIABLE GENERATION
+
+
+generateVarGlobal : Context -> Mono.SpecId -> ExprResult
+generateVarGlobal ctx specId =
     let
         ( var, ctx1 ) =
             freshVar ctx
-
-        tag : Int
-        tag =
-            if value then
-                1
-
-            else
-                0
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
     in
-    { ops = [ ecoConstruct ctx1 var tag 0 [] ]
+    { ops = [ ecoCall ctx1 var specId [] ]
     , resultVar = var
-    , ctx = ctx2
+    , ctx = ctx1
     }
 
 
-generateChrExpr : Context -> String -> ExprResult
-generateChrExpr ctx value =
-    let
-        ( var, ctx1 ) =
-            freshVar ctx
-
-        charCode : Int
-        charCode =
-            String.uncons value
-                |> Maybe.map (Tuple.first >> Char.toCode)
-                |> Maybe.withDefault 0
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
-    in
-    -- TODO: Proper char representation
-    { ops = [ ecoConstruct ctx1 var charCode 0 [] ]
-    , resultVar = var
-    , ctx = ctx2
-    }
-
-
-generateStrExpr : Context -> String -> ExprResult
-generateStrExpr ctx value =
-    let
-        ( var, ctx1 ) =
-            freshVar ctx
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
-    in
-    { ops = [ ecoStringLiteral ctx1 var value ]
-    , resultVar = var
-    , ctx = ctx2
-    }
-
-
-generateIntExpr : Context -> Int -> ExprResult
-generateIntExpr ctx value =
-    let
-        ( var, ctx1 ) =
-            freshVar ctx
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
-    in
-    { ops = [ arithConstantInt ctx1 var value ]
-    , resultVar = var
-    , ctx = ctx2
-    }
-
-
-generateFloatExpr : Context -> Float -> ExprResult
-generateFloatExpr ctx value =
-    let
-        ( var, ctx1 ) =
-            freshVar ctx
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
-    in
-    { ops = [ arithConstantFloat ctx1 var value ]
-    , resultVar = var
-    , ctx = ctx2
-    }
-
-
-
--- VARIABLE EXPRESSIONS
-
-
-generateVarLocalExpr : Context -> Name.Name -> ExprResult
-generateVarLocalExpr ctx name =
-    emptyResult ctx ("%" ++ name)
-
-
-generateVarGlobalExpr : Context -> TOpt.Global -> ExprResult
-generateVarGlobalExpr ctx global =
-    let
-        ( var, ctx1 ) =
-            freshVar ctx
-
-        globalName : String
-        globalName =
-            globalToMLIRName global
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
-    in
-    { ops = [ ecoCall ctx1 var globalName [] ]
-    , resultVar = var
-    , ctx = ctx2
-    }
-
-
-generateVarEnumExpr : Context -> TOpt.Global -> Index.ZeroBased -> ExprResult
-generateVarEnumExpr ctx global index =
-    let
-        ( var, ctx1 ) =
-            freshVar ctx
-
-        tag : Int
-        tag =
-            Index.toMachine index
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
-    in
-    { ops = [ ecoConstruct ctx1 var tag 0 [] ]
-    , resultVar = var
-    , ctx = ctx2
-    }
-
-
-generateVarBoxExpr : Context -> TOpt.Global -> ExprResult
-generateVarBoxExpr ctx global =
-    let
-        ( var, ctx1 ) =
-            freshVar ctx
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
-    in
-    { ops = [ ecoCall ctx1 var (globalToMLIRName global) [] ]
-    , resultVar = var
-    , ctx = ctx2
-    }
-
-
-generateVarCycleExpr : Context -> IO.Canonical -> Name.Name -> ExprResult
-generateVarCycleExpr ctx home name =
-    let
-        ( var, ctx1 ) =
-            freshVar ctx
-
-        cycleName : String
-        cycleName =
-            canonicalToMLIRName home ++ "_" ++ name
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
-    in
-    { ops = [ ecoCall ctx1 var cycleName [] ]
-    , resultVar = var
-    , ctx = ctx2
-    }
-
-
-generateVarDebugExpr : Context -> Name.Name -> IO.Canonical -> Maybe Name.Name -> ExprResult
-generateVarDebugExpr ctx name home maybeName =
-    let
-        ( var, ctx1 ) =
-            freshVar ctx
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
-    in
-    -- TODO: Implement debug
-    { ops = [ ecoConstruct ctx1 var 0 0 [] ]
-    , resultVar = var
-    , ctx = ctx2
-    }
-
-
-generateVarKernelExpr : Context -> Name.Name -> Name.Name -> ExprResult
-generateVarKernelExpr ctx home name =
+generateVarKernel : Context -> Name.Name -> Name.Name -> ExprResult
+generateVarKernel ctx home name =
     let
         ( var, ctx1 ) =
             freshVar ctx
@@ -1065,266 +1070,275 @@ generateVarKernelExpr ctx home name =
         kernelName : String
         kernelName =
             "Elm_Kernel_" ++ home ++ "_" ++ name
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
     in
-    { ops = [ ecoCall ctx1 var kernelName [] ]
+    { ops = [ ecoCallNamed ctx1 var kernelName [] ]
     , resultVar = var
-    , ctx = ctx2
+    , ctx = ctx1
     }
 
 
-
--- DATA STRUCTURE EXPRESSIONS
-
-
-generateUnitExpr : Context -> ExprResult
-generateUnitExpr ctx =
+generateVarDebug : Context -> Name.Name -> IO.Canonical -> Maybe Name.Name -> ExprResult
+generateVarDebug ctx name home maybeName =
+    -- Debug.log, Debug.todo, Debug.toString, etc.
     let
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( _, ctx2 ) =
-            freshOpId ctx1
+        debugName : String
+        debugName =
+            case maybeName of
+                Just n ->
+                    "Elm_Debug_" ++ name ++ "_" ++ n
+
+                Nothing ->
+                    "Elm_Debug_" ++ name
+
+        callOp : MlirOp
+        callOp =
+            ecoCallNamed ctx1 var debugName []
     in
-    { ops = [ ecoConstruct ctx1 var 0 0 [] ]
+    { ops = [ callOp ]
+    , resultVar = var
+    , ctx = ctx1
+    }
+
+
+generateVarCycle : Context -> IO.Canonical -> Name.Name -> ExprResult
+generateVarCycle ctx home name =
+    -- Reference to a variable in a mutually recursive cycle
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        cycleName : String
+        cycleName =
+            canonicalToMLIRName home ++ "_$cycle_" ++ name
+
+        callOp : MlirOp
+        callOp =
+            ecoCallNamed ctx1 var cycleName []
+    in
+    { ops = [ callOp ]
+    , resultVar = var
+    , ctx = ctx1
+    }
+
+
+generateShader : Context -> Mono.ShaderInfo -> ExprResult
+generateShader ctx shaderInfo =
+    -- WebGL shader - generate a placeholder since we don't support WebGL natively
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        -- Create a shader object that contains the source and type info
+        -- For now, just create a record with the shader source as a string
+        ( srcVar, ctx2 ) =
+            freshVar ctx1
+
+        srcOp : MlirOp
+        srcOp =
+            ecoStringLiteral ctx2 srcVar shaderInfo.src
+
+        -- Create a shader struct with the source
+        shaderOp : MlirOp
+        shaderOp =
+            mlirOp "eco.shader" ctx2
+                |> withOperands [ srcVar ]
+                |> withResult var ecoValue
+                |> withAttr "source" (StringAttr shaderInfo.src)
+                |> build
+    in
+    { ops = [ srcOp, shaderOp ]
     , resultVar = var
     , ctx = ctx2
     }
 
 
-generateTupleExpr : Context -> TOpt.Expr -> TOpt.Expr -> List TOpt.Expr -> ExprResult
-generateTupleExpr ctx a b cs =
+
+-- LIST GENERATION
+
+
+generateList : Context -> List Mono.MonoExpr -> ExprResult
+generateList ctx items =
+    case items of
+        [] ->
+            -- Empty list: Nil tag 0
+            let
+                ( var, ctx1 ) =
+                    freshVar ctx
+            in
+            { ops = [ ecoConstruct ctx1 var 0 0 0 [] ]
+            , resultVar = var
+            , ctx = ctx1
+            }
+
+        _ ->
+            -- Build list from right to left
+            let
+                ( nilVar, ctx1 ) =
+                    freshVar ctx
+
+                nilOp : MlirOp
+                nilOp =
+                    ecoConstruct ctx1 nilVar 0 0 0 []
+
+                -- Fold from right
+                ( consOps, finalVar, finalCtx ) =
+                    List.foldr
+                        (\item ( accOps, tailVar, accCtx ) ->
+                            let
+                                itemResult : ExprResult
+                                itemResult =
+                                    generateExpr accCtx item
+
+                                ( consVar, ctx2 ) =
+                                    freshVar itemResult.ctx
+
+                                -- Cons tag 1, size 2
+                                consOp : MlirOp
+                                consOp =
+                                    ecoConstruct ctx2 consVar 1 2 0 [ itemResult.resultVar, tailVar ]
+                            in
+                            ( itemResult.ops ++ [ consOp ] ++ accOps, consVar, ctx2 )
+                        )
+                        ( [], nilVar, ctx1 )
+                        items
+            in
+            { ops = nilOp :: consOps
+            , resultVar = finalVar
+            , ctx = finalCtx
+            }
+
+
+
+-- CLOSURE GENERATION
+
+
+generateClosure : Context -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
+generateClosure ctx closureInfo body monoType =
+    -- Generate captured values and create a PAP
     let
-        resultA : ExprResult
-        resultA =
-            generateExpr ctx a
+        ( captureOps, captureVars, ctx1 ) =
+            List.foldl
+                (\( _, expr, _ ) ( accOps, accVars, accCtx ) ->
+                    let
+                        result : ExprResult
+                        result =
+                            generateExpr accCtx expr
+                    in
+                    ( accOps ++ result.ops, accVars ++ [ result.resultVar ], result.ctx )
+                )
+                ( [], [], ctx )
+                closureInfo.captures
 
-        resultB : ExprResult
-        resultB =
-            generateExpr resultA.ctx b
-
-        ( restOps, restVars, finalCtx ) =
-            generateExprList resultB.ctx cs
-
-        allVars : List String
-        allVars =
-            resultA.resultVar :: resultB.resultVar :: restVars
-
-        ( resultVar, ctx1 ) =
-            freshVar finalCtx
+        ( resultVar, ctx2 ) =
+            freshVar ctx1
 
         arity : Int
         arity =
-            List.length allVars
+            List.length closureInfo.params
 
-        ( _, ctx2 ) =
-            freshOpId ctx1
+        numCaptured : Int
+        numCaptured =
+            List.length closureInfo.captures
+
+        -- Create a papCreate op
+        papOp : MlirOp
+        papOp =
+            mlirOp "eco.papCreate" ctx2
+                |> withOperands captureVars
+                |> withResult resultVar ecoValue
+                |> withAttr "lambda_id" (StringAttr (lambdaIdToString closureInfo.lambdaId))
+                |> withAttr "arity" (IntAttr arity)
+                |> withAttr "num_captured" (IntAttr numCaptured)
+                |> build
     in
-    { ops = resultA.ops ++ resultB.ops ++ restOps ++ [ ecoConstruct ctx1 resultVar 0 arity allVars ]
+    { ops = captureOps ++ [ papOp ]
     , resultVar = resultVar
     , ctx = ctx2
     }
 
 
-generateListExpr : Context -> List TOpt.Expr -> ExprResult
-generateListExpr ctx items =
-    generateList ctx items
+lambdaIdToString : Mono.LambdaId -> String
+lambdaIdToString lambdaId =
+    case lambdaId of
+        Mono.NamedFunction (Mono.Global home name) ->
+            canonicalToMLIRName home ++ "_" ++ sanitizeName name
 
-
-generateRecordExpr : Context -> EveryDict.Dict String Name.Name TOpt.Expr -> ExprResult
-generateRecordExpr ctx fields =
-    generateRecord ctx fields
-
-
-generateTrackedRecordExpr : Context -> EveryDict.Dict String (A.Located Name.Name) TOpt.Expr -> ExprResult
-generateTrackedRecordExpr ctx fields =
-    generateTrackedRecord ctx fields
+        Mono.AnonymousLambda home uid _ ->
+            canonicalToMLIRName home ++ "_lambda_" ++ String.fromInt uid
 
 
 
--- FUNCTION EXPRESSIONS
+-- CALL GENERATION
 
 
-generateFunctionExpr : Context -> List ( Name.Name, Can.Type ) -> TOpt.Expr -> ExprResult
-generateFunctionExpr ctx args body =
-    let
-        ( var, ctx1 ) =
-            freshVar ctx
+generateCall : Context -> Mono.MonoExpr -> List Mono.MonoExpr -> ExprResult
+generateCall ctx func args =
+    case func of
+        Mono.MonoVarGlobal _ specId _ ->
+            -- Direct call to known specialization
+            let
+                ( argsOps, argVars, ctx1 ) =
+                    generateExprList ctx args
 
-        arity : Int
-        arity =
-            List.length args
+                ( resultVar, ctx2 ) =
+                    freshVar ctx1
+            in
+            { ops = argsOps ++ [ ecoCall ctx2 resultVar specId argVars ]
+            , resultVar = resultVar
+            , ctx = ctx2
+            }
 
-        ( _, ctx2 ) =
-            freshOpId ctx1
-    in
-    -- TODO: Generate actual closure
-    { ops = [ ecoPapCreate ctx1 var "anonymous" arity 0 ]
-    , resultVar = var
-    , ctx = ctx2
-    }
+        Mono.MonoVarLocal name _ ->
+            -- Call through local variable (closure)
+            let
+                ( argsOps, argVars, ctx1 ) =
+                    generateExprList ctx args
 
+                ( resultVar, ctx2 ) =
+                    freshVar ctx1
 
-generateTrackedFunctionExpr : Context -> List ( A.Located Name.Name, Can.Type ) -> TOpt.Expr -> ExprResult
-generateTrackedFunctionExpr ctx locatedArgs body =
-    let
-        args =
-            List.map (\( loc, tipe ) -> ( A.toValue loc, tipe )) locatedArgs
+                papExtendOp : MlirOp
+                papExtendOp =
+                    mlirOp "eco.papExtend" ctx2
+                        |> withOperands (("%" ++ name) :: argVars)
+                        |> withResult resultVar ecoValue
+                        |> build
+            in
+            { ops = argsOps ++ [ papExtendOp ]
+            , resultVar = resultVar
+            , ctx = ctx2
+            }
 
-        ( var, ctx1 ) =
-            freshVar ctx
+        _ ->
+            -- General case: evaluate function then call
+            let
+                funcResult : ExprResult
+                funcResult =
+                    generateExpr ctx func
 
-        arity : Int
-        arity =
-            List.length args
+                ( argsOps, argVars, ctx1 ) =
+                    generateExprList funcResult.ctx args
 
-        ( _, ctx2 ) =
-            freshOpId ctx1
-    in
-    -- TODO: Generate actual closure
-    { ops = [ ecoPapCreate ctx1 var "anonymous" arity 0 ]
-    , resultVar = var
-    , ctx = ctx2
-    }
+                ( resultVar, ctx2 ) =
+                    freshVar ctx1
 
-
-generateCallExpr : Context -> TOpt.Expr -> List TOpt.Expr -> ExprResult
-generateCallExpr ctx func args =
-    generateCall ctx func args
-
-
-generateTailCallExpr : Context -> Name.Name -> List ( Name.Name, TOpt.Expr ) -> ExprResult
-generateTailCallExpr ctx name args =
-    let
-        ( argsOps, argVars, ctx1 ) =
-            generateNamedArgs ctx args
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
-
-        ( resultVar, ctx3 ) =
-            freshVar ctx2
-
-        ( _, ctx4 ) =
-            freshOpId ctx3
-    in
-    { ops = argsOps ++ [ ecoJump ctx1 0 argVars, ecoConstruct ctx3 resultVar 0 0 [] ]
-    , resultVar = resultVar
-    , ctx = ctx4
-    }
+                papExtendOp : MlirOp
+                papExtendOp =
+                    mlirOp "eco.papExtend" ctx2
+                        |> withOperands (funcResult.resultVar :: argVars)
+                        |> withResult resultVar ecoValue
+                        |> build
+            in
+            { ops = funcResult.ops ++ argsOps ++ [ papExtendOp ]
+            , resultVar = resultVar
+            , ctx = ctx2
+            }
 
 
-
--- CONTROL FLOW EXPRESSIONS
-
-
-generateIfExpr : Context -> List ( TOpt.Expr, TOpt.Expr ) -> TOpt.Expr -> ExprResult
-generateIfExpr ctx branches final =
-    generateIf ctx branches final
-
-
-generateLetExpr : Context -> TOpt.Def -> TOpt.Expr -> ExprResult
-generateLetExpr ctx def body =
-    generateLet ctx def body
-
-
-generateDestructExpr : Context -> TOpt.Destructor -> TOpt.Expr -> ExprResult
-generateDestructExpr ctx destructor body =
-    generateDestruct ctx destructor body
-
-
-generateCaseExpr : Context -> Name.Name -> Name.Name -> TOpt.Decider TOpt.Choice -> List ( Int, TOpt.Expr ) -> ExprResult
-generateCaseExpr ctx scrutinee1 scrutinee2 decider jumps =
-    generateCase ctx scrutinee1 scrutinee2 decider jumps
-
-
-
--- RECORD OPERATION EXPRESSIONS
-
-
-generateAccessorExpr : Context -> Name.Name -> ExprResult
-generateAccessorExpr ctx fieldName =
-    let
-        ( var, ctx1 ) =
-            freshVar ctx
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
-    in
-    -- TODO: Generate proper accessor function
-    { ops = [ ecoPapCreate ctx1 var ("accessor_" ++ fieldName) 1 0 ]
-    , resultVar = var
-    , ctx = ctx2
-    }
-
-
-generateAccessExpr : Context -> TOpt.Expr -> Name.Name -> ExprResult
-generateAccessExpr ctx record fieldName =
-    let
-        recordResult : ExprResult
-        recordResult =
-            generateExpr ctx record
-
-        ( resultVar, ctx1 ) =
-            freshVar recordResult.ctx
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
-    in
-    -- TODO: Compute actual field index
-    { ops = recordResult.ops ++ [ ecoProject ctx1 resultVar 0 recordResult.resultVar ]
-    , resultVar = resultVar
-    , ctx = ctx2
-    }
-
-
-generateUpdateExpr : Context -> TOpt.Expr -> EveryDict.Dict String (A.Located Name.Name) TOpt.Expr -> ExprResult
-generateUpdateExpr ctx record updates =
-    let
-        recordResult : ExprResult
-        recordResult =
-            generateExpr ctx record
-
-        ( resultVar, ctx1 ) =
-            freshVar recordResult.ctx
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
-    in
-    -- TODO: Implement record update
-    { ops = recordResult.ops ++ [ ecoConstruct ctx1 resultVar 0 1 [ recordResult.resultVar ] ]
-    , resultVar = resultVar
-    , ctx = ctx2
-    }
-
-
-
--- SPECIAL EXPRESSIONS
-
-
-generateShaderExpr : Context -> ExprResult
-generateShaderExpr ctx =
-    let
-        ( var, ctx1 ) =
-            freshVar ctx
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
-    in
-    -- Shader not supported
-    { ops = [ ecoConstruct ctx1 var 0 0 [] ]
-    , resultVar = var
-    , ctx = ctx2
-    }
-
-
-
--- HELPER: Generate list of expressions
-
-
-generateExprList : Context -> List TOpt.Expr -> ( List MlirOp, List String, Context )
+generateExprList : Context -> List Mono.MonoExpr -> ( List MlirOp, List String, Context )
 generateExprList ctx exprs =
     List.foldl
         (\expr ( accOps, accVars, accCtx ) ->
@@ -1340,100 +1354,13 @@ generateExprList ctx exprs =
 
 
 
--- HELPER: Generate named args for tail call
+-- TAIL CALL GENERATION
 
 
-generateNamedArgs : Context -> List ( Name.Name, TOpt.Expr ) -> ( List MlirOp, List String, Context )
-generateNamedArgs ctx args =
-    List.foldl
-        (\( _, expr ) ( accOps, accVars, accCtx ) ->
-            let
-                result : ExprResult
-                result =
-                    generateExpr accCtx expr
-            in
-            ( accOps ++ result.ops, accVars ++ [ result.resultVar ], result.ctx )
-        )
-        ( [], [], ctx )
-        args
-
-
-
--- GENERATE LIST
-
-
-generateList : Context -> List TOpt.Expr -> ExprResult
-generateList ctx items =
-    case items of
-        [] ->
-            -- Empty list: Nil
-            let
-                ( var, ctx1 ) =
-                    freshVar ctx
-
-                ( _, ctx2 ) =
-                    freshOpId ctx1
-            in
-            { ops = [ ecoConstruct ctx1 var 0 0 [] ]
-            , resultVar = var
-            , ctx = ctx2
-            }
-
-        _ ->
-            -- Build list from right to left: Cons(head, Cons(head2, ... Nil))
-            let
-                ( nilVar, ctx1 ) =
-                    freshVar ctx
-
-                nilOp : MlirOp
-                nilOp =
-                    ecoConstruct ctx1 nilVar 0 0 []
-
-                ( _, ctx2 ) =
-                    freshOpId ctx1
-
-                -- Fold from right, building up the list
-                ( consOps, finalVar, finalCtx ) =
-                    List.foldr
-                        (\item ( accOps, tailVar, accCtx ) ->
-                            let
-                                itemResult : ExprResult
-                                itemResult =
-                                    generateExpr accCtx item
-
-                                ( consVar, ctx3 ) =
-                                    freshVar itemResult.ctx
-
-                                consOp : MlirOp
-                                consOp =
-                                    ecoConstruct ctx3 consVar 1 2 [ itemResult.resultVar, tailVar ]
-
-                                ( _, ctx4 ) =
-                                    freshOpId ctx3
-                            in
-                            ( itemResult.ops ++ [ consOp ] ++ accOps, consVar, ctx4 )
-                        )
-                        ( [], nilVar, ctx2 )
-                        items
-            in
-            { ops = nilOp :: consOps
-            , resultVar = finalVar
-            , ctx = finalCtx
-            }
-
-
-
--- GENERATE RECORD
-
-
-generateRecord : Context -> EveryDict.Dict String Name.Name TOpt.Expr -> ExprResult
-generateRecord ctx fields =
+generateTailCall : Context -> Name.Name -> List ( Name.Name, Mono.MonoExpr ) -> ExprResult
+generateTailCall ctx name args =
     let
-        fieldList : List ( Name.Name, TOpt.Expr )
-        fieldList =
-            EveryDict.toList compare fields
-
-        ( fieldsOps, fieldVars, ctx1 ) =
+        ( argsOps, argVars, ctx1 ) =
             List.foldl
                 (\( _, expr ) ( accOps, accVars, accCtx ) ->
                     let
@@ -1444,165 +1371,34 @@ generateRecord ctx fields =
                     ( accOps ++ result.ops, accVars ++ [ result.resultVar ], result.ctx )
                 )
                 ( [], [], ctx )
-                fieldList
+                args
 
+        jumpOp : MlirOp
+        jumpOp =
+            mlirOp "eco.jump" ctx1
+                |> withOperands argVars
+                |> withAttr "target" (StringAttr name)
+                |> asTerminator
+                |> build
+
+        -- Need a placeholder result since jump is a terminator
         ( resultVar, ctx2 ) =
             freshVar ctx1
-
-        arity : Int
-        arity =
-            List.length fieldList
-
-        ( _, ctx3 ) =
-            freshOpId ctx2
     in
-    { ops = fieldsOps ++ [ ecoConstruct ctx2 resultVar 0 arity fieldVars ]
+    { ops = argsOps ++ [ jumpOp, ecoConstruct ctx2 resultVar 0 0 0 [] ]
     , resultVar = resultVar
-    , ctx = ctx3
-    }
-
-
-generateTrackedRecord : Context -> EveryDict.Dict String (A.Located Name.Name) TOpt.Expr -> ExprResult
-generateTrackedRecord ctx fields =
-    let
-        fieldList : List ( A.Located Name.Name, TOpt.Expr )
-        fieldList =
-            EveryDict.toList A.compareLocated fields
-
-        ( fieldsOps, fieldVars, ctx1 ) =
-            List.foldl
-                (\( _, expr ) ( accOps, accVars, accCtx ) ->
-                    let
-                        result : ExprResult
-                        result =
-                            generateExpr accCtx expr
-                    in
-                    ( accOps ++ result.ops, accVars ++ [ result.resultVar ], result.ctx )
-                )
-                ( [], [], ctx )
-                fieldList
-
-        ( resultVar, ctx2 ) =
-            freshVar ctx1
-
-        arity : Int
-        arity =
-            List.length fieldList
-
-        ( _, ctx3 ) =
-            freshOpId ctx2
-    in
-    { ops = fieldsOps ++ [ ecoConstruct ctx2 resultVar 0 arity fieldVars ]
-    , resultVar = resultVar
-    , ctx = ctx3
+    , ctx = ctx2
     }
 
 
 
--- GENERATE CALL
+-- IF GENERATION
 
 
-generateCall : Context -> TOpt.Expr -> List TOpt.Expr -> ExprResult
-generateCall ctx func args =
-    case func of
-        TOpt.VarGlobal _ global _ ->
-            -- Direct call to known function
-            let
-                ( argsOps, argVars, ctx1 ) =
-                    generateExprList ctx args
-
-                ( resultVar, ctx2 ) =
-                    freshVar ctx1
-
-                funcName : String
-                funcName =
-                    globalToMLIRName global
-
-                ( _, ctx3 ) =
-                    freshOpId ctx2
-            in
-            { ops = argsOps ++ [ ecoCall ctx2 resultVar funcName argVars ]
-            , resultVar = resultVar
-            , ctx = ctx3
-            }
-
-        TOpt.VarLocal name _ ->
-            -- Call to local variable (closure)
-            let
-                ( argsOps, argVars, ctx1 ) =
-                    generateExprList ctx args
-
-                ( resultVar, ctx2 ) =
-                    freshVar ctx1
-
-                allArgs : List String
-                allArgs =
-                    ("%" ++ name) :: argVars
-
-                ( _, ctx3 ) =
-                    freshOpId ctx2
-            in
-            { ops = argsOps ++ [ ecoPapExtend ctx2 resultVar allArgs ]
-            , resultVar = resultVar
-            , ctx = ctx3
-            }
-
-        TOpt.TrackedVarLocal _ name _ ->
-            -- Call to local variable (closure)
-            let
-                ( argsOps, argVars, ctx1 ) =
-                    generateExprList ctx args
-
-                ( resultVar, ctx2 ) =
-                    freshVar ctx1
-
-                allArgs : List String
-                allArgs =
-                    ("%" ++ name) :: argVars
-
-                ( _, ctx3 ) =
-                    freshOpId ctx2
-            in
-            { ops = argsOps ++ [ ecoPapExtend ctx2 resultVar allArgs ]
-            , resultVar = resultVar
-            , ctx = ctx3
-            }
-
-        _ ->
-            -- General case: evaluate function, then call
-            let
-                funcResult : ExprResult
-                funcResult =
-                    generateExpr ctx func
-
-                ( argsOps, argVars, ctx1 ) =
-                    generateExprList funcResult.ctx args
-
-                ( resultVar, ctx2 ) =
-                    freshVar ctx1
-
-                allArgs : List String
-                allArgs =
-                    funcResult.resultVar :: argVars
-
-                ( _, ctx3 ) =
-                    freshOpId ctx2
-            in
-            { ops = funcResult.ops ++ argsOps ++ [ ecoPapExtend ctx2 resultVar allArgs ]
-            , resultVar = resultVar
-            , ctx = ctx3
-            }
-
-
-
--- GENERATE IF
-
-
-generateIf : Context -> List ( TOpt.Expr, TOpt.Expr ) -> TOpt.Expr -> ExprResult
+generateIf : Context -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> Mono.MonoExpr -> ExprResult
 generateIf ctx branches final =
     case branches of
         [] ->
-            -- No branches, just the else
             generateExpr ctx final
 
         ( cond, thenBranch ) :: restBranches ->
@@ -1619,8 +1415,7 @@ generateIf ctx branches final =
                 elseResult =
                     generateIf thenResult.ctx restBranches final
 
-                -- TODO: Implement proper control flow with scf.if or cf.cond_br
-                -- For now, just generate all the ops sequentially
+                -- TODO: Proper scf.if implementation
             in
             { ops = condResult.ops ++ thenResult.ops ++ elseResult.ops
             , resultVar = elseResult.resultVar
@@ -1629,60 +1424,54 @@ generateIf ctx branches final =
 
 
 
--- GENERATE LET
+-- LET GENERATION
 
 
-generateLet : Context -> TOpt.Def -> TOpt.Expr -> ExprResult
+generateLet : Context -> Mono.MonoDef -> Mono.MonoExpr -> ExprResult
 generateLet ctx def body =
     case def of
-        TOpt.Def _ name expr _ ->
+        Mono.MonoDef _ name expr _ ->
             let
                 exprResult : ExprResult
                 exprResult =
                     generateExpr ctx expr
 
-                -- Create an alias: %name = eco.construct(%exprVar) for the andThening
+                -- Bind the name
                 aliasOp : MlirOp
                 aliasOp =
-                    ecoConstruct exprResult.ctx ("%" ++ name) 0 1 [ exprResult.resultVar ]
-
-                ( _, ctx1 ) =
-                    freshOpId exprResult.ctx
+                    ecoConstruct exprResult.ctx ("%" ++ name) 0 1 0 [ exprResult.resultVar ]
 
                 bodyResult : ExprResult
                 bodyResult =
-                    generateExpr ctx1 body
+                    generateExpr exprResult.ctx body
             in
             { ops = exprResult.ops ++ [ aliasOp ] ++ bodyResult.ops
             , resultVar = bodyResult.resultVar
             , ctx = bodyResult.ctx
             }
 
-        TOpt.TailDef _ _ _ expr _ ->
-            -- TODO: Implement local tail-recursive definition with joinpoint
-            generateExpr ctx expr
+        Mono.MonoTailDef _ _ _ _ _ ->
+            -- TODO: Proper joinpoint handling
+            generateExpr ctx body
 
 
 
--- GENERATE DESTRUCT
+-- DESTRUCT GENERATION
 
 
-generateDestruct : Context -> TOpt.Destructor -> TOpt.Expr -> ExprResult
-generateDestruct ctx (TOpt.Destructor name path _) body =
+generateDestruct : Context -> Mono.MonoDestructor -> Mono.MonoExpr -> ExprResult
+generateDestruct ctx (Mono.MonoDestructor name path _) body =
     let
         ( pathOps, pathVar, ctx1 ) =
-            generatePath ctx path
+            generateMonoPath ctx path
 
         aliasOp : MlirOp
         aliasOp =
-            ecoConstruct ctx1 ("%" ++ name) 0 1 [ pathVar ]
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
+            ecoConstruct ctx1 ("%" ++ name) 0 1 0 [ pathVar ]
 
         bodyResult : ExprResult
         bodyResult =
-            generateExpr ctx2 body
+            generateExpr ctx1 body
     in
     { ops = pathOps ++ [ aliasOp ] ++ bodyResult.ops
     , resultVar = bodyResult.resultVar
@@ -1690,87 +1479,229 @@ generateDestruct ctx (TOpt.Destructor name path _) body =
     }
 
 
-generatePath : Context -> TOpt.Path -> ( List MlirOp, String, Context )
-generatePath ctx path =
+generateMonoPath : Context -> Mono.MonoPath -> ( List MlirOp, String, Context )
+generateMonoPath ctx path =
     case path of
-        TOpt.Root name ->
+        Mono.MonoRoot name ->
             ( [], "%" ++ name, ctx )
 
-        TOpt.Index index subPath ->
+        Mono.MonoIndex index subPath ->
             let
                 ( subOps, subVar, ctx1 ) =
-                    generatePath ctx subPath
+                    generateMonoPath ctx subPath
+
+                ( resultVar, ctx2 ) =
+                    freshVar ctx1
+            in
+            ( subOps ++ [ ecoProject ctx2 resultVar index False subVar ]
+            , resultVar
+            , ctx2
+            )
+
+        Mono.MonoField _ index subPath ->
+            let
+                ( subOps, subVar, ctx1 ) =
+                    generateMonoPath ctx subPath
+
+                ( resultVar, ctx2 ) =
+                    freshVar ctx1
+            in
+            ( subOps ++ [ ecoProject ctx2 resultVar index False subVar ]
+            , resultVar
+            , ctx2
+            )
+
+        Mono.MonoUnbox subPath ->
+            generateMonoPath ctx subPath
+
+        Mono.MonoArrayIndex index subPath ->
+            let
+                ( subOps, subVar, ctx1 ) =
+                    generateMonoPath ctx subPath
 
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
-                idx : Int
-                idx =
-                    Index.toMachine index
-
-                ( _, ctx3 ) =
-                    freshOpId ctx2
+                -- Array access operation
+                arrayAccessOp : MlirOp
+                arrayAccessOp =
+                    mlirOp "eco.array_get" ctx2
+                        |> withOperands [ subVar ]
+                        |> withResult resultVar ecoValue
+                        |> withAttr "index" (IntAttr index)
+                        |> build
             in
-            ( subOps ++ [ ecoProject ctx2 resultVar idx subVar ]
+            ( subOps ++ [ arrayAccessOp ]
             , resultVar
-            , ctx3
-            )
-
-        TOpt.Field _ subPath ->
-            let
-                ( subOps, subVar, ctx1 ) =
-                    generatePath ctx subPath
-
-                ( resultVar, ctx2 ) =
-                    freshVar ctx1
-
-                ( _, ctx3 ) =
-                    freshOpId ctx2
-            in
-            -- TODO: Compute actual field index
-            ( subOps ++ [ ecoProject ctx2 resultVar 0 subVar ]
-            , resultVar
-            , ctx3
-            )
-
-        TOpt.Unbox subPath ->
-            -- Unbox is identity for our purposes
-            generatePath ctx subPath
-
-        TOpt.ArrayIndex idx subPath ->
-            let
-                ( subOps, subVar, ctx1 ) =
-                    generatePath ctx subPath
-
-                ( resultVar, ctx2 ) =
-                    freshVar ctx1
-
-                ( _, ctx3 ) =
-                    freshOpId ctx2
-            in
-            ( subOps ++ [ ecoProject ctx2 resultVar idx subVar ]
-            , resultVar
-            , ctx3
+            , ctx2
             )
 
 
 
--- GENERATE CASE
+-- CASE GENERATION
 
 
-generateCase : Context -> Name.Name -> Name.Name -> TOpt.Decider TOpt.Choice -> List ( Int, TOpt.Expr ) -> ExprResult
+generateCase : Context -> Name.Name -> Name.Name -> Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> ExprResult
 generateCase ctx scrutinee1 scrutinee2 decider jumps =
-    -- TODO: Implement proper case/decision tree
+    -- TODO: Proper decision tree compilation
     let
         ( resultVar, ctx1 ) =
             freshVar ctx
-
-        ( _, ctx2 ) =
-            freshOpId ctx1
     in
-    { ops = [ ecoConstruct ctx1 resultVar 0 0 [] ]
+    { ops = [ ecoConstruct ctx1 resultVar 0 0 0 [] ]
+    , resultVar = resultVar
+    , ctx = ctx1
+    }
+
+
+
+-- RECORD GENERATION
+
+
+generateRecordCreate : Context -> List Mono.MonoExpr -> Mono.RecordLayout -> ExprResult
+generateRecordCreate ctx fields layout =
+    let
+        ( fieldsOps, fieldVars, ctx1 ) =
+            generateExprList ctx fields
+
+        ( resultVar, ctx2 ) =
+            freshVar ctx1
+    in
+    { ops = fieldsOps ++ [ ecoConstruct ctx2 resultVar 0 layout.fieldCount layout.unboxedBitmap fieldVars ]
     , resultVar = resultVar
     , ctx = ctx2
+    }
+
+
+generateRecordAccess : Context -> Mono.MonoExpr -> Name.Name -> Int -> Bool -> ExprResult
+generateRecordAccess ctx record fieldName index isUnboxed =
+    let
+        recordResult : ExprResult
+        recordResult =
+            generateExpr ctx record
+
+        ( resultVar, ctx1 ) =
+            freshVar recordResult.ctx
+    in
+    { ops = recordResult.ops ++ [ ecoProject ctx1 resultVar index isUnboxed recordResult.resultVar ]
+    , resultVar = resultVar
+    , ctx = ctx1
+    }
+
+
+generateRecordUpdate : Context -> Mono.MonoExpr -> List ( Int, Mono.MonoExpr ) -> Mono.RecordLayout -> ExprResult
+generateRecordUpdate ctx record updates layout =
+    -- TODO: Proper record update implementation
+    let
+        recordResult : ExprResult
+        recordResult =
+            generateExpr ctx record
+
+        ( resultVar, ctx1 ) =
+            freshVar recordResult.ctx
+    in
+    { ops = recordResult.ops ++ [ ecoConstruct ctx1 resultVar 0 1 0 [ recordResult.resultVar ] ]
+    , resultVar = resultVar
+    , ctx = ctx1
+    }
+
+
+
+-- TUPLE GENERATION
+
+
+generateTupleCreate : Context -> List Mono.MonoExpr -> Mono.TupleLayout -> ExprResult
+generateTupleCreate ctx elements layout =
+    let
+        ( elemOps, elemVars, ctx1 ) =
+            generateExprList ctx elements
+
+        ( resultVar, ctx2 ) =
+            freshVar ctx1
+    in
+    { ops = elemOps ++ [ ecoConstruct ctx2 resultVar 0 layout.arity layout.unboxedBitmap elemVars ]
+    , resultVar = resultVar
+    , ctx = ctx2
+    }
+
+
+generateTupleAccess : Context -> Mono.MonoExpr -> Int -> Bool -> ExprResult
+generateTupleAccess ctx tuple index isUnboxed =
+    let
+        tupleResult : ExprResult
+        tupleResult =
+            generateExpr ctx tuple
+
+        ( resultVar, ctx1 ) =
+            freshVar tupleResult.ctx
+    in
+    { ops = tupleResult.ops ++ [ ecoProject ctx1 resultVar index isUnboxed tupleResult.resultVar ]
+    , resultVar = resultVar
+    , ctx = ctx1
+    }
+
+
+
+-- CUSTOM TYPE GENERATION
+
+
+generateCustomCreate : Context -> Name.Name -> Int -> List Mono.MonoExpr -> Mono.CtorLayout -> ExprResult
+generateCustomCreate ctx ctorName tag fields layout =
+    let
+        ( fieldsOps, fieldVars, ctx1 ) =
+            generateExprList ctx fields
+
+        ( resultVar, ctx2 ) =
+            freshVar ctx1
+
+        arity : Int
+        arity =
+            List.length fields
+    in
+    { ops = fieldsOps ++ [ ecoConstruct ctx2 resultVar tag arity layout.unboxedBitmap fieldVars ]
+    , resultVar = resultVar
+    , ctx = ctx2
+    }
+
+
+
+-- UNIT GENERATION
+
+
+generateUnit : Context -> ExprResult
+generateUnit ctx =
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+    in
+    { ops = [ ecoConstruct ctx1 var 0 0 0 [] ]
+    , resultVar = var
+    , ctx = ctx1
+    }
+
+
+
+-- ACCESSOR GENERATION
+
+
+generateAccessor : Context -> Name.Name -> ExprResult
+generateAccessor ctx fieldName =
+    let
+        ( var, ctx1 ) =
+            freshVar ctx
+
+        papOp : MlirOp
+        papOp =
+            mlirOp "eco.papCreate" ctx1
+                |> withResult var ecoValue
+                |> withAttr "lambda_id" (StringAttr ("accessor_" ++ fieldName))
+                |> withAttr "arity" (IntAttr 1)
+                |> withAttr "num_captured" (IntAttr 0)
+                |> build
+    in
+    { ops = [ papOp ]
+    , resultVar = var
+    , ctx = ctx1
     }
 
 
@@ -1778,23 +1709,13 @@ generateCase ctx scrutinee1 scrutinee2 decider jumps =
 -- HELPERS
 
 
-type alias Graph =
-    EveryDict.Dict (List String) TOpt.Global TOpt.Node
-
-
 canonicalToMLIRName : IO.Canonical -> String
 canonicalToMLIRName (IO.Canonical _ moduleName) =
     String.replace "." "_" moduleName
 
 
-globalToMLIRName : TOpt.Global -> String
-globalToMLIRName (TOpt.Global home name) =
-    canonicalToMLIRName home ++ "_" ++ sanitizeName name
-
-
 sanitizeName : String -> String
 sanitizeName name =
-    -- Replace operators and special chars with safe names
     name
         |> String.replace "+" "_plus_"
         |> String.replace "-" "_minus_"

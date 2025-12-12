@@ -103,7 +103,7 @@ monomorphize (TOpt.GlobalGraph nodes _ _) =
             Ok
                 (Mono.MonoGraph
                     { nodes = finalState.nodes
-                    , main = mainSpecId
+                    , main = Maybe.map Mono.StaticMain mainSpecId
                     , registry = finalState.registry
                     }
                 )

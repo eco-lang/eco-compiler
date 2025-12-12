@@ -3,7 +3,6 @@ module Builder.Generate exposing
     , dev
     , javascriptBackend
     , mlirBackend
-    , mlirMonoBackend
     , monoDev
     , prod
     , repl
@@ -29,7 +28,6 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.CodeGen.JavaScript as JavaScript
 import Compiler.Generate.CodeGen.MLIR as MLIR
-import Compiler.Generate.CodeGen.MLIR.Mono as MLIRMono
 import Compiler.Generate.Mode as Mode
 import Compiler.Generate.Monomorphize as Monomorphize
 import Compiler.Nitpick.Debug as Nitpick
@@ -56,18 +54,11 @@ javascriptBackend =
     JavaScript.backend
 
 
-{-| MLIR code generation backend (uses typed IR).
--}
-mlirBackend : CodeGen.TypedCodeGen
-mlirBackend =
-    MLIR.backend
-
-
 {-| MLIR code generation backend (uses monomorphized IR).
 -}
-mlirMonoBackend : CodeGen.MonoCodeGen
-mlirMonoBackend =
-    MLIRMono.backend
+mlirBackend : CodeGen.MonoCodeGen
+mlirBackend =
+    MLIR.backend
 
 
 

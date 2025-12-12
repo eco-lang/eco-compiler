@@ -221,7 +221,7 @@ handleMlirOutput : BuildContext -> FilePath -> Build.Artifacts -> Task Exit.Make
 handleMlirOutput ctx target artifacts =
     case getNoMains artifacts of
         [] ->
-            toMonoBuilder Generate.mlirMonoBackend ctx.withSourceMaps 0 ctx.root ctx.details ctx.desiredMode artifacts
+            toMonoBuilder Generate.mlirBackend ctx.withSourceMaps 0 ctx.root ctx.details ctx.desiredMode artifacts
                 |> Task.andThen (\builder -> generate ctx.style target builder (Build.getRootNames artifacts))
 
         name :: names ->

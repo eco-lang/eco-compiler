@@ -7,6 +7,8 @@ module Compiler.AST.Monomorphized exposing
     , Global(..)
     , LambdaId(..)
     , Literal(..)
+    , MainInfo(..)
+    , ManagerInfo
     , MonoChoice(..)
     , MonoDef(..)
     , MonoDestructor(..)
@@ -16,6 +18,7 @@ module Compiler.AST.Monomorphized exposing
     , MonoPath(..)
     , MonoType(..)
     , RecordLayout
+    , ShaderInfo
     , SpecId
     , SpecKey(..)
     , SpecializationRegistry
@@ -206,9 +209,20 @@ lookupSpecKey specId registry =
 type MonoGraph
     = MonoGraph
         { nodes : Dict Int Int MonoNode
-        , main : Maybe SpecId
+        , main : Maybe MainInfo
         , registry : SpecializationRegistry
         }
+
+
+{-| Information about the main entry point.
+
+  - Static: A simple main value (Html, Svg, etc.)
+  - Dynamic: An application with flags decoder (Browser.element, etc.)
+
+-}
+type MainInfo
+    = StaticMain SpecId
+    | DynamicMain SpecId MonoExpr -- main specId, flags decoder expression
 
 
 
@@ -225,6 +239,18 @@ type MonoNode
     | MonoExtern MonoType
     | MonoPortIncoming MonoExpr (EverySet Int Int) MonoType
     | MonoPortOutgoing MonoExpr (EverySet Int Int) MonoType
+    | MonoManager ManagerInfo MonoType
+    | MonoCycle (List ( Name, MonoExpr )) (EverySet Int Int) MonoType
+
+
+{-| Effects manager information -}
+type alias ManagerInfo =
+    { init : MonoExpr
+    , onEffects : MonoExpr
+    , onSelfMsg : MonoExpr
+    , cmdMap : Maybe MonoExpr
+    , subMap : Maybe MonoExpr
+    }
 
 
 
@@ -238,6 +264,8 @@ type MonoExpr
     | MonoVarLocal Name MonoType
     | MonoVarGlobal Region SpecId MonoType
     | MonoVarKernel Region Name Name MonoType
+    | MonoVarDebug Region Name IO.Canonical (Maybe Name) MonoType -- Debug.log, Debug.todo, etc.
+    | MonoVarCycle Region IO.Canonical Name MonoType -- Mutually recursive variable reference
     | MonoList Region (List MonoExpr) MonoType
     | MonoClosure ClosureInfo MonoExpr MonoType
     | MonoCall Region MonoExpr (List MonoExpr) MonoType
@@ -254,6 +282,14 @@ type MonoExpr
     | MonoCustomCreate Name Int (List MonoExpr) CtorLayout MonoType
     | MonoUnit
     | MonoAccessor Region Name MonoType
+    | MonoShader Region ShaderInfo MonoType -- WebGL shader
+
+
+{-| WebGL shader information -}
+type alias ShaderInfo =
+    { src : String
+    , types : { attribute : Dict String Name String, uniform : Dict String Name String, varying : Dict String Name String }
+    }
 
 
 type Literal
@@ -285,6 +321,7 @@ type MonoPath
     | MonoField Name Int MonoPath
     | MonoUnbox MonoPath
     | MonoRoot Name
+    | MonoArrayIndex Int MonoPath -- Array index access
 
 
 type Decider a
@@ -365,6 +402,15 @@ typeOf expr =
             MUnit
 
         MonoAccessor _ _ t ->
+            t
+
+        MonoVarDebug _ _ _ _ t ->
+            t
+
+        MonoVarCycle _ _ _ t ->
+            t
+
+        MonoShader _ _ t ->
             t
 
 
