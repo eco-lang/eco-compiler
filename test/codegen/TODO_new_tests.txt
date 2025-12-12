@@ -1,0 +1,55 @@
+# Proposed New Test Cases (25 tests)
+# Generated from gap analysis of eco dialect operations vs existing tests
+
+## Float Floor/Ceiling Operations (NO EXISTING TESTS)
+1. float_floor_basic.mlir - Test eco.float.floor with positive, negative, and fractional values
+2. float_ceiling_basic.mlir - Test eco.float.ceiling with positive, negative, and fractional values
+3. float_floor_ceiling_special.mlir - Test floor/ceiling with -0.0, +Inf, -Inf, NaN
+
+## Float Abs/Negate Operations (NO EXISTING TESTS)
+4. float_abs_basic.mlir - Test eco.float.abs with positive, negative, -0.0, +/-Inf
+5. float_negate_special.mlir - Test eco.float.negate with -0.0, +/-Inf, NaN
+
+## Memory Operations (NO EXISTING TESTS)
+6. free_noop.mlir - Test eco.free compiles as no-op
+7. reset_noop.mlir - Test eco.reset and eco.reset_ref compile as no-ops
+
+## Allocation Edge Cases
+8. allocate_string_zero_size.mlir - Test eco.allocate_string with size 0
+9. allocate_ctor_max_size.mlir - Test eco.allocate_ctor with large size
+
+## PAP True Maximum Arity
+10. pap_arity_63.mlir - Test papCreate with arity 63 (6-bit max)
+
+## Control Flow Edge Cases
+11. joinpoint_multiple_jumps_same_target.mlir - Multiple branches to same joinpoint
+12. safepoint_in_loop_body.mlir - eco.safepoint inside a loop
+13. case_three_level_nested.mlir - Three nested case ops
+
+## Call Operation Edge Cases
+14. call_direct_many_args.mlir - Direct call with 10+ arguments
+15. call_indirect_closure_only.mlir - callIndirect with 0 new args
+
+## Integer Arithmetic Edge Cases
+16. int_div_truncation.mlir - Test eco.int.div truncation toward zero
+17. int_pow_negative_exponent.mlir - Test eco.int.pow with negative exponent
+
+## Float Conversion Edge Cases
+18. float_truncate_nan.mlir - Test eco.float.truncate with NaN input
+19. float_round_ties_to_even.mlir - Test banker's rounding
+
+## Comparison Edge Cases
+20. int_cmp_signed_overflow.mlir - Compare values near INT64_MAX/MIN
+
+## Boxing Edge Cases
+21. box_unbox_nan_preservation.mlir - Verify NaN bit pattern preserved
+
+## Construct/Project Edge Cases
+22. project_out_of_bounds.mlir - Test eco.project with invalid index
+23. construct_zero_size_nonzero_tag.mlir - Test construct with size=0, tag!=0
+
+## String Edge Cases
+24. string_literal_replacement_char.mlir - Test invalid UTF-8 replacement
+
+## Unreachable Operation
+25. unreachable_basic.mlir - Test eco.unreachable in dead code
