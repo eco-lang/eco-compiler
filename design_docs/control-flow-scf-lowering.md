@@ -1,231 +1,211 @@
-Below is a self‑contained design and implementation plan for:
-
-- Extending `eco.case` and `eco.joinpoint` to carry **mandatory result type information**.
-- Normalizing joinpoints to **single‑exit shapes** suitable for `scf.while`.
-- Implementing the **Eco → SCF** control‑flow lowering (`EcoControlFlowToSCF`) that plugs into the existing pipeline.
-
-Where I go beyond the existing docs, I’m extrapolating, but I keep it aligned with them.
+Below is a consolidated design / implementation plan that incorporates both the original SCF design doc and the clarifications you raised in the “critical questions.” I’ll flag where I’m extrapolating beyond what’s explicitly written, but it all stays consistent with the existing docs.
 
 ---
 
-## 0. Context and goals
+## 0. Goals and context
 
-From the existing design:
+Current situation:
 
-- Eco currently lowers control‑flow directly to CF/LLVM:  
-  `eco.case/joinpoint/jump → cf.switch/cf.br → LLVM`
-- The new proposal is:  
-  `eco.case/joinpoint/jump → SCF → CF → LLVM`
-- SCF lowering enables loop canonicalization, peeling, specialization, etc., which are particularly useful for recursive/looping Elm code and pattern matching.
-- Eco IR represents Elm values primarily as `!eco.value`, plus some primitive types, and `eco.return` already carries the actual MLIR result types as its operands.
+- Today: `eco.case/joinpoint/jump → cf` (via `createControlFlowLoweringPass`) → LLVM  .
+- Proposed: introduce an intermediate SCF layer:
 
-The SCF design doc highlights some open issues, notably:
+  ```
+  eco.case/joinpoint/jump → SCF dialect → CF → LLVM
+  ```
 
-- Result type handling for `scf.if` / `scf.while` (need explicit result types).
-- Non‑looping vs looping joinpoints, early exits, and partial coverage.
+  via a new `EcoControlFlowToSCF` pass, SCF optimizations, then `convertSCFToControlFlow` and `convertControlFlowToLLVM`  .
 
-This design answers those issues by:
+Main design challenges called out by the doc:
 
-1. **Changing `eco.case` and `eco.joinpoint` to carry mandatory result types.**
-2. **Adding a joinpoint‑normalization pass** that identifies/normalizes single‑exit loop patterns.
-3. **Implementing the Eco→SCF pass** using these invariants.
+- Non‑looping joinpoints; early exits inside joinpoints; explicit result types for `scf.if`/`scf.while`; incremental vs big‑bang integration; and pattern prioritization  .
+
+This design resolves those and adds a precise implementation story.
 
 ---
 
-## 1. IR changes: `eco.case` and `eco.joinpoint` with mandatory result types
+## 1. IR changes
 
-### 1.1 Current shapes (summary)
+### 1.1 `eco.case` – mandatory result types (extrapolated)
 
-From `eco-lowering.md` :
+Today, `eco.case`:
 
-- **`eco.case` – `Eco_CaseOp`**
+- Has `scrutinee : AnyType`, `tags : I64ArrayAttr`, regions for alternatives, each ending in `eco.return` or `eco.jump`, and no explicit result types .
+- Type handling for SCF is currently proposed via analysis of `eco.return` inside regions  .
 
-    - Operands:
-        - `scrutinee : AnyType` (usually `!eco.value`)
-        - `tags : I64ArrayAttr`
-    - Regions:
-        - One region per alternative (+ optional default).
-        - Each alternative region takes **no block args**.
-        - Each region must end in `eco.return` or `eco.jump`.
-    - Results: none (control‑only).
+**Change (extrapolated):**
 
-- **`eco.joinpoint` / `eco.jump` – `Eco_JoinpointOp`, `Eco_JumpOp`**
+Add a **mandatory** `result_types` attribute:
 
-    - `eco.joinpoint`:
-        - `id : i64`
-        - Region 0: `jpRegion` – body; first block’s args are joinpoint parameters.
-        - Region 1: `continuation` – code after joinpoint definition.
-    - `eco.jump`:
-        - `join_point : i64` attribute (refers to `id`).
-        - Operands: `args : Variadic<AnyType>` matching joinpoint parameters.
-    - Results: none (control‑only); `eco.return` inside regions returns from the function.
+- Signature sketch:
 
-### 1.2 New mandatory result types
+  ```table
+  Op: eco.case
 
-**Design principle:** The type information we need is *not* the full Elm type, but the **MLIR representation types** of values ultimately returned (`!eco.value`, `i64`, etc.). SCF also only cares about these representation types.
+  Operands:
+    - scrutinee  : AnyType
+    - tags       : I64ArrayAttr
 
-We add a **mandatory attribute** to both ops:
+  Attributes:
+    - result_types : ArrayAttr  // array of TypeAttr (see 6. Type attribute representation)
 
-#### `eco.case`
+  Regions:
+    - alternatives: one region per tag (+ optional default), each ending in eco.return or eco.jump
 
-New definition sketch (extrapolated):
+  Results:
+    - none (control-only)
+  ```
 
-```table
-Op: eco.case
+Semantics:
 
-Operands:
-  - scrutinee      : AnyType   (usually !eco.value)
-  - tags           : I64ArrayAttr  // existing
+- `result_types` is the list of **MLIR representation types** returned from this case (e.g. `[!eco.value]`, `[]`, `[i64, !eco.value]`), matching the operand types of `eco.return` reachable from each alternative region.
+- Verifier:
 
-Attributes:
-  - result_types   : ArrayAttr<Type>  // NEW, mandatory
+    - Walk each alternative region; for every reachable `eco.return`, assert that `returnOp.getOperands().getTypes()` equals the types in `result_types`.
+    - If a branch reaches some joinpoint that then returns, type consistency is checked on the joinpoint side (see next section).
 
-Regions:
-  - alternatives   : One region per tag + optional default.
-                    Each region ends in eco.return or eco.jump.
+This is a realization of the “add explicit result type annotation to eco.case/joinpoint” mitigation mentioned in the risk table  .
 
-Results:
-  - none (control-only)
-```
+### 1.2 `eco.joinpoint` – mandatory result types (extrapolated)
 
-**Invariant:**
+Today, `eco.joinpoint`:
 
-- All control‑flow paths from each alternative region that leave the `eco.case` must eventually hit an `eco.return` whose operand types **exactly match** the `result_types` list.
+- Attributes: `id : i64`.
+- Regions:
+    - `jpRegion` – body; entry block arguments are joinpoint parameters.
+    - `continuation` – code after the joinpoint definition.
+- Results: none; `eco.return` inside regions returns from the function .
 
-This can be enforced in the `Eco_CaseOp` verifier:
+**Change (extrapolated):**
 
-- For each `eco.return` reached from an alternative:
-    - Check `returnOp.getOperands().getTypes()` equals `result_types`.
-- If a branch exits only via `eco.jump` to some joinpoint that ultimately returns, that joinpoint must also be consistent (but that’s an existing structural requirement).
-
-Typical values of `result_types`:
-
-- `[]` for functions returning unit / no value.
-- `[!eco.value]` for normal Elm functions.
-- `[i64, !eco.value]` etc. if multi‑valued returns are allowed at MLIR level.
-
-#### `eco.joinpoint`
-
-New definition sketch (extrapolated):
+Add mandatory `result_types`:
 
 ```table
 Op: eco.joinpoint
 
-Operands:
-  - (none; parameters are block arguments of the jpRegion entry block)
-
 Attributes:
-  - id            : i64
-  - result_types  : ArrayAttr<Type>  // NEW, mandatory
+  - id           : I64Attr
+  - result_types : ArrayAttr  // array of TypeAttr
 
 Regions:
-  - jpRegion      : region 0, body
-                    entry block args = joinpoint parameters
-  - continuation  : region 1, code after the joinpoint definition
+  - jpRegion     : body (loop or join block)
+  - continuation : post-joinpoint code
 
 Results:
   - none (control-only)
 ```
 
-**Meaning of `result_types` for joinpoints:**
+Semantics:
 
-- The types of the **function‑level values** ultimately returned via `eco.return` reachable from within the joinpoint and its continuation.
-- Usually this matches the enclosing function’s return types (e.g. `[!eco.value]` or `[]`).
+- `result_types` is the list of *function‑level* values ultimately returned via `eco.return` reachable from this joinpoint and its continuation; typically the enclosing function’s return types (`[!eco.value]`, `[]`, etc.).
+- Verifier:
 
-Verifier for `eco.joinpoint`:
+    - Walk `jpRegion` and `continuation` and assert every reachable `eco.return` has operand types equal to `result_types`.
+    - Ensure every `eco.jump` to this joinpoint passes arguments whose types match the joinpoint entry block’s parameter types (existing invariant ).
 
-- Walk all `eco.return` reachable from `jpRegion` and `continuation`:
-    - Every `eco.return` must have operand types equal to `result_types`.
-- Optionally: verify that all `eco.jump` to this joinpoint pass arguments whose types match the joinpoint parameters (existing invariant).
+These attributes give the SCF pass the explicit result type information it needs, rather than re‑inferring it repeatedly (though we can still keep the `getRegionResultTypes` helper as a debug check ).
 
-This makes result types **explicit and checked once** in Eco, simplifying the SCF pass.
+### 1.3 `eco.get_tag` op (doc‑driven)
+
+The SCF plan already lists as the first implementation step:
+
+> 1. Add `eco.get_tag` op – Extract constructor tag (currently done inline in CaseOpLowering) .
+
+**Design:**
+
+```mlir
+%tag = eco.get_tag %scrutinee : !eco.value -> i32   // or -> index
+```
+
+- It encapsulates the header/tag / constructor‐id extraction logic currently inlined in `eco.case` lowering to LLVM .
+- This op will be used by both:
+    - Eco→SCF case lowering (`scf.if`/`scf.index_switch`)  .
+    - Eco→LLVM heap/layout lowering (instead of duplicating tag extraction logic).
 
 ---
 
-## 2. Joinpoint normalization to single‑exit shapes
+## 2. Joinpoint normalization pass (Eco→Eco, extrapolated)
 
-Goal: prepare joinpoints so that **some of them** can be cleanly lowered to `scf.while`:
-
-- SCF’s `scf.while` has a single “exit” (condition returns `false`), returning a fixed set of values.
-- Eco joinpoints currently may have multiple `eco.return` scattered in the body, including early returns.
-
-We’ll introduce a **Stage‑1 Eco→Eco pass** (building on the existing “Joinpoint legalization” mentioned in eco‑lowering):
+Doc already envisions a “joinpoint legalization” pass in Stage 1 Eco→Eco . Here we refine it into:
 
 > `createJoinpointNormalizationPass()`
 
-### 2.1 Classification of joinpoints
+### 2.1 Classification
 
-For each `eco.joinpoint` we classify it as:
+For each `eco.joinpoint`:
 
-1. **Looping joinpoint**: there is at least one `eco.jump` targeting this `id` from inside `jpRegion`. (Same detection as in the SCF doc’s pseudo‑code).
-2. **Non‑looping joinpoint**: no such `eco.jump` in the body (only in continuation).
-3. **SCF‑candidate loop**: a looping joinpoint whose body has a **single exit point**.
+1. **Looping vs non‑looping** (doc pattern):
 
-We will only SCF‑lower SCF‑candidate loops; others stay on the CF path.
+    - Use the loop detection algorithm already sketched:
 
-### 2.2 Definition of “single exit point”
+      ```cpp
+      bool isLoopingJoinpoint(JoinpointOp op) {
+        int64_t jpId = op.getId();
+        bool hasLoopingJump = false;
+        op.getBody().walk([&](JumpOp jump) {
+          if (jump.getTarget() == jpId) {
+            hasLoopingJump = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+        return hasLoopingJump;
+      }
+      ```
 
-For a joinpoint `J`:
+    - If `hasLoopingJump` is false → **non‑looping** joinpoint; won’t map to `scf.while` per doc’s strategy .
 
-- Consider all control‑flow paths starting at the entry block of `jpRegion`.
-- An **exit point** is:
-    - A terminator `eco.return` reachable from `jpRegion`, or
-    - A terminator that jumps to some other joinpoint which ultimately returns (for simplicity, in v1, treat only direct `eco.return` as exits).
-- `J` is a **single‑exit** joinpoint if:
+2. **Single‑exit vs multi‑exit** (extrapolated):
 
-  > There is a unique `eco.return` that *post‑dominates* all paths out of `jpRegion`, i.e. every path from the joinpoint’s entry to function exit must go through that one `eco.return`.
+    - Traverse the CFG of `jpRegion` and collect all reachable `eco.return` blocks.
+    - If >1 distinct `eco.return` blocks are reachable, mark as **multi‑exit**.
+    - If exactly one reachable `eco.return`, and every path from the joinpoint entry to function exit passes through that block (post‑dominator check), mark as **single‑exit**.
 
-Implementation detail (extrapolated):
+3. **SCF‑candidate**:
 
-- In MLIR, run a control‑flow analysis on the region’s CFG:
-    - Build a graph of blocks in `jpRegion`.
-    - Compute post‑dominators or simpler:
-        - Collect all `eco.return` blocks reachable from `jpRegion`.
-        - If count > 1, not single‑exit.
-        - If exactly 1, check that for each block reachable from the entry, *every* path to function exit goes through that `eco.return` block.
+    - A joinpoint is SCF‑candidate if:
+        - It is looping (has a self‑jump).
+        - It is single‑exit as above.
+        - Its `continuation` region satisfies the shape below (2.2).
 
-### 2.3 Normalization strategy
+Non‑SCF‑candidates will stay on the CF path (doc mitigation for complex patterns and non‑looping joinpoints  ).
 
-Given the complexity of arbitrary multiple exits and early returns, the **initial, implementable plan** is:
+### 2.2 Continuation normalization (extrapolated but consistent)
 
-1. **Do not try to rewrite arbitrary multi‑exit loops.**
-2. **Instead:**
-    - If `jpRegion` has:
-        - Exactly one `eco.return` reachable from it, and
-        - No “unstructured” `eco.return` in inner constructs (e.g. inside nested joinpoints that you aren’t going to SCF‑lower),
-        - Then mark it as **SCF‑candidate**.
-    - Otherwise, leave it as **CF‑only**.
+We impose a simple structural invariant on the continuation region of SCF‑candidate joinpoints:
 
-This matches the SCF doc’s Option C for early exits: “Only lower simple loop patterns to SCF, keep complex ones on CF path.”
+- The entry block of `continuation` must:
+    - Start with exactly **one** `eco.jump` to the current joinpoint id.
+    - After that jump, contain straight‑line code (no branches) that uses only:
+        - Function arguments,
+        - Values returned from the joinpoint (after lowering),
+        - Other values defined in that straight‑line segment.
 
-You can encode this as an attribute or just as a property the SCF pass recomputes.
+Any joinpoint whose continuation doesn’t match this shape (e.g. multiple jumps, complex branching before the first jump) is **not SCF‑candidate** and remains CF‑only.
 
-#### (Optional future extension – real normalization)
+Purpose:
 
-If you later need more coverage, you can:
-
-- Introduce a normalization that rewrites multiple `eco.return`s in `jpRegion` into a single one by:
-    - Introducing joinpoint‑local “result variables” (implemented as additional joinpoint parameters or SSA values in the continuation).
-    - Rewriting each early `eco.return` into:
-        - Assign result values.
-        - Jump to a single “exit block” in the continuation that does the real `eco.return`.
-- However, this is significantly more complex and can remain future work. For v1, simple detection and exclusion is enough.
+- The first `eco.jump` provides the initial loop state values for `scf.while`.
+- The remaining continuation code will be inlined **after** the `scf.while` as post‑loop code that consumes the loop’s result.
 
 ---
 
-## 3. Eco→SCF control‑flow lowering (`EcoControlFlowToSCF`)
+## 3. Eco→SCF pass: `EcoControlFlowToSCF`
 
-We now define the main pass that lowers Eco control‑flow to SCF, using the new type and normalization invariants.
+The SCF doc suggests a new pass:
 
-### 3.1 Pass placement in the pipeline
+- `eco::createEcoControlFlowToSCFPass()` that lowers `eco.case` to `scf.if`/`scf.index_switch` and `eco.joinpoint/jump` to `scf.while` .
 
-The SCF design doc suggests adding a new pass and SCF optimizations before Eco→LLVM, then converting SCF→CF→LLVM.
+### 3.1 Pipeline placement
 
-Updated pipeline fragment (extrapolating from the doc):
+Integrate as per the doc’s “Pass Pipeline Modification” , refined to keep a CF fallback:
 
 ```cpp
 // Stage 2: Eco → Standard MLIR
-pm.addPass(eco::createEcoControlFlowToSCFPass());  // NEW (this design)
+pm.addPass(eco::createJoinpointNormalizationPass());   // NEW (extrapolated)
+pm.addPass(eco::createEcoControlFlowToSCFPass());      // NEW
+
+// (still in Stage 2)
+pm.addPass(eco::createControlFlowLoweringPass());      // existing Eco→CF for remaining eco.case/joinpoint/jump
 
 // SCF optimizations
 pm.addNestedPass<func::FuncOp>(scf::createForLoopCanonicalizationPass());
@@ -233,298 +213,386 @@ pm.addNestedPass<func::FuncOp>(scf::createForLoopPeelingPass());
 pm.addNestedPass<func::FuncOp>(scf::createForLoopSpecializationPass());
 
 // Stage 3: Eco → LLVM
-pm.addPass(eco::createEcoToLLVMPass());            // Heap, calls, etc.
-pm.addPass(createConvertSCFToControlFlowPass());   // SCF → CF
-pm.addPass(createConvertControlFlowToLLVMPass());  // CF → LLVM
+pm.addPass(eco::createEcoToLLVMPass());                // heap, calls, etc.
+pm.addPass(createConvertSCFToControlFlowPass());
+pm.addPass(createConvertControlFlowToLLVMPass());
 ```
 
-(As in the doc’s “Pass Pipeline Modification”, but with the new pass implemented according to this plan.)
+Key guarantee:
 
-### 3.2 SCF type usage: using `result_types`
+- After `createControlFlowLoweringPass()`, **no** `eco.case`/`eco.joinpoint`/`eco.jump` remain; everything is SCF or CF, matching eco‑lowering’s Stage 3 description .
+- `EcoToLLVMPass` in Stage 3 therefore does not need to handle Eco control‑flow ops, consistent with the SCF doc’s intention “EcoToLLVM no longer handles case/joinpoint” .
 
-Because `eco.case` and `eco.joinpoint` now have a mandatory `result_types` attribute:
+A CLI flag (as suggested by the doc ) can enable/disable SCF lowering:
 
-- SCF ops’ result types are taken **directly** from that attribute.
-- You no longer need to infer types from `eco.return` in this pass, only to optionally verify them (using the helper from the doc).
+- If disabled: skip `EcoControlFlowToSCF`, run only `createControlFlowLoweringPass()` (current behavior).
+- If enabled: run both passes as above.
 
----
+### 3.2 `eco.case` → SCF (generic “pure return” pattern)
 
-## 4. Lowering `eco.case` → SCF
+Use the mapping strategy and examples from the doc  , with the additional constraint that **all** alternatives must exit via `eco.return`.
 
-The SCF design doc already describes the general mapping:
+**Preconditions for this pattern (extrapolated):**
 
-- 2 alternatives → `scf.if`.
-- >2 alternatives → `scf.index_switch`.
+- `eco.case` has `result_types` attribute.
+- For each alternative region:
+    - All exits from that region, modulo nested joinpoints that are not SCF‑candidate, must reach some `eco.return` with operand types matching `result_types`.
+    - No branch in that region ends in `eco.jump` to an outer joinpoint (those are handled by joinpoint patterns, see 3.3).
 
-With mandatory `result_types`, we can make this precise.
-
-### 4.1 Prerequisite: `eco.get_tag`
-
-First, ensure there is an `eco.get_tag` op as suggested (extracts the ADT tag from `!eco.value`).
-
-```mlir
-%tag = eco.get_tag %scrutinee : !eco.value -> i32  // or index
-```
-
-### 4.2 2‑way case → `scf.if`
-
-Given:
+**Lowering (2‑way):**
 
 ```mlir
-// Eco
-%result_types = [T0, ..., Tn-1] // from attribute
-eco.case %scrutinee [tag0, tag1]
-         { ... alt0 ... }  // ends in eco.return / eco.jump
-         { ... alt1 ... }
-```
+// eco
+eco.case %scrutinee [tag0, tag1] { alt0 } { alt1 }
+  attributes { result_types = [T0, ..., Tn-1] }
 
-Lower to:
-
-```mlir
-%tag = eco.get_tag %scrutinee : !eco.value -> i32
-%cond = arith.cmpi eq, %tag, %c_tag1_i32 : i32  // pick one branch as "then"
+// SCF (sketch)
+%tag  = eco.get_tag %scrutinee : !eco.value -> i32
+%cond = arith.cmpi eq, %tag, %c_tag1_i32 : i32
 
 %res0, ..., %resN-1 =
   scf.if %cond -> (T0, ..., Tn-1) {
-    // Clone body of chosen alternative (e.g. alt1).
-    // Replace eco.return %v0, ..., %vn-1
-    //   with scf.yield %v0, ..., %vn-1.
+    // clone alt1 body
+    // eco.return → scf.yield
   } else {
-    // Clone body of the other alternative (alt0).
-    // Replace eco.return analogously.
+    // clone alt0 body
+    // eco.return → scf.yield
   }
 ```
 
-Notes:
+**Lowering (multi-way):**
 
-- Each alternative region’s `eco.return` must already match `(T0, ..., Tn-1)` by the verifier.
-- If an alternative ends in `eco.jump` to some joinpoint, the SCF pass either:
-    - Leaves that part in Eco/CF form if the joinpoint is non‑SCF, or
-    - Handles the joinpoint separately (see the joinpoint section).
-
-### 4.3 Multi‑way case → `scf.index_switch`
-
-Given:
+As in the doc’s `scf.index_switch` example  , but with results `(T0..Tn-1)` from `result_types`:
 
 ```mlir
-%result_types = [T0, ..., Tn-1]
-eco.case %scrutinee [tag0, tag1, ..., tagK-1]
-         { ... alt0 ... }
-         { ... alt1 ... }
-         ...
-         { ... altK-1 ... }
-```
-
-Lower as in the doc:
-
-```mlir
-%tag = eco.get_tag %scrutinee : !eco.value -> index
+%tag = eco.get_tag %color : !eco.value -> index
 %res0, ..., %resN-1 =
   scf.index_switch %tag -> (T0, ..., Tn-1)
-  case 0 {
-    // clone alt0, eco.return → scf.yield
-  }
-  case 1 {
-    // clone alt1
-  }
+  case 0 { ... eco.return → scf.yield ... }
   ...
-  case K-1 {
-    // clone altK-1
-  }
-  default {
-    // If there is a default alternative, clone it.
-    // Otherwise, this is unreachable (Elm patterns exhaustive).
-    // Might emit eco.crash or scf.yield of "unreachable" values.
-  }
+  default { eco.crash ... }  // or clone default region
 ```
+
+**Cases with `eco.jump` alternatives:**
+
+- If any alternative region ends in `eco.jump` to an outer joinpoint, this generic pattern **does not apply**.
+- Those `eco.case` ops are either:
+    - Consumed via the composite joinpoint+case pattern (3.3) when they form a loop body, or
+    - Left for the CF‑only path (lowered by `createControlFlowLoweringPass()`).
+
+### 3.3 `eco.joinpoint` → `scf.while`
+
+The doc already sketches mapping looping joinpoints to `scf.while`  and notes the challenge of non‑looping joinpoints and early exits  .
+
+We now fix the semantics issues and refine which patterns we support.
+
+#### 3.3.1 Loop detection and eligibility (doc‑driven + extrapolation)
+
+- Use `isLoopingJoinpoint` from the doc .
+- Use the joinpoint normalization pass (Section 2) to:
+    - Require single‑exit joinpoints for SCF lowering.
+    - Require normalized continuation.
+
+Only such joinpoints are SCF‑candidate.
+
+#### 3.3.2 `scf.while` result semantics: P vs R (extrapolated)
+
+`scf.while` returns its **loop‑carried state**, i.e. the values passed through `scf.condition` in the last iteration. In some examples, the doc shows `scf.while` returning a simpler result (e.g. `i64` fold) , but the actual semantics are that the result is exactly the yield/condition tuple.
+
+To align Eco joinpoints with this:
+
+- Let P be the types of joinpoint parameters (loop‑carried state).
+- Let R be the joinpoint’s `result_types` (Elm‑visible function results).
+- In general R is a **projection** of P or of some extension of P (for fold: P=`(!eco.value, i64)`, R=`(i64)`).
+
+**Lowering strategy (extrapolated):**
+
+1. Ensure P includes R:
+
+    - If R is already a subset of P (e.g. R is the accumulator in `(list, acc)`), nothing to do.
+    - Otherwise, normalize joinpoint parameters so they carry `(S0..Sk, R0..Rn)`; R components initialized appropriately.
+
+2. Construct `scf.while`:
+
+    - Initial values `(P0..Pk)` taken from the first `eco.jump` in continuation.
+    - Condition region:
+        - Encodes the loop exit decision (base case).
+        - Calls `scf.condition(%cond) P0..Pk`.
+    - Body region:
+        - Encodes the loop body.
+        - `scf.yield` new `(P0..Pk)`.
+
+3. After the loop:
+
+    - `scf.while` returns `(P0_final..Pk_final)`.
+    - Project out R from P:
+
+      ```mlir
+      %p0_final, ..., %pk_final = scf.while (...)
+ 
+      // R is some projection/projection+computation of %p*_final,
+      // often just picking some of the components.
+      %r0 = <extract from P_final>
+      ...
+      %rn = <extract from P_final>
+      ```
+
+    - These `%r*` replace the logical “results of the joinpoint” in the surrounding code (especially in the continuation’s post‑loop code).
+
+This resolves the “R ≠ P” mismatch (your Q1) without restricting to R==P.
+
+#### 3.3.3 Composite pattern: joinpoint + case with jump
+
+The doc shows the “complex pattern” of `eco.case` inside `eco.joinpoint` and suggests lowering the case first, then joinpoint  . However, in the presence of alternatives that end in `eco.jump`, generic case→SCF would fail.
+
+For canonical loops (e.g. list recursion):
+
+```mlir
+eco.joinpoint 0(%val: !eco.value) {
+  eco.case %val [0, 1] {
+    eco.return %result : !eco.value            // exit path
+  }, {
+    %next = eco.project %val[1] : !eco.value
+    eco.jump 0(%next : !eco.value)            // loop path
+  }
+} continuation {
+  eco.jump 0(%list : !eco.value)
+}
+```
+
+**Design decision (extrapolated):**
+
+- Implement a **joinpoint‑first composite pattern**:
+
+    - Pattern matches joinpoints whose `jpRegion` is structurally:
+
+        - A top‑level `eco.case` on the loop variable,
+        - One alternative that performs `eco.return` of the joinpoint’s result_types (exit case),
+        - One or more alternatives that compute new loop state and `eco.jump` back to the same joinpoint (loop cases).
+
+    - The pattern consumes both the `eco.joinpoint` and its internal `eco.case` and emits a single `scf.while` plus projections, as in 3.3.2.
+
+- This pattern runs **before** the generic case→SCF rewrite in the pattern set (higher benefit).
+
+- If the pattern doesn’t match (e.g. more complex nesting or multiple returns), we fall back to:
+
+    - Generic `eco.case → scf.if/index_switch` where possible;
+    - Or CF lowering for non‑SCF‑friendly patterns.
+
+This is slightly different from the doc’s “lower case first, then detect loop structure” example , but achieves the same end result and avoids case→SCF having to understand `eco.jump` alternatives.
+
+#### 3.3.4 Non‑looping joinpoints
+
+- Non‑looping joinpoints (no self‑jump) are never lowered to SCF.
+- They are left as Eco ops for `createControlFlowLoweringPass()` to lower to CF blocks and `cf.br` , in line with the doc’s suggestion to keep non‑looping joinpoints on the CF path .
 
 ---
 
-## 5. Lowering `eco.joinpoint` → SCF (`scf.while`)
+## 4. Nested patterns and lowering order
 
-This is where joinpoint classification and normalization matter.
+There are two main nested cases in the doc:
 
-### 5.1 Loop detection (recap)
+- Case inside joinpoint (loop body with pattern match)  .
+- Joinpoint inside case (loop only in one branch) .
 
-Use the detection from the doc (slightly expanded):
+**Overall strategy (extrapolated, compatible with doc):**
+
+1. **Joinpoint‑first for loop patterns where case has a jump:**
+
+    - For SCF‑candidate joinpoints whose `jpRegion` is top‑level `eco.case` with `return` vs `jump back`:
+        - Apply the composite joinpoint+case→`scf.while` pattern (3.3.3).
+        - This effectively lowers both the joinpoint and the case at once.
+
+2. **Inside‑out for other cases:**
+
+    - After joinpoint patterns have run:
+        - Apply generic case→SCF (`scf.if` / `scf.index_switch`) to any remaining `eco.case` whose alternatives all lead to `eco.return` (no `eco.jump`).
+        - This addresses cases both inside and outside of joinpoints.
+
+3. **Joinpoint‑inside‑case (doc’s 3b) :**
+
+    - For:
+
+      ```mlir
+      eco.case %outer [0, 1] {
+        eco.joinpoint 0(...) { ... }  // nested loop in branch
+        eco.return
+      }, {
+        eco.return
+      }
+      ```
+
+    - The doc recommends processing “inside‑out – lower inner joinpoints first, then outer case” .
+    - We follow that:
+        - First, apply joinpoint patterns (potentially generating `scf.while`) inside each branch.
+        - Once there are no `eco.joinpoint` left in the case regions, the case→SCF pattern is free to run.
+
+---
+
+## 5. Type attribute representation (`result_types`)
+
+As discussed, we need:
+
+```text
+result_types : ArrayAttr<Type>
+```
+
+MLIR doesn’t have a built‑in `TypeArrayAttr`; the idiom is:
+
+- Use `ArrayAttr` whose elements are `TypeAttr`.
+- Check this in the op verifier.
+
+**TableGen sketch (extrapolated):**
+
+```tablegen
+def Eco_CaseOp : Op<"case", [/*traits*/]> {
+  let arguments = (ins
+    AnyType:$scrutinee,
+    I64ArrayAttr:$tags,
+    ArrayAttr:$resultTypes   // Array of TypeAttr; checked in verifier
+  );
+  // ...
+}
+
+def Eco_JoinpointOp : Op<"joinpoint", [/*traits*/]> {
+  let arguments = (ins
+    I64Attr:$id,
+    ArrayAttr:$resultTypes   // Array of TypeAttr
+  );
+  // ...
+}
+```
+
+**Verifier (extrapolated):**
 
 ```cpp
-bool isLoopingJoinpoint(eco::JoinpointOp jp) {
-  int64_t id = jp.getId();
-  bool hasLoopJump = false;
-
-  jp.getBody().walk([&](eco::JumpOp jump) {
-    if (jump.getJoinPointId() == id) {
-      hasLoopJump = true;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-
-  return hasLoopJump;
-}
-```
-
-Combine with single‑exit check (from section 2.2) to identify **SCF‑candidate looping joinpoints**.
-
-### 5.2 Canonical pattern to target
-
-We target joinpoints that look roughly like the examples in `control-flow-scf-lowering.md` (loops over lists or counters):
-
-- Parameters of `jpRegion` are loop‑carried values.
-- There is a condition that decides whether to “continue” (`eco.jump` back to the joinpoint) or to “exit” (`eco.return`).
-- No other `eco.return` in the body.
-
-### 5.3 Mapping to `scf.while`
-
-Given a SCF‑candidate joinpoint:
-
-```mlir
-// Canonical Eco sketch
-eco.joinpoint %id (%p0: P0, ..., %pk: Pk) {
-  // BODY (jpRegion)
-
-  // compute condition %cond
-  // if cond:
-  //   compute updated params %p0', ..., %pk'
-  //   eco.jump %id(%p0', ..., %pk')
-  // else:
-  //   eco.return %r0, ..., %rn
-} continuation {
-  // initial jump:
-  eco.jump %id(%init_p0, ..., %init_pk)
-}
-```
-
-With `result_types = [R0, ..., Rn]` on `eco.joinpoint` (matching the `eco.return` operands).
-
-We lower to:
-
-```mlir
-// scf.while returns R0..Rn, carries P0..Pk
-%r0, ..., %rn =
-  scf.while (%p0 = %init_p0, ..., %pk = %init_pk)
-            : (P0, ..., Pk) -> (R0, ..., Rn) {
-    // "before" region: decide whether to continue
-
-    // Compute condition based on %p0..%pk
-    // If we know the structure, we may be able to refactor so that
-    // the eco.return is expressed as cond = false and pass result
-    // via some explicit values. For v1, we can restrict to cases
-    // where the eco.return corresponds to cond=false directly.
-
-    // Simplest pattern (extrapolated):
-    // - Extract cond such that:
-    //   cond == true  => continue
-    //   cond == false => exit with pre-computed results
-
-    %cond = ... : i1
-
-    // For SCF v1, assume results R0..Rn *do not* depend on cond path
-    // (or are equal on both paths). If they depend, stick to CF path.
-
-    scf.condition(%cond) %p0, ..., %pk : P0, ..., Pk
-  } do {
-  ^bb0(%p0_arg: P0, ..., %pk_arg: Pk):
-    // body that updates loop-carried values
-    %p0_next, ..., %pk_next = ... : P0, ..., Pk
-    scf.yield %p0_next, ..., %pk_next : P0, ..., Pk
+LogicalResult Eco_CaseOp::verify() {
+  auto array = getResultTypes(); // ArrayAttr
+  for (Attribute attr : array) {
+    if (!attr.isa<TypeAttr>())
+      return emitOpError() << "result_types must be array of TypeAttr";
   }
+  // Convert to SmallVector<Type> and check all eco.return ops.
+  ...
+}
 ```
 
-**Important practical restriction (v1, extrapolated):**
-
-To avoid complicated refactoring of `eco.return` into loop‑carried “result” variables, you initially:
-
-- **Only lower joinpoints where:**
-    - The loop’s exit values (`R0..Rn`) are equal to some current loop‑carried parameters (e.g., for list loops that keep an accumulator and return it).
-    - Or where the base case is recognizable and directly encodable as “cond == false => known result”.
-
-If a joinpoint doesn’t match this simple pattern, the pass *skips SCF lowering* and leaves it to the existing Eco→CF lowering.
-
-### 5.4 Non‑looping joinpoints
-
-As per the SCF doc’s unresolved question 1 and its suggested mitigation:
-
-- **Non‑looping joinpoints are not lowered to SCF.**
-- They remain as Eco ops to be lowered directly to CF blocks + `cf.br` (using the existing sketch in `eco-lowering.md`).
-
-This keeps the SCF pass simple and avoids trying to encode “execute once with arguments” in SCF.
+Same for `Eco_JoinpointOp`.
 
 ---
 
-## 6. Verification and debugging
+## 6. Frontend and bootstrap strategy
 
-To keep this robust:
+Docs assume a frontend that translates Elm IR → Eco IR → Eco MLIR ops (`eco.construct`, `eco.case`, `eco.joinpoint`, etc.)  .
 
-1. **Dialect verifiers:**
-    - `eco.case`:
-        - Check `result_types` is present.
-        - Validate all reachable `eco.return` operands match it.
-    - `eco.joinpoint`:
-        - Check `result_types` is present.
-        - Validate all reachable `eco.return` operands match it.
-        - Validate jump argument types vs joinpoint parameters.
+**When that frontend exists:**
 
-2. **SCF pass checks (defensive):**
-    - For each op it tries to lower:
-        - Recompute region result types with the helper from the doc:
-          ```cpp
-          SmallVector<Type> getRegionResultTypes(Region &region) { ... }
-          ```
-        - Assert (in debug mode) that these match `result_types`.
-    - For joinpoints:
-        - Check loop‑detection + single‑exit conditions before attempting `scf.while` lowering.
+- It must:
+    - Fill `result_types` for `eco.case` and `eco.joinpoint` from known function result types and representation types (`!eco.value`, `i64`, etc.).
+    - Satisfy the verifier invariants outlined in Section 1.
 
-3. **Fallback behavior:**
-    - If any invariant fails, the SCF pass:
-        - Emits an MLIR diagnostic explaining why the op is not SCF‑lowerable.
-        - Leaves that op for the CF‑only lowering path.
+**For current work / tests (extrapolated):**
 
----
+- You can unblock SCF implementation before the frontend is complete by:
 
-## 7. Summary of concrete implementation steps
+    1. Allowing `result_types` to be initially empty in tests or IR.
+    2. Implementing a small Eco→Eco pass:
 
-1. **IR changes (eco dialect):**
-    - Extend `Eco_CaseOp` and `Eco_JoinpointOp` definitions to add a mandatory:
-        - `ArrayAttr<Type> result_types`.
-    - Implement verifiers enforcing consistency with `eco.return`s.
+       ```cpp
+       // Pseudocode:
+       for (eco.case / eco.joinpoint op):
+         if (!hasResultTypesAttr()):
+           auto inferred = getRegionResultTypes(op.getRegions()...)
+           setResultTypesAttr(inferred)
+       ```
 
-2. **Frontend changes (Elm IR → Eco MLIR):**
-    - When emitting `eco.case`:
-        - Set `result_types` to the enclosing function’s return types (as Eco representation types: `!eco.value`, primitives, etc.).
-    - When emitting `eco.joinpoint`:
-        - Set `result_types` similarly—typically the function’s result types.
+       using the helper from the SCF doc .
 
-3. **Joinpoint normalization pass:**
-    - Implement `createJoinpointNormalizationPass()` that:
-        - Classifies joinpoints as looping / non‑looping.
-        - Checks for single‑exit patterns.
-        - (Initially) just records which joinpoints are SCF‑candidates vs CF‑only, based on:
-            - Presence of loopback jumps.
-            - Unique reachable `eco.return`.
-        - More aggressive transformations can be added later if needed.
+    3. Once `result_types` is filled, run the verifiers and SCF lowering as normal.
 
-4. **Eco→SCF lowering pass (`EcoControlFlowToSCF`):**
-    - For each `eco.case`:
-        - Use `result_types` as the result type list for `scf.if` / `scf.index_switch`.
-        - Clone regions, replacing `eco.return` with `scf.yield`.
-    - For each SCF‑candidate looping `eco.joinpoint`:
-        - Map to `scf.while` when its structure matches the simple loop pattern.
-        - Otherwise, skip (CF path).
-    - For non‑looping joinpoints and complex cases:
-        - Leave them untouched; they’ll be handled by the existing Eco→CF lowering.
-
-5. **Pipeline wiring:**
-    - Add `eco::createEcoControlFlowToSCFPass()` to Stage 2 before Eco→LLVM, as in the SCF design doc.
-    - Add SCF optimization passes (canonicalization, peeling, specialization).
-    - Ensure `EcoToLLVM` no longer tries to lower `eco.case`/`eco.joinpoint` directly once SCF is stable; instead rely on `convertSCFToControlFlow` + `convertControlFlowToLLVM`.
+- Later, when the frontend is in place, you can:
+    - Make `result_types` truly mandatory at parse/emit time.
+    - Keep the inference pass only for debug verification (recompute from `eco.return` and assert equality).
 
 ---
 
-This gives you:
+## 7. Fallback coexistence and EcoToLLVM behavior
 
-- A clear IR contract: `eco.case` and `eco.joinpoint` always know their result types.
-- A minimal yet useful subset of joinpoints that can be cleanly mapped to `scf.while`.
-- A straightforward Eco→SCF pass that plugs into the existing staged lowering and can be expanded over time as you need more complex loop patterns.
+Docs:
+
+- `createControlFlowLoweringPass()` already lowers Eco control flow (case/joinpoint/jump/return) to CF  .
+- `EcoToLLVMPass` handles heap ops, constants, calls, etc., and runs alongside `convertSCFToControlFlow` and `convertControlFlowToLLVM` .
+
+**Design decisions (extrapolated but aligned):**
+
+- **After `EcoControlFlowToSCF`:**
+
+    - Some `eco.case`/`eco.joinpoint` are converted to SCF.
+    - SCF‑incompatible ones remain as Eco ops.
+
+- **`createControlFlowLoweringPass()` then runs:**
+
+    - It lowers any remaining `eco.case`/`eco.joinpoint`/`eco.jump` to CF directly (as today).
+    - It ignores SCF ops, which are handled later by `convertSCFToControlFlowPass()`.
+
+- **By entry to Stage 3 (EcoToLLVM):**
+
+    - The module contains:
+        - `func`, `cf`, `scf`, `arith`, Eco heap/GC ops (`eco.allocate_*`, `eco.safepoint`, `eco.call`) .
+        - **No** remaining Eco control‑flow ops.
+
+- `EcoToLLVMPass` therefore does **not** need to be modified to understand Eco control‑flow ops in the SCF configuration; they are gone by then.
+
+If an Eco control‑flow op still exists when entering Stage 3:
+
+- Treat this as an **error** (failed lowering) – the SCF/CF passes should have been able to handle it.
+- This catches cases where the SCF pass leaves an Eco op, but EC→CF pass is disabled or misconfigured.
+
+---
+
+## 8. Summary of required work items
+
+Putting it all together:
+
+1. **IR & dialect:**
+    - Add `result_types : ArrayAttr` (array of `TypeAttr`) to `eco.case` and `eco.joinpoint`.
+    - Update verifiers to assert type consistency with `eco.return`.
+    - Add `eco.get_tag` op and hook it into existing LLVM lowering logic.
+
+2. **Normalization:**
+    - Implement `createJoinpointNormalizationPass()`:
+        - Detect looping vs non‑looping joinpoints (reuse algorithm from SCF doc ).
+        - Mark single‑exit joinpoints and normalized continuations as SCF‑candidates.
+        - Others remain CF‑only.
+
+3. **SCF lowering:**
+    - Implement `EcoControlFlowToSCF`:
+        - Generic pure‑return `eco.case` → `scf.if` / `scf.index_switch`.
+        - Composite `eco.joinpoint` + `eco.case` (with `eco.jump` alt) → `scf.while` + projection of results.
+        - SCF‑candidate joinpoints: construct `scf.while` with loop‑carried state P (including R), then extract R after the loop.
+    - Ensure pattern application order:
+        - Joinpoint+case composite patterns applied first.
+        - Then generic case→SCF patterns.
+        - Joinpoint‑inside‑case lowered inside‑out as per doc .
+
+4. **Pipeline integration:**
+    - Stage 2:
+        - `createJoinpointNormalizationPass()`
+        - `createEcoControlFlowToSCFPass()`
+        - `createControlFlowLoweringPass()` (fallback CF lowering)
+    - SCF optimizations: `scf::createForLoopCanonicalizationPass()`, `createForLoopPeelingPass()`, `createForLoopSpecializationPass()` .
+    - Stage 3:
+        - `createEcoToLLVMPass()`
+        - `createConvertSCFToControlFlowPass()`
+        - `createConvertControlFlowToLLVMPass()` (plus existing func/arith→LLVM passes as in llvm‑optimization‑ideas ).
+
+5. **Frontend / bootstrap:**
+    - In tests: optionally add a simple Eco‑to‑Eco pass that infers and populates `result_types` from `eco.return` if not already present (using the helper from the SCF doc ).
+    - In the real Elm→Eco frontend: emit `result_types` directly from type information.
+
+This plan directly addresses the three “must‑resolve” blockers you listed:
+
+1. `scf.while` result semantics – by treating results as a projection of loop‑carried state and projecting after the loop.
+2. `eco.jump` in case alternatives – by splitting into generic pure‑return cases vs composite joinpoint+case patterns, with the latter lowered jointly to `scf.while`.
+3. `eco.get_tag` – by making it an explicit prerequisite op, already suggested as step 1 in the SCF design doc .
 
