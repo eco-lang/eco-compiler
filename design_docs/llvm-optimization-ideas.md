@@ -1,1055 +1,49 @@
-# LLVM and MLIR Optimization Ideas for Ecoc
+Below is a consolidated design / implementation plan that:
 
-This document describes optimization passes that can be added to the ecoc lowering pipeline to improve generated code performance. Each optimization is explained with its mechanism and expected benefits for Elm/functional code patterns.
+- Rewrites the existing Ecoc optimisation ideas (LLVM, MLIR, Eco‑specific) as a concrete plan.
+- Integrates the “missing” ideas and dialects we discussed.
+- Adds new sections on optimising contiguous numeric buffers (tuples/records/arrays of floats, and how they interact with `memref` + `affine`).
 
-## Table of Contents
-
-1. [Current Pipeline Overview](#current-pipeline-overview)
-2. [LLVM Optimizations](#llvm-optimizations)
-3. [MLIR Standard Optimizations](#mlir-standard-optimizations)
-4. [SCF Dialect Optimizations](#scf-dialect-optimizations)
-5. [Custom Eco Dialect Optimizations](#custom-eco-dialect-optimizations)
-6. [Implementation Priority](#implementation-priority)
+I’ll clearly distinguish which parts are grounded in your docs and which are extrapolated.
 
 ---
 
-## Current Pipeline Overview
+# 0. Goals and Global Constraints
 
-The ecoc compiler currently implements this pipeline:
+### 0.1 Runtime and Representation Constraints
 
-```
-Monomorphized Elm IR
-        │
-        ▼
-┌───────────────────────────────────────┐
-│  Stage 1: Eco → Eco Transforms        │
-│  - RCElimination (implemented)        │
-│  - ConstructLowering (TODO)           │
-└───────────────────────────────────────┘
-        │
-        ▼
-┌───────────────────────────────────────┐
-│  Stage 2: Eco → Standard MLIR         │
-│  - Canonicalizer                      │
-│  - ControlFlowLowering (TODO)         │
-└───────────────────────────────────────┘
-        │
-        ▼
-┌───────────────────────────────────────┐
-│  Stage 3: Eco → LLVM Dialect          │
-│  - EcoToLLVM                          │
-│  - FuncToLLVM, CFToLLVM, ArithToLLVM  │
-└───────────────────────────────────────┘
-        │
-        ▼
-┌───────────────────────────────────────┐
-│  Stage 4: LLVM IR → Native            │
-│  - makeOptimizingTransformer(O3)      │
-└───────────────────────────────────────┘
-        │
-        ▼
-    Native Code
-```
+From `Heap.hpp` and related docs:
+
+- Every heap object starts with an 8‑byte `Header` (tag, GC bits, size, etc.)   .
+- Logical pointers are `HPointer`:
+    - 64‑bit value with `ptr : 40` (heap offset), `constant : 4` (embedded constants), `padding : 20`  .
+    - Stored in IR as `i64` or equivalent.
+- Many objects have a trailing `Unboxable values[]` array carrying either:
+    - A heap pointer (`HPointer`) or
+    - An unboxed primitive (`i64`, `f64`, `u16`)  .
+- You use a tracing GC with statepoints/stackmaps; no reference counting in the current configuration   .
+- Elm is immutable at the language level; GC design assumes “no writes after construction” (no write barriers needed)  .
+
+### 0.2 MLIR / LLVM Dialect Strategy
+
+From `eco-lowering.md`:
+
+- Core dialects: `eco`, `func`, `cf`/`scf`, `arith`, `llvm`  .
+- Optional: `memref` as a transient representation for some buffers, *not* for general Eco heap objects; for a moving GC + 40‑bit logical pointers it is “often cleaner to stick to raw pointers and the LLVM dialect”  .
+- `!eco.value` is lowered to `ptr addrspace(1)` (logical heap pointer) in the LLVM dialect; Elm primitives map to `i64`, `double`, etc.  .
+- `eco.safepoint` is lowered to `gc.statepoint`/`gc.relocate` and drives stackmaps for the GC   .
+
+These constraints shape which optimisations are easy/safe and which require major representation work.
 
 ---
 
-## LLVM Optimizations
+# 1. Base Pipeline (Recap) and Placement of Passes
 
-These optimizations operate on LLVM IR after the MLIR-to-LLVM translation.
-
-### 1. Tail Call Elimination (TCE)
-
-**What it does:**
-Tail Call Elimination transforms recursive function calls in tail position into jumps, converting recursion into iteration. A call is in "tail position" when it's the last operation before returning.
-
-**How it speeds up Elm code:**
-Elm relies heavily on recursion for iteration. Functions like `List.map`, `List.foldl`, and user-defined recursive functions all use tail recursion. Without TCE:
-
-```elm
--- Elm source
-sum : List Int -> Int -> Int
-sum list acc =
-    case list of
-        [] -> acc
-        x :: xs -> sum xs (acc + x)
-```
-
-```llvm
-; Without TCE - stack grows with each call
-define i64 @sum(ptr %list, i64 %acc) {
-  ; ... pattern match ...
-  %result = call i64 @sum(ptr %xs, i64 %new_acc)  ; Stack frame allocated
-  ret i64 %result
-}
-
-; With TCE - constant stack space
-define i64 @sum(ptr %list, i64 %acc) {
-entry:
-  br label %tailrecurse
-tailrecurse:
-  %list.tr = phi ptr [ %list, %entry ], [ %xs, %recurse ]
-  %acc.tr = phi i64 [ %acc, %entry ], [ %new_acc, %recurse ]
-  ; ... pattern match ...
-recurse:
-  br label %tailrecurse  ; Jump instead of call
-}
-```
-
-**Performance impact:**
-- Eliminates stack frame allocation/deallocation per recursive call
-- Prevents stack overflow on deep recursion
-- Enables further loop optimizations (vectorization, unrolling)
-- **Expected speedup: 2-10x for recursive functions**
-
-**Implementation:**
-```cpp
-// The eco.call op already supports musttail attribute
-pm.addPass(createTailCallEliminationPass());
-```
-
----
-
-### 2. Aggressive Dead Code Elimination (ADCE)
-
-**What it does:**
-ADCE removes instructions whose results are never used, working backwards from program outputs. Unlike simple DCE, it can eliminate entire control flow paths that don't contribute to outputs.
-
-**How it speeds up Elm code:**
-Elm's pattern matching generates many intermediate values. After inlining and specialization, some branches become unreachable:
-
-```elm
--- After monomorphization, we might know x is always Just
-case x of
-    Nothing -> defaultValue
-    Just v -> processValue v
-```
-
-```llvm
-; Before ADCE
-define i64 @process(ptr %x) {
-  %tag = call i64 @eco_get_tag(ptr %x)
-  %is_nothing = icmp eq i64 %tag, 0
-  br i1 %is_nothing, label %nothing, label %just
-
-nothing:                          ; Dead if x is always Just
-  %default = call i64 @getDefault()
-  br label %merge
-
-just:
-  %v = call ptr @eco_project(ptr %x, i64 0)
-  %result = call i64 @processValue(ptr %v)
-  br label %merge
-
-merge:
-  %phi = phi i64 [ %default, %nothing ], [ %result, %just ]
-  ret i64 %phi
-}
-
-; After ADCE (if analysis proves x is always Just)
-define i64 @process(ptr %x) {
-  %v = call ptr @eco_project(ptr %x, i64 0)
-  %result = call i64 @processValue(ptr %v)
-  ret i64 %result
-}
-```
-
-**Performance impact:**
-- Reduces code size
-- Eliminates unnecessary branches
-- Removes dead allocations
-- **Expected speedup: 5-20% code size reduction, variable runtime improvement**
-
-**Implementation:**
-```cpp
-pm.addPass(createAggressiveDCEPass());
-```
-
----
-
-### 3. Global Value Numbering (GVN)
-
-**What it does:**
-GVN identifies computations that produce the same value and eliminates redundant calculations. It builds a value numbering that assigns the same number to expressions that compute identical results.
-
-**How it speeds up Elm code:**
-Pattern matching expansion often generates redundant field accesses:
-
-```elm
-case point of
-    Point x y ->
-        if x > 0 then
-            x + y  -- x accessed again
-        else
-            x - y  -- x accessed again
-```
-
-```llvm
-; Before GVN
-define i64 @process(ptr %point) {
-  %x1 = call i64 @eco_project(ptr %point, i64 0)  ; First access
-  %cmp = icmp sgt i64 %x1, 0
-  br i1 %cmp, label %then, label %else
-
-then:
-  %x2 = call i64 @eco_project(ptr %point, i64 0)  ; Redundant!
-  %y1 = call i64 @eco_project(ptr %point, i64 1)
-  %sum = add i64 %x2, %y1
-  br label %merge
-
-else:
-  %x3 = call i64 @eco_project(ptr %point, i64 0)  ; Redundant!
-  %y2 = call i64 @eco_project(ptr %point, i64 1)  ; Also redundant!
-  %diff = sub i64 %x3, %y2
-  br label %merge
-
-merge:
-  ; ...
-}
-
-; After GVN
-define i64 @process(ptr %point) {
-  %x = call i64 @eco_project(ptr %point, i64 0)   ; Single access
-  %y = call i64 @eco_project(ptr %point, i64 1)   ; Single access
-  %cmp = icmp sgt i64 %x, 0
-  br i1 %cmp, label %then, label %else
-
-then:
-  %sum = add i64 %x, %y   ; Reuses %x, %y
-  br label %merge
-
-else:
-  %diff = sub i64 %x, %y  ; Reuses %x, %y
-  br label %merge
-
-merge:
-  ; ...
-}
-```
-
-**Performance impact:**
-- Eliminates redundant memory loads
-- Reduces instruction count
-- Improves cache utilization
-- **Expected speedup: 10-30% for pattern-heavy code**
-
-**Implementation:**
-```cpp
-pm.addPass(createGVNPass());
-```
-
----
-
-### 4. Scalar Replacement of Aggregates (SROA)
-
-**What it does:**
-SROA breaks up aggregate allocations (structs, arrays) into individual scalar values when possible. This enables the values to live in registers instead of memory.
-
-**How it speeds up Elm code:**
-Elm tuples and small records can often be completely scalarized:
-
-```elm
--- Small tuple that could live in registers
-swap : (Int, Int) -> (Int, Int)
-swap (a, b) = (b, a)
-```
-
-```llvm
-; Before SROA - tuple allocated on stack/heap
-define ptr @swap(ptr %tuple) {
-  %a = call i64 @eco_project(ptr %tuple, i64 0)
-  %b = call i64 @eco_project(ptr %tuple, i64 1)
-  %new_tuple = call ptr @eco_alloc_tuple2()
-  call void @eco_store_field(ptr %new_tuple, i64 0, i64 %b)
-  call void @eco_store_field(ptr %new_tuple, i64 1, i64 %a)
-  ret ptr %new_tuple
-}
-
-; After SROA + inlining (conceptually)
-; The tuple is replaced by two i64 values passed in registers
-define {i64, i64} @swap(i64 %a, i64 %b) {
-  %result = insertvalue {i64, i64} undef, i64 %b, 0
-  %result2 = insertvalue {i64, i64} %result, i64 %a, 1
-  ret {i64, i64} %result2
-}
-```
-
-**Performance impact:**
-- Eliminates heap allocations for small aggregates
-- Values live in registers instead of memory
-- Enables further optimizations (constant propagation, etc.)
-- **Expected speedup: 2-5x for tuple/record-heavy code**
-
-**Implementation:**
-```cpp
-pm.addPass(createSROAPass());
-```
-
----
-
-### 5. Loop Invariant Code Motion (LICM)
-
-**What it does:**
-LICM moves computations that produce the same result on every loop iteration outside the loop. It "hoists" invariant code to the loop preheader.
-
-**How it speeds up Elm code:**
-After tail recursion is converted to loops, many computations may be loop-invariant:
-
-```elm
--- The length computation is invariant
-processAll : List Int -> Int -> List Int
-processAll items multiplier =
-    List.map (\x -> x * multiplier) items
-```
-
-```llvm
-; Before LICM
-loop:
-  %i = phi i64 [ 0, %entry ], [ %i.next, %loop ]
-  %item = ; ... get items[i] ...
-  %mult = load i64, ptr %multiplier_ptr  ; Invariant - loaded every iteration!
-  %result = mul i64 %item, %mult
-  ; ... store result ...
-  %i.next = add i64 %i, 1
-  %done = icmp eq i64 %i.next, %len
-  br i1 %done, label %exit, label %loop
-
-; After LICM
-entry:
-  %mult = load i64, ptr %multiplier_ptr  ; Hoisted out of loop
-  br label %loop
-
-loop:
-  %i = phi i64 [ 0, %entry ], [ %i.next, %loop ]
-  %item = ; ... get items[i] ...
-  %result = mul i64 %item, %mult          ; Uses hoisted value
-  ; ... store result ...
-  %i.next = add i64 %i, 1
-  %done = icmp eq i64 %i.next, %len
-  br i1 %done, label %exit, label %loop
-```
-
-**Performance impact:**
-- Reduces redundant computations
-- Decreases loop body size (better instruction cache)
-- Enables further loop optimizations
-- **Expected speedup: 10-50% for loops with invariant computations**
-
-**Implementation:**
-```cpp
-pm.addPass(createLICMPass());
-```
-
----
-
-### 6. Loop Unrolling
-
-**What it does:**
-Loop unrolling replicates the loop body multiple times, reducing the number of iterations and branch instructions. It can be full (completely unroll) or partial (unroll by a factor).
-
-**How it speeds up Elm code:**
-Small, fixed-size list operations benefit greatly:
-
-```elm
--- Processing a 3-element tuple
-processTuple3 : (Int, Int, Int) -> Int
-processTuple3 (a, b, c) = a + b + c
-```
-
-```llvm
-; Before unrolling (if compiled as a loop)
-loop:
-  %i = phi i64 [ 0, %entry ], [ %i.next, %loop ]
-  %acc = phi i64 [ 0, %entry ], [ %acc.next, %loop ]
-  %elem = call i64 @eco_project(ptr %tuple, i64 %i)
-  %acc.next = add i64 %acc, %elem
-  %i.next = add i64 %i, 1
-  %done = icmp eq i64 %i.next, 3
-  br i1 %done, label %exit, label %loop
-
-; After full unrolling
-entry:
-  %a = call i64 @eco_project(ptr %tuple, i64 0)
-  %b = call i64 @eco_project(ptr %tuple, i64 1)
-  %c = call i64 @eco_project(ptr %tuple, i64 2)
-  %sum1 = add i64 %a, %b
-  %sum2 = add i64 %sum1, %c
-  ret i64 %sum2
-```
-
-**Performance impact:**
-- Eliminates loop overhead (counter increment, branch)
-- Enables instruction-level parallelism
-- Better instruction scheduling
-- **Expected speedup: 20-100% for small, hot loops**
-
-**Implementation:**
-```cpp
-pm.addPass(createLoopUnrollPass());
-```
-
----
-
-### 7. Loop Vectorization
-
-**What it does:**
-Loop vectorization transforms scalar operations into SIMD (Single Instruction, Multiple Data) operations, processing multiple elements per instruction using vector registers (SSE, AVX, NEON).
-
-**How it speeds up Elm code:**
-List operations on numeric data can be vectorized:
-
-```elm
--- Can process 4 floats at once with AVX
-doubleAll : List Float -> List Float
-doubleAll = List.map (\x -> x * 2.0)
-```
-
-```llvm
-; Before vectorization
-loop:
-  %i = phi i64 [ 0, %entry ], [ %i.next, %loop ]
-  %x = load double, ptr %src_i
-  %doubled = fmul double %x, 2.0
-  store double %doubled, ptr %dst_i
-  ; ... increment and branch ...
-
-; After vectorization (AVX - 4 doubles at once)
-vector_loop:
-  %i = phi i64 [ 0, %entry ], [ %i.next, %vector_loop ]
-  %vec = load <4 x double>, ptr %src_i        ; Load 4 doubles
-  %doubled = fmul <4 x double> %vec, <2.0, 2.0, 2.0, 2.0>  ; Multiply all 4
-  store <4 x double> %doubled, ptr %dst_i      ; Store 4 doubles
-  %i.next = add i64 %i, 4                      ; Increment by 4
-  ; ...
-```
-
-**Performance impact:**
-- Process 2-8x more elements per instruction (depending on data type and CPU)
-- Better memory bandwidth utilization
-- **Expected speedup: 2-8x for numeric list operations**
-
-**Implementation:**
-```cpp
-pm.addPass(createLoopVectorizePass());
-```
-
----
-
-### 8. Function Inlining
-
-**What it does:**
-Inlining replaces function calls with the function body, eliminating call overhead and enabling cross-function optimizations.
-
-**How it speeds up Elm code:**
-Elm code has many small functions due to functional style:
-
-```elm
--- Many small functions
-add1 : Int -> Int
-add1 x = x + 1
-
-double : Int -> Int
-double x = x * 2
-
--- Composed
-transform : Int -> Int
-transform x = double (add1 x)
-```
-
-```llvm
-; Before inlining
-define i64 @transform(i64 %x) {
-  %temp = call i64 @add1(i64 %x)    ; Call overhead
-  %result = call i64 @double(i64 %temp)  ; Call overhead
-  ret i64 %result
-}
-
-; After inlining
-define i64 @transform(i64 %x) {
-  %temp = add i64 %x, 1             ; Inlined add1
-  %result = mul i64 %temp, 2        ; Inlined double
-  ret i64 %result
-}
-
-; After further optimization
-define i64 @transform(i64 %x) {
-  %temp = add i64 %x, 1
-  %result = shl i64 %temp, 1        ; Strength reduction: x*2 -> x<<1
-  ret i64 %result
-}
-```
-
-**Performance impact:**
-- Eliminates function call overhead (save/restore registers, stack manipulation)
-- Enables cross-function optimizations
-- Improves instruction cache locality for small functions
-- **Expected speedup: 10-100% for heavily composed code**
-
-**Implementation:**
-```cpp
-pm.addPass(createFunctionInliningPass());
-// For always-inline functions (constructors, accessors):
-pm.addPass(createAlwaysInlinerLegacyPass());
-```
-
----
-
-### 9. Memory Copy Optimization (MemCpyOpt)
-
-**What it does:**
-MemCpyOpt transforms sequences of memory operations into optimized memcpy/memset calls, and eliminates redundant copies.
-
-**How it speeds up Elm code:**
-Record updates create copies that can be optimized:
-
-```elm
--- Record update creates a copy
-updateName : Person -> String -> Person
-updateName person newName =
-    { person | name = newName }
-```
-
-```llvm
-; Before MemCpyOpt - field-by-field copy
-define ptr @updateName(ptr %person, ptr %newName) {
-  %new = call ptr @eco_alloc_record(i64 3)
-  %f0 = call ptr @eco_project(ptr %person, i64 0)
-  call void @eco_store_field(ptr %new, i64 0, ptr %f0)
-  %f1 = call ptr @eco_project(ptr %person, i64 1)
-  call void @eco_store_field(ptr %new, i64 1, ptr %f1)
-  call void @eco_store_field(ptr %new, i64 2, ptr %newName)  ; Changed field
-  ret ptr %new
-}
-
-; After MemCpyOpt - bulk copy + single update
-define ptr @updateName(ptr %person, ptr %newName) {
-  %new = call ptr @eco_alloc_record(i64 3)
-  call void @llvm.memcpy(ptr %new, ptr %person, i64 24, i1 false)  ; Bulk copy
-  call void @eco_store_field(ptr %new, i64 2, ptr %newName)  ; Overwrite changed field
-  ret ptr %new
-}
-```
-
-**Performance impact:**
-- Bulk memory operations are highly optimized by hardware
-- Reduces instruction count
-- Better cache line utilization
-- **Expected speedup: 20-50% for record-heavy code**
-
-**Implementation:**
-```cpp
-pm.addPass(createMemCpyOptPass());
-```
-
----
-
-### 10. Dead Store Elimination (DSE)
-
-**What it does:**
-DSE removes store instructions whose stored values are never read or are overwritten before being read.
-
-**How it speeds up Elm code:**
-Constructor field initialization may have redundant stores:
-
-```elm
--- Some fields might be immediately overwritten
-makeDefault : () -> Config
-makeDefault () =
-    { setting1 = defaultSetting1
-    , setting2 = defaultSetting2
-    }
-```
-
-```llvm
-; Before DSE
-define ptr @makeConfig(i64 %custom) {
-  %config = call ptr @eco_alloc_record(i64 2)
-  ; Default initialization (might be generated by lowering)
-  call void @eco_store_field(ptr %config, i64 0, i64 0)  ; Dead store
-  call void @eco_store_field(ptr %config, i64 1, i64 0)  ; Dead store
-  ; Actual initialization
-  call void @eco_store_field(ptr %config, i64 0, i64 %custom)  ; Overwrites
-  call void @eco_store_field(ptr %config, i64 1, i64 42)       ; Overwrites
-  ret ptr %config
-}
-
-; After DSE
-define ptr @makeConfig(i64 %custom) {
-  %config = call ptr @eco_alloc_record(i64 2)
-  call void @eco_store_field(ptr %config, i64 0, i64 %custom)
-  call void @eco_store_field(ptr %config, i64 1, i64 42)
-  ret ptr %config
-}
-```
-
-**Performance impact:**
-- Eliminates unnecessary memory writes
-- Reduces memory bandwidth usage
-- Fewer instructions in hot paths
-- **Expected speedup: 5-15% for allocation-heavy code**
-
-**Implementation:**
-```cpp
-pm.addPass(createDeadStoreEliminationPass());
-```
-
----
-
-## MLIR Standard Optimizations
-
-These optimizations operate at the MLIR level, before lowering to LLVM.
-
-### 11. Common Subexpression Elimination (CSE)
-
-**What it does:**
-CSE identifies identical computations within a function and eliminates redundant ones, keeping only the first occurrence and reusing its result.
-
-**How it speeds up Elm code:**
-Pattern matching often generates duplicate projections:
-
-```elm
-case record of
-    { x, y } ->
-        if x > y then x else y
-```
-
-```mlir
-// Before CSE
-func.func @maxField(%record: !eco.value) -> i64 {
-  %x1 = eco.project %record[0] : !eco.value -> i64
-  %y1 = eco.project %record[1] : !eco.value -> i64
-  %cmp = arith.cmpi sgt, %x1, %y1 : i64
-  cf.cond_br %cmp, ^then, ^else
-^then:
-  %x2 = eco.project %record[0] : !eco.value -> i64  // Duplicate!
-  return %x2 : i64
-^else:
-  %y2 = eco.project %record[1] : !eco.value -> i64  // Duplicate!
-  return %y2 : i64
-}
-
-// After CSE
-func.func @maxField(%record: !eco.value) -> i64 {
-  %x = eco.project %record[0] : !eco.value -> i64
-  %y = eco.project %record[1] : !eco.value -> i64
-  %cmp = arith.cmpi sgt, %x, %y : i64
-  cf.cond_br %cmp, ^then, ^else
-^then:
-  return %x : i64  // Reuses %x
-^else:
-  return %y : i64  // Reuses %y
-}
-```
-
-**Performance impact:**
-- Eliminates redundant operations before LLVM lowering
-- Reduces MLIR size, speeding up subsequent passes
-- **Expected speedup: 10-20% compilation time, 5-15% runtime**
-
-**Implementation:**
-```cpp
-pm.addNestedPass<func::FuncOp>(createCSEPass());
-```
-
----
-
-### 12. Canonicalization
-
-**What it does:**
-Canonicalization applies algebraic simplifications and normalizes operations to canonical forms, enabling pattern matching in subsequent optimization passes.
-
-**How it speeds up Elm code:**
-Simplifies arithmetic and normalizes control flow:
-
-```mlir
-// Before canonicalization
-%c0 = arith.constant 0 : i64
-%sum = arith.addi %x, %c0 : i64        // x + 0
-%neg = arith.muli %y, -1 : i64         // y * -1
-%double = arith.addi %z, %z : i64      // z + z
-
-// After canonicalization
-// %sum removed, uses of %sum replaced with %x
-%neg = arith.negi %y : i64             // Canonical negation
-%double = arith.shli %z, 1 : i64       // z << 1 (strength reduction)
-```
-
-**Performance impact:**
-- Simplifies expressions, reducing operation count
-- Enables other optimizations to match patterns
-- Strength reduction (multiply → shift, etc.)
-- **Expected speedup: 5-10% across the board**
-
-**Implementation:**
-```cpp
-pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
-```
-
----
-
-### 13. MLIR Inliner
-
-**What it does:**
-The MLIR inliner performs function inlining at the MLIR level, before lowering to LLVM. This enables MLIR-level optimizations across function boundaries.
-
-**How it speeds up Elm code:**
-Enables eco-specific optimizations across function boundaries:
-
-```mlir
-// Before inlining
-func.func @add1(%x: i64) -> i64 {
-  %c1 = arith.constant 1 : i64
-  %result = arith.addi %x, %c1 : i64
-  return %result : i64
-}
-
-func.func @caller(%v: i64) -> i64 {
-  %r1 = call @add1(%v) : (i64) -> i64
-  %r2 = call @add1(%r1) : (i64) -> i64
-  return %r2 : i64
-}
-
-// After inlining + canonicalization
-func.func @caller(%v: i64) -> i64 {
-  %c2 = arith.constant 2 : i64
-  %result = arith.addi %v, %c2 : i64  // add1(add1(x)) -> x + 2
-  return %result : i64
-}
-```
-
-**Performance impact:**
-- Enables eco-level optimizations across functions
-- Earlier optimization than LLVM inlining
-- **Expected speedup: 15-30% for heavily composed code**
-
-**Implementation:**
-```cpp
-pm.addPass(createInlinerPass());
-```
-
----
-
-### 14. Sparse Conditional Constant Propagation (SCCP)
-
-**What it does:**
-SCCP propagates constants through the program, including through conditional branches. It can determine that certain branches are never taken based on constant values.
-
-**How it speeds up Elm code:**
-After monomorphization, many values become known constants:
-
-```mlir
-// Before SCCP
-func.func @process(%mode: i64) -> i64 {
-  %c1 = arith.constant 1 : i64
-  %is_fast = arith.cmpi eq, %mode, %c1 : i64
-  cf.cond_br %is_fast, ^fast, ^slow
-^fast:
-  %r1 = arith.constant 100 : i64
-  return %r1 : i64
-^slow:
-  %r2 = call @slowPath() : () -> i64
-  return %r2 : i64
-}
-
-// If called with constant mode=1:
-func.func @process() -> i64 {
-  %r = arith.constant 100 : i64  // Entire function simplified
-  return %r : i64
-}
-```
-
-**Performance impact:**
-- Eliminates dead branches
-- Replaces computations with constants
-- Enables further dead code elimination
-- **Expected speedup: 10-30% for code with many compile-time-known values**
-
-**Implementation:**
-```cpp
-pm.addPass(createSCCPPass());
-```
-
----
-
-### 15. Symbol Dead Code Elimination (SymbolDCE)
-
-**What it does:**
-SymbolDCE removes unused functions, globals, and other symbols from the module.
-
-**How it speeds up Elm code:**
-After inlining and specialization, many functions become unused:
-
-```mlir
-// Before SymbolDCE
-func.func private @helper1() { ... }  // Used
-func.func private @helper2() { ... }  // Inlined, now unused
-func.func private @helper3() { ... }  // Never called
-
-func.func @main() {
-  call @helper1()
-  // helper2 was inlined here
-  return
-}
-
-// After SymbolDCE
-func.func private @helper1() { ... }  // Kept
-// helper2 and helper3 removed
-
-func.func @main() {
-  call @helper1()
-  return
-}
-```
-
-**Performance impact:**
-- Reduces binary size
-- Faster linking
-- Better instruction cache behavior
-- **Expected speedup: Minimal runtime, but significant code size reduction**
-
-**Implementation:**
-```cpp
-pm.addPass(createSymbolDCEPass());
-```
-
----
-
-### 16. Control Flow Sink
-
-**What it does:**
-Control Flow Sink moves operations from dominating blocks into the blocks where they're actually used, reducing work on paths that don't need the computation.
-
-**How it speeds up Elm code:**
-Pattern matching may compute values only needed in some branches:
-
-```mlir
-// Before sinking
-func.func @process(%maybe: !eco.value) -> i64 {
-  %expensive = call @computeExpensive() : () -> i64  // Always computed
-  %tag = eco.project %maybe[tag] : !eco.value -> i64
-  %is_just = arith.cmpi eq, %tag, 1 : i64
-  cf.cond_br %is_just, ^just, ^nothing
-^just:
-  %val = eco.project %maybe[0] : !eco.value -> i64
-  %result = arith.addi %val, %expensive : i64  // Only used here
-  return %result : i64
-^nothing:
-  %zero = arith.constant 0 : i64
-  return %zero : i64
-}
-
-// After sinking
-func.func @process(%maybe: !eco.value) -> i64 {
-  %tag = eco.project %maybe[tag] : !eco.value -> i64
-  %is_just = arith.cmpi eq, %tag, 1 : i64
-  cf.cond_br %is_just, ^just, ^nothing
-^just:
-  %expensive = call @computeExpensive() : () -> i64  // Sunk here
-  %val = eco.project %maybe[0] : !eco.value -> i64
-  %result = arith.addi %val, %expensive : i64
-  return %result : i64
-^nothing:
-  %zero = arith.constant 0 : i64
-  return %zero : i64
-}
-```
-
-**Performance impact:**
-- Reduces work on fast paths
-- Better for branch-heavy code
-- **Expected speedup: 5-20% for code with expensive computations in optional branches**
-
-**Implementation:**
-```cpp
-pm.addNestedPass<func::FuncOp>(createControlFlowSinkPass());
-```
-
----
-
-## SCF Dialect Optimizations
-
-If `eco.case` and `eco.joinpoint` are lowered through SCF (Structured Control Flow) instead of directly to `cf`, these optimizations become available:
-
-### 17. Loop Canonicalization
-
-**What it does:**
-Normalizes loop structures to canonical forms (e.g., loop starting at 0, stepping by 1), enabling other optimizations.
-
-**Implementation:**
-```cpp
-pm.addNestedPass<func::FuncOp>(scf::createForLoopCanonicalizationPass());
-```
-
-### 18. Loop Peeling
-
-**What it does:**
-Peels iterations from the beginning or end of loops to handle boundary conditions separately, enabling vectorization of the main loop body.
-
-**Implementation:**
-```cpp
-pm.addNestedPass<func::FuncOp>(scf::createForLoopPeelingPass());
-```
-
-### 19. Loop Specialization
-
-**What it does:**
-Creates specialized versions of loops for different runtime conditions (e.g., known trip counts).
-
-**Implementation:**
-```cpp
-pm.addNestedPass<func::FuncOp>(scf::createForLoopSpecializationPass());
-```
-
----
-
-## Custom Eco Dialect Optimizations
-
-These are new passes specific to the eco dialect that should be implemented.
-
-### 20. Eco Constant Folding
-
-**What it does:**
-Folds eco arithmetic operations with constant operands at compile time.
-
-**How it speeds up Elm code:**
-
-```mlir
-// Before constant folding
-%a = arith.constant 10 : i64
-%b = arith.constant 20 : i64
-%sum = eco.int.add %a, %b : i64
-
-// After constant folding
-%sum = arith.constant 30 : i64
-```
-
-**Implementation priority:** Medium
-
-### 21. Box/Unbox Elimination
-
-**What it does:**
-Eliminates redundant boxing followed by unboxing (or vice versa).
-
-**How it speeds up Elm code:**
-
-```mlir
-// Before
-%boxed = eco.box %int_val : i64 -> !eco.value
-%unboxed = eco.unbox %boxed : !eco.value -> i64
-
-// After
-// Uses %int_val directly, both ops eliminated
-```
-
-**Performance impact:**
-- Eliminates heap allocations
-- Removes pointer indirection
-- **Expected speedup: 50-90% for functions with excessive boxing**
-
-**Implementation priority:** High
-
-### 22. Construct Fusion
-
-**What it does:**
-Fuses `eco.project` followed by `eco.construct` when updating a single field, potentially enabling in-place updates.
-
-**How it speeds up Elm code:**
-
-```mlir
-// Record update pattern
-%f0 = eco.project %record[0] : !eco.value -> !eco.value
-%f1 = eco.project %record[1] : !eco.value -> !eco.value
-%new = eco.construct(%f0, %new_f1) {tag = 0, size = 2} : ...
-
-// Could potentially become copy + single field update
-```
-
-**Implementation priority:** Medium
-
-### 23. Case Simplification
-
-**What it does:**
-Simplifies `eco.case` operations when the scrutinee's constructor is known.
-
-**How it speeds up Elm code:**
-
-```mlir
-// Before - case on known constructor
-%just = eco.construct(%val) {tag = 1, size = 1} : ...
-eco.case %just [0, 1] {
-  // Nothing case
-}, {
-  // Just case - always taken
-}
-
-// After
-// Just branch directly executed, case eliminated
-```
-
-**Implementation priority:** Medium
-
-### 24. Closure Devirtualization
-
-**What it does:**
-Replaces indirect closure calls with direct calls when the closure's target function is known.
-
-**How it speeds up Elm code:**
-
-```mlir
-// Before
-%closure = eco.papCreate @add(%five) {arity = 2, num_captured = 1}
-%result = eco.papExtend %closure(%ten) {remaining_arity = 1}
-
-// After
-%result = call @add(%five, %ten) : (i64, i64) -> i64
-```
-
-**Performance impact:**
-- Eliminates closure allocation
-- Enables direct call
-- Enables inlining
-- **Expected speedup: 2-5x for closure-heavy code**
-
-**Implementation priority:** High
-
----
-
-## Implementation Priority
-
-### Phase 1: Quick Wins (Low effort, high impact)
-
-| Pass | Location | Effort |
-|------|----------|--------|
-| CSE | MLIR standard | Just add to pipeline |
-| Canonicalizer (aggressive) | MLIR standard | Just add to pipeline |
-| SymbolDCE | MLIR standard | Just add to pipeline |
-| SCCP | MLIR standard | Just add to pipeline |
-
-### Phase 2: Eco-Specific (Medium effort, high impact)
-
-| Pass | Location | Effort |
-|------|----------|--------|
-| Box/Unbox Elimination | New eco pass | ~100 LOC |
-| Closure Devirtualization | New eco pass | ~200 LOC |
-| Eco Constant Folding | New eco pass | ~150 LOC |
-
-### Phase 3: Advanced (Higher effort)
-
-| Pass | Location | Effort |
-|------|----------|--------|
-| Construct Fusion | New eco pass | ~300 LOC |
-| Case Simplification | New eco pass | ~200 LOC |
-| Escape Analysis (stack allocation) | New eco pass | ~500 LOC |
-
----
-
-## Recommended Pipeline Configuration
+From `llvm-optimization-ideas.md` and `Passes.h`:
 
 ```cpp
 static int runPipeline(ModuleOp module, bool lowerToLLVM) {
     PassManager pm(module->getName());
-
-    if (failed(applyPassManagerCLOptions(pm)))
-        return 1;
 
     // ========== Stage 1: Eco → Eco ==========
     pm.addPass(eco::createRCEliminationPass());
@@ -1085,20 +79,627 @@ static int runPipeline(ModuleOp module, bool lowerToLLVM) {
 }
 ```
 
-The LLVM backend optimizations (GVN, LICM, vectorization, etc.) are already included in the `-O3` pipeline via `makeOptimizingTransformer(3, 0, nullptr)`.
+
+We’ll extend this skeleton as we add new passes.
 
 ---
 
-## Expected Overall Impact
+# 2. Eco→Eco Optimisations (High-Level IR)
 
-With all optimizations implemented:
+These passes run on the Eco dialect before any lowering to `func`/`cf`/`scf`.
 
-| Code Pattern | Expected Speedup |
-|--------------|------------------|
-| Recursive functions | 2-10x (TCE) |
-| Numeric list operations | 2-8x (vectorization) |
-| Pattern matching | 10-30% (GVN, CSE) |
-| Record operations | 20-50% (SROA, MemCpyOpt) |
-| Composed functions | 10-100% (inlining) |
-| Closure-heavy code | 2-5x (devirtualization) |
-| **Overall typical Elm program** | **30-100%** |
+## 2.1 RCElimination (existing)
+
+- **Status:** Implemented. Removes placeholder RC ops (`eco.incref`, `eco.decref`, etc.) that are not used with tracing GC  .
+- **Goal:** Assert that no Perceus/RC ops survive into codegen.
+
+## 2.2 Box/Unbox Elimination (planned)
+
+- **Goal:** Remove redundant `eco.box` / `eco.unbox` pairs to:
+    - Avoid heap allocation for temporary boxed numbers.
+    - Reduce pointer chasing.
+
+- **Pattern examples:**
+
+  ```mlir
+  %b = eco.box %x : i64 -> !eco.value
+  %y = eco.unbox %b : !eco.value -> i64
+  // => reuse %x, delete both ops
+  ```
+
+- **Implementation sketch:**
+
+    1. For each `eco.unbox`:
+        - Check if its operand is a dominating `eco.box` of the same value and type.
+        - Ensure no intervening uses of the boxed value that *require* a heap object.
+    2. Replace uses of `%y` by the unboxed source, erase the box and unbox.
+    3. Run CSE/Canonicalizer afterwards to clean up.
+
+- **Placement:**
+
+  ```cpp
+  pm.addPass(eco::createBoxUnboxEliminationPass());
+  pm.addNestedPass<func::FuncOp>(createCSEPass());
+  pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
+  ```
+
+## 2.3 Eco Constant Folding (planned)
+
+- **Goal:** Fold simple Eco‑level arithmetic/logical ops before lowering to `arith`/LLVM.
+
+- **Example:**  
+  From `llvm-optimization-ideas.md`:
+
+  ```mlir
+  %a = arith.constant 10 : i64
+  %b = arith.constant 20 : i64
+  %sum = eco.int.add %a, %b : i64
+
+  // After:
+  %sum = arith.constant 30 : i64
+  ```
+
+
+- **Implementation:**
+
+    - Define pattern rewrites for `eco.int.*`/`eco.float.*` when all operands are constants.
+    - Annotate Eco ops with `FoldableOpInterface` if appropriate so the Canonicalizer can fold them automatically.
+
+- **Placement:** Same as box/unbox, in Stage 1.
+
+## 2.4 Construct Fusion + `eco.record_update` (designed)
+
+From `eco-construct-lowering.md`:
+
+- **IR extension:** Introduce `eco.record_update`:
+
+  ```mlir
+  %new = eco.record_update %src [3, 4] (%new_name, %new_age)
+           { tag = 0, size = 5, unboxed_bitmap = 0 }
+         : (!eco.value, !eco.value, !eco.value) -> !eco.value
+  ```
+
+
+- **Semantics:**  
+  Always allocate a new record:
+
+    1. Allocate a new `Custom`/`Record` object with the same tag/size.
+    2. Copy ctor/unboxed + all fields from `%src` via memcpy.
+    3. Overwrite the fields listed in `updated_indices` with `new_values`.
+    4. Optionally set a new `unboxed_bitmap`.
+
+  Immutability is preserved because the source record is never mutated  .
+
+- **Fusion pass (`ConstructFusionPass`):**
+
+    - Pattern:
+
+      ```mlir
+      %f0 = eco.project %record[0]
+      %f1 = eco.project %record[1]
+      %f2 = eco.project %record[2]
+      %new = eco.construct(%f0, %f1, %new_f2) {tag=0, size=3, ...}
+      ```
+
+      →
+
+      ```mlir
+      %new = eco.record_update %record [2] (%new_f2) {tag=0, size=3, ...}
+      ```
+
+    - Preconditions:
+
+        - All `eco.project`s target the same `%record`.
+        - Projections are identity (`project.index == position` in the construct operands)  .
+        - Construct tag/size match the record’s layout.
+        - Profitability heuristic: `unchanged_fields > changed_fields`.
+
+    - After rewriting, CSE/DCE remove now‑dead projections.
+
+- **Lowering (`RecordUpdateOpLowering`):**
+
+  A single memcpy + K stores:
+
+  ```cpp
+  // 1. Allocate new object
+  Value newObj = allocateCustom(rewriter, loc, tag, size);
+
+  // 2. Copy ctor/unboxed + fields
+  int64_t copySize = 8 + size * 8;
+  emitMemcpy(rewriter, loc, newObj, source, /*srcOffset=*/8,
+             /*dstOffset=*/8, copySize);
+
+  // 3. Overwrite updated fields
+  for (auto [idx, value] : llvm::zip(indices, newValues))
+    emitStoreField(rewriter, loc, newObj, idx, value);
+
+  // 4. Set unboxed bitmap if provided
+  if (auto ub = op.getUnboxedBitmap())
+    emitSetUnboxed(rewriter, loc, newObj, *ub);
+  ```
+
+
+- **Placement:** Stage 1 Eco→Eco, before any lowering to `func`/`cf`/`scf`.
+
+## 2.5 Closure Devirtualization (planned)
+
+- **Goal:** Replace closure applications with direct calls when the function is statically known, eliminating allocations and enabling inlining.
+
+- **Pattern:**
+
+  ```mlir
+  %c = eco.papCreate @add(%five) {arity=2, num_captured=1}
+  %r = eco.papExtend %c(%ten) {remaining_arity=1}
+  ```
+
+  →
+
+  ```mlir
+  %r = call @add(%five, %ten) : (i64, i64) -> i64
+  ```
+
+
+- **Implementation:**
+
+    1. Analyze `eco.papCreate` and `eco.papExtend` to see if:
+        - `function` attribute is a known `@symbol`.
+        - All required arguments are present after PAP extensions.
+        - The closure value does not escape (used only by `eco.papExtend`/`eco.call` with that symbol).
+    2. Replace the closure construction+application with a direct `func.call`.
+    3. Mark the resulting call as a candidate for inlining.
+
+- **Placement:** Stage 1 Eco→Eco, before MLIR inliner.
+
+## 2.6 Escape Analysis (future, advanced)
+
+- **Goal:** Identify Eco values that do not escape a function and:
+    - Promote their allocations to stack slots (in conjunction with safepoints and stackmaps).
+    - Potentially allow in‑place updates of `eco.record_update` (Phase 3).
+
+- **Design constraints:**
+
+    - Must integrate with statepoint lowering: stack slots containing `!eco.value` must be listed in statepoints/stackmaps so GC can relocate/scan them correctly   .
+    - In‑place record updates conflict with the current assumption “no write barriers”; only safe if:
+        - The object does not survive a GC cycle, *or*
+        - You redesign GC to handle such writes.
+
+- **Implementation idea (extrapolated):**
+
+    - Build a dataflow/alias analysis to classify each allocation op (e.g. `eco.allocate_ctor`, `eco.allocate_array`) as:
+        - Local and non‑escaping (stack‑candidate),
+        - Escaping (must remain on heap).
+    - For non‑escaping objects:
+        - Lower allocation to `alloca` (or to MLIR `memref` for numeric buffers; see §6).
+        - Rewrite field operations to load/store from that `alloca`.
+
+---
+
+# 3. Eco Control Flow → SCF/CF and SCF Optimisations
+
+From `control-flow-scf-lowering.md` and `eco-lowering.md`:
+
+## 3.1 Joinpoint Normalization + EcoControlFlowToSCF
+
+- **Goal:** Turn suitable `eco.case` + `eco.joinpoint` patterns into structured control flow (`scf.if`, `scf.index_switch`, `scf.while`) so SCF loop optimisations can fire.
+
+- **Components:**
+
+    1. `createJoinpointNormalizationPass()`:
+        - Classify joinpoints as:
+            - SCF‑candidate: single entry, looping structure, simple continuation.
+            - CF‑only: complex, irreducible, or multi‑exit structures.
+        - Annotate IR so the SCF lowering pass can decide what to transform.
+    2. `createEcoControlFlowToSCFPass()`:
+        - Lower pure‑return `eco.case` to `scf.if` / `scf.index_switch`.
+        - Lower composite `eco.joinpoint + eco.case` patterns into `scf.while` loops (loop‑carried tuples).
+
+    3. `createControlFlowLoweringPass()`:
+        - Fallback: lower remaining Eco control flow ops directly to `cf`.
+
+- **Guarantees:**
+
+    - By the time `EcoToLLVMPass` runs, there are no `eco.case` / `eco.joinpoint` / `eco.jump` left; only `func` / `cf` / `scf` / `arith` and Eco heap/GC ops   .
+
+## 3.2 SCF Loop Optimisations
+
+From `llvm-optimization-ideas.md`:
+
+- **Passes:**
+
+    - `scf::createForLoopCanonicalizationPass()`
+    - `scf::createForLoopPeelingPass()`
+    - `scf::createForLoopSpecializationPass()`
+
+- **Placement:**
+
+  ```cpp
+  pm.addPass(eco::createJoinpointNormalizationPass());
+  pm.addPass(eco::createEcoControlFlowToSCFPass());
+  pm.addPass(eco::createControlFlowLoweringPass()); // fallback CF
+  pm.addNestedPass<func::FuncOp>(scf::createForLoopCanonicalizationPass());
+  pm.addNestedPass<func::FuncOp>(scf::createForLoopPeelingPass());
+  pm.addNestedPass<func::FuncOp>(scf::createForLoopSpecializationPass());
+  ```
+
+These passes make loops more regular and easier for the later LLVM loop optimisers and (optionally) for affine/vector passes on numeric buffers (§6).
+
+---
+
+# 4. MLIR‑Level Generic Passes
+
+These run on `func`/`cf`/`scf`/`arith` (and maybe Eco) before you lower to LLVM.
+
+- **CSE** to merge duplicate computations (especially `eco.project`)  .
+- **Canonicalizer** for algebraic and CFG simplifications  .
+- **SCCP** to propagate constants through branches (very powerful after monomorphization)  .
+- **SymbolDCE** to remove now‑unused functions and globals  .
+- **ControlFlowSink** to move expensive computations into only the branches that use them  .
+
+These are essentially “add to pass pipeline and tune if needed”; no Eco‑specific design change required.
+
+---
+
+# 5. LLVM‑Level Optimisations
+
+You already rely on LLVM’s `-O3` pipeline invoked via `makeOptimizingTransformer(3, 0, nullptr)`  . On top of that, `llvm-optimization-ideas.md` suggests emphasising:
+
+- Tail Call Elimination (TCE), backed by Eco’s `musttail` attribute on `eco.call` and joinpoints  .
+- ADCE and DSE for cleaning up pattern‑matching scaffolding and redundant field stores   .
+- Loop unrolling and vectorisation where loops over arrays/numeric buffers exist  .
+
+These are standard LLVM passes; the interesting work is making your IR amenable to them (via SCF, unboxing, and contiguous numeric buffers).
+
+---
+
+# 6. Additional Eco‑Level Ideas (New Section)
+
+These were missing or only hinted at previously.
+
+## 6.1 Systematic Unboxing / Representation Selection (new plan)
+
+- **Goal:** Expand the use of unboxed fields beyond just `Cons`/`Tuple2`/`Tuple3` by:
+
+    - Using the `unboxed_bitmap` attribute on `eco.construct` and `eco.record_update` to mark which fields are stored unboxed.
+    - Changing layouts of `Custom`/`Record` objects based on static type information.
+
+- **Implementation sketch (extrapolated but consistent with `Heap.hpp` + Eco docs):**
+
+    1. **Front‑end:**
+        - For each constructor/record:
+            - Derive which fields have primitive types (`Int`, `Float`, `Char`, `Bool`) and are safe to unbox.
+            - Emit `eco.construct` with `unboxed_bitmap` reflecting this choice   .
+    2. **Eco Unboxing Pass (Eco→Eco):**
+        - Inspect uses of fields; where a field is *always* consumed as an unboxed type, mark it unboxed and adjust types of projections.
+        - For fields sometimes used as boxes (e.g. passed to polymorphic code), keep them boxed.
+    3. **Lowering:**
+        - Use the `unboxed_bitmap` to decide whether each `values[i]` slot is treated as a primitive or as an `HPointer` when implementing `eco.project` and `eco.construct` lowering   .
+
+- **Benefit:** Enables more values to stay in registers and supports contiguous unboxed `f64` slots for numeric kernels (see §7).
+
+## 6.2 Closure Elimination via Escape Analysis (new)
+
+- **Goal:** Beyond closure *devirtualization*, completely remove closures that never escape their defining scope.
+
+- **Pattern (extrapolated):**
+
+  ```mlir
+  %c = eco.papCreate @f(%capt1, %capt2) ...
+  ...
+  %r = eco.call %c(%x) // only use, no storage or passing
+  ```
+
+  → rewrite IR so `@f` is called directly with `%capt1`, `%capt2`, `%x` as arguments; erase the closure.
+
+- **Requirements:**
+
+    - A simple escape analysis that tracks closure values:
+        - If a closure is only:
+            - Passed to known call sites,
+            - Never stored, returned, or passed to unknown code,
+        - Then it can be eliminated via parameter lifting.
+
+- **Implementation outline:**
+
+    1. Build a call graph and track closure values per function.
+    2. For closures with no escaping uses:
+        - Introduce new versions of target functions with additional parameters for captures.
+        - Rewrite call sites and erase closure operations.
+
+- **Placement:** Stage 1–2, after inlining and SCCP have simplified control flow.
+
+## 6.3 Eco/SCF LICM (new)
+
+- **Goal:** Hoist Eco‑specific invariant computations out of loops *before* LLVM LICM, exploiting Eco semantics more directly.
+
+- **Examples:**
+
+    - Hoist `eco.get_tag %value` out of a loop when `%value` is loop‑invariant.
+    - Hoist `eco.project %record[i]` if `%record` and `i` are loop‑invariant.
+
+- **Pass design (extrapolated):**
+
+    - A loop‑aware pass over `scf.while` and normalized joinpoints, using a simple dominance and alias analysis to hoist:
+
+        - Any `eco.get_tag`, `eco.project`, `eco.box`/`eco.unbox` whose operands are invariant and whose results are only used inside the loop.
+
+- **Placement:** After `EcoControlFlowToSCF`, before SCF loop optimizations.
+
+## 6.4 Pattern‑Matching / ADT Specialisation (new)
+
+- **Goal:** For certain ADTs (`Maybe Int`, `Result Int a`, etc.), generate specialised code paths with simpler representations.
+
+- **Status:** Fully extrapolated; not covered directly in current docs.
+
+- **Possible steps:**
+
+    1. Detect frequently used monomorphic ADTs of primitive types.
+    2. For hot functions, clone them with specialised representations (e.g. `Maybe Int` as a tagged `i64` rather than a heap object).
+    3. Rewrite calls to use specialised versions where type information allows.
+
+This is a substantial project and likely a later phase once the basic pipeline is stable.
+
+---
+
+# 7. Additional Dialects and Numerical Kernels (New Sections)
+
+This is where `memref`/`affine`/`vector` become interesting.
+
+## 7.1 Dialect Roles
+
+- **`vector` dialect:**  
+  N‑D vectors with well‑defined lowering to 1‑D LLVM vectors + aggregates  . Ideal for expressing small fixed‑size float vectors and SIMD kernels.
+- **`affine` dialect:**  
+  Structured loop nests and affine index expressions; great for tiling, fusion, and polyhedral optimisation of dense numeric kernels  .
+- **`memref` dialect:**  
+  Describes dense memory buffers (base pointer + sizes + strides); the natural buffer type for `affine` and `linalg` to work on  .
+- **`bufferization` dialect (optional, future):**  
+  Bridges tensor IR to `memref` buffers; useful if you ever go through `tensor` + `linalg` for numeric code  .
+
+## 7.2 Policy for Eco
+
+Grounded in your existing docs and the HPointer design:
+
+- **Do not** attempt to model general Eco heap (`!eco.value` / HPointer) as `memref`. It is awkward and adds little: GC and statepoints operate on logical `i64` handles, and `memref` expects real pointers as bases   .
+- **Do** use `memref`/`affine`/`vector` for **numeric buffers** that:
+
+    - Have contiguous memory layout (e.g. `f64[]`),
+    - Are not directly tracked as `!eco.value` pointers in GC roots, but rather as physical addresses derived from an HPointer during a kernel.
+
+---
+
+# 8. Optimising Contiguous Numeric Buffers (New Major Section)
+
+This is the new design space you asked for.
+
+## 8.1 Unboxed Float Tuples and Records
+
+### 8.1.1 Representation (grounded + extrapolated)
+
+From `Heap.hpp`:
+
+- `Custom` and `Record` objects are:
+
+  ```c
+  typedef struct {
+      Header header;
+      u64 ctor;       // for Custom
+      u64 unboxed;    // bitmap
+      Unboxable values[]; // elements (8 bytes each)
+  } CustomOrRecord;
+  ```
+
+
+Where `Unboxable` can hold either an `HPointer` or an unboxed primitive (`i64`, `f64`, `u16`)  .
+
+If `unboxed_bitmap` indicates “all fields are unboxed floats”, then `values[0..N-1]` is a contiguous array of 8‑byte float slots.
+
+### 8.1.2 MLIR‑level view (extrapolated)
+
+Define a small Eco→std/affine helper pass:
+
+- **Pass:** `EcoNumericTupleToMemrefPass` (conceptual)
+
+- **Pattern:**
+
+    - Detect functions of the form:
+
+      ```mlir
+      func.func @foo(%t: !eco.value) -> ... {
+        %x = eco.project %t[0] : !eco.value -> f64
+        %y = eco.project %t[1] : !eco.value -> f64
+        ...
+      }
+      ```
+
+      where `%t`:
+        - Has static type “tuple/record of N floats” from mono.
+        - Carries `unboxed_bitmap` = all ones for its fields.
+
+- **Lowering idea:**
+
+    - Introduce a local `memref<Nxf64>` view:
+
+      ```mlir
+      // pseudo-IR
+      %base = eco.to_physical_ptr %t : !eco.value -> !llvm.ptr<f64>
+      %buf = memref.reinterpret_cast %base to memref<Nxf64>
+      ```
+
+      (This requires a helper op or direct pattern rewriting into LLVM dialect; details are extrapolated.)
+
+    - Rewrite projections to `memref.load`:
+
+      ```mlir
+      %x = memref.load %buf[%c0] : memref<Nxf64>
+      %y = memref.load %buf[%c1] : memref<Nxf64>
+      ```
+
+    - If a loop over such records exists (e.g., mapping over an array of them), represent the loop body in `affine.for` + `affine.load` for these numeric fields.
+
+- **Safety:**  
+  These are *local views* used inside kernels; the global representation remains a normal Eco object with HPointer; GC still sees only the logical pointer.
+
+## 8.2 Specialised `Array Float` Representation (extrapolated)
+
+### 8.2.1 Runtime type
+
+Define a specialised array object for `Array Float`:
+
+```c
+typedef struct {
+    Header header;      // tag = Tag_ArrayFloat or Tag_Array with a subtype
+    u32 length;
+    u32 capacity;
+    double values[];    // contiguous f64 buffer
+} ElmArrayFloat;
+```
+
+(This type is extrapolated but consistent with your Tag design where `Tag_Array` already exists  .)
+
+### 8.2.2 Front‑end criteria
+
+The Elm→Eco front‑end chooses this representation only when all three hold:
+
+1. **Element type:** monomorphized type is `Float`.
+2. **API usage:** only operations that can be implemented on a `double[]` buffer are applied (no polymorphic array functions expecting generic `!eco.value`).
+3. **Aliasing/ownership (optional, future):** if you intend to do in‑place updates, you must know when the array is unique (Perceus RC=1 or escape analysis).
+
+Initially, you can skip (3) and always implement logical “copy+update” by allocating a new `ElmArrayFloat` and copying the buffer.
+
+### 8.2.3 Eco IR and Lowering
+
+- **New Eco ops (extrapolated):**
+
+    - `eco.array_float_new` (len: i64) → `!eco.value` (HPointer to `ElmArrayFloat`).
+    - `eco.array_float_get` (arr, idx) → `f64`.
+    - `eco.array_float_set` (arr, idx, val) → `!eco.value` (returns new array).
+
+- **Lowering to LLVM/affine/memref:**
+
+    1. Eco→LLVM:
+        - `eco.array_float_new` → call runtime `eco_alloc_array_float(length)` returning `ptr addrspace(1)` / HPointer.
+        - `eco.array_float_get`/`set`:
+            - Convert `!eco.value` to physical pointer: runtime helper or known layout mapping from HPointer`s 40‑bit offset.
+            - Compute pointer to `values[0]` via `llvm.getelementptr`.
+    2. Eco→affine/memref for kernels:
+        - Recognise sequences of `array_float_get`/`set` in loops.
+        - Introduce a `memref<?xf64>` view over the `values[]` buffer.
+        - Rewrite the loop to `affine.for` with `affine.load`/`affine.store`.
+
+This gives you a clean path to `affine` + `vector` for numeric arrays of floats.
+
+## 8.3 ByteBuffer as Numeric Buffer (grounded + extrapolated)
+
+From `BytesOps.hpp`:
+
+- `ByteBuffer` is a contiguous array of `u8 bytes[]` with `header.size` length and `Tag_ByteBuffer`   .
+- You already encode/decode floats into/from this buffer for `Bytes` operations.
+
+**Option:** reuse `ByteBuffer` as a backing store for some float buffers (e.g., `Array (Array Float)` for matrix operations) by:
+
+- Interpreting `bytes` as a packed sequence of `f32`/`f64`.
+- Creating MLIR `memref` views (`memref<?xf32>` / `memref<?xf64>`) over `ByteBuffer.bytes` for numerical kernels.
+- Maintaining API discipline so only numeric functions treat a given `ByteBuffer` as floats (no mixed views).
+
+This is a smaller step than introducing a brand‑new `ElmArrayFloat`, but more fragile because of aliasing/typing. Probably best as a second step.
+
+## 8.4 `List Float` → Float Buffer (highly extrapolated / future)
+
+As discussed, turning `List Float` into a contiguous buffer is representation specialisation:
+
+- **Conditions:**
+
+    1. The list is known monomorphically as `List Float`.
+    2. It is constructed and consumed within a region where:
+        - It does not escape,
+        - It is not pattern‑matched as `(::)`/`[]` outside the region.
+
+- **Strategy:**
+
+    - Within a numeric kernel, transform:
+
+      ```elm
+      sum : List Float -> Float
+      sum list = case list of
+          [] -> 0
+          x :: xs -> x + sum xs
+      ```
+
+      into something that:
+
+        1. Builds a temporary float buffer:
+            - Either via a single traversal (compute length, then allocate buffer and fill).
+        2. Runs a vectorised/affine kernel over that buffer.
+
+    - Outside the kernel, keep the logical representation as `List Float` (Cons cells).
+
+This requires non‑trivial whole‑program analysis and is best treated as a *future* specialised optimisation after the base pipeline and `Array Float` path are solid.
+
+---
+
+# 9. Pipeline Integration Summary
+
+Putting it all together, a more complete pipeline (leaving some steps as future TODOs) could look like:
+
+```cpp
+pm.addPass(eco::createRCEliminationPass());
+
+// Eco→Eco high-level normalisation
+pm.addPass(eco::createConstructLoweringPass());          // eco.construct → eco.allocate_ctor + field stores
+pm.addPass(eco::createBoxUnboxEliminationPass());        // NEW
+pm.addPass(eco::createEcoConstantFoldingPass());         // NEW
+pm.addPass(eco::createConstructFusionPass());            // record_update
+pm.addPass(eco::createClosureDevirtualizationPass());    // direct calls
+// TODO: eco::createUnboxingSpecializationPass();        // representation selection
+// TODO: eco::createClosureEliminationPass();            // escape-based closure removal
+
+pm.addNestedPass<func::FuncOp>(createCSEPass());
+pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
+
+if (lowerToLLVM) {
+  // Eco→SCF/CF
+  pm.addPass(eco::createJoinpointNormalizationPass());
+  pm.addPass(eco::createEcoControlFlowToSCFPass());
+  pm.addPass(eco::createControlFlowLoweringPass());
+  pm.addNestedPass<func::FuncOp>(scf::createForLoopCanonicalizationPass());
+  pm.addNestedPass<func::FuncOp>(scf::createForLoopPeelingPass());
+  pm.addNestedPass<func::FuncOp>(scf::createForLoopSpecializationPass());
+  // TODO: pm.addNestedPass<func::FuncOp>(eco::createEcoScfLicmPass());
+
+  // High-level generic
+  pm.addPass(createInlinerPass());
+  pm.addPass(createSCCPPass());
+  pm.addNestedPass<func::FuncOp>(createCSEPass());
+  pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
+  pm.addPass(createSymbolDCEPass());
+
+  // Optional numeric-kernel path:
+  // - pattern: detect Array Float / ElmArrayFloat / ByteBuffer kernels
+  // - create memref/affine/vector views and run affine passes
+
+  // Eco→LLVM heap & calls
+  pm.addPass(eco::createEcoToLLVMPass());
+  pm.addPass(createConvertSCFToControlFlowPass());
+  pm.addPass(createConvertFuncToLLVMPass());
+  pm.addPass(createConvertControlFlowToLLVMPass());
+  pm.addPass(createArithToLLVMConversionPass());
+
+  // LLVM dialect cleanups
+  pm.addNestedPass<LLVM::LLVMFuncOp>(createCanonicalizerPass());
+}
+```
+
+---
+
+## 10. Viability for Elm → Eco
+
+- All Eco‑specific passes described above (box/unbox elimination, construct fusion, closure devirtualization, Eco constant folding, SCF lowering) are fully compatible with Elm’s semantics and your current tracing‑GC + HPointer design.
+- Use of `memref`/`affine`/`vector` is **viable** and **valuable** when restricted to:
+    - Unboxed numeric payloads (tuples/records of floats),
+    - Specialised numeric arrays (`Array Float` / float buffers),
+    - Possibly `ByteBuffer` numeric views.
+- Avoid representing general Elm heaps (`!eco.value` / HPointer) as `memref`; it’s awkward and low‑yield given your GC and pointer model.
+- Representation specialisation for `List Float` and in‑place updates (Perceus) are larger, future projects that would likely require a different GC or a hybrid mode.
+
+If you’d like, the next step could be to expand just one of these new ideas (e.g. `Array Float` + `affine` path) into a detailed, file‑level design like `eco-construct-lowering.md`, with concrete op definitions and C++ skeleton code.
+

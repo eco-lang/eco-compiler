@@ -19,6 +19,7 @@
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVMPass.h"
+#include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 
 #include "mlir/ExecutionEngine/ExecutionEngine.h"
 #include "mlir/ExecutionEngine/OptUtils.h"
@@ -174,9 +175,24 @@ private:
         pm.addPass(eco::createRCEliminationPass());
 
         // Stage 2: Eco -> Standard MLIR
+
+        // Classify joinpoints for SCF lowering eligibility.
+        pm.addPass(eco::createJoinpointNormalizationPass());
+
+        // Lower eligible eco.case/joinpoint to SCF dialect.
+        // Non-eligible ops are left for the CF path in EcoToLLVM.
+        pm.addPass(eco::createEcoControlFlowToSCFPass());
+
         pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
 
+        // Convert SCF to CF before EcoToLLVM.
+        // This creates cf.br/cf.cond_br with !eco.value types, which
+        // EcoToLLVM will then convert to LLVM types.
+        pm.addPass(createSCFToControlFlowPass());
+
         // Stage 3: Eco -> LLVM Dialect
+        // This also handles remaining eco control flow ops (case/joinpoint/jump)
+        // that weren't lowered to SCF.
         pm.addPass(eco::createEcoToLLVMPass());
 
         // Standard MLIR dialect conversions to LLVM

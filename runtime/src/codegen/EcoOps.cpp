@@ -27,8 +27,21 @@ LogicalResult CaseOp::verify() {
            << getAlternatives().size() << ")";
   }
 
+  // Extract expected result types if specified
+  SmallVector<Type> expectedTypes;
+  if (auto resultTypesAttr = getCaseResultTypes()) {
+    for (Attribute attr : *resultTypesAttr) {
+      if (auto typeAttr = dyn_cast<TypeAttr>(attr)) {
+        expectedTypes.push_back(typeAttr.getValue());
+      } else {
+        return emitOpError("result_types must contain TypeAttr elements");
+      }
+    }
+  }
+
   // Verify that each region has exactly one block with a valid terminator.
   // Valid terminators are: eco.return or eco.jump
+  size_t altIndex = 0;
   for (auto &region : getAlternatives()) {
     if (region.empty()) {
       return emitOpError("alternative region must not be empty");
@@ -48,6 +61,29 @@ LogicalResult CaseOp::verify() {
       return emitOpError("alternative block must terminate with eco.return or eco.jump, got ")
              << terminator->getName();
     }
+
+    // If result_types is specified, verify eco.return ops have matching types
+    if (!expectedTypes.empty()) {
+      if (auto retOp = dyn_cast<ReturnOp>(terminator)) {
+        auto actualTypes = retOp.getOperandTypes();
+        if (actualTypes.size() != expectedTypes.size()) {
+          return emitOpError("alternative ")
+                 << altIndex << " eco.return has " << actualTypes.size()
+                 << " operands but result_types specifies " << expectedTypes.size();
+        }
+        for (size_t i = 0; i < expectedTypes.size(); ++i) {
+          if (actualTypes[i] != expectedTypes[i]) {
+            return emitOpError("alternative ")
+                   << altIndex << " eco.return operand " << i
+                   << " has type " << actualTypes[i]
+                   << " but result_types specifies " << expectedTypes[i];
+          }
+        }
+      }
+      // eco.jump alternatives don't contribute to result_types (they loop)
+    }
+
+    ++altIndex;
   }
 
   return success();
@@ -123,11 +159,20 @@ LogicalResult PapCreateOp::verify() {
 // Custom Assembly Format: CaseOp
 //===----------------------------------------------------------------------===//
 
-// Format: eco.case %scrutinee [tag0, tag1, ...] { region0 }, { region1 }, ...
+// Format: eco.case %scrutinee [tag0, tag1, ...] result_types [type0, ...] { region0 }, { region1 }, ...
 void CaseOp::print(OpAsmPrinter &p) {
   p << " " << getScrutinee() << " [";
   llvm::interleaveComma(getTags(), p);
   p << "]";
+
+  // Print result_types if present
+  if (auto resultTypes = getCaseResultTypes()) {
+    p << " result_types [";
+    llvm::interleaveComma(*resultTypes, p, [&](Attribute attr) {
+      p << cast<TypeAttr>(attr).getValue();
+    });
+    p << "]";
+  }
 
   for (Region &region : getAlternatives()) {
     p << " ";
@@ -136,7 +181,7 @@ void CaseOp::print(OpAsmPrinter &p) {
     if (&region != &getAlternatives().back())
       p << ",";
   }
-  p.printOptionalAttrDict((*this)->getAttrs(), {"tags"});
+  p.printOptionalAttrDict((*this)->getAttrs(), {"tags", "caseResultTypes"});
 }
 
 ParseResult CaseOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -164,6 +209,31 @@ ParseResult CaseOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
 
   result.addAttribute("tags", parser.getBuilder().getDenseI64ArrayAttr(tags));
+
+  // Parse optional result_types [type0, type1, ...]
+  if (succeeded(parser.parseOptionalKeyword("result_types"))) {
+    if (parser.parseLSquare())
+      return failure();
+
+    SmallVector<Attribute> resultTypeAttrs;
+    Type firstType;
+    if (parser.parseType(firstType))
+      return failure();
+    resultTypeAttrs.push_back(TypeAttr::get(firstType));
+
+    while (succeeded(parser.parseOptionalComma())) {
+      Type nextType;
+      if (parser.parseType(nextType))
+        return failure();
+      resultTypeAttrs.push_back(TypeAttr::get(nextType));
+    }
+
+    if (parser.parseRSquare())
+      return failure();
+
+    result.addAttribute("caseResultTypes",
+                        parser.getBuilder().getArrayAttr(resultTypeAttrs));
+  }
 
   // Parse each region
   for (size_t i = 0; i < tags.size(); ++i) {
@@ -194,7 +264,7 @@ ParseResult CaseOp::parse(OpAsmParser &parser, OperationState &result) {
 // Custom Assembly Format: JoinpointOp
 //===----------------------------------------------------------------------===//
 
-// Format: eco.joinpoint id(%arg0: type0, %arg1: type1) { body } continuation { cont }
+// Format: eco.joinpoint id(%arg0: type0, %arg1: type1) result_types [type0, ...] { body } continuation { cont }
 void JoinpointOp::print(OpAsmPrinter &p) {
   p << " " << getId();
 
@@ -208,6 +278,15 @@ void JoinpointOp::print(OpAsmPrinter &p) {
     p << ")";
   }
 
+  // Print result_types if present
+  if (auto resultTypes = getJpResultTypes()) {
+    p << " result_types [";
+    llvm::interleaveComma(*resultTypes, p, [&](Attribute attr) {
+      p << cast<TypeAttr>(attr).getValue();
+    });
+    p << "]";
+  }
+
   p << " ";
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
                 /*printBlockTerminators=*/true);
@@ -216,7 +295,7 @@ void JoinpointOp::print(OpAsmPrinter &p) {
   p.printRegion(getContinuation(), /*printEntryBlockArgs=*/false,
                 /*printBlockTerminators=*/true);
 
-  p.printOptionalAttrDict((*this)->getAttrs(), {"id"});
+  p.printOptionalAttrDict((*this)->getAttrs(), {"id", "jpResultTypes"});
 }
 
 ParseResult JoinpointOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -239,6 +318,31 @@ ParseResult JoinpointOp::parse(OpAsmParser &parser, OperationState &result) {
 
     if (parser.parseRParen())
       return failure();
+  }
+
+  // Parse optional result_types [type0, type1, ...]
+  if (succeeded(parser.parseOptionalKeyword("result_types"))) {
+    if (parser.parseLSquare())
+      return failure();
+
+    SmallVector<Attribute> resultTypeAttrs;
+    Type firstType;
+    if (parser.parseType(firstType))
+      return failure();
+    resultTypeAttrs.push_back(TypeAttr::get(firstType));
+
+    while (succeeded(parser.parseOptionalComma())) {
+      Type nextType;
+      if (parser.parseType(nextType))
+        return failure();
+      resultTypeAttrs.push_back(TypeAttr::get(nextType));
+    }
+
+    if (parser.parseRSquare())
+      return failure();
+
+    result.addAttribute("jpResultTypes",
+                        parser.getBuilder().getArrayAttr(resultTypeAttrs));
   }
 
   // Parse body region with arguments

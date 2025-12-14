@@ -31,7 +31,19 @@ std::unique_ptr<mlir::Pass> createConstructLoweringPass();
 // These are not used in tracing GC mode.
 std::unique_ptr<mlir::Pass> createRCEliminationPass();
 
+// Infers result_types attribute for eco.case ops based on eco.return operands.
+// This enables SCF lowering patterns to work without explicit annotation.
+std::unique_ptr<mlir::Pass> createResultTypesInferencePass();
+
 // ========== Stage 2: Eco -> Standard MLIR (func/cf/arith) ==========
+
+// Analyzes and classifies joinpoints for SCF lowering eligibility.
+// Marks looping, single-exit joinpoints with normalized continuations as SCF-candidates.
+std::unique_ptr<mlir::Pass> createJoinpointNormalizationPass();
+
+// Lowers eligible eco.case and eco.joinpoint ops to SCF dialect (scf.if, scf.while).
+// Non-eligible ops are left for createControlFlowLoweringPass.
+std::unique_ptr<mlir::Pass> createEcoControlFlowToSCFPass();
 
 // Lowers eco control flow ops (case, joinpoint, jump, return) to cf dialect.
 std::unique_ptr<mlir::Pass> createControlFlowLoweringPass();

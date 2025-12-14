@@ -154,11 +154,27 @@ static int runPipeline(ModuleOp module, bool lowerToLLVM) {
 
     if (lowerToLLVM) {
         // Stage 2: Eco -> Standard MLIR (func/cf/arith).
-        // TODO: Add control flow lowering pass.
-        // pm.addPass(eco::createControlFlowLoweringPass());
+
+        // Infer result_types for eco.case ops based on eco.return operands.
+        pm.addPass(eco::createResultTypesInferencePass());
+
+        // Classify joinpoints for SCF lowering eligibility.
+        pm.addPass(eco::createJoinpointNormalizationPass());
+
+        // Lower eligible eco.case/joinpoint to SCF dialect.
+        // Non-eligible ops are left for the CF path in EcoToLLVM.
+        pm.addPass(eco::createEcoControlFlowToSCFPass());
+
         pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
 
+        // Convert SCF to CF before EcoToLLVM.
+        // This creates cf.br/cf.cond_br with !eco.value types, which
+        // EcoToLLVM will then convert to LLVM types.
+        pm.addPass(createSCFToControlFlowPass());
+
         // Stage 3: Eco -> LLVM Dialect.
+        // This also handles remaining eco control flow ops (case/joinpoint/jump)
+        // that weren't lowered to SCF.
         pm.addPass(eco::createEcoToLLVMPass());
 
         // Standard MLIR dialect conversions to LLVM.

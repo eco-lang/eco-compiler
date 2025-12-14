@@ -111,6 +111,9 @@ target_compile_features(obj.EcoDialect PRIVATE cxx_std_17)
 
 add_mlir_library(EcoPasses
     Passes/RCElimination.cpp
+    Passes/ResultTypesInference.cpp
+    Passes/JoinpointNormalization.cpp
+    Passes/EcoControlFlowToSCF.cpp
     Passes/EcoToLLVM.cpp
 
     PARTIAL_SOURCES_INTENDED

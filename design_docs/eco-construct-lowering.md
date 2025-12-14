@@ -1,101 +1,89 @@
-# Construct Lowering: Construct Fusion Optimization
-
-This document describes the Construct Fusion optimization for the Eco compiler, which optimizes record update patterns by replacing multiple field projections and a full reconstruction with a bulk copy and selective field updates.
-
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Pattern to Detect](#pattern-to-detect)
-3. [Current vs Optimized Lowering](#current-vs-optimized-lowering)
-4. [Implementation Approaches](#implementation-approaches)
-5. [Runtime Support](#runtime-support)
-6. [Profitability Analysis](#profitability-analysis)
-7. [Edge Cases](#edge-cases)
-8. [Implementation Phases](#implementation-phases)
-9. [Unresolved Questions](#unresolved-questions)
+Below is a self‑contained design / implementation plan for the **Construct Fusion Optimization** in Eco, integrating the clarifications we’ve discussed (especially around semantics and immutability).
 
 ---
 
-## Overview
+# Construct Fusion & `eco.record_update` – Design and Implementation Plan
 
-The Construct Fusion optimization detects patterns where most fields of a record/ADT are projected from an existing value and then used to construct a new value with only a few fields changed. Instead of N individual field loads followed by N field stores, we can optimize this to a single memcpy plus K stores (where K is the number of changed fields).
+## 1. Goals and Context
 
-This optimization is particularly valuable for Elm's record update syntax, which is heavily used in Model-View-Update architectures.
-
----
-
-## Pattern to Detect
-
-### Record Update Pattern in Elm
+Elm code frequently uses record updates:
 
 ```elm
 { record | name = newName, age = newAge }
 ```
 
-### Current MLIR (unoptimized)
+The naive lowering pattern is:
 
-For a record with 5 fields, updating 2:
+1. Project each field from `record` (`eco.project`).
+2. Reconstruct a new record with `eco.construct`, passing all fields (unchanged + changed).
 
-```mlir
-%f0 = eco.project %record[0] : !eco.value -> !eco.value  // unchanged
-%f1 = eco.project %record[1] : !eco.value -> !eco.value  // unchanged
-%f2 = eco.project %record[2] : !eco.value -> !eco.value  // unchanged
-// %new_name is the new value for field 3
-// %new_age is the new value for field 4
-%new = eco.construct(%f0, %f1, %f2, %new_name, %new_age) {tag = 0, size = 5}
-```
+This results in many loads and stores. The Construct Fusion optimization replaces these with:
 
----
+- A *single bulk copy* of the original record (memcpy‑style), and
+- A few field overwrites for the changed fields.
 
-## Current vs Optimized Lowering
+This is especially important for Elm’s MVU workloads, where records tend to be moderately sized and frequently updated.
 
-### Current Lowering (unoptimized)
-
-```llvm
-; 3 loads for unchanged fields
-%f0 = load ptr, %record + 16
-%f1 = load ptr, %record + 24
-%f2 = load ptr, %record + 32
-
-; allocate new record
-%new = call eco_alloc_custom(0, 5, 0)
-
-; 5 stores for all fields
-call eco_store_field(%new, 0, %f0)
-call eco_store_field(%new, 1, %f1)
-call eco_store_field(%new, 2, %f2)
-call eco_store_field(%new, 3, %new_name)
-call eco_store_field(%new, 4, %new_age)
-```
-
-**Cost:** 3 loads + 1 allocation + 5 stores = 9 operations
-
-### Optimized Lowering
-
-```llvm
-; allocate new record
-%new = call eco_alloc_custom(0, 5, 0)
-
-; bulk copy (copies ctor/unboxed + all fields, skips header)
-; Source offset 8 (skip header), size = 8 + 5*8 = 48 bytes
-call llvm.memcpy(%new + 8, %record + 8, 48, false)
-
-; overwrite only changed fields
-call eco_store_field(%new, 3, %new_name)
-call eco_store_field(%new, 4, %new_age)
-```
-
-**Cost:** 1 allocation + 1 memcpy + 2 stores = 4 operations
-
-**Savings:** Eliminates 3 loads and 3 stores, replaces with vectorized memcpy.
+Eco has strict immutability: **never mutate after construction**; no write barriers are needed.  The design must preserve this.
 
 ---
 
-## Implementation Approaches
+## 2. High‑Level Strategy
 
-### Approach A: New eco.record_update Op (Recommended)
+We introduce a dedicated high‑level IR op and a fusion pass:
 
-Add a high-level op that explicitly represents record update semantics:
+1. **`eco.record_update` op** (new)
+    - Frontend or early Eco IR emits this for obvious record update semantics.
+    - Semantically: *allocate a fresh record*, copy fields from a source record, then overwrite listed fields with new values. The source record is never mutated.
+
+2. **ConstructFusionPass (Eco→Eco)**
+    - Eco‑level optimization pass that detects `eco.project* + eco.construct` patterns and rewrites them into `eco.record_update` where profitable.
+    - Uses a conservative pattern: identity projections from a single source record, same tag/size.
+
+3. **Future, separate pass: In‑place Update via Escape Analysis (optional)**
+    - A later optimization may turn *some* `eco.record_update` ops into true in‑place updates when it is *semantically safe* (source record provably dead).
+    - This pass is distinct and must not change observable program behavior (e.g., it cannot touch cases like the `bob` / `alice` example where the original record is still needed).
+
+---
+
+## 3. Semantics and Immutability
+
+### 3.1. Elm Behavior
+
+Given:
+
+```elm
+let
+    bob = { name = "bob" }
+    alice = { bob | name = "alice" }
+in
+    (bob, alice)
+```
+
+Semantic requirements:
+
+- `bob` and `alice` *must* refer to distinct heap objects.
+- `bob.name` remains `"bob"`.
+- `alice.name` is `"alice"`.
+
+### 3.2. `eco.record_update` Semantics
+
+`eco.record_update` is explicitly designed to be **pure**:
+
+- It *always* allocates a new record object.
+- It copies the original record’s data (ctor/unboxed + all fields) into the new object.
+- It overwrites only the specified fields in the new object.
+- The source object is not modified.
+
+This directly preserves Elm’s immutability: every high‑level record update is a “copy+modify”, never “modify in place”.
+
+---
+
+## 4. IR Extension: `eco.record_update` Op
+
+### 4.1. Op Definition
+
+From the Construct Lowering design:
 
 ```tablegen
 def Eco_RecordUpdateOp : Eco_Op<"record_update", [Pure]> {
@@ -134,14 +122,44 @@ def Eco_RecordUpdateOp : Eco_Op<"record_update", [Pure]> {
 }
 ```
 
-**Lowering Implementation:**
+Key points:
+
+- `source: !eco.value` – the record we are logically copying.
+- `updated_indices: DenseI64ArrayAttr` – field indices to overwrite.
+- `new_values: variadic Eco_AnyValue` – new values for those indices.
+- `tag`, `size`, `unboxed_bitmap` – layout metadata for the new record.
+
+### 4.2. Verifier
+
+The verifier should enforce:
+
+- `updated_indices.size == new_values.size`.
+- Each index is in `[0, size)`.
+- Indices are strictly increasing (avoid duplicates, keep it simple).
+- (Optional) In debug mode, assert that tag/size match the `source`’s runtime layout; this helps catch misuse.
+
+---
+
+## 5. Lowering `eco.record_update` to LLVM
+
+### 5.1. Overview
+
+Lowering is a single pattern (`RecordUpdateOpLowering`) in `EcoToLLVM.cpp`, as sketched in the doc:
+
+1. Allocate a new “Custom” record object.
+2. Copy ctor/unboxed + fields from the source.
+3. Overwrite the updated fields with the new values.
+4. Optionally, set the unboxed bitmap.
+
+### 5.2. Detailed Steps
+
+Pseudo‑implementation (from the design):
 
 ```cpp
 struct RecordUpdateOpLowering : public OpConversionPattern<RecordUpdateOp> {
     LogicalResult matchAndRewrite(RecordUpdateOp op, OpAdaptor adaptor,
                                   ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto *ctx = rewriter.getContext();
 
         // 1. Allocate new Custom object
         int64_t tag = op.getTag();
@@ -172,24 +190,73 @@ struct RecordUpdateOpLowering : public OpConversionPattern<RecordUpdateOp> {
 };
 ```
 
-### Approach B: Pattern-Based Fusion Pass
+Key properties:
 
-Create an optimization pass that detects and transforms the pattern:
+- **Allocation is always performed** (immutability preserved).
+- **Single memcpy** replaces multiple loads/stores.
+- Tag/unboxed are copied along with fields; if tag/size differ from the source, we *do not* generate `record_update` in the first place (see fusion pass below).
 
-```cpp
-class ConstructFusionPass : public PassWrapper<ConstructFusionPass,
-                                                OperationPass<func::FuncOp>> {
-    void runOnOperation() override {
-        getOperation().walk([&](ConstructOp op) {
-            if (auto candidate = analyzeConstruct(op)) {
-                fuseConstruct(op, *candidate);
-            }
-        });
-    }
-};
+### 5.3. memcpy Implementation
+
+You can either:
+
+- Call a small runtime helper `eco_copy_custom_fields` that wraps `std::memcpy`.
+- Or emit `llvm.memcpy` directly in the LLVM dialect, as sketched in the design.
+
+Initial design choice:
+
+- **Always use memcpy** for simplicity and rely on LLVM to shrink/inline for small records. We can later add a size‑based threshold if benchmarks warrant it.
+
+---
+
+## 6. Construct Fusion Pass
+
+### 6.1. Purpose
+
+Transform the common pattern:
+
+```mlir
+%f0 = eco.project %record[0]
+%f1 = eco.project %record[1]
+%f2 = eco.project %record[2]
+...
+%new = eco.construct(%f0, %f1, %f2, %new_name, %new_age) {tag = 0, size = 5}
 ```
 
-**Detection Algorithm:**
+into:
+
+```mlir
+%new = eco.record_update %record [3, 4] (%new_name, %new_age) {
+  tag = 0, size = 5
+} : ...
+```
+
+This avoids N projections, N stores, and instead does one memcpy + K stores.
+
+### 6.2. Placement in Pipeline
+
+- Runs as an Eco→Eco pass in the early optimization stage (Stage 1: Eco → Eco), before lowering to LLVM.
+- After basic SSA formation, but before canonicalization / DCE, so the patterns are still transparent.
+
+### 6.3. Pattern and Restrictions (Phase 1)
+
+For the initial implementation, we use a **conservative pattern**:
+
+- All fields in the `eco.construct` must come from either:
+    - An `eco.project` from a *single* source record, or
+    - Some non‑project expression (i.e., a “new” value).
+- Each `eco.project` must be an **identity projection**:
+    - `eco.project %src[idx]` must feed the field at position `idx` in the `construct`.
+- The `construct`’s `tag` and `size` must be the same as the source record’s layout.
+    - If tags/sizes differ, we **do not** fuse (edge case 3).
+- Fields must all come from the same `source` value:
+    - If fields are taken from multiple records, we do not fuse (edge case 5).
+
+These choices match the “Phase 1: identity only, same tag” approach in the doc.
+
+### 6.4. Detection Algorithm
+
+The design already sketches a suitable algorithm:
 
 ```cpp
 struct FusionCandidate {
@@ -231,7 +298,7 @@ std::optional<FusionCandidate> analyzeConstruct(ConstructOp op) {
         return std::nullopt;
     }
 
-    // Profitability check: worth fusing if copying more than changing
+    // Profitability: fuse if copying more fields than we’re changing
     if (projectedIndices.size() > newIndices.size()) {
         return FusionCandidate{commonSource, newIndices, std::move(newValues)};
     }
@@ -239,7 +306,21 @@ std::optional<FusionCandidate> analyzeConstruct(ConstructOp op) {
 }
 ```
 
-**Transformation:**
+### 6.5. Profitability Heuristic
+
+We adopt the design’s **simple rule**:
+
+> Fuse when `unchanged_fields > changed_fields`.
+
+Rationale:
+
+- Without fusion: ~`2N` memory operations (N loads + N stores).
+- With fusion: `~N/4 + K` (memcpy plus K stores). Net benefit whenever `K < 1.75N`, which is almost always when any fields are unchanged.
+- The `unchanged > changed` rule is conservative and easy to reason about.
+
+### 6.6. Transformation
+
+From the design:
 
 ```cpp
 void fuseConstruct(ConstructOp op, const FusionCandidate &candidate) {
@@ -265,283 +346,117 @@ void fuseConstruct(ConstructOp op, const FusionCandidate &candidate) {
 }
 ```
 
----
+Notes:
 
-## Runtime Support
-
-Add new runtime function for efficient record copying:
-
-### Header Declaration
-
-```cpp
-// RuntimeExports.h
-
-/// Copies a Custom object's data (excluding header) to a destination.
-/// Used for record update optimization.
-/// @param dest Pointer to destination Custom object (already allocated)
-/// @param source Pointer to source Custom object
-/// @param field_count Number of fields to copy
-void eco_copy_custom_fields(void* dest, void* source, uint32_t field_count);
-```
-
-### Implementation
-
-```cpp
-// RuntimeExports.cpp
-
-void eco_copy_custom_fields(void* dest, void* source, uint32_t field_count) {
-    // Custom layout: Header(8) + ctor/unboxed(8) + fields[field_count * 8]
-    // We copy everything after the header
-    size_t copySize = 8 + field_count * 8;  // ctor/unboxed + fields
-
-    std::memcpy(
-        static_cast<char*>(dest) + sizeof(Header),
-        static_cast<char*>(source) + sizeof(Header),
-        copySize
-    );
-}
-```
-
-Alternatively, inline the memcpy directly in LLVM IR for better optimization:
-
-```cpp
-// In RecordUpdateOpLowering
-void emitInlineMemcpy(ConversionPatternRewriter &rewriter, Location loc,
-                      Value dest, Value src, int64_t size) {
-    auto i8Ty = rewriter.getI8Type();
-    auto ptrTy = LLVM::LLVMPointerType::get(rewriter.getContext());
-    auto i64Ty = rewriter.getI64Type();
-    auto i1Ty = rewriter.getI1Type();
-
-    // GEP to skip header (8 bytes)
-    auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 8);
-    auto destPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, dest,
-                                                 ValueRange{offset});
-    auto srcPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, src,
-                                                ValueRange{offset});
-
-    // Emit llvm.memcpy intrinsic
-    auto sizeConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, size);
-    auto isVolatile = rewriter.create<LLVM::ConstantOp>(loc, i1Ty, false);
-    rewriter.create<LLVM::MemcpyOp>(loc, destPtr, srcPtr, sizeConst, isVolatile);
-}
-```
+- We do **not** mutate the source record; we create `record_update` which, by its lowering, allocates and copies.
+- After this pass, a standard DCE/canonicalizer pass will remove the now‑dead `eco.project` uses.
 
 ---
 
-## Profitability Analysis
+## 7. In‑Place Updates and Escape Analysis (Future Work)
 
-### When to Fuse
+### 7.1. Motivation
 
-| Record Size | Changed Fields | Unchanged Fields | Decision |
-|-------------|----------------|------------------|----------|
-| 3 | 1 | 2 | Fuse (2 > 1) |
-| 3 | 2 | 1 | Don't fuse (1 < 2) |
-| 5 | 1 | 4 | Fuse (4 > 1) |
-| 5 | 2 | 3 | Fuse (3 > 2) |
-| 5 | 3 | 2 | Don't fuse (2 < 3) |
-| 10 | 2 | 8 | Fuse (8 > 2) |
-| 10 | 5 | 5 | Borderline |
-
-### Heuristic
-
-**Simple rule:** Fuse when `unchanged_fields > changed_fields`
-
-### Cost Model
-
-Without fusion:
-- Cost = N loads + N stores = 2N memory operations
-
-With fusion:
-- Cost = 1 memcpy(N fields) + K stores
-- memcpy cost ~ N/4 equivalent operations (vectorized, sequential access)
-- Total ~ N/4 + K
-
-**Net benefit when:** `2N > N/4 + K` → `K < 1.75N`
-
-Since K < N always (otherwise no fields unchanged), fusion is almost always beneficial when any fields are unchanged. The simple heuristic `unchanged > changed` is conservative.
-
----
-
-## Edge Cases
-
-### 1. Reordered Fields
+The design mentions an advanced optimization: if the original record is *not used afterward*, we could perform a true in‑place update:
 
 ```mlir
-%a = eco.project %rec[0]
-%b = eco.project %rec[1]
-%new = eco.construct(%b, %a, %c)  // a and b swapped
-```
-
-**Handling:** Phase 1 skips this case. Phase 2 could support by tracking permutation.
-
-### 2. Partial Projection
-
-Some fields from project, some computed:
-
-```mlir
-%f0 = eco.project %rec[0]
-%f1 = eco.int.add %x, %y : i64    // computed
-%new = eco.construct(%f0, %f1)
-```
-
-**Handling:** Track which fields are "unchanged" (project with matching index) vs "new" (anything else).
-
-### 3. Different Constructor Tags
-
-Source has tag 1, result has tag 2:
-
-```mlir
-%f0 = eco.project %rec[0]
-%new = eco.construct(%f0, %f1) {tag = 2, ...}  // different tag
-```
-
-**Handling:** For now, don't fuse. The ctor field would need explicit overwrite after memcpy.
-
-### 4. Unboxed Bitmap Differences
-
-Source has different unboxed fields than result:
-
-```mlir
-// Source: field 0 is boxed
-// Result: field 0 is unboxed
-```
-
-**Handling:** After memcpy, explicitly set the unboxed bitmap via `eco_set_unboxed`.
-
-### 5. Multiple Sources
-
-Fields projected from different records:
-
-```mlir
-%f0 = eco.project %rec1[0]
-%f1 = eco.project %rec2[0]  // different source!
-%new = eco.construct(%f0, %f1)
-```
-
-**Handling:** Don't fuse. No single source to copy from.
-
-### 6. Non-Identity Projection
-
-```mlir
-%f = eco.project %rec[2]
-%new = eco.construct(%f) {size = 1}  // f goes to index 0, not 2
-```
-
-**Handling:** Phase 1 skips (index mismatch). Phase 2 could handle with field mapping.
-
----
-
-## Implementation Phases
-
-### Phase 1: eco.record_update Op and Lowering
-
-1. Add `eco.record_update` op to `Ops.td`
-2. Implement op verifier (indices in range, count matches values)
-3. Implement `RecordUpdateOpLowering` in `EcoToLLVM.cpp`
-4. Add tests for direct `eco.record_update` usage
-5. Optionally add `eco_copy_custom_fields` to RuntimeExports
-
-### Phase 2: Fusion Pass
-
-1. Create `ConstructFusionPass` in new file `Passes/ConstructFusion.cpp`
-2. Implement pattern detection with identity-projection requirement
-3. Implement transformation from `project*+construct` to `record_update`
-4. Add profitability heuristic (`unchanged > changed`)
-5. Add pass to pipeline (Stage 1: Eco → Eco)
-6. Add tests for fusion detection
-
-### Phase 3: Advanced Optimizations
-
-1. Support field reordering with permutation tracking
-2. Support different tags (copy + overwrite ctor field)
-3. Integrate with escape analysis for true in-place updates
-4. Add cost model tuning based on benchmarks
-
----
-
-## Unresolved Questions
-
-### 1. Approach Selection
-
-**Options:**
-- **A)** New `eco.record_update` op generated by frontend (Elm → Eco IR)
-- **B)** Pattern-matching pass that fuses `project*+construct` into `record_update`
-- **C)** Both: frontend generates `record_update` when obvious, pass catches remaining cases
-
-### 2. Profitability Threshold
-
-What's the minimum savings to justify fusion?
-
-**Options:**
-- **A)** Always fuse when any field is unchanged (`unchanged >= 1`)
-- **B)** Fuse when majority unchanged (`unchanged > changed`)
-- **C)** Fuse when significant majority (`unchanged > 2 * changed`)
-- **D)** Use cost model with memcpy overhead estimate
-
-### 3. Field Reordering Support
-
-Should we support fusing when field order changes?
-
-```mlir
-%a = eco.project %rec[0]
-%b = eco.project %rec[1]
-%new = eco.construct(%b, %a, %c)  // swapped a, b
-```
-
-**Options:**
-- **A)** Phase 1: Identity only, Phase 2: Add reordering support
-- **B)** Support reordering from the start (more complex but more general)
-- **C)** Never support reordering (simpler, covers 99% of record updates)
-
-### 4. In-Place Updates (Escape Analysis)
-
-Should this pass integrate with escape analysis for true mutation?
-
-```mlir
-// If %record is not used after this:
+// Before:
 %new = eco.record_update %record [3] (%new_val) ...
-// Could become:
+
+// After (advanced optimization):
 eco.store_field %record[3], %new_val  // in-place, no allocation!
 ```
 
-**Options:**
-- **A)** Phase 1: Always copy, separate escape analysis pass later
-- **B)** Integrate escape analysis into this pass
-- **C)** Defer entirely to LLVM's optimization passes
 
-### 5. memcpy vs Field-by-Field Copy
 
-For small records, memcpy overhead may exceed individual loads.
+### 7.2. Separation of Concerns
 
-**Options:**
-- **A)** Always use memcpy (simpler, let LLVM optimize small cases)
-- **B)** Use memcpy only for records > N fields (tune N)
-- **C)** Generate inline loads/stores for small records, memcpy for large
+To preserve semantics and simplicity:
 
-### 6. Tag Handling
+- **Phase 1:** `eco.record_update` always allocates a new record (copy+update). This is the only behavior that the frontend and other passes rely on.
+- **Phase 2:** A dedicated “record update in‑place” pass — later in the pipeline — may rewrite a subset of `record_update`s to in‑place `eco.store_field` operations, but *only* when it is provably safe (i.e., the source record does not “escape” or have further uses).
 
-When source and result have same tag, should we:
+This respects immutability at the IR abstraction level and isolates the tricky alias/escape reasoning.
 
-**Options:**
-- **A)** Always include tag in memcpy region (simpler)
-- **B)** Skip tag, rely on allocation setting it (slightly more efficient)
-- **C)** Add assertion that tags match, error if they don't
+### 7.3. Safety Condition (Conceptual)
 
-### 7. Dead Code Elimination
+While not fully specified in the existing docs, a safe conceptual rule is:
 
-After fusion, the original `eco.project` ops may become dead. Should we:
+- For `%r = eco.record_update %src [...]`, we may rewrite to in-place if:
+    - `%src` has no uses after this `record_update` (SSA liveness).
+    - `%src` does not alias any other live variable (requires alias analysis / object identity reasoning).
+    - We’re in a context where in‑place modification is acceptable for the GC and runtime (no write barriers needed for Elm immutability).
 
-**Options:**
-- **A)** Let standard DCE pass clean them up
-- **B)** Eagerly delete them in the fusion pass
-- **C)** Mark them for deletion but defer to avoid iterator invalidation
+This step is explicitly deferred to **Phase 3: Advanced Optimizations** in the design.
 
 ---
 
-## References
+## 8. Edge Cases and Non‑Goals (Phase 1)
 
-- Current implementation: `runtime/src/codegen/Passes/EcoToLLVM.cpp`
-- Op definitions: `runtime/src/codegen/Ops.td`
-- Heap layout: `runtime/src/allocator/Heap.hpp`
-- Related design: `/work/design_docs/llvm-optimization-ideas.md`
+We stick with the documented handling:
+
+1. **Reordered Fields:**
+    - Pattern: swapping indices in `construct`.
+    - Handling (Phase 1): skip fusion; future work may track permutations.
+
+2. **Partial Projection / Computed Fields:**
+    - Allowed; those fields simply go into `updated_indices` with new values.
+
+3. **Different Constructor Tags:**
+    - If source and result’s tags differ, **do not fuse** in Phase 1.
+
+4. **Unboxed Bitmap Differences:**
+    - `record_update` can explicitly set a new unboxed bitmap after memcpy via `emitSetUnboxed`.
+
+5. **Multiple Source Records:**
+    - If projections come from multiple records, skip fusion.
+
+6. **Non‑identity Projection:**
+    - If `project.index != construct position`, skip fusion in Phase 1.
+
+These choices keep the first implementation small and robust while still capturing the main Elm record update patterns.
+
+---
+
+## 9. Testing Plan
+
+1. **Unit tests for `eco.record_update`:**
+    - Direct IR tests that:
+        - Create small records via `construct`.
+        - Apply `record_update` to change various fields.
+        - Check resulting values at runtime.
+    - Include tests with:
+        - No changed fields (should still copy).
+        - Single changed field.
+        - Multiple changed fields.
+        - Different unboxed bitmap.
+
+2. **Fusion tests:**
+    - Eco MLIR patterns with `project* + construct` should be rewritten to `record_update`.
+    - Verify both:
+        - The IR before/after the ConstructFusionPass.
+        - Runtime behavior (results identical to unoptimized variant).
+
+3. **Immutability regression tests:**
+    - Patterns like the `bob` / `alice` example:
+        - Verify that both original and updated records remain distinct and correct, even after all optimizations.
+
+4. **Performance benchmarks:**
+    - Elm programs with heavy record updates:
+        - Compare runtime and allocation behavior with fusion enabled vs disabled.
+
+---
+
+## 10. Summary of Design Decisions
+
+- **Front‑end op:** Use a new `eco.record_update` op to represent “copy+update” record semantics.
+- **Semantics:** `record_update` *always* allocates a new record and never mutates the source; this preserves Elm’s immutability.
+- **Lowering:** Implement `RecordUpdateOpLowering` with allocation + memcpy + field overwrites, optionally adjusting unboxed bitmap.
+- **Fusion pass:** Add a ConstructFusionPass that:
+    - Detects `project* + construct` patterns with a single source, identity projections, and identical tag/size.
+    - Applies the heuristic `unchanged_fields > changed_fields` for profitability.
+    - Rewrites to `eco.record_update` and leaves dead code cleanup to DCE.
+- **Advanced optimizations:** Defer field reordering support, tag‑changing fusion, and in‑place updates with escape analysis to later phases.
+
+This gives you a clear, implementable path that is faithful to Elm’s semantics, leverages Eco’s immutability and tracing GC design, and offers a straightforward way to grow into more advanced optimizations.
+

@@ -16,7 +16,10 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -1397,6 +1400,45 @@ struct StoreGlobalOpLowering : public OpConversionPattern<StoreGlobalOp> {
 // eco.case -> cf.switch on constructor tag
 // ============================================================================
 
+// ============================================================================
+// eco.get_tag -> Extract constructor tag from ADT value
+// ============================================================================
+
+struct GetTagOpLowering : public OpConversionPattern<GetTagOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(GetTagOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto i32Ty = IntegerType::get(ctx, 32);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+        auto i8Ty = IntegerType::get(ctx, 8);
+
+        // Extract constructor tag from value.
+        // For Custom objects: ctor field is at offset 8, first 16 bits.
+        // Memory layout: [Header (8 bytes)][ctor:16 | unboxed:48][values...]
+        Value value = adaptor.getValue();
+        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, value);
+
+        // Load the ctor field at offset 8 (after the Header).
+        auto offset8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 8);
+        auto ctorPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
+                                                    ValueRange{offset8});
+        // Load as i32 (ctor is 16 bits but we use i32 for switch compatibility).
+        auto ctorTag = rewriter.create<LLVM::LoadOp>(loc, i32Ty, ctorPtr);
+
+        rewriter.replaceOp(op, ctorTag);
+        return success();
+    }
+};
+
+// ============================================================================
+// eco.case -> cf.switch
+// ============================================================================
+
 struct CaseOpLowering : public OpConversionPattern<CaseOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -2360,17 +2402,43 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         ConversionTarget target(*ctx);
         target.addLegalDialect<LLVM::LLVMDialect>();
         target.addLegalDialect<arith::ArithDialect>();
-        target.addLegalDialect<cf::ControlFlowDialect>();
+        target.addLegalDialect<scf::SCFDialect>();
         target.addLegalOp<ModuleOp>();
 
-        // func dialect is legal, but func.func with eco.value in signature
-        // needs to be converted.
-        target.addLegalDialect<func::FuncDialect>();
+        // Helper to check for eco.value types
         auto hasEcoValue = [](Type t) { return isa<ValueType>(t); };
+
+        // CF ops are dynamically legal - only legal if they don't have !eco.value operands
+        // This allows the branch type conversion pattern to update them
+        auto noEcoValueOperands = [hasEcoValue](Operation *op) {
+            return llvm::none_of(op->getOperandTypes(), hasEcoValue);
+        };
+        target.addDynamicallyLegalOp<cf::BranchOp>([noEcoValueOperands](cf::BranchOp op) {
+            return noEcoValueOperands(op.getOperation());
+        });
+        target.addDynamicallyLegalOp<cf::CondBranchOp>([noEcoValueOperands](cf::CondBranchOp op) {
+            return noEcoValueOperands(op.getOperation());
+        });
+        target.addDynamicallyLegalOp<cf::SwitchOp>([noEcoValueOperands](cf::SwitchOp op) {
+            return noEcoValueOperands(op.getOperation());
+        });
+
+        // func dialect is legal, but func.func with eco.value in signature or
+        // internal block arguments needs to be converted.
+        target.addLegalDialect<func::FuncDialect>();
         target.addDynamicallyLegalOp<func::FuncOp>([hasEcoValue](func::FuncOp op) {
-            // Legal only if no eco.value types in signature
-            return llvm::none_of(op.getFunctionType().getInputs(), hasEcoValue) &&
-                   llvm::none_of(op.getFunctionType().getResults(), hasEcoValue);
+            // Check function signature
+            if (llvm::any_of(op.getFunctionType().getInputs(), hasEcoValue) ||
+                llvm::any_of(op.getFunctionType().getResults(), hasEcoValue))
+                return false;
+            // Also check all block arguments in the function body
+            for (Block &block : op.getBody()) {
+                for (BlockArgument arg : block.getArguments()) {
+                    if (hasEcoValue(arg.getType()))
+                        return false;
+                }
+            }
+            return true;
         });
         target.addDynamicallyLegalOp<func::ReturnOp>([hasEcoValue](func::ReturnOp op) {
             // Legal only if no eco.value types in operands
@@ -2387,6 +2455,11 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(
             patterns, typeConverter);
         populateReturnOpTypeConversionPattern(patterns, typeConverter);
+
+        // Add branch type conversion pattern for cf.br/cf.cond_br when block
+        // argument types are converted (needed when scf.while -> cf creates
+        // branch ops with !eco.value types)
+        populateBranchOpInterfaceTypeConversionPattern(patterns, typeConverter);
 
         // Clear joinpoint map for this module.
         joinpointBlocks.clear();
@@ -2413,6 +2486,7 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             GlobalOpLowering,
             LoadGlobalOpLowering,
             StoreGlobalOpLowering,
+            GetTagOpLowering,
             CaseOpLowering,
             JoinpointOpLowering,
             JumpOpLowering,

@@ -121,9 +121,14 @@ def Eco_CaseOp : Eco_Op<"case", [
     Pattern match on an ADT's constructor tag and branch to one of several
     regions. Each region handles a specific constructor tag.
 
+    The `result_types` attribute specifies the MLIR representation types
+    returned from this case (e.g., `[!eco.value]`, `[]`, `[i64, !eco.value]`).
+    All `eco.return` ops reachable from each alternative must have operand
+    types matching this list.
+
     Example:
     ```mlir
-    eco.case %scrutinee [0, 1] {
+    eco.case %scrutinee [0, 1] result_types [!eco.value] {
       // tag 0 alternative (e.g., Nil)
       eco.return %nil_result : !eco.value
     }, {
@@ -139,7 +144,8 @@ def Eco_CaseOp : Eco_Op<"case", [
 
   let arguments = (ins
     Eco_Value:$scrutinee,
-    DenseI64ArrayAttr:$tags
+    DenseI64ArrayAttr:$tags,
+    OptionalAttr<ArrayAttr>:$caseResultTypes  // Array of TypeAttr for SCF lowering
   );
   let regions = (region VariadicRegion<AnyRegion>:$alternatives);
   let results = (outs);
@@ -189,9 +195,14 @@ def Eco_JoinpointOp : Eco_Op<"joinpoint", [
     The joinpoint body region's block arguments serve as the joinpoint
     parameters. These are passed via eco.jump operations.
 
+    The `result_types` attribute specifies the MLIR representation types
+    of values ultimately returned via `eco.return` reachable from this
+    joinpoint and its continuation. Typically matches the enclosing
+    function's return types.
+
     Example:
     ```mlir
-    eco.joinpoint 0(%acc: i64, %n: i64) {
+    eco.joinpoint 0(%acc: i64, %n: i64) result_types [i64] {
       // Loop body - can jump back or fall through
       %done = arith.cmpi eq, %n, %c0 : i64
       cf.cond_br %done, ^exit, ^recurse
@@ -207,7 +218,10 @@ def Eco_JoinpointOp : Eco_Op<"joinpoint", [
     ```
   }];
 
-  let arguments = (ins I64Attr:$id);
+  let arguments = (ins
+    I64Attr:$id,
+    OptionalAttr<ArrayAttr>:$jpResultTypes  // Array of TypeAttr for SCF lowering
+  );
   let regions = (region
     SizedRegion<1>:$body,
     AnyRegion:$continuation
@@ -301,6 +315,26 @@ def Eco_DbgOp : Eco_Op<"dbg"> {
 //===----------------------------------------------------------------------===//
 // 2. ADT Construction and Projection
 //===----------------------------------------------------------------------===//
+
+def Eco_GetTagOp : Eco_Op<"get_tag", [Pure]> {
+  let summary = "Extract constructor tag from ADT value";
+  let description = [{
+    Extract the constructor tag (discriminant) from an ADT value.
+    This encapsulates the header/ctor field extraction logic.
+
+    Used by SCF lowering to implement pattern matching via scf.if/scf.index_switch.
+
+    Example:
+    ```mlir
+    %tag = eco.get_tag %value : !eco.value -> i32
+    ```
+  }];
+
+  let arguments = (ins Eco_Value:$value);
+  let results = (outs I32:$tag);
+
+  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($tag)";
+}
 
 def Eco_ConstructOp : Eco_Op<"construct", [Pure]> {
   let summary = "Construct ADT/record/tuple value";
