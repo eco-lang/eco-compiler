@@ -483,6 +483,6 @@ server.setDefaultHandler((request) => {
 
 server.install();
 
-const { Elm } = require("./guida.min.js");
+const { Elm } = require("./guida.js");
 
 Elm.Terminal.Main.init();

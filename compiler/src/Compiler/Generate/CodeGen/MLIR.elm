@@ -181,7 +181,7 @@ emptyResult ctx var =
 type alias OpBuilder =
     { name : String
     , id : String
-    , operands : List String
+    , operands : List ( String, MlirType )
     , results : List ( String, MlirType )
     , attrs : Dict String MlirAttr
     , regions : List MlirRegion
@@ -209,7 +209,7 @@ mlirOp name ctx =
     }
 
 
-withOperands : List String -> OpBuilder -> OpBuilder
+withOperands : List ( String, MlirType ) -> OpBuilder -> OpBuilder
 withOperands operands builder =
     { builder | operands = operands }
 
@@ -236,11 +236,27 @@ asTerminator builder =
 
 build : OpBuilder -> MlirOp
 build builder =
+    let
+        -- Extract just the operand names for MlirOp
+        operandNames =
+            List.map Tuple.first builder.operands
+
+        -- Store operand types as an attribute for pretty printing
+        -- The types are stored as an ArrayAttr of TypeAttrs
+        operandTypesAttr =
+            if List.isEmpty builder.operands then
+                builder.attrs
+
+            else
+                Dict.insert "_operand_types"
+                    (ArrayAttr (List.map (\( _, t ) -> TypeAttr t) builder.operands))
+                    builder.attrs
+    in
     { name = builder.name
     , id = builder.id
-    , operands = builder.operands
+    , operands = operandNames
     , results = builder.results
-    , attrs = builder.attrs
+    , attrs = operandTypesAttr
     , regions = builder.regions
     , isTerminator = builder.isTerminator
     , loc = builder.loc
@@ -254,7 +270,7 @@ build builder =
 
 {-| eco.construct - create a heap object
 -}
-ecoConstruct : Context -> String -> Int -> Int -> Int -> List String -> MlirOp
+ecoConstruct : Context -> String -> Int -> Int -> Int -> List ( String, MlirType ) -> MlirOp
 ecoConstruct ctx resultVar tag size unboxedBitmap operands =
     mlirOp "eco.construct" ctx
         |> withOperands operands
@@ -267,7 +283,7 @@ ecoConstruct ctx resultVar tag size unboxedBitmap operands =
 
 {-| eco.call - call a function by spec id
 -}
-ecoCall : Context -> String -> Int -> List String -> MlirOp
+ecoCall : Context -> String -> Int -> List ( String, MlirType ) -> MlirOp
 ecoCall ctx resultVar specId operands =
     mlirOp "eco.call" ctx
         |> withOperands operands
@@ -278,7 +294,7 @@ ecoCall ctx resultVar specId operands =
 
 {-| eco.call\_named - call a function by name
 -}
-ecoCallNamed : Context -> String -> String -> List String -> MlirOp
+ecoCallNamed : Context -> String -> String -> List ( String, MlirType ) -> MlirOp
 ecoCallNamed ctx resultVar funcName operands =
     mlirOp "eco.call" ctx
         |> withOperands operands
@@ -289,8 +305,8 @@ ecoCallNamed ctx resultVar funcName operands =
 
 {-| eco.project - extract a field from a record/custom/tuple
 -}
-ecoProject : Context -> String -> Int -> Bool -> String -> MlirOp
-ecoProject ctx resultVar index isUnboxed operand =
+ecoProject : Context -> String -> Int -> Bool -> String -> MlirType -> MlirOp
+ecoProject ctx resultVar index isUnboxed operand operandType =
     let
         resultType =
             if isUnboxed then
@@ -300,7 +316,7 @@ ecoProject ctx resultVar index isUnboxed operand =
                 ecoValue
     in
     mlirOp "eco.project" ctx
-        |> withOperands [ operand ]
+        |> withOperands [ ( operand, operandType ) ]
         |> withResult resultVar resultType
         |> withAttr "index" (IntAttr index)
         |> withAttr "unboxed" (BoolAttr isUnboxed)
@@ -309,10 +325,10 @@ ecoProject ctx resultVar index isUnboxed operand =
 
 {-| eco.return - return a value
 -}
-ecoReturn : Context -> String -> MlirOp
-ecoReturn ctx operand =
+ecoReturn : Context -> String -> MlirType -> MlirOp
+ecoReturn ctx operand operandType =
     mlirOp "eco.return" ctx
-        |> withOperands [ operand ]
+        |> withOperands [ ( operand, operandType ) ]
         |> asTerminator
         |> build
 
@@ -465,7 +481,7 @@ generateMainEntry ctx mainInfo =
 
                 returnOp : MlirOp
                 returnOp =
-                    ecoReturn ctx1 callVar
+                    ecoReturn ctx1 callVar ecoValue
 
                 region : MlirRegion
                 region =
@@ -495,11 +511,11 @@ generateMainEntry ctx mainInfo =
                 -- eco.call to platform initialize with decoder and main result
                 initCallOp : MlirOp
                 initCallOp =
-                    ecoCallNamed ctx2 initCallVar "Elm_Platform_initialize" [ decoderResult.resultVar, mainCallVar ]
+                    ecoCallNamed ctx2 initCallVar "Elm_Platform_initialize" [ ( decoderResult.resultVar, ecoValue ), ( mainCallVar, ecoValue ) ]
 
                 returnOp : MlirOp
                 returnOp =
-                    ecoReturn ctx2 initCallVar
+                    ecoReturn ctx2 initCallVar ecoValue
 
                 region : MlirRegion
                 region =
@@ -577,7 +593,7 @@ generateDefine ctx funcName specId expr monoType =
 
                 returnOp : MlirOp
                 returnOp =
-                    ecoReturn exprResult.ctx exprResult.resultVar
+                    ecoReturn exprResult.ctx exprResult.resultVar (monoTypeToMlir monoType)
 
                 region : MlirRegion
                 region =
@@ -607,7 +623,7 @@ generateClosureFunc ctx funcName specId closureInfo body monoType =
 
         returnOp : MlirOp
         returnOp =
-            ecoReturn exprResult.ctx exprResult.resultVar
+            ecoReturn exprResult.ctx exprResult.resultVar (monoTypeToMlir monoType)
 
         region : MlirRegion
         region =
@@ -639,7 +655,7 @@ generateTailFunc ctx funcName specId params expr monoType =
 
         returnOp : MlirOp
         returnOp =
-            ecoReturn exprResult.ctx exprResult.resultVar
+            ecoReturn exprResult.ctx exprResult.resultVar (monoTypeToMlir monoType)
 
         region : MlirRegion
         region =
@@ -671,7 +687,7 @@ generateCtor ctx funcName specId ctorLayout monoType =
 
             returnOp : MlirOp
             returnOp =
-                ecoReturn ctx1 resultVar
+                ecoReturn ctx1 resultVar ecoValue
 
             region : MlirRegion
             region =
@@ -709,11 +725,11 @@ generateCtor ctx funcName specId ctorLayout monoType =
 
             constructOp : MlirOp
             constructOp =
-                ecoConstruct ctx1 resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argNames
+                ecoConstruct ctx1 resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs
 
             returnOp : MlirOp
             returnOp =
-                ecoReturn ctx1 resultVar
+                ecoReturn ctx1 resultVar ecoValue
 
             region : MlirRegion
             region =
@@ -738,7 +754,7 @@ generateEnum ctx funcName specId tag monoType =
 
         returnOp : MlirOp
         returnOp =
-            ecoReturn ctx1 resultVar
+            ecoReturn ctx1 resultVar ecoValue
 
         region : MlirRegion
         region =
@@ -831,16 +847,16 @@ generateManager ctx funcName specId managerInfo monoType =
         managerOp : MlirOp
         managerOp =
             ecoConstruct ctx3 resultVar 0 5 0
-                [ initResult.resultVar
-                , onEffectsResult.resultVar
-                , onSelfMsgResult.resultVar
-                , cmdMapVar
-                , subMapVar
+                [ ( initResult.resultVar, ecoValue )
+                , ( onEffectsResult.resultVar, ecoValue )
+                , ( onSelfMsgResult.resultVar, ecoValue )
+                , ( cmdMapVar, ecoValue )
+                , ( subMapVar, ecoValue )
                 ]
 
         returnOp : MlirOp
         returnOp =
-            ecoReturn ctx3 resultVar
+            ecoReturn ctx3 resultVar ecoValue
 
         allOps : List MlirOp
         allOps =
@@ -889,13 +905,18 @@ generateCycle ctx funcName specId definitions monoType =
         arity =
             List.length definitions
 
+        -- All definition results are boxed values
+        defVarPairs : List ( String, MlirType )
+        defVarPairs =
+            List.map (\v -> ( v, ecoValue )) defVars
+
         cycleOp : MlirOp
         cycleOp =
-            ecoConstruct ctx1 resultVar 0 arity 0 defVars
+            ecoConstruct ctx1 resultVar 0 arity 0 defVarPairs
 
         returnOp : MlirOp
         returnOp =
-            ecoReturn ctx1 resultVar
+            ecoReturn ctx1 resultVar ecoValue
 
         region : MlirRegion
         region =
@@ -1144,7 +1165,7 @@ generateShader ctx shaderInfo =
         shaderOp : MlirOp
         shaderOp =
             mlirOp "eco.shader" ctx2
-                |> withOperands [ srcVar ]
+                |> withOperands [ ( srcVar, ecoValue ) ]
                 |> withResult var ecoValue
                 |> withAttr "source" (StringAttr shaderInfo.src)
                 |> build
@@ -1195,10 +1216,10 @@ generateList ctx items =
                                 ( consVar, ctx2 ) =
                                     freshVar itemResult.ctx
 
-                                -- Cons tag 1, size 2
+                                -- Cons tag 1, size 2 (head and tail are both boxed values)
                                 consOp : MlirOp
                                 consOp =
-                                    ecoConstruct ctx2 consVar 1 2 0 [ itemResult.resultVar, tailVar ]
+                                    ecoConstruct ctx2 consVar 1 2 0 [ ( itemResult.resultVar, ecoValue ), ( tailVar, ecoValue ) ]
                             in
                             ( itemResult.ops ++ [ consOp ] ++ accOps, consVar, ctx2 )
                         )
@@ -1243,11 +1264,16 @@ generateClosure ctx closureInfo body monoType =
         numCaptured =
             List.length closureInfo.captures
 
+        -- Captures are all boxed values
+        captureVarPairs : List ( String, MlirType )
+        captureVarPairs =
+            List.map (\v -> ( v, ecoValue )) captureVars
+
         -- Create a papCreate op
         papOp : MlirOp
         papOp =
             mlirOp "eco.papCreate" ctx2
-                |> withOperands captureVars
+                |> withOperands captureVarPairs
                 |> withResult resultVar ecoValue
                 |> withAttr "lambda_id" (StringAttr (lambdaIdToString closureInfo.lambdaId))
                 |> withAttr "arity" (IntAttr arity)
@@ -1285,8 +1311,13 @@ generateCall ctx func args =
 
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
+
+                -- All function arguments are boxed values
+                argVarPairs : List ( String, MlirType )
+                argVarPairs =
+                    List.map (\v -> ( v, ecoValue )) argVars
             in
-            { ops = argsOps ++ [ ecoCall ctx2 resultVar specId argVars ]
+            { ops = argsOps ++ [ ecoCall ctx2 resultVar specId argVarPairs ]
             , resultVar = resultVar
             , ctx = ctx2
             }
@@ -1300,10 +1331,15 @@ generateCall ctx func args =
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
+                -- Closure and all args are boxed values
+                allOperandPairs : List ( String, MlirType )
+                allOperandPairs =
+                    ( "%" ++ name, ecoValue ) :: List.map (\v -> ( v, ecoValue )) argVars
+
                 papExtendOp : MlirOp
                 papExtendOp =
                     mlirOp "eco.papExtend" ctx2
-                        |> withOperands (("%" ++ name) :: argVars)
+                        |> withOperands allOperandPairs
                         |> withResult resultVar ecoValue
                         |> build
             in
@@ -1325,10 +1361,15 @@ generateCall ctx func args =
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
+                -- Closure and all args are boxed values
+                allOperandPairs : List ( String, MlirType )
+                allOperandPairs =
+                    ( funcResult.resultVar, ecoValue ) :: List.map (\v -> ( v, ecoValue )) argVars
+
                 papExtendOp : MlirOp
                 papExtendOp =
                     mlirOp "eco.papExtend" ctx2
-                        |> withOperands (funcResult.resultVar :: argVars)
+                        |> withOperands allOperandPairs
                         |> withResult resultVar ecoValue
                         |> build
             in
@@ -1373,10 +1414,15 @@ generateTailCall ctx name args =
                 ( [], [], ctx )
                 args
 
+        -- All arguments are boxed values
+        argVarPairs : List ( String, MlirType )
+        argVarPairs =
+            List.map (\v -> ( v, ecoValue )) argVars
+
         jumpOp : MlirOp
         jumpOp =
             mlirOp "eco.jump" ctx1
-                |> withOperands argVars
+                |> withOperands argVarPairs
                 |> withAttr "target" (StringAttr name)
                 |> asTerminator
                 |> build
@@ -1436,10 +1482,10 @@ generateLet ctx def body =
                 exprResult =
                     generateExpr ctx expr
 
-                -- Bind the name
+                -- Bind the name (the expression result is a boxed value)
                 aliasOp : MlirOp
                 aliasOp =
-                    ecoConstruct exprResult.ctx ("%" ++ name) 0 1 0 [ exprResult.resultVar ]
+                    ecoConstruct exprResult.ctx ("%" ++ name) 0 1 0 [ ( exprResult.resultVar, ecoValue ) ]
 
                 bodyResult : ExprResult
                 bodyResult =
@@ -1465,9 +1511,10 @@ generateDestruct ctx (Mono.MonoDestructor name path _) body =
         ( pathOps, pathVar, ctx1 ) =
             generateMonoPath ctx path
 
+        -- The path result is a boxed value
         aliasOp : MlirOp
         aliasOp =
-            ecoConstruct ctx1 ("%" ++ name) 0 1 0 [ pathVar ]
+            ecoConstruct ctx1 ("%" ++ name) 0 1 0 [ ( pathVar, ecoValue ) ]
 
         bodyResult : ExprResult
         bodyResult =
@@ -1493,7 +1540,7 @@ generateMonoPath ctx path =
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
             in
-            ( subOps ++ [ ecoProject ctx2 resultVar index False subVar ]
+            ( subOps ++ [ ecoProject ctx2 resultVar index False subVar ecoValue ]
             , resultVar
             , ctx2
             )
@@ -1506,7 +1553,7 @@ generateMonoPath ctx path =
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
             in
-            ( subOps ++ [ ecoProject ctx2 resultVar index False subVar ]
+            ( subOps ++ [ ecoProject ctx2 resultVar index False subVar ecoValue ]
             , resultVar
             , ctx2
             )
@@ -1522,11 +1569,11 @@ generateMonoPath ctx path =
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
-                -- Array access operation
+                -- Array access operation (operand is boxed value)
                 arrayAccessOp : MlirOp
                 arrayAccessOp =
                     mlirOp "eco.array_get" ctx2
-                        |> withOperands [ subVar ]
+                        |> withOperands [ ( subVar, ecoValue ) ]
                         |> withResult resultVar ecoValue
                         |> withAttr "index" (IntAttr index)
                         |> build
@@ -1566,8 +1613,13 @@ generateRecordCreate ctx fields layout =
 
         ( resultVar, ctx2 ) =
             freshVar ctx1
+
+        -- All record fields are boxed values
+        fieldVarPairs : List ( String, MlirType )
+        fieldVarPairs =
+            List.map (\v -> ( v, ecoValue )) fieldVars
     in
-    { ops = fieldsOps ++ [ ecoConstruct ctx2 resultVar 0 layout.fieldCount layout.unboxedBitmap fieldVars ]
+    { ops = fieldsOps ++ [ ecoConstruct ctx2 resultVar 0 layout.fieldCount layout.unboxedBitmap fieldVarPairs ]
     , resultVar = resultVar
     , ctx = ctx2
     }
@@ -1583,7 +1635,7 @@ generateRecordAccess ctx record fieldName index isUnboxed =
         ( resultVar, ctx1 ) =
             freshVar recordResult.ctx
     in
-    { ops = recordResult.ops ++ [ ecoProject ctx1 resultVar index isUnboxed recordResult.resultVar ]
+    { ops = recordResult.ops ++ [ ecoProject ctx1 resultVar index isUnboxed recordResult.resultVar ecoValue ]
     , resultVar = resultVar
     , ctx = ctx1
     }
@@ -1600,7 +1652,7 @@ generateRecordUpdate ctx record updates layout =
         ( resultVar, ctx1 ) =
             freshVar recordResult.ctx
     in
-    { ops = recordResult.ops ++ [ ecoConstruct ctx1 resultVar 0 1 0 [ recordResult.resultVar ] ]
+    { ops = recordResult.ops ++ [ ecoConstruct ctx1 resultVar 0 1 0 [ ( recordResult.resultVar, ecoValue ) ] ]
     , resultVar = resultVar
     , ctx = ctx1
     }
@@ -1618,8 +1670,13 @@ generateTupleCreate ctx elements layout =
 
         ( resultVar, ctx2 ) =
             freshVar ctx1
+
+        -- All tuple elements are boxed values
+        elemVarPairs : List ( String, MlirType )
+        elemVarPairs =
+            List.map (\v -> ( v, ecoValue )) elemVars
     in
-    { ops = elemOps ++ [ ecoConstruct ctx2 resultVar 0 layout.arity layout.unboxedBitmap elemVars ]
+    { ops = elemOps ++ [ ecoConstruct ctx2 resultVar 0 layout.arity layout.unboxedBitmap elemVarPairs ]
     , resultVar = resultVar
     , ctx = ctx2
     }
@@ -1635,7 +1692,7 @@ generateTupleAccess ctx tuple index isUnboxed =
         ( resultVar, ctx1 ) =
             freshVar tupleResult.ctx
     in
-    { ops = tupleResult.ops ++ [ ecoProject ctx1 resultVar index isUnboxed tupleResult.resultVar ]
+    { ops = tupleResult.ops ++ [ ecoProject ctx1 resultVar index isUnboxed tupleResult.resultVar ecoValue ]
     , resultVar = resultVar
     , ctx = ctx1
     }
@@ -1657,8 +1714,13 @@ generateCustomCreate ctx ctorName tag fields layout =
         arity : Int
         arity =
             List.length fields
+
+        -- All fields are boxed values
+        fieldVarPairs : List ( String, MlirType )
+        fieldVarPairs =
+            List.map (\v -> ( v, ecoValue )) fieldVars
     in
-    { ops = fieldsOps ++ [ ecoConstruct ctx2 resultVar tag arity layout.unboxedBitmap fieldVars ]
+    { ops = fieldsOps ++ [ ecoConstruct ctx2 resultVar tag arity layout.unboxedBitmap fieldVarPairs ]
     , resultVar = resultVar
     , ctx = ctx2
     }

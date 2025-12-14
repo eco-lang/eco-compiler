@@ -1,0 +1,139 @@
+#!/bin/bash
+#
+# elm2llvm - Compile Elm source to LLVM IR
+#
+# Usage: elm2llvm <input.elm> [output.ll]
+#
+# Run this from a directory containing elm.json (e.g., compiler/examples/)
+#
+
+set -e
+
+# Hardcoded paths
+GUIDA="/work/compiler/bin/index.js"
+ECOC="/work/build/runtime/src/codegen/ecoc"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m' # No Color
+
+usage() {
+    echo "Usage: $0 <input.elm> [output.ll]"
+    echo ""
+    echo "Compile Elm source to LLVM IR"
+    echo "Run from directory containing elm.json"
+    echo ""
+    echo "Options:"
+    echo "  --emit=TYPE  Output type: llvm (default), mlir, mlir-eco, mlir-llvm, jit"
+    echo "  --keep-mlir  Keep intermediate .mlir file"
+    echo "  -h, --help   Show this help message"
+    exit 1
+}
+
+# Parse arguments
+INPUT=""
+OUTPUT=""
+EMIT="llvm"
+KEEP_MLIR=0
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --emit=*)
+            EMIT="${1#*=}"
+            shift
+            ;;
+        --keep-mlir)
+            KEEP_MLIR=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            ;;
+        -*)
+            echo -e "${RED}Error: Unknown option $1${NC}" >&2
+            usage
+            ;;
+        *)
+            if [[ -z "$INPUT" ]]; then
+                INPUT="$1"
+            elif [[ -z "$OUTPUT" ]]; then
+                OUTPUT="$1"
+            else
+                echo -e "${RED}Error: Too many arguments${NC}" >&2
+                usage
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Validate input
+if [[ -z "$INPUT" ]]; then
+    echo -e "${RED}Error: No input file specified${NC}" >&2
+    usage
+fi
+
+if [[ ! -f "$INPUT" ]]; then
+    echo -e "${RED}Error: Input file '$INPUT' not found${NC}" >&2
+    exit 1
+fi
+
+if [[ ! -f "elm.json" ]]; then
+    echo -e "${RED}Error: elm.json not found in current directory${NC}" >&2
+    echo "Run this script from a directory containing elm.json" >&2
+    exit 1
+fi
+
+# Determine output filename
+BASENAME="${INPUT%.*}"
+if [[ -z "$OUTPUT" ]]; then
+    case "$EMIT" in
+        llvm)      OUTPUT="${BASENAME}.ll" ;;
+        mlir*)     OUTPUT="${BASENAME}.out.mlir" ;;
+        jit)       OUTPUT="" ;;
+        *)         OUTPUT="${BASENAME}.ll" ;;
+    esac
+fi
+
+MLIR_FILE="${BASENAME}.mlir"
+
+# Step 1: Compile Elm to MLIR
+echo -e "${YELLOW}[1/2]${NC} Compiling ${INPUT} -> ${MLIR_FILE}"
+if ! node "$GUIDA" make "$INPUT" --output="$MLIR_FILE" 2>&1; then
+    echo -e "${RED}Error: Elm compilation failed${NC}" >&2
+    exit 1
+fi
+
+if [[ ! -f "$MLIR_FILE" ]]; then
+    echo -e "${RED}Error: MLIR output not generated${NC}" >&2
+    exit 1
+fi
+
+# Step 2: Compile MLIR to LLVM IR (or run JIT)
+if [[ "$EMIT" == "jit" ]]; then
+    echo -e "${YELLOW}[2/2]${NC} JIT executing ${MLIR_FILE}"
+    "$ECOC" "$MLIR_FILE" --emit=jit
+    RESULT=$?
+else
+    echo -e "${YELLOW}[2/2]${NC} Compiling ${MLIR_FILE} -> ${OUTPUT}"
+    "$ECOC" "$MLIR_FILE" --emit="$EMIT" > "$OUTPUT"
+    RESULT=$?
+fi
+
+# Cleanup intermediate file
+if [[ $KEEP_MLIR -eq 0 && "$EMIT" != "jit" ]]; then
+    rm -f "$MLIR_FILE"
+fi
+
+if [[ $RESULT -eq 0 ]]; then
+    if [[ -n "$OUTPUT" ]]; then
+        echo -e "${GREEN}Success:${NC} Generated $OUTPUT"
+    else
+        echo -e "${GREEN}Success:${NC} JIT execution completed"
+    fi
+else
+    echo -e "${RED}Error: Compilation failed${NC}" >&2
+    exit 1
+fi
