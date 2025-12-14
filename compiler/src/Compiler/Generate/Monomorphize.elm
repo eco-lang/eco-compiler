@@ -147,58 +147,56 @@ processWorklist toptNodes state =
 
         (SpecializeGlobal global monoType maybeLambda) :: rest ->
             let
-                specKey =
-                    Mono.SpecKey global monoType maybeLambda
-
-                comparableKey =
-                    Mono.toComparableSpecKey specKey
+                -- Get or create specId first
+                ( specId, newRegistry ) =
+                    Mono.getOrCreateSpecId global monoType maybeLambda state.registry
             in
-            case Dict.get identity comparableKey state.registry.mapping of
-                Just _ ->
-                    -- Already specialized or in progress, skip
-                    processWorklist toptNodes { state | worklist = rest }
+            if EverySet.member identity specId state.inProgress then
+                -- Already being processed, skip to avoid cycles
+                processWorklist toptNodes { state | worklist = rest, registry = newRegistry }
 
-                Nothing ->
-                    -- Allocate new SpecId
-                    let
-                        ( specId, newRegistry ) =
-                            Mono.getOrCreateSpecId global monoType maybeLambda state.registry
+            else if Dict.member identity specId state.nodes then
+                -- Already done, skip
+                processWorklist toptNodes { state | worklist = rest, registry = newRegistry }
 
-                        stateWithId =
-                            { state
-                                | registry = newRegistry
-                                , inProgress = EverySet.insert identity specId state.inProgress
-                                , worklist = rest
-                            }
+            else
+                -- New specialization to process
+                let
+                    stateWithId =
+                        { state
+                            | registry = newRegistry
+                            , inProgress = EverySet.insert identity specId state.inProgress
+                            , worklist = rest
+                        }
 
-                        toptGlobal =
-                            monoGlobalToTOpt global
-                    in
-                    case Dict.get TOpt.toComparableGlobal toptGlobal toptNodes of
-                        Nothing ->
-                            -- External/kernel function
-                            let
-                                newState =
-                                    { stateWithId
-                                        | nodes = Dict.insert identity specId (Mono.MonoExtern monoType) stateWithId.nodes
-                                        , inProgress = EverySet.remove identity specId stateWithId.inProgress
-                                    }
-                            in
-                            processWorklist toptNodes newState
+                    toptGlobal =
+                        monoGlobalToTOpt global
+                in
+                case Dict.get TOpt.toComparableGlobal toptGlobal toptNodes of
+                    Nothing ->
+                        -- External/kernel function
+                        let
+                            newState =
+                                { stateWithId
+                                    | nodes = Dict.insert identity specId (Mono.MonoExtern monoType) stateWithId.nodes
+                                    , inProgress = EverySet.remove identity specId stateWithId.inProgress
+                                }
+                        in
+                        processWorklist toptNodes newState
 
-                        Just toptNode ->
-                            -- Specialize the node
-                            let
-                                ( monoNode, stateAfterSpec ) =
-                                    specializeNode toptNode monoType maybeLambda stateWithId
+                    Just toptNode ->
+                        -- Specialize the node
+                        let
+                            ( monoNode, stateAfterSpec ) =
+                                specializeNode toptNode monoType maybeLambda stateWithId
 
-                                newState =
-                                    { stateAfterSpec
-                                        | nodes = Dict.insert identity specId monoNode stateAfterSpec.nodes
-                                        , inProgress = EverySet.remove identity specId stateAfterSpec.inProgress
-                                    }
-                            in
-                            processWorklist toptNodes newState
+                            newState =
+                                { stateAfterSpec
+                                    | nodes = Dict.insert identity specId monoNode stateAfterSpec.nodes
+                                    , inProgress = EverySet.remove identity specId stateAfterSpec.inProgress
+                                }
+                        in
+                        processWorklist toptNodes newState
 
 
 

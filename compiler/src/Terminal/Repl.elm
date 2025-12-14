@@ -618,7 +618,7 @@ buildAndGenerate : FilePath -> Bool -> IO.ReplState -> Output -> BW.Scope -> Tas
 buildAndGenerate root ansi newState output scope =
     Stuff.withRootLock root
         (Task.run
-            (Task.eio Exit.ReplBadDetails (Details.load Reporting.silent scope root)
+            (Task.eio Exit.ReplBadDetails (Details.load Reporting.silent scope root False)
                 |> Task.andThen (buildAndGenerateWithDetails root ansi newState output)
             )
         )

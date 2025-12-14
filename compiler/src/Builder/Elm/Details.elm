@@ -73,6 +73,7 @@ type alias DetailsData =
     , locals : Dict String ModuleName.Raw Local
     , foreigns : Dict String ModuleName.Raw Foreign
     , extras : Extras
+    , deps : Dict ( String, String ) Pkg.Name V.Version
     }
 
 
@@ -151,25 +152,62 @@ loadObjects root (Details detailsData) =
 
 
 {-| Load typed global objects for MLIR backend.
-For now, typed objects are always loaded from cache since we don't store them in Extras.
+Loads both local typed objects and typed objects from all package dependencies.
 -}
 loadTypedObjects : FilePath -> Details -> Task Never (MVar (Maybe TOpt.GlobalGraph))
-loadTypedObjects root _ =
-    -- Typed objects are not cached in memory, always load from disk
-    -- The file may not exist if typed optimization hasn't been run
+loadTypedObjects root (Details detailsData) =
     fork (Utils.maybeEncoder TOpt.globalGraphEncoder)
-        (File.readBinary TOpt.globalGraphDecoder (Stuff.typedObjects root)
-            |> Task.map
-                (\maybeGraph ->
-                    -- If the file doesn't exist, return an empty graph
-                    case maybeGraph of
-                        Just g ->
-                            Just g
-
-                        Nothing ->
-                            Just TOpt.emptyGlobalGraph
-                )
+        (Stuff.getPackageCache
+            |> Task.andThen (loadAllTypedObjects root detailsData.deps)
         )
+
+
+{-| Load typed objects from local project and all packages.
+-}
+loadAllTypedObjects : FilePath -> Dict ( String, String ) Pkg.Name V.Version -> Stuff.PackageCache -> Task Never (Maybe TOpt.GlobalGraph)
+loadAllTypedObjects root deps cache =
+    -- Load local typed objects
+    File.readBinary TOpt.globalGraphDecoder (Stuff.typedObjects root)
+        |> Task.andThen
+            (\maybeLocal ->
+                -- Load typed objects from all dependencies
+                loadPackageTypedObjects cache deps
+                    |> Task.map (combineTypedObjects maybeLocal)
+            )
+
+
+{-| Load typed objects from all package dependencies.
+-}
+loadPackageTypedObjects : Stuff.PackageCache -> Dict ( String, String ) Pkg.Name V.Version -> Task Never TOpt.GlobalGraph
+loadPackageTypedObjects cache deps =
+    Utils.mapTraverseWithKey identity Pkg.compareName (loadSinglePackageTypedObjects cache) deps
+        |> Task.map (\loadedGraphs -> Dict.foldl compare (\_ graph acc -> TOpt.addGlobalGraph graph acc) TOpt.emptyGlobalGraph loadedGraphs)
+
+
+{-| Load typed objects from a single package.
+-}
+loadSinglePackageTypedObjects : Stuff.PackageCache -> Pkg.Name -> V.Version -> Task Never TOpt.GlobalGraph
+loadSinglePackageTypedObjects cache pkg vsn =
+    let
+        path : String
+        path =
+            Stuff.typedPackageArtifacts cache pkg vsn
+    in
+    File.readBinary TOpt.globalGraphDecoder path
+        |> Task.map (Maybe.withDefault TOpt.emptyGlobalGraph)
+
+
+{-| Combine local and package typed objects.
+-}
+combineTypedObjects : Maybe TOpt.GlobalGraph -> TOpt.GlobalGraph -> Maybe TOpt.GlobalGraph
+combineTypedObjects maybeLocal packageGraphs =
+    case maybeLocal of
+        Just local ->
+            Just (TOpt.addGlobalGraph local packageGraphs)
+
+        Nothing ->
+            -- Return package graphs (which may be empty)
+            Just packageGraphs
 
 
 loadInterfaces : FilePath -> Details -> Task Never (MVar (Maybe Interfaces))
@@ -201,7 +239,7 @@ runVerifyInstall scope root cache manager connection registry outline time =
 
         env : Env
         env =
-            Env { key = key, scope = scope, root = root, cache = cache, manager = manager, connection = connection, registry = registry }
+            Env { key = key, scope = scope, root = root, cache = cache, manager = manager, connection = connection, registry = registry, needsTypedOpt = False }
     in
     case outline of
         Outline.Pkg pkg ->
@@ -215,41 +253,41 @@ runVerifyInstall scope root cache manager connection registry outline time =
 -- LOAD -- used by Make, Repl, Reactor, Test
 
 
-load : Reporting.Style -> BW.Scope -> FilePath -> Task Never (Result Exit.Details Details)
-load style scope root =
+load : Reporting.Style -> BW.Scope -> FilePath -> Bool -> Task Never (Result Exit.Details Details)
+load style scope root needsTypedOpt =
     File.getTime (root ++ "/elm.json")
-        |> Task.andThen (loadWithTime style scope root)
+        |> Task.andThen (loadWithTime style scope root needsTypedOpt)
 
 
-loadWithTime : Reporting.Style -> BW.Scope -> FilePath -> File.Time -> Task Never (Result Exit.Details Details)
-loadWithTime style scope root newTime =
+loadWithTime : Reporting.Style -> BW.Scope -> FilePath -> Bool -> File.Time -> Task Never (Result Exit.Details Details)
+loadWithTime style scope root needsTypedOpt newTime =
     File.readBinary detailsDecoder (Stuff.details root)
-        |> Task.andThen (handleCachedDetails style scope root newTime)
+        |> Task.andThen (handleCachedDetails style scope root needsTypedOpt newTime)
 
 
-handleCachedDetails : Reporting.Style -> BW.Scope -> FilePath -> File.Time -> Maybe Details -> Task Never (Result Exit.Details Details)
-handleCachedDetails style scope root newTime maybeDetails =
+handleCachedDetails : Reporting.Style -> BW.Scope -> FilePath -> Bool -> File.Time -> Maybe Details -> Task Never (Result Exit.Details Details)
+handleCachedDetails style scope root needsTypedOpt newTime maybeDetails =
     case maybeDetails of
         Nothing ->
-            generate style scope root newTime
+            generate style scope root needsTypedOpt newTime
 
         Just (Details detailsData) ->
             if detailsData.time == newTime then
                 Task.succeed (Ok (Details { detailsData | buildID = detailsData.buildID + 1 }))
 
             else
-                generate style scope root newTime
+                generate style scope root needsTypedOpt newTime
 
 
 
 -- GENERATE
 
 
-generate : Reporting.Style -> BW.Scope -> FilePath -> File.Time -> Task Never (Result Exit.Details Details)
-generate style scope root time =
+generate : Reporting.Style -> BW.Scope -> FilePath -> Bool -> File.Time -> Task Never (Result Exit.Details Details)
+generate style scope root needsTypedOpt time =
     Reporting.trackDetails style
         (\key ->
-            initEnv key scope root
+            initEnv key scope root needsTypedOpt
                 |> Task.andThen (verifyOutline time)
         )
 
@@ -281,6 +319,7 @@ type alias EnvData =
     , manager : Http.Manager
     , connection : Solver.Connection
     , registry : Registry.Registry
+    , needsTypedOpt : Bool
     }
 
 
@@ -288,37 +327,37 @@ type Env
     = Env EnvData
 
 
-initEnv : Reporting.DKey -> BW.Scope -> FilePath -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
-initEnv key scope root =
+initEnv : Reporting.DKey -> BW.Scope -> FilePath -> Bool -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
+initEnv key scope root needsTypedOpt =
     fork resultRegistryProblemEnvEncoder Solver.initEnv
-        |> Task.andThen (initEnvWithMVar key scope root)
+        |> Task.andThen (initEnvWithMVar key scope root needsTypedOpt)
 
 
-initEnvWithMVar : Reporting.DKey -> BW.Scope -> FilePath -> MVar (Result Exit.RegistryProblem Solver.Env) -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
-initEnvWithMVar key scope root mvar =
+initEnvWithMVar : Reporting.DKey -> BW.Scope -> FilePath -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
+initEnvWithMVar key scope root needsTypedOpt mvar =
     Outline.read root
-        |> Task.andThen (handleOutlineForEnv key scope root mvar)
+        |> Task.andThen (handleOutlineForEnv key scope root needsTypedOpt mvar)
 
 
-handleOutlineForEnv : Reporting.DKey -> BW.Scope -> FilePath -> MVar (Result Exit.RegistryProblem Solver.Env) -> Result Exit.Outline Outline.Outline -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
-handleOutlineForEnv key scope root mvar eitherOutline =
+handleOutlineForEnv : Reporting.DKey -> BW.Scope -> FilePath -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Result Exit.Outline Outline.Outline -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
+handleOutlineForEnv key scope root needsTypedOpt mvar eitherOutline =
     case eitherOutline of
         Err problem ->
             Task.succeed (Err (Exit.DetailsBadOutline problem))
 
         Ok outline ->
             Utils.readMVar resultRegistryProblemEnvDecoder mvar
-                |> Task.map (combineEnvAndOutline key scope root outline)
+                |> Task.map (combineEnvAndOutline key scope root needsTypedOpt outline)
 
 
-combineEnvAndOutline : Reporting.DKey -> BW.Scope -> FilePath -> Outline.Outline -> Result Exit.RegistryProblem Solver.Env -> Result Exit.Details ( Env, Outline.Outline )
-combineEnvAndOutline key scope root outline maybeEnv =
+combineEnvAndOutline : Reporting.DKey -> BW.Scope -> FilePath -> Bool -> Outline.Outline -> Result Exit.RegistryProblem Solver.Env -> Result Exit.Details ( Env, Outline.Outline )
+combineEnvAndOutline key scope root needsTypedOpt outline maybeEnv =
     case maybeEnv of
         Err problem ->
             Err (Exit.DetailsCannotGetRegistry problem)
 
         Ok (Solver.Env env) ->
-            Ok ( Env { key = key, scope = scope, root = root, cache = env.cache, manager = env.manager, connection = env.connection, registry = env.registry }, outline )
+            Ok ( Env { key = key, scope = scope, root = root, cache = env.cache, manager = env.manager, connection = env.connection, registry = env.registry, needsTypedOpt = needsTypedOpt }, outline )
 
 
 
@@ -457,11 +496,16 @@ fork encoder work =
 
 verifyDependencies : Env -> File.Time -> ValidOutline -> Dict ( String, String ) Pkg.Name Solver.Details -> Dict ( String, String ) Pkg.Name a -> Task Exit.Details Details
 verifyDependencies ((Env envData) as env) time outline solution directDeps =
+    let
+        depVersions : Dict ( String, String ) Pkg.Name V.Version
+        depVersions =
+            Dict.map (\_ (Solver.Details v _) -> v) solution
+    in
     Task.eio identity
         (Reporting.report envData.key (Reporting.DStart (Dict.size solution))
             |> Task.andThen (\_ -> Utils.newEmptyMVar)
             |> Task.andThen (verifyAllDeps env solution)
-            |> Task.andThen (finalizeDependencies envData.scope envData.root time outline directDeps)
+            |> Task.andThen (finalizeDependencies envData.scope envData.root time outline directDeps depVersions)
         )
 
 
@@ -480,8 +524,8 @@ verifyAllDeps ((Env envData) as env) solution mvar =
 
 {-| Finalize dependency verification: build artifacts or report errors.
 -}
-finalizeDependencies : BW.Scope -> FilePath -> File.Time -> ValidOutline -> Dict ( String, String ) Pkg.Name a -> Dict ( String, String ) Pkg.Name Dep -> Task Never (Result Exit.Details Details)
-finalizeDependencies scope root time outline directDeps deps =
+finalizeDependencies : BW.Scope -> FilePath -> File.Time -> ValidOutline -> Dict ( String, String ) Pkg.Name a -> Dict ( String, String ) Pkg.Name V.Version -> Dict ( String, String ) Pkg.Name Dep -> Task Never (Result Exit.Details Details)
+finalizeDependencies scope root time outline directDeps depVersions deps =
     case Utils.sequenceDictResult identity Pkg.compareName deps of
         Err _ ->
             Stuff.getElmHome
@@ -494,7 +538,7 @@ finalizeDependencies scope root time outline directDeps deps =
                     )
 
         Ok artifacts ->
-            writeVerifiedArtifacts scope root time outline directDeps artifacts
+            writeVerifiedArtifacts scope root time outline directDeps artifacts depVersions
 
 
 {-| Write verified artifacts to disk.
@@ -506,8 +550,9 @@ writeVerifiedArtifacts :
     -> ValidOutline
     -> Dict ( String, String ) Pkg.Name a
     -> Dict ( String, String ) Pkg.Name Artifacts
+    -> Dict ( String, String ) Pkg.Name V.Version
     -> Task Never (Result Exit.Details Details)
-writeVerifiedArtifacts scope root time outline directDeps artifacts =
+writeVerifiedArtifacts scope root time outline directDeps artifacts depVersions =
     let
         objs : Opt.GlobalGraph
         objs =
@@ -530,6 +575,7 @@ writeVerifiedArtifacts scope root time outline directDeps artifacts =
                 , locals = Dict.empty
                 , foreigns = foreigns
                 , extras = ArtifactsFresh ifaces objs
+                , deps = depVersions
                 }
     in
     BW.writeBinary Opt.globalGraphEncoder scope (Stuff.objects root) objs
@@ -599,6 +645,7 @@ type alias VerifyDepContext =
     , vsn : V.Version
     , details : Solver.Details
     , fingerprint : Dict ( String, String ) Pkg.Name V.Version
+    , needsTypedOpt : Bool
     }
 
 
@@ -611,7 +658,7 @@ verifyDep (Env envData) depsMVar solution pkg ((Solver.Details vsn directDeps) a
 
         ctx : VerifyDepContext
         ctx =
-            { key = envData.key, cache = envData.cache, manager = envData.manager, depsMVar = depsMVar, pkg = pkg, vsn = vsn, details = details, fingerprint = fingerprint }
+            { key = envData.key, cache = envData.cache, manager = envData.manager, depsMVar = depsMVar, pkg = pkg, vsn = vsn, details = details, fingerprint = fingerprint, needsTypedOpt = envData.needsTypedOpt }
     in
     Utils.dirDoesDirectoryExist (Stuff.package envData.cache pkg vsn ++ "/src")
         |> Task.andThen (handleDepExistence ctx)
@@ -642,14 +689,35 @@ handleArtifactCache : VerifyDepContext -> Maybe ArtifactCache -> Task Never Dep
 handleArtifactCache ctx maybeCache =
     case maybeCache of
         Nothing ->
-            build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint EverySet.empty
+            build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint EverySet.empty ctx.needsTypedOpt
 
         Just (ArtifactCache fingerprints artifacts) ->
             if EverySet.member toComparableFingerprint ctx.fingerprint fingerprints then
-                Task.map (\_ -> Ok artifacts) (Reporting.report ctx.key Reporting.DBuilt)
+                -- Check if we need typed artifacts but don't have them
+                if ctx.needsTypedOpt then
+                    checkTypedArtifactsExist ctx fingerprints artifacts
+
+                else
+                    Task.map (\_ -> Ok artifacts) (Reporting.report ctx.key Reporting.DBuilt)
 
             else
-                build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint fingerprints
+                build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint fingerprints ctx.needsTypedOpt
+
+
+{-| Check if typed artifacts exist, rebuild if needed.
+-}
+checkTypedArtifactsExist : VerifyDepContext -> EverySet (List ( ( String, String ), ( Int, Int, Int ) )) Fingerprint -> Artifacts -> Task Never Dep
+checkTypedArtifactsExist ctx fingerprints artifacts =
+    File.exists (Stuff.typedPackageArtifacts ctx.cache ctx.pkg ctx.vsn)
+        |> Task.andThen
+            (\exists ->
+                if exists then
+                    Task.map (\_ -> Ok artifacts) (Reporting.report ctx.key Reporting.DBuilt)
+
+                else
+                    -- Rebuild with typed optimization
+                    build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint fingerprints True
+            )
 
 
 downloadAndBuildDep : VerifyDepContext -> Task Never Dep
@@ -673,7 +741,7 @@ handleDownloadResult ctx result =
 
         Ok () ->
             Reporting.report ctx.key (Reporting.DReceived ctx.pkg ctx.vsn)
-                |> Task.andThen (\_ -> build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint EverySet.empty)
+                |> Task.andThen (\_ -> build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint EverySet.empty ctx.needsTypedOpt)
 
 
 
@@ -707,6 +775,7 @@ type alias BuildContext =
     , vsn : V.Version
     , fingerprint : Fingerprint
     , fingerprints : EverySet (List ( ( String, String ), ( Int, Int, Int ) )) Fingerprint
+    , needsTypedOpt : Bool
     }
 
 
@@ -718,12 +787,13 @@ build :
     -> Solver.Details
     -> Fingerprint
     -> EverySet (List ( ( String, String ), ( Int, Int, Int ) )) Fingerprint
+    -> Bool
     -> Task Never Dep
-build key cache depsMVar pkg (Solver.Details vsn _) f fs =
+build key cache depsMVar pkg (Solver.Details vsn _) f fs needsTypedOpt =
     let
         ctx : BuildContext
         ctx =
-            { key = key, cache = cache, pkg = pkg, vsn = vsn, fingerprint = f, fingerprints = fs }
+            { key = key, cache = cache, pkg = pkg, vsn = vsn, fingerprint = f, fingerprints = fs, needsTypedOpt = needsTypedOpt }
     in
     Outline.read (Stuff.package cache pkg vsn)
         |> Task.andThen
@@ -865,7 +935,7 @@ forkCompileModules :
     -> MVar (Dict String ModuleName.Raw (MVar (Maybe DResult)))
     -> Task Never Dep
 forkCompileModules ctx exposedDict docsStatus statuses rmvar =
-    Utils.mapTraverse identity compare (fork (BE.maybe dResultEncoder) << compile ctx.pkg rmvar) statuses
+    Utils.mapTraverse identity compare (fork (BE.maybe dResultEncoder) << compile ctx.pkg ctx.needsTypedOpt rmvar) statuses
         |> Task.andThen (waitAndCollectCompileResults ctx exposedDict docsStatus rmvar)
 
 
@@ -896,6 +966,10 @@ writePackageArtifacts ctx exposedDict docsStatus maybeResults =
                 path =
                     Stuff.package ctx.cache ctx.pkg ctx.vsn ++ "/artifacts.dat"
 
+                typedPath : String
+                typedPath =
+                    Stuff.typedPackageArtifacts ctx.cache ctx.pkg ctx.vsn
+
                 ifaces : Dict String ModuleName.Raw I.DependencyInterface
                 ifaces =
                     gatherInterfaces exposedDict results
@@ -914,6 +988,19 @@ writePackageArtifacts ctx exposedDict docsStatus maybeResults =
             in
             writeDocs ctx.cache ctx.pkg ctx.vsn docsStatus results
                 |> Task.andThen (\_ -> File.writeBinary artifactCacheEncoder path (ArtifactCache fingerprints artifacts))
+                |> Task.andThen
+                    (\_ ->
+                        if ctx.needsTypedOpt then
+                            let
+                                typedObjects : TOpt.GlobalGraph
+                                typedObjects =
+                                    gatherTypedObjects results
+                            in
+                            File.writeBinary TOpt.globalGraphEncoder typedPath typedObjects
+
+                        else
+                            Task.succeed ()
+                    )
                 |> Task.andThen (\_ -> Reporting.report ctx.key Reporting.DBuilt)
                 |> Task.map (\_ -> Ok artifacts)
 
@@ -930,7 +1017,7 @@ gatherObjects results =
 addLocalGraph : ModuleName.Raw -> DResult -> Opt.GlobalGraph -> Opt.GlobalGraph
 addLocalGraph name status graph =
     case status of
-        RLocal _ objs _ ->
+        RLocal _ objs _ _ ->
             Opt.addLocalGraph objs graph
 
         RForeign _ ->
@@ -938,6 +1025,37 @@ addLocalGraph name status graph =
 
         RKernelLocal cs ->
             Opt.addKernel (Name.getKernel name) cs graph
+
+        RKernelForeign ->
+            graph
+
+
+{-| Gather typed objects from DResult dictionary for MLIR backend.
+-}
+gatherTypedObjects : Dict String ModuleName.Raw DResult -> TOpt.GlobalGraph
+gatherTypedObjects results =
+    Dict.foldr compare addTypedLocalGraph TOpt.emptyGlobalGraph results
+
+
+{-| Add a typed local graph to the global graph.
+-}
+addTypedLocalGraph : ModuleName.Raw -> DResult -> TOpt.GlobalGraph -> TOpt.GlobalGraph
+addTypedLocalGraph _ status graph =
+    case status of
+        RLocal _ _ maybeTypedObjs _ ->
+            case maybeTypedObjs of
+                Just typedObjs ->
+                    TOpt.addLocalGraph typedObjs graph
+
+                Nothing ->
+                    graph
+
+        RForeign _ ->
+            graph
+
+        RKernelLocal _ ->
+            -- Kernel modules don't have typed optimized output
+            graph
 
         RKernelForeign ->
             graph
@@ -968,7 +1086,7 @@ gatherInterfaces exposed artifacts =
 toLocalInterface : (I.Interface -> a) -> DResult -> Maybe a
 toLocalInterface func result =
     case result of
-        RLocal iface _ _ ->
+        RLocal iface _ _ _ ->
             Just (func iface)
 
         RForeign _ ->
@@ -1186,14 +1304,14 @@ getDepHome fi =
 
 
 type DResult
-    = RLocal I.Interface Opt.LocalGraph (Maybe Docs.Module)
+    = RLocal I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe Docs.Module)
     | RForeign I.Interface
     | RKernelLocal (List Kernel.Chunk)
     | RKernelForeign
 
 
-compile : Pkg.Name -> MVar (Dict String ModuleName.Raw (MVar (Maybe DResult))) -> Status -> Task Never (Maybe DResult)
-compile pkg mvar status =
+compile : Pkg.Name -> Bool -> MVar (Dict String ModuleName.Raw (MVar (Maybe DResult))) -> Status -> Task Never (Maybe DResult)
+compile pkg needsTypedOpt mvar status =
     case status of
         SLocal docsStatus deps modul ->
             Utils.readMVar moduleNameRawMVarMaybeDResultDecoder mvar
@@ -1204,25 +1322,18 @@ compile pkg mvar status =
                                 (\maybeResults ->
                                     case Utils.sequenceDictMaybe identity compare maybeResults of
                                         Just results ->
-                                            Compile.compile pkg (Utils.mapMapMaybe identity compare getInterface results) modul
-                                                |> Task.map
-                                                    (\result ->
-                                                        case result of
-                                                            Err _ ->
-                                                                Nothing
+                                            let
+                                                ifaces : Dict String ModuleName.Raw I.Interface
+                                                ifaces =
+                                                    Utils.mapMapMaybe identity compare getInterface results
+                                            in
+                                            if needsTypedOpt then
+                                                Compile.compileTyped pkg ifaces modul
+                                                    |> Task.map (handleTypedCompileResult pkg docsStatus)
 
-                                                            Ok (Compile.Artifacts canonical annotations objects) ->
-                                                                let
-                                                                    ifaces : I.Interface
-                                                                    ifaces =
-                                                                        I.fromModule pkg canonical annotations
-
-                                                                    docs : Maybe Docs.Module
-                                                                    docs =
-                                                                        makeDocs docsStatus canonical
-                                                                in
-                                                                Just (RLocal ifaces objects docs)
-                                                    )
+                                            else
+                                                Compile.compile pkg ifaces modul
+                                                    |> Task.map (handleCompileResult pkg docsStatus)
 
                                         Nothing ->
                                             Task.succeed Nothing
@@ -1239,10 +1350,52 @@ compile pkg mvar status =
             Task.succeed (Just RKernelForeign)
 
 
+{-| Handle result of normal compilation (without typed optimization).
+-}
+handleCompileResult : Pkg.Name -> DocsStatus -> Result e Compile.Artifacts -> Maybe DResult
+handleCompileResult pkg docsStatus result =
+    case result of
+        Err _ ->
+            Nothing
+
+        Ok (Compile.Artifacts canonical annotations objects) ->
+            let
+                iface : I.Interface
+                iface =
+                    I.fromModule pkg canonical annotations
+
+                docs : Maybe Docs.Module
+                docs =
+                    makeDocs docsStatus canonical
+            in
+            Just (RLocal iface objects Nothing docs)
+
+
+{-| Handle result of typed compilation (with typed optimization for MLIR).
+-}
+handleTypedCompileResult : Pkg.Name -> DocsStatus -> Result e Compile.TypedArtifacts -> Maybe DResult
+handleTypedCompileResult pkg docsStatus result =
+    case result of
+        Err _ ->
+            Nothing
+
+        Ok (Compile.TypedArtifacts data) ->
+            let
+                iface : I.Interface
+                iface =
+                    I.fromModule pkg data.canonical data.annotations
+
+                docs : Maybe Docs.Module
+                docs =
+                    makeDocs docsStatus data.canonical
+            in
+            Just (RLocal iface data.objects (Just data.typedObjects) docs)
+
+
 getInterface : DResult -> Maybe I.Interface
 getInterface result =
     case result of
-        RLocal iface _ _ ->
+        RLocal iface _ _ _ ->
             Just iface
 
         RForeign iface ->
@@ -1306,7 +1459,7 @@ writeDocs cache pkg vsn status results =
 toDocs : DResult -> Maybe Docs.Module
 toDocs result =
     case result of
-        RLocal _ _ docs ->
+        RLocal _ _ _ docs ->
             docs
 
         RForeign _ ->
@@ -1375,18 +1528,49 @@ detailsEncoder (Details detailsData) =
         , BE.assocListDict compare ModuleName.rawEncoder localEncoder detailsData.locals
         , BE.assocListDict compare ModuleName.rawEncoder foreignEncoder detailsData.foreigns
         , extrasEncoder detailsData.extras
+        , BE.assocListDict compare Pkg.nameEncoder V.versionEncoder detailsData.deps
         ]
 
 
 detailsDecoder : Bytes.Decode.Decoder Details
 detailsDecoder =
-    BD.map6 (\time outline buildID locals foreigns extras -> Details { time = time, outline = outline, buildID = buildID, locals = locals, foreigns = foreigns, extras = extras })
-        File.timeDecoder
-        validOutlineDecoder
-        BD.int
-        (BD.assocListDict identity ModuleName.rawDecoder localDecoder)
-        (BD.assocListDict identity ModuleName.rawDecoder foreignDecoder)
-        extrasDecoder
+    File.timeDecoder
+        |> Bytes.Decode.andThen
+            (\time ->
+                validOutlineDecoder
+                    |> Bytes.Decode.andThen
+                        (\outline ->
+                            BD.int
+                                |> Bytes.Decode.andThen
+                                    (\buildID ->
+                                        BD.assocListDict identity ModuleName.rawDecoder localDecoder
+                                            |> Bytes.Decode.andThen
+                                                (\locals ->
+                                                    BD.assocListDict identity ModuleName.rawDecoder foreignDecoder
+                                                        |> Bytes.Decode.andThen
+                                                            (\foreigns ->
+                                                                extrasDecoder
+                                                                    |> Bytes.Decode.andThen
+                                                                        (\extras ->
+                                                                            BD.assocListDict identity Pkg.nameDecoder V.versionDecoder
+                                                                                |> Bytes.Decode.map
+                                                                                    (\deps ->
+                                                                                        Details
+                                                                                            { time = time
+                                                                                            , outline = outline
+                                                                                            , buildID = buildID
+                                                                                            , locals = locals
+                                                                                            , foreigns = foreigns
+                                                                                            , extras = extras
+                                                                                            , deps = deps
+                                                                                            }
+                                                                                    )
+                                                                        )
+                                                            )
+                                                )
+                                    )
+                        )
+            )
 
 
 interfacesEncoder : Interfaces -> Bytes.Encode.Encoder
@@ -1527,11 +1711,12 @@ moduleNameRawMVarMaybeDResultDecoder =
 dResultEncoder : DResult -> Bytes.Encode.Encoder
 dResultEncoder dResult =
     case dResult of
-        RLocal ifaces objects docs ->
+        RLocal ifaces objects typedObjects docs ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 0
                 , I.interfaceEncoder ifaces
                 , Opt.localGraphEncoder objects
+                , BE.maybe TOpt.localGraphEncoder typedObjects
                 , BE.maybe Docs.bytesModuleEncoder docs
                 ]
 
@@ -1558,9 +1743,10 @@ dResultDecoder =
             (\idx ->
                 case idx of
                     0 ->
-                        Bytes.Decode.map3 RLocal
+                        Bytes.Decode.map4 RLocal
                             I.interfaceDecoder
                             Opt.localGraphDecoder
+                            (BD.maybe TOpt.localGraphDecoder)
                             (BD.maybe Docs.bytesModuleDecoder)
 
                     1 ->

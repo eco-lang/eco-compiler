@@ -124,7 +124,7 @@ runHelpWithScope root paths style debug optimize withSourceMaps maybeOutput mayb
 
 loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> BW.Scope -> DesiredMode -> Task Exit.Make ()
 loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs scope desiredMode =
-    Task.eio Exit.MakeBadDetails (Details.load style scope root)
+    Task.eio Exit.MakeBadDetails (Details.load style scope root (shouldUseTypedOpt maybeOutput))
         |> Task.andThen (buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs desiredMode)
 
 

@@ -17,6 +17,7 @@ module Builder.Stuff exposing
     , registry
     , testDir
     , typedObjects
+    , typedPackageArtifacts
     , withRegistryLock
     , withRootLock
     )
@@ -180,6 +181,11 @@ registry (PackageCache dir) =
 package : PackageCache -> Pkg.Name -> V.Version -> String
 package (PackageCache dir) name version =
     Utils.fpCombine dir (Utils.fpCombine (Pkg.toString name) (V.toChars version))
+
+
+typedPackageArtifacts : PackageCache -> Pkg.Name -> V.Version -> String
+typedPackageArtifacts cache name version =
+    package cache name version ++ "/typed-artifacts.dat"
 
 
 
