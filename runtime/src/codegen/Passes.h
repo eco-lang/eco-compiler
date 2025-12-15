@@ -35,6 +35,11 @@ std::unique_ptr<mlir::Pass> createRCEliminationPass();
 // This enables SCF lowering patterns to work without explicit annotation.
 std::unique_ptr<mlir::Pass> createResultTypesInferencePass();
 
+// Generates stub functions for undefined callees that crash at runtime.
+// This is a temporary measure to allow compilation while kernel functions
+// are being implemented.
+std::unique_ptr<mlir::Pass> createUndefinedFunctionStubPass();
+
 // ========== Stage 2: Eco -> Standard MLIR (func/cf/arith) ==========
 
 // Analyzes and classifies joinpoints for SCF lowering eligibility.

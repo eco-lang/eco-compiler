@@ -213,26 +213,32 @@ specializeNode node monoType maybeLambda state =
                 subst =
                     unify canType monoType
 
-                ( monoExpr, stateAfter ) =
+                ( monoExpr0, state1 ) =
                     specializeExpr expr subst state
+
+                ( monoExpr, state2 ) =
+                    ensureCallableTopLevel monoExpr0 monoType state1
 
                 depIds =
                     collectDependencies monoExpr
             in
-            ( Mono.MonoDefine monoExpr depIds monoType, stateAfter )
+            ( Mono.MonoDefine monoExpr depIds monoType, state2 )
 
         TOpt.TrackedDefine _ expr _ canType ->
             let
                 subst =
                     unify canType monoType
 
-                ( monoExpr, stateAfter ) =
+                ( monoExpr0, state1 ) =
                     specializeExpr expr subst state
+
+                ( monoExpr, state2 ) =
+                    ensureCallableTopLevel monoExpr0 monoType state1
 
                 depIds =
                     collectDependencies monoExpr
             in
-            ( Mono.MonoDefine monoExpr depIds monoType, stateAfter )
+            ( Mono.MonoDefine monoExpr depIds monoType, state2 )
 
         TOpt.DefineTailFunc _ args body _ returnType ->
             let
@@ -256,10 +262,13 @@ specializeNode node monoType maybeLambda state =
             in
             ( Mono.MonoTailFunc monoArgs monoBody depIds monoReturnType, stateAfter )
 
-        TOpt.Ctor _ _ _ ->
+        TOpt.Ctor index arity _ ->
             let
+                ctorIndex =
+                    Index.toMachine index
+
                 layout =
-                    buildCtorLayoutFromType monoType
+                    buildCtorLayoutFromArity ctorIndex arity monoType
             in
             ( Mono.MonoCtor layout monoType, state )
 
@@ -299,26 +308,32 @@ specializeNode node monoType maybeLambda state =
                 subst =
                     unify canType monoType
 
-                ( monoExpr, stateAfter ) =
+                ( monoExpr0, state1 ) =
                     specializeExpr expr subst state
+
+                ( monoExpr, state2 ) =
+                    ensureCallableTopLevel monoExpr0 monoType state1
 
                 depIds =
                     collectDependencies monoExpr
             in
-            ( Mono.MonoPortIncoming monoExpr depIds monoType, stateAfter )
+            ( Mono.MonoPortIncoming monoExpr depIds monoType, state2 )
 
         TOpt.PortOutgoing expr _ canType ->
             let
                 subst =
                     unify canType monoType
 
-                ( monoExpr, stateAfter ) =
+                ( monoExpr0, state1 ) =
                     specializeExpr expr subst state
+
+                ( monoExpr, state2 ) =
+                    ensureCallableTopLevel monoExpr0 monoType state1
 
                 depIds =
                     collectDependencies monoExpr
             in
-            ( Mono.MonoPortOutgoing monoExpr depIds monoType, stateAfter )
+            ( Mono.MonoPortOutgoing monoExpr depIds monoType, state2 )
 
 
 
@@ -489,9 +504,17 @@ specializeExpr expr subst state =
                 ( monoBody, stateAfter ) =
                     specializeExpr body subst stateWithLambda
 
+                -- Compute free variables in the body, excluding the params
+                boundByParams =
+                    List.foldl (\( n, _ ) acc -> EverySet.insert identity n acc) EverySet.empty monoParams
+
+                captures =
+                    findFreeVars boundByParams monoBody
+                        |> dedupeCaptures
+
                 closureInfo =
                     { lambdaId = lambdaId
-                    , captures = []
+                    , captures = captures
                     , params = monoParams
                     }
             in
@@ -514,9 +537,17 @@ specializeExpr expr subst state =
                 ( monoBody, stateAfter ) =
                     specializeExpr body subst stateWithLambda
 
+                -- Compute free variables in the body, excluding the params
+                boundByParams =
+                    List.foldl (\( n, _ ) acc -> EverySet.insert identity n acc) EverySet.empty monoParams
+
+                captures =
+                    findFreeVars boundByParams monoBody
+                        |> dedupeCaptures
+
                 closureInfo =
                     { lambdaId = lambdaId
-                    , captures = []
+                    , captures = captures
                     , params = monoParams
                     }
             in
@@ -1026,6 +1057,360 @@ detectLambdaArg args =
 
 
 -- ============================================================================
+-- ETA-EXPANSION FOR TOP-LEVEL FUNCTION DEFINITIONS
+-- ============================================================================
+
+
+{-| Ensure that a top-level definition with function type has a callable body.
+
+For any MonoDefine whose monoType is MFunction, its body must be a MonoClosure
+so backends never need to special-case MonoVarGlobal of function type.
+
+This handles eta-reduced definitions like:
+    text = VirtualDom.text
+
+By expanding them to:
+    text = \arg0 -> VirtualDom.text arg0
+
+-}
+ensureCallableTopLevel : Mono.MonoExpr -> Mono.MonoType -> MonoState -> ( Mono.MonoExpr, MonoState )
+ensureCallableTopLevel expr monoType state =
+    case monoType of
+        Mono.MFunction _ _ ->
+            let
+                -- Flatten curried function type to get all argument types
+                ( allArgTypes, finalRetType ) =
+                    flattenFunctionType monoType
+            in
+            case expr of
+                Mono.MonoClosure closureInfo body closureType ->
+                    -- Check if the closure's params are sufficient for the expected arity
+                    if List.length closureInfo.params >= List.length allArgTypes then
+                        -- Closure has enough params (or more for partial application context)
+                        -- Use as-is; partial application will be handled at call sites
+                        ( expr, state )
+
+                    else
+                        -- Closure has fewer params than expected (eta-reduced alias case)
+                        -- The body should be a callable function value, wrap it
+                        -- Preserve the original captures
+                        makeGeneralClosureWithCaptures body closureInfo.captures allArgTypes finalRetType monoType state
+
+                Mono.MonoVarGlobal region specId _ ->
+                    makeAliasClosure
+                        (Mono.MonoVarGlobal region specId monoType)
+                        region
+                        allArgTypes
+                        finalRetType
+                        monoType
+                        state
+
+                Mono.MonoVarKernel region home name _ ->
+                    makeAliasClosure
+                        (Mono.MonoVarKernel region home name monoType)
+                        region
+                        allArgTypes
+                        finalRetType
+                        monoType
+                        state
+
+                Mono.MonoVarCycle region home name _ ->
+                    makeAliasClosure
+                        (Mono.MonoVarCycle region home name monoType)
+                        region
+                        allArgTypes
+                        finalRetType
+                        monoType
+                        state
+
+                _ ->
+                    -- General fallback for other cases (MonoVarDebug, MonoAccessor, etc.)
+                    makeGeneralClosure expr allArgTypes finalRetType monoType state
+
+        _ ->
+            -- Not a function type, leave unchanged
+            ( expr, state )
+
+
+{-| Flatten a curried function type to get all argument types and the final return type.
+
+    MFunction [A] (MFunction [B] C)  =>  ([A, B], C)
+
+-}
+flattenFunctionType : Mono.MonoType -> ( List Mono.MonoType, Mono.MonoType )
+flattenFunctionType monoType =
+    case monoType of
+        Mono.MFunction argTypes retType ->
+            let
+                ( moreArgs, finalRet ) =
+                    flattenFunctionType retType
+            in
+            ( argTypes ++ moreArgs, finalRet )
+
+        _ ->
+            ( [], monoType )
+
+
+{-| Create a closure that wraps a callee expression with eta-expansion.
+
+Given a callee like `VirtualDom.text` with type `String -> Html`,
+creates: `\arg0 -> VirtualDom.text arg0`
+-}
+makeAliasClosure :
+    Mono.MonoExpr
+    -> A.Region
+    -> List Mono.MonoType
+    -> Mono.MonoType
+    -> Mono.MonoType
+    -> MonoState
+    -> ( Mono.MonoExpr, MonoState )
+makeAliasClosure calleeExpr region argTypes retType monoType state =
+    let
+        -- Generate fresh parameter names
+        params : List ( Name, Mono.MonoType )
+        params =
+            freshParams argTypes
+
+        -- Create parameter expressions for the call
+        paramExprs : List Mono.MonoExpr
+        paramExprs =
+            List.map
+                (\( name, ty ) -> Mono.MonoVarLocal name ty)
+                params
+
+        -- Allocate a lambda ID
+        lambdaId : Mono.LambdaId
+        lambdaId =
+            Mono.AnonymousLambda state.currentModule state.lambdaCounter []
+
+        stateWithLambda : MonoState
+        stateWithLambda =
+            { state | lambdaCounter = state.lambdaCounter + 1 }
+
+        -- Build the call to the aliased function
+        callExpr : Mono.MonoExpr
+        callExpr =
+            Mono.MonoCall region calleeExpr paramExprs retType
+
+        -- Assemble the closure
+        closureInfo : Mono.ClosureInfo
+        closureInfo =
+            { lambdaId = lambdaId
+            , captures = []
+            , params = params
+            }
+
+        closureExpr : Mono.MonoExpr
+        closureExpr =
+            Mono.MonoClosure closureInfo callExpr monoType
+    in
+    ( closureExpr, stateWithLambda )
+
+
+{-| Create a closure that wraps an arbitrary expression with eta-expansion.
+
+This is the general fallback for cases where the expression isn't a simple
+variable reference. It evaluates the expression and calls it with the params.
+-}
+makeGeneralClosure :
+    Mono.MonoExpr
+    -> List Mono.MonoType
+    -> Mono.MonoType
+    -> Mono.MonoType
+    -> MonoState
+    -> ( Mono.MonoExpr, MonoState )
+makeGeneralClosure expr argTypes retType monoType state =
+    let
+        -- Try to extract a region from the expression, fall back to zero
+        region : A.Region
+        region =
+            extractRegion expr
+
+        -- Generate fresh parameter names
+        params : List ( Name, Mono.MonoType )
+        params =
+            freshParams argTypes
+
+        -- Create parameter expressions for the call
+        paramExprs : List Mono.MonoExpr
+        paramExprs =
+            List.map
+                (\( name, ty ) -> Mono.MonoVarLocal name ty)
+                params
+
+        -- Allocate a lambda ID
+        lambdaId : Mono.LambdaId
+        lambdaId =
+            Mono.AnonymousLambda state.currentModule state.lambdaCounter []
+
+        stateWithLambda : MonoState
+        stateWithLambda =
+            { state | lambdaCounter = state.lambdaCounter + 1 }
+
+        -- Build the call: expr(arg0, arg1, ...)
+        callExpr : Mono.MonoExpr
+        callExpr =
+            Mono.MonoCall region expr paramExprs retType
+
+        -- Assemble the closure
+        closureInfo : Mono.ClosureInfo
+        closureInfo =
+            { lambdaId = lambdaId
+            , captures = []
+            , params = params
+            }
+
+        closureExpr : Mono.MonoExpr
+        closureExpr =
+            Mono.MonoClosure closureInfo callExpr monoType
+    in
+    ( closureExpr, stateWithLambda )
+
+
+{-| Like makeGeneralClosure but preserves existing captures from an outer closure.
+-}
+makeGeneralClosureWithCaptures :
+    Mono.MonoExpr
+    -> List ( Name, Mono.MonoExpr, Bool )
+    -> List Mono.MonoType
+    -> Mono.MonoType
+    -> Mono.MonoType
+    -> MonoState
+    -> ( Mono.MonoExpr, MonoState )
+makeGeneralClosureWithCaptures expr captures argTypes retType monoType state =
+    let
+        -- Try to extract a region from the expression, fall back to zero
+        region : A.Region
+        region =
+            extractRegion expr
+
+        -- Generate fresh parameter names
+        params : List ( Name, Mono.MonoType )
+        params =
+            freshParams argTypes
+
+        -- Create parameter expressions for the call
+        paramExprs : List Mono.MonoExpr
+        paramExprs =
+            List.map
+                (\( name, ty ) -> Mono.MonoVarLocal name ty)
+                params
+
+        -- Allocate a lambda ID
+        lambdaId : Mono.LambdaId
+        lambdaId =
+            Mono.AnonymousLambda state.currentModule state.lambdaCounter []
+
+        stateWithLambda : MonoState
+        stateWithLambda =
+            { state | lambdaCounter = state.lambdaCounter + 1 }
+
+        -- Build the call: expr(arg0, arg1, ...)
+        callExpr : Mono.MonoExpr
+        callExpr =
+            Mono.MonoCall region expr paramExprs retType
+
+        -- Assemble the closure - preserve the captures!
+        closureInfo : Mono.ClosureInfo
+        closureInfo =
+            { lambdaId = lambdaId
+            , captures = captures
+            , params = params
+            }
+
+        closureExpr : Mono.MonoExpr
+        closureExpr =
+            Mono.MonoClosure closureInfo callExpr monoType
+    in
+    ( closureExpr, stateWithLambda )
+
+
+{-| Generate fresh parameter names for eta-expansion.
+-}
+freshParams : List Mono.MonoType -> List ( Name, Mono.MonoType )
+freshParams argTypes =
+    List.indexedMap
+        (\i ty -> ( "arg" ++ String.fromInt i, ty ))
+        argTypes
+
+
+{-| Extract a region from a MonoExpr, falling back to A.zero if none available.
+-}
+extractRegion : Mono.MonoExpr -> A.Region
+extractRegion expr =
+    case expr of
+        Mono.MonoLiteral _ _ ->
+            A.zero
+
+        Mono.MonoVarLocal _ _ ->
+            A.zero
+
+        Mono.MonoVarGlobal region _ _ ->
+            region
+
+        Mono.MonoVarKernel region _ _ _ ->
+            region
+
+        Mono.MonoVarDebug region _ _ _ _ ->
+            region
+
+        Mono.MonoVarCycle region _ _ _ ->
+            region
+
+        Mono.MonoList region _ _ ->
+            region
+
+        Mono.MonoClosure _ _ _ ->
+            A.zero
+
+        Mono.MonoCall region _ _ _ ->
+            region
+
+        Mono.MonoTailCall _ _ _ ->
+            A.zero
+
+        Mono.MonoIf _ _ _ ->
+            A.zero
+
+        Mono.MonoLet _ _ _ ->
+            A.zero
+
+        Mono.MonoDestruct _ _ _ ->
+            A.zero
+
+        Mono.MonoCase _ _ _ _ _ ->
+            A.zero
+
+        Mono.MonoRecordCreate _ _ _ ->
+            A.zero
+
+        Mono.MonoRecordAccess _ _ _ _ _ ->
+            A.zero
+
+        Mono.MonoRecordUpdate _ _ _ _ ->
+            A.zero
+
+        Mono.MonoTupleCreate region _ _ _ ->
+            region
+
+        Mono.MonoTupleAccess _ _ _ _ ->
+            A.zero
+
+        Mono.MonoCustomCreate _ _ _ _ _ ->
+            A.zero
+
+        Mono.MonoUnit ->
+            A.zero
+
+        Mono.MonoAccessor region _ _ ->
+            region
+
+        Mono.MonoShader region _ _ ->
+            region
+
+
+
+-- ============================================================================
 -- TYPE UNIFICATION AND SUBSTITUTION
 -- ============================================================================
 
@@ -1299,29 +1684,159 @@ buildFuncType args returnType =
         args
 
 
-buildCtorLayoutFromType : Mono.MonoType -> Mono.CtorLayout
-buildCtorLayoutFromType monoType =
-    case monoType of
-        Mono.MCustom _ _ _ layout ->
-            case layout.constructors of
-                ctor :: _ ->
-                    ctor
+buildCtorLayoutFromArity : Int -> Int -> Mono.MonoType -> Mono.CtorLayout
+buildCtorLayoutFromArity tag arity monoType =
+    let
+        -- Extract field types from the function type
+        -- For a constructor like `Foo : Int -> String -> Foo`, monoType is `MFunction [Int] (MFunction [String] (MCustom ... Foo))`
+        fieldTypes =
+            extractFieldTypes arity monoType
 
-                [] ->
-                    { name = ""
-                    , tag = 0
-                    , fields = []
-                    , unboxedCount = 0
-                    , unboxedBitmap = 0
+        fields =
+            List.indexedMap
+                (\idx ty ->
+                    { name = "field" ++ String.fromInt idx
+                    , index = idx
+                    , monoType = ty
+                    , isUnboxed = Mono.canUnbox ty
                     }
+                )
+                fieldTypes
+
+        unboxedCount =
+            List.length (List.filter .isUnboxed fields)
+
+        unboxedBitmap =
+            if unboxedCount == 0 then
+                0
+
+            else
+                (2 ^ unboxedCount) - 1
+    in
+    { name = ""
+    , tag = tag
+    , fields = fields
+    , unboxedCount = unboxedCount
+    , unboxedBitmap = unboxedBitmap
+    }
+
+
+extractFieldTypes : Int -> Mono.MonoType -> List Mono.MonoType
+extractFieldTypes n monoType =
+    if n <= 0 then
+        []
+
+    else
+        case monoType of
+            Mono.MFunction args result ->
+                args ++ extractFieldTypes (n - List.length args) result
+
+            _ ->
+                []
+
+
+
+-- ============================================================================
+-- FREE VARIABLE ANALYSIS
+-- ============================================================================
+
+
+{-| Find free variables in a MonoExpr, given a set of bound variables.
+Returns a list of (name, expr, isUnboxed) for captures.
+-}
+findFreeVars : EverySet String Name -> Mono.MonoExpr -> List ( Name, Mono.MonoExpr, Bool )
+findFreeVars bound expr =
+    case expr of
+        Mono.MonoVarLocal name monoType ->
+            if EverySet.member identity name bound then
+                []
+
+            else
+                [ ( name, Mono.MonoVarLocal name monoType, Mono.canUnbox monoType ) ]
+
+        Mono.MonoList _ exprs _ ->
+            List.concatMap (findFreeVars bound) exprs
+
+        Mono.MonoClosure closureInfo body _ ->
+            -- Variables bound by closure params are not free
+            let
+                closureBound =
+                    List.foldl (\( n, _ ) acc -> EverySet.insert identity n acc) bound closureInfo.params
+            in
+            findFreeVars closureBound body
+
+        Mono.MonoCall _ func args _ ->
+            findFreeVars bound func ++ List.concatMap (findFreeVars bound) args
+
+        Mono.MonoTailCall _ args _ ->
+            List.concatMap (\( _, e ) -> findFreeVars bound e) args
+
+        Mono.MonoIf branches final _ ->
+            List.concatMap (\( c, t ) -> findFreeVars bound c ++ findFreeVars bound t) branches
+                ++ findFreeVars bound final
+
+        Mono.MonoLet def body _ ->
+            let
+                ( defName, defExpr ) =
+                    case def of
+                        Mono.MonoDef _ n e _ ->
+                            ( n, e )
+
+                        Mono.MonoTailDef _ n _ e _ ->
+                            ( n, e )
+
+                newBound =
+                    EverySet.insert identity defName bound
+            in
+            findFreeVars bound defExpr ++ findFreeVars newBound body
+
+        Mono.MonoDestruct _ body _ ->
+            findFreeVars bound body
+
+        Mono.MonoCase _ _ _ jumps _ ->
+            List.concatMap (\( _, e ) -> findFreeVars bound e) jumps
+
+        Mono.MonoRecordCreate exprs _ _ ->
+            List.concatMap (findFreeVars bound) exprs
+
+        Mono.MonoRecordAccess record _ _ _ _ ->
+            findFreeVars bound record
+
+        Mono.MonoRecordUpdate record updates _ _ ->
+            findFreeVars bound record ++ List.concatMap (\( _, e ) -> findFreeVars bound e) updates
+
+        Mono.MonoTupleCreate _ exprs _ _ ->
+            List.concatMap (findFreeVars bound) exprs
+
+        Mono.MonoTupleAccess tuple _ _ _ ->
+            findFreeVars bound tuple
+
+        Mono.MonoCustomCreate _ _ exprs _ _ ->
+            List.concatMap (findFreeVars bound) exprs
 
         _ ->
-            { name = ""
-            , tag = 0
-            , fields = []
-            , unboxedCount = 0
-            , unboxedBitmap = 0
-            }
+            -- Literals, globals, kernels, etc. have no free local vars
+            []
+
+
+{-| Remove duplicates from a list of captures based on name.
+-}
+dedupeCaptures : List ( Name, Mono.MonoExpr, Bool ) -> List ( Name, Mono.MonoExpr, Bool )
+dedupeCaptures captures =
+    let
+        go seen acc remaining =
+            case remaining of
+                [] ->
+                    List.reverse acc
+
+                (( name, _, _ ) as cap) :: rest ->
+                    if EverySet.member identity name seen then
+                        go seen acc rest
+
+                    else
+                        go (EverySet.insert identity name seen) (cap :: acc) rest
+    in
+    go EverySet.empty [] captures
 
 
 

@@ -123,6 +123,32 @@ monoTypeToMlir monoType =
             ecoValue
 
 
+{-| Compute the remaining arity of a MonoType (number of function arrows).
+For MFunction a b, this counts how many nested function arrows there are.
+-}
+functionArity : Mono.MonoType -> Int
+functionArity monoType =
+    case monoType of
+        Mono.MFunction _ result ->
+            1 + functionArity result
+
+        _ ->
+            0
+
+
+{-| Count total arity - the total number of arguments across all curried levels.
+For MFunction [a, b] (MFunction [c] d), this returns 3.
+-}
+countTotalArity : Mono.MonoType -> Int
+countTotalArity monoType =
+    case monoType of
+        Mono.MFunction argTypes result ->
+            List.length argTypes + countTotalArity result
+
+        _ ->
+            0
+
+
 
 -- CONTEXT
 
@@ -132,6 +158,15 @@ type alias Context =
     , nextOpId : Int
     , mode : Mode.Mode
     , registry : Mono.SpecializationRegistry
+    , pendingLambdas : List PendingLambda
+    }
+
+
+type alias PendingLambda =
+    { name : String
+    , captures : List ( Name.Name, Mono.MonoType )
+    , params : List ( Name.Name, Mono.MonoType )
+    , body : Mono.MonoExpr
     }
 
 
@@ -141,6 +176,7 @@ initContext mode registry =
     , nextOpId = 0
     , mode = mode
     , registry = registry
+    , pendingLambdas = []
     }
 
 
@@ -281,24 +317,13 @@ ecoConstruct ctx resultVar tag size unboxedBitmap operands =
         |> build
 
 
-{-| eco.call - call a function by spec id
+{-| eco.call - call a function by name
 -}
-ecoCall : Context -> String -> Int -> List ( String, MlirType ) -> MlirOp
-ecoCall ctx resultVar specId operands =
+ecoCallNamed : Context -> String -> String -> List ( String, MlirType ) -> MlirType -> MlirOp
+ecoCallNamed ctx resultVar funcName operands returnType =
     mlirOp "eco.call" ctx
         |> withOperands operands
-        |> withResult resultVar ecoValue
-        |> withAttr "spec_id" (IntAttr specId)
-        |> build
-
-
-{-| eco.call\_named - call a function by name
--}
-ecoCallNamed : Context -> String -> String -> List ( String, MlirType ) -> MlirOp
-ecoCallNamed ctx resultVar funcName operands =
-    mlirOp "eco.call" ctx
-        |> withOperands operands
-        |> withResult resultVar ecoValue
+        |> withResult resultVar returnType
         |> withAttr "callee" (SymbolRefAttr funcName)
         |> build
 
@@ -393,12 +418,11 @@ arithConstantChar ctx resultVar codepoint =
 
 {-| func.func - define a function
 -}
-funcFunc : Context -> String -> Int -> List ( String, MlirType ) -> MlirType -> MlirRegion -> MlirOp
-funcFunc ctx funcName specId args returnType bodyRegion =
+funcFunc : Context -> String -> List ( String, MlirType ) -> MlirType -> MlirRegion -> MlirOp
+funcFunc ctx funcName args returnType bodyRegion =
     mlirOp "func.func" ctx
         |> withRegion bodyRegion
         |> withAttr "sym_name" (StringAttr funcName)
-        |> withAttr "spec_id" (IntAttr specId)
         |> withAttr "sym_visibility" (VisibilityAttr Private)
         |> withAttr "function_type"
             (TypeAttr
@@ -437,33 +461,119 @@ generateModule mode ((Mono.MonoGraph { nodes, main, registry }) as monoGraph) =
             initContext mode registry
 
         -- Generate all nodes (they are already only reachable ones from monomorphization)
-        ops : List MlirOp
-        ops =
+        -- Thread context through to collect pending lambdas
+        ( ops, ctxAfterNodes ) =
             EveryDict.foldl compare
-                (\specId node acc ->
-                    generateNode ctx specId node :: acc
+                (\specId node ( accOps, accCtx ) ->
+                    let
+                        ( op, newCtx ) =
+                            generateNode accCtx specId node
+                    in
+                    ( accOps ++ [ op ], newCtx )
                 )
-                []
+                ( [], ctx )
                 nodes
-                |> List.reverse
+
+        -- Process pending lambdas - generate their func.func definitions
+        -- Need to iteratively process since lambdas can contain more lambdas
+        ( lambdaOps, finalCtx ) =
+            processLambdas ctxAfterNodes
 
         -- Generate main entry point if present
         mainOps : List MlirOp
         mainOps =
             case main of
                 Just mainInfo ->
-                    generateMainEntry ctx mainInfo
+                    generateMainEntry finalCtx mainInfo
 
                 Nothing ->
                     []
 
         mlirModule : MlirModule
         mlirModule =
-            { body = ops ++ mainOps
+            -- Emit lambdas first so they're defined before referenced
+            { body = lambdaOps ++ ops ++ mainOps
             , loc = Loc.unknown
             }
     in
     Pretty.ppModule mlirModule
+
+
+{-| Process pending lambdas and generate their func.func definitions.
+    This may generate more pending lambdas (nested closures), so we iterate.
+-}
+processLambdas : Context -> ( List MlirOp, Context )
+processLambdas ctx =
+    case ctx.pendingLambdas of
+        [] ->
+            ( [], ctx )
+
+        lambdas ->
+            -- Clear pending lambdas before processing (to avoid infinite loop)
+            let
+                ctxCleared =
+                    { ctx | pendingLambdas = [] }
+
+                -- Generate each lambda function
+                ( lambdaOps, ctxAfter ) =
+                    List.foldl
+                        (\lambda ( accOps, accCtx ) ->
+                            let
+                                ( op, newCtx ) =
+                                    generateLambdaFunc accCtx lambda
+                            in
+                            ( accOps ++ [ op ], newCtx )
+                        )
+                        ( [], ctxCleared )
+                        lambdas
+
+                -- Recursively process any new lambdas that were added
+                ( moreOps, finalCtx ) =
+                    processLambdas ctxAfter
+            in
+            ( lambdaOps ++ moreOps, finalCtx )
+
+
+{-| Generate a func.func for a pending lambda.
+-}
+generateLambdaFunc : Context -> PendingLambda -> ( MlirOp, Context )
+generateLambdaFunc ctx lambda =
+    let
+        -- Build argument pairs: captures come first, then params
+        captureArgPairs : List ( String, MlirType )
+        captureArgPairs =
+            List.map (\( name, _ ) -> ( "%" ++ name, ecoValue )) lambda.captures
+
+        paramArgPairs : List ( String, MlirType )
+        paramArgPairs =
+            List.map (\( name, ty ) -> ( "%" ++ name, monoTypeToMlir ty )) lambda.params
+
+        allArgPairs : List ( String, MlirType )
+        allArgPairs =
+            captureArgPairs ++ paramArgPairs
+
+        -- Create context with args bound
+        ctxWithArgs : Context
+        ctxWithArgs =
+            { ctx | nextVar = List.length allArgPairs }
+
+        exprResult : ExprResult
+        exprResult =
+            generateExpr ctxWithArgs lambda.body
+
+        returnType : MlirType
+        returnType =
+            monoTypeToMlir (Mono.typeOf lambda.body)
+
+        returnOp : MlirOp
+        returnOp =
+            ecoReturn exprResult.ctx exprResult.resultVar returnType
+
+        region : MlirRegion
+        region =
+            mkRegion allArgPairs exprResult.ops returnOp
+    in
+    ( funcFunc ctx lambda.name allArgPairs returnType region, exprResult.ctx )
 
 
 generateMainEntry : Context -> Mono.MainInfo -> List MlirOp
@@ -475,9 +585,13 @@ generateMainEntry ctx mainInfo =
                 ( callVar, ctx1 ) =
                     freshVar ctx
 
+                mainFuncName : String
+                mainFuncName =
+                    specIdToFuncName ctx.registry mainSpecId
+
                 callOp : MlirOp
                 callOp =
-                    ecoCall ctx1 callVar mainSpecId []
+                    ecoCallNamed ctx1 callVar mainFuncName [] ecoValue
 
                 returnOp : MlirOp
                 returnOp =
@@ -487,7 +601,7 @@ generateMainEntry ctx mainInfo =
                 region =
                     mkRegion [] [ callOp ] returnOp
             in
-            [ funcFunc ctx "main" -1 [] ecoValue region ]
+            [ funcFunc ctx "main" [] ecoValue region ]
 
         Mono.DynamicMain mainSpecId flagsDecoder ->
             -- Dynamic main (Browser.element, etc.) - needs flags decoder
@@ -501,9 +615,13 @@ generateMainEntry ctx mainInfo =
                 ( mainCallVar, ctx1 ) =
                     freshVar decoderResult.ctx
 
+                mainFuncName : String
+                mainFuncName =
+                    specIdToFuncName ctx.registry mainSpecId
+
                 mainCallOp : MlirOp
                 mainCallOp =
-                    ecoCall ctx1 mainCallVar mainSpecId []
+                    ecoCallNamed ctx1 mainCallVar mainFuncName [] ecoValue
 
                 ( initCallVar, ctx2 ) =
                     freshVar ctx1
@@ -511,7 +629,7 @@ generateMainEntry ctx mainInfo =
                 -- eco.call to platform initialize with decoder and main result
                 initCallOp : MlirOp
                 initCallOp =
-                    ecoCallNamed ctx2 initCallVar "Elm_Platform_initialize" [ ( decoderResult.resultVar, ecoValue ), ( mainCallVar, ecoValue ) ]
+                    ecoCallNamed ctx2 initCallVar "Elm_Platform_initialize" [ ( decoderResult.resultVar, ecoValue ), ( mainCallVar, ecoValue ) ] ecoValue
 
                 returnOp : MlirOp
                 returnOp =
@@ -521,14 +639,14 @@ generateMainEntry ctx mainInfo =
                 region =
                     mkRegion [] (decoderResult.ops ++ [ mainCallOp, initCallOp ]) returnOp
             in
-            [ funcFunc ctx "main" -1 [] ecoValue region ]
+            [ funcFunc ctx "main" [] ecoValue region ]
 
 
 
 -- GENERATE NODE
 
 
-generateNode : Context -> Mono.SpecId -> Mono.MonoNode -> MlirOp
+generateNode : Context -> Mono.SpecId -> Mono.MonoNode -> ( MlirOp, Context )
 generateNode ctx specId node =
     let
         funcName : String
@@ -537,31 +655,31 @@ generateNode ctx specId node =
     in
     case node of
         Mono.MonoDefine expr _ monoType ->
-            generateDefine ctx funcName specId expr monoType
+            generateDefine ctx funcName expr monoType
 
         Mono.MonoTailFunc params expr _ monoType ->
-            generateTailFunc ctx funcName specId params expr monoType
+            generateTailFunc ctx funcName params expr monoType
 
         Mono.MonoCtor ctorLayout monoType ->
-            generateCtor ctx funcName specId ctorLayout monoType
+            ( generateCtor ctx funcName ctorLayout monoType, ctx )
 
         Mono.MonoEnum tag monoType ->
-            generateEnum ctx funcName specId tag monoType
+            ( generateEnum ctx funcName tag monoType, ctx )
 
         Mono.MonoExtern monoType ->
-            generateExtern ctx funcName specId monoType
+            ( generateExtern ctx funcName monoType, ctx )
 
         Mono.MonoPortIncoming expr _ monoType ->
-            generateDefine ctx funcName specId expr monoType
+            generateDefine ctx funcName expr monoType
 
         Mono.MonoPortOutgoing expr _ monoType ->
-            generateDefine ctx funcName specId expr monoType
+            generateDefine ctx funcName expr monoType
 
         Mono.MonoManager managerInfo monoType ->
-            generateManager ctx funcName specId managerInfo monoType
+            ( generateManager ctx funcName managerInfo monoType, ctx )
 
         Mono.MonoCycle definitions _ monoType ->
-            generateCycle ctx funcName specId definitions monoType
+            generateCycle ctx funcName definitions monoType
 
 
 specIdToFuncName : Mono.SpecializationRegistry -> Mono.SpecId -> String
@@ -578,11 +696,11 @@ specIdToFuncName registry specId =
 -- GENERATE DEFINE
 
 
-generateDefine : Context -> String -> Mono.SpecId -> Mono.MonoExpr -> Mono.MonoType -> MlirOp
-generateDefine ctx funcName specId expr monoType =
+generateDefine : Context -> String -> Mono.MonoExpr -> Mono.MonoType -> ( MlirOp, Context )
+generateDefine ctx funcName expr monoType =
     case expr of
         Mono.MonoClosure closureInfo body _ ->
-            generateClosureFunc ctx funcName specId closureInfo body monoType
+            generateClosureFunc ctx funcName closureInfo body monoType
 
         _ ->
             -- Value (thunk) - wrap in nullary function
@@ -599,11 +717,11 @@ generateDefine ctx funcName specId expr monoType =
                 region =
                     mkRegion [] exprResult.ops returnOp
             in
-            funcFunc ctx funcName specId [] (monoTypeToMlir monoType) region
+            ( funcFunc ctx funcName [] (monoTypeToMlir monoType) region, exprResult.ctx )
 
 
-generateClosureFunc : Context -> String -> Mono.SpecId -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> MlirOp
-generateClosureFunc ctx funcName specId closureInfo body monoType =
+generateClosureFunc : Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ( MlirOp, Context )
+generateClosureFunc ctx funcName closureInfo body monoType =
     let
         -- Build arg pairs from params
         argPairs : List ( String, MlirType )
@@ -629,15 +747,15 @@ generateClosureFunc ctx funcName specId closureInfo body monoType =
         region =
             mkRegion argPairs exprResult.ops returnOp
     in
-    funcFunc ctx funcName specId argPairs (monoTypeToMlir monoType) region
+    ( funcFunc ctx funcName argPairs (monoTypeToMlir monoType) region, exprResult.ctx )
 
 
 
 -- GENERATE TAIL FUNC
 
 
-generateTailFunc : Context -> String -> Mono.SpecId -> List ( Name.Name, Mono.MonoType ) -> Mono.MonoExpr -> Mono.MonoType -> MlirOp
-generateTailFunc ctx funcName specId params expr monoType =
+generateTailFunc : Context -> String -> List ( Name.Name, Mono.MonoType ) -> Mono.MonoExpr -> Mono.MonoType -> ( MlirOp, Context )
+generateTailFunc ctx funcName params expr monoType =
     let
         argPairs : List ( String, MlirType )
         argPairs =
@@ -661,15 +779,15 @@ generateTailFunc ctx funcName specId params expr monoType =
         region =
             mkRegion argPairs exprResult.ops returnOp
     in
-    funcFunc ctx funcName specId argPairs (monoTypeToMlir monoType) region
+    ( funcFunc ctx funcName argPairs (monoTypeToMlir monoType) region, exprResult.ctx )
 
 
 
 -- GENERATE CTOR
 
 
-generateCtor : Context -> String -> Mono.SpecId -> Mono.CtorLayout -> Mono.MonoType -> MlirOp
-generateCtor ctx funcName specId ctorLayout monoType =
+generateCtor : Context -> String -> Mono.CtorLayout -> Mono.MonoType -> MlirOp
+generateCtor ctx funcName ctorLayout monoType =
     let
         arity : Int
         arity =
@@ -693,7 +811,7 @@ generateCtor ctx funcName specId ctorLayout monoType =
             region =
                 mkRegion [] [ constructOp ] returnOp
         in
-        funcFunc ctx funcName specId [] ecoValue region
+        funcFunc ctx funcName [] ecoValue region
 
     else
         -- Constructor with arguments
@@ -735,15 +853,15 @@ generateCtor ctx funcName specId ctorLayout monoType =
             region =
                 mkRegion argPairs [ constructOp ] returnOp
         in
-        funcFunc ctx funcName specId argPairs ecoValue region
+        funcFunc ctx funcName argPairs ecoValue region
 
 
 
 -- GENERATE ENUM
 
 
-generateEnum : Context -> String -> Mono.SpecId -> Int -> Mono.MonoType -> MlirOp
-generateEnum ctx funcName specId tag monoType =
+generateEnum : Context -> String -> Int -> Mono.MonoType -> MlirOp
+generateEnum ctx funcName tag monoType =
     let
         ( resultVar, ctx1 ) =
             freshVar ctx
@@ -760,19 +878,18 @@ generateEnum ctx funcName specId tag monoType =
         region =
             mkRegion [] [ constructOp ] returnOp
     in
-    funcFunc ctx funcName specId [] ecoValue region
+    funcFunc ctx funcName [] ecoValue region
 
 
 
 -- GENERATE EXTERN
 
 
-generateExtern : Context -> String -> Mono.SpecId -> Mono.MonoType -> MlirOp
-generateExtern ctx funcName specId monoType =
+generateExtern : Context -> String -> Mono.MonoType -> MlirOp
+generateExtern ctx funcName monoType =
     -- Generate an extern declaration (no body)
     mlirOp "func.func" ctx
         |> withAttr "sym_name" (StringAttr funcName)
-        |> withAttr "spec_id" (IntAttr specId)
         |> withAttr "sym_visibility" (VisibilityAttr Private)
         |> withAttr "function_type"
             (TypeAttr
@@ -789,8 +906,8 @@ generateExtern ctx funcName specId monoType =
 -- GENERATE MANAGER
 
 
-generateManager : Context -> String -> Mono.SpecId -> Mono.ManagerInfo -> Mono.MonoType -> MlirOp
-generateManager ctx funcName specId managerInfo monoType =
+generateManager : Context -> String -> Mono.ManagerInfo -> Mono.MonoType -> MlirOp
+generateManager ctx funcName managerInfo monoType =
     -- Generate an effects manager
     -- This creates a record with init, onEffects, onSelfMsg, and optional cmdMap/subMap
     let
@@ -871,15 +988,15 @@ generateManager ctx funcName specId managerInfo monoType =
         region =
             mkRegion [] allOps returnOp
     in
-    funcFunc ctx funcName specId [] (monoTypeToMlir monoType) region
+    funcFunc ctx funcName [] (monoTypeToMlir monoType) region
 
 
 
 -- GENERATE CYCLE
 
 
-generateCycle : Context -> String -> Mono.SpecId -> List ( Name.Name, Mono.MonoExpr ) -> Mono.MonoType -> MlirOp
-generateCycle ctx funcName specId definitions monoType =
+generateCycle : Context -> String -> List ( Name.Name, Mono.MonoExpr ) -> Mono.MonoType -> ( MlirOp, Context )
+generateCycle ctx funcName definitions monoType =
     -- Generate mutually recursive definitions
     -- For now, generate a thunk that creates a record of all the cycle definitions
     let
@@ -922,7 +1039,7 @@ generateCycle ctx funcName specId definitions monoType =
         region =
             mkRegion [] (defOps ++ [ cycleOp ]) returnOp
     in
-    funcFunc ctx funcName specId [] (monoTypeToMlir monoType) region
+    ( funcFunc ctx funcName [] (monoTypeToMlir monoType) region, ctx1 )
 
 
 
@@ -938,11 +1055,11 @@ generateExpr ctx expr =
         Mono.MonoVarLocal name _ ->
             emptyResult ctx ("%" ++ name)
 
-        Mono.MonoVarGlobal _ specId _ ->
-            generateVarGlobal ctx specId
+        Mono.MonoVarGlobal _ specId monoType ->
+            generateVarGlobal ctx specId monoType
 
-        Mono.MonoVarKernel _ home name _ ->
-            generateVarKernel ctx home name
+        Mono.MonoVarKernel _ home name monoType ->
+            generateVarKernel ctx home name monoType
 
         Mono.MonoList _ items _ ->
             generateList ctx items
@@ -950,8 +1067,8 @@ generateExpr ctx expr =
         Mono.MonoClosure closureInfo body monoType ->
             generateClosure ctx closureInfo body monoType
 
-        Mono.MonoCall _ func args _ ->
-            generateCall ctx func args
+        Mono.MonoCall _ func args resultType ->
+            generateCall ctx func args resultType
 
         Mono.MonoTailCall name args _ ->
             generateTailCall ctx name args
@@ -992,11 +1109,11 @@ generateExpr ctx expr =
         Mono.MonoAccessor _ fieldName _ ->
             generateAccessor ctx fieldName
 
-        Mono.MonoVarDebug _ name home maybeName _ ->
-            generateVarDebug ctx name home maybeName
+        Mono.MonoVarDebug _ name home maybeName monoType ->
+            generateVarDebug ctx name home maybeName monoType
 
-        Mono.MonoVarCycle _ home name _ ->
-            generateVarCycle ctx home name
+        Mono.MonoVarCycle _ home name monoType ->
+            generateVarCycle ctx home name monoType
 
         Mono.MonoShader _ shaderInfo _ ->
             generateShader ctx shaderInfo
@@ -1070,20 +1187,49 @@ generateLiteral ctx lit =
 -- VARIABLE GENERATION
 
 
-generateVarGlobal : Context -> Mono.SpecId -> ExprResult
-generateVarGlobal ctx specId =
+generateVarGlobal : Context -> Mono.SpecId -> Mono.MonoType -> ExprResult
+generateVarGlobal ctx specId monoType =
     let
         ( var, ctx1 ) =
             freshVar ctx
+
+        funcName : String
+        funcName =
+            specIdToFuncName ctx.registry specId
     in
-    { ops = [ ecoCall ctx1 var specId [] ]
-    , resultVar = var
-    , ctx = ctx1
-    }
+    case monoType of
+        Mono.MFunction argTypes _ ->
+            -- Function-typed global: create a closure (papCreate) with no captures
+            -- The arity is the number of function arguments
+            let
+                arity : Int
+                arity =
+                    countTotalArity monoType
+
+                papOp : MlirOp
+                papOp =
+                    mlirOp "eco.papCreate" ctx1
+                        |> withResult var ecoValue
+                        |> withAttr "function" (SymbolRefAttr funcName)
+                        |> withAttr "arity" (IntAttr arity)
+                        |> withAttr "num_captured" (IntAttr 0)
+                        |> build
+            in
+            { ops = [ papOp ]
+            , resultVar = var
+            , ctx = ctx1
+            }
+
+        _ ->
+            -- Non-function type: call the function directly (e.g., zero-arg constructors)
+            { ops = [ ecoCallNamed ctx1 var funcName [] (monoTypeToMlir monoType) ]
+            , resultVar = var
+            , ctx = ctx1
+            }
 
 
-generateVarKernel : Context -> Name.Name -> Name.Name -> ExprResult
-generateVarKernel ctx home name =
+generateVarKernel : Context -> Name.Name -> Name.Name -> Mono.MonoType -> ExprResult
+generateVarKernel ctx home name monoType =
     let
         ( var, ctx1 ) =
             freshVar ctx
@@ -1092,14 +1238,14 @@ generateVarKernel ctx home name =
         kernelName =
             "Elm_Kernel_" ++ home ++ "_" ++ name
     in
-    { ops = [ ecoCallNamed ctx1 var kernelName [] ]
+    { ops = [ ecoCallNamed ctx1 var kernelName [] (monoTypeToMlir monoType) ]
     , resultVar = var
     , ctx = ctx1
     }
 
 
-generateVarDebug : Context -> Name.Name -> IO.Canonical -> Maybe Name.Name -> ExprResult
-generateVarDebug ctx name home maybeName =
+generateVarDebug : Context -> Name.Name -> IO.Canonical -> Maybe Name.Name -> Mono.MonoType -> ExprResult
+generateVarDebug ctx name home maybeName monoType =
     -- Debug.log, Debug.todo, Debug.toString, etc.
     let
         ( var, ctx1 ) =
@@ -1116,7 +1262,7 @@ generateVarDebug ctx name home maybeName =
 
         callOp : MlirOp
         callOp =
-            ecoCallNamed ctx1 var debugName []
+            ecoCallNamed ctx1 var debugName [] (monoTypeToMlir monoType)
     in
     { ops = [ callOp ]
     , resultVar = var
@@ -1124,8 +1270,8 @@ generateVarDebug ctx name home maybeName =
     }
 
 
-generateVarCycle : Context -> IO.Canonical -> Name.Name -> ExprResult
-generateVarCycle ctx home name =
+generateVarCycle : Context -> IO.Canonical -> Name.Name -> Mono.MonoType -> ExprResult
+generateVarCycle ctx home name monoType =
     -- Reference to a variable in a mutually recursive cycle
     let
         ( var, ctx1 ) =
@@ -1137,7 +1283,7 @@ generateVarCycle ctx home name =
 
         callOp : MlirOp
         callOp =
-            ecoCallNamed ctx1 var cycleName []
+            ecoCallNamed ctx1 var cycleName [] (monoTypeToMlir monoType)
     in
     { ops = [ callOp ]
     , resultVar = var
@@ -1221,7 +1367,7 @@ generateList ctx items =
                                 consOp =
                                     ecoConstruct ctx2 consVar 1 2 0 [ ( itemResult.resultVar, ecoValue ), ( tailVar, ecoValue ) ]
                             in
-                            ( itemResult.ops ++ [ consOp ] ++ accOps, consVar, ctx2 )
+                            ( accOps ++ itemResult.ops ++ [ consOp ], consVar, ctx2 )
                         )
                         ( [], nilVar, ctx1 )
                         items
@@ -1256,13 +1402,14 @@ generateClosure ctx closureInfo body monoType =
         ( resultVar, ctx2 ) =
             freshVar ctx1
 
-        arity : Int
-        arity =
-            List.length closureInfo.params
-
         numCaptured : Int
         numCaptured =
             List.length closureInfo.captures
+
+        -- Total arity = captures + params (the underlying function takes both)
+        arity : Int
+        arity =
+            numCaptured + List.length closureInfo.params
 
         -- Captures are all boxed values
         captureVarPairs : List ( String, MlirType )
@@ -1275,14 +1422,31 @@ generateClosure ctx closureInfo body monoType =
             mlirOp "eco.papCreate" ctx2
                 |> withOperands captureVarPairs
                 |> withResult resultVar ecoValue
-                |> withAttr "lambda_id" (StringAttr (lambdaIdToString closureInfo.lambdaId))
+                |> withAttr "function" (SymbolRefAttr (lambdaIdToString closureInfo.lambdaId))
                 |> withAttr "arity" (IntAttr arity)
                 |> withAttr "num_captured" (IntAttr numCaptured)
                 |> build
+
+        -- Register this lambda for later emission as a func.func
+        captureTypes : List ( Name.Name, Mono.MonoType )
+        captureTypes =
+            List.map (\( name, expr, _ ) -> ( name, Mono.typeOf expr )) closureInfo.captures
+
+        pendingLambda : PendingLambda
+        pendingLambda =
+            { name = lambdaIdToString closureInfo.lambdaId
+            , captures = captureTypes
+            , params = closureInfo.params
+            , body = body
+            }
+
+        ctx3 : Context
+        ctx3 =
+            { ctx2 | pendingLambdas = pendingLambda :: ctx2.pendingLambdas }
     in
     { ops = captureOps ++ [ papOp ]
     , resultVar = resultVar
-    , ctx = ctx2
+    , ctx = ctx3
     }
 
 
@@ -1300,8 +1464,8 @@ lambdaIdToString lambdaId =
 -- CALL GENERATION
 
 
-generateCall : Context -> Mono.MonoExpr -> List Mono.MonoExpr -> ExprResult
-generateCall ctx func args =
+generateCall : Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+generateCall ctx func args resultType =
     case func of
         Mono.MonoVarGlobal _ specId _ ->
             -- Direct call to known specialization
@@ -1316,8 +1480,35 @@ generateCall ctx func args =
                 argVarPairs : List ( String, MlirType )
                 argVarPairs =
                     List.map (\v -> ( v, ecoValue )) argVars
+
+                funcName : String
+                funcName =
+                    specIdToFuncName ctx.registry specId
             in
-            { ops = argsOps ++ [ ecoCall ctx2 resultVar specId argVarPairs ]
+            { ops = argsOps ++ [ ecoCallNamed ctx2 resultVar funcName argVarPairs (monoTypeToMlir resultType) ]
+            , resultVar = resultVar
+            , ctx = ctx2
+            }
+
+        Mono.MonoVarKernel _ home name _ ->
+            -- Direct call to kernel function
+            let
+                ( argsOps, argVars, ctx1 ) =
+                    generateExprList ctx args
+
+                ( resultVar, ctx2 ) =
+                    freshVar ctx1
+
+                -- All function arguments are boxed values
+                argVarPairs : List ( String, MlirType )
+                argVarPairs =
+                    List.map (\v -> ( v, ecoValue )) argVars
+
+                kernelName : String
+                kernelName =
+                    "Elm_Kernel_" ++ home ++ "_" ++ name
+            in
+            { ops = argsOps ++ [ ecoCallNamed ctx2 resultVar kernelName argVarPairs (monoTypeToMlir resultType) ]
             , resultVar = resultVar
             , ctx = ctx2
             }
@@ -1336,11 +1527,17 @@ generateCall ctx func args =
                 allOperandPairs =
                     ( "%" ++ name, ecoValue ) :: List.map (\v -> ( v, ecoValue )) argVars
 
+                -- remaining_arity is the arity of the result type (how many more args needed)
+                remainingArity : Int
+                remainingArity =
+                    functionArity resultType
+
                 papExtendOp : MlirOp
                 papExtendOp =
                     mlirOp "eco.papExtend" ctx2
                         |> withOperands allOperandPairs
-                        |> withResult resultVar ecoValue
+                        |> withResult resultVar (monoTypeToMlir resultType)
+                        |> withAttr "remaining_arity" (IntAttr remainingArity)
                         |> build
             in
             { ops = argsOps ++ [ papExtendOp ]
@@ -1366,11 +1563,17 @@ generateCall ctx func args =
                 allOperandPairs =
                     ( funcResult.resultVar, ecoValue ) :: List.map (\v -> ( v, ecoValue )) argVars
 
+                -- remaining_arity is the arity of the result type (how many more args needed)
+                remainingArity : Int
+                remainingArity =
+                    functionArity resultType
+
                 papExtendOp : MlirOp
                 papExtendOp =
                     mlirOp "eco.papExtend" ctx2
                         |> withOperands allOperandPairs
-                        |> withResult resultVar ecoValue
+                        |> withResult resultVar (monoTypeToMlir resultType)
+                        |> withAttr "remaining_arity" (IntAttr remainingArity)
                         |> build
             in
             { ops = funcResult.ops ++ argsOps ++ [ papExtendOp ]
@@ -1614,10 +1817,21 @@ generateRecordCreate ctx fields layout =
         ( resultVar, ctx2 ) =
             freshVar ctx1
 
-        -- All record fields are boxed values
+        -- Use correct types for unboxed fields
         fieldVarPairs : List ( String, MlirType )
         fieldVarPairs =
-            List.map (\v -> ( v, ecoValue )) fieldVars
+            List.map2
+                (\v field ->
+                    ( v
+                    , if field.isUnboxed then
+                        monoTypeToMlir field.monoType
+
+                      else
+                        ecoValue
+                    )
+                )
+                fieldVars
+                layout.fields
     in
     { ops = fieldsOps ++ [ ecoConstruct ctx2 resultVar 0 layout.fieldCount layout.unboxedBitmap fieldVarPairs ]
     , resultVar = resultVar
@@ -1671,10 +1885,21 @@ generateTupleCreate ctx elements layout =
         ( resultVar, ctx2 ) =
             freshVar ctx1
 
-        -- All tuple elements are boxed values
+        -- Use correct types for unboxed elements
         elemVarPairs : List ( String, MlirType )
         elemVarPairs =
-            List.map (\v -> ( v, ecoValue )) elemVars
+            List.map2
+                (\v ( elemType, isUnboxed ) ->
+                    ( v
+                    , if isUnboxed then
+                        monoTypeToMlir elemType
+
+                      else
+                        ecoValue
+                    )
+                )
+                elemVars
+                layout.elements
     in
     { ops = elemOps ++ [ ecoConstruct ctx2 resultVar 0 layout.arity layout.unboxedBitmap elemVarPairs ]
     , resultVar = resultVar
@@ -1715,10 +1940,21 @@ generateCustomCreate ctx ctorName tag fields layout =
         arity =
             List.length fields
 
-        -- All fields are boxed values
+        -- Use correct types for unboxed fields
         fieldVarPairs : List ( String, MlirType )
         fieldVarPairs =
-            List.map (\v -> ( v, ecoValue )) fieldVars
+            List.map2
+                (\v field ->
+                    ( v
+                    , if field.isUnboxed then
+                        monoTypeToMlir field.monoType
+
+                      else
+                        ecoValue
+                    )
+                )
+                fieldVars
+                layout.fields
     in
     { ops = fieldsOps ++ [ ecoConstruct ctx2 resultVar tag arity layout.unboxedBitmap fieldVarPairs ]
     , resultVar = resultVar
@@ -1756,7 +1992,7 @@ generateAccessor ctx fieldName =
         papOp =
             mlirOp "eco.papCreate" ctx1
                 |> withResult var ecoValue
-                |> withAttr "lambda_id" (StringAttr ("accessor_" ++ fieldName))
+                |> withAttr "function" (SymbolRefAttr ("accessor_" ++ fieldName))
                 |> withAttr "arity" (IntAttr 1)
                 |> withAttr "num_captured" (IntAttr 0)
                 |> build

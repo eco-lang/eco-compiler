@@ -150,6 +150,9 @@ static int runPipeline(ModuleOp module, bool lowerToLLVM) {
         // TODO: Add construct lowering pass.
         // pm.addPass(eco::createConstructLoweringPass());
         pm.addPass(eco::createRCEliminationPass());
+
+        // Generate stubs for undefined functions (temporary measure).
+        pm.addPass(eco::createUndefinedFunctionStubPass());
     }
 
     if (lowerToLLVM) {
@@ -174,11 +177,12 @@ static int runPipeline(ModuleOp module, bool lowerToLLVM) {
 
         // Stage 3: Eco -> LLVM Dialect.
         // This also handles remaining eco control flow ops (case/joinpoint/jump)
-        // that weren't lowered to SCF.
+        // that weren't lowered to SCF. Also includes func-to-llvm conversion.
         pm.addPass(eco::createEcoToLLVMPass());
 
         // Standard MLIR dialect conversions to LLVM.
-        pm.addPass(createConvertFuncToLLVMPass());
+        // Note: func-to-llvm is now part of EcoToLLVM to ensure functions are
+        // converted before eco.papCreate tries to reference them.
         pm.addPass(createConvertControlFlowToLLVMPass());
         pm.addPass(createArithToLLVMConversionPass());
     }

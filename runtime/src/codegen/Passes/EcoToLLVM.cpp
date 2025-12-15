@@ -13,6 +13,7 @@
 
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -613,10 +614,12 @@ struct AllocateClosureOpLowering : public OpConversionPattern<AllocateClosureOp>
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         // Get or insert eco_alloc_closure declaration
-        auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, i32Ty});
-        getOrInsertFunc(module, rewriter, "eco_alloc_closure", funcTy);
+        auto allocClosureTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, i32Ty});
+        getOrInsertFunc(module, rewriter, "eco_alloc_closure", allocClosureTy);
 
         // Get function address for the closure.
+        // func.func will be converted to llvm.func by func-to-llvm patterns
+        // that are part of this pass, so AddressOfOp will find the llvm.func.
         auto funcSymbol = op.getFunction();
         Value funcPtr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, funcSymbol);
 
@@ -660,10 +663,12 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         auto captured = adaptor.getCaptured();
 
         // Get or insert eco_alloc_closure declaration.
-        auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, i32Ty});
-        getOrInsertFunc(module, rewriter, "eco_alloc_closure", funcTy);
+        auto allocClosureTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, i32Ty});
+        getOrInsertFunc(module, rewriter, "eco_alloc_closure", allocClosureTy);
 
         // Get function address for the closure.
+        // func.func will be converted to llvm.func by func-to-llvm patterns
+        // that are part of this pass, so AddressOfOp will find the llvm.func.
         auto funcSymbol = op.getFunction();
         Value funcPtr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, funcSymbol);
 
@@ -2341,27 +2346,12 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             return noEcoValueOperands(op.getOperation());
         });
 
-        // func dialect is legal, but func.func with eco.value in signature or
-        // internal block arguments needs to be converted.
-        target.addLegalDialect<func::FuncDialect>();
-        target.addDynamicallyLegalOp<func::FuncOp>([hasEcoValue](func::FuncOp op) {
-            // Check function signature
-            if (llvm::any_of(op.getFunctionType().getInputs(), hasEcoValue) ||
-                llvm::any_of(op.getFunctionType().getResults(), hasEcoValue))
-                return false;
-            // Also check all block arguments in the function body
-            for (Block &block : op.getBody()) {
-                for (BlockArgument arg : block.getArguments()) {
-                    if (hasEcoValue(arg.getType()))
-                        return false;
-                }
-            }
-            return true;
-        });
-        target.addDynamicallyLegalOp<func::ReturnOp>([hasEcoValue](func::ReturnOp op) {
-            // Legal only if no eco.value types in operands
-            return llvm::none_of(op.getOperandTypes(), hasEcoValue);
-        });
+        // func dialect: convert func.func to llvm.func so that AddressOfOp
+        // can reference functions when lowering eco.papCreate.
+        // Note: func.call and func.return will also be converted.
+        target.addIllegalOp<func::FuncOp>();
+        target.addIllegalOp<func::CallOp>();
+        target.addIllegalOp<func::ReturnOp>();
 
         // Mark all Eco dialect operations as illegal (to be lowered).
         target.addIllegalDialect<EcoDialect>();
@@ -2369,10 +2359,9 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // Set up lowering patterns.
         RewritePatternSet patterns(ctx);
 
-        // Add function signature and return type conversion patterns.
-        populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(
-            patterns, typeConverter);
-        populateReturnOpTypeConversionPattern(patterns, typeConverter);
+        // Add func-to-llvm conversion patterns FIRST - this ensures func.func
+        // is converted to llvm.func before eco.papCreate tries to reference it.
+        populateFuncToLLVMConversionPatterns(typeConverter, patterns);
 
         // Add branch type conversion pattern for cf.br/cf.cond_br when block
         // argument types are converted (needed when scf.while -> cf creates

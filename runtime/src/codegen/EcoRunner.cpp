@@ -174,6 +174,9 @@ private:
         // Stage 1: Eco -> Eco transformations
         pm.addPass(eco::createRCEliminationPass());
 
+        // Generate stubs for undefined functions (temporary measure).
+        pm.addPass(eco::createUndefinedFunctionStubPass());
+
         // Stage 2: Eco -> Standard MLIR
 
         // Classify joinpoints for SCF lowering eligibility.

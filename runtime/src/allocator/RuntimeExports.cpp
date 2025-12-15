@@ -449,7 +449,9 @@ extern "C" [[noreturn]] void eco_crash(void* message) {
         }
     }
 
-    std::abort();
+    // Use exit(1) instead of abort() to avoid triggering LLVM's signal handlers
+    // which would print a misleading "PLEASE submit a bug report" message.
+    std::exit(1);
 }
 
 // Forward declaration for recursive printing
