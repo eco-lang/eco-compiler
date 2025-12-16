@@ -183,6 +183,8 @@ target_compile_options(ecogen PRIVATE -Wno-ambiguous-reversed-operator)
 
 add_llvm_executable(ecoc
     ecoc.cpp
+    EcoPipeline.cpp
+    RuntimeSymbols.cpp
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
     ../allocator/NurserySpace.cpp
@@ -248,6 +250,8 @@ target_link_libraries(ecoc PRIVATE Threads::Threads)
 
 add_mlir_library(EcoRunner
     EcoRunner.cpp
+    EcoPipeline.cpp
+    RuntimeSymbols.cpp
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
     ../allocator/NurserySpace.cpp
