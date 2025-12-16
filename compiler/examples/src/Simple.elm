@@ -4,6 +4,10 @@ import Html exposing (text)
 
 main =
     let
-        _ = List.reverse [1,2,3]
+        rev = List.reverse [1,2,3]
+
+        _ = Debug.log "main" "called"
+
+        _ = Debug.log "List.reverse [1,2,3]" rev
     in
     text "Hello!"

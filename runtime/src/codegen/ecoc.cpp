@@ -154,7 +154,7 @@ static int runPipeline(ModuleOp module, bool lowerToLLVM) {
         // pm.addPass(eco::createConstructLoweringPass());
         pm.addPass(eco::createRCEliminationPass());
 
-        // Generate stubs for undefined functions (temporary measure).
+        // Generate external declarations for undefined functions (kernel functions, etc.)
         pm.addPass(eco::createUndefinedFunctionStubPass());
     }
 

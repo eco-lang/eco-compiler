@@ -23,6 +23,7 @@
 #include "allocator/BytesOpsTest.hpp"
 #include "allocator/RuntimeExportsTest.hpp"
 #include "codegen/CodegenTest.hpp"
+#include "elm/ElmTest.hpp"
 #include "TestSuite.hpp"
 
 using namespace Elm;
@@ -634,6 +635,9 @@ int main(int argc, char* argv[]) {
     // Codegen tests (MLIR lowering and JIT execution)
     Testing::TestSuite codegenTests = CodegenTest::buildCodegenTestSuite();
 
+    // Elm end-to-end tests (compile Elm -> MLIR -> JIT)
+    Testing::TestSuite elmE2ETests = ElmTest::buildElmTestSuite();
+
     // Root suite containing all sub-suites.
     Testing::TestSuite suite("All Tests");
     suite.add(std::move(nurseryTests));
@@ -647,6 +651,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(bytesOpsTests));
     suite.add(std::move(runtimeExportsTests));
     suite.add(std::move(codegenTests));
+    suite.add(std::move(elmE2ETests));
 
     // Handle --list option.
     if (config.list_tests) {

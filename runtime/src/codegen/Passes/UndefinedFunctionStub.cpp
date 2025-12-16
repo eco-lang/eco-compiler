@@ -1,9 +1,9 @@
-//===- UndefinedFunctionStub.cpp - Generate stubs for undefined functions -===//
+//===- UndefinedFunctionStub.cpp - Generate extern decls for undefined fns ===//
 //
 // This pass finds eco.call operations that reference undefined functions and
-// generates stub functions that crash with an error message at runtime.
-// This is a temporary measure to allow compilation while kernel functions
-// are being implemented.
+// generates external function declarations for them. The actual implementations
+// are provided by the runtime (for kernel functions) or will cause a link-time
+// error if missing.
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,7 +31,7 @@ struct UndefinedFunctionStubPass
     StringRef getArgument() const override { return "eco-undefined-function-stub"; }
 
     StringRef getDescription() const override {
-        return "Generate stub functions for undefined callees that crash at runtime";
+        return "Generate external declarations for undefined callees";
     }
 
     void runOnOperation() override {
@@ -58,13 +58,11 @@ struct UndefinedFunctionStubPass
         });
 
         if (undefinedFunctions.empty())
-            return; // No stubs needed.
+            return; // No declarations needed.
 
-        // Create stub functions at the end of the module.
+        // Create external function declarations at the end of the module.
         OpBuilder builder(ctx);
         builder.setInsertionPointToEnd(module.getBody());
-
-        auto valueType = ValueType::get(ctx);
 
         for (const auto &funcName : undefinedFunctions) {
             // Determine the function signature by looking at the first call site.
@@ -104,31 +102,13 @@ struct UndefinedFunctionStubPass
                 funcType = FunctionType::get(ctx, argTypes, {});
             }
 
-            // Create the stub function.
+            // Create external function declaration (no body).
             auto funcOp = builder.create<func::FuncOp>(
                 builder.getUnknownLoc(),
                 funcName,
                 funcType);
             funcOp.setVisibility(SymbolTable::Visibility::Private);
-
-            // Create function body.
-            Block *entryBlock = funcOp.addEntryBlock();
-            builder.setInsertionPointToStart(entryBlock);
-
-            // Create error message: "Missing function: <funcName>"
-            std::string errorMsg = "Missing function: " + funcName;
-            auto stringLiteralOp = builder.create<StringLiteralOp>(
-                builder.getUnknownLoc(),
-                valueType,
-                builder.getStringAttr(errorMsg));
-
-            // Create eco.crash with the error message.
-            builder.create<CrashOp>(
-                builder.getUnknownLoc(),
-                stringLiteralOp.getResult());
-
-            // Reset insertion point for next stub.
-            builder.setInsertionPointToEnd(module.getBody());
+            // Note: Not adding an entry block makes this an external declaration.
         }
     }
 };
