@@ -42,6 +42,8 @@ type alias MonoState =
     , registry : Mono.SpecializationRegistry
     , lambdaCounter : Int
     , currentModule : IO.Canonical
+    , toptNodes : Dict (List String) TOpt.Global TOpt.Node
+    , currentGlobal : Maybe Mono.Global
     }
 
 
@@ -49,14 +51,16 @@ type WorkItem
     = SpecializeGlobal Mono.Global Mono.MonoType (Maybe Mono.LambdaId)
 
 
-initState : IO.Canonical -> MonoState
-initState currentModule =
+initState : IO.Canonical -> Dict (List String) TOpt.Global TOpt.Node -> MonoState
+initState currentModule toptNodes =
     { worklist = []
     , nodes = Dict.empty
     , inProgress = EverySet.empty
     , registry = Mono.emptyRegistry
     , lambdaCounter = 0
     , currentModule = currentModule
+    , toptNodes = toptNodes
+    , currentGlobal = Nothing
     }
 
 
@@ -83,7 +87,7 @@ monomorphize (TOpt.GlobalGraph nodes _ _) =
                             canonical
 
                 initialState =
-                    initState currentModule
+                    initState currentModule nodes
 
                 stateWithMain =
                     { initialState
@@ -91,7 +95,7 @@ monomorphize (TOpt.GlobalGraph nodes _ _) =
                     }
 
                 finalState =
-                    processWorklist nodes stateWithMain
+                    processWorklist stateWithMain
 
                 mainSpecId =
                     let
@@ -139,8 +143,8 @@ findMain nodes =
 -- ============================================================================
 
 
-processWorklist : Dict (List String) TOpt.Global TOpt.Node -> MonoState -> MonoState
-processWorklist toptNodes state =
+processWorklist : MonoState -> MonoState
+processWorklist state =
     case state.worklist of
         [] ->
             state
@@ -153,11 +157,11 @@ processWorklist toptNodes state =
             in
             if EverySet.member identity specId state.inProgress then
                 -- Already being processed, skip to avoid cycles
-                processWorklist toptNodes { state | worklist = rest, registry = newRegistry }
+                processWorklist { state | worklist = rest, registry = newRegistry }
 
             else if Dict.member identity specId state.nodes then
                 -- Already done, skip
-                processWorklist toptNodes { state | worklist = rest, registry = newRegistry }
+                processWorklist { state | worklist = rest, registry = newRegistry }
 
             else
                 -- New specialization to process
@@ -172,7 +176,7 @@ processWorklist toptNodes state =
                     toptGlobal =
                         monoGlobalToTOpt global
                 in
-                case Dict.get TOpt.toComparableGlobal toptGlobal toptNodes of
+                case Dict.get TOpt.toComparableGlobal toptGlobal state.toptNodes of
                     Nothing ->
                         -- External/kernel function
                         let
@@ -182,21 +186,26 @@ processWorklist toptNodes state =
                                     , inProgress = EverySet.remove identity specId stateWithId.inProgress
                                 }
                         in
-                        processWorklist toptNodes newState
+                        processWorklist newState
 
                     Just toptNode ->
                         -- Specialize the node
                         let
+                            -- Set currentGlobal so specializeCycle knows which member was requested
+                            stateWithGlobal =
+                                { stateWithId | currentGlobal = Just global }
+
                             ( monoNode, stateAfterSpec ) =
-                                specializeNode toptNode monoType maybeLambda stateWithId
+                                specializeNode toptNode monoType maybeLambda stateWithGlobal
 
                             newState =
                                 { stateAfterSpec
                                     | nodes = Dict.insert identity specId monoNode stateAfterSpec.nodes
                                     , inProgress = EverySet.remove identity specId stateAfterSpec.inProgress
+                                    , currentGlobal = Nothing
                                 }
                         in
-                        processWorklist toptNodes newState
+                        processWorklist newState
 
 
 
@@ -283,19 +292,19 @@ specializeNode node monoType maybeLambda state =
             ( Mono.MonoExtern monoType, state )
 
         TOpt.Link linkedGlobal ->
-            -- Follow the link
-            let
-                monoGlobal =
-                    toptGlobalToMono linkedGlobal
+            -- Follow the link to the actual definition
+            case Dict.get TOpt.toComparableGlobal linkedGlobal state.toptNodes of
+                Nothing ->
+                    -- Linked global not found, treat as extern
+                    ( Mono.MonoExtern monoType, state )
 
-                workItem =
-                    SpecializeGlobal monoGlobal monoType maybeLambda
-            in
-            ( Mono.MonoExtern monoType, { state | worklist = workItem :: state.worklist } )
+                Just linkedNode ->
+                    -- Specialize the linked node
+                    specializeNode linkedNode monoType maybeLambda state
 
-        TOpt.Cycle _ _ _ _ ->
-            -- Handle cycles - for now treat as extern
-            ( Mono.MonoExtern monoType, state )
+        TOpt.Cycle names values functions _ ->
+            -- Specialize all definitions in the cycle and return MonoCycle
+            specializeCycle names values functions monoType state
 
         TOpt.Manager _ ->
             ( Mono.MonoExtern monoType, state )
@@ -334,6 +343,271 @@ specializeNode node monoType maybeLambda state =
                     collectDependencies monoExpr
             in
             ( Mono.MonoPortOutgoing monoExpr depIds monoType, state2 )
+
+
+
+-- ============================================================================
+-- CYCLE SPECIALIZATION
+-- ============================================================================
+
+
+{-| Specialize all definitions in a cycle.
+
+For function cycles, we:
+1. Identify which function was requested via state.currentGlobal
+2. Build a shared substitution from the requested function's type
+3. Generate MonoTailFunc/MonoDefine for ALL function members (not MonoCycle)
+4. Register each with its own specId in state.nodes
+5. Return the node for the originally requested function
+
+For value-only cycles, we still use MonoCycle bundling.
+-}
+specializeCycle :
+    List Name
+    -> List ( Name, TOpt.Expr )
+    -> List TOpt.Def
+    -> Mono.MonoType
+    -> MonoState
+    -> ( Mono.MonoNode, MonoState )
+specializeCycle names values functions requestedMonoType state =
+    case ( List.isEmpty functions, state.currentGlobal ) of
+        ( True, _ ) ->
+            -- Value-only cycle: use old bundling behavior
+            specializeValueOnlyCycle names values requestedMonoType state
+
+        ( False, Nothing ) ->
+            -- No currentGlobal set - fallback to extern (shouldn't happen)
+            ( Mono.MonoExtern requestedMonoType, state )
+
+        ( False, Just (Mono.Global requestedCanonical requestedName) ) ->
+            -- Function cycle: generate proper MonoTailFunc/MonoDefine nodes
+            specializeFunctionCycle requestedCanonical requestedName functions requestedMonoType state
+
+
+{-| Specialize a value-only cycle using the old bundling behavior.
+-}
+specializeValueOnlyCycle :
+    List Name
+    -> List ( Name, TOpt.Expr )
+    -> Mono.MonoType
+    -> MonoState
+    -> ( Mono.MonoNode, MonoState )
+specializeValueOnlyCycle names values monoType state =
+    let
+        subst =
+            Dict.empty
+
+        ( monoValues, state1 ) =
+            specializeValueDefs values subst state
+
+        depIds =
+            collectCycleDependencies monoValues
+    in
+    ( Mono.MonoCycle monoValues depIds monoType, state1 )
+
+
+{-| Specialize a function cycle by generating separate MonoTailFunc/MonoDefine nodes.
+-}
+specializeFunctionCycle :
+    IO.Canonical
+    -> Name
+    -> List TOpt.Def
+    -> Mono.MonoType
+    -> MonoState
+    -> ( Mono.MonoNode, MonoState )
+specializeFunctionCycle requestedCanonical requestedName functions requestedMonoType state =
+    let
+        -- Find the requested function definition
+        maybeRequestedDef =
+            List.filter (defHasName requestedName) functions
+                |> List.head
+
+        -- Get the canonical type for the requested function and build substitution
+        subst =
+            case maybeRequestedDef of
+                Just def ->
+                    let
+                        canType =
+                            getDefCanonicalType def
+                    in
+                    unify canType requestedMonoType
+
+                Nothing ->
+                    -- Requested function not found in cycle - use empty subst
+                    Dict.empty
+
+        -- Process all function definitions and register them as nodes
+        ( funcNameSpecIds, stateAfterFuncs ) =
+            List.foldl
+                (\def ( acc, st ) ->
+                    let
+                        name =
+                            getDefName def
+
+                        -- Build the global for this member
+                        memberGlobal =
+                            Mono.Global requestedCanonical name
+
+                        -- Compute member's mono type
+                        memberCanType =
+                            getDefCanonicalType def
+
+                        memberMonoType =
+                            applySubst subst memberCanType
+
+                        -- Get or create specId for this member
+                        ( specId, newRegistry ) =
+                            Mono.getOrCreateSpecId memberGlobal memberMonoType Nothing st.registry
+
+                        -- Specialize this function as a proper node
+                        ( monoNode, st1 ) =
+                            specializeFuncNodeInCycle subst def { st | registry = newRegistry }
+
+                        -- Insert the node into state.nodes
+                        st2 =
+                            { st1
+                                | nodes = Dict.insert identity specId monoNode st1.nodes
+                            }
+                    in
+                    ( ( name, specId ) :: acc, st2 )
+                )
+                ( [], state )
+                functions
+
+        -- Find and return the node for the requested function
+        maybeRequestedSpecId =
+            List.filter (\( name, _ ) -> name == requestedName) funcNameSpecIds
+                |> List.head
+                |> Maybe.map Tuple.second
+    in
+    case maybeRequestedSpecId of
+        Just requestedSpecId ->
+            case Dict.get identity requestedSpecId stateAfterFuncs.nodes of
+                Just requestedNode ->
+                    ( requestedNode, stateAfterFuncs )
+
+                Nothing ->
+                    -- Node not found (shouldn't happen)
+                    ( Mono.MonoExtern requestedMonoType, stateAfterFuncs )
+
+        Nothing ->
+            -- Requested function not in cycle (shouldn't happen)
+            ( Mono.MonoExtern requestedMonoType, stateAfterFuncs )
+
+
+{-| Specialize a function definition in a cycle as a proper MonoTailFunc/MonoDefine node.
+-}
+specializeFuncNodeInCycle :
+    Substitution
+    -> TOpt.Def
+    -> MonoState
+    -> ( Mono.MonoNode, MonoState )
+specializeFuncNodeInCycle subst def state =
+    case def of
+        TOpt.Def _ name expr canType ->
+            -- Regular function definition
+            let
+                monoType =
+                    applySubst subst canType
+
+                ( monoExpr, state1 ) =
+                    specializeExpr expr subst state
+
+                depIds =
+                    collectDependencies monoExpr
+            in
+            ( Mono.MonoDefine monoExpr depIds monoType, state1 )
+
+        TOpt.TailDef _ name args body returnType ->
+            -- Tail-recursive function definition
+            let
+                funcType =
+                    buildFuncType args returnType
+
+                monoFuncType =
+                    applySubst subst funcType
+
+                monoArgs =
+                    List.map (specializeArg subst) args
+
+                ( monoBody, state1 ) =
+                    specializeExpr body subst state
+
+                depIds =
+                    collectDependencies monoBody
+
+                monoReturnType =
+                    applySubst subst returnType
+            in
+            ( Mono.MonoTailFunc monoArgs monoBody depIds monoReturnType, state1 )
+
+
+{-| Check if a definition has the given name.
+-}
+defHasName : Name -> TOpt.Def -> Bool
+defHasName targetName def =
+    case def of
+        TOpt.Def _ name _ _ ->
+            name == targetName
+
+        TOpt.TailDef _ name _ _ _ ->
+            name == targetName
+
+
+{-| Get the name from a definition.
+-}
+getDefName : TOpt.Def -> Name
+getDefName def =
+    case def of
+        TOpt.Def _ name _ _ ->
+            name
+
+        TOpt.TailDef _ name _ _ _ ->
+            name
+
+
+{-| Get the canonical type from a definition.
+-}
+getDefCanonicalType : TOpt.Def -> Can.Type
+getDefCanonicalType def =
+    case def of
+        TOpt.Def _ _ _ canType ->
+            canType
+
+        TOpt.TailDef _ _ args _ returnType ->
+            buildFuncType args returnType
+
+
+{-| Specialize a list of value definitions (name, expr pairs).
+-}
+specializeValueDefs :
+    List ( Name, TOpt.Expr )
+    -> Substitution
+    -> MonoState
+    -> ( List ( Name, Mono.MonoExpr ), MonoState )
+specializeValueDefs values subst state =
+    List.foldl
+        (\( name, expr ) ( accDefs, accState ) ->
+            let
+                ( monoExpr, newState ) =
+                    specializeExpr expr subst accState
+            in
+            ( accDefs ++ [ ( name, monoExpr ) ], newState )
+        )
+        ( [], state )
+        values
+
+
+{-| Collect all dependencies from all definitions in a cycle.
+-}
+collectCycleDependencies : List ( Name, Mono.MonoExpr ) -> EverySet Int Int
+collectCycleDependencies defs =
+    List.foldl
+        (\( _, expr ) deps ->
+            EverySet.union deps (collectDependencies expr)
+        )
+        EverySet.empty
+        defs
 
 
 
