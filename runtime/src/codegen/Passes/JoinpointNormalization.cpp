@@ -31,7 +31,7 @@ namespace {
 /// Algorithm from the design doc: walk the body and look for eco.jump
 /// with target == joinpoint id.
 bool isLoopingJoinpoint(JoinpointOp op) {
-    int64_t jpId = op.getId();
+    auto jpId = op.getId();
     bool hasLoopingJump = false;
 
     op.getBody().walk([&](JumpOp jump) {
@@ -122,7 +122,7 @@ bool hasSimpleCaseDispatch(JoinpointOp op) {
     // - At least one should loop (eco.jump to same joinpoint)
     bool hasExitBranch = false;
     bool hasLoopBranch = false;
-    int64_t jpId = op.getId();
+    auto jpId = op.getId();
 
     for (Region &alt : topLevelCase.getAlternatives()) {
         if (alt.empty())

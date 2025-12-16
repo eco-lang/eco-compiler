@@ -751,7 +751,6 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         auto loc = op.getLoc();
         auto module = op->getParentOfType<ModuleOp>();
         auto *ctx = rewriter.getContext();
-        auto i8Ty = IntegerType::get(ctx, 8);
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
@@ -776,73 +775,8 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
             //   offset 24: values[]
 
             // Load packed field to get n_values (bits 0-5).
-            auto offset8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-                rewriter.getI64IntegerAttr(8));
-            auto packedPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr,
-                                                           ValueRange{offset8});
-            Value packed = rewriter.create<LLVM::LoadOp>(loc, i64Ty, packedPtr);
-
-            // Extract n_values (bits 0-5).
-            auto mask6 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-                rewriter.getI64IntegerAttr(0x3F));
-            Value nValues = rewriter.create<LLVM::AndOp>(loc, packed, mask6);
-
-            // Load evaluator (function pointer) from offset 16.
-            auto offset16 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-                rewriter.getI64IntegerAttr(16));
-            auto evalPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr,
-                                                         ValueRange{offset16});
-            Value evaluator = rewriter.create<LLVM::LoadOp>(loc, ptrTy, evalPtr);
-
-            // Total arity = n_values (captured) + numNewArgs.
-            // We know this equals max_values since it's saturated.
-            // Build argument list: captured values from closure + new args.
-
-            // For saturated calls, we know the total arity at compile time.
-            // Load captured values from closure.values[].
-            SmallVector<Value> allArgs;
-
-            // The number of previously captured values is (max_values - remaining_arity).
-            // Since max_values = total arity and remaining_arity is known, we can compute:
-            // captured_count = total_arity - remaining_arity
-            // But we don't have total_arity directly... we need to load it from packed.
-
-            // Actually, we can compute: captured_count = total_arity - remaining_arity
-            // total_arity = captured_count + remaining_arity (from when papCreate was called)
-            // So captured_count = max_values - remaining_arity
-            //
-            // For now, let's use a simpler approach: we know remaining_arity == numNewArgs
-            // for saturated calls, and max_values = captured_count + remaining_arity.
-            //
-            // We'll extract max_values from packed and compute captured_count.
-
-            // Extract max_values (bits 6-11).
-            auto shift6 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-                rewriter.getI64IntegerAttr(6));
-            Value shifted = rewriter.create<LLVM::LShrOp>(loc, packed, shift6);
-            Value maxValues = rewriter.create<LLVM::AndOp>(loc, shifted, mask6);
-
-            // captured_count = max_values - remaining_arity
-            auto remainingConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-                rewriter.getI64IntegerAttr(remainingArity));
-            Value capturedCount = rewriter.create<LLVM::SubOp>(loc, maxValues, remainingConst);
-
-            // Load each captured value. Since we don't know the count statically,
-            // we need to generate a loop or handle this differently.
-            //
-            // Actually, for the saturated call case, we DO know the total arity statically
-            // from the types. Let me reconsider...
-            //
-            // The remaining_arity attribute tells us how many args are still needed.
-            // The total arity can be inferred from the function being called.
-            // For papExtend on a closure, we don't have the original function symbol.
-            //
-            // Let's take a simpler approach: for the saturated case, we emit a call to
-            // a runtime helper that handles the dispatch, OR we require the frontend
-            // to provide the total_arity as well.
-            //
-            // For now, let's add a runtime helper for saturated calls.
-
+            // For saturated calls, we call a runtime helper that handles extracting
+            // captured values and dispatching to the evaluator.
             auto helperTy = LLVM::LLVMFunctionType::get(i64Ty, {ptrTy, ptrTy, i32Ty});
             getOrInsertFunc(module, rewriter, "eco_closure_call_saturated", helperTy);
 
@@ -997,20 +931,8 @@ struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
 
         // Build the initializer for the global string.
         // Use APInt to handle surrogate pairs (values > 32767) correctly.
-        SmallVector<Attribute> charAttrs;
-        for (uint16_t c : utf16) {
-            llvm::APInt charInt(16, c, /*isSigned=*/false);
-            charAttrs.push_back(rewriter.getIntegerAttr(i16Ty, charInt));
-        }
-
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(module.getBody());
-
-        // Create the global
-        auto headerAttr = rewriter.getI64IntegerAttr(header);
-        auto charsAttr = DenseIntElementsAttr::get(
-            RankedTensorType::get({static_cast<int64_t>(utf16.size())}, i16Ty),
-            charAttrs);
 
         // Create the LLVM global with the struct type.
         auto global = rewriter.create<LLVM::GlobalOp>(
@@ -1283,9 +1205,8 @@ struct ExpectOpLowering : public OpConversionPattern<ExpectOp> {
         auto funcTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy});
         getOrInsertFunc(module, rewriter, "eco_crash", funcTy);
 
-        // Get parent block and region.
+        // Get parent block.
         Block *currentBlock = op->getBlock();
-        Region *parentRegion = currentBlock->getParent();
 
         // Split the block at this operation.
         Block *continueBlock = rewriter.splitBlock(currentBlock, op->getIterator());
@@ -1323,7 +1244,6 @@ struct GlobalOpLowering : public OpConversionPattern<GlobalOp> {
     LogicalResult
     matchAndRewrite(GlobalOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        auto loc = op.getLoc();
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
 
@@ -1771,7 +1691,6 @@ struct JumpOpLowering : public OpConversionPattern<JumpOp> {
     LogicalResult
     matchAndRewrite(JumpOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        auto loc = op.getLoc();
         int64_t targetId = op.getTarget();
 
         // Look up the target joinpoint block.
@@ -1997,8 +1916,7 @@ struct IntPowOpLowering : public OpConversionPattern<IntPowOp> {
         auto expNeg = rewriter.create<arith::CmpIOp>(
             loc, arith::CmpIPredicate::slt, exp, zero);
 
-        // Call runtime helper for integer power
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+        // Call runtime helper for integer power.
         auto funcTy = LLVM::LLVMFunctionType::get(i64Ty, {i64Ty, i64Ty});
         getOrInsertFunc(module, rewriter, "eco_int_pow", funcTy);
 

@@ -523,8 +523,6 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     size_t size = getObjectSize(obj);
     void *new_obj = nullptr;
 
-    bool promoted = false;
-
     // Promote to old gen if age >= config_->promotion_age.
     if (hdr->age >= config_->promotion_age) {
         // Direct allocation to old gen (simplified - no TLAB buffering).
@@ -536,7 +534,6 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         // Reset age for promoted object.
         Header *new_hdr = getHeader(new_obj);
         new_hdr->age = 0;
-        promoted = true;
 
         // Add to promoted objects buffer for later scanning.
         if (promoted_objects) {
@@ -899,7 +896,6 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
         // Copy this Cons cell (may go to old gen if aged)
         size_t size = sizeof(Cons);
         void* new_obj = nullptr;
-        bool promoted = false;
 
         if (hdr->age >= config_->promotion_age) {
             // Promote to old gen
@@ -909,7 +905,6 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
 
             Header* new_hdr = getHeader(new_obj);
             new_hdr->age = 0;
-            promoted = true;
 
             if (promoted_objects) {
                 promoted_objects->push_back(new_obj);
