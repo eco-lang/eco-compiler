@@ -20,6 +20,7 @@
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -2321,30 +2322,16 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // Set up type converter for eco.value -> i64.
         EcoTypeConverter typeConverter(ctx);
 
-        // Set up conversion target to allow LLVM/func/arith/cf dialects.
+        // Set up conversion target to allow LLVM/arith/cf dialects.
         ConversionTarget target(*ctx);
         target.addLegalDialect<LLVM::LLVMDialect>();
         target.addLegalDialect<arith::ArithDialect>();
-        target.addLegalDialect<scf::SCFDialect>();
+        target.addLegalDialect<cf::ControlFlowDialect>();
         target.addLegalOp<ModuleOp>();
 
-        // Helper to check for eco.value types
-        auto hasEcoValue = [](Type t) { return isa<ValueType>(t); };
-
-        // CF ops are dynamically legal - only legal if they don't have !eco.value operands
-        // This allows the branch type conversion pattern to update them
-        auto noEcoValueOperands = [hasEcoValue](Operation *op) {
-            return llvm::none_of(op->getOperandTypes(), hasEcoValue);
-        };
-        target.addDynamicallyLegalOp<cf::BranchOp>([noEcoValueOperands](cf::BranchOp op) {
-            return noEcoValueOperands(op.getOperation());
-        });
-        target.addDynamicallyLegalOp<cf::CondBranchOp>([noEcoValueOperands](cf::CondBranchOp op) {
-            return noEcoValueOperands(op.getOperation());
-        });
-        target.addDynamicallyLegalOp<cf::SwitchOp>([noEcoValueOperands](cf::SwitchOp op) {
-            return noEcoValueOperands(op.getOperation());
-        });
+        // SCF ops need structural type conversion - they'll be dynamically legal
+        // based on whether their types have been converted from !eco.value to i64.
+        // This is configured by populateSCFStructuralTypeConversionsAndLegality below.
 
         // func dialect: convert func.func to llvm.func so that AddressOfOp
         // can reference functions when lowering eco.papCreate.
@@ -2364,9 +2351,12 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         populateFuncToLLVMConversionPatterns(typeConverter, patterns);
 
         // Add branch type conversion pattern for cf.br/cf.cond_br when block
-        // argument types are converted (needed when scf.while -> cf creates
-        // branch ops with !eco.value types)
+        // argument types are converted.
         populateBranchOpInterfaceTypeConversionPattern(patterns, typeConverter);
+
+        // Add SCF structural type conversion patterns and legality.
+        // This converts !eco.value types in scf.while/scf.for/scf.if to i64.
+        scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter, patterns, target);
 
         // Clear joinpoint map for this module.
         joinpointBlocks.clear();

@@ -147,11 +147,33 @@ static int runPipeline(ModuleOp module, bool lowerToLLVM) {
 
     // Build the appropriate pipeline based on the emit action.
     if (lowerToLLVM) {
-        // Full pipeline: Eco -> LLVM (includes eco-to-eco transformations).
-        eco::buildEcoToLLVMPipeline(pm);
-    } else if (emitAction >= DumpMLIREco) {
-        // Just eco-to-eco transformations.
-        eco::buildEcoToEcoPipeline(pm);
+        // Stage 2: Eco -> Standard MLIR (func/cf/arith).
+
+        // Infer result_types for eco.case ops based on eco.return operands.
+        pm.addPass(eco::createResultTypesInferencePass());
+
+        // Classify joinpoints for SCF lowering eligibility.
+        pm.addPass(eco::createJoinpointNormalizationPass());
+
+        // Lower eligible eco.case/joinpoint to SCF dialect.
+        // Non-eligible ops are left for the CF path in EcoToLLVM.
+        pm.addPass(eco::createEcoControlFlowToSCFPass());
+
+        pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
+
+        // Stage 3: Eco -> LLVM Dialect.
+        // Run EcoToLLVM BEFORE SCF-to-CF so that scf.while loop-carried values
+        // are already i64 when CF blocks are created.
+        pm.addPass(eco::createEcoToLLVMPass());
+
+        // Convert SCF to CF after EcoToLLVM.
+        // Now the scf.while ops have i64 types, so cf.br/cf.cond_br blocks
+        // will be created with i64 arguments (not !eco.value).
+        pm.addPass(createSCFToControlFlowPass());
+
+        // Standard MLIR dialect conversions to LLVM.
+        pm.addPass(createConvertControlFlowToLLVMPass());
+        pm.addPass(createArithToLLVMConversionPass());
     }
 
     if (failed(pm.run(module)))

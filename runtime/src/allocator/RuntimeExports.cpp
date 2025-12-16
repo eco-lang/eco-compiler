@@ -745,12 +745,11 @@ static void print_custom(Custom* custom, int depth) {
                 // Read as full 64-bit value for JIT mode
                 uint64_t val = static_cast<uint64_t>(custom->values[i].i);
 
-                // Safety check for small integers masquerading as pointers
-                // (due to unboxed_bitmap=0 when value is actually unboxed)
-                if (val < 0x10000) {
-                    output_format("%lld", (long long)val);
+                if (val == 0) {
+                    // Null pointer
+                    output_text("<null>");
                 } else if (!print_if_constant(val)) {
-                    // Not a constant - it's a pointer, print via print_value
+                    // Regular pointer
                     void* ptr = reinterpret_cast<void*>(val);
                     bool needs_parens = false;
                     if (ptr) {

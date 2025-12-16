@@ -167,8 +167,37 @@ private:
     bool runPipeline(ModuleOp module) {
         PassManager pm(module->getName());
 
-        // Build the full Eco -> LLVM pipeline.
-        eco::buildEcoToLLVMPipeline(pm);
+        // Stage 1: Eco -> Eco transformations
+        pm.addPass(eco::createRCEliminationPass());
+
+        // Generate external declarations for undefined functions (kernel functions, etc.)
+        pm.addPass(eco::createUndefinedFunctionStubPass());
+
+        // Stage 2: Eco -> Standard MLIR
+
+        // Classify joinpoints for SCF lowering eligibility.
+        pm.addPass(eco::createJoinpointNormalizationPass());
+
+        // Lower eligible eco.case/joinpoint to SCF dialect.
+        // Non-eligible ops are left for the CF path in EcoToLLVM.
+        pm.addPass(eco::createEcoControlFlowToSCFPass());
+
+        pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
+
+        // Stage 3: Eco -> LLVM Dialect
+        // Run EcoToLLVM BEFORE SCF-to-CF so that scf.while loop-carried values
+        // are already i64 when CF blocks are created.
+        pm.addPass(eco::createEcoToLLVMPass());
+
+        // Convert SCF to CF after EcoToLLVM.
+        // Now the scf.while ops have i64 types, so cf.br/cf.cond_br blocks
+        // will be created with i64 arguments (not !eco.value).
+        pm.addPass(createSCFToControlFlowPass());
+
+        // Standard MLIR dialect conversions to LLVM
+        pm.addPass(createConvertFuncToLLVMPass());
+        pm.addPass(createConvertControlFlowToLLVMPass());
+        pm.addPass(createArithToLLVMConversionPass());
 
         return succeeded(pm.run(module));
     }
