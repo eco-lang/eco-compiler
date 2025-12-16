@@ -158,7 +158,6 @@ HPointer indexes(void* needle, void* haystack) {
 }
 
 HPointer split(void* sep, void* str) {
-    auto& allocator = Allocator::instance();
     ElmString* separator = static_cast<ElmString*>(sep);
     ElmString* s = static_cast<ElmString*>(str);
 
