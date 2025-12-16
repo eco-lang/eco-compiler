@@ -21,12 +21,13 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
-import Compiler.Data.Name exposing (Name)
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Optimize.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
+import Utils.Crash exposing (crash)
 
 
 
@@ -354,13 +355,15 @@ specializeNode node monoType maybeLambda state =
 {-| Specialize all definitions in a cycle.
 
 For function cycles, we:
-1. Identify which function was requested via state.currentGlobal
-2. Build a shared substitution from the requested function's type
-3. Generate MonoTailFunc/MonoDefine for ALL function members (not MonoCycle)
-4. Register each with its own specId in state.nodes
-5. Return the node for the originally requested function
+
+1.  Identify which function was requested via state.currentGlobal
+2.  Build a shared substitution from the requested function's type
+3.  Generate MonoTailFunc/MonoDefine for ALL function members (not MonoCycle)
+4.  Register each with its own specId in state.nodes
+5.  Return the node for the originally requested function
 
 For value-only cycles, we still use MonoCycle bundling.
+
 -}
 specializeCycle :
     List Name
@@ -829,20 +832,100 @@ specializeExpr expr subst state =
 
         TOpt.Call region func args canType ->
             let
-                monoType =
-                    applySubst subst canType
+                ( monoArgs, state1 ) =
+                    specializeExprs args subst state
 
-                ( monoFunc, state1 ) =
-                    specializeExpr func subst state
+                ( monoFunc, resultMonoType, state2 ) =
+                    case func of
+                        -- IMPORTANT: instantiate polymorphic globals using (args, result)
+                        TOpt.VarGlobal funcRegion global funcCanType ->
+                            let
+                                -- First, infer substitutions from argument types only.
+                                argTypes =
+                                    List.map Mono.typeOf monoArgs
 
-                ( monoArgs, state2 ) =
-                    specializeExprs args subst state1
+                                substFromArgs =
+                                    unifyArgsOnly funcCanType argTypes Dict.empty
+
+                                subst2 =
+                                    mergeSubst subst substFromArgs
+
+                                -- Now we can safely compute the call result type.
+                                callResultMonoType =
+                                    applySubst subst2 canType
+
+                                -- Optionally refine further using args+result (keeps things consistent)
+                                substFromArgsAndResult =
+                                    inferCallSubst funcCanType monoArgs callResultMonoType
+
+                                subst3 =
+                                    mergeSubst subst2 substFromArgsAndResult
+
+                                funcMonoType =
+                                    applySubst subst3 funcCanType
+
+                                monoGlobal =
+                                    toptGlobalToMono global
+
+                                ( specId, newRegistry ) =
+                                    Mono.getOrCreateSpecId monoGlobal funcMonoType Nothing state1.registry
+
+                                workItem =
+                                    SpecializeGlobal monoGlobal funcMonoType Nothing
+
+                                newState =
+                                    { state1
+                                        | registry = newRegistry
+                                        , worklist = workItem :: state1.worklist
+                                    }
+                            in
+                            ( Mono.MonoVarGlobal funcRegion specId funcMonoType, callResultMonoType, newState )
+
+                        -- IMPORTANT: instantiate polymorphic kernel functions using (args, result)
+                        TOpt.VarKernel funcRegion home name funcCanType ->
+                            let
+                                -- First, infer substitutions from argument types only.
+                                argTypes =
+                                    List.map Mono.typeOf monoArgs
+
+                                substFromArgs =
+                                    unifyArgsOnly funcCanType argTypes Dict.empty
+
+                                subst2 =
+                                    mergeSubst subst substFromArgs
+
+                                -- Now we can safely compute the call result type.
+                                callResultMonoType =
+                                    applySubst subst2 canType
+
+                                -- Optionally refine further using args+result (keeps things consistent)
+                                substFromArgsAndResult =
+                                    inferCallSubst funcCanType monoArgs callResultMonoType
+
+                                subst3 =
+                                    mergeSubst subst2 substFromArgsAndResult
+
+                                funcMonoType =
+                                    applySubst subst3 funcCanType
+                            in
+                            ( Mono.MonoVarKernel funcRegion home name funcMonoType, callResultMonoType, state1 )
+
+                        -- fallback: old behavior
+                        _ ->
+                            let
+                                ( mFunc, st ) =
+                                    specializeExpr func subst state1
+
+                                fallbackResultMonoType =
+                                    applySubst subst canType
+                            in
+                            ( mFunc, fallbackResultMonoType, st )
 
                 -- Check for lambda specialization opportunity
                 ( finalFunc, state3 ) =
                     maybeSpecializeForLambda monoFunc monoArgs state2
             in
-            ( Mono.MonoCall region finalFunc monoArgs monoType, state3 )
+            ( Mono.MonoCall region finalFunc monoArgs resultMonoType, state3 )
 
         TOpt.TailCall name args canType ->
             let
@@ -1341,10 +1424,10 @@ For any MonoDefine whose monoType is MFunction, its body must be a MonoClosure
 so backends never need to special-case MonoVarGlobal of function type.
 
 This handles eta-reduced definitions like:
-    text = VirtualDom.text
+text = VirtualDom.text
 
 By expanding them to:
-    text = \arg0 -> VirtualDom.text arg0
+text = \\arg0 -> VirtualDom.text arg0
 
 -}
 ensureCallableTopLevel : Mono.MonoExpr -> Mono.MonoType -> MonoState -> ( Mono.MonoExpr, MonoState )
@@ -1408,7 +1491,7 @@ ensureCallableTopLevel expr monoType state =
 
 {-| Flatten a curried function type to get all argument types and the final return type.
 
-    MFunction [A] (MFunction [B] C)  =>  ([A, B], C)
+    MFunction [ A ] (MFunction [ B ] C) => ( [ A, B ], C )
 
 -}
 flattenFunctionType : Mono.MonoType -> ( List Mono.MonoType, Mono.MonoType )
@@ -1429,6 +1512,7 @@ flattenFunctionType monoType =
 
 Given a callee like `VirtualDom.text` with type `String -> Html`,
 creates: `\arg0 -> VirtualDom.text arg0`
+
 -}
 makeAliasClosure :
     Mono.MonoExpr
@@ -1485,6 +1569,7 @@ makeAliasClosure calleeExpr region argTypes retType monoType state =
 
 This is the general fallback for cases where the expression isn't a simple
 variable reference. It evaluates the expression and calls it with the params.
+
 -}
 makeGeneralClosure :
     Mono.MonoExpr
@@ -1783,6 +1868,46 @@ unifyHelp canType monoType subst =
             subst
 
 
+mergeSubst : Substitution -> Substitution -> Substitution
+mergeSubst base extra =
+    Dict.foldl compare
+        (\k v acc -> Dict.insert identity k v acc)
+        base
+        extra
+
+
+inferCallSubst : Can.Type -> List Mono.MonoExpr -> Mono.MonoType -> Substitution
+inferCallSubst funcCanType monoArgs resultMonoType =
+    let
+        argTypes : List Mono.MonoType
+        argTypes =
+            List.map Mono.typeOf monoArgs
+
+        desiredFuncType : Mono.MonoType
+        desiredFuncType =
+            Mono.MFunction argTypes resultMonoType
+    in
+    unify funcCanType desiredFuncType
+
+
+unifyArgsOnly : Can.Type -> List Mono.MonoType -> Substitution -> Substitution
+unifyArgsOnly canFuncType argTypes subst =
+    case ( canFuncType, argTypes ) of
+        ( _, [] ) ->
+            subst
+
+        ( Can.TLambda from to, arg0 :: rest ) ->
+            let
+                subst1 =
+                    unifyHelp from arg0 subst
+            in
+            unifyArgsOnly to rest subst1
+
+        -- If we run out of lambdas or mismatch shape, just stop.
+        _ ->
+            subst
+
+
 applySubst : Substitution -> Can.Type -> Mono.MonoType
 applySubst subst canType =
     case canType of
@@ -1792,8 +1917,19 @@ applySubst subst canType =
                     monoType
 
                 Nothing ->
-                    -- Unresolved type variable, default to Unit
-                    Mono.MUnit
+                    -- Some type vars are genuinely unconstrained/phantom at runtime (e.g. `msg` in Html msg).
+                    -- But special constraint vars MUST be resolved, otherwise we'll mis-specialize primitives.
+                    if
+                        Name.isNumberType name
+                            || Name.isComparableType name
+                            || Name.isAppendableType name
+                            || Name.isCompappendType name
+                    then
+                        crash ("Monomorphize.applySubst: unresolved constrained type variable " ++ name)
+
+                    else
+                        -- Safe fallback for phantom/unconstrained vars like `msg`
+                        Mono.MUnit
 
         Can.TLambda from to ->
             Mono.MFunction [ applySubst subst from ] (applySubst subst to)

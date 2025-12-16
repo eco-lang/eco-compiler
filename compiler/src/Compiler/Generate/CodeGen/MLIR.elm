@@ -739,15 +739,20 @@ generateClosureFunc ctx funcName closureInfo body monoType =
         exprResult =
             generateExpr ctxWithArgs body
 
+        -- IMPORTANT: The MLIR func returns the *body type*, not the closure value type.
+        returnType : MlirType
+        returnType =
+            monoTypeToMlir (Mono.typeOf body)
+
         returnOp : MlirOp
         returnOp =
-            ecoReturn exprResult.ctx exprResult.resultVar (monoTypeToMlir monoType)
+            ecoReturn exprResult.ctx exprResult.resultVar returnType
 
         region : MlirRegion
         region =
             mkRegion argPairs exprResult.ops returnOp
     in
-    ( funcFunc ctx funcName argPairs (monoTypeToMlir monoType) region, exprResult.ctx )
+    ( funcFunc ctx funcName argPairs returnType region, exprResult.ctx )
 
 
 
@@ -1399,8 +1404,19 @@ generateClosure ctx closureInfo body monoType =
                 ( [], [], ctx )
                 closureInfo.captures
 
+        -- PAP boundary: ensure boxed captures
+        captureVarsWithTypes : List ( String, Mono.MonoType )
+        captureVarsWithTypes =
+            List.map2
+                (\( _, expr, _ ) var -> ( var, Mono.typeOf expr ))
+                closureInfo.captures
+                captureVars
+
+        ( boxOps, boxedCaptureVars, ctx1b ) =
+            boxArgsIfNeeded ctx1 captureVarsWithTypes
+
         ( resultVar, ctx2 ) =
-            freshVar ctx1
+            freshVar ctx1b
 
         numCaptured : Int
         numCaptured =
@@ -1414,7 +1430,7 @@ generateClosure ctx closureInfo body monoType =
         -- Captures are all boxed values
         captureVarPairs : List ( String, MlirType )
         captureVarPairs =
-            List.map (\v -> ( v, ecoValue )) captureVars
+            List.map (\v -> ( v, ecoValue )) boxedCaptureVars
 
         -- Create a papCreate op
         papOp : MlirOp
@@ -1444,7 +1460,7 @@ generateClosure ctx closureInfo body monoType =
         ctx3 =
             { ctx2 | pendingLambdas = pendingLambda :: ctx2.pendingLambdas }
     in
-    { ops = captureOps ++ [ papOp ]
+    { ops = captureOps ++ boxOps ++ [ papOp ]
     , resultVar = resultVar
     , ctx = ctx3
     }
@@ -1464,6 +1480,65 @@ lambdaIdToString lambdaId =
 -- CALL GENERATION
 
 
+isEcoValueType : MlirType -> Bool
+isEcoValueType ty =
+    case ty of
+        NamedStruct "eco.value" ->
+            True
+
+        _ ->
+            False
+
+
+argVarPairsFromExprs : List Mono.MonoExpr -> List String -> List ( String, MlirType )
+argVarPairsFromExprs argExprs argVars =
+    List.map2
+        (\expr var -> ( var, monoTypeToMlir (Mono.typeOf expr) ))
+        argExprs
+        argVars
+
+
+boxIfNeeded : Context -> String -> Mono.MonoType -> ( List MlirOp, String, Context )
+boxIfNeeded ctx var monoTy =
+    let
+        mlirTy =
+            monoTypeToMlir monoTy
+    in
+    if isEcoValueType mlirTy then
+        ( [], var, ctx )
+
+    else
+        let
+            ( boxedVar, ctx1 ) =
+                freshVar ctx
+
+            boxOp : MlirOp
+            boxOp =
+                mlirOp "eco.box" ctx1
+                    |> withOperands [ ( var, mlirTy ) ]
+                    |> withResult boxedVar ecoValue
+                    |> build
+        in
+        ( [ boxOp ], boxedVar, ctx1 )
+
+
+boxArgsIfNeeded :
+    Context
+    -> List ( String, Mono.MonoType )
+    -> ( List MlirOp, List String, Context )
+boxArgsIfNeeded ctx args =
+    List.foldl
+        (\( var, ty ) ( opsAcc, varsAcc, ctxAcc ) ->
+            let
+                ( moreOps, boxedVar, ctx1 ) =
+                    boxIfNeeded ctxAcc var ty
+            in
+            ( opsAcc ++ moreOps, varsAcc ++ [ boxedVar ], ctx1 )
+        )
+        ( [], [], ctx )
+        args
+
+
 generateCall : Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateCall ctx func args resultType =
     case func of
@@ -1476,10 +1551,10 @@ generateCall ctx func args resultType =
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
-                -- All function arguments are boxed values
+                -- Use unboxed primitives when the Mono types are primitive
                 argVarPairs : List ( String, MlirType )
                 argVarPairs =
-                    List.map (\v -> ( v, ecoValue )) argVars
+                    argVarPairsFromExprs args argVars
 
                 funcName : String
                 funcName =
@@ -1496,19 +1571,27 @@ generateCall ctx func args resultType =
                 ( argsOps, argVars, ctx1 ) =
                     generateExprList ctx args
 
+                -- Kernel boundary: ensure boxed arguments
+                argsWithTypes : List ( String, Mono.MonoType )
+                argsWithTypes =
+                    List.map2 (\expr var -> ( var, Mono.typeOf expr )) args argVars
+
+                ( boxOps, boxedVars, ctx1b ) =
+                    boxArgsIfNeeded ctx1 argsWithTypes
+
                 ( resultVar, ctx2 ) =
-                    freshVar ctx1
+                    freshVar ctx1b
 
                 -- All function arguments are boxed values
                 argVarPairs : List ( String, MlirType )
                 argVarPairs =
-                    List.map (\v -> ( v, ecoValue )) argVars
+                    List.map (\v -> ( v, ecoValue )) boxedVars
 
                 kernelName : String
                 kernelName =
                     "Elm_Kernel_" ++ home ++ "_" ++ name
             in
-            { ops = argsOps ++ [ ecoCallNamed ctx2 resultVar kernelName argVarPairs (monoTypeToMlir resultType) ]
+            { ops = argsOps ++ boxOps ++ [ ecoCallNamed ctx2 resultVar kernelName argVarPairs (monoTypeToMlir resultType) ]
             , resultVar = resultVar
             , ctx = ctx2
             }
@@ -1519,13 +1602,21 @@ generateCall ctx func args resultType =
                 ( argsOps, argVars, ctx1 ) =
                     generateExprList ctx args
 
+                -- PAP boundary: ensure boxed arguments
+                argsWithTypes : List ( String, Mono.MonoType )
+                argsWithTypes =
+                    List.map2 (\expr var -> ( var, Mono.typeOf expr )) args argVars
+
+                ( boxOps, boxedVars, ctx1b ) =
+                    boxArgsIfNeeded ctx1 argsWithTypes
+
                 ( resultVar, ctx2 ) =
-                    freshVar ctx1
+                    freshVar ctx1b
 
                 -- Closure and all args are boxed values
                 allOperandPairs : List ( String, MlirType )
                 allOperandPairs =
-                    ( "%" ++ name, ecoValue ) :: List.map (\v -> ( v, ecoValue )) argVars
+                    ( "%" ++ name, ecoValue ) :: List.map (\v -> ( v, ecoValue )) boxedVars
 
                 -- remaining_arity is the arity of the result type (how many more args needed)
                 remainingArity : Int
@@ -1540,7 +1631,7 @@ generateCall ctx func args resultType =
                         |> withAttr "remaining_arity" (IntAttr remainingArity)
                         |> build
             in
-            { ops = argsOps ++ [ papExtendOp ]
+            { ops = argsOps ++ boxOps ++ [ papExtendOp ]
             , resultVar = resultVar
             , ctx = ctx2
             }
@@ -1555,13 +1646,21 @@ generateCall ctx func args resultType =
                 ( argsOps, argVars, ctx1 ) =
                     generateExprList funcResult.ctx args
 
+                -- PAP boundary: ensure boxed arguments
+                argsWithTypes : List ( String, Mono.MonoType )
+                argsWithTypes =
+                    List.map2 (\expr var -> ( var, Mono.typeOf expr )) args argVars
+
+                ( boxOps, boxedVars, ctx1b ) =
+                    boxArgsIfNeeded ctx1 argsWithTypes
+
                 ( resultVar, ctx2 ) =
-                    freshVar ctx1
+                    freshVar ctx1b
 
                 -- Closure and all args are boxed values
                 allOperandPairs : List ( String, MlirType )
                 allOperandPairs =
-                    ( funcResult.resultVar, ecoValue ) :: List.map (\v -> ( v, ecoValue )) argVars
+                    ( funcResult.resultVar, ecoValue ) :: List.map (\v -> ( v, ecoValue )) boxedVars
 
                 -- remaining_arity is the arity of the result type (how many more args needed)
                 remainingArity : Int
@@ -1576,7 +1675,7 @@ generateCall ctx func args resultType =
                         |> withAttr "remaining_arity" (IntAttr remainingArity)
                         |> build
             in
-            { ops = funcResult.ops ++ argsOps ++ [ papExtendOp ]
+            { ops = funcResult.ops ++ argsOps ++ boxOps ++ [ papExtendOp ]
             , resultVar = resultVar
             , ctx = ctx2
             }
@@ -1617,10 +1716,13 @@ generateTailCall ctx name args =
                 ( [], [], ctx )
                 args
 
-        -- All arguments are boxed values
+        -- Use actual argument types
         argVarPairs : List ( String, MlirType )
         argVarPairs =
-            List.map (\v -> ( v, ecoValue )) argVars
+            List.map2
+                (\( _, expr ) v -> ( v, monoTypeToMlir (Mono.typeOf expr) ))
+                args
+                argVars
 
         jumpOp : MlirOp
         jumpOp =
