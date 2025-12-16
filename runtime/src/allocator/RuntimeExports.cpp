@@ -8,6 +8,7 @@
 #include "RuntimeExports.h"
 #include "Allocator.hpp"
 #include "Heap.hpp"
+#include "HeapHelpers.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -744,8 +745,11 @@ static void print_custom(Custom* custom, int depth) {
                 // Read as full 64-bit value for JIT mode
                 uint64_t val = static_cast<uint64_t>(custom->values[i].i);
 
-                // Try to print as constant first (print_if_constant both checks AND prints)
-                if (!print_if_constant(val)) {
+                // Safety check for small integers masquerading as pointers
+                // (due to unboxed_bitmap=0 when value is actually unboxed)
+                if (val < 0x10000) {
+                    output_format("%lld", (long long)val);
+                } else if (!print_if_constant(val)) {
                     // Not a constant - it's a pointer, print via print_value
                     void* ptr = reinterpret_cast<void*>(val);
                     bool needs_parens = false;
@@ -983,6 +987,79 @@ extern "C" void eco_dbg_print_char(int32_t value) {
     output_text("[eco.dbg] ");
     print_char(static_cast<u16>(value));
     output_text("\n");
+}
+
+// Output text to the current output stream (for kernel functions)
+extern "C" void eco_output_text(const char* text) {
+    output_text(text);
+}
+
+// Print an Elm value to the current output stream
+extern "C" void eco_print_value(uint64_t value) {
+    print_value(value, 0);
+}
+
+// Print an Elm value, unwrapping the Ctor0 box wrapper used by Guida compiler.
+// This is used by Debug.log to show clean Elm values.
+extern "C" void eco_print_elm_value(uint64_t value) {
+    // Check for embedded constants first
+    if (print_if_constant(value)) {
+        return;
+    }
+
+    void* ptr = reinterpret_cast<void*>(value);
+    if (!ptr) {
+        output_text("<null>");
+        return;
+    }
+
+    Header* header = static_cast<Header*>(ptr);
+
+    // Check if this is a Ctor0 size=1 wrapper (Guida's box for polymorphic values)
+    if (header->tag == Tag_Custom) {
+        Custom* custom = static_cast<Custom*>(ptr);
+        if (custom->ctor == 0 && custom->header.size == 1) {
+            // Unwrap: print the inner value directly
+            if (custom->unboxed & 1) {
+                // Field is unboxed integer
+                output_format("%lld", (long long)custom->values[0].i);
+            } else {
+                uint64_t inner = static_cast<uint64_t>(custom->values[0].i);
+                // Safety check for small integers
+                if (inner < 0x10000) {
+                    output_format("%lld", (long long)inner);
+                } else if (!print_if_constant(inner)) {
+                    // Recursively print the inner value (also unwrapping if needed)
+                    eco_print_elm_value(inner);
+                }
+            }
+            return;
+        }
+    }
+
+    // Not a wrapper, print normally
+    print_value(value, 0);
+}
+
+// Convert an Elm value to its string representation
+extern "C" void* eco_value_to_string(uint64_t value) {
+    // Temporarily capture output to a string
+    std::ostringstream capture;
+    std::ostringstream* prev = tl_output_stream;
+    tl_output_stream = &capture;
+
+    // Print the value
+    print_value(value, 0);
+
+    // Restore previous stream
+    tl_output_stream = prev;
+
+    // Allocate and return an ElmString from the captured output
+    std::string result = capture.str();
+    HPointer strPtr = alloc::allocStringFromUTF8(result);
+
+    // Return as raw pointer for JIT
+    return Allocator::instance().resolve(strPtr);
 }
 
 //===----------------------------------------------------------------------===//

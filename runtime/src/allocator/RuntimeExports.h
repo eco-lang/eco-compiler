@@ -162,6 +162,27 @@ void eco_dbg_print_float(double value);
 /// @param value The character (Unicode code point)
 void eco_dbg_print_char(int32_t value);
 
+/// Outputs text to the current output stream (stderr or capture buffer).
+/// Used by kernel functions like Debug.log.
+/// @param text The text to output
+void eco_output_text(const char* text);
+
+/// Prints an Elm value to the current output stream in Elm syntax.
+/// Used by eco.dbg and Debug.toString.
+/// @param value The value to print (as 64-bit encoded pointer)
+void eco_print_value(uint64_t value);
+
+/// Prints an Elm value, unwrapping Ctor0 box wrappers from Guida compiler.
+/// Used by Debug.log to show clean Elm values without internal wrappers.
+/// @param value The value to print (as 64-bit encoded pointer)
+void eco_print_elm_value(uint64_t value);
+
+/// Converts an Elm value to its string representation.
+/// Allocates and returns a new ElmString.
+/// @param value The value to convert (as 64-bit encoded pointer)
+/// @return Pointer to the allocated ElmString
+void* eco_value_to_string(uint64_t value);
+
 //===----------------------------------------------------------------------===//
 // GC Interface
 //===----------------------------------------------------------------------===//

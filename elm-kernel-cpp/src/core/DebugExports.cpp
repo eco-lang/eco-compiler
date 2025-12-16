@@ -5,6 +5,7 @@
 #include "Debug.hpp"
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
+#include "allocator/RuntimeExports.h"
 
 using namespace Elm;
 using namespace Elm::Kernel;
@@ -39,27 +40,37 @@ extern "C" {
 
 uint64_t Elm_Kernel_Debug_log(uint64_t tag, uint64_t value) {
     // log prints the tag and value, then returns the value unchanged
-    std::string tagStr = elmStringToStd(Export::toPtr(tag));
-    // For now, just print the tag (stub implementation)
-    // The actual Debug.log would print both tag and value
-    fprintf(stderr, "[%s] <value>\n", tagStr.c_str());
+    // In JIT mode, parameters are raw 64-bit pointers
+    std::string tagStr = elmStringToStd(reinterpret_cast<void*>(tag));
+
+    // Output to the captured stream (or stderr if not capturing)
+    // Use eco_print_elm_value to unwrap Guida's Ctor0 box wrappers
+    eco_output_text(tagStr.c_str());
+    eco_output_text(": ");
+    eco_print_elm_value(value);
+    eco_output_text("\n");
+
     // Return the value unchanged
     return value;
 }
 
 uint64_t Elm_Kernel_Debug_todo(uint64_t message) {
-    std::string msgStr = elmStringToStd(Export::toPtr(message));
-    fprintf(stderr, "Debug.todo: %s\n", msgStr.c_str());
+    // In JIT mode, parameters are raw 64-bit pointers
+    std::string msgStr = elmStringToStd(reinterpret_cast<void*>(message));
+    eco_output_text("Debug.todo: ");
+    eco_output_text(msgStr.c_str());
+    eco_output_text("\n");
     exit(1);
     // Never reached, but needed for return type
     return 0;
 }
 
 uint64_t Elm_Kernel_Debug_toString(uint64_t value) {
-    // Stub: return a placeholder string
-    // Full implementation would serialize the value
-    HPointer result = alloc::allocStringFromUTF8("<value>");
-    return Export::encode(result);
+    // Convert the value to its string representation
+    // eco_value_to_string returns a raw pointer which in JIT mode
+    // is directly usable as an i64
+    void* strPtr = eco_value_to_string(value);
+    return reinterpret_cast<uint64_t>(strPtr);
 }
 
 } // extern "C"
