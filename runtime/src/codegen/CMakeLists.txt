@@ -12,6 +12,9 @@
 # Find MLIR package (this also finds LLVM)
 find_package(MLIR REQUIRED CONFIG)
 
+# Note: elm-kernel-cpp is included from the top-level CMakeLists.txt
+# The ElmKernel target is available for linking.
+
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
@@ -187,6 +190,8 @@ add_llvm_executable(ecoc
     ../allocator/RootSet.cpp
     ../allocator/ThreadLocalHeap.cpp
     ../allocator/GCStats.cpp
+    ../allocator/StringOps.cpp
+    ../allocator/ListOps.cpp
     PARTIAL_SOURCES_INTENDED
 )
 
@@ -194,11 +199,13 @@ target_include_directories(ecoc PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${CMAKE_CURRENT_BINARY_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../elm-kernel-cpp/src
 )
 
 target_link_libraries(ecoc PRIVATE
     EcoDialect
     EcoPasses
+    ElmKernel
     MLIRIR
     MLIRParser
     MLIRPass
@@ -248,6 +255,8 @@ add_mlir_library(EcoRunner
     ../allocator/RootSet.cpp
     ../allocator/ThreadLocalHeap.cpp
     ../allocator/GCStats.cpp
+    ../allocator/StringOps.cpp
+    ../allocator/ListOps.cpp
     PARTIAL_SOURCES_INTENDED
 
     ADDITIONAL_HEADER_DIRS
@@ -259,6 +268,7 @@ add_mlir_library(EcoRunner
     LINK_LIBS PUBLIC
     EcoDialect
     EcoPasses
+    ElmKernel
     MLIRIR
     MLIRParser
     MLIRPass
@@ -282,6 +292,10 @@ add_mlir_library(EcoRunner
     LLVMSupport
     LLVMCore
     LLVMOrcJIT
+)
+
+target_include_directories(obj.EcoRunner PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../elm-kernel-cpp/src
 )
 
 target_compile_features(obj.EcoRunner PRIVATE cxx_std_20)
