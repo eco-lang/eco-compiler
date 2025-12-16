@@ -104,6 +104,8 @@ add_mlir_dialect_library(EcoDialect
 
 # LLVM/MLIR headers require C++17 features
 target_compile_features(obj.EcoDialect PRIVATE cxx_std_17)
+# Suppress C++20 ambiguous operator warning from MLIR headers
+target_compile_options(obj.EcoDialect PRIVATE -Wno-ambiguous-reversed-operator)
 
 #------------------------------------------------------------------------------
 # Create a library for Eco passes
@@ -143,6 +145,7 @@ add_mlir_library(EcoPasses
 )
 
 target_compile_features(obj.EcoPasses PRIVATE cxx_std_17)
+target_compile_options(obj.EcoPasses PRIVATE -Wno-ambiguous-reversed-operator)
 
 #------------------------------------------------------------------------------
 # Build the ecogen executable (legacy, for parsing only)
@@ -168,6 +171,7 @@ target_link_libraries(ecogen PRIVATE
 )
 
 target_compile_features(ecogen PRIVATE cxx_std_17)
+target_compile_options(ecogen PRIVATE -Wno-ambiguous-reversed-operator)
 
 #------------------------------------------------------------------------------
 # Build the ecoc executable (full compiler with lowering and JIT)
@@ -220,6 +224,7 @@ target_link_libraries(ecoc PRIVATE
 )
 
 target_compile_features(ecoc PRIVATE cxx_std_20)
+target_compile_options(ecoc PRIVATE -Wno-ambiguous-reversed-operator)
 
 # The runtime code uses exceptions, so we need to enable them
 # (LLVM/MLIR disables exceptions by default)
@@ -279,7 +284,7 @@ add_mlir_library(EcoRunner
 )
 
 target_compile_features(obj.EcoRunner PRIVATE cxx_std_20)
-target_compile_options(obj.EcoRunner PRIVATE -fexceptions)
+target_compile_options(obj.EcoRunner PRIVATE -Wno-ambiguous-reversed-operator -fexceptions)
 target_link_libraries(obj.EcoRunner PRIVATE Threads::Threads)
 
 #------------------------------------------------------------------------------
