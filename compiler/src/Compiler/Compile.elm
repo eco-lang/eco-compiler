@@ -6,6 +6,31 @@ module Compiler.Compile exposing
     , compileTyped
     )
 
+{-| Orchestrates the full compilation pipeline from source to optimized artifacts.
+
+This module provides the main entry points for compiling Elm modules. It coordinates
+the complete transformation from parsed source code through canonicalization, type
+checking, pattern match verification, and optimization.
+
+The compilation pipeline consists of four phases:
+
+1.  **Canonicalization** - Resolves all names to their home modules
+2.  **Type Checking** - Infers and verifies types via constraint solving
+3.  **Nitpicking** - Verifies pattern match exhaustiveness
+4.  **Optimization** - Produces efficient intermediate representation
+
+
+# Compilation
+
+@docs compile, compileTyped
+
+
+# Artifacts
+
+@docs Artifacts, TypedArtifacts, TypedArtifactsData
+
+-}
+
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
@@ -29,14 +54,25 @@ import Task exposing (Task)
 
 
 
--- COMPILE
+-- ====== Artifacts ======
 
 
+{-| Compilation artifacts produced by the standard compilation pipeline.
+
+Contains the canonical AST, type annotations for all definitions, and the
+optimized local graph suitable for JavaScript code generation.
+
+-}
 type Artifacts
     = Artifacts Can.Module (Dict String Name Can.Annotation) Opt.LocalGraph
 
 
-{-| Artifacts that include typed optimization output for MLIR backend.
+{-| Extended compilation artifacts with typed optimization for MLIR backend.
+
+In addition to standard artifacts, includes a typed optimization graph that
+preserves full type information throughout the optimization process. This
+enables type-directed optimizations and direct lowering to MLIR.
+
 -}
 type alias TypedArtifactsData =
     { canonical : Can.Module
@@ -46,10 +82,28 @@ type alias TypedArtifactsData =
     }
 
 
+{-| Wrapper for typed compilation artifacts.
+-}
 type TypedArtifacts
     = TypedArtifacts TypedArtifactsData
 
 
+
+-- ====== Compilation ======
+
+
+{-| Compiles an Elm module through the complete pipeline.
+
+Executes all compilation phases in sequence:
+
+1.  Canonicalization - resolves names and imports
+2.  Type checking - infers and verifies types
+3.  Pattern match analysis - ensures exhaustiveness
+4.  Optimization - produces efficient intermediate representation
+
+Returns artifacts suitable for JavaScript code generation.
+
+-}
 compile : Pkg.Name -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never (Result E.Error Artifacts)
 compile pkg ifaces modul =
     Task.succeed
@@ -72,8 +126,16 @@ compile pkg ifaces modul =
         )
 
 
-{-| Compile with typed optimization for MLIR backend.
-Produces both Opt.LocalGraph and TOpt.LocalGraph.
+{-| Compiles an Elm module with typed optimization for native code generation.
+
+Performs all standard compilation phases plus typed optimization, producing:
+
+  - `Opt.LocalGraph` - Standard optimized IR for JavaScript backend
+  - `TOpt.LocalGraph` - Typed optimized IR with preserved type information
+
+The typed optimization phase preserves type information needed for monomorphization
+and direct lowering to MLIR/LLVM.
+
 -}
 compileTyped : Pkg.Name -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never (Result E.Error TypedArtifacts)
 compileTyped pkg ifaces modul =
@@ -102,9 +164,10 @@ compileTyped pkg ifaces modul =
 
 
 
--- PHASES
+-- ====== Internal Compilation Phases ======
 
 
+-- Converts source AST to canonical form, resolving all names and imports.
 canonicalize : Pkg.Name -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Result E.Error Can.Module
 canonicalize pkg ifaces modul =
     case Tuple.second (ReportingResult.run (Canonicalize.canonicalize pkg ifaces modul)) of
@@ -115,6 +178,7 @@ canonicalize pkg ifaces modul =
             Err (E.BadNames errors)
 
 
+-- Infers and verifies types for all definitions in the canonical module.
 typeCheck : Src.Module -> Can.Module -> Result E.Error (Dict String Name Can.Annotation)
 typeCheck modul canonical =
     case Type.constrain canonical |> TypeCheck.andThen Type.run |> TypeCheck.unsafePerformIO of
@@ -125,6 +189,7 @@ typeCheck modul canonical =
             Err (E.BadTypes (Localizer.fromModule modul) errors)
 
 
+-- Verifies pattern match exhaustiveness and detects redundant patterns.
 nitpick : Can.Module -> Result E.Error ()
 nitpick canonical =
     case PatternMatches.check canonical of
@@ -135,6 +200,7 @@ nitpick canonical =
             Err (E.BadPatterns errors)
 
 
+-- Optimizes the canonical module to produce efficient intermediate representation.
 optimize : Src.Module -> Dict String Name.Name Can.Annotation -> Can.Module -> Result E.Error Opt.LocalGraph
 optimize modul annotations canonical =
     case Tuple.second (ReportingResult.run (Optimize.optimize annotations canonical)) of
@@ -145,8 +211,7 @@ optimize modul annotations canonical =
             Err (E.BadMains (Localizer.fromModule modul) errors)
 
 
-{-| Run typed optimization to produce TOpt.LocalGraph with full type information.
--}
+-- Performs typed optimization preserving full type information for MLIR backend.
 typedOptimize : Src.Module -> Dict String Name.Name Can.Annotation -> Can.Module -> Result E.Error TOpt.LocalGraph
 typedOptimize modul annotations canonical =
     case Tuple.second (ReportingResult.run (TypedOptimize.optimize annotations canonical)) of

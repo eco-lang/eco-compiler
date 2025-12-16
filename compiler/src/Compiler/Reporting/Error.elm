@@ -8,6 +8,28 @@ module Compiler.Reporting.Error exposing
     , toJson
     )
 
+{-| Error reporting infrastructure for the Elm compiler.
+
+This module defines the core error types that can arise during compilation
+and provides functions to format them for display or serialize them for caching.
+
+
+# Error Types
+
+@docs Error, Module
+
+
+# Formatting for Display
+
+@docs toDoc, reportToJson
+
+
+# Serialization
+
+@docs toJson, moduleEncoder, moduleDecoder
+
+-}
+
 import Builder.File as File
 import Bytes.Decode
 import Bytes.Encode
@@ -36,9 +58,15 @@ import Utils.Main as Utils
 
 
 
--- MODULE
+-- ====== Module Errors ======
 
 
+{-| Represents a module that failed to compile, along with its error context.
+
+Contains the module name, file path, modification time, source code, and the
+specific error that occurred during compilation.
+
+-}
 type alias Module =
     { name : ModuleName.Raw
     , absolutePath : String
@@ -48,10 +76,19 @@ type alias Module =
     }
 
 
+{-| Errors that can occur during different phases of compilation.
 
--- ERRORS
+Each variant corresponds to a specific compiler phase:
 
+  - `BadSyntax` - Parse errors in source code
+  - `BadImports` - Problems resolving imports
+  - `BadNames` - Name resolution and canonicalization errors
+  - `BadTypes` - Type checking errors
+  - `BadMains` - Invalid main function definitions
+  - `BadPatterns` - Non-exhaustive pattern matches
+  - `BadDocs` - Malformed documentation comments
 
+-}
 type Error
     = BadSyntax Syntax.Error
     | BadImports (NE.Nonempty Import.Error)
@@ -63,9 +100,10 @@ type Error
 
 
 
--- TO REPORT
+-- ====== Report Generation ======
 
 
+-- Converts an Error to one or more Report objects for display.
 toReports : SyntaxVersion -> Code.Source -> Error -> NE.Nonempty Report.Report
 toReports syntaxVersion source err =
     case err of
@@ -92,9 +130,15 @@ toReports syntaxVersion source err =
 
 
 
--- TO DOC
+-- ====== Document Formatting ======
 
 
+{-| Format compilation errors for terminal display.
+
+Sorts modules by modification time and formats each error with a visual
+separator. Returns a Doc that can be rendered with color to the terminal.
+
+-}
 toDoc : String -> Module -> List Module -> D.Doc
 toDoc root err errs =
     let
@@ -194,9 +238,15 @@ toMessageBar title filePath =
 
 
 
--- TO JSON
+-- ====== JSON Serialization ======
 
 
+{-| Serialize a module's errors to JSON format.
+
+Produces a JSON object with the module path, name, and a list of problems.
+Used by editor integrations and build tools to consume compiler errors.
+
+-}
 toJson : Module -> E.Value
 toJson { name, absolutePath, source, error } =
     let
@@ -211,6 +261,8 @@ toJson { name, absolutePath, source, error } =
         ]
 
 
+{-| Convert a single report to JSON with title, region, and message.
+-}
 reportToJson : Report.Report -> E.Value
 reportToJson (Report.Report props) =
     E.object
@@ -239,9 +291,11 @@ encodeRegion (A.Region (A.Position sr sc) (A.Position er ec)) =
 
 
 
--- ENCODERS and DECODERS
+-- ====== Binary Serialization ======
 
 
+{-| Encode a module's error for binary caching.
+-}
 moduleEncoder : Module -> Bytes.Encode.Encoder
 moduleEncoder modul =
     Bytes.Encode.sequence
@@ -253,6 +307,8 @@ moduleEncoder modul =
         ]
 
 
+{-| Decode a module's error from binary cache.
+-}
 moduleDecoder : Bytes.Decode.Decoder Module
 moduleDecoder =
     Bytes.Decode.map5 Module

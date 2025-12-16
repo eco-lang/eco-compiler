@@ -11,6 +11,37 @@ module Compiler.Parse.Module exposing
     , isKernel
     )
 
+{-| Parse Elm module declarations including headers, imports, and declarations.
+
+This module provides the entry point for parsing entire Elm modules. It handles:
+
+  - Module headers (normal, port, and effect modules)
+  - Import declarations
+  - Module documentation comments
+  - Top-level declarations
+
+
+# Parsing Entry Point
+
+@docs fromByteString
+
+
+# Module Structure
+
+@docs Module, Header, ProjectType, Effects, defaultHeader
+
+
+# Parsers
+
+@docs chompModule, chompImports, chompImport
+
+
+# Utilities
+
+@docs isKernel
+
+-}
+
 import Compiler.AST.Source as Src
 import Compiler.Data.Name as Name
 import Compiler.Elm.Compiler.Imports as Imports
@@ -27,9 +58,15 @@ import Compiler.Reporting.Error.Syntax as E
 
 
 
--- FROM BYTE STRING
+-- ====== Parsing Entry Point ======
 
 
+{-| Parse a complete Elm module from source text.
+
+Takes a syntax version, project type, and source string. Returns either
+a parsed module or a syntax error. This is the main entry point for module parsing.
+
+-}
 fromByteString : SyntaxVersion -> ProjectType -> String -> Result E.Error Src.Module
 fromByteString syntaxVersion projectType source =
     case P.fromByteString (chompModule syntaxVersion projectType) E.ModuleBadEnd source of
@@ -41,14 +78,21 @@ fromByteString syntaxVersion projectType source =
 
 
 
--- PROJECT TYPE
+-- ====== Project Type ======
 
 
+{-| Whether we're compiling a package or application.
+
+This affects whether ports and effect modules are allowed, and which
+default imports are included.
+
+-}
 type ProjectType
     = Package Pkg.Name
     | Application
 
 
+-- Checks if this is the elm/core package.
 isCore : ProjectType -> Bool
 isCore projectType =
     case projectType of
@@ -59,6 +103,12 @@ isCore projectType =
             False
 
 
+{-| Check if the project type represents a kernel package.
+
+Only kernel packages (like elm/core internals) are allowed to define
+effect modules and use kernel JavaScript code.
+
+-}
 isKernel : ProjectType -> Bool
 isKernel projectType =
     case projectType of
@@ -70,9 +120,15 @@ isKernel projectType =
 
 
 
--- MODULE
+-- ====== Module Parsing ======
 
 
+{-| Intermediate representation of a parsed module before validation.
+
+This structure preserves all comments and formatting information during
+parsing. It's later converted to `Src.Module` after validation in `checkModule`.
+
+-}
 type alias Module =
     { initialComments : Src.FComments
     , header : Maybe Header
@@ -82,6 +138,13 @@ type alias Module =
     }
 
 
+{-| Parse the structure of an Elm module.
+
+Parses header (if present), imports, infixes (for kernel code), and
+declarations. Handles different project types by conditionally including
+default imports and allowing/disallowing certain features.
+
+-}
 chompModule : SyntaxVersion -> ProjectType -> P.Parser E.Module Module
 chompModule syntaxVersion projectType =
     chompHeader
@@ -372,9 +435,15 @@ chompModuleDocCommentSpace =
 
 
 
--- HEADER
+-- ====== Header ======
 
 
+{-| Module header information including name, exports, and effect type.
+
+Contains all the information from the module declaration line,
+including surrounding comments and the module documentation comment.
+
+-}
 type alias Header =
     { name : Src.C2 (A.Located Name.Name)
     , effects : Effects
@@ -383,6 +452,12 @@ type alias Header =
     }
 
 
+{-| Default header used when a module has no explicit module declaration.
+
+Creates a header for an implicit module named "Main" with open exports.
+Used for simple scripts and REPL evaluation contexts.
+
+-}
 defaultHeader : Header
 defaultHeader =
     { name = ( ( [], [] ), A.At A.zero Name.mainModule )
@@ -392,6 +467,13 @@ defaultHeader =
     }
 
 
+{-| The kind of effects a module can have.
+
+  - `NoEffects` - A normal module with no special effects
+  - `Ports` - A port module that can define ports for JavaScript interop
+  - `Manager` - An effect manager (kernel code only) that defines commands/subscriptions
+
+-}
 type Effects
     = NoEffects A.Region
     | Ports A.Region Src.FComments
@@ -764,9 +846,15 @@ spaces_em =
 
 
 
--- IMPORTS
+-- ====== Imports ======
 
 
+{-| Parse a sequence of import declarations.
+
+Repeatedly parses import statements until none remain. Takes a list of
+default imports to prepend (empty for core, standard defaults otherwise).
+
+-}
 chompImports : List (Src.C1 Src.Import) -> P.Parser E.Module (List (Src.C1 Src.Import))
 chompImports is =
     P.oneOfWithFallback
@@ -776,6 +864,12 @@ chompImports is =
         (List.reverse is)
 
 
+{-| Parse a single import declaration.
+
+Parses the import keyword, module name, optional alias, and optional
+exposing list. Handles all comment preservation around each component.
+
+-}
 chompImport : P.Parser E.Module (Src.C1 Src.Import)
 chompImport =
     Keyword.import_ E.ImportStart

@@ -42,7 +42,59 @@ module Compiler.AST.Canonical exposing
     , unionEncoder
     )
 
-{- Creating a canonical AST means finding the home module for all variables.
+{-| The Canonical AST represents Elm code after name resolution.
+
+During canonicalization, all variable references are resolved to their home modules.
+For example, `L.map` becomes a reference to `elm/core:List.map`. This phase also
+caches information needed by later compiler phases to avoid expensive lookups during
+type inference and exhaustiveness checking.
+
+Cached data is marked with comments like `-- CACHE for exhaustiveness` or
+`-- CACHE for inference` to clarify why certain fields exist.
+
+
+# Modules
+
+@docs Module, ModuleData, Exports, Export, Effects, Manager, Port
+
+
+# Expressions
+
+@docs Expr, Expr_, CaseBranch, FieldUpdate
+
+
+# Definitions
+
+@docs Def, Decls
+
+
+# Patterns
+
+@docs Pattern, Pattern_, PatternCtorArg
+
+
+# Types
+
+@docs Type, Annotation, FreeVars, AliasType, FieldType, fieldsToList
+
+
+# Type Declarations
+
+@docs Union, UnionData, Alias, Ctor, CtorData, CtorOpts, Binop
+
+
+# Serialization
+
+@docs annotationEncoder, annotationDecoder
+@docs typeEncoder, typeDecoder
+@docs aliasEncoder, aliasDecoder
+@docs unionEncoder, unionDecoder
+@docs ctorOptsEncoder, ctorOptsDecoder
+@docs fieldUpdateEncoder, fieldUpdateDecoder
+
+-}
+
+{- Internal note: Creating a canonical AST means finding the home module for all variables.
    So if you have L.map, you need to figure out that it is from the elm/core
    package in the List module.
 
@@ -77,17 +129,20 @@ import Utils.Bytes.Encode as BE
 
 
 
--- EXPRESSIONS
+-- ====== Expressions ======
 
 
+{-| An expression with source location annotation.
+-}
 type alias Expr =
     A.Located Expr_
 
 
+{-| Expression variants in the canonical AST.
 
--- CACHE Annotations for type inference
+Many variants include cached type annotations for efficient type inference.
 
-
+-}
 type Expr_
     = VarLocal Name
     | VarTopLevel IO.Canonical Name
@@ -119,23 +174,40 @@ type Expr_
     | Shader Shader.Source Shader.Types
 
 
+{-| A single branch in a case expression, pairing a pattern with its body.
+-}
 type CaseBranch
     = CaseBranch Pattern Expr
 
 
+{-| A field update in a record update expression.
+-}
 type FieldUpdate
     = FieldUpdate A.Region Expr
 
 
 
--- DEFS
+-- ====== Definitions ======
 
 
+{-| A value or function definition.
+
+  - `Def` - A definition without a type annotation
+  - `TypedDef` - A definition with a type annotation and free type variables
+
+-}
 type Def
     = Def (A.Located Name) (List Pattern) Expr
     | TypedDef (A.Located Name) FreeVars (List ( Pattern, Type )) Expr Type
 
 
+{-| A linked list of top-level declarations in a module.
+
+  - `Declare` - A non-recursive definition
+  - `DeclareRec` - A group of mutually recursive definitions
+  - `SaveTheEnvironment` - Sentinel marking the end of declarations
+
+-}
 type Decls
     = Declare Def Decls
     | DeclareRec Def (List Def) Decls
@@ -143,13 +215,21 @@ type Decls
 
 
 
--- PATTERNS
+-- ====== Patterns ======
 
 
+{-| A pattern with source location annotation.
+-}
 type alias Pattern =
     A.Located Pattern_
 
 
+{-| Pattern variants for destructuring values.
+
+Constructor patterns (`PCtor`) include extensive cached data for type inference
+and exhaustiveness checking.
+
+-}
 type Pattern_
     = PAnything
     | PVar Name
@@ -177,27 +257,45 @@ type Pattern_
         }
 
 
+{-| A constructor argument in a pattern, with cached index and type.
+-}
 type PatternCtorArg
     = PatternCtorArg
-        -- CACHE for destructors/errors
-        Index.ZeroBased
-        -- CACHE for type inference
-        Type
+        Index.ZeroBased -- CACHE for destructors/errors
+        Type -- CACHE for type inference
         Pattern
 
 
 
--- TYPES
+-- ====== Types ======
 
 
+{-| A type annotation with universally quantified type variables.
+
+The `FreeVars` contains the names of type variables that are polymorphic.
+
+-}
 type Annotation
     = Forall FreeVars Type
 
 
+{-| Free type variables in a type annotation.
+-}
 type alias FreeVars =
     Dict String Name ()
 
 
+{-| Canonical type representation.
+
+  - `TLambda` - Function type (a -> b)
+  - `TVar` - Type variable
+  - `TType` - Named type with arguments (e.g., List Int)
+  - `TRecord` - Record type with optional extension variable
+  - `TUnit` - Unit type ()
+  - `TTuple` - Tuple type
+  - `TAlias` - Type alias application
+
+-}
 type Type
     = TLambda Type Type
     | TVar Name
@@ -208,21 +306,29 @@ type Type
     | TAlias IO.Canonical Name (List ( Name, Type )) AliasType
 
 
+{-| Tracks whether a type alias has been fully expanded.
+
+  - `Holey` - Alias body still contains type variables to substitute
+  - `Filled` - Alias has been fully expanded with concrete types
+
+-}
 type AliasType
     = Holey Type
     | Filled Type
 
 
+{-| A record field with its source order index and type.
+
+The index preserves source order for canonical types from annotations.
+Inferred types may have all zeros for the index.
+
+-}
 type FieldType
     = FieldType Int Type
 
 
-
--- NOTE: The Word16 marks the source order, but it may not be available
--- for every canonical type. For example, if the canonical type is inferred
--- the orders will all be zeros.
-
-
+{-| Converts record fields to an ordered list, sorted by source position.
+-}
 fieldsToList : Dict String Name FieldType -> List ( Name, Type )
 fieldsToList fields =
     let
@@ -240,9 +346,11 @@ fieldsToList fields =
 
 
 
--- MODULES
+-- ====== Modules ======
 
 
+{-| Internal data for a canonical module.
+-}
 type alias ModuleData =
     { name : IO.Canonical
     , exports : Exports
@@ -255,18 +363,26 @@ type alias ModuleData =
     }
 
 
+{-| A canonicalized Elm module.
+-}
 type Module
     = Module ModuleData
 
 
+{-| A type alias definition with its type parameters and body.
+-}
 type Alias
     = Alias (List Name) Type
 
 
+{-| An infix operator definition with associativity, precedence, and function name.
+-}
 type Binop
     = Binop_ Binop.Associativity Binop.Precedence Name
 
 
+{-| Internal data for a union type declaration.
+-}
 type alias UnionData =
     { vars : List Name
     , alts : List Ctor
@@ -275,16 +391,27 @@ type alias UnionData =
     }
 
 
+{-| A union type (custom type) declaration.
+-}
 type Union
     = Union UnionData
 
 
+{-| Code generation optimization hints for constructors.
+
+  - `Normal` - Standard constructor representation
+  - `Enum` - All constructors are nullary (no arguments)
+  - `Unbox` - Single constructor with single argument can be unboxed
+
+-}
 type CtorOpts
     = Normal
     | Enum
     | Unbox
 
 
+{-| Internal data for a type constructor.
+-}
 type alias CtorData =
     { name : Name
     , index : Index.ZeroBased
@@ -293,19 +420,29 @@ type alias CtorData =
     }
 
 
+{-| A type constructor in a union type.
+-}
 type Ctor
     = Ctor CtorData
 
 
 
--- EXPORTS
+-- ====== Exports ======
 
 
+{-| What a module exports.
+
+  - `ExportEverything` - Module uses `exposing (..)` syntax
+  - `Export` - Module has explicit export list
+
+-}
 type Exports
     = ExportEverything A.Region
     | Export (Dict String Name (A.Located Export))
 
 
+{-| The kind of thing being exported.
+-}
 type Export
     = ExportValue
     | ExportBinop
@@ -315,12 +452,25 @@ type Export
     | ExportPort
 
 
+{-| Effects that a module can define.
+
+  - `NoEffects` - A normal module
+  - `Ports` - A port module with JavaScript interop
+  - `Manager` - An effect manager (kernel code only)
+
+-}
 type Effects
     = NoEffects
     | Ports (Dict String Name Port)
     | Manager A.Region A.Region A.Region Manager
 
 
+{-| A port declaration for JavaScript interop.
+
+  - `Incoming` - Receives values from JavaScript (subscription)
+  - `Outgoing` - Sends values to JavaScript (command)
+
+-}
 type Port
     = Incoming
         { freeVars : FreeVars
@@ -334,6 +484,13 @@ type Port
         }
 
 
+{-| The kind of effect manager.
+
+  - `Cmd` - Manages commands only
+  - `Sub` - Manages subscriptions only
+  - `Fx` - Manages both commands and subscriptions
+
+-}
 type Manager
     = Cmd Name
     | Sub Name
@@ -341,7 +498,7 @@ type Manager
 
 
 
--- ENCODERS and DECODERS
+-- ====== Serialization ======
 
 
 annotationEncoder : Annotation -> Bytes.Encode.Encoder

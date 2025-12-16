@@ -1,5 +1,18 @@
 module Compiler.Type.Constrain.Module exposing (constrain)
 
+{-| Generates type constraints for Elm modules during type checking.
+
+This is the entry point for constraint generation. It traverses the module's
+declarations, effects (ports, managers), and builds a constraint tree that
+the constraint solver will use to infer or verify types.
+
+
+# Constraint Generation
+
+@docs constrain
+
+-}
+
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
@@ -13,9 +26,16 @@ import System.TypeCheck.IO as IO exposing (IO)
 
 
 
--- CONSTRAIN
+-- ====== Constraint Generation ======
 
 
+{-| Generate type constraints for a canonical module.
+
+Handles regular declarations, ports, and effect managers by traversing the
+module's structure and producing a constraint tree that represents all type
+relationships.
+
+-}
 constrain : Can.Module -> IO Constraint
 constrain (Can.Module canData) =
     case canData.effects of
@@ -45,9 +65,10 @@ constrain (Can.Module canData) =
 
 
 
--- CONSTRAIN DECLARATIONS
+-- ====== Declaration Constraints ======
 
 
+-- Generates constraints for all module declarations.
 constrainDecls : Can.Decls -> Constraint -> IO Constraint
 constrainDecls decls finalConstraint =
     constrainDeclsHelp decls finalConstraint identity
@@ -67,9 +88,10 @@ constrainDeclsHelp decls finalConstraint cont =
 
 
 
--- PORT HELPERS
+-- ====== Port Constraints ======
 
 
+-- Wraps a port's type in a CLet constraint, instantiating free type variables.
 letPort : Name -> Can.Port -> IO Constraint -> IO Constraint
 letPort name port_ makeConstraint =
     case port_ of

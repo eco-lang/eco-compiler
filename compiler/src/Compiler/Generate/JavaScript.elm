@@ -4,6 +4,23 @@ module Compiler.Generate.JavaScript exposing
     , generateForReplEndpoint
     )
 
+{-| JavaScript code generation for the Elm compiler.
+
+This module is the entry point for generating JavaScript from optimized Elm AST.
+It takes an optimized global graph and produces executable JavaScript code, handling:
+
+  - Module code generation with dependency resolution
+  - REPL evaluation with type printing
+  - Source map generation for debugging
+  - Kernel JavaScript integration
+
+
+# Code Generation
+
+@docs generate, generateForRepl, generateForReplEndpoint
+
+-}
+
 import Basics.Extra exposing (flip)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
@@ -32,7 +49,7 @@ import Utils.Main as Utils
 
 
 
--- GENERATE
+-- ====== Main Code Generation ======
 
 
 type alias Graph =
@@ -51,6 +68,12 @@ prelude mode =
         ++ perfNote mode
 
 
+{-| Generates JavaScript code from an optimized global graph.
+
+Takes the optimized AST and produces executable JavaScript wrapped in an IIFE,
+including all dependencies, kernel functions, and main exports.
+
+-}
 generate : CodeGen.SourceMaps -> Int -> Mode.Mode -> Opt.GlobalGraph -> CodeGen.Mains -> String
 generate sourceMaps leadingLines mode (Opt.GlobalGraph graph _) mains =
     let
@@ -127,6 +150,12 @@ perfNote mode =
                 ++ " for better performance and smaller assets.');"
 
 
+{-| Generates JavaScript for REPL evaluation with type display.
+
+Produces code that evaluates an expression and prints its value and type
+to the console, formatted for terminal display with optional ANSI colors.
+
+-}
 generateForRepl : Bool -> L.Localizer -> Opt.GlobalGraph -> IO.Canonical -> Name.Name -> Can.Annotation -> String
 generateForRepl ansi localizer (Opt.GlobalGraph graph _) home name (Can.Forall _ tipe) =
     let
@@ -190,9 +219,15 @@ print ansi localizer home name tipe =
 
 
 
--- GENERATE FOR REPL ENDPOINT
+-- ====== REPL Endpoint Generation ======
 
 
+{-| Generates JavaScript for REPL evaluation in a web worker.
+
+Similar to generateForRepl but outputs via postMessage for use in browser
+environments. Returns a message object with name, value, and type fields.
+
+-}
 generateForReplEndpoint : L.Localizer -> Opt.GlobalGraph -> IO.Canonical -> Maybe Name.Name -> Can.Annotation -> String
 generateForReplEndpoint localizer (Opt.GlobalGraph graph _) home maybeName (Can.Forall _ tipe) =
     let

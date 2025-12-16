@@ -1,5 +1,29 @@
 module Compiler.Type.Solve exposing (run)
 
+{-| Constraint solver for Hindley-Milner type inference.
+
+This module solves type constraints generated during type checking. It implements
+Algorithm W with rank-based let-polymorphism, using pools to track variable scopes
+and enable efficient generalization.
+
+The solver works through constraints recursively:
+
+1.  Converts types to unification variables
+2.  Unifies actual types with expected types
+3.  Manages variable ranks for generalization
+4.  Detects infinite types via occurs check
+
+Variables are organized into pools by rank. Higher ranks represent more deeply
+nested scopes. During generalization, variables in young pools are either promoted
+to older pools or generalized to `noRank` (making them polymorphic).
+
+
+# Solving
+
+@docs run
+
+-}
+
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Name as Name
@@ -24,9 +48,16 @@ import Utils.Main as Utils
 
 
 
--- RUN SOLVER
+-- ====== Solver Entry Point ======
 
 
+{-| Solve a constraint tree and return either errors or type annotations.
+
+Takes a constraint tree generated during type checking and solves it by
+unifying types. Returns either a non-empty list of type errors or a
+dictionary mapping names to their inferred type annotations.
+
+-}
 run : Constraint -> IO (Result (NE.Nonempty Error.Error) (Dict String Name.Name Can.Annotation))
 run constraint =
     MVector.replicate 8 []
@@ -52,21 +83,25 @@ emptyState =
 
 
 
--- SOLVER
+-- ====== Solver State ======
 
 
+-- Maps variable names to their unification variables.
 type alias Env =
     Dict String Name.Name Variable
 
 
+-- Mutable array of variable pools indexed by rank.
 type alias Pools =
     IORef (Array (Maybe (List Variable)))
 
 
+-- Solver state containing environment, current mark, and accumulated errors.
 type State
     = State Env Mark (List Error.Error)
 
 
+-- Main solver loop using tail recursion via IO.loop.
 solve : Env -> Int -> Pools -> State -> Constraint -> IO State
 solve env rank pools state constraint =
     IO.loop solveHelp ( ( env, rank ), ( pools, state ), ( constraint, identity ) )

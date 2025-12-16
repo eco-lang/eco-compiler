@@ -4,6 +4,33 @@ module Compiler.Optimize.Module exposing
     , optimize
     )
 
+{-| Optimization phase entry point that transforms canonical AST into optimized representation.
+
+This module serves as the main interface for the optimization phase of the Elm compiler.
+It takes a canonicalized module (after type checking) and produces an optimized LocalGraph
+suitable for code generation. The optimization process:
+
+1.  Converts type aliases into constructor functions
+2.  Registers union type constructors
+3.  Handles effect managers (Cmd/Sub/Fx)
+4.  Processes port declarations with encoder/decoder generation
+5.  Optimizes value declarations and recursive definition groups
+
+The optimization tracks dependencies between globals and field access patterns to enable
+dead code elimination and efficient code generation.
+
+
+# Optimization
+
+@docs optimize
+
+
+# Types
+
+@docs Annotations, MResult
+
+-}
+
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Utils.Type as Type
@@ -24,30 +51,41 @@ import Utils.Main as Utils
 
 
 
--- OPTIMIZE
+-- ====== Optimization ======
 
 
+{-| Result type for module optimization, carrying errors and warnings.
+-}
 type alias MResult i w a =
     ReportingResult.RResult i w E.Error a
 
 
+{-| Maps definition names to their type annotations from the canonical phase.
+-}
 type alias Annotations =
     Dict String Name.Name Can.Annotation
 
 
+{-| Optimize a canonical module to produce an optimized local graph.
+
+Processes all declarations, union types, type aliases, and effects in the module.
+Returns a LocalGraph containing optimized nodes and field access counts.
+
+-}
 optimize : Annotations -> Can.Module -> MResult i (List W.Warning) Opt.LocalGraph
 optimize annotations (Can.Module canData) =
     Opt.LocalGraph Nothing Dict.empty Dict.empty |> addAliases canData.name canData.aliases |> addUnions canData.name canData.unions |> addEffects canData.name canData.effects |> addDecls canData.name annotations canData.decls
 
 
 
--- UNION
+-- ====== Union Types ======
 
 
 type alias Nodes =
     Dict (List String) Opt.Global Opt.Node
 
 
+-- Registers all union type constructors in the optimization graph.
 addUnions : IO.Canonical -> Dict String Name.Name Can.Union -> Opt.LocalGraph -> Opt.LocalGraph
 addUnions home unions (Opt.LocalGraph main nodes fields) =
     Opt.LocalGraph main (Dict.foldr compare (\_ -> addUnion home) nodes unions) fields
@@ -77,9 +115,10 @@ addCtorNode home opts (Can.Ctor c) nodes =
 
 
 
--- ALIAS
+-- ====== Type Aliases ======
 
 
+-- Converts record type aliases into constructor functions.
 addAliases : IO.Canonical -> Dict String Name.Name Can.Alias -> Opt.LocalGraph -> Opt.LocalGraph
 addAliases home aliases graph =
     Dict.foldr compare (addAlias home) graph aliases
