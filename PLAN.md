@@ -1010,7 +1010,7 @@ Get existing tests running and expand coverage.
 
 ### 4.2 MLIR Code Generation
 
-**Status**: Not Started
+**Status**: In Progress
 
 Implement code generation from Elm AST to eco MLIR dialect.
 
@@ -1019,17 +1019,42 @@ Implement code generation from Elm AST to eco MLIR dialect.
 - Monomorphization pass (§4.1.2) - polymorphic code must be specialized before MLIR emission
 
 **Code Generation Tasks**:
-- [ ] Expression translation
+- [x] Expression translation (basic)
 - [ ] Pattern matching compilation
-- [ ] Function definitions
+- [x] Function definitions
 - [ ] Module system
 - [ ] Foreign function interface
-- [ ] Closure representation
-- [ ] Data constructor encoding
+- [x] Closure representation
+- [x] Data constructor encoding
+
+**Known Issues** *(from Elm E2E test suite - 6 passing, 32 failing)*:
+
+1. **Bool Constant Codegen** *(blocks 12 tests)*
+   - Error: `'arith.constant' op failed to verify that all of {value, result} have same type`
+   - Problem: Boolean constants generated as `{value = 1} : () -> i1` but MLIR requires typed attribute
+   - Fix: Generate `{value = 1 : i1} : () -> i1` or use `true`/`false` literals
+   - Affected: BoolAnd/Or/Not/Xor/TrueFalse/ShortCircuit, CharToCode/ToLower/ToUpper/Unicode, CompareChar/Float
+
+2. **Monomorphization Unit Type Bug** *(blocks 16 tests)*
+   - Error: `COMPILER BUG - Monomorphization invariant violated! Expected: () Actual: <type>`
+   - Problem: Functions specialized with `()` for parameters that should be `Bool`, `Char`, `Int`, `String`
+   - Example: `CaseBoolTest_boolToStr_$_1` expects `()` but receives `Bool`
+   - Affected: All Case* tests, CeilingToInt, CharIsAlpha/IsDigit, ComparableMinMax, BitwiseShiftRight
+
+3. **Unresolved Type Variable** *(blocks 1 test)*
+   - Error: `Monomorphize.applySubst: unresolved constrained type variable number`
+   - Problem: `number` type constraint not resolved when used with anonymous functions/lambdas
+   - Affected: AnonymousFunctionTest (uses `List.map`, `List.foldl` with lambdas)
+
+4. **MLIR Type Attribute Inconsistencies** *(blocks 4 tests)*
+   - Symptom: Output shows pointer values instead of actual values (e.g., expected `42`, got `140189276045312`)
+   - Problem: Mismatch between `_operand_types` attributes and actual MLIR SSA types
+   - Example: `eco.construct` says `_operand_types = [!eco.value]` but receives `i64`
+   - Affected: AddTest, BitwiseIdentityTest, BitwiseLargeShiftTest, CharFromCodeTest
 
 **Deliverables**:
-- [ ] Code generation modules
-- [ ] MLIR builder utilities
+- [x] Code generation modules (`Compiler/Generate/CodeGen/MLIR.elm`)
+- [x] MLIR builder utilities
 - [ ] Symbol table management
 
 ### 4.3 Compiler Testing

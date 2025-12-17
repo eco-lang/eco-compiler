@@ -747,7 +747,7 @@ arithConstantInt : Context -> String -> Int -> MlirOp
 arithConstantInt ctx resultVar value =
     mlirOp "arith.constant" ctx
         |> withResult resultVar I64
-        |> withAttr "value" (IntAttr value)
+        |> withAttr "value" (TypedIntAttr value I64)
         |> build
 
 
@@ -767,15 +767,7 @@ arithConstantBool : Context -> String -> Bool -> MlirOp
 arithConstantBool ctx resultVar value =
     mlirOp "arith.constant" ctx
         |> withResult resultVar I1
-        |> withAttr "value"
-            (IntAttr
-                (if value then
-                    1
-
-                 else
-                    0
-                )
-            )
+        |> withAttr "value" (BoolAttr value)
         |> build
 
 
@@ -785,7 +777,7 @@ arithConstantChar : Context -> String -> Int -> MlirOp
 arithConstantChar ctx resultVar codepoint =
     mlirOp "arith.constant" ctx
         |> withResult resultVar I32
-        |> withAttr "value" (IntAttr codepoint)
+        |> withAttr "value" (TypedIntAttr codepoint I32)
         |> build
 
 
