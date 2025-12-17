@@ -15,6 +15,11 @@ The algorithm:
     c. Discovering new specializations needed and adding them to the worklist
 4.  Continue until the worklist is empty
 
+
+# Monomorphization
+
+@docs monomorphize
+
 -}
 
 import Compiler.AST.Canonical as Can

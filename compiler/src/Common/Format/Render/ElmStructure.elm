@@ -95,6 +95,18 @@ forceableSpaceSepOrStack forceMultiline first rest =
             Box.stack1 (first :: rest)
 
 
+{-| Formats as row or stack with forceable multiline layout.
+Similar to forceableSpaceSepOrStack but without spaces between elements in single-line mode.
+
+    first rest0 rest1
+
+    first
+
+    rest0
+
+    rest1
+
+-}
 forceableRowOrStack : Bool -> Box -> List Box -> Box
 forceableRowOrStack forceMultiline first rest =
     case ( forceMultiline, first, Box.allSingles rest ) of
@@ -132,6 +144,18 @@ spaceSepOrIndented =
     forceableSpaceSepOrIndented False
 
 
+{-| Formats as space-separated or indented with forceable multiline layout.
+When forceMultiline is True or content doesn't fit on one line, the first element stays
+on its own line and subsequent elements are indented.
+
+    first rest0 rest1 rest2
+
+    first
+        rest0
+        rest1
+        rest2
+
+-}
 forceableSpaceSepOrIndented : Bool -> Box -> List Box -> Box
 forceableSpaceSepOrIndented forceMultiline first rest =
     case
@@ -173,6 +197,15 @@ spaceSepOrPrefix op rest =
             Box.stack1 [ op, Box.indent rest ]
 
 
+{-| Formats two boxes with space separation on single line, or stacks them with indentation.
+Similar to spaceSepOrPrefix but without the special handling for short operators.
+
+    a b
+
+    a
+        b
+
+-}
 prefixOrIndented : Box -> Box -> Box
 prefixOrIndented a b =
     case ( a, b ) of
@@ -308,6 +341,10 @@ group innerSpaces left sep right forceMultiline children =
     group_ innerSpaces left sep [] right forceMultiline children
 
 
+{-| Similar to `group` but with additional footer elements to insert before the closing delimiter.
+Allows extra boxes (like trailing commas or comments) to be placed after the main children
+but before the right delimiter.
+-}
 group_ : Bool -> String -> String -> List Box -> String -> Bool -> List Box -> Box
 group_ innerSpaces left sep extraFooter right forceMultiline children =
     case ( forceMultiline, Box.allSingles children, Box.allSingles extraFooter ) of
@@ -392,6 +429,16 @@ extensionGroup multiline base first rest =
                 ]
 
 
+{-| Alternative version of extensionGroup that takes pre-formatted fields as a single Box.
+Formats record extension syntax with base record and fields.
+
+    { base fields }
+
+    { base
+        fields
+    }
+
+-}
 extensionGroup_ : Bool -> Box -> Box -> Box
 extensionGroup_ multiline base fields =
     case
@@ -422,11 +469,23 @@ extensionGroup_ multiline base fields =
 -- FROM `AST.V0_16`
 
 
+{-| Controls whether multiple elements should be joined on one line or split across lines.
+
+  - JoinAll: Keep all elements on a single line if possible
+  - SplitAll: Force each element onto its own line
+
+-}
 type Multiline
     = JoinAll
     | SplitAll
 
 
+{-| Controls multiline behavior for function applications.
+
+  - FASplitFirst: Function name on one line, all arguments indented on subsequent lines
+  - FAJoinFirst: Function name and first argument may share a line based on the Multiline setting
+
+-}
 type FunctionApplicationMultiline
     = FASplitFirst
     | FAJoinFirst Multiline

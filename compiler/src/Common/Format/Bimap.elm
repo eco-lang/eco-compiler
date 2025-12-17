@@ -3,6 +3,13 @@ module Common.Format.Bimap exposing
     , fromList
     )
 
+{-| A bidirectional map that maintains mappings in both directions.
+Allows efficient lookup from a to b and from b to a.
+
+@docs Bimap, fromList
+
+-}
+
 import Data.Map as Map exposing (Dict)
 
 

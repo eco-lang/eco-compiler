@@ -8,6 +8,8 @@ module Compiler.Data.Map.Utils exposing
 
 This module provides helper functions for constructing and querying dictionaries.
 
+@docs fromKeys, fromKeysA, any
+
 -}
 
 import Data.Map as Dict exposing (Dict)

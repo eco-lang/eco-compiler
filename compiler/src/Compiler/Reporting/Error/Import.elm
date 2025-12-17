@@ -45,10 +45,14 @@ import Utils.Bytes.Encode as BE
 -- ERROR
 
 
+{-| Represents an import error with location and problem details.
+-}
 type Error
     = Error ErrorProps
 
 
+{-| Properties that describe an import error, including location, module name, and the specific problem.
+-}
 type alias ErrorProps =
     { region : A.Region
     , name : ModuleName.Raw
@@ -57,6 +61,8 @@ type alias ErrorProps =
     }
 
 
+{-| Specific import problems: module not found or ambiguous due to multiple definitions.
+-}
 type Problem
     = NotFound
     | Ambiguous String (List String) Pkg.Name (List Pkg.Name)

@@ -66,21 +66,29 @@ type Line
     | Tab
 
 
+{-| Create a Line from an identifier string.
+-}
 identifier : String -> Line
 identifier =
     Text
 
 
+{-| Create a Line from a keyword string.
+-}
 keyword : String -> Line
 keyword =
     Text
 
 
+{-| Create a Line from a punctuation string.
+-}
 punc : String -> Line
 punc =
     Text
 
 
+{-| Create a Line from a literal string.
+-}
 literal : String -> Line
 literal =
     Text
@@ -93,6 +101,8 @@ row =
     Row
 
 
+{-| A single space element.
+-}
 space : Line
 space =
     Space
@@ -194,11 +204,15 @@ mapFirstLine firstFn restFn b =
             MustBreak (firstFn l1)
 
 
+{-| Indent all lines in a Box by adding a Tab at the beginning of each line.
+-}
 indent : Box -> Box
 indent =
     mapLines (\l -> row [ Tab, l ])
 
 
+{-| Check if a Box is a single line. Returns Ok Line if it is, Err Box otherwise.
+-}
 isLine : Box -> Result Box Line
 isLine b =
     case b of
@@ -222,6 +236,8 @@ destructure b =
             ( l1, [] )
 
 
+{-| Check if all Boxes in a list are single lines. Returns Ok (List Line) if they all are, Err (List Box) otherwise.
+-}
 allSingles : List Box -> Result (List Box) (List Line)
 allSingles boxes =
     case Result.combine (List.map isLine boxes) of
@@ -265,6 +281,8 @@ prefix pref =
     mapFirstLine addPrefixToLine padLineWithSpaces
 
 
+{-| Add a suffix to the last line of a Box.
+-}
 addSuffix : Line -> Box -> Box
 addSuffix suffix b =
     case destructure b of
@@ -293,6 +311,8 @@ renderLine startColumn line_ =
             renderRow startColumn lines_
 
 
+{-| Render a Box to a String with proper indentation and newlines.
+-}
 render : Box -> String
 render box =
     case box of
@@ -306,6 +326,8 @@ render box =
             String.trimRight (renderLine 0 line_) ++ "\n"
 
 
+{-| Calculate the total length of a Line in characters, accounting for tabs aligning to 4-space boundaries.
+-}
 lineLength : Int -> Line -> Int
 lineLength startColumn line_ =
     startColumn

@@ -285,6 +285,9 @@ chompTupleEnd syntaxVersion start firstExpr revExprs =
 -- RECORDS
 
 
+{-| Parse record expressions including record literals and record update syntax.
+Handles both empty records and records with fields.
+-}
 record : SyntaxVersion -> A.Position -> P.Parser E.Expr Src.Expr
 record syntaxVersion start =
     case syntaxVersion of
@@ -545,6 +548,10 @@ chompField syntaxVersion preCommaComents postCommaComments =
 -- EXPRESSIONS
 
 
+{-| Parse a complete Elm expression including operators, function application,
+and special forms like if/case/let/lambda. Returns the parsed expression with
+associated comments and position information.
+-}
 expression : SyntaxVersion -> Space.Parser E.Expr (Src.C1 Src.Expr)
 expression syntaxVersion =
     P.getPosition

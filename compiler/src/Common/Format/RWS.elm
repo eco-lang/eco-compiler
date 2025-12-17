@@ -13,12 +13,19 @@ module Common.Format.RWS exposing
     , tell
     )
 
+{-| Reader-Writer-State monad for document parsing.
+Combines read-only environment (r), write-only log (Dict), and mutable state (s).
+
+@docs RWS, andThen, error, evalRWS, get, mapM_, modify, put, replicateM, return, runRWS, tell
+
+-}
+
 import Data.Map as Dict exposing (Dict)
 import Utils.Crash exposing (crash)
 
 
-{-| Reader-Writer-State monad for document parsing.
-Combines read-only environment (r), write-only log (Dict), and mutable state (s).
+{-| Reader-Writer-State monad computation.
+Takes an environment (r) and state (s), returns a result (a), updated state, and log.
 -}
 type alias RWS r s a =
     -- type alias RWS r w s a =

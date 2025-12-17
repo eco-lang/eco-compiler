@@ -112,10 +112,12 @@ import Utils.Bytes.Encode as BE
 -- FORMAT
 
 
+{-| Controls whether a construct should be formatted across multiple lines. -}
 type ForceMultiline
     = ForceMultiline Bool
 
 
+{-| Represents a single formatting comment from the source file. -}
 type FComment
     = BlockComment (List String)
     | LineComment String
@@ -124,38 +126,46 @@ type FComment
     | CommentTrickBlock String
 
 
+{-| A list of formatting comments. -}
 type alias FComments =
     List FComment
 
 
+{-| Value with comments before it. -}
 type alias C1 a =
     ( FComments, a )
 
 
+{-| Map a function over the value in a C1 container, preserving comments. -}
 c1map : (a -> b) -> C1 a -> C1 b
 c1map f ( comments, a ) =
     ( comments, f a )
 
 
+{-| Extract the value from a C1 container, discarding comments. -}
 c1Value : C1 a -> a
 c1Value ( _, a ) =
     a
 
 
+{-| Value with comments before and after it. -}
 type alias C2 a =
     ( ( FComments, FComments ), a )
 
 
+{-| Map a function over the value in a C2 container, preserving before and after comments. -}
 c2map : (a -> b) -> C2 a -> C2 b
 c2map f ( ( before, after ), a ) =
     ( ( before, after ), f a )
 
 
+{-| Extract the value from a C2 container, discarding comments. -}
 c2Value : C2 a -> a
 c2Value ( _, a ) =
     a
 
 
+{-| Sequence a list of C2 values, collecting all comments into a single C2. -}
 sequenceAC2 : List (C2 a) -> C2 (List a)
 sequenceAC2 =
     List.foldr
@@ -165,37 +175,45 @@ sequenceAC2 =
         ( ( [], [] ), [] )
 
 
+{-| Value with comments before, inside, and after it. -}
 type alias C3 a =
     ( ( FComments, FComments, FComments ), a )
 
 
+{-| Value with optional end-of-line comment after it. -}
 type alias C0Eol a =
     ( Maybe String, a )
 
 
+{-| Map a function over the value in a C0Eol container, preserving end-of-line comment. -}
 c0EolMap : (a -> b) -> C0Eol a -> C0Eol b
 c0EolMap f ( eol, a ) =
     ( eol, f a )
 
 
+{-| Extract the value from a C0Eol container, discarding end-of-line comment. -}
 c0EolValue : C0Eol a -> a
 c0EolValue ( _, a ) =
     a
 
 
+{-| Value with comments before it and optional end-of-line comment after it. -}
 type alias C1Eol a =
     ( FComments, Maybe String, a )
 
 
+{-| Value with comments before and after it, plus optional end-of-line comment. -}
 type alias C2Eol a =
     ( ( FComments, FComments, Maybe String ), a )
 
 
+{-| Map a function over the value in a C2Eol container, preserving comments and end-of-line. -}
 c2EolMap : (a -> b) -> C2Eol a -> C2Eol b
 c2EolMap f ( ( before, after, eol ), a ) =
     ( ( before, after, eol ), f a )
 
 
+{-| Extract the value from a C2Eol container, discarding comments and end-of-line. -}
 c2EolValue : C2Eol a -> a
 c2EolValue ( _, a ) =
     a
@@ -218,6 +236,7 @@ type OpenCommentedList a
     = OpenCommentedList (List (C2Eol a)) (C1Eol a)
 
 
+{-| Map a function over all elements in an OpenCommentedList. -}
 openCommentedListMap : (a -> b) -> OpenCommentedList a -> OpenCommentedList b
 openCommentedListMap f (OpenCommentedList rest ( preLst, eolLst, lst )) =
     OpenCommentedList
@@ -225,6 +244,7 @@ openCommentedListMap f (OpenCommentedList rest ( preLst, eolLst, lst )) =
         ( preLst, eolLst, f lst )
 
 
+{-| Convert an OpenCommentedList to a regular list of C2Eol elements. -}
 toCommentedList : OpenCommentedList Type -> List (C2Eol Type)
 toCommentedList (OpenCommentedList rest ( cLast, eolLast, last )) =
     rest ++ [ ( ( cLast, [], eolLast ), last ) ]
@@ -244,6 +264,7 @@ type Pair key value
     = Pair (C1 key) (C1 value) ForceMultiline
 
 
+{-| Map functions over both the key and value in a Pair. -}
 mapPair : (a1 -> a2) -> (b1 -> b2) -> Pair a1 b1 -> Pair a2 b2
 mapPair fa fb (Pair k v fm) =
     Pair (c1map fa k) (c1map fb v) fm
@@ -253,10 +274,12 @@ mapPair fa fb (Pair k v fm) =
 -- EXPRESSIONS
 
 
+{-| Expression with source location. -}
 type alias Expr =
     A.Located Expr_
 
 
+{-| The different kinds of expressions in Elm source code. -}
 type Expr_
     = Chr String
     | Str String Bool
@@ -283,6 +306,7 @@ type Expr_
     | Parens (C2 Expr)
 
 
+{-| Distinguishes lowercase variables from uppercase constructors. -}
 type VarType
     = LowVar
     | CapVar
@@ -292,6 +316,7 @@ type VarType
 -- DEFINITIONS
 
 
+{-| A definition in a let expression: either a function definition or destructuring assignment. -}
 type Def
     = Define (A.Located Name) (List (C1 Pattern)) (C1 Expr) (Maybe (C1 (C2 Type)))
     | Destruct Pattern (C1 Expr)
@@ -301,10 +326,12 @@ type Def
 -- PATTERN
 
 
+{-| Pattern with source location. -}
 type alias Pattern =
     A.Located Pattern_
 
 
+{-| The different kinds of patterns used in destructuring and case expressions. -}
 type Pattern_
     = PAnything Name
     | PVar Name
@@ -326,10 +353,12 @@ type Pattern_
 -- TYPE
 
 
+{-| Type annotation with source location. -}
 type alias Type =
     A.Located Type_
 
 
+{-| The different kinds of type annotations in Elm source code. -}
 type Type_
     = TLambda (C0Eol Type) (C2Eol Type)
     | TVar Name
@@ -345,6 +374,7 @@ type Type_
 -- MODULE
 
 
+{-| Data contained in a module, including all top-level declarations. -}
 type alias ModuleData =
     { syntaxVersion : SyntaxVersion
     , name : Maybe (A.Located Name)
@@ -359,10 +389,12 @@ type alias ModuleData =
     }
 
 
+{-| A complete Elm module with all its declarations. -}
 type Module
     = Module ModuleData
 
 
+{-| Extract the module name, defaulting to the main module name if unnamed. -}
 getName : Module -> Name
 getName (Module data) =
     case data.name of
@@ -373,15 +405,18 @@ getName (Module data) =
             Name.mainModule
 
 
+{-| Extract the imported module name from an Import. -}
 getImportName : Import -> Name
 getImportName (Import ( _, A.At _ name ) _ _) =
     name
 
 
+{-| An import statement with optional alias and exposing clause. -}
 type Import
     = Import (C1 (A.Located Name)) (Maybe (C2 Name)) (C2 Exposing)
 
 
+{-| Data for a top-level value definition. -}
 type alias ValueData =
     { comments : FComments
     , name : C1 (A.Located Name)
@@ -391,14 +426,17 @@ type alias ValueData =
     }
 
 
+{-| A top-level value or function definition. -}
 type Value
     = Value ValueData
 
 
+{-| A union type declaration with type parameters and constructors. -}
 type Union
     = Union (C2 (A.Located Name)) (List (C1 (A.Located Name))) (List (C2Eol ( A.Located Name, List (C1 Type) )))
 
 
+{-| Data for a type alias declaration. -}
 type alias AliasData =
     { comments : FComments
     , name : C2 (A.Located Name)
@@ -407,10 +445,12 @@ type alias AliasData =
     }
 
 
+{-| A type alias declaration. -}
 type Alias
     = Alias AliasData
 
 
+{-| Data for an infix operator declaration. -}
 type alias InfixData =
     { op : C2 Name
     , associativity : C1 Binop.Associativity
@@ -419,31 +459,37 @@ type alias InfixData =
     }
 
 
+{-| An infix operator declaration. -}
 type Infix
     = Infix InfixData
 
 
+{-| A port declaration for JavaScript interop. -}
 type Port
     = Port FComments (C2 (A.Located Name)) Type
 
 
+{-| Effect declarations for a module: none, ports, or effect manager. -}
 type Effects
     = NoEffects
     | Ports (List Port)
     | Manager A.Region Manager
 
 
+{-| Type of effect manager: commands, subscriptions, or both. -}
 type Manager
     = Cmd (C2 (C2 (A.Located Name)))
     | Sub (C2 (C2 (A.Located Name)))
     | Fx (C2 (C2 (A.Located Name))) (C2 (C2 (A.Located Name)))
 
 
+{-| Module documentation: either missing or present with overview comment. -}
 type Docs
     = NoDocs A.Region (List ( Name, Comment ))
     | YesDocs Comment (List ( Name, Comment ))
 
 
+{-| A documentation comment containing source text. -}
 type Comment
     = Comment P.Snippet
 
@@ -452,17 +498,20 @@ type Comment
 -- EXPOSING
 
 
+{-| The exposing clause of a module: either exposing all or an explicit list. -}
 type Exposing
     = Open FComments FComments
     | Explicit (A.Located (List (C2 Exposed)))
 
 
+{-| An item being exposed from a module: value, type, or operator. -}
 type Exposed
     = Lower (A.Located Name)
     | Upper (A.Located Name) (C1 Privacy)
     | Operator A.Region Name
 
 
+{-| Privacy of a type's constructors: public (..) or private (not exposed). -}
 type Privacy
     = Public A.Region
     | Private
@@ -531,11 +580,13 @@ fCommentsEncoder =
     BE.list fCommentEncoder
 
 
+{-| Decode a list of format comments from bytes. -}
 fCommentsDecoder : Bytes.Decode.Decoder FComments
 fCommentsDecoder =
     BD.list fCommentDecoder
 
 
+{-| Encode a C0Eol value with its end-of-line comment to bytes. -}
 c0EolEncoder : (a -> Bytes.Encode.Encoder) -> C0Eol a -> Bytes.Encode.Encoder
 c0EolEncoder encoder ( eol, a ) =
     Bytes.Encode.sequence
@@ -544,6 +595,7 @@ c0EolEncoder encoder ( eol, a ) =
         ]
 
 
+{-| Decode a C0Eol value with its end-of-line comment from bytes. -}
 c0EolDecoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (C0Eol a)
 c0EolDecoder decoder =
     Bytes.Decode.map2 Tuple.pair
@@ -551,6 +603,7 @@ c0EolDecoder decoder =
         decoder
 
 
+{-| Encode a C1 value with its comments to bytes. -}
 c1Encoder : (a -> Bytes.Encode.Encoder) -> C1 a -> Bytes.Encode.Encoder
 c1Encoder encoder ( comments, a ) =
     Bytes.Encode.sequence
@@ -559,6 +612,7 @@ c1Encoder encoder ( comments, a ) =
         ]
 
 
+{-| Decode a C1 value with its comments from bytes. -}
 c1Decoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (C1 a)
 c1Decoder decoder =
     Bytes.Decode.map2 Tuple.pair fCommentsDecoder decoder
@@ -584,6 +638,7 @@ c2Decoder decoder =
         decoder
 
 
+{-| Encode a C2Eol value with its comments and end-of-line to bytes. -}
 c2EolEncoder : (a -> Bytes.Encode.Encoder) -> C2Eol a -> Bytes.Encode.Encoder
 c2EolEncoder encoder ( ( preComments, postComments, eol ), a ) =
     Bytes.Encode.sequence
@@ -594,6 +649,7 @@ c2EolEncoder encoder ( ( preComments, postComments, eol ), a ) =
         ]
 
 
+{-| Decode a C2Eol value with its comments and end-of-line from bytes. -}
 c2EolDecoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (C2Eol a)
 c2EolDecoder decoder =
     Bytes.Decode.map4
@@ -606,11 +662,13 @@ c2EolDecoder decoder =
         decoder
 
 
+{-| Encode a Type with its location to bytes. -}
 typeEncoder : Type -> Bytes.Encode.Encoder
 typeEncoder =
     A.locatedEncoder internalTypeEncoder
 
 
+{-| Decode a Type with its location from bytes. -}
 typeDecoder : Bytes.Decode.Decoder Type
 typeDecoder =
     A.locatedDecoder internalTypeDecoder
@@ -726,6 +784,7 @@ internalTypeDecoder =
             )
 
 
+{-| Encode a Module and all its components to bytes. -}
 moduleEncoder : Module -> Bytes.Encode.Encoder
 moduleEncoder (Module data) =
     Bytes.Encode.sequence
@@ -742,6 +801,7 @@ moduleEncoder (Module data) =
         ]
 
 
+{-| Decode a Module and all its components from bytes. -}
 moduleDecoder : Bytes.Decode.Decoder Module
 moduleDecoder =
     BD.map8

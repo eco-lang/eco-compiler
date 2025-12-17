@@ -29,7 +29,7 @@ for package publishing with full type information and module comments.
 
 # JSON Encoding
 
-@docs encode, encodeModule, decoder, jsonEncoder, jsonModuleEncoder
+@docs encode, decoder, jsonEncoder, jsonModuleEncoder
 @docs jsonDecoder, jsonModuleDecoder
 
 

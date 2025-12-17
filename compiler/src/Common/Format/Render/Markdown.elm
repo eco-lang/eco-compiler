@@ -14,6 +14,18 @@ module Common.Format.Render.Markdown exposing
     , prefix_
     )
 
+{-| Markdown rendering and formatting utilities.
+
+This module converts parsed Markdown AST structures back into formatted Markdown text.
+It handles proper spacing, indentation, escaping of special characters, and formatting
+of various block and inline elements including lists, code blocks, links, and emphasis.
+
+@docs Context, LongestSpanResult
+@docs formatListItem, formatMardownBlock, formatMarkdown, formatMarkdownInline
+@docs formatMarkdown_, formatRef, lines, longestSpanOf, mapWithPrev, prefix, prefix_
+
+-}
+
 import Common.Format.Cheapskate.Types exposing (Block(..), Blocks, CodeAttr(..), Inline(..), LinkTarget(..), ListType(..))
 import Maybe.Extra as Maybe
 import Url

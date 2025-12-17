@@ -13,6 +13,29 @@ module Common.Format.Cheapskate.Types exposing
     , ReferenceMap
     )
 
+{-| Core types for representing Markdown documents.
+
+This module defines the abstract syntax tree (AST) for Markdown documents,
+including block-level elements (paragraphs, headers, lists, code blocks) and
+inline elements (text, emphasis, links, images). The types support a rich
+Markdown feature set including fenced code blocks, HTML blocks, and link
+references.
+
+# Document
+@docs Doc, Options
+
+# Block Elements
+@docs Block, Blocks
+@docs CodeAttr, ListType, NumWrapper, HtmlTagType
+
+# Inline Elements
+@docs Inline, Inlines, LinkTarget
+
+# References
+@docs ReferenceMap
+
+-}
+
 import Data.Map exposing (Dict)
 
 

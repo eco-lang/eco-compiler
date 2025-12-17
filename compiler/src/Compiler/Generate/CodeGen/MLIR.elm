@@ -6,6 +6,11 @@ This backend generates MLIR from fully specialized, monomorphic code.
 All polymorphism has been resolved and layout information is embedded
 in the types.
 
+
+# Backend
+
+@docs backend
+
 -}
 
 import Compiler.AST.Monomorphized as Mono

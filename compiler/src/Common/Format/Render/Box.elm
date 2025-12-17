@@ -786,6 +786,9 @@ formatModuleLine ( varsToExpose, extraComments ) srcTag name moduleSettings preE
         [ exports ]
 
 
+{-| Format a complete Elm module into a Box layout with configurable spacing and header options.
+The first parameter controls whether to add a default module header if none exists.
+-}
 formatModule : Bool -> Int -> M.Module -> Box
 formatModule addDefaultHeader spacing modu =
     formatModule_ addDefaultHeader spacing (formatModu modu)

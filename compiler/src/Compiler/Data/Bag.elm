@@ -11,6 +11,8 @@ module Compiler.Data.Bag exposing
 A Bag is a binary tree structure that allows O(1) appending of bags and O(n) conversion to a list.
 This is useful for collecting results during tree traversals without paying list concatenation costs.
 
+@docs Bag, append, empty, one, toList
+
 -}
 
 

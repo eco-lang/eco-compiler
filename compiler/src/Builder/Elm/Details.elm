@@ -1201,6 +1201,8 @@ type alias StatusDict =
     Dict String ModuleName.Raw (MVar (Maybe Status))
 
 
+{-| Status of a module during crawling: local source, foreign interface, or kernel code.
+-}
 type Status
     = SLocal DocsStatus (Dict String ModuleName.Raw ()) Src.Module
     | SForeign I.Interface

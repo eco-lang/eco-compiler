@@ -8,6 +8,8 @@ This module processes declarations within the current module to add:
 - Constructors for unions and record type aliases
 - Validation for duplicate names and cyclic type aliases
 
+@docs LResult, add
+
 -}
 
 import Compiler.AST.Canonical as Can

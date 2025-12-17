@@ -1,5 +1,27 @@
 module Common.Format.Cheapskate.Parse exposing (markdown)
 
+{-| Markdown parsing implementation based on the Cheapskate algorithm.
+
+This module provides a two-phase Markdown parser that converts input text into a structured
+document representation. The parser handles CommonMark-style Markdown with extensions for
+Elm documentation features.
+
+Phase 1 (processLines): Builds a container stack by processing input line-by-line, opening
+and closing containers (blockquotes, lists, code blocks) as appropriate. This phase produces
+a tree of containers with leaf nodes representing individual lines.
+
+Phase 2 (processDocument): Transforms the container tree into a proper AST, grouping text
+lines into paragraphs, consecutive list items into lists, and parsing inline content within
+text blocks.
+
+The parser supports standard Markdown features including headers, lists, code blocks, block
+quotes, horizontal rules, HTML blocks, and link references. It also recognizes Elm-specific
+constructs like documentation directives for referencing exposed values.
+
+@docs markdown
+
+-}
+
 import Common.Format.Cheapskate.Inlines exposing (pHtmlTag, pLinkLabel, pReference, parseInlines)
 import Common.Format.Cheapskate.ParserCombinators
     exposing

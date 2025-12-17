@@ -6,6 +6,9 @@ module Compiler.Parse.SyntaxVersion exposing
     )
 
 {-| Compiler.Parse.SyntaxVersion
+
+@docs SyntaxVersion, decoder, encoder, fileSyntaxVersion
+
 -}
 
 import Bytes.Decode

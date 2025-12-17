@@ -39,6 +39,46 @@ The key difference from Optimized:
   - Nodes carry type information for definitions
   - LocalGraph includes the full annotations dictionary
 
+
+# Core Types
+
+@docs Expr, Global, Annotations
+
+
+# Definitions and Destructuring
+
+@docs Def, Destructor, Path
+
+
+# Pattern Matching
+
+@docs Decider, Choice
+
+
+# Dependency Graphs
+
+@docs GlobalGraph, LocalGraph, LocalGraphData, Node, Main, EffectsType
+
+
+# Graph Operations
+
+@docs empty, emptyGlobalGraph, emptyLocalGraph, addGlobalGraph, addLocalGraph
+
+
+# Global Reference Utilities
+
+@docs compareGlobal, toComparableGlobal, toKernelGlobal
+
+
+# Type Extraction
+
+@docs typeOf
+
+
+# Serialization
+
+@docs globalGraphEncoder, globalGraphDecoder, localGraphEncoder, localGraphDecoder
+
 -}
 
 import Bytes.Decode
@@ -74,6 +114,8 @@ type alias Annotations =
 -- Every expression variant carries its type as the LAST argument
 
 
+{-| Typed optimized expression. Each variant carries its canonical type as the last argument.
+-}
 type Expr
     = Bool A.Region Bool Can.Type
     | Chr A.Region String Can.Type

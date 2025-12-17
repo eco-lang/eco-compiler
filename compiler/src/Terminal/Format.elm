@@ -41,10 +41,16 @@ import Utils.Task.Extra as Task
 -- RUN
 
 
+{-| Configuration flags for the format command.
+Wraps FlagsProps to provide a typed configuration structure.
+-}
 type Flags
     = Flags FlagsProps
 
 
+{-| Properties defining format command behavior.
+Fields specify output destination, validation mode, input source, and confirmation settings.
+-}
 type alias FlagsProps =
     { maybeOutput : Maybe FilePath
     , autoYes : Bool
@@ -53,11 +59,17 @@ type alias FlagsProps =
     }
 
 
+{-| Construct format command flags from configuration parameters.
+Takes output path, auto-confirmation, validation mode, and stdin flag to create Flags.
+-}
 makeFlags : Maybe FilePath -> Bool -> Bool -> Bool -> Flags
 makeFlags maybeOutput autoYes doValidate stdin =
     Flags { maybeOutput = maybeOutput, autoYes = autoYes, doValidate = doValidate, stdin = stdin }
 
 
+{-| Execute the format command with given file paths and configuration.
+Resolves input files, validates or formats them according to flags, and handles results.
+-}
 run : List String -> Flags -> Task Never ()
 run paths ((Flags props) as flags) =
     resolveElmFiles paths

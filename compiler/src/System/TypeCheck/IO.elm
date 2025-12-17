@@ -47,6 +47,11 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 
 @docs Canonical
 
+
+# Descriptor Utilities
+
+@docs DescriptorProps, makeDescriptor
+
 -}
 
 import Array exposing (Array)

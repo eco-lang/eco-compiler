@@ -6,6 +6,13 @@ module Common.Format.KnownContents exposing
     , mempty
     )
 
+{-| A mapping from module names to their exported contents.
+Used to resolve exposing-all imports by looking up what values a module exports.
+
+@docs KnownContents, fromFunction, get, isKnown, mempty
+
+-}
+
 import Maybe.Extra as Maybe
 
 

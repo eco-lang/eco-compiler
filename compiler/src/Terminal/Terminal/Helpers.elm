@@ -9,6 +9,29 @@ module Terminal.Terminal.Helpers exposing
     , version
     )
 
+{-| Command-line argument parsers and validators for terminal commands.
+
+This module provides parsers for common command-line argument types including
+version numbers, package names, and file paths. Each parser includes validation,
+suggestions, and example generation for user feedback.
+
+
+# Version Parsing
+
+@docs version, parseVersion
+
+
+# File Path Parsing
+
+@docs guidaOrElmFile, parseGuidaOrElmFile, filePath, parseFilePath
+
+
+# Package Parsing
+
+@docs package, parsePackage
+
+-}
+
 import Builder.Deps.Registry as Registry
 import Builder.Stuff as Stuff
 import Compiler.Elm.Package as Pkg

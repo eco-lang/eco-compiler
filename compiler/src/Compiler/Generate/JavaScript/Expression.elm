@@ -245,6 +245,8 @@ generate mode parentModule expression =
 -- CODE CHUNKS
 
 
+{-| Generated JavaScript code, either a single expression or a block of statements.
+-}
 type Code
     = JsExpr JS.Expr
     | JsBlock (List JS.Stmt)

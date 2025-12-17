@@ -72,11 +72,15 @@ import Utils.Task.Extra as Task
 -- BACKENDS
 
 
+{-| Standard JavaScript code generation backend.
+-}
 javascriptBackend : CodeGen.CodeGen
 javascriptBackend =
     JavaScript.backend
 
 
+{-| MLIR code generation backend for monomorphized programs.
+-}
 mlirBackend : CodeGen.MonoCodeGen
 mlirBackend =
     MLIR.backend

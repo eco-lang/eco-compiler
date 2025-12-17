@@ -34,6 +34,8 @@ import Terminal.Uninstall as Uninstall
 import Utils.Impure as Impure
 
 
+{-| The main entry point for the Guida/Elm compiler CLI application.
+-}
 main : IO.Program
 main =
     IO.run

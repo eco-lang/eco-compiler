@@ -36,6 +36,12 @@ structure is useful for representing hierarchical data with guaranteed non-empti
 -- ONE OR MORE
 
 
+{-| A binary tree structure that guarantees at least one element.
+
+Can be either:
+- `One a`: A leaf node containing a single value
+- `More (OneOrMore a) (OneOrMore a)`: A branch node containing two subtrees
+-}
 type OneOrMore a
     = One a
     | More (OneOrMore a) (OneOrMore a)

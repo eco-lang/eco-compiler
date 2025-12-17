@@ -25,6 +25,8 @@ canonicalization to detect and report duplicate:
 - Variable names
 - Type parameters
 
+@docs Info, ToError, Tracker, checkFields, checkFields_, checkLocatedFields, checkLocatedFields_, detect, detectLocated, insert, none, one, union, unions
+
 -}
 
 import Compiler.Data.Name exposing (Name)

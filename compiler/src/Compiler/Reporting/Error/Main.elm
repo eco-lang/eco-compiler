@@ -45,6 +45,8 @@ import Utils.Bytes.Encode as BE
 -- ERROR
 
 
+{-| Represents errors that can occur with the main entry point of an Elm program.
+-}
 type Error
     = BadType A.Region Can.Type
     | BadCycle A.Region Name (List Name)

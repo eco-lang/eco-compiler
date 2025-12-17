@@ -40,6 +40,9 @@ import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 
 
+{-| Complete import information for a module, tracking all symbols and their sources.
+Contains exposed values, module aliases, direct imports, ambiguous names, and unresolved imports.
+-}
 type ImportInfo
     = ImportInfo
         { exposed : Dict String String String
@@ -50,6 +53,8 @@ type ImportInfo
         }
 
 
+{-| Build import information from a parsed module, using known contents to resolve exposing-all imports.
+-}
 fromModule : KnownContents -> M.Module -> ImportInfo
 fromModule knownContents modu =
     let
@@ -59,12 +64,16 @@ fromModule knownContents modu =
     fromImports knownContents (importsToDict (List.map Src.c1Value imports))
 
 
+{-| Convert a list of imports to a dictionary keyed by module name.
+-}
 importsToDict : List Src.Import -> Dict String String Src.Import
 importsToDict =
     List.map (\((Src.Import ( _, A.At _ name ) _ _) as import_) -> ( name, import_ ))
         >> Dict.fromList identity
 
 
+{-| Build import information from a dictionary of imports, resolving symbols to their source modules.
+-}
 fromImports : KnownContents -> Dict String String Src.Import -> ImportInfo
 fromImports knownContents rawImports =
     let

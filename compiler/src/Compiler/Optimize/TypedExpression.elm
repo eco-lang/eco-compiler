@@ -54,10 +54,16 @@ import Utils.Main as Utils
 -- OPTIMIZE
 
 
+{-| Set of names that form a recursive cycle.
+Used to identify and optimize mutually recursive definitions during optimization.
+-}
 type alias Cycle =
     EverySet String Name
 
 
+{-| Type annotations for top-level definitions.
+Maps definition names to their canonical type annotations, used for type-aware optimization.
+-}
 type alias Annotations =
     TOpt.Annotations
 
@@ -1287,19 +1293,10 @@ destructHelpCollectBindings path tipe (A.At _ pattern) ( revDs, andThenings ) =
 -- TAIL CALL
 
 
-{-| Optimize a recursive definition, detecting and preserving tail calls.
-Converts self-recursive calls in tail position to TailCall expressions for optimization.
+{-| Optimize a canonical expression, detecting and converting tail calls.
+Analyzes the expression for recursive calls in tail position and converts them to optimized
+TailCall nodes. Returns a typed optimized expression with preserved type information.
 -}
-optimizePotentialTailCallDef : Cycle -> Annotations -> Can.Def -> Names.Tracker TOpt.Def
-optimizePotentialTailCallDef cycle annotations def =
-    case def of
-        Can.Def (A.At region name) args expr ->
-            optimizePotentialTailCall cycle annotations region name args expr
-
-        Can.TypedDef (A.At region name) _ typedArgs expr resultType ->
-            optimizeTypedPotentialTailCall cycle annotations region name typedArgs expr resultType
-
-
 optimizePotentialTailCall : Cycle -> Annotations -> A.Region -> Name -> List Can.Pattern -> Can.Expr -> Names.Tracker TOpt.Def
 optimizePotentialTailCall cycle annotations region name args expr =
     let
@@ -1323,6 +1320,19 @@ optimizePotentialTailCall cycle annotations region name args expr =
                     (optimizeTail cycle annotations name typedArgNames returnType expr)
                     |> Names.map (toTailDef region name typedArgNames destructors returnType)
             )
+
+
+{-| Optimize a recursive definition, detecting and preserving tail calls.
+Converts self-recursive calls in tail position to TailCall expressions for optimization.
+-}
+optimizePotentialTailCallDef : Cycle -> Annotations -> Can.Def -> Names.Tracker TOpt.Def
+optimizePotentialTailCallDef cycle annotations def =
+    case def of
+        Can.Def (A.At region name) args expr ->
+            optimizePotentialTailCall cycle annotations region name args expr
+
+        Can.TypedDef (A.At region name) _ typedArgs expr resultType ->
+            optimizeTypedPotentialTailCall cycle annotations region name typedArgs expr resultType
 
 
 optimizeTypedPotentialTailCall : Cycle -> Annotations -> A.Region -> Name -> List ( Can.Pattern, Can.Type ) -> Can.Expr -> Can.Type -> Names.Tracker TOpt.Def

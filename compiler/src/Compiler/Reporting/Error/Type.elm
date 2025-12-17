@@ -68,6 +68,8 @@ import Utils.Bytes.Encode as BE
 -- ERRORS
 
 
+{-| Represents type errors discovered during type checking and inference.
+-}
 type Error
     = BadExpr A.Region Category T.Type (Expected T.Type)
     | BadPattern A.Region PCategory T.Type (PExpected T.Type)
@@ -78,12 +80,16 @@ type Error
 -- EXPRESSION EXPECTATIONS
 
 
+{-| Expected type for an expression, with optional context about where the expectation came from.
+-}
 type Expected tipe
     = NoExpectation tipe
     | FromContext A.Region Context tipe
     | FromAnnotation Name Int SubContext tipe
 
 
+{-| Context describing where in an expression a type expectation originated.
+-}
 type Context
     = ListEntry Index.ZeroBased
     | Negate
@@ -100,12 +106,16 @@ type Context
     | Destructure
 
 
+{-| Sub-context for type annotations, indicating where within an annotated definition the mismatch occurred.
+-}
 type SubContext
     = TypedIfBranch Index.ZeroBased
     | TypedCaseBranch Index.ZeroBased
     | TypedBody
 
 
+{-| Optional name for a function, constructor, or operator involved in a type error.
+-}
 type MaybeName
     = FuncName Name
     | CtorName Name
@@ -113,6 +123,8 @@ type MaybeName
     | NoName
 
 
+{-| Category of expression that has a type error, used for generating appropriate error messages.
+-}
 type Category
     = List
     | Number
@@ -138,11 +150,15 @@ type Category
 -- PATTERN EXPECTATIONS
 
 
+{-| Expected type for a pattern, with optional context about where the expectation came from.
+-}
 type PExpected tipe
     = PNoExpectation tipe
     | PFromContext A.Region PContext tipe
 
 
+{-| Context describing where in a pattern a type expectation originated.
+-}
 type PContext
     = PTypedArg Name Index.ZeroBased
     | PCaseMatch Index.ZeroBased
@@ -151,6 +167,8 @@ type PContext
     | PTail
 
 
+{-| Category of pattern that has a type error, used for generating appropriate error messages.
+-}
 type PCategory
     = PRecord
     | PUnit

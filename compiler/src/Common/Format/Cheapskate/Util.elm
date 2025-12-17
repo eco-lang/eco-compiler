@@ -17,6 +17,33 @@ module Common.Format.Cheapskate.Util exposing
     , upToCountChars
     )
 
+{-| Utility functions for the Cheapskate Markdown parser.
+
+This module provides low-level parsing utilities, character classification functions,
+and scanner combinators used throughout the Markdown parsing pipeline. Scanners operate
+on single lines (with exceptions like scanSpnl) and are designed for efficient pattern
+matching without capturing results.
+
+@docs Scanner
+
+# Character Classification
+@docs isEscapable, isWhitespace
+
+# String Utilities
+@docs joinLines, normalizeReference, tabFilter
+
+# Scanning Combinators
+@docs scanBlankline, scanChar, scanIndentSpace, scanNonindentSpace
+@docs scanSpaces, scanSpacesToColumn, scanSpnl
+
+# Lookahead Assertions
+@docs nfb, nfbChar
+
+# Character Consumption
+@docs upToCountChars
+
+-}
+
 import Common.Format.Cheapskate.ParserCombinators exposing (Parser, andThen, char, column, count, endOfInput, getPosition, map, notFollowedBy, option, return, scan, skip, skipWhile)
 import List.Extra as List
 import Utils.Crash exposing (crash)

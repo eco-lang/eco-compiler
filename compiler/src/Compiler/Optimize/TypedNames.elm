@@ -86,6 +86,9 @@ emptyContext annotations =
 -- GENERATOR
 
 
+{-| Tracker monad for name generation with type context.
+Tracks unique names, dependencies, field usage, and local variable types.
+-}
 type Tracker a
     = Tracker
         (Context

@@ -5,6 +5,16 @@ module Common.Format.Cheapskate.Inlines exposing
     , parseInlines
     )
 
+{-| Markdown inline element parsing.
+
+This module provides parsers for inline Markdown elements such as emphasis, links,
+code spans, images, HTML tags, and entities. It handles the complex precedence rules
+between different inline constructs (e.g., code backticks take precedence over emphasis).
+
+@docs pHtmlTag, pLinkLabel, pReference, parseInlines
+
+-}
+
 import Common.Format.Cheapskate.ParserCombinators
     exposing
         ( Parser

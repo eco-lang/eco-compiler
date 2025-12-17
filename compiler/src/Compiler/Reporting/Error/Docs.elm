@@ -7,7 +7,7 @@ module Compiler.Reporting.Error.Docs exposing
 {-| Error reporting for documentation comment validation.
 
 This module validates documentation comments in Elm packages, ensuring they
-follow the required format with proper @docs tags, type annotations, and
+follow the required format with proper documentation tags, type annotations, and
 alignment with the module's exposing list.
 
 
@@ -42,6 +42,8 @@ import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
 
+{-| Represents various errors that can occur during documentation validation.
+-}
 type Error
     = NoDocs A.Region
     | ImplicitExposing A.Region
@@ -50,6 +52,8 @@ type Error
     | DefProblems (NE.Nonempty DefProblem)
 
 
+{-| Represents syntax errors found while parsing documentation comments.
+-}
 type SyntaxProblem
     = Op Row Col
     | OpBad BadOperator Row Col
@@ -59,12 +63,16 @@ type SyntaxProblem
     | BadEnd Row Col
 
 
+{-| Represents mismatches between names in documentation and the exposing list.
+-}
 type NameProblem
     = NameDuplicate Name.Name A.Region A.Region
     | NameOnlyInDocs Name.Name A.Region
     | NameOnlyInExports Name.Name A.Region
 
 
+{-| Represents missing documentation or type annotations on definitions.
+-}
 type DefProblem
     = NoComment Name.Name A.Region
     | NoAnnotation Name.Name A.Region

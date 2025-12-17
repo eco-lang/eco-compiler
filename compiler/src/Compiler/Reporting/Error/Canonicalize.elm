@@ -64,6 +64,8 @@ import Utils.Bytes.Encode as BE
 -- CANONICALIZATION ERRORS
 
 
+{-| Represents errors that occur during canonicalization of Elm source code.
+-}
 type Error
     = AnnotationTooShort A.Region Name Index.ZeroBased Int
     | AmbiguousVar A.Region (Maybe Name) Name IO.Canonical (OneOrMore IO.Canonical)
@@ -105,11 +107,15 @@ type Error
     | TypeVarsMessedUpInAlias A.Region Name (List Name) (List ( Name, A.Region )) (List ( Name, A.Region ))
 
 
+{-| Context for arity mismatch errors, indicating whether the error occurred in a type or pattern.
+-}
 type BadArityContext
     = TypeArity
     | PatternArity
 
 
+{-| Context indicating where duplicate pattern variables were found.
+-}
 type DuplicatePatternContext
     = DPLambdaArgs
     | DPFuncArgs Name
@@ -118,6 +124,8 @@ type DuplicatePatternContext
     | DPDestruct
 
 
+{-| Describes why a port's payload type is invalid for communication with JavaScript.
+-}
 type InvalidPayload
     = ExtendedRecord
     | Function
@@ -125,6 +133,8 @@ type InvalidPayload
     | UnsupportedType Name
 
 
+{-| Describes structural problems with port type signatures.
+-}
 type PortProblem
     = CmdNoArg
     | CmdExtraArgs Int
@@ -133,6 +143,8 @@ type PortProblem
     | NotCmdOrSub
 
 
+{-| Collection of locally defined names and qualified names available in scope for suggesting alternatives.
+-}
 type alias PossibleNames =
     { locals : EverySet String Name
     , quals : Dict String Name (EverySet String Name)
@@ -143,6 +155,8 @@ type alias PossibleNames =
 -- KIND
 
 
+{-| Categorizes the kind of name that was not found or exported incorrectly.
+-}
 type VarKind
     = BadOp
     | BadVar

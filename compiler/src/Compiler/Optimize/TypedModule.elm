@@ -45,10 +45,14 @@ import Utils.Main as Utils
 -- OPTIMIZE
 
 
+{-| Result type for module optimization operations that can produce errors or warnings.
+-}
 type alias MResult i w a =
     ReportingResult.RResult i w E.Error a
 
 
+{-| Type annotations for top-level definitions, mapping names to their canonical type annotations.
+-}
 type alias Annotations =
     Dict String Name.Name Can.Annotation
 

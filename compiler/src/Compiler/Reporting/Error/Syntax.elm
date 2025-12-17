@@ -92,6 +92,8 @@ import Utils.Bytes.Encode as BE
 -- ALL SYNTAX ERRORS
 
 
+{-| Top-level syntax errors including module name issues, port violations, and parse errors.
+-}
 type Error
     = ModuleNameUnspecified ModuleName.Raw
     | ModuleNameMismatch ModuleName.Raw (A.Located ModuleName.Raw)
@@ -103,6 +105,8 @@ type Error
     | ParseError Module
 
 
+{-| Errors that occur while parsing module declarations, imports, and top-level structure.
+-}
 type Module
     = ModuleSpace Space Row Col
     | ModuleBadEnd Row Col
@@ -136,6 +140,8 @@ type Module
     | Declarations Decl Row Col
 
 
+{-| Errors related to module exposing lists, including values, operators, and type privacy.
+-}
 type Exposing
     = ExposingSpace Space Row Col
     | ExposingStart Row Col
@@ -154,6 +160,8 @@ type Exposing
 -- DECLARATIONS
 
 
+{-| Errors in top-level declarations including ports, type declarations, and definitions.
+-}
 type Decl
     = DeclStart Row Col
     | DeclSpace Space Row Col
@@ -165,6 +173,8 @@ type Decl
     | DeclFreshLineAfterDocComment Row Col
 
 
+{-| Errors in function and value definition syntax, including type annotations, arguments, and bodies.
+-}
 type DeclDef
     = DeclDefSpace Space Row Col
     | DeclDefEquals Row Col
@@ -179,6 +189,8 @@ type DeclDef
     | DeclDefIndentBody Row Col
 
 
+{-| Errors specific to port declaration syntax, including name and type annotation issues.
+-}
 type Port
     = PortSpace Space Row Col
     | PortName Row Col
@@ -193,6 +205,8 @@ type Port
 -- TYPE DECLARATIONS
 
 
+{-| Errors in type declaration syntax, dispatching to type alias or custom type errors.
+-}
 type DeclType
     = DT_Space Space Row Col
     | DT_Name Row Col
@@ -202,6 +216,8 @@ type DeclType
     | DT_IndentName Row Col
 
 
+{-| Errors in type alias declarations, including name, equals sign, and body type syntax.
+-}
 type TypeAlias
     = AliasSpace Space Row Col
     | AliasName Row Col
@@ -212,6 +228,8 @@ type TypeAlias
     | AliasIndentBody Row Col
 
 
+{-| Errors in custom type (union type) declarations, including variant names and arguments.
+-}
 type CustomType
     = CT_Space Space Row Col
     | CT_Name Row Col
@@ -230,6 +248,8 @@ type CustomType
 -- EXPRESSIONS
 
 
+{-| Errors in expression syntax, covering all expression forms from literals to complex structures.
+-}
 type Expr
     = Let Let Row Col
     | Case Case Row Col
@@ -254,6 +274,8 @@ type Expr
     | IndentOperatorRight Name Row Col
 
 
+{-| Errors in record expression syntax, including field names, equals signs, and values.
+-}
 type Record
     = RecordOpen Row Col
     | RecordEnd Row Col
@@ -269,6 +291,8 @@ type Record
     | RecordIndentExpr Row Col
 
 
+{-| Errors in tuple expression syntax, including element expressions and operators.
+-}
 type Tuple
     = TupleExpr Expr Row Col
     | TupleSpace Space Row Col
@@ -281,6 +305,8 @@ type Tuple
     | TupleIndentEnd Row Col
 
 
+{-| Errors in list expression syntax, including brackets and element expressions.
+-}
 type List_
     = ListSpace Space Row Col
     | ListOpen Row Col
@@ -292,6 +318,8 @@ type List_
     | ListIndentExpr Row Col
 
 
+{-| Errors in anonymous function (lambda) syntax, including arguments, arrows, and body.
+-}
 type Func
     = FuncSpace Space Row Col
     | FuncArg Pattern Row Col
@@ -303,6 +331,8 @@ type Func
     | FuncIndentBody Row Col
 
 
+{-| Errors in case expression syntax, including patterns, arrows, branches, and alignment.
+-}
 type Case
     = CaseSpace Space Row Col
     | CaseOf Row Col
@@ -319,6 +349,8 @@ type Case
     | CasePatternAlignment Int Row Col
 
 
+{-| Errors in if-then-else expression syntax, including condition, branches, and keywords.
+-}
 type If
     = IfSpace Space Row Col
     | IfThen Row Col
@@ -336,6 +368,8 @@ type If
     | IfIndentElse Row Col
 
 
+{-| Errors in let-in expression syntax, including definitions, destructuring, and alignment.
+-}
 type Let
     = LetSpace Space Row Col
     | LetIn Row Col
@@ -349,6 +383,8 @@ type Let
     | LetIndentBody Row Col
 
 
+{-| Errors in let-binding definition syntax, including type annotations, arguments, and bodies.
+-}
 type Def
     = DefSpace Space Row Col
     | DefType Type Row Col
@@ -363,6 +399,8 @@ type Def
     | DefAlignment Int Row Col
 
 
+{-| Errors in destructuring let-bindings, where patterns extract values from expressions.
+-}
 type Destruct
     = DestructSpace Space Row Col
     | DestructPattern Pattern Row Col
@@ -376,6 +414,8 @@ type Destruct
 -- PATTERNS
 
 
+{-| Errors in pattern syntax, covering all pattern forms including literals and structures.
+-}
 type Pattern
     = PRecord PRecord Row Col
     | PTuple PTuple Row Col
@@ -395,6 +435,8 @@ type Pattern
     | PIndentAlias Row Col
 
 
+{-| Errors in record pattern syntax, including field names and braces.
+-}
 type PRecord
     = PRecordOpen Row Col
     | PRecordEnd Row Col
@@ -406,6 +448,8 @@ type PRecord
     | PRecordIndentField Row Col
 
 
+{-| Errors in tuple pattern syntax, including element patterns and parentheses.
+-}
 type PTuple
     = PTupleOpen Row Col
     | PTupleEnd Row Col
@@ -417,6 +461,8 @@ type PTuple
     | PTupleIndentExprN Row Col
 
 
+{-| Errors in list pattern syntax, including element patterns and brackets.
+-}
 type PList
     = PListOpen Row Col
     | PListEnd Row Col
@@ -432,6 +478,8 @@ type PList
 -- TYPES
 
 
+{-| Errors in type annotation syntax, covering all type expression forms.
+-}
 type Type
     = TRecord TRecord Row Col
     | TTuple TTuple Row Col
@@ -442,6 +490,8 @@ type Type
     | TIndentStart Row Col
 
 
+{-| Errors in record type syntax, including field names, colons, and field types.
+-}
 type TRecord
     = TRecordOpen Row Col
     | TRecordEnd Row Col
@@ -459,6 +509,8 @@ type TRecord
     | TRecordIndentEnd Row Col
 
 
+{-| Errors in tuple type syntax, including element types and parentheses.
+-}
 type TTuple
     = TTupleOpen Row Col
     | TTupleEnd Row Col
@@ -474,18 +526,24 @@ type TTuple
 -- LITERALS
 
 
+{-| Errors specific to character literal parsing, including escape sequences and delimiters.
+-}
 type Char
     = CharEndless
     | CharEscape Escape
     | CharNotString Int
 
 
+{-| Errors specific to string literal parsing, including unterminated strings and escape sequences.
+-}
 type String_
     = StringEndless_Single
     | StringEndless_Multi
     | StringEscape Escape
 
 
+{-| Errors in escape sequence parsing, including invalid unicode escapes and unknown sequences.
+-}
 type Escape
     = EscapeUnknown
     | BadUnicodeFormat Int
@@ -493,6 +551,8 @@ type Escape
     | BadUnicodeLength Int Int Int
 
 
+{-| Errors in numeric literal parsing, including invalid formats, digits, and underscore placement.
+-}
 type Number
     = NumberEnd
     | NumberDot Int
@@ -510,6 +570,8 @@ type Number
 -- MISC
 
 
+{-| Errors related to whitespace and comments, such as tabs or unterminated multi-line comments.
+-}
 type Space
     = HasTab
     | EndlessMultiComment

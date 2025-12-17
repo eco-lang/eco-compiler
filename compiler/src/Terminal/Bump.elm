@@ -41,6 +41,8 @@ import Utils.Task.Extra as Task
 -- RUN
 
 
+{-| Run the version bump command, analyzing API changes and suggesting appropriate version bumps.
+-}
 run : () -> () -> Task Never ()
 run () () =
     Task.run (Task.andThen bump getEnv) |> Reporting.attempt Exit.bumpToReport

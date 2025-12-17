@@ -7,6 +7,8 @@ This module processes import declarations and builds up the environment containi
 - Qualified and unqualified name mappings
 - Binary operators from imported modules
 
+@docs FResult, createInitialEnv
+
 -}
 
 import Compiler.AST.Canonical as Can

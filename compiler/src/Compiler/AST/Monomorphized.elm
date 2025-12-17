@@ -54,6 +54,56 @@ Key characteristics:
   - Record/Custom/Tuple types carry their runtime layout
   - Closures are explicit with captured variables
 
+
+# Types
+
+@docs MonoType, Literal
+
+
+# Runtime Layouts
+
+@docs RecordLayout, FieldInfo, CustomLayout, CtorLayout, TupleLayout
+
+
+# Lambda Sets
+
+@docs LambdaId
+
+
+# Globals and Specialization
+
+@docs Global, SpecKey, SpecId, SpecializationRegistry, emptyRegistry, getOrCreateSpecId, lookupSpecKey
+
+
+# Program Graph
+
+@docs MonoGraph, MainInfo, MonoNode, ManagerInfo
+
+
+# Expressions
+
+@docs MonoExpr, ShaderInfo, ClosureInfo, MonoDef, MonoDestructor, MonoPath
+
+
+# Pattern Matching
+
+@docs Decider, MonoChoice
+
+
+# Type Utilities
+
+@docs typeOf, canUnbox
+
+
+# Layout Computation
+
+@docs computeRecordLayout, computeTupleLayout, computeCustomLayout
+
+
+# Comparison and Ordering
+
+@docs compareGlobal, compareMonoType, compareLambdaId, compareSpecKey, toComparableGlobal, toComparableMonoType, toComparableLambdaId, toComparableSpecKey
+
 -}
 
 import Compiler.Data.Name exposing (Name)

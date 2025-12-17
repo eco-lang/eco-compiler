@@ -59,6 +59,53 @@ module Common.Format.Cheapskate.ParserCombinators exposing
     , unless
     )
 
+{-| A parser combinator library for building text parsers.
+
+This module provides a monadic parser type and combinators for building
+parsers from smaller pieces. The parser type supports backtracking,
+position tracking, and error reporting. The API is inspired by Haskell's
+Attoparsec library.
+
+@docs Position, showPosition, comparePositions
+@docs ParseError, showParseError
+@docs ParserState, advance
+@docs Parser, parse
+
+# Basic Parsers
+@docs satisfy, char, anyChar, string, endOfInput
+
+# Character Classes
+@docs charClass, inClass, notInClass
+
+# Taking Input
+@docs takeWhile, takeWhile1, takeTill, takeText
+
+# Skipping Input
+@docs skip, skipWhile, skipMany, skipMany1, skipP
+
+# Peeking and Position
+@docs peekChar, peekLastChar, notAfter
+@docs getPosition, setPosition, column
+
+# Combinators
+@docs map, pure, apply, return, andThen
+@docs oneOf, option, many, many1, manyTill
+@docs lookAhead, notFollowedBy
+@docs count, sequence, liftA2
+@docs leftSequence, unless
+
+# Advanced Parsers
+@docs scan, lazy
+
+# Control Flow
+@docs empty, mzero, fail, guard
+@docs failure, success
+
+# Utilities
+@docs stringTakeWhile
+
+-}
+
 import Set exposing (Set)
 
 
@@ -199,6 +246,8 @@ apply (Parser g) (Parser f) =
         )
 
 
+{-| Execute the parser only if the condition is false. Returns unit if condition is true.
+-}
 unless : Bool -> Parser () -> Parser ()
 unless p s =
     if p then
@@ -339,6 +388,8 @@ parse (Parser evalParser) t =
         )
 
 
+{-| Create a failed parse result with the given error message at the current position.
+-}
 failure : ParserState -> String -> Result ParseError ( ParserState, a )
 failure (ParserState st) msg =
     Err (ParseError st.position msg)

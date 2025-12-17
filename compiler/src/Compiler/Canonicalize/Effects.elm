@@ -10,6 +10,8 @@ This module handles the canonicalization of Elm's effects system, including:
 - Effect manager declarations (Cmd, Sub, and Fx managers)
 - Verification that effect types are valid and properly declared
 
+@docs canonicalize, checkPayload
+
 -}
 
 import Compiler.AST.Canonical as Can

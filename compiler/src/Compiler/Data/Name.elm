@@ -69,6 +69,9 @@ import Utils.Crash exposing (crash)
 -- NAME
 
 
+{-| A string-based name used throughout the compiler for identifiers, module names, and type names.
+This is a simple type alias to String for clarity and type safety.
+-}
 type alias Name =
     String
 

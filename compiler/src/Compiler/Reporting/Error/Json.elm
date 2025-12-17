@@ -47,6 +47,9 @@ toReport path ftr err reason =
             parseErrorToReport path (Code.toSource bytes) parseError reason
 
 
+{-| The reason a JSON value is being parsed, used in error messages.
+For example, "I need this because it contains package dependencies."
+-}
 type Reason
     = ExplicitReason String
 
@@ -333,6 +336,9 @@ objectNote =
 -- PROBLEM TO REPORT
 
 
+{-| Tracks the path through the JSON structure to the error location.
+Used to provide context like "in the dependencies field" or "in the 3rd array element."
+-}
 type Context
     = CRoot
     | CField String Context
@@ -385,6 +391,9 @@ getMaxDepth problem =
             0
 
 
+{-| A function that converts custom decode failures into error reports.
+This allows different JSON decoders to provide specialized error messages.
+-}
 type FailureToReport x
     = FailureToReport (String -> Code.Source -> Context -> A.Region -> x -> Help.Report)
 
