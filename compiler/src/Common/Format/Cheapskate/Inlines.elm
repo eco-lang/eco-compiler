@@ -42,7 +42,8 @@ import Set exposing (Set)
 import Utils.Crash exposing (crash)
 
 
-{-| Returns tag type and whole tag.
+{-| Parse an HTML tag and return its type and full text representation.
+Returns a tuple of the tag type (Opening, Closing, or SelfClosing) and the complete tag string.
 -}
 pHtmlTag : Parser ( HtmlTagType, String )
 pHtmlTag =
@@ -157,8 +158,9 @@ pQuoted c =
             )
 
 
-{-| Parses an HTML comment. This isn't really correct to spec, but should
-do for now.
+{-| Parse an HTML comment.
+Matches comments starting with <!-- and ending with -->.
+Note: This is a simplified implementation that may not handle all edge cases.
 -}
 pHtmlComment : Parser String
 pHtmlComment =
@@ -167,14 +169,11 @@ pHtmlComment =
         |> andThen (\rest -> return ("<!--" ++ String.fromList rest ++ "-->"))
 
 
-{-| A link label [like this]. Note the precedence: code backticks have
-precedence over label bracket markers, which have precedence over
-\*, \_, and other inline formatting markers.
-So, 2 below contains a link while 1 does not:
-
-1.  [a link `with a ](/url)` character
-2.  [a link \*with emphasized ](/url) text\*
-
+{-| Parse a link label enclosed in square brackets.
+Handles nested structures respecting precedence: code backticks have precedence over
+brackets, which have precedence over emphasis markers. For example:
+- [a link `with a ](/url)` character - does NOT contain a link
+- [a link \*with emphasized ](/url) text\* - contains a link
 -}
 pLinkLabel : Parser String
 pLinkLabel =
@@ -204,9 +203,9 @@ pLinkLabel =
             )
 
 
-{-| A URL in a link or reference. This may optionally be contained
-in `<..>`; otherwise whitespace and unbalanced right parentheses
-aren't allowed. Newlines aren't allowed in any case.
+{-| Parse a URL in a link or reference.
+The URL may optionally be enclosed in angle brackets <...>. Without angle brackets,
+whitespace and unbalanced right parentheses are not allowed. Newlines are never allowed.
 -}
 pLinkUrl : Parser String
 pLinkUrl =
@@ -237,10 +236,9 @@ pLinkUrl =
             )
 
 
-{-| A link title, single or double quoted or in parentheses.
-Note that Markdown.pl doesn't allow the parenthesized form in
-inline links -- only in references -- but this restriction seems
-arbitrary, so we remove it here.
+{-| Parse a link title enclosed in quotes or parentheses.
+Accepts single quotes, double quotes, or parentheses as delimiters.
+Unlike Markdown.pl, allows parenthesized titles in both inline links and references.
 -}
 pLinkTitle : Parser String
 pLinkTitle =
@@ -293,10 +291,9 @@ pLinkTitle =
             )
 
 
-{-| A link reference is a square-bracketed link label, a colon,
-optional space or newline, a URL, optional space or newline,
-and an optional link title. (Note: we assume the input is
-pre-stripped, with no leading/trailing spaces.)
+{-| Parse a link reference definition.
+Format: [label]: url "optional title"
+Returns a tuple of (label, url, title). Assumes input has no leading/trailing spaces.
 -}
 pReference : Parser ( String, String, String )
 pReference =
@@ -318,14 +315,16 @@ pReference =
             )
 
 
-{-| Parses an escaped character and returns a Text.
+{-| Parse an escaped character following a backslash.
+Returns the character as a string without the backslash.
 -}
 pEscaped : Parser String
 pEscaped =
     map String.fromChar (skip ((==) '\\') |> andThen (\_ -> satisfy isEscapable))
 
 
-{-| Parses a (possibly escaped) character satisfying the predicate.
+{-| Parse a character satisfying the predicate, handling backslash escapes.
+Accepts either an unescaped character or an escaped escapable character.
 -}
 pSatisfy : (Char -> Bool) -> Parser Char
 pSatisfy p =
@@ -333,8 +332,8 @@ pSatisfy p =
         (char '\\' |> andThen (\_ -> satisfy (\c -> isEscapable c && p c)))
 
 
-{-| Parse a text into inlines, resolving reference links
-using the reference map.
+{-| Parse a text string into a list of inline elements.
+Resolves link references using the provided reference map.
 -}
 parseInlines : ReferenceMap -> String -> Inlines
 parseInlines remap t =

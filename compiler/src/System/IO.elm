@@ -87,10 +87,12 @@ import Task exposing (Task)
 import Utils.Impure as Impure
 
 
+{-| Type alias for an IO program that runs impure tasks. -}
 type alias Program =
     Platform.Program () Model Msg
 
 
+{-| Create and run an IO program from a task. -}
 run : Task Never () -> Program
 run app =
     Platform.worker
@@ -100,10 +102,12 @@ run app =
         }
 
 
+{-| The program's model state (unit type as we use tasks for state management). -}
 type alias Model =
     ()
 
 
+{-| Messages are tasks to be executed. -}
 type alias Msg =
     Task Never ()
 
@@ -117,6 +121,7 @@ update msg () =
 -- Interal helpers
 
 
+{-| Write a string to a file at the given path. -}
 writeString : FilePath -> String -> Task Never ()
 writeString path content =
     Impure.task "writeString"
@@ -129,10 +134,12 @@ writeString path content =
 -- Files and handles
 
 
+{-| Type alias for file paths represented as strings. -}
 type alias FilePath =
     String
 
 
+{-| Opaque handle to an open file or stream, wrapping a file descriptor integer. -}
 type Handle
     = Handle Int
 
@@ -141,11 +148,13 @@ type Handle
 -- Standard handles
 
 
+{-| Handle to the standard output stream. -}
 stdout : Handle
 stdout =
     Handle 1
 
 
+{-| Handle to the standard error stream. -}
 stderr : Handle
 stderr =
     Handle 2
@@ -155,6 +164,7 @@ stderr =
 -- Opening files
 
 
+{-| Open a file with the specified mode, pass the handle to a callback, and automatically close it afterward. -}
 withFile : String -> IOMode -> (Handle -> Task Never a) -> Task Never a
 withFile path mode callback =
     Impure.task "withFile"
@@ -178,6 +188,7 @@ withFile path mode callback =
         |> Task.andThen callback
 
 
+{-| File opening mode specifying read, write, append, or read-write access. -}
 type IOMode
     = ReadMode
     | WriteMode
@@ -189,6 +200,7 @@ type IOMode
 -- Closing files
 
 
+{-| Close an open file handle. -}
 hClose : Handle -> Task Never ()
 hClose (Handle handle) =
     Impure.task "hClose" [] (Impure.StringBody (String.fromInt handle)) (Impure.Always ())
@@ -198,6 +210,7 @@ hClose (Handle handle) =
 -- File locking
 
 
+{-| Get the size in bytes of the file associated with the handle. -}
 hFileSize : Handle -> Task Never Int
 hFileSize (Handle handle) =
     Impure.task "hFileSize"
@@ -210,6 +223,7 @@ hFileSize (Handle handle) =
 -- Buffering operations
 
 
+{-| Flush any buffered output on the handle (currently a no-op). -}
 hFlush : Handle -> Task Never ()
 hFlush _ =
     Task.succeed ()
@@ -219,6 +233,7 @@ hFlush _ =
 -- Terminal operations (not portable: GHC only)
 
 
+{-| Check if the handle is connected to a terminal device (currently always returns True). -}
 hIsTerminalDevice : Handle -> Task Never Bool
 hIsTerminalDevice _ =
     Task.succeed True
@@ -228,6 +243,7 @@ hIsTerminalDevice _ =
 -- Text output
 
 
+{-| Write a string to the specified handle without adding a newline. -}
 hPutStr : Handle -> String -> Task Never ()
 hPutStr (Handle fd) content =
     Impure.task "hPutStr"
@@ -236,6 +252,7 @@ hPutStr (Handle fd) content =
         (Impure.Always ())
 
 
+{-| Write a string to the specified handle followed by a newline. -}
 hPutStrLn : Handle -> String -> Task Never ()
 hPutStrLn handle content =
     hPutStr handle (content ++ "\n")
@@ -245,16 +262,19 @@ hPutStrLn handle content =
 -- Special cases for standard input and output
 
 
+{-| Write a string to stdout without adding a newline. -}
 putStr : String -> Task Never ()
 putStr =
     hPutStr stdout
 
 
+{-| Write a string to stdout followed by a newline. -}
 putStrLn : String -> Task Never ()
 putStrLn s =
     putStr (s ++ "\n")
 
 
+{-| Read a line of input from stdin. -}
 getLine : Task Never String
 getLine =
     Impure.task "getLine" [] Impure.EmptyBody (Impure.StringResolver identity)
@@ -264,10 +284,12 @@ getLine =
 -- Repl State (Terminal.Repl)
 
 
+{-| State maintained by the REPL, containing three dictionaries for tracking REPL session data. -}
 type ReplState
     = ReplState (Dict String String) (Dict String String) (Dict String String)
 
 
+{-| Initial empty REPL state with empty dictionaries. -}
 initialReplState : ReplState
 initialReplState =
     ReplState Dict.empty Dict.empty Dict.empty

@@ -20,6 +20,9 @@ import Url
 import Utils.Main as Utils
 
 
+{-| Format a list of blocks as Markdown text.
+Takes a code formatter function for formatting code blocks.
+-}
 formatMarkdown : (String -> Maybe String) -> Blocks -> String
 formatMarkdown formatCode blocks =
     let
@@ -55,6 +58,8 @@ formatMarkdown formatCode blocks =
     formatMarkdown_ formatCode False needsInitialBlanks needsTrailingBlanks blocks
 
 
+{-| Map over a list with access to the previous element.
+-}
 mapWithPrev : (Maybe a -> a -> b) -> List a -> List b
 mapWithPrev f list =
     case list of
@@ -65,6 +70,8 @@ mapWithPrev f list =
             f Nothing first :: List.map2 (\prev next -> f (Just prev) next) (first :: rest) rest
 
 
+{-| Internal formatting function with control over blank lines and list context.
+-}
 formatMarkdown_ : (String -> Maybe String) -> Bool -> Bool -> Bool -> List Block -> String
 formatMarkdown_ formatCode isListItem needsInitialBlanks needsTrailingBlanks blocks =
     let
@@ -101,11 +108,15 @@ formatMarkdown_ formatCode isListItem needsInitialBlanks needsTrailingBlanks blo
            )
 
 
+{-| Context for formatting decisions, tracking what came before.
+-}
 type Context
     = Normal
     | AfterIndentedList
 
 
+{-| Format a single Markdown block.
+-}
 formatMardownBlock : (String -> Maybe String) -> Context -> Block -> String
 formatMardownBlock formatCode context block =
     case block of
@@ -191,6 +202,8 @@ formatMardownBlock formatCode context block =
             List.map formatRef refs |> String.concat
 
 
+{-| Split a string into lines, removing a trailing empty line if present.
+-}
 lines : String -> List String
 lines str =
     case List.reverse (String.lines str) of
@@ -201,6 +214,8 @@ lines str =
             List.reverse result
 
 
+{-| Format a numbered list item with its index.
+-}
 formatListItem : (String -> Maybe String) -> ( Int, Blocks ) -> String
 formatListItem formatCode ( i, item ) =
     let
@@ -215,6 +230,8 @@ formatListItem formatCode ( i, item ) =
     formatMarkdown_ formatCode True False False item |> prefix_ pref "    "
 
 
+{-| Format a link reference definition.
+-}
 formatRef : ( String, String, String ) -> String
 formatRef ( label, url, title ) =
     "["
@@ -230,11 +247,15 @@ formatRef ( label, url, title ) =
         ++ "\n"
 
 
+{-| Add a prefix to the first line and a different prefix to subsequent lines.
+-}
 prefix_ : String -> String -> String -> String
 prefix_ preFirst preRest =
     lines >> prefix preFirst preRest >> Utils.unlines
 
 
+{-| Add prefixes to a list of lines.
+-}
 prefix : String -> String -> List String -> List String
 prefix preFirst preRest list =
     case list of
@@ -245,6 +266,8 @@ prefix preFirst preRest list =
             (preFirst ++ first) :: List.map (\next -> preRest ++ next) rest
 
 
+{-| Format an inline element, optionally escaping special characters.
+-}
 formatMarkdownInline : Bool -> Inline -> String
 formatMarkdownInline fixSpecialChars inline =
     let
@@ -386,6 +409,8 @@ formatMarkdownInline fixSpecialChars inline =
 -- TEXT EXTRA
 
 
+{-| Result of searching for the longest span of a character.
+-}
 type LongestSpanResult
     = NoSpan
     | Span Int
@@ -395,6 +420,9 @@ type LongestSpanResult
 {- >= 1 -}
 
 
+{-| Find the longest consecutive run of a character in a string.
+Returns NoSpan if the character doesn't appear, or Span n where n is the length of the longest run.
+-}
 longestSpanOf : Char -> String -> LongestSpanResult
 longestSpanOf char input =
     let

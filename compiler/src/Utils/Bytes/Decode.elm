@@ -50,12 +50,16 @@ endian =
     Bytes.BE
 
 
+{-| Decodes a length-prefixed UTF-8 string.
+-}
 string : BD.Decoder String
 string =
     BD.unsignedInt32 endian
         |> BD.andThen BD.string
 
 
+{-| Decodes a unit value, expecting a single zero byte.
+-}
 unit : BD.Decoder ()
 unit =
     BD.unsignedInt8
@@ -70,21 +74,29 @@ unit =
             )
 
 
+{-| Decodes an integer stored as a 64-bit float and rounds it.
+-}
 int : BD.Decoder Int
 int =
     BD.float64 endian |> BD.map round
 
 
+{-| Decodes a 64-bit floating point number in big-endian byte order.
+-}
 float : BD.Decoder Float
 float =
     BD.float64 endian
 
 
+{-| Decodes a boolean value from a single byte, where 1 is true and 0 is false.
+-}
 bool : BD.Decoder Bool
 bool =
     BD.map ((==) 1) BD.unsignedInt8
 
 
+{-| Decodes a length-prefixed list of elements.
+-}
 list : BD.Decoder a -> BD.Decoder (List a)
 list decoder =
     BD.unsignedInt32 endian
@@ -100,6 +112,8 @@ listStep decoder ( n, xs ) =
         BD.map (\x -> BD.Loop ( n - 1, x :: xs )) decoder
 
 
+{-| Decodes a Maybe value, where a leading byte indicates presence (1) or absence (0).
+-}
 maybe : BD.Decoder a -> BD.Decoder (Maybe a)
 maybe decoder =
     BD.unsignedInt8
@@ -113,6 +127,8 @@ maybe decoder =
             )
 
 
+{-| Decodes a Result value, where a leading byte indicates Ok (0) or Err (1).
+-}
 result : BD.Decoder x -> BD.Decoder a -> BD.Decoder (Result x a)
 result errDecoder successDecoder =
     BD.unsignedInt8
@@ -130,6 +146,8 @@ result errDecoder successDecoder =
             )
 
 
+{-| Combines six decoders using a function that takes six arguments.
+-}
 map6 : (a -> b -> c -> d -> e -> f -> result) -> BD.Decoder a -> BD.Decoder b -> BD.Decoder c -> BD.Decoder d -> BD.Decoder e -> BD.Decoder f -> BD.Decoder result
 map6 func decodeA decodeB decodeC decodeD decodeE decodeF =
     BD.map5 (\a b c d ( e, f ) -> func a b c d e f)
@@ -143,6 +161,8 @@ map6 func decodeA decodeB decodeC decodeD decodeE decodeF =
         )
 
 
+{-| Combines seven decoders using a function that takes seven arguments.
+-}
 map7 : (a -> b -> c -> d -> e -> f -> g -> result) -> BD.Decoder a -> BD.Decoder b -> BD.Decoder c -> BD.Decoder d -> BD.Decoder e -> BD.Decoder f -> BD.Decoder g -> BD.Decoder result
 map7 func decodeA decodeB decodeC decodeD decodeE decodeF decodeG =
     map6 (\a b c d e ( f, g ) -> func a b c d e f g)
@@ -157,6 +177,8 @@ map7 func decodeA decodeB decodeC decodeD decodeE decodeF decodeG =
         )
 
 
+{-| Combines eight decoders using a function that takes eight arguments.
+-}
 map8 : (a -> b -> c -> d -> e -> f -> g -> h -> result) -> BD.Decoder a -> BD.Decoder b -> BD.Decoder c -> BD.Decoder d -> BD.Decoder e -> BD.Decoder f -> BD.Decoder g -> BD.Decoder h -> BD.Decoder result
 map8 func decodeA decodeB decodeC decodeD decodeE decodeF decodeG decodeH =
     map7 (\a b c d e f ( g, h ) -> func a b c d e f g h)
@@ -172,23 +194,31 @@ map8 func decodeA decodeB decodeC decodeD decodeE decodeF decodeG decodeH =
         )
 
 
+{-| Decodes a dictionary from a list of key-value pairs.
+-}
 assocListDict : (k -> comparable) -> BD.Decoder k -> BD.Decoder v -> BD.Decoder (Dict comparable k v)
 assocListDict toComparable keyDecoder valueDecoder =
     list (jsonPair keyDecoder valueDecoder)
         |> BD.map (Dict.fromList toComparable)
 
 
+{-| Decodes a pair of values as a tuple.
+-}
 jsonPair : BD.Decoder a -> BD.Decoder b -> BD.Decoder ( a, b )
 jsonPair =
     BD.map2 Tuple.pair
 
 
+{-| Decodes a set from a list of elements.
+-}
 everySet : (a -> comparable) -> BD.Decoder a -> BD.Decoder (EverySet comparable a)
 everySet toComparable decoder =
     list decoder
         |> BD.map (EverySet.fromList toComparable)
 
 
+{-| Decodes a non-empty list, failing if the list is empty.
+-}
 nonempty : BD.Decoder a -> BD.Decoder (NE.Nonempty a)
 nonempty decoder =
     list decoder
@@ -203,6 +233,8 @@ nonempty decoder =
             )
 
 
+{-| Decodes a binary tree structure with at least one element.
+-}
 oneOrMore : BD.Decoder a -> BD.Decoder (OneOrMore a)
 oneOrMore decoder =
     BD.unsignedInt8
@@ -222,6 +254,8 @@ oneOrMore decoder =
             )
 
 
+{-| Creates a lazy decoder that defers construction until needed, enabling recursive decoders.
+-}
 lazy : (() -> BD.Decoder a) -> BD.Decoder a
 lazy f =
     BD.succeed () |> BD.andThen f

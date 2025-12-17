@@ -38,21 +38,29 @@ endian =
     Bytes.BE
 
 
+{-| Encodes a unit value as a single zero byte.
+-}
 unit : () -> BE.Encoder
 unit () =
     BE.unsignedInt8 0
 
 
+{-| Encodes an integer as a 64-bit float in big-endian byte order.
+-}
 int : Int -> BE.Encoder
 int =
     toFloat >> BE.float64 endian
 
 
+{-| Encodes a 64-bit floating point number in big-endian byte order.
+-}
 float : Float -> BE.Encoder
 float =
     BE.float64 endian
 
 
+{-| Encodes a UTF-8 string with a length prefix.
+-}
 string : String -> BE.Encoder
 string str =
     BE.sequence
@@ -61,6 +69,8 @@ string str =
         ]
 
 
+{-| Encodes a boolean value as a single byte, where true is 1 and false is 0.
+-}
 bool : Bool -> BE.Encoder
 bool value =
     BE.unsignedInt8
@@ -72,6 +82,8 @@ bool value =
         )
 
 
+{-| Encodes a list with a length prefix followed by encoded elements.
+-}
 list : (a -> BE.Encoder) -> List a -> BE.Encoder
 list encoder aList =
     BE.sequence
@@ -80,6 +92,8 @@ list encoder aList =
         )
 
 
+{-| Encodes a Maybe value with a leading byte indicating presence (1) or absence (0).
+-}
 maybe : (a -> BE.Encoder) -> Maybe a -> BE.Encoder
 maybe encoder maybeValue =
     case maybeValue of
@@ -93,11 +107,15 @@ maybe encoder maybeValue =
             BE.unsignedInt8 0
 
 
+{-| Encodes a non-empty list as a regular list.
+-}
 nonempty : (a -> BE.Encoder) -> NE.Nonempty a -> BE.Encoder
 nonempty encoder (NE.Nonempty x xs) =
     list encoder (x :: xs)
 
 
+{-| Encodes a Result value with a leading byte indicating Ok (0) or Err (1).
+-}
 result : (x -> BE.Encoder) -> (a -> BE.Encoder) -> Result x a -> BE.Encoder
 result errEncoder successEncoder resultValue =
     case resultValue of
@@ -114,11 +132,15 @@ result errEncoder successEncoder resultValue =
                 ]
 
 
+{-| Encodes a dictionary as a list of key-value pairs.
+-}
 assocListDict : (k -> k -> Order) -> (k -> BE.Encoder) -> (v -> BE.Encoder) -> Dict c k v -> BE.Encoder
 assocListDict keyComparison keyEncoder valueEncoder =
     Dict.toList keyComparison >> List.reverse >> list (jsonPair keyEncoder valueEncoder)
 
 
+{-| Encodes a pair of values as a tuple.
+-}
 jsonPair : (a -> BE.Encoder) -> (b -> BE.Encoder) -> ( a, b ) -> BE.Encoder
 jsonPair encoderA encoderB ( a, b ) =
     BE.sequence
@@ -127,11 +149,15 @@ jsonPair encoderA encoderB ( a, b ) =
         ]
 
 
+{-| Encodes a set as a list of elements.
+-}
 everySet : (a -> a -> Order) -> (a -> BE.Encoder) -> EverySet c a -> BE.Encoder
 everySet keyComparison encoder =
     EverySet.toList keyComparison >> List.reverse >> list encoder
 
 
+{-| Encodes a binary tree structure with at least one element.
+-}
 oneOrMore : (a -> BE.Encoder) -> OneOrMore a -> BE.Encoder
 oneOrMore encoder oneOrMore_ =
     case oneOrMore_ of

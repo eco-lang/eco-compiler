@@ -28,9 +28,7 @@ underlining, and other text effects.
 
 -}
 
--- | ANSI colors: come in various intensities, which are controlled by 'ColorIntensity'
-
-
+{-| Standard ANSI terminal colors. -}
 type Color
     = Black
     | Red
@@ -42,64 +40,46 @@ type Color
     | White
 
 
-
--- | ANSI colors come in two intensities
-
-
+{-| Intensity of ANSI colors: dull or vivid. -}
 type ColorIntensity
     = Dull
     | Vivid
 
 
-
--- | ANSI colors can be set on two different layers
-
-
+{-| Layer on which to apply colors: foreground (text) or background. -}
 type ConsoleLayer
     = Foreground
     | Background
 
 
-
--- | ANSI blink speeds: values other than 'NoBlink' are not widely supported
-
-
+{-| ANSI text blinking speed: most terminals only support NoBlink. -}
 type BlinkSpeed
-    = SlowBlink -- ^ Less than 150 blinks per minute
-    | RapidBlink -- ^ More than 150 blinks per minute
+    = SlowBlink
+    | RapidBlink
     | NoBlink
 
 
-
--- | ANSI text underlining
-
-
+{-| ANSI text underlining style. -}
 type Underlining
     = SingleUnderline
-    | DoubleUnderline -- ^ Not widely supported
+    | DoubleUnderline
     | NoUnderline
 
 
-
--- | ANSI general console intensity: usually treated as setting the font style (e.g. 'BoldIntensity' causes text to be bold)
-
-
+{-| ANSI text intensity affecting font weight and style. -}
 type ConsoleIntensity
     = BoldIntensity
-    | FaintIntensity -- ^ Not widely supported: sometimes treated as concealing text
+    | FaintIntensity
     | NormalIntensity
 
 
-
--- | ANSI Select Graphic Rendition command
-
-
+{-| ANSI Select Graphic Rendition commands for controlling terminal text appearance. -}
 type SGR
     = Reset
     | SetConsoleIntensity ConsoleIntensity
-    | SetItalicized Bool -- ^ Not widely supported: sometimes treated as swapping foreground and background
+    | SetItalicized Bool
     | SetUnderlining Underlining
     | SetBlinkSpeed BlinkSpeed
-    | SetVisible Bool -- ^ Not widely supported
+    | SetVisible Bool
     | SetSwapForegroundBackground Bool
     | SetColor ConsoleLayer ColorIntensity Color

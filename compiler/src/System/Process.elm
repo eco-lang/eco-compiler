@@ -32,10 +32,12 @@ import Task exposing (Task)
 import Utils.Impure as Impure
 
 
+{-| Specification of a command to execute, with the executable and its arguments. -}
 type CmdSpec
     = RawCommand String (List String)
 
 
+{-| Configuration for creating a new process, specifying command and standard stream handling. -}
 type alias CreateProcess =
     { cmdspec : CmdSpec
     , std_in : StdStream
@@ -44,6 +46,7 @@ type alias CreateProcess =
     }
 
 
+{-| Specification for how to handle a standard stream (stdin, stdout, or stderr) when creating a process. -}
 type StdStream
     = Inherit
     | UseHandle IO.Handle
@@ -51,10 +54,12 @@ type StdStream
     | NoStream
 
 
+{-| Opaque handle to a running process, wrapping a process ID. -}
 type ProcessHandle
     = ProcessHandle Int
 
 
+{-| Create a process configuration for running a command with arguments, inheriting all standard streams. -}
 proc : String -> List String -> CreateProcess
 proc cmd args =
     { cmdspec = RawCommand cmd args
@@ -64,6 +69,7 @@ proc cmd args =
     }
 
 
+{-| Create and run a process with the given configuration, pass handles to a callback, and wait for completion. -}
 withCreateProcess : CreateProcess -> (Maybe IO.Handle -> Maybe IO.Handle -> Maybe IO.Handle -> ProcessHandle -> Task Never Exit.ExitCode) -> Task Never Exit.ExitCode
 withCreateProcess createProcess f =
     Impure.task "withCreateProcess"
@@ -136,6 +142,7 @@ withCreateProcess createProcess f =
             )
 
 
+{-| Wait for a process to complete and return its exit code. -}
 waitForProcess : ProcessHandle -> Task Never Exit.ExitCode
 waitForProcess (ProcessHandle ph) =
     Impure.task "waitForProcess"

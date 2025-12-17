@@ -62,15 +62,21 @@ module Common.Format.Cheapskate.ParserCombinators exposing
 import Set exposing (Set)
 
 
+{-| A position in the input text, tracking line and column numbers.
+-}
 type Position
     = Position Int Int
 
 
+{-| Convert a position to a human-readable string for error messages.
+-}
 showPosition : Position -> String
 showPosition (Position ln cn) =
     "line " ++ String.fromInt ln ++ " column " ++ String.fromInt cn
 
 
+{-| Compare two positions for ordering.
+-}
 comparePositions : Position -> Position -> Basics.Order
 comparePositions (Position ln1 cn1) (Position ln2 cn2) =
     if ln1 > ln2 then
@@ -87,15 +93,21 @@ comparePositions (Position ln1 cn1) (Position ln2 cn2) =
 -- the String indicates what the parser was expecting
 
 
+{-| A parse error with position information and expected content description.
+-}
 type ParseError
     = ParseError Position String
 
 
+{-| Convert a parse error to a human-readable error message.
+-}
 showParseError : ParseError -> String
 showParseError (ParseError (Position ln cn) msg) =
     "ParseError (line " ++ String.fromInt ln ++ " column " ++ String.fromInt cn ++ ") " ++ msg
 
 
+{-| Internal parser state tracking the input string, current position, and last character read.
+-}
 type ParserState
     = ParserState
         { subject : String
@@ -104,6 +116,9 @@ type ParserState
         }
 
 
+{-| Advance the parser state by consuming a string from the input.
+Updates position tracking based on newlines and character count.
+-}
 advance : ParserState -> String -> ParserState
 advance parserState str =
     let
@@ -128,6 +143,8 @@ advance parserState str =
     List.foldl go parserState (String.toList str)
 
 
+{-| A parser that consumes input and produces a result or an error.
+-}
 type Parser a
     = Parser (ParserState -> Result ParseError ( ParserState, a ))
 
@@ -136,6 +153,8 @@ type Parser a
 -- instance Functor Parser where
 
 
+{-| Transform the result of a parser using a function.
+-}
 map : (a -> b) -> Parser a -> Parser b
 map f (Parser g) =
     Parser
@@ -153,11 +172,15 @@ map f (Parser g) =
 -- instance Applicative Parser where
 
 
+{-| Lift a value into the parser context without consuming input.
+-}
 pure : a -> Parser a
 pure x =
     Parser (\st -> Ok ( st, x ))
 
 
+{-| Apply a parser returning a function to a parser returning a value.
+-}
 apply : Parser a -> Parser (a -> b) -> Parser b
 apply (Parser g) (Parser f) =
     Parser
@@ -185,7 +208,8 @@ unless p s =
         s
 
 
-{-| (<\*)
+{-| Sequence two parsers, keeping only the result of the first.
+Equivalent to (<*) in Haskell.
 -}
 leftSequence : Parser a -> Parser b -> Parser a
 leftSequence p1 p2 =
@@ -196,11 +220,15 @@ leftSequence p1 p2 =
 -- instance Alternative Parser where
 
 
+{-| A parser that always fails.
+-}
 empty : Parser a
 empty =
     Parser (\(ParserState st) -> Err (ParseError st.position "(empty)"))
 
 
+{-| Succeed only if the boolean condition is true.
+-}
 guard : Bool -> Parser ()
 guard bool =
     if bool then
@@ -210,6 +238,9 @@ guard bool =
         empty
 
 
+{-| Try the first parser, and if it fails, try the second parser.
+Returns the result of whichever parser succeeds first.
+-}
 oneOf : Parser a -> Parser a -> Parser a
 oneOf (Parser f) (Parser g) =
     Parser
@@ -243,11 +274,17 @@ oneOf (Parser f) (Parser g) =
 -- instance Monad Parser where
 
 
+{-| Lift a value into the parser context without consuming input.
+Alias for pure.
+-}
 return : a -> Parser a
 return x =
     Parser (\st -> Ok ( st, x ))
 
 
+{-| Sequence two parsers, passing the result of the first to a function that produces the second.
+Monadic bind operation.
+-}
 andThen : (a -> Parser b) -> Parser a -> Parser b
 andThen g (Parser p) =
     Parser
@@ -269,6 +306,8 @@ andThen g (Parser p) =
 -- instance MonadFail Parser where
 
 
+{-| Create a parser that always fails with the given error message.
+-}
 fail : String -> Parser a
 fail e =
     Parser (\(ParserState st) -> Err (ParseError st.position e))
@@ -278,11 +317,15 @@ fail e =
 -- instance MonadPlus Parser where
 
 
+{-| A parser that always fails with a generic error.
+-}
 mzero : Parser a
 mzero =
     Parser (\(ParserState st) -> Err (ParseError st.position "(mzero)"))
 
 
+{-| Run a parser on an input string, returning either an error or the result.
+-}
 parse : Parser a -> String -> Result ParseError a
 parse (Parser evalParser) t =
     Result.map Tuple.second
@@ -301,11 +344,15 @@ failure (ParserState st) msg =
     Err (ParseError st.position msg)
 
 
+{-| Create a successful parse result with the given state and value.
+-}
 success : ParserState -> a -> Result ParseError ( ParserState, a )
 success st x =
     Ok ( st, x )
 
 
+{-| Parse a character that satisfies the given predicate.
+-}
 satisfy : (Char -> Bool) -> Parser Char
 satisfy f =
     let
@@ -325,6 +372,8 @@ satisfy f =
     Parser g
 
 
+{-| Look ahead at the next character without consuming it.
+-}
 peekChar : Parser (Maybe Char)
 peekChar =
     Parser
@@ -338,11 +387,15 @@ peekChar =
         )
 
 
+{-| Get the last character that was consumed by the parser.
+-}
 peekLastChar : Parser (Maybe Char)
 peekLastChar =
     Parser (\(ParserState st) -> success (ParserState st) st.lastChar)
 
 
+{-| Succeed only if the last consumed character does not satisfy the predicate.
+-}
 notAfter : (Char -> Bool) -> Parser ()
 notAfter f =
     peekLastChar
@@ -365,6 +418,9 @@ notAfter f =
 -- low-grade version of attoparsec's:
 
 
+{-| Parse a character class specification into a set of characters.
+Supports range notation like "a-z" for character ranges.
+-}
 charClass : String -> Set Char
 charClass =
     let
@@ -383,6 +439,8 @@ charClass =
     String.toList >> go >> Set.fromList
 
 
+{-| Check if a character is in the specified character class.
+-}
 inClass : String -> Char -> Bool
 inClass s c =
     let
@@ -393,11 +451,15 @@ inClass s c =
     Set.member c s_
 
 
+{-| Check if a character is NOT in the specified character class.
+-}
 notInClass : String -> Char -> Bool
 notInClass s =
     inClass s >> not
 
 
+{-| Succeed only at the end of input.
+-}
 endOfInput : Parser ()
 endOfInput =
     Parser
@@ -410,21 +472,29 @@ endOfInput =
         )
 
 
+{-| Parse a specific character.
+-}
 char : Char -> Parser Char
 char c =
     satisfy ((==) c)
 
 
+{-| Parse any single character.
+-}
 anyChar : Parser Char
 anyChar =
     satisfy (\_ -> True)
 
 
+{-| Get the current position in the input.
+-}
 getPosition : Parser Position
 getPosition =
     Parser (\(ParserState st) -> success (ParserState st) st.position)
 
 
+{-| Extract the column number from a position.
+-}
 column : Position -> Int
 column (Position _ cn) =
     cn
@@ -437,11 +507,16 @@ column (Position _ cn) =
 -- have accurate column information.
 
 
+{-| Set the current position for column tracking.
+Does not change the actual position in the input, only the column counter.
+-}
 setPosition : Position -> Parser ()
 setPosition pos =
     Parser (\(ParserState st) -> success (ParserState { st | position = pos }) ())
 
 
+{-| Parse zero or more characters satisfying the predicate.
+-}
 takeWhile : (Char -> Bool) -> Parser String
 takeWhile f =
     Parser
@@ -455,11 +530,15 @@ takeWhile f =
         )
 
 
+{-| Parse characters until the predicate is satisfied.
+-}
 takeTill : (Char -> Bool) -> Parser String
 takeTill f =
     takeWhile (not << f)
 
 
+{-| Parse one or more characters satisfying the predicate.
+-}
 takeWhile1 : (Char -> Bool) -> Parser String
 takeWhile1 f =
     Parser
@@ -477,6 +556,8 @@ takeWhile1 f =
         )
 
 
+{-| Parse all remaining input.
+-}
 takeText : Parser String
 takeText =
     Parser
@@ -490,6 +571,8 @@ takeText =
         )
 
 
+{-| Parse and discard a single character satisfying the predicate.
+-}
 skip : (Char -> Bool) -> Parser ()
 skip f =
     Parser
@@ -507,6 +590,8 @@ skip f =
         )
 
 
+{-| Parse and discard zero or more characters satisfying the predicate.
+-}
 skipWhile : (Char -> Bool) -> Parser ()
 skipWhile f =
     Parser
@@ -520,6 +605,8 @@ skipWhile f =
         )
 
 
+{-| Parse an exact string.
+-}
 string : String -> Parser String
 string s =
     Parser
@@ -532,6 +619,10 @@ string s =
         )
 
 
+{-| Parse using a stateful scanner function.
+The scanner function takes the current state and next character, returning either
+a new state (to continue) or Nothing (to stop).
+-}
 scan : s -> (s -> Char -> Maybe s) -> Parser String
 scan s0 f =
     let
@@ -558,6 +649,9 @@ scan s0 f =
     Parser (go s0 "")
 
 
+{-| Parse without consuming input.
+Runs the parser and returns its result, but restores the original parser state.
+-}
 lookAhead : Parser a -> Parser a
 lookAhead (Parser p) =
     Parser
@@ -571,6 +665,9 @@ lookAhead (Parser p) =
         )
 
 
+{-| Succeed only if the given parser fails.
+Negative lookahead that consumes no input.
+-}
 notFollowedBy : Parser a -> Parser ()
 notFollowedBy (Parser p) =
     Parser
@@ -588,16 +685,22 @@ notFollowedBy (Parser p) =
 -- combinators (definitions borrowed from attoparsec)
 
 
+{-| Try to parse, returning a default value if the parser fails.
+-}
 option : a -> Parser a -> Parser a
 option x p =
     oneOf p (pure x)
 
 
+{-| Parse one or more occurrences.
+-}
 many1 : Parser a -> Parser (List a)
 many1 p =
     liftA2 (::) p (many p)
 
 
+{-| Parse occurrences of the first parser until the second parser succeeds.
+-}
 manyTill : Parser a -> Parser b -> Parser (List a)
 manyTill p end =
     let
@@ -608,21 +711,29 @@ manyTill p end =
     go ()
 
 
+{-| Parse zero or more occurrences and discard the results.
+-}
 skipMany : Parser a -> Parser ()
 skipMany p =
     many (skipP p) |> map (\_ -> ())
 
 
+{-| Convert a parser to a unit parser that discards its result.
+-}
 skipP : Parser a -> Parser ()
 skipP p =
     p |> map (\_ -> ())
 
 
+{-| Parse one or more occurrences and discard the results.
+-}
 skipMany1 : Parser a -> Parser ()
 skipMany1 p =
     p |> andThen (\_ -> skipMany p)
 
 
+{-| Parse exactly n occurrences.
+-}
 count : Int -> Parser a -> Parser (List a)
 count n p =
     sequence (List.repeat n p)
@@ -632,11 +743,15 @@ count n p =
 -- ...
 
 
+{-| Create a lazy parser for recursive definitions.
+-}
 lazy : (() -> Parser a) -> Parser a
 lazy f =
     pure () |> andThen f
 
 
+{-| Parse zero or more occurrences.
+-}
 many : Parser a -> Parser (List a)
 many (Parser p) =
     let
@@ -652,6 +767,8 @@ many (Parser p) =
     Parser (accumulate [])
 
 
+{-| Lift a binary function to work on parser results.
+-}
 liftA2 : (a -> b -> c) -> Parser a -> Parser b -> Parser c
 liftA2 f pa pb =
     pa
@@ -659,6 +776,8 @@ liftA2 f pa pb =
         |> andThen (\fApplied -> map fApplied pb)
 
 
+{-| Run a list of parsers in sequence and collect their results.
+-}
 sequence : List (Parser a) -> Parser (List a)
 sequence parsers =
     case parsers of
@@ -669,6 +788,8 @@ sequence parsers =
             liftA2 (::) p (sequence ps)
 
 
+{-| Take characters from a string while they satisfy the predicate.
+-}
 stringTakeWhile : (Char -> Bool) -> String -> String
 stringTakeWhile f str =
     String.toList str

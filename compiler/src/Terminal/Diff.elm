@@ -53,6 +53,12 @@ import Utils.Task.Extra as Task
 -- RUN
 
 
+{-| Arguments specifying what to compare.
+
+CodeVsLatest compares local code to latest published version, CodeVsExactly
+compares to a specific version, LocalInquiry compares two published versions,
+GlobalInquiry compares versions of any package.
+-}
 type Args
     = CodeVsLatest
     | CodeVsExactly V.Version
@@ -60,6 +66,11 @@ type Args
     | GlobalInquiry Pkg.Name V.Version V.Version
 
 
+{-| Compare package APIs between versions.
+
+Shows additions, changes, and removals in the public API, helping understand
+the impact of version changes and semantic versioning requirements.
+-}
 run : Args -> () -> Task Never ()
 run args () =
     Reporting.attempt Exit.diffToReport

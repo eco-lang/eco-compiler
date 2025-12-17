@@ -28,6 +28,7 @@ import System.TypeCheck.IO as IO exposing (IO, Variable)
 import Utils.Crash exposing (crash)
 
 
+{-| Get the last element from a mutable vector, crashing if empty or invalid. -}
 unsafeLast : IORef (Array (Maybe (List Variable))) -> IO (List Variable)
 unsafeLast ioRef =
     IORef.readIORefMVector ioRef
@@ -45,11 +46,13 @@ unsafeLast ioRef =
             )
 
 
+{-| Return all elements except the last (identity function, preserving the reference). -}
 unsafeInit : IORef (Array (Maybe a)) -> IORef (Array (Maybe a))
 unsafeInit =
     identity
 
 
+{-| Apply an indexed monadic action to each element in the vector, discarding results. -}
 imapM_ : (Int -> List Variable -> IO b) -> IORef (Array (Maybe (List IO.Variable))) -> IO ()
 imapM_ action ioRef =
     IORef.readIORefMVector ioRef
@@ -80,11 +83,13 @@ mapM_ action ioRef =
     imapM_ (\_ -> action) ioRef
 
 
+{-| Apply a monadic action to each element in the vector, discarding results (flipped argument order). -}
 forM_ : IORef (Array (Maybe (List IO.Variable))) -> (List IO.Variable -> IO b) -> IO ()
 forM_ ioRef action =
     mapM_ action ioRef
 
 
+{-| Freeze a mutable vector into an immutable one (identity function, no actual freezing). -}
 unsafeFreeze : IORef (Array (Maybe a)) -> IO (IORef (Array (Maybe a)))
 unsafeFreeze =
     IO.pure

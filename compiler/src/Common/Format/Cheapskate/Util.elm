@@ -26,8 +26,8 @@ import Utils.Crash exposing (crash)
 -- Utility functions.
 
 
-{-| Like T.unlines but does not add a final newline.
-Concatenates lines with newlines between.
+{-| Concatenate lines with newlines between them, without adding a final newline.
+Similar to unlines but does not append a trailing newline.
 -}
 joinLines : List String -> String
 joinLines =
@@ -63,10 +63,9 @@ tabFilter =
     String.split "\t" >> pad >> String.concat
 
 
-{-| These are the whitespace characters that are significant in
-parsing markdown. We can treat \\160 (nonbreaking space) etc.
-as regular characters. This function should be considerably
-faster than the unicode-aware isSpace from Data.Char.
+{-| Check if a character is a significant whitespace character for Markdown parsing.
+Only recognizes space, tab, newline, and carriage return as whitespace.
+Other Unicode whitespace characters like non-breaking space are treated as regular characters.
 -}
 isWhitespace : Char -> Bool
 isWhitespace c =
@@ -87,18 +86,17 @@ isWhitespace c =
             False
 
 
-{-| The original Markdown only allowed certain symbols
-to be backslash-escaped. It was hard to remember
-which ones could be, so we now allow any ascii punctuation mark or
-symbol to be escaped, whether or not it has a use in Markdown.
+{-| Check if a character can be backslash-escaped in Markdown.
+Returns true for any ASCII punctuation mark or symbol, allowing more flexibility
+than the original Markdown specification which only allowed specific characters.
 -}
 isEscapable : Char -> Bool
 isEscapable c =
     isAscii c && (isSymbol c || isPunctuation c)
 
 
-{-| Link references are case sensitive and ignore line breaks
-and repeated spaces.
+{-| Normalize a link reference by removing whitespace and converting to lowercase.
+Link references are case-insensitive and ignore line breaks and repeated spaces.
 -}
 normalizeReference : String -> String
 normalizeReference =
@@ -144,23 +142,24 @@ split p t =
         loop t
 
 
-{-| Scanners are implemented here as attoparsec parsers,
-which consume input and capture nothing. They could easily
-be implemented as regexes in other languages, or hand-coded.
-With the exception of scanSpnl, they are all intended to
-operate on a single line of input (so endOfInput = endOfLine).
+{-| A parser that consumes input without capturing any result.
+Scanners are intended to operate on a single line of input (except scanSpnl).
+They return unit () on success, indicating only that the pattern matched.
 -}
 type alias Scanner =
     Parser ()
 
 
-{-| Scan four spaces.
+{-| Scan exactly four spaces, indicating an indented code block or list item.
 -}
 scanIndentSpace : Scanner
 scanIndentSpace =
     map (\_ -> ()) (count 4 (skip ((==) ' ')))
 
 
+{-| Scan spaces until reaching the specified column position.
+Consumes the minimum number of spaces needed to reach the target column.
+-}
 scanSpacesToColumn : Int -> Scanner
 scanSpacesToColumn col =
     getPosition
@@ -181,57 +180,61 @@ scanSpacesToColumn col =
             )
 
 
-{-| Scan 0-3 spaces.
+{-| Scan 0 to 3 spaces, which does not count as indentation.
 -}
 scanNonindentSpace : Scanner
 scanNonindentSpace =
     map (\_ -> ()) (upToCountChars 3 ((==) ' '))
 
 
-{-| Scan a specified character.
+{-| Scan a single occurrence of the specified character.
 -}
 scanChar : Char -> Scanner
 scanChar c =
     skip ((==) c) |> andThen (\_ -> return ())
 
 
-{-| Scan a blankline.
+{-| Scan a blank line containing only whitespace.
 -}
 scanBlankline : Scanner
 scanBlankline =
     scanSpaces |> andThen (\_ -> endOfInput)
 
 
-{-| Scan 0 or more spaces
+{-| Scan zero or more spaces.
 -}
 scanSpaces : Scanner
 scanSpaces =
     skipWhile ((==) ' ')
 
 
-{-| Scan 0 or more spaces, and optionally a newline
-and more spaces.
+{-| Scan spaces followed optionally by a newline and more spaces.
+Used to allow flexible whitespace across line boundaries.
 -}
 scanSpnl : Scanner
 scanSpnl =
     scanSpaces |> andThen (\_ -> option () (char '\n' |> andThen (\_ -> scanSpaces)))
 
 
-{-| Not followed by: Succeed without consuming input if the specified
-scanner would not succeed.
+{-| Succeed without consuming input if the specified parser would not succeed.
+Negative lookahead assertion that fails if the parser matches.
 -}
 nfb : Parser a -> Scanner
 nfb =
     notFollowedBy
 
 
-{-| Succeed if not followed by a character. Consumes no input.
+{-| Succeed if not followed by the specified character.
+Negative lookahead that consumes no input.
 -}
 nfbChar : Char -> Scanner
 nfbChar c =
     nfb (skip ((==) c))
 
 
+{-| Parse up to a maximum count of characters satisfying the predicate.
+Returns the matched characters as a string.
+-}
 upToCountChars : Int -> (Char -> Bool) -> Parser String
 upToCountChars cnt f =
     scan 0

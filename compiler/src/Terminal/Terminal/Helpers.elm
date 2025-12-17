@@ -25,6 +25,10 @@ import Utils.Main as Utils exposing (FilePath)
 -- VERSION
 
 
+{-| Parser for version numbers.
+
+Accepts semantic version strings like "1.0.0" or "2.3.4".
+-}
 version : Parser
 version =
     Parser
@@ -35,6 +39,10 @@ version =
         }
 
 
+{-| Parse a string as a version number.
+
+Returns Just the parsed version or Nothing if invalid.
+-}
 parseVersion : String -> Maybe V.Version
 parseVersion chars =
     case P.fromByteString V.parser Tuple.pair chars of
@@ -83,6 +91,10 @@ exampleVersions chars =
 -- GUIDA OR ELM FILE
 
 
+{-| Parser for Guida or Elm source file paths.
+
+Accepts file paths ending in .guida or .elm extensions.
+-}
 guidaOrElmFile : Parser
 guidaOrElmFile =
     Parser
@@ -93,6 +105,10 @@ guidaOrElmFile =
         }
 
 
+{-| Parse a string as a Guida or Elm file path.
+
+Returns Just the file path if it has a .guida or .elm extension, Nothing otherwise.
+-}
 parseGuidaOrElmFile : String -> Maybe FilePath
 parseGuidaOrElmFile chars =
     case Utils.fpTakeExtension chars of
@@ -115,6 +131,10 @@ exampleGuidaOrElmFiles _ =
 -- FILE PATH
 
 
+{-| Parser for general file paths.
+
+Accepts any string as a file path without validation.
+-}
 filePath : Parser
 filePath =
     Parser
@@ -125,6 +145,10 @@ filePath =
         }
 
 
+{-| Parse a string as a file path.
+
+Always succeeds, accepting any string as a valid file path.
+-}
 parseFilePath : String -> Maybe FilePath
 parseFilePath =
     Just
@@ -139,6 +163,10 @@ exampleFilePaths _ =
 -- PACKAGE
 
 
+{-| Parser for Elm package names.
+
+Accepts package names in the format "author/project" like "elm/core" or "elm/html".
+-}
 package : Parser
 package =
     Parser
@@ -149,6 +177,10 @@ package =
         }
 
 
+{-| Parse a string as an Elm package name.
+
+Returns Just the package name if valid (format: author/project), Nothing otherwise.
+-}
 parsePackage : String -> Maybe Pkg.Name
 parsePackage chars =
     case P.fromByteString Pkg.parser Tuple.pair chars of

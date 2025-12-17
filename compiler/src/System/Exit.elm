@@ -27,11 +27,13 @@ import Task exposing (Task)
 import Utils.Impure as Impure
 
 
+{-| Exit code representing success (0) or failure (non-zero integer). -}
 type ExitCode
     = ExitSuccess
     | ExitFailure Int
 
 
+{-| Exit the program with the specified exit code. -}
 exitWith : ExitCode -> Task Never a
 exitWith exitCode =
     let
@@ -50,11 +52,13 @@ exitWith exitCode =
         Impure.Crash
 
 
+{-| Exit the program with exit code 1, indicating failure. -}
 exitFailure : Task Never a
 exitFailure =
     exitWith (ExitFailure 1)
 
 
+{-| Exit the program with exit code 0, indicating success. -}
 exitSuccess : Task Never a
 exitSuccess =
     exitWith ExitSuccess

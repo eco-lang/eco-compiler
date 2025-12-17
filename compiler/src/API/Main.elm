@@ -33,6 +33,9 @@ import Task exposing (Task)
 import Utils.Impure as Impure
 
 
+{-| Entry point for the Elm compiler API server.
+Reads JSON commands from stdin and dispatches to the appropriate API modules.
+-}
 main : IO.Program
 main =
     IO.run app

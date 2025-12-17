@@ -81,10 +81,19 @@ import Utils.Task.Extra as Task
 -- RUN
 
 
+{-| Configuration flags for the REPL session.
+
+Contains optional interpreter path and color output setting.
+-}
 type Flags
     = Flags (Maybe FilePath) Bool
 
 
+{-| Start an interactive REPL session.
+
+Initializes the REPL environment, displays the welcome message, and begins
+the read-eval-print loop for evaluating Elm expressions and declarations.
+-}
 run : () -> Flags -> Task Never ()
 run () flags =
     printWelcomeMessage
@@ -201,6 +210,11 @@ handleOutcome env outcome =
 -- READ
 
 
+{-| Represents a categorized line of user input in the REPL.
+
+Can be an import, type definition, port declaration, value declaration,
+expression, or a REPL command (reset, exit, skip, help).
+-}
 type Input
     = Import ModuleName.Raw String
     | Type N.Name String
@@ -288,6 +302,11 @@ stripLegacyBackslash chars =
                 chars
 
 
+{-| Pre-filled text for multi-line input continuation.
+
+Provides either indentation or the start of a definition name to help
+users continue typing multi-line declarations.
+-}
 type Prefill
     = Indent
     | DefStart N.Name
@@ -307,6 +326,11 @@ renderPrefill lineStart =
 -- LINES
 
 
+{-| Accumulates multiple lines of user input.
+
+Stores the most recent line and a reversed list of previous lines for
+efficient appending during multi-line input.
+-}
 type Lines
     = Lines String (List String)
 
@@ -350,6 +374,11 @@ getFirstLine (Lines x xs) =
 -- CATEGORIZE INPUT
 
 
+{-| Result of analyzing user input to determine if it's complete.
+
+Either the input is complete and can be evaluated (Done), or more lines
+are needed and a prefill suggestion is provided (Continue).
+-}
 type CategorizedInput
     = Done Input
     | Continue Prefill
@@ -627,6 +656,11 @@ eval env ((IO.ReplState imports types decls) as state) input =
 -- ATTEMPT EVAL
 
 
+{-| Describes what kind of output should be generated after evaluation.
+
+OutputNothing for imports/types, OutputDecl for named declarations,
+OutputExpr for expressions that should be printed.
+-}
 type Output
     = OutputNothing
     | OutputDecl N.Name

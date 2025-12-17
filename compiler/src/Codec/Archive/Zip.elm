@@ -29,32 +29,42 @@ Ref.: <https://hackage.haskell.org/package/zip-2.1.0/docs/Codec-Archive-Zip.html
 -}
 
 
-{-| FIXME System.IO.FilePath
+{-| A file path represented as a string. FIXME: Should use System.IO.FilePath.
 -}
 type alias FilePath =
     String
 
 
+{-| A ZIP archive represented as a list of entries.
+-}
 type alias Archive =
     List Entry
 
 
+{-| A single entry in a ZIP archive containing a relative file path and its data.
+-}
 type alias Entry =
     { eRelativePath : FilePath
     , eData : String
     }
 
 
+{-| Extracts the list of entries from a ZIP archive.
+-}
 zEntries : Archive -> List Entry
 zEntries =
     identity
 
 
+{-| Extracts the relative file path from a ZIP entry.
+-}
 eRelativePath : Entry -> FilePath
 eRelativePath zipEntry =
     zipEntry.eRelativePath
 
 
+{-| Extracts the file data from a ZIP entry.
+-}
 fromEntry : Entry -> String
 fromEntry zipEntry =
     zipEntry.eData

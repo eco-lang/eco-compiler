@@ -56,11 +56,15 @@ type StateT s a
     = StateT (s -> Task Never ( a, s ))
 
 
+{-| Evaluates a state transformer computation with an initial state, returning only the result and discarding the final state.
+-}
 evalStateT : StateT s a -> s -> Task Never a
 evalStateT (StateT f) =
     f >> Task.map Tuple.first
 
 
+{-| Lifts a Task computation into the StateT monad transformer, leaving the state unchanged.
+-}
 liftIO : Task Never a -> StateT s a
 liftIO io =
     StateT (\s -> Task.map (\a -> ( a, s )) io)
@@ -79,6 +83,8 @@ apply (StateT arg) (StateT func) =
         )
 
 
+{-| Maps a function over the result value of a StateT computation, leaving the state unchanged.
+-}
 map : (a -> b) -> StateT s a -> StateT s b
 map func argStateT =
     apply argStateT (pure func)
@@ -89,6 +95,8 @@ pure value =
     StateT (\s -> Task.succeed ( value, s ))
 
 
+{-| Retrieves the current REPL state from the underlying storage.
+-}
 get : StateT s IO.ReplState
 get =
     liftIO
@@ -105,6 +113,8 @@ get =
         )
 
 
+{-| Stores the given REPL state to the underlying storage.
+-}
 put : IO.ReplState -> Task Never ()
 put (IO.ReplState imports types decls) =
     Impure.task "putStateT"

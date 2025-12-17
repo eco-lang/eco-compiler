@@ -20,14 +20,15 @@ import Data.Map exposing (Dict)
 -- TYPES
 
 
-{-| Structured representation of a document. The 'Options' affect
-how the document is rendered by `toHtml`.
+{-| A complete Markdown document with rendering options and block content.
+The Options control how the document is rendered to HTML or other formats.
 -}
 type Doc
     = Doc Options Blocks
 
 
-{-| Block-level elements.
+{-| Block-level elements that make up a Markdown document.
+Includes paragraphs, headers, lists, code blocks, HTML blocks, and more.
 -}
 type Block
     = Para Inlines
@@ -41,8 +42,8 @@ type Block
     | ElmDocs (List (List String))
 
 
-{-| Attributes for fenced code blocks. 'codeLang' is the
-first word of the attribute line, 'codeInfo' is the rest.
+{-| Attributes for fenced code blocks.
+The language identifier and additional information from the fence line.
 -}
 type CodeAttr
     = CodeAttr
@@ -51,17 +52,21 @@ type CodeAttr
         }
 
 
+{-| The type of list marker used.
+-}
 type ListType
     = Bullet Char
     | Numbered NumWrapper Int
 
 
+{-| The style of number wrapper for ordered lists.
+-}
 type NumWrapper
     = PeriodFollowing
     | ParenFollowing
 
 
-{-| Simple representation of HTML tag.
+{-| The type of an HTML tag: opening, closing, or self-closing.
 -}
 type HtmlTagType
     = Opening String
@@ -69,14 +74,14 @@ type HtmlTagType
     | SelfClosing String
 
 
-{-| We operate with sequences instead of lists, because
-they allow more efficient appending on to the end.
+{-| A sequence of block-level elements.
+Represented as a list for efficient operations.
 -}
 type alias Blocks =
     List Block
 
 
-{-| Inline elements.
+{-| Inline elements within a block such as text, emphasis, links, and code spans.
 -}
 type Inline
     = Str String
@@ -92,20 +97,26 @@ type Inline
     | RawHtml String
 
 
+{-| The target of a link: either a direct URL or a reference to be resolved.
+-}
 type LinkTarget
     = Url String
     | Ref String
 
 
+{-| A sequence of inline elements.
+-}
 type alias Inlines =
     List Inline
 
 
+{-| A mapping from link reference labels to their URLs and titles.
+-}
 type alias ReferenceMap =
     Dict String String ( String, String )
 
 
-{-| Rendering and parsing options.
+{-| Options controlling document rendering and parsing behavior.
 -}
 type Options
     = Options

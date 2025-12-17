@@ -36,6 +36,9 @@ import Utils.Task.Extra as Task
 -- RUN
 
 
+{-| Remove a package from the project's dependencies and update elm.json.
+Recalculates the dependency graph to ensure all remaining dependencies are satisfied.
+-}
 run : Pkg.Name -> Task Never ()
 run pkg =
     Reporting.attempt Exit.uninstallToReport

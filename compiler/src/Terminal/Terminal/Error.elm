@@ -5,6 +5,18 @@ module Terminal.Terminal.Error exposing
     , exitWithUnknown
     )
 
+{-| Error handling and help message generation for terminal commands.
+
+This module provides functions to display error messages, help text, and command
+overviews with proper formatting and exit codes.
+
+
+# Exit Functions
+
+@docs exitWithError, exitWithHelp, exitWithOverview, exitWithUnknown
+
+-}
+
 import Compiler.Reporting.Suggest as Suggest
 import Levenshtein
 import List.Extra as List
@@ -89,6 +101,11 @@ reflow string =
 -- HELP
 
 
+{-| Display help text for a command and exit successfully.
+
+Shows detailed help including the command description, argument patterns,
+usage examples, and available flags.
+-}
 exitWithHelp : Maybe String -> String -> P.Doc -> Args -> Flags -> Task Never a
 exitWithHelp maybeCommand details example (Args args) flags =
     toCommand maybeCommand
@@ -189,6 +206,11 @@ flagsToDocs flags docs =
 -- OVERVIEW
 
 
+{-| Display an overview of all available commands and exit successfully.
+
+Shows the intro message, lists common commands with descriptions, shows all
+commands, and displays the outro message.
+-}
 exitWithOverview : P.Doc -> P.Doc -> List Command -> Task Never a
 exitWithOverview intro outro commands =
     getExeName
@@ -252,6 +274,11 @@ toCommandList exeName commands =
 -- UNKNOWN
 
 
+{-| Display an error for an unknown command and exit with failure.
+
+Shows an error message indicating the command wasn't recognized, suggests
+similar command names if any exist, and exits with a non-zero code.
+-}
 exitWithUnknown : String -> List String -> Task Never a
 exitWithUnknown unknown knowns =
     let
@@ -297,6 +324,11 @@ exitWithUnknown unknown knowns =
 -- ERROR TO DOC
 
 
+{-| Display a parsing error and exit with failure.
+
+Takes an error from argument or flag parsing, formats it into a human-readable
+message with suggestions, and exits with a non-zero code.
+-}
 exitWithError : Error -> Task Never a
 exitWithError err =
     (case err of

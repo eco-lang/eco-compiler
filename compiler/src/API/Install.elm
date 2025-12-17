@@ -36,6 +36,9 @@ import Utils.Task.Extra as Task
 -- RUN
 
 
+{-| Install a package into the project's dependencies and update elm.json.
+Resolves version constraints and updates the dependency graph while maintaining compatibility.
+-}
 run : Pkg.Name -> Task Never ()
 run pkg =
     Reporting.attempt Exit.installToReport

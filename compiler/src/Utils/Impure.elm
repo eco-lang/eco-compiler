@@ -5,6 +5,19 @@ module Utils.Impure exposing
     , task
     )
 
+{-| Utilities for making HTTP requests that crash on failure, providing a simplified interface
+for internal compiler operations where HTTP errors are considered unrecoverable.
+
+# Types
+
+@docs Body, Resolver
+
+# HTTP Tasks
+
+@docs customTask, task
+
+-}
+
 import Bytes.Decode
 import Bytes.Encode
 import Http
@@ -14,6 +27,8 @@ import Task exposing (Task)
 import Utils.Crash exposing (crash)
 
 
+{-| Represents different types of HTTP request bodies.
+-}
 type Body
     = EmptyBody
     | StringBody String
@@ -21,6 +36,9 @@ type Body
     | BytesBody Bytes.Encode.Encoder
 
 
+{-| Defines how to resolve an HTTP response into a value.
+All resolvers crash the program if the HTTP request fails.
+-}
 type Resolver a
     = Always a
     | StringResolver (String -> a)
@@ -29,6 +47,9 @@ type Resolver a
     | Crash
 
 
+{-| Creates an HTTP task with a custom method, URL, headers, body, and response resolver.
+Crashes the program if the request fails or the resolver cannot parse the response.
+-}
 customTask : String -> String -> List Http.Header -> Body -> Resolver a -> Task Never a
 customTask method url headers body resolver =
     Http.task
@@ -129,6 +150,9 @@ customTask method url headers body resolver =
         }
 
 
+{-| Creates a POST request task with the given URL, headers, body, and response resolver.
+Crashes the program if the request fails or the resolver cannot parse the response.
+-}
 task : String -> List Http.Header -> Body -> Resolver a -> Task Never a
 task url headers body resolver =
     customTask "POST" url headers body resolver

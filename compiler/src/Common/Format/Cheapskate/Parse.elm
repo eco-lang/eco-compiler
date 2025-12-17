@@ -71,6 +71,9 @@ import Utils.Crash exposing (crash)
 -- PARSE
 
 
+{-| Parse a Markdown document with the given rendering options.
+Converts the input string into a structured Doc representation.
+-}
 markdown : Options -> String -> Doc
 markdown opts =
     processLines >> processDocument >> Doc opts

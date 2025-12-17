@@ -57,16 +57,22 @@ import Utils.Task.Extra as Task
 -- FLAGS
 
 
+{-| Compilation flags controlling debug mode, optimization, and source map generation.
+-}
 type Flags
     = Flags Bool Bool Bool
 
 
+{-| Output format for the compiled code: JavaScript file, HTML file, or discard output.
+-}
 type Output
     = JS String
     | Html String
     | DevNull
 
 
+{-| Error reporting format for compilation diagnostics.
+-}
 type ReportType
     = Json
 
@@ -75,6 +81,9 @@ type ReportType
 -- RUN
 
 
+{-| Build an Elm project from a source file path with the specified flags.
+Returns the compiled output as a string or an error describing what went wrong.
+-}
 run : String -> Flags -> Task Never (Result Exit.Make String)
 run path flags =
     Stuff.findRoot
@@ -220,6 +229,8 @@ toBuilder withSourceMaps leadingLines root details desiredMode artifacts =
 -- PARSERS
 
 
+{-| Parser for report type command-line arguments.
+-}
 reportType : Parser
 reportType =
     Parser
@@ -230,6 +241,8 @@ reportType =
         }
 
 
+{-| Parse a string into a report type, returning Nothing if the string is not a valid report type.
+-}
 parseReportType : String -> Maybe ReportType
 parseReportType string =
     if string == "json" then
@@ -239,6 +252,8 @@ parseReportType string =
         Nothing
 
 
+{-| Parser for output file command-line arguments.
+-}
 output : Parser
 output =
     Parser
@@ -249,6 +264,9 @@ output =
         }
 
 
+{-| Parse a file path into an output format based on its extension.
+Returns Nothing if the path does not have a recognized extension (.js, .html, or /dev/null).
+-}
 parseOutput : String -> Maybe Output
 parseOutput name =
     if isDevNull name then
@@ -264,6 +282,8 @@ parseOutput name =
         Nothing
 
 
+{-| Parser for documentation file command-line arguments.
+-}
 docsFile : Parser
 docsFile =
     Parser
@@ -274,6 +294,9 @@ docsFile =
         }
 
 
+{-| Parse a file path as a documentation file, requiring a .json extension.
+Returns Nothing if the path does not end with .json.
+-}
 parseDocsFile : String -> Maybe String
 parseDocsFile name =
     if hasExt ".json" name then

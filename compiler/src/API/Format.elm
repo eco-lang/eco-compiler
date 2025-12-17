@@ -21,6 +21,9 @@ import Compiler.Parse.SyntaxVersion as SV
 -- RUN
 
 
+{-| Format Elm source code according to the standard style guide.
+Parses the source and returns formatted code, or an error message if parsing fails.
+-}
 run : String -> Result String String
 run src =
     Common.Format.format SV.Guida (M.Package Pkg.core) src

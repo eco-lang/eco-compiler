@@ -17,6 +17,8 @@ import List.Extra as List
 import Utils.Crash exposing (crash)
 
 
+{-| Returns the first element of a list, crashing if the list is empty.
+-}
 head : List a -> a
 head items =
     case List.head items of
@@ -27,6 +29,8 @@ head items =
             crash "*** Exception: Prelude.head: empty list"
 
 
+{-| Returns all elements except the last one, crashing if the list is empty.
+-}
 init : List a -> List a
 init items =
     case List.init items of
@@ -37,6 +41,8 @@ init items =
             crash "*** Exception: Prelude.init: empty list"
 
 
+{-| Returns the last element of a list, crashing if the list is empty.
+-}
 last : List a -> a
 last items =
     case List.last items of
