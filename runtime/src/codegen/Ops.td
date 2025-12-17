@@ -1078,6 +1078,159 @@ def Eco_FloatSqrtOp : Eco_Op<"float.sqrt", [Pure]> {
 }
 
 //===----------------------------------------------------------------------===//
+// 9.2b Trigonometric Functions
+//===----------------------------------------------------------------------===//
+
+def Eco_FloatSinOp : Eco_Op<"float.sin", [Pure]> {
+  let summary = "Sine function";
+  let description = [{
+    Compute sine of angle in radians.
+
+    ```mlir
+    %result = eco.float.sin %x : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$value);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
+def Eco_FloatCosOp : Eco_Op<"float.cos", [Pure]> {
+  let summary = "Cosine function";
+  let description = [{
+    Compute cosine of angle in radians.
+
+    ```mlir
+    %result = eco.float.cos %x : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$value);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
+def Eco_FloatTanOp : Eco_Op<"float.tan", [Pure]> {
+  let summary = "Tangent function";
+  let description = [{
+    Compute tangent of angle in radians.
+
+    ```mlir
+    %result = eco.float.tan %x : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$value);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
+def Eco_FloatAsinOp : Eco_Op<"float.asin", [Pure]> {
+  let summary = "Arc sine function";
+  let description = [{
+    Compute arc sine (inverse sine). Returns value in radians.
+    Input must be in range [-1, 1], otherwise returns NaN.
+
+    ```mlir
+    %result = eco.float.asin %x : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$value);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
+def Eco_FloatAcosOp : Eco_Op<"float.acos", [Pure]> {
+  let summary = "Arc cosine function";
+  let description = [{
+    Compute arc cosine (inverse cosine). Returns value in radians.
+    Input must be in range [-1, 1], otherwise returns NaN.
+
+    ```mlir
+    %result = eco.float.acos %x : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$value);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
+def Eco_FloatAtanOp : Eco_Op<"float.atan", [Pure]> {
+  let summary = "Arc tangent function";
+  let description = [{
+    Compute arc tangent (inverse tangent). Returns value in radians
+    in range [-pi/2, pi/2].
+
+    ```mlir
+    %result = eco.float.atan %x : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$value);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
+def Eco_FloatAtan2Op : Eco_Op<"float.atan2", [Pure]> {
+  let summary = "Two-argument arc tangent";
+  let description = [{
+    Compute arc tangent of y/x, using signs to determine quadrant.
+    Returns value in radians in range [-pi, pi].
+
+    ```mlir
+    %result = eco.float.atan2 %y, %x : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$y, Eco_Float:$x);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$y `,` $x attr-dict `:` type($result)";
+}
+
+def Eco_FloatLogOp : Eco_Op<"float.log", [Pure]> {
+  let summary = "Natural logarithm";
+  let description = [{
+    Compute natural logarithm (base e).
+    Returns -Infinity for 0, NaN for negative inputs.
+
+    ```mlir
+    %result = eco.float.log %x : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$value);
+  let results = (outs Eco_Float:$result);
+  let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// 9.2c Float Classification
+//===----------------------------------------------------------------------===//
+
+def Eco_FloatIsNaNOp : Eco_Op<"float.isNaN", [Pure]> {
+  let summary = "Check if float is NaN";
+  let description = [{
+    Returns true if the value is NaN (Not a Number).
+
+    ```mlir
+    %result = eco.float.isNaN %x : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$value);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$value attr-dict `:` type($value)";
+}
+
+def Eco_FloatIsInfiniteOp : Eco_Op<"float.isInfinite", [Pure]> {
+  let summary = "Check if float is infinite";
+  let description = [{
+    Returns true if the value is positive or negative infinity.
+
+    ```mlir
+    %result = eco.float.isInfinite %x : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$value);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$value attr-dict `:` type($value)";
+}
+
+//===----------------------------------------------------------------------===//
 // 9.3 Type Conversions
 //===----------------------------------------------------------------------===//
 
@@ -1156,45 +1309,185 @@ def Eco_FloatTruncateOp : Eco_Op<"float.truncate", [Pure]> {
 // 9.4 Comparison Operations
 //===----------------------------------------------------------------------===//
 
-// Comparison predicate enum
-def Eco_CmpPredicate : I32EnumAttr<"CmpPredicate", "comparison predicate", [
-  I32EnumAttrCase<"lt", 0>,   // less than
-  I32EnumAttrCase<"le", 1>,   // less or equal
-  I32EnumAttrCase<"gt", 2>,   // greater than
-  I32EnumAttrCase<"ge", 3>,   // greater or equal
-  I32EnumAttrCase<"eq", 4>,   // equal
-  I32EnumAttrCase<"ne", 5>    // not equal
-]> {
-  let cppNamespace = "::eco";
-}
+// Integer comparisons - all return i1 (Bool)
 
-def Eco_IntCmpOp : Eco_Op<"int.cmp", [Pure]> {
-  let summary = "Elm integer comparison";
+def Eco_IntLtOp : Eco_Op<"int.lt", [Pure]> {
+  let summary = "Integer less-than comparison";
   let description = [{
-    Compare two integers. Returns i1 (Bool).
+    Compare two integers for less-than. Returns i1 (Bool).
 
     ```mlir
-    %lt = eco.int.cmp lt %a, %b : i64
+    %result = eco.int.lt %a, %b : i64
     ```
   }];
-  let arguments = (ins Eco_CmpPredicate:$predicate, Eco_Int:$lhs, Eco_Int:$rhs);
+  let arguments = (ins Eco_Int:$lhs, Eco_Int:$rhs);
   let results = (outs Eco_Bool:$result);
-  let assemblyFormat = "$predicate $lhs `,` $rhs attr-dict `:` type($lhs)";
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
 }
 
-def Eco_FloatCmpOp : Eco_Op<"float.cmp", [Pure]> {
-  let summary = "Elm float comparison";
+def Eco_IntLeOp : Eco_Op<"int.le", [Pure]> {
+  let summary = "Integer less-than-or-equal comparison";
   let description = [{
-    Compare two floats. Returns i1 (Bool).
-    NaN comparisons follow IEEE 754 (NaN != NaN, etc).
+    Compare two integers for less-than-or-equal. Returns i1 (Bool).
 
     ```mlir
-    %lt = eco.float.cmp lt %a, %b : f64
+    %result = eco.int.le %a, %b : i64
     ```
   }];
-  let arguments = (ins Eco_CmpPredicate:$predicate, Eco_Float:$lhs, Eco_Float:$rhs);
+  let arguments = (ins Eco_Int:$lhs, Eco_Int:$rhs);
   let results = (outs Eco_Bool:$result);
-  let assemblyFormat = "$predicate $lhs `,` $rhs attr-dict `:` type($lhs)";
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_IntGtOp : Eco_Op<"int.gt", [Pure]> {
+  let summary = "Integer greater-than comparison";
+  let description = [{
+    Compare two integers for greater-than. Returns i1 (Bool).
+
+    ```mlir
+    %result = eco.int.gt %a, %b : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$lhs, Eco_Int:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_IntGeOp : Eco_Op<"int.ge", [Pure]> {
+  let summary = "Integer greater-than-or-equal comparison";
+  let description = [{
+    Compare two integers for greater-than-or-equal. Returns i1 (Bool).
+
+    ```mlir
+    %result = eco.int.ge %a, %b : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$lhs, Eco_Int:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_IntEqOp : Eco_Op<"int.eq", [Pure, Commutative]> {
+  let summary = "Integer equality comparison";
+  let description = [{
+    Compare two integers for equality. Returns i1 (Bool).
+
+    ```mlir
+    %result = eco.int.eq %a, %b : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$lhs, Eco_Int:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_IntNeOp : Eco_Op<"int.ne", [Pure, Commutative]> {
+  let summary = "Integer not-equal comparison";
+  let description = [{
+    Compare two integers for inequality. Returns i1 (Bool).
+
+    ```mlir
+    %result = eco.int.ne %a, %b : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$lhs, Eco_Int:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+// Float comparisons - all return i1 (Bool)
+// Use ordered comparisons: return false if either operand is NaN
+
+def Eco_FloatLtOp : Eco_Op<"float.lt", [Pure]> {
+  let summary = "Float less-than comparison";
+  let description = [{
+    Compare two floats for less-than. Returns i1 (Bool).
+    Returns false if either operand is NaN (ordered comparison).
+
+    ```mlir
+    %result = eco.float.lt %a, %b : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$lhs, Eco_Float:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_FloatLeOp : Eco_Op<"float.le", [Pure]> {
+  let summary = "Float less-than-or-equal comparison";
+  let description = [{
+    Compare two floats for less-than-or-equal. Returns i1 (Bool).
+    Returns false if either operand is NaN (ordered comparison).
+
+    ```mlir
+    %result = eco.float.le %a, %b : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$lhs, Eco_Float:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_FloatGtOp : Eco_Op<"float.gt", [Pure]> {
+  let summary = "Float greater-than comparison";
+  let description = [{
+    Compare two floats for greater-than. Returns i1 (Bool).
+    Returns false if either operand is NaN (ordered comparison).
+
+    ```mlir
+    %result = eco.float.gt %a, %b : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$lhs, Eco_Float:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_FloatGeOp : Eco_Op<"float.ge", [Pure]> {
+  let summary = "Float greater-than-or-equal comparison";
+  let description = [{
+    Compare two floats for greater-than-or-equal. Returns i1 (Bool).
+    Returns false if either operand is NaN (ordered comparison).
+
+    ```mlir
+    %result = eco.float.ge %a, %b : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$lhs, Eco_Float:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_FloatEqOp : Eco_Op<"float.eq", [Pure, Commutative]> {
+  let summary = "Float equality comparison";
+  let description = [{
+    Compare two floats for equality. Returns i1 (Bool).
+    Returns false if either operand is NaN (ordered comparison).
+    Note: NaN != NaN per IEEE 754.
+
+    ```mlir
+    %result = eco.float.eq %a, %b : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$lhs, Eco_Float:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_FloatNeOp : Eco_Op<"float.ne", [Pure, Commutative]> {
+  let summary = "Float not-equal comparison";
+  let description = [{
+    Compare two floats for inequality. Returns i1 (Bool).
+    Returns true if either operand is NaN (ordered comparison).
+    Note: NaN != NaN per IEEE 754.
+
+    ```mlir
+    %result = eco.float.ne %a, %b : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$lhs, Eco_Float:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
 }
 
 def Eco_IntMinOp : Eco_Op<"int.min", [Pure, Commutative]> {

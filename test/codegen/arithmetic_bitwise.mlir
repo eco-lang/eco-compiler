@@ -57,7 +57,7 @@ module {
     // -8 logical right shift 2 = 4611686018427387902 on 64-bit
     %shru_neg = eco.int.shru %i2, %neg8 : i64
     // Just check it's positive (very large number)
-    %is_pos = eco.int.cmp gt %shru_neg, %i0 : i64
+    %is_pos = eco.int.gt %shru_neg, %i0 : i64
     %boxed = eco.box %is_pos : i1 -> !eco.value
     eco.dbg %boxed : !eco.value
     // CHECK: True

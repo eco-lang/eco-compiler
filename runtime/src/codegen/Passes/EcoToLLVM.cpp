@@ -36,6 +36,7 @@
 #include "../Passes.h"
 
 #include <codecvt>
+#include <limits>
 #include <locale>
 
 using namespace mlir;
@@ -2032,6 +2033,187 @@ struct FloatSqrtOpLowering : public OpConversionPattern<FloatSqrtOp> {
 };
 
 // ============================================================================
+// 9.2b Trigonometric Function Lowerings
+// ============================================================================
+
+struct FloatSinOpLowering : public OpConversionPattern<FloatSinOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(FloatSinOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<LLVM::SinOp>(op, adaptor.getValue());
+        return success();
+    }
+};
+
+struct FloatCosOpLowering : public OpConversionPattern<FloatCosOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(FloatCosOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<LLVM::CosOp>(op, adaptor.getValue());
+        return success();
+    }
+};
+
+struct FloatTanOpLowering : public OpConversionPattern<FloatTanOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(FloatTanOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        // tan(x) = sin(x) / cos(x)
+        auto loc = op.getLoc();
+        auto sinVal = rewriter.create<LLVM::SinOp>(loc, adaptor.getValue());
+        auto cosVal = rewriter.create<LLVM::CosOp>(loc, adaptor.getValue());
+        rewriter.replaceOpWithNewOp<arith::DivFOp>(op, sinVal, cosVal);
+        return success();
+    }
+};
+
+struct FloatAsinOpLowering : public OpConversionPattern<FloatAsinOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(FloatAsinOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto module = op->getParentOfType<ModuleOp>();
+        auto f64Ty = Float64Type::get(ctx);
+
+        // Call libm asin function
+        auto funcTy = LLVM::LLVMFunctionType::get(f64Ty, {f64Ty});
+        getOrInsertFunc(module, rewriter, "asin", funcTy);
+
+        auto call = rewriter.create<LLVM::CallOp>(
+            loc, f64Ty, SymbolRefAttr::get(ctx, "asin"),
+            ValueRange{adaptor.getValue()});
+        rewriter.replaceOp(op, call.getResult());
+        return success();
+    }
+};
+
+struct FloatAcosOpLowering : public OpConversionPattern<FloatAcosOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(FloatAcosOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto module = op->getParentOfType<ModuleOp>();
+        auto f64Ty = Float64Type::get(ctx);
+
+        // Call libm acos function
+        auto funcTy = LLVM::LLVMFunctionType::get(f64Ty, {f64Ty});
+        getOrInsertFunc(module, rewriter, "acos", funcTy);
+
+        auto call = rewriter.create<LLVM::CallOp>(
+            loc, f64Ty, SymbolRefAttr::get(ctx, "acos"),
+            ValueRange{adaptor.getValue()});
+        rewriter.replaceOp(op, call.getResult());
+        return success();
+    }
+};
+
+struct FloatAtanOpLowering : public OpConversionPattern<FloatAtanOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(FloatAtanOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto module = op->getParentOfType<ModuleOp>();
+        auto f64Ty = Float64Type::get(ctx);
+
+        // Call libm atan function
+        auto funcTy = LLVM::LLVMFunctionType::get(f64Ty, {f64Ty});
+        getOrInsertFunc(module, rewriter, "atan", funcTy);
+
+        auto call = rewriter.create<LLVM::CallOp>(
+            loc, f64Ty, SymbolRefAttr::get(ctx, "atan"),
+            ValueRange{adaptor.getValue()});
+        rewriter.replaceOp(op, call.getResult());
+        return success();
+    }
+};
+
+struct FloatAtan2OpLowering : public OpConversionPattern<FloatAtan2Op> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(FloatAtan2Op op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto module = op->getParentOfType<ModuleOp>();
+        auto f64Ty = Float64Type::get(ctx);
+
+        // Call libm atan2 function
+        auto funcTy = LLVM::LLVMFunctionType::get(f64Ty, {f64Ty, f64Ty});
+        getOrInsertFunc(module, rewriter, "atan2", funcTy);
+
+        auto call = rewriter.create<LLVM::CallOp>(
+            loc, f64Ty, SymbolRefAttr::get(ctx, "atan2"),
+            ValueRange{adaptor.getY(), adaptor.getX()});
+        rewriter.replaceOp(op, call.getResult());
+        return success();
+    }
+};
+
+struct FloatLogOpLowering : public OpConversionPattern<FloatLogOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(FloatLogOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<LLVM::LogOp>(op, adaptor.getValue());
+        return success();
+    }
+};
+
+// ============================================================================
+// 9.2c Float Classification Lowerings
+// ============================================================================
+
+struct FloatIsNaNOpLowering : public OpConversionPattern<FloatIsNaNOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(FloatIsNaNOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        // NaN is the only value where x != x (unordered comparison with itself returns true)
+        rewriter.replaceOpWithNewOp<arith::CmpFOp>(
+            op, arith::CmpFPredicate::UNO, adaptor.getValue(), adaptor.getValue());
+        return success();
+    }
+};
+
+struct FloatIsInfiniteOpLowering : public OpConversionPattern<FloatIsInfiniteOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(FloatIsInfiniteOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto f64Ty = Float64Type::get(ctx);
+
+        // Check if |x| == infinity
+        auto absVal = rewriter.create<LLVM::FAbsOp>(loc, adaptor.getValue());
+        auto inf = rewriter.create<arith::ConstantOp>(
+            loc, f64Ty, rewriter.getF64FloatAttr(std::numeric_limits<double>::infinity()));
+        rewriter.replaceOpWithNewOp<arith::CmpFOp>(
+            op, arith::CmpFPredicate::OEQ, absVal, inf);
+        return success();
+    }
+};
+
+// ============================================================================
 // 9.3 Type Conversion Lowerings
 // ============================================================================
 
@@ -2115,45 +2297,151 @@ struct FloatTruncateOpLowering : public OpConversionPattern<FloatTruncateOp> {
 // 9.4 Comparison Lowerings
 // ============================================================================
 
-struct IntCmpOpLowering : public OpConversionPattern<IntCmpOp> {
+// Integer comparisons - lower to arith.cmpi with signed predicates
+
+struct IntLtOpLowering : public OpConversionPattern<IntLtOp> {
     using OpConversionPattern::OpConversionPattern;
 
     LogicalResult
-    matchAndRewrite(IntCmpOp op, OpAdaptor adaptor,
+    matchAndRewrite(IntLtOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        arith::CmpIPredicate pred;
-        switch (op.getPredicate()) {
-            case CmpPredicate::lt: pred = arith::CmpIPredicate::slt; break;
-            case CmpPredicate::le: pred = arith::CmpIPredicate::sle; break;
-            case CmpPredicate::gt: pred = arith::CmpIPredicate::sgt; break;
-            case CmpPredicate::ge: pred = arith::CmpIPredicate::sge; break;
-            case CmpPredicate::eq: pred = arith::CmpIPredicate::eq; break;
-            case CmpPredicate::ne: pred = arith::CmpIPredicate::ne; break;
-        }
         rewriter.replaceOpWithNewOp<arith::CmpIOp>(
-            op, pred, adaptor.getLhs(), adaptor.getRhs());
+            op, arith::CmpIPredicate::slt, adaptor.getLhs(), adaptor.getRhs());
         return success();
     }
 };
 
-struct FloatCmpOpLowering : public OpConversionPattern<FloatCmpOp> {
+struct IntLeOpLowering : public OpConversionPattern<IntLeOp> {
     using OpConversionPattern::OpConversionPattern;
 
     LogicalResult
-    matchAndRewrite(FloatCmpOp op, OpAdaptor adaptor,
+    matchAndRewrite(IntLeOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        // Use ordered comparisons (return false if either is NaN)
-        arith::CmpFPredicate pred;
-        switch (op.getPredicate()) {
-            case CmpPredicate::lt: pred = arith::CmpFPredicate::OLT; break;
-            case CmpPredicate::le: pred = arith::CmpFPredicate::OLE; break;
-            case CmpPredicate::gt: pred = arith::CmpFPredicate::OGT; break;
-            case CmpPredicate::ge: pred = arith::CmpFPredicate::OGE; break;
-            case CmpPredicate::eq: pred = arith::CmpFPredicate::OEQ; break;
-            case CmpPredicate::ne: pred = arith::CmpFPredicate::ONE; break;
-        }
+        rewriter.replaceOpWithNewOp<arith::CmpIOp>(
+            op, arith::CmpIPredicate::sle, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+struct IntGtOpLowering : public OpConversionPattern<IntGtOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(IntGtOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::CmpIOp>(
+            op, arith::CmpIPredicate::sgt, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+struct IntGeOpLowering : public OpConversionPattern<IntGeOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(IntGeOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::CmpIOp>(
+            op, arith::CmpIPredicate::sge, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+struct IntEqOpLowering : public OpConversionPattern<IntEqOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(IntEqOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::CmpIOp>(
+            op, arith::CmpIPredicate::eq, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+struct IntNeOpLowering : public OpConversionPattern<IntNeOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(IntNeOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::CmpIOp>(
+            op, arith::CmpIPredicate::ne, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+// Float comparisons - lower to arith.cmpf with ordered predicates
+// Ordered comparisons return false if either operand is NaN
+
+struct FloatLtOpLowering : public OpConversionPattern<FloatLtOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(FloatLtOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
         rewriter.replaceOpWithNewOp<arith::CmpFOp>(
-            op, pred, adaptor.getLhs(), adaptor.getRhs());
+            op, arith::CmpFPredicate::OLT, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+struct FloatLeOpLowering : public OpConversionPattern<FloatLeOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(FloatLeOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::CmpFOp>(
+            op, arith::CmpFPredicate::OLE, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+struct FloatGtOpLowering : public OpConversionPattern<FloatGtOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(FloatGtOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::CmpFOp>(
+            op, arith::CmpFPredicate::OGT, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+struct FloatGeOpLowering : public OpConversionPattern<FloatGeOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(FloatGeOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::CmpFOp>(
+            op, arith::CmpFPredicate::OGE, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+struct FloatEqOpLowering : public OpConversionPattern<FloatEqOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(FloatEqOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::CmpFOp>(
+            op, arith::CmpFPredicate::OEQ, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+struct FloatNeOpLowering : public OpConversionPattern<FloatNeOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(FloatNeOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::CmpFOp>(
+            op, arith::CmpFPredicate::ONE, adaptor.getLhs(), adaptor.getRhs());
         return success();
     }
 };
@@ -2406,6 +2694,18 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             FloatAbsOpLowering,
             FloatPowOpLowering,
             FloatSqrtOpLowering,
+            // Trigonometric functions
+            FloatSinOpLowering,
+            FloatCosOpLowering,
+            FloatTanOpLowering,
+            FloatAsinOpLowering,
+            FloatAcosOpLowering,
+            FloatAtanOpLowering,
+            FloatAtan2OpLowering,
+            FloatLogOpLowering,
+            // Float classification
+            FloatIsNaNOpLowering,
+            FloatIsInfiniteOpLowering,
             // Type conversions
             IntToFloatOpLowering,
             FloatRoundOpLowering,
@@ -2413,8 +2713,18 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             FloatCeilingOpLowering,
             FloatTruncateOpLowering,
             // Comparisons
-            IntCmpOpLowering,
-            FloatCmpOpLowering,
+            IntLtOpLowering,
+            IntLeOpLowering,
+            IntGtOpLowering,
+            IntGeOpLowering,
+            IntEqOpLowering,
+            IntNeOpLowering,
+            FloatLtOpLowering,
+            FloatLeOpLowering,
+            FloatGtOpLowering,
+            FloatGeOpLowering,
+            FloatEqOpLowering,
+            FloatNeOpLowering,
             IntMinOpLowering,
             IntMaxOpLowering,
             FloatMinOpLowering,

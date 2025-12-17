@@ -211,6 +211,246 @@ emptyResult ctx var =
 
 
 
+-- INTRINSIC DEFINITIONS
+
+
+{-| Types of intrinsic operations that can be emitted as native eco ops
+-}
+type Intrinsic
+    = UnaryInt { op : String }
+    | BinaryInt { op : String }
+    | UnaryFloat { op : String }
+    | BinaryFloat { op : String }
+    | IntToFloat
+    | FloatToInt { op : String }
+    | IntComparison { op : String }
+    | FloatComparison { op : String }
+    | FloatClassify { op : String }
+    | ConstantFloat { value : Float }
+
+
+{-| Look up whether a kernel function can be emitted as an intrinsic op.
+Returns the intrinsic type if matched, Nothing if it should fall back to a runtime call.
+-}
+kernelIntrinsic : Name.Name -> Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
+kernelIntrinsic home name argTypes resultType =
+    case home of
+        "Basics" ->
+            basicsIntrinsic name argTypes resultType
+
+        "Bitwise" ->
+            bitwiseIntrinsic name argTypes resultType
+
+        _ ->
+            Nothing
+
+
+{-| Intrinsics from Basics module
+-}
+basicsIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
+basicsIntrinsic name argTypes resultType =
+    case ( name, argTypes, resultType ) of
+        -- ===== Constants =====
+        ( "pi", [], Mono.MFloat ) ->
+            Just (ConstantFloat { value = 3.141592653589793 })
+
+        ( "e", [], Mono.MFloat ) ->
+            Just (ConstantFloat { value = 2.718281828459045 })
+
+        -- ===== Integer Arithmetic =====
+        ( "add", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+            Just (BinaryInt { op = "eco.int.add" })
+
+        ( "sub", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+            Just (BinaryInt { op = "eco.int.sub" })
+
+        ( "mul", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+            Just (BinaryInt { op = "eco.int.mul" })
+
+        ( "idiv", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+            Just (BinaryInt { op = "eco.int.div" })
+
+        ( "modBy", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+            Just (BinaryInt { op = "eco.int.modby" })
+
+        ( "remainderBy", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+            Just (BinaryInt { op = "eco.int.remainderby" })
+
+        ( "negate", [ Mono.MInt ], Mono.MInt ) ->
+            Just (UnaryInt { op = "eco.int.negate" })
+
+        ( "abs", [ Mono.MInt ], Mono.MInt ) ->
+            Just (UnaryInt { op = "eco.int.abs" })
+
+        ( "pow", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+            Just (BinaryInt { op = "eco.int.pow" })
+
+        -- ===== Float Arithmetic =====
+        ( "add", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+            Just (BinaryFloat { op = "eco.float.add" })
+
+        ( "sub", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+            Just (BinaryFloat { op = "eco.float.sub" })
+
+        ( "mul", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+            Just (BinaryFloat { op = "eco.float.mul" })
+
+        ( "fdiv", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+            Just (BinaryFloat { op = "eco.float.div" })
+
+        ( "negate", [ Mono.MFloat ], Mono.MFloat ) ->
+            Just (UnaryFloat { op = "eco.float.negate" })
+
+        ( "abs", [ Mono.MFloat ], Mono.MFloat ) ->
+            Just (UnaryFloat { op = "eco.float.abs" })
+
+        ( "pow", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+            Just (BinaryFloat { op = "eco.float.pow" })
+
+        ( "sqrt", [ Mono.MFloat ], Mono.MFloat ) ->
+            Just (UnaryFloat { op = "eco.float.sqrt" })
+
+        -- ===== Trigonometric Functions =====
+        ( "sin", [ Mono.MFloat ], Mono.MFloat ) ->
+            Just (UnaryFloat { op = "eco.float.sin" })
+
+        ( "cos", [ Mono.MFloat ], Mono.MFloat ) ->
+            Just (UnaryFloat { op = "eco.float.cos" })
+
+        ( "tan", [ Mono.MFloat ], Mono.MFloat ) ->
+            Just (UnaryFloat { op = "eco.float.tan" })
+
+        ( "asin", [ Mono.MFloat ], Mono.MFloat ) ->
+            Just (UnaryFloat { op = "eco.float.asin" })
+
+        ( "acos", [ Mono.MFloat ], Mono.MFloat ) ->
+            Just (UnaryFloat { op = "eco.float.acos" })
+
+        ( "atan", [ Mono.MFloat ], Mono.MFloat ) ->
+            Just (UnaryFloat { op = "eco.float.atan" })
+
+        ( "atan2", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+            Just (BinaryFloat { op = "eco.float.atan2" })
+
+        -- ===== Logarithm =====
+        ( "logBase", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+            -- logBase is handled specially in generateCall - expanded inline
+            Nothing
+
+        ( "log", [ Mono.MFloat ], Mono.MFloat ) ->
+            Just (UnaryFloat { op = "eco.float.log" })
+
+        -- ===== Float Classification =====
+        ( "isNaN", [ Mono.MFloat ], Mono.MBool ) ->
+            Just (FloatClassify { op = "eco.float.isNaN" })
+
+        ( "isInfinite", [ Mono.MFloat ], Mono.MBool ) ->
+            Just (FloatClassify { op = "eco.float.isInfinite" })
+
+        -- ===== Type Conversions =====
+        ( "toFloat", [ Mono.MInt ], Mono.MFloat ) ->
+            Just IntToFloat
+
+        ( "round", [ Mono.MFloat ], Mono.MInt ) ->
+            Just (FloatToInt { op = "eco.float.round" })
+
+        ( "floor", [ Mono.MFloat ], Mono.MInt ) ->
+            Just (FloatToInt { op = "eco.float.floor" })
+
+        ( "ceiling", [ Mono.MFloat ], Mono.MInt ) ->
+            Just (FloatToInt { op = "eco.float.ceiling" })
+
+        ( "truncate", [ Mono.MFloat ], Mono.MInt ) ->
+            Just (FloatToInt { op = "eco.float.truncate" })
+
+        -- ===== Integer Min/Max =====
+        ( "min", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+            Just (BinaryInt { op = "eco.int.min" })
+
+        ( "max", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+            Just (BinaryInt { op = "eco.int.max" })
+
+        -- ===== Float Min/Max =====
+        ( "min", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+            Just (BinaryFloat { op = "eco.float.min" })
+
+        ( "max", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+            Just (BinaryFloat { op = "eco.float.max" })
+
+        -- ===== Integer Comparisons =====
+        ( "lt", [ Mono.MInt, Mono.MInt ], Mono.MBool ) ->
+            Just (IntComparison { op = "eco.int.lt" })
+
+        ( "le", [ Mono.MInt, Mono.MInt ], Mono.MBool ) ->
+            Just (IntComparison { op = "eco.int.le" })
+
+        ( "gt", [ Mono.MInt, Mono.MInt ], Mono.MBool ) ->
+            Just (IntComparison { op = "eco.int.gt" })
+
+        ( "ge", [ Mono.MInt, Mono.MInt ], Mono.MBool ) ->
+            Just (IntComparison { op = "eco.int.ge" })
+
+        ( "eq", [ Mono.MInt, Mono.MInt ], Mono.MBool ) ->
+            Just (IntComparison { op = "eco.int.eq" })
+
+        ( "neq", [ Mono.MInt, Mono.MInt ], Mono.MBool ) ->
+            Just (IntComparison { op = "eco.int.ne" })
+
+        -- ===== Float Comparisons =====
+        ( "lt", [ Mono.MFloat, Mono.MFloat ], Mono.MBool ) ->
+            Just (FloatComparison { op = "eco.float.lt" })
+
+        ( "le", [ Mono.MFloat, Mono.MFloat ], Mono.MBool ) ->
+            Just (FloatComparison { op = "eco.float.le" })
+
+        ( "gt", [ Mono.MFloat, Mono.MFloat ], Mono.MBool ) ->
+            Just (FloatComparison { op = "eco.float.gt" })
+
+        ( "ge", [ Mono.MFloat, Mono.MFloat ], Mono.MBool ) ->
+            Just (FloatComparison { op = "eco.float.ge" })
+
+        ( "eq", [ Mono.MFloat, Mono.MFloat ], Mono.MBool ) ->
+            Just (FloatComparison { op = "eco.float.eq" })
+
+        ( "neq", [ Mono.MFloat, Mono.MFloat ], Mono.MBool ) ->
+            Just (FloatComparison { op = "eco.float.ne" })
+
+        -- Fallback: not an intrinsic
+        _ ->
+            Nothing
+
+
+{-| Intrinsics from Bitwise module
+-}
+bitwiseIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
+bitwiseIntrinsic name argTypes resultType =
+    case ( name, argTypes, resultType ) of
+        ( "and", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+            Just (BinaryInt { op = "eco.int.and" })
+
+        ( "or", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+            Just (BinaryInt { op = "eco.int.or" })
+
+        ( "xor", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+            Just (BinaryInt { op = "eco.int.xor" })
+
+        ( "complement", [ Mono.MInt ], Mono.MInt ) ->
+            Just (UnaryInt { op = "eco.int.complement" })
+
+        ( "shiftLeftBy", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+            Just (BinaryInt { op = "eco.int.shl" })
+
+        ( "shiftRightBy", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+            Just (BinaryInt { op = "eco.int.shr" })
+
+        ( "shiftRightZfBy", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+            Just (BinaryInt { op = "eco.int.shru" })
+
+        _ ->
+            Nothing
+
+
+
 -- OP BUILDER
 
 
@@ -414,6 +654,102 @@ arithConstantChar ctx resultVar codepoint =
         |> withResult resultVar I32
         |> withAttr "value" (IntAttr codepoint)
         |> build
+
+
+{-| Build a unary eco op (e.g., eco.int.negate, eco.float.sqrt)
+-}
+ecoUnaryOp : Context -> String -> String -> ( String, MlirType ) -> MlirType -> MlirOp
+ecoUnaryOp ctx opName resultVar ( operand, operandTy ) resultTy =
+    mlirOp opName ctx
+        |> withOperands [ ( operand, operandTy ) ]
+        |> withResult resultVar resultTy
+        |> build
+
+
+{-| Build a binary eco op (e.g., eco.int.add, eco.float.mul)
+-}
+ecoBinaryOp : Context -> String -> String -> ( String, MlirType ) -> ( String, MlirType ) -> MlirType -> MlirOp
+ecoBinaryOp ctx opName resultVar ( lhs, lhsTy ) ( rhs, rhsTy ) resultTy =
+    mlirOp opName ctx
+        |> withOperands [ ( lhs, lhsTy ), ( rhs, rhsTy ) ]
+        |> withResult resultVar resultTy
+        |> build
+
+
+{-| Generate an intrinsic op from the Intrinsic descriptor
+-}
+generateIntrinsicOp : Context -> Intrinsic -> String -> List String -> MlirOp
+generateIntrinsicOp ctx intrinsic resultVar argVars =
+    case intrinsic of
+        UnaryInt { op } ->
+            let
+                operand =
+                    List.head argVars |> Maybe.withDefault "%error"
+            in
+            ecoUnaryOp ctx op resultVar ( operand, I64 ) I64
+
+        BinaryInt { op } ->
+            case argVars of
+                [ lhs, rhs ] ->
+                    ecoBinaryOp ctx op resultVar ( lhs, I64 ) ( rhs, I64 ) I64
+
+                _ ->
+                    ecoUnaryOp ctx op resultVar ( "%error", I64 ) I64
+
+        UnaryFloat { op } ->
+            let
+                operand =
+                    List.head argVars |> Maybe.withDefault "%error"
+            in
+            ecoUnaryOp ctx op resultVar ( operand, F64 ) F64
+
+        BinaryFloat { op } ->
+            case argVars of
+                [ lhs, rhs ] ->
+                    ecoBinaryOp ctx op resultVar ( lhs, F64 ) ( rhs, F64 ) F64
+
+                _ ->
+                    ecoUnaryOp ctx op resultVar ( "%error", F64 ) F64
+
+        IntToFloat ->
+            let
+                operand =
+                    List.head argVars |> Maybe.withDefault "%error"
+            in
+            ecoUnaryOp ctx "eco.int.toFloat" resultVar ( operand, I64 ) F64
+
+        FloatToInt { op } ->
+            let
+                operand =
+                    List.head argVars |> Maybe.withDefault "%error"
+            in
+            ecoUnaryOp ctx op resultVar ( operand, F64 ) I64
+
+        IntComparison { op } ->
+            case argVars of
+                [ lhs, rhs ] ->
+                    ecoBinaryOp ctx op resultVar ( lhs, I64 ) ( rhs, I64 ) I1
+
+                _ ->
+                    ecoBinaryOp ctx op resultVar ( "%error", I64 ) ( "%error", I64 ) I1
+
+        FloatComparison { op } ->
+            case argVars of
+                [ lhs, rhs ] ->
+                    ecoBinaryOp ctx op resultVar ( lhs, F64 ) ( rhs, F64 ) I1
+
+                _ ->
+                    ecoBinaryOp ctx op resultVar ( "%error", F64 ) ( "%error", F64 ) I1
+
+        FloatClassify { op } ->
+            let
+                operand =
+                    List.head argVars |> Maybe.withDefault "%error"
+            in
+            ecoUnaryOp ctx op resultVar ( operand, F64 ) I1
+
+        ConstantFloat { value } ->
+            arithConstantFloat ctx resultVar value
 
 
 {-| func.func - define a function
@@ -1242,15 +1578,40 @@ generateVarKernel ctx home name monoType =
     let
         ( var, ctx1 ) =
             freshVar ctx
-
-        kernelName : String
-        kernelName =
-            "Elm_Kernel_" ++ home ++ "_" ++ name
     in
-    { ops = [ ecoCallNamed ctx1 var kernelName [] (monoTypeToMlir monoType) ]
-    , resultVar = var
-    , ctx = ctx1
-    }
+    -- Check for intrinsic constants (pi, e)
+    case kernelIntrinsic home name [] monoType of
+        Just (ConstantFloat { value }) ->
+            -- Emit constant directly
+            { ops = [ arithConstantFloat ctx1 var value ]
+            , resultVar = var
+            , ctx = ctx1
+            }
+
+        Just _ ->
+            -- This is a function-type intrinsic used as a value
+            -- Fall back to kernel call for now (wrapper generation could be added later)
+            let
+                kernelName : String
+                kernelName =
+                    "Elm_Kernel_" ++ home ++ "_" ++ name
+            in
+            { ops = [ ecoCallNamed ctx1 var kernelName [] (monoTypeToMlir monoType) ]
+            , resultVar = var
+            , ctx = ctx1
+            }
+
+        Nothing ->
+            -- Not an intrinsic - call kernel function
+            let
+                kernelName : String
+                kernelName =
+                    "Elm_Kernel_" ++ home ++ "_" ++ name
+            in
+            { ops = [ ecoCallNamed ctx1 var kernelName [] (monoTypeToMlir monoType) ]
+            , resultVar = var
+            , ctx = ctx1
+            }
 
 
 generateVarDebug : Context -> Name.Name -> IO.Canonical -> Maybe Name.Name -> Mono.MonoType -> ExprResult
@@ -1570,35 +1931,86 @@ generateCall ctx func args resultType =
             }
 
         Mono.MonoVarKernel _ home name _ ->
-            -- Direct call to kernel function
+            -- Direct call to kernel function - check for intrinsic first
             let
                 ( argsOps, argVars, ctx1 ) =
                     generateExprList ctx args
 
-                -- Kernel boundary: ensure boxed arguments
-                argsWithTypes : List ( String, Mono.MonoType )
-                argsWithTypes =
-                    List.map2 (\expr var -> ( var, Mono.typeOf expr )) args argVars
-
-                ( boxOps, boxedVars, ctx1b ) =
-                    boxArgsIfNeeded ctx1 argsWithTypes
-
-                ( resultVar, ctx2 ) =
-                    freshVar ctx1b
-
-                -- All function arguments are boxed values
-                argVarPairs : List ( String, MlirType )
-                argVarPairs =
-                    List.map (\v -> ( v, ecoValue )) boxedVars
-
-                kernelName : String
-                kernelName =
-                    "Elm_Kernel_" ++ home ++ "_" ++ name
+                -- Get argument types for intrinsic lookup
+                argTypes : List Mono.MonoType
+                argTypes =
+                    List.map Mono.typeOf args
             in
-            { ops = argsOps ++ boxOps ++ [ ecoCallNamed ctx2 resultVar kernelName argVarPairs (monoTypeToMlir resultType) ]
-            , resultVar = resultVar
-            , ctx = ctx2
-            }
+            -- Special case: logBase - expand inline as log(x) / log(base)
+            case ( home, name, argVars ) of
+                ( "Basics", "logBase", [ baseVar, xVar ] ) ->
+                    let
+                        ( logXVar, ctx2 ) =
+                            freshVar ctx1
+
+                        ( logBaseVar, ctx3 ) =
+                            freshVar ctx2
+
+                        ( resultVar, ctx4 ) =
+                            freshVar ctx3
+
+                        logXOp =
+                            ecoUnaryOp ctx2 "eco.float.log" logXVar ( xVar, F64 ) F64
+
+                        logBaseOp =
+                            ecoUnaryOp ctx3 "eco.float.log" logBaseVar ( baseVar, F64 ) F64
+
+                        divOp =
+                            ecoBinaryOp ctx4 "eco.float.div" resultVar ( logXVar, F64 ) ( logBaseVar, F64 ) F64
+                    in
+                    { ops = argsOps ++ [ logXOp, logBaseOp, divOp ]
+                    , resultVar = resultVar
+                    , ctx = ctx4
+                    }
+
+                _ ->
+                    -- Check for intrinsic
+                    case kernelIntrinsic home name argTypes resultType of
+                        Just intrinsic ->
+                            -- Emit intrinsic op with UNBOXED types (no boxing needed!)
+                            let
+                                ( resultVar, ctx2 ) =
+                                    freshVar ctx1
+
+                                intrinsicOp =
+                                    generateIntrinsicOp ctx2 intrinsic resultVar argVars
+                            in
+                            { ops = argsOps ++ [ intrinsicOp ]
+                            , resultVar = resultVar
+                            , ctx = ctx2
+                            }
+
+                        Nothing ->
+                            -- Fall back to kernel call (existing behavior)
+                            let
+                                argsWithTypes : List ( String, Mono.MonoType )
+                                argsWithTypes =
+                                    List.map2 (\expr var -> ( var, Mono.typeOf expr )) args argVars
+
+                                ( boxOps, boxedVars, ctx1b ) =
+                                    boxArgsIfNeeded ctx1 argsWithTypes
+
+                                ( resultVar, ctx2 ) =
+                                    freshVar ctx1b
+
+                                -- All function arguments are boxed values
+                                argVarPairs : List ( String, MlirType )
+                                argVarPairs =
+                                    List.map (\v -> ( v, ecoValue )) boxedVars
+
+                                kernelName : String
+                                kernelName =
+                                    "Elm_Kernel_" ++ home ++ "_" ++ name
+                            in
+                            { ops = argsOps ++ boxOps ++ [ ecoCallNamed ctx2 resultVar kernelName argVarPairs (monoTypeToMlir resultType) ]
+                            , resultVar = resultVar
+                            , ctx = ctx2
+                            }
 
         Mono.MonoVarLocal name _ ->
             -- Call through local variable (closure)

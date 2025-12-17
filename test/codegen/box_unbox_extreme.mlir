@@ -40,7 +40,7 @@ module {
     %unbox_inf = eco.unbox %box_inf : !eco.value -> f64
     // Check it's still infinity
     %million = arith.constant 1000000.0 : f64
-    %is_huge = eco.float.cmp gt %unbox_inf, %million : f64
+    %is_huge = eco.float.gt %unbox_inf, %million : f64
     %is_huge_ext = arith.extui %is_huge : i1 to i64
     eco.dbg %is_huge_ext : i64
     // CHECK: 1
@@ -50,7 +50,7 @@ module {
     %box_neg_inf = eco.box %neg_inf : f64 -> !eco.value
     %unbox_neg_inf = eco.unbox %box_neg_inf : !eco.value -> f64
     %neg_million = arith.constant -1000000.0 : f64
-    %is_neg_huge = eco.float.cmp lt %unbox_neg_inf, %neg_million : f64
+    %is_neg_huge = eco.float.lt %unbox_neg_inf, %neg_million : f64
     %is_neg_huge_ext = arith.extui %is_neg_huge : i1 to i64
     eco.dbg %is_neg_huge_ext : i64
     // CHECK: 1
@@ -68,7 +68,7 @@ module {
     %unbox_neg_zero = eco.unbox %box_neg_zero : !eco.value -> f64
     // Test by dividing: 1/-0 = -Inf
     %div_neg_zero = arith.divf %one, %unbox_neg_zero : f64
-    %is_neg_inf = eco.float.cmp lt %div_neg_zero, %neg_million : f64
+    %is_neg_inf = eco.float.lt %div_neg_zero, %neg_million : f64
     %is_neg_inf_ext = arith.extui %is_neg_inf : i1 to i64
     eco.dbg %is_neg_inf_ext : i64
     // CHECK: 1

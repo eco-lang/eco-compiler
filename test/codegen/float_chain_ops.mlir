@@ -60,7 +60,7 @@ module {
     %neg_zero = eco.float.negate %f0 : f64
     %abs_neg_zero = eco.float.abs %neg_zero : f64
     // Check that abs(-0.0) equals 0.0
-    %eq_zero = eco.float.cmp eq %abs_neg_zero, %f0 : f64
+    %eq_zero = eco.float.eq %abs_neg_zero, %f0 : f64
     %eq_ext = arith.extui %eq_zero : i1 to i64
     eco.dbg %eq_ext : i64
     // CHECK: 1

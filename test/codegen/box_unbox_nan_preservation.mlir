@@ -15,7 +15,7 @@ module {
     %unboxed1 = eco.unbox %boxed1 : !eco.value -> f64
 
     // NaN should still be NaN after roundtrip (NaN != NaN)
-    %is_nan1 = eco.float.cmp eq %unboxed1, %unboxed1 : f64
+    %is_nan1 = eco.float.eq %unboxed1, %unboxed1 : f64
     %is_nan1_i = arith.extui %is_nan1 : i1 to i64
     eco.dbg %is_nan1_i : i64
     // CHECK: [eco.dbg] 0
@@ -30,7 +30,7 @@ module {
     %unboxed_qnan = eco.unbox %boxed_qnan : !eco.value -> f64
 
     // Should still be NaN
-    %is_qnan = eco.float.cmp eq %unboxed_qnan, %unboxed_qnan : f64
+    %is_qnan = eco.float.eq %unboxed_qnan, %unboxed_qnan : f64
     %is_qnan_i = arith.extui %is_qnan : i1 to i64
     eco.dbg %is_qnan_i : i64
     // CHECK: [eco.dbg] 0
@@ -44,7 +44,7 @@ module {
     %unboxed_snan = eco.unbox %boxed_snan : !eco.value -> f64
 
     // Should still be NaN
-    %is_snan = eco.float.cmp eq %unboxed_snan, %unboxed_snan : f64
+    %is_snan = eco.float.eq %unboxed_snan, %unboxed_snan : f64
     %is_snan_i = arith.extui %is_snan : i1 to i64
     eco.dbg %is_snan_i : i64
     // CHECK: [eco.dbg] 0
@@ -58,7 +58,7 @@ module {
     %unboxed_neg_nan = eco.unbox %boxed_neg_nan : !eco.value -> f64
 
     // Should still be NaN
-    %is_neg_nan = eco.float.cmp eq %unboxed_neg_nan, %unboxed_neg_nan : f64
+    %is_neg_nan = eco.float.eq %unboxed_neg_nan, %unboxed_neg_nan : f64
     %is_neg_nan_i = arith.extui %is_neg_nan : i1 to i64
     eco.dbg %is_neg_nan_i : i64
     // CHECK: [eco.dbg] 0
@@ -67,7 +67,7 @@ module {
     %f42 = arith.constant 42.5 : f64
     %boxed_normal = eco.box %f42 : f64 -> !eco.value
     %unboxed_normal = eco.unbox %boxed_normal : !eco.value -> f64
-    %is_normal = eco.float.cmp eq %unboxed_normal, %f42 : f64
+    %is_normal = eco.float.eq %unboxed_normal, %f42 : f64
     %is_normal_i = arith.extui %is_normal : i1 to i64
     eco.dbg %is_normal_i : i64
     // CHECK: [eco.dbg] 1

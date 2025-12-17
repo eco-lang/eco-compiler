@@ -23,12 +23,12 @@ module {
     // Use boxed bools in comparisons that produce bools, then box result
     %i5 = arith.constant 5 : i64
     %i10 = arith.constant 10 : i64
-    %cmp_lt = eco.int.cmp lt %i5, %i10 : i64
+    %cmp_lt = eco.int.lt %i5, %i10 : i64
     %boxed_cmp = eco.box %cmp_lt : i1 -> !eco.value
     eco.dbg %boxed_cmp : !eco.value
     // CHECK: True
 
-    %cmp_gt = eco.int.cmp gt %i5, %i10 : i64
+    %cmp_gt = eco.int.gt %i5, %i10 : i64
     %boxed_cmp2 = eco.box %cmp_gt : i1 -> !eco.value
     eco.dbg %boxed_cmp2 : !eco.value
     // CHECK: False
@@ -36,19 +36,19 @@ module {
     // Box result of float comparison
     %f1 = arith.constant 1.5 : f64
     %f2 = arith.constant 2.5 : f64
-    %fcmp = eco.float.cmp le %f1, %f2 : f64
+    %fcmp = eco.float.le %f1, %f2 : f64
     %boxed_fcmp = eco.box %fcmp : i1 -> !eco.value
     eco.dbg %boxed_fcmp : !eco.value
     // CHECK: True
 
     // Box equality check result
-    %eq = eco.float.cmp eq %f1, %f1 : f64
+    %eq = eco.float.eq %f1, %f1 : f64
     %boxed_eq = eco.box %eq : i1 -> !eco.value
     eco.dbg %boxed_eq : !eco.value
     // CHECK: True
 
     // Box inequality check result
-    %ne = eco.float.cmp ne %f1, %f1 : f64
+    %ne = eco.float.ne %f1, %f1 : f64
     %boxed_ne = eco.box %ne : i1 -> !eco.value
     eco.dbg %boxed_ne : !eco.value
     // CHECK: False

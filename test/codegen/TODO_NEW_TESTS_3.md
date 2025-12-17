@@ -49,5 +49,5 @@ Based on deep analysis of Ops.td, EcoToLLVM.cpp, and existing test coverage.
 - Nested joinpoints not supported by lowering - test simplified to sequential
 - eco.case inside joinpoint not supported - test simplified
 - eco.unbox to i1 crashes - tests use unbox to i64 instead
-- eco.float.cmp uses ordered comparisons (not IEEE 754 unordered for NaN)
+- eco.float.{lt,le,gt,ge,eq,ne} uses ordered comparisons (not IEEE 754 unordered for NaN)
 - eco.papCreate requires num_captured < arity (can't fully capture)
