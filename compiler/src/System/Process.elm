@@ -1,12 +1,28 @@
 module System.Process exposing
-    ( CmdSpec
-    , CreateProcess
-    , ProcessHandle
-    , StdStream(..)
-    , proc
-    , waitForProcess
-    , withCreateProcess
+    ( CreateProcess, CmdSpec, StdStream(..), proc
+    , withCreateProcess, ProcessHandle, waitForProcess
     )
+
+{-| External process creation and management for the Elm compiler.
+
+This module provides functionality to spawn and control external processes,
+allowing the compiler to invoke system tools, shell commands, and other
+programs. It handles process configuration including standard stream redirection
+and process lifetime management.
+
+Ref.: <https://hackage.haskell.org/package/process-1.6.25.0/docs/System-Process.html>
+
+
+# Process Configuration
+
+@docs CreateProcess, CmdSpec, StdStream, proc
+
+
+# Running Processes
+
+@docs withCreateProcess, ProcessHandle, waitForProcess
+
+-}
 
 import Json.Decode as Decode
 import Json.Encode as Encode

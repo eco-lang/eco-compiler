@@ -1,17 +1,43 @@
 module Compiler.Data.Index exposing
-    ( VerifiedList(..)
-    , ZeroBased
-    , first
-    , indexedMap
-    , indexedZipWith
-    , next
-    , second
-    , third
-    , toHuman
-    , toMachine
-    , zeroBasedDecoder
-    , zeroBasedEncoder
+    ( ZeroBased
+    , first, second, third, next
+    , toMachine, toHuman
+    , indexedMap, indexedZipWith, VerifiedList(..)
+    , zeroBasedEncoder, zeroBasedDecoder
     )
+
+{-| Zero-based indexing with type safety and length-verified list operations.
+
+This module provides a ZeroBased type that wraps integers to distinguish indices from
+arbitrary numbers, along with utilities for indexed operations and length verification
+when zipping lists.
+
+
+# Zero-Based Index
+
+@docs ZeroBased
+
+
+# Common Indices
+
+@docs first, second, third, next
+
+
+# Conversion
+
+@docs toMachine, toHuman
+
+
+# Indexed Operations
+
+@docs indexedMap, indexedZipWith, VerifiedList
+
+
+# Serialization
+
+@docs zeroBasedEncoder, zeroBasedDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

@@ -1,20 +1,51 @@
 module Compiler.Optimize.Names exposing
     ( Tracker
-    , andThen
-    , generate
-    , map
-    , mapTraverse
-    , pure
-    , registerCtor
-    , registerDebug
-    , registerField
-    , registerFieldDict
-    , registerFieldList
-    , registerGlobal
-    , registerKernel
     , run
-    , traverse
+    , generate
+    , registerGlobal, registerKernel, registerCtor, registerDebug
+    , registerField, registerFieldDict, registerFieldList
+    , pure, map, andThen, traverse, mapTraverse
     )
+
+{-| Tracks names and dependencies during optimization.
+
+This module provides a state monad (Tracker) that threads through the optimization
+process, collecting information about:
+
+  - Global dependencies (functions, constructors, kernels used)
+  - Field names accessed across the module
+  - Fresh variable names for generated temporaries
+
+The collected dependency information is used by the code generator to determine
+which imports and definitions are actually needed in the final output.
+
+
+# Core Type
+
+@docs Tracker
+
+
+# Running
+
+@docs run
+
+
+# Name Generation
+
+@docs generate
+
+
+# Dependency Registration
+
+@docs registerGlobal, registerKernel, registerCtor, registerDebug
+@docs registerField, registerFieldDict, registerFieldList
+
+
+# Monad Operations
+
+@docs pure, map, andThen, traverse, mapTraverse
+
+-}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt

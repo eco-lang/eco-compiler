@@ -1,20 +1,38 @@
 module Compiler.Type.Error exposing
-    ( Direction(..)
-    , Extension(..)
-    , Problem(..)
-    , Super(..)
-    , Type(..)
-    , isChar
-    , isFloat
-    , isInt
-    , isList
-    , isString
-    , iteratedDealias
-    , toComparison
-    , toDoc
-    , typeDecoder
-    , typeEncoder
+    ( Type(..), Super(..), Extension(..), Direction(..), Problem(..)
+    , isInt, isFloat, isString, isChar, isList
+    , iteratedDealias, toDoc, toComparison
+    , typeEncoder, typeDecoder
     )
+
+{-| Type representations and utilities for generating user-facing type error messages.
+
+This module provides a simplified type representation used specifically for error reporting,
+along with functions to compare types and identify differences. Unlike the internal type
+representation used during type inference, this representation is designed to be easily
+rendered into human-readable documentation.
+
+
+# Types
+
+@docs Type, Super, Extension, Direction, Problem
+
+
+# Type Predicates
+
+@docs isInt, isFloat, isString, isChar, isList
+
+
+# Utilities
+
+@docs iteratedDealias, toDoc, toComparison
+
+
+# Serialization
+
+@docs typeEncoder, typeDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

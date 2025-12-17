@@ -1,13 +1,38 @@
 module Compiler.Reporting.Render.Type.Localizer exposing
     ( Localizer
-    , empty
-    , fromModule
-    , fromNames
-    , localizerDecoder
-    , localizerEncoder
-    , toChars
-    , toDoc
+    , empty, fromModule, fromNames
+    , toDoc, toChars
+    , localizerEncoder, localizerDecoder
     )
+
+{-| Context-aware type name formatting for error messages.
+
+This module determines how to display qualified type names in error messages
+based on the imports and module context. It automatically chooses the shortest
+unambiguous name representation, using bare names when they're in scope,
+aliases when available, or fully qualified names when necessary.
+
+
+# Localizer
+
+@docs Localizer
+
+
+# Construction
+
+@docs empty, fromModule, fromNames
+
+
+# Rendering
+
+@docs toDoc, toChars
+
+
+# Serialization
+
+@docs localizerEncoder, localizerDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

@@ -1,22 +1,44 @@
 module Compiler.Canonicalize.Environment exposing
-    ( Binop(..)
-    , BinopData
-    , Ctor(..)
-    , EResult
-    , Env
-    , Exposed
-    , Info(..)
-    , Qualified
-    , Type(..)
-    , Var(..)
-    , addLocals
-    , findBinop
-    , findCtor
-    , findCtorQual
-    , findType
-    , findTypeQual
-    , mergeInfo
+    ( EResult
+    , Env, Exposed, Qualified
+    , Info(..), Var(..), Type(..), Ctor(..), Binop(..), BinopData
+    , addLocals, mergeInfo
+    , findType, findTypeQual, findCtor, findCtorQual, findBinop
     )
+
+{-| Environment for canonicalization, tracking available names and their definitions.
+
+This module maintains the canonicalization environment which maps names to their
+definitions. It handles both unqualified (exposed) and qualified imports, detects
+ambiguous references when multiple modules expose the same name, and manages
+local variable scoping with shadowing checks.
+
+
+# Results
+
+@docs EResult
+
+
+# Environment
+
+@docs Env, Exposed, Qualified
+
+
+# Name Information
+
+@docs Info, Var, Type, Ctor, Binop, BinopData
+
+
+# Environment Operations
+
+@docs addLocals, mergeInfo
+
+
+# Lookup Operations
+
+@docs findType, findTypeQual, findCtor, findCtorQual, findBinop
+
+-}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Utils.Binop as Binop

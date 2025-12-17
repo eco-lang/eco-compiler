@@ -66,9 +66,9 @@ constrain (Can.Module canData) =
 
 
 -- ====== Declaration Constraints ======
-
-
 -- Generates constraints for all module declarations.
+
+
 constrainDecls : Can.Decls -> Constraint -> IO Constraint
 constrainDecls decls finalConstraint =
     constrainDeclsHelp decls finalConstraint identity
@@ -89,9 +89,9 @@ constrainDeclsHelp decls finalConstraint cont =
 
 
 -- ====== Port Constraints ======
-
-
 -- Wraps a port's type in a CLet constraint, instantiating free type variables.
+
+
 letPort : Name -> Can.Port -> IO Constraint -> IO Constraint
 letPort name port_ makeConstraint =
     case port_ of

@@ -13,7 +13,13 @@ module System.IO exposing
     , writeString
     )
 
-{-| Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
+{-| File I/O operations for the Elm compiler runtime.
+
+This module provides a portable interface for file and console I/O operations,
+modeled after Haskell's System.IO. It enables the compiler to interact with the
+file system and standard streams through an impure effects system.
+
+Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 
 @docs Program, Model, Msg, run
 

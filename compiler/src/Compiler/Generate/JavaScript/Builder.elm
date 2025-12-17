@@ -1,20 +1,52 @@
 module Compiler.Generate.JavaScript.Builder exposing
-    ( Builder(..)
-    , BuilderData
-    , Case(..)
-    , Expr(..)
-    , InfixOp(..)
-    , LValue(..)
-    , Mapping(..)
-    , MappingData
-    , PrefixOp(..)
-    , Stmt(..)
-    , addByteString
-    , addKernel
-    , emptyBuilder
-    , exprToBuilder
-    , stmtToBuilder
+    ( Builder(..), BuilderData, emptyBuilder, stmtToBuilder, exprToBuilder
+    , Expr(..), LValue(..)
+    , Stmt(..), Case(..)
+    , InfixOp(..), PrefixOp(..)
+    , Mapping(..), MappingData
+    , addByteString, addKernel
     )
+
+{-| JavaScript AST and pretty-printer builder for the Elm compiler.
+
+This module provides a typed representation of JavaScript expressions and statements,
+along with a builder that converts them to formatted JavaScript source code. It tracks
+source positions for source map generation and handles proper indentation, operator
+precedence, and line wrapping.
+
+Based on the language-ecmascript package structure for correct JavaScript syntax modeling.
+
+
+# Builder
+
+@docs Builder, BuilderData, emptyBuilder, stmtToBuilder, exprToBuilder
+
+
+# Expressions
+
+@docs Expr, LValue
+
+
+# Statements
+
+@docs Stmt, Case
+
+
+# Operators
+
+@docs InfixOp, PrefixOp
+
+
+# Source Maps
+
+@docs Mapping, MappingData
+
+
+# Internal Helpers
+
+@docs addByteString, addKernel
+
+-}
 
 -- Based on the language-ecmascript package.
 -- https://hackage.haskell.org/package/language-ecmascript

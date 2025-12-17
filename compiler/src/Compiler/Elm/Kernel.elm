@@ -1,12 +1,38 @@
 module Compiler.Elm.Kernel exposing
-    ( Chunk(..)
-    , Content(..)
-    , Foreigns
-    , chunkDecoder
-    , chunkEncoder
-    , countFields
+    ( Chunk(..), Content(..), Foreigns
     , fromByteString
+    , countFields
+    , chunkEncoder, chunkDecoder
     )
+
+{-| Parser and utilities for Elm kernel JavaScript code.
+
+Kernel modules contain JavaScript code that interfaces with Elm values. This module parses
+kernel files into chunks representing JavaScript code, Elm variable references, field accesses,
+and conditional compilation markers. The parser recognizes special tags like \_\_x where x identifies
+the type of reference (Elm variable, JS variable, field, enum, DEBUG/PROD).
+
+
+# Types
+
+@docs Chunk, Content, Foreigns
+
+
+# Parsing
+
+@docs fromByteString
+
+
+# Field Analysis
+
+@docs countFields
+
+
+# Binary Encoding/Decoding
+
+@docs chunkEncoder, chunkDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

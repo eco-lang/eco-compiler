@@ -1,8 +1,26 @@
 module Compiler.Reporting.Warning exposing
-    ( Context(..)
-    , Warning(..)
+    ( Warning(..), Context(..)
     , toReport
     )
+
+{-| Compiler warnings for code quality issues.
+
+This module defines warnings that the compiler can emit for code that is
+syntactically correct but potentially problematic. Unlike errors, warnings
+do not prevent compilation but help developers write cleaner, more
+maintainable code.
+
+
+# Types
+
+@docs Warning, Context
+
+
+# Reporting
+
+@docs toReport
+
+-}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Utils.Type as Type

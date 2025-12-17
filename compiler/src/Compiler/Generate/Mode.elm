@@ -1,9 +1,26 @@
 module Compiler.Generate.Mode exposing
-    ( Mode(..)
-    , ShortFieldNames
-    , isDebug
-    , shortenFieldNames
+    ( Mode(..), isDebug
+    , ShortFieldNames, shortenFieldNames
     )
+
+{-| Code generation modes for the Elm compiler.
+
+This module defines the different compilation modes (development, production, debug)
+and handles production-mode optimizations like field name shortening. The mode affects
+code generation strategies, including whether to include debug metadata, preserve
+human-readable names, and apply space-saving transformations.
+
+
+# Mode
+
+@docs Mode, isDebug
+
+
+# Field Name Optimization
+
+@docs ShortFieldNames, shortenFieldNames
+
+-}
 
 import Compiler.AST.Optimized as Opt
 import Compiler.Data.Name as Name

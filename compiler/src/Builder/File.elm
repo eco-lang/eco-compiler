@@ -1,18 +1,43 @@
 module Builder.File exposing
-    ( Time(..)
-    , exists
-    , getTime
-    , readBinary
-    , readStdin
-    , readUtf8
-    , remove
-    , timeDecoder
-    , timeEncoder
-    , writeBinary
+    ( Time(..), getTime, zeroTime, timeEncoder, timeDecoder
+    , readBinary, writeBinary
+    , readUtf8, writeUtf8, readStdin
     , writePackage
-    , writeUtf8
-    , zeroTime
+    , exists, remove
     )
+
+{-| File system operations and utilities for the Elm compiler build system.
+
+This module provides a high-level interface for file I/O operations used throughout
+the build process, including binary and UTF-8 file reading/writing, modification time
+tracking, and package extraction.
+
+
+# File Modification Time
+
+@docs Time, getTime, zeroTime, timeEncoder, timeDecoder
+
+
+# Binary File Operations
+
+@docs readBinary, writeBinary
+
+
+# UTF-8 File Operations
+
+@docs readUtf8, writeUtf8, readStdin
+
+
+# Package Management
+
+@docs writePackage
+
+
+# File System Queries
+
+@docs exists, remove
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

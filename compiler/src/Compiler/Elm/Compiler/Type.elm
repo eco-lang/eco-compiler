@@ -1,17 +1,37 @@
 module Compiler.Elm.Compiler.Type exposing
-    ( Alias(..)
-    , DebugMetadata(..)
-    , Type(..)
-    , Union(..)
-    , bytesDecoder
-    , bytesEncoder
-    , decoder
-    , encode
-    , encodeMetadata
-    , jsonDecoder
-    , jsonEncoder
+    ( Type(..), Alias(..), Union(..), DebugMetadata(..)
     , toDoc
+    , encode, encodeMetadata, decoder, jsonEncoder, jsonDecoder
+    , bytesEncoder, bytesDecoder
     )
+
+{-| Type representation for documentation and debugging.
+
+Simplified type representation used in generated documentation and debug metadata.
+Unlike the canonical AST types, these are designed for external consumption and
+include only the essential type structure without compiler internals.
+
+
+# Types
+
+@docs Type, Alias, Union, DebugMetadata
+
+
+# Conversion
+
+@docs toDoc
+
+
+# JSON Encoding
+
+@docs encode, encodeMetadata, decoder, jsonEncoder, jsonDecoder
+
+
+# Binary Encoding
+
+@docs bytesEncoder, bytesDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

@@ -1,22 +1,41 @@
 module Builder.Reporting exposing
-    ( BKey
-    , BMsg(..)
-    , DKey
-    , DMsg(..)
-    , Key
-    , Style
-    , ask
-    , attempt
-    , attemptWithStyle
-    , ignorer
-    , json
-    , report
-    , reportGenerate
-    , silent
-    , terminal
-    , trackBuild
-    , trackDetails
+    ( Style, silent, json, terminal
+    , Key, report, ignorer
+    , trackDetails, DKey, DMsg(..)
+    , trackBuild, BKey, BMsg(..)
+    , attempt, attemptWithStyle
+    , ask, reportGenerate
     )
+
+{-| Build progress reporting and user interaction for the Elm compiler.
+
+This module provides the reporting infrastructure for displaying build progress,
+dependency downloads, and compilation status to users. It supports multiple output
+styles including terminal progress indicators, JSON output, and silent mode.
+
+
+# Output Styles
+
+@docs Style, silent, json, terminal
+
+
+# Progress Tracking
+
+@docs Key, report, ignorer
+@docs trackDetails, DKey, DMsg
+@docs trackBuild, BKey, BMsg
+
+
+# Error Handling
+
+@docs attempt, attemptWithStyle
+
+
+# User Interaction
+
+@docs ask, reportGenerate
+
+-}
 
 import Builder.Reporting.Exit as Exit
 import Builder.Reporting.Exit.Help as Help

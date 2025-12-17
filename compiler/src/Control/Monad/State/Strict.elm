@@ -1,13 +1,36 @@
 module Control.Monad.State.Strict exposing
     ( StateT(..)
     , evalStateT
-    , get
-    , liftIO
-    , map
-    , put
+    , liftIO, map
+    , get, put
     )
 
-{-| Lazy state monads, passing an updatable state through a computation.
+{-| A strict state transformer monad for threading state through IO computations.
+
+This module provides a state monad transformer that wraps IO tasks, allowing you to
+maintain and update state across asynchronous operations. The state is evaluated
+strictly, ensuring predictable evaluation order.
+
+
+# State Transformer Type
+
+@docs StateT
+
+
+# Running Computations
+
+@docs evalStateT
+
+
+# Lifting and Mapping
+
+@docs liftIO, map
+
+
+# State Operations
+
+@docs get, put
+
 -}
 
 import Json.Decode as Decode

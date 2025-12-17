@@ -1,5 +1,18 @@
 module Terminal.Bump exposing (run)
 
+{-| Version bump command for determining semantic versioning changes.
+
+This module implements the `bump` command which analyzes API changes between
+the current package code and the last published version, automatically determining
+the appropriate version number according to semantic versioning rules (MAJOR, MINOR, or PATCH).
+
+
+# Command Entry
+
+@docs run
+
+-}
+
 import Builder.BackgroundWriter as BW
 import Builder.Build as Build
 import Builder.Deps.Bump as Bump

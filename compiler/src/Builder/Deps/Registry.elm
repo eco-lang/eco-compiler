@@ -1,15 +1,36 @@
 module Builder.Deps.Registry exposing
-    ( KnownVersions(..)
-    , Registry(..)
-    , fetch
-    , getVersions
-    , getVersions_
-    , latest
-    , read
-    , registryDecoder
-    , registryEncoder
-    , update
+    ( Registry(..), KnownVersions(..)
+    , read, fetch, update, latest
+    , getVersions, getVersions_
+    , registryDecoder, registryEncoder
     )
+
+{-| Manages the package registry, which tracks all available Elm packages and their versions.
+
+The registry is cached locally and synchronized with the package server at package.elm-lang.org.
+This module handles fetching, updating, and querying the registry for dependency resolution.
+
+
+# Registry Types
+
+@docs Registry, KnownVersions
+
+
+# Loading and Updating
+
+@docs read, fetch, update, latest
+
+
+# Querying Versions
+
+@docs getVersions, getVersions_
+
+
+# Serialization
+
+@docs registryDecoder, registryEncoder
+
+-}
 
 import Basics.Extra exposing (flip)
 import Builder.Deps.Website as Website

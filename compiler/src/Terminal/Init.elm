@@ -1,7 +1,25 @@
 module Terminal.Init exposing
-    ( Flags(..)
-    , run
+    ( run
+    , Flags(..)
     )
+
+{-| Project initialization command for creating new Elm projects.
+
+This module implements the `init` command which scaffolds a new Elm project by
+creating an elm.json configuration file, source directories, and example test files.
+It supports both application and package project types.
+
+
+# Command Entry
+
+@docs run
+
+
+# Configuration
+
+@docs Flags
+
+-}
 
 import Basics.Extra exposing (flip)
 import Builder.Deps.Registry as Registry

@@ -1,35 +1,68 @@
 module Compiler.Json.Decode exposing
-    ( DecodeExpectation(..)
-    , Decoder
-    , Error(..)
-    , KeyDecoder(..)
-    , ParseError(..)
-    , Problem(..)
-    , StringProblem(..)
-    , andThen
-    , apply
-    , assocListDict
-    , customString
-    , dict
-    , everySet
-    , failure
-    , field
+    ( Decoder
     , fromByteString
-    , int
-    , jsonPair
-    , list
-    , map
-    , mapError
-    , nonEmptyList
-    , nonempty
-    , oneOf
-    , oneOrMore
-    , pair
-    , pairs
-    , pure
-    , result
-    , string
+    , Error(..), Problem(..), DecodeExpectation(..), ParseError(..), StringProblem(..)
+    , string, customString, int
+    , list, nonEmptyList, pair
+    , field, dict, pairs, KeyDecoder(..)
+    , assocListDict, everySet, nonempty, oneOrMore, jsonPair, result
+    , map, pure, apply, andThen, oneOf
+    , failure, mapError
     )
+
+{-| JSON decoding utilities for the Elm compiler.
+
+This module provides a custom JSON decoder implementation with its own parser,
+designed to decode compiler-specific data structures. It includes specialized
+decoders for associative-list-backed dictionaries, EverySet, NonEmptyList, and
+OneOrMore types, along with detailed error reporting for parse and decode failures.
+
+
+# Decoder Type
+
+@docs Decoder
+
+
+# Running Decoders
+
+@docs fromByteString
+
+
+# Error Types
+
+@docs Error, Problem, DecodeExpectation, ParseError, StringProblem
+
+
+# Primitive Decoders
+
+@docs string, customString, int
+
+
+# Collection Decoders
+
+@docs list, nonEmptyList, pair
+
+
+# Object Decoders
+
+@docs field, dict, pairs, KeyDecoder
+
+
+# Compiler Type Decoders
+
+@docs assocListDict, everySet, nonempty, oneOrMore, jsonPair, result
+
+
+# Combinators
+
+@docs map, pure, apply, andThen, oneOf
+
+
+# Error Handling
+
+@docs failure, mapError
+
+-}
 
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore exposing (OneOrMore)

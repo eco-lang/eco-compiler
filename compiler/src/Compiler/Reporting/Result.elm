@@ -1,20 +1,43 @@
 module Compiler.Reporting.Result exposing
-    ( RResult(..)
-    , RStep(..)
-    , Step(..)
-    , andThen
-    , apply
-    , indexedTraverse
+    ( RResult(..), RStep(..), Step(..)
+    , ok, throw, warn, run
+    , map, apply, andThen
+    , traverse, traverseDict, indexedTraverse, mapTraverseWithKey
     , loop
-    , map
-    , mapTraverseWithKey
-    , ok
-    , run
-    , throw
-    , traverse
-    , traverseDict
-    , warn
     )
+
+{-| A specialized Result type for compiler operations with warnings and state.
+
+This module provides a Result monad that threads through compiler info and
+warnings while accumulating errors. It enables compositional error handling
+throughout the compilation pipeline.
+
+
+# Types
+
+@docs RResult, RStep, Step
+
+
+# Basics
+
+@docs ok, throw, warn, run
+
+
+# Combinators
+
+@docs map, apply, andThen
+
+
+# Traversals
+
+@docs traverse, traverseDict, indexedTraverse, mapTraverseWithKey
+
+
+# Loops
+
+@docs loop
+
+-}
 
 import Compiler.Data.Index as Index
 import Compiler.Data.OneOrMore as OneOrMore

@@ -1,23 +1,50 @@
 module Builder.Build exposing
-    ( Artifacts(..)
-    , ArtifactsData
-    , BResult
-    , CachedInterface(..)
-    , Dependencies
-    , DocsGoal(..)
-    , Module(..)
-    , ReplArtifacts(..)
-    , ReplArtifactsData
-    , Root(..)
-    , cachedInterfaceDecoder
-    , fromExposed
-    , fromPaths
-    , fromRepl
-    , getRootNames
-    , ignoreDocs
-    , keepDocs
-    , writeDocs
+    ( Artifacts(..), ArtifactsData, BResult, Module(..), Root(..)
+    , ReplArtifacts(..), ReplArtifactsData
+    , CachedInterface(..), Dependencies
+    , DocsGoal(..), keepDocs, ignoreDocs, writeDocs
+    , fromExposed, fromPaths, fromRepl
+    , getRootNames, cachedInterfaceDecoder
     )
+
+{-| Parallel compilation and incremental build orchestration for Elm projects.
+
+This module implements the core build system that compiles Elm modules in parallel,
+tracks dependencies between modules, performs incremental compilation based on
+modification times and interface changes, and manages build artifacts. It handles
+both application and package builds, including REPL sessions.
+
+
+# Build Results
+
+@docs Artifacts, ArtifactsData, BResult, Module, Root
+
+
+# REPL Artifacts
+
+@docs ReplArtifacts, ReplArtifactsData
+
+
+# Module Status
+
+@docs CachedInterface, Dependencies
+
+
+# Documentation Generation
+
+@docs DocsGoal, keepDocs, ignoreDocs, writeDocs
+
+
+# Build Entry Points
+
+@docs fromExposed, fromPaths, fromRepl
+
+
+# Utilities
+
+@docs getRootNames, cachedInterfaceDecoder
+
+-}
 
 import Basics.Extra exposing (flip)
 import Builder.Elm.Details as Details

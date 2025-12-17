@@ -1,18 +1,31 @@
 module Terminal.Terminal exposing
     ( app
-    , flag
-    , flags
-    , more
-    , noArgs
-    , noFlags
-    , onOff
-    , oneOf
-    , require0
-    , require1
-    , require2
-    , require3
-    , zeroOrMore
+    , flags, noFlags, more, flag, onOff
+    , noArgs, zeroOrMore, oneOf, require0, require1, require2, require3
     )
+
+{-| Terminal application framework for building command-line interfaces.
+
+This module provides a declarative API for defining CLI commands with typed
+arguments and flags. It handles command parsing, help text generation, and
+routing to command implementations.
+
+
+# Application
+
+@docs app
+
+
+# Flags
+
+@docs flags, noFlags, more, flag, onOff
+
+
+# Arguments
+
+@docs noArgs, zeroOrMore, oneOf, require0, require1, require2, require3
+
+-}
 
 import Compiler.Elm.Version as V
 import Compiler.Reporting.Doc as D

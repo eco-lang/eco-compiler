@@ -1,12 +1,37 @@
 module Compiler.Parse.Space exposing
     ( Parser
-    , checkAligned
-    , checkFreshLine
-    , checkIndent
-    , chomp
-    , chompAndCheckIndent
+    , chomp, chompAndCheckIndent
+    , checkIndent, checkAligned, checkFreshLine
     , docComment
     )
+
+{-| Parser for whitespace, comments, and indentation in Elm source code.
+
+This module handles the consumption of whitespace, line comments, multi-line
+block comments, and doc comments. It enforces Elm's indentation-sensitive
+syntax by checking indentation levels during parsing.
+
+
+# Space Parser Type
+
+@docs Parser
+
+
+# Consuming Whitespace
+
+@docs chomp, chompAndCheckIndent
+
+
+# Indentation Checks
+
+@docs checkIndent, checkAligned, checkFreshLine
+
+
+# Documentation Comments
+
+@docs docComment
+
+-}
 
 import Compiler.AST.Source as Src
 import Compiler.Parse.Primitives as P exposing (Col, Row)

@@ -1,5 +1,17 @@
 module Compiler.Reporting.Error.Pattern exposing (toReport)
 
+{-| Error reporting for pattern matching problems.
+
+This module converts pattern match analysis results into user-friendly error
+reports, including errors for redundant patterns and incomplete case coverage.
+
+
+# Reporting
+
+@docs toReport
+
+-}
+
 import Compiler.Nitpick.PatternMatches as P
 import Compiler.Reporting.Doc as D
 import Compiler.Reporting.Render.Code as Code

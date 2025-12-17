@@ -1,15 +1,37 @@
 module API.Make exposing
-    ( Flags(..)
-    , Output(..)
-    , ReportType(..)
-    , docsFile
-    , output
-    , parseDocsFile
-    , parseOutput
-    , parseReportType
-    , reportType
-    , run
+    ( run, Flags(..)
+    , Output(..), output, parseOutput
+    , docsFile, parseDocsFile
+    , ReportType(..), reportType, parseReportType
     )
+
+{-| Build Elm projects into JavaScript or HTML. This module handles the complete
+build pipeline including dependency resolution, compilation, and code generation.
+
+Supports debug mode for enhanced development experience, optimized production builds,
+and optional source map generation.
+
+
+# Build Pipeline
+
+@docs run, Flags
+
+
+# Output Configuration
+
+@docs Output, output, parseOutput
+
+
+# Documentation Export
+
+@docs docsFile, parseDocsFile
+
+
+# Reporting
+
+@docs ReportType, reportType, parseReportType
+
+-}
 
 import Builder.BackgroundWriter as BW
 import Builder.Build as Build

@@ -1,9 +1,33 @@
 module Common.Format.ImportInfo exposing
     ( ImportInfo(..)
-    , fromImports
-    , fromModule
-    , importsToDict
+    , fromModule, fromImports, importsToDict
     )
+
+{-| Track and resolve import information for Elm modules.
+
+This module analyzes a module's import declarations to build a comprehensive mapping
+of exposed values, type aliases, module aliases, and direct imports. It handles both
+explicit imports and exposing-all imports, resolving symbol names to their defining modules.
+
+The import resolution system supports:
+
+  - Direct unqualified imports (e.g., `import List`)
+  - Module aliases (e.g., `import Dict as D`)
+  - Exposed values (e.g., `import Maybe exposing (Maybe, withDefault)`)
+  - Exposing-all imports (e.g., `import Html exposing (..)`)
+  - Default imports (Basics, List, Maybe)
+
+
+# Types
+
+@docs ImportInfo
+
+
+# Building Import Information
+
+@docs fromModule, fromImports, importsToDict
+
+-}
 
 import Basics.Extra exposing (flip)
 import Common.Format.Bimap as Bimap exposing (Bimap)

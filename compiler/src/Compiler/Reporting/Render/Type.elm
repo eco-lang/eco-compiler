@@ -1,14 +1,37 @@
 module Compiler.Reporting.Render.Type exposing
     ( Context(..)
-    , apply
-    , canToDoc
-    , lambda
-    , record
     , srcToDoc
-    , tuple
-    , vrecord
-    , vrecordSnippet
+    , canToDoc
+    , lambda, apply, tuple, record, vrecord, vrecordSnippet
     )
+
+{-| Rendering type expressions as human-readable documentation.
+
+This module converts both source and canonical type representations into
+formatted Doc values for display in error messages and documentation,
+with proper parenthesization and layout.
+
+
+# Rendering Context
+
+@docs Context
+
+
+# Source Type Rendering
+
+@docs srcToDoc
+
+
+# Canonical Type Rendering
+
+@docs canToDoc
+
+
+# Type Constructors
+
+@docs lambda, apply, tuple, record, vrecord, vrecordSnippet
+
+-}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src

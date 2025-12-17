@@ -1,45 +1,125 @@
 module Builder.Reporting.Exit exposing
-    ( BuildProblem(..)
-    , BuildProjectProblem(..)
-    , Bump(..)
-    , Details(..)
-    , DetailsBadDep(..)
-    , Diff(..)
+    ( toStderr, toJson
+    , Init(..), initToReport
+    , Install(..), installToReport
+    , Uninstall(..), uninstallToReport
+    , Make(..), makeToReport
+    , Repl(..), replToReport
+    , Test(..), testToReport
+    , Diff(..), diffToReport
+    , Bump(..), bumpToReport
+    , Publish(..), publishToReport, newPackageOverview
+    , BuildProblem(..), BuildProjectProblem(..)
+    , buildProblemEncoder, buildProblemDecoder
+    , buildProjectProblemEncoder, buildProjectProblemDecoder
+    , RegistryProblem(..), registryProblemEncoder, registryProblemDecoder
+    , Details(..), DetailsBadDep(..), detailsBadDepEncoder, detailsBadDepDecoder
+    , Solver(..)
+    , Outline(..), OutlineProblem(..)
+    , PackageProblem(..)
     , DocsProblem(..)
     , Generate(..)
-    , Init(..)
-    , Install(..)
-    , Make(..)
-    , Outline(..)
-    , OutlineProblem(..)
-    , PackageProblem(..)
-    , Publish(..)
-    , RegistryProblem(..)
-    , Repl(..)
-    , Solver(..)
-    , Test(..)
-    , Uninstall(..)
-    , buildProblemDecoder
-    , buildProblemEncoder
-    , buildProjectProblemDecoder
-    , buildProjectProblemEncoder
-    , bumpToReport
-    , detailsBadDepDecoder
-    , detailsBadDepEncoder
-    , diffToReport
-    , initToReport
-    , installToReport
-    , makeToReport
-    , newPackageOverview
-    , publishToReport
-    , registryProblemDecoder
-    , registryProblemEncoder
-    , replToReport
-    , testToReport
-    , toJson
-    , toStderr
-    , uninstallToReport
     )
+
+{-| Exit error reporting for the Elm build tool and package manager.
+
+This module defines all possible error conditions that can occur during
+build tool operations (init, install, make, publish, etc.) and provides
+functions to convert them into user-friendly error reports.
+
+
+# Output
+
+@docs toStderr, toJson
+
+
+# Init Errors
+
+@docs Init, initToReport
+
+
+# Install Errors
+
+@docs Install, installToReport
+
+
+# Uninstall Errors
+
+@docs Uninstall, uninstallToReport
+
+
+# Make Errors
+
+@docs Make, makeToReport
+
+
+# REPL Errors
+
+@docs Repl, replToReport
+
+
+# Test Errors
+
+@docs Test, testToReport
+
+
+# Diff Errors
+
+@docs Diff, diffToReport
+
+
+# Bump Errors
+
+@docs Bump, bumpToReport
+
+
+# Publish Errors
+
+@docs Publish, publishToReport, newPackageOverview
+
+
+# Build Problems
+
+@docs BuildProblem, BuildProjectProblem
+@docs buildProblemEncoder, buildProblemDecoder
+@docs buildProjectProblemEncoder, buildProjectProblemDecoder
+
+
+# Registry Problems
+
+@docs RegistryProblem, registryProblemEncoder, registryProblemDecoder
+
+
+# Details Problems
+
+@docs Details, DetailsBadDep, detailsBadDepEncoder, detailsBadDepDecoder
+
+
+# Solver Problems
+
+@docs Solver
+
+
+# Outline Problems
+
+@docs Outline, OutlineProblem
+
+
+# Package Problems
+
+@docs PackageProblem
+
+
+# Documentation Problems
+
+@docs DocsProblem
+
+
+# Code Generation
+
+@docs Generate
+
+-}
 
 import Builder.File as File
 import Builder.Http as Http

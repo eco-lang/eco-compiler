@@ -1,11 +1,32 @@
 module Compiler.Canonicalize.Expression exposing
-    ( EResult
-    , FreeLocals
-    , Uses(..)
-    , canonicalize
-    , gatherTypedArgs
+    ( EResult, FreeLocals, Uses(..)
+    , canonicalize, gatherTypedArgs
     , verifyBindings
     )
+
+{-| Canonicalize Elm expressions from source AST to canonical AST.
+
+This module handles the transformation of all expression forms including literals,
+variables, function applications, let bindings, case expressions, records, and more.
+It tracks free variable usage to detect unused bindings and recursive definitions,
+performs binary operator precedence resolution, and validates pattern bindings.
+
+
+# Results and Tracking
+
+@docs EResult, FreeLocals, Uses
+
+
+# Canonicalization
+
+@docs canonicalize, gatherTypedArgs
+
+
+# Validation
+
+@docs verifyBindings
+
+-}
 
 import Basics.Extra exposing (flip)
 import Compiler.AST.Canonical as Can

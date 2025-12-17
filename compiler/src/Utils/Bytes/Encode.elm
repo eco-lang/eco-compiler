@@ -1,18 +1,29 @@
 module Utils.Bytes.Encode exposing
-    ( assocListDict
-    , bool
-    , everySet
-    , float
-    , int
-    , jsonPair
-    , list
-    , maybe
-    , nonempty
-    , oneOrMore
-    , result
-    , string
-    , unit
+    ( unit, bool, int, float, string
+    , maybe, list, nonempty, result, oneOrMore
+    , jsonPair, assocListDict, everySet
     )
+
+{-| Binary encoding utilities for Elm values, providing consistent serialization for the compiler's
+data structures. All encoders use big-endian byte order and include length prefixes for variable-length
+data to enable reliable deserialization.
+
+
+# Primitive Encoders
+
+@docs unit, bool, int, float, string
+
+
+# Container Encoders
+
+@docs maybe, list, nonempty, result, oneOrMore
+
+
+# Structured Data Encoders
+
+@docs jsonPair, assocListDict, everySet
+
+-}
 
 import Bytes
 import Bytes.Encode as BE

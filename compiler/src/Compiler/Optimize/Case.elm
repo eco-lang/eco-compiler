@@ -1,5 +1,25 @@
 module Compiler.Optimize.Case exposing (optimize)
 
+{-| Optimizes case expressions using decision trees.
+
+This module bridges the gap between decision tree compilation and the optimized
+AST. It takes pattern-matched branches and converts them into an efficient
+case expression with:
+
+  - A decision tree that determines which branch to execute
+  - Inline choices for branches that are only reached from one path
+  - Jump labels for branches that can be reached from multiple paths
+
+The optimization reduces code duplication by sharing branch implementations
+when the same code would be reached through different pattern match paths.
+
+
+# Optimization
+
+@docs optimize
+
+-}
+
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.Data.Name as Name

@@ -1,33 +1,52 @@
 module Compiler.Optimize.TypedNames exposing
-    ( Context
-    , Tracker
-    , andThen
-    , generate
-    , getAnnotations
-    , getVarType
-    , insertVarType
-    , insertVarTypes
-    , lookupGlobalType
-    , map
-    , mapTraverse
-    , pure
-    , registerCtor
-    , registerDebug
-    , registerField
-    , registerFieldDict
-    , registerFieldList
-    , registerGlobal
-    , registerKernel
+    ( Context, Tracker
     , run
-    , traverse
-    , withVarType
-    , withVarTypes
+    , generate
+    , getVarType, withVarType, withVarTypes, insertVarType, insertVarTypes
+    , lookupGlobalType, getAnnotations
+    , registerGlobal, registerCtor, registerDebug, registerKernel
+    , registerField, registerFieldList, registerFieldDict
+    , pure, map, andThen, traverse, mapTraverse
     )
 
-{-| Name tracking for typed optimization.
+{-| Name tracking with local variable type context.
 
-Like Names.elm but also tracks local variable types in a context.
-This allows us to look up the type of any local variable during optimization.
+Like the regular Names tracker but maintains a context of local variable types
+alongside name generation and dependency tracking. This enables type lookups
+during optimization, allowing the TypedExpression optimizer to preserve type
+information on every expression node.
+
+
+# Types
+
+@docs Context, Tracker
+
+
+# Running
+
+@docs run
+
+
+# Name Generation
+
+@docs generate
+
+
+# Type Context
+
+@docs getVarType, withVarType, withVarTypes, insertVarType, insertVarTypes
+@docs lookupGlobalType, getAnnotations
+
+
+# Registration
+
+@docs registerGlobal, registerCtor, registerDebug, registerKernel
+@docs registerField, registerFieldList, registerFieldDict
+
+
+# Monadic Operations
+
+@docs pure, map, andThen, traverse, mapTraverse
 
 -}
 

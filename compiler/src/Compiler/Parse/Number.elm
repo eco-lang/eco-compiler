@@ -1,10 +1,31 @@
 module Compiler.Parse.Number exposing
-    ( Number(..)
-    , Outcome(..)
+    ( Number(..), Outcome(..)
+    , number, precedence
     , chompHex
-    , number
-    , precedence
     )
+
+{-| Parser for numeric literals in Elm.
+
+This module handles parsing of integers, floating-point numbers, hexadecimal
+literals, and binary literals. It supports underscores in numeric literals for
+improved readability (in Guida syntax mode) and validates numeric format rules.
+
+
+# Number Types
+
+@docs Number, Outcome
+
+
+# Parsing Numbers
+
+@docs number, precedence
+
+
+# Hexadecimal Parsing
+
+@docs chompHex
+
+-}
 
 import Compiler.AST.Utils.Binop as Binop
 import Compiler.Parse.Primitives as P exposing (Col, Row)

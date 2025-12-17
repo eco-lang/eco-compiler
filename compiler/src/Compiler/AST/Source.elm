@@ -1,67 +1,100 @@
 module Compiler.AST.Source exposing
-    ( Alias(..)
-    , AliasData
-    , C0Eol
-    , C1
-    , C1Eol
-    , C2
-    , C2Eol
-    , C3
-    , Comment(..)
-    , Def(..)
-    , Docs(..)
-    , Effects(..)
-    , Exposed(..)
-    , Exposing(..)
-    , Expr
-    , Expr_(..)
-    , FComment(..)
-    , FComments
-    , ForceMultiline(..)
-    , Import(..)
-    , Infix(..)
-    , InfixData
-    , Manager(..)
-    , Module(..)
-    , ModuleData
-    , OpenCommentedList(..)
-    , Pair(..)
-    , Pattern
-    , Pattern_(..)
-    , Port(..)
-    , Privacy(..)
-    , Type
-    , Type_(..)
-    , Union(..)
-    , Value(..)
-    , ValueData
-    , VarType(..)
-    , c0EolDecoder
-    , c0EolEncoder
-    , c0EolMap
-    , c0EolValue
-    , c1Decoder
-    , c1Encoder
-    , c1Value
-    , c1map
-    , c2EolDecoder
-    , c2EolEncoder
-    , c2EolMap
-    , c2EolValue
-    , c2Value
-    , c2map
+    ( C1, C2, C3, C0Eol, C1Eol, C2Eol
+    , c1map, c1Value, c2map, c2Value, c0EolMap, c0EolValue, c2EolMap, c2EolValue
+    , FComment(..), FComments, Comment(..), ForceMultiline(..)
+    , Expr, Expr_(..), VarType(..)
+    , Pattern, Pattern_(..)
+    , Type, Type_(..)
+    , Def(..), Value(..), ValueData
+    , Module(..), ModuleData, Import(..), getName, getImportName
+    , Union(..), Alias(..), AliasData, Infix(..), InfixData
+    , Effects(..), Manager(..), Port(..)
+    , Exposing(..), Exposed(..), Privacy(..), Docs(..)
+    , OpenCommentedList(..), Pair(..), openCommentedListMap, toCommentedList, mapPair, sequenceAC2
+    , moduleEncoder, moduleDecoder, typeEncoder, typeDecoder
+    , c0EolEncoder, c0EolDecoder, c1Encoder, c1Decoder, c2EolEncoder, c2EolDecoder
     , fCommentsDecoder
-    , getImportName
-    , getName
-    , mapPair
-    , moduleDecoder
-    , moduleEncoder
-    , openCommentedListMap
-    , sequenceAC2
-    , toCommentedList
-    , typeDecoder
-    , typeEncoder
     )
+
+{-| Source AST preserving original formatting and comments.
+
+This module defines the "source-faithful" AST produced by the parser. Unlike
+the Canonical AST, this representation preserves all formatting details needed
+to reproduce the original source code exactly, including:
+
+  - Comments (block and line) attached to AST nodes
+  - End-of-line comments
+  - Multiline formatting hints
+  - Original numeric literal representations
+
+This is essential for elm-format and other source-to-source tools.
+
+
+# Comment Containers
+
+These types wrap values with their surrounding comments:
+
+@docs C1, C2, C3, C0Eol, C1Eol, C2Eol
+@docs c1map, c1Value, c2map, c2Value, c0EolMap, c0EolValue, c2EolMap, c2EolValue
+
+
+# Comment Types
+
+@docs FComment, FComments, Comment, ForceMultiline
+
+
+# Expressions
+
+@docs Expr, Expr_, VarType
+
+
+# Patterns
+
+@docs Pattern, Pattern_
+
+
+# Types
+
+@docs Type, Type_
+
+
+# Definitions
+
+@docs Def, Value, ValueData
+
+
+# Module Structure
+
+@docs Module, ModuleData, Import, getName, getImportName
+
+
+# Type Declarations
+
+@docs Union, Alias, AliasData, Infix, InfixData
+
+
+# Effects
+
+@docs Effects, Manager, Port
+
+
+# Exposing
+
+@docs Exposing, Exposed, Privacy, Docs
+
+
+# Utility Types
+
+@docs OpenCommentedList, Pair, openCommentedListMap, toCommentedList, mapPair, sequenceAC2
+
+
+# Binary Serialization
+
+@docs moduleEncoder, moduleDecoder, typeEncoder, typeDecoder
+@docs c0EolEncoder, c0EolDecoder, c1Encoder, c1Decoder, c2EolEncoder, c2EolDecoder
+@docs fCommentsDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

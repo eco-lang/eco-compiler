@@ -1,22 +1,41 @@
 module Utils.Bytes.Decode exposing
-    ( assocListDict
-    , bool
-    , everySet
-    , float
-    , int
-    , jsonPair
+    ( unit, bool, int, float, string
+    , maybe, list, nonempty, result, oneOrMore
+    , jsonPair, assocListDict, everySet
+    , map6, map7, map8
     , lazy
-    , list
-    , map6
-    , map7
-    , map8
-    , maybe
-    , nonempty
-    , oneOrMore
-    , result
-    , string
-    , unit
     )
+
+{-| Binary decoding utilities for Elm values, providing the inverse operations for Utils.Bytes.Encode.
+All decoders expect big-endian byte order and handle length-prefixed data structures. These decoders
+enable reliable deserialization of the compiler's binary cache files and inter-process communication.
+
+
+# Primitive Decoders
+
+@docs unit, bool, int, float, string
+
+
+# Container Decoders
+
+@docs maybe, list, nonempty, result, oneOrMore
+
+
+# Structured Data Decoders
+
+@docs jsonPair, assocListDict, everySet
+
+
+# Extended Mapping Functions
+
+@docs map6, map7, map8
+
+
+# Utility Functions
+
+@docs lazy
+
+-}
 
 import Bytes
 import Bytes.Decode as BD

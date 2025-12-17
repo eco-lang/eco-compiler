@@ -1,4 +1,25 @@
-module Compiler.Reporting.Report exposing (Report(..), ReportProps, report)
+module Compiler.Reporting.Report exposing
+    ( Report(..), ReportProps
+    , report
+    )
+
+{-| Core data structure for compiler error and warning reports.
+
+A Report packages together all the information needed to display a helpful
+compiler diagnostic message: a title, source location, suggested fixes, and
+formatted documentation describing the issue.
+
+
+# Types
+
+@docs Report, ReportProps
+
+
+# Construction
+
+@docs report
+
+-}
 
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Doc as D

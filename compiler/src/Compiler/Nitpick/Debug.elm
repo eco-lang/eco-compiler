@@ -1,5 +1,19 @@
 module Compiler.Nitpick.Debug exposing (hasDebugUses)
 
+{-| Debug usage detection for optimized Elm code.
+
+This module traverses the optimized AST to determine whether any Debug functions
+(like Debug.log, Debug.todo) are referenced in the code. This is used to enforce
+the prohibition of Debug calls in production builds and to guide code generation
+optimizations.
+
+
+# Detection
+
+@docs hasDebugUses
+
+-}
+
 import Compiler.AST.Optimized as Opt
 import Compiler.Data.Map.Utils as Map
 import Compiler.Reporting.Annotation as A

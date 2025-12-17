@@ -1,5 +1,24 @@
 module Compiler.Type.Occurs exposing (occurs)
 
+{-| Occurs check for detecting infinite types during type unification.
+
+The occurs check prevents the creation of infinite types by detecting when a type
+variable would occur within its own definition (e.g., `a = List a` where `a` appears
+on both sides). This is essential for ensuring that type unification terminates and
+produces valid, finite types.
+
+During type inference, if we attempt to unify a type variable with a structure
+containing that same variable, we have detected a type error that would create an
+infinite type. This module performs that check by traversing type structures and
+tracking which variables have been seen.
+
+
+# Occurs Check
+
+@docs occurs
+
+-}
+
 import Compiler.Type.UnionFind as UF
 import Data.Map as Dict
 import System.TypeCheck.IO as IO exposing (IO)

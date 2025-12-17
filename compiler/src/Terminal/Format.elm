@@ -1,9 +1,25 @@
 module Terminal.Format exposing
-    ( Flags(..)
-    , FlagsProps
-    , makeFlags
-    , run
+    ( run
+    , Flags(..), FlagsProps, makeFlags
     )
+
+{-| Code formatting command for standardizing Elm code style.
+
+This module implements the `format` command which automatically formats Elm source
+files according to the official Elm style guide. It can format files in place,
+validate formatting without changes, or output to different destinations.
+
+
+# Command Entry
+
+@docs run
+
+
+# Configuration
+
+@docs Flags, FlagsProps, makeFlags
+
+-}
 
 import Builder.File as File
 import Common.Format

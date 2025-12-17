@@ -1,35 +1,56 @@
 module Compiler.Elm.Package exposing
-    ( Author
-    , Name
-    , Project
-    , browser
-    , bytes
-    , compareName
-    , core
-    , decoder
-    , dummyName
-    , encode
-    , html
+    ( Name, Author, Project
+    , compareName, toString, toChars, toUrl, toJsonString
     , isKernel
-    , json
-    , kernel
-    , keyDecoder
-    , linearAlgebra
-    , nameDecoder
-    , nameEncoder
-    , nearbyNames
-    , parser
-    , random
-    , suggestions
-    , test
-    , time
-    , toChars
-    , toJsonString
-    , toString
-    , toUrl
-    , virtualDom
-    , webgl
+    , dummyName, kernel, core, browser, virtualDom, html, json, bytes, random, time, webgl, linearAlgebra, test
+    , suggestions, nearbyNames
+    , encode, decoder, keyDecoder
+    , nameEncoder, nameDecoder, parser
     )
+
+{-| Utilities for working with Elm package names.
+
+This module handles package names in the form "author/project", providing parsers,
+encoders, comparison functions, and constants for common Elm packages. It also includes
+support for suggesting packages based on module names and finding nearby package names
+using Levenshtein distance.
+
+
+# Types
+
+@docs Name, Author, Project
+
+
+# Comparison and Conversion
+
+@docs compareName, toString, toChars, toUrl, toJsonString
+
+
+# Package Properties
+
+@docs isKernel
+
+
+# Common Packages
+
+@docs dummyName, kernel, core, browser, virtualDom, html, json, bytes, random, time, webgl, linearAlgebra, test
+
+
+# Package Suggestions
+
+@docs suggestions, nearbyNames
+
+
+# JSON Encoding/Decoding
+
+@docs encode, decoder, keyDecoder
+
+
+# Binary Encoding/Decoding
+
+@docs nameEncoder, nameDecoder, parser
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

@@ -1,13 +1,7 @@
 module Compiler.Parse.Module exposing
-    ( Effects(..)
-    , Header
-    , Module
-    , ProjectType(..)
-    , chompImport
-    , chompImports
-    , chompModule
-    , defaultHeader
-    , fromByteString
+    ( fromByteString
+    , Module, Header, ProjectType(..), Effects(..), defaultHeader
+    , chompModule, chompImports, chompImport
     , isKernel
     )
 
@@ -92,7 +86,10 @@ type ProjectType
     | Application
 
 
+
 -- Checks if this is the elm/core package.
+
+
 isCore : ProjectType -> Bool
 isCore projectType =
     case projectType of

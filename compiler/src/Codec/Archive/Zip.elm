@@ -1,16 +1,30 @@
 module Codec.Archive.Zip exposing
-    ( Archive
-    , Entry
-    , FilePath
-    , eRelativePath
-    , fromEntry
+    ( Archive, Entry, FilePath
     , zEntries
+    , eRelativePath, fromEntry
     )
 
-{-| The module provides everything you may need to manipulate Zip archives.
-There are three things that should be clarified right away, to avoid confusion.
+{-| A simplified interface for working with ZIP archive structures.
+
+This module provides types and accessor functions for representing ZIP archives as collections
+of entries with file paths and data. It is based on the Haskell zip library interface.
 
 Ref.: <https://hackage.haskell.org/package/zip-2.1.0/docs/Codec-Archive-Zip.html>
+
+
+# Types
+
+@docs Archive, Entry, FilePath
+
+
+# Archive Operations
+
+@docs zEntries
+
+
+# Entry Operations
+
+@docs eRelativePath, fromEntry
 
 -}
 

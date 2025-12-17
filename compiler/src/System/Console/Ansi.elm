@@ -1,12 +1,32 @@
 module System.Console.Ansi exposing
-    ( BlinkSpeed(..)
-    , Color(..)
-    , ColorIntensity(..)
-    , ConsoleIntensity(..)
-    , ConsoleLayer(..)
+    ( Color(..), ColorIntensity(..), ConsoleLayer(..)
+    , ConsoleIntensity(..), Underlining(..), BlinkSpeed(..)
     , SGR(..)
-    , Underlining(..)
     )
+
+{-| ANSI terminal control codes for text styling and coloring.
+
+This module defines types representing ANSI escape sequence parameters for controlling
+terminal text appearance. It provides SGR (Select Graphic Rendition) commands that can
+be converted to ANSI escape codes for styling terminal output with colors, intensity,
+underlining, and other text effects.
+
+
+# Colors
+
+@docs Color, ColorIntensity, ConsoleLayer
+
+
+# Text Styling
+
+@docs ConsoleIntensity, Underlining, BlinkSpeed
+
+
+# SGR Commands
+
+@docs SGR
+
+-}
 
 -- | ANSI colors: come in various intensities, which are controlled by 'ColorIntensity'
 

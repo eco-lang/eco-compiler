@@ -1,9 +1,30 @@
 module Compiler.Reporting.Error.Main exposing
     ( Error(..)
-    , errorDecoder
-    , errorEncoder
     , toReport
+    , errorEncoder, errorDecoder
     )
+
+{-| Error reporting for the main entry point of Elm programs.
+
+This module handles errors related to the `main` value in an Elm program,
+including type compatibility, recursive definitions, and invalid flags.
+
+
+# Errors
+
+@docs Error
+
+
+# Reporting
+
+@docs toReport
+
+
+# Serialization
+
+@docs errorEncoder, errorDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

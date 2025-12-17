@@ -1,23 +1,50 @@
 module Builder.Elm.Details exposing
-    ( BuildID
-    , Details(..)
-    , DetailsData
-    , Extras
-    , Foreign(..)
-    , Interfaces
-    , Local(..)
-    , LocalData
-    , Status
-    , ValidOutline(..)
-    , detailsEncoder
-    , load
-    , loadInterfaces
-    , loadObjects
-    , loadTypedObjects
-    , localDecoder
-    , localEncoder
-    , verifyInstall
+    ( Details(..), DetailsData, BuildID, ValidOutline(..)
+    , Local(..), LocalData, Foreign(..), Status
+    , Extras, Interfaces
+    , load, verifyInstall
+    , loadObjects, loadTypedObjects, loadInterfaces
+    , detailsEncoder, localEncoder, localDecoder
     )
+
+{-| Project details and dependency management for the Elm build system.
+
+This module manages the complete state of a project's build configuration, including
+tracking module compilation status, managing package dependencies, downloading and
+building packages, and maintaining build artifacts. It orchestrates dependency
+resolution, verification, and parallel compilation.
+
+
+# Core Types
+
+@docs Details, DetailsData, BuildID, ValidOutline
+
+
+# Module Status Tracking
+
+@docs Local, LocalData, Foreign, Status
+
+
+# Build Artifacts
+
+@docs Extras, Interfaces
+
+
+# Loading and Verification
+
+@docs load, verifyInstall
+
+
+# Artifact Loading
+
+@docs loadObjects, loadTypedObjects, loadInterfaces
+
+
+# Serialization
+
+@docs detailsEncoder, localEncoder, localDecoder
+
+-}
 
 import Builder.BackgroundWriter as BW
 import Builder.Deps.Registry as Registry

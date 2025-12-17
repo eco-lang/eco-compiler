@@ -1,9 +1,35 @@
 module Compiler.Optimize.Expression exposing
     ( Cycle
+    , optimize, optimizePotentialTailCall
     , destructArgs
-    , optimize
-    , optimizePotentialTailCall
     )
+
+{-| Optimizes canonical expressions into optimized expressions.
+
+This module transforms the canonical AST produced by type checking into an
+optimized representation suitable for code generation. Key optimizations include:
+
+  - Inlining constructors and simple operations
+  - Tracking global dependencies and field usage
+  - Pattern destructuring for efficient field access
+  - Tail call detection and optimization for recursive functions
+
+
+# Core Types
+
+@docs Cycle
+
+
+# Optimization
+
+@docs optimize, optimizePotentialTailCall
+
+
+# Helpers
+
+@docs destructArgs
+
+-}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt

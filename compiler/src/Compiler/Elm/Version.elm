@@ -1,26 +1,67 @@
 module Compiler.Elm.Version exposing
     ( Version(..)
-    , bumpMajor
-    , bumpMinor
-    , bumpPatch
-    , compare
-    , compiler
-    , decoder
-    , elmCompiler
-    , encode
-    , jsonDecoder
-    , jsonEncoder
     , major
-    , max
-    , maxVersion
-    , min
-    , one
-    , parser
+    , compare, toComparable, min, max
+    , one, maxVersion, compiler, elmCompiler
+    , bumpPatch, bumpMinor, bumpMajor
     , toChars
-    , toComparable
-    , versionDecoder
-    , versionEncoder
+    , encode, decoder, jsonEncoder, jsonDecoder
+    , versionEncoder, versionDecoder
+    , parser
     )
+
+{-| Semantic versioning utilities for Elm packages and the compiler.
+
+This module implements semantic versioning (major.minor.patch) with parsers, encoders,
+comparison functions, and version bumping operations. It follows the SemVer specification
+for version ordering and compatibility.
+
+
+# Types
+
+@docs Version
+
+
+# Accessors
+
+@docs major
+
+
+# Comparison
+
+@docs compare, toComparable, min, max
+
+
+# Version Constants
+
+@docs one, maxVersion, compiler, elmCompiler
+
+
+# Version Bumping
+
+@docs bumpPatch, bumpMinor, bumpMajor
+
+
+# Conversion
+
+@docs toChars
+
+
+# JSON Encoding/Decoding
+
+@docs encode, decoder, jsonEncoder, jsonDecoder
+
+
+# Binary Encoding/Decoding
+
+@docs versionEncoder, versionDecoder
+
+
+# Parsing
+
+@docs parser
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

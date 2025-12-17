@@ -9,7 +9,15 @@ module System.TypeCheck.IO exposing
     , DescriptorProps, makeDescriptor
     )
 
-{-| Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
+{-| IO monad and state threading for type inference.
+
+This module implements a specialized IO monad used throughout the type inference
+system. It provides state threading for mutable references (Points, Descriptors,
+etc.) without actual side effects, simulating imperative union-find and type
+unification algorithms in a pure functional style. The State contains arrays that
+act as pseudo-mutable stores for type variables and descriptors.
+
+Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 
 @docs unsafePerformIO
 

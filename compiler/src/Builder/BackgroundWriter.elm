@@ -1,8 +1,25 @@
 module Builder.BackgroundWriter exposing
-    ( Scope
-    , withScope
+    ( Scope, withScope
     , writeBinary
     )
+
+{-| Asynchronous file writing for improved build performance.
+
+This module provides a mechanism to write files in the background without blocking
+the main build process. All write operations within a scope are tracked, and the
+scope ensures all writes complete before returning control to the caller.
+
+
+# Scope Management
+
+@docs Scope, withScope
+
+
+# Background Writing
+
+@docs writeBinary
+
+-}
 
 import Builder.File as File
 import Bytes.Decode

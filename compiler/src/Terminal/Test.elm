@@ -1,10 +1,31 @@
 module Terminal.Test exposing
-    ( Flags(..)
-    , Report(..)
-    , format
-    , parseReport
-    , run
+    ( run
+    , Flags(..), Report(..)
+    , format, parseReport
     )
+
+{-| Test execution command for running Elm test suites.
+
+This module implements the `test` command which compiles and runs tests written
+using the elm-test framework. It discovers test files, generates test runners,
+compiles them with the required dependencies, and executes them using Node.js.
+
+
+# Command Entry
+
+@docs run
+
+
+# Configuration
+
+@docs Flags, Report
+
+
+# Parser Functions
+
+@docs format, parseReport
+
+-}
 
 import Builder.BackgroundWriter as BW
 import Builder.Build as Build

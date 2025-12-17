@@ -1,5 +1,18 @@
 module API.Main exposing (main)
 
+{-| Entry point for the Elm compiler API server. This module dispatches commands
+from a JSON-based protocol to the appropriate API modules and returns JSON responses.
+
+Supported commands include building projects (make), formatting code (format),
+installing and uninstalling packages, and running diagnostics on source files.
+
+
+# Program
+
+@docs main
+
+-}
+
 import API.Format as Format
 import API.Install as Install
 import API.Make as Make

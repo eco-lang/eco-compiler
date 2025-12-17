@@ -1,8 +1,4 @@
-module Compiler.Generate.JavaScript exposing
-    ( generate
-    , generateForRepl
-    , generateForReplEndpoint
-    )
+module Compiler.Generate.JavaScript exposing (generate, generateForRepl, generateForReplEndpoint)
 
 {-| JavaScript code generation for the Elm compiler.
 

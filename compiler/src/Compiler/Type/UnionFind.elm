@@ -1,12 +1,21 @@
-module Compiler.Type.UnionFind exposing
-    ( equivalent
-    , fresh
-    , get
-    , modify
-    , redundant
-    , set
-    , union
-    )
+module Compiler.Type.UnionFind exposing (fresh, get, set, modify, union, equivalent, redundant)
+
+{-| Union-Find data structure for efficient type unification.
+
+This module implements a union-find (disjoint-set) data structure optimized for type
+inference. It allows efficient tracking of type variable equivalences and supports
+path compression for fast lookups. The implementation uses mutable references (IORef)
+to achieve efficient updates while maintaining a pure interface through the IO monad.
+
+Union-find is critical for type inference performance, allowing near-constant-time
+operations for unifying type variables and checking equivalence.
+
+
+# Operations
+
+@docs fresh, get, set, modify, union, equivalent, redundant
+
+-}
 
 {- This is based on the following implementations:
 

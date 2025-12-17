@@ -1,21 +1,56 @@
 module Builder.Deps.Solver exposing
-    ( AppSolution(..)
-    , Connection(..)
+    ( Solver, SolverResult(..), State, StateData
+    , Env(..), EnvData, Connection(..), initEnv
     , Details(..)
-    , Env(..)
-    , EnvData
-    , Solver
-    , SolverResult(..)
-    , State
-    , StateData
-    , addToApp
-    , addToTestApp
-    , envDecoder
-    , envEncoder
-    , initEnv
-    , removeFromApp
+    , AppSolution(..), addToApp, addToTestApp, removeFromApp
     , verify
+    , envEncoder, envDecoder
     )
+
+{-| Constraint-based dependency solver for Elm packages.
+
+This module implements a backtracking constraint solver that finds compatible versions
+of all dependencies in an Elm project. It handles both application and package dependency
+resolution, attempting multiple strategies to find valid solutions.
+
+The solver works by:
+
+1.  Starting with direct dependency constraints
+2.  Recursively loading transitive dependencies
+3.  Checking constraint compatibility and backtracking on conflicts
+4.  Attempting progressively relaxed constraints if exact solutions fail
+
+
+# Solver Types
+
+@docs Solver, SolverResult, State, StateData
+
+
+# Environment
+
+@docs Env, EnvData, Connection, initEnv
+
+
+# Dependency Details
+
+@docs Details
+
+
+# Application Solutions
+
+@docs AppSolution, addToApp, addToTestApp, removeFromApp
+
+
+# Package Verification
+
+@docs verify
+
+
+# Serialization
+
+@docs envEncoder, envDecoder
+
+-}
 
 import Builder.Deps.Registry as Registry
 import Builder.Deps.Website as Website

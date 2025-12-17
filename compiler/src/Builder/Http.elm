@@ -1,25 +1,55 @@
 module Builder.Http exposing
-    ( Error(..)
-    , Header
-    , Manager
-    , MultiPart
-    , Sha
-    , accept
-    , errorDecoder
-    , errorEncoder
-    , filePart
-    , get
-    , getArchive
-    , getManager
-    , jsonPart
-    , managerDecoder
-    , managerEncoder
-    , post
-    , shaToChars
-    , stringPart
+    ( Manager, getManager, managerEncoder, managerDecoder
+    , get, post, upload
     , toUrl
-    , upload
+    , Header, accept
+    , getArchive, Sha, shaToChars
+    , MultiPart, filePart, jsonPart, stringPart
+    , Error(..), errorEncoder, errorDecoder
     )
+
+{-| HTTP client utilities for package downloads and uploads.
+
+This module provides a high-level HTTP interface for the Elm package manager,
+handling package downloads, archive fetching with SHA verification, and
+multipart uploads for package publishing.
+
+
+# HTTP Manager
+
+@docs Manager, getManager, managerEncoder, managerDecoder
+
+
+# Making Requests
+
+@docs get, post, upload
+
+
+# URL Construction
+
+@docs toUrl
+
+
+# Headers
+
+@docs Header, accept
+
+
+# Archive Downloads
+
+@docs getArchive, Sha, shaToChars
+
+
+# Multipart Uploads
+
+@docs MultiPart, filePart, jsonPart, stringPart
+
+
+# Error Handling
+
+@docs Error, errorEncoder, errorDecoder
+
+-}
 
 import Basics.Extra exposing (uncurry)
 import Bytes.Decode

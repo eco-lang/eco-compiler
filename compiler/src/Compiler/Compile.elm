@@ -1,9 +1,6 @@
 module Compiler.Compile exposing
-    ( Artifacts(..)
-    , TypedArtifacts(..)
-    , TypedArtifactsData
-    , compile
-    , compileTyped
+    ( compile, compileTyped
+    , Artifacts(..), TypedArtifacts(..), TypedArtifactsData
     )
 
 {-| Orchestrates the full compilation pipeline from source to optimized artifacts.
@@ -165,9 +162,9 @@ compileTyped pkg ifaces modul =
 
 
 -- ====== Internal Compilation Phases ======
-
-
 -- Converts source AST to canonical form, resolving all names and imports.
+
+
 canonicalize : Pkg.Name -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Result E.Error Can.Module
 canonicalize pkg ifaces modul =
     case Tuple.second (ReportingResult.run (Canonicalize.canonicalize pkg ifaces modul)) of
@@ -178,7 +175,10 @@ canonicalize pkg ifaces modul =
             Err (E.BadNames errors)
 
 
+
 -- Infers and verifies types for all definitions in the canonical module.
+
+
 typeCheck : Src.Module -> Can.Module -> Result E.Error (Dict String Name Can.Annotation)
 typeCheck modul canonical =
     case Type.constrain canonical |> TypeCheck.andThen Type.run |> TypeCheck.unsafePerformIO of
@@ -189,7 +189,10 @@ typeCheck modul canonical =
             Err (E.BadTypes (Localizer.fromModule modul) errors)
 
 
+
 -- Verifies pattern match exhaustiveness and detects redundant patterns.
+
+
 nitpick : Can.Module -> Result E.Error ()
 nitpick canonical =
     case PatternMatches.check canonical of
@@ -200,7 +203,10 @@ nitpick canonical =
             Err (E.BadPatterns errors)
 
 
+
 -- Optimizes the canonical module to produce efficient intermediate representation.
+
+
 optimize : Src.Module -> Dict String Name.Name Can.Annotation -> Can.Module -> Result E.Error Opt.LocalGraph
 optimize modul annotations canonical =
     case Tuple.second (ReportingResult.run (Optimize.optimize annotations canonical)) of
@@ -211,7 +217,10 @@ optimize modul annotations canonical =
             Err (E.BadMains (Localizer.fromModule modul) errors)
 
 
+
 -- Performs typed optimization preserving full type information for MLIR backend.
+
+
 typedOptimize : Src.Module -> Dict String Name.Name Can.Annotation -> Can.Module -> Result E.Error TOpt.LocalGraph
 typedOptimize modul annotations canonical =
     case Tuple.second (ReportingResult.run (TypedOptimize.optimize annotations canonical)) of

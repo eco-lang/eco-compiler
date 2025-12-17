@@ -1,22 +1,65 @@
 module Common.Format.Render.ElmStructure exposing
-    ( FunctionApplicationMultiline(..)
-    , Multiline(..)
+    ( Multiline(..), FunctionApplicationMultiline(..)
+    , spaceSepOrStack, forceableSpaceSepOrStack, forceableSpaceSepOrStack1, forceableRowOrStack
+    , spaceSepOrIndented, forceableSpaceSepOrIndented
+    , spaceSepOrPrefix, prefixOrIndented
+    , equalsPair, definition
     , application
-    , definition
-    , equalsPair
-    , extensionGroup
-    , extensionGroup_
-    , forceableRowOrStack
-    , forceableSpaceSepOrIndented
-    , forceableSpaceSepOrStack
-    , forceableSpaceSepOrStack1
-    , group
-    , group_
-    , prefixOrIndented
-    , spaceSepOrIndented
-    , spaceSepOrPrefix
-    , spaceSepOrStack
+    , group, group_
+    , extensionGroup, extensionGroup_
     )
+
+{-| Higher-level formatting primitives for common Elm syntax structures.
+
+This module provides specialized layout functions for recurring patterns in Elm syntax,
+such as function applications, definitions with equals signs, grouped elements with
+delimiters, and record extensions. Each function intelligently chooses between compact
+single-line layout and expanded multi-line layout based on content complexity.
+
+These primitives abstract common formatting decisions and ensure consistent style across
+the entire codebase, handling indentation, spacing, and line breaking automatically.
+
+
+# Multiline Control
+
+@docs Multiline, FunctionApplicationMultiline
+
+
+# Space-separated or Stacked
+
+@docs spaceSepOrStack, forceableSpaceSepOrStack, forceableSpaceSepOrStack1, forceableRowOrStack
+
+
+# Space-separated or Indented
+
+@docs spaceSepOrIndented, forceableSpaceSepOrIndented
+
+
+# Prefix Layouts
+
+@docs spaceSepOrPrefix, prefixOrIndented
+
+
+# Definitions and Pairs
+
+@docs equalsPair, definition
+
+
+# Function Application
+
+@docs application
+
+
+# Grouped Elements
+
+@docs group, group_
+
+
+# Record Extensions
+
+@docs extensionGroup, extensionGroup_
+
+-}
 
 import Common.Format.Box as Box exposing (Box)
 import Utils.Crash exposing (crash)

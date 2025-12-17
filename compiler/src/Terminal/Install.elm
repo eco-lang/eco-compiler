@@ -1,8 +1,26 @@
 module Terminal.Install exposing
-    ( Args(..)
-    , Flags(..)
-    , run
+    ( run
+    , Args(..), Flags(..)
     )
+
+{-| Package installation command for managing dependencies.
+
+This module implements the `install` command which fetches packages from the
+Elm package registry and adds them to the project's elm.json file. It handles
+dependency resolution, version constraints, and distinguishes between regular
+dependencies and test dependencies.
+
+
+# Command Entry
+
+@docs run
+
+
+# Configuration Types
+
+@docs Args, Flags
+
+-}
 
 import Builder.BackgroundWriter as BW
 import Builder.Deps.Registry as Registry

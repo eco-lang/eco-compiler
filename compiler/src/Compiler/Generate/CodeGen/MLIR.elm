@@ -500,7 +500,7 @@ generateModule mode ((Mono.MonoGraph { nodes, main, registry }) as monoGraph) =
 
 
 {-| Process pending lambdas and generate their func.func definitions.
-    This may generate more pending lambdas (nested closures), so we iterate.
+This may generate more pending lambdas (nested closures), so we iterate.
 -}
 processLambdas : Context -> ( List MlirOp, Context )
 processLambdas ctx =
@@ -968,7 +968,11 @@ generateManager ctx funcName managerInfo monoType =
 
         managerOp : MlirOp
         managerOp =
-            ecoConstruct ctx3 resultVar 0 5 0
+            ecoConstruct ctx3
+                resultVar
+                0
+                5
+                0
                 [ ( initResult.resultVar, ecoValue )
                 , ( onEffectsResult.resultVar, ecoValue )
                 , ( onSelfMsgResult.resultVar, ecoValue )

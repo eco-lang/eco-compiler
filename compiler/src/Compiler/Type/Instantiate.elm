@@ -3,6 +3,28 @@ module Compiler.Type.Instantiate exposing
     , fromSrcType
     )
 
+{-| Instantiation of source-level type annotations into internal type representations.
+
+This module converts type annotations from the canonical AST (source types) into the
+internal type representation used during type inference. The conversion involves creating
+fresh type variables and properly handling type aliases and polymorphism.
+
+When a type annotation contains free type variables (like `a` in `List a`), those
+variables are tracked in the FreeVars dictionary to ensure consistent mapping throughout
+the type structure.
+
+
+# Types
+
+@docs FreeVars
+
+
+# Conversion
+
+@docs fromSrcType
+
+-}
+
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Name exposing (Name)
 import Compiler.Type.Type exposing (Type(..))

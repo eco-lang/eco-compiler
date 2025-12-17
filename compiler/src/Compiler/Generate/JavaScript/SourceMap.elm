@@ -1,5 +1,23 @@
 module Compiler.Generate.JavaScript.SourceMap exposing (generate)
 
+{-| Source map generation for JavaScript output.
+
+This module generates source maps conforming to the Source Map Revision 3 specification,
+enabling browser developer tools to map generated JavaScript back to original Elm source
+code. The source maps are generated as base64-encoded data URLs for embedding directly
+in the generated JavaScript.
+
+The implementation uses Variable Length Quantity (VLQ) encoding to efficiently represent
+the mappings between generated and source positions. It tracks position deltas to minimize
+the encoded size.
+
+
+# Source Map Generation
+
+@docs generate
+
+-}
+
 import Base64
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Generate.JavaScript.Builder as JS

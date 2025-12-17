@@ -1,32 +1,67 @@
 module Compiler.Type.Type exposing
-    ( Constraint(..)
+    ( Constraint(..), exists
     , Type(..)
-    , bool
-    , char
-    , exists
-    , float
+    , bool, char, float, int, string, never
     , funType
-    , int
-    , mat4
-    , mkFlexNumber
-    , mkFlexVar
-    , nameToFlex
-    , nameToRigid
-    , never
-    , nextMark
-    , noMark
-    , noRank
-    , outermostRank
-    , string
-    , texture
-    , toAnnotation
-    , toErrorType
-    , unnamedFlexSuper
-    , unnamedFlexVar
-    , vec2
-    , vec3
-    , vec4
+    , vec2, vec3, vec4, mat4, texture
+    , mkFlexVar, mkFlexNumber, nameToFlex, nameToRigid
+    , unnamedFlexVar, unnamedFlexSuper
+    , noRank, outermostRank, noMark, nextMark
+    , toAnnotation, toErrorType
     )
+
+{-| Internal type representation for type inference.
+
+This module defines the runtime type representation used during type checking.
+Unlike `Can.Type` which represents user-written types, these types use union-find
+variables for efficient unification.
+
+
+# Constraints
+
+The solver works on a tree of constraints generated from the source:
+
+@docs Constraint, exists
+
+
+# Type Representation
+
+Types with unifiable variables for inference:
+
+@docs Type
+
+
+# Type Constructors
+
+Commonly used built-in types:
+
+@docs bool, char, float, int, string, never
+@docs funType
+
+
+# WebGL Types
+
+@docs vec2, vec3, vec4, mat4, texture
+
+
+# Type Variables
+
+@docs mkFlexVar, mkFlexNumber, nameToFlex, nameToRigid
+@docs unnamedFlexVar, unnamedFlexSuper
+
+
+# Rank and Mark
+
+Used by the solver to track generalization levels:
+
+@docs noRank, outermostRank, noMark, nextMark
+
+
+# Conversion
+
+@docs toAnnotation, toErrorType
+
+-}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Utils.Type as Type

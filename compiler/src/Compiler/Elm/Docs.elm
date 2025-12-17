@@ -1,27 +1,43 @@
 module Compiler.Elm.Docs exposing
-    ( Alias(..)
-    , Binop(..)
-    , Comment
-    , DocsBinopData
-    , Documentation
+    ( Documentation, Module(..), ModuleData, Comment
+    , Alias(..), Union(..), Value(..), Binop(..), DocsBinopData
     , Error(..)
-    , Module(..)
-    , ModuleData
-    , Union(..)
-    , Value(..)
-    , bytesDecoder
-    , bytesEncoder
-    , bytesModuleDecoder
-    , bytesModuleEncoder
-    , decoder
-    , encode
-    , fromModule
-    , jsonDecoder
-    , jsonEncoder
-    , jsonModuleDecoder
-    , jsonModuleEncoder
-    , parseOverview
+    , fromModule, parseOverview
+    , encode, decoder, jsonEncoder, jsonModuleEncoder
+    , jsonDecoder, jsonModuleDecoder
+    , bytesEncoder, bytesModuleEncoder, bytesDecoder, bytesModuleDecoder
     )
+
+{-| Documentation extraction and validation for Elm modules.
+
+Extracts documentation from canonical AST modules and validates that all exported
+items have documentation comments and type annotations. Generates docs.json files
+for package publishing with full type information and module comments.
+
+
+# Types
+
+@docs Documentation, Module, ModuleData, Comment
+@docs Alias, Union, Value, Binop, DocsBinopData
+@docs Error
+
+
+# Extraction
+
+@docs fromModule, parseOverview
+
+
+# JSON Encoding
+
+@docs encode, encodeModule, decoder, jsonEncoder, jsonModuleEncoder
+@docs jsonDecoder, jsonModuleDecoder
+
+
+# Binary Encoding
+
+@docs bytesEncoder, bytesModuleEncoder, bytesDecoder, bytesModuleDecoder
+
+-}
 
 import Basics.Extra exposing (flip)
 import Bytes.Decode

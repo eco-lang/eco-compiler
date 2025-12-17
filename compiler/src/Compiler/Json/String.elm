@@ -1,8 +1,17 @@
-module Compiler.Json.String exposing
-    ( fromComment
-    , fromName
-    , fromSnippet
-    )
+module Compiler.Json.String exposing (fromSnippet, fromName, fromComment)
+
+{-| String extraction utilities for JSON processing in the Elm compiler.
+
+This module provides functions to extract strings from various compiler data structures,
+including parser snippets and names. It handles proper escaping when extracting strings
+from comments, ensuring newlines, quotes, and backslashes are properly escaped for JSON output.
+
+
+# String Extraction
+
+@docs fromSnippet, fromName, fromComment
+
+-}
 
 import Compiler.Data.Name as Name
 import Compiler.Parse.Primitives as P

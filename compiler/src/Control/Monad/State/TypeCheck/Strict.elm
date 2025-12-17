@@ -1,21 +1,42 @@
 module Control.Monad.State.TypeCheck.Strict exposing
     ( StateT(..)
-    , andThen
-    , apply
-    , evalStateT
-    , gets
-    , liftIO
-    , map
-    , modify
-    , pure
-    , runStateT
-    , traverseList
-    , traverseMap
-    , traverseMaybe
-    , traverseTuple
+    , runStateT, evalStateT
+    , pure, map, apply, andThen
+    , liftIO, gets, modify
+    , traverseList, traverseTuple, traverseMap, traverseMaybe
     )
 
-{-| Lazy state monads, passing an updatable state through a computation.
+{-| A strict state transformer monad for type checking operations.
+
+This module provides a state monad transformer specialized for use during type checking,
+wrapping the type checker's IO monad. It allows threading type checking state through
+computations while maintaining strict evaluation semantics.
+
+
+# State Transformer Type
+
+@docs StateT
+
+
+# Running Computations
+
+@docs runStateT, evalStateT
+
+
+# Core Operations
+
+@docs pure, map, apply, andThen
+
+
+# Lifting and State Access
+
+@docs liftIO, gets, modify
+
+
+# Traversals
+
+@docs traverseList, traverseTuple, traverseMap, traverseMaybe
+
 -}
 
 import Data.Map as Dict exposing (Dict)

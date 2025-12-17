@@ -1,7 +1,17 @@
-module Compiler.Parse.Pattern exposing
-    ( expression
-    , term
-    )
+module Compiler.Parse.Pattern exposing (term, expression)
+
+{-| Parser for pattern matching constructs in Elm.
+
+This module handles parsing of patterns used in case expressions, function
+arguments, and let bindings. It supports wildcards, variables, literals,
+constructors with arguments, tuples, lists, records, and cons patterns.
+
+
+# Parsing Patterns
+
+@docs term, expression
+
+-}
 
 import Compiler.AST.Source as Src
 import Compiler.Data.Name as Name

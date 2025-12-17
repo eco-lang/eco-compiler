@@ -1,13 +1,30 @@
 module Compiler.Reporting.Error.Import exposing
-    ( Error(..)
-    , ErrorProps
-    , Problem(..)
-    , errorDecoder
-    , errorEncoder
-    , problemDecoder
-    , problemEncoder
+    ( Error(..), ErrorProps, Problem(..)
     , toReport
+    , errorEncoder, errorDecoder, problemEncoder, problemDecoder
     )
+
+{-| Error reporting for module import problems.
+
+This module handles errors that occur when importing modules, including
+missing modules, ambiguous imports, and name conflicts.
+
+
+# Errors
+
+@docs Error, ErrorProps, Problem
+
+
+# Reporting
+
+@docs toReport
+
+
+# Serialization
+
+@docs errorEncoder, errorDecoder, problemEncoder, problemDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

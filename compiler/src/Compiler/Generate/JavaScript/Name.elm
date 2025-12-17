@@ -1,19 +1,50 @@
 module Compiler.Generate.JavaScript.Name exposing
     ( Name
-    , dollar
-    , fromCycle
-    , fromGlobal
-    , fromGlobalHumanReadable
-    , fromIndex
-    , fromInt
+    , fromLocal, fromLocalHumanReadable
+    , fromGlobal, fromGlobalHumanReadable, fromCycle
     , fromKernel
-    , fromLocal
-    , fromLocalHumanReadable
-    , makeA
-    , makeF
-    , makeLabel
-    , makeTemp
+    , fromIndex, fromInt, makeF, makeA, makeLabel, makeTemp
+    , dollar
     )
+
+{-| JavaScript identifier generation and mangling for the Elm compiler.
+
+This module handles the conversion of Elm identifiers to valid JavaScript names,
+ensuring no collisions with JavaScript reserved words while maintaining compact
+and predictable naming. It implements name mangling for globals, locals, and
+temporary variables used during code generation.
+
+
+# Core Type
+
+@docs Name
+
+
+# Local Names
+
+@docs fromLocal, fromLocalHumanReadable
+
+
+# Global Names
+
+@docs fromGlobal, fromGlobalHumanReadable, fromCycle
+
+
+# Kernel Names
+
+@docs fromKernel
+
+
+# Generated Names
+
+@docs fromIndex, fromInt, makeF, makeA, makeLabel, makeTemp
+
+
+# Special Values
+
+@docs dollar
+
+-}
 
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name

@@ -1,5 +1,24 @@
 module Compiler.Generate.JavaScript.Functions exposing (functions)
 
+{-| JavaScript runtime function wrappers for Elm functions.
+
+This module provides the JavaScript code that implements Elm's curried function calling
+convention. It includes wrapper functions (F2-F9) that create curried versions of
+multi-argument JavaScript functions, and application functions (A2-A9) that efficiently
+call both wrapped and unwrapped functions.
+
+The F wrappers store the arity and original function, enabling efficient partial
+application and full application at call sites. The A functions check the arity
+at runtime to decide whether to call the optimized multi-argument form or the
+curried form.
+
+
+# Runtime Code
+
+@docs functions
+
+-}
+
 -- FUNCTIONS
 
 

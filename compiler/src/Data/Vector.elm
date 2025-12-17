@@ -1,10 +1,26 @@
 module Data.Vector exposing
-    ( forM_
-    , imapM_
-    , unsafeFreeze
-    , unsafeInit
-    , unsafeLast
+    ( unsafeLast, unsafeInit, unsafeFreeze
+    , forM_, imapM_
     )
+
+{-| Utilities for working with mutable vectors in the IO monad during type checking.
+
+This module provides operations on IORef-wrapped arrays used as mutable vectors in the type checker.
+The "unsafe" prefix indicates operations that assume array indices exist or that values are present,
+crashing if preconditions aren't met. This is acceptable in the type checker where these invariants
+are maintained by the algorithm.
+
+
+# Vector Operations
+
+@docs unsafeLast, unsafeInit, unsafeFreeze
+
+
+# Monadic Iteration
+
+@docs forM_, imapM_
+
+-}
 
 import Array exposing (Array)
 import Data.IORef as IORef exposing (IORef)

@@ -1,26 +1,48 @@
 module Builder.Stuff exposing
-    ( PackageCache
-    , details
-    , findRoot
-    , getElmHome
-    , getPackageCache
-    , getReplCache
-    , guidai
-    , guidao
-    , guidato
-    , interfaces
-    , objects
-    , package
-    , packageCacheDecoder
-    , packageCacheEncoder
-    , prepublishDir
-    , registry
-    , testDir
-    , typedObjects
-    , typedPackageArtifacts
-    , withRegistryLock
-    , withRootLock
+    ( findRoot, getElmHome
+    , PackageCache, getPackageCache, getReplCache, package, registry
+    , typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
+    , details, interfaces, objects, typedObjects
+    , guidai, guidao, guidato
+    , prepublishDir, testDir
+    , withRootLock, withRegistryLock
     )
+
+{-| File path management and artifact location for the Elm compiler build system.
+
+This module centralizes all knowledge about where the compiler stores its build
+artifacts, caches, and intermediate files. It handles the `guida-stuff` directory
+structure, package caches, and provides utilities for finding project roots and
+managing file locks.
+
+
+# Project Root and Home
+
+@docs findRoot, getElmHome
+
+
+# Package Cache
+
+@docs PackageCache, getPackageCache, getReplCache, package, registry
+@docs typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
+
+
+# Build Artifacts
+
+@docs details, interfaces, objects, typedObjects
+@docs guidai, guidao, guidato
+
+
+# Special Directories
+
+@docs prepublishDir, testDir
+
+
+# File Locking
+
+@docs withRootLock, withRegistryLock
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

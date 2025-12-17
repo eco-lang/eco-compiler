@@ -15,21 +15,60 @@ module Compiler.Reporting.Doc exposing
     , args, moreArgs, ordinal, intToOrdinal, cycle
     )
 
-{-|
+{-| Pretty-printing and formatting for compiler error messages.
+
+This module provides a rich interface for building beautifully formatted,
+colorized error messages. It wraps the ANSI pretty-printing library and adds
+Elm-specific conveniences for creating helpful diagnostics.
+
+
+# Document Type
 
 @docs Doc
+
+
+# Combinators
+
 @docs plus, append, a
 @docs align, cat, empty, fill, fillSep, hang
 @docs hcat, hsep, indent, sep, vcat
+
+
+# Colors
+
 @docs Color
 @docs red, cyan, green, blue, black, yellow
 @docs dullred, dullcyan, dullyellow
+
+
+# Conversion from Values
+
 @docs fromChars, fromName, fromVersion, fromPackage, fromInt
+
+
+# Rendering
+
 @docs toAnsi, toString, toLine
 @docs encode
+
+
+# High-Level Formatting
+
 @docs stack, reflow, commaSep
+
+
+# Notes and Hints
+
 @docs toSimpleNote, toFancyNote, toSimpleHint, toFancyHint
+
+
+# Links and References
+
 @docs link, fancyLink, reflowLink, makeLink, makeNakedLink
+
+
+# Helpers
+
 @docs args, moreArgs, ordinal, intToOrdinal, cycle
 
 -}

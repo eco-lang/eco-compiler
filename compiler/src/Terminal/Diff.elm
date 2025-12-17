@@ -1,7 +1,25 @@
 module Terminal.Diff exposing
-    ( Args(..)
-    , run
+    ( run
+    , Args(..)
     )
+
+{-| API difference reporting command for comparing package versions.
+
+This module implements the `diff` command which compares the public API between
+different versions of a package, showing what functions, types, and values have
+been added, changed, or removed. This helps understand the impact of version changes.
+
+
+# Command Entry
+
+@docs run
+
+
+# Configuration
+
+@docs Args
+
+-}
 
 import Basics.Extra exposing (flip)
 import Builder.BackgroundWriter as BW

@@ -1,12 +1,24 @@
 module Compiler.Optimize.TypedModule exposing
-    ( Annotations
-    , MResult
+    ( Annotations, MResult
     , optimize
     )
 
 {-| Typed module optimization.
 
-Like Module.elm but produces TypedOptimized.LocalGraph with full type information.
+Converts a canonical module to a TypedOptimized.LocalGraph, preserving full
+type information on every expression. This is like the regular Module optimization
+but maintains types throughout, which is needed for backends that perform
+monomorphization or require type information for code generation.
+
+
+# Types
+
+@docs Annotations, MResult
+
+
+# Optimization
+
+@docs optimize
 
 -}
 

@@ -1,28 +1,55 @@
 module Compiler.AST.Optimized exposing
-    ( Choice(..)
-    , Decider(..)
-    , Def(..)
-    , Destructor(..)
-    , EffectsType(..)
-    , Expr(..)
-    , Global(..)
-    , GlobalGraph(..)
-    , LocalGraph(..)
-    , Main(..)
-    , Node(..)
-    , Path(..)
-    , addGlobalGraph
-    , addKernel
-    , addLocalGraph
-    , compareGlobal
-    , empty
-    , globalGraphDecoder
-    , globalGraphEncoder
-    , localGraphDecoder
-    , localGraphEncoder
-    , toComparableGlobal
-    , toKernelGlobal
+    ( Expr(..), Global(..), compareGlobal, toComparableGlobal
+    , Def(..), Destructor(..), Path(..)
+    , Decider(..), Choice(..)
+    , GlobalGraph(..), LocalGraph(..), Node(..), Main(..), EffectsType(..)
+    , empty, addGlobalGraph, addLocalGraph, addKernel, toKernelGlobal
+    , globalGraphEncoder, globalGraphDecoder
+    , localGraphEncoder, localGraphDecoder
     )
+
+{-| Optimized AST for code generation.
+
+This module defines the AST produced by the optimization phase and consumed
+by code generators. Key transformations from Canonical AST:
+
+  - Pattern matching compiled to decision trees (`Decider`, `Choice`)
+  - Tail-recursive functions identified and marked (`TailCall`, `TailDef`)
+  - Global references resolved to `Global` identifiers
+  - Destructuring patterns converted to `Path` navigation
+
+
+# Expressions
+
+@docs Expr, Global, compareGlobal, toComparableGlobal
+
+
+# Definitions
+
+@docs Def, Destructor, Path
+
+
+# Pattern Matching
+
+Decision trees compile pattern matches into efficient branching:
+
+@docs Decider, Choice
+
+
+# Dependency Graphs
+
+The compiler builds a graph of definitions for dead code elimination:
+
+@docs GlobalGraph, LocalGraph, Node, Main, EffectsType
+@docs empty, addGlobalGraph, addLocalGraph, addKernel, toKernelGlobal
+
+
+# Binary Serialization
+
+@docs globalGraphEncoder, globalGraphDecoder
+@docs localGraphEncoder, localGraphDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

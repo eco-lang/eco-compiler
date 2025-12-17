@@ -84,24 +84,33 @@ emptyState =
 
 
 -- ====== Solver State ======
-
-
 -- Maps variable names to their unification variables.
+
+
 type alias Env =
     Dict String Name.Name Variable
 
 
+
 -- Mutable array of variable pools indexed by rank.
+
+
 type alias Pools =
     IORef (Array (Maybe (List Variable)))
 
 
+
 -- Solver state containing environment, current mark, and accumulated errors.
+
+
 type State
     = State Env Mark (List Error.Error)
 
 
+
 -- Main solver loop using tail recursion via IO.loop.
+
+
 solve : Env -> Int -> Pools -> State -> Constraint -> IO State
 solve env rank pools state constraint =
     IO.loop solveHelp ( ( env, rank ), ( pools, state ), ( constraint, identity ) )

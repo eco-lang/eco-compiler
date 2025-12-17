@@ -1,61 +1,66 @@
 module Compiler.Data.Name exposing
     ( Name
-    , array
-    , basics
-    , bitwise
-    , bool
-    , bytes
-    , char
-    , cmd
-    , debug
-    , debugger
-    , dict
-    , dollar
-    , false
-    , float
-    , fromManyNames
-    , fromPtr
-    , fromTypeVariable
-    , fromTypeVariableScheme
-    , fromVarIndex
-    , fromWords
-    , getKernel
-    , hasDot
-    , identity_
-    , int
-    , isAppendableType
-    , isCompappendType
-    , isComparableType
-    , isKernel
-    , isNumberType
-    , jsArray
-    , json
-    , list
-    , mainModule
-    , main_
-    , maybe
-    , negate
-    , node
-    , platform
-    , program
-    , replModule
-    , replValueToPrint
-    , result
-    , router
-    , sepBy
-    , shader
-    , splitDots
-    , string
-    , sub
-    , task
-    , toChars
-    , toElmString
-    , true
-    , tuple
-    , utils
-    , value
-    , virtualDom
+    , toChars, toElmString
+    , fromPtr, fromVarIndex, fromTypeVariable, fromTypeVariableScheme, fromManyNames, fromWords
+    , hasDot, splitDots, sepBy
+    , isKernel, getKernel
+    , isNumberType, isComparableType, isAppendableType, isCompappendType
+    , int, float, bool, char, string, maybe, result, list, array, dict, bytes, tuple, jsArray, json, task, router, cmd, sub
+    , platform, virtualDom, shader, debug, debugger, bitwise, basics, utils
+    , negate, true, false, value, node, program, main_, mainModule, dollar, identity_, replModule, replValueToPrint
     )
+
+{-| String-based names used throughout the compiler for identifiers, module names, and type names.
+
+This module provides utilities for working with names including creating them from various sources,
+checking for special prefixes like kernel modules, and providing constants for common Elm types and modules.
+
+
+# Core Type
+
+@docs Name
+
+
+# Conversion
+
+@docs toChars, toElmString
+
+
+# Construction
+
+@docs fromPtr, fromVarIndex, fromTypeVariable, fromTypeVariableScheme, fromManyNames, fromWords
+
+
+# Name Analysis
+
+@docs hasDot, splitDots, sepBy
+
+
+# Kernel Module Utilities
+
+@docs isKernel, getKernel
+
+
+# Type Constraint Prefixes
+
+@docs isNumberType, isComparableType, isAppendableType, isCompappendType
+
+
+# Common Type Names
+
+@docs int, float, bool, char, string, maybe, result, list, array, dict, bytes, tuple, jsArray, json, task, router, cmd, sub
+
+
+# Module Names
+
+@docs platform, virtualDom, shader, debug, debugger, bitwise, basics, utils
+
+
+# Special Names
+
+@docs negate, true, false, value, node, program, main_, mainModule, dollar, identity_, replModule, replValueToPrint
+
+-}
 
 import Utils.Crash exposing (crash)
 

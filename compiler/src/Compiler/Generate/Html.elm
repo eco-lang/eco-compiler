@@ -1,7 +1,17 @@
-module Compiler.Generate.Html exposing
-    ( leadingLines
-    , sandwich
-    )
+module Compiler.Generate.Html exposing (sandwich, leadingLines)
+
+{-| HTML template generation for standalone Elm programs.
+
+This module provides functions to wrap generated JavaScript in a complete HTML document
+that can be opened directly in a browser. The template includes basic styling, error
+handling, and initialization logic.
+
+
+# Template Generation
+
+@docs sandwich, leadingLines
+
+-}
 
 import Compiler.Data.Name exposing (Name)
 

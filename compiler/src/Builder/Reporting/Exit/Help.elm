@@ -1,14 +1,31 @@
 module Builder.Reporting.Exit.Help exposing
-    ( Report
-    , compilerReport
-    , docReport
-    , jsonReport
-    , report
-    , reportToDoc
-    , reportToJson
-    , toStderr
-    , toStdout
+    ( Report, report, docReport, jsonReport, compilerReport
+    , reportToDoc, reportToJson
+    , toStdout, toStderr
     )
+
+{-| Helpers for building and outputting error reports from the build system.
+
+This module provides utilities for constructing and rendering error reports,
+supporting both human-readable terminal output and JSON serialization for
+editor integrations.
+
+
+# Report Construction
+
+@docs Report, report, docReport, jsonReport, compilerReport
+
+
+# Conversion
+
+@docs reportToDoc, reportToJson
+
+
+# Output
+
+@docs toStdout, toStderr
+
+-}
 
 import Compiler.Json.Encode as E
 import Compiler.Reporting.Doc as D

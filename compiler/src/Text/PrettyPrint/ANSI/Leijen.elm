@@ -1,39 +1,68 @@
 module Text.PrettyPrint.ANSI.Leijen exposing
-    ( Color(..)
-    , Doc
-    , SimpleDoc(..)
-    , Style
-    , a
-    , align
-    , append
-    , black
-    , blue
-    , cat
-    , cyan
-    , displayIO
-    , displayS
-    , dullcyan
-    , dullred
-    , dullyellow
-    , empty
-    , fill
-    , fillSep
-    , green
-    , hang
-    , hcat
-    , hsep
-    , indent
-    , magenta
-    , plain
-    , plus
-    , red
-    , renderPretty
-    , sep
-    , text
-    , underline
-    , vcat
-    , yellow
+    ( Doc, SimpleDoc(..), Style, Color(..)
+    , text, empty
+    , append, plus, a
+    , align, indent, hang, fill
+    , cat, hcat, vcat, sep, hsep, fillSep
+    , plain, underline
+    , red, green, blue, cyan, magenta, yellow, black
+    , dullred, dullcyan, dullyellow
+    , renderPretty, displayS, displayIO
     )
+
+{-| Pretty printing library with ANSI terminal color and style support.
+
+This module provides a document-based pretty printing system that supports ANSI escape codes
+for terminal output. It combines layout combinators with styling functions to create
+formatted, colorized text output. The implementation wraps a generic pretty printer with
+ANSI SGR (Select Graphic Rendition) command generation.
+
+
+# Core Types
+
+@docs Doc, SimpleDoc, Style, Color
+
+
+# Document Construction
+
+@docs text, empty
+
+
+# Document Combinators
+
+@docs append, plus, a
+
+
+# Layout Combinators
+
+@docs align, indent, hang, fill
+
+
+# List Combinators
+
+@docs cat, hcat, vcat, sep, hsep, fillSep
+
+
+# Styling
+
+@docs plain, underline
+
+
+# Colors (Vivid)
+
+@docs red, green, blue, cyan, magenta, yellow, black
+
+
+# Colors (Dull)
+
+@docs dullred, dullcyan, dullyellow
+
+
+# Rendering
+
+@docs renderPretty, displayS, displayIO
+
+-}
 
 import Pretty as P
 import Pretty.Renderer as PR

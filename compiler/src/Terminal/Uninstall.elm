@@ -1,8 +1,25 @@
 module Terminal.Uninstall exposing
-    ( Args(..)
-    , Flags(..)
-    , run
+    ( run
+    , Args(..), Flags(..)
     )
+
+{-| Package removal command for cleaning up dependencies.
+
+This module implements the `uninstall` command which removes packages from the
+project's elm.json file. It handles dependency resolution to ensure the project
+remains in a valid state after package removal.
+
+
+# Command Entry
+
+@docs run
+
+
+# Configuration
+
+@docs Args, Flags
+
+-}
 
 import Builder.BackgroundWriter as BW
 import Builder.Deps.Solver as Solver

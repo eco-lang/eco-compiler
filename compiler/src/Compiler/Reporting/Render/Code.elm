@@ -1,13 +1,34 @@
 module Compiler.Reporting.Render.Code exposing
-    ( Next(..)
-    , Source
-    , nextLineStartsWithCloseCurly
-    , nextLineStartsWithKeyword
-    , toPair
-    , toSnippet
-    , toSource
-    , whatIsNext
+    ( Source, toSource
+    , toSnippet, toPair
+    , Next(..), whatIsNext
+    , nextLineStartsWithKeyword, nextLineStartsWithCloseCurly
     )
+
+{-| Source code rendering for error messages.
+
+This module handles the visual presentation of source code snippets in error
+messages. It provides line numbering, syntax highlighting, underlines pointing
+to problem areas, and context-aware formatting that makes errors easy to
+locate and understand.
+
+
+# Source Representation
+
+@docs Source, toSource
+
+
+# Snippet Rendering
+
+@docs toSnippet, toPair
+
+
+# Context Analysis
+
+@docs Next, whatIsNext
+@docs nextLineStartsWithKeyword, nextLineStartsWithCloseCurly
+
+-}
 
 import Char
 import Compiler.Parse.Primitives exposing (Col, Row)

@@ -1,5 +1,18 @@
 module Compiler.Elm.Compiler.Imports exposing (defaults)
 
+{-| Default imports for all Elm modules.
+
+Defines the implicit imports that are automatically available in every Elm module
+without explicit import statements. Includes core types like List, Maybe, Result,
+and the Basics module functions.
+
+
+# Defaults
+
+@docs defaults
+
+-}
+
 import Compiler.AST.Source as Src
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName

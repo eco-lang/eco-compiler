@@ -1,9 +1,30 @@
 module Compiler.Type.Constrain.Pattern exposing
-    ( Header
-    , State(..)
-    , add
-    , emptyState
+    ( State(..), Header
+    , add, emptyState
     )
+
+{-| Type constraint generation for pattern matching.
+
+This module generates type constraints for patterns used in case expressions, function
+arguments, let bindings, and destructuring assignments. Patterns introduce new variables
+into scope and constrain their types based on the pattern structure (e.g., a list pattern
+constrains the matched value to be a list).
+
+The State accumulates information about variables introduced by patterns, including their
+names, types, and regions for error reporting. Constraints are stored in reverse order
+for efficient appending and later reversed when complete.
+
+
+# Types
+
+@docs State, Header
+
+
+# Constraint Generation
+
+@docs add, emptyState
+
+-}
 
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Index as Index

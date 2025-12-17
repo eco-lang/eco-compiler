@@ -1,7 +1,6 @@
 module Compiler.Optimize.Module exposing
-    ( Annotations
-    , MResult
-    , optimize
+    ( optimize
+    , Annotations, MResult
     )
 
 {-| Optimization phase entry point that transforms canonical AST into optimized representation.
@@ -85,7 +84,10 @@ type alias Nodes =
     Dict (List String) Opt.Global Opt.Node
 
 
+
 -- Registers all union type constructors in the optimization graph.
+
+
 addUnions : IO.Canonical -> Dict String Name.Name Can.Union -> Opt.LocalGraph -> Opt.LocalGraph
 addUnions home unions (Opt.LocalGraph main nodes fields) =
     Opt.LocalGraph main (Dict.foldr compare (\_ -> addUnion home) nodes unions) fields
@@ -116,9 +118,9 @@ addCtorNode home opts (Can.Ctor c) nodes =
 
 
 -- ====== Type Aliases ======
-
-
 -- Converts record type aliases into constructor functions.
+
+
 addAliases : IO.Canonical -> Dict String Name.Name Can.Alias -> Opt.LocalGraph -> Opt.LocalGraph
 addAliases home aliases graph =
     Dict.foldr compare (addAlias home) graph aliases

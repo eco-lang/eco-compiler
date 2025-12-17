@@ -1,12 +1,37 @@
 module Compiler.Data.NonEmptyList exposing
     ( Nonempty(..)
-    , cons
-    , foldr
-    , map
-    , singleton
-    , sortBy
+    , singleton, cons
     , toList
+    , map, foldr, sortBy
     )
+
+{-| A list that is guaranteed to contain at least one element.
+
+This type provides compile-time guarantees that operations on the list
+will never fail due to emptiness, eliminating the need for Maybe wrappers
+in many scenarios.
+
+
+# Type
+
+@docs Nonempty
+
+
+# Construction
+
+@docs singleton, cons
+
+
+# Conversion
+
+@docs toList
+
+
+# Transformations
+
+@docs map, foldr, sortBy
+
+-}
 
 -- LIST
 

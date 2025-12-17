@@ -1,7 +1,17 @@
-module Builder.Deps.Website exposing
-    ( metadata
-    , route
-    )
+module Builder.Deps.Website exposing (route, metadata)
+
+{-| Constructs URLs for the Elm package registry website.
+
+This module provides utilities for building URLs to access package metadata, documentation,
+and registry endpoints. It respects the GUIDA\_REGISTRY environment variable to support
+custom package registries, defaulting to package.elm-lang.org.
+
+
+# URL Construction
+
+@docs route, metadata
+
+-}
 
 import Builder.Http as Http
 import Compiler.Elm.Package as Pkg

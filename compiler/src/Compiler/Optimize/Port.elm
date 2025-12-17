@@ -1,8 +1,34 @@
 module Compiler.Optimize.Port exposing
-    ( toDecoder
-    , toEncoder
-    , toFlagsDecoder
+    ( toEncoder
+    , toDecoder, toFlagsDecoder
     )
+
+{-| Generates JSON encoders and decoders for port types.
+
+This module analyzes Elm types used in port definitions and automatically
+generates the necessary encoder and decoder expressions for converting between
+Elm values and JavaScript JSON values. It handles:
+
+  - Primitives (Int, Float, Bool, String)
+  - Collections (List, Array, Maybe)
+  - Tuples
+  - Records
+  - Special types (Bytes, Json.Encode.Value)
+
+The generated code ensures type-safe communication across the Elm/JavaScript
+boundary without requiring manual encoder/decoder implementations.
+
+
+# Encoders
+
+@docs toEncoder
+
+
+# Decoders
+
+@docs toDecoder, toFlagsDecoder
+
+-}
 
 import Basics.Extra exposing (flip)
 import Compiler.AST.Canonical as Can

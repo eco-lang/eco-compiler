@@ -1,19 +1,50 @@
 module Compiler.Reporting.Error.Type exposing
-    ( Category(..)
-    , Context(..)
-    , Error(..)
-    , Expected(..)
-    , MaybeName(..)
-    , PCategory(..)
-    , PContext(..)
-    , PExpected(..)
-    , SubContext(..)
-    , errorDecoder
-    , errorEncoder
-    , ptypeReplace
+    ( Error(..)
+    , Expected(..), Context(..), SubContext(..), Category(..), MaybeName(..)
+    , PExpected(..), PContext(..), PCategory(..)
+    , typeReplace, ptypeReplace
     , toReport
-    , typeReplace
+    , errorEncoder, errorDecoder
     )
+
+{-| Type error reporting for the type checker.
+
+This module defines type errors that occur during type inference and checking.
+It captures rich contextual information about where type mismatches occur,
+what was expected versus what was found, and provides utilities for generating
+detailed, actionable error messages with type diffs.
+
+
+# Errors
+
+@docs Error
+
+
+# Expression Type Errors
+
+@docs Expected, Context, SubContext, Category, MaybeName
+
+
+# Pattern Type Errors
+
+@docs PExpected, PContext, PCategory
+
+
+# Type Manipulation
+
+@docs typeReplace, ptypeReplace
+
+
+# Reporting
+
+@docs toReport
+
+
+# Serialization
+
+@docs errorEncoder, errorDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

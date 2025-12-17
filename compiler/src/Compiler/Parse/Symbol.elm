@@ -1,10 +1,31 @@
 module Compiler.Parse.Symbol exposing
-    ( BadOperator(..)
-    , badOperatorDecoder
-    , badOperatorEncoder
-    , binopCharSet
-    , operator
+    ( operator, binopCharSet
+    , BadOperator(..)
+    , badOperatorEncoder, badOperatorDecoder
     )
+
+{-| Parser for operators and symbolic tokens in Elm.
+
+This module handles parsing of infix operators composed of symbolic characters.
+It validates operators and provides error types for reserved symbolic sequences
+that cannot be used as custom operators.
+
+
+# Operator Parsing
+
+@docs operator, binopCharSet
+
+
+# Error Types
+
+@docs BadOperator
+
+
+# Serialization
+
+@docs badOperatorEncoder, badOperatorDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

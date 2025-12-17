@@ -1,24 +1,68 @@
 module Compiler.Elm.Interface exposing
-    ( Alias(..)
-    , Binop(..)
-    , BinopData
-    , DependencyInterface(..)
-    , Interface(..)
-    , InterfaceData
+    ( Interface(..), InterfaceData
     , Union(..)
-    , dependencyInterfaceDecoder
-    , dependencyInterfaceEncoder
-    , extractAlias
-    , extractUnion
+    , Alias(..)
+    , Binop(..), BinopData
+    , DependencyInterface(..)
     , fromModule
-    , interfaceDecoder
-    , interfaceEncoder
-    , private
-    , privatize
-    , public
-    , toPublicAlias
-    , toPublicUnion
+    , public, private, privatize
+    , toPublicUnion, toPublicAlias, extractUnion, extractAlias
+    , interfaceEncoder, interfaceDecoder, dependencyInterfaceEncoder, dependencyInterfaceDecoder
     )
+
+{-| Module interface representation for type checking and compilation.
+
+An interface captures the public API surface of a compiled Elm module, including exported
+values, types, type aliases, and operators. Interfaces distinguish between public and private
+declarations, and between open and closed union types. This information is used for separate
+compilation and dependency management.
+
+
+# Interface Types
+
+@docs Interface, InterfaceData
+
+
+# Union Types
+
+@docs Union
+
+
+# Type Aliases
+
+@docs Alias
+
+
+# Binary Operators
+
+@docs Binop, BinopData
+
+
+# Dependency Interfaces
+
+@docs DependencyInterface
+
+
+# Building Interfaces
+
+@docs fromModule
+
+
+# Visibility Conversion
+
+@docs public, private, privatize
+
+
+# Extracting Public Information
+
+@docs toPublicUnion, toPublicAlias, extractUnion, extractAlias
+
+
+# Binary Encoding/Decoding
+
+@docs interfaceEncoder, interfaceDecoder, dependencyInterfaceEncoder, dependencyInterfaceDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

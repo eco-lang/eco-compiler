@@ -1,17 +1,43 @@
 module Compiler.Reporting.Error.Canonicalize exposing
-    ( BadArityContext(..)
-    , DuplicatePatternContext(..)
-    , Error(..)
-    , InvalidPayload(..)
-    , PortProblem(..)
-    , PossibleNames
-    , VarKind(..)
-    , errorDecoder
-    , errorEncoder
-    , invalidPayloadDecoder
-    , invalidPayloadEncoder
+    ( Error(..)
+    , BadArityContext(..), DuplicatePatternContext(..), VarKind(..)
+    , InvalidPayload(..), PortProblem(..), PossibleNames
     , toReport
+    , errorEncoder, errorDecoder
+    , invalidPayloadEncoder, invalidPayloadDecoder
     )
+
+{-| Error reporting for the canonicalization phase.
+
+This module defines errors that occur during canonicalization, which transforms
+parsed source AST into canonical AST. Canonicalization resolves names, validates
+declarations, checks for ambiguities, and ensures program structure is valid.
+Errors include name resolution failures, duplicate definitions, invalid ports,
+recursive type issues, and scope violations.
+
+
+# Errors
+
+@docs Error
+
+
+# Supporting Types
+
+@docs BadArityContext, DuplicatePatternContext, VarKind
+@docs InvalidPayload, PortProblem, PossibleNames
+
+
+# Reporting
+
+@docs toReport
+
+
+# Serialization
+
+@docs errorEncoder, errorDecoder
+@docs invalidPayloadEncoder, invalidPayloadDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

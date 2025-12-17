@@ -7,10 +7,12 @@ module Data.Set exposing
     , map, foldl, foldr, filter, partition
     )
 
-{-| **Initial implementation from `Gizra/elm-all-set/1.0.1`**
+{-| A set implementation for values of any type, backed by association lists.
 
-A set of unique values. The values can be any type, as the implementation is
-based on [AssocList](https://package.elm-lang.org/packages/pzp1997/assoc-list/latest)
+This module provides sets that can contain any type of value, not just comparable types.
+You provide a function to convert values to comparable representations for internal storage.
+The implementation is based on Data.Map, which uses association lists internally.
+Initial implementation from `Gizra/elm-all-set/1.0.1`.
 
 
 # Sets

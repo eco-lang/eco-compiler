@@ -6,12 +6,40 @@ module Common.Format.Box exposing
     , render
     )
 
-{-| Ref.: `elm-format-lib/src/Box.hs`
+{-| A box-based layout engine for pretty-printing formatted code.
+
+This module provides a two-level abstraction for text layout: `Line` represents a single
+line of text with proper handling of spaces and tabs, while `Box` represents potentially
+multi-line content that can be stacked vertically or kept on a single line.
+
+The layout algorithm automatically handles indentation, line breaking, and alignment to
+produce consistently formatted output. Tab stops are aligned to 4-space boundaries.
+
+Reference implementation: `elm-format-lib/src/Box.hs`
+
+
+# Line Construction
 
 @docs Line, identifier, keyword, punc, literal, row, space
+
+
+# Box Construction
+
 @docs Box, blankLine, line, mustBreak, stack_, stack1, andThen
+
+
+# Box Properties
+
 @docs isLine, allSingles, lineLength
+
+
+# Box Transformations
+
 @docs indent, prefix, addSuffix
+
+
+# Rendering
+
 @docs render
 
 -}

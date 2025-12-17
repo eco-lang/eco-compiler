@@ -1,19 +1,38 @@
 module Compiler.Optimize.TypedExpression exposing
-    ( Annotations
-    , Cycle
+    ( Annotations, Cycle
+    , optimize, optimizePotentialTailCall
     , destructArgs
-    , optimize
-    , optimizePotentialTailCall
     )
 
 {-| Typed expression optimization.
 
-Like Expression.elm but preserves type information on every expression.
-The key differences:
+Optimizes canonical expressions to typed optimized expressions while preserving
+full type information. Unlike the regular Expression optimizer, this maintains
+Can.Type annotations on every expression node and tracks local variable types
+through a context, enabling type-aware optimizations and backends that need
+type information.
 
-1.  Every expression carries its Can.Type
-2.  We look up types from annotations and track local variable types
-3.  Function types are decomposed to get argument/return types
+Key features:
+
+  - Every expression carries its Can.Type
+  - Local variable types tracked through Names context
+  - Function types decomposed for argument and return types
+  - Tail call optimization with type preservation
+
+
+# Types
+
+@docs Annotations, Cycle
+
+
+# Optimization
+
+@docs optimize, optimizePotentialTailCall
+
+
+# Destructuring
+
+@docs destructArgs
 
 -}
 

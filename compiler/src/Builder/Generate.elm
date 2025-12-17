@@ -1,13 +1,38 @@
 module Builder.Generate exposing
-    ( debug
-    , dev
-    , javascriptBackend
-    , mlirBackend
-    , monoDev
+    ( javascriptBackend, mlirBackend
+    , dev, debug, typedDev, monoDev
     , prod
     , repl
-    , typedDev
     )
+
+{-| Code generation orchestration for the Elm compiler.
+
+This module coordinates the transformation of compiled Elm code into executable output
+through various code generation backends. It handles loading optimized artifacts from
+disk, preparing them for code generation, and invoking the appropriate backend to
+produce JavaScript, MLIR, or other target code.
+
+
+# Code Generation Backends
+
+@docs javascriptBackend, mlirBackend
+
+
+# Development Builds
+
+@docs dev, debug, typedDev, monoDev
+
+
+# Production Builds
+
+@docs prod
+
+
+# REPL Code Generation
+
+@docs repl
+
+-}
 
 import Builder.Build as Build
 import Builder.Elm.Details as Details

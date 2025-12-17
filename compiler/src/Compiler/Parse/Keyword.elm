@@ -1,29 +1,49 @@
 module Compiler.Parse.Keyword exposing
-    ( alias_
-    , as_
-    , case_
-    , command_
-    , effect_
-    , else_
-    , exposing_
-    , if_
-    , import_
-    , in_
-    , infix_
-    , k4
-    , k5
-    , left_
-    , let_
-    , module_
-    , non_
-    , of_
-    , port_
-    , right_
-    , subscription_
-    , then_
-    , type_
-    , where_
+    ( type_, alias_, port_
+    , if_, then_, else_, case_, of_, let_, in_
+    , module_, import_, exposing_, as_
+    , infix_, left_, right_, non_
+    , effect_, where_, command_, subscription_
+    , k4, k5
     )
+
+{-| Parser for Elm language keywords.
+
+This module provides parsers for all reserved keywords in Elm. Each parser
+ensures that the keyword is not followed by identifier characters (to avoid
+matching prefixes like "types" when looking for "type").
+
+
+# Declaration Keywords
+
+@docs type_, alias_, port_
+
+
+# Expression Keywords
+
+@docs if_, then_, else_, case_, of_, let_, in_
+
+
+# Import Keywords
+
+@docs module_, import_, exposing_, as_
+
+
+# Infix Keywords
+
+@docs infix_, left_, right_, non_
+
+
+# Effect Keywords
+
+@docs effect_, where_, command_, subscription_
+
+
+# Keyword Helpers
+
+@docs k4, k5
+
+-}
 
 import Compiler.Parse.Primitives as P exposing (Col, Parser, Row)
 import Compiler.Parse.Variable as Var

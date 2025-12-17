@@ -1,9 +1,24 @@
 module Compiler.Reporting.Error.Json exposing
-    ( Context(..)
-    , FailureToReport(..)
-    , Reason(..)
-    , toReport
+    ( toReport
+    , Context(..), FailureToReport(..), Reason(..)
     )
+
+{-| Error reporting for JSON parsing and decoding failures.
+
+This module converts low-level JSON parse errors and decode problems into
+user-friendly error reports with source code snippets and helpful suggestions.
+
+
+# Error Reporting
+
+@docs toReport
+
+
+# Error Context
+
+@docs Context, FailureToReport, Reason
+
+-}
 
 import Builder.Reporting.Exit.Help as Help
 import Compiler.Data.NonEmptyList as NE

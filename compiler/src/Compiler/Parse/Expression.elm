@@ -1,7 +1,23 @@
-module Compiler.Parse.Expression exposing
-    ( expression
-    , record
-    )
+module Compiler.Parse.Expression exposing (expression, record)
+
+{-| Expression parser for Elm source code.
+
+This module parses Elm expressions into the Source AST, handling:
+
+  - Literals (strings, numbers, characters)
+  - Variables and qualified names
+  - Operators and operator sections
+  - Function application and lambdas
+  - Control flow (if/then/else, case/of, let/in)
+  - Data structures (lists, tuples, records)
+  - Record access and update syntax
+
+
+# Parsing
+
+@docs expression, record
+
+-}
 
 import Compiler.AST.Source as Src
 import Compiler.Data.Name as Name exposing (Name)

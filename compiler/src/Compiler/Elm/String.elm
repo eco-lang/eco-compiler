@@ -3,6 +3,23 @@ module Compiler.Elm.String exposing
     , fromChunks
     )
 
+{-| String escape sequence handling for Elm source code.
+
+Processes string chunks with escape sequences and unicode code points,
+converting them into properly escaped JavaScript string literals.
+
+
+# Types
+
+@docs Chunk
+
+
+# Operations
+
+@docs fromChunks
+
+-}
+
 import Hex
 import Numeric.Integer as NI
 

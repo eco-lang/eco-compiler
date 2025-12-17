@@ -1,17 +1,39 @@
 module Compiler.Nitpick.PatternMatches exposing
-    ( Context(..)
-    , Error(..)
-    , Literal(..)
-    , Pattern(..)
+    ( Pattern(..), Literal(..)
+    , Error(..), Context(..)
     , check
-    , errorDecoder
-    , errorEncoder
+    , errorEncoder, errorDecoder
     )
 
-{- The algorithm used here comes from "Warnings for Pattern Matching"
-   by Luc Maranget. Check it out for more information!
+{-| Pattern match exhaustiveness and redundancy checker for Elm.
 
-   http://moscova.inria.fr/~maranget/papers/warn/warn.pdf
+This module implements Luc Maranget's algorithm for detecting incomplete and redundant
+patterns in case expressions, function arguments, and let destructuring. It simplifies
+canonical patterns into a normalized form, then analyzes them to find missing cases
+(non-exhaustive matches) and unreachable branches (redundant patterns).
+
+The algorithm comes from "Warnings for Pattern Matching" by Luc Maranget:
+<http://moscova.inria.fr/~maranget/papers/warn/warn.pdf>
+
+
+# Pattern Representation
+
+@docs Pattern, Literal
+
+
+# Error Reporting
+
+@docs Error, Context
+
+
+# Checking
+
+@docs check
+
+
+# Serialization
+
+@docs errorEncoder, errorDecoder
 
 -}
 

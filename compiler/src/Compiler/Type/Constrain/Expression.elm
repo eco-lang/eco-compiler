@@ -1,8 +1,29 @@
 module Compiler.Type.Constrain.Expression exposing
     ( RTV
-    , constrainDef
-    , constrainRecursiveDefs
+    , constrainDef, constrainRecursiveDefs
     )
+
+{-| Type constraint generation for expressions.
+
+This module walks through canonical expression AST nodes and generates type constraints
+that will be solved during type inference. It handles all expression forms including
+literals, variables, function calls, pattern matching, records, and more.
+
+The constraint generation process creates relationships between types (e.g., "this
+function argument must have the same type as this parameter") without immediately
+solving them. The actual unification happens in a separate solving phase.
+
+
+# Types
+
+@docs RTV
+
+
+# Constraint Generation
+
+@docs constrainDef, constrainRecursiveDefs
+
+-}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Utils.Shader as Shader

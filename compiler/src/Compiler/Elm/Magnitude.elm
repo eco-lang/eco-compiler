@@ -1,8 +1,25 @@
 module Compiler.Elm.Magnitude exposing
     ( Magnitude(..)
-    , compare
-    , toChars
+    , compare, toChars
     )
+
+{-| Semantic versioning magnitude types.
+
+Represents the three levels of version changes in semantic versioning:
+PATCH for bug fixes, MINOR for backward-compatible additions, and MAJOR
+for breaking changes.
+
+
+# Types
+
+@docs Magnitude
+
+
+# Operations
+
+@docs compare, toChars
+
+-}
 
 -- MAGNITUDE
 

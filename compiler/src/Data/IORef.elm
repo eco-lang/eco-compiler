@@ -1,20 +1,46 @@
 module Data.IORef exposing
     ( IORef(..)
-    , modifyIORefDescriptor
-    , modifyIORefMVector
-    , newIORefDescriptor
-    , newIORefMVector
-    , newIORefPointInfo
-    , newIORefWeight
-    , readIORefDescriptor
-    , readIORefMVector
-    , readIORefPointInfo
-    , readIORefWeight
-    , writeIORefDescriptor
-    , writeIORefMVector
-    , writeIORefPointInfo
-    , writeIORefWeight
+    , newIORefWeight, newIORefPointInfo, newIORefDescriptor, newIORefMVector
+    , readIORefWeight, readIORefPointInfo, readIORefDescriptor, readIORefMVector
+    , writeIORefWeight, writeIORefPointInfo, writeIORefDescriptor, writeIORefMVector
+    , modifyIORefDescriptor, modifyIORefMVector
     )
+
+{-| Mutable references in the IO monad for the type checker's union-find algorithm.
+
+This module implements IORef, a mutable reference type used within the IO monad during type checking.
+Each IORef stores an index into one of several type-specific arrays held in the IO state, enabling
+efficient mutable updates to type checker data structures like weights, point information, and descriptors.
+
+The type checker uses separate arrays for different value types (Weight, PointInfo, Descriptor, MVector)
+to maintain type safety while allowing mutation within the IO monad.
+
+
+# Types
+
+@docs IORef
+
+
+# Creating References
+
+@docs newIORefWeight, newIORefPointInfo, newIORefDescriptor, newIORefMVector
+
+
+# Reading References
+
+@docs readIORefWeight, readIORefPointInfo, readIORefDescriptor, readIORefMVector
+
+
+# Writing References
+
+@docs writeIORefWeight, writeIORefPointInfo, writeIORefDescriptor, writeIORefMVector
+
+
+# Modifying References
+
+@docs modifyIORefDescriptor, modifyIORefMVector
+
+-}
 
 import Array exposing (Array)
 import System.TypeCheck.IO as IO exposing (IO)

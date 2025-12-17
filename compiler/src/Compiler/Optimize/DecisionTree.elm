@@ -1,13 +1,37 @@
 module Compiler.Optimize.DecisionTree exposing
-    ( DecisionTree(..)
-    , Path(..)
-    , Test(..)
+    ( DecisionTree(..), Test(..), Path(..)
     , compile
-    , pathDecoder
-    , pathEncoder
-    , testDecoder
-    , testEncoder
+    , pathEncoder, pathDecoder, testEncoder, testDecoder
     )
+
+{-| Compiles pattern matching into efficient decision trees.
+
+This module implements the algorithm described in "When Do Match-Compilation
+Heuristics Matter?" by Kevin Scott and Norman Ramsey. It converts a simple list
+of patterns into an optimized decision tree that minimizes the number of runtime
+tests needed to determine which branch to execute.
+
+The algorithm uses heuristics similar to SML/NJ:
+
+  - Minimize the number of branches with default behavior
+  - Minimize the branching factor at each decision point
+
+
+# Core Types
+
+@docs DecisionTree, Test, Path
+
+
+# Compilation
+
+@docs compile
+
+
+# Binary Encoding
+
+@docs pathEncoder, pathDecoder, testEncoder, testDecoder
+
+-}
 
 {- To learn more about how this works, definitely read through:
 

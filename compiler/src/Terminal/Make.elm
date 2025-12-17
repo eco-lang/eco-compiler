@@ -1,16 +1,37 @@
 module Terminal.Make exposing
-    ( Flags(..)
-    , FlagsData
-    , Output(..)
-    , ReportType(..)
-    , docsFile
-    , output
-    , parseDocsFile
-    , parseOutput
-    , parseReportType
-    , reportType
-    , run
+    ( run
+    , Flags(..), FlagsData, Output(..), ReportType(..)
+    , output, reportType, docsFile
+    , parseOutput, parseReportType, parseDocsFile
     )
+
+{-| Build command implementation for compiling Guida and Elm code.
+
+This module handles the `make` command which compiles source files into JavaScript,
+HTML, MLIR, or validates code without output. It supports debug mode, optimization,
+source maps, and documentation generation.
+
+
+# Command Entry
+
+@docs run
+
+
+# Configuration Types
+
+@docs Flags, FlagsData, Output, ReportType
+
+
+# Parser Definitions
+
+@docs output, reportType, docsFile
+
+
+# Parser Functions
+
+@docs parseOutput, parseReportType, parseDocsFile
+
+-}
 
 import Builder.BackgroundWriter as BW
 import Builder.Build as Build

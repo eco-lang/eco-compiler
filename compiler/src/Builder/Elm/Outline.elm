@@ -1,21 +1,55 @@
 module Builder.Elm.Outline exposing
-    ( AppOutline(..)
-    , AppOutlineData
-    , Decoder
-    , Exposed(..)
-    , Outline(..)
-    , PkgOutline(..)
-    , PkgOutlineData
-    , SrcDir(..)
-    , decoder
-    , defaultSummary
-    , flattenExposed
+    ( Outline(..), AppOutline(..), AppOutlineData, PkgOutline(..), PkgOutlineData
+    , SrcDir(..), srcDirEncoder, srcDirDecoder
+    , Exposed(..), flattenExposed
+    , read, write
+    , Decoder, decoder
     , getAllModulePaths
-    , read
-    , srcDirDecoder
-    , srcDirEncoder
-    , write
+    , defaultSummary
     )
+
+{-| Project outline parsing and validation for elm.json files.
+
+This module handles reading, parsing, and validating elm.json configuration files
+for both application and package projects. It validates dependencies, source
+directories, exposed modules, and enforces structural constraints.
+
+
+# Core Types
+
+@docs Outline, AppOutline, AppOutlineData, PkgOutline, PkgOutlineData
+
+
+# Source Directories
+
+@docs SrcDir, srcDirEncoder, srcDirDecoder
+
+
+# Exposed Modules
+
+@docs Exposed, flattenExposed
+
+
+# File Operations
+
+@docs read, write
+
+
+# JSON Decoding
+
+@docs Decoder, decoder
+
+
+# Module Discovery
+
+@docs getAllModulePaths
+
+
+# Utilities
+
+@docs defaultSummary
+
+-}
 
 import Basics.Extra as Basics
 import Builder.File as File

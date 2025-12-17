@@ -1,12 +1,37 @@
 module Terminal.Repl exposing
-    ( CategorizedInput(..)
+    ( run
     , Flags(..)
-    , Input(..)
-    , Lines(..)
+    , Input(..), CategorizedInput(..), Lines(..), Prefill(..)
     , Output(..)
-    , Prefill(..)
-    , run
     )
+
+{-| Interactive Read-Eval-Print Loop for Guida/Elm.
+
+This module implements an interactive programming session where users can type
+Elm expressions, declarations, imports, and type definitions, and see the results
+immediately. It provides a learning environment and quick experimentation tool.
+
+
+# Command Entry
+
+@docs run
+
+
+# Configuration
+
+@docs Flags
+
+
+# Input Processing
+
+@docs Input, CategorizedInput, Lines, Prefill
+
+
+# Output Generation
+
+@docs Output
+
+-}
 
 import Builder.BackgroundWriter as BW
 import Builder.Build as Build

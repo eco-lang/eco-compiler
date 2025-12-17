@@ -1,12 +1,31 @@
 module Compiler.Reporting.Error.Docs exposing
-    ( DefProblem(..)
-    , Error(..)
-    , NameProblem(..)
-    , SyntaxProblem(..)
-    , errorDecoder
-    , errorEncoder
+    ( Error(..), SyntaxProblem(..), NameProblem(..), DefProblem(..)
     , toReports
+    , errorEncoder, errorDecoder
     )
+
+{-| Error reporting for documentation comment validation.
+
+This module validates documentation comments in Elm packages, ensuring they
+follow the required format with proper @docs tags, type annotations, and
+alignment with the module's exposing list.
+
+
+# Errors
+
+@docs Error, SyntaxProblem, NameProblem, DefProblem
+
+
+# Reporting
+
+@docs toReports
+
+
+# Serialization
+
+@docs errorEncoder, errorDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

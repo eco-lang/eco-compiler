@@ -1,39 +1,73 @@
 module Compiler.Elm.ModuleName exposing
     ( Raw
-    , array
-    , basics
-    , bytes
-    , canonicalDecoder
-    , canonicalEncoder
-    , char
-    , cmd
-    , compareCanonical
-    , debug
-    , decoder
-    , dict
-    , encode
-    , jsonDecode
-    , jsonEncode
-    , list
-    , matrix4
-    , maybe
-    , platform
-    , rawDecoder
-    , rawEncoder
-    , result
-    , string
-    , sub
-    , texture
-    , toComparableCanonical
-    , toFilePath
-    , toHyphenPath
-    , tuple
-    , vector2
-    , vector3
-    , vector4
+    , toFilePath, toHyphenPath
+    , encode, decoder
+    , compareCanonical, toComparableCanonical
+    , basics, char, string, maybe, result, list, array, dict, tuple, platform, cmd, sub, debug
     , virtualDom
-    , webgl
+    , jsonDecode, jsonEncode
+    , bytes
+    , webgl, texture, vector2, vector3, vector4, matrix4
+    , canonicalEncoder, canonicalDecoder, rawEncoder, rawDecoder
     )
+
+{-| Utilities for working with Elm module names in their raw and canonical forms.
+
+This module provides parsers, encoders, decoders, and constants for Elm module names.
+Raw module names are dotted identifiers like "List" or "Dict.Extra". Canonical module
+names include both the package name and module name, fully qualifying the module.
+
+
+# Types
+
+@docs Raw
+
+
+# Path Conversion
+
+@docs toFilePath, toHyphenPath
+
+
+# JSON Encoding/Decoding
+
+@docs encode, decoder
+
+
+# Canonical Module Names
+
+@docs compareCanonical, toComparableCanonical
+
+
+# Core Modules
+
+@docs basics, char, string, maybe, result, list, array, dict, tuple, platform, cmd, sub, debug
+
+
+# HTML Modules
+
+@docs virtualDom
+
+
+# JSON Modules
+
+@docs jsonDecode, jsonEncode
+
+
+# Bytes Modules
+
+@docs bytes
+
+
+# WebGL Modules
+
+@docs webgl, texture, vector2, vector3, vector4, matrix4
+
+
+# Binary Encoding/Decoding
+
+@docs canonicalEncoder, canonicalDecoder, rawEncoder, rawDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

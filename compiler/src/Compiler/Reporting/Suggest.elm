@@ -1,7 +1,17 @@
-module Compiler.Reporting.Suggest exposing
-    ( rank
-    , sort
-    )
+module Compiler.Reporting.Suggest exposing (sort, rank)
+
+{-| Suggestion generation based on string similarity.
+
+This module uses Levenshtein distance to generate helpful suggestions when
+the compiler encounters an unknown name, helping users quickly identify typos
+and similar alternatives.
+
+
+# Suggestions
+
+@docs sort, rank
+
+-}
 
 import Levenshtein
 

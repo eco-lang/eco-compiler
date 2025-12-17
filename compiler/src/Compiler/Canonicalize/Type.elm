@@ -1,8 +1,25 @@
 module Compiler.Canonicalize.Type exposing
     ( CResult
-    , canonicalize
-    , toAnnotation
+    , canonicalize, toAnnotation
     )
+
+{-| Canonicalize Elm type annotations from source AST to canonical AST.
+
+This module transforms type expressions, validating type constructors, checking
+arity of type applications, resolving qualified type names, and collecting free
+type variables for use in polymorphic type schemes (Forall quantification).
+
+
+# Results
+
+@docs CResult
+
+
+# Canonicalization
+
+@docs canonicalize, toAnnotation
+
+-}
 
 import Basics.Extra exposing (flip)
 import Compiler.AST.Canonical as Can

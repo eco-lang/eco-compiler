@@ -1,14 +1,38 @@
 module Builder.Deps.Diff exposing
-    ( Changes(..)
-    , ModuleChanges(..)
-    , ModuleChangesData
-    , PackageChanges(..)
-    , bump
-    , diff
-    , getDocs
-    , moduleChangeMagnitude
-    , toMagnitude
+    ( PackageChanges(..), ModuleChanges(..), ModuleChangesData, Changes(..)
+    , diff, getDocs
+    , toMagnitude, moduleChangeMagnitude, bump
     )
+
+{-| Computes API differences between package versions to determine semantic version bumps.
+
+This module compares package documentation across versions, detecting breaking changes,
+new additions, and patches. It determines whether changes require MAJOR, MINOR, or PATCH
+version bumps according to semantic versioning rules.
+
+Key checks include:
+
+  - Type signature compatibility (including type variable renaming)
+  - Module additions and removals
+  - Public API changes in unions, aliases, values, and operators
+  - Operator precedence and associativity changes
+
+
+# Change Types
+
+@docs PackageChanges, ModuleChanges, ModuleChangesData, Changes
+
+
+# Diffing
+
+@docs diff, getDocs
+
+
+# Version Bumping
+
+@docs toMagnitude, moduleChangeMagnitude, bump
+
+-}
 
 import Builder.Deps.Website as Website
 import Builder.File as File

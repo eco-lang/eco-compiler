@@ -1,8 +1,25 @@
 module Compiler.Parse.Declaration exposing
     ( Decl(..)
-    , declaration
-    , infix_
+    , declaration, infix_
     )
+
+{-| Parser for top-level declarations in Elm modules.
+
+This module handles parsing of value definitions, type aliases, custom type
+declarations, and port declarations. It supports doc comments, type annotations,
+and function definitions with pattern arguments.
+
+
+# Declaration Types
+
+@docs Decl
+
+
+# Parsing Declarations
+
+@docs declaration, infix_
+
+-}
 
 import Compiler.AST.Source as Src
 import Compiler.AST.Utils.Binop as Binop

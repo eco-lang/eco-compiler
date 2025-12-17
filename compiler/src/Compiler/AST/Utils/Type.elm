@@ -1,9 +1,25 @@
 module Compiler.AST.Utils.Type exposing
-    ( dealias
-    , deepDealias
+    ( dealias, deepDealias, iteratedDealias
     , delambda
-    , iteratedDealias
     )
+
+{-| Utilities for manipulating and normalizing canonical type representations.
+
+This module provides functions to work with type aliases and function types in the
+canonical AST. The primary operations are dealiasing (expanding type aliases with
+their concrete definitions) and delambda (flattening nested function types).
+
+
+# Type Alias Expansion
+
+@docs dealias, deepDealias, iteratedDealias
+
+
+# Function Type Utilities
+
+@docs delambda
+
+-}
 
 import Compiler.AST.Canonical exposing (AliasType(..), FieldType(..), Type(..))
 import Compiler.Data.Name exposing (Name)

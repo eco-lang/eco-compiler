@@ -1,13 +1,32 @@
 module Compiler.Generate.JavaScript.Expression exposing
-    ( Code
-    , codeToExpr
-    , codeToStmtList
-    , generate
-    , generateCtor
-    , generateField
-    , generateMain
-    , generateTailDef
+    ( generate, Code
+    , codeToExpr, codeToStmtList
+    , generateCtor, generateField, generateMain, generateTailDef
     )
+
+{-| JavaScript expression generation from optimized Elm AST.
+
+This module converts optimized Elm expressions into JavaScript code, handling
+function calls, pattern matching, record operations, and various optimization
+passes. It generates either pure expressions or statement blocks depending on
+control flow requirements.
+
+
+# Code Generation
+
+@docs generate, Code
+
+
+# Code Conversion
+
+@docs codeToExpr, codeToStmtList
+
+
+# Specialized Generators
+
+@docs generateCtor, generateField, generateMain, generateTailDef
+
+-}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt

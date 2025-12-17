@@ -1,10 +1,32 @@
 module Compiler.Canonicalize.Pattern exposing
-    ( Bindings
-    , DupsDict
-    , PResult
+    ( PResult, Bindings, DupsDict
     , canonicalize
     , verify
     )
+
+{-| Canonicalize Elm patterns from source AST to canonical AST.
+
+This module transforms pattern expressions used in function arguments, let bindings,
+and case branches. It validates constructor applications, checks for duplicate
+bindings within patterns, and tracks all variables bound by each pattern for use
+in scope analysis.
+
+
+# Results and Bindings
+
+@docs PResult, Bindings, DupsDict
+
+
+# Canonicalization
+
+@docs canonicalize
+
+
+# Validation
+
+@docs verify
+
+-}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src

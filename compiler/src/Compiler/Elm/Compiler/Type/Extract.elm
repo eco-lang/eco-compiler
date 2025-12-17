@@ -1,15 +1,37 @@
 module Compiler.Elm.Compiler.Type.Extract exposing
-    ( Types(..)
-    , Types_
-    , fromDependencyInterface
-    , fromInterface
-    , fromMsg
-    , fromType
-    , merge
-    , mergeMany
-    , typesDecoder
-    , typesEncoder
+    ( Types(..), Types_
+    , fromType, fromMsg, fromInterface, fromDependencyInterface
+    , merge, mergeMany
+    , typesEncoder, typesDecoder
     )
+
+{-| Type extraction from canonical AST to documentation types.
+
+Converts canonical type representations to simplified documentation types,
+extracting transitively referenced types from module interfaces. Used for
+generating docs.json and debug metadata with full type information.
+
+
+# Types
+
+@docs Types, Types_
+
+
+# Extraction
+
+@docs fromType, fromMsg, fromInterface, fromDependencyInterface
+
+
+# Operations
+
+@docs merge, mergeMany
+
+
+# Binary Encoding
+
+@docs typesEncoder, typesDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

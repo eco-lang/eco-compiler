@@ -1,5 +1,18 @@
 module Terminal.Publish exposing (run)
 
+{-| Package publishing command for releasing packages to the Elm package registry.
+
+This module implements the `publish` command which validates, versions, and uploads
+packages to the public Elm package repository. It ensures packages meet quality
+standards, have proper documentation, and follow semantic versioning rules.
+
+
+# Command Entry
+
+@docs run
+
+-}
+
 import Builder.BackgroundWriter as BW
 import Builder.Build as Build
 import Builder.Deps.Bump as Bump

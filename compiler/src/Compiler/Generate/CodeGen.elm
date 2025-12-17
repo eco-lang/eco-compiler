@@ -1,13 +1,40 @@
 module Compiler.Generate.CodeGen exposing
-    ( CodeGen
-    , Mains
-    , MonoCodeGen
-    , Output(..)
+    ( Output(..), outputToString
     , SourceMaps(..)
-    , TypedCodeGen
-    , TypedMains
-    , outputToString
+    , Mains, TypedMains
+    , CodeGen, TypedCodeGen, MonoCodeGen
     )
+
+{-| Backend interface definitions for code generation.
+
+This module defines the abstract interface that all compiler backends must implement.
+It supports three different backend types based on the level of type information needed:
+
+1.  CodeGen - Standard backends working with optimized AST (JavaScript)
+2.  TypedCodeGen - Backends needing full type information (MLIR with type-directed optimizations)
+3.  MonoCodeGen - Backends working with fully monomorphized IR (MLIR production)
+
+
+# Output Types
+
+@docs Output, outputToString
+
+
+# Source Maps
+
+@docs SourceMaps
+
+
+# Main Entry Points
+
+@docs Mains, TypedMains
+
+
+# Backend Interfaces
+
+@docs CodeGen, TypedCodeGen, MonoCodeGen
+
+-}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono

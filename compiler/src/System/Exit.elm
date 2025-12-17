@@ -1,9 +1,27 @@
 module System.Exit exposing
     ( ExitCode(..)
-    , exitFailure
-    , exitSuccess
-    , exitWith
+    , exitWith, exitSuccess, exitFailure
     )
+
+{-| Process exit code management for the Elm compiler.
+
+This module provides functions to terminate the compiler process with appropriate
+exit codes, following standard Unix conventions where 0 indicates success and
+non-zero values indicate various failure conditions.
+
+Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-Exit.html>
+
+
+# Exit Codes
+
+@docs ExitCode
+
+
+# Exiting the Process
+
+@docs exitWith, exitSuccess, exitFailure
+
+-}
 
 import Task exposing (Task)
 import Utils.Impure as Impure

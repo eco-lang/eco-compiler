@@ -1,15 +1,33 @@
 module Compiler.AST.Utils.Shader exposing
-    ( Source(..)
-    , Type(..)
-    , Types(..)
-    , fromString
-    , sourceDecoder
-    , sourceEncoder
-    , toJsStringBuilder
-    , typesDecoder
-    , typesEncoder
-    , unescape
+    ( Source(..), fromString, toJsStringBuilder, unescape
+    , Type(..), Types(..)
+    , sourceEncoder, sourceDecoder
+    , typesEncoder, typesDecoder
     )
+
+{-| Utilities for working with WebGL shader code in the Elm compiler.
+
+This module handles GLSL shader source code and type information for shader inputs
+(attributes, uniforms, and varyings). It provides escaping/unescaping for embedding
+shader source in generated JavaScript, along with serialization support.
+
+
+# Shader Source
+
+@docs Source, fromString, toJsStringBuilder, unescape
+
+
+# Shader Types
+
+@docs Type, Types
+
+
+# Binary Serialization
+
+@docs sourceEncoder, sourceDecoder
+@docs typesEncoder, typesDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

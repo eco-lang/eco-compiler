@@ -1,5 +1,18 @@
 module Terminal.Main exposing (main)
 
+{-| Command-line interface entry point for the Guida/Elm compiler.
+
+This module defines the main entry point for the compiler's command-line interface,
+coordinating all available commands (repl, init, make, install, etc.) and providing
+a unified interface for users interacting with the compiler through the terminal.
+
+
+# Program Entry
+
+@docs main
+
+-}
+
 import Compiler.Elm.Version as V
 import Compiler.Reporting.Doc as D
 import System.IO as IO

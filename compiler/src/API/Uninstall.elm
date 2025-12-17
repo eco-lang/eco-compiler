@@ -1,5 +1,20 @@
 module API.Uninstall exposing (run)
 
+{-| Remove Elm packages from an application or package project. This module handles
+removing packages from elm.json and recalculating the dependency graph to ensure
+all remaining dependencies are satisfied.
+
+For applications, the solver recomputes the dependency solution after removal. For
+packages, direct removal is performed since package dependencies use version ranges
+rather than exact versions.
+
+
+# Uninstallation
+
+@docs run
+
+-}
+
 import Builder.BackgroundWriter as BW
 import Builder.Deps.Solver as Solver
 import Builder.Elm.Details as Details

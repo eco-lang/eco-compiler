@@ -1,5 +1,28 @@
 module Common.Format.Render.Box exposing (formatModule)
 
+{-| Render Elm AST structures to formatted Box layout.
+
+This module is the core formatting engine that transforms parsed Elm syntax trees into
+Box-based layouts. It handles the formatting of all Elm language constructs including:
+
+  - Module headers and exports
+  - Import declarations
+  - Type definitions and annotations
+  - Function declarations and patterns
+  - Expressions (applications, let-bindings, case expressions, etc.)
+  - Comments and documentation
+
+The formatter makes intelligent decisions about single-line vs multi-line layout based
+on content complexity and length, applying consistent indentation and spacing rules
+throughout.
+
+
+# Module Formatting
+
+@docs formatModule
+
+-}
+
 import Basics.Extra exposing (flip)
 import Common.Format.Box as Box exposing (Box)
 import Common.Format.Cheapskate.Parse as Parse

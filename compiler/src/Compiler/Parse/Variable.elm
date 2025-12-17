@@ -1,19 +1,42 @@
 module Compiler.Parse.Variable exposing
     ( Upper(..)
-    , chompInnerChars
-    , chompLower
-    , chompUpper
-    , foreignAlpha
-    , foreignUpper
-    , getInnerWidth
-    , getInnerWidthHelp
-    , getUpperWidth
-    , isDot
+    , lower, upper, moduleName, foreignUpper, foreignAlpha
     , isReservedWord
-    , lower
-    , moduleName
-    , upper
+    , chompLower, chompUpper, chompInnerChars
+    , getInnerWidth, getInnerWidthHelp, getUpperWidth
+    , isDot
     )
+
+{-| Parser for variable names and identifiers in Elm.
+
+This module handles parsing of lower-case variables, upper-case type names,
+qualified names (with module prefixes), and module names. It properly handles
+Unicode characters and enforces Elm's naming rules including reserved word
+checking.
+
+
+# Variable Types
+
+@docs Upper
+
+
+# Parsing Variables
+
+@docs lower, upper, moduleName, foreignUpper, foreignAlpha
+
+
+# Reserved Words
+
+@docs isReservedWord
+
+
+# Character Utilities
+
+@docs chompLower, chompUpper, chompInnerChars
+@docs getInnerWidth, getInnerWidthHelp, getUpperWidth
+@docs isDot
+
+-}
 
 import Bitwise
 import Compiler.AST.Source as Src

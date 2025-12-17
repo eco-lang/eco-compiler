@@ -1,35 +1,61 @@
 module Compiler.Parse.Primitives exposing
-    ( Col
-    , PStep(..)
-    , Parser(..)
-    , Row
-    , Snippet(..)
-    , State(..)
-    , StateData
+    ( Parser(..), PStep(..), State(..), StateData
+    , pure, map, andThen, oneOf, oneOfWithFallback, loop
+    , Row, Col, getPosition, addLocation, addEnd
+    , withIndent, withBacksetIndent
+    , inContext, specialize
+    , fromByteString, fromSnippet, Snippet(..), snippetEncoder, snippetDecoder
+    , word1, word2, unsafeIndex, isWord, getCharWidth
     , Step(..)
-    , addEnd
-    , addLocation
-    , andThen
-    , fromByteString
-    , fromSnippet
-    , getCharWidth
-    , getPosition
-    , inContext
-    , isWord
-    , loop
-    , map
-    , oneOf
-    , oneOfWithFallback
-    , pure
-    , snippetDecoder
-    , snippetEncoder
-    , specialize
-    , unsafeIndex
-    , withBacksetIndent
-    , withIndent
-    , word1
-    , word2
     )
+
+{-| Core parser primitives and combinators for the Elm compiler.
+
+This module provides the foundational parsing infrastructure used throughout the
+compiler's parser. It implements a custom parser type with position tracking,
+indentation-sensitive parsing, and efficient error reporting.
+
+
+# Parser Type
+
+@docs Parser, PStep, State, StateData
+
+
+# Parser Combinators
+
+@docs pure, map, andThen, oneOf, oneOfWithFallback, loop
+
+
+# Position Tracking
+
+@docs Row, Col, getPosition, addLocation, addEnd
+
+
+# Indentation
+
+@docs withIndent, withBacksetIndent
+
+
+# Error Context
+
+@docs inContext, specialize
+
+
+# Running Parsers
+
+@docs fromByteString, fromSnippet, Snippet, snippetEncoder, snippetDecoder
+
+
+# Character Utilities
+
+@docs word1, word2, unsafeIndex, isWord, getCharWidth
+
+
+# Loop Control
+
+@docs Step
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

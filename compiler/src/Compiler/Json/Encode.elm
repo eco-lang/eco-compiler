@@ -1,28 +1,56 @@
 module Compiler.Json.Encode exposing
     ( Value(..)
-    , array
-    , assocListDict
-    , bool
-    , chars
-    , dict
+    , string, name, chars, bool, int, number, null
+    , array, list, object, dict, assocListDict, everySet
+    , maybe, result, nonempty, oneOrMore, jsonPair
     , encodeUgly
-    , everySet
-    , int
-    , jsonPair
-    , list
-    , maybe
-    , name
-    , nonempty
-    , null
-    , number
-    , object
-    , oneOrMore
-    , result
-    , string
+    , write, writeUgly
     , toJsonValue
-    , write
-    , writeUgly
     )
+
+{-| JSON encoding utilities for the Elm compiler.
+
+This module provides a custom JSON value representation and encoding functions
+tailored for compiler data structures. It supports encoding compiler-specific types
+like associative-list-backed dictionaries, EverySet, NonEmptyList, and OneOrMore,
+as well as pretty-printed and compact JSON output.
+
+
+# Value Type
+
+@docs Value
+
+
+# Primitive Values
+
+@docs string, name, chars, bool, int, number, null
+
+
+# Collection Encoders
+
+@docs array, list, object, dict, assocListDict, everySet
+
+
+# Compiler Type Encoders
+
+@docs maybe, result, nonempty, oneOrMore, jsonPair
+
+
+# String Encoding
+
+@docs encodeUgly
+
+
+# File Writing
+
+@docs write, writeUgly
+
+
+# Conversion
+
+@docs toJsonValue
+
+-}
 
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore exposing (OneOrMore(..))

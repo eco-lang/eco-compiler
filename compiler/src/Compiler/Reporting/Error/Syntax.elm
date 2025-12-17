@@ -1,42 +1,76 @@
 module Compiler.Reporting.Error.Syntax exposing
-    ( Case(..)
-    , Char(..)
-    , CustomType(..)
-    , Decl(..)
-    , DeclDef(..)
-    , DeclType(..)
-    , Def(..)
-    , Destruct(..)
-    , Error(..)
-    , Escape(..)
-    , Exposing(..)
-    , Expr(..)
-    , Func(..)
-    , If(..)
-    , Let(..)
-    , List_(..)
-    , Module(..)
-    , Number(..)
-    , PList(..)
-    , PRecord(..)
-    , PTuple(..)
-    , Pattern(..)
-    , Port(..)
-    , Record(..)
+    ( Error(..), Module(..)
+    , Exposing(..), Port(..)
+    , Decl(..), DeclDef(..), DeclType(..), TypeAlias(..), CustomType(..)
+    , Expr(..), Let(..), Case(..), If(..), Record(..), Tuple(..), List_(..), Func(..), Def(..), Destruct(..)
+    , Pattern(..), PRecord(..), PList(..), PTuple(..)
+    , Type(..), TRecord(..), TTuple(..)
+    , Char(..), String_(..), Number(..), Escape(..)
     , Space(..)
-    , String_(..)
-    , TRecord(..)
-    , TTuple(..)
-    , Tuple(..)
-    , Type(..)
-    , TypeAlias(..)
-    , errorDecoder
-    , errorEncoder
-    , spaceDecoder
-    , spaceEncoder
-    , toReport
-    , toSpaceReport
+    , toReport, toSpaceReport
+    , errorEncoder, errorDecoder
+    , spaceEncoder, spaceDecoder
     )
+
+{-| Syntax error types and reporting for the parser.
+
+This module defines the complete taxonomy of syntax errors that can occur
+during parsing. Each error type captures precise location information and
+context about what was expected versus what was found, enabling highly
+specific and helpful error messages.
+
+
+# Top-Level Errors
+
+@docs Error, Module
+
+
+# Module Structure
+
+@docs Exposing, Port
+
+
+# Declarations
+
+@docs Decl, DeclDef, DeclType, TypeAlias, CustomType
+
+
+# Expressions
+
+@docs Expr, Let, Case, If, Record, Tuple, List_, Func, Def, Destruct
+
+
+# Patterns
+
+@docs Pattern, PRecord, PList, PTuple
+
+
+# Types
+
+@docs Type, TRecord, TTuple
+
+
+# Literals
+
+@docs Char, String_, Number, Escape
+
+
+# Whitespace
+
+@docs Space
+
+
+# Reporting
+
+@docs toReport, toSpaceReport
+
+
+# Serialization
+
+@docs errorEncoder, errorDecoder
+@docs spaceEncoder, spaceDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

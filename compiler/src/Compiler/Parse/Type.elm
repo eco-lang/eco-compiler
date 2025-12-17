@@ -3,6 +3,24 @@ module Compiler.Parse.Type exposing
     , variant
     )
 
+{-| Parser for type annotations and type declarations in Elm.
+
+This module parses type expressions including type variables, type constructors,
+function types, tuple types, record types, and extensible record types. It also
+handles parsing type constructor variants for custom type declarations.
+
+
+# Type Expressions
+
+@docs expression
+
+
+# Custom Type Variants
+
+@docs variant
+
+-}
+
 import Compiler.AST.Source as Src
 import Compiler.Data.Name exposing (Name)
 import Compiler.Parse.Primitives as P

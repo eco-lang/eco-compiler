@@ -1,11 +1,37 @@
 module Compiler.Data.OneOrMore exposing
     ( OneOrMore(..)
-    , destruct
-    , getFirstTwo
+    , one, more
     , map
-    , more
-    , one
+    , destruct, getFirstTwo
     )
+
+{-| A binary tree structure that guarantees at least one element.
+
+Unlike NonEmptyList which is a linear structure, OneOrMore represents a binary
+tree where each node can contain either a single value or two subtrees. This
+structure is useful for representing hierarchical data with guaranteed non-emptiness.
+
+
+# Type
+
+@docs OneOrMore
+
+
+# Construction
+
+@docs one, more
+
+
+# Transformations
+
+@docs map
+
+
+# Extraction
+
+@docs destruct, getFirstTwo
+
+-}
 
 -- ONE OR MORE
 

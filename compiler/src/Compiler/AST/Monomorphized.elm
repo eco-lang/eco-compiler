@@ -243,7 +243,8 @@ type MonoNode
     | MonoCycle (List ( Name, MonoExpr )) (EverySet Int Int) MonoType
 
 
-{-| Effects manager information -}
+{-| Effects manager information
+-}
 type alias ManagerInfo =
     { init : MonoExpr
     , onEffects : MonoExpr
@@ -285,7 +286,8 @@ type MonoExpr
     | MonoShader Region ShaderInfo MonoType -- WebGL shader
 
 
-{-| WebGL shader information -}
+{-| WebGL shader information
+-}
 type alias ShaderInfo =
     { src : String
     , types : { attribute : Dict String Name String, uniform : Dict String Name String, varying : Dict String Name String }

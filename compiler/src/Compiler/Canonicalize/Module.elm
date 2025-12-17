@@ -1,4 +1,25 @@
-module Compiler.Canonicalize.Module exposing (MResult, canonicalize)
+module Compiler.Canonicalize.Module exposing
+    ( MResult
+    , canonicalize
+    )
+
+{-| Canonicalize an entire Elm module, transforming it from source AST to canonical AST.
+
+This module orchestrates the canonicalization of all module components including
+value declarations, type definitions, infix operators, exports, and effects. It performs
+cycle detection for both type inference and runtime termination analysis.
+
+
+# Results
+
+@docs MResult
+
+
+# Canonicalization
+
+@docs canonicalize
+
+-}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src

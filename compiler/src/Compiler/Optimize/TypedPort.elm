@@ -1,12 +1,26 @@
 module Compiler.Optimize.TypedPort exposing
-    ( toDecoder
-    , toEncoder
-    , toFlagsDecoder
+    ( toEncoder
+    , toDecoder, toFlagsDecoder
     )
 
 {-| Typed port encoder/decoder generation.
 
-Like Port.elm but produces TypedOptimized expressions.
+Generates JSON encoders and decoders for port types with full type information
+preserved. Like the regular Port generator but produces TypedOptimized expressions
+with Can.Type annotations, enabling type-aware code generation for ports.
+
+Handles all Elm types that can pass through ports: primitives, records, tuples,
+Maybe, List, Array, and the Json.Decode.Value / Json.Encode.Value types.
+
+
+# Encoders
+
+@docs toEncoder
+
+
+# Decoders
+
+@docs toDecoder, toFlagsDecoder
 
 -}
 

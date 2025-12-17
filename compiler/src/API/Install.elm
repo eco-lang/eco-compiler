@@ -1,5 +1,19 @@
 module API.Install exposing (run)
 
+{-| Install Elm packages into an application or package project. This module
+handles dependency resolution, constraint solving, and updating the elm.json file.
+
+The installer can promote packages from indirect to direct dependencies, from test
+to production dependencies, or add entirely new packages while maintaining version
+compatibility across the dependency graph.
+
+
+# Installation
+
+@docs run
+
+-}
+
 import Builder.BackgroundWriter as BW
 import Builder.Deps.Registry as Registry
 import Builder.Deps.Solver as Solver

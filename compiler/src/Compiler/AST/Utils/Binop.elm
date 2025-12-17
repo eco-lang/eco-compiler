@@ -1,15 +1,35 @@
 module Compiler.AST.Utils.Binop exposing
-    ( Associativity(..)
-    , Precedence
-    , associativityDecoder
-    , associativityEncoder
-    , jsonAssociativityDecoder
-    , jsonAssociativityEncoder
-    , jsonPrecedenceDecoder
-    , jsonPrecedenceEncoder
-    , precedenceDecoder
-    , precedenceEncoder
+    ( Precedence, Associativity(..)
+    , jsonPrecedenceEncoder, jsonPrecedenceDecoder
+    , jsonAssociativityEncoder, jsonAssociativityDecoder
+    , precedenceEncoder, precedenceDecoder
+    , associativityEncoder, associativityDecoder
     )
+
+{-| Types and utilities for binary operator metadata in the Elm compiler.
+
+This module defines the precedence and associativity properties of binary operators,
+along with serialization support for both JSON and binary formats. These properties
+determine how expressions with multiple operators are parsed and evaluated.
+
+
+# Types
+
+@docs Precedence, Associativity
+
+
+# JSON Serialization
+
+@docs jsonPrecedenceEncoder, jsonPrecedenceDecoder
+@docs jsonAssociativityEncoder, jsonAssociativityDecoder
+
+
+# Binary Serialization
+
+@docs precedenceEncoder, precedenceDecoder
+@docs associativityEncoder, associativityDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

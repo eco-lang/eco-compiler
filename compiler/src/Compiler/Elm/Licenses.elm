@@ -1,9 +1,30 @@
 module Compiler.Elm.Licenses exposing
     ( License
     , bsd3
-    , decoder
-    , encode
+    , encode, decoder
     )
+
+{-| OSI-approved SPDX license validation and encoding.
+
+Validates license identifiers against the list of OSI-approved SPDX licenses
+and provides suggestions for invalid license strings. Used in elm.json validation.
+
+
+# Types
+
+@docs License
+
+
+# Common Licenses
+
+@docs bsd3
+
+
+# Encoding and Decoding
+
+@docs encode, decoder
+
+-}
 
 import Compiler.Json.Decode as D
 import Compiler.Json.Encode as E

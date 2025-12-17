@@ -1,11 +1,7 @@
 module Compiler.Reporting.Error exposing
-    ( Error(..)
-    , Module
-    , moduleDecoder
-    , moduleEncoder
-    , reportToJson
-    , toDoc
-    , toJson
+    ( Error(..), Module
+    , toDoc, reportToJson
+    , toJson, moduleEncoder, moduleDecoder
     )
 
 {-| Error reporting infrastructure for the Elm compiler.
@@ -101,9 +97,9 @@ type Error
 
 
 -- ====== Report Generation ======
-
-
 -- Converts an Error to one or more Report objects for display.
+
+
 toReports : SyntaxVersion -> Code.Source -> Error -> NE.Nonempty Report.Report
 toReports syntaxVersion source err =
     case err of

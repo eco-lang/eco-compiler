@@ -2,7 +2,15 @@ module Compiler.Optimize.TypedCase exposing (optimize)
 
 {-| Typed case expression optimization.
 
-Like Case.elm but produces TypedOptimized expressions.
+Compiles case expressions into decision trees with type information preserved.
+Like the regular Case optimizer but produces TypedOptimized expressions with
+Can.Type annotations on all branches and eliminates redundant tests through
+decision tree optimization.
+
+
+# Optimization
+
+@docs optimize
 
 -}
 

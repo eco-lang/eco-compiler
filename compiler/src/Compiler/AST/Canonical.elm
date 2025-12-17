@@ -1,45 +1,16 @@
 module Compiler.AST.Canonical exposing
-    ( Alias(..)
-    , AliasType(..)
-    , Annotation(..)
-    , Binop(..)
-    , CaseBranch(..)
-    , Ctor(..)
-    , CtorData
-    , CtorOpts(..)
-    , Decls(..)
-    , Def(..)
-    , Effects(..)
-    , Export(..)
-    , Exports(..)
-    , Expr
-    , Expr_(..)
-    , FieldType(..)
-    , FieldUpdate(..)
-    , FreeVars
-    , Manager(..)
-    , Module(..)
-    , ModuleData
-    , Pattern
-    , PatternCtorArg(..)
-    , Pattern_(..)
-    , Port(..)
-    , Type(..)
-    , Union(..)
-    , UnionData
-    , aliasDecoder
-    , aliasEncoder
-    , annotationDecoder
-    , annotationEncoder
-    , ctorOptsDecoder
-    , ctorOptsEncoder
-    , fieldUpdateDecoder
-    , fieldUpdateEncoder
-    , fieldsToList
-    , typeDecoder
-    , typeEncoder
-    , unionDecoder
-    , unionEncoder
+    ( Module(..), ModuleData, Exports(..), Export(..), Effects(..), Manager(..), Port(..)
+    , Expr, Expr_(..), CaseBranch(..), FieldUpdate(..)
+    , Def(..), Decls(..)
+    , Pattern, Pattern_(..), PatternCtorArg(..)
+    , Type(..), Annotation(..), FreeVars, AliasType(..), FieldType(..), fieldsToList
+    , Union(..), UnionData, Alias(..), Ctor(..), CtorData, CtorOpts(..), Binop(..)
+    , annotationEncoder, annotationDecoder
+    , typeEncoder, typeDecoder
+    , aliasEncoder, aliasDecoder
+    , unionEncoder, unionDecoder
+    , ctorOptsEncoder, ctorOptsDecoder
+    , fieldUpdateEncoder, fieldUpdateDecoder
     )
 
 {-| The Canonical AST represents Elm code after name resolution.
@@ -261,8 +232,10 @@ type Pattern_
 -}
 type PatternCtorArg
     = PatternCtorArg
-        Index.ZeroBased -- CACHE for destructors/errors
-        Type -- CACHE for type inference
+        Index.ZeroBased
+        -- CACHE for destructors/errors
+        Type
+        -- CACHE for type inference
         Pattern
 
 

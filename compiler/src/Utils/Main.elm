@@ -1,133 +1,159 @@
 module Utils.Main exposing
-    ( AsyncException(..)
-    , ChItem
-    , Chan
-    , FilePath
-    , HttpExceptionContent(..)
-    , HttpResponse(..)
-    , HttpResponseHeaders
-    , HttpStatus(..)
-    , LockSharedExclusive(..)
-    , MVar(..)
-    , ReplCompletion(..)
-    , ReplCompletionFunc
-    , ReplInputT
-    , ReplSettings(..)
-    , SomeException(..)
-    , ThreadId
-    , ZipArchive(..)
-    , ZipEntry(..)
-    , binaryDecodeFileOrFail
-    , binaryEncodeFile
-    , bracket_
-    , builderHPutBuilder
-    , dictMapM_
-    , dirCanonicalizePath
-    , dirCreateDirectoryIfMissing
-    , dirDoesDirectoryExist
-    , dirDoesFileExist
-    , dirFindExecutable
-    , dirGetAppUserDataDirectory
-    , dirGetCurrentDirectory
-    , dirGetModificationTime
-    , dirListDirectory
-    , dirRemoveDirectoryRecursive
-    , dirRemoveFile
-    , dirWithCurrentDirectory
-    , eitherLefts
-    , envGetArgs
-    , envGetProgName
-    , envLookupEnv
-    , filterM
-    , find
-    , findMax
-    , foldM
-    , foldl1_
-    , foldr1
-    , forkIO
-    , fpAddExtension
-    , fpAddTrailingPathSeparator
-    , fpCombine
-    , fpDropExtension
-    , fpDropFileName
-    , fpIsRelative
-    , fpJoinPath
-    , fpMakeRelative
-    , fpPathSeparator
-    , fpSplitDirectories
-    , fpSplitExtension
-    , fpSplitFileName
-    , fpTakeDirectory
-    , fpTakeExtension
-    , fpTakeFileName
-    , httpExceptionContentDecoder
-    , httpExceptionContentEncoder
-    , httpHLocation
-    , httpResponseHeaders
-    , httpResponseStatus
-    , httpStatusCode
-    , indexedZipWithA
-    , keysSet
-    , liftIOInputT
-    , liftInputT
-    , lines
-    , listGroupBy
-    , listLookup
-    , listMaximum
-    , listTraverse
-    , listTraverse_
-    , lockWithFileLock
-    , mVarDecoder
-    , mVarEncoder
-    , mapFindMin
-    , mapFromKeys
-    , mapFromListWith
-    , mapInsertWith
-    , mapIntersectionWith
-    , mapIntersectionWithKey
-    , mapLookupMin
-    , mapM_
-    , mapMapKeys
-    , mapMapMaybe
-    , mapMinViewWithKey
-    , mapTraverse
-    , mapTraverseResult
-    , mapTraverseWithKey
-    , mapTraverseWithKeyResult
-    , mapUnionWith
-    , mapUnions
-    , mapUnionsWith
-    , maybeEncoder
-    , maybeMapM
-    , maybeTraverseTask
-    , newChan
-    , newEmptyMVar
-    , newMVar
-    , nodeGetDirname
-    , nodeMathRandom
+    ( FilePath, fpCombine, fpAddExtension, fpDropExtension, fpDropFileName, fpSplitExtension
+    , fpSplitFileName, fpSplitDirectories, fpJoinPath, fpMakeRelative, fpAddTrailingPathSeparator
+    , fpPathSeparator, fpIsRelative, fpTakeFileName, fpTakeExtension, fpTakeDirectory
+    , dirDoesFileExist, dirDoesDirectoryExist, dirFindExecutable, dirCreateDirectoryIfMissing
+    , dirGetCurrentDirectory, dirGetAppUserDataDirectory, dirGetModificationTime, dirListDirectory
+    , dirRemoveFile, dirRemoveDirectoryRecursive, dirCanonicalizePath, dirWithCurrentDirectory
+    , envLookupEnv, envGetProgName, envGetArgs
+    , LockSharedExclusive(..), lockWithFileLock
+    , binaryDecodeFileOrFail, binaryEncodeFile, builderHPutBuilder
+    , ZipArchive(..), ZipEntry(..)
+    , HttpExceptionContent(..), HttpResponse(..), HttpResponseHeaders, HttpStatus(..)
+    , httpResponseStatus, httpStatusCode, httpResponseHeaders, httpHLocation
+    , httpExceptionContentEncoder, httpExceptionContentDecoder
+    , SomeException(..), AsyncException(..)
+    , someExceptionEncoder, someExceptionDecoder
+    , ThreadId, forkIO, bracket_
+    , MVar(..), newMVar, newEmptyMVar, readMVar, takeMVar, putMVar
+    , mVarEncoder, mVarDecoder
+    , Chan, ChItem, newChan, readChan, writeChan
+    , ReplSettings(..), ReplInputT, ReplCompletion(..), ReplCompletionFunc
+    , replRunInputT, replWithInterrupt, replCompleteWord, replGetInputLine
+    , replGetInputLineWithInitial, liftInputT, liftIOInputT
+    , nodeGetDirname, nodeMathRandom
+    , mapFromListWith, mapFromKeys, mapInsertWith, mapIntersectionWith, mapIntersectionWithKey
+    , mapUnionWith, mapUnions, mapUnionsWith, mapLookupMin, mapFindMin, mapMinViewWithKey
+    , mapMapKeys, mapMapMaybe, find, findMax, keysSet
+    , mapTraverse, mapTraverseWithKey, mapTraverseResult, mapTraverseWithKeyResult, dictMapM_
+    , eitherLefts, filterM, listGroupBy, listLookup, listMaximum, foldl1_, foldr1
+    , listTraverse, listTraverse_, lines, unlines, unzip3, zipWithM, mapM_
+    , maybeEncoder, maybeMapM, maybeTraverseTask
     , nonEmptyListTraverse
-    , putMVar
-    , readChan
-    , readMVar
-    , replCompleteWord
-    , replGetInputLine
-    , replGetInputLineWithInitial
-    , replRunInputT
-    , replWithInterrupt
-    , sequenceADict
-    , sequenceDictMaybe
-    , sequenceDictResult
-    , sequenceDictResult_
-    , sequenceListMaybe
-    , sequenceNonemptyListResult
-    , someExceptionDecoder
-    , someExceptionEncoder
-    , takeMVar
-    , unlines
-    , unzip3
-    , writeChan
-    , zipWithM
+    , sequenceADict, sequenceDictMaybe, sequenceDictResult, sequenceDictResult_
+    , sequenceListMaybe, sequenceNonemptyListResult
+    , indexedZipWithA, foldM
     )
+
+{-| Comprehensive utility module providing cross-platform system operations, data structure utilities,
+and interoperability with the underlying runtime environment. This module serves as the compiler's
+primary interface to system resources and provides Haskell-like abstractions adapted for Elm.
+
+
+# File Path Operations
+
+@docs FilePath, fpCombine, fpAddExtension, fpDropExtension, fpDropFileName, fpSplitExtension
+@docs fpSplitFileName, fpSplitDirectories, fpJoinPath, fpMakeRelative, fpAddTrailingPathSeparator
+@docs fpPathSeparator, fpIsRelative, fpTakeFileName, fpTakeExtension, fpTakeDirectory
+
+
+# Directory Operations
+
+@docs dirDoesFileExist, dirDoesDirectoryExist, dirFindExecutable, dirCreateDirectoryIfMissing
+@docs dirGetCurrentDirectory, dirGetAppUserDataDirectory, dirGetModificationTime, dirListDirectory
+@docs dirRemoveFile, dirRemoveDirectoryRecursive, dirCanonicalizePath, dirWithCurrentDirectory
+
+
+# Environment Operations
+
+@docs envLookupEnv, envGetProgName, envGetArgs
+
+
+# File Locking
+
+@docs LockSharedExclusive, lockWithFileLock
+
+
+# Binary Serialization
+
+@docs binaryDecodeFileOrFail, binaryEncodeFile, builderHPutBuilder
+
+
+# Archive Operations
+
+@docs ZipArchive, ZipEntry
+
+
+# HTTP Types and Operations
+
+@docs HttpExceptionContent, HttpResponse, HttpResponseHeaders, HttpStatus
+@docs httpResponseStatus, httpStatusCode, httpResponseHeaders, httpHLocation
+@docs httpExceptionContentEncoder, httpExceptionContentDecoder
+
+
+# Exception Types
+
+@docs SomeException, AsyncException
+@docs someExceptionEncoder, someExceptionDecoder
+
+
+# Concurrency Primitives
+
+@docs ThreadId, forkIO, bracket_
+
+
+# MVar Operations
+
+@docs MVar, newMVar, newEmptyMVar, readMVar, takeMVar, putMVar
+@docs mVarEncoder, mVarDecoder
+
+
+# Channel Operations
+
+@docs Chan, ChItem, newChan, readChan, writeChan
+
+
+# REPL Support
+
+@docs ReplSettings, ReplInputT, ReplCompletion, ReplCompletionFunc
+@docs replRunInputT, replWithInterrupt, replCompleteWord, replGetInputLine
+@docs replGetInputLineWithInitial, liftInputT, liftIOInputT
+
+
+# Node.js Integration
+
+@docs nodeGetDirname, nodeMathRandom
+
+
+# Dictionary Utilities
+
+@docs mapFromListWith, mapFromKeys, mapInsertWith, mapIntersectionWith, mapIntersectionWithKey
+@docs mapUnionWith, mapUnions, mapUnionsWith, mapLookupMin, mapFindMin, mapMinViewWithKey
+@docs mapMapKeys, mapMapMaybe, find, findMax, keysSet
+
+
+# Dictionary Traversal
+
+@docs mapTraverse, mapTraverseWithKey, mapTraverseResult, mapTraverseWithKeyResult, dictMapM_
+
+
+# List Utilities
+
+@docs eitherLefts, filterM, listGroupBy, listLookup, listMaximum, foldl1_, foldr1
+@docs listTraverse, listTraverse_, lines, unlines, unzip3, zipWithM, mapM_
+
+
+# Maybe Utilities
+
+@docs maybeEncoder, maybeMapM, maybeTraverseTask
+
+
+# NonEmptyList Traversal
+
+@docs nonEmptyListTraverse
+
+
+# Sequence Operations
+
+@docs sequenceADict, sequenceDictMaybe, sequenceDictResult, sequenceDictResult_
+@docs sequenceListMaybe, sequenceNonemptyListResult
+
+
+# Indexed Operations
+
+@docs indexedZipWithA, foldM
+
+-}
 
 import Basics.Extra exposing (flip)
 import Bytes.Decode

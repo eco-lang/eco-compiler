@@ -1,5 +1,24 @@
 module Builder.Deps.Bump exposing (getPossibilities)
 
+{-| Generates possible version bump candidates for package publishing.
+
+Given the known version history of a package, this module computes all valid next
+versions for MAJOR, MINOR, and PATCH bumps. It identifies appropriate base versions
+by grouping existing versions by major and minor version numbers.
+
+For example, with versions [1.0.0, 1.0.1, 1.1.0, 2.0.0]:
+
+  - MAJOR bump from 2.0.0 to 3.0.0
+  - MINOR bumps from 1.1.0 to 1.2.0 and 2.0.0 to 2.1.0
+  - PATCH bumps from 1.0.1 to 1.0.2, 1.1.0 to 1.1.1, and 2.0.0 to 2.0.1
+
+
+# Version Candidates
+
+@docs getPossibilities
+
+-}
+
 import Builder.Deps.Registry exposing (KnownVersions(..))
 import Compiler.Elm.Magnitude as M
 import Compiler.Elm.Version as V

@@ -1,19 +1,43 @@
 module Compiler.Elm.Constraint exposing
-    ( Constraint
-    , Error(..)
-    , anything
-    , decoder
-    , defaultElm
-    , encode
-    , exactly
-    , goodElm
-    , intersect
-    , lowerBound
-    , satisfies
-    , toChars
-    , untilNextMajor
-    , untilNextMinor
+    ( Constraint, Error(..)
+    , anything, exactly, untilNextMajor, untilNextMinor, defaultElm
+    , satisfies, goodElm, intersect
+    , toChars, lowerBound
+    , encode, decoder
     )
+
+{-| Version constraint types and operations.
+
+Represents version ranges using upper and lower bounds with inclusive/exclusive
+operators. Supports constraint intersection, satisfaction checking, and
+validation against the current Elm compiler version.
+
+
+# Types
+
+@docs Constraint, Error
+
+
+# Constructors
+
+@docs anything, exactly, untilNextMajor, untilNextMinor, defaultElm
+
+
+# Validation
+
+@docs satisfies, goodElm, intersect
+
+
+# Conversion
+
+@docs toChars, lowerBound
+
+
+# Encoding and Decoding
+
+@docs encode, decoder
+
+-}
 
 import Compiler.Elm.Version as V
 import Compiler.Json.Decode as D exposing (Decoder)

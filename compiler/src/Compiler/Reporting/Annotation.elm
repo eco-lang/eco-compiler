@@ -1,22 +1,42 @@
 module Compiler.Reporting.Annotation exposing
-    ( Located(..)
-    , Position(..)
-    , Region(..)
-    , at
-    , compareLocated
-    , isMultiline
-    , locatedDecoder
-    , locatedEncoder
-    , merge
-    , mergeRegions
-    , one
-    , regionDecoder
-    , regionEncoder
-    , toRegion
-    , toValue
-    , traverse
-    , zero
+    ( Located(..), Position(..), Region(..)
+    , at, toValue, toRegion
+    , compareLocated, traverse, merge
+    , mergeRegions, zero, one, isMultiline
+    , regionEncoder, regionDecoder
+    , locatedEncoder, locatedDecoder
     )
+
+{-| Source location tracking for compiler error reporting.
+
+This module provides types and utilities for tracking the position of syntax
+elements in source code. Every significant AST node is annotated with its
+location, enabling precise error messages that point to exactly where
+problems occur.
+
+
+# Core Types
+
+@docs Located, Position, Region
+
+
+# Working with Located Values
+
+@docs at, toValue, toRegion
+@docs compareLocated, traverse, merge
+
+
+# Region Utilities
+
+@docs mergeRegions, zero, one, isMultiline
+
+
+# Serialization
+
+@docs regionEncoder, regionDecoder
+@docs locatedEncoder, locatedDecoder
+
+-}
 
 import Bytes.Decode
 import Bytes.Encode

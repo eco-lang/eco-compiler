@@ -7,18 +7,13 @@ module Data.Map exposing
     , union, intersection, diff, merge
     )
 
-{-| **Initial implementation from `pzp1997/assoc-list/1.0.0`**
+{-| A dictionary implementation backed by association lists, supporting keys of any type with custom comparison functions.
 
-An [association list](https://en.wikipedia.org/wiki/Association_list) is a
-list of tuples that map unique keys to values. The keys can be of any type (so
-long as it has a reasonable definition for equality). This includes pretty
-much everything except for functions and things that contain functions.
+This module wraps Elm's standard Dict to provide a dictionary where keys don't need to be comparable types.
+Instead, you provide a function to convert keys to comparable values or to compare keys directly.
+Initial implementation from `pzp1997/assoc-list/1.0.0`.
 
-All functions in this module are "stack safe," which means that your program
-won't crash from recursing over large association lists. You can read
-Evan Czaplicki's
-[document on tail-call elimination](https://github.com/evancz/functional-programming-in-elm/blob/master/recursion/tail-call-elimination.md)
-for more information about this topic.
+All functions in this module are stack safe and won't crash from recursing over large dictionaries.
 
 
 # Dictionaries

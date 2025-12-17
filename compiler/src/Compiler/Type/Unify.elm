@@ -1,7 +1,17 @@
-module Compiler.Type.Unify exposing
-    ( Answer(..)
-    , unify
-    )
+module Compiler.Type.Unify exposing (unify, Answer(..))
+
+{-| Type unification for Hindley-Milner type inference.
+
+Unification finds a substitution that makes two types equal, or reports
+that no such substitution exists. This module implements unification using
+union-find data structures for efficient variable binding.
+
+
+# Unification
+
+@docs unify, Answer
+
+-}
 
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName

@@ -1,7 +1,17 @@
-module Compiler.Parse.String exposing
-    ( character
-    , string
-    )
+module Compiler.Parse.String exposing (string, character)
+
+{-| Parser for string and character literals in Elm.
+
+This module handles parsing of single-quoted character literals and double-quoted
+string literals (both single-line and multi-line). It processes escape sequences
+including Unicode escapes and validates string format rules.
+
+
+# Parsing Strings
+
+@docs string, character
+
+-}
 
 import Compiler.Elm.String as ES
 import Compiler.Parse.Number as Number
