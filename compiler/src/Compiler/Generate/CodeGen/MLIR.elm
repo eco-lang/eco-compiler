@@ -17,6 +17,7 @@ import Data.Map as EveryDict
 import Data.Set as EverySet
 import Dict exposing (Dict)
 import Mlir.Loc as Loc exposing (Loc)
+import Utils.Crash exposing (crash)
 import Mlir.Mlir
     exposing
         ( MlirAttr(..)
@@ -155,12 +156,21 @@ countTotalArity monoType =
 -- CONTEXT
 
 
+{-| Function signature for invariant checking: param types and return type
+-}
+type alias FuncSignature =
+    { paramTypes : List Mono.MonoType
+    , returnType : Mono.MonoType
+    }
+
+
 type alias Context =
     { nextVar : Int
     , nextOpId : Int
     , mode : Mode.Mode
     , registry : Mono.SpecializationRegistry
     , pendingLambdas : List PendingLambda
+    , signatures : Dict Int FuncSignature -- SpecId -> signature for invariant checking
     }
 
 
@@ -172,13 +182,14 @@ type alias PendingLambda =
     }
 
 
-initContext : Mode.Mode -> Mono.SpecializationRegistry -> Context
-initContext mode registry =
+initContext : Mode.Mode -> Mono.SpecializationRegistry -> Dict Int FuncSignature -> Context
+initContext mode registry signatures =
     { nextVar = 0
     , nextOpId = 0
     , mode = mode
     , registry = registry
     , pendingLambdas = []
+    , signatures = signatures
     }
 
 
@@ -194,6 +205,280 @@ freshOpId ctx =
     ( "op" ++ String.fromInt ctx.nextOpId
     , { ctx | nextOpId = ctx.nextOpId + 1 }
     )
+
+
+
+-- SIGNATURE EXTRACTION (for invariant checking)
+
+
+{-| Extract the function signature (param types, return type) from a MonoNode.
+Returns Nothing for nodes that aren't callable functions.
+-}
+extractNodeSignature : Mono.MonoNode -> Maybe FuncSignature
+extractNodeSignature node =
+    case node of
+        Mono.MonoDefine expr _ monoType ->
+            -- For defines, check if the expression is a closure
+            case expr of
+                Mono.MonoClosure closureInfo body _ ->
+                    -- Function with params
+                    Just
+                        { paramTypes = List.map Tuple.second closureInfo.params
+                        , returnType = Mono.typeOf body
+                        }
+
+                _ ->
+                    -- Thunk (nullary function) - no params
+                    Just
+                        { paramTypes = []
+                        , returnType = monoType
+                        }
+
+        Mono.MonoTailFunc params _ _ monoType ->
+            Just
+                { paramTypes = List.map Tuple.second params
+                , returnType = monoType
+                }
+
+        Mono.MonoCtor ctorLayout monoType ->
+            -- Constructor - params are the fields
+            Just
+                { paramTypes = List.map .monoType ctorLayout.fields
+                , returnType = monoType
+                }
+
+        Mono.MonoEnum _ monoType ->
+            -- Nullary enum constructor
+            Just
+                { paramTypes = []
+                , returnType = monoType
+                }
+
+        Mono.MonoExtern monoType ->
+            -- External - treat as nullary for now
+            Just
+                { paramTypes = []
+                , returnType = monoType
+                }
+
+        Mono.MonoPortIncoming expr _ monoType ->
+            case expr of
+                Mono.MonoClosure closureInfo body _ ->
+                    Just
+                        { paramTypes = List.map Tuple.second closureInfo.params
+                        , returnType = Mono.typeOf body
+                        }
+
+                _ ->
+                    Just
+                        { paramTypes = []
+                        , returnType = monoType
+                        }
+
+        Mono.MonoPortOutgoing expr _ monoType ->
+            case expr of
+                Mono.MonoClosure closureInfo body _ ->
+                    Just
+                        { paramTypes = List.map Tuple.second closureInfo.params
+                        , returnType = Mono.typeOf body
+                        }
+
+                _ ->
+                    Just
+                        { paramTypes = []
+                        , returnType = monoType
+                        }
+
+        Mono.MonoManager _ monoType ->
+            Just
+                { paramTypes = []
+                , returnType = monoType
+                }
+
+        Mono.MonoCycle _ _ monoType ->
+            Just
+                { paramTypes = []
+                , returnType = monoType
+                }
+
+
+{-| Build a map of SpecId -> FuncSignature from all nodes in the graph.
+Used for invariant checking at call sites.
+-}
+buildSignatures : EveryDict.Dict Int Int Mono.MonoNode -> Dict Int FuncSignature
+buildSignatures nodes =
+    EveryDict.foldl compare
+        (\specId node acc ->
+            case extractNodeSignature node of
+                Just sig ->
+                    Dict.insert specId sig acc
+
+                Nothing ->
+                    acc
+        )
+        Dict.empty
+        nodes
+
+
+{-| Assert that call site argument types match the function's declared parameter types.
+This enforces the monomorphization invariant: all types must be fully specialized.
+Crashes with a detailed error if the invariant is violated.
+-}
+assertCallSiteTypesMatch : Context -> Mono.SpecId -> List Mono.MonoExpr -> Mono.MonoType -> ()
+assertCallSiteTypesMatch ctx specId args resultType =
+    case Dict.get specId ctx.signatures of
+        Nothing ->
+            -- Unknown specId - might be external, skip check
+            ()
+
+        Just sig ->
+            let
+                actualParamTypes =
+                    List.map Mono.typeOf args
+
+                funcName =
+                    specIdToFuncName ctx.registry specId
+
+                -- Check parameter types
+                paramMismatch =
+                    if List.length sig.paramTypes /= List.length actualParamTypes then
+                        Just
+                            ("Arity mismatch: expected "
+                                ++ String.fromInt (List.length sig.paramTypes)
+                                ++ " params, got "
+                                ++ String.fromInt (List.length actualParamTypes)
+                            )
+
+                    else
+                        findFirstMismatch 0 sig.paramTypes actualParamTypes
+
+                -- Check return type
+                returnMismatch =
+                    if sig.returnType /= resultType then
+                        Just
+                            ("Return type mismatch:\n  Expected: "
+                                ++ monoTypeToString sig.returnType
+                                ++ "\n  Actual:   "
+                                ++ monoTypeToString resultType
+                            )
+
+                    else
+                        Nothing
+            in
+            case ( paramMismatch, returnMismatch ) of
+                ( Nothing, Nothing ) ->
+                    ()
+
+                ( Just paramErr, Nothing ) ->
+                    crash
+                        ("COMPILER BUG - Monomorphization invariant violated!\n"
+                            ++ "Function: "
+                            ++ funcName
+                            ++ " (SpecId "
+                            ++ String.fromInt specId
+                            ++ ")\n"
+                            ++ "Parameter types: "
+                            ++ paramErr
+                            ++ "\n\nExpected param types: "
+                            ++ String.join ", " (List.map monoTypeToString sig.paramTypes)
+                            ++ "\nActual arg types:     "
+                            ++ String.join ", " (List.map monoTypeToString actualParamTypes)
+                        )
+
+                ( Nothing, Just retErr ) ->
+                    crash
+                        ("COMPILER BUG - Monomorphization invariant violated!\n"
+                            ++ "Function: "
+                            ++ funcName
+                            ++ " (SpecId "
+                            ++ String.fromInt specId
+                            ++ ")\n"
+                            ++ retErr
+                        )
+
+                ( Just paramErr, Just retErr ) ->
+                    crash
+                        ("COMPILER BUG - Monomorphization invariant violated!\n"
+                            ++ "Function: "
+                            ++ funcName
+                            ++ " (SpecId "
+                            ++ String.fromInt specId
+                            ++ ")\n"
+                            ++ "Parameter types: "
+                            ++ paramErr
+                            ++ "\n"
+                            ++ retErr
+                            ++ "\n\nExpected param types: "
+                            ++ String.join ", " (List.map monoTypeToString sig.paramTypes)
+                            ++ "\nActual arg types:     "
+                            ++ String.join ", " (List.map monoTypeToString actualParamTypes)
+                        )
+
+
+{-| Find the first parameter type mismatch, returning its index and types.
+-}
+findFirstMismatch : Int -> List Mono.MonoType -> List Mono.MonoType -> Maybe String
+findFirstMismatch idx expected actual =
+    case ( expected, actual ) of
+        ( [], [] ) ->
+            Nothing
+
+        ( e :: es, a :: as_ ) ->
+            if e == a then
+                findFirstMismatch (idx + 1) es as_
+
+            else
+                Just
+                    ("Param "
+                        ++ String.fromInt idx
+                        ++ " type mismatch:\n  Expected: "
+                        ++ monoTypeToString e
+                        ++ "\n  Actual:   "
+                        ++ monoTypeToString a
+                    )
+
+        _ ->
+            -- Length mismatch handled above
+            Nothing
+
+
+{-| Convert MonoType to a human-readable string for error messages.
+-}
+monoTypeToString : Mono.MonoType -> String
+monoTypeToString monoType =
+    case monoType of
+        Mono.MInt ->
+            "Int"
+
+        Mono.MFloat ->
+            "Float"
+
+        Mono.MBool ->
+            "Bool"
+
+        Mono.MChar ->
+            "Char"
+
+        Mono.MString ->
+            "String"
+
+        Mono.MUnit ->
+            "()"
+
+        Mono.MList inner ->
+            "List (" ++ monoTypeToString inner ++ ")"
+
+        Mono.MTuple layout ->
+            "(" ++ String.join ", " (List.map (\( t, _ ) -> monoTypeToString t) layout.elements) ++ ")"
+
+        Mono.MRecord layout ->
+            "{ " ++ String.join ", " (List.map (\f -> f.name ++ " : " ++ monoTypeToString f.monoType) layout.fields) ++ " }"
+
+        Mono.MCustom home name _ _ ->
+            canonicalToMLIRName home ++ "." ++ name
+
+        Mono.MFunction argTypes retType ->
+            "(" ++ String.join " -> " (List.map monoTypeToString argTypes ++ [ monoTypeToString retType ]) ++ ")"
 
 
 
@@ -794,9 +1079,14 @@ mkRegion args body terminator =
 generateModule : Mode.Mode -> Mono.MonoGraph -> String
 generateModule mode ((Mono.MonoGraph { nodes, main, registry }) as monoGraph) =
     let
+        -- Build signatures map for invariant checking before code generation
+        signatures : Dict Int FuncSignature
+        signatures =
+            buildSignatures nodes
+
         ctx : Context
         ctx =
-            initContext mode registry
+            initContext mode registry signatures
 
         -- Generate all nodes (they are already only reachable ones from monomorphization)
         -- Thread context through to collect pending lambdas
@@ -1912,6 +2202,10 @@ generateCall ctx func args resultType =
         Mono.MonoVarGlobal _ specId _ ->
             -- Direct call to known specialization
             let
+                -- Assert monomorphization invariant: call site types must match function signature
+                _ =
+                    assertCallSiteTypesMatch ctx specId args resultType
+
                 ( argsOps, argVars, ctx1 ) =
                     generateExprList ctx args
 
