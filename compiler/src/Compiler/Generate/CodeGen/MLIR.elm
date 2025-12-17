@@ -14,6 +14,7 @@ in the types.
 -}
 
 import Compiler.AST.Monomorphized as Mono
+import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Generate.CodeGen as CodeGen
@@ -129,6 +130,9 @@ monoTypeToMlir monoType =
 
         Mono.MFunction _ _ ->
             ecoValue
+
+        Mono.MVar name _ ->
+            crash ("MLIR codegen: unresolved type variable " ++ name ++ " - should have been instantiated")
 
 
 {-| Compute the remaining arity of a MonoType (number of function arrows).
@@ -484,6 +488,9 @@ monoTypeToString monoType =
 
         Mono.MFunction argTypes retType ->
             "(" ++ String.join " -> " (List.map monoTypeToString argTypes ++ [ monoTypeToString retType ]) ++ ")"
+
+        Mono.MVar name constraint ->
+            "?" ++ name ++ ":" ++ Mono.constraintToString constraint
 
 
 
@@ -1759,6 +1766,9 @@ generateExpr ctx expr =
 
         Mono.MonoShader _ shaderInfo _ ->
             generateShader ctx shaderInfo
+
+        Mono.MonoPolyGlobal _ (TOpt.Global (IO.Canonical _ moduleName) name) _ ->
+            crash ("MLIR codegen: unresolved MonoPolyGlobal for " ++ moduleName ++ "." ++ name ++ " - should have been instantiated at call site")
 
 
 

@@ -40,6 +40,7 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Doc as D
 import Compiler.Reporting.Render.Type.Localizer as L
 import List.Extra as List
+import Utils.Crash
 
 
 

@@ -47,6 +47,7 @@ import Compiler.Optimize.TypedNames as Names
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
+import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
 
@@ -81,7 +82,12 @@ optimize cycle annotations (A.At region expression) =
                     (\maybeType ->
                         let
                             tipe =
-                                Maybe.withDefault unknownType maybeType
+                                case maybeType of
+                                    Just t ->
+                                        t
+
+                                    Nothing ->
+                                        crash ("Unknown variable: " ++ name)
                         in
                         TOpt.TrackedVarLocal region name tipe
                     )
@@ -99,8 +105,7 @@ optimize cycle annotations (A.At region expression) =
                 Names.registerGlobal region home name tipe
 
         Can.VarKernel home name ->
-            -- Kernel functions don't have types in annotations
-            Names.registerKernel home (TOpt.VarKernel region home name unknownType)
+            crash ("Kernel function must be called: " ++ home ++ "." ++ name)
 
         Can.VarForeign home name annotation ->
             let
@@ -501,25 +506,12 @@ optimize cycle annotations (A.At region expression) =
                                 )
                     )
 
-        Can.Shader src (Shader.Types attributes uniforms _) ->
-            -- Shader type is opaque
-            Names.pure
-                (TOpt.Shader src
-                    (EverySet.fromList identity (Dict.keys compare attributes))
-                    (EverySet.fromList identity (Dict.keys compare uniforms))
-                    unknownType
-                )
+        Can.Shader _ _ ->
+            crash "Shader not supported"
 
 
 
 -- HELPER FUNCTIONS
-
-
-{-| Placeholder for unknown/unresolved types
--}
-unknownType : Can.Type
-unknownType =
-    Can.TVar "_unknown"
 
 
 charType : Can.Type
@@ -565,7 +557,7 @@ lookupAnnotationType name annotations =
             tipe
 
         Nothing ->
-            unknownType
+            crash ("Annotation not found: " ++ name)
 
 
 {-| Get the result type of a function call.
@@ -603,13 +595,13 @@ getFieldType field recordType =
                     tipe
 
                 Nothing ->
-                    unknownType
+                    crash ("Field not found: " ++ field)
 
         Can.TAlias _ _ _ (Can.Filled tipe) ->
             getFieldType field tipe
 
         _ ->
-            unknownType
+            crash ("Expected record type for field access: " ++ field)
 
 
 {-| Get name and type from a definition.
@@ -1020,31 +1012,28 @@ getPatternType : Annotations -> Can.Pattern -> Can.Type
 getPatternType _ (A.At _ pattern) =
     case pattern of
         Can.PAnything ->
-            unknownType
+            crash "Cannot infer type for wildcard pattern"
 
         Can.PVar _ ->
-            unknownType
+            crash "Cannot infer type for variable pattern"
 
         Can.PRecord _ ->
-            unknownType
+            crash "Cannot infer type for record pattern"
 
         Can.PAlias _ _ ->
-            unknownType
+            crash "Cannot infer type for alias pattern"
 
         Can.PUnit ->
             unitType
 
-        Can.PTuple _ _ [] ->
-            unknownType
-
         Can.PTuple _ _ _ ->
-            unknownType
+            crash "Cannot infer type for tuple pattern"
 
         Can.PList _ ->
-            unknownType
+            crash "Cannot infer type for list pattern"
 
         Can.PCons _ _ ->
-            unknownType
+            crash "Cannot infer type for cons pattern"
 
         Can.PChr _ ->
             charType
@@ -1059,7 +1048,7 @@ getPatternType _ (A.At _ pattern) =
             Can.TType ModuleName.basics "Bool" []
 
         Can.PCtor _ ->
-            unknownType
+            crash "Cannot infer type for constructor pattern"
 
 
 destructHelp : TOpt.Path -> Can.Type -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
@@ -1101,7 +1090,7 @@ destructHelp path tipe (A.At _ pattern) revDs =
                             ( t1, t2, t3 )
 
                         _ ->
-                            ( unknownType, unknownType, unknownType )
+                            crash "Type mismatch in 3-tuple pattern"
             in
             case path of
                 TOpt.Root _ ->
@@ -1131,7 +1120,7 @@ destructHelp path tipe (A.At _ pattern) revDs =
                             ( t1, t2, ts )
 
                         _ ->
-                            ( unknownType, unknownType, List.map (\_ -> unknownType) cs )
+                            crash "Type mismatch in tuple pattern"
             in
             case path of
                 TOpt.Root _ ->
@@ -1230,7 +1219,7 @@ destructTwo path tipe a b revDs =
                     ( elemType, tipe )
 
                 _ ->
-                    ( unknownType, unknownType )
+                    crash "Type mismatch in destructTwo pattern"
     in
     case path of
         TOpt.Root _ ->

@@ -57,8 +57,7 @@ optimize temp root optBranches =
                     TOpt.typeOf firstExpr
 
                 [] ->
-                    -- Should not happen - case expressions always have branches
-                    Can.TVar "_unknown"
+                    crash "Case with no branches"
     in
     TOpt.Case temp
         root

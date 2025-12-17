@@ -28,6 +28,7 @@ import Compiler.Reporting.Result as ReportingResult
 import Data.Map as Dict exposing (Dict)
 import Maybe exposing (Maybe(..))
 import System.TypeCheck.IO as IO
+import Utils.Crash
 
 
 

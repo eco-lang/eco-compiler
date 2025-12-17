@@ -712,4 +712,4 @@ getDecoderResultType tipe =
             a
 
         _ ->
-            Can.TVar "_unknown"
+            crash "Expected Decoder type"

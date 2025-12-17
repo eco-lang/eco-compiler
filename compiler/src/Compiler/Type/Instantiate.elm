@@ -30,6 +30,7 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Type.Type exposing (Type(..))
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as IO exposing (IO)
+import Utils.Crash
 import Utils.Main as Utils
 
 

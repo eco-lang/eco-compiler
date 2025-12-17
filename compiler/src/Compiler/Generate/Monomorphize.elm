@@ -286,8 +286,11 @@ specializeNode node monoType maybeLambda state =
 
                 layout =
                     buildCtorLayoutFromArity ctorIndex arity monoType
+
+                ctorResultType =
+                    extractCtorResultType arity monoType
             in
-            ( Mono.MonoCtor layout monoType, state )
+            ( Mono.MonoCtor layout ctorResultType, state )
 
         TOpt.Enum index _ ->
             let
@@ -351,6 +354,20 @@ specializeNode node monoType maybeLambda state =
                     collectDependencies monoExpr
             in
             ( Mono.MonoPortOutgoing monoExpr depIds monoType, state2 )
+
+
+extractCtorResultType : Int -> Mono.MonoType -> Mono.MonoType
+extractCtorResultType n monoType =
+    if n <= 0 then
+        monoType
+
+    else
+        case monoType of
+            Mono.MFunction args result ->
+                extractCtorResultType (n - List.length args) result
+
+            _ ->
+                monoType
 
 
 
@@ -1774,6 +1791,9 @@ extractRegion expr =
         Mono.MonoShader region _ _ ->
             region
 
+        Mono.MonoPolyGlobal region _ _ ->
+            region
+
 
 
 -- ============================================================================
@@ -1924,19 +1944,7 @@ applySubst subst canType =
                     monoType
 
                 Nothing ->
-                    -- Some type vars are genuinely unconstrained/phantom at runtime (e.g. `msg` in Html msg).
-                    -- But special constraint vars MUST be resolved, otherwise we'll mis-specialize primitives.
-                    if
-                        Name.isNumberType name
-                            || Name.isComparableType name
-                            || Name.isAppendableType name
-                            || Name.isCompappendType name
-                    then
-                        crash ("Monomorphize.applySubst: unresolved constrained type variable " ++ name)
-
-                    else
-                        -- Safe fallback for phantom/unconstrained vars like `msg`
-                        Mono.MUnit
+                    Mono.MVar name (constraintFromName name)
 
         Can.TLambda from to ->
             Mono.MFunction [ applySubst subst from ] (applySubst subst to)
@@ -2037,6 +2045,24 @@ applySubst subst canType =
 canTypeToMonoType : Substitution -> Can.Type -> Mono.MonoType
 canTypeToMonoType =
     applySubst
+
+
+constraintFromName : Name -> Mono.Constraint
+constraintFromName name =
+    if Name.isNumberType name then
+        Mono.CNumber
+
+    else if Name.isComparableType name then
+        Mono.CComparable
+
+    else if Name.isAppendableType name then
+        Mono.CAppendable
+
+    else if Name.isCompappendType name then
+        Mono.CCompAppend
+
+    else
+        Mono.CAny
 
 
 

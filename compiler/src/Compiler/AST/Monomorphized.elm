@@ -1,44 +1,14 @@
 module Compiler.AST.Monomorphized exposing
-    ( ClosureInfo
-    , CtorLayout
-    , CustomLayout
-    , Decider(..)
-    , FieldInfo
-    , Global(..)
+    ( MonoType(..), Constraint(..), Literal(..)
+    , RecordLayout, FieldInfo, CustomLayout, CtorLayout, TupleLayout
     , LambdaId(..)
-    , Literal(..)
-    , MainInfo(..)
-    , ManagerInfo
-    , MonoChoice(..)
-    , MonoDef(..)
-    , MonoDestructor(..)
-    , MonoExpr(..)
-    , MonoGraph(..)
-    , MonoNode(..)
-    , MonoPath(..)
-    , MonoType(..)
-    , RecordLayout
-    , ShaderInfo
-    , SpecId
-    , SpecKey(..)
-    , SpecializationRegistry
-    , TupleLayout
-    , canUnbox
-    , compareGlobal
-    , compareLambdaId
-    , compareMonoType
-    , compareSpecKey
-    , computeCustomLayout
-    , computeRecordLayout
-    , computeTupleLayout
-    , emptyRegistry
-    , getOrCreateSpecId
-    , lookupSpecKey
-    , toComparableGlobal
-    , toComparableLambdaId
-    , toComparableMonoType
-    , toComparableSpecKey
-    , typeOf
+    , Global(..), SpecKey(..), SpecId, SpecializationRegistry, emptyRegistry, getOrCreateSpecId, lookupSpecKey
+    , MonoGraph(..), MainInfo(..), MonoNode(..), ManagerInfo
+    , MonoExpr(..), ShaderInfo, ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
+    , Decider(..), MonoChoice(..)
+    , typeOf, canUnbox, containsMVar, constraintToString, canTypeToMonoType
+    , computeRecordLayout, computeTupleLayout, computeCustomLayout
+    , compareGlobal, compareMonoType, compareLambdaId, compareSpecKey, toComparableGlobal, toComparableMonoType, toComparableLambdaId, toComparableSpecKey
     )
 
 {-| Monomorphized AST - fully specialized with no type variables.
@@ -106,8 +76,11 @@ Key characteristics:
 
 -}
 
+import Compiler.AST.Canonical as Can
+import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.Elm.Package as Pkg
 import Compiler.Optimize.DecisionTree as DT
 import Compiler.Reporting.Annotation exposing (Region)
 import Data.Map as Dict exposing (Dict)
@@ -135,6 +108,15 @@ type MonoType
     | MRecord RecordLayout
     | MCustom IO.Canonical Name (List MonoType) CustomLayout
     | MFunction (List MonoType) MonoType
+    | MVar Name Constraint -- Unspecialized type var
+
+
+type Constraint
+    = CAny -- Unconstrained phantom
+    | CNumber
+    | CComparable
+    | CAppendable
+    | CCompAppend
 
 
 
@@ -368,6 +350,7 @@ type MonoExpr
     | MonoUnit
     | MonoAccessor Region Name MonoType
     | MonoShader Region ShaderInfo MonoType -- WebGL shader
+    | MonoPolyGlobal Region TOpt.Global Can.Type -- Polymorphic global, to be resolved at call site
 
 
 {-| WebGL shader information
@@ -515,6 +498,87 @@ typeOf expr =
         MonoShader _ _ t ->
             t
 
+        MonoPolyGlobal _ _ canType ->
+            canTypeToMonoType canType
+
+
+{-| Convert a canonical type to a monomorphic type.
+Unresolved type variables become MVar with appropriate constraints.
+-}
+canTypeToMonoType : Can.Type -> MonoType
+canTypeToMonoType canType =
+    case canType of
+        Can.TVar name ->
+            -- Determine constraint from name prefix
+            if String.startsWith "number" name then
+                MVar name CNumber
+
+            else if String.startsWith "comparable" name then
+                MVar name CComparable
+
+            else if String.startsWith "appendable" name then
+                MVar name CAppendable
+
+            else if String.startsWith "compappend" name then
+                MVar name CCompAppend
+
+            else
+                MVar name CAny
+
+        Can.TLambda from to ->
+            MFunction [ canTypeToMonoType from ] (canTypeToMonoType to)
+
+        Can.TType ((IO.Canonical pkg _) as canonical) name args ->
+            if pkg == Pkg.core then
+                case ( name, args ) of
+                    ( "Int", [] ) ->
+                        MInt
+
+                    ( "Float", [] ) ->
+                        MFloat
+
+                    ( "Bool", [] ) ->
+                        MBool
+
+                    ( "Char", [] ) ->
+                        MChar
+
+                    ( "String", [] ) ->
+                        MString
+
+                    ( "List", [ inner ] ) ->
+                        MList (canTypeToMonoType inner)
+
+                    _ ->
+                        MCustom canonical name (List.map canTypeToMonoType args) (computeCustomLayout [])
+
+            else
+                MCustom canonical name (List.map canTypeToMonoType args) (computeCustomLayout [])
+
+        Can.TRecord fields _ ->
+            let
+                monoFields =
+                    Dict.map (\_ (Can.FieldType _ t) -> canTypeToMonoType t) fields
+            in
+            MRecord (computeRecordLayout monoFields)
+
+        Can.TTuple a b rest ->
+            let
+                monoTypes =
+                    List.map canTypeToMonoType (a :: b :: rest)
+            in
+            MTuple (computeTupleLayout monoTypes)
+
+        Can.TUnit ->
+            MUnit
+
+        Can.TAlias _ _ _ (Can.Filled inner) ->
+            canTypeToMonoType inner
+
+        Can.TAlias _ _ args (Can.Holey inner) ->
+            -- For holey aliases, we'd need the args substituted - just recurse for now
+            canTypeToMonoType inner
+
 
 {-| Determine whether a type can be unboxed (stored inline without heap allocation).
 -}
@@ -532,6 +596,33 @@ canUnbox monoType =
 
         MChar ->
             True
+
+        _ ->
+            False
+
+
+{-| Check if a monomorphic type contains any unresolved type variables (MVar).
+-}
+containsMVar : MonoType -> Bool
+containsMVar monoType =
+    case monoType of
+        MVar _ _ ->
+            True
+
+        MFunction args ret ->
+            List.any containsMVar args || containsMVar ret
+
+        MList inner ->
+            containsMVar inner
+
+        MTuple layout ->
+            List.any (Tuple.first >> containsMVar) layout.elements
+
+        MRecord layout ->
+            List.any (.monoType >> containsMVar) layout.fields
+
+        MCustom _ _ args _ ->
+            List.any containsMVar args
 
         _ ->
             False
@@ -726,6 +817,30 @@ toComparableMonoType monoType =
 
         MFunction args ret ->
             "Function" :: List.concatMap toComparableMonoType args ++ [ "->" ] ++ toComparableMonoType ret
+
+        MVar name constraint ->
+            [ "Var", name, constraintToString constraint ]
+
+
+{-| Convert a constraint to a string for comparison purposes.
+-}
+constraintToString : Constraint -> String
+constraintToString constraint =
+    case constraint of
+        CAny ->
+            "any"
+
+        CNumber ->
+            "number"
+
+        CComparable ->
+            "comparable"
+
+        CAppendable ->
+            "appendable"
+
+        CCompAppend ->
+            "compappend"
 
 
 {-| Compare two lambda IDs for ordering.

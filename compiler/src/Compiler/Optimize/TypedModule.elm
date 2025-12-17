@@ -38,6 +38,7 @@ import Compiler.Reporting.Warning as W
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
+import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
 
@@ -76,21 +77,27 @@ type alias Nodes =
 
 addUnions : IO.Canonical -> Annotations -> Dict String Name.Name Can.Union -> TOpt.LocalGraph -> TOpt.LocalGraph
 addUnions home annotations unions (TOpt.LocalGraph data) =
-    TOpt.LocalGraph { data | nodes = Dict.foldr compare (\_ -> addUnion home annotations) data.nodes unions }
+    TOpt.LocalGraph { data | nodes = Dict.foldr compare (addUnion home annotations) data.nodes unions }
 
 
-addUnion : IO.Canonical -> Annotations -> Can.Union -> Nodes -> Nodes
-addUnion home annotations (Can.Union unionData) nodes =
-    List.foldl (addCtorNode home annotations unionData.opts) nodes unionData.alts
+addUnion : IO.Canonical -> Annotations -> Name.Name -> Can.Union -> Nodes -> Nodes
+addUnion home annotations unionName (Can.Union unionData) nodes =
+    let
+        -- Build the result type: e.g., Maybe a for type Maybe a = Just a | Nothing
+        resultType : Can.Type
+        resultType =
+            Can.TType home unionName (List.map Can.TVar unionData.vars)
+    in
+    List.foldl (addCtorNode home annotations unionData.opts resultType) nodes unionData.alts
 
 
-addCtorNode : IO.Canonical -> Annotations -> Can.CtorOpts -> Can.Ctor -> Nodes -> Nodes
-addCtorNode home annotations opts (Can.Ctor c) nodes =
+addCtorNode : IO.Canonical -> Annotations -> Can.CtorOpts -> Can.Type -> Can.Ctor -> Nodes -> Nodes
+addCtorNode home annotations opts resultType (Can.Ctor c) nodes =
     let
         -- Build the constructor type from its arguments and result type
         ctorFullType : Can.Type
         ctorFullType =
-            buildCtorType c.args
+            buildCtorType resultType c.args
 
         node : TOpt.Node
         node =
@@ -110,17 +117,9 @@ addCtorNode home annotations opts (Can.Ctor c) nodes =
 {-| Build the full constructor type.
 For a constructor like `Just : a -> Maybe a`, this builds `a -> Maybe a`.
 -}
-buildCtorType : List Can.Type -> Can.Type
-buildCtorType types =
-    case types of
-        [] ->
-            Can.TVar "_unknown"
-
-        [ result ] ->
-            result
-
-        argType :: rest ->
-            Can.TLambda argType (buildCtorType rest)
+buildCtorType : Can.Type -> List Can.Type -> Can.Type
+buildCtorType resultType argTypes =
+    List.foldr Can.TLambda resultType argTypes
 
 
 
@@ -185,7 +184,7 @@ getFieldTypeFromFields name fields =
             t
 
         Nothing ->
-            Can.TVar "_unknown"
+            crash "Field not found"
 
 
 addRecordCtorField : Name.Name -> Can.FieldType -> Dict String Name.Name Int -> Dict String Name.Name Int
@@ -280,7 +279,7 @@ lookupAnnotationType name annotations =
             tipe
 
         Nothing ->
-            Can.TVar "_unknown"
+            crash "Annotation not found"
 
 
 
