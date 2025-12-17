@@ -30,6 +30,19 @@ import Compiler.Reporting.Error.Syntax as E
 -- TERM
 
 
+{-| Parse a single pattern term without considering operators like cons (::) or aliases.
+
+This parses atomic patterns such as:
+- Records: { x, y }
+- Tuples: (a, b) or parenthesized patterns (x)
+- Lists: [a, b, c]
+- Wildcards: _
+- Variables: x
+- Constructors: Nothing, Just x, List.map
+- Literals: 42, "hello", 'a'
+
+This is the entry point for parsing simple patterns that don't involve infix operators.
+-}
 term : SyntaxVersion -> P.Parser E.Pattern Src.Pattern
 term syntaxVersion =
     P.getPosition
@@ -306,6 +319,18 @@ listHelp syntaxVersion start patterns =
 -- EXPRESSION
 
 
+{-| Parse a complete pattern expression including cons (::) operators and aliases.
+
+This handles complex patterns like:
+- Cons patterns: x :: xs
+- Chained cons: x :: y :: rest
+- Aliased patterns: (x :: xs) as list
+- Constructor applications: Just x, Nothing
+- Nested patterns with all operators
+
+Returns a pattern with surrounding comments and the ending position.
+This is the main entry point for parsing patterns in case expressions and function arguments.
+-}
 expression : SyntaxVersion -> Space.Parser E.Pattern (Src.C1 Src.Pattern)
 expression syntaxVersion =
     P.getPosition

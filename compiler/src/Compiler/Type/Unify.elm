@@ -28,11 +28,24 @@ import Utils.Main as Utils
 -- UNIFY
 
 
+{-| Result of attempting to unify two type variables.
+
+AnswerOk indicates successful unification and includes all newly created
+variables. AnswerErr indicates a type mismatch and includes the conflicting
+types for error reporting.
+-}
 type Answer
     = AnswerOk (List IO.Variable)
     | AnswerErr (List IO.Variable) Error.Type Error.Type
 
 
+{-| Attempts to unify two type variables.
+
+Finds a substitution that makes both variables represent the same type, or
+returns an error with the conflicting types. Uses union-find to efficiently
+merge equivalent variables and handles all type constructors including
+functions, records, tuples, and type aliases.
+-}
 unify : IO.Variable -> IO.Variable -> IO Answer
 unify v1 v2 =
     case guardedUnify v1 v2 of

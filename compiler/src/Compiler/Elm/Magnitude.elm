@@ -24,12 +24,16 @@ for breaking changes.
 -- MAGNITUDE
 
 
+{-| Represents the severity level of a version change in semantic versioning.
+-}
 type Magnitude
     = PATCH
     | MINOR
     | MAJOR
 
 
+{-| Converts a magnitude value to its string representation (e.g., PATCH -> "PATCH").
+-}
 toChars : Magnitude -> String
 toChars magnitude =
     case magnitude of
@@ -43,6 +47,8 @@ toChars magnitude =
             "MAJOR"
 
 
+{-| Compares two magnitude values, ordering them from least severe (PATCH) to most severe (MAJOR).
+-}
 compare : Magnitude -> Magnitude -> Order
 compare m1 m2 =
     let

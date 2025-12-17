@@ -54,10 +54,15 @@ import Utils.Bytes.Encode as BE
 -- REGISTRY
 
 
+{-| The package registry maps package names to their available versions.
+Contains a count of entries for incremental updates and a dictionary of packages.
+-}
 type Registry
     = Registry Int (Dict ( String, String ) Pkg.Name KnownVersions)
 
 
+{-| Available versions of a package, with the latest version first followed by older versions.
+-}
 type KnownVersions
     = KnownVersions V.Version (List V.Version)
 
@@ -66,6 +71,8 @@ type KnownVersions
 -- READ
 
 
+{-| Read the cached registry from disk. Returns Nothing if the cache doesn't exist or is invalid.
+-}
 read : Stuff.PackageCache -> Task Never (Maybe Registry)
 read cache =
     File.readBinary registryDecoder (Stuff.registry cache)
@@ -75,6 +82,9 @@ read cache =
 -- FETCH
 
 
+{-| Fetch the complete registry from the package server and cache it locally.
+Use this for initial registry download or when the cache is missing.
+-}
 fetch : Http.Manager -> Stuff.PackageCache -> Task Never (Result Exit.RegistryProblem Registry)
 fetch manager cache =
     post manager "/all-packages" allPkgsDecoder <|
@@ -128,6 +138,9 @@ allPkgsDecoder =
 -- UPDATE
 
 
+{-| Update an existing registry by fetching only new package versions since the last sync.
+Returns the updated registry, or the original if no updates are available.
+-}
 update : Http.Manager -> Stuff.PackageCache -> Registry -> Task Never (Result Exit.RegistryProblem Registry)
 update manager cache ((Registry size packages) as oldRegistry) =
     post manager ("/all-packages/since/" ++ String.fromInt size) (D.list newPkgDecoder) <|
@@ -198,6 +211,9 @@ bail _ _ =
 -- LATEST
 
 
+{-| Get the latest registry, either by reading the cache and updating it, or fetching it fresh.
+This is the primary entry point for obtaining an up-to-date registry.
+-}
 latest : Http.Manager -> Stuff.PackageCache -> Task Never (Result Exit.RegistryProblem Registry)
 latest manager cache =
     read cache
@@ -216,11 +232,16 @@ latest manager cache =
 -- GET VERSIONS
 
 
+{-| Look up available versions for a package name. Returns Nothing if the package isn't in the registry.
+-}
 getVersions : Pkg.Name -> Registry -> Maybe KnownVersions
 getVersions name (Registry _ versions) =
     Dict.get identity name versions
 
 
+{-| Look up available versions for a package name, providing suggested alternatives if not found.
+Returns nearby package names (by edit distance) when the package doesn't exist.
+-}
 getVersions_ : Pkg.Name -> Registry -> Result (List Pkg.Name) KnownVersions
 getVersions_ name (Registry _ versions) =
     case Dict.get identity name versions of
@@ -255,6 +276,8 @@ post manager path decoder callback =
 -- ENCODERS and DECODERS
 
 
+{-| Binary decoder for reading a registry from disk cache.
+-}
 registryDecoder : Bytes.Decode.Decoder Registry
 registryDecoder =
     Bytes.Decode.map2 Registry
@@ -262,6 +285,8 @@ registryDecoder =
         (BD.assocListDict identity Pkg.nameDecoder knownVersionsDecoder)
 
 
+{-| Binary encoder for writing a registry to disk cache.
+-}
 registryEncoder : Registry -> Bytes.Encode.Encoder
 registryEncoder (Registry size versions) =
     Bytes.Encode.sequence

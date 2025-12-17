@@ -89,11 +89,29 @@ compile rawBranches =
 -- DECISION TREES
 
 
+{-| A decision tree representation for efficient pattern matching.
+
+- `Match Int`: A leaf node indicating successful match with the branch index
+- `Decision Path (List (Test, DecisionTree)) (Maybe DecisionTree)`: A decision node that tests a value at the given path, with edges for each test outcome and an optional fallback for unmatched cases
+
+-}
 type DecisionTree
     = Match Int
     | Decision Path (List ( Test, DecisionTree )) (Maybe DecisionTree)
 
 
+{-| A runtime test to determine which branch to take in a decision tree.
+
+- `IsCtor`: Tests if a value is a specific custom type constructor
+- `IsCons`: Tests if a list is non-empty (has cons cell)
+- `IsNil`: Tests if a list is empty
+- `IsTuple`: Tests if a value is a tuple
+- `IsInt`: Tests if a value equals a specific integer
+- `IsChr`: Tests if a value equals a specific character
+- `IsStr`: Tests if a value equals a specific string
+- `IsBool`: Tests if a value equals a specific boolean
+
+-}
 type Test
     = IsCtor IO.Canonical Name.Name Index.ZeroBased Int Can.CtorOpts
     | IsCons
@@ -105,6 +123,13 @@ type Test
     | IsBool Bool
 
 
+{-| A path describing how to access a value within a matched pattern.
+
+- `Index`: Access the nth field of a tuple or constructor arguments
+- `Unbox`: Unwrap a single-constructor custom type to access its contents
+- `Empty`: The root path (the matched value itself)
+
+-}
 type Path
     = Index Index.ZeroBased Path
     | Unbox Path
@@ -718,6 +743,8 @@ smallBranchingFactor branches path =
 -- ENCODERS and DECODERS
 
 
+{-| Encode a Path to bytes for serialization.
+-}
 pathEncoder : Path -> Bytes.Encode.Encoder
 pathEncoder path_ =
     case path_ of
@@ -738,6 +765,8 @@ pathEncoder path_ =
             Bytes.Encode.unsignedInt8 2
 
 
+{-| Decode a Path from bytes.
+-}
 pathDecoder : Bytes.Decode.Decoder Path
 pathDecoder =
     Bytes.Decode.unsignedInt8
@@ -760,6 +789,8 @@ pathDecoder =
             )
 
 
+{-| Encode a Test to bytes for serialization.
+-}
 testEncoder : Test -> Bytes.Encode.Encoder
 testEncoder test =
     case test of
@@ -807,6 +838,8 @@ testEncoder test =
                 ]
 
 
+{-| Decode a Test from bytes.
+-}
 testDecoder : Bytes.Decode.Decoder Test
 testDecoder =
     Bytes.Decode.unsignedInt8

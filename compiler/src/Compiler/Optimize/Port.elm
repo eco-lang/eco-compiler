@@ -48,6 +48,9 @@ import Utils.Crash exposing (crash)
 -- ENCODE
 
 
+{-| Generate a JSON encoder function for the given Elm type.
+Produces an optimized expression that converts Elm values to JSON for outgoing ports.
+-}
 toEncoder : Can.Type -> Names.Tracker Opt.Expr
 toEncoder tipe =
     case tipe of
@@ -249,6 +252,9 @@ encodeTuple a b cs =
 -- FLAGS DECODER
 
 
+{-| Generate a JSON decoder for program flags.
+Handles the special case where Unit flags decode to a successful Unit value.
+-}
 toFlagsDecoder : Can.Type -> Names.Tracker Opt.Expr
 toFlagsDecoder tipe =
     case tipe of
@@ -264,6 +270,9 @@ toFlagsDecoder tipe =
 -- DECODE
 
 
+{-| Generate a JSON decoder for the given Elm type.
+Produces an optimized expression that converts JSON to Elm values for incoming ports.
+-}
 toDecoder : Can.Type -> Names.Tracker Opt.Expr
 toDecoder tipe =
     case tipe of

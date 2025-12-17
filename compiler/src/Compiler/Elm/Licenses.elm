@@ -36,20 +36,29 @@ import Data.Map as Dict exposing (Dict)
 -- LICENSES
 
 
+{-| Represents a validated OSI-approved SPDX license identifier.
+-}
 type License
     = License String
 
 
+{-| The BSD 3-Clause license, commonly used in Elm packages.
+-}
 bsd3 : License
 bsd3 =
     License "BSD-3-Clause"
 
 
+{-| Encodes a license as a JSON string containing its SPDX identifier.
+-}
 encode : License -> E.Value
 encode (License code) =
     E.string code
 
 
+{-| Decodes and validates a license string, providing suggestions if the license is not recognized.
+The error callback receives a list of suggested valid license identifiers.
+-}
 decoder : (List String -> x) -> D.Decoder x License
 decoder toError =
     D.string

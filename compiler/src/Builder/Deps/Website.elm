@@ -26,12 +26,18 @@ domain =
         |> Task.map (Maybe.withDefault "https://package.elm-lang.org")
 
 
+{-| Construct a URL for a registry API endpoint with optional query parameters.
+Respects the GUIDA_REGISTRY environment variable for custom registries.
+-}
 route : String -> List ( String, String ) -> Task Never String
 route path params =
     domain
         |> Task.map (\d -> Http.toUrl (d ++ path) params)
 
 
+{-| Construct a URL for accessing package metadata files (like docs.json or endpoint.json).
+Respects the GUIDA_REGISTRY environment variable for custom registries.
+-}
 metadata : Pkg.Name -> V.Version -> String -> Task Never String
 metadata name version file =
     domain

@@ -38,6 +38,8 @@ import Data.Set as EverySet exposing (EverySet)
 -- OPERATOR
 
 
+{-| Represents operators that are reserved and cannot be used as custom infix operators.
+-}
 type BadOperator
     = BadDot
     | BadPipe
@@ -46,6 +48,9 @@ type BadOperator
     | BadHasType
 
 
+{-| Parses an infix operator composed of symbolic characters.
+Rejects reserved operators like '.', '|', '->', '=', and ':'.
+-}
 operator : (Row -> Col -> x) -> (BadOperator -> Row -> Col -> x) -> Parser x Name
 operator toExpectation toError =
     P.Parser <|
@@ -107,6 +112,9 @@ isBinopCharHelp char =
     EverySet.member identity code binopCharSet
 
 
+{-| The set of characters that can appear in binary operators.
+Includes: + - / * = . < > : & | ^ ? % !
+-}
 binopCharSet : EverySet Int Int
 binopCharSet =
     EverySet.fromList identity (List.map Char.toCode (String.toList "+-/*=.<>:&|^?%!"))
@@ -116,6 +124,8 @@ binopCharSet =
 -- ENCODERS and DECODERS
 
 
+{-| Encodes a BadOperator to bytes for serialization.
+-}
 badOperatorEncoder : BadOperator -> Bytes.Encode.Encoder
 badOperatorEncoder badOperator =
     Bytes.Encode.unsignedInt8
@@ -137,6 +147,8 @@ badOperatorEncoder badOperator =
         )
 
 
+{-| Decodes a BadOperator from bytes for deserialization.
+-}
 badOperatorDecoder : Bytes.Decode.Decoder BadOperator
 badOperatorDecoder =
     Bytes.Decode.unsignedInt8

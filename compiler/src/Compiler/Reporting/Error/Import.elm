@@ -68,6 +68,9 @@ type Problem
 -- TO REPORT
 
 
+{-| Convert an import error into a user-friendly error report with suggestions
+for fixing module not found, ambiguous imports, or name conflict issues.
+-}
 toReport : Code.Source -> Error -> Report.Report
 toReport source (Error { region, name, unimportedModules, problem }) =
     case problem of
@@ -208,6 +211,8 @@ toSuggestions name unimportedModules =
 -- ENCODERS and DECODERS
 
 
+{-| Serialize an import problem to bytes.
+-}
 problemEncoder : Problem -> Bytes.Encode.Encoder
 problemEncoder problem =
     case problem of
@@ -240,6 +245,8 @@ problemEncoder problem =
                 ]
 
 
+{-| Deserialize an import problem from bytes.
+-}
 problemDecoder : Bytes.Decode.Decoder Problem
 problemDecoder =
     Bytes.Decode.unsignedInt8
@@ -273,6 +280,8 @@ problemDecoder =
             )
 
 
+{-| Serialize an import error to bytes for caching or transmission.
+-}
 errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder (Error { region, name, unimportedModules, problem }) =
     Bytes.Encode.sequence
@@ -283,6 +292,8 @@ errorEncoder (Error { region, name, unimportedModules, problem }) =
         ]
 
 
+{-| Deserialize an import error from bytes.
+-}
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
     Bytes.Decode.map4

@@ -40,6 +40,9 @@ import Utils.Crash exposing (crash)
 -- HELPERS
 
 
+{-| Create a fresh union-find point containing the given descriptor.
+This initializes a new singleton set with weight 1.
+-}
 fresh : IO.Descriptor -> IO IO.Point
 fresh value =
     IORef.newIORefWeight 1
@@ -78,6 +81,9 @@ repr ((IO.Pt ref) as point) =
             )
 
 
+{-| Get the descriptor stored in a union-find point.
+Follows links to find the representative element's descriptor.
+-}
 get : IO.Point -> IO Descriptor
 get ((IO.Pt ref) as point) =
     IORef.readIORefPointInfo (IORef ref)
@@ -101,6 +107,9 @@ get ((IO.Pt ref) as point) =
             )
 
 
+{-| Set the descriptor stored in a union-find point.
+Follows links to update the representative element's descriptor.
+-}
 set : IO.Point -> Descriptor -> IO ()
 set ((IO.Pt ref) as point) newDesc =
     IORef.readIORefPointInfo (IORef ref)
@@ -128,6 +137,9 @@ set ((IO.Pt ref) as point) newDesc =
             )
 
 
+{-| Modify the descriptor stored in a union-find point using a transformation function.
+Follows links to modify the representative element's descriptor in place.
+-}
 modify : IO.Point -> (Descriptor -> Descriptor) -> IO ()
 modify ((IO.Pt ref) as point) func =
     IORef.readIORefPointInfo (IORef ref)
@@ -152,6 +164,10 @@ modify ((IO.Pt ref) as point) func =
             )
 
 
+{-| Unite two union-find points into the same equivalence class with a new descriptor.
+Uses weighted union to keep the tree balanced - the lighter tree becomes a child of the heavier tree.
+If the points are already equivalent, just updates the descriptor.
+-}
 union : IO.Point -> IO.Point -> IO.Descriptor -> IO ()
 union p1 p2 newDesc =
     repr p1
@@ -203,6 +219,9 @@ union p1 p2 newDesc =
             )
 
 
+{-| Check if two union-find points are in the same equivalence class.
+Returns True if they share the same representative element.
+-}
 equivalent : IO.Point -> IO.Point -> IO Bool
 equivalent p1 p2 =
     repr p1
@@ -213,6 +232,9 @@ equivalent p1 p2 =
             )
 
 
+{-| Check if a union-find point is redundant (i.e., it is a link to another point).
+Returns True if the point has been merged into another equivalence class.
+-}
 redundant : IO.Point -> IO Bool
 redundant (IO.Pt ref) =
     IORef.readIORefPointInfo (IORef ref)

@@ -190,6 +190,9 @@ toKindInfo kind name =
 -- TO REPORT
 
 
+{-| Convert a canonicalization error into a user-friendly error report with
+source code snippets and helpful suggestions.
+-}
 toReport : Code.Source -> Error -> Report.Report
 toReport source err =
     case err of
@@ -1392,6 +1395,8 @@ aliasToUnionDoc name args tipe =
 -- ENCODERS and DECODERS
 
 
+{-| Serialize a canonicalization error to bytes for caching or transmission.
+-}
 errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
     case error of
@@ -1717,6 +1722,8 @@ errorEncoder error =
                 ]
 
 
+{-| Deserialize a canonicalization error from bytes.
+-}
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
     Bytes.Decode.unsignedInt8
@@ -2105,6 +2112,8 @@ possibleNamesDecoder =
         (BD.assocListDict identity BD.string (BD.everySet identity BD.string))
 
 
+{-| Serialize an invalid port payload type to bytes.
+-}
 invalidPayloadEncoder : InvalidPayload -> Bytes.Encode.Encoder
 invalidPayloadEncoder invalidPayload =
     case invalidPayload of
@@ -2127,6 +2136,8 @@ invalidPayloadEncoder invalidPayload =
                 ]
 
 
+{-| Deserialize an invalid port payload type from bytes.
+-}
 invalidPayloadDecoder : Bytes.Decode.Decoder InvalidPayload
 invalidPayloadDecoder =
     Bytes.Decode.unsignedInt8

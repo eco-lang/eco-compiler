@@ -34,11 +34,15 @@ import Utils.Main as Utils
 -- MODE
 
 
+{-| Compilation mode determining code generation strategy - development mode with optional debug metadata or production mode with optimizations.
+-}
 type Mode
     = Dev (Maybe Extract.Types)
     | Prod ShortFieldNames
 
 
+{-| Check if the compilation mode includes debug metadata for time-travel debugging.
+-}
 isDebug : Mode -> Bool
 isDebug mode =
     case mode of
@@ -56,10 +60,14 @@ isDebug mode =
 -- SHORTEN FIELD NAMES
 
 
+{-| Map from original field names to shortened JavaScript property names for production mode size optimization.
+-}
 type alias ShortFieldNames =
     Dict String Name.Name JsName.Name
 
 
+{-| Analyze record field usage frequencies and assign short JavaScript names to frequently-used fields for code size reduction.
+-}
 shortenFieldNames : Opt.GlobalGraph -> ShortFieldNames
 shortenFieldNames (Opt.GlobalGraph _ frequencies) =
     Dict.foldr compare addToBuckets Dict.empty frequencies |> Dict.foldr compare (\_ -> addToShortNames) Dict.empty

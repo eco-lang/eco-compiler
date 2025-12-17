@@ -114,6 +114,9 @@ tResult uid deps fields value =
     TResult { uid = uid, deps = deps, fields = fields } value
 
 
+{-| Execute a tracker computation with the given annotations context.
+Returns the collected dependencies, field usage counts, and the result value.
+-}
 run : TOpt.Annotations -> Tracker a -> ( EverySet (List String) TOpt.Global, Dict String Name Int, a )
 run annotations (Tracker k) =
     case k (emptyContext annotations) 0 EverySet.empty Dict.empty of
@@ -121,6 +124,8 @@ run annotations (Tracker k) =
             ( props.deps, props.fields, value )
 
 
+{-| Generate a fresh unique name.
+-}
 generate : Tracker Name
 generate =
     Tracker <|
@@ -128,6 +133,8 @@ generate =
             tResult (uid + 1) deps fields (Name.fromVarIndex uid)
 
 
+{-| Retrieve the current module annotations from the context.
+-}
 getAnnotations : Tracker TOpt.Annotations
 getAnnotations =
     Tracker <|
@@ -181,7 +188,8 @@ withVarTypes andThenings (Tracker k) =
             k newCtx uid deps fields
 
 
-{-| Insert a variable type into the context permanently (for let andThenings)
+{-| Insert a single variable type into the context.
+This is a no-op in the current implementation but maintains the Tracker interface.
 -}
 insertVarType : Name -> Can.Type -> Tracker ()
 insertVarType name tipe =
@@ -190,7 +198,8 @@ insertVarType name tipe =
             tResult uid deps fields ()
 
 
-{-| Insert multiple variable types
+{-| Insert multiple variable types into the context.
+This is a no-op in the current implementation but maintains the Tracker interface.
 -}
 insertVarTypes : List ( Name, Can.Type ) -> Tracker ()
 insertVarTypes andThenings =
@@ -199,7 +208,8 @@ insertVarTypes andThenings =
             tResult uid deps fields ()
 
 
-{-| Look up the type of a global variable from annotations.
+{-| Look up the type of a global variable from module annotations.
+Unwraps the Forall wrapper to get the actual type.
 -}
 lookupGlobalType : Name -> Tracker (Maybe Can.Type)
 lookupGlobalType name =
@@ -218,6 +228,9 @@ lookupGlobalType name =
 -- REGISTRATIONS
 
 
+{-| Register a kernel dependency and return the provided value.
+Kernel functions are JavaScript implementations accessed from Elm.
+-}
 registerKernel : Name -> a -> Tracker a
 registerKernel home value =
     Tracker <|
@@ -226,10 +239,9 @@ registerKernel home value =
 
 
 
--- Register a global and return a VarGlobal with its type
--- The type must be provided by the caller
-
-
+{-| Register a global variable as a dependency and create a VarGlobal expression.
+The type must be provided by the caller.
+-}
 registerGlobal : A.Region -> IO.Canonical -> Name -> Can.Type -> Tracker TOpt.Expr
 registerGlobal region home name tipe =
     Tracker <|
@@ -242,6 +254,9 @@ registerGlobal region home name tipe =
             tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields (TOpt.VarGlobal region global tipe)
 
 
+{-| Register a Debug module function as a dependency and create a VarDebug expression.
+Debug functions are special functions provided by the Elm Debug module.
+-}
 registerDebug : Name -> IO.Canonical -> A.Region -> Can.Type -> Tracker TOpt.Expr
 registerDebug name home region tipe =
     Tracker <|
@@ -254,6 +269,9 @@ registerDebug name home region tipe =
             tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields (TOpt.VarDebug region name home Nothing tipe)
 
 
+{-| Register a constructor as a dependency and create the appropriate expression.
+Handles enum constructors (including True/False), unbox constructors, and normal constructors.
+-}
 registerCtor : A.Region -> IO.Canonical -> A.Located Name -> Index.ZeroBased -> Can.CtorOpts -> Can.Type -> Tracker TOpt.Expr
 registerCtor region home (A.At _ name) index opts tipe =
     Tracker <|
@@ -300,6 +318,9 @@ identityGlobal =
     TOpt.Global ModuleName.basics Name.identity_
 
 
+{-| Register a single record field as used and return the provided value.
+Increments the usage count for the field.
+-}
 registerField : Name -> a -> Tracker a
 registerField name value =
     Tracker <|
@@ -307,6 +328,9 @@ registerField name value =
             tResult uid d (Utils.mapInsertWith Basics.identity (+) name 1 fields) value
 
 
+{-| Register all fields from a dictionary as used and return the provided value.
+Each field's usage count is incremented by one.
+-}
 registerFieldDict : Dict String Name v -> a -> Tracker a
 registerFieldDict newFields value =
     Tracker <|
@@ -322,6 +346,9 @@ toOne _ =
     1
 
 
+{-| Register multiple record fields from a list as used and return the provided value.
+Each field's usage count is incremented by one.
+-}
 registerFieldList : List Name -> a -> Tracker a
 registerFieldList names value =
     Tracker <|
@@ -338,6 +365,8 @@ addOne name fields =
 -- INSTANCES
 
 
+{-| Map a function over the result of a tracker computation.
+-}
 map : (a -> b) -> Tracker a -> Tracker b
 map func (Tracker kv) =
     Tracker <|
@@ -347,11 +376,15 @@ map func (Tracker kv) =
                     tResult props.uid props.deps props.fields (func value)
 
 
+{-| Create a tracker computation that returns a pure value without effects.
+-}
 pure : a -> Tracker a
 pure value =
     Tracker (\_ n d f -> tResult n d f value)
 
 
+{-| Sequentially compose two tracker computations, passing the result of the first to the second.
+-}
 andThen : (a -> Tracker b) -> Tracker a -> Tracker b
 andThen callback (Tracker k) =
     Tracker <|
@@ -363,11 +396,15 @@ andThen callback (Tracker k) =
                             kb ctx props.uid props.deps props.fields
 
 
+{-| Apply a tracker-producing function to each element of a list and collect the results.
+-}
 traverse : (a -> Tracker b) -> List a -> Tracker (List b)
 traverse func =
     List.foldl (\a -> andThen (\acc -> map (\b -> acc ++ [ b ]) (func a))) (pure [])
 
 
+{-| Apply a tracker-producing function to each value in a dictionary and collect the results.
+-}
 mapTraverse : (k -> comparable) -> (k -> k -> Order) -> (a -> Tracker b) -> Dict comparable k a -> Tracker (Dict comparable k b)
 mapTraverse toComparable keyComparison func =
     Dict.foldl keyComparison (\k a -> andThen (\c -> map (\va -> Dict.insert toComparable k va c) (func a))) (pure Dict.empty)

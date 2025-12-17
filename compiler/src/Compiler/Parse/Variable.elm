@@ -49,6 +49,8 @@ import Data.Set as EverySet exposing (EverySet)
 -- LOCAL UPPER
 
 
+{-| Parses an upper-case identifier (type name or constructor) that starts with A-Z.
+-}
 upper : (Row -> Col -> x) -> P.Parser x Name
 upper toError =
     P.Parser <|
@@ -73,6 +75,9 @@ upper toError =
 -- LOCAL LOWER
 
 
+{-| Parses a lower-case identifier (variable or function name) that starts with a-z.
+Rejects reserved keywords like 'if', 'then', 'case', etc.
+-}
 lower : (Row -> Col -> x) -> P.Parser x Name
 lower toError =
     P.Parser <|
@@ -102,6 +107,8 @@ lower toError =
                     P.Cok name newState
 
 
+{-| Checks whether a name is a reserved keyword that cannot be used as a variable name.
+-}
 isReservedWord : Name.Name -> Bool
 isReservedWord name =
     EverySet.member identity name reservedWords
@@ -131,6 +138,9 @@ reservedWords =
 -- MODULE NAME
 
 
+{-| Parses a module name like 'Html', 'Json.Decode', or 'Data.Map.Internal'.
+Module names consist of one or more upper-case identifiers separated by dots.
+-}
 moduleName : (Row -> Col -> x) -> P.Parser x Name
 moduleName toError =
     P.Parser <|
@@ -194,11 +204,16 @@ moduleNameHelp src pos end col =
 -- FOREIGN UPPER
 
 
+{-| Represents an upper-case name that may be qualified with a module prefix.
+-}
 type Upper
     = Unqualified Name
     | Qualified Name Name
 
 
+{-| Parses an upper-case identifier that may be qualified with a module prefix.
+Examples: 'Just', 'Maybe.Just', 'Html.Attributes.class'.
+-}
 foreignUpper : (Row -> Col -> x) -> P.Parser x Upper
 foreignUpper toError =
     P.Parser <|
@@ -256,6 +271,9 @@ foreignUpperHelp src pos end col =
 -- FOREIGN ALPHA
 
 
+{-| Parses a qualified or unqualified variable reference (upper or lower case).
+Returns a Var or VarQual expression node. Examples: 'x', 'map', 'List.map', 'Maybe.Just'.
+-}
 foreignAlpha : (Row -> Col -> x) -> P.Parser x Src.Expr_
 foreignAlpha toError =
     P.Parser <|
@@ -322,6 +340,8 @@ foreignAlphaHelp src pos end col =
 -- DOTS
 
 
+{-| Checks if the character at the given position is a dot (.).
+-}
 isDot : String -> Int -> Int -> Bool
 isDot src pos end =
     pos < end && P.unsafeIndex src pos == '.'
@@ -331,6 +351,9 @@ isDot src pos end =
 -- UPPER CHARS
 
 
+{-| Consumes an upper-case identifier including any trailing inner characters (letters, digits, underscores).
+Returns the new position and column after consuming the identifier.
+-}
 chompUpper : String -> Int -> Int -> Col -> ( Int, Col )
 chompUpper src pos end col =
     let
@@ -345,6 +368,9 @@ chompUpper src pos end col =
         chompInnerChars src (pos + width) end (col + 1)
 
 
+{-| Returns the byte width of an upper-case starting character (1-4 bytes for UTF-8).
+Returns 0 if the character is not upper-case.
+-}
 getUpperWidth : String -> Int -> Int -> Int
 getUpperWidth src pos end =
     if pos < end then
@@ -354,6 +380,9 @@ getUpperWidth src pos end =
         0
 
 
+{-| Helper for getUpperWidth that determines byte width based on the first character.
+Handles ASCII upper-case letters and multi-byte UTF-8 upper-case characters.
+-}
 getUpperWidthHelp : String -> Int -> Int -> Char -> Int
 getUpperWidthHelp src pos _ word =
     let
@@ -396,6 +425,9 @@ getUpperWidthHelp src pos _ word =
 -- LOWER CHARS
 
 
+{-| Consumes a lower-case identifier including any trailing inner characters (letters, digits, underscores).
+Returns the new position and column after consuming the identifier.
+-}
 chompLower : String -> Int -> Int -> Col -> ( Int, Col )
 chompLower src pos end col =
     let
@@ -461,6 +493,9 @@ getLowerWidthHelp src pos _ word =
 -- INNER CHARS
 
 
+{-| Consumes the inner characters of an identifier (letters, digits, underscores).
+Used after consuming the initial character of a variable name.
+-}
 chompInnerChars : String -> Int -> Int -> Col -> ( Int, Col )
 chompInnerChars src pos end col =
     let
@@ -475,6 +510,9 @@ chompInnerChars src pos end col =
         chompInnerChars src (pos + width) end (col + 1)
 
 
+{-| Returns the byte width of an inner identifier character (letter, digit, or underscore).
+Returns 0 if the character is not a valid inner character.
+-}
 getInnerWidth : String -> Int -> Int -> Int
 getInnerWidth src pos end =
     if pos < end then
@@ -484,6 +522,9 @@ getInnerWidth src pos end =
         0
 
 
+{-| Helper for getInnerWidth that determines byte width based on the character.
+Handles ASCII alphanumeric characters, underscores, and multi-byte UTF-8 letters.
+-}
 getInnerWidthHelp : String -> Int -> Int -> Char -> Int
 getInnerWidthHelp src pos _ word =
     let

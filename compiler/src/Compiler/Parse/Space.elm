@@ -43,6 +43,9 @@ import Compiler.Reporting.Error.Syntax as E
 -- SPACE PARSING
 
 
+{-| A parser that returns a value along with its ending position.
+Used throughout the space parsing system to track source locations.
+-}
 type alias Parser x a =
     P.Parser x ( a, A.Position )
 
@@ -51,6 +54,9 @@ type alias Parser x a =
 -- CHOMP
 
 
+{-| Consumes whitespace and comments, returning any comments found.
+Handles spaces, newlines, line comments (--), and block comments.
+-}
 chomp : (E.Space -> Row -> Col -> x) -> P.Parser x Src.FComments
 chomp toError =
     P.Parser <|
@@ -79,6 +85,9 @@ chomp toError =
 -- CHECKS -- to be called right after a `chomp`
 
 
+{-| Checks that the current column is properly indented relative to the context.
+Must be called after chomp. Fails if indentation is insufficient.
+-}
 checkIndent : A.Position -> (Int -> Int -> x) -> P.Parser x ()
 checkIndent (A.Position endRow endCol) toError =
     P.Parser <|
@@ -90,6 +99,9 @@ checkIndent (A.Position endRow endCol) toError =
                 P.Eerr endRow endCol toError
 
 
+{-| Checks that the current column is aligned with the expected indentation level.
+Must be called after chomp. Fails if the column doesn't match the indent exactly.
+-}
 checkAligned : (Int -> Int -> Int -> x) -> P.Parser x ()
 checkAligned toError =
     P.Parser <|
@@ -101,6 +113,9 @@ checkAligned toError =
                 P.Eerr st.row st.col (toError st.indent)
 
 
+{-| Checks that we're at the start of a new line (column 1).
+Must be called after chomp. Fails if we're not at the beginning of a line.
+-}
 checkFreshLine : (Row -> Col -> x) -> P.Parser x ()
 checkFreshLine toError =
     P.Parser <|
@@ -116,6 +131,9 @@ checkFreshLine toError =
 -- CHOMP AND CHECK
 
 
+{-| Consumes whitespace and comments, then checks indentation in one operation.
+More efficient than calling chomp followed by checkIndent separately.
+-}
 chompAndCheckIndent : (E.Space -> Row -> Col -> x) -> (Row -> Col -> x) -> P.Parser x Src.FComments
 chompAndCheckIndent toSpaceError toIndentError =
     P.Parser <|
@@ -324,6 +342,9 @@ eatMultiCommentHelp src pos end row col openComments =
 -- DOCUMENTATION COMMENT
 
 
+{-| Parses a documentation comment (the kind that starts with open-brace, dash, pipe).
+Documentation comments are used to document exposed functions and types.
+-}
 docComment : (Int -> Int -> x) -> (E.Space -> Int -> Int -> x) -> P.Parser x Src.Comment
 docComment toExpectation toSpaceError =
     P.Parser <|

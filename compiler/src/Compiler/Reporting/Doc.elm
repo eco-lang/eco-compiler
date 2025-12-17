@@ -87,48 +87,64 @@ import Text.PrettyPrint.ANSI.Leijen as P
 
 
 
--- FROM
+-- ====== Conversion from Values ======
 
 
+{-| Convert a string to a Doc.
+-}
 fromChars : String -> Doc
 fromChars =
     P.text
 
 
+{-| Convert a Name to a Doc.
+-}
 fromName : Name -> Doc
 fromName =
     P.text
 
 
+{-| Convert a version to a Doc.
+-}
 fromVersion : V.Version -> Doc
 fromVersion vsn =
     P.text (V.toChars vsn)
 
 
+{-| Convert a package name to a Doc.
+-}
 fromPackage : Pkg.Name -> Doc
 fromPackage pkg =
     P.text (Pkg.toChars pkg)
 
 
+{-| Convert an integer to a Doc.
+-}
 fromInt : Int -> Doc
 fromInt n =
     P.text (String.fromInt n)
 
 
 
--- TO STRING
+-- ====== Rendering ======
 
 
+{-| Render a Doc to ANSI output with color support for the given handle.
+-}
 toAnsi : Handle -> Doc -> Task Never ()
 toAnsi handle doc =
     P.displayIO handle (P.renderPretty 1 80 doc)
 
 
+{-| Render a Doc to a plain string without any ANSI color codes.
+-}
 toString : Doc -> String
 toString doc =
     P.displayS (P.renderPretty 1 80 (P.plain doc)) ""
 
 
+{-| Render a Doc to a single line string without any line breaks.
+-}
 toLine : Doc -> String
 toLine doc =
     let
@@ -140,19 +156,27 @@ toLine doc =
 
 
 
--- FORMATTING
+-- ====== High-Level Formatting ======
 
 
+{-| Stack documents vertically with blank lines between them.
+-}
 stack : List Doc -> Doc
 stack docs =
     P.vcat (List.intersperse (P.text "") docs)
 
 
+{-| Reflow a paragraph of text, breaking it into words and filling lines optimally.
+-}
 reflow : String -> Doc
 reflow paragraph =
     P.fillSep (List.map P.text (String.words paragraph))
 
 
+{-| Format a list with commas and a conjunction (e.g., "a, b, and c").
+The first argument is the conjunction, the second is a styling function,
+and the third is the list of documents to format.
+-}
 commaSep : Doc -> (Doc -> Doc) -> List Doc -> List Doc
 commaSep conjunction addStyle names =
     case names of
@@ -170,37 +194,47 @@ commaSep conjunction addStyle names =
 
 
 
--- NOTES
+-- ====== Notes ======
 
 
+{-| Create a note from a simple string message.
+-}
 toSimpleNote : String -> Doc
 toSimpleNote message =
     toFancyNote (List.map P.text (String.words message))
 
 
+{-| Create a note from a list of formatted document chunks.
+-}
 toFancyNote : List Doc -> Doc
 toFancyNote chunks =
     P.fillSep (P.append (P.underline (P.text "Note")) (P.text ":") :: chunks)
 
 
 
--- HINTS
+-- ====== Hints ======
 
 
+{-| Create a hint from a simple string message.
+-}
 toSimpleHint : String -> Doc
 toSimpleHint message =
     toFancyHint (List.map P.text (String.words message))
 
 
+{-| Create a hint from a list of formatted document chunks.
+-}
 toFancyHint : List Doc -> Doc
 toFancyHint chunks =
     P.fillSep (P.append (P.underline (P.text "Hint")) (P.text ":") :: chunks)
 
 
 
--- LINKS
+-- ====== Links and References ======
 
 
+{-| Create a link with an underlined word, text before, a URL to a file, and text after.
+-}
 link : String -> String -> String -> String -> Doc
 link word before fileName after =
     P.fillSep <|
@@ -210,6 +244,9 @@ link word before fileName after =
             :: List.map P.text (String.words after)
 
 
+{-| Create a link with an underlined word, formatted docs before, a URL to a file,
+and formatted docs after.
+-}
 fancyLink : String -> List Doc -> String -> List Doc -> Doc
 fancyLink word before fileName after =
     P.fillSep <|
@@ -219,16 +256,22 @@ fancyLink word before fileName after =
             :: after
 
 
+{-| Create a full link URL in angle brackets pointing to elm-lang.org documentation.
+-}
 makeLink : String -> String
 makeLink fileName =
     "<" ++ makeNakedLink fileName ++ ">"
 
 
+{-| Create a bare link URL (without angle brackets) pointing to elm-lang.org documentation.
+-}
 makeNakedLink : String -> String
 makeNakedLink fileName =
     "https://elm-lang.org/" ++ V.toChars V.elmCompiler ++ "/" ++ fileName
 
 
+{-| Create a reflowed text block with an embedded link.
+-}
 reflowLink : String -> String -> String -> Doc
 reflowLink before fileName after =
     P.fillSep <|
@@ -238,9 +281,11 @@ reflowLink before fileName after =
 
 
 
--- HELPERS
+-- ====== Helpers ======
 
 
+{-| Format a count of arguments with proper singular/plural handling (e.g., "1 argument" or "2 arguments").
+-}
 args : Int -> String
 args n =
     String.fromInt n
@@ -252,6 +297,8 @@ args n =
            )
 
 
+{-| Format a count of additional arguments with "more" (e.g., "1 more argument" or "2 more arguments").
+-}
 moreArgs : Int -> String
 moreArgs n =
     String.fromInt n
@@ -264,11 +311,15 @@ moreArgs n =
            )
 
 
+{-| Convert a zero-based index to an ordinal string (e.g., "1st", "2nd", "3rd", "4th").
+-}
 ordinal : Index.ZeroBased -> String
 ordinal index =
     intToOrdinal (Index.toHuman index)
 
 
+{-| Convert an integer to an ordinal string (e.g., "1st", "2nd", "3rd", "4th").
+-}
 intToOrdinal : Int -> String
 intToOrdinal number =
     let
@@ -302,6 +353,9 @@ intToOrdinal number =
     String.fromInt number ++ ending
 
 
+{-| Create a visual cycle diagram showing circular dependencies between names.
+The diagram is indented by the specified amount and shows arrows connecting the names in a cycle.
+-}
 cycle : Int -> Name -> List Name -> Doc
 cycle indent_ name names =
     let
@@ -360,9 +414,11 @@ isWindows =
 
 
 
--- JSON
+-- ====== JSON Encoding ======
 
 
+{-| Encode a Doc to JSON, preserving styling information (bold, underline, colors).
+-}
 encode : Doc -> E.Value
 encode doc =
     E.array (toJsonHelp noStyle [] (P.renderPretty 1 80 doc))
@@ -377,6 +433,8 @@ noStyle =
     Style False False Nothing
 
 
+{-| Terminal color values, with lowercase for dull colors and uppercase for vivid colors.
+-}
 type Color
     = Red
     | RED
@@ -590,123 +648,171 @@ encodeColor color =
 
 
 
--- DOC
+-- ====== Document Type and Combinators ======
 
 
+{-| The core document type for pretty-printing.
+-}
 type alias Doc =
     P.Doc
 
 
+{-| Append two documents with a space in between.
+-}
 a : Doc -> Doc -> Doc
 a =
     P.a
 
 
+{-| Append two documents with a space in between (synonym for `a`).
+-}
 plus : Doc -> Doc -> Doc
 plus =
     P.plus
 
 
+{-| Concatenate two documents without any space between them.
+-}
 append : Doc -> Doc -> Doc
 append =
     P.append
 
 
+{-| Align a document by adding appropriate indentation to all subsequent lines.
+-}
 align : Doc -> Doc
 align =
     P.align
 
 
+{-| Concatenate documents horizontally without spaces, adding line breaks only when necessary.
+-}
 cat : List Doc -> Doc
 cat =
     P.cat
 
 
+{-| An empty document.
+-}
 empty : Doc
 empty =
     P.empty
 
 
+{-| Fill a document to the specified width by adding spaces on the right.
+-}
 fill : Int -> Doc -> Doc
 fill =
     P.fill
 
 
+{-| Concatenate documents with spaces, adding line breaks when they don't fit on one line.
+-}
 fillSep : List Doc -> Doc
 fillSep =
     P.fillSep
 
 
+{-| Hang a document by indenting all lines except the first by the specified amount.
+-}
 hang : Int -> Doc -> Doc
 hang =
     P.hang
 
 
+{-| Concatenate documents horizontally without any separation.
+-}
 hcat : List Doc -> Doc
 hcat =
     P.hcat
 
 
+{-| Concatenate documents horizontally with spaces between them.
+-}
 hsep : List Doc -> Doc
 hsep =
     P.hsep
 
 
+{-| Indent a document by the specified number of spaces.
+-}
 indent : Int -> Doc -> Doc
 indent =
     P.indent
 
 
+{-| Concatenate documents with spaces, or with line breaks if they don't fit.
+-}
 sep : List Doc -> Doc
 sep =
     P.sep
 
 
+{-| Concatenate documents vertically.
+-}
 vcat : List Doc -> Doc
 vcat =
     P.vcat
 
 
+{-| Apply vivid red color to a document.
+-}
 red : Doc -> Doc
 red =
     P.red
 
 
+{-| Apply vivid cyan color to a document.
+-}
 cyan : Doc -> Doc
 cyan =
     P.cyan
 
 
+{-| Apply vivid green color to a document.
+-}
 green : Doc -> Doc
 green =
     P.green
 
 
+{-| Apply vivid blue color to a document.
+-}
 blue : Doc -> Doc
 blue =
     P.blue
 
 
+{-| Apply black color to a document.
+-}
 black : Doc -> Doc
 black =
     P.black
 
 
+{-| Apply vivid yellow color to a document.
+-}
 yellow : Doc -> Doc
 yellow =
     P.yellow
 
 
+{-| Apply dull red color to a document.
+-}
 dullred : Doc -> Doc
 dullred =
     P.dullred
 
 
+{-| Apply dull cyan color to a document.
+-}
 dullcyan : Doc -> Doc
 dullcyan =
     P.dullcyan
 
 
+{-| Apply dull yellow color to a document.
+-}
 dullyellow : Doc -> Doc
 dullyellow =
     P.dullyellow

@@ -42,6 +42,8 @@ import Utils.Bytes.Encode as BE
 -- SOURCE
 
 
+{-| Escaped GLSL shader source code, ready for embedding in JavaScript.
+-}
 type Source
     = Source String
 
@@ -50,10 +52,14 @@ type Source
 -- TYPES
 
 
+{-| Type information for shader inputs: attributes, uniforms, and varyings.
+-}
 type Types
     = Types (Dict String Name Type) (Dict String Name Type) (Dict String Name Type)
 
 
+{-| GLSL types supported in shaders.
+-}
 type Type
     = Int
     | Float
@@ -69,6 +75,8 @@ type Type
 -- TO BUILDER
 
 
+{-| Extract the escaped shader source as a string for JavaScript embedding.
+-}
 toJsStringBuilder : Source -> String
 toJsStringBuilder (Source src) =
     src
@@ -78,6 +86,8 @@ toJsStringBuilder (Source src) =
 -- FROM STRING
 
 
+{-| Create shader source from a raw GLSL string, escaping special characters for JavaScript.
+-}
 fromString : String -> Source
 fromString =
     escape >> Source
@@ -117,6 +127,8 @@ escape =
         ""
 
 
+{-| Reverse the escaping process, converting escaped sequences back to their original characters.
+-}
 unescape : String -> String
 unescape =
     Regex.replace
@@ -146,16 +158,22 @@ unescape =
 -- ENCODERS and DECODERS
 
 
+{-| Encode shader source to binary format.
+-}
 sourceEncoder : Source -> Bytes.Encode.Encoder
 sourceEncoder (Source src) =
     BE.string src
 
 
+{-| Decode shader source from binary format.
+-}
 sourceDecoder : Bytes.Decode.Decoder Source
 sourceDecoder =
     Bytes.Decode.map Source BD.string
 
 
+{-| Encode shader type information to binary format.
+-}
 typesEncoder : Types -> Bytes.Encode.Encoder
 typesEncoder (Types attribute uniform varying) =
     Bytes.Encode.sequence
@@ -165,6 +183,8 @@ typesEncoder (Types attribute uniform varying) =
         ]
 
 
+{-| Decode shader type information from binary format.
+-}
 typesDecoder : Bytes.Decode.Decoder Types
 typesDecoder =
     Bytes.Decode.map3 Types

@@ -77,6 +77,8 @@ run constraint =
             )
 
 
+{-| Initialize an empty solver state with no variables, no errors, and initial mark.
+-}
 emptyState : State
 emptyState =
     State Dict.empty (Type.nextMark Type.noMark) []
@@ -84,38 +86,42 @@ emptyState =
 
 
 -- ====== Solver State ======
--- Maps variable names to their unification variables.
 
 
+{-| Maps variable names to their unification variables.
+-}
 type alias Env =
     Dict String Name.Name Variable
 
 
-
--- Mutable array of variable pools indexed by rank.
-
-
+{-| Mutable array of variable pools indexed by rank.
+Each pool contains variables at that rank level for generalization.
+-}
 type alias Pools =
     IORef (Array (Maybe (List Variable)))
 
 
-
--- Solver state containing environment, current mark, and accumulated errors.
-
-
+{-| Solver state containing environment, current mark, and accumulated errors.
+-}
 type State
     = State Env Mark (List Error.Error)
 
 
 
--- Main solver loop using tail recursion via IO.loop.
+-- ====== Main Solver ======
 
 
+{-| Main solver loop using tail recursion via IO.loop.
+Processes constraints recursively, maintaining pools and state.
+-}
 solve : Env -> Int -> Pools -> State -> Constraint -> IO State
 solve env rank pools state constraint =
     IO.loop solveHelp ( ( env, rank ), ( pools, state ), ( constraint, identity ) )
 
 
+{-| Helper function for the solver loop that processes individual constraints.
+Handles all constraint types: CTrue, CSaveTheEnvironment, CEqual, CLocal, CForeign, CPattern, CAnd, and CLet.
+-}
 solveHelp : ( ( Env, Int ), ( Pools, State ), ( Type.Constraint, IO State -> IO State ) ) -> IO (IO.Step ( ( Env, Int ), ( Pools, State ), ( Type.Constraint, IO State -> IO State ) ) State)
 solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constraint, cont ) ) =
     case constraint of
@@ -363,9 +369,9 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
 
 
 
--- Check that a variable has rank == noRank, meaning that it can be generalized.
-
-
+{-| Check that a variable has rank == noRank, meaning that it can be generalized.
+Crashes with a compiler bug message if the variable is not generic.
+-}
 isGeneric : Variable -> IO ()
 isGeneric var =
     UF.get var
@@ -391,9 +397,12 @@ isGeneric var =
 
 
 
--- EXPECTATIONS TO VARIABLE
+-- ====== Expectations to Variables ======
 
 
+{-| Convert an expected type into a unification variable.
+Extracts the underlying type from the expectation wrapper.
+-}
 expectedToVariable : Int -> Pools -> Error.Expected Type -> IO Variable
 expectedToVariable rank pools expectation =
     typeToVariable rank pools <|
@@ -408,6 +417,9 @@ expectedToVariable rank pools expectation =
                 tipe
 
 
+{-| Convert a pattern expectation into a unification variable.
+Extracts the underlying type from the pattern expectation wrapper.
+-}
 patternExpectationToVariable : Int -> Pools -> Error.PExpected Type -> IO Variable
 patternExpectationToVariable rank pools expectation =
     typeToVariable rank pools <|
@@ -420,18 +432,23 @@ patternExpectationToVariable rank pools expectation =
 
 
 
--- ERROR HELPERS
+-- ====== Error Helpers ======
 
 
+{-| Add a type error to the solver state.
+-}
 addError : State -> Error.Error -> State
 addError (State savedEnv rank errors) err =
     State savedEnv rank (err :: errors)
 
 
 
--- OCCURS CHECK
+-- ====== Occurs Check ======
 
 
+{-| Perform occurs check on a variable to detect infinite types.
+If an infinite type is detected, marks the variable as Error and adds an error to state.
+-}
 occurs : State -> ( Name.Name, A.Located Variable ) -> IO State
 occurs state ( name, A.At region variable ) =
     Occurs.occurs variable
@@ -455,11 +472,12 @@ occurs state ( name, A.At region variable ) =
 
 
 
--- GENERALIZE
+-- ====== Generalize ======
 
 
-{-| Every variable has rank less than or equal to the maxRank of the pool.
-This sorts variables into the young and old pools accordingly.
+{-| Generalize variables in the young pool after processing a let binding.
+Variables with rank less than youngRank are demoted to older pools.
+Variables with rank equal to youngRank are generalized to noRank (polymorphic).
 -}
 generalize : Mark -> Mark -> Int -> Pools -> IO ()
 generalize youngMark visitMark youngRank pools =
@@ -534,6 +552,9 @@ generalize youngMark visitMark youngRank pools =
             )
 
 
+{-| Build a table mapping ranks to variables, sorting the young pool by rank.
+Marks all variables with youngMark during the process.
+-}
 poolToRankTable : Mark -> Int -> List Variable -> IO (IORef (Array (Maybe (List Variable))))
 poolToRankTable youngMark youngRank youngInhabitants =
     MVector.replicate (youngRank + 1) []
@@ -557,13 +578,13 @@ poolToRankTable youngMark youngRank youngInhabitants =
 
 
 
--- ADJUST RANK
---
--- Adjust variable ranks such that ranks never increase as you move deeper.
--- This way the outermost rank is representative of the entire structure.
---
+-- ====== Adjust Rank ======
 
 
+{-| Adjust variable ranks such that ranks never increase as you move deeper.
+Returns the maximum rank found in the variable's structure.
+This ensures the outermost rank is representative of the entire structure.
+-}
 adjustRank : Mark -> Mark -> Int -> Variable -> IO Int
 adjustRank youngMark visitMark groupRank var =
     UF.get var
@@ -597,6 +618,9 @@ adjustRank youngMark visitMark groupRank var =
             )
 
 
+{-| Adjust ranks for the content of a variable descriptor.
+Recursively adjusts ranks for all variables contained in the content.
+-}
 adjustRankContent : Mark -> Mark -> Int -> Content -> IO Int
 adjustRankContent youngMark visitMark groupRank content =
     let
@@ -662,9 +686,11 @@ adjustRankContent youngMark visitMark groupRank content =
 
 
 
--- REGISTER VARIABLES
+-- ====== Register Variables ======
 
 
+{-| Register variables at the given rank by adding them to the pool and updating their descriptors.
+-}
 introduce : Int -> Pools -> List Variable -> IO ()
 introduce rank pools variables =
     MVector.modify pools
@@ -682,24 +708,19 @@ introduce rank pools variables =
 
 
 
--- TYPE TO VARIABLE
+-- ====== Type to Variable Conversion ======
 
 
+{-| Convert a Type to a unification Variable at the given rank.
+-}
 typeToVariable : Int -> Pools -> Type -> IO Variable
 typeToVariable rank pools tipe =
     typeToVar rank pools Dict.empty tipe
 
 
-
--- PERF working with @mgriffith we noticed that a 784 line entry in a `let` was
--- causing a ~1.5 second slowdown. Moving it to the top-level to be a function
--- saved all that time. The slowdown seems to manifest in `typeToVar` and in
--- `register` in particular. Have not explored further yet. Top-level definitions
--- are recommended in cases like this anyway, so there is at least a safety
--- valve for now.
---
-
-
+{-| Convert a Type to a Variable, tracking alias placeholders in aliasDict.
+Recursively converts all contained types to variables and registers them in pools.
+-}
 typeToVar : Int -> Pools -> Dict String Name.Name Variable -> Type -> IO Variable
 typeToVar rank pools aliasDict tipe =
     let
@@ -776,6 +797,9 @@ typeToVar rank pools aliasDict tipe =
                     )
 
 
+{-| Register a new variable with the given content at the specified rank.
+Creates a fresh unification variable and adds it to the appropriate pool.
+-}
 register : Int -> Pools -> Content -> IO Variable
 register rank pools content =
     UF.fresh (IO.makeDescriptor content rank Type.noMark Nothing)
@@ -786,20 +810,27 @@ register rank pools content =
             )
 
 
+{-| Content for an empty record type.
+-}
 emptyRecord1 : Content
 emptyRecord1 =
     IO.Structure IO.EmptyRecord1
 
 
+{-| Content for a unit type.
+-}
 unit1 : Content
 unit1 =
     IO.Structure IO.Unit1
 
 
 
--- SOURCE TYPE TO VARIABLE
+-- ====== Source Type to Variable ======
 
 
+{-| Convert a canonical source type to a unification variable.
+Creates fresh variables for all free type variables based on their constraints.
+-}
 srcTypeToVariable : Int -> Pools -> Dict String Name.Name () -> Can.Type -> IO Variable
 srcTypeToVariable rank pools freeVars srcType =
     let
@@ -832,6 +863,9 @@ srcTypeToVariable rank pools freeVars srcType =
             )
 
 
+{-| Convert a canonical source type to a variable, with flexVars mapping free variable names.
+Recursively converts all contained types to variables.
+-}
 srcTypeToVar : Int -> Pools -> Dict String Name.Name Variable -> Can.Type -> IO Variable
 srcTypeToVar rank pools flexVars srcType =
     let
@@ -914,15 +948,21 @@ srcTypeToVar rank pools flexVars srcType =
                     )
 
 
+{-| Convert a canonical field type to a variable.
+Unwraps the FieldType wrapper and converts the inner type.
+-}
 srcFieldTypeToVar : Int -> Pools -> Dict String Name.Name Variable -> Can.FieldType -> IO Variable
 srcFieldTypeToVar rank pools flexVars (Can.FieldType _ srcTipe) =
     srcTypeToVar rank pools flexVars srcTipe
 
 
 
--- COPY
+-- ====== Copy (Instantiation) ======
 
 
+{-| Create a copy of a polymorphic variable by instantiating it at the given rank.
+Used when referencing let-bound polymorphic variables.
+-}
 makeCopy : Int -> Pools -> Variable -> IO Variable
 makeCopy rank pools var =
     makeCopyHelp rank pools var
@@ -933,6 +973,9 @@ makeCopy rank pools var =
             )
 
 
+{-| Helper for makeCopy that recursively copies variable structure.
+Links the original to the copy to avoid duplicating work during recursive copying.
+-}
 makeCopyHelp : Int -> Pools -> Variable -> IO Variable
 makeCopyHelp maxRank pools variable =
     UF.get variable
@@ -1012,9 +1055,12 @@ makeCopyHelp maxRank pools variable =
 
 
 
--- RESTORE
+-- ====== Restore ======
 
 
+{-| Restore a variable to its pre-copy state by clearing copy links.
+Recursively restores all variables in the structure.
+-}
 restore : Variable -> IO ()
 restore variable =
     UF.get variable
@@ -1030,6 +1076,8 @@ restore variable =
             )
 
 
+{-| Restore the content of a variable by recursively restoring all contained variables.
+-}
 restoreContent : Content -> IO ()
 restoreContent content =
     case content of
@@ -1077,9 +1125,12 @@ restoreContent content =
 
 
 
--- TRAVERSE FLAT TYPE
+-- ====== Traverse Flat Type ======
 
 
+{-| Apply a function to all variables in a FlatType structure.
+Used during copying to transform all contained variables.
+-}
 traverseFlatType : (Variable -> IO Variable) -> IO.FlatType -> IO IO.FlatType
 traverseFlatType f flatType =
     case flatType of

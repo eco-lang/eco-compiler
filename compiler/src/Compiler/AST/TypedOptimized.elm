@@ -107,7 +107,7 @@ type Expr
     | Shader Shader.Source (EverySet String Name) (EverySet String Name) Can.Type
 
 
-{-| Extract the type from any expression
+{-| Extract the canonical type from any expression.
 -}
 typeOf : Expr -> Can.Type
 typeOf expr =
@@ -203,10 +203,14 @@ typeOf expr =
             t
 
 
+{-| A reference to a top-level definition in a module.
+-}
 type Global
     = Global IO.Canonical Name
 
 
+{-| Compare two global references for ordering.
+-}
 compareGlobal : Global -> Global -> Order
 compareGlobal (Global home1 name1) (Global home2 name2) =
     case compare name1 name2 of
@@ -220,11 +224,15 @@ compareGlobal (Global home1 name1) (Global home2 name2) =
             GT
 
 
+{-| Convert a global reference to a comparable key for use in dictionaries.
+-}
 toComparableGlobal : Global -> List String
 toComparableGlobal (Global home name) =
     ModuleName.toComparableCanonical home ++ [ name ]
 
 
+{-| Create a global reference to a kernel function.
+-}
 toKernelGlobal : Name.Name -> Global
 toKernelGlobal shortName =
     Global (IO.Canonical Pkg.kernel shortName) Name.dollar
@@ -234,11 +242,15 @@ toKernelGlobal shortName =
 -- DEFINITIONS
 
 
+{-| A local definition, either a simple value or a tail-recursive function.
+-}
 type Def
     = Def A.Region Name Expr Can.Type -- name, body, type of the definition
     | TailDef A.Region Name (List ( A.Located Name, Can.Type )) Expr Can.Type -- name, typed args, body, return type
 
 
+{-| Destructuring pattern that extracts a value from a data structure.
+-}
 type Destructor
     = Destructor Name Path Can.Type -- name, path, type of destructured value
 
@@ -247,6 +259,8 @@ type Destructor
 -- Note: Path doesn't need types - it's just navigation
 
 
+{-| A path describing how to navigate into a data structure for destructuring.
+-}
 type Path
     = Index Index.ZeroBased Path
     | ArrayIndex Int Path
@@ -259,12 +273,16 @@ type Path
 -- BRANCHING
 
 
+{-| A decision tree for pattern matching, optimized from the canonical AST.
+-}
 type Decider a
     = Leaf a
     | Chain (List ( DT.Path, DT.Test )) (Decider a) (Decider a)
     | FanOut DT.Path (List ( DT.Test, Decider a )) (Decider a)
 
 
+{-| Represents the action taken when a pattern match succeeds.
+-}
 type Choice
     = Inline Expr
     | Jump Int
@@ -274,6 +292,8 @@ type Choice
 -- OBJECT GRAPH
 
 
+{-| A graph of all top-level definitions across multiple modules.
+-}
 type GlobalGraph
     = GlobalGraph (Dict (List String) Global Node) (Dict String Name Int) Annotations
 
@@ -282,6 +302,8 @@ type GlobalGraph
 -- Include annotations for the whole graph
 
 
+{-| Data structure for a single module's dependency graph.
+-}
 type alias LocalGraphData =
     { main : Maybe Main
     , nodes : Dict (List String) Global Node
@@ -290,6 +312,8 @@ type alias LocalGraphData =
     }
 
 
+{-| A graph of top-level definitions for a single module.
+-}
 type LocalGraph
     = LocalGraph LocalGraphData
 
@@ -298,11 +322,15 @@ type LocalGraph
 -- Include annotations for this module
 
 
+{-| Information about the main entry point of an Elm program.
+-}
 type Main
     = Static
     | Dynamic Can.Type Expr
 
 
+{-| A node in the dependency graph representing a top-level definition.
+-}
 type Node
     = Define Expr (EverySet (List String) Global) Can.Type -- body, deps, type
     | TrackedDefine A.Region Expr (EverySet (List String) Global) Can.Type
@@ -318,6 +346,8 @@ type Node
     | PortOutgoing Expr (EverySet (List String) Global) Can.Type
 
 
+{-| The type of effects manager (commands, subscriptions, or both).
+-}
 type EffectsType
     = Cmd
     | Sub
@@ -328,21 +358,29 @@ type EffectsType
 -- GRAPHS
 
 
+{-| Create an empty global graph with no definitions.
+-}
 empty : GlobalGraph
 empty =
     GlobalGraph Dict.empty Dict.empty Dict.empty
 
 
+{-| Create an empty global graph (alias for `empty`).
+-}
 emptyGlobalGraph : GlobalGraph
 emptyGlobalGraph =
     GlobalGraph Dict.empty Dict.empty Dict.empty
 
 
+{-| Create an empty local graph with no definitions.
+-}
 emptyLocalGraph : LocalGraph
 emptyLocalGraph =
     LocalGraph { main = Nothing, nodes = Dict.empty, fields = Dict.empty, annotations = Dict.empty }
 
 
+{-| Merge two global graphs by unioning their nodes, fields, and annotations.
+-}
 addGlobalGraph : GlobalGraph -> GlobalGraph -> GlobalGraph
 addGlobalGraph (GlobalGraph nodes1 fields1 ann1) (GlobalGraph nodes2 fields2 ann2) =
     GlobalGraph
@@ -351,6 +389,8 @@ addGlobalGraph (GlobalGraph nodes1 fields1 ann1) (GlobalGraph nodes2 fields2 ann
         (Dict.union ann1 ann2)
 
 
+{-| Add a local graph's definitions to a global graph.
+-}
 addLocalGraph : LocalGraph -> GlobalGraph -> GlobalGraph
 addLocalGraph (LocalGraph data) (GlobalGraph nodes2 fields2 ann2) =
     GlobalGraph
@@ -363,6 +403,8 @@ addLocalGraph (LocalGraph data) (GlobalGraph nodes2 fields2 ann2) =
 -- ENCODERS and DECODERS
 
 
+{-| Encode a global graph to binary format.
+-}
 globalGraphEncoder : GlobalGraph -> Bytes.Encode.Encoder
 globalGraphEncoder (GlobalGraph nodes fields annotations) =
     Bytes.Encode.sequence
@@ -372,6 +414,8 @@ globalGraphEncoder (GlobalGraph nodes fields annotations) =
         ]
 
 
+{-| Decode a global graph from binary format.
+-}
 globalGraphDecoder : Bytes.Decode.Decoder GlobalGraph
 globalGraphDecoder =
     Bytes.Decode.map3 GlobalGraph
@@ -380,6 +424,8 @@ globalGraphDecoder =
         (BD.assocListDict identity BD.string Can.annotationDecoder)
 
 
+{-| Encode a local graph to binary format.
+-}
 localGraphEncoder : LocalGraph -> Bytes.Encode.Encoder
 localGraphEncoder (LocalGraph data) =
     Bytes.Encode.sequence
@@ -390,6 +436,8 @@ localGraphEncoder (LocalGraph data) =
         ]
 
 
+{-| Decode a local graph from binary format.
+-}
 localGraphDecoder : Bytes.Decode.Decoder LocalGraph
 localGraphDecoder =
     Bytes.Decode.map4

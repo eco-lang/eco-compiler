@@ -47,10 +47,19 @@ import Utils.Main as Utils
 -- RESULTS
 
 
+{-| Result type for pattern canonicalization operations.
+
+A specialized result type that threads duplicate tracking information and
+canonicalization errors through the pattern analysis pipeline.
+-}
 type alias PResult i w a =
     ReportingResult.RResult i w Error.Error a
 
 
+{-| Dictionary mapping variable names to their canonical names and source regions.
+
+Tracks all variables bound by a pattern for use in scope analysis and error reporting.
+-}
 type alias Bindings =
     Dict String Name.Name A.Region
 
@@ -59,6 +68,12 @@ type alias Bindings =
 -- VERIFY
 
 
+{-| Verify that a pattern has no duplicate bindings and extract all variable bindings.
+
+Takes a canonicalized pattern result and checks for duplicate variable names within
+the pattern. Returns both the canonicalized pattern and a dictionary of all bindings
+if successful, or errors if duplicates are found.
+-}
 verify : Error.DuplicatePatternContext -> PResult DupsDict w a -> PResult i w ( a, Bindings )
 verify context (ReportingResult.RResult k) =
     ReportingResult.RResult <|
@@ -82,10 +97,22 @@ verify context (ReportingResult.RResult k) =
 -- CANONICALIZE
 
 
+{-| Tracker for detecting duplicate variable bindings within patterns.
+
+Records each variable name and its source region to enable duplicate detection
+and helpful error messages showing both binding locations.
+-}
 type alias DupsDict =
     Dups.Tracker A.Region
 
 
+{-| Transform a source pattern into its canonical form.
+
+Converts pattern syntax from the parser (Src.Pattern) to the canonical AST
+representation (Can.Pattern). This includes resolving constructor names,
+validating arity of constructor applications, and tracking all variable bindings
+for duplicate detection.
+-}
 canonicalize : SyntaxVersion -> Env.Env -> Src.Pattern -> PResult DupsDict w Can.Pattern
 canonicalize syntaxVersion env (A.At region pattern) =
     case pattern of

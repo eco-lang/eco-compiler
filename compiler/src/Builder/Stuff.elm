@@ -65,33 +65,43 @@ stuff root =
     root ++ "/guida-stuff/" ++ compilerVersion
 
 
+{-| Returns the path to the details cache file for a project.
+-}
 details : String -> String
 details root =
     stuff root ++ "/d.dat"
 
 
+{-| Returns the path to the interfaces cache file for a project.
+-}
 interfaces : String -> String
 interfaces root =
     stuff root ++ "/i.dat"
 
 
+{-| Returns the path to the objects cache file for a project.
+-}
 objects : String -> String
 objects root =
     stuff root ++ "/o.dat"
 
 
-{-| Path to typed global objects file for MLIR backend
+{-| Returns the path to the typed objects cache file for MLIR backend.
 -}
 typedObjects : String -> String
 typedObjects root =
     stuff root ++ "/to.dat"
 
 
+{-| Returns the path to the prepublish staging directory for a package.
+-}
 prepublishDir : String -> String
 prepublishDir root =
     stuff root ++ "/prepublish"
 
 
+{-| Returns the path to the test output directory.
+-}
 testDir : String -> String
 testDir root =
     stuff root ++ "/test"
@@ -106,17 +116,21 @@ compilerVersion =
 -- ELMI and ELMO
 
 
+{-| Returns the path to a module's .guidai (interface) file.
+-}
 guidai : String -> ModuleName.Raw -> String
 guidai root name =
     toArtifactPath root name "guidai"
 
 
+{-| Returns the path to a module's .guidao (optimized) file.
+-}
 guidao : String -> ModuleName.Raw -> String
 guidao root name =
     toArtifactPath root name "guidao"
 
 
-{-| Path to typed optimized artifact (.guidato) for MLIR backend
+{-| Returns the path to a module's .guidato (typed optimized) file for MLIR backend.
 -}
 guidato : String -> ModuleName.Raw -> String
 guidato root name =
@@ -132,6 +146,8 @@ toArtifactPath root name ext =
 -- ROOT
 
 
+{-| Searches for the project root by looking for elm.json in the current directory and parent directories.
+-}
 findRoot : Task Never (Maybe String)
 findRoot =
     Utils.dirGetCurrentDirectory
@@ -163,6 +179,8 @@ findRootHelp dirs =
 -- LOCKS
 
 
+{-| Executes a task while holding an exclusive lock on the project root's guida-stuff directory.
+-}
 withRootLock : String -> Task Never a -> Task Never a
 withRootLock root work =
     let
@@ -177,6 +195,8 @@ withRootLock root work =
             )
 
 
+{-| Executes a task while holding an exclusive lock on the package registry.
+-}
 withRegistryLock : PackageCache -> Task Never a -> Task Never a
 withRegistryLock (PackageCache dir) work =
     Utils.lockWithFileLock (dir ++ "/lock") Utils.LockExclusive (\_ -> work)
@@ -186,25 +206,35 @@ withRegistryLock (PackageCache dir) work =
 -- PACKAGE CACHES
 
 
+{-| Represents the package cache directory location.
+-}
 type PackageCache
     = PackageCache String
 
 
+{-| Returns the package cache directory, creating it if necessary.
+-}
 getPackageCache : Task Never PackageCache
 getPackageCache =
     Task.map PackageCache (getCacheDir "packages")
 
 
+{-| Returns the path to the package registry cache file.
+-}
 registry : PackageCache -> String
 registry (PackageCache dir) =
     Utils.fpCombine dir "registry.dat"
 
 
+{-| Returns the directory path for a specific package version in the cache.
+-}
 package : PackageCache -> Pkg.Name -> V.Version -> String
 package (PackageCache dir) name version =
     Utils.fpCombine dir (Utils.fpCombine (Pkg.toString name) (V.toChars version))
 
 
+{-| Returns the path to typed artifacts cache for a specific package version.
+-}
 typedPackageArtifacts : PackageCache -> Pkg.Name -> V.Version -> String
 typedPackageArtifacts cache name version =
     package cache name version ++ "/typed-artifacts.dat"
@@ -214,6 +244,8 @@ typedPackageArtifacts cache name version =
 -- CACHE
 
 
+{-| Returns the REPL cache directory, creating it if necessary.
+-}
 getReplCache : Task Never String
 getReplCache =
     getCacheDir "repl"
@@ -234,6 +266,8 @@ getCacheDir projectName =
             )
 
 
+{-| Returns the Elm home directory, checking GUIDA_HOME environment variable first.
+-}
 getElmHome : Task Never String
 getElmHome =
     Utils.envLookupEnv "GUIDA_HOME"
@@ -252,11 +286,15 @@ getElmHome =
 -- ENCODERS and DECODERS
 
 
+{-| Encodes a package cache location to bytes.
+-}
 packageCacheEncoder : PackageCache -> Bytes.Encode.Encoder
 packageCacheEncoder (PackageCache dir) =
     BE.string dir
 
 
+{-| Decodes a package cache location from bytes.
+-}
 packageCacheDecoder : Bytes.Decode.Decoder PackageCache
 packageCacheDecoder =
     Bytes.Decode.map PackageCache BD.string

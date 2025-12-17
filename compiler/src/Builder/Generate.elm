@@ -72,15 +72,11 @@ import Utils.Task.Extra as Task
 -- BACKENDS
 
 
-{-| JavaScript code generation backend.
--}
 javascriptBackend : CodeGen.CodeGen
 javascriptBackend =
     JavaScript.backend
 
 
-{-| MLIR code generation backend (uses monomorphized IR).
--}
 mlirBackend : CodeGen.MonoCodeGen
 mlirBackend =
     MLIR.backend
@@ -90,6 +86,8 @@ mlirBackend =
 -- GENERATORS
 
 
+{-| Generates debug-mode output with type information for runtime type checking.
+-}
 debug : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
 debug backend withSourceMaps leadingLines root details (Build.Artifacts artifacts) =
     loadObjects root details artifacts.modules
@@ -136,6 +134,8 @@ generateWithBackend backend leadingLines mode graph mains sourceMaps =
         }
 
 
+{-| Generates development-mode output without optimization.
+-}
 dev : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
 dev backend withSourceMaps leadingLines root details (Build.Artifacts artifacts) =
     loadObjects root details artifacts.modules
@@ -159,6 +159,8 @@ generateDevOutput backend withSourceMaps leadingLines root pkg roots objects =
         |> Task.map (generateWithBackend backend leadingLines mode graph mains)
 
 
+{-| Generates production-mode output with optimizations and minified field names.
+-}
 prod : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
 prod backend withSourceMaps leadingLines root details (Build.Artifacts artifacts) =
     loadObjects root details artifacts.modules
@@ -200,6 +202,8 @@ prepareSourceMaps withSourceMaps root =
         Task.succeed CodeGen.NoSourceMaps
 
 
+{-| Generates code for REPL evaluation with type annotation display.
+-}
 repl : CodeGen.CodeGen -> FilePath -> Details.Details -> Bool -> Build.ReplArtifacts -> N.Name -> Task Exit.Generate CodeGen.Output
 repl backend root details ansi (Build.ReplArtifacts replArtifacts) name =
     loadObjects root details replArtifacts.modules
@@ -419,6 +423,8 @@ loadAndStoreInterfaceTypes root name mvar =
 -- TYPED GENERATION (FOR MLIR BACKEND)
 
 
+{-| Generates typed development-mode output for MLIR backend with type annotations.
+-}
 typedDev : CodeGen.TypedCodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
 typedDev backend withSourceMaps leadingLines root details (Build.Artifacts artifacts) =
     Task.andThen finalizeTypedObjects (loadTypedObjects root details artifacts.modules)
@@ -580,6 +586,8 @@ lookupTypedMain pkg locals root =
 -- MONOMORPHIZED GENERATION (FOR MLIR MONO BACKEND)
 
 
+{-| Generates monomorphized output for MLIR mono backend after specializing polymorphic functions.
+-}
 monoDev : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
 monoDev backend withSourceMaps leadingLines root details (Build.Artifacts artifacts) =
     loadTypedObjects root details artifacts.modules

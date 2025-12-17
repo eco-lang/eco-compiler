@@ -56,6 +56,10 @@ type alias RTV =
     Dict String Name.Name Type
 
 
+{-| Generate type constraints for an expression given the current rigid type
+variable environment and an expected type. Returns a constraint that will be
+solved during type inference.
+-}
 constrain : RTV -> Can.Expr -> E.Expected Type -> IO Constraint
 constrain rtv (A.At region expression) expected =
     case expression of
@@ -220,6 +224,10 @@ constrain rtv (A.At region expression) expected =
 -- CONSTRAIN LAMBDA
 
 
+{-| Generate constraints for a lambda expression (anonymous function). Creates
+fresh type variables for each argument pattern, constrains the patterns and body,
+and ensures the overall function type matches the expected type.
+-}
 constrainLambda : RTV -> A.Region -> List Can.Pattern -> Can.Expr -> E.Expected Type -> IO Constraint
 constrainLambda rtv region args body expected =
     constrainArgs args
@@ -249,6 +257,10 @@ constrainLambda rtv region args body expected =
 -- CONSTRAIN CALL
 
 
+{-| Generate constraints for a function call. Creates fresh type variables for
+the function and each argument, constrains them appropriately, and ensures the
+function type matches the expected arity and result type.
+-}
 constrainCall : RTV -> A.Region -> Can.Expr -> List Can.Expr -> E.Expected Type -> IO Constraint
 constrainCall rtv region ((A.At funcRegion _) as func) args expected =
     let
@@ -300,6 +312,9 @@ constrainCall rtv region ((A.At funcRegion _) as func) args expected =
             )
 
 
+{-| Generate constraints for a single function call argument at the given index.
+Returns the type variable, type, and constraint for the argument.
+-}
 constrainArg : RTV -> A.Region -> E.MaybeName -> Index.ZeroBased -> Can.Expr -> IO ( IO.Variable, Type, Constraint )
 constrainArg rtv region maybeName index arg =
     Type.mkFlexVar
@@ -318,6 +333,9 @@ constrainArg rtv region maybeName index arg =
             )
 
 
+{-| Extract the name from an expression for better error messages. Returns
+FuncName, CtorName, OpName, or NoName depending on the expression form.
+-}
 getName : Can.Expr -> MaybeName
 getName (A.At _ expr) =
     case expr of
@@ -343,6 +361,9 @@ getName (A.At _ expr) =
             NoName
 
 
+{-| Extract the variable name from an expression being accessed (e.g., in record
+access). Returns Nothing if the expression is not a simple variable reference.
+-}
 getAccessName : Can.Expr -> Maybe Name.Name
 getAccessName (A.At _ expr) =
     case expr of
@@ -363,6 +384,10 @@ getAccessName (A.At _ expr) =
 -- CONSTRAIN BINOP
 
 
+{-| Generate constraints for a binary operator application. Creates fresh type
+variables for left operand, right operand, and result, then ensures the operator
+type matches the pattern (left -> right -> result).
+-}
 constrainBinop : RTV -> A.Region -> Name.Name -> Can.Annotation -> Can.Expr -> Can.Expr -> E.Expected Type -> IO Constraint
 constrainBinop rtv region op annotation leftExpr rightExpr expected =
     Type.mkFlexVar
@@ -420,6 +445,10 @@ constrainBinop rtv region op annotation leftExpr rightExpr expected =
 -- CONSTRAIN LISTS
 
 
+{-| Generate constraints for a list literal. Creates a fresh type variable for
+the element type and ensures all list entries match that type, producing a
+List elementType.
+-}
 constrainList : RTV -> A.Region -> List Can.Expr -> E.Expected Type -> IO Constraint
 constrainList rtv region entries expected =
     Type.mkFlexVar
@@ -447,6 +476,9 @@ constrainList rtv region entries expected =
             )
 
 
+{-| Generate constraints for a single list entry at the given index, ensuring
+it matches the expected element type.
+-}
 constrainListEntry : RTV -> A.Region -> Type -> Index.ZeroBased -> Can.Expr -> IO Constraint
 constrainListEntry rtv region tipe index expr =
     constrain rtv expr (FromContext region (ListEntry index) tipe)
@@ -456,6 +488,9 @@ constrainListEntry rtv region tipe index expr =
 -- CONSTRAIN IF EXPRESSIONS
 
 
+{-| Generate constraints for an if-expression with multiple branches. Ensures
+all conditions are Bool and all branch bodies have the same type.
+-}
 constrainIf : RTV -> A.Region -> List ( Can.Expr, Can.Expr ) -> Can.Expr -> E.Expected Type -> IO Constraint
 constrainIf rtv region branches final expected =
     let
@@ -508,6 +543,10 @@ constrainIf rtv region branches final expected =
 -- CONSTRAIN CASE EXPRESSIONS
 
 
+{-| Generate constraints for a case-expression. Creates a fresh type variable
+for the scrutinee pattern type and ensures all branches match that pattern type
+and produce the same result type.
+-}
 constrainCase : RTV -> A.Region -> Can.Expr -> List Can.CaseBranch -> Expected Type -> IO Constraint
 constrainCase rtv region expr branches expected =
     Type.mkFlexVar
@@ -566,6 +605,10 @@ constrainCase rtv region expr branches expected =
             )
 
 
+{-| Generate constraints for a single case branch. Constrains the pattern to
+match the expected pattern type and the branch expression to match the expected
+branch result type.
+-}
 constrainCaseBranch : RTV -> Can.CaseBranch -> PExpected Type -> Expected Type -> IO Constraint
 constrainCaseBranch rtv (Can.CaseBranch pattern expr) pExpect bExpect =
     Pattern.add pattern pExpect Pattern.emptyState
@@ -580,6 +623,9 @@ constrainCaseBranch rtv (Can.CaseBranch pattern expr) pExpect bExpect =
 -- CONSTRAIN RECORD
 
 
+{-| Generate constraints for a record literal. Creates fresh type variables
+for each field value and constructs a record type from the field types.
+-}
 constrainRecord : RTV -> A.Region -> Dict String (A.Located Name.Name) Can.Expr -> Expected Type -> IO Constraint
 constrainRecord rtv region fields expected =
     IO.traverseMap A.toValue A.compareLocated (constrainField rtv) fields
@@ -610,6 +656,9 @@ constrainRecord rtv region fields expected =
             )
 
 
+{-| Generate constraints for a single record field expression. Returns the
+type variable, type, and constraint for the field value.
+-}
 constrainField : RTV -> Can.Expr -> IO ( IO.Variable, Type, Constraint )
 constrainField rtv expr =
     Type.mkFlexVar
@@ -632,6 +681,10 @@ constrainField rtv expr =
 -- CONSTRAIN RECORD UPDATE
 
 
+{-| Generate constraints for a record update expression. Ensures the base
+expression is a record with the updated fields and that the updated fields
+have appropriate types.
+-}
 constrainUpdate : RTV -> A.Region -> Can.Expr -> Dict String (A.Located Name.Name) Can.FieldUpdate -> Expected Type -> IO Constraint
 constrainUpdate rtv region expr locatedFields expected =
     Type.mkFlexVar
@@ -681,6 +734,9 @@ constrainUpdate rtv region expr locatedFields expected =
             )
 
 
+{-| Generate constraints for a single field in a record update. Returns the
+type variable, type, and constraint for the updated field value.
+-}
 constrainUpdateField : RTV -> A.Region -> Name.Name -> Can.FieldUpdate -> IO ( IO.Variable, Type, Constraint )
 constrainUpdateField rtv region field (Can.FieldUpdate _ expr) =
     Type.mkFlexVar
@@ -700,6 +756,9 @@ constrainUpdateField rtv region field (Can.FieldUpdate _ expr) =
 -- CONSTRAIN TUPLE
 
 
+{-| Generate constraints for a tuple literal. Creates fresh type variables for
+each element and constructs a tuple type from those element types.
+-}
 constrainTuple : RTV -> A.Region -> Can.Expr -> Can.Expr -> List Can.Expr -> Expected Type -> IO Constraint
 constrainTuple rtv region a b cs expected =
     Type.mkFlexVar
@@ -760,6 +819,10 @@ constrainTuple rtv region a b cs expected =
 -- CONSTRAIN SHADER
 
 
+{-| Generate constraints for a shader literal (WebGL shader). Constructs a
+Shader type with appropriate attribute, uniform, and varying record types
+based on the shader's declarations.
+-}
 constrainShader : A.Region -> Shader.Types -> Expected Type -> IO Constraint
 constrainShader region (Shader.Types attributes uniforms varyings) expected =
     Type.mkFlexVar
@@ -791,6 +854,10 @@ constrainShader region (Shader.Types attributes uniforms varyings) expected =
             )
 
 
+{-| Convert a dictionary of shader types to a record type. If the dictionary
+is empty, returns the base record type; otherwise constructs a record with
+the shader types mapped to Elm types.
+-}
 toShaderRecord : Dict String Name.Name Shader.Type -> Type -> Type
 toShaderRecord types baseRecType =
     if Dict.isEmpty types then
@@ -800,6 +867,9 @@ toShaderRecord types baseRecType =
         RecordN (Dict.map (\_ -> glToType) types) baseRecType
 
 
+{-| Convert a GLSL/WebGL type to the corresponding Elm type (e.g., V2 becomes
+vec2, Float becomes float).
+-}
 glToType : Shader.Type -> Type
 glToType glType =
     case glType of
@@ -832,6 +902,10 @@ glToType glType =
 -- CONSTRAIN DESTRUCTURES
 
 
+{-| Generate constraints for a let-destructure (let pattern = expression).
+Ensures the pattern matches the type of the expression and wraps the body
+constraint with the pattern bindings.
+-}
 constrainDestruct : RTV -> A.Region -> Can.Pattern -> Can.Expr -> Constraint -> IO Constraint
 constrainDestruct rtv region pattern expr bodyCon =
     Type.mkFlexVar
@@ -858,6 +932,10 @@ constrainDestruct rtv region pattern expr bodyCon =
 -- CONSTRAIN DEF
 
 
+{-| Generate constraints for a single definition in a let-expression. Handles
+both unannotated definitions (where types are inferred) and typed definitions
+(where explicit type annotations guide constraint generation).
+-}
 constrainDef : RTV -> Can.Def -> Constraint -> IO Constraint
 constrainDef rtv def bodyCon =
     case def of
@@ -929,20 +1007,34 @@ constrainDef rtv def bodyCon =
 -- CONSTRAIN RECURSIVE DEFS
 
 
+{-| Internal type for accumulating information about recursive definitions.
+Tracks type variables, constraints, and type headers for both rigid (typed)
+and flexible (untyped) definitions.
+-}
 type Info
     = Info (List IO.Variable) (List Constraint) (Dict String Name (A.Located Type))
 
 
+{-| Empty Info structure with no variables, constraints, or headers.
+-}
 emptyInfo : Info
 emptyInfo =
     Info [] [] Dict.empty
 
 
+{-| Generate constraints for a group of mutually recursive definitions in a
+let-rec expression. Handles both typed and untyped definitions, ensuring that
+recursive references are properly constrained.
+-}
 constrainRecursiveDefs : RTV -> List Can.Def -> Constraint -> IO Constraint
 constrainRecursiveDefs rtv defs bodyCon =
     recDefsHelp rtv defs bodyCon emptyInfo emptyInfo
 
 
+{-| Helper for constraining recursive definitions. Accumulates rigid (typed)
+and flexible (untyped) definition constraints separately to handle their
+different scoping rules.
+-}
 recDefsHelp : RTV -> List Can.Def -> Constraint -> Info -> Info -> IO Constraint
 recDefsHelp rtv defs bodyCon rigidInfo flexInfo =
     case defs of
@@ -1039,10 +1131,19 @@ recDefsHelp rtv defs bodyCon rigidInfo flexInfo =
 -- CONSTRAIN ARGS
 
 
+{-| Wrapper for argument constraint information, containing type variables,
+the overall function type, result type, and pattern state from argument patterns.
+-}
 type Args
     = Args ArgsProps
 
 
+{-| Properties for constrained function arguments including:
+  - vars: Type variables introduced for arguments and result
+  - tipe: The full function type (arg1 -> arg2 -> ... -> result)
+  - result: The result type of the function
+  - state: Pattern matching state from argument patterns
+-}
 type alias ArgsProps =
     { vars : List IO.Variable
     , tipe : Type
@@ -1051,18 +1152,25 @@ type alias ArgsProps =
     }
 
 
-{-| Helper to construct Args with positional args
+{-| Construct an Args value from its components: type variables, function type,
+result type, and pattern state.
 -}
 makeArgs : List IO.Variable -> Type -> Type -> Pattern.State -> Args
 makeArgs vars tipe result state =
     Args { vars = vars, tipe = tipe, result = result, state = state }
 
 
+{-| Generate constraints for a list of function argument patterns. Creates fresh
+type variables for each argument and accumulates pattern constraints.
+-}
 constrainArgs : List Can.Pattern -> IO Args
 constrainArgs args =
     argsHelp args Pattern.emptyState
 
 
+{-| Helper for constraining function arguments. Recursively processes patterns,
+threading through the pattern state and building up the function type.
+-}
 argsHelp : List Can.Pattern -> Pattern.State -> IO Args
 argsHelp args state =
     case args of
@@ -1100,15 +1208,25 @@ argsHelp args state =
 -- CONSTRAIN TYPED ARGS
 
 
+{-| Information about typed function arguments including the full function type,
+the result type, and the pattern state from argument patterns.
+-}
 type TypedArgs
     = TypedArgs Type Type Pattern.State
 
 
+{-| Generate constraints for explicitly typed function arguments (from a type
+annotation). Instantiates the source types and ensures patterns match them.
+-}
 constrainTypedArgs : Dict String Name.Name Type -> Name.Name -> List ( Can.Pattern, Can.Type ) -> Can.Type -> IO TypedArgs
 constrainTypedArgs rtv name args srcResultType =
     typedArgsHelp rtv name Index.first args srcResultType Pattern.emptyState
 
 
+{-| Helper for constraining typed arguments. Recursively processes pattern-type
+pairs, instantiating source types and ensuring patterns match, building up the
+function type with proper arity tracking for error messages.
+-}
 typedArgsHelp : Dict String Name.Name Type -> Name.Name -> Index.ZeroBased -> List ( Can.Pattern, Can.Type ) -> Can.Type -> Pattern.State -> IO TypedArgs
 typedArgsHelp rtv name index args srcResultType state =
     case args of

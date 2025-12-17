@@ -74,10 +74,14 @@ import Utils.Main as Utils
 -- DOCUMENTATION
 
 
+{-| A collection of documentation for multiple modules indexed by module name.
+-}
 type alias Documentation =
     Dict String Name Module
 
 
+{-| The internal data structure containing all documentation elements for a module.
+-}
 type alias ModuleData =
     { name : Name
     , comment : Comment
@@ -88,26 +92,38 @@ type alias ModuleData =
     }
 
 
+{-| Documentation for a single module including its overview comment and all exported items.
+-}
 type Module
     = Module ModuleData
 
 
+{-| A documentation comment string in markdown format.
+-}
 type alias Comment =
     String
 
 
+{-| Documentation for a type alias including its comment, type variables, and aliased type.
+-}
 type Alias
     = Alias Comment (List Name) Type.Type
 
 
+{-| Documentation for a union type including its comment, type variables, and constructor definitions.
+-}
 type Union
     = Union Comment (List Name) (List ( Name, List Type.Type ))
 
 
+{-| Documentation for a value or function including its comment and type signature.
+-}
 type Value
     = Value Comment Type.Type
 
 
+{-| Documentation data for a binary operator including comment, type, associativity, and precedence.
+-}
 type alias DocsBinopData =
     { comment : Comment
     , tipe : Type.Type
@@ -116,6 +132,8 @@ type alias DocsBinopData =
     }
 
 
+{-| Documentation for a binary operator.
+-}
 type Binop
     = Binop DocsBinopData
 
@@ -124,6 +142,8 @@ type Binop
 -- JSON
 
 
+{-| Encodes Documentation to the compiler's internal JSON representation.
+-}
 encode : Documentation -> E.Value
 encode docs =
     E.list encodeModule (Dict.values compare docs)
@@ -141,12 +161,16 @@ encodeModule (Module moduleData) =
         ]
 
 
+{-| Errors that can occur when decoding documentation from JSON.
+-}
 type Error
     = BadAssociativity
     | BadModuleName
     | BadType
 
 
+{-| Decodes Documentation from the compiler's internal JSON representation.
+-}
 decoder : D.Decoder Error Documentation
 decoder =
     D.map toDict (D.list moduleDecoder)
@@ -359,6 +383,8 @@ precDecoder =
 -- FROM MODULE
 
 
+{-| Extracts documentation from a canonical AST module, validating that all exported items have comments and type annotations.
+-}
 fromModule : Can.Module -> Result E.Error Module
 fromModule ((Can.Module canData) as modul) =
     case canData.exports of
@@ -380,6 +406,8 @@ fromModule ((Can.Module canData) as modul) =
 -- PARSE OVERVIEW
 
 
+{-| Parses the module overview comment to extract the list of @docs declarations.
+-}
 parseOverview : Src.Comment -> Result E.Error (List (A.Located Name.Name))
 parseOverview (Src.Comment snippet) =
     case P.fromSnippet (chompOverview []) E.BadEnd snippet of
@@ -806,16 +834,22 @@ addDef types def =
 -- JSON ENCODERS and DECODERS
 
 
+{-| Encodes Documentation to a standard Json.Encode.Value for external consumption.
+-}
 jsonEncoder : Documentation -> Encode.Value
 jsonEncoder =
     encode >> E.toJsonValue
 
 
+{-| Decodes Documentation from a standard JSON decoder.
+-}
 jsonDecoder : Decode.Decoder Documentation
 jsonDecoder =
     Decode.map toDict (Decode.list jsonModuleDecoder)
 
 
+{-| Encodes a single Module to a standard Json.Encode.Value.
+-}
 jsonModuleEncoder : Module -> Encode.Value
 jsonModuleEncoder (Module moduleData) =
     Encode.object
@@ -828,6 +862,8 @@ jsonModuleEncoder (Module moduleData) =
         ]
 
 
+{-| Decodes a single Module from a standard JSON decoder.
+-}
 jsonModuleDecoder : Decode.Decoder Module
 jsonModuleDecoder =
     Decode.map6 (\name_ comment_ unions_ aliases_ values_ binops_ -> Module { name = name_, comment = comment_, unions = unions_, aliases = aliases_, values = values_, binops = binops_ })
@@ -914,16 +950,22 @@ jsonBinopDecoder =
 -- ENCODERS and DECODERS
 
 
+{-| Encodes Documentation to a binary format for efficient serialization.
+-}
 bytesEncoder : Documentation -> Bytes.Encode.Encoder
 bytesEncoder docs =
     BE.list bytesModuleEncoder (Dict.values compare docs)
 
 
+{-| Decodes Documentation from a binary format.
+-}
 bytesDecoder : Bytes.Decode.Decoder Documentation
 bytesDecoder =
     Bytes.Decode.map toDict (BD.list bytesModuleDecoder)
 
 
+{-| Encodes a single Module to a binary format.
+-}
 bytesModuleEncoder : Module -> Bytes.Encode.Encoder
 bytesModuleEncoder (Module moduleData) =
     Bytes.Encode.sequence
@@ -936,6 +978,8 @@ bytesModuleEncoder (Module moduleData) =
         ]
 
 
+{-| Decodes a single Module from a binary format.
+-}
 bytesModuleDecoder : Bytes.Decode.Decoder Module
 bytesModuleDecoder =
     BD.map6 (\name_ comment_ unions_ aliases_ values_ binops_ -> Module { name = name_, comment = comment_, unions = unions_, aliases = aliases_, values = values_, binops = binops_ })

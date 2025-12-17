@@ -82,6 +82,12 @@ import Utils.Crash exposing (crash)
 -- CONSTRAINTS
 
 
+{-| Constraint tree representing type relationships for the solver.
+
+Constraints form a tree structure that encodes all type requirements discovered
+during constraint generation. The solver walks this tree to unify types and
+detect type errors.
+-}
 type Constraint
     = CTrue
     | CSaveTheEnvironment
@@ -93,6 +99,11 @@ type Constraint
     | CLet (List Variable) (List Variable) (Dict String Name (A.Located Type)) Constraint Constraint
 
 
+{-| Wraps a constraint with existentially quantified flex variables.
+
+Creates a CLet constraint that introduces new flex variables that are local to
+the given constraint, with no header bindings.
+-}
 exists : List Variable -> Constraint -> Constraint
 exists flexVars constraint =
     CLet [] flexVars Dict.empty constraint CTrue
@@ -102,6 +113,12 @@ exists flexVars constraint =
 -- TYPE PRIMITIVES
 
 
+{-| Runtime type representation with unification variables.
+
+Types during inference use Variables (union-find pointers) rather than the
+named type variables seen in source code. This enables efficient unification
+through union-find operations.
+-}
 type Type
     = PlaceHolder Name
     | AliasN IO.Canonical Name (List ( Name, Type )) Type
@@ -127,11 +144,21 @@ makeDescriptor content =
 -- RANKS
 
 
+{-| Rank value for unranked variables or error states.
+
+Used to mark variables that haven't been assigned a rank yet or that are in an
+error state.
+-}
 noRank : Int
 noRank =
     0
 
 
+{-| Rank value for top-level type variables.
+
+Variables at the outermost scope have rank 1, allowing the solver to detect
+when generalization is safe.
+-}
 outermostRank : Int
 outermostRank =
     1
@@ -141,6 +168,11 @@ outermostRank =
 -- MARKS
 
 
+{-| Default mark value for unmarked variables.
+
+Marks are used during graph traversal to avoid revisiting nodes. This is the
+initial mark value for fresh variables.
+-}
 noMark : Mark
 noMark =
     Mark 2
@@ -156,6 +188,11 @@ getVarNamesMark =
     Mark 0
 
 
+{-| Generates the next mark value for a new traversal.
+
+Each graph traversal should use a fresh mark value to distinguish visited nodes
+from unvisited ones.
+-}
 nextMark : Mark -> Mark
 nextMark (Mark mark) =
     Mark (mark + 1)
@@ -165,6 +202,10 @@ nextMark (Mark mark) =
 -- FUNCTION TYPES
 
 
+{-| Constructs a function type from argument to result.
+
+Represents the type `arg -> result` in Elm syntax.
+-}
 funType : Type -> Type -> Type
 funType =
     FunN
@@ -174,31 +215,43 @@ funType =
 -- PRIMITIVE TYPES
 
 
+{-| The Int type.
+-}
 int : Type
 int =
     AppN ModuleName.basics "Int" []
 
 
+{-| The Float type.
+-}
 float : Type
 float =
     AppN ModuleName.basics "Float" []
 
 
+{-| The Char type.
+-}
 char : Type
 char =
     AppN ModuleName.char "Char" []
 
 
+{-| The String type.
+-}
 string : Type
 string =
     AppN ModuleName.string "String" []
 
 
+{-| The Bool type.
+-}
 bool : Type
 bool =
     AppN ModuleName.basics "Bool" []
 
 
+{-| The Never type, representing values that cannot exist.
+-}
 never : Type
 never =
     AppN ModuleName.basics "Never" []
@@ -208,26 +261,36 @@ never =
 -- WEBGL TYPES
 
 
+{-| The Vec2 WebGL type for 2D vectors.
+-}
 vec2 : Type
 vec2 =
     AppN ModuleName.vector2 "Vec2" []
 
 
+{-| The Vec3 WebGL type for 3D vectors.
+-}
 vec3 : Type
 vec3 =
     AppN ModuleName.vector3 "Vec3" []
 
 
+{-| The Vec4 WebGL type for 4D vectors.
+-}
 vec4 : Type
 vec4 =
     AppN ModuleName.vector4 "Vec4" []
 
 
+{-| The Mat4 WebGL type for 4x4 matrices.
+-}
 mat4 : Type
 mat4 =
     AppN ModuleName.matrix4 "Mat4" []
 
 
+{-| The Texture WebGL type.
+-}
 texture : Type
 texture =
     AppN ModuleName.texture "Texture" []
@@ -237,6 +300,11 @@ texture =
 -- MAKE FLEX VARIABLES
 
 
+{-| Creates a fresh unnamed flexible type variable.
+
+Returns a new variable that can unify with any type. Used during type inference
+when the type is initially unknown.
+-}
 mkFlexVar : IO Variable
 mkFlexVar =
     UF.fresh flexVarDescriptor
@@ -247,6 +315,11 @@ flexVarDescriptor =
     makeDescriptor unnamedFlexVar
 
 
+{-| Content representing an unnamed flexible variable.
+
+Flexible variables can unify with any type and will be given generated names if
+needed for error reporting.
+-}
 unnamedFlexVar : Content
 unnamedFlexVar =
     FlexVar Nothing
@@ -256,6 +329,11 @@ unnamedFlexVar =
 -- MAKE FLEX NUMBERS
 
 
+{-| Creates a fresh unnamed flexible number variable.
+
+Returns a new variable constrained to the Number supertype (Int or Float).
+Used for numeric literals that could be either type.
+-}
 mkFlexNumber : IO Variable
 mkFlexNumber =
     UF.fresh flexNumberDescriptor
@@ -266,6 +344,11 @@ flexNumberDescriptor =
     makeDescriptor (unnamedFlexSuper Number)
 
 
+{-| Content representing an unnamed flexible supertype variable.
+
+Supertype variables are constrained to unify only with types matching the given
+supertype (Number, Comparable, Appendable, or CompAppend).
+-}
 unnamedFlexSuper : SuperType -> Content
 unnamedFlexSuper super =
     FlexSuper super Nothing
@@ -275,11 +358,23 @@ unnamedFlexSuper super =
 -- MAKE NAMED VARIABLES
 
 
+{-| Creates a named flexible variable from a type variable name.
+
+If the name corresponds to a supertype (number, comparable, appendable,
+compappend), creates a flexible supertype variable. Otherwise creates a regular
+flexible variable.
+-}
 nameToFlex : Name -> IO Variable
 nameToFlex name =
     Maybe.unwrap FlexVar FlexSuper (toSuper name) (Just name) |> makeDescriptor |> UF.fresh
 
 
+{-| Creates a named rigid variable from a type variable name.
+
+Rigid variables represent bound type variables from user annotations or let
+polymorphism. They cannot unify with other rigid variables. If the name
+corresponds to a supertype, creates a rigid supertype variable.
+-}
 nameToRigid : Name -> IO Variable
 nameToRigid name =
     Maybe.unwrap RigidVar RigidSuper (toSuper name) name |> makeDescriptor |> UF.fresh
@@ -307,6 +402,12 @@ toSuper name =
 -- TO TYPE ANNOTATION
 
 
+{-| Converts a type variable to a canonical type annotation.
+
+Traverses the type structure to produce a user-readable type with properly
+named type variables. Generates fresh names for unnamed variables and returns
+a Forall quantifier listing all type variables found.
+-}
 toAnnotation : Variable -> IO Can.Annotation
 toAnnotation variable =
     getVarNames variable Dict.empty
@@ -442,6 +543,12 @@ fieldToCanType variable =
 -- TO ERROR TYPE
 
 
+{-| Converts a type variable to an error type for reporting.
+
+Similar to toAnnotation but produces types in the error reporting format.
+Includes special handling for infinite types (occurs check failures) by
+detecting cycles during traversal.
+-}
 toErrorType : Variable -> IO ET.Type
 toErrorType variable =
     getVarNames variable Dict.empty

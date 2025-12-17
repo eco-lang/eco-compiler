@@ -77,11 +77,15 @@ type alias Name =
 -- TO
 
 
+{-| Convert a Name to a list of characters.
+-}
 toChars : Name -> List Char
 toChars =
     String.toList
 
 
+{-| Convert a Name to an Elm String (identity function since Name is a String alias).
+-}
 toElmString : Name -> String
 toElmString =
     identity
@@ -91,6 +95,8 @@ toElmString =
 -- FROM
 
 
+{-| Extract a Name from a source string using start and end indices (substring extraction).
+-}
 fromPtr : String -> Int -> Int -> Name
 fromPtr src start end =
     String.slice start end src
@@ -100,11 +106,15 @@ fromPtr src start end =
 -- HAS DOT
 
 
+{-| Check if a Name contains a dot character (used for qualified names like "List.map").
+-}
 hasDot : Name -> Bool
 hasDot =
     String.contains "."
 
 
+{-| Split a Name by dot characters into a list of segments.
+-}
 splitDots : Name -> List String
 splitDots =
     String.split "."
@@ -114,6 +124,8 @@ splitDots =
 -- GET KERNEL
 
 
+{-| Strip the "Elm.Kernel." prefix from a kernel module name. Crashes if the name is not a kernel module.
+-}
 getKernel : Name -> Name
 getKernel name =
     if isKernel name then
@@ -127,26 +139,36 @@ getKernel name =
 -- STARTS WITH
 
 
+{-| Check if a Name starts with "Elm.Kernel." prefix (identifies kernel modules).
+-}
 isKernel : Name -> Bool
 isKernel =
     String.startsWith prefixKernel
 
 
+{-| Check if a Name starts with "number" prefix (identifies number type constraint variables).
+-}
 isNumberType : Name -> Bool
 isNumberType =
     String.startsWith prefixNumber
 
 
+{-| Check if a Name starts with "comparable" prefix (identifies comparable type constraint variables).
+-}
 isComparableType : Name -> Bool
 isComparableType =
     String.startsWith prefixComparable
 
 
+{-| Check if a Name starts with "appendable" prefix (identifies appendable type constraint variables).
+-}
 isAppendableType : Name -> Bool
 isAppendableType =
     String.startsWith prefixAppendable
 
 
+{-| Check if a Name starts with "compappend" prefix (identifies compappend type constraint variables).
+-}
 isCompappendType : Name -> Bool
 isCompappendType =
     String.startsWith prefixCompappend
@@ -181,6 +203,8 @@ prefixCompappend =
 -- FROM VAR INDEX
 
 
+{-| Generate a variable name from an index (e.g., 0 -> "_v0", 1 -> "_v1").
+-}
 fromVarIndex : Int -> Name
 fromVarIndex n =
     writeDigitsAtEnd "_v" n
@@ -195,6 +219,9 @@ writeDigitsAtEnd prefix n =
 -- FROM TYPE VARIABLE
 
 
+{-| Create a type variable name with an index suffix. If index is 0, returns the name unchanged.
+If the name ends with a digit, adds an underscore before the index (e.g., "a2" + 3 -> "a2_3").
+-}
 fromTypeVariable : Name -> Int -> Name
 fromTypeVariable name index =
     if index <= 0 then
@@ -220,6 +247,9 @@ fromTypeVariable name index =
 -- FROM TYPE VARIABLE SCHEME
 
 
+{-| Generate a type variable name from a scheme index (0 -> "a", 1 -> "b", ..., 26 -> "a26", etc.).
+Uses lowercase letters with numeric suffixes for indices beyond 25.
+-}
 fromTypeVariableScheme : Int -> Name
 fromTypeVariableScheme scheme =
     if scheme < 26 then
@@ -265,6 +295,9 @@ fromTypeVariableScheme scheme =
 -- normal name. Same logic for destructuring patterns like (x,y)
 
 
+{-| Create a unique name from multiple names by prefixing the first name with "_M$".
+This creates names valid in JavaScript but not in Elm, avoiding conflicts.
+-}
 fromManyNames : List Name -> Name
 fromManyNames names =
     case names of
@@ -286,6 +319,8 @@ blank =
 -- FROM WORDS
 
 
+{-| Construct a Name from a list of characters.
+-}
 fromWords : List Char -> Name
 fromWords words =
     String.fromList words
@@ -304,6 +339,8 @@ fromWords words =
 -- SEP BY
 
 
+{-| Join two Names with a separator character between them.
+-}
 sepBy : Char -> Name -> Name -> Name
 sepBy sep ba1 ba2 =
     String.join (String.fromChar sep) [ ba1, ba2 ]
@@ -313,191 +350,267 @@ sepBy sep ba1 ba2 =
 -- COMMON NAMES
 
 
+{-| The "Int" type name.
+-}
 int : Name
 int =
     "Int"
 
 
+{-| The "Float" type name.
+-}
 float : Name
 float =
     "Float"
 
 
+{-| The "Bool" type name.
+-}
 bool : Name
 bool =
     "Bool"
 
 
+{-| The "Char" type name.
+-}
 char : Name
 char =
     "Char"
 
 
+{-| The "String" type name.
+-}
 string : Name
 string =
     "String"
 
 
+{-| The "Maybe" type name.
+-}
 maybe : Name
 maybe =
     "Maybe"
 
 
+{-| The "Result" type name.
+-}
 result : Name
 result =
     "Result"
 
 
+{-| The "List" type name.
+-}
 list : Name
 list =
     "List"
 
 
+{-| The "Array" type name.
+-}
 array : Name
 array =
     "Array"
 
 
+{-| The "Dict" type name.
+-}
 dict : Name
 dict =
     "Dict"
 
 
+{-| The "Bytes" type name.
+-}
 bytes : Name
 bytes =
     "Bytes"
 
 
+{-| The "Tuple" type name.
+-}
 tuple : Name
 tuple =
     "Tuple"
 
 
+{-| The "JsArray" type name for JavaScript arrays.
+-}
 jsArray : Name
 jsArray =
     "JsArray"
 
 
+{-| The "Json" type name.
+-}
 json : Name
 json =
     "Json"
 
 
+{-| The "Task" type name.
+-}
 task : Name
 task =
     "Task"
 
 
+{-| The "Router" type name for platform routing.
+-}
 router : Name
 router =
     "Router"
 
 
+{-| The "Cmd" type name for commands.
+-}
 cmd : Name
 cmd =
     "Cmd"
 
 
+{-| The "Sub" type name for subscriptions.
+-}
 sub : Name
 sub =
     "Sub"
 
 
+{-| The "Platform" module name.
+-}
 platform : Name
 platform =
     "Platform"
 
 
+{-| The "VirtualDom" module name.
+-}
 virtualDom : Name
 virtualDom =
     "VirtualDom"
 
 
+{-| The "Shader" type name for WebGL shaders.
+-}
 shader : Name
 shader =
     "Shader"
 
 
+{-| The "Debug" module name.
+-}
 debug : Name
 debug =
     "Debug"
 
 
+{-| The "Debugger" module name.
+-}
 debugger : Name
 debugger =
     "Debugger"
 
 
+{-| The "Bitwise" module name.
+-}
 bitwise : Name
 bitwise =
     "Bitwise"
 
 
+{-| The "Basics" module name.
+-}
 basics : Name
 basics =
     "Basics"
 
 
+{-| The "Utils" module name.
+-}
 utils : Name
 utils =
     "Utils"
 
 
+{-| The "negate" function name.
+-}
 negate : Name
 negate =
     "negate"
 
 
+{-| The "True" boolean constructor name.
+-}
 true : Name
 true =
     "True"
 
 
+{-| The "False" boolean constructor name.
+-}
 false : Name
 false =
     "False"
 
 
+{-| The "Value" type name (used in Json.Decode).
+-}
 value : Name
 value =
     "Value"
 
 
+{-| The "Node" type name (used in Html).
+-}
 node : Name
 node =
     "Node"
 
 
+{-| The "Program" type name for Elm applications.
+-}
 program : Name
 program =
     "Program"
 
 
+{-| The "main" function name for program entry points.
+-}
 main_ : Name
 main_ =
     "main"
 
 
+{-| The "Main" module name for program entry modules.
+-}
 mainModule : Name
 mainModule =
     "Main"
 
 
+{-| The "$" operator name for function application.
+-}
 dollar : Name
 dollar =
     "$"
 
 
+{-| The "identity" function name.
+-}
 identity_ : Name
 identity_ =
     "identity"
 
 
+{-| The "Elm_Repl" module name for REPL sessions.
+-}
 replModule : Name
 replModule =
     "Elm_Repl"
 
 
+{-| The "repl_input_value_" variable name for REPL value printing.
+-}
 replValueToPrint : Name
 replValueToPrint =
     "repl_input_value_"

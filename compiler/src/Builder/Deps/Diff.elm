@@ -54,10 +54,15 @@ import Task exposing (Task)
 import Utils.Main as Utils
 
 
+{-| Changes between two package versions: added modules, changed modules, and removed modules.
+Only includes module changes that are not just patches (MAJOR or MINOR changes).
+-}
 type PackageChanges
     = PackageChanges (List ModuleName.Raw) (Dict String ModuleName.Raw ModuleChanges) (List ModuleName.Raw)
 
 
+{-| Changes within a module broken down by declaration type: unions, aliases, values, and binops.
+-}
 type alias ModuleChangesData =
     { unions : Changes String Name.Name Docs.Union
     , aliases : Changes String Name.Name Docs.Alias
@@ -66,10 +71,14 @@ type alias ModuleChangesData =
     }
 
 
+{-| Changes within a single module between versions.
+-}
 type ModuleChanges
     = ModuleChanges ModuleChangesData
 
 
+{-| Generic change tracking: added items, changed items (with old and new values), and removed items.
+-}
 type Changes c k v
     = Changes (Dict c k v) (Dict c k ( v, v )) (Dict c k v)
 
@@ -95,6 +104,9 @@ getChanges toComparable keyComparison isEquivalent old new =
 -- DIFF
 
 
+{-| Compare two versions of package documentation to determine what changed.
+Filters out patch-level changes, returning only MAJOR and MINOR changes.
+-}
 diff : Docs.Documentation -> Docs.Documentation -> PackageChanges
 diff oldDocs newDocs =
     let
@@ -364,6 +376,8 @@ categorizeVar name =
 -- MAGNITUDE
 
 
+{-| Compute the new version by applying the appropriate bump (MAJOR, MINOR, or PATCH) to the current version.
+-}
 bump : PackageChanges -> Version -> Version
 bump changes version =
     case toMagnitude changes of
@@ -377,6 +391,9 @@ bump changes version =
             V.bumpMajor version
 
 
+{-| Determine the semantic version magnitude (MAJOR, MINOR, or PATCH) required by package changes.
+MAJOR for removed items or breaking changes, MINOR for additions, PATCH for no changes.
+-}
 toMagnitude : PackageChanges -> M.Magnitude
 toMagnitude (PackageChanges added changed removed) =
     let
@@ -403,6 +420,9 @@ toMagnitude (PackageChanges added changed removed) =
     Utils.listMaximum M.compare (addMag :: removeMag :: changeMags)
 
 
+{-| Determine the semantic version magnitude required by changes within a single module.
+Returns the maximum magnitude across all declaration types (unions, aliases, values, binops).
+-}
 moduleChangeMagnitude : ModuleChanges -> M.Magnitude
 moduleChangeMagnitude (ModuleChanges changes) =
     Utils.listMaximum M.compare
@@ -429,6 +449,9 @@ changeMagnitude (Changes added changed removed) =
 -- GET DOCS
 
 
+{-| Fetch documentation for a specific package version, either from local cache or the package server.
+Caches downloaded documentation locally for future use.
+-}
 getDocs : Stuff.PackageCache -> Http.Manager -> Pkg.Name -> V.Version -> Task Never (Result Exit.DocsProblem Docs.Documentation)
 getDocs cache manager name version =
     let

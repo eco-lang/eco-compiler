@@ -56,6 +56,18 @@ import Utils.Crash exposing (crash)
 -- CHUNK
 
 
+{-| Represents a parsed chunk of kernel JavaScript code.
+
+Kernel code is parsed into chunks that represent different types of content:
+- JS: Raw JavaScript code
+- ElmVar: Reference to an Elm variable from another module
+- JsVar: Reference to a JavaScript variable from a kernel module
+- ElmField: Reference to an Elm record field (\_\_$fieldName)
+- JsField: Reference to a JavaScript field by index
+- JsEnum: Reference to an enumeration value by index
+- Debug: Conditional compilation marker for debug mode
+- Prod: Conditional compilation marker for production mode
+-}
 type Chunk
     = JS String
     | ElmVar IO.Canonical Name
@@ -71,6 +83,11 @@ type Chunk
 -- COUNT FIELDS
 
 
+{-| Count the number of times each Elm field is referenced in a list of chunks.
+
+Returns a dictionary mapping field names to their occurrence counts. Only ElmField
+chunks are counted; all other chunk types are ignored.
+-}
 countFields : List Chunk -> Dict String Name Int
 countFields chunks =
     List.foldr addField Dict.empty chunks
@@ -114,14 +131,30 @@ addField chunk fields =
 -- FROM FILE
 
 
+{-| Represents the parsed content of a kernel module file.
+
+Contains the list of imports from the kernel module header comment and the parsed
+chunks representing the JavaScript code body.
+-}
 type Content
     = Content (List (Src.C1 Src.Import)) (List Chunk)
 
 
+{-| Maps module names to their package names.
+
+Used to resolve imported Elm modules to their canonical package locations when
+processing kernel module imports.
+-}
 type alias Foreigns =
     Dict String ModuleName.Raw Pkg.Name
 
 
+{-| Parse a kernel module file from a string.
+
+Expects kernel files to start with a comment block containing imports, followed by
+JavaScript code with special tags (\_\_x patterns) that reference Elm and JS variables,
+fields, and conditional compilation markers. Returns Nothing if parsing fails.
+-}
 fromByteString : Pkg.Name -> Foreigns -> String -> Maybe Content
 fromByteString pkg foreigns bytes =
     case P.fromByteString (parser pkg foreigns) toError bytes of
@@ -442,6 +475,11 @@ toName exposed =
 -- ENCODERS and DECODERS
 
 
+{-| Encode a Chunk to bytes for serialization.
+
+Each chunk type is encoded with a tag byte followed by its data. Used for caching
+parsed kernel modules in artifact files.
+-}
 chunkEncoder : Chunk -> Bytes.Encode.Encoder
 chunkEncoder chunk =
     case chunk of
@@ -490,6 +528,11 @@ chunkEncoder chunk =
             Bytes.Encode.unsignedInt8 7
 
 
+{-| Decode a Chunk from bytes during deserialization.
+
+Reads the tag byte to determine the chunk type, then decodes the corresponding data.
+Used for loading cached kernel module artifacts.
+-}
 chunkDecoder : Bytes.Decode.Decoder Chunk
 chunkDecoder =
     Bytes.Decode.unsignedInt8

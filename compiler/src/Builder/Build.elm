@@ -198,6 +198,12 @@ forkWithKey toComparable keyComparison encoder func dict =
 -- FROM EXPOSED
 
 
+{-| Build a project by compiling a specific list of exposed modules (e.g., for package builds).
+
+This entry point compiles the given modules and their dependencies, respecting the
+documentation goal (keep, write, or ignore). It performs parallel compilation with
+incremental rebuilding based on modification times and interface changes.
+-}
 fromExposed : Bytes.Decode.Decoder docs -> (docs -> Bytes.Encode.Encoder) -> Reporting.Style -> FilePath -> Details.Details -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Task Never (Result Exit.BuildProblem docs)
 fromExposed docsDecoder docsEncoder style root details docsGoal ((NE.Nonempty e es) as exposed) =
     Reporting.trackBuild docsDecoder docsEncoder style <|
@@ -304,6 +310,8 @@ writeDetailsAndReturn root details results =
 -- FROM PATHS
 
 
+{-| Data contained within build artifacts.
+-}
 type alias ArtifactsData =
     { pkg : Pkg.Name
     , deps : Dependencies
@@ -312,19 +320,30 @@ type alias ArtifactsData =
     }
 
 
+{-| Complete build artifacts including compiled modules, dependency interfaces, and root modules.
+-}
 type Artifacts
     = Artifacts ArtifactsData
 
 
+{-| Represents a compiled module, either freshly compiled or loaded from cache.
+-}
 type Module
     = Fresh ModuleName.Raw I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph)
     | Cached ModuleName.Raw Bool (MVar CachedInterface)
 
 
+{-| Map of dependency module interfaces needed for type checking.
+-}
 type alias Dependencies =
     Dict (List String) TypeCheck.Canonical I.DependencyInterface
 
 
+{-| Build a project by compiling modules from specific file paths (e.g., for application builds).
+
+This entry point discovers modules from the given file paths, crawls their dependencies,
+and performs parallel incremental compilation.
+-}
 fromPaths : Reporting.Style -> FilePath -> Details.Details -> Bool -> NE.Nonempty FilePath -> Task Never (Result Exit.BuildProblem Artifacts)
 fromPaths style root details needsTypedOpt paths =
     Reporting.trackBuild artifactsDecoder artifactsEncoder style <|
@@ -456,6 +475,8 @@ toArtifactsFromResults env foreigns ( results, rroots ) =
 -- GET ROOT NAMES
 
 
+{-| Extract the module names of all root modules from the build artifacts.
+-}
 getRootNames : Artifacts -> NE.Nonempty ModuleName.Raw
 getRootNames (Artifacts a) =
     NE.map getRootName a.roots
@@ -678,6 +699,10 @@ type alias ResultDict =
     Dict String ModuleName.Raw (MVar BResult)
 
 
+{-| Build result for a single module after compilation or cache lookup.
+
+Tracks whether the module was freshly compiled, unchanged from cache, or encountered errors.
+-}
 type BResult
     = RNew Details.Local I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe Docs.Module)
     | RSame Details.Local I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe Docs.Module)
@@ -689,6 +714,8 @@ type BResult
     | RKernel
 
 
+{-| State of a cached module interface: unneeded, successfully loaded, or corrupted.
+-}
 type CachedInterface
     = Unneeded
     | Loaded I.Interface
@@ -1685,22 +1712,32 @@ addImportProblems results name problems =
 -- DOCS
 
 
+{-| Specifies how to handle documentation during compilation.
+
+Can keep docs in memory, write to a file, or ignore them entirely.
+-}
 type DocsGoal docs
     = KeepDocs (Dict String ModuleName.Raw BResult -> docs)
     | WriteDocs (Dict String ModuleName.Raw BResult -> Task Never docs)
     | IgnoreDocs docs
 
 
+{-| Keep generated documentation in memory as a dictionary.
+-}
 keepDocs : DocsGoal (Dict String ModuleName.Raw Docs.Module)
 keepDocs =
     KeepDocs (Utils.mapMapMaybe identity compare toDocs)
 
 
+{-| Write generated documentation to a JSON file at the specified path.
+-}
 writeDocs : FilePath -> DocsGoal ()
 writeDocs path =
     WriteDocs (E.writeUgly path << Docs.encode << Utils.mapMapMaybe identity compare toDocs)
 
 
+{-| Ignore documentation generation during compilation.
+-}
 ignoreDocs : DocsGoal ()
 ignoreDocs =
     IgnoreDocs ()
@@ -1785,6 +1822,8 @@ toDocs result =
 -- FROM REPL
 
 
+{-| Data contained within REPL build artifacts.
+-}
 type alias ReplArtifactsData =
     { home : TypeCheck.Canonical
     , modules : List Module
@@ -1793,10 +1832,17 @@ type alias ReplArtifactsData =
     }
 
 
+{-| Build artifacts specific to REPL sessions, including type information for interactive evaluation.
+-}
 type ReplArtifacts
     = ReplArtifacts ReplArtifactsData
 
 
+{-| Compile Elm source code for evaluation in a REPL session.
+
+Parses the source, type checks it against available dependencies, and produces
+artifacts suitable for interactive evaluation.
+-}
 fromRepl : FilePath -> Details.Details -> String -> Task Never (Result Exit.Repl ReplArtifacts)
 fromRepl root details source =
     makeEnv Reporting.ignorer root details False
@@ -2270,6 +2316,8 @@ compileOutside (Env envData) (Details.Local localData) source ifaces modul =
 -- TO ARTIFACTS
 
 
+{-| Represents a root module, either from within the project or from a dependency.
+-}
 type Root
     = Inside ModuleName.Raw
     | Outside ModuleName.Raw I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph)
@@ -2751,6 +2799,8 @@ cachedInterfaceEncoder cachedInterface =
             Bytes.Encode.unsignedInt8 2
 
 
+{-| Decode a cached interface from bytes.
+-}
 cachedInterfaceDecoder : Bytes.Decode.Decoder CachedInterface
 cachedInterfaceDecoder =
     Bytes.Decode.unsignedInt8

@@ -1,5 +1,18 @@
 module Compiler.Parse.Shader exposing (shader)
 
+{-| Parser for GLSL shader blocks in Elm.
+
+This module handles parsing of shader literals marked with [glsl|...|] syntax.
+It extracts the GLSL source code, parses it to identify shader inputs
+(attributes, uniforms, varyings), and validates the shader syntax.
+
+
+# Shader Parsing
+
+@docs shader
+
+-}
+
 import Compiler.AST.Source as Src
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Parse.Primitives as P exposing (Col, Parser, Row)
@@ -15,6 +28,9 @@ import Utils.Crash as Crash
 -- SHADER
 
 
+{-| Parses a GLSL shader block enclosed in [glsl|...|].
+Extracts shader types (attributes, uniforms, varyings) from the GLSL source.
+-}
 shader : A.Position -> Parser E.Expr Src.Expr
 shader ((A.Position row col) as start) =
     parseBlock

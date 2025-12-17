@@ -65,11 +65,16 @@ import Task exposing (Task)
 -- CORE HELPERS
 
 
+{-| Encode a dictionary as a JSON array of key-value pairs.
+Takes a key comparison function, encoders for keys and values, and produces a JSON array.
+-}
 assocListDict : (k -> k -> Order) -> (k -> Encode.Value) -> (v -> Encode.Value) -> Dict c k v -> Encode.Value
 assocListDict keyComparison keyEncoder valueEncoder =
     Dict.toList keyComparison >> List.reverse >> Encode.list (jsonPair keyEncoder valueEncoder)
 
 
+{-| Encode a tuple as a JSON object with fields "a" and "b".
+-}
 jsonPair : (a -> Encode.Value) -> (b -> Encode.Value) -> ( a, b ) -> Encode.Value
 jsonPair firstEncoder secondEncoder ( a, b ) =
     Encode.object
@@ -78,11 +83,16 @@ jsonPair firstEncoder secondEncoder ( a, b ) =
         ]
 
 
+{-| Encode an EverySet as a JSON array.
+Takes a comparison function for elements and an encoder for elements.
+-}
 everySet : (a -> a -> Order) -> (a -> Encode.Value) -> EverySet c a -> Encode.Value
 everySet keyComparison encoder =
     EverySet.toList keyComparison >> List.reverse >> Encode.list encoder
 
 
+{-| Encode a Result value as a JSON object with "type" and "value" fields.
+-}
 result : (x -> Encode.Value) -> (a -> Encode.Value) -> Result x a -> Encode.Value
 result errEncoder successEncoder resultValue =
     case resultValue of
@@ -99,6 +109,8 @@ result errEncoder successEncoder resultValue =
                 ]
 
 
+{-| Encode a Maybe value, using the provided encoder for Just values and null for Nothing.
+-}
 maybe : (a -> Encode.Value) -> Maybe a -> Encode.Value
 maybe encoder maybeValue =
     case maybeValue of
@@ -109,11 +121,16 @@ maybe encoder maybeValue =
             Encode.null
 
 
+{-| Encode a non-empty list as a JSON array.
+-}
 nonempty : (a -> Encode.Value) -> NE.Nonempty a -> Encode.Value
 nonempty encoder (NE.Nonempty x xs) =
     Encode.list encoder (x :: xs)
 
 
+{-| Encode a OneOrMore value as a JSON object.
+Single values are encoded with a "one" field, multiple values with "left" and "right" fields.
+-}
 oneOrMore : (a -> Encode.Value) -> OneOrMore a -> Encode.Value
 oneOrMore encoder oneOrMore_ =
     case oneOrMore_ of
@@ -131,6 +148,8 @@ oneOrMore encoder oneOrMore_ =
 -- VALUES
 
 
+{-| Custom JSON value representation for the compiler's encoding needs.
+-}
 type Value
     = Array (List Value)
     | Object (List ( String, Value ))
@@ -141,46 +160,65 @@ type Value
     | Null
 
 
+{-| Create a JSON array value.
+-}
 array : List Value -> Value
 array =
     Array
 
 
+{-| Create a JSON object value from key-value pairs.
+-}
 object : List ( String, Value ) -> Value
 object =
     Object
 
 
+{-| Create a JSON string value, automatically escaping special characters.
+-}
 string : String -> Value
 string str =
     StringVal (escape str)
 
 
+{-| Create a JSON string value from a name without escaping.
+-}
 name : String -> Value
 name nm =
     StringVal nm
 
 
+{-| Create a JSON boolean value.
+-}
 bool : Bool -> Value
 bool =
     Boolean
 
 
+{-| Create a JSON integer value.
+-}
 int : Int -> Value
 int =
     Integer
 
 
+{-| Create a JSON number value from a float.
+-}
 number : Float -> Value
 number =
     Number
 
 
+{-| Create a JSON null value.
+-}
 null : Value
 null =
     Null
 
 
+{-| Encode a dictionary as a JSON object.
+Takes a comparison function for keys, functions to encode keys and values.
+-}
 dict : (k -> k -> Order) -> (k -> String) -> (v -> Value) -> Dict c k v -> Value
 dict keyComparison encodeKey encodeValue pairs =
     Object
@@ -189,6 +227,8 @@ dict keyComparison encodeKey encodeValue pairs =
         )
 
 
+{-| Encode a list as a JSON array.
+-}
 list : (a -> Value) -> List a -> Value
 list encodeEntry entries =
     Array (List.map encodeEntry entries)
@@ -198,6 +238,8 @@ list encodeEntry entries =
 -- CHARS
 
 
+{-| Create a JSON string value from characters, escaping special characters.
+-}
 chars : String -> Value
 chars chrs =
     StringVal (escape chrs)
@@ -231,11 +273,15 @@ escape chrs =
 -- WRITE TO FILE
 
 
+{-| Write a JSON value to a file with pretty-printing and a trailing newline.
+-}
 write : String -> Value -> Task Never ()
 write path value =
     fileWriteBuilder path (encode value ++ "\n")
 
 
+{-| Write a JSON value to a file in compact form without extra whitespace.
+-}
 writeUgly : String -> Value -> Task Never ()
 writeUgly path value =
     fileWriteBuilder path (encodeUgly value)
@@ -252,6 +298,8 @@ fileWriteBuilder =
 -- ENCODE UGLY
 
 
+{-| Convert a JSON value to a compact string without extra whitespace.
+-}
 encodeUgly : Value -> String
 encodeUgly value =
     case value of
@@ -389,6 +437,8 @@ encodeField indent ( key, value ) =
 -- JSON VALUE
 
 
+{-| Convert the compiler's custom Value type to the standard Json.Encode.Value type.
+-}
 toJsonValue : Value -> Encode.Value
 toJsonValue value =
     case value of

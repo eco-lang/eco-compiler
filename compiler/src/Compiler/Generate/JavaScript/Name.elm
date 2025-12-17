@@ -57,6 +57,8 @@ import System.TypeCheck.IO as IO
 -- NAME
 
 
+{-| JavaScript identifier name as a string.
+-}
 type alias Name =
     String
 
@@ -65,16 +67,24 @@ type alias Name =
 -- CONSTRUCTORS
 
 
+{-| Convert a zero-based index to a compact JavaScript name using ASCII encoding.
+-}
 fromIndex : Index.ZeroBased -> Name
 fromIndex index =
     fromInt (Index.toMachine index)
 
 
+{-| Convert an integer to a compact JavaScript name using ASCII encoding.
+Avoids JavaScript and Elm reserved words through a renaming scheme.
+-}
 fromInt : Int -> Name
 fromInt n =
     intToAscii n
 
 
+{-| Convert a local Elm name to a JavaScript name, prefixing with underscore
+if it conflicts with JavaScript or Elm reserved words.
+-}
 fromLocal : Name.Name -> Name
 fromLocal name =
     if EverySet.member identity name reservedNames then
@@ -84,26 +94,42 @@ fromLocal name =
         name
 
 
+{-| Convert a local Elm name to a human-readable JavaScript name without mangling.
+Used for debugging or when readability is prioritized over collision avoidance.
+-}
 fromLocalHumanReadable : Name.Name -> Name
 fromLocalHumanReadable name =
     name
 
 
+{-| Convert a globally-qualified Elm name to a JavaScript name.
+Encodes the module's canonical name (author, project, module path) with the value name,
+using dollar signs as separators to ensure uniqueness.
+-}
 fromGlobal : IO.Canonical -> Name.Name -> Name
 fromGlobal home name =
     homeToBuilder home ++ usd ++ name
 
 
+{-| Convert a globally-qualified Elm name to a human-readable JavaScript name.
+Uses dot-separated module.name format for debugging output.
+-}
 fromGlobalHumanReadable : IO.Canonical -> Name.Name -> Name
 fromGlobalHumanReadable (IO.Canonical _ moduleName) name =
     moduleName ++ "." ++ name
 
 
+{-| Generate a name for a cyclic definition in the module dependency graph.
+Marks the value with $cyclic$ to distinguish it from regular global names.
+-}
 fromCycle : IO.Canonical -> Name.Name -> Name
 fromCycle home name =
     homeToBuilder home ++ "$cyclic$" ++ name
 
 
+{-| Generate a name for a kernel function (built-in JavaScript implementation).
+Kernel names use underscore prefix and separator to namespace them separately.
+-}
 fromKernel : Name.Name -> Name.Name -> Name
 fromKernel home name =
     "_" ++ home ++ "_" ++ name
@@ -123,26 +149,38 @@ homeToBuilder (IO.Canonical ( author, project ) home) =
 -- TEMPORARY NAMES
 
 
+{-| Generate a function wrapper name (F2, F3, F4, etc.) for curried function application.
+-}
 makeF : Int -> Name
 makeF n =
     "F" ++ String.fromInt n
 
 
+{-| Generate an argument name (A2, A3, A4, etc.) for function parameters.
+-}
 makeA : Int -> Name
 makeA n =
     "A" ++ String.fromInt n
 
 
+{-| Generate a labeled name with an index suffix (e.g., loop$0, branch$1).
+Used for loop labels and branching constructs in generated code.
+-}
 makeLabel : String -> Int -> Name
 makeLabel name index =
     name ++ usd ++ String.fromInt index
 
 
+{-| Generate a temporary variable name with $temp$ prefix.
+Used for intermediate values during code generation.
+-}
 makeTemp : String -> Name
 makeTemp name =
     "$temp$" ++ name
 
 
+{-| The dollar sign character as a Name, used as a separator in generated identifiers.
+-}
 dollar : Name
 dollar =
     usd

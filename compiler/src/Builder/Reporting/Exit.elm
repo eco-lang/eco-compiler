@@ -153,11 +153,15 @@ import Utils.Main as Utils exposing (FilePath)
 -- RENDERERS
 
 
+{-| Writes a report to stderr with formatted output.
+-}
 toStderr : Help.Report -> Task Never ()
 toStderr report =
     Help.toStderr (Help.reportToDoc report)
 
 
+{-| Converts a report to JSON format for machine consumption.
+-}
 toJson : Help.Report -> Encode.Value
 toJson report =
     Help.reportToJson report
@@ -167,6 +171,8 @@ toJson report =
 -- INIT
 
 
+{-| Error conditions that can occur during project initialization.
+-}
 type Init
     = InitNoSolution (List Pkg.Name)
     | InitNoOfflineSolution (List Pkg.Name)
@@ -175,6 +181,8 @@ type Init
     | InitRegistryProblem RegistryProblem
 
 
+{-| Converts an initialization error to a user-friendly report.
+-}
 initToReport : Init -> Help.Report
 initToReport exit =
     case exit of
@@ -229,6 +237,8 @@ initToReport exit =
 -- DIFF
 
 
+{-| Error conditions that can occur when computing package diffs.
+-}
 type Diff
     = DiffNoOutline
     | DiffBadOutline Outline
@@ -243,6 +253,8 @@ type Diff
     | DiffBadBuild BuildProblem
 
 
+{-| Converts a diff error to a user-friendly report.
+-}
 diffToReport : Diff -> Help.Report
 diffToReport diff =
     case diff of
@@ -344,6 +356,8 @@ diffToReport diff =
 -- BUMP
 
 
+{-| Error conditions that can occur when bumping package versions.
+-}
 type Bump
     = BumpNoOutline
     | BumpBadOutline Outline
@@ -356,6 +370,8 @@ type Bump
     | BumpBadBuild BuildProblem
 
 
+{-| Converts a bump error to a user-friendly report.
+-}
 bumpToReport : Bump -> Help.Report
 bumpToReport bump =
     case bump of
@@ -494,6 +510,8 @@ bumpToReport bump =
 -- OVERVIEW OF VERSIONING
 
 
+{-| Documentation string explaining package versioning for new packages.
+-}
 newPackageOverview : String
 newPackageOverview =
     Utils.unlines
@@ -518,6 +536,8 @@ newPackageOverview =
 -- PUBLISH
 
 
+{-| Error conditions that can occur when publishing packages.
+-}
 type Publish
     = PublishNoOutline
     | PublishBadOutline Outline
@@ -550,6 +570,8 @@ type Publish
     | PublishZipBuildProblem BuildProblem
 
 
+{-| Converts a publish error to a user-friendly report.
+-}
 publishToReport : Publish -> Help.Report
 publishToReport publish =
     case publish of
@@ -1059,6 +1081,8 @@ badZipReport =
 -- DOCS
 
 
+{-| Error conditions that can occur when loading package documentation.
+-}
 type DocsProblem
     = DP_Http Http.Error
     | DP_Data String String
@@ -1117,6 +1141,8 @@ toDocsProblemReport problem context =
 -- INSTALL
 
 
+{-| Error conditions that can occur when installing packages.
+-}
 type Install
     = InstallNoOutline
     | InstallBadOutline Outline
@@ -1132,6 +1158,8 @@ type Install
     | InstallBadDetails Details
 
 
+{-| Converts an install error to a user-friendly report.
+-}
 installToReport : Install -> Help.Report
 installToReport exit =
     case exit of
@@ -1353,6 +1381,8 @@ installToReport exit =
 -- UNINSTALL
 
 
+{-| Error conditions that can occur when uninstalling packages.
+-}
 type Uninstall
     = UninstallNoOutline
     | UninstallBadOutline Outline
@@ -1364,6 +1394,8 @@ type Uninstall
     | UninstallBadDetails Details
 
 
+{-| Converts an uninstall error to a user-friendly report.
+-}
 uninstallToReport : Uninstall -> Help.Report
 uninstallToReport exit =
     case exit of
@@ -1435,6 +1467,8 @@ uninstallToReport exit =
 -- SOLVER
 
 
+{-| Error conditions that can occur during dependency resolution.
+-}
 type Solver
     = SolverBadCacheData Pkg.Name V.Version
     | SolverBadHttpData Pkg.Name V.Version String
@@ -1488,6 +1522,8 @@ toSolverReport problem =
 -- OUTLINE
 
 
+{-| Error conditions that can occur when parsing elm.json files.
+-}
 type Outline
     = OutlineHasBadStructure (Decode.Error OutlineProblem)
     | OutlineHasMissingSrcDirs FilePath (List FilePath)
@@ -1497,6 +1533,8 @@ type Outline
     | OutlineNoAppJson
 
 
+{-| Specific problems with elm.json structure and content.
+-}
 type OutlineProblem
     = OP_BadType
     | OP_BadPkgName Row Col
@@ -2012,6 +2050,8 @@ toOutlineProblemReport path source _ region problem =
 -- DETAILS
 
 
+{-| Error conditions that can occur during dependency resolution and validation.
+-}
 type Details
     = DetailsNoSolution
     | DetailsNoOfflineSolution
@@ -2024,6 +2064,8 @@ type Details
     | DetailsBadDeps FilePath (List DetailsBadDep)
 
 
+{-| Specific dependency-related errors.
+-}
 type DetailsBadDep
     = BD_BadDownload Pkg.Name V.Version PackageProblem
     | BD_BadBuild Pkg.Name V.Version (Dict ( String, String ) Pkg.Name V.Version)
@@ -2224,6 +2266,8 @@ toBadDepRank badDep =
 -- PACKAGE PROBLEM
 
 
+{-| Error conditions that can occur when downloading packages.
+-}
 type PackageProblem
     = PP_BadEndpointRequest Http.Error
     | PP_BadEndpointContent String
@@ -2291,6 +2335,8 @@ toPackageProblemReport pkg vsn problem =
 -- REGISTRY PROBLEM
 
 
+{-| Error conditions that can occur when accessing the package registry.
+-}
 type RegistryProblem
     = RP_Http Http.Error
     | RP_Data String String
@@ -2437,6 +2483,8 @@ toRedirectDoc response =
 -- MAKE
 
 
+{-| Error conditions that can occur during the make/build process.
+-}
 type Make
     = MakeNoOutline
     | MakeCannotOptimizeAndDebug
@@ -2450,6 +2498,8 @@ type Make
     | MakeBadGenerate Generate
 
 
+{-| Converts a make error to a user-friendly report.
+-}
 makeToReport : Make -> Help.Report
 makeToReport make =
     case make of
@@ -2691,11 +2741,15 @@ makeToReport make =
 -- BUILD PROBLEM
 
 
+{-| Represents compilation failures, either from bad modules or project-level issues.
+-}
 type BuildProblem
     = BuildBadModules FilePath Error.Module (List Error.Module)
     | BuildProjectProblem BuildProjectProblem
 
 
+{-| Project-level build problems that affect the entire build.
+-}
 type BuildProjectProblem
     = BP_PathUnknown FilePath
     | BP_WithBadExtension FilePath
@@ -2920,6 +2974,8 @@ toModuleNameConventionTable srcDir names =
 -- GENERATE
 
 
+{-| Error conditions that can occur during code generation.
+-}
 type Generate
     = GenerateCannotLoadArtifacts
     | GenerateCannotOptimizeDebugValues ModuleName.Raw (List ModuleName.Raw)
@@ -2984,6 +3040,8 @@ corruptCacheReport =
 -- REPL
 
 
+{-| Error conditions that can occur during REPL evaluation.
+-}
 type Repl
     = ReplBadDetails Details
     | ReplBadInput String Error.Error
@@ -2994,6 +3052,8 @@ type Repl
     | ReplBlocked
 
 
+{-| Converts a REPL error to a user-friendly report.
+-}
 replToReport : Repl -> Help.Report
 replToReport problem =
     case problem of
@@ -3023,6 +3083,8 @@ replToReport problem =
 -- TEST
 
 
+{-| Error conditions that can occur when running tests.
+-}
 type Test
     = TestNoOutline
     | TestBadOutline Outline
@@ -3039,6 +3101,8 @@ type Test
     | TestBadGenerate Generate
 
 
+{-| Converts a test error to a user-friendly report.
+-}
 testToReport : Test -> Help.Report
 testToReport test =
     case test of
@@ -3165,6 +3229,8 @@ testToReport test =
 -- ENCODERS and DECODERS
 
 
+{-| Encodes a dependency error to bytes for serialization.
+-}
 detailsBadDepEncoder : DetailsBadDep -> Bytes.Encode.Encoder
 detailsBadDepEncoder detailsBadDep =
     case detailsBadDep of
@@ -3185,6 +3251,8 @@ detailsBadDepEncoder detailsBadDep =
                 ]
 
 
+{-| Decodes a dependency error from bytes.
+-}
 detailsBadDepDecoder : Bytes.Decode.Decoder DetailsBadDep
 detailsBadDepDecoder =
     Bytes.Decode.unsignedInt8
@@ -3208,6 +3276,8 @@ detailsBadDepDecoder =
             )
 
 
+{-| Encodes a build problem to bytes for serialization.
+-}
 buildProblemEncoder : BuildProblem -> Bytes.Encode.Encoder
 buildProblemEncoder buildProblem =
     case buildProblem of
@@ -3226,6 +3296,8 @@ buildProblemEncoder buildProblem =
                 ]
 
 
+{-| Decodes a build problem from bytes.
+-}
 buildProblemDecoder : Bytes.Decode.Decoder BuildProblem
 buildProblemDecoder =
     Bytes.Decode.unsignedInt8
@@ -3246,6 +3318,8 @@ buildProblemDecoder =
             )
 
 
+{-| Encodes a project-level build problem to bytes for serialization.
+-}
 buildProjectProblemEncoder : BuildProjectProblem -> Bytes.Encode.Encoder
 buildProjectProblemEncoder buildProjectProblem =
     case buildProjectProblem of
@@ -3309,6 +3383,8 @@ buildProjectProblemEncoder buildProjectProblem =
                 ]
 
 
+{-| Decodes a project-level build problem from bytes.
+-}
 buildProjectProblemDecoder : Bytes.Decode.Decoder BuildProjectProblem
 buildProjectProblemDecoder =
     Bytes.Decode.unsignedInt8
@@ -3363,6 +3439,8 @@ buildProjectProblemDecoder =
             )
 
 
+{-| Encodes a registry problem to bytes for serialization.
+-}
 registryProblemEncoder : RegistryProblem -> Bytes.Encode.Encoder
 registryProblemEncoder registryProblem =
     case registryProblem of
@@ -3380,6 +3458,8 @@ registryProblemEncoder registryProblem =
                 ]
 
 
+{-| Decodes a registry problem from bytes.
+-}
 registryProblemDecoder : Bytes.Decode.Decoder RegistryProblem
 registryProblemDecoder =
     Bytes.Decode.unsignedInt8

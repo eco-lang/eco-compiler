@@ -59,6 +59,8 @@ import Utils.Task.Extra as Task
 -- FLAGS
 
 
+{-| Configuration data for the make command, containing all flags and options.
+-}
 type alias FlagsData =
     { debug : Bool
     , optimize : Bool
@@ -69,10 +71,14 @@ type alias FlagsData =
     }
 
 
+{-| Wrapper type for make command flags.
+-}
 type Flags
     = Flags FlagsData
 
 
+{-| Output format and destination for the compiled code.
+-}
 type Output
     = JS String
     | Html String
@@ -80,6 +86,8 @@ type Output
     | DevNull
 
 
+{-| Report format type for compiler diagnostics.
+-}
 type ReportType
     = Json
 
@@ -88,6 +96,8 @@ type ReportType
 -- RUN
 
 
+{-| Execute the make command with the given source file paths and flags.
+-}
 run : List String -> Flags -> Task Never ()
 run paths ((Flags flagsData) as flags) =
     getStyle flagsData.report
@@ -451,6 +461,8 @@ toMonoBuilder backend withSourceMaps leadingLines root details desiredMode artif
 -- PARSERS
 
 
+{-| Parser definition for report type command-line arguments.
+-}
 reportType : Parser
 reportType =
     Parser
@@ -461,6 +473,8 @@ reportType =
         }
 
 
+{-| Parse a string into a ReportType value.
+-}
 parseReportType : String -> Maybe ReportType
 parseReportType string =
     if string == "json" then
@@ -470,6 +484,8 @@ parseReportType string =
         Nothing
 
 
+{-| Parser definition for output file command-line arguments.
+-}
 output : Parser
 output =
     Parser
@@ -480,6 +496,8 @@ output =
         }
 
 
+{-| Parse a string into an Output value based on file extension.
+-}
 parseOutput : String -> Maybe Output
 parseOutput name =
     if isDevNull name then
@@ -498,6 +516,8 @@ parseOutput name =
         Nothing
 
 
+{-| Parser definition for documentation file command-line arguments.
+-}
 docsFile : Parser
 docsFile =
     Parser
@@ -508,6 +528,8 @@ docsFile =
         }
 
 
+{-| Parse a string into a documentation file path (must be .json extension).
+-}
 parseDocsFile : String -> Maybe String
 parseDocsFile name =
     if hasExt ".json" name then

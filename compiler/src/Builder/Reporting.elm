@@ -60,22 +60,30 @@ import Utils.Main as Utils exposing (Chan, MVar)
 -- STYLE
 
 
+{-| Represents different output styles for build reporting.
+-}
 type Style
     = Silent
     | Json
     | Terminal (MVar ())
 
 
+{-| Silent output style that produces no progress messages.
+-}
 silent : Style
 silent =
     Silent
 
 
+{-| JSON output style for machine-readable progress messages.
+-}
 json : Style
 json =
     Json
 
 
+{-| Terminal output style with interactive progress indicators.
+-}
 terminal : Task Never Style
 terminal =
     Task.map Terminal (Utils.newMVar (\_ -> BE.bool True) ())
@@ -85,6 +93,8 @@ terminal =
 -- ATTEMPT
 
 
+{-| Executes a task and converts failures to error reports, exiting on failure.
+-}
 attempt : (x -> Help.Report) -> Task Never (Result x a) -> Task Never a
 attempt toReport work =
     work
@@ -108,6 +118,8 @@ reportErrorAndExit helpReport =
         |> Task.andThen (\_ -> Exit.exitFailure)
 
 
+{-| Executes a task with a specific output style, converting failures to error reports.
+-}
 attemptWithStyle : Style -> (x -> Help.Report) -> Task Never (Result x a) -> Task Never a
 attemptWithStyle style toReport work =
     work
@@ -187,15 +199,21 @@ isWindows =
 -- KEY
 
 
+{-| Represents a channel for sending progress messages.
+-}
 type Key msg
     = Key (msg -> Task Never ())
 
 
+{-| Sends a progress message through a reporting key.
+-}
 report : Key msg -> msg -> Task Never ()
 report (Key send) msg =
     send msg
 
 
+{-| A reporting key that ignores all messages, useful for silent mode.
+-}
 ignorer : Key msg
 ignorer =
     Key (\_ -> Task.succeed ())
@@ -205,6 +223,8 @@ ignorer =
 -- ASK
 
 
+{-| Prompts the user with a yes/no question, defaulting to yes on empty input.
+-}
 ask : D.Doc -> Task Never Bool
 ask doc =
     Help.toStdout doc
@@ -247,10 +267,14 @@ promptAndRetry =
 -- DETAILS
 
 
+{-| Type alias for dependency resolution progress reporting key.
+-}
 type alias DKey =
     Key DMsg
 
 
+{-| Tracks dependency resolution progress with the given style.
+-}
 trackDetails : Style -> (DKey -> Task Never a) -> Task Never a
 trackDetails style callback =
     case style of
@@ -340,6 +364,8 @@ type DState
     = DState DStateData
 
 
+{-| Progress messages for dependency resolution and building.
+-}
 type DMsg
     = DStart Int
     | DCached
@@ -442,14 +468,20 @@ clear before after =
 -- BUILD
 
 
+{-| Type alias for build progress reporting key.
+-}
 type alias BKey =
     Key BMsg
 
 
+{-| Type alias for build results that may contain build problems.
+-}
 type alias BResult a =
     Result Exit.BuildProblem a
 
 
+{-| Tracks build progress with the given style, displaying compilation status.
+-}
 trackBuild : Bytes.Decode.Decoder a -> (a -> Bytes.Encode.Encoder) -> Style -> (BKey -> Task Never (BResult a)) -> Task Never (BResult a)
 trackBuild decoder encoder style callback =
     case style of
@@ -490,6 +522,8 @@ signalBuildComplete chanEncoder chan result =
         |> Task.map (\_ -> result)
 
 
+{-| Progress messages for build tracking.
+-}
 type BMsg
     = BDone
 
@@ -567,6 +601,8 @@ toFinalMessage done result =
 -- GENERATE
 
 
+{-| Reports code generation results, showing module names and output file.
+-}
 reportGenerate : Style -> NE.Nonempty ModuleName.Raw -> String -> Task Never ()
 reportGenerate style names output =
     case style of

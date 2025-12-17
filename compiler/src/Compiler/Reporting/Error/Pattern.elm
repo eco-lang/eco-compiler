@@ -22,6 +22,9 @@ import Compiler.Reporting.Report as Report
 -- TO REPORT
 
 
+{-| Convert a pattern matching error (redundant patterns or incomplete coverage)
+into a user-friendly error report with examples of unhandled cases.
+-}
 toReport : Code.Source -> P.Error -> Report.Report
 toReport source err =
     case err of

@@ -257,7 +257,11 @@ toJson { name, absolutePath, source, error } =
         ]
 
 
-{-| Convert a single report to JSON with title, region, and message.
+{-| Convert a single report to JSON format.
+
+Produces a JSON object with the error title, source region (line/column positions),
+and formatted message. Used by `toJson` to serialize individual error reports.
+
 -}
 reportToJson : Report.Report -> E.Value
 reportToJson (Report.Report props) =

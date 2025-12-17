@@ -43,10 +43,17 @@ import Utils.Bytes.Encode as BE
 -- BINOP STUFF
 
 
+{-| Operator precedence level, with higher numbers binding more tightly.
+-}
 type alias Precedence =
     Int
 
 
+{-| Associativity determines how operators of the same precedence are grouped.
+Left: `a + b + c` is `(a + b) + c`
+Non: `a == b == c` is an error
+Right: `a :: b :: c` is `a :: (b :: c)`
+-}
 type Associativity
     = Left
     | Non
@@ -57,16 +64,22 @@ type Associativity
 -- JSON ENCODERS and DECODERS
 
 
+{-| Encode precedence as a JSON integer.
+-}
 jsonPrecedenceEncoder : Precedence -> Encode.Value
 jsonPrecedenceEncoder =
     Encode.int
 
 
+{-| Decode precedence from a JSON integer.
+-}
 jsonPrecedenceDecoder : Decode.Decoder Precedence
 jsonPrecedenceDecoder =
     Decode.int
 
 
+{-| Encode associativity as a JSON string ("Left", "Non", or "Right").
+-}
 jsonAssociativityEncoder : Associativity -> Encode.Value
 jsonAssociativityEncoder associativity =
     case associativity of
@@ -80,6 +93,8 @@ jsonAssociativityEncoder associativity =
             Encode.string "Right"
 
 
+{-| Decode associativity from a JSON string ("Left", "Non", or "Right").
+-}
 jsonAssociativityDecoder : Decode.Decoder Associativity
 jsonAssociativityDecoder =
     Decode.string
@@ -104,16 +119,22 @@ jsonAssociativityDecoder =
 -- ENCODERS and DECODERS
 
 
+{-| Encode precedence to binary format.
+-}
 precedenceEncoder : Precedence -> Bytes.Encode.Encoder
 precedenceEncoder =
     BE.int
 
 
+{-| Decode precedence from binary format.
+-}
 precedenceDecoder : Bytes.Decode.Decoder Precedence
 precedenceDecoder =
     BD.int
 
 
+{-| Encode associativity to binary format as an unsigned 8-bit integer.
+-}
 associativityEncoder : Associativity -> Bytes.Encode.Encoder
 associativityEncoder associativity =
     Bytes.Encode.unsignedInt8
@@ -129,6 +150,8 @@ associativityEncoder associativity =
         )
 
 
+{-| Decode associativity from binary format.
+-}
 associativityDecoder : Bytes.Decode.Decoder Associativity
 associativityDecoder =
     Bytes.Decode.unsignedInt8

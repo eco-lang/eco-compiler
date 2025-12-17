@@ -51,13 +51,13 @@ import System.TypeCheck.IO as IO
 -- OUTPUT
 
 
-{-| Output from code generation - either a string or binary data
+{-| Output from code generation - either a string or binary data.
 -}
 type Output
     = TextOutput String
 
 
-{-| Extract the string content from an Output value
+{-| Extract the string content from an Output value.
 -}
 outputToString : Output -> String
 outputToString output =
@@ -66,14 +66,7 @@ outputToString output =
             s
 
 
-{-| The CodeGen interface - a record of functions that any backend must implement.
-
-Each backend provides implementations for:
-
-  - Full program generation
-  - REPL expression evaluation
-  - REPL endpoint generation (for browser REPL)
-
+{-| The CodeGen interface that standard backends must implement for full program generation, REPL evaluation, and browser REPL endpoints.
 -}
 type alias CodeGen =
     { -- Generate a complete program from the optimized global graph
@@ -113,10 +106,14 @@ type alias CodeGen =
 -- MAINS
 
 
+{-| Map from module names to their main entry points for standard optimized AST.
+-}
 type alias Mains =
     Dict (List String) IO.Canonical Opt.Main
 
 
+{-| Map from module names to their main entry points for typed optimized AST.
+-}
 type alias TypedMains =
     Dict (List String) IO.Canonical TOpt.Main
 
@@ -125,6 +122,8 @@ type alias TypedMains =
 -- SOURCE MAPS
 
 
+{-| Configuration for source map generation - either disabled or enabled with module source content.
+-}
 type SourceMaps
     = NoSourceMaps
     | SourceMaps (Dict (List String) IO.Canonical String)
@@ -135,10 +134,7 @@ type SourceMaps
 -- Interface for backends that need full type information (e.g., MLIR)
 
 
-{-| The TypedCodeGen interface for backends that need type information.
-
-This is used by backends like MLIR that need types for monomorphization.
-
+{-| Backend interface for code generators that require full type information from the typed optimized AST for monomorphization and type-directed optimizations.
 -}
 type alias TypedCodeGen =
     { -- Generate a complete program from the typed optimized global graph
@@ -158,11 +154,7 @@ type alias TypedCodeGen =
 -- Interface for backends that work with fully monomorphized IR
 
 
-{-| The MonoCodeGen interface for backends that work with monomorphized IR.
-
-This is used by backends that need fully specialized, monomorphic code
-with no polymorphism remaining.
-
+{-| Backend interface for code generators that work with fully monomorphized IR where all polymorphism has been resolved to concrete types.
 -}
 type alias MonoCodeGen =
     { -- Generate a complete program from the monomorphized graph

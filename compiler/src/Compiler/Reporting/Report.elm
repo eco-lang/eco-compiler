@@ -29,10 +29,16 @@ import Compiler.Reporting.Doc as D
 -- BUILD REPORTS
 
 
+{-| A compiler diagnostic report containing all information needed to display
+a helpful error or warning message to the user.
+-}
 type Report
     = Report ReportProps
 
 
+{-| The properties that make up a compiler report: a title summarizing the issue,
+the source region where it occurred, suggested fixes, and detailed documentation.
+-}
 type alias ReportProps =
     { title : String
     , region : A.Region

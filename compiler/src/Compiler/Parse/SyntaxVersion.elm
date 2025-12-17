@@ -26,6 +26,7 @@ type SyntaxVersion
 
 
 {-| Returns the syntax version based on a filepath.
+Files ending in .elm use Elm syntax, all others use Guida syntax.
 -}
 fileSyntaxVersion : String -> SyntaxVersion
 fileSyntaxVersion path =
@@ -40,6 +41,8 @@ fileSyntaxVersion path =
 -- ENCODERS and DECODERS
 
 
+{-| Encodes a SyntaxVersion to bytes for serialization.
+-}
 encoder : SyntaxVersion -> Bytes.Encode.Encoder
 encoder syntaxVersion =
     Bytes.Encode.unsignedInt8
@@ -52,6 +55,8 @@ encoder syntaxVersion =
         )
 
 
+{-| Decodes a SyntaxVersion from bytes for deserialization.
+-}
 decoder : Bytes.Decode.Decoder SyntaxVersion
 decoder =
     Bytes.Decode.unsignedInt8

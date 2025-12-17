@@ -60,9 +60,18 @@ import Utils.Main as Utils
 
 
 
--- GENERATOR
+-- ====== CORE TYPE ======
 
 
+{-| State monad that tracks name generation and dependencies during optimization.
+
+Threads through three pieces of state:
+
+  - A unique ID counter for generating fresh variable names
+  - A set of global dependencies (functions, constructors, kernels)
+  - A dictionary tracking field name usage counts
+
+-}
 type Tracker a
     = Tracker
         (Int
@@ -90,6 +99,18 @@ tResult uid deps fields value =
     TResult { uid = uid, deps = deps, fields = fields } value
 
 
+-- ====== RUNNING ======
+
+
+{-| Execute a Tracker computation, returning collected dependencies, fields, and the result value.
+
+Returns a tuple of:
+
+  - Global dependencies (functions, constructors, kernels used)
+  - Field names and their usage counts
+  - The computed result value
+
+-}
 run : Tracker a -> ( EverySet (List String) Opt.Global, Dict String Name Int, a )
 run (Tracker k) =
     case k 0 EverySet.empty Dict.empty of
@@ -97,6 +118,15 @@ run (Tracker k) =
             ( props.deps, props.fields, value )
 
 
+-- ====== NAME GENERATION ======
+
+
+{-| Generate a fresh, unique variable name.
+
+The generated name is guaranteed to not conflict with any other names in the module.
+Names are generated sequentially as _v0, _v1, _v2, etc.
+
+-}
 generate : Tracker Name
 generate =
     Tracker <|
@@ -104,6 +134,15 @@ generate =
             tResult (uid + 1) deps fields (Name.fromVarIndex uid)
 
 
+-- ====== DEPENDENCY REGISTRATION ======
+
+
+{-| Register a dependency on a kernel function and return the given value.
+
+Kernel functions are JavaScript primitives exposed to Elm code.
+Registering them ensures they are included in the final output.
+
+-}
 registerKernel : Name -> a -> Tracker a
 registerKernel home value =
     Tracker <|
@@ -111,6 +150,12 @@ registerKernel home value =
             tResult uid (EverySet.insert Opt.toComparableGlobal (Opt.toKernelGlobal home) deps) fields value
 
 
+{-| Register a dependency on a global function or value and return a reference to it.
+
+Creates a VarGlobal expression referencing the function/value and adds it to the
+dependency set so the code generator knows to import it.
+
+-}
 registerGlobal : A.Region -> IO.Canonical -> Name -> Tracker Opt.Expr
 registerGlobal region home name =
     Tracker <|
@@ -123,6 +168,12 @@ registerGlobal region home name =
             tResult uid (EverySet.insert Opt.toComparableGlobal global deps) fields (Opt.VarGlobal region global)
 
 
+{-| Register a dependency on a Debug module function and return a debug variable reference.
+
+Debug functions are special-cased to support conditional compilation and removal
+in production builds. The home module is tracked for context.
+
+-}
 registerDebug : Name -> IO.Canonical -> A.Region -> Tracker Opt.Expr
 registerDebug name home region =
     Tracker <|
@@ -135,6 +186,15 @@ registerDebug name home region =
             tResult uid (EverySet.insert Opt.toComparableGlobal global deps) fields (Opt.VarDebug region name home Nothing)
 
 
+{-| Register a dependency on a type constructor and return an optimized expression.
+
+Handles three cases based on constructor options:
+
+  - Normal: Regular constructor, returns VarGlobal
+  - Enum: Zero-argument constructor, returns VarEnum (or Bool for True/False in Basics)
+  - Unbox: Single-argument constructor, returns VarBox and registers identity dependency
+
+-}
 registerCtor : A.Region -> IO.Canonical -> A.Located Name -> Index.ZeroBased -> Can.CtorOpts -> Tracker Opt.Expr
 registerCtor region home (A.At _ name) index opts =
     Tracker <|
@@ -181,6 +241,12 @@ identity =
     Opt.Global ModuleName.basics Name.identity_
 
 
+{-| Register usage of a record field name and return the given value.
+
+Increments the usage count for the field name, which is used by the code generator
+to determine optimal field name mangling strategies.
+
+-}
 registerField : Name -> a -> Tracker a
 registerField name value =
     Tracker <|
@@ -188,6 +254,12 @@ registerField name value =
             tResult uid d (Utils.mapInsertWith Basics.identity (+) name 1 fields) value
 
 
+{-| Register usage of multiple record fields from a dictionary and return the given value.
+
+Takes a dictionary where keys are field names and increments the usage count for each.
+The dictionary values are ignored - only the keys (field names) matter.
+
+-}
 registerFieldDict : Dict String Name v -> a -> Tracker a
 registerFieldDict newFields value =
     Tracker <|
@@ -203,6 +275,12 @@ toOne _ =
     1
 
 
+{-| Register usage of multiple record fields from a list and return the given value.
+
+Increments the usage count for each field name in the list. Useful when processing
+field accesses or record patterns.
+
+-}
 registerFieldList : List Name -> a -> Tracker a
 registerFieldList names value =
     Tracker <|
@@ -216,9 +294,14 @@ addOne name fields =
 
 
 
--- INSTANCES
+-- ====== MONAD OPERATIONS ======
 
 
+{-| Transform the result value of a Tracker computation using the given function.
+
+Preserves all tracked dependencies and state while applying the function to the result.
+
+-}
 map : (a -> b) -> Tracker a -> Tracker b
 map func (Tracker kv) =
     Tracker <|
@@ -228,11 +311,24 @@ map func (Tracker kv) =
                     tResult props.uid props.deps props.fields (func value)
 
 
+{-| Lift a pure value into a Tracker computation without tracking any dependencies.
+
+Equivalent to `return` in Haskell's monad notation. The value is wrapped in a Tracker
+that doesn't modify the state or add any dependencies.
+
+-}
 pure : a -> Tracker a
 pure value =
     Tracker (\n d f -> tResult n d f value)
 
 
+{-| Chain two Tracker computations together, threading state from first to second.
+
+Equivalent to `>>=` (bind) in Haskell. The callback receives the result of the first
+computation and can use it to produce a second computation. Dependencies and state
+accumulate across both computations.
+
+-}
 andThen : (a -> Tracker b) -> Tracker a -> Tracker b
 andThen callback (Tracker k) =
     Tracker <|
@@ -244,11 +340,24 @@ andThen callback (Tracker k) =
                             kb props.uid props.deps props.fields
 
 
+{-| Apply a Tracker-producing function to each element of a list, accumulating results.
+
+Sequences the Tracker computations from left to right, threading state through each step.
+Returns a Tracker containing the list of all results with all dependencies accumulated.
+
+-}
 traverse : (a -> Tracker b) -> List a -> Tracker (List b)
 traverse func =
     List.foldl (\a -> andThen (\acc -> map (\b -> acc ++ [ b ]) (func a))) (pure [])
 
 
+{-| Apply a Tracker-producing function to each value in a dictionary, accumulating results.
+
+Like traverse but for dictionaries. Sequences computations across all dictionary entries,
+threading state through each step. Returns a Tracker containing a dictionary with
+transformed values and all accumulated dependencies.
+
+-}
 mapTraverse : (k -> comparable) -> (k -> k -> Order) -> (a -> Tracker b) -> Dict comparable k a -> Tracker (Dict comparable k b)
 mapTraverse toComparable keyComparison func =
     Dict.foldl keyComparison (\k a -> andThen (\c -> map (\va -> Dict.insert toComparable k va c) (func a))) (pure Dict.empty)

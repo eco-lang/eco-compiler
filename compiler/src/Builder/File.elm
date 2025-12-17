@@ -55,15 +55,21 @@ import Utils.Main as Utils exposing (FilePath)
 -- TIME
 
 
+{-| Represents a file modification time.
+-}
 type Time
     = Time Time.Posix
 
 
+{-| Gets the modification time of a file.
+-}
 getTime : FilePath -> Task Never Time
 getTime path =
     Task.map Time (Utils.dirGetModificationTime path)
 
 
+{-| Returns a zero timestamp, used to indicate a file has never been modified.
+-}
 zeroTime : Time
 zeroTime =
     Time (Time.millisToPosix 0)
@@ -73,6 +79,8 @@ zeroTime =
 -- BINARY
 
 
+{-| Writes binary data to a file, creating parent directories if needed.
+-}
 writeBinary : (a -> Bytes.Encode.Encoder) -> FilePath -> a -> Task Never ()
 writeBinary toEncoder path value =
     let
@@ -84,6 +92,8 @@ writeBinary toEncoder path value =
         |> Task.andThen (\_ -> Utils.binaryEncodeFile toEncoder path value)
 
 
+{-| Reads binary data from a file, returning Nothing if the file doesn't exist or is corrupt.
+-}
 readBinary : Bytes.Decode.Decoder a -> FilePath -> Task Never (Maybe a)
 readBinary decoder path =
     Utils.dirDoesFileExist path
@@ -122,6 +132,8 @@ readBinary decoder path =
 -- WRITE UTF-8
 
 
+{-| Writes a UTF-8 encoded string to a file.
+-}
 writeUtf8 : FilePath -> String -> Task Never ()
 writeUtf8 =
     IO.writeString
@@ -131,11 +143,15 @@ writeUtf8 =
 -- READ UTF-8
 
 
+{-| Reads a UTF-8 encoded file as a string.
+-}
 readUtf8 : FilePath -> Task Never String
 readUtf8 path =
     Impure.task "read" [] (Impure.StringBody path) (Impure.StringResolver identity)
 
 
+{-| Reads all input from stdin as a string.
+-}
 readStdin : Task Never String
 readStdin =
     Impure.task "readStdin" [] Impure.EmptyBody (Impure.StringResolver identity)
@@ -145,6 +161,8 @@ readStdin =
 -- WRITE PACKAGE
 
 
+{-| Extracts a package archive to a destination directory, filtering for relevant files.
+-}
 writePackage : FilePath -> Zip.Archive -> Task Never ()
 writePackage destination archive =
     case Zip.zEntries archive of
@@ -187,6 +205,8 @@ writeEntry destination root entry =
 -- EXISTS
 
 
+{-| Checks if a file exists at the given path.
+-}
 exists : FilePath -> Task Never Bool
 exists path =
     Utils.dirDoesFileExist path
@@ -196,6 +216,8 @@ exists path =
 -- REMOVE FILES
 
 
+{-| Removes a file if it exists, silently succeeding if it doesn't.
+-}
 remove : FilePath -> Task Never ()
 remove path =
     Utils.dirDoesFileExist path
@@ -213,11 +235,15 @@ remove path =
 -- ENCODERS and DECODERS
 
 
+{-| Encodes a file modification time to bytes.
+-}
 timeEncoder : Time -> Bytes.Encode.Encoder
 timeEncoder (Time posix) =
     BE.int (Time.posixToMillis posix)
 
 
+{-| Decodes a file modification time from bytes.
+-}
 timeDecoder : Bytes.Decode.Decoder Time
 timeDecoder =
     Bytes.Decode.map (Time.millisToPosix >> Time) BD.int

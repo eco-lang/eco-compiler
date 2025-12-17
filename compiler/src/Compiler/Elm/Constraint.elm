@@ -49,6 +49,9 @@ import Compiler.Parse.Primitives as P exposing (Col, Row)
 -- CONSTRAINTS
 
 
+{-| Represents a version constraint as a range with lower and upper bounds.
+Each bound can be inclusive (<=) or exclusive (<).
+-}
 type Constraint
     = Range RangeProps
 
@@ -77,11 +80,15 @@ range lower lowerOp upperOp upper =
 -- COMMON CONSTRAINTS
 
 
+{-| Creates a constraint that matches exactly one specific version.
+-}
 exactly : V.Version -> Constraint
 exactly version =
     range version LessOrEqual LessOrEqual version
 
 
+{-| Creates a constraint that accepts any valid version (1.0.0 through max version).
+-}
 anything : Constraint
 anything =
     range V.one LessOrEqual LessOrEqual V.maxVersion
@@ -91,6 +98,8 @@ anything =
 -- EXTRACT VERSION
 
 
+{-| Extracts the lower bound version from a constraint.
+-}
 lowerBound : Constraint -> V.Version
 lowerBound (Range props) =
     props.lower
@@ -100,6 +109,9 @@ lowerBound (Range props) =
 -- TO CHARS
 
 
+{-| Converts a constraint to its string representation.
+Format: "lower <= v < upper" or similar based on operators.
+-}
 toChars : Constraint -> String
 toChars constraint =
     case constraint of
@@ -121,6 +133,9 @@ opToChars op =
 -- IS SATISFIED
 
 
+{-| Checks whether a given version satisfies the constraint.
+Returns True if the version falls within the constraint's range.
+-}
 satisfies : Constraint -> V.Version -> Bool
 satisfies constraint version =
     case constraint of
@@ -145,6 +160,10 @@ isLess op =
 -- INTERSECT
 
 
+{-| Computes the intersection of two constraints.
+Returns Nothing if the constraints do not overlap, otherwise returns
+a new constraint representing the overlapping range.
+-}
 intersect : Constraint -> Constraint -> Maybe Constraint
 intersect (Range r1) (Range r2) =
     let
@@ -193,11 +212,17 @@ intersect (Range r1) (Range r2) =
 -- ELM CONSTRAINT
 
 
+{-| Checks whether the current Elm compiler version satisfies the constraint.
+-}
 goodElm : Constraint -> Bool
 goodElm constraint =
     satisfies constraint V.elmCompiler
 
 
+{-| Returns the default Elm version constraint.
+For major version 1+, constrains until the next major version.
+For major version 0, constrains until the next minor version.
+-}
 defaultElm : Constraint
 defaultElm =
     let
@@ -215,11 +240,17 @@ defaultElm =
 -- CREATE CONSTRAINTS
 
 
+{-| Creates a constraint from the given version up to (but not including) the next major version.
+Example: untilNextMajor 1.2.3 creates constraint "1.2.3 <= v < 2.0.0"
+-}
 untilNextMajor : V.Version -> Constraint
 untilNextMajor version =
     range version LessOrEqual Less (V.bumpMajor version)
 
 
+{-| Creates a constraint from the given version up to (but not including) the next minor version.
+Example: untilNextMinor 1.2.3 creates constraint "1.2.3 <= v < 1.3.0"
+-}
 untilNextMinor : V.Version -> Constraint
 untilNextMinor version =
     range version LessOrEqual Less (V.bumpMinor version)
@@ -229,11 +260,16 @@ untilNextMinor version =
 -- JSON
 
 
+{-| Encodes a constraint as a JSON string value.
+-}
 encode : Constraint -> Value
 encode constraint =
     E.string (toChars constraint)
 
 
+{-| Decodes a constraint from a JSON string.
+Returns an Error if the format is invalid or the range is malformed.
+-}
 decoder : Decoder Error Constraint
 decoder =
     D.customString parser BadFormat
@@ -243,6 +279,10 @@ decoder =
 -- PARSER
 
 
+{-| Represents errors that can occur when parsing constraint strings.
+BadFormat indicates a syntax error at the given row and column.
+InvalidRange indicates the lower bound is not less than the upper bound.
+-}
 type Error
     = BadFormat Row Col
     | InvalidRange V.Version V.Version

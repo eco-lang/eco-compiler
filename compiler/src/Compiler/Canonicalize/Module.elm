@@ -51,6 +51,8 @@ import Utils.Crash exposing (crash)
 -- RESULT
 
 
+{-| Type alias for canonicalization results that can accumulate errors and warnings.
+-}
 type alias MResult i w a =
     ReportingResult.RResult i w Error.Error a
 
@@ -59,6 +61,17 @@ type alias MResult i w a =
 -- MODULES
 
 
+{-| Canonicalize an entire source module into a canonical module.
+
+Transforms a source AST module into a canonical AST module by:
+
+  - Creating the initial environment from imported interfaces
+  - Adding local declarations to the environment
+  - Canonicalizing all value declarations with cycle detection
+  - Canonicalizing effects (ports, managers)
+  - Canonicalizing and validating exports
+
+-}
 canonicalize : Pkg.Name -> Dict String ModuleName.Raw I.Interface -> Src.Module -> MResult i (List W.Warning) Can.Module
 canonicalize pkg ifaces ((Src.Module srcData) as modul) =
     let
@@ -103,6 +116,12 @@ canonicalize pkg ifaces ((Src.Module srcData) as modul) =
 -- CANONICALIZE BINOP
 
 
+{-| Convert a source infix operator declaration to a canonical binop.
+
+Extracts the operator name, associativity, precedence, and implementing function name
+from the source infix declaration.
+
+-}
 canonicalizeBinop : A.Located Src.Infix -> ( Name, Can.Binop )
 canonicalizeBinop (A.At _ (Src.Infix data)) =
     let
@@ -131,12 +150,24 @@ canonicalizeBinop (A.At _ (Src.Infix data)) =
 --
 
 
+{-| Canonicalize all value declarations in a module with two-phase cycle detection.
+
+First converts each value to a dependency graph node, then detects strongly connected
+components to identify mutually recursive definitions.
+
+-}
 canonicalizeValues : SyntaxVersion -> Env.Env -> List (A.Located Src.Value) -> MResult i (List W.Warning) Can.Decls
 canonicalizeValues syntaxVersion env values =
     ReportingResult.traverse (toNodeOne syntaxVersion env) values
         |> ReportingResult.andThen (\nodes -> detectCycles (Graph.stronglyConnComp nodes))
 
 
+{-| Detect cycles in phase one of cycle detection using all dependencies.
+
+Processes strongly connected components to identify mutually recursive definitions
+that form valid recursive groups for type inference.
+
+-}
 detectCycles : List (Graph.SCC NodeTwo) -> MResult i w Can.Decls
 detectCycles sccs =
     case sccs of
@@ -161,6 +192,12 @@ detectCycles sccs =
                             )
 
 
+{-| Detect bad cycles in phase two using direct dependencies.
+
+Checks for cycles that represent nonterminating recursion (direct recursive calls
+without intervening function boundaries). Reports an error for any such cycles.
+
+-}
 detectBadCycles : Graph.SCC Can.Def -> MResult i w Can.Def
 detectBadCycles scc =
     case scc of
@@ -182,6 +219,8 @@ detectBadCycles scc =
             ReportingResult.throw (Error.RecursiveDecl region name names)
 
 
+{-| Extract the name from a canonical definition for error reporting.
+-}
 extractDefName : Can.Def -> A.Located Name
 extractDefName def =
     case def of
@@ -201,6 +240,12 @@ extractDefName def =
 -- This allows us to find cyclic values for type inference.
 
 
+{-| Phase one dependency graph node tracking all dependencies.
+
+Contains the phase two node, the definition name, and all transitive dependencies.
+Used for type inference cycle detection.
+
+-}
 type alias NodeOne =
     ( NodeTwo, Name.Name, List Name.Name )
 
@@ -210,10 +255,22 @@ type alias NodeOne =
 -- This allows us to detect cycles that definitely do not terminate.
 
 
+{-| Phase two dependency graph node tracking only direct dependencies.
+
+Contains the canonical definition, the definition name, and direct dependencies only.
+Used for detecting nonterminating recursion.
+
+-}
 type alias NodeTwo =
     ( Can.Def, Name, List Name )
 
 
+{-| Convert a source value declaration to a phase one dependency graph node.
+
+Canonicalizes the value declaration (handling both typed and untyped definitions),
+tracks all free variables as dependencies, and constructs a NodeOne for cycle detection.
+
+-}
 toNodeOne : SyntaxVersion -> Env.Env -> A.Located Src.Value -> MResult i (List W.Warning) NodeOne
 toNodeOne syntaxVersion env (A.At _ (Src.Value valueData)) =
     let
@@ -280,6 +337,13 @@ toNodeOne syntaxVersion env (A.At _ (Src.Value valueData)) =
                     )
 
 
+{-| Convert a canonical definition to a phase two dependency graph node.
+
+For functions (definitions with arguments), direct dependencies are empty because the
+function body doesn't execute until called. For values (no arguments), direct dependencies
+are extracted from free variables that are used directly (not in closures).
+
+-}
 toNodeTwo : Name -> List arg -> Can.Def -> Expr.FreeLocals -> NodeTwo
 toNodeTwo name args def freeLocals =
     case args of
@@ -290,6 +354,12 @@ toNodeTwo name args def freeLocals =
             ( def, name, [] )
 
 
+{-| Add a name to the direct dependencies list if it has direct uses.
+
+A direct use means the variable is referenced at the top level of the expression,
+not within a nested function or closure.
+
+-}
 addDirects : Name -> Expr.Uses -> List Name -> List Name
 addDirects name (Expr.Uses { direct }) directDeps =
     if direct > 0 then
@@ -303,6 +373,12 @@ addDirects name (Expr.Uses { direct }) directDeps =
 -- CANONICALIZE EXPORTS
 
 
+{-| Canonicalize the module's export list, validating all exported items exist.
+
+Handles explicit exports (validating each item) and open exports (exposing everything).
+Checks that exported values, types, operators, and ports are actually defined in the module.
+
+-}
 canonicalizeExports :
     List (A.Located Src.Value)
     -> Dict String Name union
@@ -330,6 +406,8 @@ canonicalizeExports values unions aliases binops effects (A.At region exposing_)
                     )
 
 
+{-| Extract the name from a source value declaration for export validation.
+-}
 valueToName : A.Located Src.Value -> ( Name, () )
 valueToName (A.At _ (Src.Value v)) =
     let
@@ -339,6 +417,17 @@ valueToName (A.At _ (Src.Value v)) =
     ( name, () )
 
 
+{-| Validate that an exposed item exists in the module.
+
+Checks that the exposed item (value, type, operator, or port) is actually defined
+in the module and creates the appropriate canonical export. Reports errors for:
+
+  - Values/ports that don't exist
+  - Operators that don't exist
+  - Types that don't exist
+  - Type aliases exposed with (..) syntax
+
+-}
 checkExposed :
     Dict String Name value
     -> Dict String Name union
@@ -389,6 +478,12 @@ checkExposed values unions aliases binops effects exposed =
                 ReportingResult.throw (Error.ExportNotFound region Error.BadType name (Dict.keys compare unions ++ Dict.keys compare aliases))
 
 
+{-| Check if a name is a port in the module's effects.
+
+Returns Nothing if the name is a port, or Just a list of all port names if it's not.
+This allows distinguishing between values and ports in export validation.
+
+-}
 checkPorts : Can.Effects -> Name -> Maybe (List Name)
 checkPorts effects name =
     case effects of
@@ -406,6 +501,11 @@ checkPorts effects name =
             Just []
 
 
+{-| Create a successful export result with duplicate tracking.
+
+Wraps the export in a duplicate tracker to detect multiple exports of the same name.
+
+-}
 ok : Name -> A.Region -> Can.Export -> MResult i w (Dups.Tracker (A.Located Can.Export))
 ok name region export =
     ReportingResult.ok (Dups.one name region (A.At region export))

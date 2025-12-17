@@ -71,15 +71,21 @@ import Utils.Main as Utils exposing (SomeException)
 -- MANAGER
 
 
+{-| Represents an HTTP client manager for making requests.
+-}
 type Manager
     = Manager
 
 
+{-| Encodes an HTTP manager to bytes for serialization.
+-}
 managerEncoder : Manager -> Bytes.Encode.Encoder
 managerEncoder _ =
     Bytes.Encode.unsignedInt8 0
 
 
+{-| Decodes an HTTP manager from bytes.
+-}
 managerDecoder : Bytes.Decode.Decoder Manager
 managerDecoder =
     Bytes.Decode.unsignedInt8
@@ -94,6 +100,8 @@ managerDecoder =
             )
 
 
+{-| Creates a new HTTP manager for making requests.
+-}
 getManager : Task Never Manager
 getManager =
     -- TODO newManager tlsManagerSettings
@@ -104,6 +112,8 @@ getManager =
 -- URL
 
 
+{-| Constructs a URL with query parameters from a base URL and parameter list.
+-}
 toUrl : String -> List ( String, String ) -> String
 toUrl url params =
     case params of
@@ -124,15 +134,21 @@ urlEncodeVars params =
 -- FETCH
 
 
+{-| Represents an HTTP header as a name-value pair.
+-}
 type alias Header =
     ( String, String )
 
 
+{-| Performs an HTTP GET request with the given headers and result handler.
+-}
 get : Manager -> String -> List Header -> (Error -> e) -> (String -> Task Never (Result e a)) -> Task Never (Result e a)
 get =
     fetch "GET"
 
 
+{-| Performs an HTTP POST request with the given headers and result handler.
+-}
 post : Manager -> String -> List Header -> (Error -> e) -> (String -> Task Never (Result e a)) -> Task Never (Result e a)
 post =
     fetch "POST"
@@ -158,6 +174,8 @@ userAgent =
     "elm/" ++ V.toChars V.compiler
 
 
+{-| Creates an Accept header with the given MIME type.
+-}
 accept : String -> Header
 accept mime =
     ( "Accept", mime )
@@ -167,6 +185,8 @@ accept mime =
 -- EXCEPTIONS
 
 
+{-| Represents HTTP request errors including URL problems, HTTP errors, and unexpected failures.
+-}
 type Error
     = BadUrl String String
     | BadHttp String Utils.HttpExceptionContent
@@ -177,10 +197,14 @@ type Error
 -- SHA
 
 
+{-| Represents a SHA hash as a string for package integrity verification.
+-}
 type alias Sha =
     String
 
 
+{-| Converts a SHA hash to its string representation.
+-}
 shaToChars : Sha -> String
 shaToChars =
     identity
@@ -190,6 +214,8 @@ shaToChars =
 -- FETCH ARCHIVE
 
 
+{-| Downloads a package archive from a URL, returning the SHA hash and archive contents.
+-}
 getArchive : Manager -> String -> (Error -> e) -> e -> (( Sha, Zip.Archive ) -> Task Never (Result e a)) -> Task Never (Result e a)
 getArchive _ url _ _ onSuccess =
     Impure.task "getArchive"
@@ -215,12 +241,16 @@ getArchive _ url _ _ onSuccess =
 -- UPLOAD
 
 
+{-| Represents parts of a multipart form upload.
+-}
 type MultiPart
     = FilePart String String
     | JsonPart String String Encode.Value
     | StringPart String String
 
 
+{-| Uploads multipart form data to a URL.
+-}
 upload : Manager -> String -> List MultiPart -> Task Never (Result Error ())
 upload _ url parts =
     Impure.task "httpUpload"
@@ -263,16 +293,22 @@ upload _ url parts =
         (Impure.Always (Ok ()))
 
 
+{-| Creates a file part for multipart upload with a field name and file path.
+-}
 filePart : String -> String -> MultiPart
 filePart name filePath =
     FilePart name filePath
 
 
+{-| Creates a JSON part for multipart upload with a field name, file path, and JSON value.
+-}
 jsonPart : String -> String -> Encode.Value -> MultiPart
 jsonPart name filePath value =
     JsonPart name filePath value
 
 
+{-| Creates a string part for multipart upload with a field name and string value.
+-}
 stringPart : String -> String -> MultiPart
 stringPart name string =
     StringPart name string
@@ -282,6 +318,8 @@ stringPart name string =
 -- ENCODERS and DECODERS
 
 
+{-| Encodes an HTTP error to bytes for serialization.
+-}
 errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
     case error of
@@ -307,6 +345,8 @@ errorEncoder error =
                 ]
 
 
+{-| Decodes an HTTP error from bytes.
+-}
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
     Bytes.Decode.unsignedInt8

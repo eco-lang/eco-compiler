@@ -78,15 +78,22 @@ import Utils.Bytes.Encode as BE
 -- VERSION
 
 
+{-| Represents a semantic version with major, minor, and patch components.
+-}
 type Version
     = Version Int Int Int
 
 
+{-| Extract the major version number from a Version.
+-}
 major : Version -> Int
 major (Version major_ _ _) =
     major_
 
 
+{-| Compare two versions following semantic versioning rules.
+Returns LT if the first version is less than the second, GT if greater, EQ if equal.
+-}
 compare : Version -> Version -> Order
 compare (Version major1 minor1 patch1) (Version major2 minor2 patch2) =
     case Basics.compare major1 major2 of
@@ -102,11 +109,15 @@ compare (Version major1 minor1 patch1) (Version major2 minor2 patch2) =
             majorRes
 
 
+{-| Convert a Version to a comparable tuple for use in sorting and comparison operations.
+-}
 toComparable : Version -> ( Int, Int, Int )
 toComparable (Version major_ minor_ patch_) =
     ( major_, minor_, patch_ )
 
 
+{-| Return the smaller of two versions according to semantic versioning order.
+-}
 min : Version -> Version -> Version
 min v1 v2 =
     case compare v1 v2 of
@@ -117,6 +128,8 @@ min v1 v2 =
             v1
 
 
+{-| Return the larger of two versions according to semantic versioning order.
+-}
 max : Version -> Version -> Version
 max v1 v2 =
     case compare v1 v2 of
@@ -127,16 +140,22 @@ max v1 v2 =
             v1
 
 
+{-| Version 1.0.0, commonly used as the initial package version.
+-}
 one : Version
 one =
     Version 1 0 0
 
 
+{-| The maximum representable version (2147483647.0.0), using the maximum 32-bit signed integer.
+-}
 maxVersion : Version
 maxVersion =
     Version 2147483647 0 0
 
 
+{-| The version of this compiler implementation. Currently returns 1.0.0.
+-}
 compiler : Version
 compiler =
     --   case map fromIntegral (Version.versionBranch Paths_elm.version) of
@@ -151,6 +170,8 @@ compiler =
     Version 1 0 0
 
 
+{-| The version of the Elm compiler this implementation targets: 0.19.1.
+-}
 elmCompiler : Version
 elmCompiler =
     Version 0 19 1
@@ -160,16 +181,25 @@ elmCompiler =
 -- BUMP
 
 
+{-| Increment the patch version number by 1 (e.g., 1.2.3 becomes 1.2.4).
+Used for backwards-compatible bug fixes.
+-}
 bumpPatch : Version -> Version
 bumpPatch (Version major_ minor patch) =
     Version major_ minor (patch + 1)
 
 
+{-| Increment the minor version number by 1 and reset patch to 0 (e.g., 1.2.3 becomes 1.3.0).
+Used for backwards-compatible new features.
+-}
 bumpMinor : Version -> Version
 bumpMinor (Version major_ minor _) =
     Version major_ (minor + 1) 0
 
 
+{-| Increment the major version number by 1 and reset minor and patch to 0 (e.g., 1.2.3 becomes 2.0.0).
+Used for backwards-incompatible API changes.
+-}
 bumpMajor : Version -> Version
 bumpMajor (Version major_ _ _) =
     Version (major_ + 1) 0 0
@@ -179,6 +209,8 @@ bumpMajor (Version major_ _ _) =
 -- TO CHARS
 
 
+{-| Convert a Version to its string representation in the format "major.minor.patch".
+-}
 toChars : Version -> String
 toChars (Version major_ minor patch) =
     String.fromInt major_ ++ "." ++ String.fromInt minor ++ "." ++ String.fromInt patch
@@ -188,11 +220,16 @@ toChars (Version major_ minor patch) =
 -- JSON
 
 
+{-| Decode a Version from a JSON string using the custom parser.
+Returns a decoder that produces error positions on parse failure.
+-}
 decoder : D.Decoder ( Row, Col ) Version
 decoder =
     D.customString parser Tuple.pair
 
 
+{-| Encode a Version to a JSON string value in the format "major.minor.patch".
+-}
 encode : Version -> E.Value
 encode version =
     E.string (toChars version)
@@ -202,6 +239,9 @@ encode version =
 -- PARSER
 
 
+{-| Parse a semantic version string in the format "major.minor.patch".
+Each component must be a valid non-negative integer. Leading zeros are only allowed for "0".
+-}
 parser : P.Parser ( Row, Col ) Version
 parser =
     numberParser
@@ -284,11 +324,17 @@ isDigit word =
 -- ENCODERS and DECODERS
 
 
+{-| Encode a Version to a standard Elm JSON value as a string in "major.minor.patch" format.
+Uses the standard Json.Encode module.
+-}
 jsonEncoder : Version -> Encode.Value
 jsonEncoder version =
     Encode.string (toChars version)
 
 
+{-| Decode a Version from a standard Elm JSON string value.
+Uses the standard Json.Decode module and returns a failure message if parsing fails.
+-}
 jsonDecoder : Decode.Decoder Version
 jsonDecoder =
     Decode.string
@@ -303,6 +349,8 @@ jsonDecoder =
             )
 
 
+{-| Encode a Version to a binary format as three consecutive integers (major, minor, patch).
+-}
 versionEncoder : Version -> Bytes.Encode.Encoder
 versionEncoder (Version major_ minor_ patch_) =
     Bytes.Encode.sequence
@@ -312,6 +360,8 @@ versionEncoder (Version major_ minor_ patch_) =
         ]
 
 
+{-| Decode a Version from a binary format expecting three consecutive integers (major, minor, patch).
+-}
 versionDecoder : Bytes.Decode.Decoder Version
 versionDecoder =
     Bytes.Decode.map3 Version

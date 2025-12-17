@@ -30,6 +30,9 @@ import Utils.Main as Utils
 -- GET POSSIBILITIES
 
 
+{-| Generate all valid version bump possibilities from a package's version history.
+Returns triples of (base version, new version, bump magnitude) for all valid MAJOR, MINOR, and PATCH bumps.
+-}
 getPossibilities : KnownVersions -> List ( V.Version, V.Version, M.Magnitude )
 getPossibilities (KnownVersions latest previous) =
     let

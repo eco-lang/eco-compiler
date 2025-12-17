@@ -24,6 +24,9 @@ import System.TypeCheck.IO as IO
 -- DEFAULTS
 
 
+{-| Returns the list of default imports automatically available in every Elm module.
+Includes Basics (open), core types like List, Maybe, Result, and platform types.
+-}
 defaults : List (Src.C1 Src.Import)
 defaults =
     [ ( [], import_ ModuleName.basics Nothing (Src.Open [] []) )

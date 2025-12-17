@@ -39,26 +39,36 @@ import Task exposing (Task)
 -- REPORT
 
 
+{-| Represents an error report that can be displayed to the user or serialized to JSON.
+-}
 type Report
     = CompilerReport String Error.Module (List Error.Module)
     | Report String (Maybe String) D.Doc
 
 
+{-| Creates a report from a title, optional file path, introductory text, and additional documentation sections.
+-}
 report : String -> Maybe String -> String -> List D.Doc -> Report
 report title path startString others =
     D.stack (D.reflow startString :: others) |> Report title path
 
 
+{-| Creates a report from pre-formatted documentation instead of a plain string.
+-}
 docReport : String -> Maybe String -> D.Doc -> List D.Doc -> Report
 docReport title path startDoc others =
     D.stack (startDoc :: others) |> Report title path
 
 
+{-| Creates a report with a single documentation block, typically used for JSON-focused errors.
+-}
 jsonReport : String -> Maybe String -> D.Doc -> Report
 jsonReport =
     Report
 
 
+{-| Creates a report from compiler errors, including the root directory and one or more error modules.
+-}
 compilerReport : String -> Error.Module -> List Error.Module -> Report
 compilerReport =
     CompilerReport
@@ -68,6 +78,8 @@ compilerReport =
 -- TO DOC
 
 
+{-| Converts a report to a formatted document for terminal output.
+-}
 reportToDoc : Report -> D.Doc
 reportToDoc report_ =
     case report_ of
@@ -106,6 +118,8 @@ reportToDoc report_ =
 -- TO JSON
 
 
+{-| Converts a report to JSON format for machine consumption.
+-}
 reportToJson : Report -> E.Value
 reportToJson report_ =
     case report_ of
@@ -128,11 +142,15 @@ reportToJson report_ =
 -- OUTPUT
 
 
+{-| Writes a formatted document to stdout, using ANSI colors if connected to a terminal.
+-}
 toStdout : D.Doc -> Task Never ()
 toStdout doc =
     toHandle IO.stdout doc
 
 
+{-| Writes a formatted document to stderr, using ANSI colors if connected to a terminal.
+-}
 toStderr : D.Doc -> Task Never ()
 toStderr doc =
     toHandle IO.stderr doc

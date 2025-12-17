@@ -35,6 +35,8 @@ import System.TypeCheck.IO as IO
 -- BACKEND
 
 
+{-| The MLIR backend that generates MLIR code from fully monomorphized IR with all polymorphism resolved.
+-}
 backend : CodeGen.MonoCodeGen
 backend =
     { generate =

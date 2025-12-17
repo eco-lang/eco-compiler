@@ -61,22 +61,16 @@ import System.TypeCheck.IO as IO
 
 
 
--- EXPRESSIONS
--- NOTE: I tried making this create a B.Builder directly.
---
--- The hope was that it'd allocate less and speed things up, but it seemed
--- to be neutral for perf.
---
--- The downside is that Generate.JavaScript.Expression inspects the
--- structure of Expr and Stmt on some occassions to try to strip out
--- unnecessary closures. I think these closures are already avoided
--- by other logic in code gen these days, but I am not 100% certain.
---
--- For this to be worth it, I think it would be necessary to avoid
--- returning tuples when generating expressions.
---
+-- ====== EXPRESSIONS ======
 
 
+{-| JavaScript expression AST node.
+
+Represents all JavaScript expression forms including literals (strings, numbers, booleans),
+arrays, objects, function calls, property access, operators, and function expressions.
+Includes both tracked variants (with source positions for source map generation) and
+untracked variants for performance.
+-}
 type Expr
     = ExprString String
     | ExprTrackedString IO.Canonical A.Position String
@@ -106,15 +100,24 @@ type Expr
     | ExprTrackedFunction IO.Canonical (List (A.Located Name.Name)) (List Stmt)
 
 
+{-| Left-hand side value in an assignment expression.
+
+Can be either a simple variable reference or an array/object index expression.
+-}
 type LValue
     = LRef Name.Name
     | LBracket Expr Expr
 
 
 
--- STATEMENTS
+-- ====== STATEMENTS ======
 
 
+{-| JavaScript statement AST node.
+
+Represents all JavaScript statement forms including blocks, control flow (if, switch, while,
+try-catch), variable declarations, function declarations, and expression statements.
+-}
 type Stmt
     = Block (List Stmt)
     | EmptyStmt
@@ -134,15 +137,24 @@ type Stmt
     | FunctionStmt Name.Name (List Name.Name) (List Stmt)
 
 
+{-| Switch statement case or default clause.
+
+Represents a single case in a switch statement, with an expression to match
+or a default case that handles all other values.
+-}
 type Case
     = Case Expr (List Stmt)
     | Default (List Stmt)
 
 
 
--- OPERATORS
+-- ====== OPERATORS ======
 
 
+{-| JavaScript infix (binary) operators.
+
+Includes arithmetic, comparison, logical, and bitwise operators.
+-}
 type InfixOp
     = OpAdd
     | OpSub
@@ -165,6 +177,10 @@ type InfixOp
     | OpZfRShift
 
 
+{-| JavaScript prefix (unary) operators.
+
+Includes logical not, arithmetic negation, and bitwise complement.
+-}
 type PrefixOp
     = PrefixNot
     | PrefixNegate
@@ -172,14 +188,24 @@ type PrefixOp
 
 
 
--- ENCODE
+-- ====== BUILDER CONVERSION ======
 
 
+{-| Convert a JavaScript statement to builder output.
+
+Takes a statement AST node and appends its formatted JavaScript representation
+to the builder, handling indentation and line breaks.
+-}
 stmtToBuilder : Stmt -> Builder -> Builder
 stmtToBuilder stmts builder =
     fromStmt levelZero stmts builder
 
 
+{-| Convert a JavaScript expression to builder output.
+
+Takes an expression AST node and appends its formatted JavaScript representation
+to the builder, handling operator precedence and parenthesization.
+-}
 exprToBuilder : Expr -> Builder -> Builder
 exprToBuilder expr builder =
     fromExpr levelZero Whatever expr builder
@@ -1043,9 +1069,14 @@ fromInfix op =
 
 
 
--- BUILDER
+-- ====== BUILDER ======
 
 
+{-| Internal state for the JavaScript code builder.
+
+Tracks the generated JavaScript output, current line and column position for
+source map generation, and accumulated kernel dependencies.
+-}
 type alias BuilderData =
     { revKernels : List String
     , revBuilders : String
@@ -1055,10 +1086,21 @@ type alias BuilderData =
     }
 
 
+{-| Opaque builder type for accumulating JavaScript output.
+
+Wraps BuilderData to provide an opaque interface for building JavaScript code
+with source map support.
+-}
 type Builder
     = Builder BuilderData
 
 
+{-| Source map mapping entry data.
+
+Records a correspondence between a location in the generated JavaScript and
+a location in the original Elm source, optionally including the original name
+before mangling.
+-}
 type alias MappingData =
     { srcLine : Int
     , srcCol : Int
@@ -1069,25 +1111,49 @@ type alias MappingData =
     }
 
 
+{-| Source map mapping entry.
+
+Wraps MappingData to provide an opaque type for source map entries.
+-}
 type Mapping
     = Mapping MappingData
 
 
+{-| Create an empty builder starting at the specified line number.
+
+Used to initialize a builder for generating JavaScript code, typically starting
+at line 1 unless prepending to existing output.
+-}
 emptyBuilder : Int -> Builder
 emptyBuilder startLine =
     Builder { revKernels = [], revBuilders = "", currentLine = startLine, currentCol = 1, mappings = [] }
 
 
+{-| Add ASCII string to builder without source map tracking.
+
+For adding JavaScript syntax elements (operators, punctuation) that don't
+correspond to specific source locations. Updates column position.
+-}
 addAscii : String -> Builder -> Builder
 addAscii ascii (Builder b) =
     Builder { b | revBuilders = b.revBuilders ++ ascii, currentCol = b.currentCol + String.length ascii }
 
 
+{-| Register a kernel module dependency.
+
+Tracks kernel modules that need to be included in the generated output.
+Kernel dependencies are accumulated and can be retrieved later.
+-}
 addKernel : String -> Builder -> Builder
 addKernel kernel (Builder b) =
     Builder { b | revKernels = kernel :: b.revKernels }
 
 
+{-| Add string to builder without source map tracking.
+
+For adding generated code that doesn't correspond to a specific source location.
+Handles multi-line strings by tracking line breaks and updating position accordingly.
+-}
 addByteString : String -> Builder -> Builder
 addByteString str (Builder b) =
     let

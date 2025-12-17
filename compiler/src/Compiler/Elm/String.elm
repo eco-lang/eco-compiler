@@ -28,12 +28,18 @@ import Numeric.Integer as NI
 -- FROM CHUNKS
 
 
+{-| Represents a portion of a string literal: a slice of the original source,
+an escape sequence, or a unicode code point.
+-}
 type Chunk
     = Slice Int Int
     | Escape Char
     | CodePoint Int
 
 
+{-| Converts a list of string chunks into a properly escaped JavaScript string literal.
+Handles unicode code points and escape sequences.
+-}
 fromChunks : String -> List Chunk -> String
 fromChunks src chunks =
     writeChunks src "" 0 chunks

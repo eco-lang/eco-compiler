@@ -37,6 +37,13 @@ import Utils.Main as Utils
 -- FREE VARS
 
 
+{-| A mapping from type variable names to their instantiated type representations.
+
+When converting source types to internal types, free type variables (like `a` in `List a`)
+need to be tracked to ensure all occurrences of the same variable name map to the same
+internal type variable. This dictionary maintains that consistent mapping throughout the
+conversion process.
+-}
 type alias FreeVars =
     Dict String Name Type
 
@@ -45,6 +52,21 @@ type alias FreeVars =
 -- FROM SOURCE TYPE
 
 
+{-| Convert a source-level type annotation into an internal type representation.
+
+Takes a mapping of free type variables and a canonical source type, and produces
+an internal type used during type inference. This handles:
+- Function types (lambdas)
+- Type variables (using the FreeVars mapping)
+- Named types with arguments (applications)
+- Type aliases (both filled and holey)
+- Tuples (pairs and triples)
+- Unit type
+- Record types with optional extension
+
+The conversion may perform IO operations such as creating fresh type variables
+for unbound names.
+-}
 fromSrcType : FreeVars -> Can.Type -> IO Type
 fromSrcType freeVars sourceType =
     case sourceType of

@@ -159,6 +159,17 @@ term =
 -- TYPE EXPRESSIONS
 
 
+{-| Parse a type expression including function types, type applications, and type terms.
+
+Handles parsing of complete type expressions such as:
+- Simple types: `Int`, `String`, `Maybe a`
+- Function types: `Int -> String`, `a -> b -> c`
+- Type applications: `List Int`, `Dict String Value`
+- Tuples: `(Int, String)`, `(a, b, c)`
+- Records: `{ x : Int, y : Int }`, `{ a | x : Int }`
+
+Returns a tuple containing the parsed type with comments and the end position.
+-}
 expression : Src.FComments -> Space.Parser E.Type (Src.C2Eol Src.Type)
 expression trailingComments =
     P.getPosition
@@ -375,6 +386,19 @@ chompField =
 -- VARIANT
 
 
+{-| Parse a custom type variant declaration.
+
+Parses variant constructors in custom type definitions, handling:
+- Constructor name (must be uppercase)
+- Optional type arguments
+
+Examples:
+- `Nothing` (no arguments)
+- `Just a` (one argument)
+- `Node a (Tree a) (Tree a)` (multiple arguments)
+
+Returns the variant constructor name and its type arguments with associated comments.
+-}
 variant : Src.FComments -> Space.Parser E.CustomType (Src.C2Eol ( A.Located Name, List (Src.C1 Src.Type) ))
 variant trailingComments =
     P.addLocation (Var.upper E.CT_Variant)

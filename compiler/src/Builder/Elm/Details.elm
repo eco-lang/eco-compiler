@@ -93,6 +93,8 @@ import Utils.Task.Extra as Task
 -- DETAILS
 
 
+{-| Complete build state for a project including module status, dependencies, and build artifacts.
+-}
 type alias DetailsData =
     { time : File.Time
     , outline : ValidOutline
@@ -104,14 +106,20 @@ type alias DetailsData =
     }
 
 
+{-| Project details tracking compilation status and dependency information.
+-}
 type Details
     = Details DetailsData
 
 
+{-| Incrementing identifier to track when modules need recompilation based on interface changes.
+-}
 type alias BuildID =
     Int
 
 
+{-| A validated project outline, either an application with source directories or a package with exposed modules.
+-}
 type ValidOutline
     = ValidApp (NE.Nonempty Outline.SrcDir)
     | ValidPkg Pkg.Name (List ModuleName.Raw) (Dict ( String, String ) Pkg.Name V.Version {- for docs in reactor -})
@@ -133,6 +141,8 @@ type ValidOutline
 --
 
 
+{-| Status information for a local module including file location, modification time, and compilation timestamps.
+-}
 type alias LocalData =
     { path : FilePath
     , time : File.Time
@@ -143,19 +153,27 @@ type alias LocalData =
     }
 
 
+{-| Status of a local project module.
+-}
 type Local
     = Local LocalData
 
 
+{-| A foreign module from a package dependency, tracking which packages provide it.
+-}
 type Foreign
     = Foreign Pkg.Name (List Pkg.Name)
 
 
+{-| Build artifact state indicating whether artifacts are cached on disk or freshly loaded in memory.
+-}
 type Extras
     = ArtifactsCached
     | ArtifactsFresh Interfaces Opt.GlobalGraph
 
 
+{-| Type interfaces for all dependency modules, indexed by canonical module name.
+-}
 type alias Interfaces =
     Dict (List String) TypeCheck.Canonical I.DependencyInterface
 
@@ -164,6 +182,9 @@ type alias Interfaces =
 -- LOAD ARTIFACTS
 
 
+{-| Load optimized objects for all dependencies in a background thread.
+Returns immediately with an MVar that will contain the objects when loading completes.
+-}
 loadObjects : FilePath -> Details -> Task Never (MVar (Maybe Opt.GlobalGraph))
 loadObjects root (Details detailsData) =
     let
@@ -237,6 +258,9 @@ combineTypedObjects maybeLocal packageGraphs =
             Just packageGraphs
 
 
+{-| Load type interfaces for all dependencies in a background thread.
+Returns immediately with an MVar that will contain the interfaces when loading completes.
+-}
 loadInterfaces : FilePath -> Details -> Task Never (MVar (Maybe Interfaces))
 loadInterfaces root (Details detailsData) =
     case detailsData.extras of
@@ -251,6 +275,9 @@ loadInterfaces root (Details detailsData) =
 -- VERIFY INSTALL -- used by Install
 
 
+{-| Verify and install all dependencies for a project without loading artifacts.
+Used by the install command to download and build dependencies.
+-}
 verifyInstall : BW.Scope -> FilePath -> Solver.Env -> Outline.Outline -> Task Never (Result Exit.Details ())
 verifyInstall scope root (Solver.Env env) outline =
     File.getTime (root ++ "/elm.json")
@@ -280,6 +307,9 @@ runVerifyInstall scope root cache manager connection registry outline time =
 -- LOAD -- used by Make, Repl, Reactor, Test
 
 
+{-| Load project details, verifying dependencies and building them if necessary.
+Checks if elm.json has changed and regenerates details if needed. Used by build commands.
+-}
 load : Reporting.Style -> BW.Scope -> FilePath -> Bool -> Task Never (Result Exit.Details Details)
 load style scope root needsTypedOpt =
     File.getTime (root ++ "/elm.json")
@@ -1546,6 +1576,8 @@ endpointDecoder =
 -- ENCODERS and DECODERS
 
 
+{-| Binary encoder for writing project details to cache.
+-}
 detailsEncoder : Details -> Bytes.Encode.Encoder
 detailsEncoder (Details detailsData) =
     Bytes.Encode.sequence
@@ -1800,6 +1832,8 @@ statusDictDecoder =
     BD.assocListDict identity ModuleName.rawDecoder Utils.mVarDecoder
 
 
+{-| Binary encoder for local module status.
+-}
 localEncoder : Local -> Bytes.Encode.Encoder
 localEncoder (Local localData) =
     Bytes.Encode.sequence
@@ -1812,6 +1846,8 @@ localEncoder (Local localData) =
         ]
 
 
+{-| Binary decoder for local module status.
+-}
 localDecoder : Bytes.Decode.Decoder Local
 localDecoder =
     BD.map6 (\path time deps hasMain lastChange lastCompile -> Local { path = path, time = time, deps = deps, hasMain = hasMain, lastChange = lastChange, lastCompile = lastCompile })

@@ -55,6 +55,9 @@ type Error
 -- TO REPORT
 
 
+{-| Convert a main entry point error into a user-friendly error report,
+explaining type compatibility issues, recursion problems, or invalid flags.
+-}
 toReport : L.Localizer -> Code.Source -> Error -> Report.Report
 toReport localizer source err =
     case err of
@@ -126,6 +129,8 @@ toReport localizer source err =
 -- ENCODERS and DECODERS
 
 
+{-| Serialize a main entry point error to bytes for caching or transmission.
+-}
 errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
     case error of
@@ -153,6 +158,8 @@ errorEncoder error =
                 ]
 
 
+{-| Deserialize a main entry point error from bytes.
+-}
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
     Bytes.Decode.unsignedInt8

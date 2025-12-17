@@ -41,11 +41,15 @@ type OneOrMore a
     | More (OneOrMore a) (OneOrMore a)
 
 
+{-| Create a OneOrMore structure containing a single element.
+-}
 one : a -> OneOrMore a
 one =
     One
 
 
+{-| Combine two OneOrMore structures into a single binary tree node.
+-}
 more : OneOrMore a -> OneOrMore a -> OneOrMore a
 more =
     More
@@ -55,6 +59,8 @@ more =
 -- MAP
 
 
+{-| Apply a function to every element in the OneOrMore structure, preserving its shape.
+-}
 map : (a -> b) -> OneOrMore a -> OneOrMore b
 map func oneOrMore =
     case oneOrMore of
@@ -69,6 +75,9 @@ map func oneOrMore =
 -- DESTRUCT
 
 
+{-| Flatten the OneOrMore structure by applying a function to the leftmost element
+and a list of remaining elements (traversed left-to-right, depth-first).
+-}
 destruct : (a -> List a -> b) -> OneOrMore a -> b
 destruct func oneOrMore =
     destructLeft func oneOrMore []
@@ -98,6 +107,9 @@ destructRight oneOrMore xs =
 -- GET FIRST TWO
 
 
+{-| Extract the first element from each of two OneOrMore structures, returning them
+as a tuple. Traverses leftmost path to find the first element in each tree.
+-}
 getFirstTwo : OneOrMore a -> OneOrMore a -> ( a, a )
 getFirstTwo left right =
     case left of

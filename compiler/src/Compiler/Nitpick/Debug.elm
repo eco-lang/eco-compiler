@@ -24,6 +24,9 @@ import Data.Map as Dict
 -- HAS DEBUG USES
 
 
+{-| Check whether the optimized code contains any references to Debug functions.
+Returns true if any Debug.log, Debug.todo, or other Debug functions are found.
+-}
 hasDebugUses : Opt.LocalGraph -> Bool
 hasDebugUses (Opt.LocalGraph _ graph _) =
     Map.any nodeHasDebug graph

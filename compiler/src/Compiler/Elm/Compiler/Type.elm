@@ -57,6 +57,9 @@ import Utils.Crash exposing (crash)
 -- TYPES
 
 
+{-| Simplified type representation for documentation and debug metadata.
+Represents Elm types including functions, variables, type constructors, records, unit, and tuples.
+-}
 type Type
     = Lambda Type Type
     | Var Name.Name
@@ -66,14 +69,20 @@ type Type
     | Tuple Type Type (List Type)
 
 
+{-| Debug metadata containing a message type and all transitively referenced type aliases and unions.
+-}
 type DebugMetadata
     = DebugMetadata Type (List Alias) (List Union)
 
 
+{-| Type alias definition with a name, type parameters, and the aliased type.
+-}
 type Alias
     = Alias Name.Name (List Name.Name) Type
 
 
+{-| Custom type (union) definition with a name, type parameters, and variant constructors.
+-}
 type Union
     = Union Name.Name (List Name.Name) (List ( Name.Name, List Type ))
 
@@ -82,6 +91,8 @@ type Union
 -- TO DOC
 
 
+{-| Converts a type to a pretty-printed document representation for display.
+-}
 toDoc : L.Localizer -> RT.Context -> Type -> D.Doc
 toDoc localizer context tipe =
     case tipe of
@@ -136,11 +147,15 @@ collectLambdas tipe =
 -- JSON for TYPE
 
 
+{-| Encodes a type as a JSON string containing its pretty-printed representation.
+-}
 encode : Type -> Value
 encode tipe =
     E.string (D.toLine (toDoc L.empty RT.None tipe))
 
 
+{-| Decodes a type from a JSON string by parsing it as an Elm type expression.
+-}
 decoder : Decoder () Type
 decoder =
     D.customString parser (\_ _ -> ())
@@ -193,6 +208,8 @@ fromRawType (A.At _ astType) =
 -- JSON for PROGRAM
 
 
+{-| Encodes debug metadata as JSON with the message type, type aliases, and custom types.
+-}
 encodeMetadata : DebugMetadata -> Value
 encodeMetadata (DebugMetadata msg aliases unions) =
     E.object
@@ -231,6 +248,8 @@ toVariantObject ( name, args ) =
 -- JSON ENCODERS and DECODERS
 
 
+{-| Encodes a type as a structured JSON object using elm/json.
+-}
 jsonEncoder : Type -> Encode.Value
 jsonEncoder type_ =
     case type_ of
@@ -275,6 +294,8 @@ jsonEncoder type_ =
                 ]
 
 
+{-| Decodes a type from a structured JSON object using elm/json.
+-}
 jsonDecoder : Decode.Decoder Type
 jsonDecoder =
     Decode.field "type" Decode.string
@@ -318,6 +339,8 @@ jsonDecoder =
 -- ENCODERS and DECODERS
 
 
+{-| Encodes a type to binary format for efficient serialization.
+-}
 bytesEncoder : Type -> Bytes.Encode.Encoder
 bytesEncoder type_ =
     case type_ of
@@ -360,6 +383,8 @@ bytesEncoder type_ =
                 ]
 
 
+{-| Decodes a type from binary format.
+-}
 bytesDecoder : Bytes.Decode.Decoder Type
 bytesDecoder =
     Bytes.Decode.unsignedInt8

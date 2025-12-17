@@ -167,6 +167,9 @@ type PCategory
 -- HELPERS
 
 
+{-| Replace the type within an Expected value while preserving the error context.
+Used during type inference to substitute concrete types for type variables.
+-}
 typeReplace : Expected a -> b -> Expected b
 typeReplace expectation tipe =
     case expectation of
@@ -180,6 +183,9 @@ typeReplace expectation tipe =
             FromAnnotation name arity context tipe
 
 
+{-| Replace the type within a PExpected (pattern expected) value while preserving
+the error context. Used during pattern type checking.
+-}
 ptypeReplace : PExpected a -> b -> PExpected b
 ptypeReplace expectation tipe =
     case expectation of
@@ -194,6 +200,9 @@ ptypeReplace expectation tipe =
 -- TO REPORT
 
 
+{-| Convert a type error into a user-friendly error report with type diffs,
+helpful hints, and suggestions for fixing type mismatches.
+-}
 toReport : Code.Source -> L.Localizer -> Error -> Report.Report
 toReport source localizer err =
     case err of
@@ -2536,6 +2545,8 @@ toInfiniteReport source localizer region name overallType =
 -- ENCODERS and DECODERS
 
 
+{-| Serialize a type error to bytes for caching or transmission.
+-}
 errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
     case error of
@@ -2566,6 +2577,8 @@ errorEncoder error =
                 ]
 
 
+{-| Deserialize a type error from bytes.
+-}
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
     Bytes.Decode.unsignedInt8

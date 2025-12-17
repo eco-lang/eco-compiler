@@ -76,6 +76,10 @@ type Dict c k v
 
 
 {-| Create an empty dictionary.
+
+    isEmpty empty
+    --> True
+
 -}
 empty : Dict c k v
 empty =
@@ -202,6 +206,11 @@ update toComparable targetKey alter (D dict) =
 
 
 {-| Create a dictionary with one key-value pair.
+
+    singleton identity "key" 42
+        |> get identity "key"
+    --> Just 42
+
 -}
 singleton : (k -> comparable) -> k -> v -> Dict comparable k v
 singleton toComparable key value =
@@ -209,7 +218,7 @@ singleton toComparable key value =
 
 
 
--- COMBINE
+-- ====== COMBINE ======
 
 
 {-| Combine two dictionaries. If there is a collision, preference is given
@@ -283,7 +292,7 @@ merge _ leftStep bothStep rightStep (D leftDict) (D rightDict) initialResult =
 
 
 
--- TRANSFORM
+-- ====== TRANSFORM ======
 
 
 {-| Apply a function to all values in a dictionary.
@@ -362,7 +371,7 @@ partition isGood (D dict) =
 
 
 
--- LISTS
+-- ====== LISTS ======
 
 
 {-| Get all of the keys in a dictionary, in the order that they were inserted

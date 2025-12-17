@@ -67,18 +67,23 @@ import Utils.Bytes.Encode as BE
 -- PACKAGE NAMES
 
 
-{-| This has been simplified from `Name Author Project` as part of the work for
+{-| Represents a package name in the form of (Author, Project).
+This has been simplified from `Name Author Project` as part of the work for
 `System.TypeCheck.IO`.
 -}
 type alias Name =
     ( Author, Project )
 
 
+{-| Convert a package name to its string representation in the form "author/project".
+-}
 toString : Name -> String
 toString ( author, project ) =
     author ++ "/" ++ project
 
 
+{-| Compare two package names lexicographically, first by author then by project.
+-}
 compareName : Name -> Name -> Order
 compareName ( name1, project1 ) ( name2, project2 ) =
     case compare name1 name2 of
@@ -92,10 +97,14 @@ compareName ( name1, project1 ) ( name2, project2 ) =
             GT
 
 
+{-| Represents the author portion of a package name (e.g., "elm" in "elm/core").
+-}
 type alias Author =
     String
 
 
+{-| Represents the project portion of a package name (e.g., "core" in "elm/core").
+-}
 type alias Project =
     String
 
@@ -104,21 +113,29 @@ type alias Project =
 -- HELPERS
 
 
+{-| Check if a package is a kernel package (authored by "elm" or "elm-explorations").
+-}
 isKernel : Name -> Bool
 isKernel ( author, _ ) =
     author == elm || author == elmExplorations
 
 
+{-| Convert a package name to a character string in the form "author/project".
+-}
 toChars : Name -> String
 toChars ( author, project ) =
     author ++ "/" ++ project
 
 
+{-| Convert a package name to a URL-friendly string in the form "author/project".
+-}
 toUrl : Name -> String
 toUrl ( author, project ) =
     author ++ "/" ++ project
 
 
+{-| Convert a package name to a JSON-compatible string in the form "author/project".
+-}
 toJsonString : Name -> String
 toJsonString ( author, project ) =
     String.join "/" [ author, project ]
@@ -133,41 +150,57 @@ toName =
     Tuple.pair
 
 
+{-| A dummy package name used as a placeholder ("author/project").
+-}
 dummyName : Name
 dummyName =
     toName "author" "project"
 
 
+{-| The "elm/kernel" package name.
+-}
 kernel : Name
 kernel =
     toName elm "kernel"
 
 
+{-| The "elm/core" package name.
+-}
 core : Name
 core =
     toName elm "core"
 
 
+{-| The "elm/browser" package name.
+-}
 browser : Name
 browser =
     toName elm "browser"
 
 
+{-| The "elm/virtual-dom" package name.
+-}
 virtualDom : Name
 virtualDom =
     toName elm "virtual-dom"
 
 
+{-| The "elm/html" package name.
+-}
 html : Name
 html =
     toName elm "html"
 
 
+{-| The "elm/json" package name.
+-}
 json : Name
 json =
     toName elm "json"
 
 
+{-| The "elm/bytes" package name.
+-}
 bytes : Name
 bytes =
     toName elm "bytes"
@@ -178,11 +211,15 @@ http =
     toName elm "http"
 
 
+{-| The "elm/random" package name.
+-}
 random : Name
 random =
     toName elm "random"
 
 
+{-| The "elm/time" package name.
+-}
 time : Name
 time =
     toName elm "time"
@@ -193,16 +230,22 @@ url =
     toName elm "url"
 
 
+{-| The "elm-explorations/webgl" package name.
+-}
 webgl : Name
 webgl =
     toName elmExplorations "webgl"
 
 
+{-| The "elm-explorations/linear-algebra" package name.
+-}
 linearAlgebra : Name
 linearAlgebra =
     toName elmExplorations "linear-algebra"
 
 
+{-| The "elm-explorations/test" package name.
+-}
 test : Name
 test =
     toName elmExplorations "test"
@@ -222,6 +265,9 @@ elmExplorations =
 -- PACKAGE SUGGESTIONS
 
 
+{-| A dictionary mapping common module names to the packages that contain them.
+Used to suggest which package to install when a module is missing.
+-}
 suggestions : Dict String String Name
 suggestions =
     let
@@ -251,6 +297,10 @@ suggestions =
 -- NEARBY NAMES
 
 
+{-| Find up to 4 package names from the given list that are most similar to the target name.
+Uses Levenshtein distance to measure similarity, with special handling for "elm" and
+"elm-explorations" authors (treated as distance 0).
+-}
 nearbyNames : Name -> List Name -> List Name
 nearbyNames ( author1, project1 ) possibleNames =
     let
@@ -287,16 +337,23 @@ projectDistance given possibility =
 -- JSON
 
 
+{-| JSON decoder for package names. Expects a string in "author/project" format.
+-}
 decoder : D.Decoder ( Row, Col ) Name
 decoder =
     D.customString parser Tuple.pair
 
 
+{-| Encode a package name as a JSON string value.
+-}
 encode : Name -> E.Value
 encode name =
     E.string (toChars name)
 
 
+{-| JSON key decoder for package names used in JSON objects.
+Accepts a function to create error values from row and column positions.
+-}
 keyDecoder : (Row -> Col -> x) -> D.KeyDecoder x Name
 keyDecoder toError =
     let
@@ -311,6 +368,10 @@ keyDecoder toError =
 -- PARSER
 
 
+{-| Parser for package names in "author/project" format.
+Enforces naming rules: author starts with alphanumeric, project starts with lowercase,
+both can contain dashes (but not consecutive), and must be under 256 characters.
+-}
 parser : P.Parser ( Row, Col ) Name
 parser =
     parseName Char.isAlphaNum Char.isAlphaNum
@@ -398,6 +459,8 @@ chompName isGoodChar src pos end prevWasDash =
 -- ENCODERS and DECODERS
 
 
+{-| Binary encoder for package names. Encodes author and project as consecutive strings.
+-}
 nameEncoder : Name -> Bytes.Encode.Encoder
 nameEncoder ( author, project ) =
     Bytes.Encode.sequence
@@ -406,6 +469,8 @@ nameEncoder ( author, project ) =
         ]
 
 
+{-| Binary decoder for package names. Decodes two consecutive strings as (author, project).
+-}
 nameDecoder : Bytes.Decode.Decoder Name
 nameDecoder =
     Bytes.Decode.map2 Tuple.pair BD.string BD.string

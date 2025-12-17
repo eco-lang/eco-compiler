@@ -37,12 +37,23 @@ import Compiler.Reporting.Report as Report exposing (Report)
 -- ALL POSSIBLE WARNINGS
 
 
+{-| Represents a compiler warning that indicates potentially problematic code.
+
+Warnings are issued for code quality issues such as unused imports, unused
+variables, or missing type annotations. Unlike errors, warnings do not prevent
+compilation.
+-}
 type Warning
     = UnusedImport A.Region Name
     | UnusedVariable A.Region Context Name
     | MissingTypeAnnotation A.Region Name Can.Type
 
 
+{-| Describes the context where an unused variable was found.
+
+The context affects how the warning message is phrased and what suggestions
+are provided to the user.
+-}
 type Context
     = Def
     | Pattern
@@ -52,6 +63,12 @@ type Context
 -- TO REPORT
 
 
+{-| Converts a warning into a formatted report for display to the user.
+
+Takes a type localizer for rendering type annotations, the source code for
+context snippets, and the warning itself. Returns a formatted report with
+appropriate title, region highlighting, and helpful messages.
+-}
 toReport : L.Localizer -> Code.Source -> Warning -> Report
 toReport localizer source warning =
     case warning of

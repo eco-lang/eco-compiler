@@ -16,11 +16,15 @@ handling, and initialization logic.
 import Compiler.Data.Name exposing (Name)
 
 
+{-| Number of leading lines in the HTML template before the JavaScript code begins. Used for accurate source map generation.
+-}
 leadingLines : Int
 leadingLines =
     2
 
 
+{-| Wrap generated JavaScript code in a complete HTML document that includes error handling and initialization logic.
+-}
 sandwich : Name -> String -> String
 sandwich moduleName javascript =
     """<!DOCTYPE HTML>

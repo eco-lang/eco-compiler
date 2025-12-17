@@ -42,6 +42,8 @@ import Compiler.Reporting.Error.Syntax as E
 -- DECLARATION
 
 
+{-| Represents a top-level declaration in an Elm module.
+-}
 type Decl
     = Value (Maybe Src.Comment) (A.Located Src.Value)
     | Union (Maybe Src.Comment) (A.Located Src.Union)
@@ -49,6 +51,9 @@ type Decl
     | Port (Maybe Src.Comment) Src.Port
 
 
+{-| Parses a top-level declaration including doc comments, type annotations, and definitions.
+Handles value declarations, type aliases, custom types, and port declarations.
+-}
 declaration : SyntaxVersion -> Space.Parser E.Decl (Src.C2 Decl)
 declaration syntaxVersion =
     chompDocComment
@@ -401,6 +406,9 @@ portDecl maybeDocs =
 --
 
 
+{-| Parses an infix operator declaration with associativity, precedence, and function binding.
+Always consumes input up to a fresh line.
+-}
 infix_ : P.Parser E.Module (Src.C1 (A.Located Src.Infix))
 infix_ =
     let

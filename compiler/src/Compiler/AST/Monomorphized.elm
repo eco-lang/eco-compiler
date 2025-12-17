@@ -71,6 +71,8 @@ import System.TypeCheck.IO as IO
 -- ============================================================================
 
 
+{-| A fully monomorphized type with no type variables remaining.
+-}
 type MonoType
     = MInt
     | MFloat
@@ -91,6 +93,8 @@ type MonoType
 -- ============================================================================
 
 
+{-| Runtime layout information for records, including field order and unboxing.
+-}
 type alias RecordLayout =
     { fieldCount : Int
     , unboxedCount : Int
@@ -99,6 +103,8 @@ type alias RecordLayout =
     }
 
 
+{-| Information about a single field in a record or constructor.
+-}
 type alias FieldInfo =
     { name : Name
     , index : Int
@@ -107,11 +113,15 @@ type alias FieldInfo =
     }
 
 
+{-| Runtime layout information for custom types.
+-}
 type alias CustomLayout =
     { constructors : List CtorLayout
     }
 
 
+{-| Runtime layout information for a single constructor variant.
+-}
 type alias CtorLayout =
     { name : Name
     , tag : Int
@@ -121,6 +131,8 @@ type alias CtorLayout =
     }
 
 
+{-| Runtime layout information for tuples.
+-}
 type alias TupleLayout =
     { arity : Int
     , unboxedBitmap : Int
@@ -134,6 +146,8 @@ type alias TupleLayout =
 -- ============================================================================
 
 
+{-| Identifier for lambda functions in lambda sets, distinguishing named functions from closures.
+-}
 type LambdaId
     = NamedFunction Global
     | AnonymousLambda IO.Canonical Int (List ( Name, MonoType )) -- module, unique id, captures
@@ -145,18 +159,26 @@ type LambdaId
 -- ============================================================================
 
 
+{-| A reference to a top-level definition in a module.
+-}
 type Global
     = Global IO.Canonical Name
 
 
+{-| Key identifying a unique specialization of a polymorphic function.
+-}
 type SpecKey
     = SpecKey Global MonoType (Maybe LambdaId)
 
 
+{-| Unique integer identifier for a function specialization.
+-}
 type alias SpecId =
     Int
 
 
+{-| Registry tracking all function specializations in the program.
+-}
 type alias SpecializationRegistry =
     { nextId : Int
     , mapping : Dict (List String) (List String) SpecId
@@ -164,6 +186,8 @@ type alias SpecializationRegistry =
     }
 
 
+{-| Create an empty specialization registry.
+-}
 emptyRegistry : SpecializationRegistry
 emptyRegistry =
     { nextId = 0
@@ -172,6 +196,8 @@ emptyRegistry =
     }
 
 
+{-| Get or create a SpecId for a function specialization, updating the registry if needed.
+-}
 getOrCreateSpecId : Global -> MonoType -> Maybe LambdaId -> SpecializationRegistry -> ( SpecId, SpecializationRegistry )
 getOrCreateSpecId global monoType maybeLambda registry =
     let
@@ -195,6 +221,8 @@ getOrCreateSpecId global monoType maybeLambda registry =
             )
 
 
+{-| Look up the specialization information for a given SpecId.
+-}
 lookupSpecKey : SpecId -> SpecializationRegistry -> Maybe ( Global, MonoType, Maybe LambdaId )
 lookupSpecKey specId registry =
     Dict.get identity specId registry.reverseMapping
@@ -206,6 +234,8 @@ lookupSpecKey specId registry =
 -- ============================================================================
 
 
+{-| The complete monomorphized program graph containing all specialized definitions.
+-}
 type MonoGraph
     = MonoGraph
         { nodes : Dict Int Int MonoNode
@@ -231,6 +261,8 @@ type MainInfo
 -- ============================================================================
 
 
+{-| A node in the monomorphized dependency graph representing a specialized definition.
+-}
 type MonoNode
     = MonoDefine MonoExpr (EverySet Int Int) MonoType
     | MonoTailFunc (List ( Name, MonoType )) MonoExpr (EverySet Int Int) MonoType
@@ -260,6 +292,8 @@ type alias ManagerInfo =
 -- ============================================================================
 
 
+{-| A monomorphized expression with concrete types and explicit closures.
+-}
 type MonoExpr
     = MonoLiteral Literal MonoType
     | MonoVarLocal Name MonoType
@@ -294,6 +328,8 @@ type alias ShaderInfo =
     }
 
 
+{-| Literal values in monomorphized expressions.
+-}
 type Literal
     = LBool Bool
     | LInt Int
@@ -302,6 +338,8 @@ type Literal
     | LStr String
 
 
+{-| Information about a closure including its lambda ID, captured variables, and parameters.
+-}
 type alias ClosureInfo =
     { lambdaId : LambdaId
     , captures : List ( Name, MonoExpr, Bool )
@@ -309,15 +347,21 @@ type alias ClosureInfo =
     }
 
 
+{-| A local definition in monomorphized code.
+-}
 type MonoDef
     = MonoDef Region Name MonoExpr MonoType
     | MonoTailDef Region Name (List ( Name, MonoType )) MonoExpr MonoType
 
 
+{-| Destructuring pattern for extracting values from data structures.
+-}
 type MonoDestructor
     = MonoDestructor Name MonoPath MonoType
 
 
+{-| Path for navigating into a data structure during destructuring.
+-}
 type MonoPath
     = MonoIndex Int MonoPath
     | MonoField Name Int MonoPath
@@ -326,12 +370,16 @@ type MonoPath
     | MonoArrayIndex Int MonoPath -- Array index access
 
 
+{-| Decision tree for pattern matching.
+-}
 type Decider a
     = Leaf a
     | Chain (List ( DT.Path, DT.Test )) (Decider a) (Decider a)
     | FanOut DT.Path (List ( DT.Test, Decider a )) (Decider a)
 
 
+{-| Action to take when a pattern match succeeds.
+-}
 type MonoChoice
     = Inline MonoExpr
     | Jump Int
@@ -343,6 +391,8 @@ type MonoChoice
 -- ============================================================================
 
 
+{-| Extract the monomorphic type from any expression.
+-}
 typeOf : MonoExpr -> MonoType
 typeOf expr =
     case expr of
@@ -416,6 +466,8 @@ typeOf expr =
             t
 
 
+{-| Determine whether a type can be unboxed (stored inline without heap allocation).
+-}
 canUnbox : MonoType -> Bool
 canUnbox monoType =
     case monoType of
@@ -441,6 +493,8 @@ canUnbox monoType =
 -- ============================================================================
 
 
+{-| Compute runtime layout for a record type, ordering fields to place unboxed values first.
+-}
 computeRecordLayout : Dict String Name MonoType -> RecordLayout
 computeRecordLayout fields =
     let
@@ -487,6 +541,8 @@ computeRecordLayout fields =
     }
 
 
+{-| Compute runtime layout for a tuple type.
+-}
 computeTupleLayout : List MonoType -> TupleLayout
 computeTupleLayout types =
     let
@@ -511,6 +567,8 @@ computeTupleLayout types =
     }
 
 
+{-| Compute runtime layout for a custom type with its constructors.
+-}
 computeCustomLayout : List ( Name, List MonoType ) -> CustomLayout
 computeCustomLayout constructors =
     { constructors =
@@ -555,6 +613,8 @@ computeCustomLayout constructors =
 -- ============================================================================
 
 
+{-| Compare two global references for ordering.
+-}
 compareGlobal : Global -> Global -> Order
 compareGlobal (Global home1 name1) (Global home2 name2) =
     case compare name1 name2 of
@@ -565,16 +625,22 @@ compareGlobal (Global home1 name1) (Global home2 name2) =
             other
 
 
+{-| Convert a global reference to a comparable key for use in dictionaries.
+-}
 toComparableGlobal : Global -> List String
 toComparableGlobal (Global home name) =
     ModuleName.toComparableCanonical home ++ [ name ]
 
 
+{-| Compare two monomorphic types for ordering.
+-}
 compareMonoType : MonoType -> MonoType -> Order
 compareMonoType t1 t2 =
     compare (toComparableMonoType t1) (toComparableMonoType t2)
 
 
+{-| Convert a monomorphic type to a comparable key for use in dictionaries.
+-}
 toComparableMonoType : MonoType -> List String
 toComparableMonoType monoType =
     case monoType of
@@ -612,11 +678,15 @@ toComparableMonoType monoType =
             "Function" :: List.concatMap toComparableMonoType args ++ [ "->" ] ++ toComparableMonoType ret
 
 
+{-| Compare two lambda IDs for ordering.
+-}
 compareLambdaId : LambdaId -> LambdaId -> Order
 compareLambdaId l1 l2 =
     compare (toComparableLambdaId l1) (toComparableLambdaId l2)
 
 
+{-| Convert a lambda ID to a comparable key for use in dictionaries.
+-}
 toComparableLambdaId : LambdaId -> List String
 toComparableLambdaId lambdaId =
     case lambdaId of
@@ -627,11 +697,15 @@ toComparableLambdaId lambdaId =
             "Anon" :: ModuleName.toComparableCanonical canonical ++ [ String.fromInt uid ]
 
 
+{-| Compare two specialization keys for ordering.
+-}
 compareSpecKey : SpecKey -> SpecKey -> Order
 compareSpecKey k1 k2 =
     compare (toComparableSpecKey k1) (toComparableSpecKey k2)
 
 
+{-| Convert a specialization key to a comparable key for use in dictionaries.
+-}
 toComparableSpecKey : SpecKey -> List String
 toComparableSpecKey (SpecKey global monoType maybeLambda) =
     toComparableGlobal global

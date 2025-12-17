@@ -75,6 +75,12 @@ import Utils.Main as Utils
 -- SOLVER
 
 
+{-| Monadic solver type that encapsulates backtracking constraint solving.
+
+Represents a computation that can succeed with a result, backtrack to try
+alternatives, or fail with an error. The solver maintains state containing
+the package cache, registry, and constraint dictionary.
+-}
 type Solver a
     = Solver (State -> Task Never (InnerSolver a))
 
@@ -85,6 +91,12 @@ type InnerSolver a
     | ISErr Exit.Solver
 
 
+{-| Internal solver state data containing cache, connection, registry, and constraint dictionary.
+
+The constraint dictionary cDict maps package name and version pairs to their
+Elm version constraint and dependency constraints, enabling efficient lookup
+during solving.
+-}
 type alias StateData =
     { cache : Stuff.PackageCache
     , connection : Connection
@@ -93,6 +105,8 @@ type alias StateData =
     }
 
 
+{-| Opaque wrapper around StateData for type safety.
+-}
 type State
     = State StateData
 
@@ -101,6 +115,11 @@ type Constraints
     = Constraints C.Constraint (Dict ( String, String ) Pkg.Name C.Constraint)
 
 
+{-| Network connection state for the solver.
+
+Online means packages can be fetched from the package website.
+Offline means only locally cached packages are available.
+-}
 type Connection
     = Online Http.Manager
     | Offline
@@ -110,6 +129,13 @@ type Connection
 -- RESULT
 
 
+{-| Result type for solver operations.
+
+- SolverOk: Successfully found a solution
+- NoSolution: No compatible version combination exists (online mode)
+- NoOfflineSolution: No solution with locally cached packages (offline mode)
+- SolverErr: Encountered an error during solving (network, cache corruption, etc.)
+-}
 type SolverResult a
     = SolverOk a
     | NoSolution
@@ -121,10 +147,20 @@ type SolverResult a
 -- VERIFY -- used by Elm.Details
 
 
+{-| Package details containing the resolved version and its dependencies.
+
+Used when verifying existing dependency solutions or loading package information.
+-}
 type Details
     = Details V.Version (Dict ( String, String ) Pkg.Name C.Constraint)
 
 
+{-| Verify that a set of dependency constraints has a valid solution.
+
+Attempts to find compatible versions for all packages satisfying the given
+constraints. Returns the resolved versions along with each package's transitive
+dependency constraints.
+-}
 verify : Stuff.PackageCache -> Connection -> Registry.Registry -> Dict ( String, String ) Pkg.Name C.Constraint -> Task Never (SolverResult (Dict ( String, String ) Pkg.Name Details))
 verify cache connection registry constraints =
     Stuff.withRegistryLock cache <|
@@ -169,6 +205,12 @@ noSolution connection =
 -- APP SOLUTION
 
 
+{-| Complete solution for an application's dependencies.
+
+Contains the old dependency set, the new dependency set, and the updated
+outline with properly categorized direct and indirect dependencies for
+both production and test contexts.
+-}
 type AppSolution
     = AppSolution (Dict ( String, String ) Pkg.Name V.Version) (Dict ( String, String ) Pkg.Name V.Version) Outline.AppOutline
 
@@ -208,6 +250,16 @@ getTransitive constraints solution unvisited visited =
 -- ADD TO APP - used in Install
 
 
+{-| Add a package to an application's dependencies.
+
+Attempts to find a solution that includes the new package while maintaining
+compatibility with existing dependencies. Tries progressively relaxed constraint
+strategies: exact versions, then untilNextMinor, then untilNextMajor, and finally
+unconstrained.
+
+The forTest parameter determines whether the package is added to test dependencies
+or production dependencies.
+-}
 addToApp : Stuff.PackageCache -> Connection -> Registry.Registry -> Pkg.Name -> Outline.AppOutline -> Bool -> Task Never (SolverResult AppSolution)
 addToApp cache connection registry pkg (Outline.AppOutline appData) forTest =
     Stuff.withRegistryLock cache <|
@@ -282,6 +334,11 @@ addToApp cache connection registry pkg (Outline.AppOutline appData) forTest =
 -- ADD TO APP - used in Test
 
 
+{-| Add a package with a specific constraint to test dependencies.
+
+Similar to addToApp but for test-specific dependencies with an explicit version
+constraint. Used when the test framework requires a particular package version range.
+-}
 addToTestApp : Stuff.PackageCache -> Connection -> Registry.Registry -> Pkg.Name -> C.Constraint -> Outline.AppOutline -> Task Never (SolverResult AppSolution)
 addToTestApp cache connection registry pkg con (Outline.AppOutline appData) =
     Stuff.withRegistryLock cache <|
@@ -348,6 +405,12 @@ addToTestApp cache connection registry pkg con (Outline.AppOutline appData) =
 -- REMOVE FROM APP - used in Uninstall
 
 
+{-| Remove a package from an application's dependencies.
+
+Resolves dependencies without the specified package, automatically removing
+it from direct dependencies and cleaning up any indirect dependencies that
+are no longer needed.
+-}
 removeFromApp : Stuff.PackageCache -> Connection -> Registry.Registry -> Pkg.Name -> Outline.AppOutline -> Task Never (SolverResult AppSolution)
 removeFromApp cache connection registry pkg (Outline.AppOutline appData) =
     Stuff.withRegistryLock cache <|
@@ -676,6 +739,11 @@ constraintsDecoder =
 -- ENVIRONMENT
 
 
+{-| Environment data for solver operations.
+
+Contains the package cache directory, HTTP manager for network requests,
+connection state (online/offline), and the package registry.
+-}
 type alias EnvData =
     { cache : Stuff.PackageCache
     , manager : Http.Manager
@@ -684,10 +752,18 @@ type alias EnvData =
     }
 
 
+{-| Opaque environment type wrapping EnvData.
+-}
 type Env
     = Env EnvData
 
 
+{-| Initialize the solver environment.
+
+Creates an HTTP manager, loads the package cache, and fetches or updates the
+package registry. Falls back to offline mode if registry update fails but a
+cached registry exists.
+-}
 initEnv : Task Never (Result Exit.RegistryProblem Env)
 initEnv =
     Utils.newEmptyMVar
@@ -852,6 +928,11 @@ foldM f b =
 -- ENCODERS and DECODERS
 
 
+{-| Binary encoder for Env, enabling environment serialization.
+
+Encodes the package cache, HTTP manager, connection state, and registry
+into a binary format for caching or transmission.
+-}
 envEncoder : Env -> Bytes.Encode.Encoder
 envEncoder (Env env) =
     Bytes.Encode.sequence
@@ -862,6 +943,11 @@ envEncoder (Env env) =
         ]
 
 
+{-| Binary decoder for Env, enabling environment deserialization.
+
+Decodes a binary representation back into an Env containing the package cache,
+HTTP manager, connection state, and registry.
+-}
 envDecoder : Bytes.Decode.Decoder Env
 envDecoder =
     Bytes.Decode.map4 (\cache manager connection registry -> Env { cache = cache, manager = manager, connection = connection, registry = registry })

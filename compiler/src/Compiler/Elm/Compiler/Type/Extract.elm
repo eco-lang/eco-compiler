@@ -54,6 +54,8 @@ import Utils.Main as Utils
 -- EXTRACTION
 
 
+{-| Converts a canonical type to a simplified documentation type.
+-}
 fromType : Can.Type -> T.Type
 fromType astType =
     Tuple.second (run (extract astType))
@@ -109,6 +111,9 @@ toPublicName (IO.Canonical _ home) name =
 -- TRANSITIVELY AVAILABLE TYPES
 
 
+{-| Collection of all types (unions and aliases) available from a set of modules.
+Maps canonical module names to their type definitions.
+-}
 type Types
     = -- PERF profile Opt.Global representation
       -- current representation needs less allocation
@@ -116,10 +121,14 @@ type Types
       Types (Dict (List String) IO.Canonical Types_)
 
 
+{-| Type information for a single module, containing unions and aliases.
+-}
 type Types_
     = Types_ (Dict String Name.Name Can.Union) (Dict String Name.Name Can.Alias)
 
 
+{-| Combines multiple type collections into a single collection.
+-}
 mergeMany : List Types -> Types
 mergeMany listOfTypes =
     case listOfTypes of
@@ -130,16 +139,22 @@ mergeMany listOfTypes =
             List.foldr merge t ts
 
 
+{-| Merges two type collections, combining their type definitions.
+-}
 merge : Types -> Types -> Types
 merge (Types types1) (Types types2) =
     Types (Dict.union types1 types2)
 
 
+{-| Extracts type information from a module interface for the current package.
+-}
 fromInterface : ModuleName.Raw -> I.Interface -> Types
 fromInterface name (I.Interface iface) =
     Types_ (Dict.map (\_ -> I.extractUnion) iface.unions) (Dict.map (\_ -> I.extractAlias) iface.aliases) |> Dict.singleton ModuleName.toComparableCanonical (IO.Canonical iface.home name) |> Types
 
 
+{-| Extracts type information from a dependency interface (either public or private).
+-}
 fromDependencyInterface : IO.Canonical -> I.DependencyInterface -> Types
 fromDependencyInterface home di =
     Types
@@ -157,6 +172,8 @@ fromDependencyInterface home di =
 -- EXTRACT MODEL, MSG, AND ANY TRANSITIVE DEPENDENCIES
 
 
+{-| Extracts debug metadata from a message type, including all transitively referenced types.
+-}
 fromMsg : Types -> Can.Type -> T.DebugMetadata
 fromMsg types message =
     let
@@ -334,11 +351,15 @@ tupleTraverse f ( a, b ) =
 -- ENCODERS and DECODERS
 
 
+{-| Encodes a type collection to binary format.
+-}
 typesEncoder : Types -> Bytes.Encode.Encoder
 typesEncoder (Types types) =
     BE.assocListDict ModuleName.compareCanonical ModuleName.canonicalEncoder types_Encoder types
 
 
+{-| Decodes a type collection from binary format.
+-}
 typesDecoder : Bytes.Decode.Decoder Types
 typesDecoder =
     Bytes.Decode.map Types (BD.assocListDict ModuleName.toComparableCanonical ModuleName.canonicalDecoder types_Decoder)

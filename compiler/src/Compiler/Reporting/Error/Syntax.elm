@@ -519,6 +519,9 @@ type Space
 -- TO REPORT
 
 
+{-| Convert a syntax error into a user-friendly error report with source code
+snippets and suggestions for fixing parsing problems.
+-}
 toReport : SyntaxVersion -> Code.Source -> Error -> Report.Report
 toReport syntaxVersion source err =
     case err of
@@ -1643,6 +1646,9 @@ toExposingReport source exposing_ startRow startCol =
 -- SPACES
 
 
+{-| Convert a whitespace-related syntax error into a user-friendly error report,
+handling issues with tabs, spaces, and indentation.
+-}
 toSpaceReport : Code.Source -> Space -> Row -> Col -> Report.Report
 toSpaceReport source space row col =
     case space of
@@ -8062,6 +8068,8 @@ toTTupleReport source context tuple startRow startCol =
 -- ENCODERS and DECODERS
 
 
+{-| Serialize a syntax error to bytes for caching or transmission.
+-}
 errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
     case error of
@@ -8115,6 +8123,8 @@ errorEncoder error =
                 ]
 
 
+{-| Deserialize a syntax error from bytes.
+-}
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
     Bytes.Decode.unsignedInt8
@@ -8152,6 +8162,8 @@ errorDecoder =
             )
 
 
+{-| Serialize a whitespace error to bytes.
+-}
 spaceEncoder : Space -> Bytes.Encode.Encoder
 spaceEncoder space =
     Bytes.Encode.unsignedInt8
@@ -8164,6 +8176,8 @@ spaceEncoder space =
         )
 
 
+{-| Deserialize a whitespace error from bytes.
+-}
 spaceDecoder : Bytes.Decode.Decoder Space
 spaceDecoder =
     Bytes.Decode.unsignedInt8

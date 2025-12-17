@@ -52,11 +52,16 @@ isDecimalDigit word =
 -- NUMBERS
 
 
+{-| Represents a parsed numeric literal with its value and source text.
+-}
 type Number
     = Int Int String
     | Float Float String
 
 
+{-| Parses a numeric literal (integer, float, hexadecimal, or binary).
+Supports underscores for readability in Guida syntax mode.
+-}
 number : SyntaxVersion -> (Row -> Col -> x) -> (E.Number -> Row -> Col -> x) -> P.Parser x Number
 number syntaxVersion toExpectation toError =
     P.Parser <|
@@ -147,6 +152,8 @@ number syntaxVersion toExpectation toError =
 -- CHOMP OUTCOME
 
 
+{-| Represents the result of parsing a number: error, integer, or float.
+-}
 type Outcome
     = Err_ Int E.Number
     | OkInt Int Int
@@ -476,6 +483,9 @@ chompBinInt src pos end =
 -- CHOMP HEX
 
 
+{-| Parses hexadecimal digits and returns the position and parsed integer value.
+Used for parsing hex literals (0x...) and Unicode escape sequences.
+-}
 chompHex : SyntaxVersion -> String -> Int -> Int -> ( Int, Int )
 chompHex syntaxVersion src pos end =
     chompHexHelp syntaxVersion src pos end -1 0
@@ -628,6 +638,8 @@ stepBin src pos end word acc =
 -- PRECEDENCE
 
 
+{-| Parses a single-digit precedence value (0-9) for infix operator declarations.
+-}
 precedence : (Row -> Col -> x) -> P.Parser x Binop.Precedence
 precedence toExpectation =
     P.Parser <|

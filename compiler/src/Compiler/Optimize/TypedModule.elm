@@ -53,6 +53,10 @@ type alias Annotations =
     Dict String Name.Name Can.Annotation
 
 
+{-| Optimize a canonical module to a typed optimized local graph.
+Converts all module definitions, aliases, unions, and effects to their optimized typed forms,
+preserving full type information for each expression node.
+-}
 optimize : Annotations -> Can.Module -> MResult i (List W.Warning) TOpt.LocalGraph
 optimize annotations (Can.Module canData) =
     TOpt.LocalGraph { main = Nothing, nodes = Dict.empty, fields = Dict.empty, annotations = annotations } |> addAliases canData.name annotations canData.aliases |> addUnions canData.name annotations canData.unions |> addEffects canData.name annotations canData.effects |> addDecls canData.name annotations canData.decls

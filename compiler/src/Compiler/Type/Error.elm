@@ -53,6 +53,12 @@ import Utils.Bytes.Encode as BE
 -- ERROR TYPES
 
 
+{-| Simplified type representation used for error reporting.
+
+This type captures the structure of Elm types in a form that's optimized for generating
+human-readable error messages, including function types, type variables, records, tuples,
+and type aliases.
+-}
 type Type
     = Lambda Type Type (List Type)
     | Infinite
@@ -68,6 +74,8 @@ type Type
     | Alias IO.Canonical Name (List ( Name, Type )) Type
 
 
+{-| Represents type variable constraints for numbers, comparable values, and appendable collections.
+-}
 type Super
     = Number
     | Comparable
@@ -75,12 +83,16 @@ type Super
     | CompAppend
 
 
+{-| Represents whether a record type is closed or has an extensible row variable.
+-}
 type Extension
     = Closed
     | FlexOpen Name
     | RigidOpen Name
 
 
+{-| Recursively remove all type aliases to reveal the underlying concrete type.
+-}
 iteratedDealias : Type -> Type
 iteratedDealias tipe =
     case tipe of
@@ -95,6 +107,8 @@ iteratedDealias tipe =
 -- TO DOC
 
 
+{-| Convert a type to a formatted documentation representation for display in error messages.
+-}
 toDoc : L.Localizer -> RT.Context -> Type -> D.Doc
 toDoc localizer ctx tipe =
     case tipe of
@@ -195,6 +209,11 @@ type Status
     | Different (Bag.Bag Problem)
 
 
+{-| Specific type mismatch problems that can be detected when comparing types.
+
+These problems enable more helpful error messages by identifying common mistakes like
+confusing Int and Float, missing record fields, or arity mismatches in function types.
+-}
 type Problem
     = IntFloat
     | StringFromInt
@@ -211,6 +230,8 @@ type Problem
     | FieldsMissing (List Name)
 
 
+{-| Indicates whether a type is what we have or what we need in a type mismatch.
+-}
 type Direction
     = Have
     | Need
@@ -255,6 +276,8 @@ merge status1 status2 =
 -- COMPARISON
 
 
+{-| Compare two types and return formatted documentation for each along with a list of detected problems.
+-}
 toComparison : L.Localizer -> Type -> Type -> ( D.Doc, D.Doc, List Problem )
 toComparison localizer tipe1 tipe2 =
     case toDiff localizer RT.None tipe1 tipe2 of
@@ -575,21 +598,29 @@ isBool home name =
     home == ModuleName.basics && name == Name.bool
 
 
+{-| Check if a canonical type name refers to the Int type.
+-}
 isInt : IO.Canonical -> Name -> Bool
 isInt home name =
     home == ModuleName.basics && name == Name.int
 
 
+{-| Check if a canonical type name refers to the Float type.
+-}
 isFloat : IO.Canonical -> Name -> Bool
 isFloat home name =
     home == ModuleName.basics && name == Name.float
 
 
+{-| Check if a canonical type name refers to the String type.
+-}
 isString : IO.Canonical -> Name -> Bool
 isString home name =
     home == ModuleName.string && name == Name.string
 
 
+{-| Check if a canonical type name refers to the Char type.
+-}
 isChar : IO.Canonical -> Name -> Bool
 isChar home name =
     home == ModuleName.char && name == Name.char
@@ -600,6 +631,8 @@ isMaybe home name =
     home == ModuleName.maybe && name == Name.maybe
 
 
+{-| Check if a canonical type name refers to the List type.
+-}
 isList : IO.Canonical -> Name -> Bool
 isList home name =
     home == ModuleName.list && name == Name.list
@@ -861,6 +894,8 @@ extToStatus ext1 ext2 =
 -- ENCODERS and DECODERS
 
 
+{-| Encode a Type value to bytes for serialization.
+-}
 typeEncoder : Type -> Bytes.Encode.Encoder
 typeEncoder type_ =
     case type_ of
@@ -940,6 +975,8 @@ typeEncoder type_ =
                 ]
 
 
+{-| Decode a Type value from bytes for deserialization.
+-}
 typeDecoder : Bytes.Decode.Decoder Type
 typeDecoder =
     Bytes.Decode.unsignedInt8

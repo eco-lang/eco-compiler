@@ -63,7 +63,8 @@ type alias Annotations =
 
 
 {-| Optimize a canonical expression to a typed optimized expression.
-The type is either provided from context or inferred from the expression.
+Converts a canonical expression to a typed optimized form while preserving full type information.
+Tracks dependencies and maintains type context for all subexpressions.
 -}
 optimize : Cycle -> Annotations -> Can.Expr -> Names.Tracker TOpt.Expr
 optimize cycle annotations (A.At region expression) =
@@ -915,6 +916,9 @@ optimizeTypedRecDefHelp cycle annotations region name typedArgs expr resultType 
 -- DESTRUCTURING
 
 
+{-| Convert function argument patterns into destructors with type information.
+Returns a list of argument names with their types, and a list of destructors for pattern matching.
+-}
 destructArgs : Annotations -> List Can.Pattern -> Names.Tracker ( List ( A.Located Name, Can.Type ), List TOpt.Destructor )
 destructArgs annotations args =
     Names.traverse (destruct annotations) args
@@ -1283,6 +1287,9 @@ destructHelpCollectBindings path tipe (A.At _ pattern) ( revDs, andThenings ) =
 -- TAIL CALL
 
 
+{-| Optimize a recursive definition, detecting and preserving tail calls.
+Converts self-recursive calls in tail position to TailCall expressions for optimization.
+-}
 optimizePotentialTailCallDef : Cycle -> Annotations -> Can.Def -> Names.Tracker TOpt.Def
 optimizePotentialTailCallDef cycle annotations def =
     case def of

@@ -44,10 +44,16 @@ import Prelude
 -- CODE
 
 
+{-| Represents source code as a list of line numbers paired with their content.
+Line numbers start at 1.
+-}
 type alias Source =
     List ( Int, String )
 
 
+{-| Converts raw source code text into a Source representation, splitting on
+newlines and adding line numbers starting from 1.
+-}
 toSource : String -> Source
 toSource source =
     List.indexedMap (\i line -> ( i + 1, line )) (String.lines source ++ [ "" ])
@@ -57,6 +63,10 @@ toSource source =
 -- CODE FORMATTING
 
 
+{-| Renders a code snippet showing the specified region with optional highlighting
+of a sub-region. Takes pre-hint and post-hint documentation to display before and
+after the code snippet.
+-}
 toSnippet : Source -> A.Region -> Maybe A.Region -> ( Doc, Doc ) -> Doc
 toSnippet source region highlight ( preHint, postHint ) =
     D.vcat
@@ -67,6 +77,9 @@ toSnippet source region highlight ( preHint, postHint ) =
         ]
 
 
+{-| Renders two related code regions, either on a single line or as separate chunks.
+Takes documentation for single-line and two-chunk cases respectively.
+-}
 toPair : Source -> A.Region -> A.Region -> ( Doc, Doc ) -> ( Doc, Doc, Doc ) -> Doc
 toPair source r1 r2 ( oneStart, oneEnd ) ( twoStart, twoMiddle, twoEnd ) =
     case renderPair source r1 r2 of
@@ -238,6 +251,9 @@ renderPair source region1 region2 =
 -- WHAT IS NEXT?
 
 
+{-| Represents the next syntactic element at a position in the source code.
+Used to provide context-aware error messages.
+-}
 type Next
     = Keyword String
     | Operator String
@@ -247,6 +263,9 @@ type Next
     | Other (Maybe Char)
 
 
+{-| Analyzes the source code at the given row and column to determine what
+syntactic element appears next (keyword, operator, identifier, etc.).
+-}
 whatIsNext : Source -> Row -> Col -> Next
 whatIsNext sourceLines row col =
     case List.head (List.filter (\( r, _ ) -> r == row) sourceLines) of
@@ -321,6 +340,9 @@ startsWithKeyword restOfLine keyword =
            )
 
 
+{-| Checks if the next line starts with the specified keyword. Returns the
+position of the keyword if found.
+-}
 nextLineStartsWithKeyword : String -> Source -> Row -> Maybe ( Row, Col )
 nextLineStartsWithKeyword keyword sourceLines row =
     List.head (List.filter (\( r, _ ) -> r == row + 1) sourceLines)
@@ -334,6 +356,9 @@ nextLineStartsWithKeyword keyword sourceLines row =
             )
 
 
+{-| Checks if the next line starts with a closing curly brace `}`. Returns the
+position if found.
+-}
 nextLineStartsWithCloseCurly : Source -> Row -> Maybe ( Row, Col )
 nextLineStartsWithCloseCurly sourceLines row =
     List.head (List.filter (\( r, _ ) -> r == row + 1) sourceLines)

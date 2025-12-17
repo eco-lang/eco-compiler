@@ -29,6 +29,8 @@ import Utils.Main as Utils
 import VLQ
 
 
+{-| Generate a source map as a base64-encoded data URL that maps generated JavaScript positions back to original Elm source positions.
+-}
 generate : Int -> Int -> Dict (List String) IO.Canonical String -> List JS.Mapping -> String
 generate leadingLines kernelLeadingLines moduleSources mappings =
     "\n"

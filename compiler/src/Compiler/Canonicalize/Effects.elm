@@ -3,6 +3,15 @@ module Compiler.Canonicalize.Effects exposing
     , checkPayload
     )
 
+{-| Canonicalization of effect managers, ports, and their type constraints.
+
+This module handles the canonicalization of Elm's effects system, including:
+- Port declarations and their payload validation
+- Effect manager declarations (Cmd, Sub, and Fx managers)
+- Verification that effect types are valid and properly declared
+
+-}
+
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.AST.Utils.Type as Type
@@ -31,6 +40,14 @@ type alias EResult i w a =
 -- CANONICALIZE
 
 
+{-| Canonicalize effect declarations, including ports and effect managers.
+
+Validates that:
+- Port types are either `Cmd msg` or `Sub msg` with valid payloads
+- Effect managers declare all required functions (init, onEffects, onSelfMsg, cmdMap/subMap)
+- Effect types reference declared union types
+
+-}
 canonicalize :
     SyntaxVersion
     -> Env.Env
@@ -202,6 +219,18 @@ verifyManager tagRegion values name =
 -- CHECK PAYLOAD TYPES
 
 
+{-| Verify that a type can be used as a port payload.
+
+Valid port payloads include:
+- Primitive types (Int, Float, Bool, String)
+- Json.Encode.Value
+- Lists, Arrays, and Maybes containing valid payloads
+- Tuples and records containing valid payloads
+- Bytes.Bytes
+
+Invalid payloads include functions, type variables, and extensible records.
+
+-}
 checkPayload : Can.Type -> Result ( Can.Type, Error.InvalidPayload ) ()
 checkPayload tipe =
     case tipe of

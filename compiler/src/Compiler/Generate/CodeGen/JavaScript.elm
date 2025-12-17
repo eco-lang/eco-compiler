@@ -20,6 +20,8 @@ import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.JavaScript as JS
 
 
+{-| The JavaScript backend implementation that generates optimized JavaScript from the standard optimized AST.
+-}
 backend : CodeGen.CodeGen
 backend =
     { generate =

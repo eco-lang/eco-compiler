@@ -30,6 +30,9 @@ import Data.Map as Dict exposing (Dict)
 -- DELAMBDA
 
 
+{-| Flatten a function type into a list of its argument types followed by the return type.
+For example, `(a -> b -> c)` becomes `[a, b, c]`.
+-}
 delambda : Type -> List Type
 delambda tipe =
     case tipe of
@@ -44,6 +47,9 @@ delambda tipe =
 -- DEALIAS
 
 
+{-| Expand a type alias by substituting its type parameters with concrete types.
+Takes a list of (parameter name, concrete type) pairs and the alias definition to expand.
+-}
 dealias : List ( Name, Type ) -> AliasType -> Type
 dealias args aliasType =
     case aliasType of
@@ -94,6 +100,8 @@ dealiasField typeTable (FieldType index tipe) =
 -- DEEP DEALIAS
 
 
+{-| Recursively expand all type aliases in a type, replacing them with their concrete definitions.
+-}
 deepDealias : Type -> Type
 deepDealias tipe =
     case tipe of
@@ -128,6 +136,9 @@ deepDealiasField (FieldType index tipe) =
 -- ITERATED DEALIAS
 
 
+{-| Expand type aliases at the top level only, iterating until no more aliases remain.
+Does not recurse into nested types.
+-}
 iteratedDealias : Type -> Type
 iteratedDealias tipe =
     case tipe of

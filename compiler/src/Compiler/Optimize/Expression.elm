@@ -49,10 +49,26 @@ import Utils.Main as Utils
 -- OPTIMIZE
 
 
+{-| Set of names that participate in a recursive definition cycle.
+Used to identify which variables need special cycle-breaking handling during optimization.
+-}
 type alias Cycle =
     EverySet String Name.Name
 
 
+{-| Transforms a canonical expression into an optimized expression.
+
+This is the main entry point for expression optimization. It recursively processes
+the canonical AST, performing optimizations such as:
+
+  - Tracking global variable and constructor usage
+  - Registering field accesses for record optimization
+  - Converting pattern matches to efficient destructuring operations
+  - Detecting and preserving tail call opportunities
+
+The function works within the Names.Tracker monad to collect dependency information
+while transforming the expression tree.
+-}
 optimize : Cycle -> Can.Expr -> Names.Tracker Opt.Expr
 optimize cycle (A.At region expression) =
     case expression of
@@ -333,6 +349,16 @@ optimizeDefHelp cycle region name args expr body =
 -- DESTRUCTURING
 
 
+{-| Converts a list of function argument patterns into argument names and destructuring operations.
+
+For each pattern in the argument list, this generates a simple variable name and creates
+Destructor operations to extract any nested values. This allows function arguments to use
+complex patterns (like tuples or records) while maintaining efficient compiled code.
+
+Returns a tuple of:
+  - List of argument names (one per pattern)
+  - List of destructors to extract nested values from those arguments
+-}
 destructArgs : List Can.Pattern -> Names.Tracker ( List (A.Located Name.Name), List Opt.Destructor )
 destructArgs args =
     Names.traverse destruct args
@@ -528,6 +554,12 @@ destructCtorArg path revDs (Can.PatternCtorArg index _ arg) =
 -- TAIL CALL
 
 
+{-| Optimizes a recursive definition to use tail calls where possible.
+
+This is the entry point for tail call optimization of definitions. It analyzes the
+definition to detect tail-recursive calls and converts them to efficient TailCall
+nodes that can be compiled to loops instead of recursive function calls.
+-}
 optimizePotentialTailCallDef : Cycle -> Can.Def -> Names.Tracker Opt.Def
 optimizePotentialTailCallDef cycle def =
     case def of
@@ -538,6 +570,18 @@ optimizePotentialTailCallDef cycle def =
             optimizePotentialTailCall cycle region name (List.map Tuple.first typedArgs) expr
 
 
+{-| Analyzes a function definition for tail call optimization opportunities.
+
+Given a function's region, name, arguments, and body expression, this function:
+
+  1. Destructures the argument patterns into simple names
+  2. Analyzes the body for tail-recursive calls to the same function
+  3. Converts tail calls into TailCall nodes for efficient compilation
+  4. Returns either a TailDef (if tail calls found) or regular Def
+
+This enables recursive functions to be compiled as loops when they are tail-recursive,
+avoiding stack overflow and improving performance.
+-}
 optimizePotentialTailCall : Cycle -> A.Region -> Name.Name -> List Can.Pattern -> Can.Expr -> Names.Tracker Opt.Def
 optimizePotentialTailCall cycle region name args expr =
     destructArgs args

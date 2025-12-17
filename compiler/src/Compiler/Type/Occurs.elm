@@ -28,6 +28,11 @@ import System.TypeCheck.IO as IO exposing (IO)
 -- OCCURS
 
 
+{-| Checks if a type variable occurs within its own definition, which would create an infinite type.
+
+Returns True if a cycle is detected (the variable appears in its own structure),
+False otherwise. This is used during type unification to prevent infinite types.
+-}
 occurs : IO.Variable -> IO Bool
 occurs var =
     occursHelp [] var False

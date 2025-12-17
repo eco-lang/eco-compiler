@@ -20,6 +20,13 @@ import Compiler.Parse.SyntaxVersion exposing (SyntaxVersion)
 import Compiler.Reporting.Error.Syntax as E
 
 
+{-| Format Elm source code into a standardized style.
+
+Takes a syntax version, project type, and source string, then parses and reformats
+the code with consistent indentation and layout. Returns an error if the source
+cannot be parsed.
+
+-}
 format : SyntaxVersion -> M.ProjectType -> String -> Result E.Module String
 format syntaxVersion projectType src =
     P.fromByteString (M.chompModule syntaxVersion projectType) E.ModuleBadEnd src

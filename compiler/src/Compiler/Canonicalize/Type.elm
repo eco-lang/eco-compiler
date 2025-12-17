@@ -39,6 +39,10 @@ import Utils.Main as Utils
 -- RESULT
 
 
+{-| Result type for canonicalization operations.
+
+Wraps the reporting result type with canonicalization-specific error information.
+-}
 type alias CResult i w a =
     ReportingResult.RResult i w Error.Error a
 
@@ -47,6 +51,12 @@ type alias CResult i w a =
 -- TO ANNOTATION
 
 
+{-| Convert a source type to a canonical type annotation.
+
+Canonicalizes the given source type and wraps it in a Forall quantifier with all
+free type variables collected. This creates a polymorphic type scheme suitable
+for top-level type annotations.
+-}
 toAnnotation : SyntaxVersion -> Env.Env -> Src.Type -> CResult i w Can.Annotation
 toAnnotation syntaxVersion env srcType =
     canonicalize syntaxVersion env srcType
@@ -57,6 +67,13 @@ toAnnotation syntaxVersion env srcType =
 -- CANONICALIZE TYPES
 
 
+{-| Canonicalize a source type expression into a canonical type.
+
+Transforms type variables, type constructors, function types, records, tuples,
+and units from source AST to canonical AST. Validates type constructor existence,
+checks arity of type applications, resolves qualified type names, and handles
+syntax version differences (e.g., tuple size restrictions in Elm vs Guida).
+-}
 canonicalize : SyntaxVersion -> Env.Env -> Src.Type -> CResult i w Can.Type
 canonicalize syntaxVersion env (A.At typeRegion tipe) =
     case tipe of

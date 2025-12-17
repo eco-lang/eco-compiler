@@ -34,6 +34,10 @@ import Utils.Main as Utils
 -- OPTIMIZE A CASE EXPRESSION
 
 
+{-| Optimize a case expression into a decision tree.
+Takes a temporary variable name, the root variable being matched, and the pattern-matched branches.
+Returns an optimized Case expression with decision tree and inline/jump choices.
+-}
 optimize : Name.Name -> Name.Name -> List ( Can.Pattern, Opt.Expr ) -> Opt.Expr
 optimize temp root optBranches =
     let

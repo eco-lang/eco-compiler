@@ -80,11 +80,18 @@ import Utils.Main as Utils exposing (FilePath)
 -- OUTLINE
 
 
+{-| Represents the top-level structure of an elm.json file.
+Can be either an application outline or a package outline.
+-}
 type Outline
     = App AppOutline
     | Pkg PkgOutline
 
 
+{-| Data structure for an application elm.json.
+Contains Elm version, source directories, and direct/indirect dependencies
+for both main dependencies and test dependencies.
+-}
 type alias AppOutlineData =
     { elm : V.Version
     , srcDirs : NE.Nonempty SrcDir
@@ -95,10 +102,16 @@ type alias AppOutlineData =
     }
 
 
+{-| Wrapper type for application outline data.
+-}
 type AppOutline
     = AppOutline AppOutlineData
 
 
+{-| Data structure for a package elm.json.
+Contains package name, summary, license, version, exposed modules,
+and dependency constraints for both main and test dependencies.
+-}
 type alias PkgOutlineData =
     { name : Pkg.Name
     , summary : String
@@ -111,15 +124,23 @@ type alias PkgOutlineData =
     }
 
 
+{-| Wrapper type for package outline data.
+-}
 type PkgOutline
     = PkgOutline PkgOutlineData
 
 
+{-| Represents how modules are exposed in a package.
+Can be a simple list of modules or a dictionary with categorized sections.
+-}
 type Exposed
     = ExposedList (List ModuleName.Raw)
     | ExposedDict (List ( String, List ModuleName.Raw ))
 
 
+{-| Represents a source directory path.
+Can be either absolute or relative to the project root.
+-}
 type SrcDir
     = AbsoluteSrcDir FilePath
     | RelativeSrcDir FilePath
@@ -129,6 +150,8 @@ type SrcDir
 -- DEFAULTS
 
 
+{-| The default placeholder summary text for new packages.
+-}
 defaultSummary : String
 defaultSummary =
     "helpful summary of your project, less than 80 characters"
@@ -138,6 +161,9 @@ defaultSummary =
 -- HELPERS
 
 
+{-| Flattens an Exposed structure into a simple list of module names.
+Works for both ExposedList and ExposedDict by extracting all modules.
+-}
 flattenExposed : Exposed -> List ModuleName.Raw
 flattenExposed exposed =
     case exposed of
@@ -152,6 +178,8 @@ flattenExposed exposed =
 -- WRITE
 
 
+{-| Writes an Outline to an elm.json file at the specified root directory.
+-}
 write : FilePath -> Outline -> Task Never ()
 write root outline =
     E.write (root ++ "/elm.json") (encode outline)
@@ -231,6 +259,9 @@ encodeSrcDir srcDir =
 -- PARSE AND VERIFY
 
 
+{-| Reads and validates an elm.json file from the specified root directory.
+Returns either an error describing what went wrong or a validated Outline.
+-}
 read : FilePath -> Task Never (Result Exit.Outline Outline)
 read root =
     File.readUtf8 (root ++ "/elm.json")
@@ -355,6 +386,9 @@ isDup paths =
 -- GET ALL MODULE PATHS
 
 
+{-| Recursively discovers all module file paths in the project and its dependencies.
+Returns a dictionary mapping canonical module names to their file paths.
+-}
 getAllModulePaths : FilePath -> Task Never (Dict (List String) TypeCheck.Canonical FilePath)
 getAllModulePaths root =
     read root
@@ -463,10 +497,15 @@ resolvePackagePaths pkgName vsn =
 -- JSON DECODE
 
 
+{-| A decoder type specialized for outline parsing errors.
+-}
 type alias Decoder a =
     D.Decoder Exit.OutlineProblem a
 
 
+{-| Decodes an Outline from JSON.
+Checks the "type" field to determine whether to parse as an application or package.
+-}
 decoder : Decoder Outline
 decoder =
     let
@@ -609,6 +648,9 @@ boundParser bound tooLong =
                 P.Cerr st.row newCol (\_ _ -> tooLong)
 
 
+{-| Encodes a SrcDir to bytes for serialization.
+Uses a tag byte (0 for absolute, 1 for relative) followed by the path string.
+-}
 srcDirEncoder : SrcDir -> Bytes.Encode.Encoder
 srcDirEncoder srcDir =
     case srcDir of
@@ -625,6 +667,9 @@ srcDirEncoder srcDir =
                 ]
 
 
+{-| Decodes a SrcDir from bytes.
+Reads a tag byte (0 for absolute, 1 for relative) followed by the path string.
+-}
 srcDirDecoder : Bytes.Decode.Decoder SrcDir
 srcDirDecoder =
     Bytes.Decode.unsignedInt8

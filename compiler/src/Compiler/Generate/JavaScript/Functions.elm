@@ -22,6 +22,8 @@ curried form.
 -- FUNCTIONS
 
 
+{-| JavaScript runtime code for function wrapping and application. Provides F2-F9 wrappers for creating curried functions and A2-A9 helpers for efficient function calls.
+-}
 functions : String
 functions =
     """

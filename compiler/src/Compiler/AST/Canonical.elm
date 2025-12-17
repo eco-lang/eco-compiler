@@ -474,6 +474,8 @@ type Manager
 -- ====== Serialization ======
 
 
+{-| Encodes an Annotation to bytes for serialization.
+-}
 annotationEncoder : Annotation -> Bytes.Encode.Encoder
 annotationEncoder (Forall freeVars tipe) =
     Bytes.Encode.sequence
@@ -482,6 +484,8 @@ annotationEncoder (Forall freeVars tipe) =
         ]
 
 
+{-| Decodes an Annotation from bytes.
+-}
 annotationDecoder : Bytes.Decode.Decoder Annotation
 annotationDecoder =
     Bytes.Decode.map2 Forall
@@ -500,6 +504,8 @@ freeVarsDecoder =
         |> Bytes.Decode.map (List.map (\key -> ( key, () )) >> Dict.fromList identity)
 
 
+{-| Encodes an Alias to bytes for serialization.
+-}
 aliasEncoder : Alias -> Bytes.Encode.Encoder
 aliasEncoder (Alias vars tipe) =
     Bytes.Encode.sequence
@@ -508,6 +514,8 @@ aliasEncoder (Alias vars tipe) =
         ]
 
 
+{-| Decodes an Alias from bytes.
+-}
 aliasDecoder : Bytes.Decode.Decoder Alias
 aliasDecoder =
     Bytes.Decode.map2 Alias
@@ -515,6 +523,8 @@ aliasDecoder =
         typeDecoder
 
 
+{-| Encodes a Type to bytes for serialization.
+-}
 typeEncoder : Type -> Bytes.Encode.Encoder
 typeEncoder type_ =
     case type_ of
@@ -567,6 +577,8 @@ typeEncoder type_ =
                 ]
 
 
+{-| Decodes a Type from bytes.
+-}
 typeDecoder : Bytes.Decode.Decoder Type
 typeDecoder =
     Bytes.Decode.unsignedInt8
@@ -661,6 +673,8 @@ aliasTypeDecoder =
             )
 
 
+{-| Encodes a Union to bytes for serialization.
+-}
 unionEncoder : Union -> Bytes.Encode.Encoder
 unionEncoder (Union u) =
     Bytes.Encode.sequence
@@ -671,6 +685,8 @@ unionEncoder (Union u) =
         ]
 
 
+{-| Decodes a Union from bytes.
+-}
 unionDecoder : Bytes.Decode.Decoder Union
 unionDecoder =
     Bytes.Decode.map4 (\vars_ alts_ numAlts_ opts_ -> Union { vars = vars_, alts = alts_, numAlts = numAlts_, opts = opts_ })
@@ -699,6 +715,8 @@ ctorDecoder =
         (BD.list typeDecoder)
 
 
+{-| Encodes CtorOpts to bytes for serialization.
+-}
 ctorOptsEncoder : CtorOpts -> Bytes.Encode.Encoder
 ctorOptsEncoder ctorOpts =
     Bytes.Encode.unsignedInt8
@@ -714,6 +732,8 @@ ctorOptsEncoder ctorOpts =
         )
 
 
+{-| Decodes CtorOpts from bytes.
+-}
 ctorOptsDecoder : Bytes.Decode.Decoder CtorOpts
 ctorOptsDecoder =
     Bytes.Decode.unsignedInt8
@@ -734,6 +754,8 @@ ctorOptsDecoder =
             )
 
 
+{-| Encodes a FieldUpdate to bytes for serialization.
+-}
 fieldUpdateEncoder : FieldUpdate -> Bytes.Encode.Encoder
 fieldUpdateEncoder (FieldUpdate fieldRegion expr) =
     Bytes.Encode.sequence
@@ -742,6 +764,8 @@ fieldUpdateEncoder (FieldUpdate fieldRegion expr) =
         ]
 
 
+{-| Decodes a FieldUpdate from bytes.
+-}
 fieldUpdateDecoder : Bytes.Decode.Decoder FieldUpdate
 fieldUpdateDecoder =
     Bytes.Decode.map2 FieldUpdate

@@ -52,6 +52,9 @@ import Utils.Bytes.Encode as BE
 -- LOCALIZER
 
 
+{-| Tracks import context to determine how to display qualified type names.
+Encapsulates information about module imports, aliases, and exposed types.
+-}
 type Localizer
     = Localizer (Dict String Name Import)
 
@@ -67,6 +70,9 @@ type Exposing
     | Only (EverySet String Name)
 
 
+{-| Creates an empty localizer with no import information. Type names will be
+displayed fully qualified.
+-}
 empty : Localizer
 empty =
     Localizer Dict.empty
@@ -76,11 +82,17 @@ empty =
 -- LOCALIZE
 
 
+{-| Converts a qualified type name to a Doc using the shortest unambiguous form
+based on the import context (bare name, aliased name, or fully qualified).
+-}
 toDoc : Localizer -> IO.Canonical -> Name -> D.Doc
 toDoc localizer home name =
     D.fromChars (toChars localizer home name)
 
 
+{-| Converts a qualified type name to a String using the shortest unambiguous form
+based on the import context (bare name, aliased name, or fully qualified).
+-}
 toChars : Localizer -> IO.Canonical -> Name -> String
 toChars (Localizer localizer) ((IO.Canonical _ home) as moduleName) name =
     case Dict.get identity home localizer of
@@ -107,6 +119,9 @@ toChars (Localizer localizer) ((IO.Canonical _ home) as moduleName) name =
 -- FROM NAMES
 
 
+{-| Creates a localizer from a dictionary of names, treating all as fully exposed.
+Useful when all names are in scope without qualification.
+-}
 fromNames : Dict String Name a -> Localizer
 fromNames names =
     Localizer (Dict.map (\_ _ -> { alias = Nothing, exposing_ = All }) names)
@@ -116,6 +131,9 @@ fromNames names =
 -- FROM MODULE
 
 
+{-| Creates a localizer from a source module, extracting import information to
+determine how types should be displayed based on the module's import statements.
+-}
 fromModule : Src.Module -> Localizer
 fromModule ((Src.Module srcData) as modul) =
     (( Src.getName modul, { alias = Nothing, exposing_ = All } ) :: List.map toPair srcData.imports) |> Dict.fromList identity |> Localizer
@@ -155,11 +173,15 @@ addType exposed types =
 -- ENCODERS and DECODERS
 
 
+{-| Encodes a Localizer to bytes for serialization.
+-}
 localizerEncoder : Localizer -> Bytes.Encode.Encoder
 localizerEncoder (Localizer localizer) =
     BE.assocListDict compare BE.string importEncoder localizer
 
 
+{-| Decodes a Localizer from bytes for deserialization.
+-}
 localizerDecoder : Bytes.Decode.Decoder Localizer
 localizerDecoder =
     Bytes.Decode.map Localizer (BD.assocListDict identity BD.string importDecoder)

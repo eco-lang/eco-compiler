@@ -46,12 +46,19 @@ import List.Extra as List
 -- TO DOC
 
 
+{-| Parenthesization context for type rendering. Determines whether parentheses
+are needed around a type expression based on where it appears.
+-}
 type Context
     = None
     | Func
     | App
 
 
+{-| Renders a function type with proper formatting and context-aware parenthesization.
+Takes the first two arguments and any additional arguments, formatting them as
+`arg1 -> arg2 -> ... -> result`.
+-}
 lambda : Context -> D.Doc -> D.Doc -> List D.Doc -> D.Doc
 lambda context arg1 arg2 args =
     let
@@ -70,6 +77,9 @@ lambda context arg1 arg2 args =
             D.cat [ D.fromChars "(", lambdaDoc, D.fromChars ")" ]
 
 
+{-| Renders a type application (type constructor applied to arguments) with
+proper formatting and context-aware parenthesization.
+-}
 apply : Context -> D.Doc -> List D.Doc -> D.Doc
 apply context name args =
     case args of
@@ -93,6 +103,9 @@ apply context name args =
                     applyDoc
 
 
+{-| Renders a tuple type with proper formatting. Takes at least two elements
+(tuples in Elm have 2 or more elements) and formats them as `( a, b, ... )`.
+-}
 tuple : D.Doc -> D.Doc -> List D.Doc -> D.Doc
 tuple a b cs =
     let
@@ -103,6 +116,10 @@ tuple a b cs =
     D.sep [ D.cat entries, D.fromChars ")" ] |> D.align
 
 
+{-| Renders a record type with horizontal layout. Takes field name/type pairs
+and an optional extension variable, formatting as `{ field : Type, ... }` or
+`{ ext | field : Type, ... }`.
+-}
 record : List ( D.Doc, D.Doc ) -> Maybe D.Doc -> D.Doc
 record entries maybeExt =
     case ( List.map entryToDoc entries, maybeExt ) of
@@ -135,6 +152,9 @@ entryToDoc ( fieldName, fieldType ) =
     D.sep [ fieldName |> D.plus (D.fromChars ":"), fieldType ] |> D.hang 4
 
 
+{-| Renders a partial record type snippet with vertical layout, showing the first
+field and indicating additional fields with `...`. Used for abbreviated error messages.
+-}
 vrecordSnippet : ( D.Doc, D.Doc ) -> List ( D.Doc, D.Doc ) -> D.Doc
 vrecordSnippet entry entries =
     let
@@ -150,6 +170,9 @@ vrecordSnippet entry entries =
     D.vcat (field :: fields ++ [ D.fromChars "}" ])
 
 
+{-| Renders a record type with vertical layout (each field on its own line).
+Takes field name/type pairs and an optional extension variable.
+-}
 vrecord : List ( D.Doc, D.Doc ) -> Maybe D.Doc -> D.Doc
 vrecord entries maybeExt =
     case ( List.map entryToDoc entries, maybeExt ) of
@@ -181,6 +204,9 @@ vrecord entries maybeExt =
 -- SOURCE TYPE TO DOC
 
 
+{-| Converts a source-level type (as parsed from user code) into a formatted
+Doc for display in error messages and documentation.
+-}
 srcToDoc : Context -> Src.Type -> D.Doc
 srcToDoc context (A.At _ tipe) =
     case tipe of
@@ -236,6 +262,10 @@ collectSrcArgs tipe =
 -- CANONICAL TYPE TO DOC
 
 
+{-| Converts a canonical type (after type checking and resolution) into a
+formatted Doc for display, using the localizer to determine the best way to
+display qualified type names.
+-}
 canToDoc : L.Localizer -> Context -> Can.Type -> D.Doc
 canToDoc localizer context tipe =
     case tipe of

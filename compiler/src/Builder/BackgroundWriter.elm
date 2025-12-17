@@ -34,10 +34,14 @@ import Utils.Main as Utils
 -- BACKGROUND WRITER
 
 
+{-| Represents a scope in which background writes can occur.
+-}
 type Scope
     = Scope (Utils.MVar (List (Utils.MVar ())))
 
 
+{-| Executes a callback with a background write scope, ensuring all writes complete before returning.
+-}
 withScope : (Scope -> Task Never a) -> Task Never a
 withScope callback =
     Utils.newMVar (BE.list (\_ -> BE.unit ())) []
@@ -62,6 +66,8 @@ waitForMVars result mvars =
         |> Task.map (\_ -> result)
 
 
+{-| Writes binary data to a file in the background within the given scope.
+-}
 writeBinary : (a -> Bytes.Encode.Encoder) -> Scope -> String -> a -> Task Never ()
 writeBinary toEncoder (Scope workList) path value =
     Utils.newEmptyMVar

@@ -44,14 +44,32 @@ import System.TypeCheck.IO as IO exposing (IO)
 -- constraint is O(1) and we can reverse it at some later time.
 
 
+{-| State accumulated during pattern constraint generation.
+
+Contains the header (variables introduced by the pattern with their types),
+a list of flexible type variables created during constraint generation,
+and constraints stored in reverse order for efficient appending.
+-}
 type State
     = State Header (List IO.Variable) (List Type.Constraint)
 
 
+{-| Header maps variable names to their types with source locations.
+
+Records all variables introduced by a pattern, associating each name
+with its inferred type and the region where it was bound.
+-}
 type alias Header =
     Dict String Name.Name (A.Located Type)
 
 
+{-| Generate type constraints for a pattern.
+
+Takes a pattern, an expected type, and the current state, and returns
+updated state with new constraints and variable bindings. Handles all
+pattern forms including literals, variables, tuples, lists, records,
+and custom type constructors.
+-}
 add : Can.Pattern -> E.PExpected Type -> State -> IO State
 add (A.At region pattern) expectation state =
     case pattern of
@@ -228,6 +246,10 @@ add (A.At region pattern) expectation state =
 -- STATE HELPERS
 
 
+{-| Initial empty state for pattern constraint generation.
+
+Contains no variable bindings, no type variables, and no constraints.
+-}
 emptyState : State
 emptyState =
     State Dict.empty [] []

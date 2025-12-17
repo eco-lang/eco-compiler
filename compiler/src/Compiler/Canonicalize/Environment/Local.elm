@@ -1,5 +1,15 @@
 module Compiler.Canonicalize.Environment.Local exposing (LResult, add)
 
+{-| Add locally-defined declarations to the canonicalization environment.
+
+This module processes declarations within the current module to add:
+- Top-level value declarations
+- Type aliases and union types
+- Constructors for unions and record type aliases
+- Validation for duplicate names and cyclic type aliases
+
+-}
+
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.Canonicalize.Environment as Env
@@ -21,18 +31,34 @@ import Utils.Main as Utils
 -- RESULT
 
 
+{-| Result type for local environment operations that can fail with canonicalization errors.
+-}
 type alias LResult i w a =
     ReportingResult.RResult i w Error.Error a
 
 
+{-| Canonicalized union type definitions.
+-}
 type alias Unions =
     Dict String Name Can.Union
 
 
+{-| Canonicalized type alias definitions.
+-}
 type alias Aliases =
     Dict String Name Can.Alias
 
 
+{-| Add all local declarations from a module to the environment.
+
+Processes the module's declarations in order:
+1. Types (unions and aliases) - validates names and detects cycles
+2. Values (top-level declarations and ports)
+3. Constructors (from unions and record aliases)
+
+Returns the updated environment along with canonicalized unions and aliases.
+
+-}
 add : Src.Module -> Env.Env -> LResult i w ( Env.Env, Unions, Aliases )
 add module_ env =
     addTypes module_ env

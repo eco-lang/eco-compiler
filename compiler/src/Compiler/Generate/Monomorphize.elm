@@ -71,6 +71,8 @@ initState currentModule toptNodes =
 -- ============================================================================
 
 
+{-| Transform a TypedOptimized.GlobalGraph into a fully monomorphized graph by specializing all polymorphic functions to their concrete type instantiations.
+-}
 monomorphize : TOpt.GlobalGraph -> Result String Mono.MonoGraph
 monomorphize (TOpt.GlobalGraph nodes _ _) =
     case findMain nodes of

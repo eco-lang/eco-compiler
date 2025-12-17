@@ -70,6 +70,9 @@ type DefProblem
     | NoAnnotation Name.Name A.Region
 
 
+{-| Convert documentation validation errors into one or more user-friendly error
+reports, helping package authors write proper documentation comments.
+-}
 toReports : Code.Source -> Error -> NE.Nonempty Report.Report
 toReports source err =
     case err of
@@ -230,6 +233,8 @@ toDefProblemReport source problem =
 -- ENCODERS and DECODERS
 
 
+{-| Serialize a documentation error to bytes for caching or transmission.
+-}
 errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
     case error of
@@ -264,6 +269,8 @@ errorEncoder error =
                 ]
 
 
+{-| Deserialize a documentation error from bytes.
+-}
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
     Bytes.Decode.unsignedInt8

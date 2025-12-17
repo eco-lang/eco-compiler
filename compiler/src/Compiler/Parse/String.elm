@@ -24,6 +24,9 @@ import Compiler.Reporting.Error.Syntax as E
 -- CHARACTER
 
 
+{-| Parses a single-quoted character literal like 'a' or '\n'.
+Handles escape sequences and Unicode escapes. Rejects multi-character and empty literals.
+-}
 character : SyntaxVersion -> (Row -> Col -> x) -> (E.Char -> Row -> Col -> x) -> Parser x String
 character syntaxVersion toExpectation toError =
     Parser
@@ -114,6 +117,10 @@ chompChar syntaxVersion src pos end row col numChars mostRecent =
 -- STRINGS
 
 
+{-| Parses a string literal (single-line or multi-line).
+Returns the string content and a boolean indicating if it's a multi-line string (""").
+Handles escape sequences including Unicode escapes.
+-}
 string : SyntaxVersion -> (Row -> Col -> x) -> (E.String_ -> Row -> Col -> x) -> Parser x ( String, Bool )
 string syntaxVersion toExpectation toError =
     Parser

@@ -21,11 +21,15 @@ import Compiler.Parse.Primitives as P
 -- FROM
 
 
+{-| Extract a string from a parser snippet.
+-}
 fromSnippet : P.Snippet -> String
 fromSnippet (P.Snippet { fptr, offset, length }) =
     String.slice offset (offset + length) fptr
 
 
+{-| Extract a string from a Name.
+-}
 fromName : Name.Name -> String
 fromName =
     identity
@@ -35,6 +39,8 @@ fromName =
 -- FROM COMMENT
 
 
+{-| Extract a string from a comment snippet, properly escaping newlines, quotes, and backslashes.
+-}
 fromComment : P.Snippet -> String
 fromComment ((P.Snippet { fptr, offset, length }) as snippet) =
     let

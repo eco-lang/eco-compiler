@@ -34,6 +34,9 @@ import Utils.Main as Utils
 -- TO REPORT
 
 
+{-| Convert a JSON parsing or decoding error into a user-friendly error report
+with source code snippets highlighting the problematic JSON location.
+-}
 toReport : String -> FailureToReport x -> Error x -> Reason -> Help.Report
 toReport path ftr err reason =
     case err of

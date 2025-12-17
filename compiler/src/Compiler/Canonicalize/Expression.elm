@@ -57,14 +57,30 @@ import Utils.Main as Utils
 -- RESULTS
 
 
+{-| Result type for expression canonicalization that tracks free variable usage.
+
+The info parameter `i` is typically `FreeLocals` during expression canonicalization,
+allowing the result to accumulate information about which local variables are referenced.
+-}
 type alias EResult i w a =
     ReportingResult.RResult i w Error.Error a
 
 
+{-| Dictionary tracking which local variables are used and how they are used.
+
+Maps variable names to their usage counts (direct vs delayed). Used to detect
+unused bindings and recursive definitions during canonicalization.
+-}
 type alias FreeLocals =
     Dict String Name.Name Uses
 
 
+{-| Tracks how many times a variable is used, distinguishing direct from delayed usage.
+
+Direct usage occurs when a variable is referenced in an immediately-evaluated context.
+Delayed usage occurs when a variable is captured in a lambda or other delayed context.
+This distinction helps detect problematic recursive definitions.
+-}
 type Uses
     = Uses
         { direct : Int
@@ -76,6 +92,18 @@ type Uses
 -- CANONICALIZE
 
 
+{-| Transform a source expression into its canonical form.
+
+This is the main entry point for expression canonicalization. It handles all expression
+forms including literals, variables, function calls, let bindings, case expressions,
+records, tuples, and more. The function:
+
+  - Resolves all variable references to their canonical forms
+  - Transforms binary operator chains according to precedence and associativity rules
+  - Validates pattern bindings and detects unused variables
+  - Tracks free variable usage for recursive definition detection
+  - Handles both Elm and Guida syntax versions
+-}
 canonicalize : SyntaxVersion -> Env.Env -> Src.Expr -> EResult FreeLocals (List W.Warning) Can.Expr
 canonicalize syntaxVersion env (A.At region expression) =
     ReportingResult.map (A.At region) <|
@@ -606,6 +634,19 @@ getPatternNames names (A.At region pattern) =
             getPatternNames names parensPattern
 
 
+{-| Match function argument patterns against a type signature, producing typed arguments.
+
+This function processes a type-annotated function definition by pairing each argument
+pattern with its corresponding type from the signature. It:
+
+  - Iterates through the function type, extracting argument types from nested lambdas
+  - Canonicalizes each argument pattern
+  - Pairs each pattern with its type annotation
+  - Returns the list of typed argument patterns and the final return type
+  - Reports an error if there are more patterns than types in the signature
+
+This is used when processing function definitions with explicit type annotations.
+-}
 gatherTypedArgs :
     SyntaxVersion
     -> Env.Env
@@ -761,6 +802,18 @@ delayUse (Uses { direct, delayed }) =
 -- MANAGING BINDINGS
 
 
+{-| Verify pattern bindings by checking for unused variables and extracting free locals.
+
+This function wraps an expression result to:
+
+  - Check which pattern-bound variables are actually used in the expression
+  - Generate warnings for any unused bindings (e.g., unused lambda parameters)
+  - Separate local bindings from free variables that reference outer scopes
+  - Return both the expression value and the free variables that escape the binding
+
+The context parameter indicates what kind of binding is being verified (pattern, definition, etc.)
+for better error messages.
+-}
 verifyBindings :
     W.Context
     -> Pattern.Bindings

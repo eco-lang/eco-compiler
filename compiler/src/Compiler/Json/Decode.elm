@@ -80,12 +80,18 @@ import Utils.Crash exposing (crash)
 -- CORE HELPERS
 
 
+{-| Decode a dictionary from a JSON array of key-value pairs.
+Takes a function to convert keys to comparable values, a decoder for keys,
+and a decoder for values. Returns a Dict built from the association list.
+-}
 assocListDict : (k -> comparable) -> Decode.Decoder k -> Decode.Decoder v -> Decode.Decoder (Dict comparable k v)
 assocListDict toComparable keyDecoder valueDecoder =
     Decode.list (jsonPair keyDecoder valueDecoder)
         |> Decode.map (Dict.fromList toComparable)
 
 
+{-| Decode a tuple encoded as a JSON object with fields "a" and "b".
+-}
 jsonPair : Decode.Decoder a -> Decode.Decoder b -> Decode.Decoder ( a, b )
 jsonPair firstDecoder secondDecoder =
     Decode.map2 Tuple.pair
@@ -93,12 +99,18 @@ jsonPair firstDecoder secondDecoder =
         (Decode.field "b" secondDecoder)
 
 
+{-| Decode an EverySet from a JSON array.
+Takes a function to convert elements to comparable values and a decoder for the elements.
+-}
 everySet : (a -> comparable) -> Decode.Decoder a -> Decode.Decoder (EverySet comparable a)
 everySet toComparable decoder =
     Decode.list decoder
         |> Decode.map (EverySet.fromList toComparable)
 
 
+{-| Decode a non-empty list from a JSON array.
+Fails if the array is empty.
+-}
 nonempty : Decode.Decoder a -> Decode.Decoder (NE.Nonempty a)
 nonempty decoder =
     Decode.list decoder
@@ -113,6 +125,10 @@ nonempty decoder =
             )
 
 
+{-| Decode a OneOrMore value from JSON.
+Expects either a "one" field with a single value, or "left" and "right" fields
+containing recursively nested OneOrMore values.
+-}
 oneOrMore : Decode.Decoder a -> Decode.Decoder (OneOrMore a)
 oneOrMore decoder =
     Decode.oneOf
@@ -123,6 +139,9 @@ oneOrMore decoder =
         ]
 
 
+{-| Decode a Result value from JSON.
+Expects an object with a "type" field ("Ok" or "Err") and a "value" field.
+-}
 result : Decode.Decoder x -> Decode.Decoder a -> Decode.Decoder (Result x a)
 result errDecoder successDecoder =
     Decode.field "type" Decode.string
@@ -144,6 +163,9 @@ result errDecoder successDecoder =
 -- RUNNERS
 
 
+{-| Parse and decode a JSON string into a value.
+Returns either a parse error or a decode error if unsuccessful.
+-}
 fromByteString : Decoder x a -> String -> Result (Error x) a
 fromByteString (Decoder decode) src =
     case P.fromByteString pFile BadEnd src of
@@ -159,6 +181,8 @@ fromByteString (Decoder decode) src =
 -- DECODERS
 
 
+{-| A JSON decoder that can produce values of type `a` or fail with custom errors of type `x`.
+-}
 type Decoder x a
     = Decoder (AST -> Result (Problem x) a)
 
@@ -167,6 +191,8 @@ type Decoder x a
 -- ERRORS
 
 
+{-| Top-level error type for JSON decoding, containing either a decode problem or a parse error.
+-}
 type Error x
     = DecodeProblem String (Problem x)
     | ParseProblem String ParseError
@@ -176,6 +202,8 @@ type Error x
 -- DECODE PROBLEMS
 
 
+{-| Represents a decoding problem with context about where it occurred.
+-}
 type Problem x
     = Field String (Problem x)
     | Index Int (Problem x)
@@ -184,6 +212,8 @@ type Problem x
     | Expecting A.Region DecodeExpectation
 
 
+{-| Describes what type of JSON value was expected during decoding.
+-}
 type DecodeExpectation
     = TObject
     | TArray
@@ -197,16 +227,23 @@ type DecodeExpectation
 -- INSTANCES
 
 
+{-| Transform the value produced by a decoder.
+-}
 map : (a -> b) -> Decoder x a -> Decoder x b
 map func (Decoder decodeA) =
     Decoder (Result.map func << decodeA)
 
 
+{-| Create a decoder that always succeeds with the given value.
+-}
 pure : a -> Decoder x a
 pure a =
     Decoder (\_ -> Ok a)
 
 
+{-| Apply a decoder of a function to a decoder of an argument.
+Useful for building up decoders in applicative style.
+-}
 apply : Decoder x a -> Decoder x (a -> b) -> Decoder x b
 apply (Decoder decodeArg) (Decoder decodeFunc) =
     Decoder <|
@@ -219,6 +256,8 @@ apply (Decoder decodeArg) (Decoder decodeFunc) =
                     )
 
 
+{-| Chain decoders together, using the result of one decoder to determine the next decoder.
+-}
 andThen : (a -> Decoder x b) -> Decoder x a -> Decoder x b
 andThen callback (Decoder decodeA) =
     Decoder <|
@@ -236,6 +275,8 @@ andThen callback (Decoder decodeA) =
 -- STRINGS
 
 
+{-| Decode a JSON string value.
+-}
 string : Decoder x String
 string =
     Decoder <|
@@ -248,6 +289,9 @@ string =
                     Err (Expecting region TString)
 
 
+{-| Decode a JSON string value and parse it using a custom parser.
+Takes a parser and an error constructor for bad end-of-input.
+-}
 customString : P.Parser x a -> (Row -> Col -> x) -> Decoder x a
 customString parser toBadEnd =
     Decoder <|
@@ -265,6 +309,8 @@ customString parser toBadEnd =
 -- INT
 
 
+{-| Decode a JSON integer value.
+-}
 int : Decoder x Int
 int =
     Decoder <|
@@ -281,6 +327,8 @@ int =
 -- LISTS
 
 
+{-| Decode a JSON array into a list.
+-}
 list : Decoder x a -> Decoder x (List a)
 list decoder =
     Decoder <|
@@ -312,6 +360,9 @@ listHelp ((Decoder decodeA) as decoder) i asts revs =
 -- NON-EMPTY LISTS
 
 
+{-| Decode a JSON array into a non-empty list.
+Fails with the provided error value if the array is empty.
+-}
 nonEmptyList : Decoder x a -> x -> Decoder x (NE.Nonempty a)
 nonEmptyList decoder x =
     Decoder <|
@@ -335,6 +386,9 @@ nonEmptyList decoder x =
 -- PAIR
 
 
+{-| Decode a JSON array with exactly two elements into a tuple.
+Fails if the array does not contain exactly two elements.
+-}
 pair : Decoder x a -> Decoder x b -> Decoder x ( a, b )
 pair (Decoder decodeA) (Decoder decodeB) =
     Decoder <|
@@ -360,15 +414,23 @@ pair (Decoder decodeA) (Decoder decodeB) =
 -- OBJECTS
 
 
+{-| A decoder for JSON object keys.
+Contains a parser to extract the key from a string snippet and an error constructor.
+-}
 type KeyDecoder x a
     = KeyDecoder (P.Parser x a) (Row -> Col -> x)
 
 
+{-| Decode a JSON object into a dictionary.
+Takes a function to convert keys to comparable values, a key decoder, and a value decoder.
+-}
 dict : (k -> comparable) -> KeyDecoder x k -> Decoder x a -> Decoder x (Dict comparable k a)
 dict toComparable keyDecoder valueDecoder =
     map (Dict.fromList toComparable) (pairs keyDecoder valueDecoder)
 
 
+{-| Decode a JSON object into a list of key-value pairs.
+-}
 pairs : KeyDecoder x k -> Decoder x a -> Decoder x (List ( k, a ))
 pairs keyDecoder valueDecoder =
     Decoder <|
@@ -414,6 +476,9 @@ snippetToRegion (P.Snippet { length, offRow, offCol }) =
 -- FIELDS
 
 
+{-| Decode a specific field from a JSON object.
+Fails if the object does not have the specified field.
+-}
 field : String -> Decoder x a -> Decoder x a
 field key (Decoder decodeA) =
     Decoder <|
@@ -450,6 +515,9 @@ findField key pairs_ =
 -- ONE OF
 
 
+{-| Try a list of decoders in order, using the first one that succeeds.
+Crashes if given an empty list.
+-}
 oneOf : List (Decoder x a) -> Decoder x a
 oneOf decoders =
     Decoder <|
@@ -496,6 +564,8 @@ oneOfError problems prob ps =
 -- FAILURE
 
 
+{-| Create a decoder that always fails with the given error value.
+-}
 failure : x -> Decoder x a
 failure x =
     Decoder <|
@@ -507,6 +577,8 @@ failure x =
 -- ERRORS
 
 
+{-| Transform the error type of a decoder by applying a function to any custom errors.
+-}
 mapError : (x -> y) -> Decoder x a -> Decoder y a
 mapError func (Decoder decodeA) =
     Decoder (Result.mapError (mapErrorHelp func) << decodeA)
@@ -557,6 +629,8 @@ type alias Parser a =
     P.Parser ParseError a
 
 
+{-| Errors that can occur while parsing JSON.
+-}
 type ParseError
     = Start Row Col
     | ObjectField Row Col
@@ -569,6 +643,8 @@ type ParseError
     | BadEnd Row Col
 
 
+{-| Specific problems that can occur while parsing JSON string literals.
+-}
 type StringProblem
     = BadStringEnd
     | BadStringControlChar

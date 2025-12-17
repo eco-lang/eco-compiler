@@ -84,20 +84,21 @@ type alias Nodes =
     Dict (List String) Opt.Global Opt.Node
 
 
-
--- Registers all union type constructors in the optimization graph.
-
-
+-- Registers all union type constructors in the optimization graph by processing each union type
+-- and adding its constructors as optimized nodes.
 addUnions : IO.Canonical -> Dict String Name.Name Can.Union -> Opt.LocalGraph -> Opt.LocalGraph
 addUnions home unions (Opt.LocalGraph main nodes fields) =
     Opt.LocalGraph main (Dict.foldr compare (\_ -> addUnion home) nodes unions) fields
 
 
+-- Processes a single union type and adds all its constructor alternatives to the nodes dictionary.
 addUnion : IO.Canonical -> Can.Union -> Nodes -> Nodes
 addUnion home (Can.Union unionData) nodes =
     List.foldl (addCtorNode home unionData.opts) nodes unionData.alts
 
 
+-- Creates and registers an optimized node for a union type constructor.
+-- The node type depends on constructor options: Normal (with arity), Unbox (newtype wrapper), or Enum.
 addCtorNode : IO.Canonical -> Can.CtorOpts -> Can.Ctor -> Nodes -> Nodes
 addCtorNode home opts (Can.Ctor c) nodes =
     let
@@ -118,14 +119,17 @@ addCtorNode home opts (Can.Ctor c) nodes =
 
 
 -- ====== Type Aliases ======
--- Converts record type aliases into constructor functions.
 
 
+-- Processes all type aliases and converts record type aliases into constructor functions.
+-- Only record aliases generate actual code; other aliases are purely compile-time.
 addAliases : IO.Canonical -> Dict String Name.Name Can.Alias -> Opt.LocalGraph -> Opt.LocalGraph
 addAliases home aliases graph =
     Dict.foldr compare (addAlias home) graph aliases
 
 
+-- Converts a single type alias into an optimized node if it's a record type.
+-- Record aliases become constructor functions that build records from their fields.
 addAlias : IO.Canonical -> Name.Name -> Can.Alias -> Opt.LocalGraph -> Opt.LocalGraph
 addAlias home name (Can.Alias _ tipe) ((Opt.LocalGraph main nodes fieldCounts) as graph) =
     case tipe of
@@ -148,15 +152,18 @@ addAlias home name (Can.Alias _ tipe) ((Opt.LocalGraph main nodes fieldCounts) a
             graph
 
 
+-- Increments the usage count for a record field accessed by a record constructor function.
 addRecordCtorField : Name.Name -> Can.FieldType -> Dict String Name.Name Int -> Dict String Name.Name Int
 addRecordCtorField name _ fields =
     Utils.mapInsertWith identity (+) name 1 fields
 
 
 
--- ADD EFFECTS
+-- ====== Effects ======
 
 
+-- Processes module effects including ports and effect managers (Cmd/Sub/Fx).
+-- Effect managers register special $fx$ nodes and link command/subscription exports.
 addEffects : IO.Canonical -> Can.Effects -> Opt.LocalGraph -> Opt.LocalGraph
 addEffects home effects ((Opt.LocalGraph main nodes fields) as graph) =
     case effects of
@@ -199,6 +206,8 @@ addEffects home effects ((Opt.LocalGraph main nodes fields) as graph) =
             Opt.LocalGraph main newNodes fields
 
 
+-- Converts a port declaration into an optimized node with encoder/decoder.
+-- Incoming ports generate decoders for JS→Elm values, outgoing ports generate encoders for Elm→JS.
 addPort : IO.Canonical -> Name.Name -> Can.Port -> Opt.LocalGraph -> Opt.LocalGraph
 addPort home name port_ graph =
     case port_ of
@@ -226,9 +235,10 @@ addPort home name port_ graph =
 
 
 
--- HELPER
+-- ====== Graph Helper ======
 
 
+-- Inserts a node into the optimization graph and merges field access counts.
 addToGraph : Opt.Global -> Opt.Node -> Dict String Name.Name Int -> Opt.LocalGraph -> Opt.LocalGraph
 addToGraph name node fields (Opt.LocalGraph main nodes fieldCounts) =
     Opt.LocalGraph
@@ -238,14 +248,18 @@ addToGraph name node fields (Opt.LocalGraph main nodes fieldCounts) =
 
 
 
--- ADD DECLS
+-- ====== Value Declarations ======
 
 
+-- Processes all value declarations in the module, handling both single definitions and
+-- mutually recursive definition groups.
 addDecls : IO.Canonical -> Annotations -> Can.Decls -> Opt.LocalGraph -> MResult i (List W.Warning) Opt.LocalGraph
 addDecls home annotations decls graph =
     ReportingResult.loop (addDeclsHelp home annotations) ( decls, graph )
 
 
+-- Recursively processes declarations, distinguishing between single defs and recursive groups.
+-- Rejects recursive groups containing 'main' which must be a single top-level definition.
 addDeclsHelp : IO.Canonical -> Annotations -> ( Can.Decls, Opt.LocalGraph ) -> MResult i (List W.Warning) (ReportingResult.Step ( Can.Decls, Opt.LocalGraph ) Opt.LocalGraph)
 addDeclsHelp home annotations ( decls, graph ) =
     case decls of
@@ -270,6 +284,8 @@ addDeclsHelp home annotations ( decls, graph ) =
             ReportingResult.ok (ReportingResult.Done graph)
 
 
+-- Searches for 'main' in a list of definitions, returning its region if found.
+-- Used to detect and reject recursive definitions involving 'main'.
 findMain : List Can.Def -> Maybe A.Region
 findMain defs =
     case defs of
@@ -293,6 +309,7 @@ findMain defs =
                         findMain rest
 
 
+-- Extracts the name from a definition.
 defToName : Can.Def -> Name.Name
 defToName def =
     case def of
@@ -304,9 +321,11 @@ defToName def =
 
 
 
--- ADD DEFS
+-- ====== Single Definitions ======
 
 
+-- Processes a single value definition, issuing a warning if a type annotation is missing.
+-- Handles both regular definitions and 'main' which requires special validation.
 addDef : IO.Canonical -> Annotations -> Can.Def -> Opt.LocalGraph -> MResult i (List W.Warning) Opt.LocalGraph
 addDef home annotations def graph =
     case def of
@@ -322,6 +341,8 @@ addDef home annotations def graph =
             addDefHelp region annotations home name (List.map Tuple.first typedArgs) body graph
 
 
+-- Optimizes and adds a definition to the graph, with special handling for 'main'.
+-- The 'main' function must have a valid Platform.Program or VirtualDom.Node type.
 addDefHelp : A.Region -> Annotations -> IO.Canonical -> Name.Name -> List Can.Pattern -> Can.Expr -> Opt.LocalGraph -> MResult i w Opt.LocalGraph
 addDefHelp region annotations home name args body ((Opt.LocalGraph _ nodes fieldCounts) as graph) =
     if name /= Name.main_ then
@@ -360,6 +381,8 @@ addDefHelp region annotations home name args body ((Opt.LocalGraph _ nodes field
                 ReportingResult.throw (E.BadType region tipe)
 
 
+-- Creates an optimized definition node by transforming arguments and body into optimized form.
+-- Functions with arguments get pattern destructuring; zero-arg definitions are plain values.
 addDefNode : IO.Canonical -> A.Region -> Name.Name -> List Can.Pattern -> Can.Expr -> EverySet (List String) Opt.Global -> Opt.LocalGraph -> Opt.LocalGraph
 addDefNode home region name args body mainDeps graph =
     let
@@ -384,9 +407,10 @@ addDefNode home region name args body mainDeps graph =
 
 
 
--- ADD RECURSIVE DEFS
+-- ====== Recursive Definitions ======
 
 
+-- Accumulator for collecting optimized values and functions from a recursive group.
 type State
     = State
         { values : List ( Name.Name, Opt.Expr )
@@ -394,6 +418,8 @@ type State
         }
 
 
+-- Processes a mutually recursive definition group into a single Cycle node.
+-- All definitions in the group are linked to a shared cycle that contains the optimized forms.
 addRecDefs : IO.Canonical -> List Can.Def -> Opt.LocalGraph -> Opt.LocalGraph
 addRecDefs home defs (Opt.LocalGraph main nodes fieldCounts) =
     let
@@ -425,6 +451,7 @@ addRecDefs home defs (Opt.LocalGraph main nodes fieldCounts) =
         (Utils.mapUnionWith identity compare (+) fields fieldCounts)
 
 
+-- Extracts the name from a definition.
 toName : Can.Def -> Name.Name
 toName def =
     case def of
@@ -435,6 +462,8 @@ toName def =
             name
 
 
+-- Adds zero-argument definitions to the value name set for cycle detection.
+-- Only values (not functions) are tracked since they may form true cyclic dependencies.
 addValueName : Can.Def -> EverySet String Name.Name -> EverySet String Name.Name
 addValueName def names =
     case def of
@@ -453,6 +482,7 @@ addValueName def names =
                 names
 
 
+-- Creates a link node pointing to the shared cycle for each definition in the group.
 addLink : IO.Canonical -> Opt.Node -> Can.Def -> Dict (List String) Opt.Global Opt.Node -> Dict (List String) Opt.Global Opt.Node
 addLink home link def links =
     case def of
@@ -463,10 +493,7 @@ addLink home link def links =
             Dict.insert Opt.toComparableGlobal (Opt.Global home name) link links
 
 
-
--- ADD RECURSIVE DEFS
-
-
+-- Optimizes a single definition within a recursive group, accumulating results in State.
 addRecDef : EverySet String Name.Name -> State -> Can.Def -> Names.Tracker State
 addRecDef cycle state def =
     case def of
@@ -477,6 +504,8 @@ addRecDef cycle state def =
             addRecDefHelp cycle region state name (List.map Tuple.first args) body
 
 
+-- Optimizes the body of a recursive definition, distinguishing values from functions.
+-- Functions in recursive groups may be eligible for tail-call optimization.
 addRecDefHelp : EverySet String Name.Name -> A.Region -> State -> Name.Name -> List Can.Pattern -> Can.Expr -> Names.Tracker State
 addRecDefHelp cycle region (State { values, functions }) name args body =
     case args of

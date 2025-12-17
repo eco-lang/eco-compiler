@@ -57,6 +57,8 @@ generateJsExpr mode parentModule expression =
     codeToExpr (generate mode parentModule expression)
 
 
+{-| Generate JavaScript code from an optimized Elm expression. Returns either a pure expression or statement block depending on control flow.
+-}
 generate : Mode.Mode -> IO.Canonical -> Opt.Expr -> Code
 generate mode parentModule expression =
     case expression of
@@ -248,6 +250,8 @@ type Code
     | JsBlock (List JS.Stmt)
 
 
+{-| Convert generated code to a JavaScript expression, wrapping statement blocks in IIFEs if necessary.
+-}
 codeToExpr : Code -> JS.Expr
 codeToExpr code =
     case code of
@@ -261,6 +265,8 @@ codeToExpr code =
             JS.ExprCall (JS.ExprFunction Nothing [] stmts) []
 
 
+{-| Convert generated code to a list of JavaScript statements, unwrapping simple expressions into return statements.
+-}
 codeToStmtList : Code -> List JS.Stmt
 codeToStmtList code =
     case code of
@@ -303,6 +309,8 @@ toChar =
 -- CTOR
 
 
+{-| Generate JavaScript code for a constructor function with the specified arity.
+-}
 generateCtor : Mode.Mode -> Opt.Global -> Index.ZeroBased -> Int -> Code
 generateCtor mode (Opt.Global home name) index arity =
     let
@@ -358,6 +366,8 @@ generateTrackedRecord mode parentModule region fields =
     JS.ExprTrackedObject parentModule region (List.map toPair (Dict.toList A.compareLocated fields))
 
 
+{-| Convert an Elm field name to a JavaScript property name, applying production-mode shortening if enabled.
+-}
 generateField : Mode.Mode -> Name.Name -> JsName.Name
 generateField mode name =
     case mode of
@@ -1072,6 +1082,8 @@ generateDef mode parentModule def =
             JS.TrackedVar parentModule start (JsName.fromLocal name) (JsName.fromLocal name) (codeToExpr (generateTailDef mode parentModule name argNames body))
 
 
+{-| Generate a tail-recursive function definition wrapped in a while-true loop with labeled break.
+-}
 generateTailDef : Mode.Mode -> IO.Canonical -> Name.Name -> List (A.Located Name.Name) -> Opt.Expr -> Code
 generateTailDef mode parentModule name argNames body =
     generateTrackedFunction parentModule (List.map (\(A.At region argName) -> A.At region (JsName.fromLocal argName)) argNames) <|
@@ -1420,6 +1432,8 @@ pathToJsExpr mode root path =
 -- GENERATE MAIN
 
 
+{-| Generate the main entry point for an Elm program, handling both static and dynamic initialization.
+-}
 generateMain : Mode.Mode -> IO.Canonical -> Opt.Main -> JS.Expr
 generateMain mode home main =
     case main of
