@@ -1,186 +1,158 @@
-# Guida programming language
+# Eco Compiler
 
-Guida is a functional programming language that builds upon the solid foundation of Elm, offering
-backward compatibility with all existing Elm 0.19.1 projects.
+Eco is a new compiler for the Elm language, designed for native compilation via LLVM.
 
-Join the [Guida Discord server](https://discord.gg/Ur33engz) to connect with the community, ask 
-questions, and share ideas.
+The front-end is written in Elm itself and is self-compiling. A new back-end has been developed using MLIR to define a custom "eco" dialect. The front-end compiles Elm source code to "eco", and the back-end lowers "eco" to LLVM, reaching many compilation targets including x86, ARM, and WebAssembly.
 
-# Vision
+## Lineage
 
-Guida builds on the foundations of Elm, aiming to advance the future of functional programming.
-By translating Elm's compiler from Haskell to a self-hosted environment, Guida helps developers to
-build reliable, maintainable, and performant applications without leaving the language they love.
+The Eco compiler forked from the [Guida compiler](https://github.com/guida-lang/compiler) written by Décio Ferreira. The Guida compiler was itself forked from the original [Elm compiler](https://github.com/elm/compiler) in Haskell written by Evan Czaplicki.
 
-**Continuity and Confidence (Version 0.x):**
-Guida starts by ensuring full backward compatibility with Elm v0.19.1, allowing developers to migrate
-effortlessly and explore Guida with complete confidence.
+## Architecture
 
-This commitment to continuity means that this version will faithfully replicate not only the
-features and behaviors of Elm v0.19.1, but also any existing bugs and quirks.
-By doing so, we provide a stable and predictable environment for developers, ensuring that their
-existing Elm projects work exactly as expected when migrated to Guida.
-
-**Evolution and Innovation (Version 1.x and Beyond):**
-As Guida evolves, we will introduce new features and improvements.
-This phase will foster a unified ecosystem that adapts to the needs of its users.
-
-**Core Principles:**
-
-- **Backward Compatibility:** Respect for existing Elm projects, ensuring a frictionless migration.
-- **Accessibility:** Lowering barriers for developers by implementing Guida’s core in its own syntax.
-
-Our ultimate goal is to create a language that inherits the best aspects of Elm while adapting and
-growing to meet the needs of its users.
-
-# Install
-
-To install Guida as an npm package, run the following command:
+The compiler transforms Elm source code through six major phases:
 
 ```
-npm install -g guida
+Source Code (.elm files)
+       │
+       ▼
+┌─────────────────┐
+│   1. PARSE      │  Text → Source AST
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ 2. CANONICALIZE │  Source AST → Canonical AST
+└────────┬────────┘  (Name resolution, scope checking)
+         │
+         ▼
+┌─────────────────┐
+│ 3. TYPE CHECK   │  Canonical AST → Typed Canonical AST
+└────────┬────────┘  (Constraint generation + solving)
+         │
+         ▼
+┌─────────────────┐
+│   4. NITPICK    │  Verify exhaustiveness, check Debug usage
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  5. OPTIMIZE    │  Canonical AST → Optimized AST
+└────────┬────────┘  (Case compilation, inlining, DCE)
+         │
+         ▼
+┌─────────────────┐
+│  6. GENERATE    │  Optimized AST → Target Code
+└─────────────────┘  (JavaScript or MLIR)
 ```
 
-You should now be able to run `guida --version`.
+The key insight enabling aggressive optimizations is Elm's purity guarantee: no side effects, immutable data, and referential transparency. This means inlining is always safe, dead code elimination is straightforward, and monomorphization is viable for native compilation.
 
-# Development
+For detailed compiler internals, see [THEORY.md](THEORY.md).
 
-Start by installing [Node Version Manager](https://github.com/nvm-sh/nvm).
+## Backends
 
-Switch to the correct node version number by running:
+### JavaScript Backend
 
-```
+Generates ES5-compatible JavaScript with optional source maps, suitable for browser and Node.js environments. This maintains compatibility with the existing Elm ecosystem.
+
+### MLIR Backend (Eco Dialect)
+
+For native compilation, the MLIR backend:
+1. **Monomorphizes** all polymorphic code, specializing generic functions to concrete types
+2. **Computes memory layouts** for all data types
+3. **Emits typed MLIR operations** in the eco dialect
+4. **Lowers to LLVM IR** for final code generation
+
+This enables compilation to native executables for x86, ARM, WebAssembly, and other LLVM-supported targets.
+
+## Development
+
+### Prerequisites
+
+Install [Node Version Manager](https://github.com/nvm-sh/nvm), then:
+
+```bash
 nvm use
-```
-
-Install the dependencies:
-
-```
 npm install
 ```
 
-Generate guida:
+### Building
 
-```
+```bash
 npm run build
 ```
 
-Link the project to run `guida` command:
+### Linking for Development
 
-```
+```bash
 npm link
 ```
 
-You should now be able to run `guida`:
+You should now be able to run `guida --help`.
 
-```
-guida --help
-```
+### Watch Mode
 
-To compare the performance of guida with elm, you can run `./scripts/performance-comparison.sh`.
+Rebuild automatically when source files change:
 
-## Watch mode
-
-You can run the following command to `build:bin` when anything is added, changed or deleted within the `src` directory:
-
-```
+```bash
 npm run watch
 ```
 
-# Examples
+### Running Tests
 
-To run an example `cd` into the `examples` folder, and run the `guida make` command:
-
-```
-cd examples
-guida make --debug src/Hello.elm
-```
-
-You can then `open index.html`.
-
-# Try
-
-Find an example of how to use the browser version of the compiler on the [`try` folder](try/README.md).
-
-## Clear cache
-
-To clear all cache and re-generate `./bin/guida.js` run the following:
-
-```
-rm -rf ~/.guida guida-stuff; npm run build
+```bash
+npm test              # Run all tests
+npm run test:jest     # Jest tests only
+npm run test:elm      # elm-test only
+npm run test:elm-review    # elm-review only
+npm run test:elm-format-validate  # Format validation
 ```
 
-# Run tests
+### Formatting
 
-Run all tests:
-
-```
-npm test
-```
-
-Run `jest` tests:
-
-```
-npm test:jest
-```
-
-Run `elm-test` tests:
-
-```
-npm run test:elm
-```
-
-Run `elm-review` tests:
-
-```
-npm run test:elm-review
-```
-
-Run `elm-format` validation:
-
-```
-npm run test:elm-format-validate
-```
-
-# Format elm source code
-
-```
+```bash
 npm run elm-format
 ```
 
-# Publish new npm package version
+### Clear Cache
 
-Before publishing a new npm package version, make sure you are on the correct
-branch, ie. in case of wanting to publish a 0.x version, you should have the
-`v0.x` branch checked out.
-
-To publish a new version, we should then run the following commands:
-
-```
-npm version <newversion>
-npm publish
-git push origin <currentbranch>
-git push origin tag v<newversion>
+```bash
+rm -rf ~/.guida guida-stuff; npm run build
 ```
 
-As an example, these should have been the commands ran for publishing `v0.2.0-alpha`
+## Examples
+
+```bash
+cd examples
+guida make --debug src/Hello.elm
+open index.html
+```
+
+## Directory Structure
 
 ```
-npm version 0.2.0-alpha
-npm publish
-git push origin v0.x
-git push origin tag v0.2.0-alpha
+src/Compiler/
+├── AST/                  # AST definitions for each phase
+│   ├── Source.elm        # Parse output
+│   ├── Canonical.elm     # Canonicalized
+│   ├── Optimized.elm     # Optimized (untyped)
+│   ├── TypedOptimized.elm  # Optimized (typed)
+│   └── Monomorphized.elm # Fully specialized (for MLIR)
+├── Parse/                # Parsing phase
+├── Canonicalize/         # Canonicalization phase
+├── Type/                 # Type checking phase
+├── Nitpick/              # Post-typecheck verification
+├── Optimize/             # Optimization phase
+├── Generate/             # Code generation phase
+│   ├── JavaScript/       # JS backend
+│   └── CodeGen/          # MLIR backend
+├── Reporting/            # Error reporting
+└── Data/                 # Internal data structures
 ```
 
-The `<newversion>` value relates to the `version` field value found on `package.json`.
+## References
 
-# References
-
-- Initial transpilation from Haskell to Elm done based on [Elm compiler v0.19.1](https://github.com/elm/compiler/releases/tag/0.19.1)
-  (more specifically [commit c9aefb6](https://github.com/elm/compiler/commit/c9aefb6230f5e0bda03205ab0499f6e4af924495))
-- Terminal logic implementation based on https://github.com/albertdahlin/elm-posix
-
-# Resources
-
-- [Hoogle](https://hoogle.haskell.org/)
-- [Online Haskell Compiler](https://www.tutorialspoint.com/compile_haskell_online.php)
+- Initial transpilation from Haskell to Elm based on [Elm compiler v0.19.1](https://github.com/elm/compiler/releases/tag/0.19.1) (commit [c9aefb6](https://github.com/elm/compiler/commit/c9aefb6230f5e0bda03205ab0499f6e4af924495))
+- Terminal logic implementation based on [elm-posix](https://github.com/albertdahlin/elm-posix)
+- [MLIR documentation](https://mlir.llvm.org/)
