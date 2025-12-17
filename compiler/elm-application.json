@@ -1,0 +1,8 @@
+{
+    "name": "the-sett/eco-compiler",
+    "summary": "Eco Compiler",
+    "version": "1.0.0",
+    "exposed-modules": [
+        "Terminal.Main"
+    ]
+}
