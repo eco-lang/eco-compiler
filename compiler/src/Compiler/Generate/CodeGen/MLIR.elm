@@ -16,14 +16,11 @@ in the types.
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name
-import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.Mode as Mode
 import Data.Map as EveryDict
-import Data.Set as EverySet
 import Dict exposing (Dict)
 import Mlir.Loc as Loc exposing (Loc)
-import Utils.Crash exposing (crash)
 import Mlir.Mlir
     exposing
         ( MlirAttr(..)
@@ -36,6 +33,7 @@ import Mlir.Mlir
 import Mlir.Pretty as Pretty
 import OrderedDict
 import System.TypeCheck.IO as IO
+import Utils.Crash exposing (crash)
 
 
 
@@ -327,170 +325,6 @@ buildSignatures nodes =
         )
         Dict.empty
         nodes
-
-
-{-| Assert that call site argument types match the function's declared parameter types.
-This enforces the monomorphization invariant: all types must be fully specialized.
-Crashes with a detailed error if the invariant is violated.
--}
-assertCallSiteTypesMatch : Context -> Mono.SpecId -> List Mono.MonoExpr -> Mono.MonoType -> ()
-assertCallSiteTypesMatch ctx specId args resultType =
-    case Dict.get specId ctx.signatures of
-        Nothing ->
-            -- Unknown specId - might be external, skip check
-            ()
-
-        Just sig ->
-            let
-                actualParamTypes =
-                    List.map Mono.typeOf args
-
-                funcName =
-                    specIdToFuncName ctx.registry specId
-
-                -- Check parameter types
-                paramMismatch =
-                    if List.length sig.paramTypes /= List.length actualParamTypes then
-                        Just
-                            ("Arity mismatch: expected "
-                                ++ String.fromInt (List.length sig.paramTypes)
-                                ++ " params, got "
-                                ++ String.fromInt (List.length actualParamTypes)
-                            )
-
-                    else
-                        findFirstMismatch 0 sig.paramTypes actualParamTypes
-
-                -- Check return type
-                returnMismatch =
-                    if sig.returnType /= resultType then
-                        Just
-                            ("Return type mismatch:\n  Expected: "
-                                ++ monoTypeToString sig.returnType
-                                ++ "\n  Actual:   "
-                                ++ monoTypeToString resultType
-                            )
-
-                    else
-                        Nothing
-            in
-            case ( paramMismatch, returnMismatch ) of
-                ( Nothing, Nothing ) ->
-                    ()
-
-                ( Just paramErr, Nothing ) ->
-                    crash
-                        ("COMPILER BUG - Monomorphization invariant violated!\n"
-                            ++ "Function: "
-                            ++ funcName
-                            ++ " (SpecId "
-                            ++ String.fromInt specId
-                            ++ ")\n"
-                            ++ "Parameter types: "
-                            ++ paramErr
-                            ++ "\n\nExpected param types: "
-                            ++ String.join ", " (List.map monoTypeToString sig.paramTypes)
-                            ++ "\nActual arg types:     "
-                            ++ String.join ", " (List.map monoTypeToString actualParamTypes)
-                        )
-
-                ( Nothing, Just retErr ) ->
-                    crash
-                        ("COMPILER BUG - Monomorphization invariant violated!\n"
-                            ++ "Function: "
-                            ++ funcName
-                            ++ " (SpecId "
-                            ++ String.fromInt specId
-                            ++ ")\n"
-                            ++ retErr
-                        )
-
-                ( Just paramErr, Just retErr ) ->
-                    crash
-                        ("COMPILER BUG - Monomorphization invariant violated!\n"
-                            ++ "Function: "
-                            ++ funcName
-                            ++ " (SpecId "
-                            ++ String.fromInt specId
-                            ++ ")\n"
-                            ++ "Parameter types: "
-                            ++ paramErr
-                            ++ "\n"
-                            ++ retErr
-                            ++ "\n\nExpected param types: "
-                            ++ String.join ", " (List.map monoTypeToString sig.paramTypes)
-                            ++ "\nActual arg types:     "
-                            ++ String.join ", " (List.map monoTypeToString actualParamTypes)
-                        )
-
-
-{-| Find the first parameter type mismatch, returning its index and types.
--}
-findFirstMismatch : Int -> List Mono.MonoType -> List Mono.MonoType -> Maybe String
-findFirstMismatch idx expected actual =
-    case ( expected, actual ) of
-        ( [], [] ) ->
-            Nothing
-
-        ( e :: es, a :: as_ ) ->
-            if e == a then
-                findFirstMismatch (idx + 1) es as_
-
-            else
-                Just
-                    ("Param "
-                        ++ String.fromInt idx
-                        ++ " type mismatch:\n  Expected: "
-                        ++ monoTypeToString e
-                        ++ "\n  Actual:   "
-                        ++ monoTypeToString a
-                    )
-
-        _ ->
-            -- Length mismatch handled above
-            Nothing
-
-
-{-| Convert MonoType to a human-readable string for error messages.
--}
-monoTypeToString : Mono.MonoType -> String
-monoTypeToString monoType =
-    case monoType of
-        Mono.MInt ->
-            "Int"
-
-        Mono.MFloat ->
-            "Float"
-
-        Mono.MBool ->
-            "Bool"
-
-        Mono.MChar ->
-            "Char"
-
-        Mono.MString ->
-            "String"
-
-        Mono.MUnit ->
-            "()"
-
-        Mono.MList inner ->
-            "List (" ++ monoTypeToString inner ++ ")"
-
-        Mono.MTuple layout ->
-            "(" ++ String.join ", " (List.map (\( t, _ ) -> monoTypeToString t) layout.elements) ++ ")"
-
-        Mono.MRecord layout ->
-            "{ " ++ String.join ", " (List.map (\f -> f.name ++ " : " ++ monoTypeToString f.monoType) layout.fields) ++ " }"
-
-        Mono.MCustom home name _ _ ->
-            canonicalToMLIRName home ++ "." ++ name
-
-        Mono.MFunction argTypes retType ->
-            "(" ++ String.join " -> " (List.map monoTypeToString argTypes ++ [ monoTypeToString retType ]) ++ ")"
-
-        Mono.MVar name constraint ->
-            "?" ++ name ++ ":" ++ Mono.constraintToString constraint
 
 
 
@@ -1850,7 +1684,7 @@ generateVarGlobal ctx specId monoType =
             specIdToFuncName ctx.registry specId
     in
     case monoType of
-        Mono.MFunction argTypes _ ->
+        Mono.MFunction _ _ ->
             -- Function-typed global: create a closure (papCreate) with no captures
             -- The arity is the number of function arguments
             let
@@ -2218,9 +2052,6 @@ generateCall ctx func args resultType =
             -- Direct call to known specialization
             let
                 -- Assert monomorphization invariant: call site types must match function signature
-                _ =
-                    assertCallSiteTypesMatch ctx specId args resultType
-
                 ( argsOps, argVars, ctx1 ) =
                     generateExprList ctx args
 

@@ -24,7 +24,6 @@ their concrete definitions) and delambda (flattening nested function types).
 import Compiler.AST.Canonical exposing (AliasType(..), FieldType(..), Type(..))
 import Compiler.Data.Name exposing (Name)
 import Data.Map as Dict exposing (Dict)
-import Utils.Crash
 
 
 

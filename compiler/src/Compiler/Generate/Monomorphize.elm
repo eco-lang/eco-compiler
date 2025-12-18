@@ -32,7 +32,6 @@ import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
-import Utils.Crash exposing (crash)
 
 
 
@@ -531,7 +530,7 @@ specializeFuncNodeInCycle :
     -> ( Mono.MonoNode, MonoState )
 specializeFuncNodeInCycle subst def state =
     case def of
-        TOpt.Def _ name expr canType ->
+        TOpt.Def _ _ expr canType ->
             -- Regular function definition
             let
                 monoType =
@@ -545,15 +544,9 @@ specializeFuncNodeInCycle subst def state =
             in
             ( Mono.MonoDefine monoExpr depIds monoType, state1 )
 
-        TOpt.TailDef _ name args body returnType ->
+        TOpt.TailDef _ _ args body returnType ->
             -- Tail-recursive function definition
             let
-                funcType =
-                    buildFuncType args returnType
-
-                monoFuncType =
-                    applySubst subst funcType
-
                 monoArgs =
                     List.map (specializeArg subst) args
 
@@ -1464,7 +1457,7 @@ ensureCallableTopLevel expr monoType state =
                     flattenFunctionType monoType
             in
             case expr of
-                Mono.MonoClosure closureInfo body closureType ->
+                Mono.MonoClosure closureInfo body _ ->
                     -- Check if the closure's params are sufficient for the expected arity
                     if List.length closureInfo.params >= List.length allArgTypes then
                         -- Closure has enough params (or more for partial application context)

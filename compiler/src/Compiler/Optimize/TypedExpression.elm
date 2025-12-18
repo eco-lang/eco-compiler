@@ -38,7 +38,6 @@ Key features:
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.TypedOptimized as TOpt
-import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName

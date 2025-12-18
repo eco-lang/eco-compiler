@@ -1,14 +1,15 @@
 module Compiler.AST.Monomorphized exposing
-    ( MonoType(..), Constraint(..), Literal(..)
+    ( MonoType(..), Literal(..)
     , RecordLayout, FieldInfo, CustomLayout, CtorLayout, TupleLayout
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry, emptyRegistry, getOrCreateSpecId, lookupSpecKey
     , MonoGraph(..), MainInfo(..), MonoNode(..), ManagerInfo
     , MonoExpr(..), ShaderInfo, ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
     , Decider(..), MonoChoice(..)
-    , typeOf, canUnbox, containsMVar, constraintToString, canTypeToMonoType
+    , typeOf, canUnbox
     , computeRecordLayout, computeTupleLayout, computeCustomLayout
     , compareGlobal, compareMonoType, compareLambdaId, compareSpecKey, toComparableGlobal, toComparableMonoType, toComparableLambdaId, toComparableSpecKey
+    , Constraint(..), canTypeToMonoType, constraintToString, containsMVar
     )
 
 {-| Monomorphized AST - fully specialized with no type variables.
@@ -575,7 +576,7 @@ canTypeToMonoType canType =
         Can.TAlias _ _ _ (Can.Filled inner) ->
             canTypeToMonoType inner
 
-        Can.TAlias _ _ args (Can.Holey inner) ->
+        Can.TAlias _ _ _ (Can.Holey inner) ->
             -- For holey aliases, we'd need the args substituted - just recurse for now
             canTypeToMonoType inner
 

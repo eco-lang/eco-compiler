@@ -30,7 +30,6 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Type.Type exposing (Type(..))
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as IO exposing (IO)
-import Utils.Crash
 import Utils.Main as Utils
 
 
@@ -44,6 +43,7 @@ When converting source types to internal types, free type variables (like `a` in
 need to be tracked to ensure all occurrences of the same variable name map to the same
 internal type variable. This dictionary maintains that consistent mapping throughout the
 conversion process.
+
 -}
 type alias FreeVars =
     Dict String Name Type
@@ -57,16 +57,18 @@ type alias FreeVars =
 
 Takes a mapping of free type variables and a canonical source type, and produces
 an internal type used during type inference. This handles:
-- Function types (lambdas)
-- Type variables (using the FreeVars mapping)
-- Named types with arguments (applications)
-- Type aliases (both filled and holey)
-- Tuples (pairs and triples)
-- Unit type
-- Record types with optional extension
+
+  - Function types (lambdas)
+  - Type variables (using the FreeVars mapping)
+  - Named types with arguments (applications)
+  - Type aliases (both filled and holey)
+  - Tuples (pairs and triples)
+  - Unit type
+  - Record types with optional extension
 
 The conversion may perform IO operations such as creating fresh type variables
 for unbound names.
+
 -}
 fromSrcType : FreeVars -> Can.Type -> IO Type
 fromSrcType freeVars sourceType =

@@ -1,14 +1,12 @@
-module Compiler.Canonicalize.Effects exposing
-    ( canonicalize
-    , checkPayload
-    )
+module Compiler.Canonicalize.Effects exposing (canonicalize, checkPayload)
 
 {-| Canonicalization of effect managers, ports, and their type constraints.
 
 This module handles the canonicalization of Elm's effects system, including:
-- Port declarations and their payload validation
-- Effect manager declarations (Cmd, Sub, and Fx managers)
-- Verification that effect types are valid and properly declared
+
+  - Port declarations and their payload validation
+  - Effect manager declarations (Cmd, Sub, and Fx managers)
+  - Verification that effect types are valid and properly declared
 
 @docs canonicalize, checkPayload
 
@@ -28,7 +26,6 @@ import Compiler.Reporting.Result as ReportingResult
 import Data.Map as Dict exposing (Dict)
 import Maybe exposing (Maybe(..))
 import System.TypeCheck.IO as IO
-import Utils.Crash
 
 
 
@@ -46,9 +43,10 @@ type alias EResult i w a =
 {-| Canonicalize effect declarations, including ports and effect managers.
 
 Validates that:
-- Port types are either `Cmd msg` or `Sub msg` with valid payloads
-- Effect managers declare all required functions (init, onEffects, onSelfMsg, cmdMap/subMap)
-- Effect types reference declared union types
+
+  - Port types are either `Cmd msg` or `Sub msg` with valid payloads
+  - Effect managers declare all required functions (init, onEffects, onSelfMsg, cmdMap/subMap)
+  - Effect types reference declared union types
 
 -}
 canonicalize :
@@ -225,11 +223,12 @@ verifyManager tagRegion values name =
 {-| Verify that a type can be used as a port payload.
 
 Valid port payloads include:
-- Primitive types (Int, Float, Bool, String)
-- Json.Encode.Value
-- Lists, Arrays, and Maybes containing valid payloads
-- Tuples and records containing valid payloads
-- Bytes.Bytes
+
+  - Primitive types (Int, Float, Bool, String)
+  - Json.Encode.Value
+  - Lists, Arrays, and Maybes containing valid payloads
+  - Tuples and records containing valid payloads
+  - Bytes.Bytes
 
 Invalid payloads include functions, type variables, and extensible records.
 

@@ -24,7 +24,6 @@ type variables for use in polymorphic type schemes (Forall quantification).
 import Basics.Extra exposing (flip)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Utils.Crash
 import Compiler.Canonicalize.Environment as Env
 import Compiler.Canonicalize.Environment.Dups as Dups
 import Compiler.Data.Name as Name
@@ -43,6 +42,7 @@ import Utils.Main as Utils
 {-| Result type for canonicalization operations.
 
 Wraps the reporting result type with canonicalization-specific error information.
+
 -}
 type alias CResult i w a =
     ReportingResult.RResult i w Error.Error a
@@ -57,6 +57,7 @@ type alias CResult i w a =
 Canonicalizes the given source type and wraps it in a Forall quantifier with all
 free type variables collected. This creates a polymorphic type scheme suitable
 for top-level type annotations.
+
 -}
 toAnnotation : SyntaxVersion -> Env.Env -> Src.Type -> CResult i w Can.Annotation
 toAnnotation syntaxVersion env srcType =
@@ -74,6 +75,7 @@ Transforms type variables, type constructors, function types, records, tuples,
 and units from source AST to canonical AST. Validates type constructor existence,
 checks arity of type applications, resolves qualified type names, and handles
 syntax version differences (e.g., tuple size restrictions in Elm vs Guida).
+
 -}
 canonicalize : SyntaxVersion -> Env.Env -> Src.Type -> CResult i w Can.Type
 canonicalize syntaxVersion env (A.At typeRegion tipe) =
