@@ -95,6 +95,9 @@ toEncoder tipe =
                         in
                         Names.registerGlobal A.zero ModuleName.basics Name.identity_ identityType
 
+                    else if name == Name.bytes then
+                        encodeBytes
+
                     else
                         crash "toEncoder: bad custom type"
 
@@ -399,6 +402,9 @@ toDecoder tipe =
                 ( "Value", [] ) ->
                     decode "value"
 
+                ( "Bytes", [] ) ->
+                    decodeBytes
+
                 ( "Maybe", [ arg ] ) ->
                     decodeMaybe arg
 
@@ -679,6 +685,35 @@ decode name =
             Can.TVar "_decoder"
     in
     Names.registerGlobal A.zero ModuleName.jsonDecode name decoderFuncType
+
+
+
+-- BYTES HELPERS
+
+
+bytesType : Can.Type
+bytesType =
+    Can.TType ModuleName.bytes "Bytes" []
+
+
+encodeBytes : Names.Tracker TOpt.Expr
+encodeBytes =
+    let
+        encoderType : Can.Type
+        encoderType =
+            Can.TLambda bytesType jsonValueType
+    in
+    Names.registerKernel Name.json (TOpt.VarKernel A.zero Name.json "encodeBytes" encoderType)
+
+
+decodeBytes : Names.Tracker TOpt.Expr
+decodeBytes =
+    let
+        decoderResultType : Can.Type
+        decoderResultType =
+            decoderType bytesType
+    in
+    Names.registerKernel Name.json (TOpt.VarKernel A.zero Name.json "decodeBytes" decoderResultType)
 
 
 

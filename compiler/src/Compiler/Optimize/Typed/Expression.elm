@@ -38,6 +38,7 @@ Key features:
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.TypedOptimized as TOpt
+import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
@@ -104,7 +105,15 @@ optimize cycle annotations (A.At region expression) =
                 Names.registerGlobal region home name tipe
 
         Can.VarKernel home name ->
-            crash ("Kernel function must be called: " ++ home ++ "." ++ name)
+            -- Kernel vars don't have type annotations in the canonical AST.
+            -- Use a type variable as a placeholder - the actual type will be
+            -- determined when this is used in context (e.g., in a call).
+            let
+                placeholderType : Can.Type
+                placeholderType =
+                    Can.TVar ("kernel_" ++ home ++ "_" ++ name)
+            in
+            Names.registerKernel home (TOpt.VarKernel region home name placeholderType)
 
         Can.VarForeign home name annotation ->
             let
@@ -360,10 +369,10 @@ optimize cycle annotations (A.At region expression) =
                                         scrutineeType =
                                             TOpt.typeOf oexpr
 
-                                        -- optimizeBranch is now defined here where scrutineeType is available
+                                        -- Define optimizeBranch inside so it can access scrutineeType
                                         optimizeBranch : Name -> Can.CaseBranch -> Names.Tracker ( Can.Pattern, TOpt.Expr )
                                         optimizeBranch root (Can.CaseBranch pattern branch) =
-                                            destructCase scrutineeType root pattern
+                                            destructCaseWithType scrutineeType root pattern
                                                 |> Names.andThen
                                                     (\( destructors, andThenings ) ->
                                                         Names.withVarTypes andThenings
@@ -508,8 +517,47 @@ optimize cycle annotations (A.At region expression) =
                                 )
                     )
 
-        Can.Shader _ _ ->
-            crash "Shader not supported"
+        Can.Shader src (Shader.Types attributes uniforms varyings) ->
+            let
+                -- Build record types for attributes, uniforms, and varyings
+                toFieldType : Name -> Shader.Type -> Can.FieldType
+                toFieldType _ shaderTipe =
+                    Can.FieldType 0 (shaderTypeToCanType shaderTipe)
+
+                attributeFields : Dict String Name Can.FieldType
+                attributeFields =
+                    Dict.map toFieldType attributes
+
+                uniformFields : Dict String Name Can.FieldType
+                uniformFields =
+                    Dict.map toFieldType uniforms
+
+                varyingFields : Dict String Name Can.FieldType
+                varyingFields =
+                    Dict.map toFieldType varyings
+
+                attributeType : Can.Type
+                attributeType =
+                    Can.TRecord attributeFields Nothing
+
+                uniformType : Can.Type
+                uniformType =
+                    Can.TRecord uniformFields Nothing
+
+                varyingType : Can.Type
+                varyingType =
+                    Can.TRecord varyingFields Nothing
+
+                shaderType : Can.Type
+                shaderType =
+                    Can.TType ModuleName.webgl "Shader" [ attributeType, uniformType, varyingType ]
+            in
+            Names.pure
+                (TOpt.Shader src
+                    (EverySet.fromList identity (Dict.keys compare attributes))
+                    (EverySet.fromList identity (Dict.keys compare uniforms))
+                    shaderType
+                )
 
 
 
@@ -534,6 +582,41 @@ intType =
 floatType : Can.Type
 floatType =
     Can.TType ModuleName.basics "Float" []
+
+
+boolType : Can.Type
+boolType =
+    Can.TType ModuleName.basics "Bool" []
+
+
+{-| Convert a GLSL shader type to a canonical Elm type.
+-}
+shaderTypeToCanType : Shader.Type -> Can.Type
+shaderTypeToCanType shaderType =
+    case shaderType of
+        Shader.Int ->
+            intType
+
+        Shader.Float ->
+            floatType
+
+        Shader.V2 ->
+            Can.TType ModuleName.vector2 "Vec2" []
+
+        Shader.V3 ->
+            Can.TType ModuleName.vector3 "Vec3" []
+
+        Shader.V4 ->
+            Can.TType ModuleName.vector4 "Vec4" []
+
+        Shader.M4 ->
+            Can.TType ModuleName.matrix4 "Mat4" []
+
+        Shader.Texture ->
+            Can.TType ModuleName.texture "Texture" []
+
+        Shader.Bool ->
+            boolType
 
 
 unitType : Can.Type
@@ -602,8 +685,68 @@ getFieldType field recordType =
         Can.TAlias _ _ _ (Can.Filled tipe) ->
             getFieldType field tipe
 
+        Can.TAlias _ _ args (Can.Holey body) ->
+            -- Substitute type parameters and look up field in the expanded body
+            let
+                substitutedBody : Can.Type
+                substitutedBody =
+                    substituteTypeVars args body
+            in
+            getFieldType field substitutedBody
+
+        Can.TVar _ ->
+            -- Type variable representing a record - return a placeholder type variable
+            -- This happens with extensible records like { a | field : Type }
+            Can.TVar ("field_" ++ field)
+
         _ ->
             crash ("Expected record type for field access: " ++ field)
+
+
+{-| Substitute type variables in a type according to the given bindings.
+-}
+substituteTypeVars : List ( Name, Can.Type ) -> Can.Type -> Can.Type
+substituteTypeVars bindings tipe =
+    case tipe of
+        Can.TVar name ->
+            case List.filter (\( n, _ ) -> n == name) bindings of
+                ( _, replacement ) :: _ ->
+                    replacement
+
+                [] ->
+                    tipe
+
+        Can.TLambda arg result ->
+            Can.TLambda (substituteTypeVars bindings arg) (substituteTypeVars bindings result)
+
+        Can.TType home name args ->
+            Can.TType home name (List.map (substituteTypeVars bindings) args)
+
+        Can.TRecord fields ext ->
+            Can.TRecord
+                (Dict.map (\_ (Can.FieldType idx ft) -> Can.FieldType idx (substituteTypeVars bindings ft)) fields)
+                ext
+
+        Can.TUnit ->
+            Can.TUnit
+
+        Can.TTuple a b cs ->
+            Can.TTuple
+                (substituteTypeVars bindings a)
+                (substituteTypeVars bindings b)
+                (List.map (substituteTypeVars bindings) cs)
+
+        Can.TAlias home name args aliasType ->
+            Can.TAlias home
+                name
+                (List.map (\( n, t ) -> ( n, substituteTypeVars bindings t )) args)
+                (case aliasType of
+                    Can.Holey body ->
+                        Can.Holey (substituteTypeVars bindings body)
+
+                    Can.Filled body ->
+                        Can.Filled (substituteTypeVars bindings body)
+                )
 
 
 {-| Get name and type from a definition.
@@ -957,6 +1100,15 @@ destructCase : Can.Type -> Name -> Can.Pattern -> Names.Tracker ( List TOpt.Dest
 destructCase scrutineeType rootName pattern =
     -- Use the scrutinee type directly instead of trying to infer from pattern.
     -- This fixes crashes for wildcards, variables, tuples, and constructors.
+    destructHelpCollectBindings (TOpt.Root rootName) scrutineeType pattern ( [], [] )
+        |> Names.map (\( revDs, andThenings ) -> ( List.reverse revDs, andThenings ))
+
+
+{-| Destruct a case pattern with a known type from the scrutinee.
+This is the preferred version that avoids trying to infer types from patterns.
+-}
+destructCaseWithType : Can.Type -> Name -> Can.Pattern -> Names.Tracker ( List TOpt.Destructor, List ( Name, Can.Type ) )
+destructCaseWithType scrutineeType rootName pattern =
     destructHelpCollectBindings (TOpt.Root rootName) scrutineeType pattern ( [], [] )
         |> Names.map (\( revDs, andThenings ) -> ( List.reverse revDs, andThenings ))
 
@@ -1581,10 +1733,9 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
                                         exprType =
                                             TOpt.typeOf oexpr
 
-                                        -- optimizeBranch is now defined here where exprType is available
                                         optimizeBranch : Name -> Can.CaseBranch -> Names.Tracker ( Can.Pattern, TOpt.Expr )
                                         optimizeBranch root (Can.CaseBranch pattern branch) =
-                                            destructCase exprType root pattern
+                                            destructCaseWithType exprType root pattern
                                                 |> Names.andThen
                                                     (\( destructors, patternBindings ) ->
                                                         Names.withVarTypes patternBindings
