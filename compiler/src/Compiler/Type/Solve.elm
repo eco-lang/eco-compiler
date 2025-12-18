@@ -721,11 +721,11 @@ typeToVariable rank pools tipe =
 Recursively converts all contained types to variables and registers them in pools.
 -}
 typeToVar : Int -> Pools -> Dict String Name.Name Variable -> Type -> IO Variable
-typeToVar rank pools aliasDict tipe =
+typeToVar rank pools _ tipe =
     let
         go : Type -> IO Variable
         go =
-            typeToVar rank pools aliasDict
+            typeToVar rank pools Dict.empty
     in
     case tipe of
         Type.VarN v ->

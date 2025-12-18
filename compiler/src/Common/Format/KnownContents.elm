@@ -1,20 +1,18 @@
-module Common.Format.KnownContents exposing (KnownContents, get, isKnown, mempty)
+module Common.Format.KnownContents exposing (KnownContents, mempty)
 
 {-| A mapping from module names to their exported contents.
 Used to resolve exposing-all imports by looking up what values a module exports.
 
-@docs KnownContents, get, isKnown, mempty
+@docs KnownContents, mempty
 
 -}
-
-import Maybe.Extra as Maybe
 
 
 {-| A mapping from module names to their exported contents.
 Used to resolve exposing-all imports by looking up what values a module exports.
 -}
 type KnownContents
-    = KnownContents (String -> Maybe (List String)) -- return Nothing if the contents are unknown
+    = KnownContents
 
 
 
@@ -33,20 +31,5 @@ mempty =
 The function returns Nothing if the module contents are unknown.
 -}
 fromFunction : (String -> Maybe (List String)) -> KnownContents
-fromFunction =
+fromFunction _ =
     KnownContents
-
-
-{-| Check if a module's contents are known.
--}
-isKnown : KnownContents -> String -> Bool
-isKnown (KnownContents lookup) =
-    lookup >> Maybe.unwrap False (always True)
-
-
-{-| Get the list of exported values for a module, if known.
-Returns Nothing if the module's contents are unknown.
--}
-get : String -> KnownContents -> Maybe (List String)
-get ns (KnownContents lookup) =
-    lookup ns

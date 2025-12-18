@@ -965,14 +965,8 @@ formatModu modu =
                     String.slice offset (offset + length) fptr
                         |> String.trim
                         |> Parse.markdown
-                            (Options
-                                { sanitize = True
-                                , allowRawHtml = True
-                                , preserveHardBreaks = True
-                                , debug = False
-                                }
-                            )
-                        |> (\(Doc _ blocks) -> blocks)
+                            Options
+                        |> (\(Doc blocks) -> blocks)
                 )
             |> A.At A.zero
     , imports = imports
@@ -1008,14 +1002,8 @@ declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
                                     (String.slice offset (offset + length) fptr
                                         |> String.trim
                                         |> Parse.markdown
-                                            (Options
-                                                { sanitize = True
-                                                , allowRawHtml = True
-                                                , preserveHardBreaks = True
-                                                , debug = False
-                                                }
-                                            )
-                                        |> (\(Doc _ blocks) -> blocks)
+                                            Options
+                                        |> (\(Doc blocks) -> blocks)
                                     )
                                 ]
                             )
@@ -1060,14 +1048,8 @@ declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
                                     (String.slice offset (offset + length) fptr
                                         |> String.trim
                                         |> Parse.markdown
-                                            (Options
-                                                { sanitize = True
-                                                , allowRawHtml = True
-                                                , preserveHardBreaks = True
-                                                , debug = False
-                                                }
-                                            )
-                                        |> (\(Doc _ blocks) -> blocks)
+                                            Options
+                                        |> (\(Doc blocks) -> blocks)
                                     )
                                 ]
                             )
@@ -1093,14 +1075,8 @@ declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
                                     (String.slice offset (offset + length) fptr
                                         |> String.trim
                                         |> Parse.markdown
-                                            (Options
-                                                { sanitize = True
-                                                , allowRawHtml = True
-                                                , preserveHardBreaks = True
-                                                , debug = False
-                                                }
-                                            )
-                                        |> (\(Doc _ blocks) -> blocks)
+                                            Options
+                                        |> (\(Doc blocks) -> blocks)
                                     )
                                 ]
                             )
@@ -1116,14 +1092,8 @@ declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
                                     (String.slice offset (offset + length) fptr
                                         |> String.trim
                                         |> Parse.markdown
-                                            (Options
-                                                { sanitize = True
-                                                , allowRawHtml = True
-                                                , preserveHardBreaks = True
-                                                , debug = False
-                                                }
-                                            )
-                                        |> (\(Doc _ blocks) -> blocks)
+                                            Options
+                                        |> (\(Doc blocks) -> blocks)
                                     )
                                 ]
                             )

@@ -322,14 +322,14 @@ addNews pkg new old =
 
 type Change a
     = Insert a
-    | Change a a
-    | Remove a
+    | Change a
+    | Remove
 
 
 detectChanges : Dict ( String, String ) Pkg.Name a -> Dict ( String, String ) Pkg.Name a -> Dict ( String, String ) Pkg.Name (Change a)
 detectChanges old new =
     Dict.merge compare
-        (\k v -> Dict.insert identity k (Remove v))
+        (\k _ -> Dict.insert identity k Remove)
         (\k oldElem newElem acc ->
             case keepChange k oldElem newElem of
                 Just change ->
@@ -350,7 +350,7 @@ keepChange _ old new =
         Nothing
 
     else
-        Just (Change old new)
+        Just (Change new)
 
 
 keepNew : Change a -> Maybe a
@@ -359,8 +359,8 @@ keepNew change =
         Insert a ->
             Just a
 
-        Change _ a ->
+        Change a ->
             Just a
 
-        Remove _ ->
+        Remove ->
             Nothing

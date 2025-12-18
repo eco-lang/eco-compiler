@@ -785,7 +785,7 @@ handleCachedDepsStatus :
     -> Details.Local
     -> DepsStatus
     -> Task Never BResult
-handleCachedDepsStatus ((Env envData) as env) root projectType name path time deps hasMain lastChange local depsStatus =
+handleCachedDepsStatus ((Env envData) as env) root projectType name path time deps hasMain lastChange _ depsStatus =
     case depsStatus of
         DepsSame same cached ->
             -- Check if typed optimization is needed but .guidato doesn't exist
@@ -867,7 +867,7 @@ recompileCachedModule :
     -> Dict String ModuleName.Raw I.Interface
     -> String
     -> Task Never BResult
-recompileCachedModule env root projectType name path time deps ifaces source =
+recompileCachedModule env _ projectType name path time deps ifaces source =
     case Parse.fromByteString (SV.fileSyntaxVersion path) projectType source of
         Err err ->
             Error.BadSyntax err |> Error.Module name path time source |> RProblem |> Task.succeed

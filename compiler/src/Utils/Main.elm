@@ -17,8 +17,8 @@ module Utils.Main exposing
     , MVar(..), newMVar, newEmptyMVar, readMVar, takeMVar, putMVar
     , mVarEncoder, mVarDecoder
     , Chan, ChItem, newChan, readChan, writeChan
-    , ReplSettings(..), ReplInputT, ReplCompletion(..), ReplCompletionFunc
-    , replRunInputT, replWithInterrupt, replCompleteWord, replGetInputLine
+    , ReplSettings(..), ReplInputT
+    , replRunInputT, replWithInterrupt, replGetInputLine
     , replGetInputLineWithInitial, liftInputT, liftIOInputT
     , nodeGetDirname, nodeMathRandom
     , mapFromListWith, mapFromKeys, mapInsertWith, mapIntersectionWith, mapIntersectionWithKey
@@ -99,8 +99,8 @@ primary interface to system resources and provides Haskell-like abstractions ada
 
 # REPL Support
 
-@docs ReplSettings, ReplInputT, ReplCompletion, ReplCompletionFunc
-@docs replRunInputT, replWithInterrupt, replCompleteWord, replGetInputLine
+@docs ReplSettings, ReplInputT
+@docs replRunInputT, replWithInterrupt, replGetInputLine
 @docs replGetInputLineWithInitial, liftInputT, liftIOInputT
 
 
@@ -1401,28 +1401,12 @@ binaryEncodeFile toEncoder path value =
 -}
 type ReplSettings
     = ReplSettings
-        { historyFile : Maybe String
-        , autoAddHistory : Bool
-        , complete : ReplCompletionFunc
-        }
 
 
 {-| The REPL input monad, which is just a Task in this implementation.
 -}
 type alias ReplInputT a =
     Task Never a
-
-
-{-| A completion suggestion with replacement text, display text, and whether it's finished.
--}
-type ReplCompletion
-    = ReplCompletion String String Bool
-
-
-{-| A function that provides completion suggestions for the REPL.
--}
-type ReplCompletionFunc
-    = ReplCompletionFunc
 
 
 {-| Run a REPL input task with the given settings.
@@ -1437,14 +1421,6 @@ replRunInputT _ io =
 replWithInterrupt : ReplInputT a -> ReplInputT a
 replWithInterrupt =
     identity
-
-
-{-| Create a completion function for word completion in the REPL.
--}
-replCompleteWord : Maybe Char -> String -> (String -> State.StateT a (List ReplCompletion)) -> ReplCompletionFunc
-replCompleteWord _ _ _ =
-    -- FIXME
-    ReplCompletionFunc
 
 
 {-| Read a line of input from the REPL with the given prompt, returning Nothing on EOF.

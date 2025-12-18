@@ -97,8 +97,8 @@ import Utils.Crash exposing (crash)
 Converts the input string into a structured Doc representation.
 -}
 markdown : Options -> String -> Doc
-markdown opts =
-    processLines >> processDocument >> Doc opts
+markdown _ =
+    processLines >> processDocument >> Doc
 
 
 
@@ -143,7 +143,7 @@ type alias LineNumber =
 -}
 type Elt
     = C Container
-    | L LineNumber Leaf
+    | L Leaf
 
 
 type Container
@@ -316,7 +316,7 @@ closeContainer =
                             -- move final BlankLine outside of list item
                             (Container ct_ cs_) :: rs ->
                                 case List.reverse cs__ of
-                                    ((L _ (BlankLine _)) as b) :: zs ->
+                                    ((L (BlankLine _)) as b) :: zs ->
                                         RWS.put
                                             (ContainerStack
                                                 (if List.isEmpty zs then
@@ -348,24 +348,24 @@ closeContainer =
 -- Add a leaf to the top container.
 
 
-addLeaf : LineNumber -> Leaf -> ContainerM ()
-addLeaf lineNum lf =
+addLeaf : Leaf -> ContainerM ()
+addLeaf lf =
     RWS.get
         |> RWS.andThen
             (\(ContainerStack top rest) ->
                 case ( top, lf ) of
                     ( Container ((ListItem _) as ct) cs, BlankLine _ ) ->
                         case List.reverse cs of
-                            (L _ (BlankLine _)) :: _ ->
+                            (L (BlankLine _)) :: _ ->
                                 -- two blanks break out of list item:
                                 closeContainer
-                                    |> RWS.andThen (\_ -> addLeaf lineNum lf)
+                                    |> RWS.andThen (\_ -> addLeaf lf)
 
                             _ ->
-                                RWS.put (ContainerStack (Container ct (L lineNum lf :: cs)) rest)
+                                RWS.put (ContainerStack (Container ct (L lf :: cs)) rest)
 
                     ( Container ct cs, _ ) ->
-                        RWS.put (ContainerStack (Container ct (L lineNum lf :: cs)) rest)
+                        RWS.put (ContainerStack (Container ct (L lf :: cs)) rest)
             )
 
 
@@ -408,7 +408,7 @@ processElts remap elts =
         [] ->
             []
 
-        (L _ lf) :: rest ->
+        (L lf) :: rest ->
             case lf of
                 -- Special handling of @docs lines in Elm:
                 TextLine t ->
@@ -425,7 +425,7 @@ processElts remap elts =
                                 isDocLine : Elt -> Bool
                                 isDocLine elt =
                                     case elt of
-                                        L _ (TextLine _) ->
+                                        L (TextLine _) ->
                                             True
 
                                         _ ->
@@ -459,7 +459,7 @@ processElts remap elts =
                                 isTextLine : Elt -> Bool
                                 isTextLine elt =
                                     case elt of
-                                        L _ (TextLine s) ->
+                                        L (TextLine s) ->
                                             not (String.startsWith "@docs" s)
 
                                         _ ->
@@ -490,7 +490,7 @@ processElts remap elts =
                 isBlankLine : Elt -> Bool
                 isBlankLine x =
                     case x of
-                        L _ (BlankLine _) ->
+                        L (BlankLine _) ->
                             True
 
                         _ ->
@@ -538,7 +538,7 @@ processElts remap elts =
                                     else
                                         []
 
-                                ((L _ (BlankLine _)) as lf) :: ((C (Container (ListItem li_) _)) as c) :: zs ->
+                                ((L (BlankLine _)) as lf) :: ((C (Container (ListItem li_) _)) as c) :: zs ->
                                     if listTypesMatch li_.listType listType then
                                         lf :: c :: takeListItems zs
 
@@ -629,7 +629,7 @@ processElts remap elts =
                         extractCode : Elt -> List String
                         extractCode elt =
                             case elt of
-                                L _ (BlankLine t) ->
+                                L (BlankLine t) ->
                                     [ String.dropLeft 1 t ]
 
                                 C (Container IndentedCode cs_) ->
@@ -645,7 +645,7 @@ processElts remap elts =
                         isIndentedCodeOrBlank : Elt -> Bool
                         isIndentedCodeOrBlank elt =
                             case elt of
-                                L _ (BlankLine _) ->
+                                L (BlankLine _) ->
                                     True
 
                                 C (Container IndentedCode _) ->
@@ -698,7 +698,7 @@ processElts remap elts =
 extractText : Elt -> String
 extractText elt =
     case elt of
-        L _ (TextLine t) ->
+        L (TextLine t) ->
             t
 
         _ ->
@@ -730,7 +730,7 @@ processLines t =
 
 
 processLine : ( LineNumber, String ) -> ContainerM ()
-processLine ( lineNumber, txt ) =
+processLine ( _, txt ) =
     RWS.get
         |> RWS.andThen
             (\(ContainerStack ((Container ct cs) as top) rest) ->
@@ -746,7 +746,7 @@ processLine ( lineNumber, txt ) =
                     lastLineIsText =
                         (numUnmatched == 0)
                             && (case List.reverse cs of
-                                    (L _ (TextLine _)) :: _ ->
+                                    (L (TextLine _)) :: _ ->
                                         True
 
                                     _ ->
@@ -764,7 +764,7 @@ processLine ( lineNumber, txt ) =
                                             RWS.return ()
 
                                         _ ->
-                                            addLeaf lineNumber lf
+                                            addLeaf lf
                                 )
                 in
                 -- Process the rest of the line in a way that makes sense given
@@ -772,10 +772,10 @@ processLine ( lineNumber, txt ) =
                 case ( ct, numUnmatched == 0 ) of
                     -- If it's a verbatim line container, add the line.
                     ( RawHtmlBlock, True ) ->
-                        addLeaf lineNumber (TextLine t_)
+                        addLeaf (TextLine t_)
 
                     ( IndentedCode, True ) ->
-                        addLeaf lineNumber (TextLine t_)
+                        addLeaf (TextLine t_)
 
                     ( FencedCode { fence }, _ ) ->
                         -- here we don't check numUnmatched because we allow laziness
@@ -786,7 +786,7 @@ processLine ( lineNumber, txt ) =
                             closeContainer
 
                         else
-                            addLeaf lineNumber (TextLine t_)
+                            addLeaf (TextLine t_)
 
                     ( Reference, _ ) ->
                         let
@@ -806,7 +806,7 @@ processLine ( lineNumber, txt ) =
                                     numUnmatched
                                         > 0
                                         && (case List.reverse cs of
-                                                (L _ (TextLine _)) :: _ ->
+                                                (L (TextLine _)) :: _ ->
                                                     True
 
                                                 _ ->
@@ -815,7 +815,7 @@ processLine ( lineNumber, txt ) =
                                         && ct
                                         /= IndentedCode
                                 then
-                                    addLeaf lineNumber (TextLine t)
+                                    addLeaf (TextLine t)
 
                                 else
                                     -- close unmatched containers, add new ones
@@ -827,12 +827,12 @@ processLine ( lineNumber, txt ) =
                             ( [] as ns, (SetextHeader lev _) as lf ) ->
                                 if numUnmatched == 0 then
                                     case List.reverse cs of
-                                        (L _ (TextLine t)) :: cs_ ->
+                                        (L (TextLine t)) :: cs_ ->
                                             -- replace last text line with setext header
                                             RWS.put
                                                 (ContainerStack
                                                     (Container ct
-                                                        (List.reverse (L lineNumber (SetextHeader lev t) :: cs_))
+                                                        (List.reverse (L (SetextHeader lev t) :: cs_))
                                                     )
                                                     rest
                                                 )

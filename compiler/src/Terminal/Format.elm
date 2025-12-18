@@ -557,14 +557,14 @@ collectErrors =
 
 
 type TranformFilesResult a
-    = NoChange FilePath a
+    = NoChange
     | Changed FilePath a
 
 
 updateFile : TranformFilesResult String -> Task Never ()
 updateFile result =
     case result of
-        NoChange _ _ ->
+        NoChange ->
             Task.succeed ()
 
         Changed outputFile outputText ->
@@ -580,7 +580,7 @@ readStdin =
 checkChange : ( FilePath, a ) -> a -> TranformFilesResult a
 checkChange ( inputFile, inputText ) outputText =
     if inputText == outputText then
-        NoChange inputFile outputText
+        NoChange
 
     else
         Changed inputFile outputText

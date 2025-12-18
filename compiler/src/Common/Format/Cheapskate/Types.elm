@@ -44,11 +44,10 @@ import Data.Map exposing (Dict)
 -- TYPES
 
 
-{-| A complete Markdown document with rendering options and block content.
-The Options control how the document is rendered to HTML or other formats.
+{-| A complete Markdown document with block content.
 -}
 type Doc
-    = Doc Options Blocks
+    = Doc Blocks
 
 
 {-| Block-level elements that make up a Markdown document.
@@ -144,8 +143,3 @@ type alias ReferenceMap =
 -}
 type Options
     = Options
-        { sanitize : Bool -- ^ Sanitize raw HTML, link/image attributes
-        , allowRawHtml : Bool -- ^ Allow raw HTML (if false it gets escaped)
-        , preserveHardBreaks : Bool -- ^ Preserve hard line breaks in the source
-        , debug : Bool -- ^ Print container structure for debugging
-        }

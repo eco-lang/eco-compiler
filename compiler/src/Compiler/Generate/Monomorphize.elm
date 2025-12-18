@@ -203,7 +203,7 @@ processWorklist state =
                                 { stateWithId | currentGlobal = Just global }
 
                             ( monoNode, stateAfterSpec ) =
-                                specializeNode toptNode monoType maybeLambda stateWithGlobal
+                                specializeNode toptNode monoType stateWithGlobal
 
                             newState =
                                 { stateAfterSpec
@@ -221,8 +221,8 @@ processWorklist state =
 -- ============================================================================
 
 
-specializeNode : TOpt.Node -> Mono.MonoType -> Maybe Mono.LambdaId -> MonoState -> ( Mono.MonoNode, MonoState )
-specializeNode node monoType maybeLambda state =
+specializeNode : TOpt.Node -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
+specializeNode node monoType state =
     case node of
         TOpt.Define expr _ canType ->
             let
@@ -234,11 +234,8 @@ specializeNode node monoType maybeLambda state =
 
                 ( monoExpr, state2 ) =
                     ensureCallableTopLevel monoExpr0 monoType state1
-
-                depIds =
-                    collectDependencies monoExpr
             in
-            ( Mono.MonoDefine monoExpr depIds monoType, state2 )
+            ( Mono.MonoDefine monoExpr monoType, state2 )
 
         TOpt.TrackedDefine _ expr _ canType ->
             let
@@ -250,11 +247,8 @@ specializeNode node monoType maybeLambda state =
 
                 ( monoExpr, state2 ) =
                     ensureCallableTopLevel monoExpr0 monoType state1
-
-                depIds =
-                    collectDependencies monoExpr
             in
-            ( Mono.MonoDefine monoExpr depIds monoType, state2 )
+            ( Mono.MonoDefine monoExpr monoType, state2 )
 
         TOpt.DefineTailFunc _ args body _ returnType ->
             let
@@ -270,13 +264,10 @@ specializeNode node monoType maybeLambda state =
                 ( monoBody, stateAfter ) =
                     specializeExpr body subst state
 
-                depIds =
-                    collectDependencies monoBody
-
                 monoReturnType =
                     applySubst subst returnType
             in
-            ( Mono.MonoTailFunc monoArgs monoBody depIds monoReturnType, stateAfter )
+            ( Mono.MonoTailFunc monoArgs monoBody monoReturnType, stateAfter )
 
         TOpt.Ctor index arity _ ->
             let
@@ -310,7 +301,7 @@ specializeNode node monoType maybeLambda state =
 
                 Just linkedNode ->
                     -- Specialize the linked node
-                    specializeNode linkedNode monoType maybeLambda state
+                    specializeNode linkedNode monoType state
 
         TOpt.Cycle names values functions _ ->
             -- Specialize all definitions in the cycle and return MonoCycle
@@ -332,11 +323,8 @@ specializeNode node monoType maybeLambda state =
 
                 ( monoExpr, state2 ) =
                     ensureCallableTopLevel monoExpr0 monoType state1
-
-                depIds =
-                    collectDependencies monoExpr
             in
-            ( Mono.MonoPortIncoming monoExpr depIds monoType, state2 )
+            ( Mono.MonoPortIncoming monoExpr monoType, state2 )
 
         TOpt.PortOutgoing expr _ canType ->
             let
@@ -348,11 +336,8 @@ specializeNode node monoType maybeLambda state =
 
                 ( monoExpr, state2 ) =
                     ensureCallableTopLevel monoExpr0 monoType state1
-
-                depIds =
-                    collectDependencies monoExpr
             in
-            ( Mono.MonoPortOutgoing monoExpr depIds monoType, state2 )
+            ( Mono.MonoPortOutgoing monoExpr monoType, state2 )
 
 
 extractCtorResultType : Int -> Mono.MonoType -> Mono.MonoType
@@ -418,18 +403,15 @@ specializeValueOnlyCycle :
     -> Mono.MonoType
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
-specializeValueOnlyCycle names values monoType state =
+specializeValueOnlyCycle _ values monoType state =
     let
         subst =
             Dict.empty
 
         ( monoValues, state1 ) =
             specializeValueDefs values subst state
-
-        depIds =
-            collectCycleDependencies monoValues
     in
-    ( Mono.MonoCycle monoValues depIds monoType, state1 )
+    ( Mono.MonoCycle monoValues monoType, state1 )
 
 
 {-| Specialize a function cycle by generating separate MonoTailFunc/MonoDefine nodes.
@@ -538,11 +520,8 @@ specializeFuncNodeInCycle subst def state =
 
                 ( monoExpr, state1 ) =
                     specializeExpr expr subst state
-
-                depIds =
-                    collectDependencies monoExpr
             in
-            ( Mono.MonoDefine monoExpr depIds monoType, state1 )
+            ( Mono.MonoDefine monoExpr monoType, state1 )
 
         TOpt.TailDef _ _ args body returnType ->
             -- Tail-recursive function definition
@@ -553,13 +532,10 @@ specializeFuncNodeInCycle subst def state =
                 ( monoBody, state1 ) =
                     specializeExpr body subst state
 
-                depIds =
-                    collectDependencies monoBody
-
                 monoReturnType =
                     applySubst subst returnType
             in
-            ( Mono.MonoTailFunc monoArgs monoBody depIds monoReturnType, state1 )
+            ( Mono.MonoTailFunc monoArgs monoBody monoReturnType, state1 )
 
 
 {-| Check if a definition has the given name.
@@ -616,18 +592,6 @@ specializeValueDefs values subst state =
         )
         ( [], state )
         values
-
-
-{-| Collect all dependencies from all definitions in a cycle.
--}
-collectCycleDependencies : List ( Name, Mono.MonoExpr ) -> EverySet Int Int
-collectCycleDependencies defs =
-    List.foldl
-        (\( _, expr ) deps ->
-            EverySet.union deps (collectDependencies expr)
-        )
-        EverySet.empty
-        defs
 
 
 
@@ -790,7 +754,7 @@ specializeExpr expr subst state =
 
                 -- Allocate a lambda ID
                 lambdaId =
-                    Mono.AnonymousLambda state.currentModule state.lambdaCounter []
+                    Mono.AnonymousLambda state.currentModule state.lambdaCounter
 
                 stateWithLambda =
                     { state | lambdaCounter = state.lambdaCounter + 1 }
@@ -823,7 +787,7 @@ specializeExpr expr subst state =
                     List.map (\( locName, t ) -> ( A.toValue locName, applySubst subst t )) params
 
                 lambdaId =
-                    Mono.AnonymousLambda state.currentModule state.lambdaCounter []
+                    Mono.AnonymousLambda state.currentModule state.lambdaCounter
 
                 stateWithLambda =
                     { state | lambdaCounter = state.lambdaCounter + 1 }
@@ -1158,40 +1122,28 @@ specializeBranches branches subst state =
 specializeDef : TOpt.Def -> Substitution -> MonoState -> ( Mono.MonoDef, MonoState )
 specializeDef def subst state =
     case def of
-        TOpt.Def region name expr canType ->
+        TOpt.Def _ name expr _ ->
             let
-                monoType =
-                    applySubst subst canType
-
                 ( monoExpr, stateAfter ) =
                     specializeExpr expr subst state
             in
-            ( Mono.MonoDef region name monoExpr monoType, stateAfter )
+            ( Mono.MonoDef name monoExpr, stateAfter )
 
-        TOpt.TailDef region name args expr canType ->
+        TOpt.TailDef _ name _ expr _ ->
             let
-                monoType =
-                    applySubst subst canType
-
-                monoArgs =
-                    List.map (\( locName, t ) -> ( A.toValue locName, applySubst subst t )) args
-
                 ( monoExpr, stateAfter ) =
                     specializeExpr expr subst state
             in
-            ( Mono.MonoTailDef region name monoArgs monoExpr monoType, stateAfter )
+            ( Mono.MonoTailDef name monoExpr, stateAfter )
 
 
 specializeDestructor : TOpt.Destructor -> Substitution -> Mono.MonoDestructor
-specializeDestructor (TOpt.Destructor name path canType) subst =
+specializeDestructor (TOpt.Destructor name path _) _ =
     let
-        monoType =
-            applySubst subst canType
-
         monoPath =
             specializePath path
     in
-    Mono.MonoDestructor name monoPath monoType
+    Mono.MonoDestructor name monoPath
 
 
 specializePath : TOpt.Path -> Mono.MonoPath
@@ -1204,9 +1156,9 @@ specializePath path =
             -- Treat array index as regular index for now
             Mono.MonoIndex idx (specializePath subPath)
 
-        TOpt.Field name subPath ->
+        TOpt.Field _ subPath ->
             -- Field access needs index lookup at runtime
-            Mono.MonoField name 0 (specializePath subPath)
+            Mono.MonoField 0 (specializePath subPath)
 
         TOpt.Unbox subPath ->
             Mono.MonoUnbox (specializePath subPath)
@@ -1225,7 +1177,7 @@ specializeDecider decider subst state =
             in
             ( Mono.Leaf monoChoice, stateAfter )
 
-        TOpt.Chain tests success failure ->
+        TOpt.Chain _ success failure ->
             let
                 ( monoSuccess, state1 ) =
                     specializeDecider success subst state
@@ -1233,9 +1185,9 @@ specializeDecider decider subst state =
                 ( monoFailure, state2 ) =
                     specializeDecider failure subst state1
             in
-            ( Mono.Chain tests monoSuccess monoFailure, state2 )
+            ( Mono.Chain monoSuccess monoFailure, state2 )
 
-        TOpt.FanOut path edges fallback ->
+        TOpt.FanOut _ edges fallback ->
             let
                 ( monoEdges, state1 ) =
                     specializeEdges edges subst state
@@ -1243,7 +1195,7 @@ specializeDecider decider subst state =
                 ( monoFallback, state2 ) =
                     specializeDecider fallback subst state1
             in
-            ( Mono.FanOut path monoEdges monoFallback, state2 )
+            ( Mono.FanOut monoEdges monoFallback, state2 )
 
 
 specializeChoice : TOpt.Choice -> Substitution -> MonoState -> ( Mono.MonoChoice, MonoState )
@@ -1256,8 +1208,8 @@ specializeChoice choice subst state =
             in
             ( Mono.Inline monoExpr, stateAfter )
 
-        TOpt.Jump idx ->
-            ( Mono.Jump idx, state )
+        TOpt.Jump _ ->
+            ( Mono.Jump, state )
 
 
 specializeEdges : List ( DT.Test, TOpt.Decider TOpt.Choice ) -> Substitution -> MonoState -> ( List ( DT.Test, Mono.Decider Mono.MonoChoice ), MonoState )
@@ -1547,7 +1499,7 @@ makeAliasClosure calleeExpr region argTypes retType monoType state =
         -- Allocate a lambda ID
         lambdaId : Mono.LambdaId
         lambdaId =
-            Mono.AnonymousLambda state.currentModule state.lambdaCounter []
+            Mono.AnonymousLambda state.currentModule state.lambdaCounter
 
         stateWithLambda : MonoState
         stateWithLambda =
@@ -1608,7 +1560,7 @@ makeGeneralClosure expr argTypes retType monoType state =
         -- Allocate a lambda ID
         lambdaId : Mono.LambdaId
         lambdaId =
-            Mono.AnonymousLambda state.currentModule state.lambdaCounter []
+            Mono.AnonymousLambda state.currentModule state.lambdaCounter
 
         stateWithLambda : MonoState
         stateWithLambda =
@@ -1666,7 +1618,7 @@ makeGeneralClosureWithCaptures expr captures argTypes retType monoType state =
         -- Allocate a lambda ID
         lambdaId : Mono.LambdaId
         lambdaId =
-            Mono.AnonymousLambda state.currentModule state.lambdaCounter []
+            Mono.AnonymousLambda state.currentModule state.lambdaCounter
 
         stateWithLambda : MonoState
         stateWithLambda =
@@ -1798,7 +1750,7 @@ unifyHelp canType monoType subst =
                     else
                         unifyHelp to (Mono.MFunction restArgs ret) subst1
 
-        ( Can.TType _ _ args, Mono.MCustom _ _ monoArgs _ ) ->
+        ( Can.TType _ _ args, Mono.MCustom _ _ monoArgs ) ->
             List.foldl
                 (\( canArg, monoArg ) s ->
                     unifyHelp canArg monoArg s
@@ -1955,19 +1907,11 @@ applySubst subst canType =
 
                     _ ->
                         -- Custom type from elm/core
-                        let
-                            layout =
-                                Mono.computeCustomLayout []
-                        in
-                        Mono.MCustom canonical name monoArgs layout
+                        Mono.MCustom canonical name monoArgs
 
             else
                 -- Custom type
-                let
-                    layout =
-                        Mono.computeCustomLayout []
-                in
-                Mono.MCustom canonical name monoArgs layout
+                Mono.MCustom canonical name monoArgs
 
         Can.TRecord fields _ ->
             let
@@ -2188,10 +2132,10 @@ findFreeVars bound expr =
             let
                 ( defName, defExpr ) =
                     case def of
-                        Mono.MonoDef _ n e _ ->
+                        Mono.MonoDef n e ->
                             ( n, e )
 
-                        Mono.MonoTailDef _ n _ e _ ->
+                        Mono.MonoTailDef n e ->
                             ( n, e )
 
                 newBound =
@@ -2248,11 +2192,6 @@ dedupeCaptures captures =
 -- ============================================================================
 
 
-collectDependencies : Mono.MonoExpr -> EverySet Int Int
-collectDependencies expr =
-    collectDepsHelp expr EverySet.empty
-
-
 collectDepsHelp : Mono.MonoExpr -> EverySet Int Int -> EverySet Int Int
 collectDepsHelp expr deps =
     case expr of
@@ -2287,10 +2226,10 @@ collectDepsHelp expr deps =
             let
                 defDeps =
                     case def of
-                        Mono.MonoDef _ _ e _ ->
+                        Mono.MonoDef _ e ->
                             collectDepsHelp e deps
 
-                        Mono.MonoTailDef _ _ _ e _ ->
+                        Mono.MonoTailDef _ e ->
                             collectDepsHelp e deps
             in
             collectDepsHelp body defDeps
@@ -2329,13 +2268,13 @@ collectDeciderDeps decider deps =
                 Mono.Inline expr ->
                     collectDepsHelp expr deps
 
-                Mono.Jump _ ->
+                Mono.Jump ->
                     deps
 
-        Mono.Chain _ success failure ->
+        Mono.Chain success failure ->
             collectDeciderDeps failure (collectDeciderDeps success deps)
 
-        Mono.FanOut _ edges fallback ->
+        Mono.FanOut edges fallback ->
             let
                 edgeDeps =
                     List.foldl (\( _, d ) acc -> collectDeciderDeps d acc) deps edges

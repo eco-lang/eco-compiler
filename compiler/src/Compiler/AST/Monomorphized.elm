@@ -1,13 +1,13 @@
 module Compiler.AST.Monomorphized exposing
     ( MonoType(..), Literal(..), Constraint(..)
-    , RecordLayout, FieldInfo, CustomLayout, CtorLayout, TupleLayout
+    , RecordLayout, FieldInfo, CtorLayout, TupleLayout
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry, emptyRegistry, getOrCreateSpecId, lookupSpecKey
     , MonoGraph(..), MainInfo(..), MonoNode(..)
     , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
     , Decider(..), MonoChoice(..)
     , typeOf, canUnbox
-    , computeRecordLayout, computeTupleLayout, computeCustomLayout
+    , computeRecordLayout, computeTupleLayout
     , toComparableSpecKey
     )
 
@@ -32,7 +32,7 @@ Key characteristics:
 
 # Runtime Layouts
 
-@docs RecordLayout, FieldInfo, CustomLayout, CtorLayout, TupleLayout
+@docs RecordLayout, FieldInfo, CtorLayout, TupleLayout
 
 
 # Lambda Sets
@@ -67,7 +67,7 @@ Key characteristics:
 
 # Layout Computation
 
-@docs computeRecordLayout, computeTupleLayout, computeCustomLayout
+@docs computeRecordLayout, computeTupleLayout
 
 
 # Comparison and Ordering
@@ -81,7 +81,6 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Optimize.DecisionTree as DT
 import Compiler.Reporting.Annotation exposing (Region)
 import Data.Map as Dict exposing (Dict)
-import Data.Set exposing (EverySet)
 import System.TypeCheck.IO as IO
 
 
@@ -103,7 +102,7 @@ type MonoType
     | MList MonoType
     | MTuple TupleLayout
     | MRecord RecordLayout
-    | MCustom IO.Canonical Name (List MonoType) CustomLayout
+    | MCustom IO.Canonical Name (List MonoType)
     | MFunction (List MonoType) MonoType
     | MVar Name Constraint -- Unspecialized type var
 
@@ -144,13 +143,6 @@ type alias FieldInfo =
     }
 
 
-{-| Runtime layout information for custom types.
--}
-type alias CustomLayout =
-    { constructors : List CtorLayout
-    }
-
-
 {-| Runtime layout information for a single constructor variant.
 -}
 type alias CtorLayout =
@@ -180,7 +172,7 @@ type alias TupleLayout =
 {-| Identifier for lambda functions in lambda sets, distinguishing named functions from closures.
 -}
 type LambdaId
-    = AnonymousLambda IO.Canonical Int (List ( Name, MonoType )) -- module, unique id, captures
+    = AnonymousLambda IO.Canonical Int
 
 
 
@@ -293,14 +285,14 @@ type MainInfo
 {-| A node in the monomorphized dependency graph representing a specialized definition.
 -}
 type MonoNode
-    = MonoDefine MonoExpr (EverySet Int Int) MonoType
-    | MonoTailFunc (List ( Name, MonoType )) MonoExpr (EverySet Int Int) MonoType
+    = MonoDefine MonoExpr MonoType
+    | MonoTailFunc (List ( Name, MonoType )) MonoExpr MonoType
     | MonoCtor CtorLayout MonoType
     | MonoEnum Int MonoType
     | MonoExtern MonoType
-    | MonoPortIncoming MonoExpr (EverySet Int Int) MonoType
-    | MonoPortOutgoing MonoExpr (EverySet Int Int) MonoType
-    | MonoCycle (List ( Name, MonoExpr )) (EverySet Int Int) MonoType
+    | MonoPortIncoming MonoExpr MonoType
+    | MonoPortOutgoing MonoExpr MonoType
+    | MonoCycle (List ( Name, MonoExpr )) MonoType
 
 
 
@@ -354,38 +346,38 @@ type alias ClosureInfo =
 {-| A local definition in monomorphized code.
 -}
 type MonoDef
-    = MonoDef Region Name MonoExpr MonoType
-    | MonoTailDef Region Name (List ( Name, MonoType )) MonoExpr MonoType
+    = MonoDef Name MonoExpr
+    | MonoTailDef Name MonoExpr
 
 
 {-| Destructuring pattern for extracting values from data structures.
 -}
 type MonoDestructor
-    = MonoDestructor Name MonoPath MonoType
+    = MonoDestructor Name MonoPath
 
 
 {-| Path for navigating into a data structure during destructuring.
 -}
 type MonoPath
     = MonoIndex Int MonoPath
-    | MonoField Name Int MonoPath
+    | MonoField Int MonoPath
     | MonoUnbox MonoPath
-    | MonoRoot Name -- Array index access
+    | MonoRoot Name
 
 
 {-| Decision tree for pattern matching.
 -}
 type Decider a
     = Leaf a
-    | Chain (List ( DT.Path, DT.Test )) (Decider a) (Decider a)
-    | FanOut DT.Path (List ( DT.Test, Decider a )) (Decider a)
+    | Chain (Decider a) (Decider a)
+    | FanOut (List ( DT.Test, Decider a )) (Decider a)
 
 
 {-| Action to take when a pattern match succeeds.
 -}
 type MonoChoice
     = Inline MonoExpr
-    | Jump Int
+    | Jump
 
 
 
@@ -555,46 +547,6 @@ computeTupleLayout types =
     }
 
 
-{-| Compute runtime layout for a custom type with its constructors.
--}
-computeCustomLayout : List ( Name, List MonoType ) -> CustomLayout
-computeCustomLayout constructors =
-    { constructors =
-        List.indexedMap
-            (\tag ( name, fieldTypes ) ->
-                let
-                    fields =
-                        List.indexedMap
-                            (\idx ty ->
-                                { name = "field" ++ String.fromInt idx
-                                , index = idx
-                                , monoType = ty
-                                , isUnboxed = canUnbox ty
-                                }
-                            )
-                            fieldTypes
-
-                    unboxedCount =
-                        List.length (List.filter .isUnboxed fields)
-
-                    unboxedBitmap =
-                        if unboxedCount == 0 then
-                            0
-
-                        else
-                            (2 ^ unboxedCount) - 1
-                in
-                { name = name
-                , tag = tag
-                , fields = fields
-                , unboxedCount = unboxedCount
-                , unboxedBitmap = unboxedBitmap
-                }
-            )
-            constructors
-    }
-
-
 
 -- ============================================================================
 -- COMPARISON FUNCTIONS
@@ -640,7 +592,7 @@ toComparableMonoType monoType =
         MRecord layout ->
             "Record" :: List.concatMap (\f -> f.name :: toComparableMonoType f.monoType) layout.fields
 
-        MCustom canonical name args _ ->
+        MCustom canonical name args ->
             "Custom" :: ModuleName.toComparableCanonical canonical ++ [ name ] ++ List.concatMap toComparableMonoType args
 
         MFunction args ret ->
@@ -676,7 +628,7 @@ constraintToString constraint =
 toComparableLambdaId : LambdaId -> List String
 toComparableLambdaId lambdaId =
     case lambdaId of
-        AnonymousLambda canonical uid _ ->
+        AnonymousLambda canonical uid ->
             "Anon" :: ModuleName.toComparableCanonical canonical ++ [ String.fromInt uid ]
 
 

@@ -280,7 +280,7 @@ generateAndRunTests root testFileGlobs flags exposedList =
 
 
 generateTestMain : FilePath -> List String -> Flags -> List ( FilePath, ( String, List String ) ) -> Task Never String
-generateTestMain root testFileGlobs flags exposedList =
+generateTestMain _ testFileGlobs flags exposedList =
     let
         testModules : List { moduleName : String, possiblyTests : List String }
         testModules =
@@ -906,8 +906,8 @@ determineFileType isFile isDirectory =
 
 
 type Error
-    = FileDoesNotExist FilePath
-    | NoElmFiles FilePath
+    = FileDoesNotExist
+    | NoElmFiles
 
 
 resolveFile : FilePath -> Task Never (Result Error (List FilePath))
@@ -927,14 +927,14 @@ resolveFileByType path fileType =
                 |> Task.map (validateElmFiles path)
 
         DoesNotExist ->
-            Task.succeed (Err (FileDoesNotExist path))
+            Task.succeed (Err FileDoesNotExist)
 
 
 validateElmFiles : FilePath -> List FilePath -> Result Error (List FilePath)
-validateElmFiles path elmFiles =
+validateElmFiles _ elmFiles =
     case elmFiles of
         [] ->
-            Err (NoElmFiles path)
+            Err NoElmFiles
 
         _ ->
             Ok elmFiles

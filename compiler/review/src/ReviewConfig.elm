@@ -52,7 +52,6 @@ config =
     , NoUnused.CustomTypeConstructors.rule []
     , Docs.ReviewAtDocs.rule
     --, NoUnused.CustomTypeConstructorArgs.rule
-    --, NoUnused.Parameters.rule
-    --    |> Rule.ignoreErrorsForFiles [ "src/Utils/Crash.elm" ]
-
+    , NoUnused.Parameters.rule
+        |> Rule.ignoreErrorsForFiles [ "src/Utils/Crash.elm" ]
     ]

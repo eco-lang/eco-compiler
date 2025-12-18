@@ -122,7 +122,7 @@ monoTypeToMlir monoType =
         Mono.MRecord _ ->
             ecoValue
 
-        Mono.MCustom _ _ _ _ ->
+        Mono.MCustom _ _ _ ->
             ecoValue
 
         Mono.MFunction _ _ ->
@@ -223,7 +223,7 @@ Returns Nothing for nodes that aren't callable functions.
 extractNodeSignature : Mono.MonoNode -> Maybe FuncSignature
 extractNodeSignature node =
     case node of
-        Mono.MonoDefine expr _ monoType ->
+        Mono.MonoDefine expr monoType ->
             -- For defines, check if the expression is a closure
             case expr of
                 Mono.MonoClosure closureInfo body _ ->
@@ -240,7 +240,7 @@ extractNodeSignature node =
                         , returnType = monoType
                         }
 
-        Mono.MonoTailFunc params _ _ monoType ->
+        Mono.MonoTailFunc params _ monoType ->
             Just
                 { paramTypes = List.map Tuple.second params
                 , returnType = monoType
@@ -267,7 +267,7 @@ extractNodeSignature node =
                 , returnType = monoType
                 }
 
-        Mono.MonoPortIncoming expr _ monoType ->
+        Mono.MonoPortIncoming expr monoType ->
             case expr of
                 Mono.MonoClosure closureInfo body _ ->
                     Just
@@ -281,7 +281,7 @@ extractNodeSignature node =
                         , returnType = monoType
                         }
 
-        Mono.MonoPortOutgoing expr _ monoType ->
+        Mono.MonoPortOutgoing expr monoType ->
             case expr of
                 Mono.MonoClosure closureInfo body _ ->
                     Just
@@ -295,7 +295,7 @@ extractNodeSignature node =
                         , returnType = monoType
                         }
 
-        Mono.MonoCycle _ _ monoType ->
+        Mono.MonoCycle _ monoType ->
             Just
                 { paramTypes = []
                 , returnType = monoType
@@ -908,7 +908,7 @@ mkRegion args body terminator =
 
 
 generateModule : Mode.Mode -> Mono.MonoGraph -> String
-generateModule mode ((Mono.MonoGraph { nodes, main, registry }) as monoGraph) =
+generateModule mode (Mono.MonoGraph { nodes, main, registry }) =
     let
         -- Build signatures map for invariant checking before code generation
         signatures : Dict Int FuncSignature
@@ -1075,10 +1075,10 @@ generateNode ctx specId node =
             specIdToFuncName ctx.registry specId
     in
     case node of
-        Mono.MonoDefine expr _ monoType ->
+        Mono.MonoDefine expr monoType ->
             generateDefine ctx funcName expr monoType
 
-        Mono.MonoTailFunc params expr _ monoType ->
+        Mono.MonoTailFunc params expr monoType ->
             generateTailFunc ctx funcName params expr monoType
 
         Mono.MonoCtor ctorLayout monoType ->
@@ -1090,13 +1090,13 @@ generateNode ctx specId node =
         Mono.MonoExtern monoType ->
             ( generateExtern ctx funcName monoType, ctx )
 
-        Mono.MonoPortIncoming expr _ monoType ->
+        Mono.MonoPortIncoming expr monoType ->
             generateDefine ctx funcName expr monoType
 
-        Mono.MonoPortOutgoing expr _ monoType ->
+        Mono.MonoPortOutgoing expr monoType ->
             generateDefine ctx funcName expr monoType
 
-        Mono.MonoCycle definitions _ monoType ->
+        Mono.MonoCycle definitions monoType ->
             generateCycle ctx funcName definitions monoType
 
 
@@ -1139,7 +1139,7 @@ generateDefine ctx funcName expr monoType =
 
 
 generateClosureFunc : Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ( MlirOp, Context )
-generateClosureFunc ctx funcName closureInfo body monoType =
+generateClosureFunc ctx funcName closureInfo body _ =
     let
         -- Build arg pairs from params
         argPairs : List ( String, MlirType )
@@ -1210,7 +1210,7 @@ generateTailFunc ctx funcName params expr monoType =
 
 
 generateCtor : Context -> String -> Mono.CtorLayout -> Mono.MonoType -> MlirOp
-generateCtor ctx funcName ctorLayout monoType =
+generateCtor ctx funcName ctorLayout _ =
     let
         arity : Int
         arity =
@@ -1284,7 +1284,7 @@ generateCtor ctx funcName ctorLayout monoType =
 
 
 generateEnum : Context -> String -> Int -> Mono.MonoType -> MlirOp
-generateEnum ctx funcName tag monoType =
+generateEnum ctx funcName tag _ =
     let
         ( resultVar, ctx1 ) =
             freshVar ctx
@@ -1338,7 +1338,7 @@ generateCycle ctx funcName definitions monoType =
         -- Generate each definition in the cycle
         ( defOps, defVars, finalCtx ) =
             List.foldl
-                (\( name, expr ) ( accOps, accVars, accCtx ) ->
+                (\( _, expr ) ( accOps, accVars, accCtx ) ->
                     let
                         result : ExprResult
                         result =
@@ -1650,7 +1650,7 @@ generateList ctx items =
 
 
 generateClosure : Context -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
-generateClosure ctx closureInfo body monoType =
+generateClosure ctx closureInfo body _ =
     -- Generate captured values and create a PAP
     let
         ( captureOps, captureVars, ctx1 ) =
@@ -1731,7 +1731,7 @@ generateClosure ctx closureInfo body monoType =
 lambdaIdToString : Mono.LambdaId -> String
 lambdaIdToString lambdaId =
     case lambdaId of
-        Mono.AnonymousLambda home uid _ ->
+        Mono.AnonymousLambda home uid ->
             canonicalToMLIRName home ++ "_lambda_" ++ String.fromInt uid
 
 
@@ -2092,7 +2092,7 @@ generateIf ctx branches final =
 generateLet : Context -> Mono.MonoDef -> Mono.MonoExpr -> ExprResult
 generateLet ctx def body =
     case def of
-        Mono.MonoDef _ name expr _ ->
+        Mono.MonoDef name expr ->
             let
                 exprResult : ExprResult
                 exprResult =
@@ -2112,7 +2112,7 @@ generateLet ctx def body =
             , ctx = bodyResult.ctx
             }
 
-        Mono.MonoTailDef _ _ _ _ _ ->
+        Mono.MonoTailDef _ _ ->
             -- TODO: Proper joinpoint handling
             generateExpr ctx body
 
@@ -2122,7 +2122,7 @@ generateLet ctx def body =
 
 
 generateDestruct : Context -> Mono.MonoDestructor -> Mono.MonoExpr -> ExprResult
-generateDestruct ctx (Mono.MonoDestructor name path _) body =
+generateDestruct ctx (Mono.MonoDestructor name path) body =
     let
         ( pathOps, pathVar, ctx1 ) =
             generateMonoPath ctx path
@@ -2161,7 +2161,7 @@ generateMonoPath ctx path =
             , ctx2
             )
 
-        Mono.MonoField _ index subPath ->
+        Mono.MonoField index subPath ->
             let
                 ( subOps, subVar, ctx1 ) =
                     generateMonoPath ctx subPath
@@ -2183,7 +2183,7 @@ generateMonoPath ctx path =
 
 
 generateCase : Context -> Name.Name -> Name.Name -> Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> ExprResult
-generateCase ctx scrutinee1 scrutinee2 decider jumps =
+generateCase ctx _ _ _ _ =
     -- TODO: Proper decision tree compilation
     let
         ( resultVar, ctx1 ) =
@@ -2231,7 +2231,7 @@ generateRecordCreate ctx fields layout =
 
 
 generateRecordAccess : Context -> Mono.MonoExpr -> Name.Name -> Int -> Bool -> ExprResult
-generateRecordAccess ctx record fieldName index isUnboxed =
+generateRecordAccess ctx record _ index isUnboxed =
     let
         recordResult : ExprResult
         recordResult =
@@ -2247,7 +2247,7 @@ generateRecordAccess ctx record fieldName index isUnboxed =
 
 
 generateRecordUpdate : Context -> Mono.MonoExpr -> List ( Int, Mono.MonoExpr ) -> Mono.RecordLayout -> ExprResult
-generateRecordUpdate ctx record updates layout =
+generateRecordUpdate ctx record _ _ =
     -- TODO: Proper record update implementation
     let
         recordResult : ExprResult

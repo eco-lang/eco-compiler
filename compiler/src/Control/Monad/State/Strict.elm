@@ -1,8 +1,8 @@
 module Control.Monad.State.Strict exposing
     ( StateT(..)
     , evalStateT
-    , liftIO, map
-    , get, put
+    , liftIO
+    , put
     )
 
 {-| A strict state transformer monad for threading state through IO computations.
@@ -22,18 +22,17 @@ strictly, ensuring predictable evaluation order.
 @docs evalStateT
 
 
-# Lifting and Mapping
+# Lifting
 
-@docs liftIO, map
+@docs liftIO
 
 
 # State Operations
 
-@docs get, put
+@docs put
 
 -}
 
-import Json.Decode as Decode
 import Json.Encode as Encode
 import System.IO as IO
 import Task exposing (Task)
@@ -68,49 +67,6 @@ evalStateT (StateT f) =
 liftIO : Task Never a -> StateT s a
 liftIO io =
     StateT (\s -> Task.map (\a -> ( a, s )) io)
-
-
-apply : StateT s a -> StateT s (a -> b) -> StateT s b
-apply (StateT arg) (StateT func) =
-    StateT
-        (\s ->
-            arg s
-                |> Task.andThen
-                    (\( a, sa ) ->
-                        func sa
-                            |> Task.map (\( fb, sb ) -> ( fb a, sb ))
-                    )
-        )
-
-
-{-| Maps a function over the result value of a StateT computation, leaving the state unchanged.
--}
-map : (a -> b) -> StateT s a -> StateT s b
-map func argStateT =
-    apply argStateT (pure func)
-
-
-pure : a -> StateT s a
-pure value =
-    StateT (\s -> Task.succeed ( value, s ))
-
-
-{-| Retrieves the current REPL state from the underlying storage.
--}
-get : StateT s IO.ReplState
-get =
-    liftIO
-        (Impure.task "getStateT"
-            []
-            Impure.EmptyBody
-            (Impure.DecoderResolver
-                (Decode.map3 (\imports types decls -> IO.ReplState imports types decls)
-                    (Decode.field "imports" (Decode.dict Decode.string))
-                    (Decode.field "types" (Decode.dict Decode.string))
-                    (Decode.field "decls" (Decode.dict Decode.string))
-                )
-            )
-        )
 
 
 {-| Stores the given REPL state to the underlying storage.

@@ -564,10 +564,10 @@ type Publish
     | PublishNoGit
     | PublishLocalChanges V.Version
       --
-    | PublishZipBadDetails Details
+    | PublishZipBadDetails
     | PublishZipApplication
     | PublishZipNoExposed
-    | PublishZipBuildProblem BuildProblem
+    | PublishZipBuildProblem
 
 
 {-| Converts a publish error to a user-friendly report.
@@ -1033,7 +1033,7 @@ publishToReport publish =
                         ++ "` and publish your code from there."
                 ]
 
-        PublishZipBadDetails _ ->
+        PublishZipBadDetails ->
             badZipReport
 
         PublishZipApplication ->
@@ -1042,7 +1042,7 @@ publishToReport publish =
         PublishZipNoExposed ->
             badZipReport
 
-        PublishZipBuildProblem _ ->
+        PublishZipBuildProblem ->
             badZipReport
 
 

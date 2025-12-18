@@ -949,48 +949,6 @@ initSettings : Task Never Utils.ReplSettings
 initSettings =
     Stuff.getReplCache
         |> Task.map
-            (\cache ->
+            (\_ ->
                 Utils.ReplSettings
-                    { historyFile = Just (cache ++ "/history")
-                    , autoAddHistory = True
-                    , complete = Utils.replCompleteWord Nothing " \n" lookupCompletions
-                    }
             )
-
-
-lookupCompletions : String -> M (List Utils.ReplCompletion)
-lookupCompletions string =
-    State.get
-        |> State.map
-            (\(IO.ReplState imports types decls) ->
-                addMatches string False commands [] |> addMatches string True imports |> addMatches string False types |> addMatches string False decls
-            )
-
-
-commands : Dict.Dict N.Name ()
-commands =
-    Dict.fromList
-        [ ( ":exit", () )
-        , ( ":quit", () )
-        , ( ":reset", () )
-        , ( ":help", () )
-        ]
-
-
-addMatches : String -> Bool -> Dict.Dict N.Name v -> List Utils.ReplCompletion -> List Utils.ReplCompletion
-addMatches string isFinished dict completions =
-    Dict.foldr (addMatch string isFinished) completions dict
-
-
-addMatch : String -> Bool -> N.Name -> v -> List Utils.ReplCompletion -> List Utils.ReplCompletion
-addMatch string isFinished name _ completions =
-    let
-        suggestion : String
-        suggestion =
-            String.fromList (N.toChars name)
-    in
-    if String.startsWith string suggestion then
-        Utils.ReplCompletion suggestion suggestion isFinished :: completions
-
-    else
-        completions

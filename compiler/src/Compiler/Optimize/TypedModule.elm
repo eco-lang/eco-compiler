@@ -92,7 +92,7 @@ addUnion home annotations unionName (Can.Union unionData) nodes =
 
 
 addCtorNode : IO.Canonical -> Annotations -> Can.CtorOpts -> Can.Type -> Can.Ctor -> Nodes -> Nodes
-addCtorNode home annotations opts resultType (Can.Ctor c) nodes =
+addCtorNode home _ opts resultType (Can.Ctor c) nodes =
     let
         -- Build the constructor type from its arguments and result type
         ctorFullType : Can.Type
@@ -132,7 +132,7 @@ addAliases home annotations aliases graph =
 
 
 addAlias : IO.Canonical -> Annotations -> Name.Name -> Can.Alias -> TOpt.LocalGraph -> TOpt.LocalGraph
-addAlias home annotations name (Can.Alias _ tipe) ((TOpt.LocalGraph graphData) as graph) =
+addAlias home _ name (Can.Alias _ tipe) ((TOpt.LocalGraph graphData) as graph) =
     case tipe of
         Can.TRecord fields Nothing ->
             let
@@ -619,7 +619,7 @@ addRecDef cycle annotations state def =
 
 
 addRecDefHelp : EverySet String Name.Name -> Annotations -> A.Region -> State -> Name.Name -> List Can.Pattern -> Can.Expr -> Maybe ( List ( Can.Pattern, Can.Type ), Can.Type ) -> Names.Tracker State
-addRecDefHelp cycle annotations region (State { values, functions }) name args body maybeTypedArgs =
+addRecDefHelp cycle annotations region (State { values, functions }) name args body _ =
     case args of
         [] ->
             Expr.optimize cycle annotations body

@@ -1,6 +1,6 @@
 module Data.Set exposing
     ( EverySet
-    , empty, singleton, insert, remove
+    , empty, insert, remove
     , isEmpty, member, size
     , union, diff
     , toList, fromList
@@ -22,7 +22,7 @@ Initial implementation from `Gizra/elm-all-set/1.0.1`.
 
 # Build
 
-@docs empty, singleton, insert, remove
+@docs empty, insert, remove
 
 
 # Query
@@ -61,13 +61,6 @@ type EverySet c a
 empty : EverySet c a
 empty =
     EverySet Dict.empty
-
-
-{-| Create a set with one value.
--}
-singleton : (a -> comparable) -> a -> EverySet comparable a
-singleton toComparable k =
-    Dict.singleton toComparable k () |> EverySet
 
 
 {-| Insert a value into a set.
