@@ -815,6 +815,10 @@ int main(int argc, char* argv[]) {
     // Print combined stats from all thread heaps.
     auto &alloc = Allocator::instance();
     GCStats combined_stats = alloc.getCombinedStats();
+
+    // Add accumulated stats from forked Elm test processes.
+    combined_stats.combine(ElmTest::getAccumulatedStats());
+
     combined_stats.print();
 #endif
 

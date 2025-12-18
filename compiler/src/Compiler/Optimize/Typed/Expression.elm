@@ -318,22 +318,25 @@ optimize cycle annotations (A.At region expression) =
                     optimizeLetRecDefs cycle annotations defs body
 
         Can.LetDestruct pattern expr body ->
-            destruct annotations pattern
+            -- First optimize the expression to get its type
+            optimize cycle annotations expr
                 |> Names.andThen
-                    (\( A.At nameRegion name, patternType, destructs ) ->
-                        optimize cycle annotations expr
+                    (\oexpr ->
+                        let
+                            exprType : Can.Type
+                            exprType =
+                                TOpt.typeOf oexpr
+                        in
+                        -- Now destruct with the known expression type
+                        destructWithKnownType exprType pattern
                             |> Names.andThen
-                                (\oexpr ->
+                                (\( A.At nameRegion name, destructs ) ->
                                     Names.withVarType name
-                                        patternType
+                                        exprType
                                         (optimize cycle annotations body)
                                         |> Names.map
                                             (\obody ->
                                                 let
-                                                    exprType : Can.Type
-                                                    exprType =
-                                                        TOpt.typeOf oexpr
-
                                                     bodyType : Can.Type
                                                     bodyType =
                                                         TOpt.typeOf obody
@@ -346,25 +349,6 @@ optimize cycle annotations (A.At region expression) =
                     )
 
         Can.Case expr branches ->
-            let
-                optimizeBranch : Name -> Can.CaseBranch -> Names.Tracker ( Can.Pattern, TOpt.Expr )
-                optimizeBranch root (Can.CaseBranch pattern branch) =
-                    destructCase annotations root pattern
-                        |> Names.andThen
-                            (\( destructors, andThenings ) ->
-                                Names.withVarTypes andThenings
-                                    (optimize cycle annotations branch)
-                                    |> Names.map
-                                        (\obranch ->
-                                            let
-                                                branchType : Can.Type
-                                                branchType =
-                                                    TOpt.typeOf obranch
-                                            in
-                                            ( pattern, List.foldr (wrapDestruct branchType) obranch destructors )
-                                        )
-                            )
-            in
             Names.generate
                 |> Names.andThen
                     (\temp ->
@@ -375,6 +359,25 @@ optimize cycle annotations (A.At region expression) =
                                         scrutineeType : Can.Type
                                         scrutineeType =
                                             TOpt.typeOf oexpr
+
+                                        -- optimizeBranch is now defined here where scrutineeType is available
+                                        optimizeBranch : Name -> Can.CaseBranch -> Names.Tracker ( Can.Pattern, TOpt.Expr )
+                                        optimizeBranch root (Can.CaseBranch pattern branch) =
+                                            destructCase scrutineeType root pattern
+                                                |> Names.andThen
+                                                    (\( destructors, andThenings ) ->
+                                                        Names.withVarTypes andThenings
+                                                            (optimize cycle annotations branch)
+                                                            |> Names.map
+                                                                (\obranch ->
+                                                                    let
+                                                                        branchType : Can.Type
+                                                                        branchType =
+                                                                            TOpt.typeOf obranch
+                                                                    in
+                                                                    ( pattern, List.foldr (wrapDestruct branchType) obranch destructors )
+                                                                )
+                                                    )
                                     in
                                     case oexpr of
                                         TOpt.VarLocal root tipe ->
@@ -950,14 +953,11 @@ destructTypedArg ( pattern, tipe ) =
         |> Names.map (\( locName, destructors ) -> ( ( locName, tipe ), destructors ))
 
 
-destructCase : Annotations -> Name -> Can.Pattern -> Names.Tracker ( List TOpt.Destructor, List ( Name, Can.Type ) )
-destructCase annotations rootName pattern =
-    let
-        patternType : Can.Type
-        patternType =
-            getPatternType annotations pattern
-    in
-    destructHelpCollectBindings (TOpt.Root rootName) patternType pattern ( [], [] )
+destructCase : Can.Type -> Name -> Can.Pattern -> Names.Tracker ( List TOpt.Destructor, List ( Name, Can.Type ) )
+destructCase scrutineeType rootName pattern =
+    -- Use the scrutinee type directly instead of trying to infer from pattern.
+    -- This fixes crashes for wildcards, variables, tuples, and constructors.
+    destructHelpCollectBindings (TOpt.Root rootName) scrutineeType pattern ( [], [] )
         |> Names.map (\( revDs, andThenings ) -> ( List.reverse revDs, andThenings ))
 
 
@@ -1004,35 +1004,77 @@ destructWithType tipe ((A.At region ptrn) as pattern) =
                     )
 
 
+{-| Like destruct but takes the known type instead of inferring it.
+Used when we already have the expression type from the RHS.
+-}
+destructWithKnownType : Can.Type -> Can.Pattern -> Names.Tracker ( A.Located Name, List TOpt.Destructor )
+destructWithKnownType tipe ((A.At region ptrn) as pattern) =
+    case ptrn of
+        Can.PVar name ->
+            Names.pure ( A.At region name, [] )
+
+        Can.PAlias subPattern name ->
+            destructHelp (TOpt.Root name) tipe subPattern []
+                |> Names.map (\revDs -> ( A.At region name, List.reverse revDs ))
+
+        _ ->
+            Names.generate
+                |> Names.andThen
+                    (\name ->
+                        destructHelp (TOpt.Root name) tipe pattern []
+                            |> Names.map (\revDs -> ( A.At region name, List.reverse revDs ))
+                    )
+
+
 {-| Try to infer type from pattern structure.
-This is a best-effort approach for patterns.
+This is a best-effort approach for patterns. For patterns where the type
+cannot be inferred (wildcards, variables, etc.), we use a type variable
+as a placeholder. Type checking has already happened, so these types
+will be properly constrained in context.
 -}
 getPatternType : Annotations -> Can.Pattern -> Can.Type
 getPatternType _ (A.At _ pattern) =
     case pattern of
         Can.PAnything ->
-            crash "Cannot infer type for wildcard pattern"
+            -- Wildcard can be any type
+            Can.TVar "_pattern"
 
-        Can.PVar _ ->
-            crash "Cannot infer type for variable pattern"
+        Can.PVar name ->
+            -- Variable pattern - use name-based type variable
+            Can.TVar name
 
         Can.PRecord _ ->
-            crash "Cannot infer type for record pattern"
+            -- Record pattern - use placeholder record type
+            Can.TVar "_record"
 
-        Can.PAlias _ _ ->
-            crash "Cannot infer type for alias pattern"
+        Can.PAlias subPattern _ ->
+            -- Alias pattern - try to get type from sub-pattern (subPattern is already A.Located Pattern_)
+            getPatternType Dict.empty subPattern
 
         Can.PUnit ->
             unitType
 
-        Can.PTuple _ _ _ ->
-            crash "Cannot infer type for tuple pattern"
+        Can.PTuple a b otherPatterns ->
+            -- Tuple pattern - recursively get element types (third element is List Pattern for 3+ tuples)
+            let
+                aType =
+                    getPatternType Dict.empty a
+
+                bType =
+                    getPatternType Dict.empty b
+
+                otherTypes =
+                    List.map (getPatternType Dict.empty) otherPatterns
+            in
+            Can.TTuple aType bType otherTypes
 
         Can.PList _ ->
-            crash "Cannot infer type for list pattern"
+            -- List pattern - element type unknown
+            Can.TType ModuleName.list "List" [ Can.TVar "_elem" ]
 
         Can.PCons _ _ ->
-            crash "Cannot infer type for cons pattern"
+            -- Cons pattern - element type unknown
+            Can.TType ModuleName.list "List" [ Can.TVar "_elem" ]
 
         Can.PChr _ ->
             charType
@@ -1046,8 +1088,11 @@ getPatternType _ (A.At _ pattern) =
         Can.PBool _ _ ->
             Can.TType ModuleName.basics "Bool" []
 
-        Can.PCtor _ ->
-            crash "Cannot infer type for constructor pattern"
+        Can.PCtor { home, type_, union } ->
+            -- Constructor pattern - use the type from the constructor info
+            case union of
+                Can.Union data ->
+                    Can.TType home type_ (List.map (\_ -> Can.TVar "_") data.vars)
 
 
 destructHelp : TOpt.Path -> Can.Type -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
@@ -1494,14 +1539,21 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
                     optimizeLetRecDefs cycle annotations defs body
 
         Can.LetDestruct pattern expr body ->
-            destruct annotations pattern
+            -- First optimize the expression to get its type
+            optimize cycle annotations expr
                 |> Names.andThen
-                    (\( A.At dregion dname, patternType, destructors ) ->
-                        optimize cycle annotations expr
+                    (\oexpr ->
+                        let
+                            exprType : Can.Type
+                            exprType =
+                                TOpt.typeOf oexpr
+                        in
+                        -- Now destruct with the known expression type
+                        destructWithKnownType exprType pattern
                             |> Names.andThen
-                                (\oexpr ->
+                                (\( A.At dregion dname, destructors ) ->
                                     Names.withVarType dname
-                                        patternType
+                                        exprType
                                         (optimizeTail cycle annotations rootName typedArgNames returnType body)
                                         |> Names.map
                                             (\obody ->
@@ -1510,7 +1562,7 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
                                                     bodyType =
                                                         TOpt.typeOf obody
                                                 in
-                                                TOpt.Let (TOpt.Def dregion dname oexpr patternType)
+                                                TOpt.Let (TOpt.Def dregion dname oexpr exprType)
                                                     (List.foldr (wrapDestruct bodyType) obody destructors)
                                                     bodyType
                                             )
@@ -1518,25 +1570,6 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
                     )
 
         Can.Case expr branches ->
-            let
-                optimizeBranch : Name -> Can.CaseBranch -> Names.Tracker ( Can.Pattern, TOpt.Expr )
-                optimizeBranch root (Can.CaseBranch pattern branch) =
-                    destructCase annotations root pattern
-                        |> Names.andThen
-                            (\( destructors, patternBindings ) ->
-                                Names.withVarTypes patternBindings
-                                    (optimizeTail cycle annotations rootName typedArgNames returnType branch)
-                                    |> Names.map
-                                        (\obranch ->
-                                            let
-                                                branchType : Can.Type
-                                                branchType =
-                                                    TOpt.typeOf obranch
-                                            in
-                                            ( pattern, List.foldr (wrapDestruct branchType) obranch destructors )
-                                        )
-                            )
-            in
             Names.generate
                 |> Names.andThen
                     (\temp ->
@@ -1547,6 +1580,25 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
                                         exprType : Can.Type
                                         exprType =
                                             TOpt.typeOf oexpr
+
+                                        -- optimizeBranch is now defined here where exprType is available
+                                        optimizeBranch : Name -> Can.CaseBranch -> Names.Tracker ( Can.Pattern, TOpt.Expr )
+                                        optimizeBranch root (Can.CaseBranch pattern branch) =
+                                            destructCase exprType root pattern
+                                                |> Names.andThen
+                                                    (\( destructors, patternBindings ) ->
+                                                        Names.withVarTypes patternBindings
+                                                            (optimizeTail cycle annotations rootName typedArgNames returnType branch)
+                                                            |> Names.map
+                                                                (\obranch ->
+                                                                    let
+                                                                        branchType : Can.Type
+                                                                        branchType =
+                                                                            TOpt.typeOf obranch
+                                                                    in
+                                                                    ( pattern, List.foldr (wrapDestruct branchType) obranch destructors )
+                                                                )
+                                                    )
                                     in
                                     case oexpr of
                                         TOpt.VarLocal root tipe ->

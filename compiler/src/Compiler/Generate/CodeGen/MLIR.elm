@@ -1059,8 +1059,38 @@ generateEnum ctx funcName tag _ =
 
 generateExtern : Context -> String -> Mono.MonoType -> ( Context, MlirOp )
 generateExtern ctx funcName monoType =
-    -- Generate an extern declaration (no body)
+    -- Generate an extern declaration with a placeholder body.
+    -- MLIR's func.func requires at least one region, so we create a stub body
+    -- that constructs a Unit value and returns it. The actual implementation
+    -- will be provided by the runtime linker.
     let
+        returnType =
+            monoTypeToMlir monoType
+
+        ( stubVar, ctx1 ) =
+            freshVar ctx
+
+        -- Create a placeholder Unit value
+        ( ctx2, constructOp ) =
+            mlirOp ctx1 "eco.construct"
+                |> opBuilder.withResults [ ( stubVar, ecoValue ) ]
+                |> opBuilder.withAttrs
+                    (Dict.fromList
+                        [ ( "_operand_types", ArrayAttr [] )
+                        , ( "size", IntAttr 0 )
+                        , ( "tag", IntAttr 0 )
+                        , ( "unboxed_bitmap", IntAttr 0 )
+                        ]
+                    )
+                |> opBuilder.build
+
+        ( ctx3, returnOp ) =
+            ecoReturn ctx2 stubVar ecoValue
+
+        region : MlirRegion
+        region =
+            mkRegion [] [ constructOp ] returnOp
+
         attrs =
             Dict.fromList
                 [ ( "sym_name", StringAttr funcName )
@@ -1069,13 +1099,14 @@ generateExtern ctx funcName monoType =
                   , TypeAttr
                         (FunctionType
                             { inputs = []
-                            , results = [ monoTypeToMlir monoType ]
+                            , results = [ returnType ]
                             }
                         )
                   )
                 ]
     in
-    mlirOp ctx "func.func"
+    mlirOp ctx3 "func.func"
+        |> opBuilder.withRegions [ region ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build
 
@@ -1286,29 +1317,43 @@ generateVarGlobal ctx specId monoType =
     in
     case monoType of
         Mono.MFunction _ _ ->
-            -- Function-typed global: create a closure (papCreate) with no captures
             let
                 arity : Int
                 arity =
                     countTotalArity monoType
-
-                attrs =
-                    Dict.fromList
-                        [ ( "function", SymbolRefAttr funcName )
-                        , ( "arity", IntAttr arity )
-                        , ( "num_captured", IntAttr 0 )
-                        ]
-
-                ( ctx2, papOp ) =
-                    mlirOp ctx1 "eco.papCreate"
-                        |> opBuilder.withResults [ ( var, ecoValue ) ]
-                        |> opBuilder.withAttrs attrs
-                        |> opBuilder.build
             in
-            { ops = [ papOp ]
-            , resultVar = var
-            , ctx = ctx2
-            }
+            if arity == 0 then
+                -- Zero-arity function (thunk): call directly instead of creating a PAP.
+                -- papCreate requires arity > 0 (num_captured < arity invariant).
+                let
+                    ( ctx2, callOp ) =
+                        ecoCallNamed ctx1 var funcName [] (monoTypeToMlir monoType)
+                in
+                { ops = [ callOp ]
+                , resultVar = var
+                , ctx = ctx2
+                }
+
+            else
+                -- Function-typed global with arity > 0: create a closure (papCreate) with no captures
+                let
+                    attrs =
+                        Dict.fromList
+                            [ ( "function", SymbolRefAttr funcName )
+                            , ( "arity", IntAttr arity )
+                            , ( "num_captured", IntAttr 0 )
+                            ]
+
+                    ( ctx2, papOp ) =
+                        mlirOp ctx1 "eco.papCreate"
+                            |> opBuilder.withResults [ ( var, ecoValue ) ]
+                            |> opBuilder.withAttrs attrs
+                            |> opBuilder.build
+                in
+                { ops = [ papOp ]
+                , resultVar = var
+                , ctx = ctx2
+                }
 
         _ ->
             -- Non-function type: call the function directly (e.g., zero-arg constructors)
@@ -1427,7 +1472,7 @@ generateList ctx items =
 
 
 generateClosure : Context -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
-generateClosure ctx closureInfo body _ =
+generateClosure ctx closureInfo body monoType =
     let
         ( captureOps, captureVars, ctx1 ) =
             List.foldl
@@ -1463,34 +1508,6 @@ generateClosure ctx closureInfo body _ =
         arity =
             numCaptured + List.length closureInfo.params
 
-        captureVarNames : List String
-        captureVarNames =
-            boxedCaptureVars
-
-        operandTypesAttr =
-            if List.isEmpty captureVarNames then
-                Dict.empty
-
-            else
-                Dict.singleton "_operand_types"
-                    (ArrayAttr (List.map (\_ -> TypeAttr ecoValue) captureVarNames))
-
-        papAttrs =
-            Dict.union operandTypesAttr
-                (Dict.fromList
-                    [ ( "function", SymbolRefAttr (lambdaIdToString closureInfo.lambdaId) )
-                    , ( "arity", IntAttr arity )
-                    , ( "num_captured", IntAttr numCaptured )
-                    ]
-                )
-
-        ( ctx3, papOp ) =
-            mlirOp ctx2 "eco.papCreate"
-                |> opBuilder.withOperands captureVarNames
-                |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
-                |> opBuilder.withAttrs papAttrs
-                |> opBuilder.build
-
         captureTypes : List ( Name.Name, Mono.MonoType )
         captureTypes =
             List.map (\( name, expr, _ ) -> ( name, Mono.typeOf expr )) closureInfo.captures
@@ -1502,15 +1519,62 @@ generateClosure ctx closureInfo body _ =
             , params = closureInfo.params
             , body = body
             }
-
-        ctx4 : Context
-        ctx4 =
-            { ctx3 | pendingLambdas = pendingLambda :: ctx3.pendingLambdas }
     in
-    { ops = captureOps ++ boxOps ++ [ papOp ]
-    , resultVar = resultVar
-    , ctx = ctx4
-    }
+    if arity == 0 then
+        -- Zero-arity closure (thunk with no captures): call the lambda directly.
+        -- papCreate requires arity > 0 (num_captured < arity invariant).
+        let
+            ctx3 : Context
+            ctx3 =
+                { ctx2 | pendingLambdas = pendingLambda :: ctx2.pendingLambdas }
+
+            ( ctx4, callOp ) =
+                ecoCallNamed ctx3 resultVar (lambdaIdToString closureInfo.lambdaId) [] (monoTypeToMlir monoType)
+        in
+        { ops = captureOps ++ boxOps ++ [ callOp ]
+        , resultVar = resultVar
+        , ctx = ctx4
+        }
+
+    else
+        -- Non-zero arity: create a PAP with captures
+        let
+            captureVarNames : List String
+            captureVarNames =
+                boxedCaptureVars
+
+            operandTypesAttr =
+                if List.isEmpty captureVarNames then
+                    Dict.empty
+
+                else
+                    Dict.singleton "_operand_types"
+                        (ArrayAttr (List.map (\_ -> TypeAttr ecoValue) captureVarNames))
+
+            papAttrs =
+                Dict.union operandTypesAttr
+                    (Dict.fromList
+                        [ ( "function", SymbolRefAttr (lambdaIdToString closureInfo.lambdaId) )
+                        , ( "arity", IntAttr arity )
+                        , ( "num_captured", IntAttr numCaptured )
+                        ]
+                    )
+
+            ( ctx3, papOp ) =
+                mlirOp ctx2 "eco.papCreate"
+                    |> opBuilder.withOperands captureVarNames
+                    |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+                    |> opBuilder.withAttrs papAttrs
+                    |> opBuilder.build
+
+            ctx4 : Context
+            ctx4 =
+                { ctx3 | pendingLambdas = pendingLambda :: ctx3.pendingLambdas }
+        in
+        { ops = captureOps ++ boxOps ++ [ papOp ]
+        , resultVar = resultVar
+        , ctx = ctx4
+        }
 
 
 lambdaIdToString : Mono.LambdaId -> String
@@ -2442,9 +2506,19 @@ arithConstantInt ctx resultVar value =
 -}
 arithConstantFloat : Context -> String -> Float -> ( Context, MlirOp )
 arithConstantFloat ctx resultVar value =
+    let
+        -- For whole numbers, use TypedIntAttr to produce "5 : f64" which is valid MLIR.
+        -- FloatAttr uses String.fromFloat which omits the decimal point for whole numbers,
+        -- producing invalid MLIR like "5" instead of "5.0" for f64 type.
+        valueAttr =
+            if value == toFloat (round value) then
+                TypedIntAttr (round value) F64
+            else
+                FloatAttr value
+    in
     mlirOp ctx "arith.constant"
         |> opBuilder.withResults [ ( resultVar, F64 ) ]
-        |> opBuilder.withAttrs (Dict.singleton "value" (FloatAttr value))
+        |> opBuilder.withAttrs (Dict.singleton "value" valueAttr)
         |> opBuilder.build
 
 
