@@ -249,7 +249,6 @@ type InfoMessage
     = ProcessingFile FilePath
     | FileWouldChange FilePath
     | ParseError FilePath (List (A.Located E.Error))
-    | JsonParseError FilePath String
 
 
 type PromptMessage
@@ -305,9 +304,6 @@ toConsoleInfoMessage infoMessage =
             in
             "Unable to parse file " ++ location ++ " To see a detailed explanation, run elm make on the file."
 
-        JsonParseError inputFile err ->
-            "Unable to parse JSON file " ++ inputFile ++ "\n\n" ++ err
-
 
 jsonInfoMessage : InfoMessage -> Maybe Encode.Value
 jsonInfoMessage infoMessage =
@@ -328,9 +324,6 @@ jsonInfoMessage infoMessage =
 
         ParseError inputFile _ ->
             Just (fileMessage inputFile "Error parsing the file")
-
-        JsonParseError inputFile _ ->
-            Just (fileMessage inputFile "Error parsing the JSON file")
 
 
 toConsoleErrorMessage : ErrorMessage -> String
@@ -602,7 +595,6 @@ readFromFile onProcessingFile filePath =
 type TransformMode
     = StdinToStdout
     | StdinToFile FilePath
-    | FileToStdout FilePath
     | FileToFile FilePath FilePath
     | FilesInPlace FilePath (List FilePath)
 
@@ -617,9 +609,6 @@ applyTransformation processingFile autoYes confirmPrompt transform mode =
                     True
 
                 StdinToFile _ ->
-                    True
-
-                FileToStdout _ ->
                     True
 
                 FileToFile _ _ ->
@@ -644,10 +633,6 @@ applyTransformation processingFile autoYes confirmPrompt transform mode =
         StdinToFile outputFile ->
             readStdin
                 |> Task.andThen (logErrorOr onInfo (File.writeUtf8 outputFile) << transform)
-
-        FileToStdout inputFile ->
-            readUtf8FileWithPath inputFile
-                |> Task.andThen (logErrorOr onInfo IO.putStr << transform)
 
         FileToFile inputFile outputFile ->
             readFromFile (onInfo << processingFile) inputFile

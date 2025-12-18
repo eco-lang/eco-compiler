@@ -2,9 +2,9 @@ module Data.Set exposing
     ( EverySet
     , empty, singleton, insert, remove
     , isEmpty, member, size
-    , union, intersect, diff
+    , union, diff
     , toList, fromList
-    , map, foldl, foldr, filter, partition
+    , foldr, filter
     )
 
 {-| A set implementation for values of any type, backed by association lists.
@@ -32,7 +32,7 @@ Initial implementation from `Gizra/elm-all-set/1.0.1`.
 
 # Combine
 
-@docs union, intersect, diff
+@docs union, diff
 
 
 # Lists
@@ -42,7 +42,7 @@ Initial implementation from `Gizra/elm-all-set/1.0.1`.
 
 # Transform
 
-@docs map, foldl, foldr, filter, partition
+@docs foldr, filter
 
 -}
 
@@ -112,13 +112,6 @@ union (EverySet d1) (EverySet d2) =
     Dict.union d1 d2 |> EverySet
 
 
-{-| Get the intersection of two sets. Keeps values that appear in both sets.
--}
-intersect : (a -> a -> Order) -> EverySet comparable a -> EverySet comparable a -> EverySet comparable a
-intersect keyComparison (EverySet d1) (EverySet d2) =
-    Dict.intersection keyComparison d1 d2 |> EverySet
-
-
 {-| Get the difference between the first set and the second. Keeps values
 that do not appear in the second set.
 -}
@@ -141,13 +134,6 @@ fromList toComparable xs =
     List.foldl (insert toComparable) empty xs
 
 
-{-| Fold over the values in a set, in order from lowest to highest.
--}
-foldl : (a -> a -> Order) -> (a -> b -> b) -> b -> EverySet c a -> b
-foldl keyComparison f b (EverySet d) =
-    Dict.foldl keyComparison (\k _ result -> f k result) b d
-
-
 {-| Fold over the values in a set, in order from highest to lowest.
 -}
 foldr : (a -> a -> Order) -> (a -> b -> b) -> b -> EverySet c a -> b
@@ -155,27 +141,8 @@ foldr keyComparison f b (EverySet d) =
     Dict.foldr keyComparison (\k _ result -> f k result) b d
 
 
-{-| Map a function onto a set, creating a new set with no duplicates.
--}
-map : (a -> a -> Order) -> (a2 -> comparable) -> (a -> a2) -> EverySet comparable a -> EverySet comparable a2
-map keyComparison toString f s =
-    fromList toString (List.map f (toList keyComparison s))
-
-
 {-| Create a new set consisting only of elements which satisfy a predicate.
 -}
 filter : (a -> Bool) -> EverySet comparable a -> EverySet comparable a
 filter p (EverySet d) =
     Dict.filter (\k _ -> p k) d |> EverySet
-
-
-{-| Create two new sets; the first consisting of elements which satisfy a
-predicate, the second consisting of elements which do not.
--}
-partition : (a -> Bool) -> EverySet comparable a -> ( EverySet comparable a, EverySet comparable a )
-partition p (EverySet d) =
-    let
-        ( p1, p2 ) =
-            Dict.partition (\k _ -> p k) d
-    in
-    ( EverySet p1, EverySet p2 )

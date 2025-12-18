@@ -771,9 +771,6 @@ isLiteral expr =
         JS.ExprTrackedString _ _ _ ->
             True
 
-        JS.ExprFloat _ ->
-            True
-
         JS.ExprTrackedFloat _ _ _ ->
             True
 

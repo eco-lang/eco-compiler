@@ -12,7 +12,7 @@ module Compiler.Reporting.Doc exposing
     , stack, reflow, commaSep
     , toSimpleNote, toFancyNote, toSimpleHint, toFancyHint
     , link, fancyLink, reflowLink, makeLink, makeNakedLink
-    , args, moreArgs, ordinal, intToOrdinal, cycle
+    , args, ordinal, intToOrdinal, cycle
     )
 
 {-| Pretty-printing and formatting for compiler error messages.
@@ -69,7 +69,7 @@ Elm-specific conveniences for creating helpful diagnostics.
 
 # Helpers
 
-@docs args, moreArgs, ordinal, intToOrdinal, cycle
+@docs args, ordinal, intToOrdinal, cycle
 
 -}
 
@@ -297,20 +297,6 @@ args n =
            )
 
 
-{-| Format a count of additional arguments with "more" (e.g., "1 more argument" or "2 more arguments").
--}
-moreArgs : Int -> String
-moreArgs n =
-    String.fromInt n
-        ++ " more"
-        ++ (if n == 1 then
-                " argument"
-
-            else
-                " arguments"
-           )
-
-
 {-| Convert a zero-based index to an ordinal string (e.g., "1st", "2nd", "3rd", "4th").
 -}
 ordinal : Index.ZeroBased -> String
@@ -438,8 +424,6 @@ noStyle =
 type Color
     = Red
     | RED
-    | Magenta
-    | MAGENTA
     | Yellow
     | YELLOW
     | Green
@@ -450,8 +434,6 @@ type Color
     | BLUE
     | Black
     | BLACK
-    | White
-    | WHITE
 
 
 toJsonHelp : Style -> List String -> P.SimpleDoc -> List E.Value
@@ -485,20 +467,8 @@ sgrToStyle sgrs ((Style bold underline color) as style) =
                     Ansi.SetConsoleIntensity i ->
                         Style (isBold i) underline color
 
-                    Ansi.SetItalicized _ ->
-                        style
-
                     Ansi.SetUnderlining u ->
                         Style bold (isUnderline u) color
-
-                    Ansi.SetBlinkSpeed _ ->
-                        style
-
-                    Ansi.SetVisible _ ->
-                        style
-
-                    Ansi.SetSwapForegroundBackground _ ->
-                        style
 
                     Ansi.SetColor l i c ->
                         Style bold underline (toColor l i c)
@@ -510,12 +480,6 @@ isBold intensity =
         Ansi.BoldIntensity ->
             True
 
-        Ansi.FaintIntensity ->
-            False
-
-        Ansi.NormalIntensity ->
-            False
-
 
 isUnderline : Ansi.Underlining -> Bool
 isUnderline underlining =
@@ -523,19 +487,10 @@ isUnderline underlining =
         Ansi.SingleUnderline ->
             True
 
-        Ansi.DoubleUnderline ->
-            False
-
-        Ansi.NoUnderline ->
-            False
-
 
 toColor : Ansi.ConsoleLayer -> Ansi.ColorIntensity -> Ansi.Color -> Maybe Color
 toColor layer intensity color =
     case layer of
-        Ansi.Background ->
-            Nothing
-
         Ansi.Foreground ->
             let
                 pick : b -> b -> b
@@ -552,9 +507,6 @@ toColor layer intensity color =
                     Ansi.Red ->
                         pick Red RED
 
-                    Ansi.Magenta ->
-                        pick Magenta MAGENTA
-
                     Ansi.Yellow ->
                         pick Yellow YELLOW
 
@@ -566,9 +518,6 @@ toColor layer intensity color =
 
                     Ansi.Blue ->
                         pick Blue BLUE
-
-                    Ansi.White ->
-                        pick White WHITE
 
                     Ansi.Black ->
                         pick Black BLACK
@@ -604,12 +553,6 @@ encodeColor color =
             RED ->
                 "RED"
 
-            Magenta ->
-                "magenta"
-
-            MAGENTA ->
-                "MAGENTA"
-
             Yellow ->
                 "yellow"
 
@@ -639,12 +582,6 @@ encodeColor color =
 
             BLACK ->
                 "BLACK"
-
-            White ->
-                "white"
-
-            WHITE ->
-                "WHITE"
 
 
 

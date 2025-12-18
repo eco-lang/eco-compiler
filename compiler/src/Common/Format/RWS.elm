@@ -1,22 +1,9 @@
-module Common.Format.RWS exposing
-    ( RWS
-    , andThen
-    , error
-    , evalRWS
-    , get
-    , mapM_
-    , modify
-    , put
-    , replicateM
-    , return
-    , runRWS
-    , tell
-    )
+module Common.Format.RWS exposing (RWS, andThen, error, evalRWS, get, mapM_, modify, put, replicateM, return, tell)
 
 {-| Reader-Writer-State monad for document parsing.
 Combines read-only environment (r), write-only log (Dict), and mutable state (s).
 
-@docs RWS, andThen, error, evalRWS, get, mapM_, modify, put, replicateM, return, runRWS, tell
+@docs RWS, andThen, error, evalRWS, get, mapM_, modify, put, replicateM, return, tell
 
 -}
 

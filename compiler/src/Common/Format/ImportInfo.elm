@@ -1,6 +1,6 @@
 module Common.Format.ImportInfo exposing
     ( ImportInfo(..)
-    , fromModule, fromImports, importsToDict
+    , fromModule
     )
 
 {-| Track and resolve import information for Elm modules.
@@ -25,7 +25,7 @@ The import resolution system supports:
 
 # Building Import Information
 
-@docs fromModule, fromImports, importsToDict
+@docs fromModule
 
 -}
 

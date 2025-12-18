@@ -368,7 +368,6 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                     )
 
 
-
 {-| Check that a variable has rank == noRank, meaning that it can be generalized.
 Crashes with a compiler bug message if the variable is not generic.
 -}
@@ -760,9 +759,6 @@ typeToVar rank pools aliasDict tipe =
                                     register rank pools (IO.Alias home name argVars aliasVar)
                                 )
                     )
-
-        Type.PlaceHolder name ->
-            IO.pure (Utils.find identity name aliasDict)
 
         Type.RecordN fields ext ->
             IO.traverseMap identity compare go fields

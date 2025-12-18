@@ -1,6 +1,6 @@
 module Builder.Generate exposing
     ( javascriptBackend, mlirBackend
-    , dev, debug, typedDev, monoDev
+    , dev, debug, monoDev
     , prod
     , repl
     )
@@ -20,7 +20,7 @@ produce JavaScript, MLIR, or other target code.
 
 # Development Builds
 
-@docs dev, debug, typedDev, monoDev
+@docs dev, debug, monoDev
 
 
 # Production Builds
@@ -425,47 +425,6 @@ loadAndStoreInterfaceTypes root name mvar =
 
 
 -- TYPED GENERATION (FOR MLIR BACKEND)
-
-
-{-| Generates typed development-mode output for MLIR backend with type annotations.
--}
-typedDev : CodeGen.TypedCodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
-typedDev backend withSourceMaps leadingLines root details (Build.Artifacts artifacts) =
-    Task.andThen finalizeTypedObjects (loadTypedObjects root details artifacts.modules)
-        |> Task.andThen (generateTypedDevOutput backend withSourceMaps leadingLines root artifacts.pkg artifacts.roots)
-
-
-generateTypedDevOutput : CodeGen.TypedCodeGen -> Bool -> Int -> FilePath -> Pkg.Name -> NE.Nonempty Build.Root -> TypedObjects -> Task Exit.Generate CodeGen.Output
-generateTypedDevOutput backend withSourceMaps leadingLines root pkg roots objects =
-    let
-        mode : Mode.Mode
-        mode =
-            Mode.Dev Nothing
-
-        graph : TOpt.GlobalGraph
-        graph =
-            typedObjectsToGlobalGraph objects
-
-        mains : Dict (List String) TypeCheck.Canonical TOpt.Main
-        mains =
-            gatherTypedMains pkg objects roots
-    in
-    prepareSourceMaps withSourceMaps root
-        |> Task.map (generateTypedWithBackend backend leadingLines mode graph mains)
-
-
-generateTypedWithBackend : CodeGen.TypedCodeGen -> Int -> Mode.Mode -> TOpt.GlobalGraph -> Dict (List String) TypeCheck.Canonical TOpt.Main -> CodeGen.SourceMaps -> CodeGen.Output
-generateTypedWithBackend backend leadingLines mode graph mains sourceMaps =
-    backend.generate
-        { sourceMaps = sourceMaps
-        , leadingLines = leadingLines
-        , mode = mode
-        , graph = graph
-        , mains = mains
-        }
-
-
-
 -- TYPED OBJECTS LOADING
 
 
@@ -563,30 +522,6 @@ typedObjectsToGlobalGraph (TypedObjects globals locals) =
 
 
 -- GATHER TYPED MAINS
-
-
-gatherTypedMains : Pkg.Name -> TypedObjects -> NE.Nonempty Build.Root -> Dict (List String) TypeCheck.Canonical TOpt.Main
-gatherTypedMains pkg (TypedObjects _ locals) roots =
-    Dict.fromList ModuleName.toComparableCanonical (List.filterMap (lookupTypedMain pkg locals) (NE.toList roots))
-
-
-lookupTypedMain : Pkg.Name -> Dict String ModuleName.Raw TOpt.LocalGraph -> Build.Root -> Maybe ( TypeCheck.Canonical, TOpt.Main )
-lookupTypedMain pkg locals root =
-    let
-        toPair : N.Name -> TOpt.LocalGraph -> Maybe ( TypeCheck.Canonical, TOpt.Main )
-        toPair name (TOpt.LocalGraph data) =
-            Maybe.map (Tuple.pair (TypeCheck.Canonical pkg name)) data.main
-    in
-    case root of
-        Build.Inside name ->
-            Dict.get identity name locals |> Maybe.andThen (toPair name)
-
-        Build.Outside name _ _ maybeTypedGraph ->
-            -- Outside roots now have typed graphs when typed optimization is enabled
-            Maybe.andThen (toPair name) maybeTypedGraph
-
-
-
 -- MONOMORPHIZED GENERATION (FOR MLIR MONO BACKEND)
 
 

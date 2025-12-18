@@ -1,15 +1,9 @@
-module Common.Format.KnownContents exposing
-    ( KnownContents
-    , fromFunction
-    , get
-    , isKnown
-    , mempty
-    )
+module Common.Format.KnownContents exposing (KnownContents, get, isKnown, mempty)
 
 {-| A mapping from module names to their exported contents.
 Used to resolve exposing-all imports by looking up what values a module exports.
 
-@docs KnownContents, fromFunction, get, isKnown, mempty
+@docs KnownContents, get, isKnown, mempty
 
 -}
 

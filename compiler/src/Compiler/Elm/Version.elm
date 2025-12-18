@@ -5,7 +5,7 @@ module Compiler.Elm.Version exposing
     , one, maxVersion, compiler, elmCompiler
     , bumpPatch, bumpMinor, bumpMajor
     , toChars
-    , encode, decoder, jsonEncoder, jsonDecoder
+    , encode, decoder
     , versionEncoder, versionDecoder
     , parser
     )
@@ -49,7 +49,7 @@ for version ordering and compatibility.
 
 # JSON Encoding/Decoding
 
-@docs encode, decoder, jsonEncoder, jsonDecoder
+@docs encode, decoder
 
 
 # Binary Encoding/Decoding
@@ -68,8 +68,6 @@ import Bytes.Encode
 import Compiler.Json.Decode as D
 import Compiler.Json.Encode as E
 import Compiler.Parse.Primitives as P exposing (Col, Row)
-import Json.Decode as Decode
-import Json.Encode as Encode
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -322,31 +320,6 @@ isDigit word =
 
 
 -- ENCODERS and DECODERS
-
-
-{-| Encode a Version to a standard Elm JSON value as a string in "major.minor.patch" format.
-Uses the standard Json.Encode module.
--}
-jsonEncoder : Version -> Encode.Value
-jsonEncoder version =
-    Encode.string (toChars version)
-
-
-{-| Decode a Version from a standard Elm JSON string value.
-Uses the standard Json.Decode module and returns a failure message if parsing fails.
--}
-jsonDecoder : Decode.Decoder Version
-jsonDecoder =
-    Decode.string
-        |> Decode.andThen
-            (\str ->
-                case P.fromByteString parser Tuple.pair str of
-                    Ok version ->
-                        Decode.succeed version
-
-                    Err _ ->
-                        Decode.fail "failed to parse version"
-            )
 
 
 {-| Encode a Version to a binary format as three consecutive integers (major, minor, patch).

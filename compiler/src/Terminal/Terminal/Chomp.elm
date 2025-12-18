@@ -1,18 +1,9 @@
 module Terminal.Terminal.Chomp exposing
-    ( Chomper
-    , Chunk
-    , Suggest
-    , andThen
-    , apply
-    , checkForUnknownFlags
-    , chomp
+    ( Chomper, Chunk, Suggest
+    , chomp, chompExactly, chompMultiple
     , chompArg
-    , chompExactly
-    , chompMultiple
-    , chompNormalFlag
-    , chompOnOffFlag
-    , map
-    , pure
+    , chompNormalFlag, chompOnOffFlag, checkForUnknownFlags
+    , map, pure, apply, andThen
     )
 
 {-| Command-line argument parsing using a chomper-based approach.
@@ -64,6 +55,7 @@ import Utils.Task.Extra as Task
 Takes an optional completion index, the raw argument strings, argument parsers,
 and a flag chomper. Returns suggestions for tab completion and either an error
 or the parsed arguments and flags.
+
 -}
 chomp :
     Maybe Int
@@ -107,6 +99,7 @@ toSuggest maybeIndex =
 
 Takes suggestions and chunks, produces either a success with remaining chunks
 and parsed value, or an error.
+
 -}
 type Chomper x a
     = Chomper (Suggest -> List Chunk -> ChomperResult x a)
@@ -120,6 +113,7 @@ type ChomperResult x a
 {-| A command-line argument string paired with its position index.
 
 Used to track which argument is being parsed for error messages and completions.
+
 -}
 type Chunk
     = Chunk Int String
@@ -129,6 +123,7 @@ type Chunk
 
 NoSuggestion means no completion context, Suggest means we know the position,
 Suggestions contains the actual completion options.
+
 -}
 type Suggest
     = NoSuggestion
@@ -205,6 +200,7 @@ addSuggest everything suggest =
 {-| Parse arguments and ensure no extra arguments remain.
 
 Takes a chomper and runs it, returning an error if any unparsed arguments are left.
+
 -}
 chompExactly : Chomper ArgError a -> Suggest -> List Chunk -> ( Suggest, Result ArgError a )
 chompExactly (Chomper chomper) suggest chunks =
@@ -225,6 +221,7 @@ chompExactly (Chomper chomper) suggest chunks =
 
 Takes a chomper producing a function that accepts a list, a parser, and a parse
 function. Collects all remaining arguments and applies them to the function.
+
 -}
 chompMultiple : Chomper ArgError (List a -> b) -> Parser -> (String -> Maybe a) -> Suggest -> List Chunk -> ( Suggest, Result ArgError b )
 chompMultiple (Chomper chomper) parser parserFn suggest chunks =
@@ -259,6 +256,7 @@ chompMultipleHelp parser parserFn revArgs suggest chunks func =
 
 Takes the total number of chunks, a parser for the argument type, and a parse
 function. Consumes one chunk and validates it.
+
 -}
 chompArg : Int -> Parser -> (String -> Maybe a) -> Chomper ArgError a
 chompArg numChunks ((Parser { singular, examples }) as parser) parserFn =
@@ -331,6 +329,7 @@ tryToParse suggest (Parser parser) parserFn index string =
 {-| Create a chomper for a boolean on/off flag.
 
 Takes the flag name and returns True if the flag is present, False if absent.
+
 -}
 chompOnOffFlag : String -> Chomper FlagError Bool
 chompOnOffFlag flagName =
@@ -356,6 +355,7 @@ chompOnOffFlag flagName =
 
 Takes the flag name, a parser, and a parse function. Returns Just the parsed
 value if the flag is present, Nothing if absent.
+
 -}
 chompNormalFlag : String -> Parser -> (String -> Maybe a) -> Chomper FlagError (Maybe a)
 chompNormalFlag flagName ((Parser { singular, examples }) as parser) parserFn =
@@ -449,6 +449,7 @@ findFlagHelp revPrev loneFlag flagPrefix chunks =
 
 Takes the valid flags specification and checks if any unrecognized flags remain
 in the input, producing an error with suggestions if found.
+
 -}
 checkForUnknownFlags : Flags -> Chomper FlagError ()
 checkForUnknownFlags flags =
@@ -511,6 +512,7 @@ getFlagName flag =
 
 Applies a function to the successful result of a chomper without changing
 the error type or parsing behavior.
+
 -}
 map : (a -> b) -> Chomper x a -> Chomper x b
 map func (Chomper chomper) =
@@ -527,6 +529,7 @@ map func (Chomper chomper) =
 {-| Create a chomper that always succeeds with a given value.
 
 Doesn't consume any input, just wraps the value in a successful chomper result.
+
 -}
 pure : a -> Chomper x a
 pure value =
@@ -539,6 +542,7 @@ pure value =
 
 Sequences two chompers, applying the function from the first to the value
 from the second.
+
 -}
 apply : Chomper x a -> Chomper x (a -> b) -> Chomper x b
 apply (Chomper argChomper) (Chomper funcChomper) =
@@ -566,6 +570,7 @@ apply (Chomper argChomper) (Chomper funcChomper) =
 
 Takes a function that produces a chomper based on a value, and a chomper that
 produces that value. Enables dynamic parsing based on earlier results.
+
 -}
 andThen : (a -> Chomper x b) -> Chomper x a -> Chomper x b
 andThen callback (Chomper aChomper) =

@@ -1,10 +1,4 @@
-module Compiler.Data.Bag exposing
-    ( Bag(..)
-    , append
-    , empty
-    , one
-    , toList
-    )
+module Compiler.Data.Bag exposing (Bag(..), append, empty, one, toList)
 
 {-| An efficient data structure for accumulating elements with constant-time append operations.
 
@@ -14,7 +8,6 @@ This is useful for collecting results during tree traversals without paying list
 @docs Bag, append, empty, one, toList
 
 -}
-
 
 -- BAGS
 

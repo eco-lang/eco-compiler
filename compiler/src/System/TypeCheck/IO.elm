@@ -1,7 +1,7 @@
 module System.TypeCheck.IO exposing
     ( unsafePerformIO
     , IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMap, traverseMapWithKey, forM_, mapM_
-    , foldMDict, indexedForA, mapM, traverseIndexed, traverseList, traverseMaybe, traverseTuple
+    , foldMDict, indexedForA, mapM, traverseIndexed, traverseList, traverseTuple
     , Step(..), loop
     , Point(..), PointInfo(..)
     , Descriptor(..), Content(..), SuperType(..), Mark(..), Variable, FlatType(..)
@@ -25,7 +25,7 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 # The IO monad
 
 @docs IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMap, traverseMapWithKey, forM_, mapM_
-@docs foldMDict, indexedForA, mapM, traverseIndexed, traverseList, traverseMaybe, traverseTuple
+@docs foldMDict, indexedForA, mapM, traverseIndexed, traverseList, traverseTuple
 
 
 # Loop
@@ -82,8 +82,8 @@ unsafePerformIO ioA =
 
 {-| Represents a step in a looping computation.
 
-- `Loop state`: Continue iterating with the given state
-- `Done a`: Terminate and return the result
+  - `Loop state`: Continue iterating with the given state
+  - `Done a`: Terminate and return the result
 
 -}
 type Step state a
@@ -312,21 +312,6 @@ The first element is left unchanged.
 traverseTuple : (b -> IO c) -> ( a, b ) -> IO ( a, c )
 traverseTuple f ( a, b ) =
     map (Tuple.pair a) (f b)
-
-
-{-| Traverse a Maybe value with an IO-producing function.
-
-Returns `Nothing` unchanged, applies the function to `Just` values.
-
--}
-traverseMaybe : (a -> IO b) -> Maybe a -> IO (Maybe b)
-traverseMaybe f a =
-    case Maybe.map f a of
-        Just b ->
-            map Just b
-
-        Nothing ->
-            pure Nothing
 
 
 {-| Alias for `traverseList`.

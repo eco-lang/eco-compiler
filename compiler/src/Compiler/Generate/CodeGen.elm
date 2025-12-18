@@ -1,8 +1,8 @@
 module Compiler.Generate.CodeGen exposing
     ( Output(..), outputToString
     , SourceMaps(..)
-    , Mains, TypedMains
-    , CodeGen, TypedCodeGen, MonoCodeGen
+    , Mains
+    , CodeGen, MonoCodeGen
     )
 
 {-| Backend interface definitions for code generation.
@@ -27,19 +27,18 @@ It supports three different backend types based on the level of type information
 
 # Main Entry Points
 
-@docs Mains, TypedMains
+@docs Mains
 
 
 # Backend Interfaces
 
-@docs CodeGen, TypedCodeGen, MonoCodeGen
+@docs CodeGen, MonoCodeGen
 
 -}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Optimized as Opt
-import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name
 import Compiler.Generate.Mode as Mode
 import Compiler.Reporting.Render.Type.Localizer as L
@@ -112,12 +111,6 @@ type alias Mains =
     Dict (List String) IO.Canonical Opt.Main
 
 
-{-| Map from module names to their main entry points for typed optimized AST.
--}
-type alias TypedMains =
-    Dict (List String) IO.Canonical TOpt.Main
-
-
 
 -- SOURCE MAPS
 
@@ -132,24 +125,6 @@ type SourceMaps
 
 -- TYPED CODE GEN
 -- Interface for backends that need full type information (e.g., MLIR)
-
-
-{-| Backend interface for code generators that require full type information from the typed optimized AST for monomorphization and type-directed optimizations.
--}
-type alias TypedCodeGen =
-    { -- Generate a complete program from the typed optimized global graph
-      generate :
-        { sourceMaps : SourceMaps
-        , leadingLines : Int
-        , mode : Mode.Mode
-        , graph : TOpt.GlobalGraph
-        , mains : TypedMains
-        }
-        -> Output
-    }
-
-
-
 -- MONO CODE GEN
 -- Interface for backends that work with fully monomorphized IR
 

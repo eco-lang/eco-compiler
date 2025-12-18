@@ -46,6 +46,7 @@ import Utils.Main as Utils
 
 Takes an intro message, outro message, and list of available commands.
 Parses command-line arguments and routes to the appropriate command handler.
+
 -}
 app : D.Doc -> D.Doc -> List Command -> Task Never ()
 app intro outro commands =
@@ -89,6 +90,7 @@ app intro outro commands =
 {-| A command with no flags.
 
 Use this when your command doesn't accept any command-line flags.
+
 -}
 noFlags : Flags
 noFlags =
@@ -98,6 +100,7 @@ noFlags =
 {-| Start building a flags specification.
 
 Equivalent to noFlags, used as the starting point when adding flags with more.
+
 -}
 flags : Flags
 flags =
@@ -107,6 +110,7 @@ flags =
 {-| Add a flag to a flags specification.
 
 Builds up a list of flags by prepending each flag to the existing specification.
+
 -}
 more : Flag -> Flags -> Flags
 more f fs =
@@ -121,6 +125,7 @@ more f fs =
 
 Takes the flag name, a parser for the value type, and a help description.
 Example: flag "output" filePath "The output file path"
+
 -}
 flag : String -> Parser -> String -> Flag
 flag =
@@ -131,6 +136,7 @@ flag =
 
 Takes the flag name and a help description. The flag is either present (True)
 or absent (False). Example: onOff "verbose" "Enable verbose output"
+
 -}
 onOff : String -> String -> Flag
 onOff =
@@ -172,6 +178,7 @@ dotdotdot requiredArgs repeatedArg =
 
 Takes a list of argument specifications and allows any one of them to match.
 Useful for commands that can be invoked in different ways.
+
 -}
 oneOf : List Args -> Args
 oneOf listOfArgs =
@@ -185,6 +192,7 @@ oneOf listOfArgs =
 {-| Specify that a command takes no arguments.
 
 Use this for commands that only use flags or don't take any input.
+
 -}
 noArgs : Args
 noArgs =
@@ -204,6 +212,7 @@ noArgs =
 
 Takes a parser for the argument type. All remaining command-line arguments
 will be collected and parsed with this parser.
+
 -}
 zeroOrMore : Parser -> Args
 zeroOrMore parser =
@@ -219,6 +228,7 @@ zeroOrMore parser =
 {-| Specify that a command requires exactly zero arguments.
 
 Equivalent to noArgs, used for consistency in the requireN family of functions.
+
 -}
 require0 : Args
 require0 =
@@ -228,6 +238,7 @@ require0 =
 {-| Specify that a command requires exactly one argument.
 
 Takes a parser for the required argument type.
+
 -}
 require1 : Parser -> Args
 require1 a =
@@ -237,6 +248,7 @@ require1 a =
 {-| Specify that a command requires exactly two arguments.
 
 Takes parsers for both required argument types.
+
 -}
 require2 : Parser -> Parser -> Args
 require2 a b =
@@ -246,6 +258,7 @@ require2 a b =
 {-| Specify that a command requires exactly three arguments.
 
 Takes parsers for all three required argument types.
+
 -}
 require3 : Parser -> Parser -> Parser -> Args
 require3 a b c =

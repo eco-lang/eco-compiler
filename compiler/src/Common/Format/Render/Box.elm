@@ -2849,7 +2849,6 @@ type StringRepresentation
 type LiteralValue
     = IntNum String
     | FloatNum String
-    | Boolean Bool
 
 
 formatLiteral : LiteralValue -> Box
@@ -2869,12 +2868,6 @@ formatLiteral lit =
 
         FloatNum f ->
             Box.line (Box.literal f)
-
-        Boolean True ->
-            Box.literal "True" |> Box.line
-
-        Boolean False ->
-            Box.literal "False" |> Box.line
 
 
 type StringStyle

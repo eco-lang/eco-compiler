@@ -1,12 +1,7 @@
 module Terminal.Terminal.Helpers exposing
-    ( filePath
-    , guidaOrElmFile
-    , package
-    , parseFilePath
-    , parseGuidaOrElmFile
-    , parsePackage
-    , parseVersion
-    , version
+    ( version, parseVersion
+    , guidaOrElmFile, parseGuidaOrElmFile, filePath, parseFilePath
+    , package, parsePackage
     )
 
 {-| Command-line argument parsers and validators for terminal commands.
@@ -51,6 +46,7 @@ import Utils.Main as Utils exposing (FilePath)
 {-| Parser for version numbers.
 
 Accepts semantic version strings like "1.0.0" or "2.3.4".
+
 -}
 version : Parser
 version =
@@ -65,6 +61,7 @@ version =
 {-| Parse a string as a version number.
 
 Returns Just the parsed version or Nothing if invalid.
+
 -}
 parseVersion : String -> Maybe V.Version
 parseVersion chars =
@@ -117,6 +114,7 @@ exampleVersions chars =
 {-| Parser for Guida or Elm source file paths.
 
 Accepts file paths ending in .guida or .elm extensions.
+
 -}
 guidaOrElmFile : Parser
 guidaOrElmFile =
@@ -131,6 +129,7 @@ guidaOrElmFile =
 {-| Parse a string as a Guida or Elm file path.
 
 Returns Just the file path if it has a .guida or .elm extension, Nothing otherwise.
+
 -}
 parseGuidaOrElmFile : String -> Maybe FilePath
 parseGuidaOrElmFile chars =
@@ -157,6 +156,7 @@ exampleGuidaOrElmFiles _ =
 {-| Parser for general file paths.
 
 Accepts any string as a file path without validation.
+
 -}
 filePath : Parser
 filePath =
@@ -171,6 +171,7 @@ filePath =
 {-| Parse a string as a file path.
 
 Always succeeds, accepting any string as a valid file path.
+
 -}
 parseFilePath : String -> Maybe FilePath
 parseFilePath =
@@ -189,6 +190,7 @@ exampleFilePaths _ =
 {-| Parser for Elm package names.
 
 Accepts package names in the format "author/project" like "elm/core" or "elm/html".
+
 -}
 package : Parser
 package =
@@ -203,6 +205,7 @@ package =
 {-| Parse a string as an Elm package name.
 
 Returns Just the package name if valid (format: author/project), Nothing otherwise.
+
 -}
 parsePackage : String -> Maybe Pkg.Name
 parsePackage chars =

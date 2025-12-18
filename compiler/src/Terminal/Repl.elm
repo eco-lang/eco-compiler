@@ -84,6 +84,7 @@ import Utils.Task.Extra as Task
 {-| Configuration flags for the REPL session.
 
 Contains optional interpreter path and color output setting.
+
 -}
 type Flags
     = Flags (Maybe FilePath) Bool
@@ -93,6 +94,7 @@ type Flags
 
 Initializes the REPL environment, displays the welcome message, and begins
 the read-eval-print loop for evaluating Elm expressions and declarations.
+
 -}
 run : () -> Flags -> Task Never ()
 run () flags =
@@ -214,6 +216,7 @@ handleOutcome env outcome =
 
 Can be an import, type definition, port declaration, value declaration,
 expression, or a REPL command (reset, exit, skip, help).
+
 -}
 type Input
     = Import ModuleName.Raw String
@@ -306,6 +309,7 @@ stripLegacyBackslash chars =
 
 Provides either indentation or the start of a definition name to help
 users continue typing multi-line declarations.
+
 -}
 type Prefill
     = Indent
@@ -330,6 +334,7 @@ renderPrefill lineStart =
 
 Stores the most recent line and a reversed list of previous lines for
 efficient appending during multi-line input.
+
 -}
 type Lines
     = Lines String (List String)
@@ -378,6 +383,7 @@ getFirstLine (Lines x xs) =
 
 Either the input is complete and can be evaluated (Done), or more lines
 are needed and a prefill suggestion is provided (Continue).
+
 -}
 type CategorizedInput
     = Done Input
@@ -660,6 +666,7 @@ eval env ((IO.ReplState imports types decls) as state) input =
 
 OutputNothing for imports/types, OutputDecl for named declarations,
 OutputExpr for expressions that should be printed.
+
 -}
 type Output
     = OutputNothing

@@ -1,9 +1,4 @@
-module API.Make exposing
-    ( run, Flags(..)
-    , Output(..), output, parseOutput
-    , docsFile, parseDocsFile
-    , ReportType(..), reportType, parseReportType
-    )
+module API.Make exposing (run, Flags(..))
 
 {-| Build Elm projects into JavaScript or HTML. This module handles the complete
 build pipeline including dependency resolution, compilation, and code generation.
@@ -15,21 +10,6 @@ and optional source map generation.
 # Build Pipeline
 
 @docs run, Flags
-
-
-# Output Configuration
-
-@docs Output, output, parseOutput
-
-
-# Documentation Export
-
-@docs docsFile, parseDocsFile
-
-
-# Reporting
-
-@docs ReportType, reportType, parseReportType
 
 -}
 
@@ -47,9 +27,8 @@ import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.Html as Html
 import Maybe.Extra as Maybe
 import Task exposing (Task)
-import Terminal.Terminal.Internal exposing (Parser(..))
 import Utils.Crash exposing (crash)
-import Utils.Main as Utils exposing (FilePath)
+import Utils.Main exposing (FilePath)
 import Utils.Task.Extra as Task
 
 
@@ -61,20 +40,6 @@ import Utils.Task.Extra as Task
 -}
 type Flags
     = Flags Bool Bool Bool
-
-
-{-| Output format for the compiled code: JavaScript file, HTML file, or discard output.
--}
-type Output
-    = JS String
-    | Html String
-    | DevNull
-
-
-{-| Error reporting format for compilation diagnostics.
--}
-type ReportType
-    = Json
 
 
 
@@ -227,90 +192,3 @@ toBuilder withSourceMaps leadingLines root details desiredMode artifacts =
 
 
 -- PARSERS
-
-
-{-| Parser for report type command-line arguments.
--}
-reportType : Parser
-reportType =
-    Parser
-        { singular = "report type"
-        , plural = "report types"
-        , suggest = \_ -> Task.succeed [ "json" ]
-        , examples = \_ -> Task.succeed [ "json" ]
-        }
-
-
-{-| Parse a string into a report type, returning Nothing if the string is not a valid report type.
--}
-parseReportType : String -> Maybe ReportType
-parseReportType string =
-    if string == "json" then
-        Just Json
-
-    else
-        Nothing
-
-
-{-| Parser for output file command-line arguments.
--}
-output : Parser
-output =
-    Parser
-        { singular = "output file"
-        , plural = "output files"
-        , suggest = \_ -> Task.succeed []
-        , examples = \_ -> Task.succeed [ "elm.js", "index.html", "/dev/null" ]
-        }
-
-
-{-| Parse a file path into an output format based on its extension.
-Returns Nothing if the path does not have a recognized extension (.js, .html, or /dev/null).
--}
-parseOutput : String -> Maybe Output
-parseOutput name =
-    if isDevNull name then
-        Just DevNull
-
-    else if hasExt ".html" name then
-        Just (Html name)
-
-    else if hasExt ".js" name then
-        Just (JS name)
-
-    else
-        Nothing
-
-
-{-| Parser for documentation file command-line arguments.
--}
-docsFile : Parser
-docsFile =
-    Parser
-        { singular = "json file"
-        , plural = "json files"
-        , suggest = \_ -> Task.succeed []
-        , examples = \_ -> Task.succeed [ "docs.json", "documentation.json" ]
-        }
-
-
-{-| Parse a file path as a documentation file, requiring a .json extension.
-Returns Nothing if the path does not end with .json.
--}
-parseDocsFile : String -> Maybe String
-parseDocsFile name =
-    if hasExt ".json" name then
-        Just name
-
-    else
-        Nothing
-
-
-hasExt : String -> String -> Bool
-hasExt ext path =
-    Utils.fpTakeExtension path == ext && String.length path > String.length ext
-
-
-isDevNull : String -> Bool
-isDevNull name =
-    name == "/dev/null" || name == "NUL" || name == "<|null"

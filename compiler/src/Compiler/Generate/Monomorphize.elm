@@ -1488,15 +1488,6 @@ ensureCallableTopLevel expr monoType state =
                         monoType
                         state
 
-                Mono.MonoVarCycle region home name _ ->
-                    makeAliasClosure
-                        (Mono.MonoVarCycle region home name monoType)
-                        region
-                        allArgTypes
-                        finalRetType
-                        monoType
-                        state
-
                 _ ->
                     -- General fallback for other cases (MonoVarDebug, MonoAccessor, etc.)
                     makeGeneralClosure expr allArgTypes finalRetType monoType state
@@ -1727,12 +1718,6 @@ extractRegion expr =
         Mono.MonoVarKernel region _ _ _ ->
             region
 
-        Mono.MonoVarDebug region _ _ _ _ ->
-            region
-
-        Mono.MonoVarCycle region _ _ _ ->
-            region
-
         Mono.MonoList region _ _ ->
             region
 
@@ -1769,22 +1754,10 @@ extractRegion expr =
         Mono.MonoTupleCreate region _ _ _ ->
             region
 
-        Mono.MonoTupleAccess _ _ _ _ ->
-            A.zero
-
-        Mono.MonoCustomCreate _ _ _ _ _ ->
-            A.zero
-
         Mono.MonoUnit ->
             A.zero
 
         Mono.MonoAccessor region _ _ ->
-            region
-
-        Mono.MonoShader region _ _ ->
-            region
-
-        Mono.MonoPolyGlobal region _ _ ->
             region
 
 
@@ -2244,12 +2217,6 @@ findFreeVars bound expr =
         Mono.MonoTupleCreate _ exprs _ _ ->
             List.concatMap (findFreeVars bound) exprs
 
-        Mono.MonoTupleAccess tuple _ _ _ ->
-            findFreeVars bound tuple
-
-        Mono.MonoCustomCreate _ _ exprs _ _ ->
-            List.concatMap (findFreeVars bound) exprs
-
         _ ->
             -- Literals, globals, kernels, etc. have no free local vars
             []
@@ -2348,12 +2315,6 @@ collectDepsHelp expr deps =
             List.foldl (\( _, e ) d -> collectDepsHelp e d) (collectDepsHelp record deps) updates
 
         Mono.MonoTupleCreate _ exprs _ _ ->
-            List.foldl collectDepsHelp deps exprs
-
-        Mono.MonoTupleAccess tuple _ _ _ ->
-            collectDepsHelp tuple deps
-
-        Mono.MonoCustomCreate _ _ exprs _ _ ->
             List.foldl collectDepsHelp deps exprs
 
         _ ->

@@ -5,7 +5,7 @@ module Text.PrettyPrint.ANSI.Leijen exposing
     , align, indent, hang, fill
     , cat, hcat, vcat, sep, hsep, fillSep
     , plain, underline
-    , red, green, blue, cyan, magenta, yellow, black
+    , red, green, blue, cyan, yellow, black
     , dullred, dullcyan, dullyellow
     , renderPretty, displayS, displayIO
     )
@@ -50,7 +50,7 @@ ANSI SGR (Select Graphic Rendition) command generation.
 
 # Colors (Vivid)
 
-@docs red, green, blue, cyan, magenta, yellow, black
+@docs red, green, blue, cyan, yellow, black
 
 
 # Colors (Dull)
@@ -149,9 +149,6 @@ styleToSgrs style =
                     Cyan ->
                         Ansi.SetColor Ansi.Foreground Ansi.Vivid Ansi.Cyan
 
-                    Magenta ->
-                        Ansi.SetColor Ansi.Foreground Ansi.Vivid Ansi.Magenta
-
                     Blue ->
                         Ansi.SetColor Ansi.Foreground Ansi.Vivid Ansi.Blue
 
@@ -218,23 +215,11 @@ displayS simpleDoc acc =
         SSGR ((Ansi.SetColor _ Ansi.Vivid Ansi.Cyan) :: tail) sd ->
             displayS (SSGR tail sd) (acc ++ "\u{001B}[96m")
 
-        SSGR ((Ansi.SetUnderlining Ansi.DoubleUnderline) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[4:2m")
-
-        SSGR ((Ansi.SetUnderlining Ansi.NoUnderline) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[24m")
-
         SSGR ((Ansi.SetColor _ Ansi.Dull Ansi.Black) :: tail) sd ->
             displayS (SSGR tail sd) (acc ++ "\u{001B}[30m")
 
         SSGR ((Ansi.SetColor _ Ansi.Dull Ansi.Blue) :: tail) sd ->
             displayS (SSGR tail sd) (acc ++ "\u{001B}[34m")
-
-        SSGR ((Ansi.SetColor _ Ansi.Dull Ansi.Magenta) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[35m")
-
-        SSGR ((Ansi.SetColor _ Ansi.Dull Ansi.White) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[37m")
 
         SSGR ((Ansi.SetColor _ Ansi.Vivid Ansi.Black) :: tail) sd ->
             displayS (SSGR tail sd) (acc ++ "\u{001B}[90m")
@@ -242,47 +227,8 @@ displayS simpleDoc acc =
         SSGR ((Ansi.SetColor _ Ansi.Vivid Ansi.Blue) :: tail) sd ->
             displayS (SSGR tail sd) (acc ++ "\u{001B}[94m")
 
-        SSGR ((Ansi.SetColor _ Ansi.Vivid Ansi.Magenta) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[95m")
-
-        SSGR ((Ansi.SetColor _ Ansi.Vivid Ansi.White) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[97m")
-
         SSGR ((Ansi.SetConsoleIntensity Ansi.BoldIntensity) :: tail) sd ->
             displayS (SSGR tail sd) (acc ++ "\u{001B}[1m")
-
-        SSGR ((Ansi.SetConsoleIntensity Ansi.FaintIntensity) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[2m")
-
-        SSGR ((Ansi.SetConsoleIntensity Ansi.NormalIntensity) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[22m")
-
-        SSGR ((Ansi.SetItalicized True) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[3m")
-
-        SSGR ((Ansi.SetItalicized False) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[23m")
-
-        SSGR ((Ansi.SetBlinkSpeed Ansi.SlowBlink) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[5m")
-
-        SSGR ((Ansi.SetBlinkSpeed Ansi.RapidBlink) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[6m")
-
-        SSGR ((Ansi.SetBlinkSpeed Ansi.NoBlink) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[25m")
-
-        SSGR ((Ansi.SetVisible True) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[28m")
-
-        SSGR ((Ansi.SetVisible False) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[8m")
-
-        SSGR ((Ansi.SetSwapForegroundBackground True) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[7m")
-
-        SSGR ((Ansi.SetSwapForegroundBackground False) :: tail) sd ->
-            displayS (SSGR tail sd) (acc ++ "\u{001B}[27m")
 
         SSGR [] sd ->
             displayS sd acc
@@ -434,13 +380,6 @@ cyan =
     updateColor Cyan
 
 
-{-| Applies vivid magenta color to a document.
--}
-magenta : Doc -> Doc
-magenta =
-    updateColor Magenta
-
-
 {-| Applies vivid green color to a document.
 -}
 green : Doc -> Doc
@@ -509,7 +448,6 @@ type Color
     = Red
     | Green
     | Cyan
-    | Magenta
     | Blue
     | Black
     | Yellow

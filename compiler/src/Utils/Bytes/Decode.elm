@@ -2,7 +2,7 @@ module Utils.Bytes.Decode exposing
     ( unit, bool, int, float, string
     , maybe, list, nonempty, result, oneOrMore
     , jsonPair, assocListDict, everySet
-    , map6, map7, map8
+    , map6, map8
     , lazy
     )
 
@@ -28,7 +28,7 @@ enable reliable deserialization of the compiler's binary cache files and inter-p
 
 # Extended Mapping Functions
 
-@docs map6, map7, map8
+@docs map6, map8
 
 
 # Utility Functions

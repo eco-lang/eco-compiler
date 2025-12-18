@@ -1,31 +1,12 @@
 module Compiler.AST.TypedOptimized exposing
-    ( Annotations
-    , Choice(..)
-    , Decider(..)
-    , Def(..)
-    , Destructor(..)
-    , EffectsType(..)
-    , Expr(..)
-    , Global(..)
-    , GlobalGraph(..)
-    , LocalGraph(..)
-    , LocalGraphData
-    , Main(..)
-    , Node(..)
-    , Path(..)
-    , addGlobalGraph
-    , addLocalGraph
-    , compareGlobal
-    , empty
-    , emptyGlobalGraph
-    , emptyLocalGraph
-    , globalGraphDecoder
-    , globalGraphEncoder
-    , localGraphDecoder
-    , localGraphEncoder
-    , toComparableGlobal
-    , toKernelGlobal
+    ( Expr(..), Global(..), Annotations
+    , Def(..), Destructor(..), Path(..)
+    , Decider(..), Choice(..)
+    , GlobalGraph(..), LocalGraph(..), LocalGraphData, Node(..), Main(..), EffectsType(..)
+    , emptyGlobalGraph, emptyLocalGraph, addGlobalGraph, addLocalGraph
+    , compareGlobal, toComparableGlobal, toKernelGlobal
     , typeOf
+    , globalGraphEncoder, globalGraphDecoder, localGraphEncoder, localGraphDecoder
     )
 
 {-| TypedOptimized AST - like Optimized but preserves type information.
@@ -62,7 +43,7 @@ The key difference from Optimized:
 
 # Graph Operations
 
-@docs empty, emptyGlobalGraph, emptyLocalGraph, addGlobalGraph, addLocalGraph
+@docs emptyGlobalGraph, emptyLocalGraph, addGlobalGraph, addLocalGraph
 
 
 # Global Reference Utilities
@@ -398,13 +379,6 @@ type EffectsType
 
 
 -- GRAPHS
-
-
-{-| Create an empty global graph with no definitions.
--}
-empty : GlobalGraph
-empty =
-    GlobalGraph Dict.empty Dict.empty Dict.empty
 
 
 {-| Create an empty global graph (alias for `empty`).

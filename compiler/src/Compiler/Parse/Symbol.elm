@@ -113,7 +113,7 @@ isBinopCharHelp char =
 
 
 {-| The set of characters that can appear in binary operators.
-Includes: + - / * = . < > : & | ^ ? % !
+Includes: + - / \* = . < > : & | ^ ? % !
 -}
 binopCharSet : EverySet Int Int
 binopCharSet =

@@ -1,19 +1,10 @@
 module Common.Format.Cheapskate.Util exposing
     ( Scanner
-    , isEscapable
-    , isWhitespace
-    , joinLines
-    , nfb
-    , nfbChar
-    , normalizeReference
-    , scanBlankline
-    , scanChar
-    , scanIndentSpace
-    , scanNonindentSpace
-    , scanSpaces
-    , scanSpacesToColumn
-    , scanSpnl
-    , tabFilter
+    , isEscapable, isWhitespace
+    , joinLines, normalizeReference, tabFilter
+    , scanBlankline, scanChar, scanIndentSpace, scanNonindentSpace
+    , scanSpaces, scanSpacesToColumn, scanSpnl
+    , nfb, nfbChar
     , upToCountChars
     )
 
@@ -26,20 +17,30 @@ matching without capturing results.
 
 @docs Scanner
 
+
 # Character Classification
+
 @docs isEscapable, isWhitespace
 
+
 # String Utilities
+
 @docs joinLines, normalizeReference, tabFilter
 
+
 # Scanning Combinators
+
 @docs scanBlankline, scanChar, scanIndentSpace, scanNonindentSpace
 @docs scanSpaces, scanSpacesToColumn, scanSpnl
 
+
 # Lookahead Assertions
+
 @docs nfb, nfbChar
 
+
 # Character Consumption
+
 @docs upToCountChars
 
 -}

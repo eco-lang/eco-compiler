@@ -49,6 +49,7 @@ import Utils.Main as Utils
 {-| Configuration flags for the init command.
 
 Contains flags for package mode and auto-yes to skip confirmation prompts.
+
 -}
 type Flags
     = Flags Bool Bool
@@ -58,6 +59,7 @@ type Flags
 
 Creates an elm.json file with default dependencies, sets up source directories,
 and creates an example test file. Supports both application and package projects.
+
 -}
 run : () -> Flags -> Task Never ()
 run () (Flags package autoYes) =

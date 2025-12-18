@@ -91,8 +91,8 @@ compile rawBranches =
 
 {-| A decision tree representation for efficient pattern matching.
 
-- `Match Int`: A leaf node indicating successful match with the branch index
-- `Decision Path (List (Test, DecisionTree)) (Maybe DecisionTree)`: A decision node that tests a value at the given path, with edges for each test outcome and an optional fallback for unmatched cases
+  - `Match Int`: A leaf node indicating successful match with the branch index
+  - `Decision Path (List (Test, DecisionTree)) (Maybe DecisionTree)`: A decision node that tests a value at the given path, with edges for each test outcome and an optional fallback for unmatched cases
 
 -}
 type DecisionTree
@@ -102,14 +102,14 @@ type DecisionTree
 
 {-| A runtime test to determine which branch to take in a decision tree.
 
-- `IsCtor`: Tests if a value is a specific custom type constructor
-- `IsCons`: Tests if a list is non-empty (has cons cell)
-- `IsNil`: Tests if a list is empty
-- `IsTuple`: Tests if a value is a tuple
-- `IsInt`: Tests if a value equals a specific integer
-- `IsChr`: Tests if a value equals a specific character
-- `IsStr`: Tests if a value equals a specific string
-- `IsBool`: Tests if a value equals a specific boolean
+  - `IsCtor`: Tests if a value is a specific custom type constructor
+  - `IsCons`: Tests if a list is non-empty (has cons cell)
+  - `IsNil`: Tests if a list is empty
+  - `IsTuple`: Tests if a value is a tuple
+  - `IsInt`: Tests if a value equals a specific integer
+  - `IsChr`: Tests if a value equals a specific character
+  - `IsStr`: Tests if a value equals a specific string
+  - `IsBool`: Tests if a value equals a specific boolean
 
 -}
 type Test
@@ -125,9 +125,9 @@ type Test
 
 {-| A path describing how to access a value within a matched pattern.
 
-- `Index`: Access the nth field of a tuple or constructor arguments
-- `Unbox`: Unwrap a single-constructor custom type to access its contents
-- `Empty`: The root path (the matched value itself)
+  - `Index`: Access the nth field of a tuple or constructor arguments
+  - `Unbox`: Unwrap a single-constructor custom type to access its contents
+  - `Empty`: The root path (the matched value itself)
 
 -}
 type Path

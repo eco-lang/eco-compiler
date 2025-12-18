@@ -3,7 +3,7 @@ module Control.Monad.State.TypeCheck.Strict exposing
     , runStateT, evalStateT
     , pure, map, apply, andThen
     , liftIO, gets, modify
-    , traverseList, traverseTuple, traverseMap, traverseMaybe
+    , traverseList, traverseTuple, traverseMap
     )
 
 {-| A strict state transformer monad for type checking operations.
@@ -35,7 +35,7 @@ computations while maintaining strict evaluation semantics.
 
 # Traversals
 
-@docs traverseList, traverseTuple, traverseMap, traverseMaybe
+@docs traverseList, traverseTuple, traverseMap
 
 -}
 
@@ -166,15 +166,3 @@ traverseMapWithKey keyComparison toComparable f =
     Dict.foldl keyComparison
         (\k a -> andThen (\c -> map (\va -> Dict.insert toComparable k va c) (f k a)))
         (pure Dict.empty)
-
-
-{-| Applies a stateful computation to the value inside a Maybe if present, otherwise returns Nothing.
--}
-traverseMaybe : (a -> StateT s b) -> Maybe a -> StateT s (Maybe b)
-traverseMaybe f a =
-    case Maybe.map f a of
-        Just b ->
-            map Just b
-
-        Nothing ->
-            pure Nothing

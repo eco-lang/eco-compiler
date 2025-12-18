@@ -47,11 +47,11 @@ config =
     , NoUnused.Dependencies.rule
     , NoUnused.Variables.rule
     , NoUnused.Patterns.rule
+    , NoUnused.Exports.rule
     , Simplify.rule Simplify.defaults
-    --, Docs.ReviewAtDocs.rule
-    --, NoUnused.CustomTypeConstructors.rule []
+    , NoUnused.CustomTypeConstructors.rule []
+    , Docs.ReviewAtDocs.rule
     --, NoUnused.CustomTypeConstructorArgs.rule
-    --, NoUnused.Exports.rule
     --, NoUnused.Parameters.rule
     --    |> Rule.ignoreErrorsForFiles [ "src/Utils/Crash.elm" ]
 

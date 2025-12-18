@@ -1139,10 +1139,12 @@ type Args
 
 
 {-| Properties for constrained function arguments including:
+
   - vars: Type variables introduced for arguments and result
   - tipe: The full function type (arg1 -> arg2 -> ... -> result)
   - result: The result type of the function
   - state: Pattern matching state from argument patterns
+
 -}
 type alias ArgsProps =
     { vars : List IO.Variable

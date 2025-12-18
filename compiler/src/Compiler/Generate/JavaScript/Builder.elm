@@ -4,7 +4,7 @@ module Compiler.Generate.JavaScript.Builder exposing
     , Stmt(..), Case(..)
     , InfixOp(..), PrefixOp(..)
     , Mapping(..), MappingData
-    , addByteString, addKernel
+    , addKernel
     )
 
 {-| JavaScript AST and pretty-printer builder for the Elm compiler.
@@ -44,7 +44,7 @@ Based on the language-ecmascript package structure for correct JavaScript syntax
 
 # Internal Helpers
 
-@docs addByteString, addKernel
+@docs addKernel
 
 -}
 
@@ -70,11 +70,11 @@ Represents all JavaScript expression forms including literals (strings, numbers,
 arrays, objects, function calls, property access, operators, and function expressions.
 Includes both tracked variants (with source positions for source map generation) and
 untracked variants for performance.
+
 -}
 type Expr
     = ExprString String
     | ExprTrackedString IO.Canonical A.Position String
-    | ExprFloat String
     | ExprTrackedFloat IO.Canonical A.Position String
     | ExprInt Int
     | ExprTrackedInt IO.Canonical A.Position Int
@@ -103,6 +103,7 @@ type Expr
 {-| Left-hand side value in an assignment expression.
 
 Can be either a simple variable reference or an array/object index expression.
+
 -}
 type LValue
     = LRef Name.Name
@@ -117,6 +118,7 @@ type LValue
 
 Represents all JavaScript statement forms including blocks, control flow (if, switch, while,
 try-catch), variable declarations, function declarations, and expression statements.
+
 -}
 type Stmt
     = Block (List Stmt)
@@ -141,6 +143,7 @@ type Stmt
 
 Represents a single case in a switch statement, with an expression to match
 or a default case that handles all other values.
+
 -}
 type Case
     = Case Expr (List Stmt)
@@ -154,6 +157,7 @@ type Case
 {-| JavaScript infix (binary) operators.
 
 Includes arithmetic, comparison, logical, and bitwise operators.
+
 -}
 type InfixOp
     = OpAdd
@@ -180,6 +184,7 @@ type InfixOp
 {-| JavaScript prefix (unary) operators.
 
 Includes logical not, arithmetic negation, and bitwise complement.
+
 -}
 type PrefixOp
     = PrefixNot
@@ -195,6 +200,7 @@ type PrefixOp
 
 Takes a statement AST node and appends its formatted JavaScript representation
 to the builder, handling indentation and line breaks.
+
 -}
 stmtToBuilder : Stmt -> Builder -> Builder
 stmtToBuilder stmts builder =
@@ -205,6 +211,7 @@ stmtToBuilder stmts builder =
 
 Takes an expression AST node and appends its formatted JavaScript representation
 to the builder, handling operator precedence and parenthesization.
+
 -}
 exprToBuilder : Expr -> Builder -> Builder
 exprToBuilder expr builder =
@@ -563,9 +570,6 @@ fromExpr ((Level indent nextLevel) as level) grouping expression builder =
         ExprTrackedString moduleName position string ->
             addTrackedByteString moduleName position ("'" ++ string ++ "'") builder
 
-        ExprFloat float ->
-            addByteString float builder
-
         ExprTrackedFloat moduleName position float ->
             addTrackedByteString moduleName position float builder
 
@@ -833,9 +837,6 @@ fromExprLines level expression =
         ExprTrackedString _ _ _ ->
             One
 
-        ExprFloat _ ->
-            One
-
         ExprTrackedFloat _ _ _ ->
             One
 
@@ -1076,6 +1077,7 @@ fromInfix op =
 
 Tracks the generated JavaScript output, current line and column position for
 source map generation, and accumulated kernel dependencies.
+
 -}
 type alias BuilderData =
     { revKernels : List String
@@ -1090,6 +1092,7 @@ type alias BuilderData =
 
 Wraps BuilderData to provide an opaque interface for building JavaScript code
 with source map support.
+
 -}
 type Builder
     = Builder BuilderData
@@ -1100,6 +1103,7 @@ type Builder
 Records a correspondence between a location in the generated JavaScript and
 a location in the original Elm source, optionally including the original name
 before mangling.
+
 -}
 type alias MappingData =
     { srcLine : Int
@@ -1114,6 +1118,7 @@ type alias MappingData =
 {-| Source map mapping entry.
 
 Wraps MappingData to provide an opaque type for source map entries.
+
 -}
 type Mapping
     = Mapping MappingData
@@ -1123,6 +1128,7 @@ type Mapping
 
 Used to initialize a builder for generating JavaScript code, typically starting
 at line 1 unless prepending to existing output.
+
 -}
 emptyBuilder : Int -> Builder
 emptyBuilder startLine =
@@ -1133,6 +1139,7 @@ emptyBuilder startLine =
 
 For adding JavaScript syntax elements (operators, punctuation) that don't
 correspond to specific source locations. Updates column position.
+
 -}
 addAscii : String -> Builder -> Builder
 addAscii ascii (Builder b) =
@@ -1143,6 +1150,7 @@ addAscii ascii (Builder b) =
 
 Tracks kernel modules that need to be included in the generated output.
 Kernel dependencies are accumulated and can be retrieved later.
+
 -}
 addKernel : String -> Builder -> Builder
 addKernel kernel (Builder b) =
@@ -1153,6 +1161,7 @@ addKernel kernel (Builder b) =
 
 For adding generated code that doesn't correspond to a specific source location.
 Handles multi-line strings by tracking line breaks and updating position accordingly.
+
 -}
 addByteString : String -> Builder -> Builder
 addByteString str (Builder b) =

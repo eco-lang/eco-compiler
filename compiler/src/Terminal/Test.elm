@@ -69,6 +69,7 @@ import Utils.Task.Extra as Task
 {-| Configuration flags for the test command.
 
 Contains optional seed value, number of test runs, and report format.
+
 -}
 type Flags
     = Flags (Maybe Int) (Maybe Int) (Maybe Report)
@@ -78,6 +79,7 @@ type Flags
 
 Discovers test files, generates test runners, compiles them, and executes
 the tests using Node.js with the specified configuration.
+
 -}
 run : List String -> Flags -> Task Never ()
 run paths flags =
@@ -1273,6 +1275,7 @@ toBuilder leadingLines root details artifacts =
 
 Json for machine-readable JSON output, JUnit for XML test reports,
 Console for human-readable terminal output.
+
 -}
 type Report
     = Json
@@ -1283,6 +1286,7 @@ type Report
 {-| Parser for test report format arguments.
 
 Accepts format names: json, junit, or console.
+
 -}
 format : Parser
 format =
@@ -1297,6 +1301,7 @@ format =
 {-| Parse a string as a test report format.
 
 Returns Just the format if recognized, Nothing otherwise.
+
 -}
 parseReport : String -> Maybe Report
 parseReport report =

@@ -46,6 +46,7 @@ import Utils.Task.Extra as Task
 {-| Arguments for the uninstall command.
 
 NoArgs means no package specified, Uninstall means remove the named package.
+
 -}
 type Args
     = NoArgs
@@ -55,6 +56,7 @@ type Args
 {-| Configuration flags for the uninstall command.
 
 Contains the auto-yes flag to skip confirmation prompts.
+
 -}
 type Flags
     = Flags Bool
@@ -64,6 +66,7 @@ type Flags
 
 Updates elm.json to remove the package, re-solves dependencies, and verifies
 the project still builds correctly after removal.
+
 -}
 run : Args -> Flags -> Task Never ()
 run args (Flags autoYes) =

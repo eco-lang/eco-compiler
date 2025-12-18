@@ -1,24 +1,22 @@
 module Utils.Task.Extra exposing
-    ( apply
-    , eio
-    , io
-    , mapM
-    , mio
-    , run
-    , throw
-    , void
+    ( run, throw
+    , io, mio, eio
+    , void, apply, mapM
     )
 
 {-| Additional utilities for working with Elm tasks, providing common patterns for error handling
 and task composition.
 
+
 # Task Execution
 
 @docs run, throw
 
+
 # IO Task Conversions
 
 @docs io, mio, eio
+
 
 # Task Combinators
 

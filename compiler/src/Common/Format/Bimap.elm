@@ -1,7 +1,4 @@
-module Common.Format.Bimap exposing
-    ( Bimap
-    , fromList
-    )
+module Common.Format.Bimap exposing (Bimap, fromList)
 
 {-| A bidirectional map that maintains mappings in both directions.
 Allows efficient lookup from a to b and from b to a.

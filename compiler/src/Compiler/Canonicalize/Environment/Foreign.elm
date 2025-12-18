@@ -3,9 +3,10 @@ module Compiler.Canonicalize.Environment.Foreign exposing (FResult, createInitia
 {-| Build the initial canonicalization environment from imported modules.
 
 This module processes import declarations and builds up the environment containing:
-- Imported values, types, and constructors
-- Qualified and unqualified name mappings
-- Binary operators from imported modules
+
+  - Imported values, types, and constructors
+  - Qualified and unqualified name mappings
+  - Binary operators from imported modules
 
 @docs FResult, createInitialEnv
 
@@ -36,10 +37,11 @@ type alias FResult i w a =
 {-| Create the initial canonicalization environment from a list of imports.
 
 Processes each import declaration to build the environment with:
-- Exposed values, types, and constructors
-- Qualified names for module-prefixed access
-- Binary operators
-- Special handling for kernel imports in kernel packages
+
+  - Exposed values, types, and constructors
+  - Qualified names for module-prefixed access
+  - Binary operators
+  - Special handling for kernel imports in kernel packages
 
 -}
 createInitialEnv : IO.Canonical -> Dict String ModuleName.Raw I.Interface -> List Src.Import -> FResult i w Env.Env

@@ -1,9 +1,4 @@
-module Common.Format.Cheapskate.Inlines exposing
-    ( pHtmlTag
-    , pLinkLabel
-    , pReference
-    , parseInlines
-    )
+module Common.Format.Cheapskate.Inlines exposing (pHtmlTag, pLinkLabel, pReference, parseInlines)
 
 {-| Markdown inline element parsing.
 
@@ -182,8 +177,10 @@ pHtmlComment =
 {-| Parse a link label enclosed in square brackets.
 Handles nested structures respecting precedence: code backticks have precedence over
 brackets, which have precedence over emphasis markers. For example:
-- [a link `with a ](/url)` character - does NOT contain a link
-- [a link \*with emphasized ](/url) text\* - contains a link
+
+  - [a link `with a ](/url)` character - does NOT contain a link
+  - [a link \*with emphasized ](/url) text\* - contains a link
+
 -}
 pLinkLabel : Parser String
 pLinkLabel =

@@ -3,10 +3,11 @@ module Compiler.Canonicalize.Environment.Local exposing (LResult, add)
 {-| Add locally-defined declarations to the canonicalization environment.
 
 This module processes declarations within the current module to add:
-- Top-level value declarations
-- Type aliases and union types
-- Constructors for unions and record type aliases
-- Validation for duplicate names and cyclic type aliases
+
+  - Top-level value declarations
+  - Type aliases and union types
+  - Constructors for unions and record type aliases
+  - Validation for duplicate names and cyclic type aliases
 
 @docs LResult, add
 
@@ -54,9 +55,10 @@ type alias Aliases =
 {-| Add all local declarations from a module to the environment.
 
 Processes the module's declarations in order:
-1. Types (unions and aliases) - validates names and detects cycles
-2. Values (top-level declarations and ports)
-3. Constructors (from unions and record aliases)
+
+1.  Types (unions and aliases) - validates names and detects cycles
+2.  Values (top-level declarations and ports)
+3.  Constructors (from unions and record aliases)
 
 Returns the updated environment along with canonicalized unions and aliases.
 

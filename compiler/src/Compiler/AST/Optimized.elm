@@ -73,7 +73,8 @@ import Utils.Bytes.Encode as BE
 -- EXPRESSIONS
 
 
-{-| Optimized expression representation after optimization passes. -}
+{-| Optimized expression representation after optimization passes.
+-}
 type Expr
     = Bool A.Region Bool
     | Chr A.Region String
@@ -107,12 +108,14 @@ type Expr
     | Shader Shader.Source (EverySet String Name) (EverySet String Name)
 
 
-{-| A reference to a top-level definition in a module. -}
+{-| A reference to a top-level definition in a module.
+-}
 type Global
     = Global IO.Canonical Name
 
 
-{-| Compare two globals for ordering. -}
+{-| Compare two globals for ordering.
+-}
 compareGlobal : Global -> Global -> Order
 compareGlobal (Global home1 name1) (Global home2 name2) =
     case compare name1 name2 of
@@ -126,7 +129,8 @@ compareGlobal (Global home1 name1) (Global home2 name2) =
             GT
 
 
-{-| Convert a global to a comparable key for use in dictionaries. -}
+{-| Convert a global to a comparable key for use in dictionaries.
+-}
 toComparableGlobal : Global -> List String
 toComparableGlobal (Global home name) =
     ModuleName.toComparableCanonical home ++ [ name ]
@@ -136,18 +140,21 @@ toComparableGlobal (Global home name) =
 -- DEFINITIONS
 
 
-{-| A local definition binding a name to an expression. -}
+{-| A local definition binding a name to an expression.
+-}
 type Def
     = Def A.Region Name Expr
     | TailDef A.Region Name (List (A.Located Name)) Expr
 
 
-{-| Destructuring binding that extracts a value via a path. -}
+{-| Destructuring binding that extracts a value via a path.
+-}
 type Destructor
     = Destructor Name Path
 
 
-{-| Path for navigating into a value structure to extract a subvalue. -}
+{-| Path for navigating into a value structure to extract a subvalue.
+-}
 type Path
     = Index Index.ZeroBased Path
     | ArrayIndex Int Path
@@ -160,14 +167,16 @@ type Path
 -- BRANCHING
 
 
-{-| Decision tree for compiled pattern matches. -}
+{-| Decision tree for compiled pattern matches.
+-}
 type Decider a
     = Leaf a
     | Chain (List ( DT.Path, DT.Test )) (Decider a) (Decider a)
     | FanOut DT.Path (List ( DT.Test, Decider a )) (Decider a)
 
 
-{-| Result of a decision tree branch, either inline code or a jump to a shared expression. -}
+{-| Result of a decision tree branch, either inline code or a jump to a shared expression.
+-}
 type Choice
     = Inline Expr
     | Jump Int
@@ -177,12 +186,14 @@ type Choice
 -- OBJECT GRAPH
 
 
-{-| Graph of all global definitions in a package for dependency analysis. -}
+{-| Graph of all global definitions in a package for dependency analysis.
+-}
 type GlobalGraph
     = GlobalGraph (Dict (List String) Global Node) (Dict String Name Int)
 
 
-{-| Graph of definitions within a single module, including optional main entry point. -}
+{-| Graph of definitions within a single module, including optional main entry point.
+-}
 type LocalGraph
     = LocalGraph
         (Maybe Main)
@@ -191,13 +202,15 @@ type LocalGraph
         (Dict String Name Int)
 
 
-{-| Type of main entry point for an Elm program. -}
+{-| Type of main entry point for an Elm program.
+-}
 type Main
     = Static
     | Dynamic Can.Type Expr
 
 
-{-| A node in the dependency graph representing a definition and its dependencies. -}
+{-| A node in the dependency graph representing a definition and its dependencies.
+-}
 type Node
     = Define Expr (EverySet (List String) Global)
     | TrackedDefine A.Region Expr (EverySet (List String) Global)
@@ -213,7 +226,8 @@ type Node
     | PortOutgoing Expr (EverySet (List String) Global)
 
 
-{-| Type of effects managed by an effect manager. -}
+{-| Type of effects managed by an effect manager.
+-}
 type EffectsType
     = Cmd
     | Sub
@@ -224,13 +238,15 @@ type EffectsType
 -- GRAPHS
 
 
-{-| Create an empty global graph. -}
+{-| Create an empty global graph.
+-}
 empty : GlobalGraph
 empty =
     GlobalGraph Dict.empty Dict.empty
 
 
-{-| Merge two global graphs by combining their nodes and fields. -}
+{-| Merge two global graphs by combining their nodes and fields.
+-}
 addGlobalGraph : GlobalGraph -> GlobalGraph -> GlobalGraph
 addGlobalGraph (GlobalGraph nodes1 fields1) (GlobalGraph nodes2 fields2) =
     GlobalGraph
@@ -238,7 +254,8 @@ addGlobalGraph (GlobalGraph nodes1 fields1) (GlobalGraph nodes2 fields2) =
         (Dict.union fields1 fields2)
 
 
-{-| Add a local graph to a global graph by merging nodes and fields. -}
+{-| Add a local graph to a global graph by merging nodes and fields.
+-}
 addLocalGraph : LocalGraph -> GlobalGraph -> GlobalGraph
 addLocalGraph (LocalGraph _ nodes1 fields1) (GlobalGraph nodes2 fields2) =
     GlobalGraph
@@ -246,7 +263,8 @@ addLocalGraph (LocalGraph _ nodes1 fields1) (GlobalGraph nodes2 fields2) =
         (Dict.union fields1 fields2)
 
 
-{-| Add a kernel definition to the global graph. -}
+{-| Add a kernel definition to the global graph.
+-}
 addKernel : Name -> List K.Chunk -> GlobalGraph -> GlobalGraph
 addKernel shortName chunks (GlobalGraph nodes fields) =
     let
@@ -291,7 +309,8 @@ addKernelDep chunk deps =
             deps
 
 
-{-| Convert a kernel short name to a global reference. -}
+{-| Convert a kernel short name to a global reference.
+-}
 toKernelGlobal : Name.Name -> Global
 toKernelGlobal shortName =
     Global (IO.Canonical Pkg.kernel shortName) Name.dollar
@@ -301,7 +320,8 @@ toKernelGlobal shortName =
 -- ENCODERS and DECODERS
 
 
-{-| Encode a global graph to bytes for serialization. -}
+{-| Encode a global graph to bytes for serialization.
+-}
 globalGraphEncoder : GlobalGraph -> Bytes.Encode.Encoder
 globalGraphEncoder (GlobalGraph nodes fields) =
     Bytes.Encode.sequence
@@ -310,7 +330,8 @@ globalGraphEncoder (GlobalGraph nodes fields) =
         ]
 
 
-{-| Decode a global graph from bytes. -}
+{-| Decode a global graph from bytes.
+-}
 globalGraphDecoder : Bytes.Decode.Decoder GlobalGraph
 globalGraphDecoder =
     Bytes.Decode.map2 GlobalGraph
@@ -318,7 +339,8 @@ globalGraphDecoder =
         (BD.assocListDict identity BD.string BD.int)
 
 
-{-| Encode a local graph to bytes for serialization. -}
+{-| Encode a local graph to bytes for serialization.
+-}
 localGraphEncoder : LocalGraph -> Bytes.Encode.Encoder
 localGraphEncoder (LocalGraph main nodes fields) =
     Bytes.Encode.sequence
@@ -328,7 +350,8 @@ localGraphEncoder (LocalGraph main nodes fields) =
         ]
 
 
-{-| Decode a local graph from bytes. -}
+{-| Decode a local graph from bytes.
+-}
 localGraphDecoder : Bytes.Decode.Decoder LocalGraph
 localGraphDecoder =
     Bytes.Decode.map3 LocalGraph

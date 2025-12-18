@@ -1,62 +1,21 @@
 module Common.Format.Cheapskate.ParserCombinators exposing
-    ( ParseError(..)
-    , Parser(..)
+    ( Position(..)
+    , ParseError(..), showParseError
     , ParserState(..)
-    , Position(..)
-    , advance
-    , andThen
-    , anyChar
-    , apply
-    , char
-    , charClass
-    , column
-    , comparePositions
-    , count
-    , empty
-    , endOfInput
-    , fail
-    , failure
-    , getPosition
-    , guard
-    , inClass
-    , lazy
-    , leftSequence
-    , liftA2
-    , lookAhead
-    , many
-    , many1
-    , manyTill
-    , map
-    , mzero
-    , notAfter
-    , notFollowedBy
+    , Parser(..), parse
+    , satisfy, char, anyChar, string, endOfInput
     , notInClass
-    , oneOf
-    , option
-    , parse
-    , peekChar
-    , peekLastChar
-    , pure
-    , return
-    , satisfy
-    , scan
-    , sequence
-    , setPosition
-    , showParseError
-    , showPosition
-    , skip
-    , skipMany
-    , skipMany1
-    , skipP
-    , skipWhile
-    , string
-    , stringTakeWhile
-    , success
-    , takeText
-    , takeTill
-    , takeWhile
-    , takeWhile1
-    , unless
+    , takeWhile, takeWhile1, takeTill, takeText
+    , skip, skipWhile
+    , peekChar, notAfter
+    , getPosition, setPosition, column
+    , map, pure, apply, return, andThen
+    , oneOf, option, many, manyTill
+    , lookAhead, notFollowedBy
+    , count
+    , leftSequence, unless
+    , scan, lazy
+    , mzero, fail, guard
     )
 
 {-| A parser combinator library for building text parsers.
@@ -66,43 +25,58 @@ parsers from smaller pieces. The parser type supports backtracking,
 position tracking, and error reporting. The API is inspired by Haskell's
 Attoparsec library.
 
-@docs Position, showPosition, comparePositions
+@docs Position
 @docs ParseError, showParseError
-@docs ParserState, advance
+@docs ParserState
 @docs Parser, parse
 
+
 # Basic Parsers
+
 @docs satisfy, char, anyChar, string, endOfInput
 
+
 # Character Classes
-@docs charClass, inClass, notInClass
+
+@docs notInClass
+
 
 # Taking Input
+
 @docs takeWhile, takeWhile1, takeTill, takeText
 
+
 # Skipping Input
-@docs skip, skipWhile, skipMany, skipMany1, skipP
+
+@docs skip, skipWhile
+
 
 # Peeking and Position
-@docs peekChar, peekLastChar, notAfter
+
+@docs peekChar, notAfter
 @docs getPosition, setPosition, column
 
+
 # Combinators
+
 @docs map, pure, apply, return, andThen
-@docs oneOf, option, many, many1, manyTill
+@docs oneOf, option, many, manyTill
 @docs lookAhead, notFollowedBy
-@docs count, sequence, liftA2
+@docs count
 @docs leftSequence, unless
 
+
 # Advanced Parsers
+
 @docs scan, lazy
 
+
 # Control Flow
-@docs empty, mzero, fail, guard
-@docs failure, success
+
+@docs mzero, fail, guard
+
 
 # Utilities
-@docs stringTakeWhile
 
 -}
 
@@ -113,13 +87,6 @@ import Set exposing (Set)
 -}
 type Position
     = Position Int Int
-
-
-{-| Convert a position to a human-readable string for error messages.
--}
-showPosition : Position -> String
-showPosition (Position ln cn) =
-    "line " ++ String.fromInt ln ++ " column " ++ String.fromInt cn
 
 
 {-| Compare two positions for ordering.
@@ -258,7 +225,7 @@ unless p s =
 
 
 {-| Sequence two parsers, keeping only the result of the first.
-Equivalent to (<*) in Haskell.
+Equivalent to (<\*) in Haskell.
 -}
 leftSequence : Parser a -> Parser b -> Parser a
 leftSequence p1 p2 =
@@ -743,13 +710,6 @@ option x p =
     oneOf p (pure x)
 
 
-{-| Parse one or more occurrences.
--}
-many1 : Parser a -> Parser (List a)
-many1 p =
-    liftA2 (::) p (many p)
-
-
 {-| Parse occurrences of the first parser until the second parser succeeds.
 -}
 manyTill : Parser a -> Parser b -> Parser (List a)
@@ -760,27 +720,6 @@ manyTill p end =
             oneOf (end |> andThen (\_ -> pure [])) (liftA2 (::) p (lazy go))
     in
     go ()
-
-
-{-| Parse zero or more occurrences and discard the results.
--}
-skipMany : Parser a -> Parser ()
-skipMany p =
-    many (skipP p) |> map (\_ -> ())
-
-
-{-| Convert a parser to a unit parser that discards its result.
--}
-skipP : Parser a -> Parser ()
-skipP p =
-    p |> map (\_ -> ())
-
-
-{-| Parse one or more occurrences and discard the results.
--}
-skipMany1 : Parser a -> Parser ()
-skipMany1 p =
-    p |> andThen (\_ -> skipMany p)
 
 
 {-| Parse exactly n occurrences.

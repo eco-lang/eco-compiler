@@ -61,6 +61,7 @@ import Utils.Main as Utils
 
 The info parameter `i` is typically `FreeLocals` during expression canonicalization,
 allowing the result to accumulate information about which local variables are referenced.
+
 -}
 type alias EResult i w a =
     ReportingResult.RResult i w Error.Error a
@@ -70,6 +71,7 @@ type alias EResult i w a =
 
 Maps variable names to their usage counts (direct vs delayed). Used to detect
 unused bindings and recursive definitions during canonicalization.
+
 -}
 type alias FreeLocals =
     Dict String Name.Name Uses
@@ -80,6 +82,7 @@ type alias FreeLocals =
 Direct usage occurs when a variable is referenced in an immediately-evaluated context.
 Delayed usage occurs when a variable is captured in a lambda or other delayed context.
 This distinction helps detect problematic recursive definitions.
+
 -}
 type Uses
     = Uses
@@ -103,6 +106,7 @@ records, tuples, and more. The function:
   - Validates pattern bindings and detects unused variables
   - Tracks free variable usage for recursive definition detection
   - Handles both Elm and Guida syntax versions
+
 -}
 canonicalize : SyntaxVersion -> Env.Env -> Src.Expr -> EResult FreeLocals (List W.Warning) Can.Expr
 canonicalize syntaxVersion env (A.At region expression) =
@@ -646,6 +650,7 @@ pattern with its corresponding type from the signature. It:
   - Reports an error if there are more patterns than types in the signature
 
 This is used when processing function definitions with explicit type annotations.
+
 -}
 gatherTypedArgs :
     SyntaxVersion
@@ -813,6 +818,7 @@ This function wraps an expression result to:
 
 The context parameter indicates what kind of binding is being verified (pattern, definition, etc.)
 for better error messages.
+
 -}
 verifyBindings :
     W.Context

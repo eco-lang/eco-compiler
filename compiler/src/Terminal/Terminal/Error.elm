@@ -1,9 +1,4 @@
-module Terminal.Terminal.Error exposing
-    ( exitWithError
-    , exitWithHelp
-    , exitWithOverview
-    , exitWithUnknown
-    )
+module Terminal.Terminal.Error exposing (exitWithError, exitWithHelp, exitWithOverview, exitWithUnknown)
 
 {-| Error handling and help message generation for terminal commands.
 
@@ -105,6 +100,7 @@ reflow string =
 
 Shows detailed help including the command description, argument patterns,
 usage examples, and available flags.
+
 -}
 exitWithHelp : Maybe String -> String -> P.Doc -> Args -> Flags -> Task Never a
 exitWithHelp maybeCommand details example (Args args) flags =
@@ -210,6 +206,7 @@ flagsToDocs flags docs =
 
 Shows the intro message, lists common commands with descriptions, shows all
 commands, and displays the outro message.
+
 -}
 exitWithOverview : P.Doc -> P.Doc -> List Command -> Task Never a
 exitWithOverview intro outro commands =
@@ -278,6 +275,7 @@ toCommandList exeName commands =
 
 Shows an error message indicating the command wasn't recognized, suggests
 similar command names if any exist, and exits with a non-zero code.
+
 -}
 exitWithUnknown : String -> List String -> Task Never a
 exitWithUnknown unknown knowns =
@@ -328,6 +326,7 @@ exitWithUnknown unknown knowns =
 
 Takes an error from argument or flag parsing, formats it into a human-readable
 message with suggestions, and exits with a non-zero code.
+
 -}
 exitWithError : Error -> Task Never a
 exitWithError err =

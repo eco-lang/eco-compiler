@@ -24,7 +24,7 @@ import Compiler.Reporting.Error.Syntax as E
 -- CHARACTER
 
 
-{-| Parses a single-quoted character literal like 'a' or '\n'.
+{-| Parses a single-quoted character literal like 'a' or '\\n'.
 Handles escape sequences and Unicode escapes. Rejects multi-character and empty literals.
 -}
 character : SyntaxVersion -> (Row -> Col -> x) -> (E.Char -> Row -> Col -> x) -> Parser x String

@@ -1,5 +1,5 @@
 module Builder.Deps.Solver exposing
-    ( Solver, SolverResult(..), State, StateData
+    ( Solver, SolverResult(..), State
     , Env(..), EnvData, Connection(..), initEnv
     , Details(..)
     , AppSolution(..), addToApp, addToTestApp, removeFromApp
@@ -23,7 +23,7 @@ The solver works by:
 
 # Solver Types
 
-@docs Solver, SolverResult, State, StateData
+@docs Solver, SolverResult, State
 
 
 # Environment
@@ -80,6 +80,7 @@ import Utils.Main as Utils
 Represents a computation that can succeed with a result, backtrack to try
 alternatives, or fail with an error. The solver maintains state containing
 the package cache, registry, and constraint dictionary.
+
 -}
 type Solver a
     = Solver (State -> Task Never (InnerSolver a))
@@ -96,6 +97,7 @@ type InnerSolver a
 The constraint dictionary cDict maps package name and version pairs to their
 Elm version constraint and dependency constraints, enabling efficient lookup
 during solving.
+
 -}
 type alias StateData =
     { cache : Stuff.PackageCache
@@ -119,6 +121,7 @@ type Constraints
 
 Online means packages can be fetched from the package website.
 Offline means only locally cached packages are available.
+
 -}
 type Connection
     = Online Http.Manager
@@ -131,10 +134,11 @@ type Connection
 
 {-| Result type for solver operations.
 
-- SolverOk: Successfully found a solution
-- NoSolution: No compatible version combination exists (online mode)
-- NoOfflineSolution: No solution with locally cached packages (offline mode)
-- SolverErr: Encountered an error during solving (network, cache corruption, etc.)
+  - SolverOk: Successfully found a solution
+  - NoSolution: No compatible version combination exists (online mode)
+  - NoOfflineSolution: No solution with locally cached packages (offline mode)
+  - SolverErr: Encountered an error during solving (network, cache corruption, etc.)
+
 -}
 type SolverResult a
     = SolverOk a
@@ -150,6 +154,7 @@ type SolverResult a
 {-| Package details containing the resolved version and its dependencies.
 
 Used when verifying existing dependency solutions or loading package information.
+
 -}
 type Details
     = Details V.Version (Dict ( String, String ) Pkg.Name C.Constraint)
@@ -160,6 +165,7 @@ type Details
 Attempts to find compatible versions for all packages satisfying the given
 constraints. Returns the resolved versions along with each package's transitive
 dependency constraints.
+
 -}
 verify : Stuff.PackageCache -> Connection -> Registry.Registry -> Dict ( String, String ) Pkg.Name C.Constraint -> Task Never (SolverResult (Dict ( String, String ) Pkg.Name Details))
 verify cache connection registry constraints =
@@ -210,6 +216,7 @@ noSolution connection =
 Contains the old dependency set, the new dependency set, and the updated
 outline with properly categorized direct and indirect dependencies for
 both production and test contexts.
+
 -}
 type AppSolution
     = AppSolution (Dict ( String, String ) Pkg.Name V.Version) (Dict ( String, String ) Pkg.Name V.Version) Outline.AppOutline
@@ -259,6 +266,7 @@ unconstrained.
 
 The forTest parameter determines whether the package is added to test dependencies
 or production dependencies.
+
 -}
 addToApp : Stuff.PackageCache -> Connection -> Registry.Registry -> Pkg.Name -> Outline.AppOutline -> Bool -> Task Never (SolverResult AppSolution)
 addToApp cache connection registry pkg (Outline.AppOutline appData) forTest =
@@ -338,6 +346,7 @@ addToApp cache connection registry pkg (Outline.AppOutline appData) forTest =
 
 Similar to addToApp but for test-specific dependencies with an explicit version
 constraint. Used when the test framework requires a particular package version range.
+
 -}
 addToTestApp : Stuff.PackageCache -> Connection -> Registry.Registry -> Pkg.Name -> C.Constraint -> Outline.AppOutline -> Task Never (SolverResult AppSolution)
 addToTestApp cache connection registry pkg con (Outline.AppOutline appData) =
@@ -410,6 +419,7 @@ addToTestApp cache connection registry pkg con (Outline.AppOutline appData) =
 Resolves dependencies without the specified package, automatically removing
 it from direct dependencies and cleaning up any indirect dependencies that
 are no longer needed.
+
 -}
 removeFromApp : Stuff.PackageCache -> Connection -> Registry.Registry -> Pkg.Name -> Outline.AppOutline -> Task Never (SolverResult AppSolution)
 removeFromApp cache connection registry pkg (Outline.AppOutline appData) =
@@ -743,6 +753,7 @@ constraintsDecoder =
 
 Contains the package cache directory, HTTP manager for network requests,
 connection state (online/offline), and the package registry.
+
 -}
 type alias EnvData =
     { cache : Stuff.PackageCache
@@ -763,6 +774,7 @@ type Env
 Creates an HTTP manager, loads the package cache, and fetches or updates the
 package registry. Falls back to offline mode if registry update fails but a
 cached registry exists.
+
 -}
 initEnv : Task Never (Result Exit.RegistryProblem Env)
 initEnv =
@@ -932,6 +944,7 @@ foldM f b =
 
 Encodes the package cache, HTTP manager, connection state, and registry
 into a binary format for caching or transmission.
+
 -}
 envEncoder : Env -> Bytes.Encode.Encoder
 envEncoder (Env env) =
@@ -947,6 +960,7 @@ envEncoder (Env env) =
 
 Decodes a binary representation back into an Env containing the package cache,
 HTTP manager, connection state, and registry.
+
 -}
 envDecoder : Bytes.Decode.Decoder Env
 envDecoder =

@@ -2,8 +2,7 @@ module Compiler.Optimize.TypedNames exposing
     ( Context, Tracker
     , run
     , generate
-    , getVarType, withVarType, withVarTypes, insertVarType, insertVarTypes
-    , lookupGlobalType, getAnnotations
+    , getVarType, withVarType, withVarTypes
     , registerGlobal, registerCtor, registerDebug, registerKernel
     , registerField, registerFieldList, registerFieldDict
     , pure, map, andThen, traverse, mapTraverse
@@ -34,8 +33,7 @@ information on every expression node.
 
 # Type Context
 
-@docs getVarType, withVarType, withVarTypes, insertVarType, insertVarTypes
-@docs lookupGlobalType, getAnnotations
+@docs getVarType, withVarType, withVarTypes
 
 
 # Registration
@@ -136,15 +134,6 @@ generate =
             tResult (uid + 1) deps fields (Name.fromVarIndex uid)
 
 
-{-| Retrieve the current module annotations from the context.
--}
-getAnnotations : Tracker TOpt.Annotations
-getAnnotations =
-    Tracker <|
-        \ctx uid deps fields ->
-            tResult uid deps fields ctx.annotations
-
-
 
 -- TYPE LOOKUPS
 
@@ -191,42 +180,6 @@ withVarTypes andThenings (Tracker k) =
             k newCtx uid deps fields
 
 
-{-| Insert a single variable type into the context.
-This is a no-op in the current implementation but maintains the Tracker interface.
--}
-insertVarType : Name -> Can.Type -> Tracker ()
-insertVarType name tipe =
-    Tracker <|
-        \_ uid deps fields ->
-            tResult uid deps fields ()
-
-
-{-| Insert multiple variable types into the context.
-This is a no-op in the current implementation but maintains the Tracker interface.
--}
-insertVarTypes : List ( Name, Can.Type ) -> Tracker ()
-insertVarTypes andThenings =
-    Tracker <|
-        \_ uid deps fields ->
-            tResult uid deps fields ()
-
-
-{-| Look up the type of a global variable from module annotations.
-Unwraps the Forall wrapper to get the actual type.
--}
-lookupGlobalType : Name -> Tracker (Maybe Can.Type)
-lookupGlobalType name =
-    Tracker <|
-        \ctx uid deps fields ->
-            let
-                tipe : Maybe Can.Type
-                tipe =
-                    Dict.get identity name ctx.annotations
-                        |> Maybe.map (\(Can.Forall _ t) -> t)
-            in
-            tResult uid deps fields tipe
-
-
 
 -- REGISTRATIONS
 
@@ -239,7 +192,6 @@ registerKernel home value =
     Tracker <|
         \_ uid deps fields ->
             tResult uid (EverySet.insert TOpt.toComparableGlobal (TOpt.toKernelGlobal home) deps) fields value
-
 
 
 {-| Register a global variable as a dependency and create a VarGlobal expression.

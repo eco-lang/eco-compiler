@@ -2,9 +2,8 @@ module Compiler.Elm.Docs exposing
     ( Documentation, Module(..), ModuleData, Comment
     , Alias(..), Union(..), Value(..), Binop(..), DocsBinopData
     , Error(..)
-    , fromModule, parseOverview
-    , encode, decoder, jsonEncoder, jsonModuleEncoder
-    , jsonDecoder, jsonModuleDecoder
+    , fromModule
+    , encode, decoder, jsonEncoder
     , bytesEncoder, bytesModuleEncoder, bytesDecoder, bytesModuleDecoder
     )
 
@@ -24,13 +23,12 @@ for package publishing with full type information and module comments.
 
 # Extraction
 
-@docs fromModule, parseOverview
+@docs fromModule
 
 
 # JSON Encoding
 
-@docs encode, decoder, jsonEncoder, jsonModuleEncoder
-@docs jsonDecoder, jsonModuleDecoder
+@docs encode, decoder, jsonEncoder
 
 
 # Binary Encoding
@@ -62,7 +60,6 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Docs as E
 import Compiler.Reporting.Result as ReportingResult
 import Data.Map as Dict exposing (Dict)
-import Json.Decode as Decode
 import Json.Encode as Encode
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
@@ -839,111 +836,6 @@ addDef types def =
 jsonEncoder : Documentation -> Encode.Value
 jsonEncoder =
     encode >> E.toJsonValue
-
-
-{-| Decodes Documentation from a standard JSON decoder.
--}
-jsonDecoder : Decode.Decoder Documentation
-jsonDecoder =
-    Decode.map toDict (Decode.list jsonModuleDecoder)
-
-
-{-| Encodes a single Module to a standard Json.Encode.Value.
--}
-jsonModuleEncoder : Module -> Encode.Value
-jsonModuleEncoder (Module moduleData) =
-    Encode.object
-        [ ( "name", Encode.string moduleData.name )
-        , ( "comment", Encode.string moduleData.comment )
-        , ( "unions", E.assocListDict compare Encode.string jsonUnionEncoder moduleData.unions )
-        , ( "aliases", E.assocListDict compare Encode.string jsonAliasEncoder moduleData.aliases )
-        , ( "values", E.assocListDict compare Encode.string jsonValueEncoder moduleData.values )
-        , ( "binops", E.assocListDict compare Encode.string jsonBinopEncoder moduleData.binops )
-        ]
-
-
-{-| Decodes a single Module from a standard JSON decoder.
--}
-jsonModuleDecoder : Decode.Decoder Module
-jsonModuleDecoder =
-    Decode.map6 (\name_ comment_ unions_ aliases_ values_ binops_ -> Module { name = name_, comment = comment_, unions = unions_, aliases = aliases_, values = values_, binops = binops_ })
-        (Decode.field "name" Decode.string)
-        (Decode.field "comment" Decode.string)
-        (Decode.field "unions" (D.assocListDict identity Decode.string jsonUnionDecoder))
-        (Decode.field "aliases" (D.assocListDict identity Decode.string jsonAliasDecoder))
-        (Decode.field "values" (D.assocListDict identity Decode.string jsonValueDecoder))
-        (Decode.field "binops" (D.assocListDict identity Decode.string jsonBinopDecoder))
-
-
-jsonUnionEncoder : Union -> Encode.Value
-jsonUnionEncoder (Union comment args cases) =
-    Encode.object
-        [ ( "comment", Encode.string comment )
-        , ( "args", Encode.list Encode.string args )
-        , ( "cases", Encode.list (E.jsonPair Encode.string (Encode.list Type.jsonEncoder)) cases )
-        ]
-
-
-jsonUnionDecoder : Decode.Decoder Union
-jsonUnionDecoder =
-    Decode.map3 Union
-        (Decode.field "comment" Decode.string)
-        (Decode.field "args" (Decode.list Decode.string))
-        (Decode.field "cases" (Decode.list (D.jsonPair Decode.string (Decode.list Type.jsonDecoder))))
-
-
-jsonAliasEncoder : Alias -> Encode.Value
-jsonAliasEncoder (Alias comment args type_) =
-    Encode.object
-        [ ( "comment", Encode.string comment )
-        , ( "args", Encode.list Encode.string args )
-        , ( "type", Type.jsonEncoder type_ )
-        ]
-
-
-jsonAliasDecoder : Decode.Decoder Alias
-jsonAliasDecoder =
-    Decode.map3 Alias
-        (Decode.field "comment" Decode.string)
-        (Decode.field "args" (Decode.list Decode.string))
-        (Decode.field "type" Type.jsonDecoder)
-
-
-jsonValueEncoder : Value -> Encode.Value
-jsonValueEncoder (Value comment type_) =
-    Encode.object
-        [ ( "comment", Encode.string comment )
-        , ( "type", Type.jsonEncoder type_ )
-        ]
-
-
-jsonValueDecoder : Decode.Decoder Value
-jsonValueDecoder =
-    Decode.map2 Value
-        (Decode.field "comment" Decode.string)
-        (Decode.field "type" Type.jsonDecoder)
-
-
-jsonBinopEncoder : Binop -> Encode.Value
-jsonBinopEncoder (Binop data) =
-    Encode.object
-        [ ( "comment", Encode.string data.comment )
-        , ( "type", Type.jsonEncoder data.tipe )
-        , ( "associativity", Binop.jsonAssociativityEncoder data.associativity )
-        , ( "precedence", Binop.jsonPrecedenceEncoder data.precedence )
-        ]
-
-
-jsonBinopDecoder : Decode.Decoder Binop
-jsonBinopDecoder =
-    Decode.map4
-        (\comment tipe associativity precedence ->
-            Binop { comment = comment, tipe = tipe, associativity = associativity, precedence = precedence }
-        )
-        (Decode.field "comment" Decode.string)
-        (Decode.field "type" Type.jsonDecoder)
-        (Decode.field "associativity" Binop.jsonAssociativityDecoder)
-        (Decode.field "precedence" Binop.jsonPrecedenceDecoder)
 
 
 

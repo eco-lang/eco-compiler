@@ -61,9 +61,11 @@ import Utils.Main as Utils
 {-| Simplified pattern representation used by the exhaustiveness checker.
 
 Canonical patterns are normalized into this simpler form for analysis:
-- `Anything` matches any value (wildcards, variables, records)
-- `Literal` matches exact primitive values (Int, Char, String)
-- `Ctor` matches custom type constructors with their arguments
+
+  - `Anything` matches any value (wildcards, variables, records)
+  - `Literal` matches exact primitive values (Int, Char, String)
+  - `Ctor` matches custom type constructors with their arguments
+
 -}
 type Pattern
     = Anything
@@ -74,9 +76,11 @@ type Pattern
 {-| Literal value that can appear in patterns.
 
 Represents primitive values that can be matched exactly:
-- `Chr` for character literals
-- `Str` for string literals
-- `Int` for integer literals
+
+  - `Chr` for character literals
+  - `Str` for string literals
+  - `Int` for integer literals
+
 -}
 type Literal
     = Chr String
@@ -256,10 +260,11 @@ nilName =
 
 {-| Pattern matching error detected during exhaustiveness checking.
 
-- `Incomplete` indicates missing cases in pattern matching, with the region,
-  context where the error occurred, and example patterns that are not covered
-- `Redundant` indicates an unreachable pattern, with the overall match region,
-  the redundant pattern's region, and its 1-based index in the pattern list
+  - `Incomplete` indicates missing cases in pattern matching, with the region,
+    context where the error occurred, and example patterns that are not covered
+  - `Redundant` indicates an unreachable pattern, with the overall match region,
+    the redundant pattern's region, and its 1-based index in the pattern list
+
 -}
 type Error
     = Incomplete A.Region Context (List Pattern)
@@ -268,9 +273,10 @@ type Error
 
 {-| Context where a pattern matching error occurred.
 
-- `BadArg` means the error is in a function argument pattern
-- `BadDestruct` means the error is in a let-destructuring pattern
-- `BadCase` means the error is in a case expression
+  - `BadArg` means the error is in a function argument pattern
+  - `BadDestruct` means the error is in a let-destructuring pattern
+  - `BadCase` means the error is in a case expression
+
 -}
 type Context
     = BadArg
@@ -285,10 +291,12 @@ type Context
 {-| Check a canonical module for pattern matching errors.
 
 Traverses all declarations, expressions, and patterns in the module to find:
-- Non-exhaustive pattern matches (missing cases)
-- Redundant patterns (unreachable branches)
+
+  - Non-exhaustive pattern matches (missing cases)
+  - Redundant patterns (unreachable branches)
 
 Returns `Ok ()` if all patterns are valid, or `Err` with a list of errors found.
+
 -}
 check : Can.Module -> Result (NE.Nonempty Error) ()
 check (Can.Module canData) =

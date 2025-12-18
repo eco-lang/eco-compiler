@@ -1,16 +1,16 @@
 module Utils.Impure exposing
-    ( Body(..)
-    , Resolver(..)
-    , customTask
-    , task
+    ( Body(..), Resolver(..)
+    , customTask, task
     )
 
 {-| Utilities for making HTTP requests that crash on failure, providing a simplified interface
 for internal compiler operations where HTTP errors are considered unrecoverable.
 
+
 # Types
 
 @docs Body, Resolver
+
 
 # HTTP Tasks
 

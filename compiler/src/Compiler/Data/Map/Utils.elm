@@ -1,8 +1,4 @@
-module Compiler.Data.Map.Utils exposing
-    ( any
-    , fromKeys
-    , fromKeysA
-    )
+module Compiler.Data.Map.Utils exposing (fromKeys, fromKeysA, any)
 
 {-| Utility functions for working with dictionaries (maps).
 

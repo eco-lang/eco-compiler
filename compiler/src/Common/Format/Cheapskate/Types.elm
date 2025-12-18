@@ -1,15 +1,8 @@
 module Common.Format.Cheapskate.Types exposing
-    ( Block(..)
-    , Blocks
-    , CodeAttr(..)
-    , Doc(..)
-    , HtmlTagType(..)
-    , Inline(..)
-    , Inlines
-    , LinkTarget(..)
-    , ListType(..)
-    , NumWrapper(..)
-    , Options(..)
+    ( Doc(..), Options(..)
+    , Block(..), Blocks
+    , CodeAttr(..), ListType(..), NumWrapper(..), HtmlTagType(..)
+    , Inline(..), Inlines, LinkTarget(..)
     , ReferenceMap
     )
 
@@ -21,17 +14,25 @@ inline elements (text, emphasis, links, images). The types support a rich
 Markdown feature set including fenced code blocks, HTML blocks, and link
 references.
 
+
 # Document
+
 @docs Doc, Options
 
+
 # Block Elements
+
 @docs Block, Blocks
 @docs CodeAttr, ListType, NumWrapper, HtmlTagType
 
+
 # Inline Elements
+
 @docs Inline, Inlines, LinkTarget
 
+
 # References
+
 @docs ReferenceMap
 
 -}

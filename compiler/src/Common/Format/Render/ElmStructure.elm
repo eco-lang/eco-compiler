@@ -6,7 +6,7 @@ module Common.Format.Render.ElmStructure exposing
     , equalsPair, definition
     , application
     , group, group_
-    , extensionGroup, extensionGroup_
+    , extensionGroup_
     )
 
 {-| Higher-level formatting primitives for common Elm syntax structures.
@@ -57,7 +57,7 @@ the entire codebase, handling indentation, spacing, and line breaking automatica
 
 # Record Extensions
 
-@docs extensionGroup, extensionGroup_
+@docs extensionGroup_
 
 -}
 
@@ -380,53 +380,6 @@ group_ innerSpaces left sep extraFooter right forceMultiline children =
                             :: List.map (Box.prefix <| Box.row [ Box.punc sep, Box.space ]) rest
                             ++ extraFooter
                             ++ [ Box.punc right |> Box.line ]
-
-
-{-| Formats as:
-
-    { base | first }
-
-    { base | first, rest0, rest1 }
-
-    { base
-      | first
-      , rest0
-      , rest1
-    }
-
--}
-extensionGroup : Bool -> Box -> Box -> List Box -> Box
-extensionGroup multiline base first rest =
-    case
-        ( multiline
-        , Box.isLine base
-        , Box.allSingles (first :: rest)
-        )
-    of
-        ( False, Ok base_, Ok fields_ ) ->
-            Box.line <|
-                Box.row
-                    [ Box.punc "{"
-                    , Box.space
-                    , base_
-                    , Box.space
-                    , Box.punc "|"
-                    , Box.space
-                    , Box.row (List.intersperse (Box.row [ Box.punc ",", Box.space ]) fields_)
-                    , Box.space
-                    , Box.punc "}"
-                    ]
-
-        _ ->
-            Box.stack1
-                [ Box.prefix (Box.row [ Box.punc "{", Box.space ]) base
-                , Box.stack1
-                    (Box.prefix (Box.row [ Box.punc "|", Box.space ]) first
-                        :: List.map (Box.prefix (Box.row [ Box.punc ",", Box.space ])) rest
-                    )
-                    |> Box.indent
-                , Box.punc "}" |> Box.line
-                ]
 
 
 {-| Alternative version of extensionGroup that takes pre-formatted fields as a single Box.

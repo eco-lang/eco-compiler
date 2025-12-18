@@ -1,31 +1,17 @@
-module Compiler.Canonicalize.Environment.Dups exposing
-    ( Info
-    , ToError
-    , Tracker
-    , checkFields
-    , checkFields_
-    , checkLocatedFields
-    , checkLocatedFields_
-    , detect
-    , detectLocated
-    , insert
-    , none
-    , one
-    , union
-    , unions
-    )
+module Compiler.Canonicalize.Environment.Dups exposing (Info, ToError, Tracker, checkFields, checkLocatedFields, checkLocatedFields_, detect, insert, none, one, union, unions)
 
 {-| Utilities for detecting duplicate names in declarations.
 
 This module provides a generic duplicate-tracking system used throughout
 canonicalization to detect and report duplicate:
-- Type names
-- Constructor names
-- Field names in records
-- Variable names
-- Type parameters
 
-@docs Info, ToError, Tracker, checkFields, checkFields_, checkLocatedFields, checkLocatedFields_, detect, detectLocated, insert, none, one, union, unions
+  - Type names
+  - Constructor names
+  - Field names in records
+  - Variable names
+  - Type parameters
+
+@docs Info, ToError, Tracker, checkFields, checkLocatedFields, checkLocatedFields_, detect, insert, none, one, union, unions
 
 -}
 
@@ -166,17 +152,6 @@ has access to the field's source region.
 checkLocatedFields_ : (A.Region -> a -> b) -> List ( A.Located Name, a ) -> ReportingResult.RResult i w Error (Dict String (A.Located Name) b)
 checkLocatedFields_ toValue fields =
     detectLocated Error.DuplicateField (List.foldr (addField_ toValue) none fields)
-
-
-{-| Check for duplicate field names, transforming values with a region-aware function.
-
-Like `checkFields` but applies a transformation function to each value that
-has access to the field's source region.
-
--}
-checkFields_ : (A.Region -> a -> b) -> List ( A.Located Name, a ) -> ReportingResult.RResult i w Error (Dict String Name b)
-checkFields_ toValue fields =
-    detect Error.DuplicateField (List.foldr (addField_ toValue) none fields)
 
 
 addField_ : (A.Region -> a -> b) -> ( A.Located Name, a ) -> Tracker b -> Tracker b

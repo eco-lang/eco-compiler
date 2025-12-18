@@ -203,6 +203,7 @@ forkWithKey toComparable keyComparison encoder func dict =
 This entry point compiles the given modules and their dependencies, respecting the
 documentation goal (keep, write, or ignore). It performs parallel compilation with
 incremental rebuilding based on modification times and interface changes.
+
 -}
 fromExposed : Bytes.Decode.Decoder docs -> (docs -> Bytes.Encode.Encoder) -> Reporting.Style -> FilePath -> Details.Details -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Task Never (Result Exit.BuildProblem docs)
 fromExposed docsDecoder docsEncoder style root details docsGoal ((NE.Nonempty e es) as exposed) =
@@ -343,6 +344,7 @@ type alias Dependencies =
 
 This entry point discovers modules from the given file paths, crawls their dependencies,
 and performs parallel incremental compilation.
+
 -}
 fromPaths : Reporting.Style -> FilePath -> Details.Details -> Bool -> NE.Nonempty FilePath -> Task Never (Result Exit.BuildProblem Artifacts)
 fromPaths style root details needsTypedOpt paths =
@@ -702,6 +704,7 @@ type alias ResultDict =
 {-| Build result for a single module after compilation or cache lookup.
 
 Tracks whether the module was freshly compiled, unchanged from cache, or encountered errors.
+
 -}
 type BResult
     = RNew Details.Local I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe Docs.Module)
@@ -1715,6 +1718,7 @@ addImportProblems results name problems =
 {-| Specifies how to handle documentation during compilation.
 
 Can keep docs in memory, write to a file, or ignore them entirely.
+
 -}
 type DocsGoal docs
     = KeepDocs (Dict String ModuleName.Raw BResult -> docs)
@@ -1842,6 +1846,7 @@ type ReplArtifacts
 
 Parses the source, type checks it against available dependencies, and produces
 artifacts suitable for interactive evaluation.
+
 -}
 fromRepl : FilePath -> Details.Details -> String -> Task Never (Result Exit.Repl ReplArtifacts)
 fromRepl root details source =

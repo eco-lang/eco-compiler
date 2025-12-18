@@ -32,6 +32,7 @@ import System.TypeCheck.IO as IO exposing (IO)
 
 Returns True if a cycle is detected (the variable appears in its own structure),
 False otherwise. This is used during type unification to prevent infinite types.
+
 -}
 occurs : IO.Variable -> IO Bool
 occurs var =

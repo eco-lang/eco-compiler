@@ -1,9 +1,4 @@
-module Compiler.Parse.SyntaxVersion exposing
-    ( SyntaxVersion(..)
-    , decoder
-    , encoder
-    , fileSyntaxVersion
-    )
+module Compiler.Parse.SyntaxVersion exposing (SyntaxVersion(..), decoder, encoder, fileSyntaxVersion)
 
 {-| Compiler.Parse.SyntaxVersion
 

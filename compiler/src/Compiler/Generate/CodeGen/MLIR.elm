@@ -14,7 +14,6 @@ in the types.
 -}
 
 import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.Mode as Mode
@@ -295,12 +294,6 @@ extractNodeSignature node =
                         { paramTypes = []
                         , returnType = monoType
                         }
-
-        Mono.MonoManager _ monoType ->
-            Just
-                { paramTypes = []
-                , returnType = monoType
-                }
 
         Mono.MonoCycle _ _ monoType ->
             Just
@@ -1069,44 +1062,6 @@ generateMainEntry ctx mainInfo =
             in
             [ funcFunc ctx "main" [] ecoValue region ]
 
-        Mono.DynamicMain mainSpecId flagsDecoder ->
-            -- Dynamic main (Browser.element, etc.) - needs flags decoder
-            let
-                -- First generate the flags decoder expression
-                decoderResult : ExprResult
-                decoderResult =
-                    generateExpr ctx flagsDecoder
-
-                -- Then call Elm_Platform_initialize with the decoder and main
-                ( mainCallVar, ctx1 ) =
-                    freshVar decoderResult.ctx
-
-                mainFuncName : String
-                mainFuncName =
-                    specIdToFuncName ctx.registry mainSpecId
-
-                mainCallOp : MlirOp
-                mainCallOp =
-                    ecoCallNamed ctx1 mainCallVar mainFuncName [] ecoValue
-
-                ( initCallVar, ctx2 ) =
-                    freshVar ctx1
-
-                -- eco.call to platform initialize with decoder and main result
-                initCallOp : MlirOp
-                initCallOp =
-                    ecoCallNamed ctx2 initCallVar "Elm_Platform_initialize" [ ( decoderResult.resultVar, ecoValue ), ( mainCallVar, ecoValue ) ] ecoValue
-
-                returnOp : MlirOp
-                returnOp =
-                    ecoReturn ctx2 initCallVar ecoValue
-
-                region : MlirRegion
-                region =
-                    mkRegion [] (decoderResult.ops ++ [ mainCallOp, initCallOp ]) returnOp
-            in
-            [ funcFunc ctx "main" [] ecoValue region ]
-
 
 
 -- GENERATE NODE
@@ -1140,9 +1095,6 @@ generateNode ctx specId node =
 
         Mono.MonoPortOutgoing expr _ monoType ->
             generateDefine ctx funcName expr monoType
-
-        Mono.MonoManager managerInfo monoType ->
-            ( generateManager ctx funcName managerInfo monoType, ctx )
 
         Mono.MonoCycle definitions _ monoType ->
             generateCycle ctx funcName definitions monoType
@@ -1375,98 +1327,6 @@ generateExtern ctx funcName monoType =
 
 
 -- GENERATE MANAGER
-
-
-generateManager : Context -> String -> Mono.ManagerInfo -> Mono.MonoType -> MlirOp
-generateManager ctx funcName managerInfo monoType =
-    -- Generate an effects manager
-    -- This creates a record with init, onEffects, onSelfMsg, and optional cmdMap/subMap
-    let
-        -- Generate each manager function
-        initResult : ExprResult
-        initResult =
-            generateExpr ctx managerInfo.init
-
-        onEffectsResult : ExprResult
-        onEffectsResult =
-            generateExpr initResult.ctx managerInfo.onEffects
-
-        onSelfMsgResult : ExprResult
-        onSelfMsgResult =
-            generateExpr onEffectsResult.ctx managerInfo.onSelfMsg
-
-        -- Generate optional cmdMap and subMap
-        ( cmdMapOps, cmdMapVar, ctx1 ) =
-            case managerInfo.cmdMap of
-                Just cmdMapExpr ->
-                    let
-                        result =
-                            generateExpr onSelfMsgResult.ctx cmdMapExpr
-                    in
-                    ( result.ops, result.resultVar, result.ctx )
-
-                Nothing ->
-                    let
-                        ( nullVar, c ) =
-                            freshVar onSelfMsgResult.ctx
-                    in
-                    ( [ ecoConstruct c nullVar 0 0 0 [] ], nullVar, c )
-
-        ( subMapOps, subMapVar, ctx2 ) =
-            case managerInfo.subMap of
-                Just subMapExpr ->
-                    let
-                        result =
-                            generateExpr ctx1 subMapExpr
-                    in
-                    ( result.ops, result.resultVar, result.ctx )
-
-                Nothing ->
-                    let
-                        ( nullVar, c ) =
-                            freshVar ctx1
-                    in
-                    ( [ ecoConstruct c nullVar 0 0 0 [] ], nullVar, c )
-
-        -- Create the manager record
-        ( resultVar, ctx3 ) =
-            freshVar ctx2
-
-        managerOp : MlirOp
-        managerOp =
-            ecoConstruct ctx3
-                resultVar
-                0
-                5
-                0
-                [ ( initResult.resultVar, ecoValue )
-                , ( onEffectsResult.resultVar, ecoValue )
-                , ( onSelfMsgResult.resultVar, ecoValue )
-                , ( cmdMapVar, ecoValue )
-                , ( subMapVar, ecoValue )
-                ]
-
-        returnOp : MlirOp
-        returnOp =
-            ecoReturn ctx3 resultVar ecoValue
-
-        allOps : List MlirOp
-        allOps =
-            initResult.ops
-                ++ onEffectsResult.ops
-                ++ onSelfMsgResult.ops
-                ++ cmdMapOps
-                ++ subMapOps
-                ++ [ managerOp ]
-
-        region : MlirRegion
-        region =
-            mkRegion [] allOps returnOp
-    in
-    funcFunc ctx funcName [] (monoTypeToMlir monoType) region
-
-
-
 -- GENERATE CYCLE
 
 
@@ -1572,29 +1432,11 @@ generateExpr ctx expr =
         Mono.MonoTupleCreate _ elements layout _ ->
             generateTupleCreate ctx elements layout
 
-        Mono.MonoTupleAccess tuple index isUnboxed _ ->
-            generateTupleAccess ctx tuple index isUnboxed
-
-        Mono.MonoCustomCreate ctorName tag fields layout _ ->
-            generateCustomCreate ctx ctorName tag fields layout
-
         Mono.MonoUnit ->
             generateUnit ctx
 
         Mono.MonoAccessor _ fieldName _ ->
             generateAccessor ctx fieldName
-
-        Mono.MonoVarDebug _ name home maybeName monoType ->
-            generateVarDebug ctx name home maybeName monoType
-
-        Mono.MonoVarCycle _ home name monoType ->
-            generateVarCycle ctx home name monoType
-
-        Mono.MonoShader _ shaderInfo _ ->
-            generateShader ctx shaderInfo
-
-        Mono.MonoPolyGlobal _ (TOpt.Global (IO.Canonical _ moduleName) name) _ ->
-            crash ("MLIR codegen: unresolved MonoPolyGlobal for " ++ moduleName ++ "." ++ name ++ " - should have been instantiated at call site")
 
 
 
@@ -1747,84 +1589,6 @@ generateVarKernel ctx home name monoType =
             }
 
 
-generateVarDebug : Context -> Name.Name -> IO.Canonical -> Maybe Name.Name -> Mono.MonoType -> ExprResult
-generateVarDebug ctx name home maybeName monoType =
-    -- Debug.log, Debug.todo, Debug.toString, etc.
-    let
-        ( var, ctx1 ) =
-            freshVar ctx
-
-        debugName : String
-        debugName =
-            case maybeName of
-                Just n ->
-                    "Elm_Debug_" ++ name ++ "_" ++ n
-
-                Nothing ->
-                    "Elm_Debug_" ++ name
-
-        callOp : MlirOp
-        callOp =
-            ecoCallNamed ctx1 var debugName [] (monoTypeToMlir monoType)
-    in
-    { ops = [ callOp ]
-    , resultVar = var
-    , ctx = ctx1
-    }
-
-
-generateVarCycle : Context -> IO.Canonical -> Name.Name -> Mono.MonoType -> ExprResult
-generateVarCycle ctx home name monoType =
-    -- Reference to a variable in a mutually recursive cycle
-    let
-        ( var, ctx1 ) =
-            freshVar ctx
-
-        cycleName : String
-        cycleName =
-            canonicalToMLIRName home ++ "_$cycle_" ++ name
-
-        callOp : MlirOp
-        callOp =
-            ecoCallNamed ctx1 var cycleName [] (monoTypeToMlir monoType)
-    in
-    { ops = [ callOp ]
-    , resultVar = var
-    , ctx = ctx1
-    }
-
-
-generateShader : Context -> Mono.ShaderInfo -> ExprResult
-generateShader ctx shaderInfo =
-    -- WebGL shader - generate a placeholder since we don't support WebGL natively
-    let
-        ( var, ctx1 ) =
-            freshVar ctx
-
-        -- Create a shader object that contains the source and type info
-        -- For now, just create a record with the shader source as a string
-        ( srcVar, ctx2 ) =
-            freshVar ctx1
-
-        srcOp : MlirOp
-        srcOp =
-            ecoStringLiteral ctx2 srcVar shaderInfo.src
-
-        -- Create a shader struct with the source
-        shaderOp : MlirOp
-        shaderOp =
-            mlirOp "eco.shader" ctx2
-                |> withOperands [ ( srcVar, ecoValue ) ]
-                |> withResult var ecoValue
-                |> withAttr "source" (StringAttr shaderInfo.src)
-                |> build
-    in
-    { ops = [ srcOp, shaderOp ]
-    , resultVar = var
-    , ctx = ctx2
-    }
-
-
 
 -- LIST GENERATION
 
@@ -1967,9 +1731,6 @@ generateClosure ctx closureInfo body monoType =
 lambdaIdToString : Mono.LambdaId -> String
 lambdaIdToString lambdaId =
     case lambdaId of
-        Mono.NamedFunction (Mono.Global home name) ->
-            canonicalToMLIRName home ++ "_" ++ sanitizeName name
-
         Mono.AnonymousLambda home uid _ ->
             canonicalToMLIRName home ++ "_lambda_" ++ String.fromInt uid
 
@@ -2416,28 +2177,6 @@ generateMonoPath ctx path =
         Mono.MonoUnbox subPath ->
             generateMonoPath ctx subPath
 
-        Mono.MonoArrayIndex index subPath ->
-            let
-                ( subOps, subVar, ctx1 ) =
-                    generateMonoPath ctx subPath
-
-                ( resultVar, ctx2 ) =
-                    freshVar ctx1
-
-                -- Array access operation (operand is boxed value)
-                arrayAccessOp : MlirOp
-                arrayAccessOp =
-                    mlirOp "eco.array_get" ctx2
-                        |> withOperands [ ( subVar, ecoValue ) ]
-                        |> withResult resultVar ecoValue
-                        |> withAttr "index" (IntAttr index)
-                        |> build
-            in
-            ( subOps ++ [ arrayAccessOp ]
-            , resultVar
-            , ctx2
-            )
-
 
 
 -- CASE GENERATION
@@ -2559,62 +2298,8 @@ generateTupleCreate ctx elements layout =
     }
 
 
-generateTupleAccess : Context -> Mono.MonoExpr -> Int -> Bool -> ExprResult
-generateTupleAccess ctx tuple index isUnboxed =
-    let
-        tupleResult : ExprResult
-        tupleResult =
-            generateExpr ctx tuple
-
-        ( resultVar, ctx1 ) =
-            freshVar tupleResult.ctx
-    in
-    { ops = tupleResult.ops ++ [ ecoProject ctx1 resultVar index isUnboxed tupleResult.resultVar ecoValue ]
-    , resultVar = resultVar
-    , ctx = ctx1
-    }
-
-
 
 -- CUSTOM TYPE GENERATION
-
-
-generateCustomCreate : Context -> Name.Name -> Int -> List Mono.MonoExpr -> Mono.CtorLayout -> ExprResult
-generateCustomCreate ctx ctorName tag fields layout =
-    let
-        ( fieldsOps, fieldVars, ctx1 ) =
-            generateExprList ctx fields
-
-        ( resultVar, ctx2 ) =
-            freshVar ctx1
-
-        arity : Int
-        arity =
-            List.length fields
-
-        -- Use correct types for unboxed fields
-        fieldVarPairs : List ( String, MlirType )
-        fieldVarPairs =
-            List.map2
-                (\v field ->
-                    ( v
-                    , if field.isUnboxed then
-                        monoTypeToMlir field.monoType
-
-                      else
-                        ecoValue
-                    )
-                )
-                fieldVars
-                layout.fields
-    in
-    { ops = fieldsOps ++ [ ecoConstruct ctx2 resultVar tag arity layout.unboxedBitmap fieldVarPairs ]
-    , resultVar = resultVar
-    , ctx = ctx2
-    }
-
-
-
 -- UNIT GENERATION
 
 

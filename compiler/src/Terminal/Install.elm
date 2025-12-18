@@ -49,6 +49,7 @@ import Utils.Task.Extra as Task
 {-| Arguments for the install command.
 
 NoArgs means show help message, Install means add the named package.
+
 -}
 type Args
     = NoArgs
@@ -58,6 +59,7 @@ type Args
 {-| Configuration flags for the install command.
 
 Contains flags for test dependencies and auto-yes to skip confirmation prompts.
+
 -}
 type Flags
     = Flags Bool Bool
@@ -67,6 +69,7 @@ type Flags
 
 Fetches package information from the registry, resolves version constraints,
 updates elm.json, and verifies the project builds with the new dependency.
+
 -}
 run : Args -> Flags -> Task Never ()
 run args (Flags forTest autoYes) =

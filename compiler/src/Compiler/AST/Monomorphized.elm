@@ -1,15 +1,14 @@
 module Compiler.AST.Monomorphized exposing
-    ( MonoType(..), Literal(..)
+    ( MonoType(..), Literal(..), Constraint(..)
     , RecordLayout, FieldInfo, CustomLayout, CtorLayout, TupleLayout
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry, emptyRegistry, getOrCreateSpecId, lookupSpecKey
-    , MonoGraph(..), MainInfo(..), MonoNode(..), ManagerInfo
-    , MonoExpr(..), ShaderInfo, ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
+    , MonoGraph(..), MainInfo(..), MonoNode(..)
+    , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
     , Decider(..), MonoChoice(..)
     , typeOf, canUnbox
     , computeRecordLayout, computeTupleLayout, computeCustomLayout
-    , compareGlobal, compareMonoType, compareLambdaId, compareSpecKey, toComparableGlobal, toComparableMonoType, toComparableLambdaId, toComparableSpecKey
-    , Constraint(..), canTypeToMonoType, constraintToString, containsMVar
+    , toComparableSpecKey
     )
 
 {-| Monomorphized AST - fully specialized with no type variables.
@@ -28,7 +27,7 @@ Key characteristics:
 
 # Types
 
-@docs MonoType, Literal
+@docs MonoType, Literal, Constraint
 
 
 # Runtime Layouts
@@ -48,12 +47,12 @@ Key characteristics:
 
 # Program Graph
 
-@docs MonoGraph, MainInfo, MonoNode, ManagerInfo
+@docs MonoGraph, MainInfo, MonoNode
 
 
 # Expressions
 
-@docs MonoExpr, ShaderInfo, ClosureInfo, MonoDef, MonoDestructor, MonoPath
+@docs MonoExpr, ClosureInfo, MonoDef, MonoDestructor, MonoPath
 
 
 # Pattern Matching
@@ -73,15 +72,12 @@ Key characteristics:
 
 # Comparison and Ordering
 
-@docs compareGlobal, compareMonoType, compareLambdaId, compareSpecKey, toComparableGlobal, toComparableMonoType, toComparableLambdaId, toComparableSpecKey
+@docs toComparableSpecKey
 
 -}
 
-import Compiler.AST.Canonical as Can
-import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Elm.Package as Pkg
 import Compiler.Optimize.DecisionTree as DT
 import Compiler.Reporting.Annotation exposing (Region)
 import Data.Map as Dict exposing (Dict)
@@ -112,6 +108,8 @@ type MonoType
     | MVar Name Constraint -- Unspecialized type var
 
 
+{-| Possibly constrained type vars.
+-}
 type Constraint
     = CAny -- Unconstrained phantom
     | CNumber
@@ -182,8 +180,7 @@ type alias TupleLayout =
 {-| Identifier for lambda functions in lambda sets, distinguishing named functions from closures.
 -}
 type LambdaId
-    = NamedFunction Global
-    | AnonymousLambda IO.Canonical Int (List ( Name, MonoType )) -- module, unique id, captures
+    = AnonymousLambda IO.Canonical Int (List ( Name, MonoType )) -- module, unique id, captures
 
 
 
@@ -284,8 +281,7 @@ type MonoGraph
 
 -}
 type MainInfo
-    = StaticMain SpecId
-    | DynamicMain SpecId MonoExpr -- main specId, flags decoder expression
+    = StaticMain SpecId -- main specId, flags decoder expression
 
 
 
@@ -304,19 +300,7 @@ type MonoNode
     | MonoExtern MonoType
     | MonoPortIncoming MonoExpr (EverySet Int Int) MonoType
     | MonoPortOutgoing MonoExpr (EverySet Int Int) MonoType
-    | MonoManager ManagerInfo MonoType
     | MonoCycle (List ( Name, MonoExpr )) (EverySet Int Int) MonoType
-
-
-{-| Effects manager information
--}
-type alias ManagerInfo =
-    { init : MonoExpr
-    , onEffects : MonoExpr
-    , onSelfMsg : MonoExpr
-    , cmdMap : Maybe MonoExpr
-    , subMap : Maybe MonoExpr
-    }
 
 
 
@@ -331,9 +315,7 @@ type MonoExpr
     = MonoLiteral Literal MonoType
     | MonoVarLocal Name MonoType
     | MonoVarGlobal Region SpecId MonoType
-    | MonoVarKernel Region Name Name MonoType
-    | MonoVarDebug Region Name IO.Canonical (Maybe Name) MonoType -- Debug.log, Debug.todo, etc.
-    | MonoVarCycle Region IO.Canonical Name MonoType -- Mutually recursive variable reference
+    | MonoVarKernel Region Name Name MonoType -- Mutually recursive variable reference
     | MonoList Region (List MonoExpr) MonoType
     | MonoClosure ClosureInfo MonoExpr MonoType
     | MonoCall Region MonoExpr (List MonoExpr) MonoType
@@ -346,20 +328,8 @@ type MonoExpr
     | MonoRecordAccess MonoExpr Name Int Bool MonoType
     | MonoRecordUpdate MonoExpr (List ( Int, MonoExpr )) RecordLayout MonoType
     | MonoTupleCreate Region (List MonoExpr) TupleLayout MonoType
-    | MonoTupleAccess MonoExpr Int Bool MonoType
-    | MonoCustomCreate Name Int (List MonoExpr) CtorLayout MonoType
     | MonoUnit
-    | MonoAccessor Region Name MonoType
-    | MonoShader Region ShaderInfo MonoType -- WebGL shader
-    | MonoPolyGlobal Region TOpt.Global Can.Type -- Polymorphic global, to be resolved at call site
-
-
-{-| WebGL shader information
--}
-type alias ShaderInfo =
-    { src : String
-    , types : { attribute : Dict String Name String, uniform : Dict String Name String, varying : Dict String Name String }
-    }
+    | MonoAccessor Region Name MonoType -- Polymorphic global, to be resolved at call site
 
 
 {-| Literal values in monomorphized expressions.
@@ -400,8 +370,7 @@ type MonoPath
     = MonoIndex Int MonoPath
     | MonoField Name Int MonoPath
     | MonoUnbox MonoPath
-    | MonoRoot Name
-    | MonoArrayIndex Int MonoPath -- Array index access
+    | MonoRoot Name -- Array index access
 
 
 {-| Decision tree for pattern matching.
@@ -478,107 +447,11 @@ typeOf expr =
         MonoTupleCreate _ _ _ t ->
             t
 
-        MonoTupleAccess _ _ _ t ->
-            t
-
-        MonoCustomCreate _ _ _ _ t ->
-            t
-
         MonoUnit ->
             MUnit
 
         MonoAccessor _ _ t ->
             t
-
-        MonoVarDebug _ _ _ _ t ->
-            t
-
-        MonoVarCycle _ _ _ t ->
-            t
-
-        MonoShader _ _ t ->
-            t
-
-        MonoPolyGlobal _ _ canType ->
-            canTypeToMonoType canType
-
-
-{-| Convert a canonical type to a monomorphic type.
-Unresolved type variables become MVar with appropriate constraints.
--}
-canTypeToMonoType : Can.Type -> MonoType
-canTypeToMonoType canType =
-    case canType of
-        Can.TVar name ->
-            -- Determine constraint from name prefix
-            if String.startsWith "number" name then
-                MVar name CNumber
-
-            else if String.startsWith "comparable" name then
-                MVar name CComparable
-
-            else if String.startsWith "appendable" name then
-                MVar name CAppendable
-
-            else if String.startsWith "compappend" name then
-                MVar name CCompAppend
-
-            else
-                MVar name CAny
-
-        Can.TLambda from to ->
-            MFunction [ canTypeToMonoType from ] (canTypeToMonoType to)
-
-        Can.TType ((IO.Canonical pkg _) as canonical) name args ->
-            if pkg == Pkg.core then
-                case ( name, args ) of
-                    ( "Int", [] ) ->
-                        MInt
-
-                    ( "Float", [] ) ->
-                        MFloat
-
-                    ( "Bool", [] ) ->
-                        MBool
-
-                    ( "Char", [] ) ->
-                        MChar
-
-                    ( "String", [] ) ->
-                        MString
-
-                    ( "List", [ inner ] ) ->
-                        MList (canTypeToMonoType inner)
-
-                    _ ->
-                        MCustom canonical name (List.map canTypeToMonoType args) (computeCustomLayout [])
-
-            else
-                MCustom canonical name (List.map canTypeToMonoType args) (computeCustomLayout [])
-
-        Can.TRecord fields _ ->
-            let
-                monoFields =
-                    Dict.map (\_ (Can.FieldType _ t) -> canTypeToMonoType t) fields
-            in
-            MRecord (computeRecordLayout monoFields)
-
-        Can.TTuple a b rest ->
-            let
-                monoTypes =
-                    List.map canTypeToMonoType (a :: b :: rest)
-            in
-            MTuple (computeTupleLayout monoTypes)
-
-        Can.TUnit ->
-            MUnit
-
-        Can.TAlias _ _ _ (Can.Filled inner) ->
-            canTypeToMonoType inner
-
-        Can.TAlias _ _ _ (Can.Holey inner) ->
-            -- For holey aliases, we'd need the args substituted - just recurse for now
-            canTypeToMonoType inner
 
 
 {-| Determine whether a type can be unboxed (stored inline without heap allocation).
@@ -597,33 +470,6 @@ canUnbox monoType =
 
         MChar ->
             True
-
-        _ ->
-            False
-
-
-{-| Check if a monomorphic type contains any unresolved type variables (MVar).
--}
-containsMVar : MonoType -> Bool
-containsMVar monoType =
-    case monoType of
-        MVar _ _ ->
-            True
-
-        MFunction args ret ->
-            List.any containsMVar args || containsMVar ret
-
-        MList inner ->
-            containsMVar inner
-
-        MTuple layout ->
-            List.any (Tuple.first >> containsMVar) layout.elements
-
-        MRecord layout ->
-            List.any (.monoType >> containsMVar) layout.fields
-
-        MCustom _ _ args _ ->
-            List.any containsMVar args
 
         _ ->
             False
@@ -755,30 +601,11 @@ computeCustomLayout constructors =
 -- ============================================================================
 
 
-{-| Compare two global references for ordering.
--}
-compareGlobal : Global -> Global -> Order
-compareGlobal (Global home1 name1) (Global home2 name2) =
-    case compare name1 name2 of
-        EQ ->
-            ModuleName.compareCanonical home1 home2
-
-        other ->
-            other
-
-
 {-| Convert a global reference to a comparable key for use in dictionaries.
 -}
 toComparableGlobal : Global -> List String
 toComparableGlobal (Global home name) =
     ModuleName.toComparableCanonical home ++ [ name ]
-
-
-{-| Compare two monomorphic types for ordering.
--}
-compareMonoType : MonoType -> MonoType -> Order
-compareMonoType t1 t2 =
-    compare (toComparableMonoType t1) (toComparableMonoType t2)
 
 
 {-| Convert a monomorphic type to a comparable key for use in dictionaries.
@@ -844,30 +671,13 @@ constraintToString constraint =
             "compappend"
 
 
-{-| Compare two lambda IDs for ordering.
--}
-compareLambdaId : LambdaId -> LambdaId -> Order
-compareLambdaId l1 l2 =
-    compare (toComparableLambdaId l1) (toComparableLambdaId l2)
-
-
 {-| Convert a lambda ID to a comparable key for use in dictionaries.
 -}
 toComparableLambdaId : LambdaId -> List String
 toComparableLambdaId lambdaId =
     case lambdaId of
-        NamedFunction global ->
-            "Named" :: toComparableGlobal global
-
         AnonymousLambda canonical uid _ ->
             "Anon" :: ModuleName.toComparableCanonical canonical ++ [ String.fromInt uid ]
-
-
-{-| Compare two specialization keys for ordering.
--}
-compareSpecKey : SpecKey -> SpecKey -> Order
-compareSpecKey k1 k2 =
-    compare (toComparableSpecKey k1) (toComparableSpecKey k2)
 
 
 {-| Convert a specialization key to a comparable key for use in dictionaries.

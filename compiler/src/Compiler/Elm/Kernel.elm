@@ -59,14 +59,16 @@ import Utils.Crash exposing (crash)
 {-| Represents a parsed chunk of kernel JavaScript code.
 
 Kernel code is parsed into chunks that represent different types of content:
-- JS: Raw JavaScript code
-- ElmVar: Reference to an Elm variable from another module
-- JsVar: Reference to a JavaScript variable from a kernel module
-- ElmField: Reference to an Elm record field (\_\_$fieldName)
-- JsField: Reference to a JavaScript field by index
-- JsEnum: Reference to an enumeration value by index
-- Debug: Conditional compilation marker for debug mode
-- Prod: Conditional compilation marker for production mode
+
+  - JS: Raw JavaScript code
+  - ElmVar: Reference to an Elm variable from another module
+  - JsVar: Reference to a JavaScript variable from a kernel module
+  - ElmField: Reference to an Elm record field (\_\_$fieldName)
+  - JsField: Reference to a JavaScript field by index
+  - JsEnum: Reference to an enumeration value by index
+  - Debug: Conditional compilation marker for debug mode
+  - Prod: Conditional compilation marker for production mode
+
 -}
 type Chunk
     = JS String
@@ -87,6 +89,7 @@ type Chunk
 
 Returns a dictionary mapping field names to their occurrence counts. Only ElmField
 chunks are counted; all other chunk types are ignored.
+
 -}
 countFields : List Chunk -> Dict String Name Int
 countFields chunks =
@@ -135,6 +138,7 @@ addField chunk fields =
 
 Contains the list of imports from the kernel module header comment and the parsed
 chunks representing the JavaScript code body.
+
 -}
 type Content
     = Content (List (Src.C1 Src.Import)) (List Chunk)
@@ -144,6 +148,7 @@ type Content
 
 Used to resolve imported Elm modules to their canonical package locations when
 processing kernel module imports.
+
 -}
 type alias Foreigns =
     Dict String ModuleName.Raw Pkg.Name
@@ -154,6 +159,7 @@ type alias Foreigns =
 Expects kernel files to start with a comment block containing imports, followed by
 JavaScript code with special tags (\_\_x patterns) that reference Elm and JS variables,
 fields, and conditional compilation markers. Returns Nothing if parsing fails.
+
 -}
 fromByteString : Pkg.Name -> Foreigns -> String -> Maybe Content
 fromByteString pkg foreigns bytes =
@@ -479,6 +485,7 @@ toName exposed =
 
 Each chunk type is encoded with a tag byte followed by its data. Used for caching
 parsed kernel modules in artifact files.
+
 -}
 chunkEncoder : Chunk -> Bytes.Encode.Encoder
 chunkEncoder chunk =
@@ -532,6 +539,7 @@ chunkEncoder chunk =
 
 Reads the tag byte to determine the chunk type, then decodes the corresponding data.
 Used for loading cached kernel module artifacts.
+
 -}
 chunkDecoder : Bytes.Decode.Decoder Chunk
 chunkDecoder =

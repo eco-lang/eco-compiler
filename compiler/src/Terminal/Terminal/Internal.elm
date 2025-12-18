@@ -1,18 +1,9 @@
 module Terminal.Terminal.Internal exposing
-    ( ArgError(..)
-    , Args(..)
-    , Command(..)
-    , CommandData
-    , CompleteArgs(..)
-    , Error(..)
-    , Expectation(..)
-    , Flag(..)
-    , FlagError(..)
-    , Flags(..)
+    ( Command(..), CommandData, Summary(..), toName
+    , Args(..), CompleteArgs(..), RequiredArgs(..)
+    , Flags(..), Flag(..)
     , Parser(..)
-    , RequiredArgs(..)
-    , Summary(..)
-    , toName
+    , Error(..), ArgError(..), FlagError(..), Expectation(..)
     )
 
 {-| Internal types and data structures for terminal command parsing.
@@ -59,6 +50,7 @@ import Text.PrettyPrint.ANSI.Leijen exposing (Doc)
 
 Includes the command name, summary, detailed help text, usage example,
 argument and flag specifications, and the run function that executes the command.
+
 -}
 type alias CommandData =
     { name : String
@@ -74,6 +66,7 @@ type alias CommandData =
 {-| A terminal command with all its configuration.
 
 Wraps CommandData to provide a distinct type for commands.
+
 -}
 type Command
     = Command CommandData
@@ -82,6 +75,7 @@ type Command
 {-| Extract the name from a command.
 
 Returns the command's name string.
+
 -}
 toName : Command -> String
 toName (Command cmdData) =
@@ -93,6 +87,7 @@ toName (Command cmdData) =
 Common commands appear with a description in the overview, Uncommon commands
 are only listed by name. Use Common for frequently-used commands with a brief
 2-3 line description, Uncommon for specialized or advanced commands.
+
 -}
 type Summary
     = Common String
@@ -107,6 +102,7 @@ type Summary
 
 FDone represents no flags, FMore adds a flag to the collection.
 Built up recursively to form a list of flags.
+
 -}
 type Flags
     = FDone
@@ -117,6 +113,7 @@ type Flags
 
 Flag takes a name, parser, and description for flags with values.
 OnOff takes a name and description for boolean flags.
+
 -}
 type Flag
     = Flag String Parser String
@@ -131,6 +128,7 @@ type Flag
 
 Contains the singular and plural names for help text, a suggestion function
 for tab completion, and an examples function for error messages.
+
 -}
 type Parser
     = Parser
@@ -150,6 +148,7 @@ type Parser
 {-| A specification for command arguments.
 
 Contains a list of possible complete argument patterns that the command accepts.
+
 -}
 type Args
     = Args (List CompleteArgs)
@@ -159,6 +158,7 @@ type Args
 
 Exactly means a fixed sequence of required arguments, Multiple adds a repeating
 argument that can appear zero or more times after the required arguments.
+
 -}
 type CompleteArgs
     = Exactly RequiredArgs
@@ -169,6 +169,7 @@ type CompleteArgs
 
 Done represents no more required arguments, Required adds one required argument
 to the sequence.
+
 -}
 type RequiredArgs
     = Done
@@ -182,6 +183,7 @@ type RequiredArgs
 {-| Top-level error type for command parsing.
 
 BadArgs contains a list of argument errors, BadFlag contains a single flag error.
+
 -}
 type Error
     = BadArgs (List ArgError)
@@ -193,6 +195,7 @@ type Error
 ArgMissing means a required argument was not provided, ArgBad means an argument
 was provided but couldn't be parsed, ArgExtras means unexpected extra arguments
 were provided.
+
 -}
 type ArgError
     = ArgMissing Expectation
@@ -205,6 +208,7 @@ type ArgError
 FlagWithValue means an on/off flag was given a value, FlagWithBadValue means
 a flag value couldn't be parsed, FlagWithNoValue means a flag requiring a value
 had none, FlagUnknown means an unrecognized flag was provided.
+
 -}
 type FlagError
     = FlagWithValue String String
@@ -216,6 +220,7 @@ type FlagError
 {-| Expected value information for error messages.
 
 Contains the singular type name and a task to generate example values.
+
 -}
 type Expectation
     = Expectation String (Task Never (List String))

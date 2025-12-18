@@ -99,6 +99,7 @@ tResult uid deps fields value =
     TResult { uid = uid, deps = deps, fields = fields } value
 
 
+
 -- ====== RUNNING ======
 
 
@@ -118,13 +119,14 @@ run (Tracker k) =
             ( props.deps, props.fields, value )
 
 
+
 -- ====== NAME GENERATION ======
 
 
 {-| Generate a fresh, unique variable name.
 
 The generated name is guaranteed to not conflict with any other names in the module.
-Names are generated sequentially as _v0, _v1, _v2, etc.
+Names are generated sequentially as _v0, _v1, \_v2, etc.
 
 -}
 generate : Tracker Name
@@ -132,6 +134,7 @@ generate =
     Tracker <|
         \uid deps fields ->
             tResult (uid + 1) deps fields (Name.fromVarIndex uid)
+
 
 
 -- ====== DEPENDENCY REGISTRATION ======

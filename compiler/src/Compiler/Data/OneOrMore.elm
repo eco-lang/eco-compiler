@@ -1,7 +1,6 @@
 module Compiler.Data.OneOrMore exposing
     ( OneOrMore(..)
     , one, more
-    , map
     , destruct, getFirstTwo
     )
 
@@ -24,8 +23,6 @@ structure is useful for representing hierarchical data with guaranteed non-empti
 
 # Transformations
 
-@docs map
-
 
 # Extraction
 
@@ -39,8 +36,10 @@ structure is useful for representing hierarchical data with guaranteed non-empti
 {-| A binary tree structure that guarantees at least one element.
 
 Can be either:
-- `One a`: A leaf node containing a single value
-- `More (OneOrMore a) (OneOrMore a)`: A branch node containing two subtrees
+
+  - `One a`: A leaf node containing a single value
+  - `More (OneOrMore a) (OneOrMore a)`: A branch node containing two subtrees
+
 -}
 type OneOrMore a
     = One a
@@ -63,21 +62,6 @@ more =
 
 
 -- MAP
-
-
-{-| Apply a function to every element in the OneOrMore structure, preserving its shape.
--}
-map : (a -> b) -> OneOrMore a -> OneOrMore b
-map func oneOrMore =
-    case oneOrMore of
-        One value ->
-            One (func value)
-
-        More left right ->
-            More (map func left) (map func right)
-
-
-
 -- DESTRUCT
 
 

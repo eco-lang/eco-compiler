@@ -1,7 +1,5 @@
 module Compiler.AST.Utils.Binop exposing
     ( Precedence, Associativity(..)
-    , jsonPrecedenceEncoder, jsonPrecedenceDecoder
-    , jsonAssociativityEncoder, jsonAssociativityDecoder
     , precedenceEncoder, precedenceDecoder
     , associativityEncoder, associativityDecoder
     )
@@ -20,9 +18,6 @@ determine how expressions with multiple operators are parsed and evaluated.
 
 # JSON Serialization
 
-@docs jsonPrecedenceEncoder, jsonPrecedenceDecoder
-@docs jsonAssociativityEncoder, jsonAssociativityDecoder
-
 
 # Binary Serialization
 
@@ -33,8 +28,6 @@ determine how expressions with multiple operators are parsed and evaluated.
 
 import Bytes.Decode
 import Bytes.Encode
-import Json.Decode as Decode
-import Json.Encode as Encode
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -62,60 +55,6 @@ type Associativity
 
 
 -- JSON ENCODERS and DECODERS
-
-
-{-| Encode precedence as a JSON integer.
--}
-jsonPrecedenceEncoder : Precedence -> Encode.Value
-jsonPrecedenceEncoder =
-    Encode.int
-
-
-{-| Decode precedence from a JSON integer.
--}
-jsonPrecedenceDecoder : Decode.Decoder Precedence
-jsonPrecedenceDecoder =
-    Decode.int
-
-
-{-| Encode associativity as a JSON string ("Left", "Non", or "Right").
--}
-jsonAssociativityEncoder : Associativity -> Encode.Value
-jsonAssociativityEncoder associativity =
-    case associativity of
-        Left ->
-            Encode.string "Left"
-
-        Non ->
-            Encode.string "Non"
-
-        Right ->
-            Encode.string "Right"
-
-
-{-| Decode associativity from a JSON string ("Left", "Non", or "Right").
--}
-jsonAssociativityDecoder : Decode.Decoder Associativity
-jsonAssociativityDecoder =
-    Decode.string
-        |> Decode.andThen
-            (\str ->
-                case str of
-                    "Left" ->
-                        Decode.succeed Left
-
-                    "Non" ->
-                        Decode.succeed Non
-
-                    "Right" ->
-                        Decode.succeed Right
-
-                    _ ->
-                        Decode.fail ("Unknown Associativity: " ++ str)
-            )
-
-
-
 -- ENCODERS and DECODERS
 
 

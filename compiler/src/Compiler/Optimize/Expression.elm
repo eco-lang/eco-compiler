@@ -68,6 +68,7 @@ the canonical AST, performing optimizations such as:
 
 The function works within the Names.Tracker monad to collect dependency information
 while transforming the expression tree.
+
 -}
 optimize : Cycle -> Can.Expr -> Names.Tracker Opt.Expr
 optimize cycle (A.At region expression) =
@@ -356,8 +357,10 @@ Destructor operations to extract any nested values. This allows function argumen
 complex patterns (like tuples or records) while maintaining efficient compiled code.
 
 Returns a tuple of:
+
   - List of argument names (one per pattern)
   - List of destructors to extract nested values from those arguments
+
 -}
 destructArgs : List Can.Pattern -> Names.Tracker ( List (A.Located Name.Name), List Opt.Destructor )
 destructArgs args =
@@ -559,6 +562,7 @@ destructCtorArg path revDs (Can.PatternCtorArg index _ arg) =
 This is the entry point for tail call optimization of definitions. It analyzes the
 definition to detect tail-recursive calls and converts them to efficient TailCall
 nodes that can be compiled to loops instead of recursive function calls.
+
 -}
 optimizePotentialTailCallDef : Cycle -> Can.Def -> Names.Tracker Opt.Def
 optimizePotentialTailCallDef cycle def =
@@ -574,13 +578,14 @@ optimizePotentialTailCallDef cycle def =
 
 Given a function's region, name, arguments, and body expression, this function:
 
-  1. Destructures the argument patterns into simple names
-  2. Analyzes the body for tail-recursive calls to the same function
-  3. Converts tail calls into TailCall nodes for efficient compilation
-  4. Returns either a TailDef (if tail calls found) or regular Def
+1.  Destructures the argument patterns into simple names
+2.  Analyzes the body for tail-recursive calls to the same function
+3.  Converts tail calls into TailCall nodes for efficient compilation
+4.  Returns either a TailDef (if tail calls found) or regular Def
 
 This enables recursive functions to be compiled as loops when they are tail-recursive,
 avoiding stack overflow and improving performance.
+
 -}
 optimizePotentialTailCall : Cycle -> A.Region -> Name.Name -> List Can.Pattern -> Can.Expr -> Names.Tracker Opt.Def
 optimizePotentialTailCall cycle region name args expr =

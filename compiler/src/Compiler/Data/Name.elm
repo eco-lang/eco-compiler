@@ -223,7 +223,7 @@ writeDigitsAtEnd prefix n =
 
 
 {-| Create a type variable name with an index suffix. If index is 0, returns the name unchanged.
-If the name ends with a digit, adds an underscore before the index (e.g., "a2" + 3 -> "a2_3").
+If the name ends with a digit, adds an underscore before the index (e.g., "a2" + 3 -> "a2\_3").
 -}
 fromTypeVariable : Name -> Int -> Name
 fromTypeVariable name index =
@@ -298,7 +298,7 @@ fromTypeVariableScheme scheme =
 -- normal name. Same logic for destructuring patterns like (x,y)
 
 
-{-| Create a unique name from multiple names by prefixing the first name with "_M$".
+{-| Create a unique name from multiple names by prefixing the first name with "\_M$".
 This creates names valid in JavaScript but not in Elm, avoiding conflicts.
 -}
 fromManyNames : List Name -> Name
@@ -605,14 +605,14 @@ identity_ =
     "identity"
 
 
-{-| The "Elm_Repl" module name for REPL sessions.
+{-| The "Elm\_Repl" module name for REPL sessions.
 -}
 replModule : Name
 replModule =
     "Elm_Repl"
 
 
-{-| The "repl_input_value_" variable name for REPL value printing.
+{-| The "repl\_input\_value\_" variable name for REPL value printing.
 -}
 replValueToPrint : Name
 replValueToPrint =

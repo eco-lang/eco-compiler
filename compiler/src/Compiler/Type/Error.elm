@@ -58,6 +58,7 @@ import Utils.Bytes.Encode as BE
 This type captures the structure of Elm types in a form that's optimized for generating
 human-readable error messages, including function types, type variables, records, tuples,
 and type aliases.
+
 -}
 type Type
     = Lambda Type Type (List Type)
@@ -213,6 +214,7 @@ type Status
 
 These problems enable more helpful error messages by identifying common mistakes like
 confusing Int and Float, missing record fields, or arity mismatches in function types.
+
 -}
 type Problem
     = IntFloat

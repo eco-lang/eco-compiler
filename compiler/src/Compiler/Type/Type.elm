@@ -87,6 +87,7 @@ import Utils.Crash exposing (crash)
 Constraints form a tree structure that encodes all type requirements discovered
 during constraint generation. The solver walks this tree to unify types and
 detect type errors.
+
 -}
 type Constraint
     = CTrue
@@ -103,6 +104,7 @@ type Constraint
 
 Creates a CLet constraint that introduces new flex variables that are local to
 the given constraint, with no header bindings.
+
 -}
 exists : List Variable -> Constraint -> Constraint
 exists flexVars constraint =
@@ -118,10 +120,10 @@ exists flexVars constraint =
 Types during inference use Variables (union-find pointers) rather than the
 named type variables seen in source code. This enables efficient unification
 through union-find operations.
+
 -}
 type Type
-    = PlaceHolder Name
-    | AliasN IO.Canonical Name (List ( Name, Type )) Type
+    = AliasN IO.Canonical Name (List ( Name, Type )) Type
     | VarN Variable
     | AppN IO.Canonical Name (List Type)
     | FunN Type Type
@@ -148,6 +150,7 @@ makeDescriptor content =
 
 Used to mark variables that haven't been assigned a rank yet or that are in an
 error state.
+
 -}
 noRank : Int
 noRank =
@@ -158,6 +161,7 @@ noRank =
 
 Variables at the outermost scope have rank 1, allowing the solver to detect
 when generalization is safe.
+
 -}
 outermostRank : Int
 outermostRank =
@@ -172,6 +176,7 @@ outermostRank =
 
 Marks are used during graph traversal to avoid revisiting nodes. This is the
 initial mark value for fresh variables.
+
 -}
 noMark : Mark
 noMark =
@@ -192,6 +197,7 @@ getVarNamesMark =
 
 Each graph traversal should use a fresh mark value to distinguish visited nodes
 from unvisited ones.
+
 -}
 nextMark : Mark -> Mark
 nextMark (Mark mark) =
@@ -205,6 +211,7 @@ nextMark (Mark mark) =
 {-| Constructs a function type from argument to result.
 
 Represents the type `arg -> result` in Elm syntax.
+
 -}
 funType : Type -> Type -> Type
 funType =
@@ -304,6 +311,7 @@ texture =
 
 Returns a new variable that can unify with any type. Used during type inference
 when the type is initially unknown.
+
 -}
 mkFlexVar : IO Variable
 mkFlexVar =
@@ -319,6 +327,7 @@ flexVarDescriptor =
 
 Flexible variables can unify with any type and will be given generated names if
 needed for error reporting.
+
 -}
 unnamedFlexVar : Content
 unnamedFlexVar =
@@ -333,6 +342,7 @@ unnamedFlexVar =
 
 Returns a new variable constrained to the Number supertype (Int or Float).
 Used for numeric literals that could be either type.
+
 -}
 mkFlexNumber : IO Variable
 mkFlexNumber =
@@ -348,6 +358,7 @@ flexNumberDescriptor =
 
 Supertype variables are constrained to unify only with types matching the given
 supertype (Number, Comparable, Appendable, or CompAppend).
+
 -}
 unnamedFlexSuper : SuperType -> Content
 unnamedFlexSuper super =
@@ -363,6 +374,7 @@ unnamedFlexSuper super =
 If the name corresponds to a supertype (number, comparable, appendable,
 compappend), creates a flexible supertype variable. Otherwise creates a regular
 flexible variable.
+
 -}
 nameToFlex : Name -> IO Variable
 nameToFlex name =
@@ -374,6 +386,7 @@ nameToFlex name =
 Rigid variables represent bound type variables from user annotations or let
 polymorphism. They cannot unify with other rigid variables. If the name
 corresponds to a supertype, creates a rigid supertype variable.
+
 -}
 nameToRigid : Name -> IO Variable
 nameToRigid name =
@@ -407,6 +420,7 @@ toSuper name =
 Traverses the type structure to produce a user-readable type with properly
 named type variables. Generates fresh names for unnamed variables and returns
 a Forall quantifier listing all type variables found.
+
 -}
 toAnnotation : Variable -> IO Can.Annotation
 toAnnotation variable =
@@ -548,6 +562,7 @@ fieldToCanType variable =
 Similar to toAnnotation but produces types in the error reporting format.
 Includes special handling for infinite types (occurs check failures) by
 detecting cycles during traversal.
+
 -}
 toErrorType : Variable -> IO ET.Type
 toErrorType variable =

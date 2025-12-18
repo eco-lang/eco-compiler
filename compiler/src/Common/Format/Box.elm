@@ -1,7 +1,7 @@
 module Common.Format.Box exposing
     ( Line, identifier, keyword, punc, literal, row, space
     , Box(..), blankLine, line, mustBreak, stack_, stack1, andThen
-    , isLine, allSingles, lineLength
+    , allSingles, lineLength
     , indent, prefix, addSuffix
     , render
     )
@@ -30,7 +30,7 @@ Reference implementation: `elm-format-lib/src/Box.hs`
 
 # Box Properties
 
-@docs isLine, allSingles, lineLength
+@docs allSingles, lineLength
 
 
 # Box Transformations

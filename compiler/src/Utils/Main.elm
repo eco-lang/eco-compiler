@@ -8,11 +8,10 @@ module Utils.Main exposing
     , envLookupEnv, envGetProgName, envGetArgs
     , LockSharedExclusive(..), lockWithFileLock
     , binaryDecodeFileOrFail, binaryEncodeFile, builderHPutBuilder
-    , ZipArchive(..), ZipEntry(..)
     , HttpExceptionContent(..), HttpResponse(..), HttpResponseHeaders, HttpStatus(..)
     , httpResponseStatus, httpStatusCode, httpResponseHeaders, httpHLocation
     , httpExceptionContentEncoder, httpExceptionContentDecoder
-    , SomeException(..), AsyncException(..)
+    , SomeException(..)
     , someExceptionEncoder, someExceptionDecoder
     , ThreadId, forkIO, bracket_
     , MVar(..), newMVar, newEmptyMVar, readMVar, takeMVar, putMVar
@@ -69,11 +68,6 @@ primary interface to system resources and provides Haskell-like abstractions ada
 @docs binaryDecodeFileOrFail, binaryEncodeFile, builderHPutBuilder
 
 
-# Archive Operations
-
-@docs ZipArchive, ZipEntry
-
-
 # HTTP Types and Operations
 
 @docs HttpExceptionContent, HttpResponse, HttpResponseHeaders, HttpStatus
@@ -83,7 +77,7 @@ primary interface to system resources and provides Haskell-like abstractions ada
 
 # Exception Types
 
-@docs SomeException, AsyncException
+@docs SomeException
 @docs someExceptionEncoder, someExceptionDecoder
 
 
@@ -1109,24 +1103,6 @@ envGetArgs =
 
 
 -- Codec.Archive.Zip
-
-
-{-| A ZIP archive containing a list of entries.
--}
-type ZipArchive
-    = ZipArchive (List ZipEntry)
-
-
-{-| A single entry in a ZIP archive with its relative path and data.
--}
-type ZipEntry
-    = ZipEntry
-        { eRelativePath : FilePath
-        , eData : String
-        }
-
-
-
 -- Network.HTTP.Client
 
 
@@ -1195,12 +1171,6 @@ type HttpStatus
 -}
 type SomeException
     = SomeException
-
-
-{-| Asynchronous exceptions that can interrupt program execution.
--}
-type AsyncException
-    = UserInterrupt
 
 
 {-| Execute an action with resource acquisition and cleanup, ensuring cleanup runs even if the action fails.
@@ -1498,7 +1468,7 @@ replGetInputLineWithInitial prompt ( left, right ) =
 -- NODE
 
 
-{-| Get the directory name of the current module (Node.js __dirname equivalent).
+{-| Get the directory name of the current module (Node.js \_\_dirname equivalent).
 -}
 nodeGetDirname : Task Never String
 nodeGetDirname =

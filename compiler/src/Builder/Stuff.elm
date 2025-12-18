@@ -266,7 +266,7 @@ getCacheDir projectName =
             )
 
 
-{-| Returns the Elm home directory, checking GUIDA_HOME environment variable first.
+{-| Returns the Elm home directory, checking GUIDA\_HOME environment variable first.
 -}
 getElmHome : Task Never String
 getElmHome =

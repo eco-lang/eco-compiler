@@ -1,17 +1,6 @@
 module Common.Format.Render.Markdown exposing
-    ( Context(..)
-    , LongestSpanResult(..)
-    , formatListItem
-    , formatMardownBlock
+    ( Context(..), LongestSpanResult(..)
     , formatMarkdown
-    , formatMarkdownInline
-    , formatMarkdown_
-    , formatRef
-    , lines
-    , longestSpanOf
-    , mapWithPrev
-    , prefix
-    , prefix_
     )
 
 {-| Markdown rendering and formatting utilities.
@@ -21,8 +10,7 @@ It handles proper spacing, indentation, escaping of special characters, and form
 of various block and inline elements including lists, code blocks, links, and emphasis.
 
 @docs Context, LongestSpanResult
-@docs formatListItem, formatMardownBlock, formatMarkdown, formatMarkdownInline
-@docs formatMarkdown_, formatRef, lines, longestSpanOf, mapWithPrev, prefix, prefix_
+@docs formatMarkdown
 
 -}
 

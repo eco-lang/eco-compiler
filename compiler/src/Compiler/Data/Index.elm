@@ -116,10 +116,8 @@ indexedMap func xs =
     List.map2 func (List.map ZeroBased (List.range 0 (List.length xs - 1))) xs
 
 
+
 -- NOTE: indexedTraverse and indexedForA are defined on `Utils`
-
-
-
 -- VERIFIED/INDEXED ZIP
 
 

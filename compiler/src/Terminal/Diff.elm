@@ -58,6 +58,7 @@ import Utils.Task.Extra as Task
 CodeVsLatest compares local code to latest published version, CodeVsExactly
 compares to a specific version, LocalInquiry compares two published versions,
 GlobalInquiry compares versions of any package.
+
 -}
 type Args
     = CodeVsLatest
@@ -70,6 +71,7 @@ type Args
 
 Shows additions, changes, and removals in the public API, helping understand
 the impact of version changes and semantic versioning requirements.
+
 -}
 run : Args -> () -> Task Never ()
 run args () =

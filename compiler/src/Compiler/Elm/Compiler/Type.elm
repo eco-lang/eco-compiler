@@ -1,7 +1,7 @@
 module Compiler.Elm.Compiler.Type exposing
     ( Type(..), Alias(..), Union(..), DebugMetadata(..)
     , toDoc
-    , encode, encodeMetadata, decoder, jsonEncoder, jsonDecoder
+    , encode, encodeMetadata, decoder
     , bytesEncoder, bytesDecoder
     )
 
@@ -24,7 +24,7 @@ include only the essential type structure without compiler internals.
 
 # JSON Encoding
 
-@docs encode, encodeMetadata, decoder, jsonEncoder, jsonDecoder
+@docs encode, encodeMetadata, decoder
 
 
 # Binary Encoding
@@ -46,8 +46,6 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Doc as D
 import Compiler.Reporting.Render.Type as RT
 import Compiler.Reporting.Render.Type.Localizer as L
-import Json.Decode as Decode
-import Json.Encode as Encode
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 import Utils.Crash exposing (crash)
@@ -246,96 +244,6 @@ toVariantObject ( name, args ) =
 
 
 -- JSON ENCODERS and DECODERS
-
-
-{-| Encodes a type as a structured JSON object using elm/json.
--}
-jsonEncoder : Type -> Encode.Value
-jsonEncoder type_ =
-    case type_ of
-        Lambda arg body ->
-            Encode.object
-                [ ( "type", Encode.string "Lambda" )
-                , ( "arg", jsonEncoder arg )
-                , ( "body", jsonEncoder body )
-                ]
-
-        Var name ->
-            Encode.object
-                [ ( "type", Encode.string "Var" )
-                , ( "name", Encode.string name )
-                ]
-
-        Type name args ->
-            Encode.object
-                [ ( "type", Encode.string "Type" )
-                , ( "name", Encode.string name )
-                , ( "args", Encode.list jsonEncoder args )
-                ]
-
-        Record fields ext ->
-            Encode.object
-                [ ( "type", Encode.string "Record" )
-                , ( "fields", Encode.list (E.jsonPair Encode.string jsonEncoder) fields )
-                , ( "ext", E.maybe Encode.string ext )
-                ]
-
-        Unit ->
-            Encode.object
-                [ ( "type", Encode.string "Unit" )
-                ]
-
-        Tuple a b cs ->
-            Encode.object
-                [ ( "type", Encode.string "Tuple" )
-                , ( "a", jsonEncoder a )
-                , ( "b", jsonEncoder b )
-                , ( "cs", Encode.list jsonEncoder cs )
-                ]
-
-
-{-| Decodes a type from a structured JSON object using elm/json.
--}
-jsonDecoder : Decode.Decoder Type
-jsonDecoder =
-    Decode.field "type" Decode.string
-        |> Decode.andThen
-            (\type_ ->
-                case type_ of
-                    "Lambda" ->
-                        Decode.map2 Lambda
-                            (Decode.field "arg" jsonDecoder)
-                            (Decode.field "body" jsonDecoder)
-
-                    "Var" ->
-                        Decode.map Var
-                            (Decode.field "name" Decode.string)
-
-                    "Type" ->
-                        Decode.map2 Type
-                            (Decode.field "name" Decode.string)
-                            (Decode.field "args" (Decode.list jsonDecoder))
-
-                    "Record" ->
-                        Decode.map2 Record
-                            (Decode.field "fields" (Decode.list (D.jsonPair Decode.string jsonDecoder)))
-                            (Decode.field "ext" (Decode.maybe Decode.string))
-
-                    "Unit" ->
-                        Decode.succeed Unit
-
-                    "Tuple" ->
-                        Decode.map3 Tuple
-                            (Decode.field "a" jsonDecoder)
-                            (Decode.field "b" jsonDecoder)
-                            (Decode.field "cs" (Decode.list jsonDecoder))
-
-                    _ ->
-                        Decode.fail ("Failed to decode Type's type: " ++ type_)
-            )
-
-
-
 -- ENCODERS and DECODERS
 
 

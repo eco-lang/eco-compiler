@@ -1,6 +1,6 @@
 module Compiler.Parse.Module exposing
     ( fromByteString
-    , Module, Header, ProjectType(..), Effects(..), defaultHeader
+    , Module, Header, ProjectType(..), Effects(..)
     , chompModule, chompImports, chompImport
     , isKernel
     )
@@ -22,7 +22,7 @@ This module provides the entry point for parsing entire Elm modules. It handles:
 
 # Module Structure
 
-@docs Module, Header, ProjectType, Effects, defaultHeader
+@docs Module, Header, ProjectType, Effects
 
 
 # Parsers
@@ -446,21 +446,6 @@ type alias Header =
     , effects : Effects
     , exports : Src.C2 (A.Located Src.Exposing)
     , docs : Result A.Region Src.Comment
-    }
-
-
-{-| Default header used when a module has no explicit module declaration.
-
-Creates a header for an implicit module named "Main" with open exports.
-Used for simple scripts and REPL evaluation contexts.
-
--}
-defaultHeader : Header
-defaultHeader =
-    { name = ( ( [], [] ), A.At A.zero Name.mainModule )
-    , effects = NoEffects A.zero
-    , exports = ( ( [], [] ), A.At A.zero (Src.Open [] []) )
-    , docs = Err A.zero
     }
 
 
