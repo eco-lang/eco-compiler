@@ -11,18 +11,35 @@ module Compiler.AST.Monomorphized exposing
     , toComparableSpecKey
     )
 
-{-| Monomorphized AST - fully specialized with no type variables.
+{-| Monomorphized AST for backends that can optimize using concrete types.
 
-This IR is produced by the monomorphization pass and consumed by the MLIR backend.
-All polymorphism has been resolved to concrete types, and all higher-order functions
-have been specialized for their specific lambda arguments (lambda sets).
+This IR makes all specialized definitions, layouts, and closure structures
+explicit so that later stages can generate low-level code without needing
+type inference or layout computation.
 
-Key characteristics:
+High‑level properties:
 
-  - MonoType has no type variables
-  - Every function specialization has a unique SpecId
-  - Record/Custom/Tuple types carry their runtime layout
-  - Closures are explicit with captured variables
+  - Each polymorphic Elm definition that is actually used at one or more
+    type instantiations appears as one or more specialized nodes in
+    `MonoGraph`, identified by a concrete `SpecId`.
+
+  - Record, tuple, and custom types carry their computed runtime layouts
+    (`RecordLayout`, `TupleLayout`, `CustomLayout`), so consumers of this
+    IR can rely on fixed shapes and unboxing decisions.
+
+  - Higher‑order functions are either represented as explicit closures
+    (`MonoClosure` with captured variables and parameter types) or as
+    specialized top‑level function nodes (`MonoDefine`, `MonoTailFunc`).
+
+  - Remaining type variables in `MonoType` are limited to a small,
+    backend‑aware set of constrained variables (`MVar` with `Constraint`)
+    that do not require further inference. In particular, any unresolved
+    numeric variables are intended to be rejected before final code
+    generation. See `MonoType` and `Constraint` for the precise invariants.
+
+This module defines the data structures for the monomorphized program
+(`MonoGraph`, `MonoNode`, `MonoExpr`, etc.) along with utilities such as
+`typeOf` and the layout computation functions.
 
 
 # Types
@@ -113,11 +130,14 @@ INVARIANTS BY PHASE:
       - `MVar _ CEcoValue` is allowed for positions whose concrete type does
         not affect layout (always boxed) and may remain until codegen.
 
-  - At MLIR codegen time:
+  - At codegen time:
       - No `MVar _ CNumber` may remain in any reachable `MonoType`. Such
         a case indicates a failed specialization and is a compiler bug.
       - Any remaining `MVar _ CEcoValue` is treated as a boxed `eco.value`
         in the target representation.
+
+The actual specialization to `MInt` or `MFloat` is expected tp be done at call
+sites during code generation.
 
 -}
 type MonoType
