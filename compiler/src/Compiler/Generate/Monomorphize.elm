@@ -1,11 +1,13 @@
 module Compiler.Generate.Monomorphize exposing (monomorphize)
 
-{-| Monomorphization Pass
+{-| Monomorphization pass that eliminates polymorphism from typed optimized code.
 
 This module transforms a TypedOptimized.GlobalGraph into a Monomorphized.MonoGraph
 by specializing all polymorphic functions to their concrete type instantiations.
+This produces a representation where every function has concrete types only,
+enabling more aggressive optimization and simplifying code generation.
 
-The algorithm:
+The monomorphization algorithm works as follows:
 
 1.  Find the entry point (main function).
 2.  Use a worklist to process each (Global, MonoType, Maybe LambdaId) specialization.
@@ -14,7 +16,12 @@ The algorithm:
     b. Applying the substitution to all types in the expression.
     c. Discovering new specializations needed and adding them to the worklist.
 4.  Continue until the worklist is empty.
-5.  Optionally validate invariants (e.g. no unresolved numeric vars) before codegen.
+5.  Return a MonoGraph with all polymorphism resolved to concrete types.
+
+
+# Monomorphization
+
+@docs monomorphize
 
 -}
 
@@ -30,6 +37,12 @@ import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 
 
+
+-- ========== STATE ==========
+
+
+{-| State maintained during monomorphization, tracking work to be done and completed specializations.
+-}
 type alias MonoState =
     { worklist : List WorkItem
     , nodes : Dict Int Int Mono.MonoNode
@@ -42,14 +55,18 @@ type alias MonoState =
     }
 
 
+{-| Work item representing a function specialization to be processed.
+-}
 type WorkItem
     = SpecializeGlobal Mono.Global Mono.MonoType (Maybe Mono.LambdaId)
 
 
 
--- ENTRY POINT
+-- ========== ENTRY POINT ==========
 
 
+{-| Transform a typed optimized graph into a monomorphized graph by specializing all polymorphic code to concrete types.
+-}
 monomorphize : TOpt.GlobalGraph -> Result String Mono.MonoGraph
 monomorphize (TOpt.GlobalGraph nodes _ _) =
     case findMain nodes of
@@ -58,7 +75,6 @@ monomorphize (TOpt.GlobalGraph nodes _ _) =
 
         Just ( mainGlobal, mainType ) ->
             let
-                -- Compute main's monomorphic type
                 mainMonoType : Mono.MonoType
                 mainMonoType =
                     canTypeToMonoType Dict.empty mainType
@@ -69,7 +85,6 @@ monomorphize (TOpt.GlobalGraph nodes _ _) =
                         TOpt.Global canonical _ ->
                             canonical
 
-                -- Initial state: one work item for main
                 initialState : MonoState
                 initialState =
                     initState currentModule nodes
@@ -107,9 +122,11 @@ monomorphize (TOpt.GlobalGraph nodes _ _) =
 
 
 
--- INITIAL STATE / MAIN LOOKUP
+-- ========== INITIALIZATION ==========
 
 
+{-| Initialize the monomorphization state with empty worklist and registry.
+-}
 initState : IO.Canonical -> Dict (List String) TOpt.Global TOpt.Node -> MonoState
 initState currentModule toptNodes =
     { worklist = []
@@ -123,6 +140,8 @@ initState currentModule toptNodes =
     }
 
 
+{-| Find the main entry point in the global graph.
+-}
 findMain : Dict (List String) TOpt.Global TOpt.Node -> Maybe ( TOpt.Global, Can.Type )
 findMain nodes =
     Dict.foldl TOpt.compareGlobal
@@ -147,9 +166,11 @@ findMain nodes =
 
 
 
--- WORKLIST PROCESSING
+-- ========== WORKLIST PROCESSING ==========
 
 
+{-| Process all pending specializations until the worklist is empty.
+-}
 processWorklist : MonoState -> MonoState
 processWorklist state =
     case state.worklist of
@@ -168,11 +189,11 @@ processWorklist state =
                     }
             in
             if EverySet.member identity specId state1.inProgress then
-                -- Already in progress; skip to avoid infinite recursion
+                -- Skip to avoid infinite recursion when specializing recursive functions.
                 processWorklist state1
 
             else if Dict.member identity specId state1.nodes then
-                -- Already done
+                -- Already specialized, skip.
                 processWorklist state1
 
             else
@@ -188,7 +209,7 @@ processWorklist state =
                 in
                 case Dict.get TOpt.toComparableGlobal toptGlobal state2.toptNodes of
                     Nothing ->
-                        -- External or missing; treat as extern
+                        -- External or missing definition; treat as extern.
                         let
                             newState =
                                 { state2
@@ -200,7 +221,7 @@ processWorklist state =
                         processWorklist newState
 
                     Just toptNode ->
-                        -- Specialize this node
+                        -- Specialize this node to concrete types.
                         let
                             ( monoNode, stateAfter ) =
                                 specializeNode toptNode monoType state2
@@ -216,9 +237,11 @@ processWorklist state =
 
 
 
--- NODE SPECIALIZATION
+-- ========== NODE SPECIALIZATION ==========
 
 
+{-| Specialize a typed optimized node to a monomorphized node at the requested concrete type.
+-}
 specializeNode : TOpt.Node -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
 specializeNode node requestedMonoType state =
     case node of
@@ -347,6 +370,8 @@ specializeNode node requestedMonoType state =
             ( Mono.MonoPortOutgoing monoExpr requestedMonoType, state2 )
 
 
+{-| Specialize a mutually recursive cycle, handling both value and function definitions.
+-}
 specializeCycle :
     List Name
     -> List ( Name, TOpt.Expr )
@@ -373,6 +398,8 @@ specializeCycle names valueDefs funcDefs requestedMonoType state =
                 state
 
 
+{-| Specialize a cycle containing only value definitions.
+-}
 specializeValueOnlyCycle :
     List ( Name, TOpt.Expr )
     -> Mono.MonoType
@@ -389,6 +416,8 @@ specializeValueOnlyCycle valueDefs requestedMonoType state =
     ( Mono.MonoCycle monoDefs requestedMonoType, state1 )
 
 
+{-| Specialize a cycle containing function definitions by creating separate nodes for each function.
+-}
 specializeFunctionCycle :
     IO.Canonical
     -> Name
@@ -521,9 +550,11 @@ specializeFuncDefInCycle subst def state =
 
 
 
--- VALUE DEFS (LOCAL OR CYCLE)
+-- ========== VALUE DEFINITIONS ==========
 
 
+{-| Specialize a list of value definitions in a cycle.
+-}
 specializeValueDefs :
     List ( Name, TOpt.Expr )
     -> Substitution
@@ -543,9 +574,11 @@ specializeValueDefs values subst state =
 
 
 
--- EXPRESSION SPECIALIZATION
+-- ========== EXPRESSION SPECIALIZATION ==========
 
 
+{-| Specialize a typed optimized expression to a monomorphized expression by applying type substitutions.
+-}
 specializeExpr : TOpt.Expr -> Substitution -> MonoState -> ( Mono.MonoExpr, MonoState )
 specializeExpr expr subst state =
     case expr of
@@ -969,9 +1002,11 @@ specializeExpr expr subst state =
 
 
 
--- LIST / BRANCH HELPERS
+-- ========== EXPRESSION LIST HELPERS ==========
 
 
+{-| Specialize a list of expressions.
+-}
 specializeExprs : List TOpt.Expr -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
 specializeExprs exprs subst state =
     List.foldr
@@ -986,6 +1021,8 @@ specializeExprs exprs subst state =
         exprs
 
 
+{-| Specialize a list of named expressions.
+-}
 specializeNamedExprs :
     List ( Name, TOpt.Expr )
     -> Substitution
@@ -1004,6 +1041,8 @@ specializeNamedExprs namedExprs subst state =
         namedExprs
 
 
+{-| Specialize if-expression branches (condition-body pairs).
+-}
 specializeBranches :
     List ( TOpt.Expr, TOpt.Expr )
     -> Substitution
@@ -1026,9 +1065,11 @@ specializeBranches branches subst state =
 
 
 
--- LAMBDA / CLOSURE HANDLING
+-- ========== LAMBDA AND CLOSURE HANDLING ==========
 
 
+{-| Ensure that a top-level expression is directly callable by wrapping it in a closure if necessary.
+-}
 ensureCallableTopLevel : Mono.MonoExpr -> Mono.MonoType -> MonoState -> ( Mono.MonoExpr, MonoState )
 ensureCallableTopLevel expr monoType state =
     case monoType of
@@ -1071,6 +1112,8 @@ ensureCallableTopLevel expr monoType state =
             ( expr, state )
 
 
+{-| Flatten a curried function type into a list of argument types and a final return type.
+-}
 flattenFunctionType : Mono.MonoType -> ( List Mono.MonoType, Mono.MonoType )
 flattenFunctionType monoType =
     case monoType of
@@ -1241,9 +1284,11 @@ extractRegion expr =
 
 
 
--- CLOSURE CAPTURE ANALYSIS
+-- ========== CLOSURE CAPTURE ANALYSIS ==========
 
 
+{-| Compute the free variables that need to be captured by a closure.
+-}
 computeClosureCaptures :
     List ( Name, Mono.MonoType )
     -> Mono.MonoExpr
@@ -1275,6 +1320,8 @@ computeClosureCaptures params body =
     List.map captureFor freeNames
 
 
+{-| Find free local variable names in an expression.
+-}
 findFreeLocals :
     EverySet String Name
     -> Mono.MonoExpr
@@ -1413,9 +1460,11 @@ dedupeNames names =
 
 
 
--- NODE SPECIALIZATION
+-- ========== CONSTRUCTOR HELPERS ==========
 
 
+{-| Extract the result type of a constructor after peeling off function arguments.
+-}
 extractCtorResultType : Int -> Mono.MonoType -> Mono.MonoType
 extractCtorResultType n monoType =
     if n <= 0 then
@@ -1431,10 +1480,10 @@ extractCtorResultType n monoType =
 
 
 
--- CYCLE SPECIALIZATION
+-- ========== CYCLE SPECIALIZATION HELPERS ==========
 
 
-{-| Specialize a function definition in a cycle as a proper MonoTailFunc/MonoDefine node.
+{-| Specialize a function definition in a cycle as a proper MonoTailFunc or MonoDefine node.
 -}
 specializeFuncNodeInCycle :
     Substitution
@@ -1506,10 +1555,11 @@ getDefCanonicalType def =
 
 
 
--- EXPRESSION SPECIALIZATION
--- HELPER FUNCTIONS
+-- ========== DEFINITION SPECIALIZATION HELPERS ==========
 
 
+{-| Specialize a local definition.
+-}
 specializeDef : TOpt.Def -> Substitution -> MonoState -> ( Mono.MonoDef, MonoState )
 specializeDef def subst state =
     case def of
@@ -1771,10 +1821,10 @@ detectLambdaArg args =
 
 
 
--- ETA-EXPANSION FOR TOP-LEVEL FUNCTION DEFINITIONS
+-- ========== ETA-EXPANSION HELPERS ==========
 
 
-{-| Like makeGeneralClosure but preserves existing captures from an outer closure.
+{-| Create a closure wrapping an expression, preserving existing captures from an outer closure.
 -}
 makeGeneralClosureWithCaptures :
     Mono.MonoExpr
@@ -1833,13 +1883,17 @@ makeGeneralClosureWithCaptures expr captures argTypes retType monoType state =
 
 
 
--- TYPE UNIFICATION AND SUBSTITUTION
+-- ========== TYPE UNIFICATION AND SUBSTITUTION ==========
 
 
+{-| Substitution mapping type variable names to their concrete monomorphic types.
+-}
 type alias Substitution =
     Dict String Name Mono.MonoType
 
 
+{-| Unify a function call by matching argument types and result type.
+-}
 unifyFuncCall :
     Can.Type
     -> List Mono.MonoType
@@ -1860,11 +1914,15 @@ unifyFuncCall funcCanType argMonoTypes resultCanType baseSubst =
     unifyHelp funcCanType desiredFuncMono subst1
 
 
+{-| Unify a canonical type with a monomorphic type to produce a substitution for type variables.
+-}
 unify : Can.Type -> Mono.MonoType -> Substitution
 unify canType monoType =
     unifyHelp canType monoType Dict.empty
 
 
+{-| Helper for unification that extends an existing substitution.
+-}
 unifyHelp : Can.Type -> Mono.MonoType -> Substitution -> Substitution
 unifyHelp canType monoType subst =
     case ( canType, monoType ) of
@@ -1990,6 +2048,8 @@ unifyArgsOnly canFuncType argTypes subst =
             subst
 
 
+{-| Apply a type substitution to a canonical type to produce a monomorphic type.
+-}
 applySubst : Substitution -> Can.Type -> Mono.MonoType
 applySubst subst canType =
     case canType of
@@ -2104,9 +2164,11 @@ constraintFromName name =
 
 
 
--- LAYOUT HELPERS
+-- ========== LAYOUT HELPERS ==========
 
 
+{-| Extract record layout from a monomorphic type.
+-}
 getRecordLayout : Mono.MonoType -> Mono.RecordLayout
 getRecordLayout monoType =
     case monoType of
@@ -2134,6 +2196,8 @@ getTupleLayout monoType =
             }
 
 
+{-| Look up the index and unboxed status of a record field by name.
+-}
 lookupFieldIndex : Name -> Mono.MonoType -> ( Int, Bool )
 lookupFieldIndex fieldName monoType =
     case monoType of
@@ -2153,6 +2217,8 @@ lookupFieldIndex fieldName monoType =
             ( 0, False )
 
 
+{-| Build a function type from a list of arguments and a return type.
+-}
 buildFuncType : List ( A.Located Name, Can.Type ) -> Can.Type -> Can.Type
 buildFuncType args returnType =
     List.foldr
@@ -2163,6 +2229,8 @@ buildFuncType args returnType =
         args
 
 
+{-| Build a constructor layout from tag, arity, and monomorphic type information.
+-}
 buildCtorLayoutFromArity : Int -> Int -> Mono.MonoType -> Mono.CtorLayout
 buildCtorLayoutFromArity tag arity ctorMonoType =
     let
@@ -2218,11 +2286,10 @@ extractFieldTypes n monoType =
 
 
 
--- FREE VARIABLE ANALYSIS
+-- ========== FREE VARIABLE ANALYSIS ==========
 
 
-{-| Find free variables in a MonoExpr, given a set of bound variables.
-Returns a list of (name, expr, isUnboxed) for captures.
+{-| Find free local variables in a monomorphized expression for closure capture analysis.
 -}
 findFreeVars : EverySet String Name -> Mono.MonoExpr -> List ( Name, Mono.MonoExpr, Bool )
 findFreeVars bound expr =
@@ -2314,9 +2381,11 @@ dedupeCaptures captures =
 
 
 
--- DEPENDENCY COLLECTION
+-- ========== DEPENDENCY COLLECTION ==========
 
 
+{-| Collect all global dependencies referenced by an expression.
+-}
 collectDepsHelp : Mono.MonoExpr -> EverySet Int Int -> EverySet Int Int
 collectDepsHelp expr deps =
     case expr of
@@ -2408,14 +2477,18 @@ collectDeciderDeps decider deps =
 
 
 
--- GLOBAL CONVERSIONS
+-- ========== GLOBAL CONVERSIONS ==========
 
 
+{-| Convert a typed optimized global reference to a monomorphized global reference.
+-}
 toptGlobalToMono : TOpt.Global -> Mono.Global
 toptGlobalToMono (TOpt.Global canonical name) =
     Mono.Global canonical name
 
 
+{-| Convert a monomorphized global reference to a typed optimized global reference.
+-}
 monoGlobalToTOpt : Mono.Global -> TOpt.Global
 monoGlobalToTOpt (Mono.Global canonical name) =
     TOpt.Global canonical name
