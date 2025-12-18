@@ -1,4 +1,4 @@
-module Compiler.Optimize.TypedNames exposing
+module Compiler.Optimize.Typed.Names exposing
     ( Context, Tracker
     , run
     , generate

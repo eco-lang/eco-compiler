@@ -95,7 +95,7 @@ This module defines the data structures for the monomorphized program
 
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Optimize.DecisionTree as DT
+import Compiler.Optimize.Erased.DecisionTree as DT
 import Compiler.Reporting.Annotation exposing (Region)
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as IO

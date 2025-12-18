@@ -1,4 +1,4 @@
-module Compiler.Optimize.TypedCase exposing (optimize)
+module Compiler.Optimize.Typed.Case exposing (optimize)
 
 {-| Typed case expression optimization.
 
@@ -17,7 +17,7 @@ decision tree optimization.
 import Compiler.AST.Canonical as Can
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name
-import Compiler.Optimize.DecisionTree as DT
+import Compiler.Optimize.Erased.DecisionTree as DT
 import Data.Map as Dict exposing (Dict)
 import Prelude
 import Utils.Crash exposing (crash)

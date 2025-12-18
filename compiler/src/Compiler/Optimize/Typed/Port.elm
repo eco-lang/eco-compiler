@@ -1,4 +1,4 @@
-module Compiler.Optimize.TypedPort exposing
+module Compiler.Optimize.Typed.Port exposing
     ( toEncoder
     , toDecoder, toFlagsDecoder
     )
@@ -32,7 +32,7 @@ import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Generate.JavaScript.Name as JsName
-import Compiler.Optimize.TypedNames as Names
+import Compiler.Optimize.Typed.Names as Names
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Utils.Crash exposing (crash)

@@ -1,4 +1,4 @@
-module Compiler.Optimize.DecisionTree exposing
+module Compiler.Optimize.Erased.DecisionTree exposing
     ( DecisionTree(..), Test(..), Path(..)
     , compile
     , pathEncoder, pathDecoder, testEncoder, testDecoder

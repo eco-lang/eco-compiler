@@ -1,4 +1,4 @@
-module Compiler.Optimize.Case exposing (optimize)
+module Compiler.Optimize.Erased.Case exposing (optimize)
 
 {-| Optimizes case expressions using decision trees.
 
@@ -23,7 +23,7 @@ when the same code would be reached through different pattern match paths.
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.Data.Name as Name
-import Compiler.Optimize.DecisionTree as DT
+import Compiler.Optimize.Erased.DecisionTree as DT
 import Data.Map as Dict exposing (Dict)
 import Prelude
 import Utils.Crash exposing (crash)

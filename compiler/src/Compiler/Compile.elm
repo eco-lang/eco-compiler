@@ -38,8 +38,8 @@ import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Nitpick.PatternMatches as PatternMatches
-import Compiler.Optimize.Module as Optimize
-import Compiler.Optimize.TypedModule as TypedOptimize
+import Compiler.Optimize.Erased.Module as Optimize
+import Compiler.Optimize.Typed.Module as TypedOptimize
 import Compiler.Reporting.Error as E
 import Compiler.Reporting.Render.Type.Localizer as Localizer
 import Compiler.Reporting.Result as ReportingResult

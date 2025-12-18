@@ -27,7 +27,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Optimize.DecisionTree as DT
+import Compiler.Optimize.Erased.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
@@ -75,7 +75,8 @@ initState currentModule toptNodes =
 -- ============================================================================
 
 
-{-| Transform a TypedOptimized.GlobalGraph into a fully monomorphized graph by specializing all polymorphic functions to their concrete type instantiations.
+{-| Transform a TypedOptimized.GlobalGraph into a fully monomorphized graph by specializing all
+polymorphic functions to their concrete type instantiations.
 -}
 monomorphize : TOpt.GlobalGraph -> Result String Mono.MonoGraph
 monomorphize (TOpt.GlobalGraph nodes _ _) =
@@ -1961,15 +1962,6 @@ constraintFromName : Name -> Mono.Constraint
 constraintFromName name =
     if Name.isNumberType name then
         Mono.CNumber
-
-    else if Name.isComparableType name then
-        Mono.CEcoValue
-
-    else if Name.isAppendableType name then
-        Mono.CEcoValue
-
-    else if Name.isCompappendType name then
-        Mono.CEcoValue
 
     else
         Mono.CEcoValue

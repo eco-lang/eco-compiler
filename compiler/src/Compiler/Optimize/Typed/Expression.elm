@@ -1,4 +1,4 @@
-module Compiler.Optimize.TypedExpression exposing
+module Compiler.Optimize.Typed.Expression exposing
     ( Annotations, Cycle
     , optimize, optimizePotentialTailCall
     , destructArgs
@@ -41,8 +41,8 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Optimize.TypedCase as Case
-import Compiler.Optimize.TypedNames as Names
+import Compiler.Optimize.Typed.Case as Case
+import Compiler.Optimize.Typed.Names as Names
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)

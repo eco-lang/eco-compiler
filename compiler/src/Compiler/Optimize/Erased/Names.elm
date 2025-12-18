@@ -1,4 +1,4 @@
-module Compiler.Optimize.Names exposing
+module Compiler.Optimize.Erased.Names exposing
     ( Tracker
     , run
     , generate

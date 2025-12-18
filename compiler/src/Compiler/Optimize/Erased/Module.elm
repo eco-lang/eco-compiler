@@ -1,4 +1,4 @@
-module Compiler.Optimize.Module exposing
+module Compiler.Optimize.Erased.Module exposing
     ( optimize
     , Annotations, MResult
     )
@@ -36,9 +36,9 @@ import Compiler.AST.Utils.Type as Type
 import Compiler.Canonicalize.Effects as Effects
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Optimize.Expression as Expr
-import Compiler.Optimize.Names as Names
-import Compiler.Optimize.Port as Port
+import Compiler.Optimize.Erased.Expression as Expr
+import Compiler.Optimize.Erased.Names as Names
+import Compiler.Optimize.Erased.Port as Port
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Main as E
 import Compiler.Reporting.Result as ReportingResult

@@ -1,4 +1,4 @@
-module Compiler.Optimize.Expression exposing
+module Compiler.Optimize.Erased.Expression exposing
     ( Cycle
     , optimize, optimizePotentialTailCall
     , destructArgs
@@ -37,8 +37,8 @@ import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Optimize.Case as Case
-import Compiler.Optimize.Names as Names
+import Compiler.Optimize.Erased.Case as Case
+import Compiler.Optimize.Erased.Names as Names
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict
 import Data.Set as EverySet exposing (EverySet)
