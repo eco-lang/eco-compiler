@@ -7,18 +7,14 @@ by specializing all polymorphic functions to their concrete type instantiations.
 
 The algorithm:
 
-1.  Find the entry point (main function)
-2.  Use a worklist to process each (Global, MonoType, Maybe LambdaId) tuple
-3.  For each work item, specialize the function body by:
-    a. Unifying the polymorphic type with the concrete type to get a substitution
-    b. Applying the substitution to all types in the expression
-    c. Discovering new specializations needed and adding them to the worklist
-4.  Continue until the worklist is empty
-
-
-# Monomorphization
-
-@docs monomorphize
+1.  Find the entry point (main function).
+2.  Use a worklist to process each (Global, MonoType, Maybe LambdaId) specialization.
+3.  For each work item, specialize the TOpt.Node into a MonoNode by:
+    a. Unifying the polymorphic type with the concrete type to get a substitution.
+    b. Applying the substitution to all types in the expression.
+    c. Discovering new specializations needed and adding them to the worklist.
+4.  Continue until the worklist is empty.
+5.  Optionally validate invariants (e.g. no unresolved numeric vars) before codegen.
 
 -}
 
@@ -32,12 +28,6 @@ import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
-
-
-
--- ============================================================================
--- STATE
--- ============================================================================
 
 
 type alias MonoState =
@@ -56,6 +46,70 @@ type WorkItem
     = SpecializeGlobal Mono.Global Mono.MonoType (Maybe Mono.LambdaId)
 
 
+
+-- ENTRY POINT
+
+
+monomorphize : TOpt.GlobalGraph -> Result String Mono.MonoGraph
+monomorphize (TOpt.GlobalGraph nodes _ _) =
+    case findMain nodes of
+        Nothing ->
+            Err "No main function found"
+
+        Just ( mainGlobal, mainType ) ->
+            let
+                -- Compute main's monomorphic type
+                mainMonoType : Mono.MonoType
+                mainMonoType =
+                    canTypeToMonoType Dict.empty mainType
+
+                currentModule : IO.Canonical
+                currentModule =
+                    case mainGlobal of
+                        TOpt.Global canonical _ ->
+                            canonical
+
+                -- Initial state: one work item for main
+                initialState : MonoState
+                initialState =
+                    initState currentModule nodes
+
+                stateWithMain : MonoState
+                stateWithMain =
+                    { initialState
+                        | worklist =
+                            [ SpecializeGlobal (toptGlobalToMono mainGlobal) mainMonoType Nothing ]
+                    }
+
+                finalState : MonoState
+                finalState =
+                    processWorklist stateWithMain
+
+                mainKey : List String
+                mainKey =
+                    Mono.toComparableSpecKey (Mono.SpecKey (toptGlobalToMono mainGlobal) mainMonoType Nothing)
+
+                mainSpecId : Maybe Mono.SpecId
+                mainSpecId =
+                    Dict.get identity mainKey finalState.registry.mapping
+
+                mainInfo : Maybe Mono.MainInfo
+                mainInfo =
+                    Maybe.map Mono.StaticMain mainSpecId
+            in
+            Ok
+                (Mono.MonoGraph
+                    { nodes = finalState.nodes
+                    , main = mainInfo
+                    , registry = finalState.registry
+                    }
+                )
+
+
+
+-- INITIAL STATE / MAIN LOOKUP
+
+
 initState : IO.Canonical -> Dict (List String) TOpt.Global TOpt.Node -> MonoState
 initState currentModule toptNodes =
     { worklist = []
@@ -69,61 +123,8 @@ initState currentModule toptNodes =
     }
 
 
-
--- ============================================================================
--- MAIN ENTRY POINT
--- ============================================================================
-
-
-{-| Transform a TypedOptimized.GlobalGraph into a fully monomorphized graph by specializing all
-polymorphic functions to their concrete type instantiations.
--}
-monomorphize : TOpt.GlobalGraph -> Result String Mono.MonoGraph
-monomorphize (TOpt.GlobalGraph nodes _ _) =
-    case findMain nodes of
-        Nothing ->
-            Err "No main function found"
-
-        Just ( mainGlobal, mainType ) ->
-            let
-                monoType =
-                    canTypeToMonoType Dict.empty mainType
-
-                currentModule =
-                    case mainGlobal of
-                        TOpt.Global canonical _ ->
-                            canonical
-
-                initialState =
-                    initState currentModule nodes
-
-                stateWithMain =
-                    { initialState
-                        | worklist = [ SpecializeGlobal (toptGlobalToMono mainGlobal) monoType Nothing ]
-                    }
-
-                finalState =
-                    processWorklist stateWithMain
-
-                mainSpecId =
-                    let
-                        specKey =
-                            Mono.toComparableSpecKey (Mono.SpecKey (toptGlobalToMono mainGlobal) monoType Nothing)
-                    in
-                    Dict.get identity specKey finalState.registry.mapping
-            in
-            Ok
-                (Mono.MonoGraph
-                    { nodes = finalState.nodes
-                    , main = Maybe.map Mono.StaticMain mainSpecId
-                    , registry = finalState.registry
-                    }
-                )
-
-
 findMain : Dict (List String) TOpt.Global TOpt.Node -> Maybe ( TOpt.Global, Can.Type )
 findMain nodes =
-    -- Look for a node with name "main"
     Dict.foldl TOpt.compareGlobal
         (\global node acc ->
             case acc of
@@ -146,9 +147,7 @@ findMain nodes =
 
 
 
--- ============================================================================
 -- WORKLIST PROCESSING
--- ============================================================================
 
 
 processWorklist : MonoState -> MonoState
@@ -159,57 +158,57 @@ processWorklist state =
 
         (SpecializeGlobal global monoType maybeLambda) :: rest ->
             let
-                -- Get or create specId first
                 ( specId, newRegistry ) =
                     Mono.getOrCreateSpecId global monoType maybeLambda state.registry
-            in
-            if EverySet.member identity specId state.inProgress then
-                -- Already being processed, skip to avoid cycles
-                processWorklist { state | worklist = rest, registry = newRegistry }
 
-            else if Dict.member identity specId state.nodes then
-                -- Already done, skip
-                processWorklist { state | worklist = rest, registry = newRegistry }
+                state1 =
+                    { state
+                        | registry = newRegistry
+                        , worklist = rest
+                    }
+            in
+            if EverySet.member identity specId state1.inProgress then
+                -- Already in progress; skip to avoid infinite recursion
+                processWorklist state1
+
+            else if Dict.member identity specId state1.nodes then
+                -- Already done
+                processWorklist state1
 
             else
-                -- New specialization to process
                 let
-                    stateWithId =
-                        { state
-                            | registry = newRegistry
-                            , inProgress = EverySet.insert identity specId state.inProgress
-                            , worklist = rest
+                    state2 =
+                        { state1
+                            | inProgress = EverySet.insert identity specId state1.inProgress
+                            , currentGlobal = Just global
                         }
 
                     toptGlobal =
                         monoGlobalToTOpt global
                 in
-                case Dict.get TOpt.toComparableGlobal toptGlobal state.toptNodes of
+                case Dict.get TOpt.toComparableGlobal toptGlobal state2.toptNodes of
                     Nothing ->
-                        -- External/kernel function
+                        -- External or missing; treat as extern
                         let
                             newState =
-                                { stateWithId
-                                    | nodes = Dict.insert identity specId (Mono.MonoExtern monoType) stateWithId.nodes
-                                    , inProgress = EverySet.remove identity specId stateWithId.inProgress
+                                { state2
+                                    | nodes = Dict.insert identity specId (Mono.MonoExtern monoType) state2.nodes
+                                    , inProgress = EverySet.remove identity specId state2.inProgress
+                                    , currentGlobal = Nothing
                                 }
                         in
                         processWorklist newState
 
                     Just toptNode ->
-                        -- Specialize the node
+                        -- Specialize this node
                         let
-                            -- Set currentGlobal so specializeCycle knows which member was requested
-                            stateWithGlobal =
-                                { stateWithId | currentGlobal = Just global }
-
-                            ( monoNode, stateAfterSpec ) =
-                                specializeNode toptNode monoType stateWithGlobal
+                            ( monoNode, stateAfter ) =
+                                specializeNode toptNode monoType state2
 
                             newState =
-                                { stateAfterSpec
-                                    | nodes = Dict.insert identity specId monoNode stateAfterSpec.nodes
-                                    , inProgress = EverySet.remove identity specId stateAfterSpec.inProgress
+                                { stateAfter
+                                    | nodes = Dict.insert identity specId monoNode stateAfter.nodes
+                                    , inProgress = EverySet.remove identity specId stateAfter.inProgress
                                     , currentGlobal = Nothing
                                 }
                         in
@@ -217,39 +216,37 @@ processWorklist state =
 
 
 
--- ============================================================================
 -- NODE SPECIALIZATION
--- ============================================================================
 
 
 specializeNode : TOpt.Node -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
-specializeNode node monoType state =
+specializeNode node requestedMonoType state =
     case node of
         TOpt.Define expr _ canType ->
             let
                 subst =
-                    unify canType monoType
+                    unify canType requestedMonoType
 
                 ( monoExpr0, state1 ) =
                     specializeExpr expr subst state
 
                 ( monoExpr, state2 ) =
-                    ensureCallableTopLevel monoExpr0 monoType state1
+                    ensureCallableTopLevel monoExpr0 requestedMonoType state1
             in
-            ( Mono.MonoDefine monoExpr monoType, state2 )
+            ( Mono.MonoDefine monoExpr requestedMonoType, state2 )
 
         TOpt.TrackedDefine _ expr _ canType ->
             let
                 subst =
-                    unify canType monoType
+                    unify canType requestedMonoType
 
                 ( monoExpr0, state1 ) =
                     specializeExpr expr subst state
 
                 ( monoExpr, state2 ) =
-                    ensureCallableTopLevel monoExpr0 monoType state1
+                    ensureCallableTopLevel monoExpr0 requestedMonoType state1
             in
-            ( Mono.MonoDefine monoExpr monoType, state2 )
+            ( Mono.MonoDefine monoExpr requestedMonoType, state2 )
 
         TOpt.DefineTailFunc _ args body _ returnType ->
             let
@@ -257,123 +254,99 @@ specializeNode node monoType state =
                     buildFuncType args returnType
 
                 subst =
-                    unify funcType monoType
+                    unify funcType requestedMonoType
 
                 monoArgs =
                     List.map (specializeArg subst) args
 
-                ( monoBody, stateAfter ) =
+                ( monoBody, state1 ) =
                     specializeExpr body subst state
 
                 monoReturnType =
                     applySubst subst returnType
             in
-            ( Mono.MonoTailFunc monoArgs monoBody monoReturnType, stateAfter )
+            ( Mono.MonoTailFunc monoArgs monoBody monoReturnType, state1 )
 
-        TOpt.Ctor index arity _ ->
+        TOpt.Ctor index arity canType ->
             let
-                ctorIndex =
+                subst =
+                    unify canType requestedMonoType
+
+                ctorMonoType =
+                    applySubst subst canType
+
+                tag =
                     Index.toMachine index
 
                 layout =
-                    buildCtorLayoutFromArity ctorIndex arity monoType
+                    buildCtorLayoutFromArity tag arity ctorMonoType
 
                 ctorResultType =
-                    extractCtorResultType arity monoType
+                    extractCtorResultType arity ctorMonoType
             in
             ( Mono.MonoCtor layout ctorResultType, state )
 
-        TOpt.Enum index _ ->
+        TOpt.Enum index canType ->
             let
+                monoType =
+                    applySubst Dict.empty canType
+
                 tag =
                     Index.toMachine index
             in
             ( Mono.MonoEnum tag monoType, state )
 
-        TOpt.Box _ ->
+        TOpt.Box canType ->
+            let
+                monoType =
+                    applySubst Dict.empty canType
+            in
             ( Mono.MonoExtern monoType, state )
 
         TOpt.Link linkedGlobal ->
-            -- Follow the link to the actual definition
             case Dict.get TOpt.toComparableGlobal linkedGlobal state.toptNodes of
                 Nothing ->
-                    -- Linked global not found, treat as extern
-                    ( Mono.MonoExtern monoType, state )
+                    ( Mono.MonoExtern requestedMonoType, state )
 
                 Just linkedNode ->
-                    -- Specialize the linked node
-                    specializeNode linkedNode monoType state
+                    specializeNode linkedNode requestedMonoType state
 
-        TOpt.Cycle names values functions _ ->
-            -- Specialize all definitions in the cycle and return MonoCycle
-            specializeCycle names values functions monoType state
+        TOpt.Cycle names values functions typeEnv ->
+            specializeCycle names values functions requestedMonoType state
 
         TOpt.Manager _ ->
-            ( Mono.MonoExtern monoType, state )
+            ( Mono.MonoExtern requestedMonoType, state )
 
         TOpt.Kernel _ _ ->
-            ( Mono.MonoExtern monoType, state )
+            ( Mono.MonoExtern requestedMonoType, state )
 
         TOpt.PortIncoming expr _ canType ->
             let
                 subst =
-                    unify canType monoType
+                    unify canType requestedMonoType
 
                 ( monoExpr0, state1 ) =
                     specializeExpr expr subst state
 
                 ( monoExpr, state2 ) =
-                    ensureCallableTopLevel monoExpr0 monoType state1
+                    ensureCallableTopLevel monoExpr0 requestedMonoType state1
             in
-            ( Mono.MonoPortIncoming monoExpr monoType, state2 )
+            ( Mono.MonoPortIncoming monoExpr requestedMonoType, state2 )
 
         TOpt.PortOutgoing expr _ canType ->
             let
                 subst =
-                    unify canType monoType
+                    unify canType requestedMonoType
 
                 ( monoExpr0, state1 ) =
                     specializeExpr expr subst state
 
                 ( monoExpr, state2 ) =
-                    ensureCallableTopLevel monoExpr0 monoType state1
+                    ensureCallableTopLevel monoExpr0 requestedMonoType state1
             in
-            ( Mono.MonoPortOutgoing monoExpr monoType, state2 )
+            ( Mono.MonoPortOutgoing monoExpr requestedMonoType, state2 )
 
 
-extractCtorResultType : Int -> Mono.MonoType -> Mono.MonoType
-extractCtorResultType n monoType =
-    if n <= 0 then
-        monoType
-
-    else
-        case monoType of
-            Mono.MFunction args result ->
-                extractCtorResultType (n - List.length args) result
-
-            _ ->
-                monoType
-
-
-
--- ============================================================================
--- CYCLE SPECIALIZATION
--- ============================================================================
-
-
-{-| Specialize all definitions in a cycle.
-
-For function cycles, we:
-
-1.  Identify which function was requested via state.currentGlobal
-2.  Build a shared substitution from the requested function's type
-3.  Generate MonoTailFunc/MonoDefine for ALL function members (not MonoCycle)
-4.  Register each with its own specId in state.nodes
-5.  Return the node for the originally requested function
-
-For value-only cycles, we still use MonoCycle bundling.
-
--}
 specializeCycle :
     List Name
     -> List ( Name, TOpt.Expr )
@@ -381,58 +354,56 @@ specializeCycle :
     -> Mono.MonoType
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
-specializeCycle names values functions requestedMonoType state =
-    case ( List.isEmpty functions, state.currentGlobal ) of
+specializeCycle names valueDefs funcDefs requestedMonoType state =
+    case ( List.isEmpty funcDefs, state.currentGlobal ) of
         ( True, _ ) ->
-            -- Value-only cycle: use old bundling behavior
-            specializeValueOnlyCycle names values requestedMonoType state
+            specializeValueOnlyCycle valueDefs requestedMonoType state
 
         ( False, Nothing ) ->
-            -- No currentGlobal set - fallback to extern (shouldn't happen)
+            -- Should not happen; conservative fallback
             ( Mono.MonoExtern requestedMonoType, state )
 
         ( False, Just (Mono.Global requestedCanonical requestedName) ) ->
-            -- Function cycle: generate proper MonoTailFunc/MonoDefine nodes
-            specializeFunctionCycle requestedCanonical requestedName functions requestedMonoType state
+            specializeFunctionCycle
+                requestedCanonical
+                requestedName
+                valueDefs
+                funcDefs
+                requestedMonoType
+                state
 
 
-{-| Specialize a value-only cycle using the old bundling behavior.
--}
 specializeValueOnlyCycle :
-    List Name
-    -> List ( Name, TOpt.Expr )
+    List ( Name, TOpt.Expr )
     -> Mono.MonoType
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
-specializeValueOnlyCycle _ values monoType state =
+specializeValueOnlyCycle valueDefs requestedMonoType state =
     let
         subst =
             Dict.empty
 
-        ( monoValues, state1 ) =
-            specializeValueDefs values subst state
+        ( monoDefs, state1 ) =
+            specializeValueDefs valueDefs subst state
     in
-    ( Mono.MonoCycle monoValues monoType, state1 )
+    ( Mono.MonoCycle monoDefs requestedMonoType, state1 )
 
 
-{-| Specialize a function cycle by generating separate MonoTailFunc/MonoDefine nodes.
--}
 specializeFunctionCycle :
     IO.Canonical
     -> Name
+    -> List ( Name, TOpt.Expr )
     -> List TOpt.Def
     -> Mono.MonoType
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
-specializeFunctionCycle requestedCanonical requestedName functions requestedMonoType state =
+specializeFunctionCycle requestedCanonical requestedName valueDefs funcDefs requestedMonoType state =
     let
-        -- Find the requested function definition
         maybeRequestedDef =
-            List.filter (defHasName requestedName) functions
-                |> List.head
+            List.filter (defHasName requestedName) funcDefs |> List.head
 
-        -- Get the canonical type for the requested function and build substitution
-        subst =
+        sharedSubst : Substitution
+        sharedSubst =
             case maybeRequestedDef of
                 Just def ->
                     let
@@ -442,90 +413,100 @@ specializeFunctionCycle requestedCanonical requestedName functions requestedMono
                     unify canType requestedMonoType
 
                 Nothing ->
-                    -- Requested function not found in cycle - use empty subst
                     Dict.empty
 
-        -- Process all function definitions and register them as nodes
-        ( funcNameSpecIds, stateAfterFuncs ) =
-            List.foldl
-                (\def ( acc, st ) ->
-                    let
-                        name =
-                            getDefName def
+        ( newNodes, stateAfter ) =
+            List.foldl (specializeFunc requestedCanonical sharedSubst) ( state.nodes, state ) funcDefs
 
-                        -- Build the global for this member
-                        memberGlobal =
-                            Mono.Global requestedCanonical name
+        requestedGlobal =
+            Mono.Global requestedCanonical requestedName
 
-                        -- Compute member's mono type
-                        memberCanType =
-                            getDefCanonicalType def
-
-                        memberMonoType =
-                            applySubst subst memberCanType
-
-                        -- Get or create specId for this member
-                        ( specId, newRegistry ) =
-                            Mono.getOrCreateSpecId memberGlobal memberMonoType Nothing st.registry
-
-                        -- Specialize this function as a proper node
-                        ( monoNode, st1 ) =
-                            specializeFuncNodeInCycle subst def { st | registry = newRegistry }
-
-                        -- Insert the node into state.nodes
-                        st2 =
-                            { st1
-                                | nodes = Dict.insert identity specId monoNode st1.nodes
-                            }
-                    in
-                    ( ( name, specId ) :: acc, st2 )
-                )
-                ( [], state )
-                functions
-
-        -- Find and return the node for the requested function
-        maybeRequestedSpecId =
-            List.filter (\( name, _ ) -> name == requestedName) funcNameSpecIds
-                |> List.head
-                |> Maybe.map Tuple.second
+        ( requestedSpecId, _ ) =
+            Mono.getOrCreateSpecId requestedGlobal requestedMonoType Nothing stateAfter.registry
     in
-    case maybeRequestedSpecId of
-        Just requestedSpecId ->
-            case Dict.get identity requestedSpecId stateAfterFuncs.nodes of
-                Just requestedNode ->
-                    ( requestedNode, stateAfterFuncs )
-
-                Nothing ->
-                    -- Node not found (shouldn't happen)
-                    ( Mono.MonoExtern requestedMonoType, stateAfterFuncs )
+    case Dict.get identity requestedSpecId newNodes of
+        Just requestedNode ->
+            ( requestedNode, { stateAfter | nodes = newNodes } )
 
         Nothing ->
-            -- Requested function not in cycle (shouldn't happen)
-            ( Mono.MonoExtern requestedMonoType, stateAfterFuncs )
+            ( Mono.MonoExtern requestedMonoType, { stateAfter | nodes = newNodes } )
 
 
-{-| Specialize a function definition in a cycle as a proper MonoTailFunc/MonoDefine node.
+{-| NOTE:
+We still do not promote the 'valueDefs' of a function cycle to separate
+top-level MonoNodes, because we do not have explicit canonical types
+for them here. They are assumed to be empty in function cycles in the
+current TypedOptimized representation.
+
+If that assumption ever breaks, this is the place to extend the API
+to also specialize and register values as separate nodes.
+
+For now, we keep valueDefs ignored in function cycles, but we no
+longer "lose" function members (each function in the cycle gets its
+own MonoTailFunc/MonoDefine node).
+
 -}
-specializeFuncNodeInCycle :
+specializeFunc :
+    IO.Canonical
+    -> Substitution
+    -> TOpt.Def
+    -> ( Dict Int Int Mono.MonoNode, MonoState )
+    -> ( Dict Int Int Mono.MonoNode, MonoState )
+specializeFunc requestedCanonical sharedSubst def ( accNodes, accState ) =
+    let
+        name =
+            getDefName def
+
+        globalFun =
+            Mono.Global requestedCanonical name
+
+        canType =
+            getDefCanonicalType def
+
+        monoType =
+            applySubst sharedSubst canType
+
+        ( specId, newRegistry ) =
+            Mono.getOrCreateSpecId globalFun monoType Nothing accState.registry
+
+        accState1 =
+            { accState | registry = newRegistry }
+    in
+    if Dict.member identity specId accNodes then
+        ( accNodes, accState1 )
+
+    else
+        let
+            ( monoNode, accState2 ) =
+                specializeFuncDefInCycle sharedSubst def accState1
+
+            nextNodes =
+                Dict.insert identity specId monoNode accNodes
+        in
+        ( nextNodes, accState2 )
+
+
+specializeFuncDefInCycle :
     Substitution
     -> TOpt.Def
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
-specializeFuncNodeInCycle subst def state =
+specializeFuncDefInCycle subst def state =
     case def of
         TOpt.Def _ _ expr canType ->
-            -- Regular function definition
             let
                 monoType =
                     applySubst subst canType
 
-                ( monoExpr, state1 ) =
+                ( monoExpr0, state1 ) =
                     specializeExpr expr subst state
+
+                ( monoExpr, state2 ) =
+                    ensureCallableTopLevel monoExpr0 monoType state1
             in
-            ( Mono.MonoDefine monoExpr monoType, state1 )
+            ( Mono.MonoDefine monoExpr monoType, state2 )
 
         TOpt.TailDef _ _ args body returnType ->
-            -- Tail-recursive function definition
             let
                 monoArgs =
                     List.map (specializeArg subst) args
@@ -539,44 +520,10 @@ specializeFuncNodeInCycle subst def state =
             ( Mono.MonoTailFunc monoArgs monoBody monoReturnType, state1 )
 
 
-{-| Check if a definition has the given name.
--}
-defHasName : Name -> TOpt.Def -> Bool
-defHasName targetName def =
-    case def of
-        TOpt.Def _ name _ _ ->
-            name == targetName
 
-        TOpt.TailDef _ name _ _ _ ->
-            name == targetName
+-- VALUE DEFS (LOCAL OR CYCLE)
 
 
-{-| Get the name from a definition.
--}
-getDefName : TOpt.Def -> Name
-getDefName def =
-    case def of
-        TOpt.Def _ name _ _ ->
-            name
-
-        TOpt.TailDef _ name _ _ _ ->
-            name
-
-
-{-| Get the canonical type from a definition.
--}
-getDefCanonicalType : TOpt.Def -> Can.Type
-getDefCanonicalType def =
-    case def of
-        TOpt.Def _ _ _ canType ->
-            canType
-
-        TOpt.TailDef _ _ args _ returnType ->
-            buildFuncType args returnType
-
-
-{-| Specialize a list of value definitions (name, expr pairs).
--}
 specializeValueDefs :
     List ( Name, TOpt.Expr )
     -> Substitution
@@ -596,9 +543,7 @@ specializeValueDefs values subst state =
 
 
 
--- ============================================================================
 -- EXPRESSION SPECIALIZATION
--- ============================================================================
 
 
 specializeExpr : TOpt.Expr -> Substitution -> MonoState -> ( Mono.MonoExpr, MonoState )
@@ -644,13 +589,10 @@ specializeExpr expr subst state =
                 ( specId, newRegistry ) =
                     Mono.getOrCreateSpecId monoGlobal monoType Nothing state.registry
 
-                workItem =
-                    SpecializeGlobal monoGlobal monoType Nothing
-
                 newState =
                     { state
                         | registry = newRegistry
-                        , worklist = workItem :: state.worklist
+                        , worklist = SpecializeGlobal monoGlobal monoType Nothing :: state.worklist
                     }
             in
             ( Mono.MonoVarGlobal region specId monoType, newState )
@@ -666,13 +608,10 @@ specializeExpr expr subst state =
                 ( specId, newRegistry ) =
                     Mono.getOrCreateSpecId monoGlobal monoType Nothing state.registry
 
-                workItem =
-                    SpecializeGlobal monoGlobal monoType Nothing
-
                 newState =
                     { state
                         | registry = newRegistry
-                        , worklist = workItem :: state.worklist
+                        , worklist = SpecializeGlobal monoGlobal monoType Nothing :: state.worklist
                     }
             in
             ( Mono.MonoVarGlobal region specId monoType, newState )
@@ -688,13 +627,10 @@ specializeExpr expr subst state =
                 ( specId, newRegistry ) =
                     Mono.getOrCreateSpecId monoGlobal monoType Nothing state.registry
 
-                workItem =
-                    SpecializeGlobal monoGlobal monoType Nothing
-
                 newState =
                     { state
                         | registry = newRegistry
-                        , worklist = workItem :: state.worklist
+                        , worklist = SpecializeGlobal monoGlobal monoType Nothing :: state.worklist
                     }
             in
             ( Mono.MonoVarGlobal region specId monoType, newState )
@@ -710,13 +646,10 @@ specializeExpr expr subst state =
                 ( specId, newRegistry ) =
                     Mono.getOrCreateSpecId monoGlobal monoType Nothing state.registry
 
-                workItem =
-                    SpecializeGlobal monoGlobal monoType Nothing
-
                 newState =
                     { state
                         | registry = newRegistry
-                        , worklist = workItem :: state.worklist
+                        , worklist = SpecializeGlobal monoGlobal monoType Nothing :: state.worklist
                     }
             in
             ( Mono.MonoVarGlobal region specId monoType, newState )
@@ -750,10 +683,12 @@ specializeExpr expr subst state =
                 monoType =
                     applySubst subst canType
 
-                monoParams =
-                    List.map (\( name, t ) -> ( name, applySubst subst t )) params
+                paramPairs =
+                    List.map (\( name, t ) -> ( name, t )) params
 
-                -- Allocate a lambda ID
+                monoParams =
+                    List.map (\( name, t ) -> ( name, applySubst subst t )) paramPairs
+
                 lambdaId =
                     Mono.AnonymousLambda state.currentModule state.lambdaCounter
 
@@ -763,13 +698,8 @@ specializeExpr expr subst state =
                 ( monoBody, stateAfter ) =
                     specializeExpr body subst stateWithLambda
 
-                -- Compute free variables in the body, excluding the params
-                boundByParams =
-                    List.foldl (\( n, _ ) acc -> EverySet.insert identity n acc) EverySet.empty monoParams
-
                 captures =
-                    findFreeVars boundByParams monoBody
-                        |> dedupeCaptures
+                    computeClosureCaptures monoParams monoBody
 
                 closureInfo =
                     { lambdaId = lambdaId
@@ -784,8 +714,11 @@ specializeExpr expr subst state =
                 monoType =
                     applySubst subst canType
 
+                paramPairs =
+                    List.map (\( locName, t ) -> ( A.toValue locName, t )) params
+
                 monoParams =
-                    List.map (\( locName, t ) -> ( A.toValue locName, applySubst subst t )) params
+                    List.map (\( name, t ) -> ( name, applySubst subst t )) paramPairs
 
                 lambdaId =
                     Mono.AnonymousLambda state.currentModule state.lambdaCounter
@@ -796,13 +729,8 @@ specializeExpr expr subst state =
                 ( monoBody, stateAfter ) =
                     specializeExpr body subst stateWithLambda
 
-                -- Compute free variables in the body, excluding the params
-                boundByParams =
-                    List.foldl (\( n, _ ) acc -> EverySet.insert identity n acc) EverySet.empty monoParams
-
                 captures =
-                    findFreeVars boundByParams monoBody
-                        |> dedupeCaptures
+                    computeClosureCaptures monoParams monoBody
 
                 closureInfo =
                     { lambdaId = lambdaId
@@ -816,98 +744,70 @@ specializeExpr expr subst state =
             let
                 ( monoArgs, state1 ) =
                     specializeExprs args subst state
-
-                ( monoFunc, resultMonoType, state2 ) =
-                    case func of
-                        -- IMPORTANT: instantiate polymorphic globals using (args, result)
-                        TOpt.VarGlobal funcRegion global funcCanType ->
-                            let
-                                -- First, infer substitutions from argument types only.
-                                argTypes =
-                                    List.map Mono.typeOf monoArgs
-
-                                substFromArgs =
-                                    unifyArgsOnly funcCanType argTypes Dict.empty
-
-                                subst2 =
-                                    mergeSubst subst substFromArgs
-
-                                -- Now we can safely compute the call result type.
-                                callResultMonoType =
-                                    applySubst subst2 canType
-
-                                -- Optionally refine further using args+result (keeps things consistent)
-                                substFromArgsAndResult =
-                                    inferCallSubst funcCanType monoArgs callResultMonoType
-
-                                subst3 =
-                                    mergeSubst subst2 substFromArgsAndResult
-
-                                funcMonoType =
-                                    applySubst subst3 funcCanType
-
-                                monoGlobal =
-                                    toptGlobalToMono global
-
-                                ( specId, newRegistry ) =
-                                    Mono.getOrCreateSpecId monoGlobal funcMonoType Nothing state1.registry
-
-                                workItem =
-                                    SpecializeGlobal monoGlobal funcMonoType Nothing
-
-                                newState =
-                                    { state1
-                                        | registry = newRegistry
-                                        , worklist = workItem :: state1.worklist
-                                    }
-                            in
-                            ( Mono.MonoVarGlobal funcRegion specId funcMonoType, callResultMonoType, newState )
-
-                        -- IMPORTANT: instantiate polymorphic kernel functions using (args, result)
-                        TOpt.VarKernel funcRegion home name funcCanType ->
-                            let
-                                -- First, infer substitutions from argument types only.
-                                argTypes =
-                                    List.map Mono.typeOf monoArgs
-
-                                substFromArgs =
-                                    unifyArgsOnly funcCanType argTypes Dict.empty
-
-                                subst2 =
-                                    mergeSubst subst substFromArgs
-
-                                -- Now we can safely compute the call result type.
-                                callResultMonoType =
-                                    applySubst subst2 canType
-
-                                -- Optionally refine further using args+result (keeps things consistent)
-                                substFromArgsAndResult =
-                                    inferCallSubst funcCanType monoArgs callResultMonoType
-
-                                subst3 =
-                                    mergeSubst subst2 substFromArgsAndResult
-
-                                funcMonoType =
-                                    applySubst subst3 funcCanType
-                            in
-                            ( Mono.MonoVarKernel funcRegion home name funcMonoType, callResultMonoType, state1 )
-
-                        -- fallback: old behavior
-                        _ ->
-                            let
-                                ( mFunc, st ) =
-                                    specializeExpr func subst state1
-
-                                fallbackResultMonoType =
-                                    applySubst subst canType
-                            in
-                            ( mFunc, fallbackResultMonoType, st )
-
-                -- Check for lambda specialization opportunity
-                ( finalFunc, state3 ) =
-                    maybeSpecializeForLambda monoFunc monoArgs state2
             in
-            ( Mono.MonoCall region finalFunc monoArgs resultMonoType, state3 )
+            case func of
+                -- Polymorphic global function call
+                TOpt.VarGlobal funcRegion global funcCanType ->
+                    let
+                        argTypes =
+                            List.map Mono.typeOf monoArgs
+
+                        callSubst =
+                            unifyFuncCall funcCanType argTypes canType subst
+
+                        resultMonoType =
+                            applySubst callSubst canType
+
+                        funcMonoType =
+                            applySubst callSubst funcCanType
+
+                        monoGlobal =
+                            toptGlobalToMono global
+
+                        ( specId, newRegistry ) =
+                            Mono.getOrCreateSpecId monoGlobal funcMonoType Nothing state1.registry
+
+                        newState =
+                            { state1
+                                | registry = newRegistry
+                                , worklist = SpecializeGlobal monoGlobal funcMonoType Nothing :: state1.worklist
+                            }
+
+                        monoFunc =
+                            Mono.MonoVarGlobal funcRegion specId funcMonoType
+                    in
+                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType, newState )
+
+                -- Polymorphic kernel function call
+                TOpt.VarKernel funcRegion home name funcCanType ->
+                    let
+                        argTypes =
+                            List.map Mono.typeOf monoArgs
+
+                        callSubst =
+                            unifyFuncCall funcCanType argTypes canType subst
+
+                        resultMonoType =
+                            applySubst callSubst canType
+
+                        funcMonoType =
+                            applySubst callSubst funcCanType
+
+                        monoFunc =
+                            Mono.MonoVarKernel funcRegion home name funcMonoType
+                    in
+                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType, state1 )
+
+                -- Fallback: general function expression
+                _ ->
+                    let
+                        ( monoFunc, state2 ) =
+                            specializeExpr func subst state1
+
+                        resultMonoType =
+                            applySubst subst canType
+                    in
+                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType, state2 )
 
         TOpt.TailCall name args canType ->
             let
@@ -1065,59 +965,549 @@ specializeExpr expr subst state =
             ( Mono.MonoTupleCreate region allExprs layout monoType, state3 )
 
         TOpt.Shader _ _ _ _ ->
-            -- Shaders are not supported in MLIR backend
             ( Mono.MonoUnit, state )
 
 
 
--- ============================================================================
--- HELPER FUNCTIONS
--- ============================================================================
+-- LIST / BRANCH HELPERS
 
 
 specializeExprs : List TOpt.Expr -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
 specializeExprs exprs subst state =
     List.foldr
-        (\expr ( acc, st ) ->
+        (\e ( acc, st ) ->
             let
-                ( monoExpr, newSt ) =
-                    specializeExpr expr subst st
+                ( me, st1 ) =
+                    specializeExpr e subst st
             in
-            ( monoExpr :: acc, newSt )
+            ( me :: acc, st1 )
         )
         ( [], state )
         exprs
 
 
-specializeNamedExprs : List ( Name, TOpt.Expr ) -> Substitution -> MonoState -> ( List ( Name, Mono.MonoExpr ), MonoState )
+specializeNamedExprs :
+    List ( Name, TOpt.Expr )
+    -> Substitution
+    -> MonoState
+    -> ( List ( Name, Mono.MonoExpr ), MonoState )
 specializeNamedExprs namedExprs subst state =
     List.foldr
-        (\( name, expr ) ( acc, st ) ->
+        (\( name, e ) ( acc, st ) ->
             let
-                ( monoExpr, newSt ) =
-                    specializeExpr expr subst st
+                ( me, st1 ) =
+                    specializeExpr e subst st
             in
-            ( ( name, monoExpr ) :: acc, newSt )
+            ( ( name, me ) :: acc, st1 )
         )
         ( [], state )
         namedExprs
 
 
-specializeBranches : List ( TOpt.Expr, TOpt.Expr ) -> Substitution -> MonoState -> ( List ( Mono.MonoExpr, Mono.MonoExpr ), MonoState )
+specializeBranches :
+    List ( TOpt.Expr, TOpt.Expr )
+    -> Substitution
+    -> MonoState
+    -> ( List ( Mono.MonoExpr, Mono.MonoExpr ), MonoState )
 specializeBranches branches subst state =
     List.foldr
         (\( cond, body ) ( acc, st ) ->
             let
-                ( monoCond, st1 ) =
+                ( mCond, st1 ) =
                     specializeExpr cond subst st
 
-                ( monoBody, st2 ) =
+                ( mBody, st2 ) =
                     specializeExpr body subst st1
             in
-            ( ( monoCond, monoBody ) :: acc, st2 )
+            ( ( mCond, mBody ) :: acc, st2 )
         )
         ( [], state )
         branches
+
+
+
+-- LAMBDA / CLOSURE HANDLING
+
+
+ensureCallableTopLevel : Mono.MonoExpr -> Mono.MonoType -> MonoState -> ( Mono.MonoExpr, MonoState )
+ensureCallableTopLevel expr monoType state =
+    case monoType of
+        Mono.MFunction _ _ ->
+            let
+                ( argTypes, retType ) =
+                    flattenFunctionType monoType
+            in
+            case expr of
+                Mono.MonoClosure closureInfo _ _ ->
+                    if List.length closureInfo.params >= List.length argTypes then
+                        ( expr, state )
+
+                    else
+                        -- Under-parameterized closure: wrap it in an alias closure
+                        makeAliasClosureOverExpr expr argTypes retType monoType state
+
+                Mono.MonoVarGlobal region specId _ ->
+                    makeAliasClosure
+                        (Mono.MonoVarGlobal region specId monoType)
+                        region
+                        argTypes
+                        retType
+                        monoType
+                        state
+
+                Mono.MonoVarKernel region home name _ ->
+                    makeAliasClosure
+                        (Mono.MonoVarKernel region home name monoType)
+                        region
+                        argTypes
+                        retType
+                        monoType
+                        state
+
+                _ ->
+                    makeGeneralClosure expr argTypes retType monoType state
+
+        _ ->
+            ( expr, state )
+
+
+flattenFunctionType : Mono.MonoType -> ( List Mono.MonoType, Mono.MonoType )
+flattenFunctionType monoType =
+    case monoType of
+        Mono.MFunction args ret ->
+            let
+                ( moreArgs, finalRet ) =
+                    flattenFunctionType ret
+            in
+            ( args ++ moreArgs, finalRet )
+
+        _ ->
+            ( [], monoType )
+
+
+makeAliasClosure :
+    Mono.MonoExpr
+    -> A.Region
+    -> List Mono.MonoType
+    -> Mono.MonoType
+    -> Mono.MonoType
+    -> MonoState
+    -> ( Mono.MonoExpr, MonoState )
+makeAliasClosure calleeExpr region argTypes retType funcType state =
+    let
+        params =
+            freshParams argTypes
+
+        paramExprs =
+            List.map (\( name, ty ) -> Mono.MonoVarLocal name ty) params
+
+        lambdaId =
+            Mono.AnonymousLambda state.currentModule state.lambdaCounter
+
+        stateWithLambda =
+            { state | lambdaCounter = state.lambdaCounter + 1 }
+
+        callExpr =
+            Mono.MonoCall region calleeExpr paramExprs retType
+
+        closureInfo =
+            { lambdaId = lambdaId
+            , captures = []
+            , params = params
+            }
+
+        closureExpr =
+            Mono.MonoClosure closureInfo callExpr funcType
+    in
+    ( closureExpr, stateWithLambda )
+
+
+makeGeneralClosure :
+    Mono.MonoExpr
+    -> List Mono.MonoType
+    -> Mono.MonoType
+    -> Mono.MonoType
+    -> MonoState
+    -> ( Mono.MonoExpr, MonoState )
+makeGeneralClosure expr argTypes retType funcType state =
+    let
+        region =
+            extractRegion expr
+
+        params =
+            freshParams argTypes
+
+        paramExprs =
+            List.map (\( name, ty ) -> Mono.MonoVarLocal name ty) params
+
+        lambdaId =
+            Mono.AnonymousLambda state.currentModule state.lambdaCounter
+
+        stateWithLambda =
+            { state | lambdaCounter = state.lambdaCounter + 1 }
+
+        callExpr =
+            Mono.MonoCall region expr paramExprs retType
+
+        closureInfo =
+            { lambdaId = lambdaId
+            , captures = []
+            , params = params
+            }
+
+        closureExpr =
+            Mono.MonoClosure closureInfo callExpr funcType
+    in
+    ( closureExpr, stateWithLambda )
+
+
+makeAliasClosureOverExpr :
+    Mono.MonoExpr
+    -> List Mono.MonoType
+    -> Mono.MonoType
+    -> Mono.MonoType
+    -> MonoState
+    -> ( Mono.MonoExpr, MonoState )
+makeAliasClosureOverExpr expr argTypes retType funcType state =
+    -- For now, treat it like a general closure around the expression.
+    -- If you later want to reuse existing captures of an inner closure,
+    -- you can extend this to preserve them.
+    makeGeneralClosure expr argTypes retType funcType state
+
+
+freshParams : List Mono.MonoType -> List ( Name, Mono.MonoType )
+freshParams argTypes =
+    List.indexedMap
+        (\i ty -> ( "arg" ++ String.fromInt i, ty ))
+        argTypes
+
+
+extractRegion : Mono.MonoExpr -> A.Region
+extractRegion expr =
+    case expr of
+        Mono.MonoLiteral _ _ ->
+            A.zero
+
+        Mono.MonoVarLocal _ _ ->
+            A.zero
+
+        Mono.MonoVarGlobal region _ _ ->
+            region
+
+        Mono.MonoVarKernel region _ _ _ ->
+            region
+
+        Mono.MonoList region _ _ ->
+            region
+
+        Mono.MonoClosure _ _ _ ->
+            A.zero
+
+        Mono.MonoCall region _ _ _ ->
+            region
+
+        Mono.MonoTailCall _ _ _ ->
+            A.zero
+
+        Mono.MonoIf _ _ _ ->
+            A.zero
+
+        Mono.MonoLet _ _ _ ->
+            A.zero
+
+        Mono.MonoDestruct _ _ _ ->
+            A.zero
+
+        Mono.MonoCase _ _ _ _ _ ->
+            A.zero
+
+        Mono.MonoRecordCreate _ _ _ ->
+            A.zero
+
+        Mono.MonoRecordAccess record _ _ _ _ ->
+            extractRegion record
+
+        Mono.MonoRecordUpdate record _ _ _ ->
+            extractRegion record
+
+        Mono.MonoTupleCreate region _ _ _ ->
+            region
+
+        Mono.MonoUnit ->
+            A.zero
+
+        Mono.MonoAccessor region _ _ ->
+            region
+
+
+
+-- CLOSURE CAPTURE ANALYSIS
+
+
+computeClosureCaptures :
+    List ( Name, Mono.MonoType )
+    -> Mono.MonoExpr
+    -> List ( Name, Mono.MonoExpr, Bool )
+computeClosureCaptures params body =
+    let
+        boundInitial : EverySet String Name
+        boundInitial =
+            List.foldl
+                (\( name, _ ) acc -> EverySet.insert identity name acc)
+                EverySet.empty
+                params
+
+        freeNames : List Name
+        freeNames =
+            findFreeLocals boundInitial body
+                |> dedupeNames
+
+        captureFor name =
+            let
+                -- We do not track an environment here; in practice we only
+                -- capture by name and type from the VarLocal uses.
+                -- For now, use a placeholder MUnit when the type is unknown.
+                placeholderType =
+                    Mono.MUnit
+            in
+            ( name, Mono.MonoVarLocal name placeholderType, False )
+    in
+    List.map captureFor freeNames
+
+
+findFreeLocals :
+    EverySet String Name
+    -> Mono.MonoExpr
+    -> List Name
+findFreeLocals bound expr =
+    case expr of
+        Mono.MonoVarLocal name _ ->
+            if EverySet.member identity name bound then
+                []
+
+            else
+                [ name ]
+
+        Mono.MonoClosure closureInfo body _ ->
+            -- Nested closures compute their own captures; do not descend.
+            []
+
+        -- Alternatively, you could choose to recurse into body
+        -- with closure params added to bound if you want combined info.
+        Mono.MonoLet def body _ ->
+            let
+                ( defName, defExpr ) =
+                    case def of
+                        Mono.MonoDef n e ->
+                            ( n, e )
+
+                        Mono.MonoTailDef n e ->
+                            ( n, e )
+
+                freeInDef =
+                    findFreeLocals bound defExpr
+
+                newBound =
+                    EverySet.insert identity defName bound
+
+                freeInBody =
+                    findFreeLocals newBound body
+            in
+            freeInDef ++ freeInBody
+
+        Mono.MonoIf branches final _ ->
+            let
+                freeBranches =
+                    List.concatMap
+                        (\( cond, thenExpr ) ->
+                            findFreeLocals bound cond
+                                ++ findFreeLocals bound thenExpr
+                        )
+                        branches
+
+                freeFinal =
+                    findFreeLocals bound final
+            in
+            freeBranches ++ freeFinal
+
+        Mono.MonoCase _ _ decider jumps _ ->
+            let
+                freeDecider =
+                    collectDeciderFreeLocals bound decider
+
+                freeJumps =
+                    List.concatMap (\( _, e ) -> findFreeLocals bound e) jumps
+            in
+            freeDecider ++ freeJumps
+
+        Mono.MonoList _ exprs _ ->
+            List.concatMap (findFreeLocals bound) exprs
+
+        Mono.MonoCall _ func args _ ->
+            findFreeLocals bound func
+                ++ List.concatMap (findFreeLocals bound) args
+
+        Mono.MonoTailCall _ namedExprs _ ->
+            List.concatMap (\( _, e ) -> findFreeLocals bound e) namedExprs
+
+        Mono.MonoRecordCreate exprs _ _ ->
+            List.concatMap (findFreeLocals bound) exprs
+
+        Mono.MonoRecordAccess record _ _ _ _ ->
+            findFreeLocals bound record
+
+        Mono.MonoRecordUpdate record updates _ _ ->
+            findFreeLocals bound record
+                ++ List.concatMap (\( _, e ) -> findFreeLocals bound e) updates
+
+        Mono.MonoTupleCreate _ exprs _ _ ->
+            List.concatMap (findFreeLocals bound) exprs
+
+        _ ->
+            []
+
+
+collectDeciderFreeLocals :
+    EverySet String Name
+    -> Mono.Decider Mono.MonoChoice
+    -> List Name
+collectDeciderFreeLocals bound decider =
+    case decider of
+        Mono.Leaf choice ->
+            case choice of
+                Mono.Inline expr ->
+                    findFreeLocals bound expr
+
+                Mono.Jump ->
+                    []
+
+        Mono.Chain success failure ->
+            collectDeciderFreeLocals bound success
+                ++ collectDeciderFreeLocals bound failure
+
+        Mono.FanOut edges fallback ->
+            let
+                freeEdges =
+                    List.concatMap (\( _, d ) -> collectDeciderFreeLocals bound d) edges
+
+                freeFallback =
+                    collectDeciderFreeLocals bound fallback
+            in
+            freeEdges ++ freeFallback
+
+
+dedupeNames : List Name -> List Name
+dedupeNames names =
+    let
+        step name ( seen, acc ) =
+            if EverySet.member identity name seen then
+                ( seen, acc )
+
+            else
+                ( EverySet.insert identity name seen, name :: acc )
+    in
+    names
+        |> List.foldl step ( EverySet.empty, [] )
+        |> Tuple.second
+        |> List.reverse
+
+
+
+-- NODE SPECIALIZATION
+
+
+extractCtorResultType : Int -> Mono.MonoType -> Mono.MonoType
+extractCtorResultType n monoType =
+    if n <= 0 then
+        monoType
+
+    else
+        case monoType of
+            Mono.MFunction args result ->
+                extractCtorResultType (n - List.length args) result
+
+            _ ->
+                monoType
+
+
+
+-- CYCLE SPECIALIZATION
+
+
+{-| Specialize a function definition in a cycle as a proper MonoTailFunc/MonoDefine node.
+-}
+specializeFuncNodeInCycle :
+    Substitution
+    -> TOpt.Def
+    -> MonoState
+    -> ( Mono.MonoNode, MonoState )
+specializeFuncNodeInCycle subst def state =
+    case def of
+        TOpt.Def _ _ expr canType ->
+            -- Regular function definition
+            let
+                monoType =
+                    applySubst subst canType
+
+                ( monoExpr, state1 ) =
+                    specializeExpr expr subst state
+            in
+            ( Mono.MonoDefine monoExpr monoType, state1 )
+
+        TOpt.TailDef _ _ args body returnType ->
+            -- Tail-recursive function definition
+            let
+                monoArgs =
+                    List.map (specializeArg subst) args
+
+                ( monoBody, state1 ) =
+                    specializeExpr body subst state
+
+                monoReturnType =
+                    applySubst subst returnType
+            in
+            ( Mono.MonoTailFunc monoArgs monoBody monoReturnType, state1 )
+
+
+{-| Check if a definition has the given name.
+-}
+defHasName : Name -> TOpt.Def -> Bool
+defHasName targetName def =
+    case def of
+        TOpt.Def _ name _ _ ->
+            name == targetName
+
+        TOpt.TailDef _ name _ _ _ ->
+            name == targetName
+
+
+{-| Get the name from a definition.
+-}
+getDefName : TOpt.Def -> Name
+getDefName def =
+    case def of
+        TOpt.Def _ name _ _ ->
+            name
+
+        TOpt.TailDef _ name _ _ _ ->
+            name
+
+
+{-| Get the canonical type from a definition.
+-}
+getDefCanonicalType : TOpt.Def -> Can.Type
+getDefCanonicalType def =
+    case def of
+        TOpt.Def _ _ _ canType ->
+            canType
+
+        TOpt.TailDef _ _ args _ returnType ->
+            buildFuncType args returnType
+
+
+
+-- EXPRESSION SPECIALIZATION
+-- HELPER FUNCTIONS
 
 
 specializeDef : TOpt.Def -> Substitution -> MonoState -> ( Mono.MonoDef, MonoState )
@@ -1328,9 +1718,7 @@ specializeArg subst ( locName, canType ) =
 
 
 
--- ============================================================================
 -- LAMBDA SPECIALIZATION
--- ============================================================================
 
 
 maybeSpecializeForLambda : Mono.MonoExpr -> List Mono.MonoExpr -> MonoState -> ( Mono.MonoExpr, MonoState )
@@ -1383,208 +1771,7 @@ detectLambdaArg args =
 
 
 
--- ============================================================================
 -- ETA-EXPANSION FOR TOP-LEVEL FUNCTION DEFINITIONS
--- ============================================================================
-
-
-{-| Ensure that a top-level definition with function type has a callable body.
-
-For any MonoDefine whose monoType is MFunction, its body must be a MonoClosure
-so backends never need to special-case MonoVarGlobal of function type.
-
-This handles eta-reduced definitions like:
-text = VirtualDom.text
-
-By expanding them to:
-text = \\arg0 -> VirtualDom.text arg0
-
--}
-ensureCallableTopLevel : Mono.MonoExpr -> Mono.MonoType -> MonoState -> ( Mono.MonoExpr, MonoState )
-ensureCallableTopLevel expr monoType state =
-    case monoType of
-        Mono.MFunction _ _ ->
-            let
-                -- Flatten curried function type to get all argument types
-                ( allArgTypes, finalRetType ) =
-                    flattenFunctionType monoType
-            in
-            case expr of
-                Mono.MonoClosure closureInfo body _ ->
-                    -- Check if the closure's params are sufficient for the expected arity
-                    if List.length closureInfo.params >= List.length allArgTypes then
-                        -- Closure has enough params (or more for partial application context)
-                        -- Use as-is; partial application will be handled at call sites
-                        ( expr, state )
-
-                    else
-                        -- Closure has fewer params than expected (eta-reduced alias case)
-                        -- The body should be a callable function value, wrap it
-                        -- Preserve the original captures
-                        makeGeneralClosureWithCaptures body closureInfo.captures allArgTypes finalRetType monoType state
-
-                Mono.MonoVarGlobal region specId _ ->
-                    makeAliasClosure
-                        (Mono.MonoVarGlobal region specId monoType)
-                        region
-                        allArgTypes
-                        finalRetType
-                        monoType
-                        state
-
-                Mono.MonoVarKernel region home name _ ->
-                    makeAliasClosure
-                        (Mono.MonoVarKernel region home name monoType)
-                        region
-                        allArgTypes
-                        finalRetType
-                        monoType
-                        state
-
-                _ ->
-                    -- General fallback for other cases (MonoVarDebug, MonoAccessor, etc.)
-                    makeGeneralClosure expr allArgTypes finalRetType monoType state
-
-        _ ->
-            -- Not a function type, leave unchanged
-            ( expr, state )
-
-
-{-| Flatten a curried function type to get all argument types and the final return type.
-
-    MFunction [ A ] (MFunction [ B ] C) => ( [ A, B ], C )
-
--}
-flattenFunctionType : Mono.MonoType -> ( List Mono.MonoType, Mono.MonoType )
-flattenFunctionType monoType =
-    case monoType of
-        Mono.MFunction argTypes retType ->
-            let
-                ( moreArgs, finalRet ) =
-                    flattenFunctionType retType
-            in
-            ( argTypes ++ moreArgs, finalRet )
-
-        _ ->
-            ( [], monoType )
-
-
-{-| Create a closure that wraps a callee expression with eta-expansion.
-
-Given a callee like `VirtualDom.text` with type `String -> Html`,
-creates: `\arg0 -> VirtualDom.text arg0`
-
--}
-makeAliasClosure :
-    Mono.MonoExpr
-    -> A.Region
-    -> List Mono.MonoType
-    -> Mono.MonoType
-    -> Mono.MonoType
-    -> MonoState
-    -> ( Mono.MonoExpr, MonoState )
-makeAliasClosure calleeExpr region argTypes retType monoType state =
-    let
-        -- Generate fresh parameter names
-        params : List ( Name, Mono.MonoType )
-        params =
-            freshParams argTypes
-
-        -- Create parameter expressions for the call
-        paramExprs : List Mono.MonoExpr
-        paramExprs =
-            List.map
-                (\( name, ty ) -> Mono.MonoVarLocal name ty)
-                params
-
-        -- Allocate a lambda ID
-        lambdaId : Mono.LambdaId
-        lambdaId =
-            Mono.AnonymousLambda state.currentModule state.lambdaCounter
-
-        stateWithLambda : MonoState
-        stateWithLambda =
-            { state | lambdaCounter = state.lambdaCounter + 1 }
-
-        -- Build the call to the aliased function
-        callExpr : Mono.MonoExpr
-        callExpr =
-            Mono.MonoCall region calleeExpr paramExprs retType
-
-        -- Assemble the closure
-        closureInfo : Mono.ClosureInfo
-        closureInfo =
-            { lambdaId = lambdaId
-            , captures = []
-            , params = params
-            }
-
-        closureExpr : Mono.MonoExpr
-        closureExpr =
-            Mono.MonoClosure closureInfo callExpr monoType
-    in
-    ( closureExpr, stateWithLambda )
-
-
-{-| Create a closure that wraps an arbitrary expression with eta-expansion.
-
-This is the general fallback for cases where the expression isn't a simple
-variable reference. It evaluates the expression and calls it with the params.
-
--}
-makeGeneralClosure :
-    Mono.MonoExpr
-    -> List Mono.MonoType
-    -> Mono.MonoType
-    -> Mono.MonoType
-    -> MonoState
-    -> ( Mono.MonoExpr, MonoState )
-makeGeneralClosure expr argTypes retType monoType state =
-    let
-        -- Try to extract a region from the expression, fall back to zero
-        region : A.Region
-        region =
-            extractRegion expr
-
-        -- Generate fresh parameter names
-        params : List ( Name, Mono.MonoType )
-        params =
-            freshParams argTypes
-
-        -- Create parameter expressions for the call
-        paramExprs : List Mono.MonoExpr
-        paramExprs =
-            List.map
-                (\( name, ty ) -> Mono.MonoVarLocal name ty)
-                params
-
-        -- Allocate a lambda ID
-        lambdaId : Mono.LambdaId
-        lambdaId =
-            Mono.AnonymousLambda state.currentModule state.lambdaCounter
-
-        stateWithLambda : MonoState
-        stateWithLambda =
-            { state | lambdaCounter = state.lambdaCounter + 1 }
-
-        -- Build the call: expr(arg0, arg1, ...)
-        callExpr : Mono.MonoExpr
-        callExpr =
-            Mono.MonoCall region expr paramExprs retType
-
-        -- Assemble the closure
-        closureInfo : Mono.ClosureInfo
-        closureInfo =
-            { lambdaId = lambdaId
-            , captures = []
-            , params = params
-            }
-
-        closureExpr : Mono.MonoExpr
-        closureExpr =
-            Mono.MonoClosure closureInfo callExpr monoType
-    in
-    ( closureExpr, stateWithLambda )
 
 
 {-| Like makeGeneralClosure but preserves existing captures from an outer closure.
@@ -1645,83 +1832,32 @@ makeGeneralClosureWithCaptures expr captures argTypes retType monoType state =
     ( closureExpr, stateWithLambda )
 
 
-{-| Generate fresh parameter names for eta-expansion.
--}
-freshParams : List Mono.MonoType -> List ( Name, Mono.MonoType )
-freshParams argTypes =
-    List.indexedMap
-        (\i ty -> ( "arg" ++ String.fromInt i, ty ))
-        argTypes
 
-
-{-| Extract a region from a MonoExpr, falling back to A.zero if none available.
--}
-extractRegion : Mono.MonoExpr -> A.Region
-extractRegion expr =
-    case expr of
-        Mono.MonoLiteral _ _ ->
-            A.zero
-
-        Mono.MonoVarLocal _ _ ->
-            A.zero
-
-        Mono.MonoVarGlobal region _ _ ->
-            region
-
-        Mono.MonoVarKernel region _ _ _ ->
-            region
-
-        Mono.MonoList region _ _ ->
-            region
-
-        Mono.MonoClosure _ _ _ ->
-            A.zero
-
-        Mono.MonoCall region _ _ _ ->
-            region
-
-        Mono.MonoTailCall _ _ _ ->
-            A.zero
-
-        Mono.MonoIf _ _ _ ->
-            A.zero
-
-        Mono.MonoLet _ _ _ ->
-            A.zero
-
-        Mono.MonoDestruct _ _ _ ->
-            A.zero
-
-        Mono.MonoCase _ _ _ _ _ ->
-            A.zero
-
-        Mono.MonoRecordCreate _ _ _ ->
-            A.zero
-
-        Mono.MonoRecordAccess _ _ _ _ _ ->
-            A.zero
-
-        Mono.MonoRecordUpdate _ _ _ _ ->
-            A.zero
-
-        Mono.MonoTupleCreate region _ _ _ ->
-            region
-
-        Mono.MonoUnit ->
-            A.zero
-
-        Mono.MonoAccessor region _ _ ->
-            region
-
-
-
--- ============================================================================
 -- TYPE UNIFICATION AND SUBSTITUTION
--- ============================================================================
 
 
 type alias Substitution =
     Dict String Name Mono.MonoType
+
+
+unifyFuncCall :
+    Can.Type
+    -> List Mono.MonoType
+    -> Can.Type
+    -> Substitution
+    -> Substitution
+unifyFuncCall funcCanType argMonoTypes resultCanType baseSubst =
+    let
+        subst1 =
+            unifyArgsOnly funcCanType argMonoTypes baseSubst
+
+        desiredResultMono =
+            applySubst subst1 resultCanType
+
+        desiredFuncMono =
+            Mono.MFunction argMonoTypes desiredResultMono
+    in
+    unifyHelp funcCanType desiredFuncMono subst1
 
 
 unify : Can.Type -> Mono.MonoType -> Substitution
@@ -1968,9 +2104,7 @@ constraintFromName name =
 
 
 
--- ============================================================================
 -- LAYOUT HELPERS
--- ============================================================================
 
 
 getRecordLayout : Mono.MonoType -> Mono.RecordLayout
@@ -2030,12 +2164,10 @@ buildFuncType args returnType =
 
 
 buildCtorLayoutFromArity : Int -> Int -> Mono.MonoType -> Mono.CtorLayout
-buildCtorLayoutFromArity tag arity monoType =
+buildCtorLayoutFromArity tag arity ctorMonoType =
     let
-        -- Extract field types from the function type
-        -- For a constructor like `Foo : Int -> String -> Foo`, monoType is `MFunction [Int] (MFunction [String] (MCustom ... Foo))`
         fieldTypes =
-            extractFieldTypes arity monoType
+            extractFieldTypes arity ctorMonoType
 
         fields =
             List.indexedMap
@@ -2048,15 +2180,20 @@ buildCtorLayoutFromArity tag arity monoType =
                 )
                 fieldTypes
 
+        unboxedBitmap =
+            List.foldl
+                (\field acc ->
+                    if field.isUnboxed then
+                        acc + (2 ^ field.index)
+
+                    else
+                        acc
+                )
+                0
+                fields
+
         unboxedCount =
             List.length (List.filter .isUnboxed fields)
-
-        unboxedBitmap =
-            if unboxedCount == 0 then
-                0
-
-            else
-                (2 ^ unboxedCount) - 1
     in
     { name = ""
     , tag = tag
@@ -2081,9 +2218,7 @@ extractFieldTypes n monoType =
 
 
 
--- ============================================================================
 -- FREE VARIABLE ANALYSIS
--- ============================================================================
 
 
 {-| Find free variables in a MonoExpr, given a set of bound variables.
@@ -2179,9 +2314,7 @@ dedupeCaptures captures =
 
 
 
--- ============================================================================
 -- DEPENDENCY COLLECTION
--- ============================================================================
 
 
 collectDepsHelp : Mono.MonoExpr -> EverySet Int Int -> EverySet Int Int
@@ -2275,9 +2408,7 @@ collectDeciderDeps decider deps =
 
 
 
--- ============================================================================
 -- GLOBAL CONVERSIONS
--- ============================================================================
 
 
 toptGlobalToMono : TOpt.Global -> Mono.Global
