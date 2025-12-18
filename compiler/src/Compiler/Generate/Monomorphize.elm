@@ -1,11 +1,7 @@
 module Compiler.Generate.Monomorphize exposing (monomorphize)
 
-{-| Monomorphization pass that eliminates polymorphism from typed optimized code.
-
-This module transforms a TypedOptimized.GlobalGraph into a Monomorphized.MonoGraph
+{-| This module transforms a TypedOptimized.GlobalGraph into a Monomorphized.MonoGraph
 by specializing all polymorphic functions to their concrete type instantiations.
-This produces a representation where every function has concrete types only,
-enabling more aggressive optimization and simplifying code generation.
 
 The monomorphization algorithm works as follows:
 
@@ -16,7 +12,6 @@ The monomorphization algorithm works as follows:
     b. Applying the substitution to all types in the expression.
     c. Discovering new specializations needed and adding them to the worklist.
 4.  Continue until the worklist is empty.
-5.  Return a MonoGraph with all polymorphism resolved to concrete types.
 
 
 # Monomorphization
