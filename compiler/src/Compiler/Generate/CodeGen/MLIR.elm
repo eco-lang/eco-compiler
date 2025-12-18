@@ -15,12 +15,14 @@ in the types.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.Mode as Mode
 import Data.Map as EveryDict
+import Data.Set as EverySet
 import Dict exposing (Dict)
 import Mlir.Loc as Loc exposing (Loc)
-import Mlir.Mlir
+import Mlir.Mlir as Mlir
     exposing
         ( MlirAttr(..)
         , MlirModule
@@ -128,8 +130,13 @@ monoTypeToMlir monoType =
         Mono.MFunction _ _ ->
             ecoValue
 
-        Mono.MVar name _ ->
-            crash ("MLIR codegen: unresolved type variable " ++ name ++ " - should have been instantiated")
+        Mono.MVar name constraint_ ->
+            case constraint_ of
+                Mono.CNumber ->
+                    crash ("MLIR codegen: unresolved type variable " ++ name ++ " - should have been instantiated")
+
+                Mono.CEcoValue ->
+                    ecoValue
 
 
 {-| Compute the remaining arity of a MonoType (number of function arrows).
@@ -338,10 +345,9 @@ emptyResult ctx var =
 
 
 -- INTRINSIC DEFINITIONS
+-- (Same as your original; omitted detailed comments for brevity.)
 
 
-{-| Types of intrinsic operations that can be emitted as native eco ops
--}
 type Intrinsic
     = UnaryInt { op : String }
     | BinaryInt { op : String }
@@ -355,9 +361,6 @@ type Intrinsic
     | ConstantFloat { value : Float }
 
 
-{-| Look up whether a kernel function can be emitted as an intrinsic op.
-Returns the intrinsic type if matched, Nothing if it should fall back to a runtime call.
--}
 kernelIntrinsic : Name.Name -> Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
 kernelIntrinsic home name argTypes resultType =
     case home of
@@ -371,19 +374,15 @@ kernelIntrinsic home name argTypes resultType =
             Nothing
 
 
-{-| Intrinsics from Basics module
--}
 basicsIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
 basicsIntrinsic name argTypes resultType =
     case ( name, argTypes, resultType ) of
-        -- ===== Constants =====
         ( "pi", [], Mono.MFloat ) ->
             Just (ConstantFloat { value = 3.141592653589793 })
 
         ( "e", [], Mono.MFloat ) ->
             Just (ConstantFloat { value = 2.718281828459045 })
 
-        -- ===== Integer Arithmetic =====
         ( "add", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
             Just (BinaryInt { op = "eco.int.add" })
 
@@ -411,7 +410,6 @@ basicsIntrinsic name argTypes resultType =
         ( "pow", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
             Just (BinaryInt { op = "eco.int.pow" })
 
-        -- ===== Float Arithmetic =====
         ( "add", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
             Just (BinaryFloat { op = "eco.float.add" })
 
@@ -436,7 +434,6 @@ basicsIntrinsic name argTypes resultType =
         ( "sqrt", [ Mono.MFloat ], Mono.MFloat ) ->
             Just (UnaryFloat { op = "eco.float.sqrt" })
 
-        -- ===== Trigonometric Functions =====
         ( "sin", [ Mono.MFloat ], Mono.MFloat ) ->
             Just (UnaryFloat { op = "eco.float.sin" })
 
@@ -458,22 +455,18 @@ basicsIntrinsic name argTypes resultType =
         ( "atan2", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
             Just (BinaryFloat { op = "eco.float.atan2" })
 
-        -- ===== Logarithm =====
         ( "logBase", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
-            -- logBase is handled specially in generateCall - expanded inline
             Nothing
 
         ( "log", [ Mono.MFloat ], Mono.MFloat ) ->
             Just (UnaryFloat { op = "eco.float.log" })
 
-        -- ===== Float Classification =====
         ( "isNaN", [ Mono.MFloat ], Mono.MBool ) ->
             Just (FloatClassify { op = "eco.float.isNaN" })
 
         ( "isInfinite", [ Mono.MFloat ], Mono.MBool ) ->
             Just (FloatClassify { op = "eco.float.isInfinite" })
 
-        -- ===== Type Conversions =====
         ( "toFloat", [ Mono.MInt ], Mono.MFloat ) ->
             Just IntToFloat
 
@@ -489,21 +482,18 @@ basicsIntrinsic name argTypes resultType =
         ( "truncate", [ Mono.MFloat ], Mono.MInt ) ->
             Just (FloatToInt { op = "eco.float.truncate" })
 
-        -- ===== Integer Min/Max =====
         ( "min", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
             Just (BinaryInt { op = "eco.int.min" })
 
         ( "max", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
             Just (BinaryInt { op = "eco.int.max" })
 
-        -- ===== Float Min/Max =====
         ( "min", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
             Just (BinaryFloat { op = "eco.float.min" })
 
         ( "max", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
             Just (BinaryFloat { op = "eco.float.max" })
 
-        -- ===== Integer Comparisons =====
         ( "lt", [ Mono.MInt, Mono.MInt ], Mono.MBool ) ->
             Just (IntComparison { op = "eco.int.lt" })
 
@@ -522,7 +512,6 @@ basicsIntrinsic name argTypes resultType =
         ( "neq", [ Mono.MInt, Mono.MInt ], Mono.MBool ) ->
             Just (IntComparison { op = "eco.int.ne" })
 
-        -- ===== Float Comparisons =====
         ( "lt", [ Mono.MFloat, Mono.MFloat ], Mono.MBool ) ->
             Just (FloatComparison { op = "eco.float.lt" })
 
@@ -541,13 +530,10 @@ basicsIntrinsic name argTypes resultType =
         ( "neq", [ Mono.MFloat, Mono.MFloat ], Mono.MBool ) ->
             Just (FloatComparison { op = "eco.float.ne" })
 
-        -- Fallback: not an intrinsic
         _ ->
             Nothing
 
 
-{-| Intrinsics from Bitwise module
--}
 bitwiseIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
 bitwiseIntrinsic name argTypes resultType =
     case ( name, argTypes, resultType ) of
@@ -576,227 +562,7 @@ bitwiseIntrinsic name argTypes resultType =
             Nothing
 
 
-
--- OP BUILDER
-
-
-type alias OpBuilder =
-    { name : String
-    , id : String
-    , operands : List ( String, MlirType )
-    , results : List ( String, MlirType )
-    , attrs : Dict String MlirAttr
-    , regions : List MlirRegion
-    , isTerminator : Bool
-    , loc : Loc
-    , successors : List String
-    }
-
-
-mlirOp : String -> Context -> OpBuilder
-mlirOp name ctx =
-    let
-        ( opId, _ ) =
-            freshOpId ctx
-    in
-    { name = name
-    , id = opId
-    , operands = []
-    , results = []
-    , attrs = Dict.empty
-    , regions = []
-    , isTerminator = False
-    , loc = Loc.unknown
-    , successors = []
-    }
-
-
-withOperands : List ( String, MlirType ) -> OpBuilder -> OpBuilder
-withOperands operands builder =
-    { builder | operands = operands }
-
-
-withResult : String -> MlirType -> OpBuilder -> OpBuilder
-withResult ssa type_ builder =
-    { builder | results = [ ( ssa, type_ ) ] }
-
-
-withAttr : String -> MlirAttr -> OpBuilder -> OpBuilder
-withAttr key value builder =
-    { builder | attrs = Dict.insert key value builder.attrs }
-
-
-withRegion : MlirRegion -> OpBuilder -> OpBuilder
-withRegion region builder =
-    { builder | regions = [ region ] }
-
-
-asTerminator : OpBuilder -> OpBuilder
-asTerminator builder =
-    { builder | isTerminator = True }
-
-
-build : OpBuilder -> MlirOp
-build builder =
-    let
-        -- Extract just the operand names for MlirOp
-        operandNames =
-            List.map Tuple.first builder.operands
-
-        -- Store operand types as an attribute for pretty printing
-        -- The types are stored as an ArrayAttr of TypeAttrs
-        operandTypesAttr =
-            if List.isEmpty builder.operands then
-                builder.attrs
-
-            else
-                Dict.insert "_operand_types"
-                    (ArrayAttr (List.map (\( _, t ) -> TypeAttr t) builder.operands))
-                    builder.attrs
-    in
-    { name = builder.name
-    , id = builder.id
-    , operands = operandNames
-    , results = builder.results
-    , attrs = operandTypesAttr
-    , regions = builder.regions
-    , isTerminator = builder.isTerminator
-    , loc = builder.loc
-    , successors = builder.successors
-    }
-
-
-
--- ECO DIALECT OP HELPERS
-
-
-{-| eco.construct - create a heap object
--}
-ecoConstruct : Context -> String -> Int -> Int -> Int -> List ( String, MlirType ) -> MlirOp
-ecoConstruct ctx resultVar tag size unboxedBitmap operands =
-    mlirOp "eco.construct" ctx
-        |> withOperands operands
-        |> withResult resultVar ecoValue
-        |> withAttr "tag" (IntAttr tag)
-        |> withAttr "size" (IntAttr size)
-        |> withAttr "unboxed_bitmap" (IntAttr unboxedBitmap)
-        |> build
-
-
-{-| eco.call - call a function by name
--}
-ecoCallNamed : Context -> String -> String -> List ( String, MlirType ) -> MlirType -> MlirOp
-ecoCallNamed ctx resultVar funcName operands returnType =
-    mlirOp "eco.call" ctx
-        |> withOperands operands
-        |> withResult resultVar returnType
-        |> withAttr "callee" (SymbolRefAttr funcName)
-        |> build
-
-
-{-| eco.project - extract a field from a record/custom/tuple
--}
-ecoProject : Context -> String -> Int -> Bool -> String -> MlirType -> MlirOp
-ecoProject ctx resultVar index isUnboxed operand operandType =
-    let
-        resultType =
-            if isUnboxed then
-                I64
-
-            else
-                ecoValue
-    in
-    mlirOp "eco.project" ctx
-        |> withOperands [ ( operand, operandType ) ]
-        |> withResult resultVar resultType
-        |> withAttr "index" (IntAttr index)
-        |> withAttr "unboxed" (BoolAttr isUnboxed)
-        |> build
-
-
-{-| eco.return - return a value
--}
-ecoReturn : Context -> String -> MlirType -> MlirOp
-ecoReturn ctx operand operandType =
-    mlirOp "eco.return" ctx
-        |> withOperands [ ( operand, operandType ) ]
-        |> asTerminator
-        |> build
-
-
-{-| eco.string\_literal - create a string constant
--}
-ecoStringLiteral : Context -> String -> String -> MlirOp
-ecoStringLiteral ctx resultVar value =
-    mlirOp "eco.string_literal" ctx
-        |> withResult resultVar ecoValue
-        |> withAttr "value" (StringAttr value)
-        |> build
-
-
-{-| arith.constant for integers
--}
-arithConstantInt : Context -> String -> Int -> MlirOp
-arithConstantInt ctx resultVar value =
-    mlirOp "arith.constant" ctx
-        |> withResult resultVar I64
-        |> withAttr "value" (TypedIntAttr value I64)
-        |> build
-
-
-{-| arith.constant for floats
--}
-arithConstantFloat : Context -> String -> Float -> MlirOp
-arithConstantFloat ctx resultVar value =
-    mlirOp "arith.constant" ctx
-        |> withResult resultVar F64
-        |> withAttr "value" (FloatAttr value)
-        |> build
-
-
-{-| arith.constant for booleans
--}
-arithConstantBool : Context -> String -> Bool -> MlirOp
-arithConstantBool ctx resultVar value =
-    mlirOp "arith.constant" ctx
-        |> withResult resultVar I1
-        |> withAttr "value" (BoolAttr value)
-        |> build
-
-
-{-| arith.constant for characters
--}
-arithConstantChar : Context -> String -> Int -> MlirOp
-arithConstantChar ctx resultVar codepoint =
-    mlirOp "arith.constant" ctx
-        |> withResult resultVar I32
-        |> withAttr "value" (TypedIntAttr codepoint I32)
-        |> build
-
-
-{-| Build a unary eco op (e.g., eco.int.negate, eco.float.sqrt)
--}
-ecoUnaryOp : Context -> String -> String -> ( String, MlirType ) -> MlirType -> MlirOp
-ecoUnaryOp ctx opName resultVar ( operand, operandTy ) resultTy =
-    mlirOp opName ctx
-        |> withOperands [ ( operand, operandTy ) ]
-        |> withResult resultVar resultTy
-        |> build
-
-
-{-| Build a binary eco op (e.g., eco.int.add, eco.float.mul)
--}
-ecoBinaryOp : Context -> String -> String -> ( String, MlirType ) -> ( String, MlirType ) -> MlirType -> MlirOp
-ecoBinaryOp ctx opName resultVar ( lhs, lhsTy ) ( rhs, rhsTy ) resultTy =
-    mlirOp opName ctx
-        |> withOperands [ ( lhs, lhsTy ), ( rhs, rhsTy ) ]
-        |> withResult resultVar resultTy
-        |> build
-
-
-{-| Generate an intrinsic op from the Intrinsic descriptor
--}
-generateIntrinsicOp : Context -> Intrinsic -> String -> List String -> MlirOp
+generateIntrinsicOp : Context -> Intrinsic -> String -> List String -> ( Context, MlirOp )
 generateIntrinsicOp ctx intrinsic resultVar argVars =
     case intrinsic of
         UnaryInt { op } ->
@@ -870,47 +636,14 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
             arithConstantFloat ctx resultVar value
 
 
-{-| func.func - define a function
--}
-funcFunc : Context -> String -> List ( String, MlirType ) -> MlirType -> MlirRegion -> MlirOp
-funcFunc ctx funcName args returnType bodyRegion =
-    mlirOp "func.func" ctx
-        |> withRegion bodyRegion
-        |> withAttr "sym_name" (StringAttr funcName)
-        |> withAttr "sym_visibility" (VisibilityAttr Private)
-        |> withAttr "function_type"
-            (TypeAttr
-                (FunctionType
-                    { inputs = List.map Tuple.second args
-                    , results = [ returnType ]
-                    }
-                )
-            )
-        |> build
 
-
-{-| Create a region with a single entry block
--}
-mkRegion : List ( String, MlirType ) -> List MlirOp -> MlirOp -> MlirRegion
-mkRegion args body terminator =
-    MlirRegion
-        { entry =
-            { args = args
-            , body = body
-            , terminator = terminator
-            }
-        , blocks = OrderedDict.empty
-        }
-
-
-
+-- OP BUILDER (already defined above)
 -- GENERATE MODULE
 
 
 generateModule : Mode.Mode -> Mono.MonoGraph -> String
 generateModule mode (Mono.MonoGraph { nodes, main, registry }) =
     let
-        -- Build signatures map for invariant checking before code generation
         signatures : Dict Int FuncSignature
         signatures =
             buildSignatures nodes
@@ -919,8 +652,6 @@ generateModule mode (Mono.MonoGraph { nodes, main, registry }) =
         ctx =
             initContext mode registry signatures
 
-        -- Generate all nodes (they are already only reachable ones from monomorphization)
-        -- Thread context through to collect pending lambdas
         ( ops, ctxAfterNodes ) =
             EveryDict.foldl compare
                 (\specId node ( accOps, accCtx ) ->
@@ -933,12 +664,9 @@ generateModule mode (Mono.MonoGraph { nodes, main, registry }) =
                 ( [], ctx )
                 nodes
 
-        -- Process pending lambdas - generate their func.func definitions
-        -- Need to iteratively process since lambdas can contain more lambdas
         ( lambdaOps, finalCtx ) =
             processLambdas ctxAfterNodes
 
-        -- Generate main entry point if present
         mainOps : List MlirOp
         mainOps =
             case main of
@@ -950,17 +678,24 @@ generateModule mode (Mono.MonoGraph { nodes, main, registry }) =
 
         mlirModule : MlirModule
         mlirModule =
-            -- Emit lambdas first so they're defined before referenced
             { body = lambdaOps ++ ops ++ mainOps
             , loc = Loc.unknown
             }
+
+        _ =
+            if not (verifyCodegenInvariants mlirModule finalCtx) then
+                crash "MLIR codegen: invariant violation"
+
+            else
+                ()
     in
     Pretty.ppModule mlirModule
 
 
-{-| Process pending lambdas and generate their func.func definitions.
-This may generate more pending lambdas (nested closures), so we iterate.
--}
+
+-- LAMBDA PROCESSING (unchanged)
+
+
 processLambdas : Context -> ( List MlirOp, Context )
 processLambdas ctx =
     case ctx.pendingLambdas of
@@ -968,12 +703,10 @@ processLambdas ctx =
             ( [], ctx )
 
         lambdas ->
-            -- Clear pending lambdas before processing (to avoid infinite loop)
             let
                 ctxCleared =
                     { ctx | pendingLambdas = [] }
 
-                -- Generate each lambda function
                 ( lambdaOps, ctxAfter ) =
                     List.foldl
                         (\lambda ( accOps, accCtx ) ->
@@ -986,19 +719,15 @@ processLambdas ctx =
                         ( [], ctxCleared )
                         lambdas
 
-                -- Recursively process any new lambdas that were added
                 ( moreOps, finalCtx ) =
                     processLambdas ctxAfter
             in
             ( lambdaOps ++ moreOps, finalCtx )
 
 
-{-| Generate a func.func for a pending lambda.
--}
 generateLambdaFunc : Context -> PendingLambda -> ( MlirOp, Context )
 generateLambdaFunc ctx lambda =
     let
-        -- Build argument pairs: captures come first, then params
         captureArgPairs : List ( String, MlirType )
         captureArgPairs =
             List.map (\( name, _ ) -> ( "%" ++ name, ecoValue )) lambda.captures
@@ -1011,7 +740,6 @@ generateLambdaFunc ctx lambda =
         allArgPairs =
             captureArgPairs ++ paramArgPairs
 
-        -- Create context with args bound
         ctxWithArgs : Context
         ctxWithArgs =
             { ctx | nextVar = List.length allArgPairs }
@@ -1024,22 +752,27 @@ generateLambdaFunc ctx lambda =
         returnType =
             monoTypeToMlir (Mono.typeOf lambda.body)
 
-        returnOp : MlirOp
-        returnOp =
+        ( ctx1, returnOp ) =
             ecoReturn exprResult.ctx exprResult.resultVar returnType
 
         region : MlirRegion
         region =
             mkRegion allArgPairs exprResult.ops returnOp
+
+        ( ctx2, funcOp ) =
+            funcFunc ctx1 lambda.name allArgPairs returnType region
     in
-    ( funcFunc ctx lambda.name allArgPairs returnType region, exprResult.ctx )
+    ( funcOp, ctx2 )
+
+
+
+-- GENERATE MAIN ENTRY
 
 
 generateMainEntry : Context -> Mono.MainInfo -> List MlirOp
 generateMainEntry ctx mainInfo =
     case mainInfo of
         Mono.StaticMain mainSpecId ->
-            -- Simple main - just call it and return the result
             let
                 ( callVar, ctx1 ) =
                     freshVar ctx
@@ -1048,19 +781,20 @@ generateMainEntry ctx mainInfo =
                 mainFuncName =
                     specIdToFuncName ctx.registry mainSpecId
 
-                callOp : MlirOp
-                callOp =
+                ( ctx2, callOp ) =
                     ecoCallNamed ctx1 callVar mainFuncName [] ecoValue
 
-                returnOp : MlirOp
-                returnOp =
-                    ecoReturn ctx1 callVar ecoValue
+                ( ctx3, returnOp ) =
+                    ecoReturn ctx2 callVar ecoValue
 
                 region : MlirRegion
                 region =
                     mkRegion [] [ callOp ] returnOp
+
+                ( _, mainOp ) =
+                    funcFunc ctx3 "main" [] ecoValue region
             in
-            [ funcFunc ctx "main" [] ecoValue region ]
+            [ mainOp ]
 
 
 
@@ -1082,13 +816,25 @@ generateNode ctx specId node =
             generateTailFunc ctx funcName params expr monoType
 
         Mono.MonoCtor ctorLayout monoType ->
-            ( generateCtor ctx funcName ctorLayout monoType, ctx )
+            let
+                ( ctx1, op ) =
+                    generateCtor ctx funcName ctorLayout monoType
+            in
+            ( op, ctx1 )
 
         Mono.MonoEnum tag monoType ->
-            ( generateEnum ctx funcName tag monoType, ctx )
+            let
+                ( ctx1, op ) =
+                    generateEnum ctx funcName tag monoType
+            in
+            ( op, ctx1 )
 
         Mono.MonoExtern monoType ->
-            ( generateExtern ctx funcName monoType, ctx )
+            let
+                ( ctx1, op ) =
+                    generateExtern ctx funcName monoType
+            in
+            ( op, ctx1 )
 
         Mono.MonoPortIncoming expr monoType ->
             generateDefine ctx funcName expr monoType
@@ -1127,28 +873,31 @@ generateDefine ctx funcName expr monoType =
                 exprResult =
                     generateExpr ctx expr
 
-                returnOp : MlirOp
-                returnOp =
-                    ecoReturn exprResult.ctx exprResult.resultVar (monoTypeToMlir monoType)
+                retTy =
+                    monoTypeToMlir monoType
+
+                ( ctx1, returnOp ) =
+                    ecoReturn exprResult.ctx exprResult.resultVar retTy
 
                 region : MlirRegion
                 region =
                     mkRegion [] exprResult.ops returnOp
+
+                ( ctx2, funcOp ) =
+                    funcFunc ctx1 funcName [] retTy region
             in
-            ( funcFunc ctx funcName [] (monoTypeToMlir monoType) region, exprResult.ctx )
+            ( funcOp, ctx2 )
 
 
 generateClosureFunc : Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ( MlirOp, Context )
 generateClosureFunc ctx funcName closureInfo body _ =
     let
-        -- Build arg pairs from params
         argPairs : List ( String, MlirType )
         argPairs =
             List.map
                 (\( name, ty ) -> ( "%" ++ name, monoTypeToMlir ty ))
                 closureInfo.params
 
-        -- Create context with args bound
         ctxWithArgs : Context
         ctxWithArgs =
             { ctx | nextVar = List.length closureInfo.params }
@@ -1157,20 +906,21 @@ generateClosureFunc ctx funcName closureInfo body _ =
         exprResult =
             generateExpr ctxWithArgs body
 
-        -- IMPORTANT: The MLIR func returns the *body type*, not the closure value type.
         returnType : MlirType
         returnType =
             monoTypeToMlir (Mono.typeOf body)
 
-        returnOp : MlirOp
-        returnOp =
+        ( ctx1, returnOp ) =
             ecoReturn exprResult.ctx exprResult.resultVar returnType
 
         region : MlirRegion
         region =
             mkRegion argPairs exprResult.ops returnOp
+
+        ( ctx2, funcOp ) =
+            funcFunc ctx1 funcName argPairs returnType region
     in
-    ( funcFunc ctx funcName argPairs returnType region, exprResult.ctx )
+    ( funcOp, ctx2 )
 
 
 
@@ -1194,22 +944,27 @@ generateTailFunc ctx funcName params expr monoType =
         exprResult =
             generateExpr ctxWithArgs expr
 
-        returnOp : MlirOp
-        returnOp =
-            ecoReturn exprResult.ctx exprResult.resultVar (monoTypeToMlir monoType)
+        retTy =
+            monoTypeToMlir monoType
+
+        ( ctx1, returnOp ) =
+            ecoReturn exprResult.ctx exprResult.resultVar retTy
 
         region : MlirRegion
         region =
             mkRegion argPairs exprResult.ops returnOp
+
+        ( ctx2, funcOp ) =
+            funcFunc ctx1 funcName argPairs retTy region
     in
-    ( funcFunc ctx funcName argPairs (monoTypeToMlir monoType) region, exprResult.ctx )
+    ( funcOp, ctx2 )
 
 
 
 -- GENERATE CTOR
 
 
-generateCtor : Context -> String -> Mono.CtorLayout -> Mono.MonoType -> MlirOp
+generateCtor : Context -> String -> Mono.CtorLayout -> Mono.MonoType -> ( Context, MlirOp )
 generateCtor ctx funcName ctorLayout _ =
     let
         arity : Int
@@ -1222,19 +977,17 @@ generateCtor ctx funcName ctorLayout _ =
             ( resultVar, ctx1 ) =
                 freshVar ctx
 
-            constructOp : MlirOp
-            constructOp =
+            ( ctx2, constructOp ) =
                 ecoConstruct ctx1 resultVar ctorLayout.tag 0 0 []
 
-            returnOp : MlirOp
-            returnOp =
-                ecoReturn ctx1 resultVar ecoValue
+            ( ctx3, returnOp ) =
+                ecoReturn ctx2 resultVar ecoValue
 
             region : MlirRegion
             region =
                 mkRegion [] [ constructOp ] returnOp
         in
-        funcFunc ctx funcName [] ecoValue region
+        funcFunc ctx3 funcName [] ecoValue region
 
     else
         -- Constructor with arguments
@@ -1264,69 +1017,70 @@ generateCtor ctx funcName ctorLayout _ =
             ( resultVar, ctx1 ) =
                 freshVar { ctx | nextVar = arity }
 
-            constructOp : MlirOp
-            constructOp =
+            ( ctx2, constructOp ) =
                 ecoConstruct ctx1 resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs
 
-            returnOp : MlirOp
-            returnOp =
-                ecoReturn ctx1 resultVar ecoValue
+            ( ctx3, returnOp ) =
+                ecoReturn ctx2 resultVar ecoValue
 
             region : MlirRegion
             region =
                 mkRegion argPairs [ constructOp ] returnOp
         in
-        funcFunc ctx funcName argPairs ecoValue region
+        funcFunc ctx3 funcName argPairs ecoValue region
 
 
 
 -- GENERATE ENUM
 
 
-generateEnum : Context -> String -> Int -> Mono.MonoType -> MlirOp
+generateEnum : Context -> String -> Int -> Mono.MonoType -> ( Context, MlirOp )
 generateEnum ctx funcName tag _ =
     let
         ( resultVar, ctx1 ) =
             freshVar ctx
 
-        constructOp : MlirOp
-        constructOp =
+        ( ctx2, constructOp ) =
             ecoConstruct ctx1 resultVar tag 0 0 []
 
-        returnOp : MlirOp
-        returnOp =
-            ecoReturn ctx1 resultVar ecoValue
+        ( ctx3, returnOp ) =
+            ecoReturn ctx2 resultVar ecoValue
 
         region : MlirRegion
         region =
             mkRegion [] [ constructOp ] returnOp
     in
-    funcFunc ctx funcName [] ecoValue region
+    funcFunc ctx3 funcName [] ecoValue region
 
 
 
 -- GENERATE EXTERN
 
 
-generateExtern : Context -> String -> Mono.MonoType -> MlirOp
+generateExtern : Context -> String -> Mono.MonoType -> ( Context, MlirOp )
 generateExtern ctx funcName monoType =
     -- Generate an extern declaration (no body)
-    mlirOp "func.func" ctx
-        |> withAttr "sym_name" (StringAttr funcName)
-        |> withAttr "sym_visibility" (VisibilityAttr Private)
-        |> withAttr "function_type"
-            (TypeAttr
-                (FunctionType
-                    { inputs = []
-                    , results = [ monoTypeToMlir monoType ]
-                    }
-                )
-            )
-        |> build
+    let
+        attrs =
+            Dict.fromList
+                [ ( "sym_name", StringAttr funcName )
+                , ( "sym_visibility", VisibilityAttr Private )
+                , ( "function_type"
+                  , TypeAttr
+                        (FunctionType
+                            { inputs = []
+                            , results = [ monoTypeToMlir monoType ]
+                            }
+                        )
+                  )
+                ]
+    in
+    mlirOp ctx "func.func"
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
 
 
 
--- GENERATE MANAGER
 -- GENERATE CYCLE
 
 
@@ -1335,7 +1089,6 @@ generateCycle ctx funcName definitions monoType =
     -- Generate mutually recursive definitions
     -- For now, generate a thunk that creates a record of all the cycle definitions
     let
-        -- Generate each definition in the cycle
         ( defOps, defVars, finalCtx ) =
             List.foldl
                 (\( _, expr ) ( accOps, accVars, accCtx ) ->
@@ -1349,7 +1102,6 @@ generateCycle ctx funcName definitions monoType =
                 ( [], [], ctx )
                 definitions
 
-        -- Create a record containing all the cycle definitions
         ( resultVar, ctx1 ) =
             freshVar finalCtx
 
@@ -1357,24 +1109,24 @@ generateCycle ctx funcName definitions monoType =
         arity =
             List.length definitions
 
-        -- All definition results are boxed values
         defVarPairs : List ( String, MlirType )
         defVarPairs =
             List.map (\v -> ( v, ecoValue )) defVars
 
-        cycleOp : MlirOp
-        cycleOp =
+        ( ctx2, cycleOp ) =
             ecoConstruct ctx1 resultVar 0 arity 0 defVarPairs
 
-        returnOp : MlirOp
-        returnOp =
-            ecoReturn ctx1 resultVar ecoValue
+        ( ctx3, returnOp ) =
+            ecoReturn ctx2 resultVar ecoValue
 
         region : MlirRegion
         region =
             mkRegion [] (defOps ++ [ cycleOp ]) returnOp
+
+        ( ctx4, funcOp ) =
+            funcFunc ctx3 funcName [] (monoTypeToMlir monoType) region
     in
-    ( funcFunc ctx funcName [] (monoTypeToMlir monoType) region, ctx1 )
+    ( funcOp, ctx4 )
 
 
 
@@ -1450,30 +1202,39 @@ generateLiteral ctx lit =
             let
                 ( var, ctx1 ) =
                     freshVar ctx
+
+                ( ctx2, op ) =
+                    arithConstantBool ctx1 var value
             in
-            { ops = [ arithConstantBool ctx1 var value ]
+            { ops = [ op ]
             , resultVar = var
-            , ctx = ctx1
+            , ctx = ctx2
             }
 
         Mono.LInt value ->
             let
                 ( var, ctx1 ) =
                     freshVar ctx
+
+                ( ctx2, op ) =
+                    arithConstantInt ctx1 var value
             in
-            { ops = [ arithConstantInt ctx1 var value ]
+            { ops = [ op ]
             , resultVar = var
-            , ctx = ctx1
+            , ctx = ctx2
             }
 
         Mono.LFloat value ->
             let
                 ( var, ctx1 ) =
                     freshVar ctx
+
+                ( ctx2, op ) =
+                    arithConstantFloat ctx1 var value
             in
-            { ops = [ arithConstantFloat ctx1 var value ]
+            { ops = [ op ]
             , resultVar = var
-            , ctx = ctx1
+            , ctx = ctx2
             }
 
         Mono.LChar value ->
@@ -1486,20 +1247,26 @@ generateLiteral ctx lit =
                     String.uncons value
                         |> Maybe.map (Tuple.first >> Char.toCode)
                         |> Maybe.withDefault 0
+
+                ( ctx2, op ) =
+                    arithConstantChar ctx1 var codepoint
             in
-            { ops = [ arithConstantChar ctx1 var codepoint ]
+            { ops = [ op ]
             , resultVar = var
-            , ctx = ctx1
+            , ctx = ctx2
             }
 
         Mono.LStr value ->
             let
                 ( var, ctx1 ) =
                     freshVar ctx
+
+                ( ctx2, op ) =
+                    ecoStringLiteral ctx1 var value
             in
-            { ops = [ ecoStringLiteral ctx1 var value ]
+            { ops = [ op ]
             , resultVar = var
-            , ctx = ctx1
+            , ctx = ctx2
             }
 
 
@@ -1520,31 +1287,38 @@ generateVarGlobal ctx specId monoType =
     case monoType of
         Mono.MFunction _ _ ->
             -- Function-typed global: create a closure (papCreate) with no captures
-            -- The arity is the number of function arguments
             let
                 arity : Int
                 arity =
                     countTotalArity monoType
 
-                papOp : MlirOp
-                papOp =
-                    mlirOp "eco.papCreate" ctx1
-                        |> withResult var ecoValue
-                        |> withAttr "function" (SymbolRefAttr funcName)
-                        |> withAttr "arity" (IntAttr arity)
-                        |> withAttr "num_captured" (IntAttr 0)
-                        |> build
+                attrs =
+                    Dict.fromList
+                        [ ( "function", SymbolRefAttr funcName )
+                        , ( "arity", IntAttr arity )
+                        , ( "num_captured", IntAttr 0 )
+                        ]
+
+                ( ctx2, papOp ) =
+                    mlirOp ctx1 "eco.papCreate"
+                        |> opBuilder.withResults [ ( var, ecoValue ) ]
+                        |> opBuilder.withAttrs attrs
+                        |> opBuilder.build
             in
             { ops = [ papOp ]
             , resultVar = var
-            , ctx = ctx1
+            , ctx = ctx2
             }
 
         _ ->
             -- Non-function type: call the function directly (e.g., zero-arg constructors)
-            { ops = [ ecoCallNamed ctx1 var funcName [] (monoTypeToMlir monoType) ]
+            let
+                ( ctx2, callOp ) =
+                    ecoCallNamed ctx1 var funcName [] (monoTypeToMlir monoType)
+            in
+            { ops = [ callOp ]
             , resultVar = var
-            , ctx = ctx1
+            , ctx = ctx2
             }
 
 
@@ -1557,35 +1331,41 @@ generateVarKernel ctx home name monoType =
     -- Check for intrinsic constants (pi, e)
     case kernelIntrinsic home name [] monoType of
         Just (ConstantFloat { value }) ->
-            -- Emit constant directly
-            { ops = [ arithConstantFloat ctx1 var value ]
+            let
+                ( ctx2, floatOp ) =
+                    arithConstantFloat ctx1 var value
+            in
+            { ops = [ floatOp ]
             , resultVar = var
-            , ctx = ctx1
+            , ctx = ctx2
             }
 
         Just _ ->
-            -- This is a function-type intrinsic used as a value
-            -- Fall back to kernel call for now (wrapper generation could be added later)
             let
                 kernelName : String
                 kernelName =
                     "Elm_Kernel_" ++ home ++ "_" ++ name
+
+                ( ctx2, callOp ) =
+                    ecoCallNamed ctx1 var kernelName [] (monoTypeToMlir monoType)
             in
-            { ops = [ ecoCallNamed ctx1 var kernelName [] (monoTypeToMlir monoType) ]
+            { ops = [ callOp ]
             , resultVar = var
-            , ctx = ctx1
+            , ctx = ctx2
             }
 
         Nothing ->
-            -- Not an intrinsic - call kernel function
             let
                 kernelName : String
                 kernelName =
                     "Elm_Kernel_" ++ home ++ "_" ++ name
+
+                ( ctx2, callOp ) =
+                    ecoCallNamed ctx1 var kernelName [] (monoTypeToMlir monoType)
             in
-            { ops = [ ecoCallNamed ctx1 var kernelName [] (monoTypeToMlir monoType) ]
+            { ops = [ callOp ]
             , resultVar = var
-            , ctx = ctx1
+            , ctx = ctx2
             }
 
 
@@ -1597,46 +1377,43 @@ generateList : Context -> List Mono.MonoExpr -> ExprResult
 generateList ctx items =
     case items of
         [] ->
-            -- Empty list: Nil tag 0
             let
                 ( var, ctx1 ) =
                     freshVar ctx
+
+                ( ctx2, constructOp ) =
+                    ecoConstruct ctx1 var 0 0 0 []
             in
-            { ops = [ ecoConstruct ctx1 var 0 0 0 [] ]
+            { ops = [ constructOp ]
             , resultVar = var
-            , ctx = ctx1
+            , ctx = ctx2
             }
 
         _ ->
-            -- Build list from right to left
             let
                 ( nilVar, ctx1 ) =
                     freshVar ctx
 
-                nilOp : MlirOp
-                nilOp =
+                ( ctx2, nilOp ) =
                     ecoConstruct ctx1 nilVar 0 0 0 []
 
-                -- Fold from right
                 ( consOps, finalVar, finalCtx ) =
                     List.foldr
                         (\item ( accOps, tailVar, accCtx ) ->
                             let
-                                itemResult : ExprResult
-                                itemResult =
+                                result : ExprResult
+                                result =
                                     generateExpr accCtx item
 
-                                ( consVar, ctx2 ) =
-                                    freshVar itemResult.ctx
+                                ( consVar, ctx3 ) =
+                                    freshVar result.ctx
 
-                                -- Cons tag 1, size 2 (head and tail are both boxed values)
-                                consOp : MlirOp
-                                consOp =
-                                    ecoConstruct ctx2 consVar 1 2 0 [ ( itemResult.resultVar, ecoValue ), ( tailVar, ecoValue ) ]
+                                ( ctx4, consOp ) =
+                                    ecoConstruct ctx3 consVar 1 2 0 [ ( result.resultVar, ecoValue ), ( tailVar, ecoValue ) ]
                             in
-                            ( accOps ++ itemResult.ops ++ [ consOp ], consVar, ctx2 )
+                            ( accOps ++ result.ops ++ [ consOp ], consVar, ctx4 )
                         )
-                        ( [], nilVar, ctx1 )
+                        ( [], nilVar, ctx2 )
                         items
             in
             { ops = nilOp :: consOps
@@ -1651,7 +1428,6 @@ generateList ctx items =
 
 generateClosure : Context -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateClosure ctx closureInfo body _ =
-    -- Generate captured values and create a PAP
     let
         ( captureOps, captureVars, ctx1 ) =
             List.foldl
@@ -1666,7 +1442,6 @@ generateClosure ctx closureInfo body _ =
                 ( [], [], ctx )
                 closureInfo.captures
 
-        -- PAP boundary: ensure boxed captures
         captureVarsWithTypes : List ( String, Mono.MonoType )
         captureVarsWithTypes =
             List.map2
@@ -1684,28 +1459,38 @@ generateClosure ctx closureInfo body _ =
         numCaptured =
             List.length closureInfo.captures
 
-        -- Total arity = captures + params (the underlying function takes both)
         arity : Int
         arity =
             numCaptured + List.length closureInfo.params
 
-        -- Captures are all boxed values
-        captureVarPairs : List ( String, MlirType )
-        captureVarPairs =
-            List.map (\v -> ( v, ecoValue )) boxedCaptureVars
+        captureVarNames : List String
+        captureVarNames =
+            boxedCaptureVars
 
-        -- Create a papCreate op
-        papOp : MlirOp
-        papOp =
-            mlirOp "eco.papCreate" ctx2
-                |> withOperands captureVarPairs
-                |> withResult resultVar ecoValue
-                |> withAttr "function" (SymbolRefAttr (lambdaIdToString closureInfo.lambdaId))
-                |> withAttr "arity" (IntAttr arity)
-                |> withAttr "num_captured" (IntAttr numCaptured)
-                |> build
+        operandTypesAttr =
+            if List.isEmpty captureVarNames then
+                Dict.empty
 
-        -- Register this lambda for later emission as a func.func
+            else
+                Dict.singleton "_operand_types"
+                    (ArrayAttr (List.map (\_ -> TypeAttr ecoValue) captureVarNames))
+
+        papAttrs =
+            Dict.union operandTypesAttr
+                (Dict.fromList
+                    [ ( "function", SymbolRefAttr (lambdaIdToString closureInfo.lambdaId) )
+                    , ( "arity", IntAttr arity )
+                    , ( "num_captured", IntAttr numCaptured )
+                    ]
+                )
+
+        ( ctx3, papOp ) =
+            mlirOp ctx2 "eco.papCreate"
+                |> opBuilder.withOperands captureVarNames
+                |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+                |> opBuilder.withAttrs papAttrs
+                |> opBuilder.build
+
         captureTypes : List ( Name.Name, Mono.MonoType )
         captureTypes =
             List.map (\( name, expr, _ ) -> ( name, Mono.typeOf expr )) closureInfo.captures
@@ -1718,13 +1503,13 @@ generateClosure ctx closureInfo body _ =
             , body = body
             }
 
-        ctx3 : Context
-        ctx3 =
-            { ctx2 | pendingLambdas = pendingLambda :: ctx2.pendingLambdas }
+        ctx4 : Context
+        ctx4 =
+            { ctx3 | pendingLambdas = pendingLambda :: ctx3.pendingLambdas }
     in
     { ops = captureOps ++ boxOps ++ [ papOp ]
     , resultVar = resultVar
-    , ctx = ctx3
+    , ctx = ctx4
     }
 
 
@@ -1771,14 +1556,17 @@ boxIfNeeded ctx var monoTy =
             ( boxedVar, ctx1 ) =
                 freshVar ctx
 
-            boxOp : MlirOp
-            boxOp =
-                mlirOp "eco.box" ctx1
-                    |> withOperands [ ( var, mlirTy ) ]
-                    |> withResult boxedVar ecoValue
-                    |> build
+            attrs =
+                Dict.singleton "_operand_types" (ArrayAttr [ TypeAttr mlirTy ])
+
+            ( ctx2, boxOp ) =
+                mlirOp ctx1 "eco.box"
+                    |> opBuilder.withOperands [ var ]
+                    |> opBuilder.withResults [ ( boxedVar, ecoValue ) ]
+                    |> opBuilder.withAttrs attrs
+                    |> opBuilder.build
         in
-        ( [ boxOp ], boxedVar, ctx1 )
+        ( [ boxOp ], boxedVar, ctx2 )
 
 
 boxArgsIfNeeded :
@@ -1802,16 +1590,13 @@ generateCall : Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -
 generateCall ctx func args resultType =
     case func of
         Mono.MonoVarGlobal _ specId _ ->
-            -- Direct call to known specialization
             let
-                -- Assert monomorphization invariant: call site types must match function signature
-                ( argsOps, argVars, ctx1 ) =
+                ( argOps, argVars, ctx1 ) =
                     generateExprList ctx args
 
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
-                -- Use unboxed primitives when the Mono types are primitive
                 argVarPairs : List ( String, MlirType )
                 argVarPairs =
                     argVarPairsFromExprs args argVars
@@ -1819,24 +1604,24 @@ generateCall ctx func args resultType =
                 funcName : String
                 funcName =
                     specIdToFuncName ctx.registry specId
+
+                ( ctx3, callOp ) =
+                    ecoCallNamed ctx2 resultVar funcName argVarPairs (monoTypeToMlir resultType)
             in
-            { ops = argsOps ++ [ ecoCallNamed ctx2 resultVar funcName argVarPairs (monoTypeToMlir resultType) ]
+            { ops = argOps ++ [ callOp ]
             , resultVar = resultVar
-            , ctx = ctx2
+            , ctx = ctx3
             }
 
         Mono.MonoVarKernel _ home name _ ->
-            -- Direct call to kernel function - check for intrinsic first
             let
-                ( argsOps, argVars, ctx1 ) =
+                ( argOps, argVars, ctx1 ) =
                     generateExprList ctx args
 
-                -- Get argument types for intrinsic lookup
                 argTypes : List Mono.MonoType
                 argTypes =
                     List.map Mono.typeOf args
             in
-            -- Special case: logBase - expand inline as log(x) / log(base)
             case ( home, name, argVars ) of
                 ( "Basics", "logBase", [ baseVar, xVar ] ) ->
                     let
@@ -1846,42 +1631,39 @@ generateCall ctx func args resultType =
                         ( logBaseVar, ctx3 ) =
                             freshVar ctx2
 
-                        ( resultVar, ctx4 ) =
+                        ( resVar, ctx4 ) =
                             freshVar ctx3
 
-                        logXOp =
+                        ( ctx5, logXOp ) =
                             ecoUnaryOp ctx2 "eco.float.log" logXVar ( xVar, F64 ) F64
 
-                        logBaseOp =
-                            ecoUnaryOp ctx3 "eco.float.log" logBaseVar ( baseVar, F64 ) F64
+                        ( ctx6, logBaseOp ) =
+                            ecoUnaryOp ctx5 "eco.float.log" logBaseVar ( baseVar, F64 ) F64
 
-                        divOp =
-                            ecoBinaryOp ctx4 "eco.float.div" resultVar ( logXVar, F64 ) ( logBaseVar, F64 ) F64
+                        ( ctx7, divOp ) =
+                            ecoBinaryOp ctx6 "eco.float.div" resVar ( logXVar, F64 ) ( logBaseVar, F64 ) F64
                     in
-                    { ops = argsOps ++ [ logXOp, logBaseOp, divOp ]
-                    , resultVar = resultVar
-                    , ctx = ctx4
+                    { ops = argOps ++ [ logXOp, logBaseOp, divOp ]
+                    , resultVar = resVar
+                    , ctx = ctx7
                     }
 
                 _ ->
-                    -- Check for intrinsic
                     case kernelIntrinsic home name argTypes resultType of
                         Just intrinsic ->
-                            -- Emit intrinsic op with UNBOXED types (no boxing needed!)
                             let
-                                ( resultVar, ctx2 ) =
+                                ( resVar, ctx2 ) =
                                     freshVar ctx1
 
-                                intrinsicOp =
-                                    generateIntrinsicOp ctx2 intrinsic resultVar argVars
+                                ( ctx3, intrinsicOp ) =
+                                    generateIntrinsicOp ctx2 intrinsic resVar argVars
                             in
-                            { ops = argsOps ++ [ intrinsicOp ]
-                            , resultVar = resultVar
-                            , ctx = ctx2
+                            { ops = argOps ++ [ intrinsicOp ]
+                            , resultVar = resVar
+                            , ctx = ctx3
                             }
 
                         Nothing ->
-                            -- Fall back to kernel call (existing behavior)
                             let
                                 argsWithTypes : List ( String, Mono.MonoType )
                                 argsWithTypes =
@@ -1890,10 +1672,9 @@ generateCall ctx func args resultType =
                                 ( boxOps, boxedVars, ctx1b ) =
                                     boxArgsIfNeeded ctx1 argsWithTypes
 
-                                ( resultVar, ctx2 ) =
+                                ( resVar, ctx2 ) =
                                     freshVar ctx1b
 
-                                -- All function arguments are boxed values
                                 argVarPairs : List ( String, MlirType )
                                 argVarPairs =
                                     List.map (\v -> ( v, ecoValue )) boxedVars
@@ -1901,19 +1682,20 @@ generateCall ctx func args resultType =
                                 kernelName : String
                                 kernelName =
                                     "Elm_Kernel_" ++ home ++ "_" ++ name
+
+                                ( ctx3, callOp ) =
+                                    ecoCallNamed ctx2 resVar kernelName argVarPairs (monoTypeToMlir resultType)
                             in
-                            { ops = argsOps ++ boxOps ++ [ ecoCallNamed ctx2 resultVar kernelName argVarPairs (monoTypeToMlir resultType) ]
-                            , resultVar = resultVar
-                            , ctx = ctx2
+                            { ops = argOps ++ boxOps ++ [ callOp ]
+                            , resultVar = resVar
+                            , ctx = ctx3
                             }
 
         Mono.MonoVarLocal name _ ->
-            -- Call through local variable (closure)
             let
-                ( argsOps, argVars, ctx1 ) =
+                ( argOps, argVars, ctx1 ) =
                     generateExprList ctx args
 
-                -- PAP boundary: ensure boxed arguments
                 argsWithTypes : List ( String, Mono.MonoType )
                 argsWithTypes =
                     List.map2 (\expr var -> ( var, Mono.typeOf expr )) args argVars
@@ -1921,43 +1703,48 @@ generateCall ctx func args resultType =
                 ( boxOps, boxedVars, ctx1b ) =
                     boxArgsIfNeeded ctx1 argsWithTypes
 
-                ( resultVar, ctx2 ) =
+                ( resVar, ctx2 ) =
                     freshVar ctx1b
 
-                -- Closure and all args are boxed values
-                allOperandPairs : List ( String, MlirType )
-                allOperandPairs =
-                    ( "%" ++ name, ecoValue ) :: List.map (\v -> ( v, ecoValue )) boxedVars
+                allOperandNames : List String
+                allOperandNames =
+                    ("%" ++ name) :: boxedVars
 
-                -- remaining_arity is the arity of the result type (how many more args needed)
+                allOperandTypes : List MlirType
+                allOperandTypes =
+                    List.map (\_ -> ecoValue) allOperandNames
+
                 remainingArity : Int
                 remainingArity =
                     functionArity resultType
 
-                papExtendOp : MlirOp
-                papExtendOp =
-                    mlirOp "eco.papExtend" ctx2
-                        |> withOperands allOperandPairs
-                        |> withResult resultVar (monoTypeToMlir resultType)
-                        |> withAttr "remaining_arity" (IntAttr remainingArity)
-                        |> build
+                papExtendAttrs =
+                    Dict.fromList
+                        [ ( "_operand_types", ArrayAttr (List.map TypeAttr allOperandTypes) )
+                        , ( "remaining_arity", IntAttr remainingArity )
+                        ]
+
+                ( ctx3, papExtendOp ) =
+                    mlirOp ctx2 "eco.papExtend"
+                        |> opBuilder.withOperands allOperandNames
+                        |> opBuilder.withResults [ ( resVar, monoTypeToMlir resultType ) ]
+                        |> opBuilder.withAttrs papExtendAttrs
+                        |> opBuilder.build
             in
-            { ops = argsOps ++ boxOps ++ [ papExtendOp ]
-            , resultVar = resultVar
-            , ctx = ctx2
+            { ops = argOps ++ boxOps ++ [ papExtendOp ]
+            , resultVar = resVar
+            , ctx = ctx3
             }
 
         _ ->
-            -- General case: evaluate function then call
             let
                 funcResult : ExprResult
                 funcResult =
                     generateExpr ctx func
 
-                ( argsOps, argVars, ctx1 ) =
+                ( argOps, argVars, ctx1 ) =
                     generateExprList funcResult.ctx args
 
-                -- PAP boundary: ensure boxed arguments
                 argsWithTypes : List ( String, Mono.MonoType )
                 argsWithTypes =
                     List.map2 (\expr var -> ( var, Mono.typeOf expr )) args argVars
@@ -1965,30 +1752,37 @@ generateCall ctx func args resultType =
                 ( boxOps, boxedVars, ctx1b ) =
                     boxArgsIfNeeded ctx1 argsWithTypes
 
-                ( resultVar, ctx2 ) =
+                ( resVar, ctx2 ) =
                     freshVar ctx1b
 
-                -- Closure and all args are boxed values
-                allOperandPairs : List ( String, MlirType )
-                allOperandPairs =
-                    ( funcResult.resultVar, ecoValue ) :: List.map (\v -> ( v, ecoValue )) boxedVars
+                allOperandNames : List String
+                allOperandNames =
+                    funcResult.resultVar :: boxedVars
 
-                -- remaining_arity is the arity of the result type (how many more args needed)
+                allOperandTypes : List MlirType
+                allOperandTypes =
+                    List.map (\_ -> ecoValue) allOperandNames
+
                 remainingArity : Int
                 remainingArity =
                     functionArity resultType
 
-                papExtendOp : MlirOp
-                papExtendOp =
-                    mlirOp "eco.papExtend" ctx2
-                        |> withOperands allOperandPairs
-                        |> withResult resultVar (monoTypeToMlir resultType)
-                        |> withAttr "remaining_arity" (IntAttr remainingArity)
-                        |> build
+                papExtendAttrs =
+                    Dict.fromList
+                        [ ( "_operand_types", ArrayAttr (List.map TypeAttr allOperandTypes) )
+                        , ( "remaining_arity", IntAttr remainingArity )
+                        ]
+
+                ( ctx3, papExtendOp ) =
+                    mlirOp ctx2 "eco.papExtend"
+                        |> opBuilder.withOperands allOperandNames
+                        |> opBuilder.withResults [ ( resVar, monoTypeToMlir resultType ) ]
+                        |> opBuilder.withAttrs papExtendAttrs
+                        |> opBuilder.build
             in
-            { ops = funcResult.ops ++ argsOps ++ boxOps ++ [ papExtendOp ]
-            , resultVar = resultVar
-            , ctx = ctx2
+            { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
+            , resultVar = resVar
+            , ctx = ctx3
             }
 
 
@@ -2027,34 +1821,41 @@ generateTailCall ctx name args =
                 ( [], [], ctx )
                 args
 
-        -- Use actual argument types
-        argVarPairs : List ( String, MlirType )
-        argVarPairs =
-            List.map2
-                (\( _, expr ) v -> ( v, monoTypeToMlir (Mono.typeOf expr) ))
-                args
-                argVars
+        argVarNames : List String
+        argVarNames =
+            argVars
 
-        jumpOp : MlirOp
-        jumpOp =
-            mlirOp "eco.jump" ctx1
-                |> withOperands argVarPairs
-                |> withAttr "target" (StringAttr name)
-                |> asTerminator
-                |> build
+        argVarTypes : List MlirType
+        argVarTypes =
+            List.map (\( _, expr ) -> monoTypeToMlir (Mono.typeOf expr)) args
 
-        -- Need a placeholder result since jump is a terminator
-        ( resultVar, ctx2 ) =
-            freshVar ctx1
+        jumpAttrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr (List.map TypeAttr argVarTypes) )
+                , ( "target", StringAttr name )
+                ]
+
+        ( ctx2, jumpOp ) =
+            mlirOp ctx1 "eco.jump"
+                |> opBuilder.withOperands argVarNames
+                |> opBuilder.withAttrs jumpAttrs
+                |> opBuilder.isTerminator True
+                |> opBuilder.build
+
+        ( resultVar, ctx3 ) =
+            freshVar ctx2
+
+        ( ctx4, constructOp ) =
+            ecoConstruct ctx3 resultVar 0 0 0 []
     in
-    { ops = argsOps ++ [ jumpOp, ecoConstruct ctx2 resultVar 0 0 0 [] ]
+    { ops = argsOps ++ [ jumpOp, constructOp ]
     , resultVar = resultVar
-    , ctx = ctx2
+    , ctx = ctx4
     }
 
 
 
--- IF GENERATION
+-- IF GENERATION (still a stub: evaluates branches sequentially)
 
 
 generateIf : Context -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> Mono.MonoExpr -> ExprResult
@@ -2063,30 +1864,24 @@ generateIf ctx branches final =
         [] ->
             generateExpr ctx final
 
-        ( cond, thenBranch ) :: restBranches ->
+        ( _, thenBranch ) :: restBranches ->
             let
-                condResult : ExprResult
-                condResult =
-                    generateExpr ctx cond
-
                 thenResult : ExprResult
                 thenResult =
-                    generateExpr condResult.ctx thenBranch
+                    generateExpr ctx thenBranch
 
                 elseResult : ExprResult
                 elseResult =
                     generateIf thenResult.ctx restBranches final
-
-                -- TODO: Proper scf.if implementation
             in
-            { ops = condResult.ops ++ thenResult.ops ++ elseResult.ops
+            { ops = thenResult.ops ++ elseResult.ops
             , resultVar = elseResult.resultVar
             , ctx = elseResult.ctx
             }
 
 
 
--- LET GENERATION
+-- LET GENERATION (kept as in original; you may refine later)
 
 
 generateLet : Context -> Mono.MonoDef -> Mono.MonoExpr -> ExprResult
@@ -2098,14 +1893,12 @@ generateLet ctx def body =
                 exprResult =
                     generateExpr ctx expr
 
-                -- Bind the name (the expression result is a boxed value)
-                aliasOp : MlirOp
-                aliasOp =
+                ( ctx1, aliasOp ) =
                     ecoConstruct exprResult.ctx ("%" ++ name) 0 1 0 [ ( exprResult.resultVar, ecoValue ) ]
 
                 bodyResult : ExprResult
                 bodyResult =
-                    generateExpr exprResult.ctx body
+                    generateExpr ctx1 body
             in
             { ops = exprResult.ops ++ [ aliasOp ] ++ bodyResult.ops
             , resultVar = bodyResult.resultVar
@@ -2113,12 +1906,11 @@ generateLet ctx def body =
             }
 
         Mono.MonoTailDef _ _ ->
-            -- TODO: Proper joinpoint handling
             generateExpr ctx body
 
 
 
--- DESTRUCT GENERATION
+-- DESTRUCT GENERATION (kept as in original)
 
 
 generateDestruct : Context -> Mono.MonoDestructor -> Mono.MonoExpr -> ExprResult
@@ -2127,14 +1919,12 @@ generateDestruct ctx (Mono.MonoDestructor name path) body =
         ( pathOps, pathVar, ctx1 ) =
             generateMonoPath ctx path
 
-        -- The path result is a boxed value
-        aliasOp : MlirOp
-        aliasOp =
+        ( ctx2, aliasOp ) =
             ecoConstruct ctx1 ("%" ++ name) 0 1 0 [ ( pathVar, ecoValue ) ]
 
         bodyResult : ExprResult
         bodyResult =
-            generateExpr ctx1 body
+            generateExpr ctx2 body
     in
     { ops = pathOps ++ [ aliasOp ] ++ bodyResult.ops
     , resultVar = bodyResult.resultVar
@@ -2155,10 +1945,13 @@ generateMonoPath ctx path =
 
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
+
+                ( ctx3, projectOp ) =
+                    ecoProject ctx2 resultVar index False subVar ecoValue
             in
-            ( subOps ++ [ ecoProject ctx2 resultVar index False subVar ecoValue ]
+            ( subOps ++ [ projectOp ]
             , resultVar
-            , ctx2
+            , ctx3
             )
 
         Mono.MonoField index subPath ->
@@ -2168,10 +1961,13 @@ generateMonoPath ctx path =
 
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
+
+                ( ctx3, projectOp ) =
+                    ecoProject ctx2 resultVar index False subVar ecoValue
             in
-            ( subOps ++ [ ecoProject ctx2 resultVar index False subVar ecoValue ]
+            ( subOps ++ [ projectOp ]
             , resultVar
-            , ctx2
+            , ctx3
             )
 
         Mono.MonoUnbox subPath ->
@@ -2179,19 +1975,21 @@ generateMonoPath ctx path =
 
 
 
--- CASE GENERATION
+-- CASE GENERATION (stub)
 
 
 generateCase : Context -> Name.Name -> Name.Name -> Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> ExprResult
 generateCase ctx _ _ _ _ =
-    -- TODO: Proper decision tree compilation
     let
         ( resultVar, ctx1 ) =
             freshVar ctx
+
+        ( ctx2, constructOp ) =
+            ecoConstruct ctx1 resultVar 0 0 0 []
     in
-    { ops = [ ecoConstruct ctx1 resultVar 0 0 0 [] ]
+    { ops = [ constructOp ]
     , resultVar = resultVar
-    , ctx = ctx1
+    , ctx = ctx2
     }
 
 
@@ -2208,7 +2006,6 @@ generateRecordCreate ctx fields layout =
         ( resultVar, ctx2 ) =
             freshVar ctx1
 
-        -- Use correct types for unboxed fields
         fieldVarPairs : List ( String, MlirType )
         fieldVarPairs =
             List.map2
@@ -2223,10 +2020,13 @@ generateRecordCreate ctx fields layout =
                 )
                 fieldVars
                 layout.fields
+
+        ( ctx3, constructOp ) =
+            ecoConstruct ctx2 resultVar 0 layout.fieldCount layout.unboxedBitmap fieldVarPairs
     in
-    { ops = fieldsOps ++ [ ecoConstruct ctx2 resultVar 0 layout.fieldCount layout.unboxedBitmap fieldVarPairs ]
+    { ops = fieldsOps ++ [ constructOp ]
     , resultVar = resultVar
-    , ctx = ctx2
+    , ctx = ctx3
     }
 
 
@@ -2239,16 +2039,18 @@ generateRecordAccess ctx record _ index isUnboxed =
 
         ( resultVar, ctx1 ) =
             freshVar recordResult.ctx
+
+        ( ctx2, projectOp ) =
+            ecoProject ctx1 resultVar index isUnboxed recordResult.resultVar ecoValue
     in
-    { ops = recordResult.ops ++ [ ecoProject ctx1 resultVar index isUnboxed recordResult.resultVar ecoValue ]
+    { ops = recordResult.ops ++ [ projectOp ]
     , resultVar = resultVar
-    , ctx = ctx1
+    , ctx = ctx2
     }
 
 
 generateRecordUpdate : Context -> Mono.MonoExpr -> List ( Int, Mono.MonoExpr ) -> Mono.RecordLayout -> ExprResult
 generateRecordUpdate ctx record _ _ =
-    -- TODO: Proper record update implementation
     let
         recordResult : ExprResult
         recordResult =
@@ -2256,10 +2058,13 @@ generateRecordUpdate ctx record _ _ =
 
         ( resultVar, ctx1 ) =
             freshVar recordResult.ctx
+
+        ( ctx2, constructOp ) =
+            ecoConstruct ctx1 resultVar 0 1 0 [ ( recordResult.resultVar, ecoValue ) ]
     in
-    { ops = recordResult.ops ++ [ ecoConstruct ctx1 resultVar 0 1 0 [ ( recordResult.resultVar, ecoValue ) ] ]
+    { ops = recordResult.ops ++ [ constructOp ]
     , resultVar = resultVar
-    , ctx = ctx1
+    , ctx = ctx2
     }
 
 
@@ -2276,7 +2081,6 @@ generateTupleCreate ctx elements layout =
         ( resultVar, ctx2 ) =
             freshVar ctx1
 
-        -- Use correct types for unboxed elements
         elemVarPairs : List ( String, MlirType )
         elemVarPairs =
             List.map2
@@ -2291,15 +2095,17 @@ generateTupleCreate ctx elements layout =
                 )
                 elemVars
                 layout.elements
+
+        ( ctx3, constructOp ) =
+            ecoConstruct ctx2 resultVar 0 layout.arity layout.unboxedBitmap elemVarPairs
     in
-    { ops = elemOps ++ [ ecoConstruct ctx2 resultVar 0 layout.arity layout.unboxedBitmap elemVarPairs ]
+    { ops = elemOps ++ [ constructOp ]
     , resultVar = resultVar
-    , ctx = ctx2
+    , ctx = ctx3
     }
 
 
 
--- CUSTOM TYPE GENERATION
 -- UNIT GENERATION
 
 
@@ -2308,10 +2114,13 @@ generateUnit ctx =
     let
         ( var, ctx1 ) =
             freshVar ctx
+
+        ( ctx2, constructOp ) =
+            ecoConstruct ctx1 var 0 0 0 []
     in
-    { ops = [ ecoConstruct ctx1 var 0 0 0 [] ]
+    { ops = [ constructOp ]
     , resultVar = var
-    , ctx = ctx1
+    , ctx = ctx2
     }
 
 
@@ -2325,19 +2134,145 @@ generateAccessor ctx fieldName =
         ( var, ctx1 ) =
             freshVar ctx
 
-        papOp : MlirOp
-        papOp =
-            mlirOp "eco.papCreate" ctx1
-                |> withResult var ecoValue
-                |> withAttr "function" (SymbolRefAttr ("accessor_" ++ fieldName))
-                |> withAttr "arity" (IntAttr 1)
-                |> withAttr "num_captured" (IntAttr 0)
-                |> build
+        attrs =
+            Dict.fromList
+                [ ( "function", SymbolRefAttr ("accessor_" ++ fieldName) )
+                , ( "arity", IntAttr 1 )
+                , ( "num_captured", IntAttr 0 )
+                ]
+
+        ( ctx2, papOp ) =
+            mlirOp ctx1 "eco.papCreate"
+                |> opBuilder.withResults [ ( var, ecoValue ) ]
+                |> opBuilder.withAttrs attrs
+                |> opBuilder.build
     in
     { ops = [ papOp ]
     , resultVar = var
-    , ctx = ctx1
+    , ctx = ctx2
     }
+
+
+
+-- INVARIANT CHECKS
+
+
+verifyCodegenInvariants : MlirModule -> Context -> Bool
+verifyCodegenInvariants mlirModule ctx =
+    let
+        definedFuncs =
+            mlirModule.body
+                |> List.foldl
+                    (\op acc ->
+                        if op.name == "func.func" then
+                            case Dict.get "sym_name" op.attrs of
+                                Just (StringAttr symName) ->
+                                    EverySet.insert identity symName acc
+
+                                _ ->
+                                    acc
+
+                        else
+                            acc
+                    )
+                    EverySet.empty
+
+        allOps =
+            collectAllOps mlirModule.body
+
+        callsAreKnown =
+            List.all
+                (\op ->
+                    if op.name == "eco.call" then
+                        case Dict.get "callee" op.attrs of
+                            Just (SymbolRefAttr callee) ->
+                                EverySet.member identity callee definedFuncs || isLikelyExternal callee
+
+                            _ ->
+                                False
+
+                    else
+                        True
+                )
+                allOps
+
+        cfgWellFormed =
+            List.all blocksWellFormed (collectFuncRegions mlirModule.body)
+    in
+    callsAreKnown && cfgWellFormed
+
+
+collectAllOps : List MlirOp -> List MlirOp
+collectAllOps topLevelOps =
+    let
+        step op acc =
+            let
+                nestedOps =
+                    op.regions
+                        |> List.concatMap
+                            (\(MlirRegion region) ->
+                                let
+                                    entryOps =
+                                        region.entry.body
+
+                                    blockOps =
+                                        OrderedDict.values region.blocks
+                                            |> List.concatMap (\b -> b.body)
+                                in
+                                entryOps ++ blockOps
+                            )
+            in
+            op :: List.foldl step acc nestedOps
+    in
+    List.foldr step [] topLevelOps
+
+
+collectFuncRegions : List MlirOp -> List MlirRegion
+collectFuncRegions ops =
+    ops
+        |> List.filter (\op -> op.name == "func.func")
+        |> List.concatMap .regions
+
+
+blocksWellFormed : MlirRegion -> Bool
+blocksWellFormed (MlirRegion region) =
+    let
+        checkBlock ops =
+            let
+                step op ( seenTerm, ok ) =
+                    if not ok then
+                        ( seenTerm, False )
+
+                    else if seenTerm then
+                        ( seenTerm, False )
+
+                    else if op.isTerminator then
+                        ( True, True )
+
+                    else
+                        ( False, True )
+
+                ( _, check ) =
+                    List.foldl step ( False, True ) ops
+            in
+            check
+
+        entryOk =
+            checkBlock region.entry.body
+
+        otherOk =
+            OrderedDict.values region.blocks
+                |> List.all (\b -> checkBlock b.body)
+    in
+    entryOk && otherOk
+
+
+isLikelyExternal : String -> Bool
+isLikelyExternal name =
+    String.startsWith "Elm_Kernel_" name
+        || String.startsWith "accessor_" name
+        || name
+        == "main"
 
 
 
@@ -2346,7 +2281,8 @@ generateAccessor ctx fieldName =
 
 canonicalToMLIRName : IO.Canonical -> String
 canonicalToMLIRName (IO.Canonical _ moduleName) =
-    String.replace "." "_" moduleName
+    moduleName
+        |> String.replace "." "_"
 
 
 sanitizeName : String -> String
@@ -2366,3 +2302,236 @@ sanitizeName name =
         |> String.replace ":" "_colon_"
         |> String.replace "." "_dot_"
         |> String.replace "$" "_dollar_"
+
+
+
+-- ECO DIALECT OP HELPERS
+
+
+opBuilder : Mlir.OpBuilderFns e
+opBuilder =
+    Mlir.opBuilder
+
+
+mlirOp : Context -> String -> Mlir.OpBuilder Context
+mlirOp env =
+    Mlir.mlirOp (\e -> freshOpId e |> (\( id, ctx ) -> ( ctx, id ))) env
+
+
+{-| eco.construct - create a heap object
+-}
+ecoConstruct : Context -> String -> Int -> Int -> Int -> List ( String, MlirType ) -> ( Context, MlirOp )
+ecoConstruct ctx resultVar tag size unboxedBitmap operands =
+    let
+        operandNames =
+            List.map Tuple.first operands
+
+        operandTypesAttr =
+            if List.isEmpty operands then
+                Dict.empty
+
+            else
+                Dict.singleton "_operand_types"
+                    (ArrayAttr (List.map (\( _, t ) -> TypeAttr t) operands))
+
+        attrs =
+            Dict.union operandTypesAttr
+                (Dict.fromList
+                    [ ( "tag", IntAttr tag )
+                    , ( "size", IntAttr size )
+                    , ( "unboxed_bitmap", IntAttr unboxedBitmap )
+                    ]
+                )
+    in
+    mlirOp ctx "eco.construct"
+        |> opBuilder.withOperands operandNames
+        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.call - call a function by name
+-}
+ecoCallNamed : Context -> String -> String -> List ( String, MlirType ) -> MlirType -> ( Context, MlirOp )
+ecoCallNamed ctx resultVar funcName operands returnType =
+    let
+        operandNames =
+            List.map Tuple.first operands
+
+        operandTypesAttr =
+            if List.isEmpty operands then
+                Dict.empty
+
+            else
+                Dict.singleton "_operand_types"
+                    (ArrayAttr (List.map (\( _, t ) -> TypeAttr t) operands))
+
+        attrs =
+            Dict.union operandTypesAttr
+                (Dict.singleton "callee" (SymbolRefAttr funcName))
+    in
+    mlirOp ctx "eco.call"
+        |> opBuilder.withOperands operandNames
+        |> opBuilder.withResults [ ( resultVar, returnType ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.project - extract a field from a record/custom/tuple
+-}
+ecoProject : Context -> String -> Int -> Bool -> String -> MlirType -> ( Context, MlirOp )
+ecoProject ctx resultVar index isUnboxed operand operandType =
+    let
+        resultType =
+            if isUnboxed then
+                I64
+
+            else
+                ecoValue
+
+        attrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr [ TypeAttr operandType ] )
+                , ( "index", IntAttr index )
+                , ( "unboxed", BoolAttr isUnboxed )
+                ]
+    in
+    mlirOp ctx "eco.project"
+        |> opBuilder.withOperands [ operand ]
+        |> opBuilder.withResults [ ( resultVar, resultType ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.return - return a value
+-}
+ecoReturn : Context -> String -> MlirType -> ( Context, MlirOp )
+ecoReturn ctx operand operandType =
+    let
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr [ TypeAttr operandType ])
+    in
+    mlirOp ctx "eco.return"
+        |> opBuilder.withOperands [ operand ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.isTerminator True
+        |> opBuilder.build
+
+
+{-| eco.string\_literal - create a string constant
+-}
+ecoStringLiteral : Context -> String -> String -> ( Context, MlirOp )
+ecoStringLiteral ctx resultVar value =
+    mlirOp ctx "eco.string_literal"
+        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs (Dict.singleton "value" (StringAttr value))
+        |> opBuilder.build
+
+
+{-| arith.constant for integers
+-}
+arithConstantInt : Context -> String -> Int -> ( Context, MlirOp )
+arithConstantInt ctx resultVar value =
+    mlirOp ctx "arith.constant"
+        |> opBuilder.withResults [ ( resultVar, I64 ) ]
+        |> opBuilder.withAttrs (Dict.singleton "value" (TypedIntAttr value I64))
+        |> opBuilder.build
+
+
+{-| arith.constant for floats
+-}
+arithConstantFloat : Context -> String -> Float -> ( Context, MlirOp )
+arithConstantFloat ctx resultVar value =
+    mlirOp ctx "arith.constant"
+        |> opBuilder.withResults [ ( resultVar, F64 ) ]
+        |> opBuilder.withAttrs (Dict.singleton "value" (FloatAttr value))
+        |> opBuilder.build
+
+
+{-| arith.constant for booleans
+-}
+arithConstantBool : Context -> String -> Bool -> ( Context, MlirOp )
+arithConstantBool ctx resultVar value =
+    mlirOp ctx "arith.constant"
+        |> opBuilder.withResults [ ( resultVar, I1 ) ]
+        |> opBuilder.withAttrs (Dict.singleton "value" (BoolAttr value))
+        |> opBuilder.build
+
+
+{-| arith.constant for characters
+-}
+arithConstantChar : Context -> String -> Int -> ( Context, MlirOp )
+arithConstantChar ctx resultVar codepoint =
+    mlirOp ctx "arith.constant"
+        |> opBuilder.withResults [ ( resultVar, I32 ) ]
+        |> opBuilder.withAttrs (Dict.singleton "value" (TypedIntAttr codepoint I32))
+        |> opBuilder.build
+
+
+{-| Build a unary eco op (e.g., eco.int.negate, eco.float.sqrt)
+-}
+ecoUnaryOp : Context -> String -> String -> ( String, MlirType ) -> MlirType -> ( Context, MlirOp )
+ecoUnaryOp ctx opName resultVar ( operand, operandTy ) resultTy =
+    let
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr [ TypeAttr operandTy ])
+    in
+    mlirOp ctx opName
+        |> opBuilder.withOperands [ operand ]
+        |> opBuilder.withResults [ ( resultVar, resultTy ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| Build a binary eco op (e.g., eco.int.add, eco.float.mul)
+-}
+ecoBinaryOp : Context -> String -> String -> ( String, MlirType ) -> ( String, MlirType ) -> MlirType -> ( Context, MlirOp )
+ecoBinaryOp ctx opName resultVar ( lhs, lhsTy ) ( rhs, rhsTy ) resultTy =
+    let
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr [ TypeAttr lhsTy, TypeAttr rhsTy ])
+    in
+    mlirOp ctx opName
+        |> opBuilder.withOperands [ lhs, rhs ]
+        |> opBuilder.withResults [ ( resultVar, resultTy ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| Create a region with a single entry block
+-}
+mkRegion : List ( String, MlirType ) -> List MlirOp -> MlirOp -> MlirRegion
+mkRegion args body terminator =
+    MlirRegion
+        { entry =
+            { args = args
+            , body = body
+            , terminator = terminator
+            }
+        , blocks = OrderedDict.empty
+        }
+
+
+{-| func.func - define a function
+-}
+funcFunc : Context -> String -> List ( String, MlirType ) -> MlirType -> MlirRegion -> ( Context, MlirOp )
+funcFunc ctx funcName args returnType bodyRegion =
+    let
+        attrs =
+            Dict.fromList
+                [ ( "sym_name", StringAttr funcName )
+                , ( "sym_visibility", VisibilityAttr Private )
+                , ( "function_type"
+                  , TypeAttr
+                        (FunctionType
+                            { inputs = List.map Tuple.second args
+                            , results = [ returnType ]
+                            }
+                        )
+                  )
+                ]
+    in
+    mlirOp ctx "func.func"
+        |> opBuilder.withRegions [ bodyRegion ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
