@@ -1963,16 +1963,16 @@ constraintFromName name =
         Mono.CNumber
 
     else if Name.isComparableType name then
-        Mono.CComparable
+        Mono.CEcoValue
 
     else if Name.isAppendableType name then
-        Mono.CAppendable
+        Mono.CEcoValue
 
     else if Name.isCompappendType name then
-        Mono.CCompAppend
+        Mono.CEcoValue
 
     else
-        Mono.CAny
+        Mono.CEcoValue
 
 
 

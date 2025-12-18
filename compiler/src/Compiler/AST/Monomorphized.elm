@@ -90,7 +90,35 @@ import System.TypeCheck.IO as IO
 -- ============================================================================
 
 
-{-| A fully monomorphized type with no type variables remaining.
+{-| Monomorphized type used by the MLIR backend.
+
+This type represents the fully elaborated runtime shape of values after
+monomorphization. All concrete instantiations of source types (including
+primitives, functions, lists, tuples, records, and custom types) must appear
+here as `MInt`, `MFloat`, `MList`, `MTuple`, etc.
+
+Type variables only remain in the form of `MVar` with an attached `Constraint`
+when their exact runtime type is either:
+
+  - Guaranteed to be represented as a boxed `eco.value` (`CEcoValue`), or
+  - A numeric type (`CNumber`) that is waiting to be resolved to `MInt` or
+    `MFloat` during specialization.
+
+INVARIANTS BY PHASE:
+
+  - Before codegen:
+      - `MVar _ CNumber` is allowed as an intermediate result of
+        monomorphization and must be resolved to either `MInt` or `MFloat`
+        for any reachable code path that performs numeric operations.
+      - `MVar _ CEcoValue` is allowed for positions whose concrete type does
+        not affect layout (always boxed) and may remain until codegen.
+
+  - At MLIR codegen time:
+      - No `MVar _ CNumber` may remain in any reachable `MonoType`. Such
+        a case indicates a failed specialization and is a compiler bug.
+      - Any remaining `MVar _ CEcoValue` is treated as a boxed `eco.value`
+        in the target representation.
+
 -}
 type MonoType
     = MInt
@@ -104,17 +132,37 @@ type MonoType
     | MRecord RecordLayout
     | MCustom IO.Canonical Name (List MonoType)
     | MFunction (List MonoType) MonoType
-    | MVar Name Constraint -- Unspecialized type var
+    | MVar Name Constraint
 
 
-{-| Possibly constrained type vars.
+{-| Constraint on an unspecialized type variable in `MonoType`.
+
+These constraints record how much is known about a type variable after
+monomorphization and determine what obligations remain before codegen.
+
+  - `CEcoValue`:
+    The variable's concrete Elm type is erased in the backend and is
+    always represented as a boxed `eco.value`. Its precise source type
+    does not influence layout or calling convention; it is only tracked
+    for comparison/debugging purposes. It is safe (and expected) for
+    `MVar _ CEcoValue` to survive to MLIR codegen, where it is lowered
+    uniformly to `eco.value`.
+
+  - `CNumber`:
+    The variable is known to be a numeric type (`Int` or `Float` in Elm).
+    This variable MUST be resolved to either `MInt` or `MFloat` by the
+    monomorphization/specialization phase for all reachable code paths
+    that perform numeric operations. Any occurrence of `MVar _ CNumber`
+    in a `MonoType` that reaches MLIR codegen is a compiler bug.
+
+In other words, `CEcoValue` marks "erased / always boxed" variables that can
+remain polymorphic at the backend, while `CNumber` marks numeric variables
+that must be fully specialized before code generation.
+
 -}
 type Constraint
-    = CAny -- Unconstrained phantom
+    = CEcoValue
     | CNumber
-    | CComparable
-    | CAppendable
-    | CCompAppend
 
 
 
@@ -607,20 +655,11 @@ toComparableMonoType monoType =
 constraintToString : Constraint -> String
 constraintToString constraint =
     case constraint of
-        CAny ->
-            "any"
+        CEcoValue ->
+            "ecovalue"
 
         CNumber ->
             "number"
-
-        CComparable ->
-            "comparable"
-
-        CAppendable ->
-            "appendable"
-
-        CCompAppend ->
-            "compappend"
 
 
 {-| Convert a lambda ID to a comparable key for use in dictionaries.

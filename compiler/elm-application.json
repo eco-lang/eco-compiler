@@ -26,7 +26,6 @@
         "Builder.Stuff",
         "Codec.Archive.Zip",
         "Common.Format",
-        "Common.Format.Bimap",
         "Common.Format.Box",
         "Common.Format.Cheapskate.Inlines",
         "Common.Format.Cheapskate.Parse",
