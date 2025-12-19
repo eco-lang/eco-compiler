@@ -100,6 +100,7 @@
         "Compiler.Optimize.Erased.Port",
         "Compiler.Optimize.Typed.Case",
         "Compiler.Optimize.Typed.Expression",
+        "Compiler.Optimize.Typed.KernelTypes",
         "Compiler.Optimize.Typed.Module",
         "Compiler.Optimize.Typed.Names",
         "Compiler.Optimize.Typed.Port",

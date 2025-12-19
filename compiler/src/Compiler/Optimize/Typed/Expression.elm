@@ -43,12 +43,24 @@ import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Optimize.Typed.Case as Case
+import Compiler.Optimize.Typed.KernelTypes as KernelTypes
 import Compiler.Optimize.Typed.Names as Names
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
+
+
+{-| Result of destructuring a pattern with type and bindings.
+Used to return all the information from pattern destructuring.
+-}
+type alias DestructResult =
+    { locName : A.Located Name
+    , tipe : Can.Type
+    , destructors : List TOpt.Destructor
+    , bindings : List ( Name, Can.Type )
+    }
 
 
 
@@ -73,8 +85,8 @@ type alias Annotations =
 Converts a canonical expression to a typed optimized form while preserving full type information.
 Tracks dependencies and maintains type context for all subexpressions.
 -}
-optimize : Cycle -> Annotations -> Can.Expr -> Names.Tracker TOpt.Expr
-optimize cycle annotations (A.At region expression) =
+optimize : KernelTypes.KernelTypeEnv -> Cycle -> Annotations -> Can.Expr -> Names.Tracker TOpt.Expr
+optimize kernelEnv cycle annotations (A.At region expression) =
     case expression of
         Can.VarLocal name ->
             Names.getVarType name
@@ -105,15 +117,21 @@ optimize cycle annotations (A.At region expression) =
                 Names.registerGlobal region home name tipe
 
         Can.VarKernel home name ->
-            -- Kernel vars don't have type annotations in the canonical AST.
-            -- Use a type variable as a placeholder - the actual type will be
-            -- determined when this is used in context (e.g., in a call).
+            -- Look up the kernel type from the module's kernel type environment.
+            -- This gives us real function types derived from the Elm aliases.
             let
-                placeholderType : Can.Type
-                placeholderType =
-                    Can.TVar ("kernel_" ++ home ++ "_" ++ name)
+                tipe : Can.Type
+                tipe =
+                    case KernelTypes.lookup home name kernelEnv of
+                        Just t ->
+                            t
+
+                        Nothing ->
+                            -- Fallback to placeholder during rollout.
+                            -- Once all kernel aliases are covered, this could be a crash.
+                            Can.TVar ("kernel_" ++ home ++ "_" ++ name)
             in
-            Names.registerKernel home (TOpt.VarKernel region home name placeholderType)
+            Names.registerKernel home (TOpt.VarKernel region home name tipe)
 
         Can.VarForeign home name annotation ->
             let
@@ -160,7 +178,7 @@ optimize cycle annotations (A.At region expression) =
             Names.pure (TOpt.Float region float floatType)
 
         Can.List entries ->
-            Names.traverse (optimize cycle annotations) entries
+            Names.traverse (optimize kernelEnv cycle annotations) entries
                 |> Names.andThen
                     (\items ->
                         let
@@ -185,7 +203,7 @@ optimize cycle annotations (A.At region expression) =
             Names.registerGlobal region ModuleName.basics Name.negate negateType
                 |> Names.andThen
                     (\func ->
-                        optimize cycle annotations expr
+                        optimize kernelEnv cycle annotations expr
                             |> Names.map
                                 (\arg ->
                                     let
@@ -206,10 +224,10 @@ optimize cycle annotations (A.At region expression) =
             Names.registerGlobal region home name opType
                 |> Names.andThen
                     (\optFunc ->
-                        optimize cycle annotations left
+                        optimize kernelEnv cycle annotations left
                             |> Names.andThen
                                 (\optLeft ->
-                                    optimize cycle annotations right
+                                    optimize kernelEnv cycle annotations right
                                         |> Names.map
                                             (\optRight ->
                                                 let
@@ -225,15 +243,19 @@ optimize cycle annotations (A.At region expression) =
         Can.Lambda args body ->
             destructArgs annotations args
                 |> Names.andThen
-                    (\( typedArgNames, destructors ) ->
+                    (\( typedArgNames, destructors, bindings ) ->
                         let
-                            -- Extend context with argument types
+                            -- Extend context with all bindings (includes nested pattern variables)
                             argTypes : List ( Name, Can.Type )
                             argTypes =
                                 List.map (\( loc, t ) -> ( A.toValue loc, t )) typedArgNames
+
+                            allBindings : List ( Name, Can.Type )
+                            allBindings =
+                                argTypes ++ bindings
                         in
-                        Names.withVarTypes argTypes
-                            (optimize cycle annotations body)
+                        Names.withVarTypes allBindings
+                            (optimize kernelEnv cycle annotations body)
                             |> Names.map
                                 (\obody ->
                                     let
@@ -250,10 +272,10 @@ optimize cycle annotations (A.At region expression) =
                     )
 
         Can.Call func args ->
-            optimize cycle annotations func
+            optimize kernelEnv cycle annotations func
                 |> Names.andThen
                     (\optFunc ->
-                        Names.traverse (optimize cycle annotations) args
+                        Names.traverse (optimize kernelEnv cycle annotations) args
                             |> Names.map
                                 (\optArgs ->
                                     let
@@ -273,17 +295,17 @@ optimize cycle annotations (A.At region expression) =
             let
                 optimizeBranch : ( Can.Expr, Can.Expr ) -> Names.Tracker ( TOpt.Expr, TOpt.Expr )
                 optimizeBranch ( condition, branch ) =
-                    optimize cycle annotations condition
+                    optimize kernelEnv cycle annotations condition
                         |> Names.andThen
                             (\expr ->
-                                optimize cycle annotations branch
+                                optimize kernelEnv cycle annotations branch
                                     |> Names.map (Tuple.pair expr)
                             )
             in
             Names.traverse optimizeBranch branches
                 |> Names.andThen
                     (\optimizedBranches ->
-                        optimize cycle annotations finally
+                        optimize kernelEnv cycle annotations finally
                             |> Names.map
                                 (\ofinally ->
                                     let
@@ -296,22 +318,28 @@ optimize cycle annotations (A.At region expression) =
                     )
 
         Can.Let def body ->
-            optimizeDefAndBody cycle annotations def body
+            optimizeDefAndBody kernelEnv cycle annotations def body
 
         Can.LetRec defs body ->
             case defs of
                 [ def ] ->
-                    optimizePotentialTailCallDef cycle annotations def
+                    optimizePotentialTailCallDef kernelEnv cycle annotations def
                         |> Names.andThen
                             (\tailCallDef ->
                                 let
-                                    -- Get the name and type from the def
+                                    -- Extract name and type from the optimized def,
+                                    -- instead of using annotations.
                                     ( defName, defType ) =
-                                        getDefNameAndType def annotations
+                                        case tailCallDef of
+                                            TOpt.Def _ name _ t ->
+                                                ( name, t )
+
+                                            TOpt.TailDef _ name _ _ t ->
+                                                ( name, t )
                                 in
                                 Names.withVarType defName
                                     defType
-                                    (optimize cycle annotations body)
+                                    (optimize kernelEnv cycle annotations body)
                                     |> Names.map
                                         (\obody ->
                                             let
@@ -324,11 +352,11 @@ optimize cycle annotations (A.At region expression) =
                             )
 
                 _ ->
-                    optimizeLetRecDefs cycle annotations defs body
+                    optimizeLetRecDefs kernelEnv cycle annotations defs body
 
         Can.LetDestruct pattern expr body ->
             -- First optimize the expression to get its type
-            optimize cycle annotations expr
+            optimize kernelEnv cycle annotations expr
                 |> Names.andThen
                     (\oexpr ->
                         let
@@ -336,13 +364,18 @@ optimize cycle annotations (A.At region expression) =
                             exprType =
                                 TOpt.typeOf oexpr
                         in
-                        -- Now destruct with the known expression type
-                        destructWithKnownType exprType pattern
+                        -- Now destruct with the known expression type and collect all bindings
+                        destructWithKnownTypeAndBindings exprType pattern
                             |> Names.andThen
-                                (\( A.At nameRegion name, destructs ) ->
-                                    Names.withVarType name
-                                        exprType
-                                        (optimize cycle annotations body)
+                                (\( A.At nameRegion name, destructs, bindings ) ->
+                                    let
+                                        -- Include root name and all nested bindings
+                                        allBindings : List ( Name, Can.Type )
+                                        allBindings =
+                                            ( name, exprType ) :: bindings
+                                    in
+                                    Names.withVarTypes allBindings
+                                        (optimize kernelEnv cycle annotations body)
                                         |> Names.map
                                             (\obody ->
                                                 let
@@ -361,7 +394,7 @@ optimize cycle annotations (A.At region expression) =
             Names.generate
                 |> Names.andThen
                     (\temp ->
-                        optimize cycle annotations expr
+                        optimize kernelEnv cycle annotations expr
                             |> Names.andThen
                                 (\oexpr ->
                                     let
@@ -376,7 +409,7 @@ optimize cycle annotations (A.At region expression) =
                                                 |> Names.andThen
                                                     (\( destructors, andThenings ) ->
                                                         Names.withVarTypes andThenings
-                                                            (optimize cycle annotations branch)
+                                                            (optimize kernelEnv cycle annotations branch)
                                                             |> Names.map
                                                                 (\obranch ->
                                                                     let
@@ -440,7 +473,7 @@ optimize cycle annotations (A.At region expression) =
             Names.registerField field (TOpt.Accessor region field accessorType)
 
         Can.Access record (A.At fieldPosition field) ->
-            optimize cycle annotations record
+            optimize kernelEnv cycle annotations record
                 |> Names.andThen
                     (\optRecord ->
                         let
@@ -456,10 +489,10 @@ optimize cycle annotations (A.At region expression) =
                     )
 
         Can.Update record updates ->
-            Names.mapTraverse A.toValue A.compareLocated (optimizeUpdate cycle annotations) updates
+            Names.mapTraverse A.toValue A.compareLocated (optimizeUpdate kernelEnv cycle annotations) updates
                 |> Names.andThen
                     (\optUpdates ->
-                        optimize cycle annotations record
+                        optimize kernelEnv cycle annotations record
                             |> Names.andThen
                                 (\optRecord ->
                                     let
@@ -473,7 +506,7 @@ optimize cycle annotations (A.At region expression) =
                     )
 
         Can.Record fields ->
-            Names.mapTraverse A.toValue A.compareLocated (optimize cycle annotations) fields
+            Names.mapTraverse A.toValue A.compareLocated (optimize kernelEnv cycle annotations) fields
                 |> Names.andThen
                     (\optFields ->
                         let
@@ -495,13 +528,13 @@ optimize cycle annotations (A.At region expression) =
             Names.registerKernel Name.utils (TOpt.Unit unitType)
 
         Can.Tuple a b cs ->
-            optimize cycle annotations a
+            optimize kernelEnv cycle annotations a
                 |> Names.andThen
                     (\optA ->
-                        optimize cycle annotations b
+                        optimize kernelEnv cycle annotations b
                             |> Names.andThen
                                 (\optB ->
-                                    Names.traverse (optimize cycle annotations) cs
+                                    Names.traverse (optimize kernelEnv cycle annotations) cs
                                         |> Names.andThen
                                             (\optCs ->
                                                 let
@@ -635,6 +668,13 @@ annotationType (Can.Forall _ tipe) =
     tipe
 
 
+{-| Look up the canonical type of a top-level definition from its annotation.
+
+IMPORTANT: Only use this for top-level definitions that have module-level annotations.
+Do NOT use this for local let/letrec bindings - those must be typed via TOpt.typeOf
+on the optimized RHS expression.
+
+-}
 lookupAnnotationType : Name -> Annotations -> Can.Type
 lookupAnnotationType name annotations =
     case Dict.get identity name annotations of
@@ -749,7 +789,11 @@ substituteTypeVars bindings tipe =
                 )
 
 
-{-| Get name and type from a definition.
+{-| Get name and type from a top-level definition using module annotations.
+
+IMPORTANT: Only use this for top-level definitions that have module-level annotations.
+For local let/letrec bindings, extract the type from the optimized TOpt.Def instead.
+
 -}
 getDefNameAndType : Can.Def -> Annotations -> ( Name, Can.Type )
 getDefNameAndType def annotations =
@@ -770,6 +814,44 @@ getDefNameAndType def annotations =
             ( name, funcType )
 
 
+{-| Synthesize a function type for a (possibly local) recursive def,
+without looking at annotations.
+
+For untyped defs, we build a `TLambda` chain with fresh type variables
+for each argument and the result. This is only used to seed the Names
+environment so recursive calls have some type; the final def type is
+computed later from the optimized RHS via TOpt.typeOf.
+
+-}
+synthesizeRecDefType : Can.Def -> Can.Type
+synthesizeRecDefType def =
+    case def of
+        Can.Def (A.At _ name) args _ ->
+            let
+                -- One fresh type variable per arg, plus one for the result.
+                argTypes : List Can.Type
+                argTypes =
+                    List.indexedMap
+                        (\index _ ->
+                            Can.TVar ("rec_arg_" ++ name ++ "_" ++ String.fromInt index)
+                        )
+                        args
+
+                resultType : Can.Type
+                resultType =
+                    Can.TVar ("rec_result_" ++ name)
+            in
+            buildFunctionType argTypes resultType
+
+        Can.TypedDef (A.At _ _) _ typedArgs _ resultType ->
+            let
+                argTypes : List Can.Type
+                argTypes =
+                    List.map Tuple.second typedArgs
+            in
+            buildFunctionType argTypes resultType
+
+
 {-| Wrap a destructor around a body expression.
 -}
 wrapDestruct : Can.Type -> TOpt.Destructor -> TOpt.Expr -> TOpt.Expr
@@ -781,30 +863,30 @@ wrapDestruct bodyType destructor body =
 -- UPDATE
 
 
-optimizeUpdate : Cycle -> Annotations -> Can.FieldUpdate -> Names.Tracker TOpt.Expr
-optimizeUpdate cycle annotations (Can.FieldUpdate _ expr) =
-    optimize cycle annotations expr
+optimizeUpdate : KernelTypes.KernelTypeEnv -> Cycle -> Annotations -> Can.FieldUpdate -> Names.Tracker TOpt.Expr
+optimizeUpdate kernelEnv cycle annotations (Can.FieldUpdate _ expr) =
+    optimize kernelEnv cycle annotations expr
 
 
 
 -- DEFINITION
 
 
-optimizeDefAndBody : Cycle -> Annotations -> Can.Def -> Can.Expr -> Names.Tracker TOpt.Expr
-optimizeDefAndBody cycle annotations def body =
+optimizeDefAndBody : KernelTypes.KernelTypeEnv -> Cycle -> Annotations -> Can.Def -> Can.Expr -> Names.Tracker TOpt.Expr
+optimizeDefAndBody kernelEnv cycle annotations def body =
     case def of
         Can.Def (A.At region name) args expr ->
-            optimizeDefHelp cycle annotations region name args expr body
+            optimizeDefHelp kernelEnv cycle annotations region name args expr body
 
         Can.TypedDef (A.At region name) _ typedArgs expr resultType ->
-            optimizeTypedDefHelp cycle annotations region name typedArgs expr resultType body
+            optimizeTypedDefHelp kernelEnv cycle annotations region name typedArgs expr resultType body
 
 
-optimizeDefHelp : Cycle -> Annotations -> A.Region -> Name -> List Can.Pattern -> Can.Expr -> Can.Expr -> Names.Tracker TOpt.Expr
-optimizeDefHelp cycle annotations region name args expr body =
+optimizeDefHelp : KernelTypes.KernelTypeEnv -> Cycle -> Annotations -> A.Region -> Name -> List Can.Pattern -> Can.Expr -> Can.Expr -> Names.Tracker TOpt.Expr
+optimizeDefHelp kernelEnv cycle annotations region name args expr body =
     case args of
         [] ->
-            optimize cycle annotations expr
+            optimize kernelEnv cycle annotations expr
                 |> Names.andThen
                     (\oexpr ->
                         let
@@ -814,7 +896,7 @@ optimizeDefHelp cycle annotations region name args expr body =
                         in
                         Names.withVarType name
                             exprType
-                            (optimize cycle annotations body)
+                            (optimize kernelEnv cycle annotations body)
                             |> Names.map
                                 (\obody ->
                                     let
@@ -829,14 +911,18 @@ optimizeDefHelp cycle annotations region name args expr body =
         _ ->
             destructArgs annotations args
                 |> Names.andThen
-                    (\( typedArgNames, destructors ) ->
+                    (\( typedArgNames, destructors, bindings ) ->
                         let
                             argTypes : List ( Name, Can.Type )
                             argTypes =
                                 List.map (\( loc, t ) -> ( A.toValue loc, t )) typedArgNames
+
+                            allBindings : List ( Name, Can.Type )
+                            allBindings =
+                                argTypes ++ bindings
                         in
-                        Names.withVarTypes argTypes
-                            (optimize cycle annotations expr)
+                        Names.withVarTypes allBindings
+                            (optimize kernelEnv cycle annotations expr)
                             |> Names.andThen
                                 (\oexpr ->
                                     let
@@ -856,7 +942,7 @@ optimizeDefHelp cycle annotations region name args expr body =
                                     in
                                     Names.withVarType name
                                         funcType
-                                        (optimize cycle annotations body)
+                                        (optimize kernelEnv cycle annotations body)
                                         |> Names.map
                                             (\obody ->
                                                 let
@@ -870,16 +956,16 @@ optimizeDefHelp cycle annotations region name args expr body =
                     )
 
 
-optimizeTypedDefHelp : Cycle -> Annotations -> A.Region -> Name -> List ( Can.Pattern, Can.Type ) -> Can.Expr -> Can.Type -> Can.Expr -> Names.Tracker TOpt.Expr
-optimizeTypedDefHelp cycle annotations region name typedArgs expr resultType body =
+optimizeTypedDefHelp : KernelTypes.KernelTypeEnv -> Cycle -> Annotations -> A.Region -> Name -> List ( Can.Pattern, Can.Type ) -> Can.Expr -> Can.Type -> Can.Expr -> Names.Tracker TOpt.Expr
+optimizeTypedDefHelp kernelEnv cycle annotations region name typedArgs expr resultType body =
     case typedArgs of
         [] ->
-            optimize cycle annotations expr
+            optimize kernelEnv cycle annotations expr
                 |> Names.andThen
                     (\oexpr ->
                         Names.withVarType name
                             resultType
-                            (optimize cycle annotations body)
+                            (optimize kernelEnv cycle annotations body)
                             |> Names.map
                                 (\obody ->
                                     let
@@ -894,18 +980,22 @@ optimizeTypedDefHelp cycle annotations region name typedArgs expr resultType bod
         _ ->
             destructTypedArgs typedArgs
                 |> Names.andThen
-                    (\( typedArgNames, destructors ) ->
+                    (\( typedArgNames, destructors, bindings ) ->
                         let
                             argTypes : List ( Name, Can.Type )
                             argTypes =
                                 List.map (\( loc, t ) -> ( A.toValue loc, t )) typedArgNames
 
+                            allBindings : List ( Name, Can.Type )
+                            allBindings =
+                                argTypes ++ bindings
+
                             funcType : Can.Type
                             funcType =
                                 buildFunctionType (List.map Tuple.second typedArgNames) resultType
                         in
-                        Names.withVarTypes argTypes
-                            (optimize cycle annotations expr)
+                        Names.withVarTypes allBindings
+                            (optimize kernelEnv cycle annotations expr)
                             |> Names.andThen
                                 (\oexpr ->
                                     let
@@ -917,7 +1007,7 @@ optimizeTypedDefHelp cycle annotations region name typedArgs expr resultType bod
                                     in
                                     Names.withVarType name
                                         funcType
-                                        (optimize cycle annotations body)
+                                        (optimize kernelEnv cycle annotations body)
                                         |> Names.map
                                             (\obody ->
                                                 let
@@ -931,64 +1021,81 @@ optimizeTypedDefHelp cycle annotations region name typedArgs expr resultType bod
                     )
 
 
-optimizeLetRecDefs : Cycle -> Annotations -> List Can.Def -> Can.Expr -> Names.Tracker TOpt.Expr
-optimizeLetRecDefs cycle annotations defs body =
-    -- For multiple recursive defs, we add all their types to scope first
+optimizeLetRecDefs : KernelTypes.KernelTypeEnv -> Cycle -> Annotations -> List Can.Def -> Can.Expr -> Names.Tracker TOpt.Expr
+optimizeLetRecDefs kernelEnv cycle annotations defs body =
+    -- For multiple recursive defs, we add all their types to scope first.
+    -- Use synthesizeRecDefType instead of getDefNameAndType to avoid looking
+    -- up annotations for local defs.
     let
         defBindings : List ( Name, Can.Type )
         defBindings =
-            List.map (\d -> getDefNameAndType d annotations) defs
+            List.map
+                (\d ->
+                    case d of
+                        Can.Def (A.At _ name) _ _ ->
+                            ( name, synthesizeRecDefType d )
+
+                        Can.TypedDef (A.At _ name) _ _ _ _ ->
+                            ( name, synthesizeRecDefType d )
+                )
+                defs
     in
     Names.withVarTypes defBindings
         (List.foldl
             (\def bod ->
-                Names.andThen (optimizeRecDefToLet cycle annotations def) bod
+                Names.andThen (optimizeRecDefToLet kernelEnv cycle annotations def) bod
             )
-            (optimize cycle annotations body)
+            (optimize kernelEnv cycle annotations body)
             defs
         )
 
 
-optimizeRecDefToLet : Cycle -> Annotations -> Can.Def -> TOpt.Expr -> Names.Tracker TOpt.Expr
-optimizeRecDefToLet cycle annotations def body =
+optimizeRecDefToLet : KernelTypes.KernelTypeEnv -> Cycle -> Annotations -> Can.Def -> TOpt.Expr -> Names.Tracker TOpt.Expr
+optimizeRecDefToLet kernelEnv cycle annotations def body =
     case def of
         Can.Def (A.At region name) args expr ->
-            optimizeRecDefHelp cycle annotations region name args expr body
+            optimizeRecDefHelp kernelEnv cycle annotations region name args expr body
 
         Can.TypedDef (A.At region name) _ typedArgs expr resultType ->
-            optimizeTypedRecDefHelp cycle annotations region name typedArgs expr resultType body
+            optimizeTypedRecDefHelp kernelEnv cycle annotations region name typedArgs expr resultType body
 
 
-optimizeRecDefHelp : Cycle -> Annotations -> A.Region -> Name -> List Can.Pattern -> Can.Expr -> TOpt.Expr -> Names.Tracker TOpt.Expr
-optimizeRecDefHelp cycle annotations region name args expr body =
+optimizeRecDefHelp : KernelTypes.KernelTypeEnv -> Cycle -> Annotations -> A.Region -> Name -> List Can.Pattern -> Can.Expr -> TOpt.Expr -> Names.Tracker TOpt.Expr
+optimizeRecDefHelp kernelEnv cycle annotations region name args expr body =
     let
-        defType : Can.Type
-        defType =
-            lookupAnnotationType name annotations
-
         bodyType : Can.Type
         bodyType =
             TOpt.typeOf body
     in
     case args of
         [] ->
-            optimize cycle annotations expr
+            -- No arguments: def type is just the RHS type.
+            optimize kernelEnv cycle annotations expr
                 |> Names.map
                     (\oexpr ->
+                        let
+                            defType : Can.Type
+                            defType =
+                                TOpt.typeOf oexpr
+                        in
                         TOpt.Let (TOpt.Def region name oexpr defType) body bodyType
                     )
 
         _ ->
             destructArgs annotations args
                 |> Names.andThen
-                    (\( typedArgNames, destructors ) ->
+                    (\( typedArgNames, destructors, bindings ) ->
                         let
                             argTypes : List ( Name, Can.Type )
                             argTypes =
                                 List.map (\( loc, t ) -> ( A.toValue loc, t )) typedArgNames
+
+                            allBindings : List ( Name, Can.Type )
+                            allBindings =
+                                argTypes ++ bindings
                         in
-                        Names.withVarTypes argTypes
-                            (optimize cycle annotations expr)
+                        Names.withVarTypes allBindings
+                            (optimize kernelEnv cycle annotations expr)
                             |> Names.map
                                 (\oexpr ->
                                     let
@@ -1011,8 +1118,8 @@ optimizeRecDefHelp cycle annotations region name args expr body =
                     )
 
 
-optimizeTypedRecDefHelp : Cycle -> Annotations -> A.Region -> Name -> List ( Can.Pattern, Can.Type ) -> Can.Expr -> Can.Type -> TOpt.Expr -> Names.Tracker TOpt.Expr
-optimizeTypedRecDefHelp cycle annotations region name typedArgs expr resultType body =
+optimizeTypedRecDefHelp : KernelTypes.KernelTypeEnv -> Cycle -> Annotations -> A.Region -> Name -> List ( Can.Pattern, Can.Type ) -> Can.Expr -> Can.Type -> TOpt.Expr -> Names.Tracker TOpt.Expr
+optimizeTypedRecDefHelp kernelEnv cycle annotations region name typedArgs expr resultType body =
     let
         bodyType : Can.Type
         bodyType =
@@ -1020,7 +1127,7 @@ optimizeTypedRecDefHelp cycle annotations region name typedArgs expr resultType 
     in
     case typedArgs of
         [] ->
-            optimize cycle annotations expr
+            optimize kernelEnv cycle annotations expr
                 |> Names.map
                     (\oexpr ->
                         TOpt.Let (TOpt.Def region name oexpr resultType) body bodyType
@@ -1029,18 +1136,22 @@ optimizeTypedRecDefHelp cycle annotations region name typedArgs expr resultType 
         _ ->
             destructTypedArgs typedArgs
                 |> Names.andThen
-                    (\( typedArgNames, destructors ) ->
+                    (\( typedArgNames, destructors, bindings ) ->
                         let
                             argTypes : List ( Name, Can.Type )
                             argTypes =
                                 List.map (\( loc, t ) -> ( A.toValue loc, t )) typedArgNames
 
+                            allBindings : List ( Name, Can.Type )
+                            allBindings =
+                                argTypes ++ bindings
+
                             funcType : Can.Type
                             funcType =
                                 buildFunctionType (List.map Tuple.second typedArgNames) resultType
                         in
-                        Names.withVarTypes argTypes
-                            (optimize cycle annotations expr)
+                        Names.withVarTypes allBindings
+                            (optimize kernelEnv cycle annotations expr)
                             |> Names.map
                                 (\oexpr ->
                                     let
@@ -1060,40 +1171,45 @@ optimizeTypedRecDefHelp cycle annotations region name typedArgs expr resultType 
 
 
 {-| Convert function argument patterns into destructors with type information.
-Returns a list of argument names with their types, and a list of destructors for pattern matching.
+Returns a list of argument names with their types, destructors, and all bindings.
 -}
-destructArgs : Annotations -> List Can.Pattern -> Names.Tracker ( List ( A.Located Name, Can.Type ), List TOpt.Destructor )
+destructArgs : Annotations -> List Can.Pattern -> Names.Tracker ( List ( A.Located Name, Can.Type ), List TOpt.Destructor, List ( Name, Can.Type ) )
 destructArgs annotations args =
     Names.traverse (destruct annotations) args
         |> Names.map
             (\results ->
                 let
-                    ( names, types, destructorLists ) =
+                    ( argPairs, allDestructors, allBindings ) =
                         List.foldr
-                            (\( n, t, ds ) ( ns, ts, dss ) -> ( n :: ns, t :: ts, ds ++ dss ))
+                            (\result ( pairs, dss, bss ) ->
+                                ( ( result.locName, result.tipe ) :: pairs
+                                , result.destructors ++ dss
+                                , result.bindings ++ bss
+                                )
+                            )
                             ( [], [], [] )
                             results
                 in
-                ( List.map2 Tuple.pair names types, destructorLists )
+                ( argPairs, allDestructors, allBindings )
             )
 
 
-destructTypedArgs : List ( Can.Pattern, Can.Type ) -> Names.Tracker ( List ( A.Located Name, Can.Type ), List TOpt.Destructor )
+destructTypedArgs : List ( Can.Pattern, Can.Type ) -> Names.Tracker ( List ( A.Located Name, Can.Type ), List TOpt.Destructor, List ( Name, Can.Type ) )
 destructTypedArgs typedArgs =
     Names.traverse destructTypedArg typedArgs
         |> Names.map
             (\results ->
                 List.foldr
-                    (\( n, ds ) ( ns, dss ) -> ( n :: ns, ds ++ dss ))
-                    ( [], [] )
+                    (\( n, ds, bs ) ( ns, dss, bss ) -> ( n :: ns, ds ++ dss, bs ++ bss ))
+                    ( [], [], [] )
                     results
             )
 
 
-destructTypedArg : ( Can.Pattern, Can.Type ) -> Names.Tracker ( ( A.Located Name, Can.Type ), List TOpt.Destructor )
+destructTypedArg : ( Can.Pattern, Can.Type ) -> Names.Tracker ( ( A.Located Name, Can.Type ), List TOpt.Destructor, List ( Name, Can.Type ) )
 destructTypedArg ( pattern, tipe ) =
-    destructWithType tipe pattern
-        |> Names.map (\( locName, destructors ) -> ( ( locName, tipe ), destructors ))
+    destructPatternWithTypeAndBindings tipe pattern
+        |> Names.map (\result -> ( ( result.locName, result.tipe ), result.destructors, result.bindings ))
 
 
 destructCase : Can.Type -> Name -> Can.Pattern -> Names.Tracker ( List TOpt.Destructor, List ( Name, Can.Type ) )
@@ -1113,28 +1229,16 @@ destructCaseWithType scrutineeType rootName pattern =
         |> Names.map (\( revDs, andThenings ) -> ( List.reverse revDs, andThenings ))
 
 
-destruct : Annotations -> Can.Pattern -> Names.Tracker ( A.Located Name, Can.Type, List TOpt.Destructor )
-destruct annotations ((A.At region ptrn) as pattern) =
+{-| Destructure a pattern, returning root name, type, destructors, and all bindings.
+-}
+destruct : Annotations -> Can.Pattern -> Names.Tracker DestructResult
+destruct annotations pattern =
     let
         patternType : Can.Type
         patternType =
             getPatternType annotations pattern
     in
-    case ptrn of
-        Can.PVar name ->
-            Names.pure ( A.At region name, patternType, [] )
-
-        Can.PAlias subPattern name ->
-            destructHelp (TOpt.Root name) patternType subPattern []
-                |> Names.map (\revDs -> ( A.At region name, patternType, List.reverse revDs ))
-
-        _ ->
-            Names.generate
-                |> Names.andThen
-                    (\name ->
-                        destructHelp (TOpt.Root name) patternType pattern []
-                            |> Names.map (\revDs -> ( A.At region name, patternType, List.reverse revDs ))
-                    )
+    destructPatternWithTypeAndBindings patternType pattern
 
 
 destructWithType : Can.Type -> Can.Pattern -> Names.Tracker ( A.Located Name, List TOpt.Destructor )
@@ -1176,6 +1280,58 @@ destructWithKnownType tipe ((A.At region ptrn) as pattern) =
                         destructHelp (TOpt.Root name) tipe pattern []
                             |> Names.map (\revDs -> ( A.At region name, List.reverse revDs ))
                     )
+
+
+{-| Destructure a pattern with a known type and collect all bindings.
+Returns the root name, type, destructors, and all nested bindings.
+-}
+destructPatternWithTypeAndBindings : Can.Type -> Can.Pattern -> Names.Tracker DestructResult
+destructPatternWithTypeAndBindings tipe ((A.At region ptrn) as pattern) =
+    case ptrn of
+        Can.PVar name ->
+            -- Simple variable: no destructors, one binding
+            Names.pure
+                { locName = A.At region name
+                , tipe = tipe
+                , destructors = []
+                , bindings = [ ( name, tipe ) ]
+                }
+
+        Can.PAlias subPattern name ->
+            -- Alias binds the alias name and any nested bindings
+            destructHelpCollectBindings (TOpt.Root name) tipe subPattern ( [], [] )
+                |> Names.map
+                    (\( revDs, nestedBindings ) ->
+                        { locName = A.At region name
+                        , tipe = tipe
+                        , destructors = List.reverse revDs
+                        , bindings = ( name, tipe ) :: nestedBindings
+                        }
+                    )
+
+        _ ->
+            -- Complex pattern: generate a synthetic root name
+            Names.generate
+                |> Names.andThen
+                    (\name ->
+                        destructHelpCollectBindings (TOpt.Root name) tipe pattern ( [], [] )
+                            |> Names.map
+                                (\( revDs, nestedBindings ) ->
+                                    { locName = A.At region name
+                                    , tipe = tipe
+                                    , destructors = List.reverse revDs
+                                    , bindings = ( name, tipe ) :: nestedBindings
+                                    }
+                                )
+                    )
+
+
+{-| Like destructWithKnownType but also returns all bindings.
+-}
+destructWithKnownTypeAndBindings : Can.Type -> Can.Pattern -> Names.Tracker ( A.Located Name, List TOpt.Destructor, List ( Name, Can.Type ) )
+destructWithKnownTypeAndBindings tipe pattern =
+    destructPatternWithTypeAndBindings tipe pattern
+        |> Names.map (\result -> ( result.locName, result.destructors, result.bindings ))
 
 
 {-| Try to infer type from pattern structure.
@@ -1247,36 +1403,47 @@ getPatternType _ (A.At _ pattern) =
                     Can.TType home type_ (List.map (\_ -> Can.TVar "_") data.vars)
 
 
+{-| Destructure a pattern to produce a list of destructors.
+This is now a thin wrapper around destructHelpCollectBindings that discards the bindings.
+-}
 destructHelp : TOpt.Path -> Can.Type -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
-destructHelp path tipe (A.At _ pattern) revDs =
+destructHelp path tipe pattern revDs =
+    destructHelpCollectBindings path tipe pattern ( revDs, [] )
+        |> Names.map Tuple.first
+
+
+destructHelpCollectBindings : TOpt.Path -> Can.Type -> Can.Pattern -> ( List TOpt.Destructor, List ( Name, Can.Type ) ) -> Names.Tracker ( List TOpt.Destructor, List ( Name, Can.Type ) )
+destructHelpCollectBindings path tipe (A.At _ pattern) ( revDs, bindings ) =
     case pattern of
         Can.PAnything ->
-            Names.pure revDs
+            Names.pure ( revDs, bindings )
 
         Can.PVar name ->
-            Names.pure (TOpt.Destructor name path tipe :: revDs)
+            Names.pure ( TOpt.Destructor name path tipe :: revDs, ( name, tipe ) :: bindings )
 
         Can.PRecord fields ->
             let
+                newBindings : List ( Name, Can.Type )
+                newBindings =
+                    List.map (\f -> ( f, getFieldType f tipe )) fields
+
                 toDestruct : Name -> TOpt.Destructor
                 toDestruct name =
-                    let
-                        fieldType : Can.Type
-                        fieldType =
-                            getFieldType name tipe
-                    in
-                    TOpt.Destructor name (TOpt.Field name path) fieldType
+                    TOpt.Destructor name (TOpt.Field name path) (getFieldType name tipe)
             in
-            Names.registerFieldList fields (List.map toDestruct fields ++ revDs)
+            Names.registerFieldList fields ( List.map toDestruct fields ++ revDs, newBindings ++ bindings )
 
         Can.PAlias subPattern name ->
-            (TOpt.Destructor name path tipe :: revDs) |> destructHelp (TOpt.Root name) tipe subPattern
+            destructHelpCollectBindings (TOpt.Root name)
+                tipe
+                subPattern
+                ( TOpt.Destructor name path tipe :: revDs, ( name, tipe ) :: bindings )
 
         Can.PUnit ->
-            Names.pure revDs
+            Names.pure ( revDs, bindings )
 
         Can.PTuple a b [] ->
-            destructTwo path tipe a b revDs
+            destructTwoCollectBindings path tipe a b ( revDs, bindings )
 
         Can.PTuple a b [ c ] ->
             let
@@ -1285,14 +1452,21 @@ destructHelp path tipe (A.At _ pattern) revDs =
                         Can.TTuple t1 t2 [ t3 ] ->
                             ( t1, t2, t3 )
 
+                        Can.TVar _ ->
+                            -- For type variables, infer tuple element types from patterns
+                            ( getPatternType Dict.empty a
+                            , getPatternType Dict.empty b
+                            , getPatternType Dict.empty c
+                            )
+
                         _ ->
                             crash "Type mismatch in 3-tuple pattern"
             in
             case path of
                 TOpt.Root _ ->
-                    destructHelp (TOpt.Index Index.first path) aType a revDs
-                        |> Names.andThen (destructHelp (TOpt.Index Index.second path) bType b)
-                        |> Names.andThen (destructHelp (TOpt.Index Index.third path) cType c)
+                    destructHelpCollectBindings (TOpt.Index Index.first path) aType a ( revDs, bindings )
+                        |> Names.andThen (destructHelpCollectBindings (TOpt.Index Index.second path) bType b)
+                        |> Names.andThen (destructHelpCollectBindings (TOpt.Index Index.third path) cType c)
 
                 _ ->
                     Names.generate
@@ -1303,9 +1477,12 @@ destructHelp path tipe (A.At _ pattern) revDs =
                                     newRoot =
                                         TOpt.Root name
                                 in
-                                destructHelp (TOpt.Index Index.first newRoot) aType a (TOpt.Destructor name path tipe :: revDs)
-                                    |> Names.andThen (destructHelp (TOpt.Index Index.second newRoot) bType b)
-                                    |> Names.andThen (destructHelp (TOpt.Index Index.third newRoot) cType c)
+                                destructHelpCollectBindings (TOpt.Index Index.first newRoot)
+                                    aType
+                                    a
+                                    ( TOpt.Destructor name path tipe :: revDs, ( name, tipe ) :: bindings )
+                                    |> Names.andThen (destructHelpCollectBindings (TOpt.Index Index.second newRoot) bType b)
+                                    |> Names.andThen (destructHelpCollectBindings (TOpt.Index Index.third newRoot) cType c)
                             )
 
         Can.PTuple a b cs ->
@@ -1315,17 +1492,25 @@ destructHelp path tipe (A.At _ pattern) revDs =
                         Can.TTuple t1 t2 ts ->
                             ( t1, t2, ts )
 
+                        Can.TVar _ ->
+                            -- For type variables, infer tuple element types from patterns
+                            ( getPatternType Dict.empty a
+                            , getPatternType Dict.empty b
+                            , List.map (getPatternType Dict.empty) cs
+                            )
+
                         _ ->
                             crash "Type mismatch in tuple pattern"
             in
             case path of
                 TOpt.Root _ ->
                     List.foldl
-                        (\( index, ( arg, argType ) ) ->
-                            Names.andThen (destructHelp (TOpt.ArrayIndex index (TOpt.Field "cs" path)) argType arg)
+                        (\( index, ( arg, argType ) ) accTracker ->
+                            accTracker
+                                |> Names.andThen (destructHelpCollectBindings (TOpt.ArrayIndex index (TOpt.Field "cs" path)) argType arg)
                         )
-                        (destructHelp (TOpt.Index Index.first path) aType a revDs
-                            |> Names.andThen (destructHelp (TOpt.Index Index.second path) bType b)
+                        (destructHelpCollectBindings (TOpt.Index Index.first path) aType a ( revDs, bindings )
+                            |> Names.andThen (destructHelpCollectBindings (TOpt.Index Index.second path) bType b)
                         )
                         (List.map2 Tuple.pair (List.range 0 (List.length cs - 1)) (List.map2 Tuple.pair cs csTypes))
 
@@ -1339,35 +1524,39 @@ destructHelp path tipe (A.At _ pattern) revDs =
                                         TOpt.Root name
                                 in
                                 List.foldl
-                                    (\( index, ( arg, argType ) ) ->
-                                        Names.andThen (destructHelp (TOpt.ArrayIndex index (TOpt.Field "cs" newRoot)) argType arg)
+                                    (\( index, ( arg, argType ) ) accTracker ->
+                                        accTracker
+                                            |> Names.andThen (destructHelpCollectBindings (TOpt.ArrayIndex index (TOpt.Field "cs" newRoot)) argType arg)
                                     )
-                                    (destructHelp (TOpt.Index Index.first newRoot) aType a (TOpt.Destructor name path tipe :: revDs)
-                                        |> Names.andThen (destructHelp (TOpt.Index Index.second newRoot) bType b)
+                                    (destructHelpCollectBindings (TOpt.Index Index.first newRoot)
+                                        aType
+                                        a
+                                        ( TOpt.Destructor name path tipe :: revDs, ( name, tipe ) :: bindings )
+                                        |> Names.andThen (destructHelpCollectBindings (TOpt.Index Index.second newRoot) bType b)
                                     )
                                     (List.map2 Tuple.pair (List.range 0 (List.length cs - 1)) (List.map2 Tuple.pair cs csTypes))
                             )
 
         Can.PList [] ->
-            Names.pure revDs
+            Names.pure ( revDs, bindings )
 
         Can.PList (hd :: tl) ->
-            destructTwo path tipe hd (A.At (A.Region (A.Position 0 0) (A.Position 0 0)) (Can.PList tl)) revDs
+            destructTwoCollectBindings path tipe hd (A.At (A.Region (A.Position 0 0) (A.Position 0 0)) (Can.PList tl)) ( revDs, bindings )
 
         Can.PCons hd tl ->
-            destructTwo path tipe hd tl revDs
+            destructTwoCollectBindings path tipe hd tl ( revDs, bindings )
 
         Can.PChr _ ->
-            Names.pure revDs
+            Names.pure ( revDs, bindings )
 
         Can.PStr _ _ ->
-            Names.pure revDs
+            Names.pure ( revDs, bindings )
 
         Can.PInt _ ->
-            Names.pure revDs
+            Names.pure ( revDs, bindings )
 
         Can.PBool _ _ ->
-            Names.pure revDs
+            Names.pure ( revDs, bindings )
 
         Can.PCtor { union, args } ->
             case args of
@@ -1378,33 +1567,41 @@ destructHelp path tipe (A.At _ pattern) revDs =
                     in
                     case unionData.opts of
                         Can.Normal ->
-                            destructHelp (TOpt.Index Index.first path) argType arg revDs
+                            destructHelpCollectBindings (TOpt.Index Index.first path) argType arg ( revDs, bindings )
 
                         Can.Unbox ->
-                            destructHelp (TOpt.Unbox path) argType arg revDs
+                            destructHelpCollectBindings (TOpt.Unbox path) argType arg ( revDs, bindings )
 
                         Can.Enum ->
-                            destructHelp (TOpt.Index Index.first path) argType arg revDs
+                            destructHelpCollectBindings (TOpt.Index Index.first path) argType arg ( revDs, bindings )
 
                 _ ->
                     case path of
                         TOpt.Root _ ->
-                            List.foldl (\arg -> Names.andThen (\revDs_ -> destructCtorArg path revDs_ arg))
-                                (Names.pure revDs)
+                            List.foldl
+                                (\arg accTracker ->
+                                    accTracker |> Names.andThen (destructCtorArgCollectBindings path arg)
+                                )
+                                (Names.pure ( revDs, bindings ))
                                 args
 
                         _ ->
                             Names.generate
                                 |> Names.andThen
                                     (\name ->
-                                        List.foldl (\arg -> Names.andThen (\revDs_ -> destructCtorArg (TOpt.Root name) revDs_ arg))
-                                            (Names.pure (TOpt.Destructor name path tipe :: revDs))
+                                        List.foldl
+                                            (\arg accTracker ->
+                                                accTracker |> Names.andThen (destructCtorArgCollectBindings (TOpt.Root name) arg)
+                                            )
+                                            (Names.pure ( TOpt.Destructor name path tipe :: revDs, ( name, tipe ) :: bindings ))
                                             args
                                     )
 
 
-destructTwo : TOpt.Path -> Can.Type -> Can.Pattern -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
-destructTwo path tipe a b revDs =
+{-| Destructure a 2-element pattern (tuple or list cons) while collecting bindings.
+-}
+destructTwoCollectBindings : TOpt.Path -> Can.Type -> Can.Pattern -> Can.Pattern -> ( List TOpt.Destructor, List ( Name, Can.Type ) ) -> Names.Tracker ( List TOpt.Destructor, List ( Name, Can.Type ) )
+destructTwoCollectBindings path tipe a b ( revDs, bindings ) =
     let
         ( aType, bType ) =
             case tipe of
@@ -1414,13 +1611,40 @@ destructTwo path tipe a b revDs =
                 Can.TType _ "List" [ elemType ] ->
                     ( elemType, tipe )
 
+                Can.TAlias _ _ _ aliasType ->
+                    -- Unwrap type aliases
+                    let
+                        realType : Can.Type
+                        realType =
+                            case aliasType of
+                                Can.Holey t ->
+                                    t
+
+                                Can.Filled t ->
+                                    t
+                    in
+                    case realType of
+                        Can.TTuple t1 t2 [] ->
+                            ( t1, t2 )
+
+                        Can.TType _ "List" [ elemType ] ->
+                            ( elemType, realType )
+
+                        _ ->
+                            -- For other aliased types, just use the original type as fallback
+                            ( realType, realType )
+
+                Can.TVar _ ->
+                    -- For type variables, infer tuple element types from patterns
+                    ( getPatternType Dict.empty a, getPatternType Dict.empty b )
+
                 _ ->
-                    crash "Type mismatch in destructTwo pattern"
+                    crash ("Type mismatch in destructTwoCollectBindings pattern: expected tuple or list.")
     in
     case path of
         TOpt.Root _ ->
-            destructHelp (TOpt.Index Index.first path) aType a revDs
-                |> Names.andThen (destructHelp (TOpt.Index Index.second path) bType b)
+            destructHelpCollectBindings (TOpt.Index Index.first path) aType a ( revDs, bindings )
+                |> Names.andThen (destructHelpCollectBindings (TOpt.Index Index.second path) bType b)
 
         _ ->
             Names.generate
@@ -1431,47 +1655,19 @@ destructTwo path tipe a b revDs =
                             newRoot =
                                 TOpt.Root name
                         in
-                        destructHelp (TOpt.Index Index.first newRoot) aType a (TOpt.Destructor name path tipe :: revDs)
-                            |> Names.andThen (destructHelp (TOpt.Index Index.second newRoot) bType b)
+                        destructHelpCollectBindings (TOpt.Index Index.first newRoot)
+                            aType
+                            a
+                            ( TOpt.Destructor name path tipe :: revDs, ( name, tipe ) :: bindings )
+                            |> Names.andThen (destructHelpCollectBindings (TOpt.Index Index.second newRoot) bType b)
                     )
 
 
-destructCtorArg : TOpt.Path -> List TOpt.Destructor -> Can.PatternCtorArg -> Names.Tracker (List TOpt.Destructor)
-destructCtorArg path revDs (Can.PatternCtorArg index argType arg) =
-    destructHelp (TOpt.Index index path) argType arg revDs
-
-
-destructHelpCollectBindings : TOpt.Path -> Can.Type -> Can.Pattern -> ( List TOpt.Destructor, List ( Name, Can.Type ) ) -> Names.Tracker ( List TOpt.Destructor, List ( Name, Can.Type ) )
-destructHelpCollectBindings path tipe (A.At _ pattern) ( revDs, andThenings ) =
-    case pattern of
-        Can.PAnything ->
-            Names.pure ( revDs, andThenings )
-
-        Can.PVar name ->
-            Names.pure ( TOpt.Destructor name path tipe :: revDs, ( name, tipe ) :: andThenings )
-
-        Can.PRecord fields ->
-            let
-                newBindings : List ( Name, Can.Type )
-                newBindings =
-                    List.map (\f -> ( f, getFieldType f tipe )) fields
-
-                toDestruct : Name -> TOpt.Destructor
-                toDestruct name =
-                    TOpt.Destructor name (TOpt.Field name path) (getFieldType name tipe)
-            in
-            Names.registerFieldList fields ( List.map toDestruct fields ++ revDs, newBindings ++ andThenings )
-
-        Can.PAlias subPattern name ->
-            destructHelpCollectBindings (TOpt.Root name)
-                tipe
-                subPattern
-                ( TOpt.Destructor name path tipe :: revDs, ( name, tipe ) :: andThenings )
-
-        _ ->
-            -- For other patterns, use the simpler destructHelp
-            destructHelp path tipe (A.At (A.Region (A.Position 0 0) (A.Position 0 0)) pattern) revDs
-                |> Names.map (\newRevDs -> ( newRevDs, andThenings ))
+{-| Destructure a constructor argument while collecting bindings.
+-}
+destructCtorArgCollectBindings : TOpt.Path -> Can.PatternCtorArg -> ( List TOpt.Destructor, List ( Name, Can.Type ) ) -> Names.Tracker ( List TOpt.Destructor, List ( Name, Can.Type ) )
+destructCtorArgCollectBindings path (Can.PatternCtorArg index argType arg) ( revDs, bindings ) =
+    destructHelpCollectBindings (TOpt.Index index path) argType arg ( revDs, bindings )
 
 
 
@@ -1481,66 +1677,88 @@ destructHelpCollectBindings path tipe (A.At _ pattern) ( revDs, andThenings ) =
 {-| Optimize a canonical expression, detecting and converting tail calls.
 Analyzes the expression for recursive calls in tail position and converts them to optimized
 TailCall nodes. Returns a typed optimized expression with preserved type information.
+
+The defType parameter is the function type (supplied by caller), used to compute returnType.
+This avoids calling lookupAnnotationType, which only works for top-level definitions.
 -}
-optimizePotentialTailCall : Cycle -> Annotations -> A.Region -> Name -> List Can.Pattern -> Can.Expr -> Names.Tracker TOpt.Def
-optimizePotentialTailCall cycle annotations region name args expr =
-    let
-        defType : Can.Type
-        defType =
-            lookupAnnotationType name annotations
-    in
+optimizePotentialTailCall : KernelTypes.KernelTypeEnv -> Cycle -> Annotations -> A.Region -> Name -> Can.Type -> List Can.Pattern -> Can.Expr -> Names.Tracker TOpt.Def
+optimizePotentialTailCall kernelEnv cycle annotations region name defType args expr =
     destructArgs annotations args
         |> Names.andThen
-            (\( typedArgNames, destructors ) ->
+            (\( typedArgNames, destructors, bindings ) ->
                 let
                     argTypes : List ( Name, Can.Type )
                     argTypes =
                         List.map (\( loc, t ) -> ( A.toValue loc, t )) typedArgNames
 
+                    -- Include the recursive function's own name so non-tail self-calls can find it
+                    allBindings : List ( Name, Can.Type )
+                    allBindings =
+                        ( name, defType ) :: argTypes ++ bindings
+
                     returnType : Can.Type
                     returnType =
                         getCallResultType defType (List.length args)
                 in
-                Names.withVarTypes argTypes
-                    (optimizeTail cycle annotations name typedArgNames returnType expr)
+                Names.withVarTypes allBindings
+                    (optimizeTail kernelEnv cycle annotations name typedArgNames returnType expr)
                     |> Names.map (toTailDef region name typedArgNames destructors returnType)
             )
 
 
 {-| Optimize a recursive definition, detecting and preserving tail calls.
 Converts self-recursive calls in tail position to TailCall expressions for optimization.
+
+Uses synthesizeRecDefType to create a schematic type for untyped defs, avoiding
+lookupAnnotationType which only works for top-level definitions.
 -}
-optimizePotentialTailCallDef : Cycle -> Annotations -> Can.Def -> Names.Tracker TOpt.Def
-optimizePotentialTailCallDef cycle annotations def =
+optimizePotentialTailCallDef : KernelTypes.KernelTypeEnv -> Cycle -> Annotations -> Can.Def -> Names.Tracker TOpt.Def
+optimizePotentialTailCallDef kernelEnv cycle annotations def =
     case def of
         Can.Def (A.At region name) args expr ->
-            optimizePotentialTailCall cycle annotations region name args expr
+            let
+                -- Synthesize a schematic type for untyped defs
+                defType : Can.Type
+                defType =
+                    synthesizeRecDefType def
+            in
+            optimizePotentialTailCall kernelEnv cycle annotations region name defType args expr
 
         Can.TypedDef (A.At region name) _ typedArgs expr resultType ->
-            optimizeTypedPotentialTailCall cycle annotations region name typedArgs expr resultType
+            optimizeTypedPotentialTailCall kernelEnv cycle annotations region name typedArgs expr resultType
 
 
-optimizeTypedPotentialTailCall : Cycle -> Annotations -> A.Region -> Name -> List ( Can.Pattern, Can.Type ) -> Can.Expr -> Can.Type -> Names.Tracker TOpt.Def
-optimizeTypedPotentialTailCall cycle annotations region name typedArgs expr resultType =
+optimizeTypedPotentialTailCall : KernelTypes.KernelTypeEnv -> Cycle -> Annotations -> A.Region -> Name -> List ( Can.Pattern, Can.Type ) -> Can.Expr -> Can.Type -> Names.Tracker TOpt.Def
+optimizeTypedPotentialTailCall kernelEnv cycle annotations region name typedArgs expr resultType =
     destructTypedArgs typedArgs
         |> Names.andThen
-            (\( typedArgNames, destructors ) ->
+            (\( typedArgNames, destructors, bindings ) ->
                 let
                     argTypes : List ( Name, Can.Type )
                     argTypes =
                         List.map (\( loc, t ) -> ( A.toValue loc, t )) typedArgNames
+
+                    -- Compute the function type from typed args and result type
+                    defType : Can.Type
+                    defType =
+                        buildFunctionType (List.map Tuple.second typedArgNames) resultType
+
+                    -- Include the recursive function's own name so non-tail self-calls can find it
+                    allBindings : List ( Name, Can.Type )
+                    allBindings =
+                        ( name, defType ) :: argTypes ++ bindings
                 in
-                Names.withVarTypes argTypes
-                    (optimizeTail cycle annotations name typedArgNames resultType expr)
+                Names.withVarTypes allBindings
+                    (optimizeTail kernelEnv cycle annotations name typedArgNames resultType expr)
                     |> Names.map (toTailDef region name typedArgNames destructors resultType)
             )
 
 
-optimizeTail : Cycle -> Annotations -> Name -> List ( A.Located Name, Can.Type ) -> Can.Type -> Can.Expr -> Names.Tracker TOpt.Expr
-optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region expression) as locExpr) =
+optimizeTail : KernelTypes.KernelTypeEnv -> Cycle -> Annotations -> Name -> List ( A.Located Name, Can.Type ) -> Can.Type -> Can.Expr -> Names.Tracker TOpt.Expr
+optimizeTail kernelEnv cycle annotations rootName typedArgNames returnType ((A.At region expression) as locExpr) =
     case expression of
         Can.Call func args ->
-            Names.traverse (optimize cycle annotations) args
+            Names.traverse (optimize kernelEnv cycle annotations) args
                 |> Names.andThen
                     (\oargs ->
                         let
@@ -1562,7 +1780,7 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
                                     Names.pure (TOpt.TailCall rootName pairs returnType)
 
                                 Index.LengthMismatch _ _ ->
-                                    optimize cycle annotations func
+                                    optimize kernelEnv cycle annotations func
                                         |> Names.map
                                             (\ofunc ->
                                                 let
@@ -1578,7 +1796,7 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
                                             )
 
                         else
-                            optimize cycle annotations func
+                            optimize kernelEnv cycle annotations func
                                 |> Names.map
                                     (\ofunc ->
                                         let
@@ -1598,17 +1816,17 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
             let
                 optimizeBranch : ( Can.Expr, Can.Expr ) -> Names.Tracker ( TOpt.Expr, TOpt.Expr )
                 optimizeBranch ( condition, branch ) =
-                    optimize cycle annotations condition
+                    optimize kernelEnv cycle annotations condition
                         |> Names.andThen
                             (\optimizeCondition ->
-                                optimizeTail cycle annotations rootName typedArgNames returnType branch
+                                optimizeTail kernelEnv cycle annotations rootName typedArgNames returnType branch
                                     |> Names.map (Tuple.pair optimizeCondition)
                             )
             in
             Names.traverse optimizeBranch branches
                 |> Names.andThen
                     (\obranches ->
-                        optimizeTail cycle annotations rootName typedArgNames returnType finally
+                        optimizeTail kernelEnv cycle annotations rootName typedArgNames returnType finally
                             |> Names.map
                                 (\ofinally ->
                                     let
@@ -1621,18 +1839,25 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
                     )
 
         Can.Let def body ->
-            let
-                ( defName, defType ) =
-                    getDefNameAndType def annotations
-            in
             case def of
-                Can.Def (A.At defRegion _) defArgs defExpr ->
-                    optimizeDefForTail cycle annotations defRegion defName defArgs defExpr defType
+                Can.Def (A.At defRegion defName) defArgs defExpr ->
+                    optimizeDefForTail kernelEnv cycle annotations defRegion defName defArgs defExpr
                         |> Names.andThen
                             (\odef ->
+                                let
+                                    -- Extract type from the optimized def
+                                    defType : Can.Type
+                                    defType =
+                                        case odef of
+                                            TOpt.Def _ _ _ t ->
+                                                t
+
+                                            TOpt.TailDef _ _ _ _ t ->
+                                                t
+                                in
                                 Names.withVarType defName
                                     defType
-                                    (optimizeTail cycle annotations rootName typedArgNames returnType body)
+                                    (optimizeTail kernelEnv cycle annotations rootName typedArgNames returnType body)
                                     |> Names.map
                                         (\obody ->
                                             let
@@ -1644,13 +1869,24 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
                                         )
                             )
 
-                Can.TypedDef (A.At defRegion _) _ defTypedArgs defExpr defResultType ->
-                    optimizeTypedDefForTail cycle annotations defRegion defName defTypedArgs defExpr defResultType
+                Can.TypedDef (A.At defRegion defName) _ defTypedArgs defExpr defResultType ->
+                    optimizeTypedDefForTail kernelEnv cycle annotations defRegion defName defTypedArgs defExpr defResultType
                         |> Names.andThen
                             (\odef ->
+                                let
+                                    -- Extract type from the optimized def
+                                    defType : Can.Type
+                                    defType =
+                                        case odef of
+                                            TOpt.Def _ _ _ t ->
+                                                t
+
+                                            TOpt.TailDef _ _ _ _ t ->
+                                                t
+                                in
                                 Names.withVarType defName
                                     defType
-                                    (optimizeTail cycle annotations rootName typedArgNames returnType body)
+                                    (optimizeTail kernelEnv cycle annotations rootName typedArgNames returnType body)
                                     |> Names.map
                                         (\obody ->
                                             let
@@ -1665,16 +1901,22 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
         Can.LetRec defs body ->
             case defs of
                 [ def ] ->
-                    optimizePotentialTailCallDef cycle annotations def
+                    optimizePotentialTailCallDef kernelEnv cycle annotations def
                         |> Names.andThen
                             (\odef ->
                                 let
+                                    -- Extract name and type from the optimized def
                                     ( defName, defType ) =
-                                        getDefNameAndType def annotations
+                                        case odef of
+                                            TOpt.Def _ name _ t ->
+                                                ( name, t )
+
+                                            TOpt.TailDef _ name _ _ t ->
+                                                ( name, t )
                                 in
                                 Names.withVarType defName
                                     defType
-                                    (optimizeTail cycle annotations rootName typedArgNames returnType body)
+                                    (optimizeTail kernelEnv cycle annotations rootName typedArgNames returnType body)
                                     |> Names.map
                                         (\obody ->
                                             let
@@ -1688,11 +1930,11 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
 
                 _ ->
                     -- Multiple recursive defs - fall back to regular optimization
-                    optimizeLetRecDefs cycle annotations defs body
+                    optimizeLetRecDefs kernelEnv cycle annotations defs body
 
         Can.LetDestruct pattern expr body ->
             -- First optimize the expression to get its type
-            optimize cycle annotations expr
+            optimize kernelEnv cycle annotations expr
                 |> Names.andThen
                     (\oexpr ->
                         let
@@ -1700,13 +1942,18 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
                             exprType =
                                 TOpt.typeOf oexpr
                         in
-                        -- Now destruct with the known expression type
-                        destructWithKnownType exprType pattern
+                        -- Now destruct with the known expression type and collect bindings
+                        destructWithKnownTypeAndBindings exprType pattern
                             |> Names.andThen
-                                (\( A.At dregion dname, destructors ) ->
-                                    Names.withVarType dname
-                                        exprType
-                                        (optimizeTail cycle annotations rootName typedArgNames returnType body)
+                                (\( A.At dregion dname, destructors, bindings ) ->
+                                    let
+                                        -- Include root name and all nested bindings
+                                        allBindings : List ( Name, Can.Type )
+                                        allBindings =
+                                            ( dname, exprType ) :: bindings
+                                    in
+                                    Names.withVarTypes allBindings
+                                        (optimizeTail kernelEnv cycle annotations rootName typedArgNames returnType body)
                                         |> Names.map
                                             (\obody ->
                                                 let
@@ -1725,7 +1972,7 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
             Names.generate
                 |> Names.andThen
                     (\temp ->
-                        optimize cycle annotations expr
+                        optimize kernelEnv cycle annotations expr
                             |> Names.andThen
                                 (\oexpr ->
                                     let
@@ -1739,7 +1986,7 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
                                                 |> Names.andThen
                                                     (\( destructors, patternBindings ) ->
                                                         Names.withVarTypes patternBindings
-                                                            (optimizeTail cycle annotations rootName typedArgNames returnType branch)
+                                                            (optimizeTail kernelEnv cycle annotations rootName typedArgNames returnType branch)
                                                             |> Names.map
                                                                 (\obranch ->
                                                                     let
@@ -1785,45 +2032,59 @@ optimizeTail cycle annotations rootName typedArgNames returnType ((A.At region e
                     )
 
         _ ->
-            optimize cycle annotations locExpr
+            optimize kernelEnv cycle annotations locExpr
 
 
-optimizeDefForTail : Cycle -> Annotations -> A.Region -> Name -> List Can.Pattern -> Can.Expr -> Can.Type -> Names.Tracker TOpt.Def
-optimizeDefForTail cycle annotations region name args expr defType =
+{-| Optimize a local definition for tail call context.
+Infers the type from the optimized RHS - does not use module annotations.
+-}
+optimizeDefForTail : KernelTypes.KernelTypeEnv -> Cycle -> Annotations -> A.Region -> Name -> List Can.Pattern -> Can.Expr -> Names.Tracker TOpt.Def
+optimizeDefForTail kernelEnv cycle annotations region name args expr =
     case args of
         [] ->
-            optimize cycle annotations expr
+            -- Simple value binding: infer its type from the RHS
+            optimize kernelEnv cycle annotations expr
                 |> Names.map
                     (\oexpr ->
-                        TOpt.Def region name oexpr defType
+                        let
+                            exprType : Can.Type
+                            exprType =
+                                TOpt.typeOf oexpr
+                        in
+                        TOpt.Def region name oexpr exprType
                     )
 
         _ ->
+            -- Function binding: infer arg and return types from patterns + RHS
             destructArgs annotations args
                 |> Names.andThen
-                    (\( typedArgNames, destructors ) ->
+                    (\( typedArgNames, destructors, bindings ) ->
                         let
                             argTypes : List ( Name, Can.Type )
                             argTypes =
                                 List.map (\( loc, t ) -> ( A.toValue loc, t )) typedArgNames
 
-                            returnType : Can.Type
-                            returnType =
-                                getCallResultType defType (List.length args)
+                            allBindings : List ( Name, Can.Type )
+                            allBindings =
+                                argTypes ++ bindings
                         in
-                        Names.withVarTypes argTypes
-                            (optimize cycle annotations expr)
+                        Names.withVarTypes allBindings
+                            (optimize kernelEnv cycle annotations expr)
                             |> Names.map
                                 (\oexpr ->
                                     let
+                                        bodyType : Can.Type
+                                        bodyType =
+                                            TOpt.typeOf oexpr
+
                                         funcType : Can.Type
                                         funcType =
-                                            buildFunctionType (List.map Tuple.second typedArgNames) returnType
+                                            buildFunctionType (List.map Tuple.second typedArgNames) bodyType
 
                                         ofunc : TOpt.Expr
                                         ofunc =
                                             TOpt.TrackedFunction typedArgNames
-                                                (List.foldr (wrapDestruct returnType) oexpr destructors)
+                                                (List.foldr (wrapDestruct bodyType) oexpr destructors)
                                                 funcType
                                     in
                                     TOpt.Def region name ofunc funcType
@@ -1831,28 +2092,32 @@ optimizeDefForTail cycle annotations region name args expr defType =
                     )
 
 
-optimizeTypedDefForTail : Cycle -> Annotations -> A.Region -> Name -> List ( Can.Pattern, Can.Type ) -> Can.Expr -> Can.Type -> Names.Tracker TOpt.Def
-optimizeTypedDefForTail cycle annotations region name typedArgs expr resultType =
+optimizeTypedDefForTail : KernelTypes.KernelTypeEnv -> Cycle -> Annotations -> A.Region -> Name -> List ( Can.Pattern, Can.Type ) -> Can.Expr -> Can.Type -> Names.Tracker TOpt.Def
+optimizeTypedDefForTail kernelEnv cycle annotations region name typedArgs expr resultType =
     case typedArgs of
         [] ->
-            optimize cycle annotations expr
+            optimize kernelEnv cycle annotations expr
                 |> Names.map (\oexpr -> TOpt.Def region name oexpr resultType)
 
         _ ->
             destructTypedArgs typedArgs
                 |> Names.andThen
-                    (\( typedArgNames, destructors ) ->
+                    (\( typedArgNames, destructors, bindings ) ->
                         let
                             argTypes : List ( Name, Can.Type )
                             argTypes =
                                 List.map (\( loc, t ) -> ( A.toValue loc, t )) typedArgNames
 
+                            allBindings : List ( Name, Can.Type )
+                            allBindings =
+                                argTypes ++ bindings
+
                             funcType : Can.Type
                             funcType =
                                 buildFunctionType (List.map Tuple.second typedArgNames) resultType
                         in
-                        Names.withVarTypes argTypes
-                            (optimize cycle annotations expr)
+                        Names.withVarTypes allBindings
+                            (optimize kernelEnv cycle annotations expr)
                             |> Names.map
                                 (\oexpr ->
                                     let

@@ -45,6 +45,7 @@ add_custom_command(
 add_custom_command(
     OUTPUT ${COMPILER_OUTPUT}
     COMMAND ${ELM_EXECUTABLE} make --optimize --output=${COMPILER_OUTPUT} ${ELM_ENTRY}
+    # COMMAND ${ELM_EXECUTABLE} make --output=${COMPILER_OUTPUT} ${ELM_ENTRY}
     COMMAND ${NODE_EXECUTABLE} scripts/replacements.js ${COMPILER_OUTPUT}
     DEPENDS ${NPM_STAMP} ${ELM_SOURCES} ${COMPILER_CONFIG_FILES}
     WORKING_DIRECTORY ${COMPILER_DIR}

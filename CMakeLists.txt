@@ -42,3 +42,9 @@ add_subdirectory(elm-kernel-cpp)
 
 # Guida compiler (Elm compiler written in Elm)
 add_subdirectory(compiler)
+
+# Clean target support - mark guida-stuff directories for cleaning
+set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_MAKE_CLEAN_FILES
+    "${CMAKE_SOURCE_DIR}/test/elm/guida-stuff"
+    "${CMAKE_SOURCE_DIR}/compiler/examples/guida-stuff"
+)

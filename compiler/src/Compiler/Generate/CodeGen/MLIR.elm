@@ -2513,6 +2513,7 @@ arithConstantFloat ctx resultVar value =
         valueAttr =
             if value == toFloat (round value) then
                 TypedIntAttr (round value) F64
+
             else
                 FloatAttr value
     in

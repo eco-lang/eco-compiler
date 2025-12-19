@@ -22,6 +22,7 @@ esac
 js="$filepath.js"
 min="$filepath.min.js"
 
+#elm make --output=$js $elm_entry
 elm make --optimize --output=$js $elm_entry
 node scripts/replacements.js $js
 

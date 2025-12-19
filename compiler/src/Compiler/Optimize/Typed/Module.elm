@@ -29,6 +29,7 @@ import Compiler.Canonicalize.Effects as Effects
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Optimize.Typed.Expression as Expr
+import Compiler.Optimize.Typed.KernelTypes as KernelTypes
 import Compiler.Optimize.Typed.Names as Names
 import Compiler.Optimize.Typed.Port as Port
 import Compiler.Reporting.Annotation as A
@@ -64,7 +65,16 @@ preserving full type information for each expression node.
 -}
 optimize : Annotations -> Can.Module -> MResult i (List W.Warning) TOpt.LocalGraph
 optimize annotations (Can.Module canData) =
-    TOpt.LocalGraph { main = Nothing, nodes = Dict.empty, fields = Dict.empty, annotations = annotations } |> addAliases canData.name annotations canData.aliases |> addUnions canData.name annotations canData.unions |> addEffects canData.name annotations canData.effects |> addDecls canData.name annotations canData.decls
+    let
+        kernelEnv : KernelTypes.KernelTypeEnv
+        kernelEnv =
+            KernelTypes.fromDecls annotations canData.decls
+    in
+    TOpt.LocalGraph { main = Nothing, nodes = Dict.empty, fields = Dict.empty, annotations = annotations }
+        |> addAliases canData.name annotations canData.aliases
+        |> addUnions canData.name annotations canData.unions
+        |> addEffects canData.name annotations canData.effects
+        |> addDecls canData.name annotations kernelEnv canData.decls
 
 
 
@@ -299,16 +309,16 @@ addToGraph name node fieldCounts (TOpt.LocalGraph data) =
 -- ADD DECLS
 
 
-addDecls : IO.Canonical -> Annotations -> Can.Decls -> TOpt.LocalGraph -> MResult i (List W.Warning) TOpt.LocalGraph
-addDecls home annotations decls graph =
-    ReportingResult.loop (addDeclsHelp home annotations) ( decls, graph )
+addDecls : IO.Canonical -> Annotations -> KernelTypes.KernelTypeEnv -> Can.Decls -> TOpt.LocalGraph -> MResult i (List W.Warning) TOpt.LocalGraph
+addDecls home annotations kernelEnv decls graph =
+    ReportingResult.loop (addDeclsHelp home annotations kernelEnv) ( decls, graph )
 
 
-addDeclsHelp : IO.Canonical -> Annotations -> ( Can.Decls, TOpt.LocalGraph ) -> MResult i (List W.Warning) (ReportingResult.Step ( Can.Decls, TOpt.LocalGraph ) TOpt.LocalGraph)
-addDeclsHelp home annotations ( decls, graph ) =
+addDeclsHelp : IO.Canonical -> Annotations -> KernelTypes.KernelTypeEnv -> ( Can.Decls, TOpt.LocalGraph ) -> MResult i (List W.Warning) (ReportingResult.Step ( Can.Decls, TOpt.LocalGraph ) TOpt.LocalGraph)
+addDeclsHelp home annotations kernelEnv ( decls, graph ) =
     case decls of
         Can.Declare def subDecls ->
-            addDef home annotations def graph
+            addDef home annotations kernelEnv def graph
                 |> ReportingResult.map (ReportingResult.Loop << Tuple.pair subDecls)
 
         Can.DeclareRec d ds subDecls ->
@@ -319,7 +329,7 @@ addDeclsHelp home annotations ( decls, graph ) =
             in
             case findMain defs of
                 Nothing ->
-                    ReportingResult.ok (ReportingResult.Loop ( subDecls, addRecDefs home annotations defs graph ))
+                    ReportingResult.ok (ReportingResult.Loop ( subDecls, addRecDefs home annotations kernelEnv defs graph ))
 
                 Just region ->
                     E.BadCycle region (defToName d) (List.map defToName ds) |> ReportingResult.throw
@@ -365,8 +375,8 @@ defToName def =
 -- ADD DEFS
 
 
-addDef : IO.Canonical -> Annotations -> Can.Def -> TOpt.LocalGraph -> MResult i (List W.Warning) TOpt.LocalGraph
-addDef home annotations def graph =
+addDef : IO.Canonical -> Annotations -> KernelTypes.KernelTypeEnv -> Can.Def -> TOpt.LocalGraph -> MResult i (List W.Warning) TOpt.LocalGraph
+addDef home annotations kernelEnv def graph =
     case def of
         Can.Def (A.At region name) args body ->
             let
@@ -374,15 +384,16 @@ addDef home annotations def graph =
                     Utils.find identity name annotations
             in
             ReportingResult.warn (W.MissingTypeAnnotation region name tipe)
-                |> ReportingResult.andThen (\_ -> addDefHelp region annotations home name args body Nothing graph)
+                |> ReportingResult.andThen (\_ -> addDefHelp region annotations kernelEnv home name args body Nothing graph)
 
         Can.TypedDef (A.At region name) _ typedArgs body resultType ->
-            addDefHelp region annotations home name (List.map Tuple.first typedArgs) body (Just ( typedArgs, resultType )) graph
+            addDefHelp region annotations kernelEnv home name (List.map Tuple.first typedArgs) body (Just ( typedArgs, resultType )) graph
 
 
 addDefHelp :
     A.Region
     -> Annotations
+    -> KernelTypes.KernelTypeEnv
     -> IO.Canonical
     -> Name.Name
     -> List Can.Pattern
@@ -390,9 +401,9 @@ addDefHelp :
     -> Maybe ( List ( Can.Pattern, Can.Type ), Can.Type )
     -> TOpt.LocalGraph
     -> MResult i w TOpt.LocalGraph
-addDefHelp region annotations home name args body maybeTypedArgs ((TOpt.LocalGraph graphData) as graph) =
+addDefHelp region annotations kernelEnv home name args body maybeTypedArgs ((TOpt.LocalGraph graphData) as graph) =
     if name /= Name.main_ then
-        ReportingResult.ok (addDefNode home annotations region name args body maybeTypedArgs EverySet.empty graph)
+        ReportingResult.ok (addDefNode home annotations kernelEnv region name args body maybeTypedArgs EverySet.empty graph)
 
     else
         let
@@ -401,7 +412,7 @@ addDefHelp region annotations home name args body maybeTypedArgs ((TOpt.LocalGra
 
             addMain : ( EverySet (List String) TOpt.Global, Dict String Name.Name Int, TOpt.Main ) -> TOpt.LocalGraph
             addMain ( deps, localFields, main ) =
-                TOpt.LocalGraph { graphData | main = Just main, fields = Utils.mapUnionWith identity compare (+) localFields graphData.fields } |> addDefNode home annotations region name args body maybeTypedArgs deps
+                TOpt.LocalGraph { graphData | main = Just main, fields = Utils.mapUnionWith identity compare (+) localFields graphData.fields } |> addDefNode home annotations kernelEnv region name args body maybeTypedArgs deps
         in
         case Type.deepDealias tipe of
             Can.TType hm nm [ _ ] ->
@@ -430,6 +441,7 @@ addDefHelp region annotations home name args body maybeTypedArgs ((TOpt.LocalGra
 addDefNode :
     IO.Canonical
     -> Annotations
+    -> KernelTypes.KernelTypeEnv
     -> A.Region
     -> Name.Name
     -> List Can.Pattern
@@ -438,7 +450,7 @@ addDefNode :
     -> EverySet (List String) TOpt.Global
     -> TOpt.LocalGraph
     -> TOpt.LocalGraph
-addDefNode home annotations region name args body maybeTypedArgs mainDeps graph =
+addDefNode home annotations kernelEnv region name args body maybeTypedArgs mainDeps graph =
     let
         defType : Can.Type
         defType =
@@ -448,7 +460,7 @@ addDefNode home annotations region name args body maybeTypedArgs mainDeps graph 
             Names.run annotations <|
                 case ( args, maybeTypedArgs ) of
                     ( [], _ ) ->
-                        Expr.optimize EverySet.empty annotations body
+                        Expr.optimize kernelEnv EverySet.empty annotations body
                             |> Names.map
                                 (\oexpr ->
                                     TOpt.TrackedFunction [] oexpr defType
@@ -457,14 +469,18 @@ addDefNode home annotations region name args body maybeTypedArgs mainDeps graph 
                     ( _, Just ( _, resultType ) ) ->
                         Expr.destructArgs annotations args
                             |> Names.andThen
-                                (\( typedArgNames, destructors ) ->
+                                (\( typedArgNames, destructors, bindings ) ->
                                     let
                                         argBindings : List ( Name.Name, Can.Type )
                                         argBindings =
                                             List.map (\( loc, t ) -> ( A.toValue loc, t )) typedArgNames
+
+                                        allBindings : List ( Name.Name, Can.Type )
+                                        allBindings =
+                                            argBindings ++ bindings
                                     in
-                                    Names.withVarTypes argBindings
-                                        (Expr.optimize EverySet.empty annotations body)
+                                    Names.withVarTypes allBindings
+                                        (Expr.optimize kernelEnv EverySet.empty annotations body)
                                         |> Names.map
                                             (\obody ->
                                                 let
@@ -479,18 +495,22 @@ addDefNode home annotations region name args body maybeTypedArgs mainDeps graph 
                     ( _, Nothing ) ->
                         Expr.destructArgs annotations args
                             |> Names.andThen
-                                (\( typedArgNames, destructors ) ->
+                                (\( typedArgNames, destructors, bindings ) ->
                                     let
                                         argBindings : List ( Name.Name, Can.Type )
                                         argBindings =
                                             List.map (\( loc, t ) -> ( A.toValue loc, t )) typedArgNames
 
+                                        allBindings : List ( Name.Name, Can.Type )
+                                        allBindings =
+                                            argBindings ++ bindings
+
                                         returnType : Can.Type
                                         returnType =
                                             getReturnType defType (List.length args)
                                     in
-                                    Names.withVarTypes argBindings
-                                        (Expr.optimize EverySet.empty annotations body)
+                                    Names.withVarTypes allBindings
+                                        (Expr.optimize kernelEnv EverySet.empty annotations body)
                                         |> Names.map
                                             (\obody ->
                                                 let
@@ -534,8 +554,8 @@ type State
         }
 
 
-addRecDefs : IO.Canonical -> Annotations -> List Can.Def -> TOpt.LocalGraph -> TOpt.LocalGraph
-addRecDefs home annotations defs (TOpt.LocalGraph graphData) =
+addRecDefs : IO.Canonical -> Annotations -> KernelTypes.KernelTypeEnv -> List Can.Def -> TOpt.LocalGraph -> TOpt.LocalGraph
+addRecDefs home annotations kernelEnv defs (TOpt.LocalGraph graphData) =
     let
         names : List Name.Name
         names =
@@ -555,7 +575,7 @@ addRecDefs home annotations defs (TOpt.LocalGraph graphData) =
 
         ( deps, localFields, State { values, functions } ) =
             Names.run annotations <|
-                List.foldl (\def -> Names.andThen (\state -> addRecDef cycle annotations state def))
+                List.foldl (\def -> Names.andThen (\state -> addRecDef kernelEnv cycle annotations state def))
                     (Names.pure (State { values = [], functions = [] }))
                     defs
     in
@@ -608,21 +628,21 @@ addLink home link def links =
 -- ADD RECURSIVE DEFS
 
 
-addRecDef : EverySet String Name.Name -> Annotations -> State -> Can.Def -> Names.Tracker State
-addRecDef cycle annotations state def =
+addRecDef : KernelTypes.KernelTypeEnv -> EverySet String Name.Name -> Annotations -> State -> Can.Def -> Names.Tracker State
+addRecDef kernelEnv cycle annotations state def =
     case def of
         Can.Def (A.At region name) args body ->
-            addRecDefHelp cycle annotations region state name args body Nothing
+            addRecDefHelp kernelEnv cycle annotations region state name args body Nothing
 
         Can.TypedDef (A.At region name) _ args body resultType ->
-            addRecDefHelp cycle annotations region state name (List.map Tuple.first args) body (Just ( args, resultType ))
+            addRecDefHelp kernelEnv cycle annotations region state name (List.map Tuple.first args) body (Just ( args, resultType ))
 
 
-addRecDefHelp : EverySet String Name.Name -> Annotations -> A.Region -> State -> Name.Name -> List Can.Pattern -> Can.Expr -> Maybe ( List ( Can.Pattern, Can.Type ), Can.Type ) -> Names.Tracker State
-addRecDefHelp cycle annotations region (State { values, functions }) name args body _ =
+addRecDefHelp : KernelTypes.KernelTypeEnv -> EverySet String Name.Name -> Annotations -> A.Region -> State -> Name.Name -> List Can.Pattern -> Can.Expr -> Maybe ( List ( Can.Pattern, Can.Type ), Can.Type ) -> Names.Tracker State
+addRecDefHelp kernelEnv cycle annotations region (State { values, functions }) name args body _ =
     case args of
         [] ->
-            Expr.optimize cycle annotations body
+            Expr.optimize kernelEnv cycle annotations body
                 |> Names.map
                     (\obody ->
                         State
@@ -632,7 +652,13 @@ addRecDefHelp cycle annotations region (State { values, functions }) name args b
                     )
 
         _ :: _ ->
-            Expr.optimizePotentialTailCall cycle annotations region name args body
+            let
+                -- For top-level defs, we can safely use lookupAnnotationType
+                defType : Can.Type
+                defType =
+                    lookupAnnotationType name annotations
+            in
+            Expr.optimizePotentialTailCall kernelEnv cycle annotations region name defType args body
                 |> Names.map
                     (\odef ->
                         State
