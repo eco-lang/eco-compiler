@@ -894,16 +894,18 @@ synthesizeRecDefType def =
     case def of
         Can.Def (A.At _ name) args _ ->
             let
-                -- Use existing pattern heuristics to get argument types.
+                -- One fresh type variable per arg, plus one for the result.
                 argTypes : List Can.Type
                 argTypes =
-                    List.map (getPatternType Dict.empty) args
+                    List.indexedMap
+                        (\index _ ->
+                            Can.TVar ("rec_arg_" ++ name ++ "_" ++ String.fromInt index)
+                        )
+                        args
 
-                -- Still use a schematic result type; it will be
-                -- replaced later by TOpt.typeOf on the optimized RHS.
                 resultType : Can.Type
                 resultType =
-                    Can.TVar ("_rec_result_" ++ name)
+                    Can.TVar ("rec_result_" ++ name)
             in
             buildFunctionType argTypes resultType
 
@@ -1703,7 +1705,7 @@ destructTwoCollectBindings path tipe a b ( revDs, bindings ) =
                     ( getPatternType Dict.empty a, getPatternType Dict.empty b )
 
                 _ ->
-                    crash "Type mismatch in destructTwoCollectBindings pattern: expected tuple or list."
+                    crash ("Type mismatch in destructTwoCollectBindings pattern: expected tuple or list.")
     in
     case path of
         TOpt.Root _ ->
@@ -1744,7 +1746,6 @@ TailCall nodes. Returns a typed optimized expression with preserved type informa
 
 The defType parameter is the function type (supplied by caller), used to compute returnType.
 This avoids calling lookupAnnotationType, which only works for top-level definitions.
-
 -}
 optimizePotentialTailCall : KernelTypes.KernelTypeEnv -> Cycle -> Annotations -> A.Region -> Name -> Can.Type -> List Can.Pattern -> Can.Expr -> Names.Tracker TOpt.Def
 optimizePotentialTailCall kernelEnv cycle annotations region name defType args expr =
@@ -1776,7 +1777,6 @@ Converts self-recursive calls in tail position to TailCall expressions for optim
 
 Uses synthesizeRecDefType to create a schematic type for untyped defs, avoiding
 lookupAnnotationType which only works for top-level definitions.
-
 -}
 optimizePotentialTailCallDef : KernelTypes.KernelTypeEnv -> Cycle -> Annotations -> Can.Def -> Names.Tracker TOpt.Def
 optimizePotentialTailCallDef kernelEnv cycle annotations def =
