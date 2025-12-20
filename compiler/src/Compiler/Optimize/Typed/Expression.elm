@@ -231,17 +231,9 @@ optimize kernelEnv cycle annotations (A.At region expression) =
                                         |> Names.map
                                             (\optRight ->
                                                 let
-                                                    leftType : Can.Type
-                                                    leftType =
-                                                        TOpt.typeOf optLeft
-
-                                                    rightType : Can.Type
-                                                    rightType =
-                                                        TOpt.typeOf optRight
-
                                                     resultType : Can.Type
                                                     resultType =
-                                                        computeBinopResultType opType leftType rightType
+                                                        getCallResultType opType 2
                                                 in
                                                 TOpt.Call region optFunc [ optLeft, optRight ] resultType
                                             )
@@ -625,19 +617,6 @@ floatType =
     Can.TType ModuleName.basics "Float" []
 
 
-{-| Check if a canonical type is a concrete numeric primitive (Int or Float).
--}
-isConcreteNumberType : Can.Type -> Bool
-isConcreteNumberType tipe =
-    case tipe of
-        Can.TType home typeName [] ->
-            home == ModuleName.basics
-                && (typeName == Name.int || typeName == Name.float)
-
-        _ ->
-            False
-
-
 boolType : Can.Type
 boolType =
     Can.TType ModuleName.basics "Bool" []
@@ -721,51 +700,6 @@ getCallResultType funcType numArgs =
         _ ->
             -- Not enough lambdas - return what we have
             funcType
-
-
-{-| Compute the result type of a binary operator call.
-
-This refines the old `getCallResultType opType 2` behavior for the common
-case of numeric-supertype operators like (+), (-), (\*), (//), etc.
-
-If the operator's result type is the `number` supertype variable
-(e.g. `number -> number -> number`) *and* both operands have already been
-resolved to a concrete numeric type (`Int` or `Float`), we return that
-concrete operand type instead of the abstract `TVar "number"`.
-
-In all other cases, we fall back to `getCallResultType opType 2`.
-
--}
-computeBinopResultType : Can.Type -> Can.Type -> Can.Type -> Can.Type
-computeBinopResultType opType leftType rightType =
-    let
-        fallback : Can.Type
-        fallback =
-            getCallResultType opType 2
-    in
-    case opType of
-        -- Expect a curried binary function: arg1 -> arg2 -> result
-        Can.TLambda _ (Can.TLambda _ result) ->
-            case result of
-                -- Only special-case when the result is a numeric supertype var
-                Can.TVar varName ->
-                    if Name.isNumberType varName then
-                        -- Only trust the operand type when it's a concrete number
-                        if isConcreteNumberType leftType && leftType == rightType then
-                            leftType
-
-                        else
-                            fallback
-
-                    else
-                        fallback
-
-                _ ->
-                    fallback
-
-        _ ->
-            -- Non-standard operator shapes: keep existing behavior
-            fallback
 
 
 {-| Build a function type from argument types and result type.
