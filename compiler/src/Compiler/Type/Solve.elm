@@ -1,4 +1,4 @@
-module Compiler.Type.Solve exposing (run)
+module Compiler.Type.Solve exposing (run, runWithIds)
 
 {-| Constraint solver for Hindley-Milner type inference.
 
@@ -20,7 +20,7 @@ to older pools or generalized to `noRank` (making them polymorphic).
 
 # Solving
 
-@docs run
+@docs run, runWithIds
 
 -}
 
@@ -70,6 +70,56 @@ run constraint =
                                 [] ->
                                     IO.traverseMap identity compare Type.toAnnotation env
                                         |> IO.map Ok
+
+                                e :: es ->
+                                    IO.pure (Err (NE.Nonempty e es))
+                        )
+            )
+
+
+{-| Solve constraints and return both annotations and per-node types.
+
+Takes a constraint tree and a node variable map (mapping expression and pattern
+IDs to their solver variables). Returns either errors or both the annotations
+and a dictionary mapping node IDs to their inferred types.
+
+Used for building the TypedCanonical AST.
+
+-}
+runWithIds :
+    Constraint
+    -> Dict Int Int Variable
+    ->
+        IO
+            (Result
+                (NE.Nonempty Error.Error)
+                { annotations : Dict String Name.Name Can.Annotation
+                , nodeTypes : Dict Int Int Can.Type
+                }
+            )
+runWithIds constraint nodeVars =
+    MVector.replicate 8 []
+        |> IO.andThen
+            (\pools ->
+                solve Dict.empty Type.outermostRank pools emptyState constraint
+                    |> IO.andThen
+                        (\(State env _ errors) ->
+                            case errors of
+                                [] ->
+                                    -- Convert env to annotations
+                                    IO.traverseMap identity compare Type.toAnnotation env
+                                        |> IO.andThen
+                                            (\annotations ->
+                                                -- Convert nodeVars to Can.Types
+                                                IO.traverseMap identity compare Type.toCanType nodeVars
+                                                    |> IO.map
+                                                        (\nodeTypes ->
+                                                            Ok
+                                                                { annotations = annotations
+                                                                , nodeTypes = nodeTypes
+                                                                }
+                                                        )
+                                            )
 
                                 e :: es ->
                                     IO.pure (Err (NE.Nonempty e es))

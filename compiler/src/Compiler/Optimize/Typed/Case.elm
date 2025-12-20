@@ -1,11 +1,17 @@
 module Compiler.Optimize.Typed.Case exposing (optimize)
 
-{-| Typed case expression optimization.
+{-| Optimizes typed case expressions using decision trees.
 
-Compiles case expressions into decision trees with type information preserved.
-Like the regular Case optimizer but produces TypedOptimized expressions with
-Can.Type annotations on all branches and eliminates redundant tests through
-decision tree optimization.
+This module bridges the gap between decision tree compilation and the typed optimized
+AST. It takes pattern-matched branches and converts them into an efficient
+case expression with:
+
+  - A decision tree that determines which branch to execute
+  - Inline choices for branches that are only reached from one path
+  - Jump labels for branches that can be reached from multiple paths
+
+The optimization reduces code duplication by sharing branch implementations
+when the same code would be reached through different pattern match paths.
 
 
 # Optimization
@@ -28,12 +34,12 @@ import Utils.Main as Utils
 -- OPTIMIZE A CASE EXPRESSION
 
 
-{-| Optimize a case expression into a decision tree with type information.
-Takes a temporary variable name, the root variable being matched, and the pattern-matched branches.
-Returns a typed Case expression with optimized decision tree and inline/jump choices.
+{-| Optimize a typed case expression into a decision tree.
+Takes a temporary variable name, the root variable being matched, the pattern-matched branches,
+and the result type. Returns an optimized Case expression with decision tree and inline/jump choices.
 -}
-optimize : Name.Name -> Name.Name -> List ( Can.Pattern, TOpt.Expr ) -> TOpt.Expr
-optimize temp root optBranches =
+optimize : Name.Name -> Name.Name -> List ( Can.Pattern, TOpt.Expr ) -> Can.Type -> TOpt.Expr
+optimize temp root optBranches resultType =
     let
         ( patterns, indexedBranches ) =
             List.unzip (List.indexedMap indexify optBranches)
@@ -48,16 +54,6 @@ optimize temp root optBranches =
 
         ( choices, maybeJumps ) =
             List.unzip (List.map (createChoices targetCounts) indexedBranches)
-
-        -- Get the result type from the first branch
-        resultType : Can.Type
-        resultType =
-            case optBranches of
-                ( _, firstExpr ) :: _ ->
-                    TOpt.typeOf firstExpr
-
-                [] ->
-                    crash "Case with no branches"
     in
     TOpt.Case temp
         root

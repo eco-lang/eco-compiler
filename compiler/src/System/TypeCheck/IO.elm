@@ -1,7 +1,7 @@
 module System.TypeCheck.IO exposing
     ( unsafePerformIO
     , IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMap, traverseMapWithKey, forM_, mapM_
-    , foldMDict, indexedForA, mapM, traverseIndexed, traverseList, traverseTuple
+    , foldMDict, mapM, traverseList, traverseTuple
     , Step(..), loop
     , Point(..), PointInfo(..)
     , Descriptor(..), Content(..), SuperType(..), Mark(..), Variable, FlatType(..)
@@ -25,7 +25,7 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 # The IO monad
 
 @docs IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMap, traverseMapWithKey, forM_, mapM_
-@docs foldMDict, indexedForA, mapM, traverseIndexed, traverseList, traverseTuple
+@docs foldMDict, mapM, traverseList, traverseTuple
 
 
 # Loop
@@ -55,7 +55,6 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 -}
 
 import Array exposing (Array)
-import Compiler.Data.Index as Index
 import Data.Map as Dict exposing (Dict)
 
 
@@ -322,31 +321,6 @@ Map an IO-producing function over a list, collecting results.
 mapM : (a -> IO b) -> List a -> IO (List b)
 mapM =
     traverseList
-
-
-{-| Traverse a list with an indexed IO-producing function.
-
-The function receives both the zero-based index and the element.
-
--}
-traverseIndexed : (Index.ZeroBased -> a -> IO b) -> List a -> IO (List b)
-traverseIndexed func xs =
-    sequenceAList (Index.indexedMap func xs)
-
-
-{-| Flipped version of `traverseIndexed` for pipeline-style code.
-
-Traverse a list with an indexed IO-producing function.
-
--}
-indexedForA : List a -> (Index.ZeroBased -> a -> IO b) -> IO (List b)
-indexedForA xs func =
-    sequenceAList (Index.indexedMap func xs)
-
-
-sequenceAList : List (IO a) -> IO (List a)
-sequenceAList =
-    List.foldr (\x acc -> apply acc (map (::) x)) (pure [])
 
 
 

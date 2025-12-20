@@ -550,7 +550,7 @@ generateMonoDevOutput backend withSourceMaps leadingLines root roots objects =
         typedGraph =
             List.foldl addRootTypedGraph baseGraph (NE.toList roots)
     in
-    case Monomorphize.monomorphize typedGraph of
+    case Monomorphize.monomorphize "main" typedGraph of
         Err err ->
             Task.throw (Exit.GenerateMonomorphizationError err)
 

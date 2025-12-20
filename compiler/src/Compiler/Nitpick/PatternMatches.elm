@@ -93,8 +93,8 @@ type Literal
 
 
 simplify : Can.Pattern -> Pattern
-simplify (A.At _ pattern) =
-    case pattern of
+simplify (A.At _ patternInfo) =
+    case patternInfo.node of
         Can.PAnything ->
             Anything
 
@@ -354,8 +354,8 @@ checkTypedArg ( (A.At region _) as pattern, _ ) errors =
 
 
 checkExpr : Can.Expr -> List Error -> List Error
-checkExpr (A.At region expression) errors =
-    case expression of
+checkExpr (A.At region exprInfo) errors =
+    case exprInfo.node of
         Can.VarLocal _ ->
             errors
 

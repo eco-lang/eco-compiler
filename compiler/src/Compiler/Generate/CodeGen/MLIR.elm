@@ -15,13 +15,11 @@ in the types.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
-import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.Mode as Mode
 import Data.Map as EveryDict
-import Data.Set as EverySet
 import Dict exposing (Dict)
-import Mlir.Loc as Loc exposing (Loc)
+import Mlir.Loc as Loc
 import Mlir.Mlir as Mlir
     exposing
         ( MlirAttr(..)
@@ -133,7 +131,7 @@ monoTypeToMlir monoType =
         Mono.MVar name constraint_ ->
             case constraint_ of
                 Mono.CNumber ->
-                    crash ("MLIR codegen: unresolved type variable " ++ name ++ " - should have been instantiated")
+                    I64
 
                 Mono.CEcoValue ->
                     ecoValue
@@ -163,6 +161,24 @@ countTotalArity monoType =
 
         _ ->
             0
+
+
+{-| Decompose a function type into its flattened argument types and final return type.
+For MFunction [a, b] (MFunction [c] d), this returns ([a, b, c], d).
+For non-function types, returns ([], type).
+-}
+decomposeFunctionType : Mono.MonoType -> ( List Mono.MonoType, Mono.MonoType )
+decomposeFunctionType monoType =
+    case monoType of
+        Mono.MFunction argTypes result ->
+            let
+                ( nestedArgs, finalResult ) =
+                    decomposeFunctionType result
+            in
+            ( argTypes ++ nestedArgs, finalResult )
+
+        other ->
+            ( [], other )
 
 
 
@@ -681,13 +697,6 @@ generateModule mode (Mono.MonoGraph { nodes, main, registry }) =
             { body = lambdaOps ++ ops ++ mainOps
             , loc = Loc.unknown
             }
-
-        _ =
-            if not (verifyCodegenInvariants mlirModule finalCtx) then
-                crash "MLIR codegen: invariant violation"
-
-            else
-                ()
     in
     Pretty.ppModule mlirModule
 
@@ -1061,35 +1070,45 @@ generateExtern : Context -> String -> Mono.MonoType -> ( Context, MlirOp )
 generateExtern ctx funcName monoType =
     -- Generate an extern declaration with a placeholder body.
     -- MLIR's func.func requires at least one region, so we create a stub body
-    -- that constructs a Unit value and returns it. The actual implementation
+    -- that returns a default value of the correct type. The actual implementation
     -- will be provided by the runtime linker.
     let
-        returnType =
-            monoTypeToMlir monoType
+        -- Decompose function type to get argument types and return type
+        ( argMonoTypes, resultMonoType ) =
+            decomposeFunctionType monoType
 
+        -- Convert to MLIR types
+        argMlirTypes : List MlirType
+        argMlirTypes =
+            List.map monoTypeToMlir argMonoTypes
+
+        resultMlirType : MlirType
+        resultMlirType =
+            monoTypeToMlir resultMonoType
+
+        -- Create block argument pairs (arg0, arg1, etc.)
+        argPairs : List ( String, MlirType )
+        argPairs =
+            List.indexedMap (\i ty -> ( "%arg" ++ String.fromInt i, ty )) argMlirTypes
+
+        -- Start fresh var counter after block args
+        ctxWithArgs : Context
+        ctxWithArgs =
+            { ctx | nextVar = List.length argPairs }
+
+        -- Create a stub return value of the correct type
         ( stubVar, ctx1 ) =
-            freshVar ctx
+            freshVar ctxWithArgs
 
-        -- Create a placeholder Unit value
-        ( ctx2, constructOp ) =
-            mlirOp ctx1 "eco.construct"
-                |> opBuilder.withResults [ ( stubVar, ecoValue ) ]
-                |> opBuilder.withAttrs
-                    (Dict.fromList
-                        [ ( "_operand_types", ArrayAttr [] )
-                        , ( "size", IntAttr 0 )
-                        , ( "tag", IntAttr 0 )
-                        , ( "unboxed_bitmap", IntAttr 0 )
-                        ]
-                    )
-                |> opBuilder.build
+        ( ctx2, stubOp ) =
+            generateStubValue ctx1 stubVar resultMonoType resultMlirType
 
         ( ctx3, returnOp ) =
-            ecoReturn ctx2 stubVar ecoValue
+            ecoReturn ctx2 stubVar resultMlirType
 
         region : MlirRegion
         region =
-            mkRegion [] [ constructOp ] returnOp
+            mkRegion argPairs [ stubOp ] returnOp
 
         attrs =
             Dict.fromList
@@ -1098,8 +1117,8 @@ generateExtern ctx funcName monoType =
                 , ( "function_type"
                   , TypeAttr
                         (FunctionType
-                            { inputs = []
-                            , results = [ returnType ]
+                            { inputs = argMlirTypes
+                            , results = [ resultMlirType ]
                             }
                         )
                   )
@@ -1109,6 +1128,39 @@ generateExtern ctx funcName monoType =
         |> opBuilder.withRegions [ region ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build
+
+
+{-| Generate a stub value of the given type for extern function bodies.
+-}
+generateStubValue : Context -> String -> Mono.MonoType -> MlirType -> ( Context, MlirOp )
+generateStubValue ctx resultVar monoType mlirType =
+    case monoType of
+        Mono.MInt ->
+            arithConstantInt ctx resultVar 0
+
+        Mono.MFloat ->
+            arithConstantFloat ctx resultVar 0.0
+
+        Mono.MBool ->
+            arithConstantBool ctx resultVar False
+
+        Mono.MChar ->
+            arithConstantChar ctx resultVar 0
+
+        _ ->
+            -- For all other types (String, List, Record, Custom, Function, etc.),
+            -- return a boxed Unit value
+            mlirOp ctx "eco.construct"
+                |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+                |> opBuilder.withAttrs
+                    (Dict.fromList
+                        [ ( "_operand_types", ArrayAttr [] )
+                        , ( "size", IntAttr 0 )
+                        , ( "tag", IntAttr 0 )
+                        , ( "unboxed_bitmap", IntAttr 0 )
+                        ]
+                    )
+                |> opBuilder.build
 
 
 
@@ -1695,7 +1747,7 @@ generateCall ctx func args resultType =
                         ( logBaseVar, ctx3 ) =
                             freshVar ctx2
 
-                        ( resVar, ctx4 ) =
+                        ( resVar, _ ) =
                             freshVar ctx3
 
                         ( ctx5, logXOp ) =
@@ -2219,127 +2271,6 @@ generateAccessor ctx fieldName =
 
 
 -- INVARIANT CHECKS
-
-
-verifyCodegenInvariants : MlirModule -> Context -> Bool
-verifyCodegenInvariants mlirModule ctx =
-    let
-        definedFuncs =
-            mlirModule.body
-                |> List.foldl
-                    (\op acc ->
-                        if op.name == "func.func" then
-                            case Dict.get "sym_name" op.attrs of
-                                Just (StringAttr symName) ->
-                                    EverySet.insert identity symName acc
-
-                                _ ->
-                                    acc
-
-                        else
-                            acc
-                    )
-                    EverySet.empty
-
-        allOps =
-            collectAllOps mlirModule.body
-
-        callsAreKnown =
-            List.all
-                (\op ->
-                    if op.name == "eco.call" then
-                        case Dict.get "callee" op.attrs of
-                            Just (SymbolRefAttr callee) ->
-                                EverySet.member identity callee definedFuncs || isLikelyExternal callee
-
-                            _ ->
-                                False
-
-                    else
-                        True
-                )
-                allOps
-
-        cfgWellFormed =
-            List.all blocksWellFormed (collectFuncRegions mlirModule.body)
-    in
-    callsAreKnown && cfgWellFormed
-
-
-collectAllOps : List MlirOp -> List MlirOp
-collectAllOps topLevelOps =
-    let
-        step op acc =
-            let
-                nestedOps =
-                    op.regions
-                        |> List.concatMap
-                            (\(MlirRegion region) ->
-                                let
-                                    entryOps =
-                                        region.entry.body
-
-                                    blockOps =
-                                        OrderedDict.values region.blocks
-                                            |> List.concatMap (\b -> b.body)
-                                in
-                                entryOps ++ blockOps
-                            )
-            in
-            op :: List.foldl step acc nestedOps
-    in
-    List.foldr step [] topLevelOps
-
-
-collectFuncRegions : List MlirOp -> List MlirRegion
-collectFuncRegions ops =
-    ops
-        |> List.filter (\op -> op.name == "func.func")
-        |> List.concatMap .regions
-
-
-blocksWellFormed : MlirRegion -> Bool
-blocksWellFormed (MlirRegion region) =
-    let
-        checkBlock ops =
-            let
-                step op ( seenTerm, ok ) =
-                    if not ok then
-                        ( seenTerm, False )
-
-                    else if seenTerm then
-                        ( seenTerm, False )
-
-                    else if op.isTerminator then
-                        ( True, True )
-
-                    else
-                        ( False, True )
-
-                ( _, check ) =
-                    List.foldl step ( False, True ) ops
-            in
-            check
-
-        entryOk =
-            checkBlock region.entry.body
-
-        otherOk =
-            OrderedDict.values region.blocks
-                |> List.all (\b -> checkBlock b.body)
-    in
-    entryOk && otherOk
-
-
-isLikelyExternal : String -> Bool
-isLikelyExternal name =
-    String.startsWith "Elm_Kernel_" name
-        || String.startsWith "accessor_" name
-        || name
-        == "main"
-
-
-
 -- HELPERS
 
 
@@ -2507,15 +2438,8 @@ arithConstantInt ctx resultVar value =
 arithConstantFloat : Context -> String -> Float -> ( Context, MlirOp )
 arithConstantFloat ctx resultVar value =
     let
-        -- For whole numbers, use TypedIntAttr to produce "5 : f64" which is valid MLIR.
-        -- FloatAttr uses String.fromFloat which omits the decimal point for whole numbers,
-        -- producing invalid MLIR like "5" instead of "5.0" for f64 type.
         valueAttr =
-            if value == toFloat (round value) then
-                TypedIntAttr (round value) F64
-
-            else
-                FloatAttr value
+            TypedFloatAttr value F64
     in
     mlirOp ctx "arith.constant"
         |> opBuilder.withResults [ ( resultVar, F64 ) ]

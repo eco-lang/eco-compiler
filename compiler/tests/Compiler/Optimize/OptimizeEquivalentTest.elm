@@ -1,0 +1,54 @@
+module Compiler.Optimize.OptimizeEquivalentTest exposing (suite)
+
+{-| Test suite for verifying that Erased and Typed optimization paths
+produce structurally equivalent results.
+
+This runs all the standard test cases (excluding TypeCheckFails) through
+both optimization pipelines and compares the resulting IRs.
+
+-}
+
+import Compiler.AsPatternTests as AsPatternTests
+import Compiler.BinopTests as BinopTests
+import Compiler.CaseTests as CaseTests
+import Compiler.DeepFuzzTests as DeepFuzzTests
+import Compiler.EdgeCaseTests as EdgeCaseTests
+import Compiler.FunctionTests as FunctionTests
+import Compiler.HigherOrderTests as HigherOrderTests
+import Compiler.LetDestructTests as LetDestructTests
+import Compiler.LetRecTests as LetRecTests
+import Compiler.LetTests as LetTests
+import Compiler.ListTests as ListTests
+import Compiler.LiteralTests as LiteralTests
+import Compiler.MultiDefTests as MultiDefTests
+import Compiler.OperatorTests as OperatorTests
+import Compiler.Optimize.OptimizeEquivalent exposing (expectEquivalentOptimization)
+import Compiler.PatternArgTests as PatternArgTests
+import Compiler.RecordTests as RecordTests
+import Compiler.TupleTests as TupleTests
+import Test exposing (Test)
+
+
+suite : Test
+suite =
+    Test.describe "Erased and Typed optimization produce equivalent results"
+        [ AsPatternTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        , BinopTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        , CaseTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        , EdgeCaseTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        , FunctionTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        , HigherOrderTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        , LetDestructTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        , LetRecTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        , LetTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        , ListTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        , LiteralTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        , MultiDefTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        , OperatorTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        , PatternArgTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        , RecordTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        , TupleTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+
+        -- Deep structural fuzz tests
+        , DeepFuzzTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        ]

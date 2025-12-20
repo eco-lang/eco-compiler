@@ -2,7 +2,7 @@ module Compiler.Reporting.Result exposing
     ( RResult(..), RStep(..), Step(..)
     , ok, throw, warn, run
     , map, apply, andThen
-    , traverse, traverseDict, indexedTraverse, mapTraverseWithKey
+    , traverse, indexedTraverse, mapTraverseWithKey
     , loop
     )
 
@@ -30,7 +30,7 @@ throughout the compilation pipeline.
 
 # Traversals
 
-@docs traverse, traverseDict, indexedTraverse, mapTraverseWithKey
+@docs traverse, indexedTraverse, mapTraverseWithKey
 
 
 # Loops
@@ -297,17 +297,6 @@ mapTraverseWithKeyHelp toComparable f ( pairs, result ) =
 
         ( k, a ) :: rest ->
             map (\b -> Loop ( rest, Dict.insert toComparable k b result )) (f k a)
-
-
-{-| Traverse a dictionary with a function that only depends on values.
-
-Similar to mapTraverseWithKey but the function doesn't receive the key.
-Builds a new dictionary with transformed values while threading RResult state.
-
--}
-traverseDict : (k -> comparable) -> (k -> k -> Order) -> (a -> RResult i w x b) -> Dict comparable k a -> RResult i w x (Dict comparable k b)
-traverseDict toComparable keyComparison func =
-    Dict.foldr keyComparison (\k a -> andThen (\acc -> map (\b -> Dict.insert toComparable k b acc) (func a))) (ok Dict.empty)
 
 
 {-| Traverse a list with an index-aware function.

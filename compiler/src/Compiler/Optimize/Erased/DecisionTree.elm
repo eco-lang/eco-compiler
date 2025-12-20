@@ -223,8 +223,8 @@ flattenPatterns (Branch goal pathPatterns) =
 
 
 flatten : ( Path, Can.Pattern ) -> List ( Path, Can.Pattern ) -> List ( Path, Can.Pattern )
-flatten (( path, A.At region pattern ) as pathPattern) otherPathPatterns =
-    case pattern of
+flatten (( path, A.At region patternInfo ) as pathPattern) otherPathPatterns =
+    case patternInfo.node of
         Can.PVar _ ->
             pathPattern :: otherPathPatterns
 
@@ -264,7 +264,8 @@ flatten (( path, A.At region pattern ) as pathPattern) otherPathPatterns =
 
         Can.PAlias realPattern alias ->
             flatten ( path, realPattern ) <|
-                ( path, A.At region (Can.PVar alias) )
+                -- Use placeholder ID (-1) for synthesized patterns
+                ( path, A.At region { id = -1, node = Can.PVar alias } )
                     :: otherPathPatterns
 
         Can.PRecord _ ->
@@ -376,8 +377,8 @@ testAtPath : Path -> Branch -> Maybe Test
 testAtPath selectedPath (Branch _ pathPatterns) =
     Utils.listLookup selectedPath pathPatterns
         |> Maybe.andThen
-            (\(A.At _ pattern) ->
-                case pattern of
+            (\(A.At _ patternInfo) ->
+                case patternInfo.node of
                     Can.PCtor { home, union, name, index } ->
                         let
                             (Can.Union unionData) =
@@ -444,8 +445,8 @@ edgesFor path branches test =
 toRelevantBranch : Test -> Path -> Branch -> Maybe Branch
 toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
     case extract path pathPatterns of
-        Found start (A.At region pattern) end ->
-            case pattern of
+        Found start (A.At region patternInfo) end ->
+            case patternInfo.node of
                 Can.PCtor { union, name, args } ->
                     case test of
                         IsCtor _ testName _ _ _ ->
@@ -486,9 +487,10 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
                     case test of
                         IsCons ->
                             let
-                                tl_ : A.Located Can.Pattern_
+                                -- Use placeholder ID (-1) for synthesized patterns
+                                tl_ : Can.Pattern
                                 tl_ =
-                                    A.At region (Can.PList tl)
+                                    A.At region { id = -1, node = Can.PList tl }
                             in
                             Just (Branch goal (start ++ subPositions path [ hd, tl_ ] ++ end))
 
@@ -618,8 +620,8 @@ isIrrelevantTo selectedPath (Branch _ pathPatterns) =
 
 
 needsTests : Can.Pattern -> Bool
-needsTests (A.At _ pattern) =
-    case pattern of
+needsTests (A.At _ patternInfo) =
+    case patternInfo.node of
         Can.PVar _ ->
             False
 

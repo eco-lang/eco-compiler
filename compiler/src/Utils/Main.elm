@@ -26,12 +26,12 @@ module Utils.Main exposing
     , mapMapKeys, mapMapMaybe, find, findMax, keysSet
     , mapTraverse, mapTraverseWithKey, mapTraverseResult, mapTraverseWithKeyResult, dictMapM_
     , eitherLefts, filterM, listGroupBy, listLookup, listMaximum, foldl1_, foldr1
-    , listTraverse, listTraverse_, lines, unlines, unzip3, zipWithM, mapM_
+    , listTraverse, listTraverse_, lines, unlines, zipWithM, mapM_
     , maybeEncoder, maybeMapM, maybeTraverseTask
     , nonEmptyListTraverse
     , sequenceADict, sequenceDictMaybe, sequenceDictResult, sequenceDictResult_
     , sequenceListMaybe, sequenceNonemptyListResult
-    , indexedZipWithA, foldM
+    , foldM
     )
 
 {-| Comprehensive utility module providing cross-platform system operations, data structure utilities,
@@ -124,7 +124,7 @@ primary interface to system resources and provides Haskell-like abstractions ada
 # List Utilities
 
 @docs eitherLefts, filterM, listGroupBy, listLookup, listMaximum, foldl1_, foldr1
-@docs listTraverse, listTraverse_, lines, unlines, unzip3, zipWithM, mapM_
+@docs listTraverse, listTraverse_, lines, unlines, zipWithM, mapM_
 
 
 # Maybe Utilities
@@ -145,14 +145,13 @@ primary interface to system resources and provides Haskell-like abstractions ada
 
 # Indexed Operations
 
-@docs indexedZipWithA, foldM
+@docs foldM
 
 -}
 
 import Basics.Extra exposing (flip)
 import Bytes.Decode
 import Bytes.Encode
-import Compiler.Data.Index as Index
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Reporting.Result as ReportingResult
 import Control.Monad.State.Strict as State
@@ -389,31 +388,11 @@ foldM f b =
     List.foldl (\a -> ReportingResult.andThen (\acc -> f acc a)) (ReportingResult.ok b)
 
 
-{-| Zip two lists with an indexed function that produces RResults, verifying that lists have matching lengths.
--}
-indexedZipWithA : (Index.ZeroBased -> a -> b -> ReportingResult.RResult info warnings error c) -> List a -> List b -> ReportingResult.RResult info warnings error (Index.VerifiedList c)
-indexedZipWithA func listX listY =
-    case Index.indexedZipWith func listX listY of
-        Index.LengthMatch xs ->
-            sequenceAList xs
-                |> ReportingResult.map Index.LengthMatch
-
-        Index.LengthMismatch x y ->
-            ReportingResult.ok (Index.LengthMismatch x y)
-
-
 {-| Sequence a dictionary of RResults into an RResult of a dictionary, collecting all errors and warnings.
 -}
 sequenceADict : (k -> comparable) -> (k -> k -> Order) -> Dict comparable k (ReportingResult.RResult i w e v) -> ReportingResult.RResult i w e (Dict comparable k v)
 sequenceADict toComparable keyComparison =
     Map.foldr keyComparison (\k x acc -> ReportingResult.apply acc (ReportingResult.map (Map.insert toComparable k) x)) (ReportingResult.ok Map.empty)
-
-
-{-| Sequence a list of RResults into an RResult of a list, collecting all errors and warnings.
--}
-sequenceAList : List (ReportingResult.RResult i w e v) -> ReportingResult.RResult i w e (List v)
-sequenceAList =
-    List.foldr (\x acc -> ReportingResult.apply acc (ReportingResult.map (::) x)) (ReportingResult.ok [])
 
 
 {-| Sequence a dictionary of Maybes into a Maybe dictionary, returning Nothing if any value is Nothing.
@@ -456,18 +435,6 @@ sequenceNonemptyListResult (NE.Nonempty x xs) =
 keysSet : (k -> comparable) -> (k -> k -> Order) -> Dict comparable k a -> EverySet comparable k
 keysSet toComparable keyComparison =
     Map.keys keyComparison >> EverySet.fromList toComparable
-
-
-{-| Unzip a list of 3-tuples into three separate lists.
--}
-unzip3 : List ( a, b, c ) -> ( List a, List b, List c )
-unzip3 pairs =
-    let
-        step : ( a, b, c ) -> ( List a, List b, List c ) -> ( List a, List b, List c )
-        step ( x, y, z ) ( xs, ys, zs ) =
-            ( x :: xs, y :: ys, z :: zs )
-    in
-    List.foldr step ( [], [], [] ) pairs
 
 
 {-| Map a monadic function over a list, discarding the results and returning ().

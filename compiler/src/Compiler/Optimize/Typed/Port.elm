@@ -3,23 +3,12 @@ module Compiler.Optimize.Typed.Port exposing
     , toDecoder, toFlagsDecoder
     )
 
-{-| Typed port encoder/decoder generation.
+{-| Generates typed JSON encoders and decoders for port types.
 
-Generates JSON encoders and decoders for port types with full type information
-preserved. Like the regular Port generator but produces TypedOptimized expressions
-with Can.Type annotations, enabling type-aware code generation for ports.
-
-Handles all Elm types that can pass through ports: primitives, records, tuples,
-Maybe, List, Array, and the Json.Decode.Value / Json.Encode.Value types.
-
-
-# Encoders
+This is the typed version of Compiler.Optimize.Erased.Port. It produces
+TOpt.Expr values with type annotations instead of Opt.Expr.
 
 @docs toEncoder
-
-
-# Decoders
-
 @docs toDecoder, toFlagsDecoder
 
 -}
@@ -42,8 +31,7 @@ import Utils.Crash exposing (crash)
 -- ENCODE
 
 
-{-| Generate a JSON encoder function for the given Elm type.
-Produces a typed expression that converts Elm values to JSON.
+{-| Generate a typed JSON encoder function for the given Elm type.
 -}
 toEncoder : Can.Type -> Names.Tracker TOpt.Expr
 toEncoder tipe =
@@ -60,13 +48,12 @@ toEncoder tipe =
         Can.TUnit ->
             encode "null"
                 |> Names.map
-                    (\nullEncoder ->
+                    (\null ->
                         let
-                            funcType : Can.Type
                             funcType =
-                                Can.TLambda Can.TUnit jsonValueType
+                                Can.TLambda Can.TUnit (Can.TType ModuleName.jsonEncode "Value" [])
                         in
-                        TOpt.Function [ ( Name.dollar, Can.TUnit ) ] nullEncoder funcType
+                        TOpt.Function [ ( Name.dollar, Can.TUnit ) ] null funcType
                     )
 
         Can.TTuple a b cs ->
@@ -88,12 +75,7 @@ toEncoder tipe =
                         encode "string"
 
                     else if name == Name.value then
-                        let
-                            identityType : Can.Type
-                            identityType =
-                                Can.TLambda jsonValueType jsonValueType
-                        in
-                        Names.registerGlobal A.zero ModuleName.basics Name.identity_ identityType
+                        Names.registerGlobal A.zero ModuleName.basics Name.identity_ (Can.TLambda tipe tipe)
 
                     else if name == Name.bytes then
                         encodeBytes
@@ -122,25 +104,22 @@ toEncoder tipe =
 
         Can.TRecord fields Nothing ->
             let
+                valueType =
+                    Can.TType ModuleName.jsonEncode "Value" []
+
                 encodeField : ( Name, Can.FieldType ) -> Names.Tracker TOpt.Expr
                 encodeField ( name, Can.FieldType _ fieldType ) =
                     toEncoder fieldType
                         |> Names.map
                             (\encoder ->
                                 let
-                                    accessExpr : TOpt.Expr
-                                    accessExpr =
-                                        TOpt.Access (TOpt.VarLocal Name.dollar tipe) A.zero name fieldType
-
-                                    value : TOpt.Expr
-                                    value =
-                                        TOpt.Call A.zero encoder [ accessExpr ] jsonValueType
-
-                                    tupleType : Can.Type
                                     tupleType =
-                                        Can.TTuple stringType jsonValueType []
+                                        Can.TTuple (Can.TType ModuleName.basics "String" []) valueType []
+
+                                    value =
+                                        TOpt.Call A.zero encoder [ TOpt.Access (TOpt.VarLocal Name.dollar tipe) A.zero name fieldType ] valueType
                                 in
-                                TOpt.Tuple A.zero (TOpt.Str A.zero (Name.toElmString name) stringType) value [] tupleType
+                                TOpt.Tuple A.zero (TOpt.Str A.zero (Name.toElmString name) (Can.TType ModuleName.basics "String" [])) value [] tupleType
                             )
             in
             encode "object"
@@ -150,17 +129,15 @@ toEncoder tipe =
                             |> Names.andThen
                                 (\keyValuePairs ->
                                     let
-                                        listType : Can.Type
                                         listType =
-                                            Can.TType ModuleName.list "List" [ Can.TTuple stringType jsonValueType [] ]
+                                            Can.TType ModuleName.list "List" [ Can.TTuple (Can.TType ModuleName.basics "String" []) valueType [] ]
 
-                                        funcType : Can.Type
                                         funcType =
-                                            Can.TLambda tipe jsonValueType
+                                            Can.TLambda tipe valueType
                                     in
                                     Names.registerFieldDict fields
                                         (TOpt.Function [ ( Name.dollar, tipe ) ]
-                                            (TOpt.Call A.zero object [ TOpt.List A.zero keyValuePairs listType ] jsonValueType)
+                                            (TOpt.Call A.zero object [ TOpt.List A.zero keyValuePairs listType ] valueType)
                                             funcType
                                         )
                                 )
@@ -172,30 +149,27 @@ toEncoder tipe =
 
 
 encodeMaybe : Can.Type -> Names.Tracker TOpt.Expr
-encodeMaybe argType =
+encodeMaybe tipe =
     let
-        maybeType : Can.Type
         maybeType =
-            Can.TType ModuleName.maybe "Maybe" [ argType ]
+            Can.TType ModuleName.maybe "Maybe" [ tipe ]
+
+        valueType =
+            Can.TType ModuleName.jsonEncode "Value" []
     in
     encode "null"
         |> Names.andThen
             (\null ->
-                toEncoder argType
+                toEncoder tipe
                     |> Names.andThen
                         (\encoder ->
-                            let
-                                destructType : Can.Type
-                                destructType =
-                                    Can.TLambda jsonValueType (Can.TLambda (Can.TLambda argType jsonValueType) (Can.TLambda maybeType jsonValueType))
-
-                                funcType : Can.Type
-                                funcType =
-                                    Can.TLambda maybeType jsonValueType
-                            in
-                            Names.registerGlobal A.zero ModuleName.maybe "destruct" destructType
+                            Names.registerGlobal A.zero ModuleName.maybe "destruct" (Can.TVar "destruct")
                                 |> Names.map
                                     (\destruct ->
+                                        let
+                                            funcType =
+                                                Can.TLambda maybeType valueType
+                                        in
                                         TOpt.Function [ ( Name.dollar, maybeType ) ]
                                             (TOpt.Call A.zero
                                                 destruct
@@ -203,7 +177,7 @@ encodeMaybe argType =
                                                 , encoder
                                                 , TOpt.VarLocal Name.dollar maybeType
                                                 ]
-                                                jsonValueType
+                                                valueType
                                             )
                                             funcType
                                     )
@@ -212,37 +186,35 @@ encodeMaybe argType =
 
 
 encodeList : Can.Type -> Names.Tracker TOpt.Expr
-encodeList argType =
+encodeList tipe =
     let
-        listType : Can.Type
-        listType =
-            Can.TType ModuleName.list "List" [ argType ]
+        valueType =
+            Can.TType ModuleName.jsonEncode "Value" []
     in
     encode "list"
         |> Names.andThen
             (\list ->
-                toEncoder argType
+                toEncoder tipe
                     |> Names.map
                         (\encoder ->
-                            TOpt.Call A.zero list [ encoder ] (Can.TLambda listType jsonValueType)
+                            TOpt.Call A.zero list [ encoder ] (Can.TLambda (Can.TType ModuleName.list "List" [ tipe ]) valueType)
                         )
             )
 
 
 encodeArray : Can.Type -> Names.Tracker TOpt.Expr
-encodeArray argType =
+encodeArray tipe =
     let
-        arrayType : Can.Type
-        arrayType =
-            Can.TType ModuleName.array "Array" [ argType ]
+        valueType =
+            Can.TType ModuleName.jsonEncode "Value" []
     in
     encode "array"
         |> Names.andThen
             (\array ->
-                toEncoder argType
+                toEncoder tipe
                     |> Names.map
                         (\encoder ->
-                            TOpt.Call A.zero array [ encoder ] (Can.TLambda arrayType jsonValueType)
+                            TOpt.Call A.zero array [ encoder ] (Can.TLambda (Can.TType ModuleName.array "Array" [ tipe ]) valueType)
                         )
             )
 
@@ -250,42 +222,32 @@ encodeArray argType =
 encodeTuple : Can.Type -> Can.Type -> List Can.Type -> Names.Tracker TOpt.Expr
 encodeTuple a b cs =
     let
-        tupleType : Can.Type
         tupleType =
             Can.TTuple a b cs
 
-        let_ : Name -> Index.ZeroBased -> Can.Type -> TOpt.Expr -> TOpt.Expr
-        let_ arg index elemType body =
-            let
-                bodyType : Can.Type
-                bodyType =
-                    TOpt.typeOf body
-            in
-            TOpt.Destruct (TOpt.Destructor arg (TOpt.Index index (TOpt.Root Name.dollar)) elemType) body bodyType
+        valueType =
+            Can.TType ModuleName.jsonEncode "Value" []
 
-        letCs_ : Name -> Int -> Can.Type -> TOpt.Expr -> TOpt.Expr
-        letCs_ arg index elemType body =
-            let
-                bodyType : Can.Type
-                bodyType =
-                    TOpt.typeOf body
-            in
-            TOpt.Destruct (TOpt.Destructor arg (TOpt.ArrayIndex index (TOpt.Field "cs" (TOpt.Root Name.dollar))) elemType) body bodyType
+        listValueType =
+            Can.TType ModuleName.list "List" [ valueType ]
+
+        let_ : Name -> Can.Type -> Index.ZeroBased -> TOpt.Expr -> TOpt.Expr
+        let_ arg argType index body =
+            TOpt.Destruct (TOpt.Destructor arg (TOpt.Index index (TOpt.Root Name.dollar)) argType) body (TOpt.typeOf body)
+
+        letCs_ : Name -> Can.Type -> Int -> TOpt.Expr -> TOpt.Expr
+        letCs_ arg argType index body =
+            TOpt.Destruct (TOpt.Destructor arg (TOpt.ArrayIndex index (TOpt.Field "cs" (TOpt.Root Name.dollar))) argType) body (TOpt.typeOf body)
 
         encodeArg : Name -> Can.Type -> Names.Tracker TOpt.Expr
-        encodeArg arg elemType =
-            toEncoder elemType
-                |> Names.map (\encoder -> TOpt.Call A.zero encoder [ TOpt.VarLocal arg elemType ] jsonValueType)
+        encodeArg arg argType =
+            toEncoder argType
+                |> Names.map (\encoder -> TOpt.Call A.zero encoder [ TOpt.VarLocal arg argType ] valueType)
     in
     encode "list"
         |> Names.andThen
             (\list ->
-                let
-                    identityType : Can.Type
-                    identityType =
-                        Can.TLambda jsonValueType jsonValueType
-                in
-                Names.registerGlobal A.zero ModuleName.basics Name.identity_ identityType
+                Names.registerGlobal A.zero ModuleName.basics Name.identity_ (Can.TLambda listValueType listValueType)
                     |> Names.andThen
                         (\identity ->
                             encodeArg "a" a
@@ -296,37 +258,33 @@ encodeTuple a b cs =
                                                 (\arg2 ->
                                                     let
                                                         ( _, indexedCs ) =
-                                                            List.foldl (\( i, cType ) ( index, acc ) -> ( Index.next index, ( i, index, cType ) :: acc ))
+                                                            List.foldl (\( i, c ) ( index, acc ) -> ( Index.next index, ( i, index, c ) :: acc ))
                                                                 ( Index.third, [] )
                                                                 (List.indexedMap Tuple.pair cs)
                                                                 |> Tuple.mapSecond List.reverse
                                                     in
                                                     List.foldl
-                                                        (\( _, i, elemType ) acc ->
-                                                            encodeArg (JsName.fromIndex i) elemType |> Names.andThen (\encodedArg -> Names.map (flip (++) [ encodedArg ]) acc)
+                                                        (\( _, i, argType ) acc ->
+                                                            encodeArg (JsName.fromIndex i) argType
+                                                                |> Names.andThen (\encodedArg -> Names.map (flip (++) [ encodedArg ]) acc)
                                                         )
                                                         (Names.pure [ arg1, arg2 ])
                                                         indexedCs
                                                         |> Names.map
                                                             (\args ->
                                                                 let
-                                                                    listType : Can.Type
-                                                                    listType =
-                                                                        Can.TType ModuleName.list "List" [ jsonValueType ]
-
-                                                                    funcType : Can.Type
                                                                     funcType =
-                                                                        Can.TLambda tupleType jsonValueType
+                                                                        Can.TLambda tupleType valueType
                                                                 in
                                                                 TOpt.Function [ ( Name.dollar, tupleType ) ]
                                                                     (let_ "a"
-                                                                        Index.first
                                                                         a
+                                                                        Index.first
                                                                         (let_ "b"
-                                                                            Index.second
                                                                             b
-                                                                            (List.foldr (\( i, index, elemType ) -> letCs_ (JsName.fromIndex index) i elemType)
-                                                                                (TOpt.Call A.zero list [ identity, TOpt.List A.zero args listType ] jsonValueType)
+                                                                            Index.second
+                                                                            (List.foldr (\( i, index, argType ) -> letCs_ (JsName.fromIndex index) argType i)
+                                                                                (TOpt.Call A.zero list [ identity, TOpt.List A.zero args listValueType ] valueType)
                                                                                 indexedCs
                                                                             )
                                                                         )
@@ -343,8 +301,7 @@ encodeTuple a b cs =
 -- FLAGS DECODER
 
 
-{-| Generate a JSON decoder for program flags.
-Handles the special case where Unit flags decode to a successful Unit value.
+{-| Generate a typed JSON decoder for program flags.
 -}
 toFlagsDecoder : Can.Type -> Names.Tracker TOpt.Expr
 toFlagsDecoder tipe =
@@ -353,7 +310,7 @@ toFlagsDecoder tipe =
             decode "succeed"
                 |> Names.map
                     (\succeed ->
-                        TOpt.Call A.zero succeed [ TOpt.Unit Can.TUnit ] (decoderType Can.TUnit)
+                        TOpt.Call A.zero succeed [ TOpt.Unit Can.TUnit ] (Can.TType ModuleName.jsonDecode "Decoder" [ Can.TUnit ])
                     )
 
         _ ->
@@ -364,8 +321,7 @@ toFlagsDecoder tipe =
 -- DECODE
 
 
-{-| Generate a JSON decoder for the given Elm type.
-Produces a typed expression that converts JSON to Elm values.
+{-| Generate a typed JSON decoder for the given Elm type.
 -}
 toDecoder : Can.Type -> Names.Tracker TOpt.Expr
 toDecoder tipe =
@@ -421,32 +377,26 @@ toDecoder tipe =
             crash "toDecoder: bad record"
 
         Can.TRecord fields Nothing ->
-            decodeRecord tipe fields
+            decodeRecord fields tipe
 
 
 
--- DECODE MAYBE
+-- DECODE HELPERS
 
 
 decodeMaybe : Can.Type -> Names.Tracker TOpt.Expr
-decodeMaybe argType =
+decodeMaybe tipe =
     let
-        maybeType : Can.Type
         maybeType =
-            Can.TType ModuleName.maybe "Maybe" [ argType ]
+            Can.TType ModuleName.maybe "Maybe" [ tipe ]
 
-        nothingType : Can.Type
-        nothingType =
-            maybeType
-
-        justType : Can.Type
-        justType =
-            Can.TLambda argType maybeType
+        decoderType =
+            Can.TType ModuleName.jsonDecode "Decoder" [ maybeType ]
     in
-    Names.registerGlobal A.zero ModuleName.maybe "Nothing" nothingType
+    Names.registerGlobal A.zero ModuleName.maybe "Nothing" maybeType
         |> Names.andThen
             (\nothing ->
-                Names.registerGlobal A.zero ModuleName.maybe "Just" justType
+                Names.registerGlobal A.zero ModuleName.maybe "Just" (Can.TLambda tipe maybeType)
                     |> Names.andThen
                         (\just ->
                             decode "oneOf"
@@ -458,23 +408,22 @@ decodeMaybe argType =
                                                     decode "map"
                                                         |> Names.andThen
                                                             (\map_ ->
-                                                                toDecoder argType
+                                                                toDecoder tipe
                                                                     |> Names.map
                                                                         (\subDecoder ->
                                                                             let
-                                                                                listType : Can.Type
                                                                                 listType =
-                                                                                    Can.TType ModuleName.list "List" [ decoderType maybeType ]
+                                                                                    Can.TType ModuleName.list "List" [ decoderType ]
                                                                             in
                                                                             TOpt.Call A.zero
                                                                                 oneOf
                                                                                 [ TOpt.List A.zero
-                                                                                    [ TOpt.Call A.zero null [ nothing ] (decoderType maybeType)
-                                                                                    , TOpt.Call A.zero map_ [ just, subDecoder ] (decoderType maybeType)
+                                                                                    [ TOpt.Call A.zero null [ nothing ] decoderType
+                                                                                    , TOpt.Call A.zero map_ [ just, subDecoder ] decoderType
                                                                                     ]
                                                                                     listType
                                                                                 ]
-                                                                                (decoderType maybeType)
+                                                                                decoderType
                                                                         )
                                                             )
                                                 )
@@ -483,69 +432,67 @@ decodeMaybe argType =
             )
 
 
-
--- DECODE LIST
-
-
 decodeList : Can.Type -> Names.Tracker TOpt.Expr
-decodeList argType =
+decodeList tipe =
     let
-        listType : Can.Type
         listType =
-            Can.TType ModuleName.list "List" [ argType ]
+            Can.TType ModuleName.list "List" [ tipe ]
+
+        decoderType =
+            Can.TType ModuleName.jsonDecode "Decoder" [ listType ]
     in
     decode "list"
         |> Names.andThen
             (\list ->
-                toDecoder argType
+                toDecoder tipe
                     |> Names.map
-                        (\argDecoder ->
-                            TOpt.Call A.zero list [ argDecoder ] (decoderType listType)
+                        (\subDecoder ->
+                            TOpt.Call A.zero list [ subDecoder ] decoderType
                         )
             )
 
 
-
--- DECODE ARRAY
-
-
 decodeArray : Can.Type -> Names.Tracker TOpt.Expr
-decodeArray argType =
+decodeArray tipe =
     let
-        arrayType : Can.Type
         arrayType =
-            Can.TType ModuleName.array "Array" [ argType ]
+            Can.TType ModuleName.array "Array" [ tipe ]
+
+        decoderType =
+            Can.TType ModuleName.jsonDecode "Decoder" [ arrayType ]
     in
     decode "array"
         |> Names.andThen
             (\array ->
-                toDecoder argType
+                toDecoder tipe
                     |> Names.map
-                        (\argDecoder ->
-                            TOpt.Call A.zero array [ argDecoder ] (decoderType arrayType)
+                        (\subDecoder ->
+                            TOpt.Call A.zero array [ subDecoder ] decoderType
                         )
             )
 
 
-
--- DECODE TUPLES
-
-
 decodeTuple0 : Names.Tracker TOpt.Expr
 decodeTuple0 =
+    let
+        decoderType =
+            Can.TType ModuleName.jsonDecode "Decoder" [ Can.TUnit ]
+    in
     decode "null"
         |> Names.map
             (\null ->
-                TOpt.Call A.zero null [ TOpt.Unit Can.TUnit ] (decoderType Can.TUnit)
+                TOpt.Call A.zero null [ TOpt.Unit Can.TUnit ] decoderType
             )
 
 
 decodeTuple : Can.Type -> Can.Type -> List Can.Type -> Names.Tracker TOpt.Expr
 decodeTuple a b cs =
     let
-        tupleType : Can.Type
         tupleType =
             Can.TTuple a b cs
+
+        decoderType =
+            Can.TType ModuleName.jsonDecode "Decoder" [ tupleType ]
     in
     decode "succeed"
         |> Names.andThen
@@ -559,12 +506,11 @@ decodeTuple a b cs =
                             _ ->
                                 ( [ a ], b )
 
-                    tuple : TOpt.Expr
                     tuple =
-                        TOpt.Tuple A.zero (toLocal 0 a) (toLocal 1 b) (List.indexedMap (\i cType -> toLocal (i + 2) cType) cs) tupleType
+                        TOpt.Tuple A.zero (toLocal 0 a) (toLocal 1 b) (List.indexedMap (\i c -> toLocal (i + 2) c) cs) tupleType
                 in
-                List.foldr (\( i, cType ) -> Names.andThen (indexAndThen i cType))
-                    (indexAndThen (List.length cs + 1) lastElem (TOpt.Call A.zero succeed [ tuple ] (decoderType tupleType)))
+                List.foldr (\( i, c ) -> Names.andThen (indexAndThen i c))
+                    (indexAndThen (List.length cs + 1) lastElem (TOpt.Call A.zero succeed [ tuple ] decoderType))
                     (List.indexedMap Tuple.pair allElems)
             )
 
@@ -575,11 +521,10 @@ toLocal index tipe =
 
 
 indexAndThen : Int -> Can.Type -> TOpt.Expr -> Names.Tracker TOpt.Expr
-indexAndThen i argType decoder =
+indexAndThen i tipe decoder =
     let
-        decoderResultType : Can.Type
         decoderResultType =
-            getDecoderResultType (TOpt.typeOf decoder)
+            TOpt.typeOf decoder
     in
     decode "andThen"
         |> Names.andThen
@@ -587,37 +532,37 @@ indexAndThen i argType decoder =
                 decode "index"
                     |> Names.andThen
                         (\index ->
-                            toDecoder argType
+                            toDecoder tipe
                                 |> Names.map
                                     (\typeDecoder ->
                                         let
-                                            funcType : Can.Type
                                             funcType =
-                                                Can.TLambda argType (decoderType decoderResultType)
+                                                Can.TLambda tipe decoderResultType
+
+                                            subDecoderType =
+                                                Can.TType ModuleName.jsonDecode "Decoder" [ tipe ]
                                         in
                                         TOpt.Call A.zero
                                             andThen
-                                            [ TOpt.Function [ ( Name.fromVarIndex i, argType ) ] decoder funcType
-                                            , TOpt.Call A.zero index [ TOpt.Int A.zero i intType, typeDecoder ] (decoderType argType)
+                                            [ TOpt.Function [ ( Name.fromVarIndex i, tipe ) ] decoder funcType
+                                            , TOpt.Call A.zero index [ TOpt.Int A.zero i (Can.TType ModuleName.basics "Int" []), typeDecoder ] subDecoderType
                                             ]
-                                            (decoderType decoderResultType)
+                                            decoderResultType
                                     )
                         )
             )
 
 
-
--- DECODE RECORDS
-
-
-decodeRecord : Can.Type -> Dict String Name.Name Can.FieldType -> Names.Tracker TOpt.Expr
-decodeRecord recordType fields =
+decodeRecord : Dict String Name.Name Can.FieldType -> Can.Type -> Names.Tracker TOpt.Expr
+decodeRecord fields recordType =
     let
+        decoderType =
+            Can.TType ModuleName.jsonDecode "Decoder" [ recordType ]
+
         toFieldExpr : Name -> Can.FieldType -> TOpt.Expr
         toFieldExpr name (Can.FieldType _ fieldType) =
             TOpt.VarLocal name fieldType
 
-        record : TOpt.Expr
         record =
             TOpt.Record (Dict.map toFieldExpr fields) recordType
     in
@@ -627,35 +572,41 @@ decodeRecord recordType fields =
                 Names.registerFieldDict fields (Dict.toList compare fields)
                     |> Names.andThen
                         (\fieldDecoders ->
-                            List.foldl (\fieldDecoder -> Names.andThen (\optCall -> fieldAndThen recordType optCall fieldDecoder))
-                                (Names.pure (TOpt.Call A.zero succeed [ record ] (decoderType recordType)))
+                            List.foldl (\fieldDecoder -> Names.andThen (\optCall -> fieldAndThen optCall fieldDecoder))
+                                (Names.pure (TOpt.Call A.zero succeed [ record ] decoderType))
                                 fieldDecoders
                         )
             )
 
 
-fieldAndThen : Can.Type -> TOpt.Expr -> ( Name.Name, Can.FieldType ) -> Names.Tracker TOpt.Expr
-fieldAndThen recordType decoder ( key, Can.FieldType _ fieldType ) =
+fieldAndThen : TOpt.Expr -> ( Name.Name, Can.FieldType ) -> Names.Tracker TOpt.Expr
+fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
+    let
+        decoderResultType =
+            TOpt.typeOf decoder
+    in
     decode "andThen"
         |> Names.andThen
             (\andThen ->
                 decode "field"
                     |> Names.andThen
                         (\field ->
-                            toDecoder fieldType
+                            toDecoder tipe
                                 |> Names.map
                                     (\typeDecoder ->
                                         let
-                                            funcType : Can.Type
                                             funcType =
-                                                Can.TLambda fieldType (decoderType recordType)
+                                                Can.TLambda tipe decoderResultType
+
+                                            subDecoderType =
+                                                Can.TType ModuleName.jsonDecode "Decoder" [ tipe ]
                                         in
                                         TOpt.Call A.zero
                                             andThen
-                                            [ TOpt.Function [ ( key, fieldType ) ] decoder funcType
-                                            , TOpt.Call A.zero field [ TOpt.Str A.zero (Name.toElmString key) stringType, typeDecoder ] (decoderType fieldType)
+                                            [ TOpt.Function [ ( key, tipe ) ] decoder funcType
+                                            , TOpt.Call A.zero field [ TOpt.Str A.zero (Name.toElmString key) (Can.TType ModuleName.basics "String" []), typeDecoder ] subDecoderType
                                             ]
-                                            (decoderType recordType)
+                                            decoderResultType
                                     )
                         )
             )
@@ -667,84 +618,23 @@ fieldAndThen recordType decoder ( key, Can.FieldType _ fieldType ) =
 
 encode : Name -> Names.Tracker TOpt.Expr
 encode name =
-    let
-        -- Encoder types are approximate
-        encoderType : Can.Type
-        encoderType =
-            Can.TVar "_encoder"
-    in
-    Names.registerGlobal A.zero ModuleName.jsonEncode name encoderType
+    Names.registerGlobal A.zero ModuleName.jsonEncode name (Can.TVar name)
 
 
 decode : Name -> Names.Tracker TOpt.Expr
 decode name =
-    let
-        -- Decoder types are approximate
-        decoderFuncType : Can.Type
-        decoderFuncType =
-            Can.TVar "_decoder"
-    in
-    Names.registerGlobal A.zero ModuleName.jsonDecode name decoderFuncType
+    Names.registerGlobal A.zero ModuleName.jsonDecode name (Can.TVar name)
 
 
 
 -- BYTES HELPERS
 
 
-bytesType : Can.Type
-bytesType =
-    Can.TType ModuleName.bytes "Bytes" []
-
-
 encodeBytes : Names.Tracker TOpt.Expr
 encodeBytes =
-    let
-        encoderType : Can.Type
-        encoderType =
-            Can.TLambda bytesType jsonValueType
-    in
-    Names.registerKernel Name.json (TOpt.VarKernel A.zero Name.json "encodeBytes" encoderType)
+    Names.registerKernel Name.json (TOpt.VarKernel A.zero Name.json "encodeBytes" (Can.TVar "encodeBytes"))
 
 
 decodeBytes : Names.Tracker TOpt.Expr
 decodeBytes =
-    let
-        decoderResultType : Can.Type
-        decoderResultType =
-            decoderType bytesType
-    in
-    Names.registerKernel Name.json (TOpt.VarKernel A.zero Name.json "decodeBytes" decoderResultType)
-
-
-
--- TYPE HELPERS
-
-
-jsonValueType : Can.Type
-jsonValueType =
-    Can.TType ModuleName.jsonEncode "Value" []
-
-
-stringType : Can.Type
-stringType =
-    Can.TType ModuleName.string "String" []
-
-
-intType : Can.Type
-intType =
-    Can.TType ModuleName.basics "Int" []
-
-
-decoderType : Can.Type -> Can.Type
-decoderType a =
-    Can.TType ModuleName.jsonDecode "Decoder" [ a ]
-
-
-getDecoderResultType : Can.Type -> Can.Type
-getDecoderResultType tipe =
-    case tipe of
-        Can.TType _ "Decoder" [ a ] ->
-            a
-
-        _ ->
-            crash "Expected Decoder type"
+    Names.registerKernel Name.json (TOpt.VarKernel A.zero Name.json "decodeBytes" (Can.TVar "decodeBytes"))

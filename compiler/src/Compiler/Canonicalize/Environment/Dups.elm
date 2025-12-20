@@ -1,4 +1,4 @@
-module Compiler.Canonicalize.Environment.Dups exposing (Info, ToError, Tracker, checkFields, checkLocatedFields, checkLocatedFields_, detect, insert, none, one, union, unions)
+module Compiler.Canonicalize.Environment.Dups exposing (Info, ToError, Tracker, checkFields, checkLocatedFields, detect, insert, none, one, union, unions)
 
 {-| Utilities for detecting duplicate names in declarations.
 
@@ -11,7 +11,7 @@ canonicalization to detect and report duplicate:
   - Variable names
   - Type parameters
 
-@docs Info, ToError, Tracker, checkFields, checkLocatedFields, checkLocatedFields_, detect, insert, none, one, union, unions
+@docs Info, ToError, Tracker, checkFields, checkLocatedFields, detect, insert, none, one, union, unions
 
 -}
 
@@ -141,22 +141,6 @@ checkFields fields =
 addField : ( A.Located Name, a ) -> Tracker a -> Tracker a
 addField ( A.At region name, value ) dups =
     Utils.mapInsertWith identity OneOrMore.more name (OneOrMore.one (Info region value)) dups
-
-
-{-| Check for duplicate field names, transforming values with a region-aware function.
-
-Like `checkLocatedFields` but applies a transformation function to each value that
-has access to the field's source region.
-
--}
-checkLocatedFields_ : (A.Region -> a -> b) -> List ( A.Located Name, a ) -> ReportingResult.RResult i w Error (Dict String (A.Located Name) b)
-checkLocatedFields_ toValue fields =
-    detectLocated Error.DuplicateField (List.foldr (addField_ toValue) none fields)
-
-
-addField_ : (A.Region -> a -> b) -> ( A.Located Name, a ) -> Tracker b -> Tracker b
-addField_ toValue ( A.At region name, value ) dups =
-    Utils.mapInsertWith identity OneOrMore.more name (OneOrMore.one (Info region (toValue region value))) dups
 
 
 

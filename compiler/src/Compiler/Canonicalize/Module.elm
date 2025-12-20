@@ -29,6 +29,7 @@ import Compiler.Canonicalize.Environment.Dups as Dups
 import Compiler.Canonicalize.Environment.Foreign as Foreign
 import Compiler.Canonicalize.Environment.Local as Local
 import Compiler.Canonicalize.Expression as Expr
+import Compiler.Canonicalize.Ids as Ids
 import Compiler.Canonicalize.Pattern as Pattern
 import Compiler.Canonicalize.Type as Type
 import Compiler.Data.Index as Index
@@ -155,11 +156,41 @@ canonicalizeBinop (A.At _ (Src.Infix data)) =
 First converts each value to a dependency graph node, then detects strongly connected
 components to identify mutually recursive definitions.
 
+IdState is threaded through all definitions to ensure globally unique expression IDs.
+
 -}
 canonicalizeValues : SyntaxVersion -> Env.Env -> List (A.Located Src.Value) -> MResult i (List W.Warning) Can.Decls
 canonicalizeValues syntaxVersion env values =
-    ReportingResult.traverse (toNodeOne syntaxVersion env) values
-        |> ReportingResult.andThen (\nodes -> detectCycles (Graph.stronglyConnComp nodes))
+    traverseValuesWithState syntaxVersion env Ids.initialIdState values
+        |> ReportingResult.andThen (\( nodes, _ ) -> detectCycles (Graph.stronglyConnComp nodes))
+
+
+{-| Traverse value declarations threading IdState through each one.
+
+This ensures all expressions across all definitions get unique IDs within the module.
+
+-}
+traverseValuesWithState :
+    SyntaxVersion
+    -> Env.Env
+    -> Ids.IdState
+    -> List (A.Located Src.Value)
+    -> MResult i (List W.Warning) ( List NodeOne, Ids.IdState )
+traverseValuesWithState syntaxVersion env state values =
+    case values of
+        [] ->
+            ReportingResult.ok ( [], state )
+
+        value :: rest ->
+            toNodeOne syntaxVersion env state value
+                |> ReportingResult.andThen
+                    (\( node, newState ) ->
+                        traverseValuesWithState syntaxVersion env newState rest
+                            |> ReportingResult.map
+                                (\( restNodes, finalState ) ->
+                                    ( node :: restNodes, finalState )
+                                )
+                    )
 
 
 {-| Detect cycles in phase one of cycle detection using all dependencies.
@@ -270,9 +301,11 @@ type alias NodeTwo =
 Canonicalizes the value declaration (handling both typed and untyped definitions),
 tracks all free variables as dependencies, and constructs a NodeOne for cycle detection.
 
+Now also threads IdState through to ensure unique IDs across all definitions.
+
 -}
-toNodeOne : SyntaxVersion -> Env.Env -> A.Located Src.Value -> MResult i (List W.Warning) NodeOne
-toNodeOne syntaxVersion env (A.At _ (Src.Value valueData)) =
+toNodeOne : SyntaxVersion -> Env.Env -> Ids.IdState -> A.Located Src.Value -> MResult i (List W.Warning) ( NodeOne, Ids.IdState )
+toNodeOne syntaxVersion env idState (A.At _ (Src.Value valueData)) =
     let
         ( _, (A.At _ name) as aname ) =
             valueData.name
@@ -285,24 +318,27 @@ toNodeOne syntaxVersion env (A.At _ (Src.Value valueData)) =
     in
     case valueData.tipe of
         Nothing ->
-            Pattern.verify (Error.DPFuncArgs name)
-                (ReportingResult.traverse (Pattern.canonicalize syntaxVersion env) (List.map Src.c1Value srcArgs))
+            Pattern.verifyWithIds (Error.DPFuncArgs name)
+                (Pattern.traverseWithIds syntaxVersion env idState (List.map Src.c1Value srcArgs))
                 |> ReportingResult.andThen
-                    (\( args, argBindings ) ->
+                    (\( args, argBindings, stateAfterArgs ) ->
                         Env.addLocals argBindings env
                             |> ReportingResult.andThen
                                 (\newEnv ->
-                                    Expr.verifyBindings W.Pattern argBindings (Expr.canonicalize syntaxVersion newEnv body)
+                                    Expr.verifyBindingsWithIds W.Pattern argBindings
+                                        (Expr.canonicalizeWithIds syntaxVersion newEnv stateAfterArgs body)
                                         |> ReportingResult.map
-                                            (\( cbody, freeLocals ) ->
+                                            (\( ( cbody, finalState ), freeLocals ) ->
                                                 let
                                                     def : Can.Def
                                                     def =
                                                         Can.Def aname args cbody
                                                 in
-                                                ( toNodeTwo name srcArgs def freeLocals
-                                                , name
-                                                , Dict.keys compare freeLocals
+                                                ( ( toNodeTwo name srcArgs def freeLocals
+                                                  , name
+                                                  , Dict.keys compare freeLocals
+                                                  )
+                                                , finalState
                                                 )
                                             )
                                 )
@@ -312,24 +348,27 @@ toNodeOne syntaxVersion env (A.At _ (Src.Value valueData)) =
             Type.toAnnotation syntaxVersion env srcType
                 |> ReportingResult.andThen
                     (\(Can.Forall freeVars tipe) ->
-                        Pattern.verify (Error.DPFuncArgs name)
-                            (Expr.gatherTypedArgs syntaxVersion env name (List.map Src.c1Value srcArgs) tipe Index.first [])
+                        Pattern.verifyWithIds (Error.DPFuncArgs name)
+                            (Expr.gatherTypedArgsWithIds syntaxVersion env name idState (List.map Src.c1Value srcArgs) tipe Index.first [])
                             |> ReportingResult.andThen
-                                (\( ( args, resultType ), argBindings ) ->
+                                (\( ( args, resultType ), argBindings, stateAfterArgs ) ->
                                     Env.addLocals argBindings env
                                         |> ReportingResult.andThen
                                             (\newEnv ->
-                                                Expr.verifyBindings W.Pattern argBindings (Expr.canonicalize syntaxVersion newEnv body)
+                                                Expr.verifyBindingsWithIds W.Pattern argBindings
+                                                    (Expr.canonicalizeWithIds syntaxVersion newEnv stateAfterArgs body)
                                                     |> ReportingResult.map
-                                                        (\( cbody, freeLocals ) ->
+                                                        (\( ( cbody, finalState ), freeLocals ) ->
                                                             let
                                                                 def : Can.Def
                                                                 def =
                                                                     Can.TypedDef aname freeVars args cbody resultType
                                                             in
-                                                            ( toNodeTwo name srcArgs def freeLocals
-                                                            , name
-                                                            , Dict.keys compare freeLocals
+                                                            ( ( toNodeTwo name srcArgs def freeLocals
+                                                              , name
+                                                              , Dict.keys compare freeLocals
+                                                              )
+                                                            , finalState
                                                             )
                                                         )
                                             )

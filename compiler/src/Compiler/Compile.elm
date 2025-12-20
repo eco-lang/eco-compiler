@@ -31,6 +31,7 @@ The compilation pipeline consists of four phases:
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
+import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name exposing (Name)
@@ -141,16 +142,26 @@ compileTyped pkg ifaces modul =
             |> (\canonicalResult ->
                     case canonicalResult of
                         Ok canonical ->
-                            Result.map2 (\annotations () -> annotations)
-                                (typeCheck modul canonical)
-                                (nitpick canonical)
+                            typeCheckTyped modul canonical
                                 |> Result.andThen
-                                    (\annotations ->
-                                        optimize modul annotations canonical
+                                    (\{ annotations, typedCanonical, nodeTypes } ->
+                                        nitpick canonical
                                             |> Result.andThen
-                                                (\objects ->
-                                                    typedOptimize modul annotations canonical
-                                                        |> Result.map (\typedObjects -> TypedArtifacts { canonical = canonical, annotations = annotations, objects = objects, typedObjects = typedObjects })
+                                                (\() ->
+                                                    optimize modul annotations canonical
+                                                        |> Result.andThen
+                                                            (\objects ->
+                                                                typedOptimizeFromTyped modul annotations nodeTypes typedCanonical
+                                                                    |> Result.map
+                                                                        (\typedObjects ->
+                                                                            TypedArtifacts
+                                                                                { canonical = canonical
+                                                                                , annotations = annotations
+                                                                                , objects = objects
+                                                                                , typedObjects = typedObjects
+                                                                                }
+                                                                        )
+                                                            )
                                                 )
                                     )
 
@@ -190,6 +201,49 @@ typeCheck modul canonical =
 
 
 
+-- Type checks a module and produces a TypedCanonical module with per-expression types.
+
+
+{-| Type check a module and produce both annotations and a TypedCanonical module.
+
+This function extends the standard type checking to also build a TypedCanonical
+module where every expression is paired with its inferred type. This is useful
+for downstream phases that need access to per-expression type information.
+
+-}
+typeCheckTyped :
+    Src.Module
+    -> Can.Module
+    ->
+        Result
+            E.Error
+            { annotations : Dict String Name Can.Annotation
+            , typedCanonical : TCan.Module
+            , nodeTypes : TCan.NodeTypes
+            }
+typeCheckTyped modul canonical =
+    let
+        ioResult =
+            Type.constrainWithIds canonical
+                |> TypeCheck.andThen
+                    (\( constraint, nodeVars ) ->
+                        Type.runWithIds constraint nodeVars
+                    )
+                |> TypeCheck.unsafePerformIO
+    in
+    case ioResult of
+        Err errors ->
+            Err (E.BadTypes (Localizer.fromModule modul) errors)
+
+        Ok { annotations, nodeTypes } ->
+            Ok
+                { annotations = annotations
+                , typedCanonical = TCan.fromCanonical canonical nodeTypes
+                , nodeTypes = nodeTypes
+                }
+
+
+
 -- Verifies pattern match exhaustiveness and detects redundant patterns.
 
 
@@ -219,11 +273,12 @@ optimize modul annotations canonical =
 
 
 -- Performs typed optimization preserving full type information for MLIR backend.
+-- Performs typed optimization from a TypedCanonical module.
 
 
-typedOptimize : Src.Module -> Dict String Name.Name Can.Annotation -> Can.Module -> Result E.Error TOpt.LocalGraph
-typedOptimize modul annotations canonical =
-    case Tuple.second (ReportingResult.run (TypedOptimize.optimize annotations canonical)) of
+typedOptimizeFromTyped : Src.Module -> Dict String Name.Name Can.Annotation -> TCan.NodeTypes -> TCan.Module -> Result E.Error TOpt.LocalGraph
+typedOptimizeFromTyped modul annotations nodeTypes tcanModule =
+    case Tuple.second (ReportingResult.run (TypedOptimize.optimizeTyped annotations nodeTypes tcanModule)) of
         Ok localGraph ->
             Ok localGraph
 

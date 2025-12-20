@@ -1,7 +1,6 @@
 module Compiler.Canonicalize.Expression exposing
     ( EResult, FreeLocals, Uses(..)
-    , canonicalize, gatherTypedArgs
-    , verifyBindings
+    , IdState, canonicalizeWithIds, gatherTypedArgsWithIds, verifyBindingsWithIds
     )
 
 {-| Canonicalize Elm expressions from source AST to canonical AST.
@@ -19,7 +18,7 @@ performs binary operator precedence resolution, and validates pattern bindings.
 
 # Canonicalization
 
-@docs canonicalize, gatherTypedArgs
+@docs gatherTypedArgs
 
 
 # Validation
@@ -35,6 +34,7 @@ import Compiler.AST.Utils.Binop as Binop
 import Compiler.AST.Utils.Type as Type
 import Compiler.Canonicalize.Environment as Env
 import Compiler.Canonicalize.Environment.Dups as Dups
+import Compiler.Canonicalize.Ids as Ids
 import Compiler.Canonicalize.Pattern as Pattern
 import Compiler.Canonicalize.Type as Type
 import Compiler.Data.Index as Index
@@ -91,40 +91,73 @@ type Uses
         }
 
 
+{-| State for tracking expression IDs during canonicalization.
+Re-exported from Compiler.Canonicalize.Ids for convenience.
+-}
+type alias IdState =
+    Ids.IdState
+
+
+{-| Create a canonical expression with an ID.
+-}
+makeExpr : A.Region -> IdState -> Can.Expr_ -> ( Can.Expr, IdState )
+makeExpr region state node =
+    let
+        ( id, newState ) =
+            Ids.allocId state
+    in
+    ( A.At region { id = id, node = node }, newState )
+
+
 
 -- CANONICALIZE
 
 
-{-| Transform a source expression into its canonical form.
+{-| Transform a source expression with ID state threading.
 
-This is the main entry point for expression canonicalization. It handles all expression
-forms including literals, variables, function calls, let bindings, case expressions,
-records, tuples, and more. The function:
-
-  - Resolves all variable references to their canonical forms
-  - Transforms binary operator chains according to precedence and associativity rules
-  - Validates pattern bindings and detects unused variables
-  - Tracks free variable usage for recursive definition detection
-  - Handles both Elm and Guida syntax versions
+Like canonicalize but also threads an IdState through to assign unique IDs
+to each expression. Returns both the canonical expression and the updated state.
 
 -}
-canonicalize : SyntaxVersion -> Env.Env -> Src.Expr -> EResult FreeLocals (List W.Warning) Can.Expr
-canonicalize syntaxVersion env (A.At region expression) =
-    ReportingResult.map (A.At region) <|
-        case expression of
-            Src.Str string _ ->
-                ReportingResult.ok (Can.Str string)
+canonicalizeWithIds : SyntaxVersion -> Env.Env -> IdState -> Src.Expr -> EResult FreeLocals (List W.Warning) ( Can.Expr, IdState )
+canonicalizeWithIds syntaxVersion env state (A.At region expression) =
+    canonicalizeNode syntaxVersion env state region expression
 
-            Src.Chr char ->
-                ReportingResult.ok (Can.Chr char)
 
-            Src.Int int _ ->
-                ReportingResult.ok (Can.Int int)
+{-| Helper to canonicalize the inner expression node and wrap with ID.
 
-            Src.Float float _ ->
-                ReportingResult.ok (Can.Float float)
+This converts the old-style canonicalization (returning Expr\_) to the new style
+(returning Expr with ID). For now, uses the passed state for ID assignment.
 
-            Src.Var varType name ->
+-}
+canonicalizeNode : SyntaxVersion -> Env.Env -> IdState -> A.Region -> Src.Expr_ -> EResult FreeLocals (List W.Warning) ( Can.Expr, IdState )
+canonicalizeNode syntaxVersion env state0 region expression =
+    let
+        -- Helper to wrap an Expr_ result with an ID
+        wrapNode : Can.Expr_ -> ( Can.Expr, IdState )
+        wrapNode node =
+            makeExpr region state0 node
+
+        -- Helper to wrap an Expr_ RResult with ID
+        wrapResult : EResult FreeLocals (List W.Warning) Can.Expr_ -> EResult FreeLocals (List W.Warning) ( Can.Expr, IdState )
+        wrapResult =
+            ReportingResult.map wrapNode
+    in
+    case expression of
+        Src.Str string _ ->
+            wrapResult (ReportingResult.ok (Can.Str string))
+
+        Src.Chr char ->
+            wrapResult (ReportingResult.ok (Can.Chr char))
+
+        Src.Int int _ ->
+            wrapResult (ReportingResult.ok (Can.Int int))
+
+        Src.Float float _ ->
+            wrapResult (ReportingResult.ok (Can.Float float))
+
+        Src.Var varType name ->
+            wrapResult <|
                 case varType of
                     Src.LowVar ->
                         findVar region env name
@@ -132,7 +165,8 @@ canonicalize syntaxVersion env (A.At region expression) =
                     Src.CapVar ->
                         ReportingResult.map (toVarCtor name) (Env.findCtor region env name)
 
-            Src.VarQual varType prefix name ->
+        Src.VarQual varType prefix name ->
+            wrapResult <|
                 case varType of
                     Src.LowVar ->
                         findVarQual region env prefix name
@@ -140,104 +174,225 @@ canonicalize syntaxVersion env (A.At region expression) =
                     Src.CapVar ->
                         ReportingResult.map (toVarCtor name) (Env.findCtorQual region env prefix name)
 
-            Src.List exprs _ ->
-                ReportingResult.map Can.List (ReportingResult.traverse (canonicalize syntaxVersion env) (List.map Tuple.second exprs))
+        Src.List exprs _ ->
+            let
+                ( listId, stateAfterList ) =
+                    Ids.allocId state0
+            in
+            traverseExprsWithIds syntaxVersion env stateAfterList (List.map Tuple.second exprs)
+                |> ReportingResult.map
+                    (\( citems, finalState ) ->
+                        ( A.At region { id = listId, node = Can.List citems }, finalState )
+                    )
 
-            Src.Op op ->
-                Env.findBinop region env op
+        Src.Op op ->
+            wrapResult
+                (Env.findBinop region env op
                     |> ReportingResult.map
                         (\(Env.Binop binopData) ->
                             Can.VarOperator op binopData.home binopData.name binopData.annotation
                         )
+                )
 
-            Src.Negate expr ->
-                ReportingResult.map Can.Negate (canonicalize syntaxVersion env expr)
-
-            Src.Binops ops final ->
-                ReportingResult.map A.toValue (canonicalizeBinops syntaxVersion region env (List.map (Tuple.mapSecond Src.c2Value) ops) final)
-
-            Src.Lambda ( _, srcArgs ) ( _, body ) ->
-                delayedUsage <|
-                    (Pattern.verify Error.DPLambdaArgs
-                        (ReportingResult.traverse (Pattern.canonicalize syntaxVersion env) (List.map Src.c1Value srcArgs))
-                        |> ReportingResult.andThen
-                            (\( args, andThenings ) ->
-                                Env.addLocals andThenings env
-                                    |> ReportingResult.andThen
-                                        (\newEnv ->
-                                            verifyBindings W.Pattern andThenings (canonicalize syntaxVersion newEnv body)
-                                                |> ReportingResult.map
-                                                    (\( cbody, freeLocals ) ->
-                                                        ( Can.Lambda args cbody, freeLocals )
-                                                    )
-                                        )
-                            )
+        Src.Negate expr ->
+            let
+                ( negateId, stateAfterNegate ) =
+                    Ids.allocId state0
+            in
+            canonicalizeWithIds syntaxVersion env stateAfterNegate expr
+                |> ReportingResult.map
+                    (\( cexpr, finalState ) ->
+                        ( A.At region { id = negateId, node = Can.Negate cexpr }, finalState )
                     )
 
-            Src.Call func args ->
-                ReportingResult.map Can.Call (canonicalize syntaxVersion env func)
-                    |> ReportingResult.apply (ReportingResult.traverse (canonicalize syntaxVersion env) (List.map Src.c1Value args))
+        Src.Binops ops final ->
+            canonicalizeBinopsWithIds syntaxVersion region env state0 (List.map (Tuple.mapSecond Src.c2Value) ops) final
 
-            Src.If firstBranch branches finally ->
-                ReportingResult.map Can.If
-                    (ReportingResult.traverse (canonicalizeIfBranch syntaxVersion env)
-                        (List.map (Src.c1Value >> Tuple.mapBoth Src.c2Value Src.c2Value) (firstBranch :: branches))
-                    )
-                    |> ReportingResult.apply (canonicalize syntaxVersion env (Src.c1Value finally))
-
-            Src.Let defs _ expr ->
-                ReportingResult.map A.toValue (canonicalizeLet syntaxVersion region env (List.map Src.c2Value defs) expr)
-
-            Src.Case expr branches ->
-                ReportingResult.map Can.Case (canonicalize syntaxVersion env (Src.c2Value expr))
-                    |> ReportingResult.apply (ReportingResult.traverse (canonicalizeCaseBranch syntaxVersion env) (List.map (Tuple.mapBoth Src.c2Value Src.c1Value) branches))
-
-            Src.Accessor field ->
-                ReportingResult.ok (Can.Accessor field)
-
-            Src.Access record field ->
-                ReportingResult.map Can.Access (canonicalize syntaxVersion env record)
-                    |> ReportingResult.apply (ReportingResult.ok field)
-
-            Src.Update ( _, name ) ( _, fields ) ->
-                let
-                    makeCanFields : ReportingResult.RResult i w Error.Error (Dict String (A.Located Name) (ReportingResult.RResult FreeLocals (List W.Warning) Error.Error Can.FieldUpdate))
-                    makeCanFields =
-                        Dups.checkLocatedFields_ (\r t -> ReportingResult.map (Can.FieldUpdate r) (canonicalize syntaxVersion env t)) (List.map (Src.c2EolValue >> Tuple.mapBoth Src.c1Value Src.c1Value) fields)
-                in
-                ReportingResult.map Can.Update (canonicalize syntaxVersion env name)
-                    |> ReportingResult.apply (ReportingResult.andThen (Utils.sequenceADict A.toValue A.compareLocated) makeCanFields)
-
-            Src.Record ( _, fields ) ->
-                Dups.checkLocatedFields (List.map (Src.c2EolValue >> Tuple.mapBoth Src.c1Value Src.c1Value) fields)
+        Src.Lambda ( _, srcArgs ) ( _, body ) ->
+            -- Allocate the Lambda's ID first, then use remaining state for patterns and body
+            let
+                ( lambdaId, stateAfterLambda ) =
+                    Ids.allocId state0
+            in
+            delayedUsageWithIds <|
+                (Pattern.verifyWithIds Error.DPLambdaArgs
+                    (Pattern.traverseWithIds syntaxVersion env stateAfterLambda (List.map Src.c1Value srcArgs))
                     |> ReportingResult.andThen
-                        (\fieldDict ->
-                            ReportingResult.map Can.Record (ReportingResult.traverseDict A.toValue A.compareLocated (canonicalize syntaxVersion env) fieldDict)
+                        (\( args, andThenings, stateAfterPatterns ) ->
+                            Env.addLocals andThenings env
+                                |> ReportingResult.andThen
+                                    (\newEnv ->
+                                        verifyBindingsWithIds W.Pattern andThenings (canonicalizeWithIds syntaxVersion newEnv stateAfterPatterns body)
+                                            |> ReportingResult.map
+                                                (\( ( cbody, finalState ), freeLocals ) ->
+                                                    let
+                                                        lambdaExpr : Can.Expr
+                                                        lambdaExpr =
+                                                            A.At region { id = lambdaId, node = Can.Lambda args cbody }
+                                                    in
+                                                    ( ( lambdaExpr, finalState ), freeLocals )
+                                                )
+                                    )
                         )
+                )
 
-            Src.Unit ->
-                ReportingResult.ok Can.Unit
+        Src.Call func args ->
+            let
+                ( callId, stateAfterCall ) =
+                    Ids.allocId state0
+            in
+            canonicalizeWithIds syntaxVersion env stateAfterCall func
+                |> ReportingResult.andThen
+                    (\( cfunc, stateAfterFunc ) ->
+                        traverseExprsWithIds syntaxVersion env stateAfterFunc (List.map Src.c1Value args)
+                            |> ReportingResult.map
+                                (\( cargs, finalState ) ->
+                                    ( A.At region { id = callId, node = Can.Call cfunc cargs }, finalState )
+                                )
+                    )
 
-            Src.Tuple ( _, a ) ( _, b ) cs ->
-                ReportingResult.map Can.Tuple (canonicalize syntaxVersion env a)
-                    |> ReportingResult.apply (canonicalize syntaxVersion env b)
-                    |> ReportingResult.apply (canonicalizeTupleExtras syntaxVersion region env (List.map Src.c2Value cs))
+        Src.If firstBranch branches finally ->
+            let
+                ( ifId, stateAfterIf ) =
+                    Ids.allocId state0
+            in
+            traverseIfBranchesWithIds syntaxVersion
+                env
+                stateAfterIf
+                (List.map (Src.c1Value >> Tuple.mapBoth Src.c2Value Src.c2Value) (firstBranch :: branches))
+                |> ReportingResult.andThen
+                    (\( cBranches, stateAfterBranches ) ->
+                        canonicalizeWithIds syntaxVersion env stateAfterBranches (Src.c1Value finally)
+                            |> ReportingResult.map
+                                (\( cfinally, finalState ) ->
+                                    ( A.At region { id = ifId, node = Can.If cBranches cfinally }, finalState )
+                                )
+                    )
 
-            Src.Shader src tipe ->
-                ReportingResult.ok (Can.Shader src tipe)
+        Src.Let defs _ expr ->
+            canonicalizeLetWithIds syntaxVersion region env state0 (List.map Src.c2Value defs) expr
 
-            Src.Parens ( _, expr ) ->
-                ReportingResult.map A.toValue (canonicalize syntaxVersion env expr)
+        Src.Case expr branches ->
+            -- Allocate the Case's ID first, then thread state through scrutinee and branches
+            let
+                ( caseId, stateAfterCase ) =
+                    Ids.allocId state0
+            in
+            canonicalizeWithIds syntaxVersion env stateAfterCase (Src.c2Value expr)
+                |> ReportingResult.andThen
+                    (\( cexpr, stateAfterScrutinee ) ->
+                        traverseCaseBranchesWithIds syntaxVersion env stateAfterScrutinee (List.map (Tuple.mapBoth Src.c2Value Src.c1Value) branches)
+                            |> ReportingResult.map
+                                (\( cBranches, finalState ) ->
+                                    let
+                                        caseExpr : Can.Expr
+                                        caseExpr =
+                                            A.At region { id = caseId, node = Can.Case cexpr cBranches }
+                                    in
+                                    ( caseExpr, finalState )
+                                )
+                    )
+
+        Src.Accessor field ->
+            let
+                ( accessorId, newState ) =
+                    Ids.allocId state0
+            in
+            ReportingResult.ok ( A.At region { id = accessorId, node = Can.Accessor field }, newState )
+
+        Src.Access record field ->
+            let
+                ( accessId, stateAfterAccess ) =
+                    Ids.allocId state0
+            in
+            canonicalizeWithIds syntaxVersion env stateAfterAccess record
+                |> ReportingResult.map
+                    (\( crecord, finalState ) ->
+                        ( A.At region { id = accessId, node = Can.Access crecord field }, finalState )
+                    )
+
+        Src.Update ( _, name ) ( _, fields ) ->
+            let
+                ( updateId, stateAfterUpdate ) =
+                    Ids.allocId state0
+            in
+            canonicalizeWithIds syntaxVersion env stateAfterUpdate name
+                |> ReportingResult.andThen
+                    (\( cname, stateAfterName ) ->
+                        Dups.checkLocatedFields (List.map (Src.c2EolValue >> Tuple.mapBoth Src.c1Value Src.c1Value) fields)
+                            |> ReportingResult.andThen
+                                (\fieldDict ->
+                                    traverseUpdateFieldsWithIds syntaxVersion env stateAfterName fieldDict
+                                        |> ReportingResult.map
+                                            (\( cfields, finalState ) ->
+                                                ( A.At region { id = updateId, node = Can.Update cname cfields }, finalState )
+                                            )
+                                )
+                    )
+
+        Src.Record ( _, fields ) ->
+            let
+                ( recordId, stateAfterRecord ) =
+                    Ids.allocId state0
+            in
+            Dups.checkLocatedFields (List.map (Src.c2EolValue >> Tuple.mapBoth Src.c1Value Src.c1Value) fields)
+                |> ReportingResult.andThen
+                    (\fieldDict ->
+                        traverseDictWithIds syntaxVersion env stateAfterRecord fieldDict
+                            |> ReportingResult.map
+                                (\( cfields, finalState ) ->
+                                    ( A.At region { id = recordId, node = Can.Record cfields }, finalState )
+                                )
+                    )
+
+        Src.Unit ->
+            let
+                ( unitId, newState ) =
+                    Ids.allocId state0
+            in
+            ReportingResult.ok ( A.At region { id = unitId, node = Can.Unit }, newState )
+
+        Src.Tuple ( _, a ) ( _, b ) cs ->
+            let
+                ( tupleId, stateAfterTuple ) =
+                    Ids.allocId state0
+            in
+            canonicalizeWithIds syntaxVersion env stateAfterTuple a
+                |> ReportingResult.andThen
+                    (\( ca, stateAfterA ) ->
+                        canonicalizeWithIds syntaxVersion env stateAfterA b
+                            |> ReportingResult.andThen
+                                (\( cb, stateAfterB ) ->
+                                    canonicalizeTupleExtrasWithIds syntaxVersion region env stateAfterB (List.map Src.c2Value cs)
+                                        |> ReportingResult.map
+                                            (\( cextras, finalState ) ->
+                                                ( A.At region { id = tupleId, node = Can.Tuple ca cb cextras }, finalState )
+                                            )
+                                )
+                    )
+
+        Src.Shader src tipe ->
+            let
+                ( shaderId, newState ) =
+                    Ids.allocId state0
+            in
+            ReportingResult.ok ( A.At region { id = shaderId, node = Can.Shader src tipe }, newState )
+
+        Src.Parens ( _, expr ) ->
+            canonicalizeWithIds syntaxVersion env state0 expr
 
 
-canonicalizeTupleExtras : SyntaxVersion -> A.Region -> Env.Env -> List Src.Expr -> EResult FreeLocals (List W.Warning) (List Can.Expr)
-canonicalizeTupleExtras syntaxVersion region env extras =
+{-| Canonicalize extra tuple elements (3rd, 4th, etc.) while threading IdState.
+-}
+canonicalizeTupleExtrasWithIds : SyntaxVersion -> A.Region -> Env.Env -> IdState -> List Src.Expr -> EResult FreeLocals (List W.Warning) ( List Can.Expr, IdState )
+canonicalizeTupleExtrasWithIds syntaxVersion region env state extras =
     case extras of
         [] ->
-            ReportingResult.ok []
+            ReportingResult.ok ( [], state )
 
         [ three ] ->
-            canonicalize syntaxVersion env three |> ReportingResult.map List.singleton
+            canonicalizeWithIds syntaxVersion env state three
+                |> ReportingResult.map (\( e, s ) -> ( [ e ], s ))
 
         _ ->
             case syntaxVersion of
@@ -245,85 +400,298 @@ canonicalizeTupleExtras syntaxVersion region env extras =
                     ReportingResult.throw (Error.TupleLargerThanThree region)
 
                 SV.Guida ->
-                    ReportingResult.traverse (canonicalize syntaxVersion env) extras
+                    traverseExprsWithIds syntaxVersion env state extras
+
+
+{-| Traverse a list of expressions while threading IdState through each.
+-}
+traverseExprsWithIds : SyntaxVersion -> Env.Env -> IdState -> List Src.Expr -> EResult FreeLocals (List W.Warning) ( List Can.Expr, IdState )
+traverseExprsWithIds syntaxVersion env state exprs =
+    case exprs of
+        [] ->
+            ReportingResult.ok ( [], state )
+
+        expr :: rest ->
+            canonicalizeWithIds syntaxVersion env state expr
+                |> ReportingResult.andThen
+                    (\( cexpr, stateAfter ) ->
+                        traverseExprsWithIds syntaxVersion env stateAfter rest
+                            |> ReportingResult.map
+                                (\( crest, finalState ) ->
+                                    ( cexpr :: crest, finalState )
+                                )
+                    )
+
+
+{-| Traverse a dict of expressions while threading IdState through each.
+The dict is converted to a list, traversed, then converted back.
+-}
+traverseDictWithIds :
+    SyntaxVersion
+    -> Env.Env
+    -> IdState
+    -> Dict String (A.Located Name) Src.Expr
+    -> EResult FreeLocals (List W.Warning) ( Dict String (A.Located Name) Can.Expr, IdState )
+traverseDictWithIds syntaxVersion env state dict =
+    let
+        entries : List ( A.Located Name, Src.Expr )
+        entries =
+            Dict.toList A.compareLocated dict
+    in
+    traverseDictEntriesWithIds syntaxVersion env state entries []
+        |> ReportingResult.map
+            (\( resultEntries, finalState ) ->
+                ( Dict.fromList A.toValue resultEntries, finalState )
+            )
+
+
+traverseDictEntriesWithIds :
+    SyntaxVersion
+    -> Env.Env
+    -> IdState
+    -> List ( A.Located Name, Src.Expr )
+    -> List ( A.Located Name, Can.Expr )
+    -> EResult FreeLocals (List W.Warning) ( List ( A.Located Name, Can.Expr ), IdState )
+traverseDictEntriesWithIds syntaxVersion env state entries acc =
+    case entries of
+        [] ->
+            ReportingResult.ok ( List.reverse acc, state )
+
+        ( key, srcExpr ) :: rest ->
+            canonicalizeWithIds syntaxVersion env state srcExpr
+                |> ReportingResult.andThen
+                    (\( canExpr, stateAfter ) ->
+                        traverseDictEntriesWithIds syntaxVersion env stateAfter rest (( key, canExpr ) :: acc)
+                    )
+
+
+{-| Traverse update fields while threading IdState through each, producing FieldUpdate values.
+-}
+traverseUpdateFieldsWithIds :
+    SyntaxVersion
+    -> Env.Env
+    -> IdState
+    -> Dict String (A.Located Name) Src.Expr
+    -> EResult FreeLocals (List W.Warning) ( Dict String (A.Located Name) Can.FieldUpdate, IdState )
+traverseUpdateFieldsWithIds syntaxVersion env state dict =
+    let
+        entries : List ( A.Located Name, Src.Expr )
+        entries =
+            Dict.toList A.compareLocated dict
+    in
+    traverseUpdateEntriesWithIds syntaxVersion env state entries []
+        |> ReportingResult.map
+            (\( resultEntries, finalState ) ->
+                ( Dict.fromList A.toValue resultEntries, finalState )
+            )
+
+
+traverseUpdateEntriesWithIds :
+    SyntaxVersion
+    -> Env.Env
+    -> IdState
+    -> List ( A.Located Name, Src.Expr )
+    -> List ( A.Located Name, Can.FieldUpdate )
+    -> EResult FreeLocals (List W.Warning) ( List ( A.Located Name, Can.FieldUpdate ), IdState )
+traverseUpdateEntriesWithIds syntaxVersion env state entries acc =
+    case entries of
+        [] ->
+            ReportingResult.ok ( List.reverse acc, state )
+
+        ( (A.At fieldRegion _) as key, srcExpr ) :: rest ->
+            canonicalizeWithIds syntaxVersion env state srcExpr
+                |> ReportingResult.andThen
+                    (\( canExpr, stateAfter ) ->
+                        let
+                            fieldUpdate : Can.FieldUpdate
+                            fieldUpdate =
+                                Can.FieldUpdate fieldRegion canExpr
+                        in
+                        traverseUpdateEntriesWithIds syntaxVersion env stateAfter rest (( key, fieldUpdate ) :: acc)
+                    )
 
 
 
 -- CANONICALIZE IF BRANCH
 
 
-canonicalizeIfBranch : SyntaxVersion -> Env.Env -> ( Src.Expr, Src.Expr ) -> EResult FreeLocals (List W.Warning) ( Can.Expr, Can.Expr )
-canonicalizeIfBranch syntaxVersion env ( condition, branch ) =
-    ReportingResult.map Tuple.pair (canonicalize syntaxVersion env condition)
-        |> ReportingResult.apply (canonicalize syntaxVersion env branch)
+{-| Canonicalize an if branch (condition and body) while threading IdState.
+-}
+canonicalizeIfBranchWithIds : SyntaxVersion -> Env.Env -> IdState -> ( Src.Expr, Src.Expr ) -> EResult FreeLocals (List W.Warning) ( ( Can.Expr, Can.Expr ), IdState )
+canonicalizeIfBranchWithIds syntaxVersion env state ( condition, branch ) =
+    canonicalizeWithIds syntaxVersion env state condition
+        |> ReportingResult.andThen
+            (\( ccond, stateAfterCond ) ->
+                canonicalizeWithIds syntaxVersion env stateAfterCond branch
+                    |> ReportingResult.map
+                        (\( cbranch, finalState ) ->
+                            ( ( ccond, cbranch ), finalState )
+                        )
+            )
+
+
+{-| Traverse if branches while threading IdState through each.
+-}
+traverseIfBranchesWithIds : SyntaxVersion -> Env.Env -> IdState -> List ( Src.Expr, Src.Expr ) -> EResult FreeLocals (List W.Warning) ( List ( Can.Expr, Can.Expr ), IdState )
+traverseIfBranchesWithIds syntaxVersion env state branches =
+    case branches of
+        [] ->
+            ReportingResult.ok ( [], state )
+
+        branch :: rest ->
+            canonicalizeIfBranchWithIds syntaxVersion env state branch
+                |> ReportingResult.andThen
+                    (\( cbranch, stateAfter ) ->
+                        traverseIfBranchesWithIds syntaxVersion env stateAfter rest
+                            |> ReportingResult.map
+                                (\( crest, finalState ) ->
+                                    ( cbranch :: crest, finalState )
+                                )
+                    )
 
 
 
 -- CANONICALIZE CASE BRANCH
 
 
-canonicalizeCaseBranch : SyntaxVersion -> Env.Env -> ( Src.Pattern, Src.Expr ) -> EResult FreeLocals (List W.Warning) Can.CaseBranch
-canonicalizeCaseBranch syntaxVersion env ( pattern, expr ) =
-    directUsage
-        (Pattern.verify Error.DPCaseBranch
-            (Pattern.canonicalize syntaxVersion env pattern)
+{-| Canonicalize a case branch while threading IdState through pattern and expression.
+-}
+canonicalizeCaseBranchWithIds : SyntaxVersion -> Env.Env -> IdState -> ( Src.Pattern, Src.Expr ) -> EResult FreeLocals (List W.Warning) ( Can.CaseBranch, IdState )
+canonicalizeCaseBranchWithIds syntaxVersion env state ( pattern, expr ) =
+    directUsageWithIds
+        (Pattern.verifyWithIds Error.DPCaseBranch
+            (Pattern.canonicalizeWithIds syntaxVersion env state pattern)
             |> ReportingResult.andThen
-                (\( cpattern, andThenings ) ->
+                (\( cpattern, andThenings, stateAfterPattern ) ->
                     Env.addLocals andThenings env
                         |> ReportingResult.andThen
                             (\newEnv ->
-                                verifyBindings W.Pattern andThenings (canonicalize syntaxVersion newEnv expr)
+                                verifyBindingsWithIds W.Pattern andThenings (canonicalizeWithIds syntaxVersion newEnv stateAfterPattern expr)
                                     |> ReportingResult.map
-                                        (\( cexpr, freeLocals ) ->
-                                            ( Can.CaseBranch cpattern cexpr, freeLocals )
+                                        (\( ( cexpr, finalState ), freeLocals ) ->
+                                            ( ( Can.CaseBranch cpattern cexpr, finalState ), freeLocals )
                                         )
                             )
                 )
         )
 
 
+{-| Traverse case branches while threading IdState through each branch.
+-}
+traverseCaseBranchesWithIds :
+    SyntaxVersion
+    -> Env.Env
+    -> IdState
+    -> List ( Src.Pattern, Src.Expr )
+    -> EResult FreeLocals (List W.Warning) ( List Can.CaseBranch, IdState )
+traverseCaseBranchesWithIds syntaxVersion env state branches =
+    case branches of
+        [] ->
+            ReportingResult.ok ( [], state )
+
+        branch :: rest ->
+            canonicalizeCaseBranchWithIds syntaxVersion env state branch
+                |> ReportingResult.andThen
+                    (\( canBranch, stateAfterBranch ) ->
+                        traverseCaseBranchesWithIds syntaxVersion env stateAfterBranch rest
+                            |> ReportingResult.map
+                                (\( canRest, finalState ) ->
+                                    ( canBranch :: canRest, finalState )
+                                )
+                    )
+
+
 
 -- CANONICALIZE BINOPS
 
 
-canonicalizeBinops : SyntaxVersion -> A.Region -> Env.Env -> List ( Src.Expr, A.Located Name.Name ) -> Src.Expr -> EResult FreeLocals (List W.Warning) Can.Expr
-canonicalizeBinops syntaxVersion overallRegion env ops final =
+{-| Canonicalize binary operators with proper precedence and associativity,
+threading IdState through all expressions.
+-}
+canonicalizeBinopsWithIds :
+    SyntaxVersion
+    -> A.Region
+    -> Env.Env
+    -> IdState
+    -> List ( Src.Expr, A.Located Name.Name )
+    -> Src.Expr
+    -> EResult FreeLocals (List W.Warning) ( Can.Expr, IdState )
+canonicalizeBinopsWithIds syntaxVersion overallRegion env state ops final =
     let
-        canonicalizeHelp : ( Src.Expr, A.Located Name ) -> ReportingResult.RResult FreeLocals (List W.Warning) Error.Error ( Can.Expr, Env.Binop )
-        canonicalizeHelp ( expr, A.At region op ) =
-            ReportingResult.map Tuple.pair (canonicalize syntaxVersion env expr)
-                |> ReportingResult.apply (Env.findBinop region env op)
+        canonicalizeOpsWithIds :
+            IdState
+            -> List ( Src.Expr, A.Located Name )
+            -> List ( Can.Expr, Env.Binop )
+            -> EResult FreeLocals (List W.Warning) ( List ( Can.Expr, Env.Binop ), IdState )
+        canonicalizeOpsWithIds st opsToProcess acc =
+            case opsToProcess of
+                [] ->
+                    ReportingResult.ok ( List.reverse acc, st )
+
+                ( expr, A.At region op ) :: rest ->
+                    canonicalizeWithIds syntaxVersion env st expr
+                        |> ReportingResult.andThen
+                            (\( cexpr, stAfter ) ->
+                                Env.findBinop region env op
+                                    |> ReportingResult.andThen
+                                        (\binop ->
+                                            canonicalizeOpsWithIds stAfter rest (( cexpr, binop ) :: acc)
+                                        )
+                            )
     in
-    (ReportingResult.map More (ReportingResult.traverse canonicalizeHelp ops)
-        |> ReportingResult.apply (canonicalize syntaxVersion env final)
-    )
-        |> ReportingResult.andThen (runBinopStepper overallRegion)
+    canonicalizeOpsWithIds state ops []
+        |> ReportingResult.andThen
+            (\( cOps, stateAfterOps ) ->
+                canonicalizeWithIds syntaxVersion env stateAfterOps final
+                    |> ReportingResult.andThen
+                        (\( cfinal, stateAfterFinal ) ->
+                            case cOps of
+                                [] ->
+                                    ReportingResult.ok ( cfinal, stateAfterFinal )
+
+                                _ ->
+                                    runBinopStepperWithIds overallRegion stateAfterFinal (MoreWithIds stateAfterFinal cOps cfinal)
+                        )
+            )
 
 
-type Step
-    = Done Can.Expr
-    | More (List ( Can.Expr, Env.Binop )) Can.Expr
-    | Error Env.Binop Env.Binop
+type StepWithIds
+    = DoneWithIds Can.Expr IdState
+    | MoreWithIds IdState (List ( Can.Expr, Env.Binop )) Can.Expr
+    | ErrorWithIds Env.Binop Env.Binop
 
 
-runBinopStepper : A.Region -> Step -> EResult FreeLocals w Can.Expr
-runBinopStepper overallRegion step =
+{-| A function that, given state and a right operand, produces a binop expression and updated state.
+-}
+type alias MakeBinopFn =
+    IdState -> Can.Expr -> ( Can.Expr, IdState )
+
+
+runBinopStepperWithIds : A.Region -> IdState -> StepWithIds -> EResult FreeLocals w ( Can.Expr, IdState )
+runBinopStepperWithIds overallRegion state step =
     case step of
-        Done expr ->
-            ReportingResult.ok expr
+        DoneWithIds expr finalState ->
+            ReportingResult.ok ( expr, finalState )
 
-        More [] expr ->
-            ReportingResult.ok expr
+        MoreWithIds innerState [] expr ->
+            ReportingResult.ok ( expr, innerState )
 
-        More (( expr, op ) :: rest) final ->
-            toBinopStep (toBinop op expr) op rest final |> runBinopStepper overallRegion
+        MoreWithIds innerState (( expr, op ) :: rest) final ->
+            toBinopStepWithIds innerState (toBinopWithIds op expr) op rest final
+                |> runBinopStepperWithIds overallRegion innerState
 
-        Error (Env.Binop binopData1) (Env.Binop binopData2) ->
+        ErrorWithIds (Env.Binop binopData1) (Env.Binop binopData2) ->
             ReportingResult.throw (Error.Binop overallRegion binopData1.op binopData2.op)
 
 
-toBinopStep : (Can.Expr -> Can.Expr) -> Env.Binop -> List ( Can.Expr, Env.Binop ) -> Can.Expr -> Step
-toBinopStep makeBinop ((Env.Binop rootBinopData) as rootOp) middle final =
+toBinopStepWithIds :
+    IdState
+    -> MakeBinopFn
+    -> Env.Binop
+    -> List ( Can.Expr, Env.Binop )
+    -> Can.Expr
+    -> StepWithIds
+toBinopStepWithIds currentState makeBinop ((Env.Binop rootBinopData) as rootOp) middle final =
     let
         rootAssociativity =
             rootBinopData.associativity
@@ -333,7 +701,11 @@ toBinopStep makeBinop ((Env.Binop rootBinopData) as rootOp) middle final =
     in
     case middle of
         [] ->
-            Done (makeBinop final)
+            let
+                ( result, finalState ) =
+                    makeBinop currentState final
+            in
+            DoneWithIds result finalState
 
         ( expr, (Env.Binop opBinopData) as op ) :: rest ->
             let
@@ -344,39 +716,90 @@ toBinopStep makeBinop ((Env.Binop rootBinopData) as rootOp) middle final =
                     opBinopData.precedence
             in
             if precedence < rootPrecedence then
-                More (( makeBinop expr, op ) :: rest) final
+                -- Lower precedence: apply makeBinop first, then return More for caller to handle
+                let
+                    ( combined, newState ) =
+                        makeBinop currentState expr
+                in
+                MoreWithIds newState (( combined, op ) :: rest) final
 
             else if precedence > rootPrecedence then
-                case toBinopStep (toBinop op expr) op rest final of
-                    Done newLast ->
-                        Done (makeBinop newLast)
+                -- Higher precedence: process inner operators first, then apply makeBinop
+                case toBinopStepWithIds currentState (toBinopWithIds op expr) op rest final of
+                    DoneWithIds newLast innerState ->
+                        let
+                            ( result, finalState ) =
+                                makeBinop innerState newLast
+                        in
+                        DoneWithIds result finalState
 
-                    More newMiddle newLast ->
-                        toBinopStep makeBinop rootOp newMiddle newLast
+                    MoreWithIds innerState newMiddle newLast ->
+                        toBinopStepWithIds innerState makeBinop rootOp newMiddle newLast
 
-                    Error a b ->
-                        Error a b
+                    ErrorWithIds a b ->
+                        ErrorWithIds a b
 
             else
+                -- Same precedence: check associativity
                 case ( rootAssociativity, associativity ) of
                     ( Binop.Left, Binop.Left ) ->
-                        toBinopStep (toBinop op (makeBinop expr)) op rest final
+                        -- Left associative: apply makeBinop first, then continue with result
+                        let
+                            ( combined, newState ) =
+                                makeBinop currentState expr
+                        in
+                        toBinopStepWithIds newState (toBinopWithIds op combined) op rest final
 
                     ( Binop.Right, Binop.Right ) ->
-                        toBinopStep (toBinop op expr >> makeBinop) op rest final
+                        -- Right associative: compose makeBinop with toBinopWithIds
+                        -- First apply inner (toBinopWithIds op expr), then outer (makeBinop)
+                        -- IMPORTANT: Capture makeBinop in a fresh variable before creating the lambda.
+                        -- This prevents a TCO-related closure bug where makeBinop becomes a mutable
+                        -- loop variable and the lambda accidentally calls itself.
+                        let
+                            outerMakeBinop =
+                                makeBinop
+
+                            composedMakeBinop : MakeBinopFn
+                            composedMakeBinop state right =
+                                let
+                                    ( inner, state1 ) =
+                                        toBinopWithIds op expr state right
+                                in
+                                outerMakeBinop state1 inner
+                        in
+                        toBinopStepWithIds currentState composedMakeBinop op rest final
 
                     _ ->
-                        Error rootOp op
+                        ErrorWithIds rootOp op
 
 
-toBinop : Env.Binop -> Can.Expr -> Can.Expr -> Can.Expr
-toBinop (Env.Binop binopData) left right =
-    A.merge left right (Can.Binop binopData.op binopData.home binopData.name binopData.annotation left right)
+{-| Create a MakeBinopFn that builds a binary operator expression.
+
+Given an operator and left operand, returns a function that takes state and
+right operand to produce the complete binop expression.
+
+-}
+toBinopWithIds : Env.Binop -> Can.Expr -> MakeBinopFn
+toBinopWithIds (Env.Binop binopData) left =
+    \state right ->
+        let
+            ( id, newState ) =
+                Ids.allocId state
+
+            region =
+                A.mergeRegions (A.toRegion left) (A.toRegion right)
+        in
+        ( A.At region { id = id, node = Can.Binop binopData.op binopData.home binopData.name binopData.annotation left right }
+        , newState
+        )
 
 
-canonicalizeLet : SyntaxVersion -> A.Region -> Env.Env -> List (A.Located Src.Def) -> Src.Expr -> EResult FreeLocals (List W.Warning) Can.Expr
-canonicalizeLet syntaxVersion letRegion env defs body =
-    directUsage <|
+{-| Canonicalize a let expression, detecting cycles and threading IdState.
+-}
+canonicalizeLetWithIds : SyntaxVersion -> A.Region -> Env.Env -> IdState -> List (A.Located Src.Def) -> Src.Expr -> EResult FreeLocals (List W.Warning) ( Can.Expr, IdState )
+canonicalizeLetWithIds syntaxVersion letRegion env state defs body =
+    directUsageWithIds <|
         (Dups.detect (Error.DuplicatePattern Error.DPLetBinding)
             (List.foldl addBindings Dups.none defs)
             |> ReportingResult.andThen
@@ -384,20 +807,42 @@ canonicalizeLet syntaxVersion letRegion env defs body =
                     Env.addLocals andThenings env
                         |> ReportingResult.andThen
                             (\newEnv ->
-                                verifyBindings W.Def andThenings <|
-                                    (Utils.foldM (addDefNodes syntaxVersion newEnv) [] defs
+                                verifyBindingsWithIds W.Def andThenings <|
+                                    (foldDefNodesWithIds syntaxVersion newEnv state [] defs
                                         |> ReportingResult.andThen
-                                            (\nodes ->
-                                                canonicalize syntaxVersion newEnv body
+                                            (\( nodes, stateAfterDefs ) ->
+                                                canonicalizeWithIds syntaxVersion newEnv stateAfterDefs body
                                                     |> ReportingResult.andThen
-                                                        (\cbody ->
-                                                            detectCycles letRegion (Graph.stronglyConnComp nodes) cbody
+                                                        (\( cbody, stateAfterBody ) ->
+                                                            detectCyclesWithIds letRegion stateAfterBody (Graph.stronglyConnComp nodes) cbody
                                                         )
                                             )
                                     )
                             )
                 )
         )
+
+
+{-| Fold over def nodes while threading IdState through each.
+-}
+foldDefNodesWithIds :
+    SyntaxVersion
+    -> Env.Env
+    -> IdState
+    -> List Node
+    -> List (A.Located Src.Def)
+    -> EResult FreeLocals (List W.Warning) ( List Node, IdState )
+foldDefNodesWithIds syntaxVersion env state acc defs =
+    case defs of
+        [] ->
+            ReportingResult.ok ( acc, state )
+
+        def :: rest ->
+            addDefNodesWithIds syntaxVersion env state acc def
+                |> ReportingResult.andThen
+                    (\( newAcc, newState ) ->
+                        foldDefNodesWithIds syntaxVersion env newState newAcc rest
+                    )
 
 
 addBindings : A.Located Src.Def -> Dups.Tracker A.Region -> Dups.Tracker A.Region
@@ -471,22 +916,24 @@ type Binding
     | Destruct Can.Pattern Can.Expr
 
 
-addDefNodes : SyntaxVersion -> Env.Env -> List Node -> A.Located Src.Def -> EResult FreeLocals (List W.Warning) (List Node)
-addDefNodes syntaxVersion env nodes (A.At _ def) =
+{-| Process a definition node while threading IdState through pattern canonicalization.
+-}
+addDefNodesWithIds : SyntaxVersion -> Env.Env -> IdState -> List Node -> A.Located Src.Def -> EResult FreeLocals (List W.Warning) ( List Node, IdState )
+addDefNodesWithIds syntaxVersion env state nodes (A.At _ def) =
     case def of
         Src.Define ((A.At _ name) as aname) srcArgs ( _, body ) maybeType ->
             case maybeType of
                 Nothing ->
-                    Pattern.verify (Error.DPFuncArgs name)
-                        (ReportingResult.traverse (Pattern.canonicalize syntaxVersion env) (List.map Src.c1Value srcArgs))
+                    Pattern.verifyWithIds (Error.DPFuncArgs name)
+                        (Pattern.traverseWithIds syntaxVersion env state (List.map Src.c1Value srcArgs))
                         |> ReportingResult.andThen
-                            (\( args, argBindings ) ->
+                            (\( args, argBindings, stateAfterArgs ) ->
                                 Env.addLocals argBindings env
                                     |> ReportingResult.andThen
                                         (\newEnv ->
-                                            verifyBindings W.Pattern argBindings (canonicalize syntaxVersion newEnv body)
+                                            verifyBindingsWithIds W.Pattern argBindings (canonicalizeWithIds syntaxVersion newEnv stateAfterArgs body)
                                                 |> ReportingResult.andThen
-                                                    (\( cbody, freeLocals ) ->
+                                                    (\( ( cbody, stateAfterBody ), freeLocals ) ->
                                                         let
                                                             cdef : Can.Def
                                                             cdef =
@@ -496,7 +943,7 @@ addDefNodes syntaxVersion env nodes (A.At _ def) =
                                                             node =
                                                                 ( Define cdef, name, Dict.keys compare freeLocals )
                                                         in
-                                                        logLetLocals args freeLocals (node :: nodes)
+                                                        logLetLocalsWithIds args freeLocals ( node :: nodes, stateAfterBody )
                                                     )
                                         )
                             )
@@ -505,16 +952,18 @@ addDefNodes syntaxVersion env nodes (A.At _ def) =
                     Type.toAnnotation syntaxVersion env tipe
                         |> ReportingResult.andThen
                             (\(Can.Forall freeVars ctipe) ->
+                                -- Use Pattern.verify (not verifyWithIds) because gatherTypedArgsWithIds
+                                -- already threads IdState internally and returns it in the result tuple
                                 Pattern.verify (Error.DPFuncArgs name)
-                                    (gatherTypedArgs syntaxVersion env name (List.map Src.c1Value srcArgs) ctipe Index.first [])
+                                    (gatherTypedArgsWithIds syntaxVersion env name state (List.map Src.c1Value srcArgs) ctipe Index.first [])
                                     |> ReportingResult.andThen
-                                        (\( ( args, resultType ), argBindings ) ->
+                                        (\( ( ( args, resultType ), stateAfterArgs ), argBindings ) ->
                                             Env.addLocals argBindings env
                                                 |> ReportingResult.andThen
                                                     (\newEnv ->
-                                                        verifyBindings W.Pattern argBindings (canonicalize syntaxVersion newEnv body)
+                                                        verifyBindingsWithIds W.Pattern argBindings (canonicalizeWithIds syntaxVersion newEnv stateAfterArgs body)
                                                             |> ReportingResult.andThen
-                                                                (\( cbody, freeLocals ) ->
+                                                                (\( ( cbody, stateAfterBody ), freeLocals ) ->
                                                                     let
                                                                         cdef : Can.Def
                                                                         cdef =
@@ -524,23 +973,23 @@ addDefNodes syntaxVersion env nodes (A.At _ def) =
                                                                         node =
                                                                             ( Define cdef, name, Dict.keys compare freeLocals )
                                                                     in
-                                                                    logLetLocals args freeLocals (node :: nodes)
+                                                                    logLetLocalsWithIds args freeLocals ( node :: nodes, stateAfterBody )
                                                                 )
                                                     )
                                         )
                             )
 
         Src.Destruct pattern ( _, body ) ->
-            Pattern.verify Error.DPDestruct
-                (Pattern.canonicalize syntaxVersion env pattern)
+            Pattern.verifyWithIds Error.DPDestruct
+                (Pattern.canonicalizeWithIds syntaxVersion env state pattern)
                 |> ReportingResult.andThen
-                    (\( cpattern, _ ) ->
+                    (\( cpattern, _, stateAfterPattern ) ->
                         ReportingResult.RResult
                             (\fs ws ->
-                                case canonicalize syntaxVersion env body of
+                                case canonicalizeWithIds syntaxVersion env stateAfterPattern body of
                                     ReportingResult.RResult k ->
                                         case k Dict.empty ws of
-                                            ReportingResult.ROk freeLocals warnings cbody ->
+                                            ReportingResult.ROk freeLocals warnings ( cbody, stateAfterBody ) ->
                                                 let
                                                     names : List (A.Located Name)
                                                     names =
@@ -557,7 +1006,7 @@ addDefNodes syntaxVersion env nodes (A.At _ def) =
                                                 ReportingResult.ROk
                                                     (Utils.mapUnionWith identity compare combineUses fs freeLocals)
                                                     warnings
-                                                    (List.foldl (addEdge [ name ]) (node :: nodes) names)
+                                                    ( List.foldl (addEdge [ name ]) (node :: nodes) names, stateAfterBody )
 
                                             ReportingResult.RErr freeLocals warnings errors ->
                                                 ReportingResult.RErr (Utils.mapUnionWith identity compare combineUses freeLocals fs) warnings errors
@@ -565,8 +1014,10 @@ addDefNodes syntaxVersion env nodes (A.At _ def) =
                     )
 
 
-logLetLocals : List arg -> FreeLocals -> value -> EResult FreeLocals w value
-logLetLocals args letLocals value =
+{-| Like logLetLocals but preserves IdState in the result.
+-}
+logLetLocalsWithIds : List arg -> FreeLocals -> ( value, IdState ) -> EResult FreeLocals w ( value, IdState )
+logLetLocalsWithIds args letLocals ( value, idState ) =
     ReportingResult.RResult
         (\freeLocals warnings ->
             ReportingResult.ROk
@@ -583,7 +1034,7 @@ logLetLocals args letLocals value =
                     )
                 )
                 warnings
-                value
+                ( value, idState )
         )
 
 
@@ -644,35 +1095,36 @@ This function processes a type-annotated function definition by pairing each arg
 pattern with its corresponding type from the signature. It:
 
   - Iterates through the function type, extracting argument types from nested lambdas
-  - Canonicalizes each argument pattern
+  - Canonicalizes each argument pattern with IdState threading
   - Pairs each pattern with its type annotation
-  - Returns the list of typed argument patterns and the final return type
+  - Returns the list of typed argument patterns, the final return type, and updated IdState
   - Reports an error if there are more patterns than types in the signature
 
 This is used when processing function definitions with explicit type annotations.
 
 -}
-gatherTypedArgs :
+gatherTypedArgsWithIds :
     SyntaxVersion
     -> Env.Env
     -> Name.Name
+    -> IdState
     -> List Src.Pattern
     -> Can.Type
     -> Index.ZeroBased
     -> List ( Can.Pattern, Can.Type )
-    -> EResult Pattern.DupsDict w ( List ( Can.Pattern, Can.Type ), Can.Type )
-gatherTypedArgs syntaxVersion env name srcArgs tipe index revTypedArgs =
+    -> EResult Pattern.DupsDict w ( ( List ( Can.Pattern, Can.Type ), Can.Type ), IdState )
+gatherTypedArgsWithIds syntaxVersion env name state srcArgs tipe index revTypedArgs =
     case srcArgs of
         [] ->
-            ReportingResult.ok ( List.reverse revTypedArgs, tipe )
+            ReportingResult.ok ( ( List.reverse revTypedArgs, tipe ), state )
 
         srcArg :: otherSrcArgs ->
             case Type.iteratedDealias tipe of
                 Can.TLambda argType resultType ->
-                    Pattern.canonicalize syntaxVersion env srcArg
+                    Pattern.canonicalizeWithIds syntaxVersion env state srcArg
                         |> ReportingResult.andThen
-                            (\arg ->
-                                (( arg, argType ) :: revTypedArgs) |> gatherTypedArgs syntaxVersion env name otherSrcArgs resultType (Index.next index)
+                            (\( arg, stateAfterArg ) ->
+                                gatherTypedArgsWithIds syntaxVersion env name stateAfterArg otherSrcArgs resultType (Index.next index) (( arg, argType ) :: revTypedArgs)
                             )
 
                 _ ->
@@ -681,36 +1133,6 @@ gatherTypedArgs syntaxVersion env name srcArgs tipe index revTypedArgs =
                             ( Prelude.head srcArgs, Prelude.last srcArgs )
                     in
                     ReportingResult.throw (Error.AnnotationTooShort (A.mergeRegions start end) name index (List.length srcArgs))
-
-
-detectCycles : A.Region -> List (Graph.SCC Binding) -> Can.Expr -> EResult i w Can.Expr
-detectCycles letRegion sccs body =
-    case sccs of
-        [] ->
-            ReportingResult.ok body
-
-        scc :: subSccs ->
-            case scc of
-                Graph.AcyclicSCC andThening ->
-                    case andThening of
-                        Define def ->
-                            detectCycles letRegion subSccs body
-                                |> ReportingResult.map (Can.Let def)
-                                |> ReportingResult.map (A.At letRegion)
-
-                        Edge _ ->
-                            detectCycles letRegion subSccs body
-
-                        Destruct pattern expr ->
-                            detectCycles letRegion subSccs body
-                                |> ReportingResult.map (Can.LetDestruct pattern expr)
-                                |> ReportingResult.map (A.At letRegion)
-
-                Graph.CyclicSCC andThenings ->
-                    ReportingResult.map (A.At letRegion)
-                        (ReportingResult.map Can.LetRec (checkCycle andThenings [])
-                            |> ReportingResult.apply (detectCycles letRegion subSccs body)
-                        )
 
 
 checkCycle : List Binding -> List Can.Def -> EResult i w (List Can.Def)
@@ -772,6 +1194,59 @@ getDefName def =
             name
 
 
+{-| Like detectCycles but threads IdState and allocates IDs for Let/LetDestruct/LetRec nodes.
+-}
+detectCyclesWithIds : A.Region -> IdState -> List (Graph.SCC Binding) -> Can.Expr -> EResult i w ( Can.Expr, IdState )
+detectCyclesWithIds letRegion state sccs body =
+    case sccs of
+        [] ->
+            ReportingResult.ok ( body, state )
+
+        scc :: subSccs ->
+            case scc of
+                Graph.AcyclicSCC andThening ->
+                    case andThening of
+                        Define def ->
+                            detectCyclesWithIds letRegion state subSccs body
+                                |> ReportingResult.map
+                                    (\( innerBody, stateAfterInner ) ->
+                                        let
+                                            ( letId, finalState ) =
+                                                Ids.allocId stateAfterInner
+                                        in
+                                        ( A.At letRegion { id = letId, node = Can.Let def innerBody }, finalState )
+                                    )
+
+                        Edge _ ->
+                            detectCyclesWithIds letRegion state subSccs body
+
+                        Destruct pattern expr ->
+                            detectCyclesWithIds letRegion state subSccs body
+                                |> ReportingResult.map
+                                    (\( innerBody, stateAfterInner ) ->
+                                        let
+                                            ( letId, finalState ) =
+                                                Ids.allocId stateAfterInner
+                                        in
+                                        ( A.At letRegion { id = letId, node = Can.LetDestruct pattern expr innerBody }, finalState )
+                                    )
+
+                Graph.CyclicSCC andThenings ->
+                    checkCycle andThenings []
+                        |> ReportingResult.andThen
+                            (\defs ->
+                                detectCyclesWithIds letRegion state subSccs body
+                                    |> ReportingResult.map
+                                        (\( innerBody, stateAfterInner ) ->
+                                            let
+                                                ( letId, finalState ) =
+                                                    Ids.allocId stateAfterInner
+                                            in
+                                            ( A.At letRegion { id = letId, node = Can.LetRec defs innerBody }, finalState )
+                                        )
+                            )
+
+
 logVar : Name.Name -> a -> EResult FreeLocals w a
 logVar name value =
     ReportingResult.RResult <|
@@ -807,29 +1282,75 @@ delayUse (Uses { direct, delayed }) =
 -- MANAGING BINDINGS
 
 
-{-| Verify pattern bindings by checking for unused variables and extracting free locals.
+addUnusedWarning : W.Context -> Name.Name -> A.Region -> List W.Warning -> List W.Warning
+addUnusedWarning context name region warnings =
+    W.UnusedVariable region context name :: warnings
 
-This function wraps an expression result to:
 
-  - Check which pattern-bound variables are actually used in the expression
-  - Generate warnings for any unused bindings (e.g., unused lambda parameters)
-  - Separate local bindings from free variables that reference outer scopes
-  - Return both the expression value and the free variables that escape the binding
+{-| Like directUsage but also threads IdState through the result.
 
-The context parameter indicates what kind of binding is being verified (pattern, definition, etc.)
-for better error messages.
+Used for Let and Case expressions where pattern canonicalization
+needs to share the ID space with expressions.
 
 -}
-verifyBindings :
+directUsageWithIds : EResult () w ( ( expr, IdState ), FreeLocals ) -> EResult FreeLocals w ( expr, IdState )
+directUsageWithIds (ReportingResult.RResult k) =
+    ReportingResult.RResult
+        (\freeLocals warnings ->
+            case k () warnings of
+                ReportingResult.ROk () ws ( ( value, idState ), newFreeLocals ) ->
+                    ReportingResult.ROk (Utils.mapUnionWith identity compare combineUses freeLocals newFreeLocals) ws ( value, idState )
+
+                ReportingResult.RErr () ws es ->
+                    ReportingResult.RErr freeLocals ws es
+        )
+
+
+{-| Like delayedUsage but also threads IdState through the result.
+
+Used for Lambda expressions where pattern canonicalization
+needs to share the ID space with expressions.
+
+-}
+delayedUsageWithIds : EResult () w ( ( expr, IdState ), FreeLocals ) -> EResult FreeLocals w ( expr, IdState )
+delayedUsageWithIds (ReportingResult.RResult k) =
+    ReportingResult.RResult
+        (\freeLocals warnings ->
+            case k () warnings of
+                ReportingResult.ROk () ws ( ( value, idState ), newFreeLocals ) ->
+                    let
+                        delayedLocals : Dict String Name Uses
+                        delayedLocals =
+                            Dict.map (\_ -> delayUse) newFreeLocals
+                    in
+                    ReportingResult.ROk (Utils.mapUnionWith identity compare combineUses freeLocals delayedLocals) ws ( value, idState )
+
+                ReportingResult.RErr () ws es ->
+                    ReportingResult.RErr freeLocals ws es
+        )
+
+
+{-| Like verifyBindings but handles a result containing ( expr, IdState ).
+
+The info type parameter allows this to be used in different contexts:
+
+  - With info = () when wrapped with directUsageWithIds/delayedUsageWithIds
+  - With info = FreeLocals when used directly in addDefNodesWithIds
+
+-}
+verifyBindingsWithIds :
     W.Context
     -> Pattern.Bindings
-    -> EResult FreeLocals (List W.Warning) value
-    -> EResult info (List W.Warning) ( value, FreeLocals )
-verifyBindings context andThenings (ReportingResult.RResult k) =
-    ReportingResult.RResult
-        (\info warnings ->
+    -> EResult FreeLocals (List W.Warning) ( expr, IdState )
+    -> EResult info (List W.Warning) ( ( expr, IdState ), FreeLocals )
+verifyBindingsWithIds context andThenings (ReportingResult.RResult k) =
+    ReportingResult.RResult <|
+        \info warnings ->
             case k Dict.empty warnings of
-                ReportingResult.ROk freeLocals warnings1 value ->
+                ReportingResult.RErr _ warnings1 errors ->
+                    ReportingResult.RErr info warnings1 errors
+
+                ReportingResult.ROk freeLocals warnings1 ( value, idState ) ->
                     let
                         outerFreeLocals : Dict String Name Uses
                         outerFreeLocals =
@@ -837,55 +1358,13 @@ verifyBindings context andThenings (ReportingResult.RResult k) =
 
                         warnings2 : List W.Warning
                         warnings2 =
-                            -- NOTE: Uses Map.size for O(1) lookup. This means there is
-                            -- no dictionary allocation unless a problem is detected.
                             if Dict.size andThenings + Dict.size outerFreeLocals == Dict.size freeLocals then
                                 warnings1
 
                             else
                                 Dict.diff andThenings freeLocals |> Dict.foldl compare (addUnusedWarning context) warnings1
                     in
-                    ReportingResult.ROk info warnings2 ( value, outerFreeLocals )
-
-                ReportingResult.RErr _ warnings1 err ->
-                    ReportingResult.RErr info warnings1 err
-        )
-
-
-addUnusedWarning : W.Context -> Name.Name -> A.Region -> List W.Warning -> List W.Warning
-addUnusedWarning context name region warnings =
-    W.UnusedVariable region context name :: warnings
-
-
-directUsage : EResult () w ( expr, FreeLocals ) -> EResult FreeLocals w expr
-directUsage (ReportingResult.RResult k) =
-    ReportingResult.RResult
-        (\freeLocals warnings ->
-            case k () warnings of
-                ReportingResult.ROk () ws ( value, newFreeLocals ) ->
-                    ReportingResult.ROk (Utils.mapUnionWith identity compare combineUses freeLocals newFreeLocals) ws value
-
-                ReportingResult.RErr () ws es ->
-                    ReportingResult.RErr freeLocals ws es
-        )
-
-
-delayedUsage : EResult () w ( expr, FreeLocals ) -> EResult FreeLocals w expr
-delayedUsage (ReportingResult.RResult k) =
-    ReportingResult.RResult
-        (\freeLocals warnings ->
-            case k () warnings of
-                ReportingResult.ROk () ws ( value, newFreeLocals ) ->
-                    let
-                        delayedLocals : Dict String Name Uses
-                        delayedLocals =
-                            Dict.map (\_ -> delayUse) newFreeLocals
-                    in
-                    ReportingResult.ROk (Utils.mapUnionWith identity compare combineUses freeLocals delayedLocals) ws value
-
-                ReportingResult.RErr () ws es ->
-                    ReportingResult.RErr freeLocals ws es
-        )
+                    ReportingResult.ROk info warnings2 ( ( value, idState ), outerFreeLocals )
 
 
 

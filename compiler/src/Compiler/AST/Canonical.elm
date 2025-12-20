@@ -1,8 +1,8 @@
 module Compiler.AST.Canonical exposing
     ( Module(..), ModuleData, Exports(..), Export(..), Effects(..), Manager(..), Port(..)
-    , Expr, Expr_(..), CaseBranch(..), FieldUpdate(..)
+    , Expr, ExprInfo, Expr_(..), CaseBranch(..), FieldUpdate(..)
     , Def(..), Decls(..)
-    , Pattern, Pattern_(..), PatternCtorArg(..)
+    , Pattern, PatternInfo, Pattern_(..), PatternCtorArg(..)
     , Type(..), Annotation(..), FreeVars, AliasType(..), FieldType(..), fieldsToList
     , Union(..), UnionData, Alias(..), Ctor(..), CtorData, CtorOpts(..), Binop(..)
     , annotationEncoder, annotationDecoder
@@ -31,7 +31,7 @@ Cached data is marked with comments like `-- CACHE for exhaustiveness` or
 
 # Expressions
 
-@docs Expr, Expr_, CaseBranch, FieldUpdate
+@docs Expr, ExprInfo, Expr_, CaseBranch, FieldUpdate
 
 
 # Definitions
@@ -41,7 +41,7 @@ Cached data is marked with comments like `-- CACHE for exhaustiveness` or
 
 # Patterns
 
-@docs Pattern, Pattern_, PatternCtorArg
+@docs Pattern, PatternInfo, Pattern_, PatternCtorArg
 
 
 # Types
@@ -103,10 +103,18 @@ import Utils.Bytes.Encode as BE
 -- ====== Expressions ======
 
 
-{-| An expression with source location annotation.
+{-| An expression with source location annotation and unique ID.
 -}
 type alias Expr =
-    A.Located Expr_
+    A.Located ExprInfo
+
+
+{-| Expression info containing the unique ID and expression node.
+-}
+type alias ExprInfo =
+    { id : Int
+    , node : Expr_
+    }
 
 
 {-| Expression variants in the canonical AST.
@@ -189,10 +197,18 @@ type Decls
 -- ====== Patterns ======
 
 
-{-| A pattern with source location annotation.
+{-| A pattern with source location annotation and unique ID.
 -}
 type alias Pattern =
-    A.Located Pattern_
+    A.Located PatternInfo
+
+
+{-| Pattern info containing the unique ID and pattern node.
+-}
+type alias PatternInfo =
+    { id : Int
+    , node : Pattern_
+    }
 
 
 {-| Pattern variants for destructuring values.
@@ -775,12 +791,27 @@ fieldUpdateDecoder =
 
 exprEncoder : Expr -> Bytes.Encode.Encoder
 exprEncoder =
-    A.locatedEncoder expr_Encoder
+    A.locatedEncoder exprInfoEncoder
 
 
 exprDecoder : Bytes.Decode.Decoder Expr
 exprDecoder =
-    A.locatedDecoder expr_Decoder
+    A.locatedDecoder exprInfoDecoder
+
+
+exprInfoEncoder : ExprInfo -> Bytes.Encode.Encoder
+exprInfoEncoder info =
+    Bytes.Encode.sequence
+        [ BE.int info.id
+        , expr_Encoder info.node
+        ]
+
+
+exprInfoDecoder : Bytes.Decode.Decoder ExprInfo
+exprInfoDecoder =
+    Bytes.Decode.map2 (\id node -> { id = id, node = node })
+        BD.int
+        expr_Decoder
 
 
 expr_Encoder : Expr_ -> Bytes.Encode.Encoder
@@ -1130,12 +1161,27 @@ expr_Decoder =
 
 patternEncoder : Pattern -> Bytes.Encode.Encoder
 patternEncoder =
-    A.locatedEncoder pattern_Encoder
+    A.locatedEncoder patternInfoEncoder
 
 
 patternDecoder : Bytes.Decode.Decoder Pattern
 patternDecoder =
-    A.locatedDecoder pattern_Decoder
+    A.locatedDecoder patternInfoDecoder
+
+
+patternInfoEncoder : PatternInfo -> Bytes.Encode.Encoder
+patternInfoEncoder info =
+    Bytes.Encode.sequence
+        [ BE.int info.id
+        , pattern_Encoder info.node
+        ]
+
+
+patternInfoDecoder : Bytes.Decode.Decoder PatternInfo
+patternInfoDecoder =
+    Bytes.Decode.map2 PatternInfo
+        BD.int
+        pattern_Decoder
 
 
 pattern_Encoder : Pattern_ -> Bytes.Encode.Encoder

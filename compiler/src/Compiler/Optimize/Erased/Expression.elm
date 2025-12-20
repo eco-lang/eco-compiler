@@ -71,8 +71,8 @@ while transforming the expression tree.
 
 -}
 optimize : Cycle -> Can.Expr -> Names.Tracker Opt.Expr
-optimize cycle (A.At region expression) =
-    case expression of
+optimize cycle (A.At region exprInfo) =
+    case exprInfo.node of
         Can.VarLocal name ->
             Names.pure (Opt.TrackedVarLocal region name)
 
@@ -379,8 +379,8 @@ destructCase rootName pattern =
 
 
 destruct : Can.Pattern -> Names.Tracker ( A.Located Name.Name, List Opt.Destructor )
-destruct ((A.At region ptrn) as pattern) =
-    case ptrn of
+destruct ((A.At region patternInfo) as pattern) =
+    case patternInfo.node of
         Can.PVar name ->
             Names.pure ( A.At region name, [] )
 
@@ -401,8 +401,8 @@ destruct ((A.At region ptrn) as pattern) =
 
 
 destructHelp : Opt.Path -> Can.Pattern -> List Opt.Destructor -> Names.Tracker (List Opt.Destructor)
-destructHelp path (A.At region pattern) revDs =
-    case pattern of
+destructHelp path (A.At region patternInfo) revDs =
+    case patternInfo.node of
         Can.PAnything ->
             Names.pure revDs
 
@@ -476,7 +476,8 @@ destructHelp path (A.At region pattern) revDs =
             Names.pure revDs
 
         Can.PList (hd :: tl) ->
-            destructTwo path hd (A.At region (Can.PList tl)) revDs
+            -- Use placeholder ID (-1) for synthesized patterns
+            destructTwo path hd (A.At region { id = -1, node = Can.PList tl }) revDs
 
         Can.PCons hd tl ->
             destructTwo path hd tl revDs
@@ -598,8 +599,8 @@ optimizePotentialTailCall cycle region name args expr =
 
 
 optimizeTail : Cycle -> Name.Name -> List (A.Located Name.Name) -> Can.Expr -> Names.Tracker Opt.Expr
-optimizeTail cycle rootName argNames ((A.At region expression) as locExpr) =
-    case expression of
+optimizeTail cycle rootName argNames ((A.At region exprInfo) as locExpr) =
+    case exprInfo.node of
         Can.Call func args ->
             Names.traverse (optimize cycle) args
                 |> Names.andThen
@@ -607,7 +608,7 @@ optimizeTail cycle rootName argNames ((A.At region expression) as locExpr) =
                         let
                             isMatchingName : Bool
                             isMatchingName =
-                                case A.toValue func of
+                                case (A.toValue func).node of
                                     Can.VarLocal name ->
                                         rootName == name
 

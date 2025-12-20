@@ -7,7 +7,7 @@ module Compiler.Type.Type exposing
     , mkFlexVar, mkFlexNumber, nameToFlex, nameToRigid
     , unnamedFlexVar, unnamedFlexSuper
     , noRank, outermostRank, noMark, nextMark
-    , toAnnotation, toErrorType
+    , toAnnotation, toCanType, toErrorType
     )
 
 {-| Internal type representation for type inference.
@@ -59,7 +59,7 @@ Used by the solver to track generalization levels:
 
 # Conversion
 
-@docs toAnnotation, toErrorType
+@docs toAnnotation, toCanType, toErrorType
 
 -}
 
@@ -432,6 +432,21 @@ toAnnotation variable =
                         (\( tipe, NameState nsData ) ->
                             Can.Forall nsData.taken tipe
                         )
+            )
+
+
+{-| Convert a solver Variable to a Can.Type.
+
+Similar to toAnnotation but returns just the type without the Forall quantifier.
+Used for building the TypedCanonical AST where each expression needs its type.
+-}
+toCanType : Variable -> IO Can.Type
+toCanType variable =
+    getVarNames variable Dict.empty
+        |> IO.andThen
+            (\userNames ->
+                State.runStateT (variableToCanType variable) (makeNameState userNames)
+                    |> IO.map Tuple.first
             )
 
 

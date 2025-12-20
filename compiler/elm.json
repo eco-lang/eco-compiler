@@ -7,11 +7,12 @@
     "dependencies": {
         "direct": {
             "Janiczek/elm-vlq": "1.0.0",
+            "cuducos/elm-format-number": "9.0.1",
             "dasch/levenshtein": "1.0.3",
             "elm/bytes": "1.0.8",
             "elm/core": "1.0.5",
             "elm/http": "2.0.0",
-            "elm/json": "1.1.3",
+            "elm/json": "1.1.4",
             "elm/regex": "1.0.0",
             "elm/time": "1.0.0",
             "elm/url": "1.0.0",
@@ -22,12 +23,12 @@
             "elm-community/result-extra": "2.4.0",
             "guida-lang/glsl": "1.0.0",
             "guida-lang/graph": "1.0.1",
+            "j-maas/elm-ordered-containers": "1.0.0",
             "jxxcarlson/hex": "4.0.1",
             "obiloud/numeric-decimal": "3.0.1",
             "rtfeldman/elm-hex": "1.0.0",
-            "j-maas/elm-ordered-containers": "1.0.0",
-            "the-sett/elm-mlir": "2.0.0",
-            "the-sett/elm-pretty-printer": "3.1.0",
+            "the-sett/elm-mlir": "3.0.0",
+            "the-sett/elm-pretty-printer": "3.3.0",
             "truqu/elm-base64": "2.0.4"
         },
         "indirect": {
@@ -47,8 +48,8 @@
             "elm-explorations/test": "2.2.0"
         },
         "indirect": {
-            "elm/html": "1.0.0",
-            "elm/virtual-dom": "1.0.4"
+            "elm/html": "1.0.1",
+            "elm/virtual-dom": "1.0.5"
         }
     }
 }
