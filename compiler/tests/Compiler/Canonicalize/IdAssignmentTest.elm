@@ -9,6 +9,7 @@ appropriate expectation functions.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
+import Compiler.AnnotatedTests as AnnotatedTests
 import Compiler.AsPatternTests as AsPatternTests
 import Compiler.BinopTests as BinopTests
 import Compiler.Canonicalize.IdAssignment exposing (expectUniqueIds, expectUniqueIdsCanonical)
@@ -41,7 +42,8 @@ suite =
 expectSuite : (Src.Module -> Expectation) -> (Can.Module -> Expectation) -> String -> Test
 expectSuite expectFn expectFnCanonical condStr =
     Test.describe "Unique IDs for all nodes in Canonical form"
-        [ AsPatternTests.expectSuite expectFn condStr
+        [ AnnotatedTests.expectSuite expectFn condStr
+        , AsPatternTests.expectSuite expectFn condStr
         , BinopTests.expectSuite expectFn condStr
         , CaseTests.expectSuite expectFn condStr
         , EdgeCaseTests.expectSuite expectFn condStr

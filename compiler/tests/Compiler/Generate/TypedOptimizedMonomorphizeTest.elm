@@ -7,6 +7,7 @@ the typed optimization pipeline and then monomorphization.
 
 -}
 
+import Compiler.AnnotatedTests as AnnotatedTests
 import Compiler.AsPatternTests as AsPatternTests
 import Compiler.BinopTests as BinopTests
 import Compiler.CaseTests as CaseTests
@@ -31,7 +32,8 @@ import Test exposing (Test)
 suite : Test
 suite =
     Test.describe "TypedOptimized code monomorphizes successfully"
-        [ AsPatternTests.expectSuite expectMonomorphization "monomorphizes"
+        [ AnnotatedTests.expectSuite expectMonomorphization "monomorphizes"
+        , AsPatternTests.expectSuite expectMonomorphization "monomorphizes"
         , BinopTests.expectSuite expectMonomorphization "monomorphizes"
         , CaseTests.expectSuite expectMonomorphization "monomorphizes"
         , EdgeCaseTests.expectSuite expectMonomorphization "monomorphizes"

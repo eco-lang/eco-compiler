@@ -8,6 +8,7 @@ both optimization pipelines and compares the resulting IRs.
 
 -}
 
+import Compiler.AnnotatedTests as AnnotatedTests
 import Compiler.AsPatternTests as AsPatternTests
 import Compiler.BinopTests as BinopTests
 import Compiler.CaseTests as CaseTests
@@ -32,7 +33,8 @@ import Test exposing (Test)
 suite : Test
 suite =
     Test.describe "Erased and Typed optimization produce equivalent results"
-        [ AsPatternTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        [ AnnotatedTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        , AsPatternTests.expectSuite expectEquivalentOptimization "optimize equivalently"
         , BinopTests.expectSuite expectEquivalentOptimization "optimize equivalently"
         , CaseTests.expectSuite expectEquivalentOptimization "optimize equivalently"
         , EdgeCaseTests.expectSuite expectEquivalentOptimization "optimize equivalently"

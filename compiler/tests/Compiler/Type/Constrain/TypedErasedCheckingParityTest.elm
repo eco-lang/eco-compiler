@@ -8,6 +8,7 @@ appropriate expectation functions.
 -}
 
 import Compiler.AST.Source as Src
+import Compiler.AnnotatedTests as AnnotatedTests
 import Compiler.AsPatternTests as AsPatternTests
 import Compiler.BinopTests as BinopTests
 import Compiler.CaseTests as CaseTests
@@ -46,7 +47,8 @@ suite =
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
     Test.describe "Type solver constrain and constrinWithIds type check equivalently"
-        [ AsPatternTests.expectSuite expectFn condStr
+        [ AnnotatedTests.expectSuite expectFn condStr
+        , AsPatternTests.expectSuite expectFn condStr
         , BinopTests.expectSuite expectFn condStr
         , CaseTests.expectSuite expectFn condStr
         , EdgeCaseTests.expectSuite expectFn condStr

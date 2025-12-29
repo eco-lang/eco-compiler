@@ -9,6 +9,7 @@ module Compiler.AST.SourceBuilder exposing
     , charFuzzer
     , chrExpr
     , define
+    , defineTyped
     , destruct
       -- Pattern builders
     , floatExpr
@@ -19,6 +20,7 @@ module Compiler.AST.SourceBuilder exposing
     , listExpr
     , makeModule
     , makeModuleWithDefs
+    , makeModuleWithTypedDefs
       -- Fuzzers
     , negateExpr
     , pAlias
@@ -36,6 +38,15 @@ module Compiler.AST.SourceBuilder exposing
     , parensExpr
     , recordExpr
     , strExpr
+      -- Type builders
+    , tLambda
+    , tRecord
+    , tTuple
+    , tType
+    , tUnit
+    , tVar
+      -- Type alias
+    , TypedDef
     , tuple3Expr
     , tupleExpr
     , unitExpr
@@ -384,6 +395,13 @@ destruct pattern expr =
     Src.Destruct pattern (c1 expr)
 
 
+{-| Create a function/value definition with a type annotation.
+-}
+defineTyped : Name -> List Src.Pattern -> Src.Type -> Src.Expr -> Src.Def
+defineTyped name args tipe body =
+    Src.Define (A.At A.zero name) (List.map c1 args) (c1 body) (Just (c1 (c2 tipe)))
+
+
 
 -- ============================================================================
 -- MODULE BUILDERS
@@ -460,6 +478,102 @@ makeModuleWithDefs defs =
         , infixes = []
         , effects = Src.NoEffects
         }
+
+
+{-| A typed definition: name, args, type annotation, and body.
+-}
+type alias TypedDef =
+    { name : Name
+    , args : List Src.Pattern
+    , tipe : Src.Type
+    , body : Src.Expr
+    }
+
+
+{-| Create a module with multiple typed definitions.
+-}
+makeModuleWithTypedDefs : List TypedDef -> Src.Module
+makeModuleWithTypedDefs defs =
+    let
+        values =
+            List.map
+                (\{ name, args, tipe, body } ->
+                    A.At A.zero
+                        (Src.Value
+                            { comments = noComments
+                            , name = c1 (A.At A.zero name)
+                            , args = List.map c1 args
+                            , body = c1 body
+                            , tipe = Just (c1 (c2 tipe))
+                            }
+                        )
+                )
+                defs
+    in
+    Src.Module
+        { syntaxVersion = SV.Elm
+        , name = Just (A.At A.zero "Test")
+        , exports = A.At A.zero (Src.Open noComments noComments)
+        , docs = Src.NoDocs A.zero []
+        , imports = [ basicsImport ]
+        , values = values
+        , unions = []
+        , aliases = []
+        , infixes = []
+        , effects = Src.NoEffects
+        }
+
+
+
+-- ============================================================================
+-- TYPE BUILDERS
+-- ============================================================================
+
+
+{-| Create a type variable.
+-}
+tVar : Name -> Src.Type
+tVar name =
+    A.At A.zero (Src.TVar name)
+
+
+{-| Create a function type (a -> b).
+-}
+tLambda : Src.Type -> Src.Type -> Src.Type
+tLambda from to =
+    A.At A.zero (Src.TLambda (c0Eol from) (c2Eol to))
+
+
+{-| Create a type constructor with arguments (e.g., List a, Maybe b).
+-}
+tType : Name -> List Src.Type -> Src.Type
+tType name args =
+    A.At A.zero (Src.TType A.zero name (List.map c1 args))
+
+
+{-| Create a unit type.
+-}
+tUnit : Src.Type
+tUnit =
+    A.At A.zero Src.TUnit
+
+
+{-| Create a tuple type.
+-}
+tTuple : Src.Type -> Src.Type -> Src.Type
+tTuple a b =
+    A.At A.zero (Src.TTuple (c2Eol a) (c2Eol b) [])
+
+
+{-| Create a record type.
+-}
+tRecord : List ( Name, Src.Type ) -> Src.Type
+tRecord fields =
+    let
+        fieldList =
+            List.map (\( name, t ) -> c2 ( c1 (A.At A.zero name), c1 t )) fields
+    in
+    A.At A.zero (Src.TRecord fieldList Nothing noComments)
 
 
 
