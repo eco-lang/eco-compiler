@@ -280,6 +280,10 @@ make =
                             ++ "with `reactor` because it is quite hard to deal with these JSON files directly."
                         )
                     )
+                |> Terminal.more
+                    (Terminal.onOff "Xpackage-errors"
+                        "Show full compilation errors when a package dependency fails to compile (experimental)."
+                    )
     in
     Terminal.Command
         { name = "make"
@@ -294,13 +298,14 @@ make =
                     chunks
                     [ Chomp.chompMultiple (Chomp.pure identity) Terminal.guidaOrElmFile Terminal.parseGuidaOrElmFile
                     ]
-                    (Chomp.pure (\debug_ optimize_ withSourceMaps_ output_ report_ docs_ -> Make.Flags { debug = debug_, optimize = optimize_, withSourceMaps = withSourceMaps_, output = output_, report = report_, docs = docs_ })
+                    (Chomp.pure (\debug_ optimize_ withSourceMaps_ output_ report_ docs_ showPackageErrors_ -> Make.Flags { debug = debug_, optimize = optimize_, withSourceMaps = withSourceMaps_, output = output_, report = report_, docs = docs_, showPackageErrors = showPackageErrors_ })
                         |> Chomp.apply (Chomp.chompOnOffFlag "debug")
                         |> Chomp.apply (Chomp.chompOnOffFlag "optimize")
                         |> Chomp.apply (Chomp.chompOnOffFlag "sourcemaps")
                         |> Chomp.apply (Chomp.chompNormalFlag "output" Make.output Make.parseOutput)
                         |> Chomp.apply (Chomp.chompNormalFlag "report" Make.reportType Make.parseReportType)
                         |> Chomp.apply (Chomp.chompNormalFlag "docs" Make.docsFile Make.parseDocsFile)
+                        |> Chomp.apply (Chomp.chompOnOffFlag "Xpackage-errors")
                         |> Chomp.andThen
                             (\value ->
                                 Chomp.checkForUnknownFlags makeFlags

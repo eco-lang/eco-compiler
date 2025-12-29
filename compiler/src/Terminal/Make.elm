@@ -68,6 +68,7 @@ type alias FlagsData =
     , output : Maybe Output
     , report : Maybe ReportType
     , docs : Maybe String
+    , showPackageErrors : Bool
     }
 
 
@@ -140,22 +141,22 @@ type alias BuildContext =
 
 runHelp : String -> List String -> Reporting.Style -> Flags -> Task Never (Result Exit.Make ())
 runHelp root paths style (Flags flagsData) =
-    BW.withScope (runHelpWithScope root paths style flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs)
+    BW.withScope (runHelpWithScope root paths style flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors)
 
 
-runHelpWithScope : FilePath -> List String -> Reporting.Style -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> BW.Scope -> Task Never (Result Exit.Make ())
-runHelpWithScope root paths style debug optimize withSourceMaps maybeOutput maybeDocs scope =
+runHelpWithScope : FilePath -> List String -> Reporting.Style -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> BW.Scope -> Task Never (Result Exit.Make ())
+runHelpWithScope root paths style debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors scope =
     Stuff.withRootLock root
         (Task.run
             (getMode debug optimize
-                |> Task.andThen (loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs scope)
+                |> Task.andThen (loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors scope)
             )
         )
 
 
-loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> BW.Scope -> DesiredMode -> Task Exit.Make ()
-loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs scope desiredMode =
-    Task.eio Exit.MakeBadDetails (Details.load style scope root (shouldUseTypedOpt maybeOutput))
+loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> BW.Scope -> DesiredMode -> Task Exit.Make ()
+loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors scope desiredMode =
+    Task.eio Exit.MakeBadDetails (Details.load style scope root (shouldUseTypedOpt maybeOutput) showPackageErrors)
         |> Task.andThen (buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs desiredMode)
 
 

@@ -55,6 +55,7 @@ import Builder.File as File
 import Builder.Http as Http
 import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit
+import Builder.Reporting.Exit.Help as Help
 import Builder.Stuff as Stuff
 import Bytes.Decode
 import Bytes.Encode
@@ -78,6 +79,10 @@ import Compiler.Json.Encode as E
 import Compiler.Parse.Module as Parse
 import Compiler.Parse.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Reporting.Annotation as A
+import Compiler.Reporting.Doc as Doc
+import Compiler.Reporting.Error as Error
+import Compiler.Reporting.Error.Syntax as Syntax
+import Result.Extra
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as TypeCheck
@@ -293,7 +298,7 @@ runVerifyInstall scope root cache manager connection registry outline time =
 
         env : Env
         env =
-            Env { key = key, scope = scope, root = root, cache = cache, manager = manager, connection = connection, registry = registry, needsTypedOpt = False }
+            Env { key = key, scope = scope, root = root, cache = cache, manager = manager, connection = connection, registry = registry, needsTypedOpt = False, showPackageErrors = False }
     in
     case outline of
         Outline.Pkg pkg ->
@@ -310,41 +315,41 @@ runVerifyInstall scope root cache manager connection registry outline time =
 {-| Load project details, verifying dependencies and building them if necessary.
 Checks if elm.json has changed and regenerates details if needed. Used by build commands.
 -}
-load : Reporting.Style -> BW.Scope -> FilePath -> Bool -> Task Never (Result Exit.Details Details)
-load style scope root needsTypedOpt =
+load : Reporting.Style -> BW.Scope -> FilePath -> Bool -> Bool -> Task Never (Result Exit.Details Details)
+load style scope root needsTypedOpt showPackageErrors =
     File.getTime (root ++ "/elm.json")
-        |> Task.andThen (loadWithTime style scope root needsTypedOpt)
+        |> Task.andThen (loadWithTime style scope root needsTypedOpt showPackageErrors)
 
 
-loadWithTime : Reporting.Style -> BW.Scope -> FilePath -> Bool -> File.Time -> Task Never (Result Exit.Details Details)
-loadWithTime style scope root needsTypedOpt newTime =
+loadWithTime : Reporting.Style -> BW.Scope -> FilePath -> Bool -> Bool -> File.Time -> Task Never (Result Exit.Details Details)
+loadWithTime style scope root needsTypedOpt showPackageErrors newTime =
     File.readBinary detailsDecoder (Stuff.details root)
-        |> Task.andThen (handleCachedDetails style scope root needsTypedOpt newTime)
+        |> Task.andThen (handleCachedDetails style scope root needsTypedOpt showPackageErrors newTime)
 
 
-handleCachedDetails : Reporting.Style -> BW.Scope -> FilePath -> Bool -> File.Time -> Maybe Details -> Task Never (Result Exit.Details Details)
-handleCachedDetails style scope root needsTypedOpt newTime maybeDetails =
+handleCachedDetails : Reporting.Style -> BW.Scope -> FilePath -> Bool -> Bool -> File.Time -> Maybe Details -> Task Never (Result Exit.Details Details)
+handleCachedDetails style scope root needsTypedOpt showPackageErrors newTime maybeDetails =
     case maybeDetails of
         Nothing ->
-            generate style scope root needsTypedOpt newTime
+            generate style scope root needsTypedOpt showPackageErrors newTime
 
         Just (Details detailsData) ->
             if detailsData.time == newTime then
                 Task.succeed (Ok (Details { detailsData | buildID = detailsData.buildID + 1 }))
 
             else
-                generate style scope root needsTypedOpt newTime
+                generate style scope root needsTypedOpt showPackageErrors newTime
 
 
 
 -- GENERATE
 
 
-generate : Reporting.Style -> BW.Scope -> FilePath -> Bool -> File.Time -> Task Never (Result Exit.Details Details)
-generate style scope root needsTypedOpt time =
+generate : Reporting.Style -> BW.Scope -> FilePath -> Bool -> Bool -> File.Time -> Task Never (Result Exit.Details Details)
+generate style scope root needsTypedOpt showPackageErrors time =
     Reporting.trackDetails style
         (\key ->
-            initEnv key scope root needsTypedOpt
+            initEnv key scope root needsTypedOpt showPackageErrors
                 |> Task.andThen (verifyOutline time)
         )
 
@@ -377,6 +382,7 @@ type alias EnvData =
     , connection : Solver.Connection
     , registry : Registry.Registry
     , needsTypedOpt : Bool
+    , showPackageErrors : Bool
     }
 
 
@@ -384,37 +390,37 @@ type Env
     = Env EnvData
 
 
-initEnv : Reporting.DKey -> BW.Scope -> FilePath -> Bool -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
-initEnv key scope root needsTypedOpt =
+initEnv : Reporting.DKey -> BW.Scope -> FilePath -> Bool -> Bool -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
+initEnv key scope root needsTypedOpt showPackageErrors =
     fork resultRegistryProblemEnvEncoder Solver.initEnv
-        |> Task.andThen (initEnvWithMVar key scope root needsTypedOpt)
+        |> Task.andThen (initEnvWithMVar key scope root needsTypedOpt showPackageErrors)
 
 
-initEnvWithMVar : Reporting.DKey -> BW.Scope -> FilePath -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
-initEnvWithMVar key scope root needsTypedOpt mvar =
+initEnvWithMVar : Reporting.DKey -> BW.Scope -> FilePath -> Bool -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
+initEnvWithMVar key scope root needsTypedOpt showPackageErrors mvar =
     Outline.read root
-        |> Task.andThen (handleOutlineForEnv key scope root needsTypedOpt mvar)
+        |> Task.andThen (handleOutlineForEnv key scope root needsTypedOpt showPackageErrors mvar)
 
 
-handleOutlineForEnv : Reporting.DKey -> BW.Scope -> FilePath -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Result Exit.Outline Outline.Outline -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
-handleOutlineForEnv key scope root needsTypedOpt mvar eitherOutline =
+handleOutlineForEnv : Reporting.DKey -> BW.Scope -> FilePath -> Bool -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Result Exit.Outline Outline.Outline -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
+handleOutlineForEnv key scope root needsTypedOpt showPackageErrors mvar eitherOutline =
     case eitherOutline of
         Err problem ->
             Task.succeed (Err (Exit.DetailsBadOutline problem))
 
         Ok outline ->
             Utils.readMVar resultRegistryProblemEnvDecoder mvar
-                |> Task.map (combineEnvAndOutline key scope root needsTypedOpt outline)
+                |> Task.map (combineEnvAndOutline key scope root needsTypedOpt showPackageErrors outline)
 
 
-combineEnvAndOutline : Reporting.DKey -> BW.Scope -> FilePath -> Bool -> Outline.Outline -> Result Exit.RegistryProblem Solver.Env -> Result Exit.Details ( Env, Outline.Outline )
-combineEnvAndOutline key scope root needsTypedOpt outline maybeEnv =
+combineEnvAndOutline : Reporting.DKey -> BW.Scope -> FilePath -> Bool -> Bool -> Outline.Outline -> Result Exit.RegistryProblem Solver.Env -> Result Exit.Details ( Env, Outline.Outline )
+combineEnvAndOutline key scope root needsTypedOpt showPackageErrors outline maybeEnv =
     case maybeEnv of
         Err problem ->
             Err (Exit.DetailsCannotGetRegistry problem)
 
         Ok (Solver.Env env) ->
-            Ok ( Env { key = key, scope = scope, root = root, cache = env.cache, manager = env.manager, connection = env.connection, registry = env.registry, needsTypedOpt = needsTypedOpt }, outline )
+            Ok ( Env { key = key, scope = scope, root = root, cache = env.cache, manager = env.manager, connection = env.connection, registry = env.registry, needsTypedOpt = needsTypedOpt, showPackageErrors = showPackageErrors }, outline )
 
 
 
@@ -703,6 +709,7 @@ type alias VerifyDepContext =
     , details : Solver.Details
     , fingerprint : Dict ( String, String ) Pkg.Name V.Version
     , needsTypedOpt : Bool
+    , showPackageErrors : Bool
     }
 
 
@@ -715,7 +722,7 @@ verifyDep (Env envData) depsMVar solution pkg ((Solver.Details vsn directDeps) a
 
         ctx : VerifyDepContext
         ctx =
-            { key = envData.key, cache = envData.cache, manager = envData.manager, depsMVar = depsMVar, pkg = pkg, vsn = vsn, details = details, fingerprint = fingerprint, needsTypedOpt = envData.needsTypedOpt }
+            { key = envData.key, cache = envData.cache, manager = envData.manager, depsMVar = depsMVar, pkg = pkg, vsn = vsn, details = details, fingerprint = fingerprint, needsTypedOpt = envData.needsTypedOpt, showPackageErrors = envData.showPackageErrors }
     in
     Utils.dirDoesDirectoryExist (Stuff.package envData.cache pkg vsn ++ "/src")
         |> Task.andThen (handleDepExistence ctx)
@@ -746,7 +753,7 @@ handleArtifactCache : VerifyDepContext -> Maybe ArtifactCache -> Task Never Dep
 handleArtifactCache ctx maybeCache =
     case maybeCache of
         Nothing ->
-            build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint EverySet.empty ctx.needsTypedOpt
+            build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint EverySet.empty ctx.needsTypedOpt ctx.showPackageErrors
 
         Just (ArtifactCache fingerprints artifacts) ->
             if EverySet.member toComparableFingerprint ctx.fingerprint fingerprints then
@@ -758,7 +765,7 @@ handleArtifactCache ctx maybeCache =
                     Task.map (\_ -> Ok artifacts) (Reporting.report ctx.key Reporting.DBuilt)
 
             else
-                build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint fingerprints ctx.needsTypedOpt
+                build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint fingerprints ctx.needsTypedOpt ctx.showPackageErrors
 
 
 {-| Check if typed artifacts exist, rebuild if needed.
@@ -773,7 +780,7 @@ checkTypedArtifactsExist ctx fingerprints artifacts =
 
                 else
                     -- Rebuild with typed optimization
-                    build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint fingerprints True
+                    build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint fingerprints True ctx.showPackageErrors
             )
 
 
@@ -798,7 +805,7 @@ handleDownloadResult ctx result =
 
         Ok () ->
             Reporting.report ctx.key (Reporting.DReceived ctx.pkg ctx.vsn)
-                |> Task.andThen (\_ -> build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint EverySet.empty ctx.needsTypedOpt)
+                |> Task.andThen (\_ -> build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint EverySet.empty ctx.needsTypedOpt ctx.showPackageErrors)
 
 
 
@@ -833,6 +840,7 @@ type alias BuildContext =
     , fingerprint : Fingerprint
     , fingerprints : EverySet (List ( ( String, String ), ( Int, Int, Int ) )) Fingerprint
     , needsTypedOpt : Bool
+    , showPackageErrors : Bool
     }
 
 
@@ -845,12 +853,13 @@ build :
     -> Fingerprint
     -> EverySet (List ( ( String, String ), ( Int, Int, Int ) )) Fingerprint
     -> Bool
+    -> Bool
     -> Task Never Dep
-build key cache depsMVar pkg (Solver.Details vsn _) f fs needsTypedOpt =
+build key cache depsMVar pkg (Solver.Details vsn _) f fs needsTypedOpt showPackageErrors =
     let
         ctx : BuildContext
         ctx =
-            { key = key, cache = cache, pkg = pkg, vsn = vsn, fingerprint = f, fingerprints = fs, needsTypedOpt = needsTypedOpt }
+            { key = key, cache = cache, pkg = pkg, vsn = vsn, fingerprint = f, fingerprints = fs, needsTypedOpt = needsTypedOpt, showPackageErrors = showPackageErrors }
     in
     Outline.read (Stuff.package cache pkg vsn)
         |> Task.andThen
@@ -989,10 +998,10 @@ forkCompileModules :
     -> Dict String ModuleName.Raw ()
     -> DocsStatus
     -> Dict String ModuleName.Raw Status
-    -> MVar (Dict String ModuleName.Raw (MVar (Maybe DResult)))
+    -> MVar (Dict String ModuleName.Raw (MVar (Result Error.Module DResult)))
     -> Task Never Dep
 forkCompileModules ctx exposedDict docsStatus statuses rmvar =
-    Utils.mapTraverse identity compare (fork (BE.maybe dResultEncoder) << compile ctx.pkg ctx.needsTypedOpt rmvar) statuses
+    Utils.mapTraverse identity compare (fork resultErrorModuleDResultEncoder << compile ctx rmvar) statuses
         |> Task.andThen (waitAndCollectCompileResults ctx exposedDict docsStatus rmvar)
 
 
@@ -1000,24 +1009,26 @@ waitAndCollectCompileResults :
     BuildContext
     -> Dict String ModuleName.Raw ()
     -> DocsStatus
-    -> MVar (Dict String ModuleName.Raw (MVar (Maybe DResult)))
-    -> Dict String ModuleName.Raw (MVar (Maybe DResult))
+    -> MVar (Dict String ModuleName.Raw (MVar (Result Error.Module DResult)))
+    -> Dict String ModuleName.Raw (MVar (Result Error.Module DResult))
     -> Task Never Dep
 waitAndCollectCompileResults ctx exposedDict docsStatus rmvar rmvars =
-    Utils.putMVar dictRawMVarMaybeDResultEncoder rmvar rmvars
-        |> Task.andThen (\_ -> Utils.mapTraverse identity compare (Utils.readMVar (BD.maybe dResultDecoder)) rmvars)
+    Utils.putMVar dictRawMVarResultErrorModuleDResultEncoder rmvar rmvars
+        |> Task.andThen (\_ -> Utils.mapTraverse identity compare (Utils.readMVar resultErrorModuleDResultDecoder) rmvars)
         |> Task.andThen (writePackageArtifacts ctx exposedDict docsStatus)
 
 
 {-| Write package artifacts to disk.
 -}
-writePackageArtifacts : BuildContext -> Dict String ModuleName.Raw () -> DocsStatus -> Dict String ModuleName.Raw (Maybe DResult) -> Task Never Dep
-writePackageArtifacts ctx exposedDict docsStatus maybeResults =
-    case Utils.sequenceDictMaybe identity compare maybeResults of
-        Nothing ->
-            reportBuildBroken ctx
-
-        Just results ->
+writePackageArtifacts : BuildContext -> Dict String ModuleName.Raw () -> DocsStatus -> Dict String ModuleName.Raw (Result Error.Module DResult) -> Task Never Dep
+writePackageArtifacts ctx exposedDict docsStatus resultDict =
+    let
+        ( errors, successes ) =
+            partitionResults resultDict
+    in
+    case errors of
+        [] ->
+            -- All succeeded, write artifacts
             let
                 path : String
                 path =
@@ -1029,11 +1040,11 @@ writePackageArtifacts ctx exposedDict docsStatus maybeResults =
 
                 ifaces : Dict String ModuleName.Raw I.DependencyInterface
                 ifaces =
-                    gatherInterfaces exposedDict results
+                    gatherInterfaces exposedDict successes
 
                 objects : Opt.GlobalGraph
                 objects =
-                    gatherObjects results
+                    gatherObjects successes
 
                 artifacts : Artifacts
                 artifacts =
@@ -1043,7 +1054,7 @@ writePackageArtifacts ctx exposedDict docsStatus maybeResults =
                 fingerprints =
                     EverySet.insert toComparableFingerprint ctx.fingerprint ctx.fingerprints
             in
-            writeDocs ctx.cache ctx.pkg ctx.vsn docsStatus results
+            writeDocs ctx.cache ctx.pkg ctx.vsn docsStatus successes
                 |> Task.andThen (\_ -> File.writeBinary artifactCacheEncoder path (ArtifactCache fingerprints artifacts))
                 |> Task.andThen
                     (\_ ->
@@ -1051,7 +1062,7 @@ writePackageArtifacts ctx exposedDict docsStatus maybeResults =
                             let
                                 typedObjects : TOpt.GlobalGraph
                                 typedObjects =
-                                    gatherTypedObjects results
+                                    gatherTypedObjects successes
                             in
                             File.writeBinary TOpt.globalGraphEncoder typedPath typedObjects
 
@@ -1060,6 +1071,71 @@ writePackageArtifacts ctx exposedDict docsStatus maybeResults =
                     )
                 |> Task.andThen (\_ -> Reporting.report ctx.key Reporting.DBuilt)
                 |> Task.map (\_ -> Ok artifacts)
+
+        firstErr :: restErrs ->
+            -- Some modules failed to compile
+            if ctx.showPackageErrors then
+                printPackageCompileErrors ctx.cache ctx.pkg ctx.vsn firstErr restErrs
+                    |> Task.andThen (\_ -> reportBuildBroken ctx)
+
+            else
+                reportBuildBroken ctx
+
+
+{-| Partition a dict of results into a list of errors and a dict of successes.
+Filters out "blocked" errors (those with empty source) since they're not real errors.
+-}
+partitionResults : Dict String ModuleName.Raw (Result Error.Module ok) -> ( List Error.Module, Dict String ModuleName.Raw ok )
+partitionResults dict =
+    Dict.foldl compare
+        (\k result ( errs, oks ) ->
+            case result of
+                Err e ->
+                    -- Only include errors with non-empty source (real errors, not blocked)
+                    if String.isEmpty e.source then
+                        ( errs, oks )
+
+                    else
+                        ( e :: errs, oks )
+
+                Ok v ->
+                    ( errs, Dict.insert identity k v oks )
+        )
+        ( [], Dict.empty )
+        dict
+
+
+{-| Print package compilation errors using the same format as local module errors.
+-}
+printPackageCompileErrors : Stuff.PackageCache -> Pkg.Name -> V.Version -> Error.Module -> List Error.Module -> Task Never ()
+printPackageCompileErrors cache pkg vsn firstErr restErrs =
+    let
+        -- The root path for rendering error locations
+        pkgRoot : String
+        pkgRoot =
+            Stuff.package cache pkg vsn ++ "/src"
+
+        -- Create the standard compiler error report
+        errorDoc : Doc.Doc
+        errorDoc =
+            Error.toDoc pkgRoot firstErr restErrs
+
+        -- Add package context footer
+        footer : Doc.Doc
+        footer =
+            Doc.vcat
+                [ Doc.fromChars ""
+                , Doc.dullyellow (Doc.fromChars "-- NOTE -----------------------------------------------------------------------")
+                , Doc.fromChars ""
+                , Doc.reflow ("The errors above occurred while compiling package: " ++ Pkg.toChars pkg ++ " " ++ V.toChars vsn)
+                , Doc.reflow "This is not an error in your code."
+                ]
+
+        fullDoc : Doc.Doc
+        fullDoc =
+            Doc.vcat [ errorDoc, footer ]
+    in
+    Help.toStderr fullDoc
 
 
 
@@ -1369,86 +1445,166 @@ type DResult
     | RKernelForeign
 
 
-compile : Pkg.Name -> Bool -> MVar (Dict String ModuleName.Raw (MVar (Maybe DResult))) -> Status -> Task Never (Maybe DResult)
-compile pkg needsTypedOpt mvar status =
+compile : BuildContext -> MVar (Dict String ModuleName.Raw (MVar (Result Error.Module DResult))) -> Status -> Task Never (Result Error.Module DResult)
+compile ctx mvar status =
     case status of
         SLocal docsStatus deps modul ->
-            Utils.readMVar moduleNameRawMVarMaybeDResultDecoder mvar
+            Utils.readMVar moduleNameRawMVarResultErrorModuleDResultDecoder mvar
                 |> Task.andThen
                     (\resultsDict ->
-                        Utils.mapTraverse identity compare (Utils.readMVar (BD.maybe dResultDecoder)) (Dict.intersection compare resultsDict deps)
+                        Utils.mapTraverse identity compare (Utils.readMVar resultErrorModuleDResultDecoder) (Dict.intersection compare resultsDict deps)
                             |> Task.andThen
-                                (\maybeResults ->
-                                    case Utils.sequenceDictMaybe identity compare maybeResults of
-                                        Just results ->
-                                            let
-                                                ifaces : Dict String ModuleName.Raw I.Interface
-                                                ifaces =
-                                                    Utils.mapMapMaybe identity compare getInterface results
-                                            in
-                                            if needsTypedOpt then
-                                                Compile.compileTyped pkg ifaces modul
-                                                    |> Task.map (handleTypedCompileResult pkg docsStatus)
+                                (\depResults ->
+                                    if hasAnyError depResults then
+                                        -- A dependency failed, so we can't compile this module.
+                                        -- We mark it as "blocked" with empty source (not a real error to report).
+                                        Task.succeed (Err { name = Src.getName modul, absolutePath = "", modificationTime = File.zeroTime, source = "", error = Error.BadSyntax (Syntax.ParseError (Syntax.ModuleBadEnd 0 0)) })
 
-                                            else
-                                                Compile.compile pkg ifaces modul
-                                                    |> Task.map (handleCompileResult pkg docsStatus)
+                                    else
+                                        case Utils.sequenceDictResult identity compare depResults of
+                                            Err _ ->
+                                                -- Should not happen since we checked hasAnyError above
+                                                Task.succeed (Err { name = Src.getName modul, absolutePath = "", modificationTime = File.zeroTime, source = "", error = Error.BadSyntax (Syntax.ParseError (Syntax.ModuleBadEnd 0 0)) })
 
-                                        Nothing ->
-                                            Task.succeed Nothing
+                                            Ok results ->
+                                                let
+                                                    ifaces : Dict String ModuleName.Raw I.Interface
+                                                    ifaces =
+                                                        Utils.mapMapMaybe identity compare getInterface results
+                                                in
+                                                if ctx.needsTypedOpt then
+                                                    Compile.compileTyped ctx.pkg ifaces modul
+                                                        |> Task.andThen (handleTypedCompileResult ctx modul docsStatus)
+
+                                                else
+                                                    Compile.compile ctx.pkg ifaces modul
+                                                        |> Task.andThen (handleCompileResult ctx modul docsStatus)
                                 )
                     )
 
         SForeign iface ->
-            Task.succeed (Just (RForeign iface))
+            Task.succeed (Ok (RForeign iface))
 
         SKernelLocal chunks ->
-            Task.succeed (Just (RKernelLocal chunks))
+            Task.succeed (Ok (RKernelLocal chunks))
 
         SKernelForeign ->
-            Task.succeed (Just RKernelForeign)
+            Task.succeed (Ok RKernelForeign)
+
+
+{-| Check if any result in the dict is an error.
+-}
+hasAnyError : Dict String ModuleName.Raw (Result e v) -> Bool
+hasAnyError dict =
+    Dict.foldl compare (\_ result acc -> acc || Result.Extra.isErr result) False dict
 
 
 {-| Handle result of normal compilation (without typed optimization).
+On error, reads the source file to construct a full error report.
 -}
-handleCompileResult : Pkg.Name -> DocsStatus -> Result e Compile.Artifacts -> Maybe DResult
-handleCompileResult pkg docsStatus result =
+handleCompileResult : BuildContext -> Src.Module -> DocsStatus -> Result Error.Error Compile.Artifacts -> Task Never (Result Error.Module DResult)
+handleCompileResult ctx modul docsStatus result =
     case result of
-        Err _ ->
-            Nothing
+        Err err ->
+            let
+                name : ModuleName.Raw
+                name =
+                    Src.getName modul
+
+                (Src.Module srcData) =
+                    modul
+
+                extension : String
+                extension =
+                    case srcData.syntaxVersion of
+                        SV.Elm ->
+                            ".elm"
+
+                        SV.Guida ->
+                            ".guida"
+
+                path : FilePath
+                path =
+                    Stuff.package ctx.cache ctx.pkg ctx.vsn ++ "/src/" ++ ModuleName.toFilePath name ++ extension
+            in
+            Task.map2
+                (\time source ->
+                    Err
+                        { name = name
+                        , absolutePath = path
+                        , modificationTime = time
+                        , source = source
+                        , error = err
+                        }
+                )
+                (File.getTime path)
+                (File.readUtf8 path)
 
         Ok (Compile.Artifacts canonical annotations objects) ->
             let
                 iface : I.Interface
                 iface =
-                    I.fromModule pkg canonical annotations
+                    I.fromModule ctx.pkg canonical annotations
 
                 docs : Maybe Docs.Module
                 docs =
                     makeDocs docsStatus canonical
             in
-            Just (RLocal iface objects Nothing docs)
+            Task.succeed (Ok (RLocal iface objects Nothing docs))
 
 
 {-| Handle result of typed compilation (with typed optimization for MLIR).
+On error, reads the source file to construct a full error report.
 -}
-handleTypedCompileResult : Pkg.Name -> DocsStatus -> Result e Compile.TypedArtifacts -> Maybe DResult
-handleTypedCompileResult pkg docsStatus result =
+handleTypedCompileResult : BuildContext -> Src.Module -> DocsStatus -> Result Error.Error Compile.TypedArtifacts -> Task Never (Result Error.Module DResult)
+handleTypedCompileResult ctx modul docsStatus result =
     case result of
-        Err _ ->
-            Nothing
+        Err err ->
+            let
+                name : ModuleName.Raw
+                name =
+                    Src.getName modul
+
+                (Src.Module srcData) =
+                    modul
+
+                extension : String
+                extension =
+                    case srcData.syntaxVersion of
+                        SV.Elm ->
+                            ".elm"
+
+                        SV.Guida ->
+                            ".guida"
+
+                path : FilePath
+                path =
+                    Stuff.package ctx.cache ctx.pkg ctx.vsn ++ "/src/" ++ ModuleName.toFilePath name ++ extension
+            in
+            Task.map2
+                (\time source ->
+                    Err
+                        { name = name
+                        , absolutePath = path
+                        , modificationTime = time
+                        , source = source
+                        , error = err
+                        }
+                )
+                (File.getTime path)
+                (File.readUtf8 path)
 
         Ok (Compile.TypedArtifacts data) ->
             let
                 iface : I.Interface
                 iface =
-                    I.fromModule pkg data.canonical data.annotations
+                    I.fromModule ctx.pkg data.canonical data.annotations
 
                 docs : Maybe Docs.Module
                 docs =
                     makeDocs docsStatus data.canonical
             in
-            Just (RLocal iface data.objects (Just data.typedObjects) docs)
+            Task.succeed (Ok (RLocal iface data.objects (Just data.typedObjects) docs))
 
 
 getInterface : DResult -> Maybe I.Interface
@@ -1767,6 +1923,49 @@ dictRawMVarMaybeDResultEncoder =
 moduleNameRawMVarMaybeDResultDecoder : Bytes.Decode.Decoder (Dict String ModuleName.Raw (MVar (Maybe DResult)))
 moduleNameRawMVarMaybeDResultDecoder =
     BD.assocListDict identity ModuleName.rawDecoder Utils.mVarDecoder
+
+
+dictRawMVarResultErrorModuleDResultEncoder : Dict String ModuleName.Raw (MVar (Result Error.Module DResult)) -> Bytes.Encode.Encoder
+dictRawMVarResultErrorModuleDResultEncoder =
+    BE.assocListDict compare ModuleName.rawEncoder Utils.mVarEncoder
+
+
+moduleNameRawMVarResultErrorModuleDResultDecoder : Bytes.Decode.Decoder (Dict String ModuleName.Raw (MVar (Result Error.Module DResult)))
+moduleNameRawMVarResultErrorModuleDResultDecoder =
+    BD.assocListDict identity ModuleName.rawDecoder Utils.mVarDecoder
+
+
+resultErrorModuleDResultEncoder : Result Error.Module DResult -> Bytes.Encode.Encoder
+resultErrorModuleDResultEncoder result =
+    case result of
+        Err errorModule ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
+                , Error.moduleEncoder errorModule
+                ]
+
+        Ok dResult ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
+                , dResultEncoder dResult
+                ]
+
+
+resultErrorModuleDResultDecoder : Bytes.Decode.Decoder (Result Error.Module DResult)
+resultErrorModuleDResultDecoder =
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
+            (\idx ->
+                case idx of
+                    0 ->
+                        Bytes.Decode.map Err Error.moduleDecoder
+
+                    1 ->
+                        Bytes.Decode.map Ok dResultDecoder
+
+                    _ ->
+                        Bytes.Decode.fail
+            )
 
 
 dResultEncoder : DResult -> Bytes.Encode.Encoder

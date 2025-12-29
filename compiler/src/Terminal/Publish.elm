@@ -303,7 +303,7 @@ verifyBuild root =
 loadDetailsAndBuildDocs : String -> BW.Scope -> Task Never (Result Exit.Publish Docs.Documentation)
 loadDetailsAndBuildDocs root scope =
     Task.run
-        (Task.eio Exit.PublishBadDetails (Details.load Reporting.silent scope root False)
+        (Task.eio Exit.PublishBadDetails (Details.load Reporting.silent scope root False False)
             |> Task.andThen (extractExposedAndBuildDocs root)
         )
 
@@ -522,7 +522,7 @@ verifyZipBuild root =
 loadDetailsAndVerifyZip : FilePath -> BW.Scope -> Task Never (Result Exit.Publish ())
 loadDetailsAndVerifyZip root scope =
     Task.run
-        (Task.eio (\_ -> Exit.PublishZipBadDetails) (Details.load Reporting.silent scope root False)
+        (Task.eio (\_ -> Exit.PublishZipBadDetails) (Details.load Reporting.silent scope root False False)
             |> Task.andThen (extractExposedAndBuildZip root)
         )
 

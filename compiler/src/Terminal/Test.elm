@@ -1241,7 +1241,7 @@ runMake root path =
     BW.withScope
         (\scope ->
             Task.run <|
-                (Task.eio Exit.TestBadDetails (Details.load style scope root False)
+                (Task.eio Exit.TestBadDetails (Details.load style scope root False False)
                     |> Task.andThen (buildAndGenerate root path)
                 )
         )
