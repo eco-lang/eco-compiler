@@ -11,8 +11,8 @@ This module transforms TypedCanonical AST (where every expression has its type)
 into TypedOptimized representation suitable for code generation. Each TOpt.Expr
 carries its canonical type.
 
-@docs Cycle
-@docs optimize, optimizePotentialTailCallDef
+@docs Cycle, Annotations
+@docs optimize, optimizePotentialTailCall
 @docs destructArgs
 
 -}
@@ -44,6 +44,12 @@ type alias Cycle =
     EverySet String Name.Name
 
 
+{-| Dictionary mapping variable names to their type annotations.
+
+Used to look up types during optimization for kernel function typing
+and other type-directed optimizations.
+
+-}
 type alias Annotations =
     Dict String Name Can.Annotation
 

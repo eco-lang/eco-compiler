@@ -32,6 +32,8 @@ during optimization.
 
 # Lookup
 
+@docs lookup, inferFromUsage
+
 -}
 
 import Compiler.AST.Canonical as Can

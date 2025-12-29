@@ -13,17 +13,17 @@ performs binary operator precedence resolution, and validates pattern bindings.
 
 # Results and Tracking
 
-@docs EResult, FreeLocals, Uses
+@docs EResult, FreeLocals, Uses, IdState
 
 
 # Canonicalization
 
-@docs gatherTypedArgs
+@docs canonicalizeWithIds, gatherTypedArgsWithIds
 
 
 # Validation
 
-@docs verifyBindings
+@docs verifyBindingsWithIds
 
 -}
 

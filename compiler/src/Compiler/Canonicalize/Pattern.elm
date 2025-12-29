@@ -19,10 +19,12 @@ in scope analysis.
 
 # Canonicalization
 
+@docs canonicalizeWithIds, traverseWithIds
+
 
 # Validation
 
-@docs verify
+@docs verify, verifyWithIds
 
 -}
 

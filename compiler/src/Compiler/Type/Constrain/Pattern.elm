@@ -26,7 +26,7 @@ preventing stack overflow on deeply nested patterns.
 
 # Constraint Generation
 
-@docs add, emptyState
+@docs add, addWithIds, emptyState
 
 -}
 
