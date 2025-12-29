@@ -753,22 +753,11 @@ toBinopStepWithIds currentState makeBinop ((Env.Binop rootBinopData) as rootOp) 
                     ( Binop.Right, Binop.Right ) ->
                         -- Right associative: compose makeBinop with toBinopWithIds
                         -- First apply inner (toBinopWithIds op expr), then outer (makeBinop)
-                        -- IMPORTANT: Capture makeBinop in a fresh variable before creating the lambda.
-                        -- This prevents a TCO-related closure bug where makeBinop becomes a mutable
-                        -- loop variable and the lambda accidentally calls itself.
-                        let
-                            outerMakeBinop =
-                                makeBinop
-
-                            composedMakeBinop : MakeBinopFn
-                            composedMakeBinop state right =
-                                let
-                                    ( inner, state1 ) =
-                                        toBinopWithIds op expr state right
-                                in
-                                outerMakeBinop state1 inner
-                        in
-                        toBinopStepWithIds currentState composedMakeBinop op rest final
+                        -- Use composeBinopStep helper to ensure JavaScript captures makeBinop's
+                        -- VALUE, not the variable reference. Without this, JavaScript's function-scoped
+                        -- `var` causes all closures to share the same variable, leading to infinite
+                        -- recursion when the loop variable is reassigned.
+                        toBinopStepWithIds currentState (composeBinopStep makeBinop op expr) op rest final
 
                     _ ->
                         ErrorWithIds rootOp op
@@ -793,6 +782,28 @@ toBinopWithIds (Env.Binop binopData) left =
         ( A.At region { id = id, node = Can.Binop binopData.op binopData.home binopData.name binopData.annotation left right }
         , newState
         )
+
+
+{-| Compose a binop step by wrapping an outer MakeBinopFn with an inner toBinopWithIds.
+
+This helper function is crucial for correct JavaScript code generation. When the Elm compiler
+generates a tail-recursive loop with closures, JavaScript's function-scoped `var` causes all
+closures in the loop to share the same variable binding. By extracting the composition into
+a separate function, we force JavaScript to capture the CURRENT VALUE of outerMakeBinop as
+a function parameter, rather than capturing a shared variable that gets overwritten.
+
+Without this pattern, the closures would all reference the same `outerMakeBinop` variable,
+which after the loop points to the last closure, causing infinite self-recursion.
+
+-}
+composeBinopStep : MakeBinopFn -> Env.Binop -> Can.Expr -> MakeBinopFn
+composeBinopStep outerMakeBinop op expr =
+    \state right ->
+        let
+            ( inner, state1 ) =
+                toBinopWithIds op expr state right
+        in
+        outerMakeBinop state1 inner
 
 
 {-| Canonicalize a let expression, detecting cycles and threading IdState.
