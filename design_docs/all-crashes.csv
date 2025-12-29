@@ -1,0 +1,120 @@
+filename,line_number,reason_for_crash
+Utils/Impure.elm,82,Unexpected BadUrl in HTTP request
+Utils/Impure.elm,85,Unexpected Timeout in HTTP request
+Utils/Impure.elm,88,Unexpected NetworkError in HTTP request
+Utils/Impure.elm,91,Unexpected BadStatus in HTTP response
+Utils/Impure.elm,102,Unexpected BadUrl in HTTP request
+Utils/Impure.elm,105,Unexpected Timeout in HTTP request
+Utils/Impure.elm,108,Unexpected NetworkError in HTTP request
+Utils/Impure.elm,111,Unexpected BadStatus in HTTP response
+Utils/Impure.elm,119,JSON decoding error in HTTP response
+Utils/Impure.elm,127,Unexpected BadUrl in HTTP request
+Utils/Impure.elm,130,Unexpected Timeout in HTTP request
+Utils/Impure.elm,133,Unexpected NetworkError in HTTP request
+Utils/Impure.elm,136,Unexpected BadStatus in HTTP response
+Utils/Impure.elm,144,Decoding bytes error in HTTP response
+Utils/Impure.elm,148,HTTP request failed with given URL
+Utils/Main.elm,303,Map.!: given key is not an element in the map
+Utils/Main.elm,315,Error: empty map has no maximal element
+Utils/Main.elm,339,Error: empty map has no minimal element
+Utils/Main.elm,618,maximum: empty structure
+Utils/Main.elm,658,foldl1: empty structure
+Utils/Main.elm,689,foldr1: empty structure
+Prelude.elm,29,Prelude.head: empty list
+Prelude.elm,41,Prelude.init: empty list
+Prelude.elm,53,Prelude.last: empty list
+Compiler/Parse/Primitives.elm,648,Error on unsafeIndex - index out of bounds
+Compiler/Parse/Shader.elm,216,Unreachable case - storage qualifier not Attribute/Uniform/Varying (should never happen due to extractInputs filter)
+Compiler/Reporting/Error/Json.elm,413,Region error in JSON error reporting
+Compiler/Optimize/Erased/Case.elm,86,Compiler bug: somehow created an empty decision tree
+Compiler/Optimize/Erased/DecisionTree.elm,430,Aliases should never reach testAtPath function
+Compiler/Optimize/Erased/DecisionTree.elm,662,Aliases should never reach isIrrelevantTo function
+Compiler/Optimize/Erased/DecisionTree.elm,702,Cannot choose the best of zero paths
+Compiler/Optimize/Erased/Port.elm,61,toEncoder: function type not allowed in ports
+Compiler/Optimize/Erased/Port.elm,64,toEncoder: type variable not allowed in ports
+Compiler/Optimize/Erased/Port.elm,94,toEncoder: bad custom type
+Compiler/Optimize/Erased/Port.elm,107,toEncoder: bad custom type
+Compiler/Optimize/Erased/Port.elm,110,toEncoder: bad custom type
+Compiler/Optimize/Erased/Port.elm,113,toEncoder: bad record
+Compiler/Optimize/Erased/Port.elm,280,Functions should not be allowed through input ports
+Compiler/Optimize/Erased/Port.elm,283,Type variables should not be allowed through input ports
+Compiler/Optimize/Erased/Port.elm,324,toDecoder: bad type
+Compiler/Optimize/Erased/Port.elm,327,toDecoder: bad record
+Compiler/Optimize/Typed/Names.elm,354,Local variable not in scope
+Compiler/Optimize/Typed/Case.elm,87,Compiler bug: somehow created an empty decision tree
+Compiler/Optimize/Typed/Port.elm,43,toEncoder: function type not allowed in ports
+Compiler/Optimize/Typed/Port.elm,46,toEncoder: type variable not allowed in ports
+Compiler/Optimize/Typed/Port.elm,84,toEncoder: bad custom type
+Compiler/Optimize/Typed/Port.elm,97,toEncoder: bad custom type
+Compiler/Optimize/Typed/Port.elm,100,toEncoder: bad custom type
+Compiler/Optimize/Typed/Port.elm,103,toEncoder: bad record
+Compiler/Optimize/Typed/Port.elm,330,Functions should not be allowed through input ports
+Compiler/Optimize/Typed/Port.elm,333,Type variables should not be allowed through input ports
+Compiler/Optimize/Typed/Port.elm,374,toDecoder: bad type
+Compiler/Optimize/Typed/Port.elm,377,toDecoder: bad record
+Compiler/Optimize/Typed/Expression.elm,99,Missing kernel type lookup in VarKernel optimization
+Compiler/Json/Decode.elm,447,Ran into (Json.Decode.oneOf []) - empty decoder list
+Compiler/Nitpick/PatternMatches.elm,685,Compiler bug: constructors and literals should never align in pattern match exhaustiveness checks
+Compiler/Nitpick/PatternMatches.elm,688,Compiler error: Empty matrices should not get specialized
+Compiler/Nitpick/PatternMatches.elm,709,Compiler bug: constructors and literals should never align in pattern match exhaustiveness checks
+Compiler/Nitpick/PatternMatches.elm,712,Compiler error: Empty matrices should not get specialized
+Compiler/Elm/Compiler/Type.elm,103,toDoc Lambda - unexpected lambda in type documentation
+Compiler/Elm/Interface.elm,194,Impossible exports discovered in restrictUnions
+Compiler/Elm/Kernel.elm,409,Cannot use `as` with kernel import
+Compiler/Elm/Kernel.elm,448,Kernel imports with dots need an alias
+Compiler/Elm/Kernel.elm,458,Cannot have `exposing (..)` in kernel code
+Compiler/Elm/Kernel.elm,474,Cannot have Maybe(..) syntax in kernel code header
+Compiler/Elm/Kernel.elm,477,Cannot use binops in kernel code
+Compiler/Generate/JavaScript.elm,876,Cannot have two modules with the same name
+Compiler/Generate/CodeGen/MLIR.elm,134,MLIR codegen: unresolved type variable - should have been instantiated
+Compiler/Generate/JavaScript/Expression.elm,1310,COMPILER BUG - there should never be tests on a tuple
+Compiler/Generate/JavaScript/Expression.elm,1341,COMPILER BUG - there should never be three tests on a boolean
+Compiler/Generate/JavaScript/Expression.elm,1344,COMPILER BUG - there should never be three tests on a list
+Compiler/Generate/JavaScript/Expression.elm,1347,COMPILER BUG - there should never be three tests on a list
+Compiler/Generate/JavaScript/Expression.elm,1350,COMPILER BUG - there should never be three tests on a tuple
+Compiler/Generate/JavaScript/Expression.elm,1396,COMPILER BUG - there should never be three tests on a list
+Compiler/Generate/JavaScript/Expression.elm,1399,COMPILER BUG - there should never be three tests on a list
+Compiler/Generate/JavaScript/Expression.elm,1402,COMPILER BUG - there should never be three tests on a list
+Compiler/Generate/JavaScript/Expression.elm,1405,COMPILER BUG - there should never be three tests on a list
+Compiler/AST/TypedCanonical.elm,240,Missing type for expr id
+Compiler/Canonicalize/Module.elm,239,Data.Graph.SCC should not allow empty CyclicSCC
+Compiler/Canonicalize/Environment/Foreign.elm,119,Kernel imports cannot use `as`
+Compiler/Type/Solve.elm,436,Compiler bug: type with unexpected rank (please report at elm/compiler issues)
+Compiler/Type/Type.elm,516,Cannot handle Error types in variableToCanType
+Compiler/Type/Type.elm,551,Used toAnnotation on a type that is not well-formed
+Compiler/Type/Type.elm,737,Used toErrorType on a type that is not well-formed
+Compiler/Type/UnionFind.elm,215,Unexpected pattern in union-find
+Compiler/Data/Name.elm,138,AssertionFailed in name handling
+Builder/Deps/Solver.elm,197,Compiler bug manifesting in Deps.Solver.addDeps
+Builder/Elm/Details.elm,1126,Compiler bug manifesting in Elm.Details.gatherInterfaces
+Builder/Build.elm,749,Mistakenly seeing private interface for package
+Builder/Build.elm,2386,Seems like guida-stuff/ is corrupted
+Builder/Build.elm,2405,Bad inside module name
+Builder/Build.elm,2408,Bad inside module name
+Builder/Build.elm,2411,Bad inside module name
+Common/Format/Cheapskate/Util.elm,166,unsafeTail called on empty list
+Common/Format/Cheapskate/Inlines.elm,350,parseInlines error
+Common/Format/Cheapskate/Inlines.elm,1001,autolink parse error
+Common/Format/Cheapskate/Parse.elm,397,Top level container is not Document
+Common/Format/Cheapskate/Parse.elm,510,Document container found inside Document
+Common/Format/Cheapskate/Parse.elm,885,Error parsing scanners
+Common/Format/Cheapskate/Parse.elm,927,Parse error in markdown processing
+Common/Format/Cheapskate/Parse.elm,1284,Exception: Prelude.read: no parse
+Common/Format/Box.elm,163,The list will contain at least line2first
+Common/Format/Box.elm,180,stack1: empty structure
+Common/Format/Render/Box.elm,1042,Union type without constructors
+Common/Format/Render/Box.elm,1712,List can't be empty
+Common/Format/Render/ElmStructure.elm,129,forceableSpaceSepOrStack1 with empty list
+Terminal/Repl.elm,749,Not implemented
+Terminal/Test.elm,352,Not implemented
+Terminal/Test.elm,392,addKernelTestChecking: no submatches found
+API/Make.elm,89,No main! - missing main function
+API/Make.elm,96,TODO - not yet implemented
+Data/Vector.elm,43,Data.Vector.unsafeLast: invalid value
+Data/Vector.elm,46,Data.Vector.unsafeLast: empty array
+Data/Vector/Mutable.elm,59,Data.Vector.read: invalid value
+Data/Vector/Mutable.elm,62,Data.Vector.read: could not find entry
+Data/IORef.elm,94,Data.IORef.readIORefWeight: could not find entry
+Data/IORef.elm,107,Data.IORef.readIORefPointInfo: could not find entry
+Data/IORef.elm,120,Data.IORef.readIORefDescriptor: could not find entry
+Data/IORef.elm,133,Data.IORef.readIORefMVector: could not find entry
