@@ -636,8 +636,8 @@ constrainWithIdsProg rtv (A.At region exprInfo) expected =
 
 {-| Generic path for Group B expressions.
 
-Allocates a synthetic exprVar, records it in NodeIds, and adds a CEqual
-constraint to unify it with the expected type.
+Allocates a synthetic exprVar, records it in NodeIds but does not add any solver constraints on it,
+so it will be totally unconstrained at the end of type checking.
 
 -}
 constrainGenericWithIdsProg : RigidTypeVar -> A.Region -> Can.ExprInfo -> E.Expected Type -> ProgS ExprIdState Constraint
@@ -648,22 +648,11 @@ constrainGenericWithIdsProg rtv region info expected =
                 let
                     exprId =
                         info.id
-
-                    exprType =
-                        VarN exprVar
                 in
                 Prog.opModifyS (NodeIds.recordNodeVar exprId exprVar)
                     |> Prog.andThenS
-                        (\() ->
-                            let
-                                category =
-                                    nodeToCategory info.node
-                            in
+                        (\_ ->
                             constrainNodeWithIdsProg rtv region info.node expected
-                                |> Prog.mapS
-                                    (\con ->
-                                        CAnd [ con, CEqual region category exprType expected ]
-                                    )
                         )
             )
 
