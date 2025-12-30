@@ -40,8 +40,10 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Nitpick.PatternMatches as PatternMatches
 import Compiler.Optimize.Erased.Module as Optimize
+import Compiler.Optimize.Typed.KernelTypes as KernelTypes
 import Compiler.Optimize.Typed.Module as TypedOptimize
 import Compiler.Reporting.Error as E
+import Compiler.Type.PostSolve as PostSolve
 import Compiler.Reporting.Render.Type.Localizer as Localizer
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Type.Constrain.Module as Type
@@ -144,14 +146,14 @@ compileTyped pkg ifaces modul =
                         Ok canonical ->
                             typeCheckTyped modul canonical
                                 |> Result.andThen
-                                    (\{ annotations, typedCanonical, nodeTypes } ->
+                                    (\{ annotations, typedCanonical, nodeTypes, kernelEnv } ->
                                         nitpick canonical
                                             |> Result.andThen
                                                 (\() ->
                                                     optimize modul annotations canonical
                                                         |> Result.andThen
                                                             (\objects ->
-                                                                typedOptimizeFromTyped modul annotations nodeTypes typedCanonical
+                                                                typedOptimizeFromTyped modul annotations nodeTypes kernelEnv typedCanonical
                                                                     |> Result.map
                                                                         (\typedObjects ->
                                                                             TypedArtifacts
@@ -210,6 +212,9 @@ This function extends the standard type checking to also build a TypedCanonical
 module where every expression is paired with its inferred type. This is useful
 for downstream phases that need access to per-expression type information.
 
+Also runs the PostSolve phase to fix Group B expression types and compute
+kernel function types for typed optimization.
+
 -}
 typeCheckTyped :
     Src.Module
@@ -220,6 +225,7 @@ typeCheckTyped :
             { annotations : Dict String Name Can.Annotation
             , typedCanonical : TCan.Module
             , nodeTypes : TCan.NodeTypes
+            , kernelEnv : KernelTypes.KernelTypeEnv
             }
 typeCheckTyped modul canonical =
     let
@@ -236,10 +242,22 @@ typeCheckTyped modul canonical =
             Err (E.BadTypes (Localizer.fromModule modul) errors)
 
         Ok { annotations, nodeTypes } ->
+            let
+                -- Run PostSolve to fix Group B types and compute kernel env
+                postSolveResult =
+                    PostSolve.postSolve annotations canonical nodeTypes
+
+                fixedNodeTypes =
+                    postSolveResult.nodeTypes
+
+                kernelEnv =
+                    postSolveResult.kernelEnv
+            in
             Ok
                 { annotations = annotations
-                , typedCanonical = TCan.fromCanonical canonical nodeTypes
-                , nodeTypes = nodeTypes
+                , typedCanonical = TCan.fromCanonical canonical fixedNodeTypes
+                , nodeTypes = fixedNodeTypes
+                , kernelEnv = kernelEnv
                 }
 
 
@@ -276,9 +294,9 @@ optimize modul annotations canonical =
 -- Performs typed optimization from a TypedCanonical module.
 
 
-typedOptimizeFromTyped : Src.Module -> Dict String Name.Name Can.Annotation -> TCan.NodeTypes -> TCan.Module -> Result E.Error TOpt.LocalGraph
-typedOptimizeFromTyped modul annotations nodeTypes tcanModule =
-    case Tuple.second (ReportingResult.run (TypedOptimize.optimizeTyped annotations nodeTypes tcanModule)) of
+typedOptimizeFromTyped : Src.Module -> Dict String Name.Name Can.Annotation -> TCan.NodeTypes -> KernelTypes.KernelTypeEnv -> TCan.Module -> Result E.Error TOpt.LocalGraph
+typedOptimizeFromTyped modul annotations nodeTypes kernelEnv tcanModule =
+    case Tuple.second (ReportingResult.run (TypedOptimize.optimizeTyped annotations nodeTypes kernelEnv tcanModule)) of
         Ok localGraph ->
             Ok localGraph
 

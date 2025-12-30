@@ -63,20 +63,11 @@ This is the main entry point for typed optimization. It takes a TypedCanonical
 module (where every expression already has its type), the expression type map
 for converting subexpressions, and produces a TypedOptimized.LocalGraph.
 
--}
-optimizeTyped : Annotations -> ExprTypes -> TCan.Module -> MResult i (List W.Warning) TOpt.LocalGraph
-optimizeTyped annotations exprTypes (TCan.Module tData) =
-    let
-        -- Phase 1: alias-based kernel types
-        aliasEnv : KernelTypes.KernelTypeEnv
-        aliasEnv =
-            KernelTypes.fromDecls annotations tData.decls
+The kernelEnv is computed by the PostSolve phase and passed in from the caller.
 
-        -- Phase 2: usage-based inference for unaliased kernels
-        kernelEnv : KernelTypes.KernelTypeEnv
-        kernelEnv =
-            KernelTypes.inferFromUsage tData.decls exprTypes aliasEnv
-    in
+-}
+optimizeTyped : Annotations -> ExprTypes -> KernelTypes.KernelTypeEnv -> TCan.Module -> MResult i (List W.Warning) TOpt.LocalGraph
+optimizeTyped annotations exprTypes kernelEnv (TCan.Module tData) =
     TOpt.LocalGraph
         { main = Nothing
         , nodes = Dict.empty

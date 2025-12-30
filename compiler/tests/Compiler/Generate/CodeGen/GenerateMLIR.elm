@@ -32,8 +32,10 @@ import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.CodeGen.MLIR as MLIR
 import Compiler.Generate.Mode as Mode
 import Compiler.Generate.Monomorphize as Monomorphize
+import Compiler.Optimize.Typed.KernelTypes as KernelTypes
 import Compiler.Optimize.Typed.Module as TypedOptimize
 import Compiler.Reporting.Annotation as A
+import Compiler.Type.PostSolve as PostSolve
 import Compiler.Reporting.Result as Result
 import Compiler.Type.Constrain.Module as Constrain
 import Compiler.Type.Solve as Solve
@@ -142,10 +144,20 @@ runWithIdsTypeCheck modul =
 runTypedOptimization : Dict String Name.Name Can.Annotation -> Dict Int Int Can.Type -> Can.Module -> Result String TOpt.LocalGraph
 runTypedOptimization annotations exprTypes canModule =
     let
+        -- Run PostSolve to fix Group B types and compute kernel env
+        postSolveResult =
+            PostSolve.postSolve annotations canModule exprTypes
+
+        fixedNodeTypes =
+            postSolveResult.nodeTypes
+
+        kernelEnv =
+            postSolveResult.kernelEnv
+
         typedModule =
-            TCan.fromCanonical canModule exprTypes
+            TCan.fromCanonical canModule fixedNodeTypes
     in
-    case Result.run (TypedOptimize.optimizeTyped annotations exprTypes typedModule) of
+    case Result.run (TypedOptimize.optimizeTyped annotations fixedNodeTypes kernelEnv typedModule) of
         ( _, Ok graph ) ->
             Ok graph
 
