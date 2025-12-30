@@ -549,26 +549,41 @@ optimizeTailExpr kernelEnv annotations exprTypes cycle rootName argNames resultT
                     )
 
         Can.Let def body ->
-            optimizeTail kernelEnv annotations exprTypes cycle rootName argNames resultType (TCan.toTypedExpr exprTypes body)
+            -- Add the let-bound variable to scope BEFORE optimizing the body
+            let
+                ( defName, defType ) =
+                    getDefNameAndType exprTypes def
+            in
+            Names.withVarTypes [ ( defName, defType ) ]
+                (optimizeTail kernelEnv annotations exprTypes cycle rootName argNames resultType (TCan.toTypedExpr exprTypes body))
                 |> Names.andThen (optimizeDef kernelEnv annotations exprTypes cycle def tipe)
 
         Can.LetRec defs body ->
+            -- For LetRec, all definitions are mutually recursive, so add all names to scope
+            let
+                defBindings =
+                    List.map (getDefNameAndType exprTypes) defs
+            in
             case defs of
                 [ def ] ->
-                    optimizePotentialTailCallDef kernelEnv annotations exprTypes cycle def
+                    Names.withVarTypes defBindings
+                        (optimizePotentialTailCallDef kernelEnv annotations exprTypes cycle def)
                         |> Names.andThen
                             (\tailCallDef ->
-                                optimizeTail kernelEnv annotations exprTypes cycle rootName argNames resultType (TCan.toTypedExpr exprTypes body)
+                                Names.withVarTypes defBindings
+                                    (optimizeTail kernelEnv annotations exprTypes cycle rootName argNames resultType (TCan.toTypedExpr exprTypes body))
                                     |> Names.map (\obody -> TOpt.Let tailCallDef obody tipe)
                             )
 
                 _ ->
-                    List.foldl
-                        (\def bod ->
-                            Names.andThen (optimizeDef kernelEnv annotations exprTypes cycle def tipe) bod
+                    Names.withVarTypes defBindings
+                        (List.foldl
+                            (\def bod ->
+                                Names.andThen (optimizeDef kernelEnv annotations exprTypes cycle def tipe) bod
+                            )
+                            (optimizeTail kernelEnv annotations exprTypes cycle rootName argNames resultType (TCan.toTypedExpr exprTypes body))
+                            defs
                         )
-                        (optimizeTail kernelEnv annotations exprTypes cycle rootName argNames resultType (TCan.toTypedExpr exprTypes body))
-                        defs
 
         Can.LetDestruct pattern boundExpr body ->
             destruct annotations pattern
