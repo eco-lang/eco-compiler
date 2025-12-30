@@ -26,6 +26,7 @@ module Compiler.AST.SourceBuilder exposing
     , pAlias
     , pAnything
     , pCons
+    , pCtor
     , pInt
     , pList
     , pRecord
@@ -375,6 +376,13 @@ pAlias pattern name =
     A.At A.zero (Src.PAlias (c1 pattern) (c1 (A.At A.zero name)))
 
 
+{-| Constructor pattern (e.g., Just x, Nothing).
+-}
+pCtor : Name -> List Src.Pattern -> Src.Pattern
+pCtor name args =
+    A.At A.zero (Src.PCtor A.zero name (List.map c1 args))
+
+
 
 -- ============================================================================
 -- DEFINITION BUILDERS
@@ -416,6 +424,23 @@ basicsImport =
         (c1 (A.At A.zero "Basics"))
         Nothing
         (c2 (Src.Open noComments noComments))
+
+
+{-| Import statement for Maybe exposing everything.
+-}
+maybeImport : Src.Import
+maybeImport =
+    Src.Import
+        (c1 (A.At A.zero "Maybe"))
+        Nothing
+        (c2 (Src.Open noComments noComments))
+
+
+{-| Standard imports for test modules.
+-}
+standardImports : List Src.Import
+standardImports =
+    [ basicsImport, maybeImport ]
 
 
 {-| Create a simple module with a single top-level definition.
@@ -515,7 +540,7 @@ makeModuleWithTypedDefs defs =
         , name = Just (A.At A.zero "Test")
         , exports = A.At A.zero (Src.Open noComments noComments)
         , docs = Src.NoDocs A.zero []
-        , imports = [ basicsImport ]
+        , imports = standardImports
         , values = values
         , unions = []
         , aliases = []

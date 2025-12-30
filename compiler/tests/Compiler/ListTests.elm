@@ -7,7 +7,9 @@ import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
+        , binopsExpr
         , callExpr
+        , caseExpr
         , charFuzzer
         , chrExpr
         , floatExpr
@@ -17,6 +19,7 @@ import Compiler.AST.SourceBuilder
         , listExpr
         , makeModule
         , makeModuleWithTypedDefs
+        , pCtor
         , pVar
         , recordExpr
         , strExpr
@@ -460,39 +463,152 @@ twoRandomLists expectFn ints1 ints2 =
 -- ============================================================================
 -- List Failure Tests
 -- ============================================================================
--- These tests exercise type generalization patterns that are known to fail
--- in elm/core List.elm.
--- They test functions with type annotations containing type variables
--- where the body uses those variables in higher-order contexts.
+-- These tests exercise the exact type generalization patterns that fail
+-- in elm/core List.elm. The function bodies are copied verbatim from List.elm.
 
 
-{-| Test suite for higher-order functions that require proper type generalization.
-These patterns match the failing functions in elm/core List.elm.
+{-| Test suite for exact List.elm functions that fail type checking.
 -}
 knownListFails : (Src.Module -> Expectation) -> String -> Test
 knownListFails expectFn condStr =
-    Test.describe ("Higher-order function patterns " ++ condStr)
-        [ Test.test ("Filter-like pattern with foldr " ++ condStr) (filterLikePattern expectFn)
+    Test.describe ("Exact List.elm functions " ++ condStr)
+        [ Test.test ("concatMap " ++ condStr) (testConcatMap expectFn)
+        , Test.test ("indexedMap " ++ condStr) (testIndexedMap expectFn)
+        , Test.test ("filter " ++ condStr) (testFilter expectFn)
+        , Test.test ("filterMap " ++ condStr) (testFilterMap expectFn)
         ]
 
 
-{-| Test: Pattern matching List.filter.
-
-myFilter : (a -> Bool) -> List a -> List a
-myFilter isGood list = myFoldr (\\x xs -> if isGood x then myCons x xs else xs) [] list
-
-This requires proper helper definitions too.
-
+{-| concatMap : (a -> List b) -> List a -> List b
+concatMap f list =
+concat (map f list)
 -}
-filterLikePattern : (Src.Module -> Expectation) -> (() -> Expectation)
-filterLikePattern expectFn _ =
+testConcatMap : (Src.Module -> Expectation) -> (() -> Expectation)
+testConcatMap expectFn _ =
     let
-        -- myFilter : (a -> Bool) -> List a -> List a
+        -- concatMap : (a -> List b) -> List a -> List b
+        concatMapType =
+            tLambda (tLambda (tVar "a") (tType "List" [ tVar "b" ]))
+                (tLambda (tType "List" [ tVar "a" ]) (tType "List" [ tVar "b" ]))
+
+        -- concat (map f list)
+        concatMapBody =
+            callExpr (varExpr "concat")
+                [ callExpr (varExpr "map") [ varExpr "f", varExpr "list" ] ]
+
+        -- concat : List (List a) -> List a
+        concatType =
+            tLambda (tType "List" [ tType "List" [ tVar "a" ] ])
+                (tType "List" [ tVar "a" ])
+
+        -- map : (a -> b) -> List a -> List b
+        mapType =
+            tLambda (tLambda (tVar "a") (tVar "b"))
+                (tLambda (tType "List" [ tVar "a" ]) (tType "List" [ tVar "b" ]))
+
+        modul =
+            makeModuleWithTypedDefs
+                [ { name = "concat"
+                  , args = [ pVar "xs" ]
+                  , tipe = concatType
+                  , body = listExpr []
+                  }
+                , { name = "map"
+                  , args = [ pVar "f", pVar "xs" ]
+                  , tipe = mapType
+                  , body = listExpr []
+                  }
+                , { name = "concatMap"
+                  , args = [ pVar "f", pVar "list" ]
+                  , tipe = concatMapType
+                  , body = concatMapBody
+                  }
+                ]
+    in
+    expectFn modul
+
+
+{-| indexedMap : (Int -> a -> b) -> List a -> List b
+indexedMap f xs =
+map2 f (range 0 (length xs - 1)) xs
+-}
+testIndexedMap : (Src.Module -> Expectation) -> (() -> Expectation)
+testIndexedMap expectFn _ =
+    let
+        -- indexedMap : (Int -> a -> b) -> List a -> List b
+        indexedMapType =
+            tLambda (tLambda (tType "Int" []) (tLambda (tVar "a") (tVar "b")))
+                (tLambda (tType "List" [ tVar "a" ]) (tType "List" [ tVar "b" ]))
+
+        -- map2 f (range 0 (length xs - 1)) xs
+        -- length xs - 1
+        lengthMinus1 =
+            binopsExpr
+                [ ( callExpr (varExpr "length") [ varExpr "xs" ], "-" ) ]
+                (intExpr 1)
+
+        -- range 0 (length xs - 1)
+        rangeCall =
+            callExpr (varExpr "range") [ intExpr 0, lengthMinus1 ]
+
+        indexedMapBody =
+            callExpr (varExpr "map2") [ varExpr "f", rangeCall, varExpr "xs" ]
+
+        -- map2 : (a -> b -> c) -> List a -> List b -> List c
+        map2Type =
+            tLambda (tLambda (tVar "a") (tLambda (tVar "b") (tVar "c")))
+                (tLambda (tType "List" [ tVar "a" ])
+                    (tLambda (tType "List" [ tVar "b" ]) (tType "List" [ tVar "c" ]))
+                )
+
+        -- range : Int -> Int -> List Int
+        rangeType =
+            tLambda (tType "Int" []) (tLambda (tType "Int" []) (tType "List" [ tType "Int" [] ]))
+
+        -- length : List a -> Int
+        lengthType =
+            tLambda (tType "List" [ tVar "a" ]) (tType "Int" [])
+
+        modul =
+            makeModuleWithTypedDefs
+                [ { name = "map2"
+                  , args = [ pVar "f", pVar "xs", pVar "ys" ]
+                  , tipe = map2Type
+                  , body = listExpr []
+                  }
+                , { name = "range"
+                  , args = [ pVar "lo", pVar "hi" ]
+                  , tipe = rangeType
+                  , body = listExpr []
+                  }
+                , { name = "length"
+                  , args = [ pVar "xs" ]
+                  , tipe = lengthType
+                  , body = intExpr 0
+                  }
+                , { name = "indexedMap"
+                  , args = [ pVar "f", pVar "xs" ]
+                  , tipe = indexedMapType
+                  , body = indexedMapBody
+                  }
+                ]
+    in
+    expectFn modul
+
+
+{-| filter : (a -> Bool) -> List a -> List a
+filter isGood list =
+foldr (\\x xs -> if isGood x then cons x xs else xs) [] list
+-}
+testFilter : (Src.Module -> Expectation) -> (() -> Expectation)
+testFilter expectFn _ =
+    let
+        -- filter : (a -> Bool) -> List a -> List a
         filterType =
             tLambda (tLambda (tVar "a") (tType "Bool" []))
                 (tLambda (tType "List" [ tVar "a" ]) (tType "List" [ tVar "a" ]))
 
-        -- The lambda: \x xs -> if isGood x then cons x xs else xs
+        -- \x xs -> if isGood x then cons x xs else xs
         innerIf =
             ifExpr
                 (callExpr (varExpr "isGood") [ varExpr "x" ])
@@ -502,7 +618,7 @@ filterLikePattern expectFn _ =
         theLambda =
             lambdaExpr [ pVar "x", pVar "xs" ] innerIf
 
-        -- myFilter isGood list = foldr theLambda [] list
+        -- foldr (\x xs -> ...) [] list
         filterBody =
             callExpr (varExpr "foldr") [ theLambda, listExpr [], varExpr "list" ]
 
@@ -520,25 +636,103 @@ filterLikePattern expectFn _ =
 
         modul =
             makeModuleWithTypedDefs
-                [ -- Stub for foldr (just returns the initial value for simplicity)
-                  { name = "foldr"
+                [ { name = "foldr"
                   , args = [ pVar "f", pVar "init", pVar "xs" ]
                   , tipe = foldrType
                   , body = varExpr "init"
                   }
-
-                -- Stub for cons
                 , { name = "cons"
                   , args = [ pVar "x", pVar "xs" ]
                   , tipe = consType
                   , body = varExpr "xs"
                   }
-
-                -- The actual filter function
-                , { name = "myFilter"
+                , { name = "filter"
                   , args = [ pVar "isGood", pVar "list" ]
                   , tipe = filterType
                   , body = filterBody
+                  }
+                ]
+    in
+    expectFn modul
+
+
+{-| filterMap : (a -> Maybe b) -> List a -> List b
+filterMap f xs =
+foldr (maybeCons f) [] xs
+
+where maybeCons is a helper:
+maybeCons : (a -> Maybe b) -> a -> List b -> List b
+maybeCons f mx xs =
+case f mx of
+Nothing -> xs
+Just x -> cons x xs
+
+-}
+testFilterMap : (Src.Module -> Expectation) -> (() -> Expectation)
+testFilterMap expectFn _ =
+    let
+        -- filterMap : (a -> Maybe b) -> List a -> List b
+        filterMapType =
+            tLambda (tLambda (tVar "a") (tType "Maybe" [ tVar "b" ]))
+                (tLambda (tType "List" [ tVar "a" ]) (tType "List" [ tVar "b" ]))
+
+        -- foldr (maybeCons f) [] xs
+        filterMapBody =
+            callExpr (varExpr "foldr")
+                [ callExpr (varExpr "maybeCons") [ varExpr "f" ]
+                , listExpr []
+                , varExpr "xs"
+                ]
+
+        -- maybeCons : (a -> Maybe b) -> a -> List b -> List b
+        maybeConsType =
+            tLambda (tLambda (tVar "a") (tType "Maybe" [ tVar "b" ]))
+                (tLambda (tVar "a")
+                    (tLambda (tType "List" [ tVar "b" ]) (tType "List" [ tVar "b" ]))
+                )
+
+        -- case f mx of Nothing -> xs; Just x -> cons x xs
+        maybeConsBody =
+            caseExpr (callExpr (varExpr "f") [ varExpr "mx" ])
+                [ ( pCtor "Nothing" [], varExpr "xs" )
+                , ( pCtor "Just" [ pVar "x" ]
+                  , callExpr (varExpr "cons") [ varExpr "x", varExpr "xs" ]
+                  )
+                ]
+
+        -- foldr : (a -> b -> b) -> b -> List a -> b
+        foldrType =
+            tLambda (tLambda (tVar "a") (tLambda (tVar "b") (tVar "b")))
+                (tLambda (tVar "b")
+                    (tLambda (tType "List" [ tVar "a" ]) (tVar "b"))
+                )
+
+        -- cons : a -> List a -> List a
+        consType =
+            tLambda (tVar "a")
+                (tLambda (tType "List" [ tVar "a" ]) (tType "List" [ tVar "a" ]))
+
+        modul =
+            makeModuleWithTypedDefs
+                [ { name = "foldr"
+                  , args = [ pVar "f", pVar "init", pVar "xs" ]
+                  , tipe = foldrType
+                  , body = varExpr "init"
+                  }
+                , { name = "cons"
+                  , args = [ pVar "x", pVar "xs" ]
+                  , tipe = consType
+                  , body = varExpr "xs"
+                  }
+                , { name = "maybeCons"
+                  , args = [ pVar "f", pVar "mx", pVar "xs" ]
+                  , tipe = maybeConsType
+                  , body = maybeConsBody
+                  }
+                , { name = "filterMap"
+                  , args = [ pVar "f", pVar "xs" ]
+                  , tipe = filterMapType
+                  , body = filterMapBody
                   }
                 ]
     in

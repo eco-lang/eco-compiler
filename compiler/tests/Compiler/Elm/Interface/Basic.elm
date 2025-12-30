@@ -8,6 +8,8 @@ import Compiler.AST.Utils.Binop as Binop
 import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.Interface as I
+import Compiler.Elm.Interface.List as ListInterface
+import Compiler.Elm.Interface.Maybe as MaybeInterface
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Data.Map as Dict exposing (Dict)
@@ -19,39 +21,52 @@ import Data.Map as Dict exposing (Dict)
 -- ============================================================================
 
 
-{-| The Basics module interface containing Bool (True/False) and standard operators.
+{-| The Basics module interface containing Bool (True/False), Int, and standard operators.
 -}
 basicsInterface : I.Interface
 basicsInterface =
     I.Interface
         { home = Pkg.core
         , values = Dict.empty
-        , unions = boolUnion
+        , unions = basicsUnions
         , aliases = Dict.empty
         , binops = standardBinops
         }
 
 
-{-| Bool type with True and False constructors.
+{-| Basic unions: Bool (True/False) and Int.
 -}
-boolUnion : Dict String Name I.Union
-boolUnion =
+basicsUnions : Dict String Name I.Union
+basicsUnions =
     let
+        -- Bool type
         falseC =
             Can.Ctor { name = "False", index = Index.first, numArgs = 0, args = [] }
 
         trueC =
             Can.Ctor { name = "True", index = Index.second, numArgs = 0, args = [] }
 
-        union =
+        boolUnion =
             Can.Union
                 { vars = []
                 , alts = [ falseC, trueC ]
                 , numAlts = 2
                 , opts = Can.Enum
                 }
+
+        -- Int type (opaque, no constructors exposed)
+        intUnion =
+            Can.Union
+                { vars = []
+                , alts = []
+                , numAlts = 0
+                , opts = Can.Normal
+                }
     in
-    Dict.singleton identity "Bool" (I.OpenUnion union)
+    Dict.fromList identity
+        [ ( "Bool", I.OpenUnion boolUnion )
+        , ( "Int", I.ClosedUnion intUnion )
+        ]
 
 
 {-| Collect all free type variables from a canonical type.
@@ -194,8 +209,12 @@ standardBinops =
         ]
 
 
-{-| Test environment with Basics module interface.
+{-| Test environment with Basics, List, and Maybe module interfaces.
 -}
 testIfaces : Dict String Name I.Interface
 testIfaces =
-    Dict.singleton identity "Basics" basicsInterface
+    Dict.fromList identity
+        [ ( "Basics", basicsInterface )
+        , ( "List", ListInterface.listInterface )
+        , ( "Maybe", MaybeInterface.maybeInterface )
+        ]
