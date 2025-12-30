@@ -25,6 +25,7 @@ import Compiler.Reporting.Error.Canonicalize as CanError
 import Compiler.Reporting.Error.Type as TypeError
 import Compiler.Reporting.Result as Result
 import Compiler.Type.Constrain.Module as Constrain
+import Compiler.Type.Error as T
 import Compiler.Type.Solve as Solve
 import Data.Map as Dict exposing (Dict)
 import Expect
@@ -144,22 +145,37 @@ expectEquivalentTypeChecking srcModule =
                                 ++ (Set.toList nodeTypeIds |> List.map String.fromInt |> String.join ", ")
                             )
 
-                ( Err _, Err _ ) ->
+                ( Err standardErrors, Err withIdsErrors ) ->
                     -- Both failed - this is acceptable (they agree)
-                    Expect.fail "Unexpected solver failure on both paths."
-
-                ( Ok _, Err errorCount ) ->
                     Expect.fail
-                        ("Standard path succeeded but WithIds path failed with: "
-                            ++ String.fromInt errorCount
-                            ++ " error(s)"
+                        ("Unexpected solver failure on both paths.\nStandard errors: "
+                            ++ (NE.toList standardErrors |> List.map typeErrorToString |> String.join "; ")
+                            ++ "\nWithIds errors: "
+                            ++ (NE.toList withIdsErrors |> List.map typeErrorToString |> String.join "; ")
                         )
 
-                ( Err errorCount, Ok _ ) ->
+                ( Ok _, Err withIdsErrors ) ->
+                    let
+                        errorList =
+                            NE.toList withIdsErrors
+                    in
                     Expect.fail
-                        ("WithIds path succeeded but standard path failed with: "
-                            ++ String.fromInt errorCount
-                            ++ " error(s)"
+                        ("Standard path succeeded but WithIds path failed with "
+                            ++ String.fromInt (List.length errorList)
+                            ++ " error(s):\n"
+                            ++ (List.map typeErrorToString errorList |> String.join "\n")
+                        )
+
+                ( Err standardErrors, Ok _ ) ->
+                    let
+                        errorList =
+                            NE.toList standardErrors
+                    in
+                    Expect.fail
+                        ("WithIds path succeeded but standard path failed with "
+                            ++ String.fromInt (List.length errorList)
+                            ++ " error(s):\n"
+                            ++ (List.map typeErrorToString errorList |> String.join "\n")
                         )
 
 
@@ -206,22 +222,37 @@ expectEquivalentTypeCheckingCanonical modul =
                         ++ (Set.toList nodeTypeIds |> List.map String.fromInt |> String.join ", ")
                     )
 
-        ( Err _, Err _ ) ->
+        ( Err standardErrors, Err withIdsErrors ) ->
             -- Both failed - this is acceptable (they agree)
-            Expect.fail "Unexpected solver failure on both paths."
-
-        ( Ok _, Err errorCount ) ->
             Expect.fail
-                ("Standard path succeeded but WithIds path failed with: "
-                    ++ String.fromInt errorCount
-                    ++ " error(s)"
+                ("Unexpected solver failure on both paths.\nStandard errors: "
+                    ++ (NE.toList standardErrors |> List.map typeErrorToString |> String.join "; ")
+                    ++ "\nWithIds errors: "
+                    ++ (NE.toList withIdsErrors |> List.map typeErrorToString |> String.join "; ")
                 )
 
-        ( Err errorCount, Ok _ ) ->
+        ( Ok _, Err withIdsErrors ) ->
+            let
+                errorList =
+                    NE.toList withIdsErrors
+            in
             Expect.fail
-                ("WithIds path succeeded but standard path failed with: "
-                    ++ String.fromInt errorCount
-                    ++ " error(s)"
+                ("Standard path succeeded but WithIds path failed with "
+                    ++ String.fromInt (List.length errorList)
+                    ++ " error(s):\n"
+                    ++ (List.map typeErrorToString errorList |> String.join "\n")
+                )
+
+        ( Err standardErrors, Ok _ ) ->
+            let
+                errorList =
+                    NE.toList standardErrors
+            in
+            Expect.fail
+                ("WithIds path succeeded but standard path failed with "
+                    ++ String.fromInt (List.length errorList)
+                    ++ " error(s):\n"
+                    ++ (List.map typeErrorToString errorList |> String.join "\n")
                 )
 
 
@@ -369,26 +400,191 @@ runWithIdsPathWithErrors modul =
 typeErrorToString : TypeError.Error -> String
 typeErrorToString error =
     case error of
-        TypeError.BadExpr region category _ _ ->
+        TypeError.BadExpr region category actualType expectedType ->
             "BadExpr at "
                 ++ regionToString region
                 ++ " ("
                 ++ categoryToString category
-                ++ ")"
+                ++ ") actual="
+                ++ tTypeToString actualType
+                ++ " expected="
+                ++ tExpectedToString expectedType
 
-        TypeError.BadPattern region pCategory _ _ ->
+        TypeError.BadPattern region pCategory actualType expectedType ->
             "BadPattern at "
                 ++ regionToString region
                 ++ " ("
                 ++ pCategoryToString pCategory
-                ++ ")"
+                ++ ") actual="
+                ++ tTypeToString actualType
+                ++ " expected="
+                ++ tPExpectedToString expectedType
 
-        TypeError.InfiniteType region name _ ->
+        TypeError.InfiniteType region name tType ->
             "InfiniteType at "
                 ++ regionToString region
                 ++ " (var: "
                 ++ name
-                ++ ")"
+                ++ ") type="
+                ++ tTypeToString tType
+
+
+{-| Convert a T.Type to a string for debugging.
+-}
+tTypeToString : T.Type -> String
+tTypeToString tType =
+    case tType of
+        T.Lambda arg result rest ->
+            let
+                args =
+                    arg :: result :: rest
+            in
+            "(" ++ String.join " -> " (List.map tTypeToString args) ++ ")"
+
+        T.Infinite ->
+            "Infinite"
+
+        T.Error ->
+            "Error"
+
+        T.FlexVar name ->
+            name
+
+        T.FlexSuper _ name ->
+            name
+
+        T.RigidVar name ->
+            name
+
+        T.RigidSuper _ name ->
+            name
+
+        T.Type _ name args ->
+            if List.isEmpty args then
+                name
+
+            else
+                name ++ " " ++ String.join " " (List.map tTypeToString args)
+
+        T.Record fields ext ->
+            let
+                fieldStrs =
+                    Dict.foldr compare (\k v acc -> (k ++ ": " ++ tTypeToString v) :: acc) [] fields
+
+                extStr =
+                    case ext of
+                        T.Closed ->
+                            ""
+
+                        T.FlexOpen name ->
+                            " | " ++ name
+
+                        T.RigidOpen name ->
+                            " | " ++ name
+            in
+            "{ " ++ String.join ", " fieldStrs ++ extStr ++ " }"
+
+        T.Unit ->
+            "()"
+
+        T.Tuple a b cs ->
+            "( " ++ String.join ", " (List.map tTypeToString (a :: b :: cs)) ++ " )"
+
+        T.Alias _ name args _ ->
+            name ++ " " ++ String.join " " (List.map (\( _, t ) -> tTypeToString t) args)
+
+
+{-| Convert a TypeError.Expected to a string for debugging.
+-}
+tExpectedToString : TypeError.Expected T.Type -> String
+tExpectedToString expected =
+    case expected of
+        TypeError.NoExpectation tType ->
+            "NoExpect(" ++ tTypeToString tType ++ ")"
+
+        TypeError.FromContext _ context tType ->
+            "FromContext(" ++ contextToString context ++ ", " ++ tTypeToString tType ++ ")"
+
+        TypeError.FromAnnotation name _ _ tType ->
+            "FromAnnotation(" ++ name ++ ", " ++ tTypeToString tType ++ ")"
+
+
+{-| Convert a TypeError.PExpected to a string for debugging.
+-}
+tPExpectedToString : TypeError.PExpected T.Type -> String
+tPExpectedToString expected =
+    case expected of
+        TypeError.PNoExpectation tType ->
+            "PNoExpect(" ++ tTypeToString tType ++ ")"
+
+        TypeError.PFromContext _ pContext tType ->
+            "PFromContext(" ++ pContextToString pContext ++ ", " ++ tTypeToString tType ++ ")"
+
+
+{-| Convert a PContext to a string.
+-}
+pContextToString : TypeError.PContext -> String
+pContextToString pContext =
+    case pContext of
+        TypeError.PTypedArg name _ ->
+            "PTypedArg(" ++ name ++ ")"
+
+        TypeError.PCaseMatch _ ->
+            "PCaseMatch"
+
+        TypeError.PCtorArg name _ ->
+            "PCtorArg(" ++ name ++ ")"
+
+        TypeError.PListEntry _ ->
+            "PListEntry"
+
+        TypeError.PTail ->
+            "PTail"
+
+
+{-| Convert a Context to a string.
+-}
+contextToString : TypeError.Context -> String
+contextToString context =
+    case context of
+        TypeError.ListEntry _ ->
+            "ListEntry"
+
+        TypeError.Negate ->
+            "Negate"
+
+        TypeError.OpLeft _ ->
+            "OpLeft"
+
+        TypeError.OpRight _ ->
+            "OpRight"
+
+        TypeError.IfCondition ->
+            "IfCondition"
+
+        TypeError.IfBranch _ ->
+            "IfBranch"
+
+        TypeError.CaseBranch _ ->
+            "CaseBranch"
+
+        TypeError.CallArity _ _ ->
+            "CallArity"
+
+        TypeError.CallArg _ _ ->
+            "CallArg"
+
+        TypeError.RecordAccess _ _ _ _ ->
+            "RecordAccess"
+
+        TypeError.RecordUpdateKeys _ ->
+            "RecordUpdateKeys"
+
+        TypeError.RecordUpdateValue _ ->
+            "RecordUpdateValue"
+
+        TypeError.Destructure ->
+            "Destructure"
 
 
 {-| Convert a region to a string for debugging.
@@ -672,40 +868,23 @@ pCategoriesEquivalent pCat1 pCat2 =
 
 
 {-| Run the standard constraint generation and solving path.
+Returns actual errors instead of just a count.
 -}
-runStandardPath : Can.Module -> IO.IO (Result Int (Dict String Name.Name Can.Annotation))
+runStandardPath : Can.Module -> IO.IO (Result (NE.Nonempty TypeError.Error) (Dict String Name.Name Can.Annotation))
 runStandardPath modul =
     Constrain.constrain modul
         |> IO.andThen Solve.run
-        |> IO.map
-            (\result ->
-                case result of
-                    Ok annotations ->
-                        Ok annotations
-
-                    Err (NE.Nonempty _ rest) ->
-                        Err (1 + List.length rest)
-            )
 
 
 {-| Run the WithIds constraint generation and solving path.
-Returns both annotations and the nodeTypes map.
+Returns both annotations and the nodeTypes map, or actual errors.
 -}
-runWithIdsPath : Can.Module -> IO.IO (Result Int { annotations : Dict String Name.Name Can.Annotation, nodeTypes : Dict Int Int Can.Type })
+runWithIdsPath : Can.Module -> IO.IO (Result (NE.Nonempty TypeError.Error) { annotations : Dict String Name.Name Can.Annotation, nodeTypes : Dict Int Int Can.Type })
 runWithIdsPath modul =
     Constrain.constrainWithIds modul
         |> IO.andThen
             (\( constraint, nodeVars ) ->
                 Solve.runWithIds constraint nodeVars
-            )
-        |> IO.map
-            (\result ->
-                case result of
-                    Ok data ->
-                        Ok data
-
-                    Err (NE.Nonempty _ rest) ->
-                        Err (1 + List.length rest)
             )
 
 
