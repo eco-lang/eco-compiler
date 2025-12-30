@@ -528,6 +528,12 @@ postSolveLetType exprId body nodeTypes0 kernel0 =
 
 
 {-| Handle Call expressions with special logic for kernel usage inference.
+
+IMPORTANT: When the callee is a VarKernel, we must NOT recurse into it first,
+because we need to infer its type from the call before we can assign it.
+We handle VarKernel specially: recurse into args only, infer the kernel type,
+then update both kernelEnv and the VarKernel node's type in nodeTypes.
+
 -}
 postSolveCall :
     Dict String Name Can.Annotation
@@ -538,48 +544,72 @@ postSolveCall :
     -> KernelTypes.KernelTypeEnv
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
 postSolveCall annotations exprId func args nodeTypes0 kernel0 =
-    let
-        -- First post-solve func and args
-        ( nodeTypes1, kernel1 ) =
-            postSolveExpr annotations func nodeTypes0 kernel0
-
-        ( nodeTypes2, kernel2 ) =
-            List.foldl
-                (\arg ( nt, ke ) -> postSolveExpr annotations arg nt ke)
-                ( nodeTypes1, kernel1 )
-                args
-    in
-    -- Check if func is VarKernel for usage-based inference
+    -- Check if func is VarKernel BEFORE recursing
     case func of
         A.At _ funcInfo ->
             case funcInfo.node of
                 Can.VarKernel home name ->
-                    -- Direct kernel call: infer full function type from args and result
+                    -- Direct kernel call: DON'T recurse into func (it's VarKernel)
+                    -- Only recurse into args
                     let
+                        ( nodeTypes1, kernel1 ) =
+                            List.foldl
+                                (\arg ( nt, ke ) -> postSolveExpr annotations arg nt ke)
+                                ( nodeTypes0, kernel0 )
+                                args
+
+                        -- Get arg types
                         argTypes =
                             List.map
                                 (\arg ->
                                     case arg of
                                         A.At _ info ->
-                                            Dict.get Basics.identity info.id nodeTypes2
+                                            Dict.get Basics.identity info.id nodeTypes1
                                                 |> Maybe.withDefault (Can.TVar "a")
                                 )
                                 args
 
                         -- The call's result type is already in nodeTypes from solver (Group A)
                         callResultType =
-                            Dict.get Basics.identity exprId nodeTypes2
+                            Dict.get Basics.identity exprId nodeTypes1
                                 |> Maybe.withDefault (Can.TVar "result")
 
+                        -- Build the full function type for this kernel
                         candidateType =
                             KernelTypes.buildFunctionType argTypes callResultType
 
-                        kernel3 =
-                            KernelTypes.insertFirstUsage home name candidateType kernel2
+                        -- Add to kernel env (first-usage-wins)
+                        kernel2 =
+                            KernelTypes.insertFirstUsage home name candidateType kernel1
+
+                        -- Now update the VarKernel node's type in nodeTypes
+                        -- Use the inferred type (or look up from kernel2 which now has it)
+                        kernelNodeType =
+                            case KernelTypes.lookup home name kernel2 of
+                                Just t ->
+                                    t
+
+                                Nothing ->
+                                    -- Should never happen since we just inserted it
+                                    candidateType
+
+                        nodeTypes2 =
+                            Dict.insert Basics.identity funcInfo.id kernelNodeType nodeTypes1
                     in
-                    ( nodeTypes2, kernel3 )
+                    ( nodeTypes2, kernel2 )
 
                 _ ->
+                    -- Non-kernel callee: recurse into both func and args normally
+                    let
+                        ( nodeTypes1, kernel1 ) =
+                            postSolveExpr annotations func nodeTypes0 kernel0
+
+                        ( nodeTypes2, kernel2 ) =
+                            List.foldl
+                                (\arg ( nt, ke ) -> postSolveExpr annotations arg nt ke)
+                                ( nodeTypes1, kernel1 )
+                                args
+                    in
                     ( nodeTypes2, kernel2 )
 
 
