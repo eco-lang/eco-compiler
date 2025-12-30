@@ -583,15 +583,71 @@ constrainWithIds rtv expr expected state =
 
 
 {-| DSL version of constrainWithIds for stack safety.
+
+This function dispatches to specialized helpers based on expression type:
+
+  - Group A expressions (those with natural result variables) record their
+    existing result var and avoid creating an extra exprVar + CEqual.
+  - Group B expressions (without natural result variables) use the generic
+    path that allocates a synthetic exprVar.
+
 -}
 constrainWithIdsProg : RigidTypeVar -> Can.Expr -> E.Expected Type -> ProgS ExprIdState Constraint
 constrainWithIdsProg rtv (A.At region exprInfo) expected =
+    case exprInfo.node of
+        -- Group A: Use specialized helpers that record the natural result var
+        Can.Int _ ->
+            constrainIntWithIdsProg region exprInfo.id expected
+
+        Can.Negate expr ->
+            constrainNegateWithIdsProg rtv region exprInfo.id expr expected
+
+        Can.Binop op _ _ annotation leftExpr rightExpr ->
+            constrainBinopWithIdsProg rtv region exprInfo.id op annotation leftExpr rightExpr expected
+
+        Can.Call func args ->
+            constrainCallWithIdsProg rtv region exprInfo.id func args expected
+
+        Can.If branches finally ->
+            constrainIfWithIdsProg rtv region exprInfo.id branches finally expected
+
+        Can.Case expr branches ->
+            constrainCaseWithIdsProg rtv region exprInfo.id expr branches expected
+
+        Can.Access expr (A.At accessRegion field) ->
+            constrainAccessWithIdsProg rtv region exprInfo.id expr accessRegion field expected
+
+        Can.Update expr fields ->
+            constrainUpdateWithIdsProg rtv region exprInfo.id expr fields expected
+
+        -- Special case: VarKernel has no constraint but still needs to be tracked
+        Can.VarKernel _ _ ->
+            Prog.opMkFlexVarS
+                |> Prog.andThenS
+                    (\exprVar ->
+                        Prog.opModifyS (NodeIds.recordNodeVar exprInfo.id exprVar)
+                            |> Prog.mapS (\() -> CTrue)
+                    )
+
+        -- Group B: Use generic path with extra exprVar
+        _ ->
+            constrainGenericWithIdsProg rtv region exprInfo expected
+
+
+{-| Generic path for Group B expressions.
+
+Allocates a synthetic exprVar, records it in NodeIds, and adds a CEqual
+constraint to unify it with the expected type.
+
+-}
+constrainGenericWithIdsProg : RigidTypeVar -> A.Region -> Can.ExprInfo -> E.Expected Type -> ProgS ExprIdState Constraint
+constrainGenericWithIdsProg rtv region info expected =
     Prog.opMkFlexVarS
         |> Prog.andThenS
             (\exprVar ->
                 let
                     exprId =
-                        exprInfo.id
+                        info.id
 
                     exprType =
                         VarN exprVar
@@ -599,21 +655,15 @@ constrainWithIdsProg rtv (A.At region exprInfo) expected =
                 Prog.opModifyS (NodeIds.recordNodeVar exprId exprVar)
                     |> Prog.andThenS
                         (\() ->
-                            case exprInfo.node of
-                                Can.VarKernel _ _ ->
-                                    -- Preserve old semantics: kernel vars impose no constraint
-                                    Prog.pureS CTrue
-
-                                _ ->
-                                    let
-                                        category =
-                                            nodeToCategory exprInfo.node
-                                    in
-                                    constrainNodeWithIdsProg rtv region exprInfo.node expected
-                                        |> Prog.mapS
-                                            (\con ->
-                                                CAnd [ con, CEqual region category exprType expected ]
-                                            )
+                            let
+                                category =
+                                    nodeToCategory info.node
+                            in
+                            constrainNodeWithIdsProg rtv region info.node expected
+                                |> Prog.mapS
+                                    (\con ->
+                                        CAnd [ con, CEqual region category exprType expected ]
+                                    )
                         )
             )
 
@@ -713,6 +763,108 @@ nodeToCategory node =
             Shader
 
 
+
+-- ====== Group A Specialized Helpers ======
+--
+-- These helpers handle expressions that have a natural "result variable".
+-- They record that variable directly in NodeIds instead of creating a
+-- synthetic exprVar, avoiding an extra CEqual constraint.
+
+
+{-| Group A helper for Int literals.
+
+Records the flex number var as the expression's type.
+
+-}
+constrainIntWithIdsProg : A.Region -> Int -> E.Expected Type -> ProgS ExprIdState Constraint
+constrainIntWithIdsProg region exprId expected =
+    Prog.opMkFlexNumberS
+        |> Prog.andThenS
+            (\var ->
+                Prog.opModifyS (NodeIds.recordNodeVar exprId var)
+                    |> Prog.mapS
+                        (\() ->
+                            Type.exists [ var ] (CEqual region E.Number (VarN var) expected)
+                        )
+            )
+
+
+{-| Group A helper for Negate expressions.
+
+Records the numberVar as the expression's type.
+
+-}
+constrainNegateWithIdsProg : RigidTypeVar -> A.Region -> Int -> Can.Expr -> E.Expected Type -> ProgS ExprIdState Constraint
+constrainNegateWithIdsProg rtv region exprId expr expected =
+    Prog.opMkFlexNumberS
+        |> Prog.andThenS
+            (\numberVar ->
+                let
+                    numberType : Type
+                    numberType =
+                        VarN numberVar
+                in
+                Prog.opModifyS (NodeIds.recordNodeVar exprId numberVar)
+                    |> Prog.andThenS
+                        (\() ->
+                            constrainWithIdsProg rtv expr (FromContext region Negate numberType)
+                                |> Prog.mapS
+                                    (\numberCon ->
+                                        let
+                                            negateCon : Constraint
+                                            negateCon =
+                                                CEqual region E.Number numberType expected
+                                        in
+                                        Type.exists [ numberVar ] (CAnd [ numberCon, negateCon ])
+                                    )
+                        )
+            )
+
+
+{-| Group A helper for Access expressions (record.field).
+
+Records the fieldVar as the expression's type.
+
+-}
+constrainAccessWithIdsProg : RigidTypeVar -> A.Region -> Int -> Can.Expr -> A.Region -> Name.Name -> E.Expected Type -> ProgS ExprIdState Constraint
+constrainAccessWithIdsProg rtv region exprId expr accessRegion field expected =
+    Prog.opMkFlexVarS
+        |> Prog.andThenS
+            (\extVar ->
+                Prog.opMkFlexVarS
+                    |> Prog.andThenS
+                        (\fieldVar ->
+                            Prog.opModifyS (NodeIds.recordNodeVar exprId fieldVar)
+                                |> Prog.andThenS
+                                    (\() ->
+                                        let
+                                            extType : Type
+                                            extType =
+                                                VarN extVar
+
+                                            fieldType : Type
+                                            fieldType =
+                                                VarN fieldVar
+
+                                            recordType : Type
+                                            recordType =
+                                                RecordN (Dict.singleton identity field fieldType) extType
+
+                                            context : Context
+                                            context =
+                                                RecordAccess (A.toRegion expr) (getAccessName expr) accessRegion field
+                                        in
+                                        constrainWithIdsProg rtv expr (FromContext region context recordType)
+                                            |> Prog.mapS
+                                                (\recordCon ->
+                                                    Type.exists [ fieldVar, extVar ]
+                                                        (CAnd [ recordCon, CEqual region (Access field) fieldType expected ])
+                                                )
+                                    )
+                        )
+            )
+
+
 {-| DSL version of constrainNodeWithIds for stack safety.
 -}
 constrainNodeWithIdsProg : RigidTypeVar -> A.Region -> Can.Expr_ -> E.Expected Type -> ProgS ExprIdState Constraint
@@ -745,12 +897,10 @@ constrainNodeWithIdsProg rtv region node expected =
         Can.Chr _ ->
             Prog.pureS (CEqual region Char Type.char expected)
 
+        -- Group A expressions are handled directly by constrainWithIdsProg.
+        -- These cases are unreachable but required for exhaustive matching.
         Can.Int _ ->
-            Prog.opMkFlexNumberS
-                |> Prog.mapS
-                    (\var ->
-                        Type.exists [ var ] (CEqual region E.Number (VarN var) expected)
-                    )
+            Prog.pureS CTrue
 
         Can.Float _ ->
             Prog.pureS (CEqual region Float Type.float expected)
@@ -758,41 +908,23 @@ constrainNodeWithIdsProg rtv region node expected =
         Can.List elements ->
             constrainListWithIdsProg rtv region elements expected
 
-        Can.Negate expr ->
-            Prog.opMkFlexNumberS
-                |> Prog.andThenS
-                    (\numberVar ->
-                        let
-                            numberType : Type
-                            numberType =
-                                VarN numberVar
-                        in
-                        constrainWithIdsProg rtv expr (FromContext region Negate numberType)
-                            |> Prog.mapS
-                                (\numberCon ->
-                                    let
-                                        negateCon : Constraint
-                                        negateCon =
-                                            CEqual region E.Number numberType expected
-                                    in
-                                    Type.exists [ numberVar ] (CAnd [ numberCon, negateCon ])
-                                )
-                    )
+        Can.Negate _ ->
+            Prog.pureS CTrue
 
-        Can.Binop op _ _ annotation leftExpr rightExpr ->
-            constrainBinopWithIdsProg rtv region op annotation leftExpr rightExpr expected
+        Can.Binop _ _ _ _ _ _ ->
+            Prog.pureS CTrue
 
         Can.Lambda args body ->
             constrainLambdaWithIdsProg rtv region args body expected
 
-        Can.Call func args ->
-            constrainCallWithIdsProg rtv region func args expected
+        Can.Call _ _ ->
+            Prog.pureS CTrue
 
-        Can.If branches finally ->
-            constrainIfWithIdsProg rtv region branches finally expected
+        Can.If _ _ ->
+            Prog.pureS CTrue
 
-        Can.Case expr branches ->
-            constrainCaseWithIdsProg rtv region expr branches expected
+        Can.Case _ _ ->
+            Prog.pureS CTrue
 
         Can.Let def body ->
             constrainWithIdsProg rtv body expected
@@ -830,40 +962,13 @@ constrainNodeWithIdsProg rtv region node expected =
                                 )
                     )
 
-        Can.Access expr (A.At accessRegion field) ->
-            Prog.opMkFlexVarS
-                |> Prog.andThenS
-                    (\extVar ->
-                        Prog.opMkFlexVarS
-                            |> Prog.andThenS
-                                (\fieldVar ->
-                                    let
-                                        extType : Type
-                                        extType =
-                                            VarN extVar
+        Can.Access _ _ ->
+            -- Group A: handled by constrainAccessWithIdsProg
+            Prog.pureS CTrue
 
-                                        fieldType : Type
-                                        fieldType =
-                                            VarN fieldVar
-
-                                        recordType : Type
-                                        recordType =
-                                            RecordN (Dict.singleton identity field fieldType) extType
-
-                                        context : Context
-                                        context =
-                                            RecordAccess (A.toRegion expr) (getAccessName expr) accessRegion field
-                                    in
-                                    constrainWithIdsProg rtv expr (FromContext region context recordType)
-                                        |> Prog.mapS
-                                            (\recordCon ->
-                                                Type.exists [ fieldVar, extVar ] (CAnd [ recordCon, CEqual region (Access field) fieldType expected ])
-                                            )
-                                )
-                    )
-
-        Can.Update expr fields ->
-            constrainUpdateWithIdsProg rtv region expr fields expected
+        Can.Update _ _ ->
+            -- Group A: handled by constrainUpdateWithIdsProg
+            Prog.pureS CTrue
 
         Can.Record fields ->
             constrainRecordWithIdsProg rtv region fields expected
@@ -918,10 +1023,13 @@ constrainShaderWithIdsProg region (Shader.Types attributes uniforms varyings) ex
             )
 
 
-{-| DSL version of constrainBinopWithIds.
+{-| Group A helper for Binop expressions.
+
+Records the answerVar as the expression's type.
+
 -}
-constrainBinopWithIdsProg : RigidTypeVar -> A.Region -> Name.Name -> Can.Annotation -> Can.Expr -> Can.Expr -> E.Expected Type -> ProgS ExprIdState Constraint
-constrainBinopWithIdsProg rtv region op annotation leftExpr rightExpr expected =
+constrainBinopWithIdsProg : RigidTypeVar -> A.Region -> Int -> Name.Name -> Can.Annotation -> Can.Expr -> Can.Expr -> E.Expected Type -> ProgS ExprIdState Constraint
+constrainBinopWithIdsProg rtv region exprId op annotation leftExpr rightExpr expected =
     Prog.opMkFlexVarS
         |> Prog.andThenS
             (\leftVar ->
@@ -931,41 +1039,45 @@ constrainBinopWithIdsProg rtv region op annotation leftExpr rightExpr expected =
                             Prog.opMkFlexVarS
                                 |> Prog.andThenS
                                     (\answerVar ->
-                                        let
-                                            leftType : Type
-                                            leftType =
-                                                VarN leftVar
-
-                                            rightType : Type
-                                            rightType =
-                                                VarN rightVar
-
-                                            answerType : Type
-                                            answerType =
-                                                VarN answerVar
-
-                                            binopType : Type
-                                            binopType =
-                                                Type.funType leftType (Type.funType rightType answerType)
-
-                                            opCon : Constraint
-                                            opCon =
-                                                CForeign region op annotation (NoExpectation binopType)
-                                        in
-                                        constrainWithIdsProg rtv leftExpr (FromContext region (OpLeft op) leftType)
+                                        Prog.opModifyS (NodeIds.recordNodeVar exprId answerVar)
                                             |> Prog.andThenS
-                                                (\leftCon ->
-                                                    constrainWithIdsProg rtv rightExpr (FromContext region (OpRight op) rightType)
-                                                        |> Prog.mapS
-                                                            (\rightCon ->
-                                                                Type.exists [ leftVar, rightVar, answerVar ]
-                                                                    (CAnd
-                                                                        [ opCon
-                                                                        , leftCon
-                                                                        , rightCon
-                                                                        , CEqual region (CallResult (OpName op)) answerType expected
-                                                                        ]
-                                                                    )
+                                                (\() ->
+                                                    let
+                                                        leftType : Type
+                                                        leftType =
+                                                            VarN leftVar
+
+                                                        rightType : Type
+                                                        rightType =
+                                                            VarN rightVar
+
+                                                        answerType : Type
+                                                        answerType =
+                                                            VarN answerVar
+
+                                                        binopType : Type
+                                                        binopType =
+                                                            Type.funType leftType (Type.funType rightType answerType)
+
+                                                        opCon : Constraint
+                                                        opCon =
+                                                            CForeign region op annotation (NoExpectation binopType)
+                                                    in
+                                                    constrainWithIdsProg rtv leftExpr (FromContext region (OpLeft op) leftType)
+                                                        |> Prog.andThenS
+                                                            (\leftCon ->
+                                                                constrainWithIdsProg rtv rightExpr (FromContext region (OpRight op) rightType)
+                                                                    |> Prog.mapS
+                                                                        (\rightCon ->
+                                                                            Type.exists [ leftVar, rightVar, answerVar ]
+                                                                                (CAnd
+                                                                                    [ opCon
+                                                                                    , leftCon
+                                                                                    , rightCon
+                                                                                    , CEqual region (CallResult (OpName op)) answerType expected
+                                                                                    ]
+                                                                                )
+                                                                        )
                                                             )
                                                 )
                                     )
@@ -1014,10 +1126,14 @@ constrainListEntriesWithIdsProg rtv region tipe index entries acc =
                     )
 
 
-{-| DSL version of constrainIfWithIds.
+{-| Group A helper for If expressions.
+
+For unannotated If expressions, records branchVar as the expression's type.
+For annotated If expressions, allocates a synthetic exprVar (Group B behavior).
+
 -}
-constrainIfWithIdsProg : RigidTypeVar -> A.Region -> List ( Can.Expr, Can.Expr ) -> Can.Expr -> E.Expected Type -> ProgS ExprIdState Constraint
-constrainIfWithIdsProg rtv region branches final expected =
+constrainIfWithIdsProg : RigidTypeVar -> A.Region -> Int -> List ( Can.Expr, Can.Expr ) -> Can.Expr -> E.Expected Type -> ProgS ExprIdState Constraint
+constrainIfWithIdsProg rtv region exprId branches final expected =
     let
         boolExpect : Expected Type
         boolExpect =
@@ -1031,31 +1147,49 @@ constrainIfWithIdsProg rtv region branches final expected =
             (\condCons ->
                 case expected of
                     FromAnnotation name arity _ tipe ->
-                        constrainIndexedExprsWithIdsProg rtv exprs (\index -> FromAnnotation name arity (TypedIfBranch index) tipe) Index.first []
-                            |> Prog.mapS
-                                (\branchCons ->
-                                    CAnd (CAnd condCons :: branchCons)
+                        -- Annotated case: Group B behavior - allocate synthetic exprVar
+                        Prog.opMkFlexVarS
+                            |> Prog.andThenS
+                                (\exprVar ->
+                                    Prog.opModifyS (NodeIds.recordNodeVar exprId exprVar)
+                                        |> Prog.andThenS
+                                            (\() ->
+                                                constrainIndexedExprsWithIdsProg rtv exprs (\index -> FromAnnotation name arity (TypedIfBranch index) tipe) Index.first []
+                                                    |> Prog.mapS
+                                                        (\branchCons ->
+                                                            CAnd
+                                                                [ CAnd condCons
+                                                                , CAnd branchCons
+                                                                , CEqual region If (VarN exprVar) expected
+                                                                ]
+                                                        )
+                                            )
                                 )
 
                     _ ->
+                        -- Unannotated case: Group A behavior - record branchVar
                         Prog.opMkFlexVarS
                             |> Prog.andThenS
                                 (\branchVar ->
-                                    let
-                                        branchType : Type
-                                        branchType =
-                                            VarN branchVar
-                                    in
-                                    constrainIndexedExprsWithIdsProg rtv exprs (\index -> FromContext region (IfBranch index) branchType) Index.first []
-                                        |> Prog.mapS
-                                            (\branchCons ->
-                                                Type.exists [ branchVar ]
-                                                    (CAnd
-                                                        [ CAnd condCons
-                                                        , CAnd branchCons
-                                                        , CEqual region If branchType expected
-                                                        ]
-                                                    )
+                                    Prog.opModifyS (NodeIds.recordNodeVar exprId branchVar)
+                                        |> Prog.andThenS
+                                            (\() ->
+                                                let
+                                                    branchType : Type
+                                                    branchType =
+                                                        VarN branchVar
+                                                in
+                                                constrainIndexedExprsWithIdsProg rtv exprs (\index -> FromContext region (IfBranch index) branchType) Index.first []
+                                                    |> Prog.mapS
+                                                        (\branchCons ->
+                                                            Type.exists [ branchVar ]
+                                                                (CAnd
+                                                                    [ CAnd condCons
+                                                                    , CAnd branchCons
+                                                                    , CEqual region If branchType expected
+                                                                    ]
+                                                                )
+                                                        )
                                             )
                                 )
             )
@@ -1093,46 +1227,53 @@ constrainIndexedExprsWithIdsProg rtv exprs mkExpected index acc =
                     )
 
 
-{-| DSL version of constrainCaseWithIds.
+{-| Group A helper for Case expressions.
+
+Records the bodyVar as the expression's type.
+
 -}
-constrainCaseWithIdsProg : RigidTypeVar -> A.Region -> Can.Expr -> List Can.CaseBranch -> Expected Type -> ProgS ExprIdState Constraint
-constrainCaseWithIdsProg rtv region expr branches expected =
+constrainCaseWithIdsProg : RigidTypeVar -> A.Region -> Int -> Can.Expr -> List Can.CaseBranch -> Expected Type -> ProgS ExprIdState Constraint
+constrainCaseWithIdsProg rtv region exprId expr branches expected =
     Prog.opMkFlexVarS
         |> Prog.andThenS
             (\ptrnVar ->
                 Prog.opMkFlexVarS
                     |> Prog.andThenS
                         (\bodyVar ->
-                            let
-                                ptrnType : Type
-                                ptrnType =
-                                    VarN ptrnVar
-
-                                bodyType : Type
-                                bodyType =
-                                    VarN bodyVar
-
-                                exprExpect : Expected Type
-                                exprExpect =
-                                    NoExpectation ptrnType
-
-                                bodyExpect : Index.ZeroBased -> Expected Type
-                                bodyExpect index =
-                                    FromContext region (CaseBranch index) bodyType
-                            in
-                            constrainWithIdsProg rtv expr exprExpect
+                            Prog.opModifyS (NodeIds.recordNodeVar exprId bodyVar)
                                 |> Prog.andThenS
-                                    (\exprCon ->
-                                        constrainCaseBranchesWithIdsProg rtv region ptrnType branches bodyExpect Index.first []
-                                            |> Prog.mapS
-                                                (\branchCons ->
-                                                    Type.exists [ ptrnVar, bodyVar ]
-                                                        (CAnd
-                                                            [ exprCon
-                                                            , CAnd branchCons
-                                                            , CEqual region Case bodyType expected
-                                                            ]
-                                                        )
+                                    (\() ->
+                                        let
+                                            ptrnType : Type
+                                            ptrnType =
+                                                VarN ptrnVar
+
+                                            bodyType : Type
+                                            bodyType =
+                                                VarN bodyVar
+
+                                            exprExpect : Expected Type
+                                            exprExpect =
+                                                NoExpectation ptrnType
+
+                                            bodyExpect : Index.ZeroBased -> Expected Type
+                                            bodyExpect index =
+                                                FromContext region (CaseBranch index) bodyType
+                                        in
+                                        constrainWithIdsProg rtv expr exprExpect
+                                            |> Prog.andThenS
+                                                (\exprCon ->
+                                                    constrainCaseBranchesWithIdsProg rtv region ptrnType branches bodyExpect Index.first []
+                                                        |> Prog.mapS
+                                                            (\branchCons ->
+                                                                Type.exists [ ptrnVar, bodyVar ]
+                                                                    (CAnd
+                                                                        [ exprCon
+                                                                        , CAnd branchCons
+                                                                        , CEqual region Case bodyType expected
+                                                                        ]
+                                                                    )
+                                                            )
                                                 )
                                     )
                         )
@@ -1213,10 +1354,13 @@ constrainLambdaWithIdsProg rtv region args body expected =
             )
 
 
-{-| DSL version of constrainCallWithIds.
+{-| Group A helper for Call expressions.
+
+Records the resultVar as the expression's type.
+
 -}
-constrainCallWithIdsProg : RigidTypeVar -> A.Region -> Can.Expr -> List Can.Expr -> E.Expected Type -> ProgS ExprIdState Constraint
-constrainCallWithIdsProg rtv region ((A.At funcRegion _) as func) args expected =
+constrainCallWithIdsProg : RigidTypeVar -> A.Region -> Int -> Can.Expr -> List Can.Expr -> E.Expected Type -> ProgS ExprIdState Constraint
+constrainCallWithIdsProg rtv region exprId ((A.At funcRegion _) as func) args expected =
     let
         maybeName : MaybeName
         maybeName =
@@ -1228,38 +1372,42 @@ constrainCallWithIdsProg rtv region ((A.At funcRegion _) as func) args expected 
                 Prog.opMkFlexVarS
                     |> Prog.andThenS
                         (\resultVar ->
-                            let
-                                funcType : Type
-                                funcType =
-                                    VarN funcVar
-
-                                resultType : Type
-                                resultType =
-                                    VarN resultVar
-                            in
-                            constrainWithIdsProg rtv func (E.NoExpectation funcType)
+                            Prog.opModifyS (NodeIds.recordNodeVar exprId resultVar)
                                 |> Prog.andThenS
-                                    (\funcCon ->
-                                        constrainCallArgsWithIdsProg rtv region maybeName Index.first args [] [] []
-                                            |> Prog.mapS
-                                                (\( argVars, argTypes, argCons ) ->
-                                                    let
-                                                        arityType : Type
-                                                        arityType =
-                                                            List.foldr FunN resultType argTypes
+                                    (\() ->
+                                        let
+                                            funcType : Type
+                                            funcType =
+                                                VarN funcVar
 
-                                                        category : Category
-                                                        category =
-                                                            CallResult maybeName
-                                                    in
-                                                    Type.exists (funcVar :: resultVar :: argVars)
-                                                        (CAnd
-                                                            [ funcCon
-                                                            , CEqual funcRegion category funcType (FromContext region (CallArity maybeName (List.length args)) arityType)
-                                                            , CAnd argCons
-                                                            , CEqual region category resultType expected
-                                                            ]
-                                                        )
+                                            resultType : Type
+                                            resultType =
+                                                VarN resultVar
+                                        in
+                                        constrainWithIdsProg rtv func (E.NoExpectation funcType)
+                                            |> Prog.andThenS
+                                                (\funcCon ->
+                                                    constrainCallArgsWithIdsProg rtv region maybeName Index.first args [] [] []
+                                                        |> Prog.mapS
+                                                            (\( argVars, argTypes, argCons ) ->
+                                                                let
+                                                                    arityType : Type
+                                                                    arityType =
+                                                                        List.foldr FunN resultType argTypes
+
+                                                                    category : Category
+                                                                    category =
+                                                                        CallResult maybeName
+                                                                in
+                                                                Type.exists (funcVar :: resultVar :: argVars)
+                                                                    (CAnd
+                                                                        [ funcCon
+                                                                        , CEqual funcRegion category funcType (FromContext region (CallArity maybeName (List.length args)) arityType)
+                                                                        , CAnd argCons
+                                                                        , CEqual region category resultType expected
+                                                                        ]
+                                                                    )
+                                                            )
                                                 )
                                     )
                         )
@@ -1353,10 +1501,13 @@ constrainFieldsWithIdsProg rtv fields acc =
                     )
 
 
-{-| DSL version of constrainUpdateWithIds.
+{-| Group A helper for Update expressions (record update).
+
+Records the recordVar as the expression's type.
+
 -}
-constrainUpdateWithIdsProg : RigidTypeVar -> A.Region -> Can.Expr -> Dict String (A.Located Name.Name) Can.FieldUpdate -> Expected Type -> ProgS ExprIdState Constraint
-constrainUpdateWithIdsProg rtv region expr locatedFields expected =
+constrainUpdateWithIdsProg : RigidTypeVar -> A.Region -> Int -> Can.Expr -> Dict String (A.Located Name.Name) Can.FieldUpdate -> Expected Type -> ProgS ExprIdState Constraint
+constrainUpdateWithIdsProg rtv region exprId expr locatedFields expected =
     let
         updateList : List ( Name.Name, Can.FieldUpdate )
         updateList =
@@ -1372,48 +1523,52 @@ constrainUpdateWithIdsProg rtv region expr locatedFields expected =
                 Prog.opMkFlexVarS
                     |> Prog.andThenS
                         (\recordVar ->
-                            let
-                                recordType : Type
-                                recordType =
-                                    VarN recordVar
-                            in
-                            constrainUpdateFieldsWithIdsProg rtv region updateList []
+                            Prog.opModifyS (NodeIds.recordNodeVar exprId recordVar)
                                 |> Prog.andThenS
-                                    (\fieldConstraints ->
+                                    (\() ->
                                         let
-                                            fieldVars : List IO.Variable
-                                            fieldVars =
-                                                List.map (\( _, ( v, _, _ ) ) -> v) fieldConstraints
-
-                                            fieldTypes : Dict String Name.Name Type
-                                            fieldTypes =
-                                                List.foldl
-                                                    (\( name, ( _, t, _ ) ) acc -> Dict.insert identity name t acc)
-                                                    Dict.empty
-                                                    fieldConstraints
-
-                                            fieldCons : List Constraint
-                                            fieldCons =
-                                                List.map (\( _, ( _, _, c ) ) -> c) fieldConstraints
-
-                                            fieldsType : Type
-                                            fieldsType =
-                                                RecordN fieldTypes (VarN extVar)
-
-                                            -- NOTE: fieldsTypeCon is separate so that Error propagates better
-                                            fieldsTypeCon : Constraint
-                                            fieldsTypeCon =
-                                                CEqual region Record recordType (NoExpectation fieldsType)
-
-                                            recordCon : Constraint
-                                            recordCon =
-                                                CEqual region Record recordType expected
+                                            recordType : Type
+                                            recordType =
+                                                VarN recordVar
                                         in
-                                        constrainWithIdsProg rtv expr (FromContext region (RecordUpdateKeys fields) recordType)
-                                            |> Prog.mapS
-                                                (\exprCon ->
-                                                    Type.exists (recordVar :: extVar :: fieldVars)
-                                                        (CAnd (fieldsTypeCon :: exprCon :: recordCon :: fieldCons))
+                                        constrainUpdateFieldsWithIdsProg rtv region updateList []
+                                            |> Prog.andThenS
+                                                (\fieldConstraints ->
+                                                    let
+                                                        fieldVars : List IO.Variable
+                                                        fieldVars =
+                                                            List.map (\( _, ( v, _, _ ) ) -> v) fieldConstraints
+
+                                                        fieldTypes : Dict String Name.Name Type
+                                                        fieldTypes =
+                                                            List.foldl
+                                                                (\( name, ( _, t, _ ) ) acc -> Dict.insert identity name t acc)
+                                                                Dict.empty
+                                                                fieldConstraints
+
+                                                        fieldCons : List Constraint
+                                                        fieldCons =
+                                                            List.map (\( _, ( _, _, c ) ) -> c) fieldConstraints
+
+                                                        fieldsType : Type
+                                                        fieldsType =
+                                                            RecordN fieldTypes (VarN extVar)
+
+                                                        -- NOTE: fieldsTypeCon is separate so that Error propagates better
+                                                        fieldsTypeCon : Constraint
+                                                        fieldsTypeCon =
+                                                            CEqual region Record recordType (NoExpectation fieldsType)
+
+                                                        recordCon : Constraint
+                                                        recordCon =
+                                                            CEqual region Record recordType expected
+                                                    in
+                                                    constrainWithIdsProg rtv expr (FromContext region (RecordUpdateKeys fields) recordType)
+                                                        |> Prog.mapS
+                                                            (\exprCon ->
+                                                                Type.exists (recordVar :: extVar :: fieldVars)
+                                                                    (CAnd (fieldsTypeCon :: exprCon :: recordCon :: fieldCons))
+                                                            )
                                                 )
                                     )
                         )

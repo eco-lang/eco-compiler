@@ -14,8 +14,10 @@ import Compiler.BinopTests as BinopTests
 import Compiler.CaseTests as CaseTests
 import Compiler.DeepFuzzTests as DeepFuzzTests
 import Compiler.EdgeCaseTests as EdgeCaseTests
+import Compiler.ForeignTests as ForeignTests
 import Compiler.FunctionTests as FunctionTests
 import Compiler.HigherOrderTests as HigherOrderTests
+import Compiler.KernelTests as KernelTests
 import Compiler.LetDestructTests as LetDestructTests
 import Compiler.LetRecTests as LetRecTests
 import Compiler.LetTests as LetTests
@@ -29,6 +31,7 @@ import Compiler.TupleTests as TupleTests
 import Compiler.Type.Constrain.TypedErasedCheckingParity
     exposing
         ( expectEquivalentTypeChecking
+        , expectEquivalentTypeCheckingCanonical
         , expectEquivalentTypeCheckingFails
         )
 import Compiler.TypeCheckFails as TypeCheckFails
@@ -66,9 +69,9 @@ expectSuite expectFn condStr =
         , TupleTests.expectSuite expectFn condStr
         , DeepFuzzTests.expectSuite expectFn condStr
 
-        --
-        -- Kernel tests not from Source AST
-        --, KernelTests.expectSuite expectFnCanonical condStr
+        -- Kernel and Foreign tests require canonical AST (not from Source)
+        , KernelTests.expectSuite expectEquivalentTypeCheckingCanonical condStr
+        , ForeignTests.expectSuite expectEquivalentTypeCheckingCanonical condStr
         ]
 
 

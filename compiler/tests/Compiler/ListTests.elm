@@ -6,15 +6,25 @@ module Compiler.ListTests exposing (expectSuite)
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( charFuzzer
+        ( TypedDef
+        , callExpr
+        , charFuzzer
         , chrExpr
         , floatExpr
+        , ifExpr
         , intExpr
+        , lambdaExpr
         , listExpr
         , makeModule
+        , makeModuleWithTypedDefs
+        , pVar
         , recordExpr
         , strExpr
+        , tLambda
+        , tType
+        , tVar
         , tupleExpr
+        , varExpr
         )
 import Expect exposing (Expectation)
 import Fuzz
@@ -30,6 +40,7 @@ expectSuite expectFn condStr =
         , nestedListTests expectFn condStr
         , mixedTypeTests expectFn condStr
         , listFuzzTests expectFn condStr
+        , knownListFails expectFn condStr
         ]
 
 
@@ -441,5 +452,94 @@ twoRandomLists expectFn ints1 ints2 =
 
         modul =
             makeModule "testValue" (listExpr [ list1, list2 ])
+    in
+    expectFn modul
+
+
+
+-- ============================================================================
+-- List Failure Tests
+-- ============================================================================
+-- These tests exercise type generalization patterns that are known to fail
+-- in elm/core List.elm.
+-- They test functions with type annotations containing type variables
+-- where the body uses those variables in higher-order contexts.
+
+
+{-| Test suite for higher-order functions that require proper type generalization.
+These patterns match the failing functions in elm/core List.elm.
+-}
+knownListFails : (Src.Module -> Expectation) -> String -> Test
+knownListFails expectFn condStr =
+    Test.describe ("Higher-order function patterns " ++ condStr)
+        [ Test.test ("Filter-like pattern with foldr " ++ condStr) (filterLikePattern expectFn)
+        ]
+
+
+{-| Test: Pattern matching List.filter.
+
+myFilter : (a -> Bool) -> List a -> List a
+myFilter isGood list = myFoldr (\\x xs -> if isGood x then myCons x xs else xs) [] list
+
+This requires proper helper definitions too.
+
+-}
+filterLikePattern : (Src.Module -> Expectation) -> (() -> Expectation)
+filterLikePattern expectFn _ =
+    let
+        -- myFilter : (a -> Bool) -> List a -> List a
+        filterType =
+            tLambda (tLambda (tVar "a") (tType "Bool" []))
+                (tLambda (tType "List" [ tVar "a" ]) (tType "List" [ tVar "a" ]))
+
+        -- The lambda: \x xs -> if isGood x then cons x xs else xs
+        innerIf =
+            ifExpr
+                (callExpr (varExpr "isGood") [ varExpr "x" ])
+                (callExpr (varExpr "cons") [ varExpr "x", varExpr "xs" ])
+                (varExpr "xs")
+
+        theLambda =
+            lambdaExpr [ pVar "x", pVar "xs" ] innerIf
+
+        -- myFilter isGood list = foldr theLambda [] list
+        filterBody =
+            callExpr (varExpr "foldr") [ theLambda, listExpr [], varExpr "list" ]
+
+        -- foldr : (a -> b -> b) -> b -> List a -> b
+        foldrType =
+            tLambda (tLambda (tVar "a") (tLambda (tVar "b") (tVar "b")))
+                (tLambda (tVar "b")
+                    (tLambda (tType "List" [ tVar "a" ]) (tVar "b"))
+                )
+
+        -- cons : a -> List a -> List a
+        consType =
+            tLambda (tVar "a")
+                (tLambda (tType "List" [ tVar "a" ]) (tType "List" [ tVar "a" ]))
+
+        modul =
+            makeModuleWithTypedDefs
+                [ -- Stub for foldr (just returns the initial value for simplicity)
+                  { name = "foldr"
+                  , args = [ pVar "f", pVar "init", pVar "xs" ]
+                  , tipe = foldrType
+                  , body = varExpr "init"
+                  }
+
+                -- Stub for cons
+                , { name = "cons"
+                  , args = [ pVar "x", pVar "xs" ]
+                  , tipe = consType
+                  , body = varExpr "xs"
+                  }
+
+                -- The actual filter function
+                , { name = "myFilter"
+                  , args = [ pVar "isGood", pVar "list" ]
+                  , tipe = filterType
+                  , body = filterBody
+                  }
+                ]
     in
     expectFn modul

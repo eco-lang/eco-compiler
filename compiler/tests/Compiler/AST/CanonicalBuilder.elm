@@ -7,6 +7,7 @@ module Compiler.AST.CanonicalBuilder exposing
     , letExpr
     , listExpr
     , listType
+    , makeAnnotation
     , makeDef
     , -- ID Counter
       makeModule
@@ -16,6 +17,7 @@ module Compiler.AST.CanonicalBuilder exposing
       -- Type builders for typed definitions
     , tupleExpr
     , tupleType
+    , varForeignExpr
     , varKernelExpr
     , varLocalExpr
     , varType
@@ -262,6 +264,21 @@ Used for kernel functions like Elm.Kernel.Platform.batch.
 varKernelExpr : Int -> Name.Name -> Name.Name -> Can.Expr
 varKernelExpr id home name =
     makeExpr id (Can.VarKernel home name)
+
+
+{-| Create a foreign variable reference (VarForeign).
+Used for references to functions from other modules with type annotations.
+-}
+varForeignExpr : Int -> IO.Canonical -> Name.Name -> Can.Annotation -> Can.Expr
+varForeignExpr id home name annotation =
+    makeExpr id (Can.VarForeign home name annotation)
+
+
+{-| Create an annotation from free variables and a type.
+-}
+makeAnnotation : List Name.Name -> Can.Type -> Can.Annotation
+makeAnnotation freeVars tipe =
+    Can.Forall (Dict.fromList identity (List.map (\v -> ( v, () )) freeVars)) tipe
 
 
 

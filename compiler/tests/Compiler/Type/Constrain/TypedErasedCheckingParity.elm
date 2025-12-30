@@ -1,5 +1,6 @@
 module Compiler.Type.Constrain.TypedErasedCheckingParity exposing
     ( expectEquivalentTypeChecking
+    , expectEquivalentTypeCheckingCanonical
     , expectEquivalentTypeCheckingFails
     )
 
@@ -160,6 +161,68 @@ expectEquivalentTypeChecking srcModule =
                             ++ String.fromInt errorCount
                             ++ " error(s)"
                         )
+
+
+{-| Run both constraint paths on a Canonical module and verify they produce equivalent results.
+
+This skips canonicalization and directly tests the constraint generation paths.
+Useful for testing kernel variables and other constructs that can only be created
+by directly constructing canonical AST.
+
+-}
+expectEquivalentTypeCheckingCanonical : Can.Module -> Expect.Expectation
+expectEquivalentTypeCheckingCanonical modul =
+    let
+        standardResult =
+            IO.unsafePerformIO (runStandardPath modul)
+
+        withIdsResult =
+            IO.unsafePerformIO (runWithIdsPath modul)
+
+        -- Extract all expression IDs from the module
+        allExprIds =
+            extractModuleExprIds modul
+    in
+    case ( standardResult, withIdsResult ) of
+        ( Ok _, Ok { nodeTypes } ) ->
+            -- Both succeeded - now check that all IDs are in nodeTypes
+            let
+                nodeTypeIds =
+                    Dict.keys compare nodeTypes |> Set.fromList
+
+                missingIds =
+                    Set.diff allExprIds nodeTypeIds
+            in
+            if Set.isEmpty missingIds then
+                Expect.pass
+
+            else
+                Expect.fail
+                    ("WithIds path succeeded but missing types for expression IDs: "
+                        ++ (Set.toList missingIds |> List.map String.fromInt |> String.join ", ")
+                        ++ "\nExpected IDs: "
+                        ++ (Set.toList allExprIds |> List.map String.fromInt |> String.join ", ")
+                        ++ "\nGot IDs: "
+                        ++ (Set.toList nodeTypeIds |> List.map String.fromInt |> String.join ", ")
+                    )
+
+        ( Err _, Err _ ) ->
+            -- Both failed - this is acceptable (they agree)
+            Expect.fail "Unexpected solver failure on both paths."
+
+        ( Ok _, Err errorCount ) ->
+            Expect.fail
+                ("Standard path succeeded but WithIds path failed with: "
+                    ++ String.fromInt errorCount
+                    ++ " error(s)"
+                )
+
+        ( Err errorCount, Ok _ ) ->
+            Expect.fail
+                ("WithIds path succeeded but standard path failed with: "
+                    ++ String.fromInt errorCount
+                    ++ " error(s)"
+                )
 
 
 {-| Expect both constraint paths to fail with equivalent type errors.
