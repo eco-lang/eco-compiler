@@ -345,12 +345,8 @@ postSolveExpr annotations ((A.At _ exprInfo) as expr) nodeTypes0 kernel0 =
         Can.Negate subExpr ->
             postSolveExpr annotations subExpr nodeTypes0 kernel0
 
-        Can.Binop _ _ _ _ left right ->
-            let
-                ( nt1, ke1 ) =
-                    postSolveExpr annotations left nodeTypes0 kernel0
-            in
-            postSolveExpr annotations right nt1 ke1
+        Can.Binop _ _ _ opAnnotation left right ->
+            postSolveBinop annotations opAnnotation left right nodeTypes0 kernel0
 
         Can.Call func args ->
             postSolveCall annotations exprId func args nodeTypes0 kernel0
@@ -359,7 +355,7 @@ postSolveExpr annotations ((A.At _ exprInfo) as expr) nodeTypes0 kernel0 =
             postSolveIf annotations branches final nodeTypes0 kernel0
 
         Can.Case scrutinee branches ->
-            postSolveCase annotations scrutinee branches nodeTypes0 kernel0
+            postSolveCase annotations exprId scrutinee branches nodeTypes0 kernel0
 
         Can.Access record _ ->
             postSolveExpr annotations record nodeTypes0 kernel0
@@ -663,28 +659,182 @@ postSolveIf annotations branches final nodeTypes0 kernel0 =
     postSolveExpr annotations final nt1 ke1
 
 
+{-| Handle Binop expression (Group A - trust solver's type).
+
+Also infers kernel types for VarKernel expressions that appear as
+operands to the binary operator. Uses the operator's annotation to
+determine the expected types for left and right operands.
+-}
+postSolveBinop :
+    Dict String Name Can.Annotation
+    -> Can.Annotation
+    -> Can.Expr
+    -> Can.Expr
+    -> NodeTypes
+    -> KernelTypes.KernelTypeEnv
+    -> ( NodeTypes, KernelTypes.KernelTypeEnv )
+postSolveBinop annotations opAnnotation left right nodeTypes0 kernel0 =
+    let
+        -- First, recurse into left and right to process any nested expressions
+        ( nt1, ke1 ) =
+            postSolveExpr annotations left nodeTypes0 kernel0
+
+        ( nt2, ke2 ) =
+            postSolveExpr annotations right nt1 ke1
+
+        -- Check if either operand is a VarKernel
+        leftIsKernel =
+            isKernelExpr left
+
+        rightIsKernel =
+            isKernelExpr right
+    in
+    if leftIsKernel || rightIsKernel then
+        -- Extract expected types from the operator's annotation
+        let
+            (Can.Forall _ opType) =
+                opAnnotation
+
+            ( argTypes, _ ) =
+                peelFunctionType opType
+
+            -- Get expected types for left and right (first two args of binop)
+            maybeLeftType =
+                List.head argTypes
+
+            maybeRightType =
+                argTypes |> List.drop 1 |> List.head
+
+            -- Infer kernel type for left if it's a VarKernel
+            ( nt3, ke3 ) =
+                case ( leftIsKernel, maybeLeftType ) of
+                    ( True, Just expectedType ) ->
+                        inferBinopKernelType left expectedType nt2 ke2
+
+                    _ ->
+                        ( nt2, ke2 )
+
+            -- Infer kernel type for right if it's a VarKernel
+            ( nt4, ke4 ) =
+                case ( rightIsKernel, maybeRightType ) of
+                    ( True, Just expectedType ) ->
+                        inferBinopKernelType right expectedType nt3 ke3
+
+                    _ ->
+                        ( nt3, ke3 )
+        in
+        ( nt4, ke4 )
+
+    else
+        ( nt2, ke2 )
+
+
+{-| Infer kernel type from a binop operand.
+
+If the operand is a VarKernel that doesn't have a known type yet,
+use the expected type (from the operator's annotation) to infer its type.
+-}
+inferBinopKernelType :
+    Can.Expr
+    -> Can.Type
+    -> NodeTypes
+    -> KernelTypes.KernelTypeEnv
+    -> ( NodeTypes, KernelTypes.KernelTypeEnv )
+inferBinopKernelType operand expectedType nodeTypes kernel =
+    case operand of
+        A.At _ exprInfo ->
+            case exprInfo.node of
+                Can.VarKernel home name ->
+                    if KernelTypes.hasEntry home name kernel then
+                        -- Already have a type for this kernel; don't override
+                        ( nodeTypes, kernel )
+
+                    else
+                        -- Insert the inferred type for this kernel
+                        let
+                            ke2 =
+                                KernelTypes.insertFirstUsage home name expectedType kernel
+
+                            nt2 =
+                                Dict.insert Basics.identity exprInfo.id expectedType nodeTypes
+                        in
+                        ( nt2, ke2 )
+
+                _ ->
+                    ( nodeTypes, kernel )
+
+
 {-| Handle Case expression (Group A - trust solver's type).
+
+Also infers kernel types for VarKernel expressions that appear directly
+as case branch bodies. Since all branches must have the same type as the
+case expression, a VarKernel branch body has the case's result type.
 -}
 postSolveCase :
     Dict String Name Can.Annotation
+    -> Int
     -> Can.Expr
     -> List Can.CaseBranch
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
-postSolveCase annotations scrutinee branches nodeTypes0 kernel0 =
+postSolveCase annotations caseExprId scrutinee branches nodeTypes0 kernel0 =
     let
         ( nt1, ke1 ) =
             postSolveExpr annotations scrutinee nodeTypes0 kernel0
+
+        -- Get case result type (all branches have this type)
+        caseResultType =
+            Dict.get Basics.identity caseExprId nt1
+                |> Maybe.withDefault (Can.TVar "a")
 
         stepBranch (Can.CaseBranch pat branchExpr) ( nt, ke ) =
             let
                 ( nt2, ke2 ) =
                     postSolvePattern annotations pat nt ke
+
+                ( nt3, ke3 ) =
+                    postSolveExpr annotations branchExpr nt2 ke2
             in
-            postSolveExpr annotations branchExpr nt2 ke2
+            -- Infer kernel type if branch body is VarKernel
+            inferBranchKernelType branchExpr caseResultType nt3 ke3
     in
     List.foldl stepBranch ( nt1, ke1 ) branches
+
+
+{-| Infer kernel type from a case branch body.
+
+If the branch body is a VarKernel that doesn't have a known type yet,
+use the expected type (from the case expression) to infer its type.
+-}
+inferBranchKernelType :
+    Can.Expr
+    -> Can.Type
+    -> NodeTypes
+    -> KernelTypes.KernelTypeEnv
+    -> ( NodeTypes, KernelTypes.KernelTypeEnv )
+inferBranchKernelType branchExpr expectedType nodeTypes kernel =
+    case branchExpr of
+        A.At _ exprInfo ->
+            case exprInfo.node of
+                Can.VarKernel home name ->
+                    if KernelTypes.hasEntry home name kernel then
+                        -- Already have a type for this kernel; don't override
+                        ( nodeTypes, kernel )
+
+                    else
+                        -- Insert the inferred type for this kernel
+                        let
+                            ke2 =
+                                KernelTypes.insertFirstUsage home name expectedType kernel
+
+                            nt2 =
+                                Dict.insert Basics.identity exprInfo.id expectedType nodeTypes
+                        in
+                        ( nt2, ke2 )
+
+                _ ->
+                    ( nodeTypes, kernel )
 
 
 {-| Handle Update expression (Group A - trust solver's type).
