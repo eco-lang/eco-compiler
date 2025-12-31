@@ -369,25 +369,20 @@ postSolveExpr annotations ((A.At _ exprInfo) as expr) nodeTypes0 kernel0 =
 
         -- ====== VARKERNEL: Look up from kernelEnv ======
         Can.VarKernel home name ->
-            let
-                kernelType =
-                    case KernelTypes.lookup home name kernel0 of
-                        Just t ->
-                            t
+            case KernelTypes.lookup home name kernel0 of
+                Just kernelType ->
+                    -- Type known: update nodeTypes with the kernel type
+                    let
+                        nodeTypes1 =
+                            Dict.insert Basics.identity exprId kernelType nodeTypes0
+                    in
+                    ( nodeTypes1, kernel0 )
 
-                        Nothing ->
-                            crash
-                                ("PostSolve: No kernel type for "
-                                    ++ home
-                                    ++ "."
-                                    ++ name
-                                    ++ ". Kernel must be aliased or called directly."
-                                )
-
-                nodeTypes1 =
-                    Dict.insert Basics.identity exprId kernelType nodeTypes0
-            in
-            ( nodeTypes1, kernel0 )
+                Nothing ->
+                    -- Type not known yet: don't crash, leave nodeTypes unchanged.
+                    -- The type may be inferred later if this is passed as an
+                    -- argument to a kernel call (propagated from callee's type).
+                    ( nodeTypes0, kernel0 )
 
         -- ====== GROUP B: Compute type structurally ======
         Can.Str _ ->
@@ -595,8 +590,17 @@ postSolveCall annotations exprId func args nodeTypes0 kernel0 =
 
                         nodeTypes2 =
                             Dict.insert Basics.identity funcInfo.id kernelNodeType nodeTypes1
+
+                        -- Propagate types to VarKernel arguments:
+                        -- Peel the callee's function type to get expected arg types,
+                        -- then for each VarKernel arg, insert that type into kernelEnv.
+                        ( inferredArgTypes, _ ) =
+                            peelFunctionType kernelNodeType
+
+                        ( nodeTypes3, kernel3 ) =
+                            propagateKernelArgTypes args inferredArgTypes nodeTypes2 kernel2
                     in
-                    ( nodeTypes2, kernel2 )
+                    ( nodeTypes3, kernel3 )
 
                 Can.VarCtor _ _ _ _ ctorAnnotation ->
                     -- Constructor call: check if any args are VarKernel
@@ -947,6 +951,57 @@ isKernelExpr (A.At _ info) =
 
         _ ->
             False
+
+
+{-| Propagate inferred types to VarKernel arguments.
+
+Given a list of arguments and their expected types (from peeling the callee's
+function type), for each VarKernel argument:
+- Insert its type into kernelEnv
+- Update its type in nodeTypes
+
+This handles the pattern where a kernel function is passed as an argument
+to another kernel call.
+
+-}
+propagateKernelArgTypes :
+    List Can.Expr
+    -> List Can.Type
+    -> NodeTypes
+    -> KernelTypes.KernelTypeEnv
+    -> ( NodeTypes, KernelTypes.KernelTypeEnv )
+propagateKernelArgTypes args expectedTypes nodeTypes0 kernel0 =
+    let
+        -- Pair args with their expected types (use Nothing for excess args)
+        argsWithTypes =
+            List.map2 Tuple.pair args expectedTypes
+                ++ List.map (\arg -> ( arg, Can.TVar "a" )) (List.drop (List.length expectedTypes) args)
+
+        processArg ( arg, expectedType ) ( nt, ke ) =
+            case arg of
+                A.At _ argInfo ->
+                    case argInfo.node of
+                        Can.VarKernel argHome argName ->
+                            if KernelTypes.hasEntry argHome argName ke then
+                                -- Already have a type for this kernel; don't override
+                                ( nt, ke )
+
+                            else
+                                -- Insert the inferred type for this kernel arg
+                                let
+                                    ke2 =
+                                        KernelTypes.insertFirstUsage argHome argName expectedType ke
+
+                                    nt2 =
+                                        Dict.insert Basics.identity argInfo.id expectedType nt
+                                in
+                                ( nt2, ke2 )
+
+                        _ ->
+                            -- Not a VarKernel; already processed
+                            ( nt, ke )
+    in
+    List.foldl processArg ( nodeTypes0, kernel0 ) argsWithTypes
 
 
 {-| Type variable substitution map.

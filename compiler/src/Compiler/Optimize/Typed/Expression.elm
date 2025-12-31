@@ -102,8 +102,8 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
                             t
 
                         Nothing ->
-                            Crash.crash "Typed.Expression.optimizeExpr"
-                                ("Missing kernel type for " ++ home ++ "." ++ name)
+                            Crash.crash
+                                ("Typed.Expression.optimizeExpr: Missing kernel type for " ++ home ++ "." ++ name)
             in
             Names.registerKernel home (TOpt.VarKernel region home name kernelType)
 
