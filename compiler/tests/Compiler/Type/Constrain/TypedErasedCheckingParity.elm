@@ -24,7 +24,8 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as CanError
 import Compiler.Reporting.Error.Type as TypeError
 import Compiler.Reporting.Result as Result
-import Compiler.Type.Constrain.Module as Constrain
+import Compiler.Type.Constrain.Erased.Module as ConstrainErased
+import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Error as T
 import Compiler.Type.Solve as Solve
 import Data.Map as Dict exposing (Dict)
@@ -413,7 +414,7 @@ expectEquivalentTypeCheckingFails srcModule =
 -}
 runStandardPathWithErrors : Can.Module -> IO.IO (Result (NE.Nonempty TypeError.Error) (Dict String Name.Name Can.Annotation))
 runStandardPathWithErrors modul =
-    Constrain.constrain modul
+    ConstrainErased.constrain modul
         |> IO.andThen Solve.run
 
 
@@ -421,7 +422,7 @@ runStandardPathWithErrors modul =
 -}
 runWithIdsPathWithErrors : Can.Module -> IO.IO (Result (NE.Nonempty TypeError.Error) { annotations : Dict String Name.Name Can.Annotation, nodeTypes : Dict Int Int Can.Type })
 runWithIdsPathWithErrors modul =
-    Constrain.constrainWithIds modul
+    ConstrainTyped.constrainWithIds modul
         |> IO.andThen
             (\( constraint, nodeVars ) ->
                 Solve.runWithIds constraint nodeVars
@@ -905,7 +906,7 @@ Returns actual errors instead of just a count.
 -}
 runStandardPath : Can.Module -> IO.IO (Result (NE.Nonempty TypeError.Error) (Dict String Name.Name Can.Annotation))
 runStandardPath modul =
-    Constrain.constrain modul
+    ConstrainErased.constrain modul
         |> IO.andThen Solve.run
 
 
@@ -914,7 +915,7 @@ Returns both annotations and the nodeTypes map, or actual errors.
 -}
 runWithIdsPath : Can.Module -> IO.IO (Result (NE.Nonempty TypeError.Error) { annotations : Dict String Name.Name Can.Annotation, nodeTypes : Dict Int Int Can.Type })
 runWithIdsPath modul =
-    Constrain.constrainWithIds modul
+    ConstrainTyped.constrainWithIds modul
         |> IO.andThen
             (\( constraint, nodeVars ) ->
                 Solve.runWithIds constraint nodeVars

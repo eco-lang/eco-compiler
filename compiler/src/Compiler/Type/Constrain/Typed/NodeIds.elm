@@ -1,11 +1,11 @@
-module Compiler.Type.Constrain.NodeIds exposing
+module Compiler.Type.Constrain.Typed.NodeIds exposing
     ( NodeVarMap
     , NodeIdState
     , emptyNodeIdState
     , recordNodeVar
     )
 
-{-| Unified node ID tracking for type constraint generation.
+{-| Unified node ID tracking for type constraint generation (Typed pathway).
 
 This module provides a shared ID space for tracking solver variables
 associated with canonical AST nodes (both expressions and patterns).

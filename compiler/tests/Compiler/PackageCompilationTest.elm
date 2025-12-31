@@ -39,6 +39,7 @@ suite =
         , jsArrayCompilationTests
         , arrayParsingTests
         , multiModuleCompilationTests
+        , typedPathwayTests
         ]
 
 
@@ -236,3 +237,134 @@ boolToString b =
 
     else
         "false"
+
+
+
+-- ============================================================================
+-- TYPED PATHWAY TESTS - Monomorphization and MLIR
+-- ============================================================================
+
+
+{-| Tests that verify the typed pathway continues through Monomorphization and MLIR generation.
+
+The erased path reaches Optimized, and the typed path reaches TypedOptimized in the
+standard compilation tests above. These tests extend the typed path only to verify
+it can also pass through Monomorphization and MLIR generation.
+
+If both pathways pass the optimization phase, then the typed path should also pass
+its later stages.
+
+-}
+typedPathwayTests : Test
+typedPathwayTests =
+    Test.describe "Typed pathway through Monomorphization and MLIR"
+        [ Test.test "JsArray.elm typed path monomorphizes successfully" <|
+            \() ->
+                case PC.parseModule Pkg.core JsArraySource.source of
+                    Err err ->
+                        Expect.fail ("Parse failed: " ++ PC.errorToString (PC.ParseError err))
+
+                    Ok srcModule ->
+                        case PC.compileModule Pkg.core extendedTestIfaces srcModule of
+                            Err err ->
+                                Expect.fail ("Compile failed: " ++ PC.errorToString err)
+
+                            Ok result ->
+                                -- Both pathways passed optimization, now verify typed path monomorphizes
+                                case PC.monomorphize result of
+                                    Err err ->
+                                        Expect.fail ("Monomorphization failed: " ++ PC.errorToString err)
+
+                                    Ok _ ->
+                                        Expect.pass
+        , Test.test "JsArray.elm typed path generates MLIR successfully" <|
+            \() ->
+                case PC.parseModule Pkg.core JsArraySource.source of
+                    Err err ->
+                        Expect.fail ("Parse failed: " ++ PC.errorToString (PC.ParseError err))
+
+                    Ok srcModule ->
+                        case PC.compileModule Pkg.core extendedTestIfaces srcModule of
+                            Err err ->
+                                Expect.fail ("Compile failed: " ++ PC.errorToString err)
+
+                            Ok result ->
+                                case PC.monomorphize result of
+                                    Err err ->
+                                        Expect.fail ("Monomorphization failed: " ++ PC.errorToString err)
+
+                                    Ok monoGraph ->
+                                        let
+                                            mlirOutput =
+                                                PC.generateMLIR monoGraph
+                                        in
+                                        if String.isEmpty mlirOutput then
+                                            Expect.fail "MLIR output is empty"
+
+                                        else if not (String.contains "func.func" mlirOutput || String.contains "eco." mlirOutput) then
+                                            Expect.fail "MLIR output doesn't contain expected operations"
+
+                                        else
+                                            Expect.pass
+        , Test.test "Array.elm typed path monomorphizes successfully" <|
+            \() ->
+                -- Array depends on JsArray, so compile both in order
+                case
+                    PC.compileModulesInOrder Pkg.core
+                        extendedTestIfaces
+                        [ JsArraySource.source
+                        , ArraySource.source
+                        ]
+                of
+                    Err ( err, moduleName ) ->
+                        Expect.fail (moduleName ++ ": " ++ PC.errorToString err)
+
+                    Ok results ->
+                        case List.filter (\r -> r.moduleName == "Array") results of
+                            [ arrayResult ] ->
+                                -- Both pathways passed optimization, now verify typed path monomorphizes
+                                case PC.monomorphize arrayResult of
+                                    Err err ->
+                                        Expect.fail ("Array monomorphization failed: " ++ PC.errorToString err)
+
+                                    Ok _ ->
+                                        Expect.pass
+
+                            _ ->
+                                Expect.fail "Array module not found in results"
+        , Test.test "Array.elm typed path generates MLIR successfully" <|
+            \() ->
+                case
+                    PC.compileModulesInOrder Pkg.core
+                        extendedTestIfaces
+                        [ JsArraySource.source
+                        , ArraySource.source
+                        ]
+                of
+                    Err ( err, moduleName ) ->
+                        Expect.fail (moduleName ++ ": " ++ PC.errorToString err)
+
+                    Ok results ->
+                        case List.filter (\r -> r.moduleName == "Array") results of
+                            [ arrayResult ] ->
+                                case PC.monomorphize arrayResult of
+                                    Err err ->
+                                        Expect.fail ("Array monomorphization failed: " ++ PC.errorToString err)
+
+                                    Ok monoGraph ->
+                                        let
+                                            mlirOutput =
+                                                PC.generateMLIR monoGraph
+                                        in
+                                        if String.isEmpty mlirOutput then
+                                            Expect.fail "MLIR output is empty"
+
+                                        else if not (String.contains "func.func" mlirOutput || String.contains "eco." mlirOutput) then
+                                            Expect.fail "MLIR output doesn't contain expected operations"
+
+                                        else
+                                            Expect.pass
+
+                            _ ->
+                                Expect.fail "Array module not found in results"
+        ]

@@ -1,24 +1,15 @@
-module Compiler.Type.Constrain.Module exposing
-    ( constrain
-    , constrainWithIds
+module Compiler.Type.Constrain.Typed.Module exposing
+    ( constrainWithIds
     )
 
-{-| Generates type constraints for Elm modules during type checking.
+{-| Generates type constraints for Elm modules during type checking (Typed pathway).
 
-This is the entry point for constraint generation. It traverses the module's
-declarations, effects (ports, managers), and builds a constraint tree that
-the constraint solver will use to infer or verify types.
-
-
-# Constraint Generation
-
-@docs constrain
+This is the entry point for constraint generation with ID tracking. It traverses
+the module's declarations, effects (ports, managers), and builds a constraint tree
+while tracking node IDs to solver variables for later type retrieval.
 
 
-# Constraint Generation with Node ID Tracking
-
-For TypedCanonical AST construction, we track node ID → Variable mappings
-for both expressions and patterns.
+# Constraint Generation with ID Tracking
 
 @docs constrainWithIds
 
@@ -29,9 +20,9 @@ import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Type as E
-import Compiler.Type.Constrain.Expression as Expr
-import Compiler.Type.Constrain.NodeIds as NodeIds
-import Compiler.Type.Constrain.Program as Prog exposing (Prog)
+import Compiler.Type.Constrain.Typed.Expression as Expr
+import Compiler.Type.Constrain.Typed.NodeIds as NodeIds
+import Compiler.Type.Constrain.Typed.Program as Prog exposing (ProgS)
 import Compiler.Type.Instantiate as Instantiate
 import Compiler.Type.Type as Type exposing (Constraint(..), Type(..), mkFlexVar, nameToRigid)
 import Data.Map as Dict exposing (Dict)
@@ -39,136 +30,51 @@ import System.TypeCheck.IO as IO exposing (IO)
 
 
 
--- ====== Constraint Generation ======
+-- ====== Constraint Generation with ID Tracking ======
 
 
-{-| Generate type constraints for a canonical module.
+{-| Generate type constraints for a canonical module, tracking node IDs.
 
 Handles regular declarations, ports, and effect managers by traversing the
-module's structure and producing a constraint tree that represents all type
-relationships.
-
--}
-constrain : Can.Module -> IO Constraint
-constrain (Can.Module canData) =
-    case canData.effects of
-        Can.NoEffects ->
-            constrainDecls canData.decls CSaveTheEnvironment
-
-        Can.Ports ports ->
-            Dict.foldr compare letPort (constrainDecls canData.decls CSaveTheEnvironment) ports
-
-        Can.Manager r0 r1 r2 manager ->
-            case manager of
-                Can.Cmd cmdName ->
-                    constrainEffects canData.name r0 r1 r2 manager
-                        |> IO.andThen (constrainDecls canData.decls)
-                        |> IO.andThen (letCmd canData.name cmdName)
-
-                Can.Sub subName ->
-                    constrainEffects canData.name r0 r1 r2 manager
-                        |> IO.andThen (constrainDecls canData.decls)
-                        |> IO.andThen (letSub canData.name subName)
-
-                Can.Fx cmdName subName ->
-                    constrainEffects canData.name r0 r1 r2 manager
-                        |> IO.andThen (constrainDecls canData.decls)
-                        |> IO.andThen (letSub canData.name subName)
-                        |> IO.andThen (letCmd canData.name cmdName)
-
-
-
--- ====== Declaration Constraints ======
--- Generates constraints for all module declarations.
-
-
-constrainDecls : Can.Decls -> Constraint -> IO Constraint
-constrainDecls decls finalConstraint =
-    constrainDeclsHelp decls finalConstraint identity
-
-
-constrainDeclsHelp : Can.Decls -> Constraint -> (IO Constraint -> IO Constraint) -> IO Constraint
-constrainDeclsHelp decls finalConstraint cont =
-    case decls of
-        Can.Declare def otherDecls ->
-            constrainDeclsHelp otherDecls finalConstraint (IO.andThen (Expr.constrainDef Dict.empty def) >> cont)
-
-        Can.DeclareRec def defs otherDecls ->
-            constrainDeclsHelp otherDecls finalConstraint (IO.andThen (Expr.constrainRecursiveDefs Dict.empty (def :: defs)) >> cont)
-
-        Can.SaveTheEnvironment ->
-            cont (IO.pure finalConstraint)
-
-
-
--- ====== Constraint Generation with Expression Tracking ======
--- Generates constraints while also tracking expression ID → Variable mappings.
-
-
-{-| Generate type constraints for a canonical module while also collecting
-node ID → solver Variable mappings for TypedCanonical construction.
-
-The returned NodeVarMap maps node IDs (for both expressions and patterns)
-to their solver variables. After solving, these can be converted to types.
+module's structure and producing a constraint tree. Also builds a mapping
+from expression/pattern IDs to solver variables for later type retrieval.
 
 -}
 constrainWithIds : Can.Module -> IO ( Constraint, NodeIds.NodeVarMap )
 constrainWithIds (Can.Module canData) =
-    let
-        initialState : Expr.ExprIdState
-        initialState =
-            Expr.emptyExprIdState
-    in
     case canData.effects of
         Can.NoEffects ->
-            constrainDeclsWithVars canData.decls CSaveTheEnvironment initialState
-                |> IO.map (\( c, s ) -> ( c, s.mapping ))
+            constrainDeclsWithVars canData.decls CSaveTheEnvironment Expr.emptyExprIdState
+                |> IO.map (\( con, state ) -> ( con, state.mapping ))
 
         Can.Ports ports ->
-            Dict.foldr compare
-                letPortWithVars
-                (constrainDeclsWithVars canData.decls CSaveTheEnvironment initialState)
-                ports
-                |> IO.map (\( c, s ) -> ( c, s.mapping ))
+            Dict.foldr compare letPortWithVars (constrainDeclsWithVars canData.decls CSaveTheEnvironment Expr.emptyExprIdState) ports
+                |> IO.map (\( con, state ) -> ( con, state.mapping ))
 
         Can.Manager r0 r1 r2 manager ->
             case manager of
                 Can.Cmd cmdName ->
-                    constrainEffects canData.name r0 r1 r2 manager
-                        |> IO.andThen
-                            (\effConstraint ->
-                                constrainDeclsWithVars canData.decls effConstraint initialState
-                            )
-                        |> IO.andThen
-                            (\( constraint, state ) ->
-                                letCmd canData.name cmdName constraint
-                                    |> IO.map (\c -> ( c, state.mapping ))
-                            )
+                    constrainEffectsWithIds canData.name r0 r1 r2 manager Expr.emptyExprIdState
+                        |> IO.andThen (\( con, state ) -> constrainDeclsWithVars canData.decls con state)
+                        |> IO.andThen (\( con, state ) -> letCmdWithVars canData.name cmdName con state)
+                        |> IO.map (\( con, state ) -> ( con, state.mapping ))
 
                 Can.Sub subName ->
-                    constrainEffects canData.name r0 r1 r2 manager
-                        |> IO.andThen
-                            (\effConstraint ->
-                                constrainDeclsWithVars canData.decls effConstraint initialState
-                            )
-                        |> IO.andThen
-                            (\( constraint, state ) ->
-                                letSub canData.name subName constraint
-                                    |> IO.map (\c -> ( c, state.mapping ))
-                            )
+                    constrainEffectsWithIds canData.name r0 r1 r2 manager Expr.emptyExprIdState
+                        |> IO.andThen (\( con, state ) -> constrainDeclsWithVars canData.decls con state)
+                        |> IO.andThen (\( con, state ) -> letSubWithVars canData.name subName con state)
+                        |> IO.map (\( con, state ) -> ( con, state.mapping ))
 
                 Can.Fx cmdName subName ->
-                    constrainEffects canData.name r0 r1 r2 manager
-                        |> IO.andThen
-                            (\effConstraint ->
-                                constrainDeclsWithVars canData.decls effConstraint initialState
-                            )
-                        |> IO.andThen
-                            (\( constraint, state ) ->
-                                letSub canData.name subName constraint
-                                    |> IO.andThen (letCmd canData.name cmdName)
-                                    |> IO.map (\c -> ( c, state.mapping ))
-                            )
+                    constrainEffectsWithIds canData.name r0 r1 r2 manager Expr.emptyExprIdState
+                        |> IO.andThen (\( con, state ) -> constrainDeclsWithVars canData.decls con state)
+                        |> IO.andThen (\( con, state ) -> letSubWithVars canData.name subName con state)
+                        |> IO.andThen (\( con, state ) -> letCmdWithVars canData.name cmdName con state)
+                        |> IO.map (\( con, state ) -> ( con, state.mapping ))
+
+
+
+-- ====== Declaration Constraints with ID Tracking ======
 
 
 constrainDeclsWithVars : Can.Decls -> Constraint -> Expr.ExprIdState -> IO ( Constraint, Expr.ExprIdState )
@@ -176,48 +82,33 @@ constrainDeclsWithVars decls finalConstraint state =
     constrainDeclsWithVarsHelp decls finalConstraint state
 
 
-constrainDeclsWithVarsHelp :
-    Can.Decls
-    -> Constraint
-    -> Expr.ExprIdState
-    -> IO ( Constraint, Expr.ExprIdState )
+constrainDeclsWithVarsHelp : Can.Decls -> Constraint -> Expr.ExprIdState -> IO ( Constraint, Expr.ExprIdState )
 constrainDeclsWithVarsHelp decls finalConstraint state =
     case decls of
         Can.Declare def otherDecls ->
             constrainDeclsWithVarsHelp otherDecls finalConstraint state
                 |> IO.andThen
-                    (\( constraint, s ) ->
-                        Expr.constrainDefWithIds Dict.empty def constraint s
+                    (\( bodyCon, newState ) ->
+                        Expr.constrainDefWithIds Dict.empty def bodyCon newState
                     )
 
         Can.DeclareRec def defs otherDecls ->
             constrainDeclsWithVarsHelp otherDecls finalConstraint state
                 |> IO.andThen
-                    (\( constraint, s ) ->
-                        Expr.constrainRecursiveDefsWithIds Dict.empty (def :: defs) constraint s
+                    (\( bodyCon, newState ) ->
+                        Expr.constrainRecursiveDefsWithIds Dict.empty (def :: defs) bodyCon newState
                     )
 
         Can.SaveTheEnvironment ->
             IO.pure ( finalConstraint, state )
 
 
+
+-- ====== Port Constraints with ID Tracking ======
+
+
 letPortWithVars : Name -> Can.Port -> IO ( Constraint, Expr.ExprIdState ) -> IO ( Constraint, Expr.ExprIdState )
 letPortWithVars name port_ makeConstraint =
-    makeConstraint
-        |> IO.andThen
-            (\( constraint, state ) ->
-                letPort name port_ (IO.pure constraint)
-                    |> IO.map (\c -> ( c, state ))
-            )
-
-
-
--- ====== Port Constraints ======
--- Wraps a port's type in a CLet constraint, instantiating free type variables.
-
-
-letPort : Name -> Can.Port -> IO Constraint -> IO Constraint
-letPort name port_ makeConstraint =
     case port_ of
         Can.Incoming { freeVars, func } ->
             IO.traverseMapWithKey identity compare (\k _ -> nameToRigid k) freeVars
@@ -231,7 +122,8 @@ letPort name port_ makeConstraint =
                                         header =
                                             Dict.singleton identity name (A.At A.zero tipe)
                                     in
-                                    IO.map (CLet (Dict.values compare vars) [] header CTrue) makeConstraint
+                                    makeConstraint
+                                        |> IO.map (\( con, state ) -> ( CLet (Dict.values compare vars) [] header CTrue con, state ))
                                 )
                     )
 
@@ -247,17 +139,18 @@ letPort name port_ makeConstraint =
                                         header =
                                             Dict.singleton identity name (A.At A.zero tipe)
                                     in
-                                    IO.map (CLet (Dict.values compare vars) [] header CTrue) makeConstraint
+                                    makeConstraint
+                                        |> IO.map (\( con, state ) -> ( CLet (Dict.values compare vars) [] header CTrue con, state ))
                                 )
                     )
 
 
 
--- EFFECT MANAGER HELPERS
+-- ====== Effect Manager Helpers with ID Tracking ======
 
 
-letCmd : IO.Canonical -> Name -> Constraint -> IO Constraint
-letCmd home tipe constraint =
+letCmdWithVars : IO.Canonical -> Name -> Constraint -> Expr.ExprIdState -> IO ( Constraint, Expr.ExprIdState )
+letCmdWithVars home tipe constraint state =
     mkFlexVar
         |> IO.map
             (\msgVar ->
@@ -274,12 +167,12 @@ letCmd home tipe constraint =
                     header =
                         Dict.singleton identity "command" (A.At A.zero cmdType)
                 in
-                CLet [ msgVar ] [] header CTrue constraint
+                ( CLet [ msgVar ] [] header CTrue constraint, state )
             )
 
 
-letSub : IO.Canonical -> Name -> Constraint -> IO Constraint
-letSub home tipe constraint =
+letSubWithVars : IO.Canonical -> Name -> Constraint -> Expr.ExprIdState -> IO ( Constraint, Expr.ExprIdState )
+letSubWithVars home tipe constraint state =
     mkFlexVar
         |> IO.map
             (\msgVar ->
@@ -296,40 +189,37 @@ letSub home tipe constraint =
                     header =
                         Dict.singleton identity "subscription" (A.At A.zero subType)
                 in
-                CLet [ msgVar ] [] header CTrue constraint
+                ( CLet [ msgVar ] [] header CTrue constraint, state )
             )
 
 
-constrainEffects : IO.Canonical -> A.Region -> A.Region -> A.Region -> Can.Manager -> IO Constraint
-constrainEffects home r0 r1 r2 manager =
-    constrainEffectsProg home r0 r1 r2 manager |> Prog.run
+constrainEffectsWithIds : IO.Canonical -> A.Region -> A.Region -> A.Region -> Can.Manager -> Expr.ExprIdState -> IO ( Constraint, Expr.ExprIdState )
+constrainEffectsWithIds home r0 r1 r2 manager state =
+    Prog.runS state (constrainEffectsWithIdsProg home r0 r1 r2 manager)
 
 
-{-| Stack-safe DSL version of constrainEffects.
-Uses the Program DSL to avoid deeply nested mkFlexVar calls.
--}
-constrainEffectsProg : IO.Canonical -> A.Region -> A.Region -> A.Region -> Can.Manager -> Prog Constraint
-constrainEffectsProg home r0 r1 r2 manager =
-    Prog.opMkFlexVar
-        |> Prog.andThen
+constrainEffectsWithIdsProg : IO.Canonical -> A.Region -> A.Region -> A.Region -> Can.Manager -> ProgS Expr.ExprIdState Constraint
+constrainEffectsWithIdsProg home r0 r1 r2 manager =
+    Prog.opMkFlexVarS
+        |> Prog.andThenS
             (\s0 ->
-                Prog.opMkFlexVar
-                    |> Prog.andThen
+                Prog.opMkFlexVarS
+                    |> Prog.andThenS
                         (\s1 ->
-                            Prog.opMkFlexVar
-                                |> Prog.andThen
+                            Prog.opMkFlexVarS
+                                |> Prog.andThenS
                                     (\s2 ->
-                                        Prog.opMkFlexVar
-                                            |> Prog.andThen
+                                        Prog.opMkFlexVarS
+                                            |> Prog.andThenS
                                                 (\m1 ->
-                                                    Prog.opMkFlexVar
-                                                        |> Prog.andThen
+                                                    Prog.opMkFlexVarS
+                                                        |> Prog.andThenS
                                                             (\m2 ->
-                                                                Prog.opMkFlexVar
-                                                                    |> Prog.andThen
+                                                                Prog.opMkFlexVarS
+                                                                    |> Prog.andThenS
                                                                         (\sm1 ->
-                                                                            Prog.opMkFlexVar
-                                                                                |> Prog.andThen
+                                                                            Prog.opMkFlexVarS
+                                                                                |> Prog.andThenS
                                                                                     (\sm2 ->
                                                                                         let
                                                                                             state0 : Type
@@ -400,7 +290,7 @@ constrainEffectsProg home r0 r1 r2 manager =
                                                                                                     , CEqual r2 E.Effects self1 (E.NoExpectation self2)
                                                                                                     ]
                                                                                         in
-                                                                                        checkMapProg manager home [ s0, s1, s2, m1, m2, sm1, sm2 ] effectCons
+                                                                                        checkMapWithIdsProg manager home [ s0, s1, s2, m1, m2, sm1, sm2 ] effectCons
                                                                                     )
                                                                         )
                                                             )
@@ -410,34 +300,30 @@ constrainEffectsProg home r0 r1 r2 manager =
             )
 
 
-{-| Build the final constraint with the appropriate map checks.
--}
-checkMapProg : Can.Manager -> IO.Canonical -> List IO.Variable -> Constraint -> Prog Constraint
-checkMapProg manager home vars effectCons =
+checkMapWithIdsProg : Can.Manager -> IO.Canonical -> List IO.Variable -> Constraint -> ProgS Expr.ExprIdState Constraint
+checkMapWithIdsProg manager home vars effectCons =
     case manager of
         Can.Cmd cmd ->
-            checkMapProgHelper "cmdMap" home cmd CSaveTheEnvironment
-                |> Prog.map (CLet [] vars Dict.empty effectCons)
+            checkMapHelperWithIdsProg "cmdMap" home cmd CSaveTheEnvironment
+                |> Prog.mapS (CLet [] vars Dict.empty effectCons)
 
         Can.Sub sub ->
-            checkMapProgHelper "subMap" home sub CSaveTheEnvironment
-                |> Prog.map (CLet [] vars Dict.empty effectCons)
+            checkMapHelperWithIdsProg "subMap" home sub CSaveTheEnvironment
+                |> Prog.mapS (CLet [] vars Dict.empty effectCons)
 
         Can.Fx cmd sub ->
-            checkMapProgHelper "subMap" home sub CSaveTheEnvironment
-                |> Prog.andThen (checkMapProgHelper "cmdMap" home cmd)
-                |> Prog.map (CLet [] vars Dict.empty effectCons)
+            checkMapHelperWithIdsProg "subMap" home sub CSaveTheEnvironment
+                |> Prog.andThenS (checkMapHelperWithIdsProg "cmdMap" home cmd)
+                |> Prog.mapS (CLet [] vars Dict.empty effectCons)
 
 
-{-| Stack-safe version of checkMap using the DSL.
--}
-checkMapProgHelper : Name -> IO.Canonical -> Name -> Constraint -> Prog Constraint
-checkMapProgHelper name home tipe constraint =
-    Prog.opMkFlexVar
-        |> Prog.andThen
+checkMapHelperWithIdsProg : Name -> IO.Canonical -> Name -> Constraint -> ProgS Expr.ExprIdState Constraint
+checkMapHelperWithIdsProg name home tipe constraint =
+    Prog.opMkFlexVarS
+        |> Prog.andThenS
             (\a ->
-                Prog.opMkFlexVar
-                    |> Prog.map
+                Prog.opMkFlexVarS
+                    |> Prog.mapS
                         (\b ->
                             let
                                 mapType : Type

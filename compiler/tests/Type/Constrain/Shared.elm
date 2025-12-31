@@ -12,7 +12,8 @@ import Compiler.AST.Canonical as Can
 import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Reporting.Annotation as A
-import Compiler.Type.Constrain.Module as Constrain
+import Compiler.Type.Constrain.Erased.Module as ConstrainErased
+import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Solve as Solve
 import Data.Map as Dict exposing (Dict)
 import Expect
@@ -96,7 +97,7 @@ expectEquivalentTypeChecking modul =
 -}
 runStandardPath : Can.Module -> IO.IO (Result Int (Dict String Name.Name Can.Annotation))
 runStandardPath modul =
-    Constrain.constrain modul
+    ConstrainErased.constrain modul
         |> IO.andThen Solve.run
         |> IO.map
             (\result ->
@@ -114,7 +115,7 @@ Returns both annotations and the nodeTypes map.
 -}
 runWithIdsPath : Can.Module -> IO.IO (Result Int { annotations : Dict String Name.Name Can.Annotation, nodeTypes : Dict Int Int Can.Type })
 runWithIdsPath modul =
-    Constrain.constrainWithIds modul
+    ConstrainTyped.constrainWithIds modul
         |> IO.andThen
             (\( constraint, nodeVars ) ->
                 Solve.runWithIds constraint nodeVars

@@ -37,7 +37,7 @@ import Compiler.Optimize.Typed.Module as TypedOptimize
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Reporting.Result as Result
-import Compiler.Type.Constrain.Module as Constrain
+import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Solve as Solve
 import Data.Map as Dict exposing (Dict)
 import Expect
@@ -114,7 +114,7 @@ expectMonomorphization srcModule =
 
 runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict String Name.Name Can.Annotation, nodeTypes : Dict Int Int Can.Type })
 runWithIdsTypeCheck modul =
-    Constrain.constrainWithIds modul
+    ConstrainTyped.constrainWithIds modul
         |> IO.andThen
             (\( constraint, nodeVars ) ->
                 Solve.runWithIds constraint nodeVars

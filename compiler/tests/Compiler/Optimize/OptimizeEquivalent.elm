@@ -35,7 +35,8 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Reporting.Error.Canonicalize as CanError
 import Compiler.Reporting.Result as Result
-import Compiler.Type.Constrain.Module as Constrain
+import Compiler.Type.Constrain.Erased.Module as ConstrainErased
+import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Solve as Solve
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
@@ -129,7 +130,7 @@ expectEquivalentOptimization srcModule =
 
 runStandardTypeCheck : Can.Module -> IO.IO (Result Int (Dict String Name.Name Can.Annotation))
 runStandardTypeCheck modul =
-    Constrain.constrain modul
+    ConstrainErased.constrain modul
         |> IO.andThen Solve.run
         |> IO.map
             (\result ->
@@ -144,7 +145,7 @@ runStandardTypeCheck modul =
 
 runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict String Name.Name Can.Annotation, nodeTypes : Dict Int Int Can.Type })
 runWithIdsTypeCheck modul =
-    Constrain.constrainWithIds modul
+    ConstrainTyped.constrainWithIds modul
         |> IO.andThen
             (\( constraint, nodeVars ) ->
                 Solve.runWithIds constraint nodeVars

@@ -5,6 +5,8 @@ module Compiler.PackageCompilation exposing
     , parseModule
     , compileModule
     , compileModulesInOrder
+    , monomorphize
+    , generateMLIR
     , errorToString
     , discrepancyToString
     )
@@ -40,6 +42,11 @@ This ensures the standard JS pathway and the MLIR pathway behave consistently.
 @docs compileModule, compileModulesInOrder
 
 
+# Typed Pathway - Monomorphization and MLIR
+
+@docs monomorphize, generateMLIR
+
+
 # Error Formatting
 
 @docs errorToString, discrepancyToString
@@ -47,6 +54,7 @@ This ensures the standard JS pathway and the MLIR pathway behave consistently.
 -}
 
 import Compiler.AST.Canonical as Can
+import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedCanonical as TCan
@@ -58,6 +66,10 @@ import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
+import Compiler.Generate.CodeGen as CodeGen
+import Compiler.Generate.CodeGen.MLIR as MLIR
+import Compiler.Generate.Mode as Mode
+import Compiler.Generate.Monomorphize as Monomorphize
 import Compiler.Nitpick.PatternMatches as PatternMatches
 import Compiler.Optimize.Erased.Module as Optimize
 import Compiler.Optimize.Typed.KernelTypes as KernelTypes
@@ -70,7 +82,8 @@ import Compiler.Reporting.Error.Main as MainError
 import Compiler.Reporting.Error.Syntax as Syntax
 import Compiler.Reporting.Error.Type as TypeError
 import Compiler.Reporting.Result as RResult
-import Compiler.Type.Constrain.Module as Type
+import Compiler.Type.Constrain.Erased.Module as TypeErased
+import Compiler.Type.Constrain.Typed.Module as TypeTyped
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Type
 import Data.Map as Dict exposing (Dict)
@@ -106,6 +119,8 @@ type CompileError
     | TypeError (NE.Nonempty TypeError.Error)
     | PatternError (NE.Nonempty PatternMatches.Error)
     | OptimizeError (OneOrMore.OneOrMore MainError.Error)
+    | MonomorphizeError String
+    | MLIRGenerationError String
     | PathwayMismatch PathwayDiscrepancy
 
 
@@ -374,7 +389,7 @@ This is the JS backend pathway.
 -}
 typeCheckErased : Can.Module -> Result (NE.Nonempty TypeError.Error) (Dict String Name.Name Can.Annotation)
 typeCheckErased canonical =
-    Type.constrain canonical
+    TypeErased.constrain canonical
         |> TypeCheck.andThen Type.run
         |> TypeCheck.unsafePerformIO
 
@@ -388,7 +403,7 @@ typeCheckTyped : Can.Module -> Result (NE.Nonempty TypeError.Error) TypeCheckTyp
 typeCheckTyped canonical =
     let
         ioResult =
-            Type.constrainWithIds canonical
+            TypeTyped.constrainWithIds canonical
                 |> TypeCheck.andThen
                     (\( constraint, nodeVars ) ->
                         Type.runWithIds constraint nodeVars
@@ -452,6 +467,94 @@ optimizeTyped annotations nodeTypes kernelEnv tcanModule =
 
 
 -- ============================================================================
+-- TYPED PATHWAY - MONOMORPHIZATION AND MLIR
+-- ============================================================================
+
+
+{-| Monomorphize the typed compilation result.
+
+This takes a CompileResult and runs the typed pathway through monomorphization,
+producing a MonoGraph that can be used for MLIR code generation.
+
+-}
+monomorphize : CompileResult -> Result CompileError Mono.MonoGraph
+monomorphize result =
+    let
+        globalGraph =
+            TOpt.addLocalGraph result.typedObjects TOpt.emptyGlobalGraph
+    in
+    case monomorphizeAny globalGraph of
+        Ok monoGraph ->
+            Ok monoGraph
+
+        Err errMsg ->
+            Err (MonomorphizeError errMsg)
+
+
+{-| Monomorphize using the first defined function as entry point.
+
+This is useful for testing when the entry point name is not known in advance.
+Test modules use various names like "testValue", etc.
+
+-}
+monomorphizeAny : TOpt.GlobalGraph -> Result String Mono.MonoGraph
+monomorphizeAny (TOpt.GlobalGraph nodes _ _) =
+    case findAnyEntryPoint nodes of
+        Nothing ->
+            Err "No function found in graph"
+
+        Just ( TOpt.Global _ name, _ ) ->
+            Monomorphize.monomorphize name (TOpt.GlobalGraph nodes Dict.empty Dict.empty)
+
+
+{-| Find any entry point in the global graph (the first defined function).
+-}
+findAnyEntryPoint : Dict (List String) TOpt.Global TOpt.Node -> Maybe ( TOpt.Global, Can.Type )
+findAnyEntryPoint nodes =
+    Dict.foldl TOpt.compareGlobal
+        (\global node acc ->
+            case acc of
+                Just _ ->
+                    acc
+
+                Nothing ->
+                    case node of
+                        TOpt.Define _ _ tipe ->
+                            Just ( global, tipe )
+
+                        TOpt.TrackedDefine _ _ _ tipe ->
+                            Just ( global, tipe )
+
+                        _ ->
+                            Nothing
+        )
+        Nothing
+        nodes
+
+
+{-| Generate MLIR code from a monomorphized graph.
+
+Returns the MLIR output as a string.
+
+-}
+generateMLIR : Mono.MonoGraph -> String
+generateMLIR monoGraph =
+    let
+        config =
+            { sourceMaps = CodeGen.NoSourceMaps
+            , leadingLines = 0
+            , mode = Mode.Dev Nothing
+            , graph = monoGraph
+            }
+
+        output =
+            MLIR.backend.generate config
+    in
+    CodeGen.outputToString output
+
+
+
+-- ============================================================================
 -- ERROR FORMATTING
 -- ============================================================================
 
@@ -503,6 +606,12 @@ errorToString error =
                     List.length errorList
             in
             "Optimization error (" ++ String.fromInt count ++ " error(s))"
+
+        MonomorphizeError msg ->
+            "Monomorphization error: " ++ msg
+
+        MLIRGenerationError msg ->
+            "MLIR generation error: " ++ msg
 
         PathwayMismatch discrepancy ->
             "PATHWAY MISMATCH: " ++ discrepancyToString discrepancy

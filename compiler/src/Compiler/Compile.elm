@@ -46,7 +46,8 @@ import Compiler.Reporting.Error as E
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Reporting.Render.Type.Localizer as Localizer
 import Compiler.Reporting.Result as ReportingResult
-import Compiler.Type.Constrain.Module as Type
+import Compiler.Type.Constrain.Erased.Module as TypeErased
+import Compiler.Type.Constrain.Typed.Module as TypeTyped
 import Compiler.Type.Solve as Type
 import Data.Map exposing (Dict)
 import System.TypeCheck.IO as TypeCheck
@@ -194,7 +195,7 @@ canonicalize pkg ifaces modul =
 
 typeCheck : Src.Module -> Can.Module -> Result E.Error (Dict String Name Can.Annotation)
 typeCheck modul canonical =
-    case Type.constrain canonical |> TypeCheck.andThen Type.run |> TypeCheck.unsafePerformIO of
+    case TypeErased.constrain canonical |> TypeCheck.andThen Type.run |> TypeCheck.unsafePerformIO of
         Ok annotations ->
             Ok annotations
 
@@ -230,7 +231,7 @@ typeCheckTyped :
 typeCheckTyped modul canonical =
     let
         ioResult =
-            Type.constrainWithIds canonical
+            TypeTyped.constrainWithIds canonical
                 |> TypeCheck.andThen
                     (\( constraint, nodeVars ) ->
                         Type.runWithIds constraint nodeVars
