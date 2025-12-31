@@ -598,8 +598,28 @@ postSolveCall annotations exprId func args nodeTypes0 kernel0 =
                     in
                     ( nodeTypes2, kernel2 )
 
+                Can.VarCtor _ _ _ _ ctorAnnotation ->
+                    -- Constructor call: check if any args are VarKernel
+                    -- If so, use the constructor's annotation to infer kernel types
+                    if hasKernelArg args then
+                        postSolveCallWithCtorKernelArgs annotations exprId ctorAnnotation func args nodeTypes0 kernel0
+
+                    else
+                        -- No kernel args; recurse normally
+                        let
+                            ( nodeTypes1, kernel1 ) =
+                                postSolveExpr annotations func nodeTypes0 kernel0
+
+                            ( nodeTypes2, kernel2 ) =
+                                List.foldl
+                                    (\arg ( nt, ke ) -> postSolveExpr annotations arg nt ke)
+                                    ( nodeTypes1, kernel1 )
+                                    args
+                        in
+                        ( nodeTypes2, kernel2 )
+
                 _ ->
-                    -- Non-kernel callee: recurse into both func and args normally
+                    -- Non-kernel, non-ctor callee: recurse into both func and args normally
                     let
                         ( nodeTypes1, kernel1 ) =
                             postSolveExpr annotations func nodeTypes0 kernel0
@@ -906,3 +926,342 @@ postSolveAccessor _ exprId field nodeTypes0 kernel0 =
             Dict.insert Basics.identity exprId accessorType nodeTypes0
     in
     ( nodeTypes1, kernel0 )
+
+
+
+-- ====== KERNEL ARGUMENT TYPE INFERENCE ======
+
+
+{-| Check if any argument in a list is a direct VarKernel expression.
+-}
+hasKernelArg : List Can.Expr -> Bool
+hasKernelArg args =
+    List.any isKernelExpr args
+
+
+isKernelExpr : Can.Expr -> Bool
+isKernelExpr (A.At _ info) =
+    case info.node of
+        Can.VarKernel _ _ ->
+            True
+
+        _ ->
+            False
+
+
+{-| Type variable substitution map.
+-}
+type alias Subst =
+    Dict String Name Can.Type
+
+
+{-| Unify a scheme type (with TVars) against a concrete type to extract substitutions.
+
+This is a one-way unifier: TVars in the scheme get bound to corresponding
+parts of the concrete type. Returns Nothing if types are incompatible.
+
+-}
+unifySchemeToType : Can.Type -> Can.Type -> Maybe Subst
+unifySchemeToType scheme concrete =
+    unifyHelp Dict.empty scheme concrete
+
+
+unifyHelp : Subst -> Can.Type -> Can.Type -> Maybe Subst
+unifyHelp subst schemeType concreteType =
+    case ( schemeType, concreteType ) of
+        ( Can.TVar v, t ) ->
+            case Dict.get Basics.identity v subst of
+                Nothing ->
+                    Just (Dict.insert Basics.identity v t subst)
+
+                Just existing ->
+                    if existing == t then
+                        Just subst
+
+                    else
+                        Nothing
+
+        ( Can.TType home1 name1 args1, Can.TType home2 name2 args2 ) ->
+            if home1 == home2 && name1 == name2 && List.length args1 == List.length args2 then
+                unifyList subst args1 args2
+
+            else
+                Nothing
+
+        ( Can.TLambda arg1 res1, Can.TLambda arg2 res2 ) ->
+            case unifyHelp subst arg1 arg2 of
+                Nothing ->
+                    Nothing
+
+                Just subst1 ->
+                    unifyHelp subst1 res1 res2
+
+        ( Can.TTuple a1 b1 cs1, Can.TTuple a2 b2 cs2 ) ->
+            if List.length cs1 == List.length cs2 then
+                case unifyHelp subst a1 a2 of
+                    Nothing ->
+                        Nothing
+
+                    Just subst1 ->
+                        case unifyHelp subst1 b1 b2 of
+                            Nothing ->
+                                Nothing
+
+                            Just subst2 ->
+                                unifyList subst2 cs1 cs2
+
+            else
+                Nothing
+
+        ( Can.TUnit, Can.TUnit ) ->
+            Just subst
+
+        ( Can.TRecord fields1 ext1, Can.TRecord fields2 ext2 ) ->
+            -- For records, try to unify field types
+            -- This is simplified; full record unification is more complex
+            if ext1 == ext2 then
+                let
+                    fieldList1 =
+                        Dict.toList compare fields1
+
+                    fieldList2 =
+                        Dict.toList compare fields2
+                in
+                if List.length fieldList1 == List.length fieldList2 then
+                    unifyFieldList subst fieldList1 fieldList2
+
+                else
+                    Nothing
+
+            else
+                Nothing
+
+        ( Can.TAlias _ _ _ (Can.Filled realType1), t2 ) ->
+            unifyHelp subst realType1 t2
+
+        ( t1, Can.TAlias _ _ _ (Can.Filled realType2) ) ->
+            unifyHelp subst t1 realType2
+
+        _ ->
+            -- For other cases, require structural equality
+            if schemeType == concreteType then
+                Just subst
+
+            else
+                Nothing
+
+
+unifyList : Subst -> List Can.Type -> List Can.Type -> Maybe Subst
+unifyList subst list1 list2 =
+    case ( list1, list2 ) of
+        ( [], [] ) ->
+            Just subst
+
+        ( h1 :: t1, h2 :: t2 ) ->
+            case unifyHelp subst h1 h2 of
+                Nothing ->
+                    Nothing
+
+                Just subst1 ->
+                    unifyList subst1 t1 t2
+
+        _ ->
+            Nothing
+
+
+unifyFieldList : Subst -> List ( Name, Can.FieldType ) -> List ( Name, Can.FieldType ) -> Maybe Subst
+unifyFieldList subst list1 list2 =
+    case ( list1, list2 ) of
+        ( [], [] ) ->
+            Just subst
+
+        ( ( name1, Can.FieldType _ type1 ) :: t1, ( name2, Can.FieldType _ type2 ) :: t2 ) ->
+            if name1 == name2 then
+                case unifyHelp subst type1 type2 of
+                    Nothing ->
+                        Nothing
+
+                    Just subst1 ->
+                        unifyFieldList subst1 t1 t2
+
+            else
+                Nothing
+
+        _ ->
+            Nothing
+
+
+{-| Apply a substitution to a type, replacing TVars with their bound types.
+-}
+applySubst : Subst -> Can.Type -> Can.Type
+applySubst subst tipe =
+    case tipe of
+        Can.TVar v ->
+            Dict.get Basics.identity v subst
+                |> Maybe.withDefault tipe
+
+        Can.TType home name args ->
+            Can.TType home name (List.map (applySubst subst) args)
+
+        Can.TLambda arg res ->
+            Can.TLambda (applySubst subst arg) (applySubst subst res)
+
+        Can.TTuple a b cs ->
+            Can.TTuple
+                (applySubst subst a)
+                (applySubst subst b)
+                (List.map (applySubst subst) cs)
+
+        Can.TRecord fields ext ->
+            Can.TRecord
+                (Dict.map (\_ (Can.FieldType idx t) -> Can.FieldType idx (applySubst subst t)) fields)
+                ext
+
+        Can.TAlias home name args aliasType ->
+            Can.TAlias home name
+                (List.map (\( n, t ) -> ( n, applySubst subst t )) args)
+                (case aliasType of
+                    Can.Holey t ->
+                        Can.Holey (applySubst subst t)
+
+                    Can.Filled t ->
+                        Can.Filled (applySubst subst t)
+                )
+
+        Can.TUnit ->
+            tipe
+
+
+{-| Peel TLambdas off a function type, returning the list of argument types
+and the final result type.
+
+    peelFunctionType (A -> B -> C) == ( [A, B], C )
+
+-}
+peelFunctionType : Can.Type -> ( List Can.Type, Can.Type )
+peelFunctionType tipe =
+    case tipe of
+        Can.TLambda arg res ->
+            let
+                ( restArgs, finalResult ) =
+                    peelFunctionType res
+            in
+            ( arg :: restArgs, finalResult )
+
+        _ ->
+            ( [], tipe )
+
+
+{-| Handle Call where callee is a VarCtor and some arguments may be VarKernel.
+
+We extract the constructor's type from its annotation, unify with the call's
+result type to get substitutions, then use those to infer kernel argument types.
+
+-}
+postSolveCallWithCtorKernelArgs :
+    Dict String Name Can.Annotation
+    -> Int
+    -> Can.Annotation
+    -> Can.Expr
+    -> List Can.Expr
+    -> NodeTypes
+    -> KernelTypes.KernelTypeEnv
+    -> ( NodeTypes, KernelTypes.KernelTypeEnv )
+postSolveCallWithCtorKernelArgs annotations exprId ctorAnnotation funcExpr args nodeTypes0 kernel0 =
+    let
+        -- Extract the constructor's function type from its annotation
+        (Can.Forall _ ctorType) =
+            ctorAnnotation
+
+        -- Peel the constructor type into argument types and result type
+        ( ctorArgTypes, ctorResType ) =
+            peelFunctionType ctorType
+
+        -- Get the call's result type from nodeTypes (Group A - solver computed it)
+        maybeCallType =
+            Dict.get Basics.identity exprId nodeTypes0
+
+        -- Try to compute substitution from unifying ctor result with call result
+        maybeSubst =
+            case maybeCallType of
+                Just callType ->
+                    unifySchemeToType ctorResType callType
+
+                Nothing ->
+                    Nothing
+    in
+    case maybeSubst of
+        Just subst ->
+            -- We have a substitution; process each argument
+            processCtorArgs annotations subst ctorArgTypes args funcExpr nodeTypes0 kernel0
+
+        Nothing ->
+            -- Couldn't compute substitution; fall back to normal processing
+            let
+                ( nodeTypes1, kernel1 ) =
+                    postSolveExpr annotations funcExpr nodeTypes0 kernel0
+            in
+            List.foldl
+                (\arg ( nt, ke ) -> postSolveExpr annotations arg nt ke)
+                ( nodeTypes1, kernel1 )
+                args
+
+
+{-| Process constructor arguments, inferring types for any VarKernel args.
+-}
+processCtorArgs :
+    Dict String Name Can.Annotation
+    -> Subst
+    -> List Can.Type
+    -> List Can.Expr
+    -> Can.Expr
+    -> NodeTypes
+    -> KernelTypes.KernelTypeEnv
+    -> ( NodeTypes, KernelTypes.KernelTypeEnv )
+processCtorArgs annotations subst ctorArgTypes args funcExpr nodeTypes0 kernel0 =
+    let
+        -- First, post-solve the callee (the VarCtor itself)
+        ( nodeTypes1, kernel1 ) =
+            postSolveExpr annotations funcExpr nodeTypes0 kernel0
+
+        -- Now process each argument, pairing with expected types
+        processArg : ( Can.Expr, Maybe Can.Type ) -> ( NodeTypes, KernelTypes.KernelTypeEnv ) -> ( NodeTypes, KernelTypes.KernelTypeEnv )
+        processArg ( arg, maybeExpectedType ) ( nt, ke ) =
+            case arg of
+                A.At _ argInfo ->
+                    case argInfo.node of
+                        Can.VarKernel home name ->
+                            if KernelTypes.hasEntry home name ke then
+                                -- Already have a type for this kernel; recurse normally
+                                postSolveExpr annotations arg nt ke
+
+                            else
+                                -- Try to infer from expected type
+                                case maybeExpectedType of
+                                    Just expectedType ->
+                                        let
+                                            kernelType =
+                                                applySubst subst expectedType
+
+                                            ke2 =
+                                                KernelTypes.insertFirstUsage home name kernelType ke
+
+                                            nt2 =
+                                                Dict.insert Basics.identity argInfo.id kernelType nt
+                                        in
+                                        ( nt2, ke2 )
+
+                                    Nothing ->
+                                        -- No expected type; recurse normally (may crash later)
+                                        postSolveExpr annotations arg nt ke
+
+                        _ ->
+                            -- Not a VarKernel; recurse normally
+                            postSolveExpr annotations arg nt ke
+
+        -- Pair args with their expected types (if we have enough ctor arg types)
+        argsWithTypes =
+            List.map2 (\arg t -> ( arg, Just t )) args ctorArgTypes
+                ++ List.map (\arg -> ( arg, Nothing )) (List.drop (List.length ctorArgTypes) args)
+    in
+    List.foldl processArg ( nodeTypes1, kernel1 ) argsWithTypes

@@ -1,6 +1,7 @@
 module Compiler.Optimize.Typed.KernelTypes exposing
     ( KernelTypeEnv
     , lookup
+    , hasEntry
     , insertFirstUsage
     , buildFunctionType
     )
