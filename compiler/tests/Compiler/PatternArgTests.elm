@@ -70,7 +70,7 @@ singleVariablePattern : (Src.Module -> Expectation) -> (() -> Expectation)
 singleVariablePattern expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "identity", [ pVar "x" ], varExpr "x" )
                 ]
     in
@@ -81,7 +81,7 @@ twoVariablePatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 twoVariablePatterns expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "first", [ pVar "x", pVar "y" ], varExpr "x" )
                 ]
     in
@@ -92,7 +92,7 @@ threeVariablePatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 threeVariablePatterns expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "second", [ pVar "a", pVar "b", pVar "c" ], varExpr "b" )
                 ]
     in
@@ -103,7 +103,7 @@ variablePatternReturningTuple : (Src.Module -> Expectation) -> (() -> Expectatio
 variablePatternReturningTuple expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "swap", [ pVar "x", pVar "y" ], tupleExpr (varExpr "y") (varExpr "x") )
                 ]
     in
@@ -114,7 +114,7 @@ variablePatternReturningList : (Src.Module -> Expectation) -> (() -> Expectation
 variablePatternReturningList expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "toList", [ pVar "x" ], listExpr [ varExpr "x" ] )
                 ]
     in
@@ -125,7 +125,7 @@ multipleFunctionsWithVariablePatterns : (Src.Module -> Expectation) -> (() -> Ex
 multipleFunctionsWithVariablePatterns expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "f", [ pVar "x" ], varExpr "x" )
                 , ( "g", [ pVar "y" ], varExpr "y" )
                 ]
@@ -153,7 +153,7 @@ singleWildcardPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 singleWildcardPattern expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "const", [ pAnything ], intExpr 42 )
                 ]
     in
@@ -164,7 +164,7 @@ wildcardWithVariable : (Src.Module -> Expectation) -> (() -> Expectation)
 wildcardWithVariable expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "const", [ pVar "x", pAnything ], varExpr "x" )
                 ]
     in
@@ -175,7 +175,7 @@ multipleWildcards : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleWildcards expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "zero", [ pAnything, pAnything, pAnything ], intExpr 0 )
                 ]
     in
@@ -216,7 +216,7 @@ tuple2Pattern : (Src.Module -> Expectation) -> (() -> Expectation)
 tuple2Pattern expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "fst", [ pTuple (pVar "x") (pVar "y") ], varExpr "x" )
                 ]
     in
@@ -227,7 +227,7 @@ tuple3Pattern : (Src.Module -> Expectation) -> (() -> Expectation)
 tuple3Pattern expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "snd3", [ pTuple3 (pVar "a") (pVar "b") (pVar "c") ], varExpr "b" )
                 ]
     in
@@ -238,7 +238,7 @@ tuplePatternWithWildcard : (Src.Module -> Expectation) -> (() -> Expectation)
 tuplePatternWithWildcard expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "snd", [ pTuple pAnything (pVar "y") ], varExpr "y" )
                 ]
     in
@@ -249,7 +249,7 @@ nestedTuplePattern : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedTuplePattern expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "deep", [ pTuple (pTuple (pVar "a") (pVar "b")) (pVar "c") ], varExpr "a" )
                 ]
     in
@@ -272,7 +272,7 @@ multipleTuplePatternArgs : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleTuplePatternArgs expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "addPairs"
                   , [ pTuple (pVar "a") (pVar "b"), pTuple (pVar "c") (pVar "d") ]
                   , tupleExpr (varExpr "a") (varExpr "c")
@@ -304,7 +304,7 @@ singleFieldRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 singleFieldRecordPattern expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "getX", [ pRecord [ "x" ] ], varExpr "x" )
                 ]
     in
@@ -315,7 +315,7 @@ multiFieldRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 multiFieldRecordPattern expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "getXY", [ pRecord [ "x", "y" ] ], tupleExpr (varExpr "x") (varExpr "y") )
                 ]
     in
@@ -338,7 +338,7 @@ recordPatternWithManyFields : (Src.Module -> Expectation) -> (() -> Expectation)
 recordPatternWithManyFields expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "getAll", [ pRecord [ "a", "b", "c", "d", "e" ] ], varExpr "a" )
                 ]
     in
@@ -349,7 +349,7 @@ multipleRecordPatternArgs : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleRecordPatternArgs expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "combine"
                   , [ pRecord [ "x" ], pRecord [ "y" ] ]
                   , tupleExpr (varExpr "x") (varExpr "y")
@@ -363,7 +363,7 @@ recordPatternWithVariable : (Src.Module -> Expectation) -> (() -> Expectation)
 recordPatternWithVariable expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "extract", [ pRecord [ "value" ], pVar "default" ], varExpr "value" )
                 ]
     in
@@ -390,7 +390,7 @@ consPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 consPattern expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "head", [ pCons (pVar "h") (pVar "t") ], varExpr "h" )
                 ]
     in
@@ -401,7 +401,7 @@ fixedListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 fixedListPattern expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "firstTwo", [ pList [ pVar "a", pVar "b" ] ], tupleExpr (varExpr "a") (varExpr "b") )
                 ]
     in
@@ -412,7 +412,7 @@ nestedConsPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedConsPattern expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "secondElem", [ pCons pAnything (pCons (pVar "x") pAnything) ], varExpr "x" )
                 ]
     in
@@ -451,7 +451,7 @@ intLiteralPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 intLiteralPattern expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "isZero", [ pInt 0 ], strExpr "zero" )
                 ]
     in
@@ -462,7 +462,7 @@ stringLiteralPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 stringLiteralPattern expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "greet", [ pStr "hello" ], strExpr "hi" )
                 ]
     in
@@ -473,7 +473,7 @@ unitPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 unitPattern expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "unit", [ pUnit ], intExpr 0 )
                 ]
     in
@@ -484,7 +484,7 @@ multipleLiteralPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleLiteralPatterns expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "match", [ pInt 0, pStr "" ], intExpr 0 )
                 ]
     in
@@ -516,7 +516,7 @@ deeplyNestedTuplePattern expectFn _ =
                 (pTuple (pVar "c") (pVar "d"))
 
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "extract", [ pattern ], varExpr "a" )
                 ]
     in
@@ -530,7 +530,7 @@ mixedNestedPatterns expectFn _ =
             pTuple (pRecord [ "x" ]) (pCons (pVar "h") pAnything)
 
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "mixed", [ pattern ], tupleExpr (varExpr "x") (varExpr "h") )
                 ]
     in
@@ -547,7 +547,7 @@ tripleNestedPatterns expectFn _ =
                 (pCons (pVar "h") (pVar "t"))
 
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "complex", [ pattern ], varExpr "a" )
                 ]
     in
@@ -563,7 +563,7 @@ nestedWithWildcards expectFn _ =
                 (pTuple pAnything (pVar "y"))
 
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "corners", [ pattern ], tupleExpr (varExpr "x") (varExpr "y") )
                 ]
     in
@@ -590,7 +590,7 @@ fiveArgsWithMixedPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 fiveArgsWithMixedPatterns expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "fiveArgs"
                   , [ pVar "a", pTuple (pVar "b") (pVar "c"), pRecord [ "d" ], pAnything, pVar "e" ]
                   , varExpr "a"
@@ -604,7 +604,7 @@ allSamePatternType : (Src.Module -> Expectation) -> (() -> Expectation)
 allSamePatternType expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "allTuples"
                   , [ pTuple (pVar "a") (pVar "b")
                     , pTuple (pVar "c") (pVar "d")
@@ -621,7 +621,7 @@ allWildcards : (Src.Module -> Expectation) -> (() -> Expectation)
 allWildcards expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "ignoreAll", [ pAnything, pAnything, pAnything, pAnything ], intExpr 0 )
                 ]
     in
@@ -632,7 +632,7 @@ alternatingPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 alternatingPatterns expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "alternate"
                   , [ pVar "a", pAnything, pVar "b", pAnything, pVar "c" ]
                   , listExpr [ varExpr "a", varExpr "b", varExpr "c" ]

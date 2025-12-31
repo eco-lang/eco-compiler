@@ -62,8 +62,41 @@ errorToString error =
         CanError.Shadowing name _ _ ->
             "Shadowing: " ++ name
 
+        CanError.BadArity _ _ name expected got ->
+            "BadArity: " ++ name ++ " expected " ++ String.fromInt expected ++ " got " ++ String.fromInt got
+
+        CanError.DuplicateDecl name _ _ ->
+            "DuplicateDecl: " ++ name
+
+        CanError.DuplicatePattern _ name _ _ ->
+            "DuplicatePattern: " ++ name
+
+        CanError.AnnotationTooShort _ name _ _ ->
+            "AnnotationTooShort: " ++ name
+
+        CanError.Binop _ op _ ->
+            "Binop error: " ++ op
+
+        CanError.AmbiguousVar _ _ name _ _ ->
+            "AmbiguousVar: " ++ name
+
+        CanError.AmbiguousType _ _ name _ _ ->
+            "AmbiguousType: " ++ name
+
+        CanError.AmbiguousBinop _ name _ _ ->
+            "AmbiguousBinop: " ++ name
+
+        CanError.ExportNotFound _ _ name _ ->
+            "ExportNotFound: " ++ name
+
+        CanError.ImportNotFound _ name _ ->
+            "ImportNotFound: " ++ name
+
+        CanError.ImportExposingNotFound _ _ name _ ->
+            "ImportExposingNotFound: " ++ name
+
         _ ->
-            "Other error"
+            "Other error (unhandled)"
 
 
 

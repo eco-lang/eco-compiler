@@ -8,8 +8,11 @@ import Compiler.AST.Utils.Binop as Binop
 import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.Interface as I
+import Compiler.Elm.Interface.Bitwise as BitwiseInterface
+import Compiler.Elm.Interface.JsArray as JsArrayInterface
 import Compiler.Elm.Interface.List as ListInterface
 import Compiler.Elm.Interface.Maybe as MaybeInterface
+import Compiler.Elm.Interface.Tuple as TupleInterface
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Data.Map as Dict exposing (Dict)
@@ -27,14 +30,14 @@ basicsInterface : I.Interface
 basicsInterface =
     I.Interface
         { home = Pkg.core
-        , values = Dict.empty
+        , values = basicsValues
         , unions = basicsUnions
         , aliases = Dict.empty
         , binops = standardBinops
         }
 
 
-{-| Basic unions: Bool (True/False) and Int.
+{-| Basic unions: Bool (True/False), Int, and Float.
 -}
 basicsUnions : Dict String Name I.Union
 basicsUnions =
@@ -62,10 +65,20 @@ basicsUnions =
                 , numAlts = 0
                 , opts = Can.Normal
                 }
+
+        -- Float type (opaque, no constructors exposed)
+        floatUnion =
+            Can.Union
+                { vars = []
+                , alts = []
+                , numAlts = 0
+                , opts = Can.Normal
+                }
     in
     Dict.fromList identity
         [ ( "Bool", I.OpenUnion boolUnion )
         , ( "Int", I.ClosedUnion intUnion )
+        , ( "Float", I.ClosedUnion floatUnion )
         ]
 
 
@@ -137,6 +150,9 @@ standardBinops =
         aVar =
             Can.TVar "a"
 
+        bVar =
+            Can.TVar "b"
+
         -- Common types
         boolType =
             Can.TType ModuleName.basics "Bool" []
@@ -178,6 +194,14 @@ standardBinops =
         -- Bool -> Bool -> Bool
         boolBinType =
             Can.TLambda boolType (Can.TLambda boolType boolType)
+
+        -- a -> (a -> b) -> b (for |>)
+        pipeRType =
+            Can.TLambda aVar (Can.TLambda (Can.TLambda aVar bVar) bVar)
+
+        -- (a -> b) -> a -> b (for <|)
+        pipeLType =
+            Can.TLambda (Can.TLambda aVar bVar) (Can.TLambda aVar bVar)
     in
     Dict.fromList identity
         [ -- Arithmetic (precedence 6-7)
@@ -206,10 +230,14 @@ standardBinops =
 
         -- Cons (precedence 5)
         , binop "::" "cons" consType Binop.Right 5
+
+        -- Pipe (precedence 0)
+        , binop "|>" "apR" pipeRType Binop.Left 0
+        , binop "<|" "apL" pipeLType Binop.Right 0
         ]
 
 
-{-| Test environment with Basics, List, and Maybe module interfaces.
+{-| Test environment with Basics, List, Maybe, JsArray, Bitwise, and Tuple module interfaces.
 -}
 testIfaces : Dict String Name I.Interface
 testIfaces =
@@ -217,4 +245,101 @@ testIfaces =
         [ ( "Basics", basicsInterface )
         , ( "List", ListInterface.listInterface )
         , ( "Maybe", MaybeInterface.maybeInterface )
+        , ( "Elm.JsArray", JsArrayInterface.jsArrayInterface )
+        , ( "Bitwise", BitwiseInterface.bitwiseInterface )
+        , ( "Tuple", TupleInterface.tupleInterface )
+        ]
+
+
+{-| Helper to create a value annotation with collected free vars.
+-}
+mkAnnotation : Can.Type -> Can.Annotation
+mkAnnotation tipe =
+    Can.Forall (collectFreeVars tipe) tipe
+
+
+{-| Basics module function values needed by Array.elm.
+-}
+basicsValues : Dict String Name Can.Annotation
+basicsValues =
+    let
+        -- Type variables
+        numberVar =
+            Can.TVar "number"
+
+        aVar =
+            Can.TVar "a"
+
+        bVar =
+            Can.TVar "b"
+
+        -- Common types
+        intType =
+            Can.TType ModuleName.basics "Int" []
+
+        floatType =
+            Can.TType ModuleName.basics "Float" []
+
+        boolType =
+            Can.TType ModuleName.basics "Bool" []
+    in
+    Dict.fromList identity
+        [ -- remainderBy : Int -> Int -> Int
+          ( "remainderBy"
+          , mkAnnotation (Can.TLambda intType (Can.TLambda intType intType))
+          )
+
+        -- ceiling : Float -> Int
+        , ( "ceiling"
+          , mkAnnotation (Can.TLambda floatType intType)
+          )
+
+        -- floor : Float -> Int
+        , ( "floor"
+          , mkAnnotation (Can.TLambda floatType intType)
+          )
+
+        -- logBase : Float -> Float -> Float
+        , ( "logBase"
+          , mkAnnotation (Can.TLambda floatType (Can.TLambda floatType floatType))
+          )
+
+        -- toFloat : Int -> Float
+        , ( "toFloat"
+          , mkAnnotation (Can.TLambda intType floatType)
+          )
+
+        -- always : a -> b -> a
+        , ( "always"
+          , mkAnnotation (Can.TLambda aVar (Can.TLambda bVar aVar))
+          )
+
+        -- max : comparable -> comparable -> comparable
+        , ( "max"
+          , let
+                comparableVar =
+                    Can.TVar "comparable"
+            in
+            mkAnnotation (Can.TLambda comparableVar (Can.TLambda comparableVar comparableVar))
+          )
+
+        -- identity : a -> a
+        , ( "identity"
+          , mkAnnotation (Can.TLambda aVar aVar)
+          )
+
+        -- not : Bool -> Bool
+        , ( "not"
+          , mkAnnotation (Can.TLambda boolType boolType)
+          )
+
+        -- negate : number -> number
+        , ( "negate"
+          , mkAnnotation (Can.TLambda numberVar numberVar)
+          )
+
+        -- abs : number -> number
+        , ( "abs"
+          , mkAnnotation (Can.TLambda numberVar numberVar)
+          )
         ]

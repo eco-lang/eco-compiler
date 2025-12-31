@@ -116,7 +116,7 @@ generateDefsForNames : Scope -> List Name -> List ( Name, List Src.Pattern, Src.
 generateDefsForNames scope names accDefs =
     case names of
         [] ->
-            Fuzz.constant (B.makeModuleWithDefs (List.reverse accDefs))
+            Fuzz.constant (B.makeModuleWithDefs "Test" (List.reverse accDefs))
 
         name :: restNames ->
             topLevelDefBodyFuzzer scope name

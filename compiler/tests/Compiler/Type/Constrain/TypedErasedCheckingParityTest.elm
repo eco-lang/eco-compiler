@@ -9,6 +9,7 @@ appropriate expectation functions.
 
 import Compiler.AST.Source as Src
 import Compiler.AnnotatedTests as AnnotatedTests
+import Compiler.ArrayTest as ArrayTest
 import Compiler.AsPatternTests as AsPatternTests
 import Compiler.BinopTests as BinopTests
 import Compiler.CaseTests as CaseTests
@@ -44,6 +45,7 @@ suite =
     Test.describe "Equivalenve of type checking with and without ids"
         [ expectSuite expectEquivalentTypeChecking "check equivalently"
         , typeCheckFailsSuite
+        , arrayTestSuite
         ]
 
 
@@ -78,3 +80,8 @@ expectSuite expectFn condStr =
 typeCheckFailsSuite : Test
 typeCheckFailsSuite =
     TypeCheckFails.expectSuite expectEquivalentTypeCheckingFails "Equivalent type checking failures"
+
+
+arrayTestSuite : Test
+arrayTestSuite =
+    ArrayTest.expectSuite expectEquivalentTypeChecking "Array type variable scoping"

@@ -73,7 +73,7 @@ identityAnnotated expectFn _ =
             tLambda (tVar "a") (tVar "a")
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "identity"
                   , args = [ pVar "x" ]
                   , tipe = tipe
@@ -95,7 +95,7 @@ constAnnotated expectFn _ =
             tLambda (tVar "a") (tLambda (tVar "b") (tVar "a"))
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "const"
                   , args = [ pVar "x", pVar "y" ]
                   , tipe = tipe
@@ -117,7 +117,7 @@ boolIdentity expectFn _ =
             tLambda (tType "Bool" []) (tType "Bool" [])
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "boolIdentity"
                   , args = [ pVar "x" ]
                   , tipe = tipe
@@ -155,7 +155,7 @@ applyAnnotated expectFn _ =
                 (tLambda (tVar "a") (tVar "b"))
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "apply"
                   , args = [ pVar "f", pVar "x" ]
                   , tipe = tipe
@@ -184,7 +184,7 @@ applyWithUsage expectFn _ =
             tType "Bool" []
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "apply"
                   , args = [ pVar "f", pVar "x" ]
                   , tipe = applyType
@@ -217,7 +217,7 @@ flipAnnotated expectFn _ =
                 (tLambda (tVar "b") (tLambda (tVar "a") (tVar "c")))
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "flip"
                   , args = [ pVar "f", pVar "y", pVar "x" ]
                   , tipe = tipe
@@ -257,7 +257,7 @@ composeAnnotated expectFn _ =
                 )
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "compose"
                   , args = [ pVar "f", pVar "g", pVar "x" ]
                   , tipe = tipe
@@ -288,7 +288,7 @@ composeWithUsage expectFn _ =
             tType "Bool" []
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "compose"
                   , args = [ pVar "f", pVar "g", pVar "x" ]
                   , tipe = composeType
@@ -323,7 +323,7 @@ onAnnotated expectFn _ =
                 )
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "on"
                   , args = [ pVar "f", pVar "g", pVar "x", pVar "y" ]
                   , tipe = tipe
@@ -366,7 +366,7 @@ pairAnnotated expectFn _ =
                 (tLambda (tVar "b") (tTuple (tVar "a") (tVar "b")))
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "pair"
                   , args = [ pVar "x", pVar "y" ]
                   , tipe = tipe
@@ -388,7 +388,7 @@ wrapInTupleAnnotated expectFn _ =
             tLambda (tVar "a") (tTuple (tVar "a") (tVar "a"))
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "wrapInTuple"
                   , args = [ pVar "x" ]
                   , tipe = tipe
@@ -410,7 +410,7 @@ makePairAnnotated expectFn _ =
             tLambda (tVar "a") (tLambda (tVar "b") (tTuple (tVar "a") (tVar "b")))
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "makePair"
                   , args = [ pVar "x", pVar "y" ]
                   , tipe = tipe
@@ -432,7 +432,7 @@ constTupleAnnotated expectFn _ =
             tLambda (tVar "a") (tLambda (tVar "b") (tTuple (tVar "a") (tVar "a")))
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "constTuple"
                   , args = [ pVar "x", pVar "y" ]
                   , tipe = tipe
@@ -471,7 +471,7 @@ makeRecordAnnotated expectFn _ =
                 )
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "makeXY"
                   , args = [ pVar "x", pVar "y" ]
                   , tipe = tipe
@@ -494,7 +494,7 @@ makeRecordSameTypeAnnotated expectFn _ =
                 (tRecord [ ( "x", tVar "a" ), ( "y", tVar "a" ) ])
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "makeSame"
                   , args = [ pVar "val" ]
                   , tipe = tipe
@@ -530,7 +530,7 @@ duplicateAnnotated expectFn _ =
             tLambda (tVar "a") (tTuple (tVar "a") (tVar "a"))
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "duplicate"
                   , args = [ pVar "x" ]
                   , tipe = tipe
@@ -558,7 +558,7 @@ nestTupleAnnotated expectFn _ =
                 )
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "nest"
                   , args = [ pVar "x", pVar "y" ]
                   , tipe = tipe

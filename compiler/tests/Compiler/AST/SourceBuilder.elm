@@ -21,6 +21,7 @@ module Compiler.AST.SourceBuilder exposing
     , makeModule
     , makeModuleWithDefs
     , makeModuleWithTypedDefs
+    , makeModuleWithTypedDefsUnionsAliases
       -- Fuzzers
     , negateExpr
     , pAlias
@@ -46,8 +47,11 @@ module Compiler.AST.SourceBuilder exposing
     , tType
     , tUnit
     , tVar
-      -- Type alias
+      -- Type aliases for module building
     , TypedDef
+    , UnionDef
+    , UnionCtor
+    , AliasDef
     , tuple3Expr
     , tupleExpr
     , unitExpr
@@ -436,11 +440,41 @@ maybeImport =
         (c2 (Src.Open noComments noComments))
 
 
+{-| Import statement for List exposing everything.
+-}
+listImport : Src.Import
+listImport =
+    Src.Import
+        (c1 (A.At A.zero "List"))
+        Nothing
+        (c2 (Src.Open noComments noComments))
+
+
+{-| Import statement for Array exposing everything.
+-}
+arrayImport : Src.Import
+arrayImport =
+    Src.Import
+        (c1 (A.At A.zero "Array"))
+        Nothing
+        (c2 (Src.Open noComments noComments))
+
+
+{-| Import statement for Elm.JsArray as JsArray exposing everything.
+-}
+jsArrayImport : Src.Import
+jsArrayImport =
+    Src.Import
+        (c1 (A.At A.zero "Elm.JsArray"))
+        (Just (c2 "JsArray"))
+        (c2 (Src.Open noComments noComments))
+
+
 {-| Standard imports for test modules.
 -}
 standardImports : List Src.Import
 standardImports =
-    [ basicsImport, maybeImport ]
+    [ basicsImport, maybeImport, listImport, jsArrayImport ]
 
 
 {-| Create a simple module with a single top-level definition.
@@ -473,8 +507,8 @@ makeModule name expr =
 
 {-| Create a module with multiple definitions.
 -}
-makeModuleWithDefs : List ( Name, List Src.Pattern, Src.Expr ) -> Src.Module
-makeModuleWithDefs defs =
+makeModuleWithDefs : Name -> List ( Name, List Src.Pattern, Src.Expr ) -> Src.Module
+makeModuleWithDefs moduleName defs =
     let
         values =
             List.map
@@ -493,7 +527,7 @@ makeModuleWithDefs defs =
     in
     Src.Module
         { syntaxVersion = SV.Elm
-        , name = Just (A.At A.zero "Test")
+        , name = Just (A.At A.zero moduleName)
         , exports = A.At A.zero (Src.Open noComments noComments)
         , docs = Src.NoDocs A.zero []
         , imports = [ basicsImport ]
@@ -517,8 +551,8 @@ type alias TypedDef =
 
 {-| Create a module with multiple typed definitions.
 -}
-makeModuleWithTypedDefs : List TypedDef -> Src.Module
-makeModuleWithTypedDefs defs =
+makeModuleWithTypedDefs : Name -> List TypedDef -> Src.Module
+makeModuleWithTypedDefs moduleName defs =
     let
         values =
             List.map
@@ -537,7 +571,7 @@ makeModuleWithTypedDefs defs =
     in
     Src.Module
         { syntaxVersion = SV.Elm
-        , name = Just (A.At A.zero "Test")
+        , name = Just (A.At A.zero moduleName)
         , exports = A.At A.zero (Src.Open noComments noComments)
         , docs = Src.NoDocs A.zero []
         , imports = standardImports
@@ -599,6 +633,111 @@ tRecord fields =
             List.map (\( name, t ) -> c2 ( c1 (A.At A.zero name), c1 t )) fields
     in
     A.At A.zero (Src.TRecord fieldList Nothing noComments)
+
+
+
+-- ============================================================================
+-- UNION AND ALIAS BUILDERS
+-- ============================================================================
+
+
+{-| A union type constructor: name and list of argument types.
+-}
+type alias UnionCtor =
+    { name : Name
+    , args : List Src.Type
+    }
+
+
+{-| A union type definition: name, type parameters, and constructors.
+-}
+type alias UnionDef =
+    { name : Name
+    , args : List Name
+    , ctors : List UnionCtor
+    }
+
+
+{-| Create a Source union type from a definition.
+-}
+makeUnion : UnionDef -> A.Located Src.Union
+makeUnion def =
+    let
+        ctors =
+            List.map
+                (\ctor ->
+                    c2Eol ( A.At A.zero ctor.name, List.map c1 ctor.args )
+                )
+                def.ctors
+    in
+    A.At A.zero
+        (Src.Union
+            (c2 (A.At A.zero def.name))
+            (List.map (\arg -> c1 (A.At A.zero arg)) def.args)
+            ctors
+        )
+
+
+{-| A type alias definition: name, type parameters, and aliased type.
+-}
+type alias AliasDef =
+    { name : Name
+    , args : List Name
+    , tipe : Src.Type
+    }
+
+
+{-| Create a Source type alias from a definition.
+-}
+makeAlias : AliasDef -> A.Located Src.Alias
+makeAlias def =
+    A.At A.zero
+        (Src.Alias
+            { comments = noComments
+            , name = c2 (A.At A.zero def.name)
+            , args = List.map (\arg -> c1 (A.At A.zero arg)) def.args
+            , tipe = c1 def.tipe
+            }
+        )
+
+
+{-| Create a module with typed definitions, unions, and aliases.
+-}
+makeModuleWithTypedDefsUnionsAliases :
+    Name
+    -> List TypedDef
+    -> List UnionDef
+    -> List AliasDef
+    -> Src.Module
+makeModuleWithTypedDefsUnionsAliases moduleName defs unions aliases =
+    let
+        values =
+            List.map
+                (\{ name, args, tipe, body } ->
+                    A.At A.zero
+                        (Src.Value
+                            { comments = noComments
+                            , name = c1 (A.At A.zero name)
+                            , args = List.map c1 args
+                            , body = c1 body
+                            , tipe = Just (c1 (c2 tipe))
+                            }
+                        )
+                )
+                defs
+    in
+    Src.Module
+        { syntaxVersion = SV.Elm
+        , name = Just (A.At A.zero moduleName)
+        , exports = A.At A.zero (Src.Open noComments noComments)
+        , docs = Src.NoDocs A.zero []
+        , imports = standardImports
+        , values = values
+        , unions = List.map makeUnion unions
+        , aliases = List.map makeAlias aliases
+        , infixes = []
+        , effects = Src.NoEffects
+        }
 
 
 

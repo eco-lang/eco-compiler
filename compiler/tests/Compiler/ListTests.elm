@@ -507,7 +507,7 @@ testConcatMap expectFn _ =
                 (tLambda (tType "List" [ tVar "a" ]) (tType "List" [ tVar "b" ]))
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "concat"
                   , args = [ pVar "xs" ]
                   , tipe = concatType
@@ -570,7 +570,7 @@ testIndexedMap expectFn _ =
             tLambda (tType "List" [ tVar "a" ]) (tType "Int" [])
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "map2"
                   , args = [ pVar "f", pVar "xs", pVar "ys" ]
                   , tipe = map2Type
@@ -635,7 +635,7 @@ testFilter expectFn _ =
                 (tLambda (tType "List" [ tVar "a" ]) (tType "List" [ tVar "a" ]))
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "foldr"
                   , args = [ pVar "f", pVar "init", pVar "xs" ]
                   , tipe = foldrType
@@ -713,7 +713,7 @@ testFilterMap expectFn _ =
                 (tLambda (tType "List" [ tVar "a" ]) (tType "List" [ tVar "a" ]))
 
         modul =
-            makeModuleWithTypedDefs
+            makeModuleWithTypedDefs "Test"
                 [ { name = "foldr"
                   , args = [ pVar "f", pVar "init", pVar "xs" ]
                   , tipe = foldrType

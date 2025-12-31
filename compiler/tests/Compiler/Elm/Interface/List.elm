@@ -4,6 +4,7 @@ module Compiler.Elm.Interface.List exposing (listInterface)
 -}
 
 import Compiler.AST.Canonical as Can
+import Compiler.AST.Utils.Binop as Binop
 import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.Interface as I
@@ -27,8 +28,36 @@ listInterface =
         , values = listValues
         , unions = Dict.empty
         , aliases = Dict.empty
-        , binops = Dict.empty
+        , binops = listBinops
         }
+
+
+{-| List binary operators - specifically the :: (cons) operator.
+-}
+listBinops : Dict String Name I.Binop
+listBinops =
+    let
+        aVar =
+            Can.TVar "a"
+
+        listA =
+            Can.TType ModuleName.list "List" [ aVar ]
+
+        -- a -> List a -> List a
+        consType =
+            Can.TLambda aVar (Can.TLambda listA listA)
+
+        consBinop =
+            I.Binop
+                { name = "cons"
+                , annotation = Can.Forall (Dict.singleton identity "a" ()) consType
+                , associativity = Binop.Right
+                , precedence = 5
+                }
+    in
+    Dict.fromList identity
+        [ ( "::", consBinop )
+        ]
 
 
 {-| Collect all free type variables from a canonical type.
@@ -169,6 +198,10 @@ listValues =
         -- concat : List (List a) -> List a
         concatType =
             Can.TLambda listListA listA
+
+        -- drop : Int -> List a -> List a
+        dropType =
+            Can.TLambda intType (Can.TLambda listA listA)
     in
     Dict.fromList identity
         [ ( "cons", mkAnnotation consType )
@@ -180,4 +213,5 @@ listValues =
         , ( "range", mkAnnotation rangeType )
         , ( "length", mkAnnotation lengthType )
         , ( "concat", mkAnnotation concatType )
+        , ( "drop", mkAnnotation dropType )
         ]

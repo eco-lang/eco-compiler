@@ -67,7 +67,7 @@ aliasOnVariable : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnVariable expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "dup", [ pAlias (pVar "x") "y" ], tupleExpr (varExpr "x") (varExpr "y") )
                 ]
     in
@@ -78,7 +78,7 @@ aliasOnWildcard : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnWildcard expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "capture", [ pAlias pAnything "x" ], varExpr "x" )
                 ]
     in
@@ -89,7 +89,7 @@ multipleAliases : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleAliases expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "both"
                   , [ pAlias (pVar "a") "x", pAlias (pVar "b") "y" ]
                   , tupleExpr (varExpr "x") (varExpr "y")
@@ -131,7 +131,7 @@ aliasOn2Tuple : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOn2Tuple expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "withPair"
                   , [ pAlias (pTuple (pVar "a") (pVar "b")) "pair" ]
                   , tupleExpr (varExpr "pair") (varExpr "a")
@@ -145,7 +145,7 @@ aliasOn3Tuple : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOn3Tuple expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "withTriple"
                   , [ pAlias (pTuple3 (pVar "a") (pVar "b") (pVar "c")) "triple" ]
                   , varExpr "triple"
@@ -162,7 +162,7 @@ nestedAliasInTuple expectFn _ =
             pTuple (pAlias (pVar "x") "first") (pAlias (pVar "y") "second")
 
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "parts", [ pattern ], listExpr [ varExpr "first", varExpr "second" ] )
                 ]
     in
@@ -176,7 +176,7 @@ aliasOnNestedTuple expectFn _ =
             pAlias (pTuple (pTuple (pVar "a") (pVar "b")) (pVar "c")) "whole"
 
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "deep", [ pattern ], varExpr "whole" )
                 ]
     in
@@ -203,7 +203,7 @@ aliasOnRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnRecordPattern expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "withRecord"
                   , [ pAlias (pRecord [ "x", "y" ]) "point" ]
                   , tupleExpr (varExpr "point") (varExpr "x")
@@ -217,7 +217,7 @@ aliasOnSingleFieldRecord : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnSingleFieldRecord expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "getValue"
                   , [ pAlias (pRecord [ "value" ]) "wrapper" ]
                   , tupleExpr (varExpr "wrapper") (varExpr "value")
@@ -231,7 +231,7 @@ multipleRecordAliases : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleRecordAliases expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "combine"
                   , [ pAlias (pRecord [ "a" ]) "r1", pAlias (pRecord [ "b" ]) "r2" ]
                   , tupleExpr (varExpr "r1") (varExpr "r2")
@@ -245,7 +245,7 @@ aliasOnRecordWithManyFields : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnRecordWithManyFields expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "allFields"
                   , [ pAlias (pRecord [ "a", "b", "c", "d" ]) "rec" ]
                   , varExpr "rec"
@@ -275,7 +275,7 @@ aliasOnConsPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnConsPattern expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "withList"
                   , [ pAlias (pCons (pVar "h") (pVar "t")) "list" ]
                   , tupleExpr (varExpr "list") (varExpr "h")
@@ -289,7 +289,7 @@ aliasOnFixedListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasOnFixedListPattern expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "pairList"
                   , [ pAlias (pList [ pVar "a", pVar "b" ]) "both" ]
                   , varExpr "both"
@@ -306,7 +306,7 @@ nestedAliasInList expectFn _ =
             pCons (pAlias (pVar "h") "head") (pAlias (pVar "t") "tail")
 
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "parts", [ pattern ], tupleExpr (varExpr "head") (varExpr "tail") )
                 ]
     in
@@ -320,7 +320,7 @@ aliasOnNestedCons expectFn _ =
             pAlias (pCons (pVar "a") (pCons (pVar "b") (pVar "rest"))) "list"
 
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "twoOrMore", [ pattern ], varExpr "list" )
                 ]
     in
@@ -351,7 +351,7 @@ multipleLevelsOfAlias expectFn _ =
             pAlias (pAlias (pVar "x") "inner") "outer"
 
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "levels", [ pattern ], listExpr [ varExpr "x", varExpr "inner", varExpr "outer" ] )
                 ]
     in
@@ -367,7 +367,7 @@ aliasInDeeplyNestedStructure expectFn _ =
                 (pVar "c")
 
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "deep", [ pattern ], tupleExpr (varExpr "inner") (varExpr "a") )
                 ]
     in
@@ -386,7 +386,7 @@ aliasEverywhere expectFn _ =
                 "whole"
 
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "allAliased", [ pattern ], listExpr [ varExpr "whole", varExpr "first", varExpr "second" ] )
                 ]
     in
@@ -405,7 +405,7 @@ mixedNestedAliases expectFn _ =
                 "all"
 
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "mixed", [ pattern ], varExpr "all" )
                 ]
     in

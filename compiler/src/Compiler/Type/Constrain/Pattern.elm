@@ -96,6 +96,46 @@ patternToCategory node =
             E.PBool
 
 
+{-| Determine if a pattern needs a CPattern constraint.
+
+Patterns that DON'T need constraints (matching `add` behavior):
+
+  - PAnything: just returns state unchanged
+  - PVar: just updates headers, no structural constraint
+  - PAlias: delegates to inner pattern, no constraint for the alias itself
+
+All other patterns need CPattern constraints to enforce their structure.
+
+-}
+patternNeedsConstraint : Can.Pattern_ -> Bool
+patternNeedsConstraint node =
+    case node of
+        Can.PAnything ->
+            False
+
+        Can.PVar _ ->
+            False
+
+        Can.PAlias _ _ ->
+            False
+
+        _ ->
+            True
+
+
+{-| Try to extract a variable from a type.
+Returns Just var if the type is VarN var, Nothing otherwise.
+-}
+extractVarFromType : Type -> Maybe IO.Variable
+extractVarFromType tipe =
+    case tipe of
+        Type.VarN v ->
+            Just v
+
+        _ ->
+            Nothing
+
+
 
 -- ACTUALLY ADD CONSTRAINTS
 -- The constraints are stored in reverse order so that adding a new
@@ -143,40 +183,86 @@ add pattern expectation state =
 Like `add` but also tracks pattern node IDs to solver variables in the
 NodeIdState, enabling later retrieval of pattern types from the solver.
 
+IMPORTANT: This function now matches `add` in constraint generation behavior.
+For patterns that don't need constraints (PAnything, PVar, PAlias), we do NOT
+add extra CPattern constraints or flex variables to the state. We only record
+the pattern's type variable in NodeIds for later type retrieval.
+
 Uses the stack-safe PatternProg DSL internally.
 
 -}
 addWithIds : Can.Pattern -> E.PExpected Type -> State -> NodeIds.NodeIdState -> IO ( State, NodeIds.NodeIdState )
 addWithIds ((A.At region patternInfo) as pattern) expectation state nodeState0 =
-    Type.mkFlexVar
-        |> IO.andThen
-            (\patVar ->
+    if patternNeedsConstraint patternInfo.node then
+        -- CONSTRAINED path: create patVar, add CPattern constraint, add to state
+        -- This matches the behavior of `add` for patterns like PUnit, PTuple, etc.
+        Type.mkFlexVar
+            |> IO.andThen
+                (\patVar ->
+                    let
+                        patType : Type
+                        patType =
+                            Type.VarN patVar
+
+                        eqCon : Type.Constraint
+                        eqCon =
+                            Type.CPattern region (patternToCategory patternInfo.node) patType expectation
+
+                        -- extend the pattern state with this new variable + constraint
+                        (State headers vars revCons) =
+                            state
+
+                        stateWithPatVar : State
+                        stateWithPatVar =
+                            State headers (patVar :: vars) (eqCon :: revCons)
+
+                        -- record ID → variable mapping
+                        nodeState1 : NodeIds.NodeIdState
+                        nodeState1 =
+                            NodeIds.recordNodeVar patternInfo.id patVar nodeState0
+                    in
+                    -- Now generate all the usual pattern constraints using the DSL
+                    addHelpWithIdsProg region patternInfo.node expectation stateWithPatVar nodeState1
+                        |> runPatternProgWithIds
+                )
+
+    else
+        -- UNCONSTRAINED path: just record in NodeIds, no extra constraint or var in state
+        -- This matches the behavior of `add` for PAnything, PVar, PAlias
+        let
+            -- Try to extract the variable directly from the expectation type
+            -- For function args, expectation is typically PNoExpectation (VarN argVar)
+            -- so we can record argVar directly - it will have the correct type after solving
+            expectedType : Type
+            expectedType =
+                getType expectation
+        in
+        case extractVarFromType expectedType of
+            Just existingVar ->
+                -- Record the existing variable from expectation
                 let
-                    patType : Type
-                    patType =
-                        Type.VarN patVar
-
-                    eqCon : Type.Constraint
-                    eqCon =
-                        Type.CPattern region (patternToCategory patternInfo.node) patType expectation
-
-                    -- extend the pattern state with this new variable + constraint
-                    (State headers vars revCons) =
-                        state
-
-                    stateWithPatVar : State
-                    stateWithPatVar =
-                        State headers (patVar :: vars) (eqCon :: revCons)
-
-                    -- record ID → variable mapping
                     nodeState1 : NodeIds.NodeIdState
                     nodeState1 =
-                        NodeIds.recordNodeVar patternInfo.id patVar nodeState0
+                        NodeIds.recordNodeVar patternInfo.id existingVar nodeState0
                 in
-                -- Now generate all the usual pattern constraints using the DSL
-                addHelpWithIdsProg region patternInfo.node expectation stateWithPatVar nodeState1
+                addHelpWithIdsProg region patternInfo.node expectation state nodeState1
                     |> runPatternProgWithIds
-            )
+
+            Nothing ->
+                -- Fallback: create a var just for NodeIds tracking (unconstrained)
+                -- PostSolve will need to compute the type from context
+                Type.mkFlexVar
+                    |> IO.andThen
+                        (\patVar ->
+                            let
+                                nodeState1 : NodeIds.NodeIdState
+                                nodeState1 =
+                                    NodeIds.recordNodeVar patternInfo.id patVar nodeState0
+                            in
+                            -- Note: we do NOT add patVar to state.vars or add a constraint
+                            addHelpWithIdsProg region patternInfo.node expectation state nodeState1
+                                |> runPatternProgWithIds
+                        )
 
 
 
@@ -697,33 +783,72 @@ addCtorArgsProg region ctorName freeVarDict state args =
 -- ===== WithIds versions =====
 
 
+{-| DSL version of addWithIds for recursive pattern processing.
+
+Like addWithIds, this conditionally adds constraints only for patterns that
+need them, matching the behavior of `add`/`addProg`.
+
+-}
 addWithIdsProg : Can.Pattern -> E.PExpected Type -> State -> NodeIds.NodeIdState -> PatternProg ( State, NodeIds.NodeIdState )
 addWithIdsProg ((A.At region patternInfo) as pattern) expectation state nodeState0 =
-    pMkFlexVar
-        |> pAndThen
-            (\patVar ->
+    if patternNeedsConstraint patternInfo.node then
+        -- CONSTRAINED path: create patVar, add CPattern constraint, add to state
+        pMkFlexVar
+            |> pAndThen
+                (\patVar ->
+                    let
+                        patType : Type
+                        patType =
+                            Type.VarN patVar
+
+                        eqCon : Type.Constraint
+                        eqCon =
+                            Type.CPattern region (patternToCategory patternInfo.node) patType expectation
+
+                        (State headers vars revCons) =
+                            state
+
+                        stateWithPatVar : State
+                        stateWithPatVar =
+                            State headers (patVar :: vars) (eqCon :: revCons)
+
+                        nodeState1 : NodeIds.NodeIdState
+                        nodeState1 =
+                            NodeIds.recordNodeVar patternInfo.id patVar nodeState0
+                    in
+                    addHelpWithIdsProg region patternInfo.node expectation stateWithPatVar nodeState1
+                )
+
+    else
+        -- UNCONSTRAINED path: just record in NodeIds, no extra constraint or var in state
+        let
+            expectedType : Type
+            expectedType =
+                getType expectation
+        in
+        case extractVarFromType expectedType of
+            Just existingVar ->
+                -- Record the existing variable from expectation
                 let
-                    patType : Type
-                    patType =
-                        Type.VarN patVar
-
-                    eqCon : Type.Constraint
-                    eqCon =
-                        Type.CPattern region (patternToCategory patternInfo.node) patType expectation
-
-                    (State headers vars revCons) =
-                        state
-
-                    stateWithPatVar : State
-                    stateWithPatVar =
-                        State headers (patVar :: vars) (eqCon :: revCons)
-
                     nodeState1 : NodeIds.NodeIdState
                     nodeState1 =
-                        NodeIds.recordNodeVar patternInfo.id patVar nodeState0
+                        NodeIds.recordNodeVar patternInfo.id existingVar nodeState0
                 in
-                addHelpWithIdsProg region patternInfo.node expectation stateWithPatVar nodeState1
-            )
+                addHelpWithIdsProg region patternInfo.node expectation state nodeState1
+
+            Nothing ->
+                -- Fallback: create a var just for NodeIds tracking (unconstrained)
+                pMkFlexVar
+                    |> pAndThen
+                        (\patVar ->
+                            let
+                                nodeState1 : NodeIds.NodeIdState
+                                nodeState1 =
+                                    NodeIds.recordNodeVar patternInfo.id patVar nodeState0
+                            in
+                            -- Note: we do NOT add patVar to state.vars or add a constraint
+                            addHelpWithIdsProg region patternInfo.node expectation state nodeState1
+                        )
 
 
 addHelpWithIdsProg : A.Region -> Can.Pattern_ -> E.PExpected Type -> State -> NodeIds.NodeIdState -> PatternProg ( State, NodeIds.NodeIdState )

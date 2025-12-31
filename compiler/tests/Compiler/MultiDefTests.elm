@@ -58,7 +58,7 @@ twoIdenticalStructureDefinitions expectFn _ =
     -- If IDs reset, both would have the same IDs
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "a", [], binopsExpr [ ( intExpr 1, "+" ) ] (intExpr 2) )
                 , ( "b", [], binopsExpr [ ( intExpr 1, "+" ) ] (intExpr 2) )
                 ]
@@ -73,7 +73,7 @@ threeSimpleValueDefinitions expectFn _ =
     -- c = 3
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "a", [], intExpr 1 )
                 , ( "b", [], intExpr 2 )
                 , ( "c", [], intExpr 3 )
@@ -88,7 +88,7 @@ multipleFunctionsSameArity expectFn _ =
     -- g y = y * 2
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "f", [ pVar "x" ], binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1) )
                 , ( "g", [ pVar "y" ], binopsExpr [ ( varExpr "y", "*" ) ] (intExpr 2) )
                 ]
@@ -104,7 +104,7 @@ multipleFunctionsDifferentArities expectFn _ =
     -- h x y z = x + y + z
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "a", [], intExpr 42 )
                 , ( "f", [ pVar "x" ], varExpr "x" )
                 , ( "g", [ pVar "x", pVar "y" ], binopsExpr [ ( varExpr "x", "+" ) ] (varExpr "y") )
@@ -123,7 +123,7 @@ functionsCallEachOther expectFn _ =
     -- g y = y + 1
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "f", [ pVar "x" ], callExpr (varExpr "g") [ varExpr "x" ] )
                 , ( "g", [ pVar "y" ], binopsExpr [ ( varExpr "y", "+" ) ] (intExpr 1) )
                 ]
@@ -137,7 +137,7 @@ multipleDefsWithLet expectFn _ =
     -- b = let y = 2 in y
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "a", [], letExpr [ define "x" [] (intExpr 1) ] (varExpr "x") )
                 , ( "b", [], letExpr [ define "y" [] (intExpr 2) ] (varExpr "y") )
                 ]
@@ -151,7 +151,7 @@ multipleDefsWithCase expectFn _ =
     -- g y = case y of { 0 -> 3; _ -> 4 }
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "f"
                   , [ pVar "x" ]
                   , caseExpr (varExpr "x")
@@ -178,7 +178,7 @@ multipleDefsWithIf expectFn _ =
     -- c = if True then 5 else 6
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "a", [], ifExpr (boolExpr True) (intExpr 1) (intExpr 2) )
                 , ( "b", [], ifExpr (boolExpr True) (intExpr 3) (intExpr 4) )
                 , ( "c", [], ifExpr (boolExpr True) (intExpr 5) (intExpr 6) )
@@ -194,7 +194,7 @@ multipleDefsWithLambdas expectFn _ =
     -- h = \a b -> a + b
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "f", [], lambdaExpr [ pVar "x" ] (varExpr "x") )
                 , ( "g", [], lambdaExpr [ pVar "y" ] (binopsExpr [ ( varExpr "y", "+" ) ] (intExpr 1)) )
                 , ( "h", [], lambdaExpr [ pVar "a", pVar "b" ] (binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "b")) )
@@ -210,7 +210,7 @@ multipleDefsWithRecords expectFn _ =
     -- c = { p = 4, q = 5, r = 6 }
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "a", [], recordExpr [ ( "x", intExpr 1 ) ] )
                 , ( "b", [], recordExpr [ ( "y", intExpr 2 ), ( "z", intExpr 3 ) ] )
                 , ( "c", [], recordExpr [ ( "p", intExpr 4 ), ( "q", intExpr 5 ), ( "r", intExpr 6 ) ] )
@@ -227,7 +227,7 @@ multipleDefsWithBinops expectFn _ =
     -- d = 7 / 8
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "a", [], binopsExpr [ ( intExpr 1, "+" ) ] (intExpr 2) )
                 , ( "b", [], binopsExpr [ ( intExpr 3, "*" ) ] (intExpr 4) )
                 , ( "c", [], binopsExpr [ ( intExpr 5, "-" ) ] (intExpr 6) )
@@ -242,7 +242,7 @@ largeModuleManyDefs expectFn _ =
     -- 15 definitions to stress test
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "def1", [], intExpr 1 )
                 , ( "def2", [], intExpr 2 )
                 , ( "def3", [], intExpr 3 )
@@ -269,7 +269,7 @@ nestedLetsMultipleDefs expectFn _ =
     -- b = let p = let q = 2 in q in p
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "a"
                   , []
                   , letExpr [ define "x" [] (letExpr [ define "y" [] (intExpr 1) ] (varExpr "y")) ]
@@ -291,7 +291,7 @@ tuplePatternMultipleDefs expectFn _ =
     -- g (x, y) = x * y
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "f", [ pTuple (pVar "a") (pVar "b") ], binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "b") )
                 , ( "g", [ pTuple (pVar "x") (pVar "y") ], binopsExpr [ ( varExpr "x", "*" ) ] (varExpr "y") )
                 ]
@@ -305,7 +305,7 @@ listPatternMultipleDefs expectFn _ =
     -- g [x, y] = x + y
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "f", [ pList [ pVar "a" ] ], varExpr "a" )
                 , ( "g", [ pList [ pVar "x", pVar "y" ] ], binopsExpr [ ( varExpr "x", "+" ) ] (varExpr "y") )
                 ]
@@ -319,7 +319,7 @@ recordPatternMultipleDefs expectFn _ =
     -- g { a, b } = a + b
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "f", [ pRecord [ "x" ] ], varExpr "x" )
                 , ( "g", [ pRecord [ "a", "b" ] ], binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "b") )
                 ]
@@ -332,7 +332,7 @@ mixedExpressionsAndPatterns expectFn _ =
     -- Complex mix of all features
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "value", [], intExpr 42 )
                 , ( "func", [ pVar "x" ], binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1) )
                 , ( "withLet"

@@ -530,7 +530,7 @@ topLevelFunctionWithPatterns : (Src.Module -> Expectation) -> (() -> Expectation
 topLevelFunctionWithPatterns expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "swap", [ pTuple (pVar "a") (pVar "b") ], tupleExpr (varExpr "b") (varExpr "a") )
                 ]
     in

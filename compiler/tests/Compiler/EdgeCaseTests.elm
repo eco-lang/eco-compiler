@@ -508,7 +508,7 @@ multipleDefinitionsWithVariousPatterns : (Src.Module -> Expectation) -> (() -> E
 multipleDefinitionsWithVariousPatterns expectFn _ =
     let
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "f1", [ pVar "x" ], varExpr "x" )
                 , ( "f2", [ pTuple (pVar "a") (pVar "b") ], varExpr "a" )
                 , ( "f3", [ pRecord [ "name" ] ], varExpr "name" )

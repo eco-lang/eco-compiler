@@ -83,7 +83,7 @@ aliasEverywhere expectFn _ =
                 "whole"
 
         modul =
-            makeModuleWithDefs
+            makeModuleWithDefs "Test"
                 [ ( "allAliased", [ pattern ], listExpr [ varExpr "whole", varExpr "first", varExpr "second" ] )
                 ]
     in
