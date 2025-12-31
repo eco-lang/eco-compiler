@@ -157,9 +157,6 @@ standardBinops =
         boolType =
             Can.TType ModuleName.basics "Bool" []
 
-        listA =
-            Can.TType ModuleName.list "List" [ aVar ]
-
         -- Helper to create a binop
         binop op funcName tipe assoc prec =
             ( op
@@ -186,10 +183,6 @@ standardBinops =
         -- appendable -> appendable -> appendable
         appendType =
             Can.TLambda appendableVar (Can.TLambda appendableVar appendableVar)
-
-        -- a -> List a -> List a
-        consType =
-            Can.TLambda aVar (Can.TLambda listA listA)
 
         -- Bool -> Bool -> Bool
         boolBinType =
@@ -228,8 +221,8 @@ standardBinops =
         -- Append (precedence 5)
         , binop "++" "append" appendType Binop.Right 5
 
-        -- Cons (precedence 5)
-        , binop "::" "cons" consType Binop.Right 5
+        -- Note: :: (cons) is defined in List interface only.
+        -- Test modules should import List to use it.
 
         -- Pipe (precedence 0)
         , binop "|>" "apR" pipeRType Binop.Left 0
