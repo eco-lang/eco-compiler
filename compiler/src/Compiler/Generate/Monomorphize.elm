@@ -1544,14 +1544,14 @@ collectDeciderFreeLocals bound decider =
                 Mono.Inline expr ->
                     findFreeLocals bound expr
 
-                Mono.Jump ->
+                Mono.Jump _ ->
                     []
 
-        Mono.Chain success failure ->
+        Mono.Chain _ success failure ->
             collectDeciderFreeLocals bound success
                 ++ collectDeciderFreeLocals bound failure
 
-        Mono.FanOut edges fallback ->
+        Mono.FanOut _ edges fallback ->
             let
                 freeEdges =
                     List.concatMap (\( _, d ) -> collectDeciderFreeLocals bound d) edges
@@ -1702,7 +1702,7 @@ specializeDecider decider subst state =
             in
             ( Mono.Leaf monoChoice, stateAfter )
 
-        TOpt.Chain _ success failure ->
+        TOpt.Chain testChain success failure ->
             let
                 ( monoSuccess, state1 ) =
                     specializeDecider success subst state
@@ -1710,9 +1710,9 @@ specializeDecider decider subst state =
                 ( monoFailure, state2 ) =
                     specializeDecider failure subst state1
             in
-            ( Mono.Chain monoSuccess monoFailure, state2 )
+            ( Mono.Chain testChain monoSuccess monoFailure, state2 )
 
-        TOpt.FanOut _ edges fallback ->
+        TOpt.FanOut path edges fallback ->
             let
                 ( monoEdges, state1 ) =
                     specializeEdges edges subst state
@@ -1720,7 +1720,7 @@ specializeDecider decider subst state =
                 ( monoFallback, state2 ) =
                     specializeDecider fallback subst state1
             in
-            ( Mono.FanOut monoEdges monoFallback, state2 )
+            ( Mono.FanOut path monoEdges monoFallback, state2 )
 
 
 specializeChoice : TOpt.Choice -> Substitution -> MonoState -> ( Mono.MonoChoice, MonoState )
@@ -1733,8 +1733,8 @@ specializeChoice choice subst state =
             in
             ( Mono.Inline monoExpr, stateAfter )
 
-        TOpt.Jump _ ->
-            ( Mono.Jump, state )
+        TOpt.Jump index ->
+            ( Mono.Jump index, state )
 
 
 specializeEdges : List ( DT.Test, TOpt.Decider TOpt.Choice ) -> Substitution -> MonoState -> ( List ( DT.Test, Mono.Decider Mono.MonoChoice ), MonoState )
@@ -2317,13 +2317,13 @@ collectDeciderDeps decider deps =
                 Mono.Inline expr ->
                     collectDepsHelp expr deps
 
-                Mono.Jump ->
+                Mono.Jump _ ->
                     deps
 
-        Mono.Chain success failure ->
+        Mono.Chain _ success failure ->
             collectDeciderDeps failure (collectDeciderDeps success deps)
 
-        Mono.FanOut edges fallback ->
+        Mono.FanOut _ edges fallback ->
             let
                 edgeDeps =
                     List.foldl (\( _, d ) acc -> collectDeciderDeps d acc) deps edges

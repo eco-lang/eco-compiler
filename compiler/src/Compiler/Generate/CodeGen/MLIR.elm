@@ -14,9 +14,11 @@ in the types.
 -}
 
 import Compiler.AST.Monomorphized as Mono
+import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.Mode as Mode
+import Compiler.Optimize.Erased.DecisionTree as DT
 import Data.Map as EveryDict
 import Dict exposing (Dict)
 import Mlir.Loc as Loc
@@ -1154,10 +1156,10 @@ generateStubValue ctx resultVar monoType mlirType =
                 |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
                 |> opBuilder.withAttrs
                     (Dict.fromList
-                        [ ( "_operand_types", ArrayAttr [] )
-                        , ( "size", IntAttr 0 )
-                        , ( "tag", IntAttr 0 )
-                        , ( "unboxed_bitmap", IntAttr 0 )
+                        [ ( "_operand_types", ArrayAttr Nothing [] )
+                        , ( "size", IntAttr Nothing 0 )
+                        , ( "tag", IntAttr Nothing 0 )
+                        , ( "unboxed_bitmap", IntAttr Nothing 0 )
                         ]
                     )
                 |> opBuilder.build
@@ -1252,8 +1254,8 @@ generateExpr ctx expr =
         Mono.MonoDestruct destructor body _ ->
             generateDestruct ctx destructor body
 
-        Mono.MonoCase scrutinee1 scrutinee2 decider jumps _ ->
-            generateCase ctx scrutinee1 scrutinee2 decider jumps
+        Mono.MonoCase scrutinee1 scrutinee2 decider jumps resultType ->
+            generateCase ctx scrutinee1 scrutinee2 decider jumps resultType
 
         Mono.MonoRecordCreate fields layout _ ->
             generateRecordCreate ctx fields layout
@@ -1392,8 +1394,8 @@ generateVarGlobal ctx specId monoType =
                     attrs =
                         Dict.fromList
                             [ ( "function", SymbolRefAttr funcName )
-                            , ( "arity", IntAttr arity )
-                            , ( "num_captured", IntAttr 0 )
+                            , ( "arity", IntAttr Nothing arity )
+                            , ( "num_captured", IntAttr Nothing 0 )
                             ]
 
                     ( ctx2, papOp ) =
@@ -1601,14 +1603,14 @@ generateClosure ctx closureInfo body monoType =
 
                 else
                     Dict.singleton "_operand_types"
-                        (ArrayAttr (List.map (\_ -> TypeAttr ecoValue) captureVarNames))
+                        (ArrayAttr Nothing (List.map (\_ -> TypeAttr ecoValue) captureVarNames))
 
             papAttrs =
                 Dict.union operandTypesAttr
                     (Dict.fromList
                         [ ( "function", SymbolRefAttr (lambdaIdToString closureInfo.lambdaId) )
-                        , ( "arity", IntAttr arity )
-                        , ( "num_captured", IntAttr numCaptured )
+                        , ( "arity", IntAttr Nothing arity )
+                        , ( "num_captured", IntAttr Nothing numCaptured )
                         ]
                     )
 
@@ -1673,7 +1675,7 @@ boxIfNeeded ctx var monoTy =
                 freshVar ctx
 
             attrs =
-                Dict.singleton "_operand_types" (ArrayAttr [ TypeAttr mlirTy ])
+                Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr mlirTy ])
 
             ( ctx2, boxOp ) =
                 mlirOp ctx1 "eco.box"
@@ -1836,8 +1838,8 @@ generateCall ctx func args resultType =
 
                 papExtendAttrs =
                     Dict.fromList
-                        [ ( "_operand_types", ArrayAttr (List.map TypeAttr allOperandTypes) )
-                        , ( "remaining_arity", IntAttr remainingArity )
+                        [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
+                        , ( "remaining_arity", IntAttr Nothing remainingArity )
                         ]
 
                 ( ctx3, papExtendOp ) =
@@ -1885,8 +1887,8 @@ generateCall ctx func args resultType =
 
                 papExtendAttrs =
                     Dict.fromList
-                        [ ( "_operand_types", ArrayAttr (List.map TypeAttr allOperandTypes) )
-                        , ( "remaining_arity", IntAttr remainingArity )
+                        [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
+                        , ( "remaining_arity", IntAttr Nothing remainingArity )
                         ]
 
                 ( ctx3, papExtendOp ) =
@@ -1947,7 +1949,7 @@ generateTailCall ctx name args =
 
         jumpAttrs =
             Dict.fromList
-                [ ( "_operand_types", ArrayAttr (List.map TypeAttr argVarTypes) )
+                [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr argVarTypes) )
                 , ( "target", StringAttr name )
                 ]
 
@@ -1971,28 +1973,71 @@ generateTailCall ctx name args =
 
 
 
--- IF GENERATION (still a stub: evaluates branches sequentially)
+-- IF GENERATION
 
 
+{-| Generate if expressions using eco.case on Bool.
+
+Compiles `if c1 then t1 else if c2 then t2 else ... final` to nested
+eco.case operations on boolean conditions.
+
+-}
 generateIf : Context -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> Mono.MonoExpr -> ExprResult
 generateIf ctx branches final =
     case branches of
         [] ->
             generateExpr ctx final
 
-        ( _, thenBranch ) :: restBranches ->
+        ( condExpr, thenExpr ) :: restBranches ->
             let
-                thenResult : ExprResult
-                thenResult =
-                    generateExpr ctx thenBranch
+                -- Evaluate condition to Bool
+                condRes =
+                    generateExpr ctx condExpr
 
-                elseResult : ExprResult
-                elseResult =
-                    generateIf thenResult.ctx restBranches final
+                condVar =
+                    condRes.resultVar
+
+                -- Get result type from the then branch
+                resultMonoType =
+                    Mono.typeOf thenExpr
+
+                resultMlirType =
+                    monoTypeToMlir resultMonoType
+
+                -- Generate then branch with eco.return
+                thenRes =
+                    generateExpr condRes.ctx thenExpr
+
+                ( ctx1, thenRetOp ) =
+                    ecoReturn thenRes.ctx thenRes.resultVar resultMlirType
+
+                thenRegion =
+                    mkRegion [] thenRes.ops thenRetOp
+
+                -- Generate else branch (recursive if or final) with eco.return
+                elseRes =
+                    generateIf ctx1 restBranches final
+
+                ( ctx2, elseRetOp ) =
+                    ecoReturn elseRes.ctx elseRes.resultVar resultMlirType
+
+                elseRegion =
+                    mkRegion [] elseRes.ops elseRetOp
+
+                -- eco.case on Bool: tag 1 for True (then), default for False (else)
+                ( ctx3, caseOp ) =
+                    ecoCase ctx2 condVar [ 1 ] [ thenRegion, elseRegion ] [ resultMlirType ]
+
+                -- Return dummy result (control exits via eco.return in regions)
+                ( dummyVar, ctx4 ) =
+                    freshVar ctx3
+
+                ( ctx5, dummyOp ) =
+                    ecoConstruct ctx4 dummyVar 0 0 0 []
             in
-            { ops = thenResult.ops ++ elseResult.ops
-            , resultVar = elseResult.resultVar
-            , ctx = elseResult.ctx
+            { ops = condRes.ops ++ [ caseOp, dummyOp ]
+            , resultVar = dummyVar
+            , ctx = ctx5
             }
 
 
@@ -2091,21 +2136,533 @@ generateMonoPath ctx path =
 
 
 
--- CASE GENERATION (stub)
+-- DECISION TREE PATH GENERATION
 
 
-generateCase : Context -> Name.Name -> Name.Name -> Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> ExprResult
-generateCase ctx _ _ _ _ =
+{-| Generate MLIR ops to navigate a DT.Path from the root scrutinee.
+
+Returns the ops needed to project to the target, the result variable name,
+and the updated context.
+
+-}
+generateDTPath : Context -> Name.Name -> DT.Path -> ( List MlirOp, String, Context )
+generateDTPath ctx root dtPath =
+    case dtPath of
+        DT.Empty ->
+            ( [], "%" ++ root, ctx )
+
+        DT.Index index subPath ->
+            let
+                ( subOps, subVar, ctx1 ) =
+                    generateDTPath ctx root subPath
+
+                ( resultVar, ctx2 ) =
+                    freshVar ctx1
+
+                ( ctx3, projectOp ) =
+                    ecoProject ctx2 resultVar (Index.toMachine index) False subVar ecoValue
+            in
+            ( subOps ++ [ projectOp ], resultVar, ctx3 )
+
+        DT.Unbox subPath ->
+            -- Unbox just accesses the first field
+            let
+                ( subOps, subVar, ctx1 ) =
+                    generateDTPath ctx root subPath
+
+                ( resultVar, ctx2 ) =
+                    freshVar ctx1
+
+                ( ctx3, projectOp ) =
+                    ecoProject ctx2 resultVar 0 False subVar ecoValue
+            in
+            ( subOps ++ [ projectOp ], resultVar, ctx3 )
+
+
+{-| Generate MLIR ops to evaluate a DT.Test, returning a boolean result.
+
+For constructor tests (IsCtor), we return the value to be tested with eco.case directly.
+For other tests (IsBool, IsInt, etc.), we generate comparison ops that produce a boolean.
+
+-}
+generateTest : Context -> Name.Name -> ( DT.Path, DT.Test ) -> ( List MlirOp, String, Context )
+generateTest ctx root ( path, test ) =
     let
-        ( resultVar, ctx1 ) =
-            freshVar ctx
-
-        ( ctx2, constructOp ) =
-            ecoConstruct ctx1 resultVar 0 0 0 []
+        ( pathOps, valVar, ctx1 ) =
+            generateDTPath ctx root path
     in
-    { ops = [ constructOp ]
-    , resultVar = resultVar
-    , ctx = ctx2
+    case test of
+        DT.IsCtor _ _ _ _ _ ->
+            -- For ctor tests, we rely on eco.case; just return the value
+            ( pathOps, valVar, ctx1 )
+
+        DT.IsBool expected ->
+            -- valVar is a Bool; if expected is False, invert it
+            if expected then
+                ( pathOps, valVar, ctx1 )
+
+            else
+                let
+                    ( resVar, ctx2 ) =
+                        freshVar ctx1
+
+                    -- Invert boolean: result = 1 - valVar (xor with 1)
+                    ( constVar, ctx3 ) =
+                        freshVar ctx2
+
+                    ( ctx4, constOp ) =
+                        arithConstantBool ctx3 constVar True
+
+                    ( ctx5, xorOp ) =
+                        ecoBinaryOp ctx4 "arith.xori" resVar ( valVar, I1 ) ( constVar, I1 ) I1
+                in
+                ( pathOps ++ [ constOp, xorOp ], resVar, ctx5 )
+
+        DT.IsInt i ->
+            let
+                ( constVar, ctx2 ) =
+                    freshVar ctx1
+
+                ( ctx3, constOp ) =
+                    arithConstantInt ctx2 constVar i
+
+                ( resVar, ctx4 ) =
+                    freshVar ctx3
+
+                ( ctx5, cmpOp ) =
+                    ecoBinaryOp ctx4 "eco.int.eq" resVar ( valVar, I64 ) ( constVar, I64 ) I1
+            in
+            ( pathOps ++ [ constOp, cmpOp ], resVar, ctx5 )
+
+        DT.IsChr c ->
+            -- Compare character codes
+            let
+                charCode =
+                    String.toList c |> List.head |> Maybe.map Char.toCode |> Maybe.withDefault 0
+
+                ( constVar, ctx2 ) =
+                    freshVar ctx1
+
+                ( ctx3, constOp ) =
+                    arithConstantChar ctx2 constVar charCode
+
+                ( resVar, ctx4 ) =
+                    freshVar ctx3
+
+                ( ctx5, cmpOp ) =
+                    ecoBinaryOp ctx4 "arith.cmpi" resVar ( valVar, I32 ) ( constVar, I32 ) I1
+            in
+            ( pathOps ++ [ constOp, cmpOp ], resVar, ctx5 )
+
+        DT.IsStr s ->
+            -- String comparison - use kernel function
+            let
+                ( strVar, ctx2 ) =
+                    freshVar ctx1
+
+                ( ctx3, strOp ) =
+                    ecoStringLiteral ctx2 strVar s
+
+                ( resVar, ctx4 ) =
+                    freshVar ctx3
+
+                ( ctx5, cmpOp ) =
+                    ecoCallNamed ctx4 resVar "Elm_Kernel_Utils_equal" [ ( valVar, ecoValue ), ( strVar, ecoValue ) ] I1
+            in
+            ( pathOps ++ [ strOp, cmpOp ], resVar, ctx5 )
+
+        DT.IsCons ->
+            -- Test if list is non-empty (tag == 1)
+            let
+                ( tagVar, ctx2 ) =
+                    freshVar ctx1
+
+                ( ctx3, tagOp ) =
+                    ecoGetTag ctx2 tagVar valVar
+
+                ( constVar, ctx4 ) =
+                    freshVar ctx3
+
+                ( ctx5, constOp ) =
+                    arithConstantInt ctx4 constVar 1
+
+                ( resVar, ctx6 ) =
+                    freshVar ctx5
+
+                ( ctx7, cmpOp ) =
+                    ecoBinaryOp ctx6 "eco.int.eq" resVar ( tagVar, I64 ) ( constVar, I64 ) I1
+            in
+            ( pathOps ++ [ tagOp, constOp, cmpOp ], resVar, ctx7 )
+
+        DT.IsNil ->
+            -- Test if list is empty (tag == 0)
+            let
+                ( tagVar, ctx2 ) =
+                    freshVar ctx1
+
+                ( ctx3, tagOp ) =
+                    ecoGetTag ctx2 tagVar valVar
+
+                ( constVar, ctx4 ) =
+                    freshVar ctx3
+
+                ( ctx5, constOp ) =
+                    arithConstantInt ctx4 constVar 0
+
+                ( resVar, ctx6 ) =
+                    freshVar ctx5
+
+                ( ctx7, cmpOp ) =
+                    ecoBinaryOp ctx6 "eco.int.eq" resVar ( tagVar, I64 ) ( constVar, I64 ) I1
+            in
+            ( pathOps ++ [ tagOp, constOp, cmpOp ], resVar, ctx7 )
+
+        DT.IsTuple ->
+            -- Tuples always match (we just need the value)
+            let
+                ( resVar, ctx2 ) =
+                    freshVar ctx1
+
+                ( ctx3, constOp ) =
+                    arithConstantBool ctx2 resVar True
+            in
+            ( pathOps ++ [ constOp ], resVar, ctx3 )
+
+
+{-| Generate the condition for a Chain node by ANDing all test booleans.
+-}
+generateChainCondition : Context -> Name.Name -> List ( DT.Path, DT.Test ) -> ( List MlirOp, String, Context )
+generateChainCondition ctx root tests =
+    case tests of
+        [] ->
+            -- No tests means always true
+            let
+                ( resVar, ctx1 ) =
+                    freshVar ctx
+
+                ( ctx2, constOp ) =
+                    arithConstantBool ctx1 resVar True
+            in
+            ( [ constOp ], resVar, ctx2 )
+
+        [ singleTest ] ->
+            generateTest ctx root singleTest
+
+        firstTest :: restTests ->
+            let
+                ( firstOps, firstVar, ctx1 ) =
+                    generateTest ctx root firstTest
+
+                ( restOps, restVar, ctx2 ) =
+                    generateChainCondition ctx1 root restTests
+
+                ( resVar, ctx3 ) =
+                    freshVar ctx2
+
+                ( ctx4, andOp ) =
+                    ecoBinaryOp ctx3 "arith.andi" resVar ( firstVar, I1 ) ( restVar, I1 ) I1
+            in
+            ( firstOps ++ restOps ++ [ andOp ], resVar, ctx4 )
+
+
+{-| Get the tag from a DT.Test for use with eco.case
+-}
+testToTagInt : DT.Test -> Int
+testToTagInt test =
+    case test of
+        DT.IsCtor _ _ index _ _ ->
+            Index.toMachine index
+
+        DT.IsCons ->
+            1
+
+        DT.IsNil ->
+            0
+
+        DT.IsBool True ->
+            1
+
+        DT.IsBool False ->
+            0
+
+        DT.IsInt i ->
+            i
+
+        DT.IsChr c ->
+            String.toList c |> List.head |> Maybe.map Char.toCode |> Maybe.withDefault 0
+
+        DT.IsStr _ ->
+            0
+
+        DT.IsTuple ->
+            0
+
+
+
+-- CASE GENERATION
+
+
+{-| Generate shared joinpoints for case branches that are referenced multiple times.
+
+Each (index, branchExpr) in jumps becomes an eco.joinpoint that can be jumped to
+from multiple leaves in the decision tree.
+
+-}
+generateSharedJoinpoints : Context -> List ( Int, Mono.MonoExpr ) -> MlirType -> ( Context, List MlirOp )
+generateSharedJoinpoints ctx jumps resultTy =
+    List.foldl
+        (\( index, branchExpr ) ( accCtx, accOps ) ->
+            let
+                -- Body: generate the branch expression, then eco.return
+                branchRes =
+                    generateExpr accCtx branchExpr
+
+                ( ctx1, retOp ) =
+                    ecoReturn branchRes.ctx branchRes.resultVar resultTy
+
+                jpRegion =
+                    mkRegion [] branchRes.ops retOp
+
+                -- Continuation: a dummy region with a return (joinpoint semantics require it)
+                ( dummyVar, ctx2 ) =
+                    freshVar ctx1
+
+                ( ctx3, dummyConstructOp ) =
+                    ecoConstruct ctx2 dummyVar 0 0 0 []
+
+                ( ctx4, dummyRetOp ) =
+                    ecoReturn ctx3 dummyVar resultTy
+
+                contRegion =
+                    mkRegion [] [ dummyConstructOp ] dummyRetOp
+
+                ( ctx5, jpOp ) =
+                    ecoJoinpoint ctx4 index [] jpRegion contRegion [ resultTy ]
+            in
+            ( ctx5, accOps ++ [ jpOp ] )
+        )
+        ( ctx, [] )
+        jumps
+
+
+{-| Generate the decision tree control flow for a case expression.
+-}
+generateDecider : Context -> Name.Name -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
+generateDecider ctx root decider resultTy =
+    case decider of
+        Mono.Leaf choice ->
+            generateLeaf ctx root choice resultTy
+
+        Mono.Chain testChain success failure ->
+            generateChain ctx root testChain success failure resultTy
+
+        Mono.FanOut path edges fallback ->
+            generateFanOut ctx root path edges fallback resultTy
+
+
+{-| Generate code for a Leaf node in the decision tree.
+-}
+generateLeaf : Context -> Name.Name -> Mono.MonoChoice -> MlirType -> ExprResult
+generateLeaf ctx _ choice resultTy =
+    case choice of
+        Mono.Inline branchExpr ->
+            -- Evaluate the branch expression and return it
+            let
+                branchRes =
+                    generateExpr ctx branchExpr
+
+                ( ctx1, retOp ) =
+                    ecoReturn branchRes.ctx branchRes.resultVar resultTy
+
+                -- Return a dummy result var for ExprResult contract
+                ( dummyVar, ctx2 ) =
+                    freshVar ctx1
+
+                ( ctx3, dummyOp ) =
+                    ecoConstruct ctx2 dummyVar 0 0 0 []
+            in
+            { ops = branchRes.ops ++ [ retOp, dummyOp ]
+            , resultVar = dummyVar
+            , ctx = ctx3
+            }
+
+        Mono.Jump index ->
+            -- Jump to the shared joinpoint
+            let
+                ( ctx1, jumpOp ) =
+                    ecoJump ctx index []
+
+                -- Return a dummy result
+                ( dummyVar, ctx2 ) =
+                    freshVar ctx1
+
+                ( ctx3, dummyOp ) =
+                    ecoConstruct ctx2 dummyVar 0 0 0 []
+            in
+            { ops = [ jumpOp, dummyOp ]
+            , resultVar = dummyVar
+            , ctx = ctx3
+            }
+
+
+{-| Generate code for a Chain node (test chain with success/failure branches).
+-}
+generateChain : Context -> Name.Name -> List ( DT.Path, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
+generateChain ctx root testChain success failure resultTy =
+    let
+        -- Compute the boolean condition
+        ( condOps, condVar, ctx1 ) =
+            generateChainCondition ctx root testChain
+
+        -- Generate success branch
+        thenRes =
+            generateDecider ctx1 root success resultTy
+
+        -- Generate failure branch
+        elseRes =
+            generateDecider thenRes.ctx root failure resultTy
+
+        -- Build regions for eco.case on Bool
+        -- Note: thenRes.ops and elseRes.ops already contain eco.return (from generateLeaf or recursion)
+        thenRegion =
+            mkRegionFromOps thenRes.ops
+
+        elseRegion =
+            mkRegionFromOps elseRes.ops
+
+        -- eco.case on Bool: tag 1 for True (then), fallback for False (else)
+        ( ctx2, caseOp ) =
+            ecoCase elseRes.ctx condVar [ 1 ] [ thenRegion, elseRegion ] [ resultTy ]
+
+        -- Return dummy result
+        ( dummyVar, ctx3 ) =
+            freshVar ctx2
+
+        ( ctx4, dummyOp ) =
+            ecoConstruct ctx3 dummyVar 0 0 0 []
+    in
+    { ops = condOps ++ [ caseOp, dummyOp ]
+    , resultVar = dummyVar
+    , ctx = ctx4
+    }
+
+
+{-| Generate code for a FanOut node (multi-way branching on constructor tags).
+-}
+generateFanOut : Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
+generateFanOut ctx root path edges fallback resultTy =
+    let
+        -- Get the scrutinee value at the path
+        ( pathOps, scrutineeVar, ctx1 ) =
+            generateDTPath ctx root path
+
+        -- Collect tags from edges
+        tags =
+            List.map (\( test, _ ) -> testToTagInt test) edges
+
+        -- Generate regions for each edge
+        ( edgeRegions, ctx2 ) =
+            List.foldl
+                (\( _, subTree ) ( accRegions, accCtx ) ->
+                    let
+                        subRes =
+                            generateDecider accCtx root subTree resultTy
+
+                        region =
+                            mkRegionFromOps subRes.ops
+                    in
+                    ( accRegions ++ [ region ], subRes.ctx )
+                )
+                ( [], ctx1 )
+                edges
+
+        -- Generate fallback region
+        fallbackRes =
+            generateDecider ctx2 root fallback resultTy
+
+        fallbackRegion =
+            mkRegionFromOps fallbackRes.ops
+
+        -- Build eco.case with all regions (edges + fallback)
+        allRegions =
+            edgeRegions ++ [ fallbackRegion ]
+
+        ( ctx3, caseOp ) =
+            ecoCase fallbackRes.ctx scrutineeVar tags allRegions [ resultTy ]
+
+        -- Return dummy result
+        ( dummyVar, ctx4 ) =
+            freshVar ctx3
+
+        ( ctx5, dummyOp ) =
+            ecoConstruct ctx4 dummyVar 0 0 0 []
+    in
+    { ops = pathOps ++ [ caseOp, dummyOp ]
+    , resultVar = dummyVar
+    , ctx = ctx5
+    }
+
+
+{-| Helper to build a region from a list of ops (where the last op is the terminator).
+-}
+mkRegionFromOps : List MlirOp -> MlirRegion
+mkRegionFromOps ops =
+    case List.reverse ops of
+        [] ->
+            -- Empty region - shouldn't happen but handle gracefully
+            MlirRegion
+                { entry = { args = [], body = [], terminator = defaultTerminator }
+                , blocks = OrderedDict.empty
+                }
+
+        terminator :: restReversed ->
+            MlirRegion
+                { entry = { args = [], body = List.reverse restReversed, terminator = terminator }
+                , blocks = OrderedDict.empty
+                }
+
+
+{-| A default terminator for empty regions (unreachable).
+-}
+defaultTerminator : MlirOp
+defaultTerminator =
+    { id = "unreachable"
+    , name = "eco.unreachable"
+    , operands = []
+    , regions = []
+    , results = []
+    , successors = []
+    , attrs = Dict.empty
+    , loc = Loc.unknown
+    , isTerminator = True
+    }
+
+
+{-| Generate case expression control flow.
+
+This is the main entry point for case expressions. It:
+1. Emits joinpoints for shared branches
+2. Generates the decision tree control flow
+3. Returns a dummy ExprResult (since real control exits via eco.return/eco.jump)
+
+-}
+generateCase : Context -> Name.Name -> Name.Name -> Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> Mono.MonoType -> ExprResult
+generateCase ctx _ root decider jumps resultMonoType =
+    let
+        resultMlirType =
+            monoTypeToMlir resultMonoType
+
+        -- Emit joinpoints for shared branches
+        ( ctx1, joinpointOps ) =
+            generateSharedJoinpoints ctx jumps resultMlirType
+
+        -- Generate decision tree control flow
+        decisionResult =
+            generateDecider ctx1 root decider resultMlirType
+    in
+    { ops = joinpointOps ++ decisionResult.ops
+    , resultVar = decisionResult.resultVar
+    , ctx = decisionResult.ctx
     }
 
 
@@ -2253,8 +2810,8 @@ generateAccessor ctx fieldName =
         attrs =
             Dict.fromList
                 [ ( "function", SymbolRefAttr ("accessor_" ++ fieldName) )
-                , ( "arity", IntAttr 1 )
-                , ( "num_captured", IntAttr 0 )
+                , ( "arity", IntAttr Nothing 1 )
+                , ( "num_captured", IntAttr Nothing 0 )
                 ]
 
         ( ctx2, papOp ) =
@@ -2327,14 +2884,14 @@ ecoConstruct ctx resultVar tag size unboxedBitmap operands =
 
             else
                 Dict.singleton "_operand_types"
-                    (ArrayAttr (List.map (\( _, t ) -> TypeAttr t) operands))
+                    (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) operands))
 
         attrs =
             Dict.union operandTypesAttr
                 (Dict.fromList
-                    [ ( "tag", IntAttr tag )
-                    , ( "size", IntAttr size )
-                    , ( "unboxed_bitmap", IntAttr unboxedBitmap )
+                    [ ( "tag", IntAttr Nothing tag )
+                    , ( "size", IntAttr Nothing size )
+                    , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
                     ]
                 )
     in
@@ -2359,7 +2916,7 @@ ecoCallNamed ctx resultVar funcName operands returnType =
 
             else
                 Dict.singleton "_operand_types"
-                    (ArrayAttr (List.map (\( _, t ) -> TypeAttr t) operands))
+                    (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) operands))
 
         attrs =
             Dict.union operandTypesAttr
@@ -2386,8 +2943,8 @@ ecoProject ctx resultVar index isUnboxed operand operandType =
 
         attrs =
             Dict.fromList
-                [ ( "_operand_types", ArrayAttr [ TypeAttr operandType ] )
-                , ( "index", IntAttr index )
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr operandType ] )
+                , ( "index", IntAttr Nothing index )
                 , ( "unboxed", BoolAttr isUnboxed )
                 ]
     in
@@ -2404,7 +2961,7 @@ ecoReturn : Context -> String -> MlirType -> ( Context, MlirOp )
 ecoReturn ctx operand operandType =
     let
         attrs =
-            Dict.singleton "_operand_types" (ArrayAttr [ TypeAttr operandType ])
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr operandType ])
     in
     mlirOp ctx "eco.return"
         |> opBuilder.withOperands [ operand ]
@@ -2429,7 +2986,7 @@ arithConstantInt : Context -> String -> Int -> ( Context, MlirOp )
 arithConstantInt ctx resultVar value =
     mlirOp ctx "arith.constant"
         |> opBuilder.withResults [ ( resultVar, I64 ) ]
-        |> opBuilder.withAttrs (Dict.singleton "value" (TypedIntAttr value I64))
+        |> opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just I64) value))
         |> opBuilder.build
 
 
@@ -2463,7 +3020,7 @@ arithConstantChar : Context -> String -> Int -> ( Context, MlirOp )
 arithConstantChar ctx resultVar codepoint =
     mlirOp ctx "arith.constant"
         |> opBuilder.withResults [ ( resultVar, I32 ) ]
-        |> opBuilder.withAttrs (Dict.singleton "value" (TypedIntAttr codepoint I32))
+        |> opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just I32) codepoint))
         |> opBuilder.build
 
 
@@ -2473,7 +3030,7 @@ ecoUnaryOp : Context -> String -> String -> ( String, MlirType ) -> MlirType -> 
 ecoUnaryOp ctx opName resultVar ( operand, operandTy ) resultTy =
     let
         attrs =
-            Dict.singleton "_operand_types" (ArrayAttr [ TypeAttr operandTy ])
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr operandTy ])
     in
     mlirOp ctx opName
         |> opBuilder.withOperands [ operand ]
@@ -2488,7 +3045,7 @@ ecoBinaryOp : Context -> String -> String -> ( String, MlirType ) -> ( String, M
 ecoBinaryOp ctx opName resultVar ( lhs, lhsTy ) ( rhs, rhsTy ) resultTy =
     let
         attrs =
-            Dict.singleton "_operand_types" (ArrayAttr [ TypeAttr lhsTy, TypeAttr rhsTy ])
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr lhsTy, TypeAttr rhsTy ])
     in
     mlirOp ctx opName
         |> opBuilder.withOperands [ lhs, rhs ]
@@ -2532,5 +3089,145 @@ funcFunc ctx funcName args returnType bodyRegion =
     in
     mlirOp ctx "func.func"
         |> opBuilder.withRegions [ bodyRegion ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.case - pattern matching control flow
+
+Takes a scrutinee SSA name, list of tags, list of regions (one per alternative),
+and result types. Emits an eco.case operation.
+
+-}
+ecoCase : Context -> String -> List Int -> List MlirRegion -> List MlirType -> ( Context, MlirOp )
+ecoCase ctx scrutinee tags regions resultTypes =
+    let
+        attrsBase =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr ecoValue ] )
+                , ( "tags", ArrayAttr (Just I64) (List.map (\t -> IntAttr Nothing t) tags) )
+                ]
+
+        attrs =
+            if List.isEmpty resultTypes then
+                attrsBase
+
+            else
+                Dict.insert "result_types"
+                    (ArrayAttr Nothing (List.map TypeAttr resultTypes))
+                    attrsBase
+    in
+    mlirOp ctx "eco.case"
+        |> opBuilder.withOperands [ scrutinee ]
+        |> opBuilder.withRegions regions
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.joinpoint - local control-flow join with a body and continuation
+
+Takes a joinpoint id, parameter types, the body region, continuation region,
+and result types.
+
+-}
+ecoJoinpoint : Context -> Int -> List ( String, MlirType ) -> MlirRegion -> MlirRegion -> List MlirType -> ( Context, MlirOp )
+ecoJoinpoint ctx id params jpRegion contRegion resultTypes =
+    let
+        attrsBase =
+            Dict.fromList [ ( "id", IntAttr Nothing id ) ]
+
+        attrs =
+            if List.isEmpty resultTypes then
+                attrsBase
+
+            else
+                Dict.insert "result_types"
+                    (ArrayAttr Nothing (List.map TypeAttr resultTypes))
+                    attrsBase
+
+        -- Build the jp region with params
+        jpRegionWithParams =
+            case jpRegion of
+                MlirRegion r ->
+                    MlirRegion { r | entry = { args = params, body = r.entry.body, terminator = r.entry.terminator } }
+    in
+    mlirOp ctx "eco.joinpoint"
+        |> opBuilder.withRegions [ jpRegionWithParams, contRegion ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.jump - jump to a joinpoint
+
+Takes the joinpoint id, operands with types, and builds an eco.jump operation.
+The result is a terminator operation.
+
+-}
+ecoJump : Context -> Int -> List ( String, MlirType ) -> ( Context, MlirOp )
+ecoJump ctx targetId operands =
+    let
+        operandNames =
+            List.map Tuple.first operands
+
+        operandTypesAttr =
+            if List.isEmpty operands then
+                Dict.empty
+
+            else
+                Dict.singleton "_operand_types"
+                    (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) operands))
+
+        attrs =
+            Dict.union operandTypesAttr
+                (Dict.singleton "target" (IntAttr Nothing targetId))
+    in
+    mlirOp ctx "eco.jump"
+        |> opBuilder.withOperands operandNames
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.isTerminator True
+        |> opBuilder.build
+
+
+{-| eco.jump for tail-recursive calls - jump to a named target (function entry)
+
+Takes the target name (function), operands with types, and builds an eco.jump operation.
+
+-}
+ecoJumpNamed : Context -> String -> List ( String, MlirType ) -> ( Context, MlirOp )
+ecoJumpNamed ctx targetName operands =
+    let
+        operandNames =
+            List.map Tuple.first operands
+
+        operandTypesAttr =
+            if List.isEmpty operands then
+                Dict.empty
+
+            else
+                Dict.singleton "_operand_types"
+                    (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) operands))
+
+        attrs =
+            Dict.union operandTypesAttr
+                (Dict.singleton "target" (StringAttr targetName))
+    in
+    mlirOp ctx "eco.jump"
+        |> opBuilder.withOperands operandNames
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.isTerminator True
+        |> opBuilder.build
+
+
+{-| eco.getTag - get the tag from a value (for eco.case scrutinee)
+-}
+ecoGetTag : Context -> String -> String -> ( Context, MlirOp )
+ecoGetTag ctx resultVar operand =
+    let
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr ecoValue ])
+    in
+    mlirOp ctx "eco.getTag"
+        |> opBuilder.withOperands [ operand ]
+        |> opBuilder.withResults [ ( resultVar, I64 ) ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build

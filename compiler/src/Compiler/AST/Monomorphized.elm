@@ -434,18 +434,24 @@ type MonoPath
 
 
 {-| Decision tree for pattern matching.
+
+This matches the structure of Opt.Decider from Compiler.AST.Optimized:
+
+  - Chain carries a list of (Path, Test) pairs for the condition
+  - FanOut carries the Path being tested
+
 -}
 type Decider a
     = Leaf a
-    | Chain (Decider a) (Decider a)
-    | FanOut (List ( DT.Test, Decider a )) (Decider a)
+    | Chain (List ( DT.Path, DT.Test )) (Decider a) (Decider a)
+    | FanOut DT.Path (List ( DT.Test, Decider a )) (Decider a)
 
 
 {-| Action to take when a pattern match succeeds.
 -}
 type MonoChoice
     = Inline MonoExpr
-    | Jump
+    | Jump Int
 
 
 
