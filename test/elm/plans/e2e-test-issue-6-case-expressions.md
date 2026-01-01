@@ -2,252 +2,333 @@
 
 ## Affected Tests (~20)
 
-- CaseIntTest.elm
-- CaseDefaultTest.elm
-- CaseDeeplyNestedTest.elm
-- CaseManyBranchesTest.elm
-- CaseNestedTest.elm
-- CaseListTest.elm
-- CaseStringTest.elm
-- CaseBoolTest.elm
-- CaseMaybeTest.elm
-- CaseCustomTypeTest.elm
-- CustomTypeBasicTest.elm
-- AnonymousFunctionTest.elm (lambda returning case result)
-- RecursiveFactorialTest.elm (uses case)
-- RecursiveFibonacciTest.elm (uses case)
+- CaseIntTest.elm, CaseDefaultTest.elm, CaseDeeplyNestedTest.elm
+- CaseManyBranchesTest.elm, CaseNestedTest.elm, CaseListTest.elm
+- CaseStringTest.elm, CaseBoolTest.elm, CaseMaybeTest.elm
+- CaseCustomTypeTest.elm, CustomTypeBasicTest.elm
+- AnonymousFunctionTest.elm, RecursiveFactorialTest.elm, RecursiveFibonacciTest.elm
 - And others...
 
-## Analysis
+---
 
-### Symptom
-Case expressions always return the same value (`Ctor0`) regardless of the pattern being matched:
+## Root Cause Analysis
 
-```
-Expected: case1: "one"
-Actual:   case1: Ctor0
+### The Bug Location
 
-Expected: day1: "Monday"
-Actual:   day1: Ctor0
-```
+**File:** `/work/compiler/src/Compiler/Generate/CodeGen/MLIR.elm`
+**Lines:** 2097-2109
 
-### Root Cause
-
-Case expression bodies are not being generated. The compiler produces empty functions that return a default `Ctor0` construct.
-
-Example from `CaseBoolTest.elm`:
 ```elm
-boolToStr b =
-    case b of
-        True -> "yes"
-        False -> "no"
+-- CASE GENERATION (stub)
+
+generateCase : Context -> Name.Name -> Name.Name -> Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> ExprResult
+generateCase ctx _ _ _ _ =
+    let
+        ( resultVar, ctx1 ) =
+            freshVar ctx
+
+        ( ctx2, constructOp ) =
+            ecoConstruct ctx1 resultVar 0 0 0 []
+    in
+    { ops = [ constructOp ]
+    , resultVar = resultVar
+    , ctx = ctx2
+    }
 ```
 
-Generated MLIR:
-```mlir
-"func.func"() ({
-    ^bb0(%b: !eco.value):
-      -- No branching logic!
-      -- No check of %b's value!
-      -- Just returns Ctor0 unconditionally:
-      %1 = "eco.construct"() {size = 0, tag = 0} : () -> !eco.value
-      "eco.return"(%1) : (!eco.value) -> ()
-}) {sym_name = "CaseBoolTest_boolToStr_$_1"}
-```
+### What's Wrong
 
-The function should:
-1. Examine the value of `%b`
-2. Branch based on whether it's True or False
-3. Return the appropriate string literal
+The function is a **stub that ignores all inputs**:
+- `_` for `label` (Name.Name) - the case expression's identifier
+- `_` for `root` (Name.Name) - the variable being matched against
+- `_` for `decider` (Mono.Decider Mono.MonoChoice) - the compiled decision tree
+- `_` for `jumps` (List (Int, Mono.MonoExpr)) - shared branch targets
 
-But instead it:
-1. Ignores `%b` completely
-2. Returns an empty constructor (tag=0, size=0) which displays as `Ctor0`
+It always returns an empty `eco.construct` with tag=0, size=0, producing `Ctor0`.
 
-### What The Code Should Look Like
+### Related Stub: `generateIf`
 
-```mlir
-"func.func"() ({
-    ^bb0(%b: !eco.value):
-      // Extract the boolean value (True=1, False=0)
-      %tag = "eco.getTag"(%b) : (!eco.value) -> i64
+The `if` expression generator (lines 1977-1996) is also a stub - it ignores conditions and evaluates branches sequentially:
 
-      // Branch based on tag
-      %is_true = "arith.cmpi" eq, %tag, 1 : i64
-      "cf.cond_br"(%is_true, ^true_branch, ^false_branch)
-
-    ^true_branch:
-      %yes = "eco.string_literal"() {value = "yes"} : () -> !eco.value
-      "eco.return"(%yes) : (!eco.value) -> ()
-
-    ^false_branch:
-      %no = "eco.string_literal"() {value = "no"} : () -> !eco.value
-      "eco.return"(%no) : (!eco.value) -> ()
-}) {sym_name = "CaseBoolTest_boolToStr_$_1"}
-```
-
-### Related: Custom Type Pattern Matching
-
-Similar issue for custom types. Example from `CaseIntTest.elm`:
 ```elm
-intToStr n =
-    case n of
-        1 -> "one"
-        2 -> "two"
-        _ -> "other"
+generateIf ctx branches final =
+    case branches of
+        [] ->
+            generateExpr ctx final
+
+        ( _, thenBranch ) :: restBranches ->  -- Ignores condition (_)
+            let
+                thenResult = generateExpr ctx thenBranch
+                elseResult = generateIf thenResult.ctx restBranches final
+            in
+            { ops = thenResult.ops ++ elseResult.ops
+            , resultVar = elseResult.resultVar
+            , ctx = elseResult.ctx
+            }
 ```
 
-Should generate:
-1. Compare `n` to 1, branch if equal
-2. Compare `n` to 2, branch if equal
-3. Default branch for other values
+---
 
-But generates:
-```mlir
-%1 = "eco.construct"() {tag = 0} : () -> !eco.value  // Just Ctor0
+## Architecture Understanding
+
+### Decision Tree Compilation (Already Working)
+
+The compiler has a complete pattern matching pipeline:
+
+1. **DecisionTree.elm** - Compiles patterns into decision trees using Scott & Ramsey algorithm
+2. **Decider type** - Represents compiled decision trees:
+   ```elm
+   type Decider a
+       = Leaf a                                    -- Match found
+       | Chain (Decider a) (Decider a)            -- if-then-else chain
+       | FanOut (List (Test, Decider a)) (Decider a)  -- switch on tag
+   ```
+3. **MonoChoice type**:
+   ```elm
+   type MonoChoice
+       = Inline MonoExpr   -- Evaluate expression directly
+       | Jump              -- Jump to shared branch target
+   ```
+4. **DT.Test type** - Tests to perform:
+   ```elm
+   type Test
+       = IsCtor IO.Canonical Name Index Int CtorOpts
+       | IsCons | IsNil | IsTuple
+       | IsInt Int | IsChr String | IsStr String | IsBool Bool
+   ```
+5. **DT.Path type** - Navigation into data structures:
+   ```elm
+   type Path
+       = Index ZeroBased Path  -- Navigate to tuple/ctor field
+       | Unbox Path            -- Unbox a single-field wrapper
+       | Empty                 -- The root value
+   ```
+
+### JavaScript Implementation (Working Reference)
+
+`/work/compiler/src/Compiler/Generate/JavaScript/Expression.elm` lines 1201-1429:
+
+```elm
+generateDecider mode parentModule label root decisionTree =
+    case decisionTree of
+        Opt.Leaf (Opt.Inline branch) ->
+            codeToStmtList (generate mode parentModule branch)
+
+        Opt.Leaf (Opt.Jump index) ->
+            [ JS.Break (Just (JsName.makeLabel label index)) ]
+
+        Opt.Chain testChain success failure ->
+            [ JS.IfStmt
+                (foldl1 (JS.ExprInfix JS.OpAnd) (List.map (generateIfTest mode root) testChain))
+                (JS.Block (generateDecider mode parentModule label root success))
+                (JS.Block (generateDecider mode parentModule label root failure))
+            ]
+
+        Opt.FanOut path edges fallback ->
+            [ JS.Switch
+                (generateCaseTest mode root path (first (head edges)))
+                (foldr (\edge cases -> generateCaseBranch ... edge :: cases)
+                    [ JS.Default (generateDecider ... fallback) ]
+                    edges)
+            ]
 ```
 
-### Compiler Investigation Needed
+### Available MLIR Infrastructure
 
-The issue is in the Guida compiler's code generation for case expressions. The compiler is:
-1. Recognizing the case expression syntax
-2. Creating a function with the right signature
-3. **Not generating the pattern matching logic**
-4. **Not generating the branch bodies**
-5. Emitting a placeholder `Ctor0` return
+The MLIR backend has:
+- `eco.project` - Extract fields from objects (lines 2375-2398)
+- `eco.construct` - Create heap objects
+- `eco.int.eq`, `eco.int.ne`, `eco.int.lt`, etc. - Integer comparisons
+- `mkRegion` - Create MLIR regions with blocks
+- Uses `the-sett/elm-mlir` package for MLIR AST types
+
+**Missing:** Control flow operations like `scf.if` or `cf.cond_br`
+
+---
 
 ## Proposed Solution
 
-### Step 1: Identify Compiler Bug Location
+### Step 1: Add MLIR Control Flow Operations
 
-Find where case expressions are handled in the Guida compiler. Look for:
-- Pattern matching IR generation
-- Decision tree or pattern matrix compilation
-- Branch/switch statement emission
+The `the-sett/elm-mlir` package likely provides `scf.if` or similar. If not, we can use:
+- `scf.if` - Structured control flow if/else
+- `scf.yield` - Return values from regions
 
-### Step 2: Fix Case Expression Compilation
-
-The compiler needs to generate:
-
-#### For Literal Patterns (Int, Char, String):
-```mlir
-// case n of 1 -> ... ; 2 -> ... ; _ -> ...
-%is_1 = "arith.cmpi" eq, %n, 1 : i64
-"cf.cond_br"(%is_1, ^case_1, ^check_2)
-
-^check_2:
-  %is_2 = "arith.cmpi" eq, %n, 2 : i64
-  "cf.cond_br"(%is_2, ^case_2, ^default)
-
-^case_1:
-  // body for n == 1
-
-^case_2:
-  // body for n == 2
-
-^default:
-  // body for _
-```
-
-#### For Boolean Patterns:
-```mlir
-// case b of True -> ... ; False -> ...
-// If b is i64: 1=True, 0=False
-"cf.cond_br"(%b, ^true_case, ^false_case)
-```
-
-#### For Custom Type Patterns:
-```mlir
-// case shape of Circle r -> ... ; Rectangle w h -> ...
-%tag = "eco.getTag"(%shape) : (!eco.value) -> i64
-"cf.switch" %tag [
-  0 -> ^circle_case,
-  1 -> ^rectangle_case
-] default: ^unreachable
-
-^circle_case:
-  %r = "eco.extractField"(%shape, 0) : (!eco.value) -> !eco.value
-  // body using r
-
-^rectangle_case:
-  %w = "eco.extractField"(%shape, 0) : (!eco.value) -> !eco.value
-  %h = "eco.extractField"(%shape, 1) : (!eco.value) -> !eco.value
-  // body using w, h
-```
-
-#### For List Patterns:
-```mlir
-// case list of [] -> ... ; x :: xs -> ...
-%is_nil = "eco.isNil"(%list) : (!eco.value) -> i1
-"cf.cond_br"(%is_nil, ^empty_case, ^cons_case)
-
-^cons_case:
-  %x = "eco.head"(%list) : (!eco.value) -> !eco.value
-  %xs = "eco.tail"(%list) : (!eco.value) -> !eco.value
-  // body using x, xs
-```
-
-#### For Maybe Patterns:
-```mlir
-// case maybe of Just x -> ... ; Nothing -> ...
-%tag = "eco.getTag"(%maybe) : (!eco.value) -> i64
-%is_just = "arith.cmpi" eq, %tag, 1 : i64  // Just has tag 1
-"cf.cond_br"(%is_just, ^just_case, ^nothing_case)
-
-^just_case:
-  %x = "eco.extractField"(%maybe, 0) : (!eco.value) -> !eco.value
-  // body using x
-```
-
-### Step 3: Handle Nested Patterns
-
-For nested patterns like:
 ```elm
-case pair of
-    (Just x, Just y) -> ...
-    (Nothing, _) -> ...
-    (_, Nothing) -> ...
+-- New helper function
+scfIf : Context -> String -> String -> MlirRegion -> MlirRegion -> MlirType -> (Context, MlirOp)
+scfIf ctx resultVar condition thenRegion elseRegion resultType =
+    mlirOp ctx "scf.if"
+        |> opBuilder.withOperands [ condition ]
+        |> opBuilder.withRegions [ thenRegion, elseRegion ]
+        |> opBuilder.withResults [ ( resultVar, resultType ) ]
+        |> opBuilder.build
 ```
 
-Generate decision tree that checks outer structure first, then inner.
+### Step 2: Implement Path Navigation
 
-### Step 4: Handle Exhaustiveness
+Translate `DT.Path` to MLIR operations:
 
-Ensure all patterns are covered. For non-exhaustive patterns, either:
-- Compiler error (Elm's approach)
-- Runtime error branch
+```elm
+pathToMlir : Context -> Name.Name -> DT.Path -> (List MlirOp, String, Context)
+pathToMlir ctx root path =
+    case path of
+        DT.Empty ->
+            ( [], "%" ++ Name.toString root, ctx )
+
+        DT.Index index subPath ->
+            let
+                ( subOps, subVar, ctx1 ) = pathToMlir ctx root subPath
+                ( resultVar, ctx2 ) = freshVar ctx1
+                ( ctx3, projectOp ) = ecoProject ctx2 resultVar (Index.toInt index) False subVar ecoValue
+            in
+            ( subOps ++ [ projectOp ], resultVar, ctx3 )
+
+        DT.Unbox subPath ->
+            let
+                ( subOps, subVar, ctx1 ) = pathToMlir ctx root subPath
+                ( resultVar, ctx2 ) = freshVar ctx1
+                ( ctx3, projectOp ) = ecoProject ctx2 resultVar 0 True subVar ecoValue
+            in
+            ( subOps ++ [ projectOp ], resultVar, ctx3 )
+```
+
+### Step 3: Implement Test Generation
+
+Generate comparison operations for each test type:
+
+```elm
+generateTest : Context -> Name.Name -> DT.Path -> DT.Test -> (List MlirOp, String, Context)
+generateTest ctx root path test =
+    let
+        ( pathOps, valueVar, ctx1 ) = pathToMlir ctx root path
+    in
+    case test of
+        DT.IsCtor _ _ index _ _ ->
+            -- Extract tag and compare to constructor index
+            let
+                ( tagVar, ctx2 ) = freshVar ctx1
+                ( ctx3, getTagOp ) = ecoGetTag ctx2 tagVar valueVar
+                ( resultVar, ctx4 ) = freshVar ctx3
+                ( ctx5, cmpOp ) = intEq ctx4 resultVar tagVar (Index.toInt index)
+            in
+            ( pathOps ++ [ getTagOp, cmpOp ], resultVar, ctx5 )
+
+        DT.IsInt expected ->
+            let
+                ( resultVar, ctx2 ) = freshVar ctx1
+                ( ctx3, cmpOp ) = intEq ctx2 resultVar valueVar expected
+            in
+            ( pathOps ++ [ cmpOp ], resultVar, ctx3 )
+
+        DT.IsBool expected ->
+            if expected then
+                ( pathOps, valueVar, ctx1 )  -- Value itself is the condition
+            else
+                -- Negate the value
+                let
+                    ( resultVar, ctx2 ) = freshVar ctx1
+                    ( ctx3, notOp ) = intNot ctx2 resultVar valueVar
+                in
+                ( pathOps ++ [ notOp ], resultVar, ctx3 )
+
+        -- ... other cases
+```
+
+### Step 4: Implement Decider Traversal
+
+```elm
+generateDecider : Context -> Name.Name -> Name.Name -> Mono.Decider Mono.MonoChoice -> MonoType -> ExprResult
+generateDecider ctx label root decider resultType =
+    case decider of
+        Mono.Leaf (Mono.Inline expr) ->
+            generateExpr ctx expr
+
+        Mono.Leaf Mono.Jump ->
+            -- Generate jump to labeled block (needs special handling)
+            generateJump ctx label
+
+        Mono.Chain success failure ->
+            -- Chain has implicit test in success branch
+            -- Generate if-then-else
+            let
+                successResult = generateDecider ctx label root success resultType
+                failureResult = generateDecider successResult.ctx label root failure resultType
+                ( resultVar, ctx1 ) = freshVar failureResult.ctx
+
+                thenRegion = mkRegion [] successResult.ops (scfYield successResult.resultVar)
+                elseRegion = mkRegion [] failureResult.ops (scfYield failureResult.resultVar)
+
+                ( ctx2, ifOp ) = scfIf ctx1 resultVar ??? thenRegion elseRegion (monoTypeToMlir resultType)
+            in
+            { ops = [ ifOp ], resultVar = resultVar, ctx = ctx2 }
+
+        Mono.FanOut edges fallback ->
+            -- Generate switch-like dispatch
+            generateFanOut ctx label root edges fallback resultType
+```
+
+### Step 5: Handle Jump Targets
+
+The `jumps` parameter contains shared branch expressions. These need to be:
+1. Generated as separate labeled blocks
+2. Accessed via `eco.jump` or similar for the `Jump` choice
+
+---
+
+## Questions Resolved
+
+| Question | Answer |
+|----------|--------|
+| Where is the bug? | `MLIR.elm:2097-2109`, `generateCase` is a stub |
+| What IR is used? | `Mono.Decider Mono.MonoChoice` with `DT.Test` and `DT.Path` |
+| Is this missing or broken? | **Missing** - stub placeholder, never implemented |
+| What eco ops exist? | `eco.project` for field access, but no tag extraction or control flow |
+| How are ctors represented? | Tag field (integer), accessed via `eco.project` or needs `eco.getTag` |
+
+## Questions Still Open
+
+1. **Does `the-sett/elm-mlir` support `scf.if` or `cf.cond_br`?**
+   - Need to check the package API
+   - May need to add new ops to the MLIR builder
+
+2. **How to extract constructor tags?**
+   - Need `eco.getTag` operation, or use `eco.project` with special index
+   - Check how runtime represents tags
+
+3. **How to handle jumps (shared branches)?**
+   - MLIR doesn't have `goto`
+   - Options: duplicate code, use functions, or use `scf.while` with state
+
+4. **What's the result type for case expressions?**
+   - The signature has no return type info
+   - May need to thread through from caller
+
+---
 
 ## Implementation Steps
 
-1. **Locate case expression handling** in Guida compiler
-2. **Implement pattern compilation** for each pattern type:
-   - Literal patterns (Int, Char, String)
-   - Constructor patterns (Bool, Maybe, Result, Custom)
-   - List patterns ([], ::)
-   - Tuple patterns
-   - Record patterns
-   - Wildcard (_)
-3. **Generate control flow** (cf.cond_br, cf.switch)
-4. **Generate field extraction** for constructor patterns
-5. **Handle nested patterns** recursively
-6. **Test each pattern type** independently
+1. **Examine `the-sett/elm-mlir`** to understand available ops
+2. **Add `eco.getTag`** operation (or use existing mechanism)
+3. **Implement `pathToMlir`** for path navigation
+4. **Implement `generateTest`** for each test type
+5. **Implement `generateDecider`** for tree traversal
+6. **Handle jump targets** in `generateCase`
+7. **Also fix `generateIf`** which has the same issue
 
 ## Files to Modify
 
-- Guida compiler: case expression codegen
-- Guida compiler: pattern matching IR
-- Possibly add new eco dialect ops:
-  - `eco.getTag` - extract constructor tag
-  - `eco.extractField` - extract field from constructor
-  - `eco.isNil` - check for empty list
+- `/work/compiler/src/Compiler/Generate/CodeGen/MLIR.elm` - Main implementation
+- Possibly eco dialect in runtime if `eco.getTag` doesn't exist
 
 ## Estimated Complexity
 
-High - This is a fundamental compiler feature. Pattern matching compilation is complex, especially for:
-- Nested patterns
-- Guard expressions (if Elm supports them)
-- Efficient decision trees vs naive sequential checks
+**High** - This is a substantial implementation:
+- ~200-400 lines of new Elm code
+- Need to understand MLIR control flow semantics
+- Need to handle all test types and path navigation
+- Jump targets add complexity
 
 ## Priority
 
-**Critical** - Case expressions are fundamental to Elm. Without them, most programs can't work. This should be the highest priority fix.
+**Critical** - Case expressions are fundamental. Most Elm programs won't work without them.
