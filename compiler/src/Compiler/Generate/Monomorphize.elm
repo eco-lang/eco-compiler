@@ -56,6 +56,81 @@ type WorkItem
     = SpecializeGlobal Mono.Global Mono.MonoType (Maybe Mono.LambdaId)
 
 
+{-| Check if a MonoType represents a function type.
+-}
+isFunctionType : Mono.MonoType -> Bool
+isFunctionType monoType =
+    case monoType of
+        Mono.MFunction _ _ ->
+            True
+
+        _ ->
+            False
+
+
+{-| Verify that all function-typed MonoDefine nodes have MonoClosure expressions.
+Returns an error message if the invariant is violated.
+
+This enforces the invariant:
+> Every MonoNode whose MonoType is a function (MFunction) must be callable, i.e.:
+> - either MonoTailFunc params body monoType, or
+> - MonoDefine expr monoType where expr is MonoClosure closureInfo body monoType.
+-}
+checkCallableTopLevels : MonoState -> Result String ()
+checkCallableTopLevels state =
+    let
+        checkNode : ( Int, Mono.MonoNode ) -> Maybe String
+        checkNode ( specId, node ) =
+            case node of
+                Mono.MonoDefine expr monoType ->
+                    if isFunctionType monoType then
+                        case expr of
+                            Mono.MonoClosure _ _ _ ->
+                                Nothing
+
+                            _ ->
+                                let
+                                    globalName =
+                                        case Mono.lookupSpecKey specId state.registry of
+                                            Just ( Mono.Global (IO.Canonical ( author, pkg ) moduleName) name, _, _ ) ->
+                                                author ++ "/" ++ pkg ++ ":" ++ moduleName ++ "." ++ name
+
+                                            Nothing ->
+                                                "unknown"
+                                in
+                                Just
+                                    ("Monomorphization invariant violated: "
+                                        ++ "function-typed MonoDefine is not a MonoClosure.\n"
+                                        ++ "  Global: "
+                                        ++ globalName
+                                        ++ "\n"
+                                        ++ "  SpecId: "
+                                        ++ String.fromInt specId
+                                        ++ "\n"
+                                        ++ "  Type: "
+                                        ++ Debug.toString monoType
+                                        ++ "\n"
+                                        ++ "  Expr: "
+                                        ++ Debug.toString expr
+                                    )
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+    in
+    case Dict.toList compare state.nodes
+        |> List.filterMap checkNode
+        |> List.head
+    of
+        Just msg ->
+            Err msg
+
+        Nothing ->
+            Ok ()
+
+
 
 -- ========== ENTRY POINT ==========
 
@@ -104,26 +179,33 @@ monomorphizeFromEntry mainGlobal mainType nodes =
         finalState : MonoState
         finalState =
             processWorklist stateWithMain
-
-        mainKey : List String
-        mainKey =
-            Mono.toComparableSpecKey (Mono.SpecKey (toptGlobalToMono mainGlobal) mainMonoType Nothing)
-
-        mainSpecId : Maybe Mono.SpecId
-        mainSpecId =
-            Dict.get identity mainKey finalState.registry.mapping
-
-        mainInfo : Maybe Mono.MainInfo
-        mainInfo =
-            Maybe.map Mono.StaticMain mainSpecId
     in
-    Ok
-        (Mono.MonoGraph
-            { nodes = finalState.nodes
-            , main = mainInfo
-            , registry = finalState.registry
-            }
-        )
+    -- Check the callable-top-level invariant before returning
+    case checkCallableTopLevels finalState of
+        Err msg ->
+            Err ("COMPILER BUG: " ++ msg)
+
+        Ok () ->
+            let
+                mainKey : List String
+                mainKey =
+                    Mono.toComparableSpecKey (Mono.SpecKey (toptGlobalToMono mainGlobal) mainMonoType Nothing)
+
+                mainSpecId : Maybe Mono.SpecId
+                mainSpecId =
+                    Dict.get identity mainKey finalState.registry.mapping
+
+                mainInfo : Maybe Mono.MainInfo
+                mainInfo =
+                    Maybe.map Mono.StaticMain mainSpecId
+            in
+            Ok
+                (Mono.MonoGraph
+                    { nodes = finalState.nodes
+                    , main = mainInfo
+                    , registry = finalState.registry
+                    }
+                )
 
 
 
@@ -626,8 +708,32 @@ specializeExpr expr subst state =
 
         TOpt.VarGlobal region global canType ->
             let
-                monoType =
+                monoType0 =
                     applySubst subst canType
+
+                -- If the type is an unresolved type variable (MVar), look up the actual
+                -- type from the global's definition. This happens when the reference
+                -- has a fresh type variable that wasn't in our substitution (e.g., when
+                -- Html.text's body is just a reference to VirtualDom.text).
+                monoType =
+                    case monoType0 of
+                        Mono.MVar _ _ ->
+                            case Dict.get TOpt.toComparableGlobal global state.toptNodes of
+                                Just (TOpt.Define _ _ defCanType) ->
+                                    applySubst subst defCanType
+
+                                Just (TOpt.TrackedDefine _ _ _ defCanType) ->
+                                    applySubst subst defCanType
+
+                                Just (TOpt.DefineTailFunc _ args _ _ returnType) ->
+                                    applySubst subst (buildFuncType args returnType)
+
+                                _ ->
+                                    -- For Link, Kernel, etc. - keep the original type
+                                    monoType0
+
+                        _ ->
+                            monoType0
 
                 monoGlobal =
                     toptGlobalToMono global
