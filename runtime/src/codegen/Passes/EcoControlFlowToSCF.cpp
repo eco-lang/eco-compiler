@@ -25,6 +25,9 @@
 #include "../EcoOps.h"
 #include "../Passes.h"
 
+#include "llvm/Support/Debug.h"
+#define DEBUG_TYPE "eco-cf-to-scf"
+
 using namespace mlir;
 using namespace ::eco;
 
@@ -607,8 +610,11 @@ struct EcoControlFlowToSCFPass
         patterns.add<CaseToScfIfPattern>(ctx, /*benefit=*/5);
         patterns.add<CaseToScfIndexSwitchPattern>(ctx, /*benefit=*/5);
 
-        // Apply patterns greedily
-        if (failed(applyPatternsGreedily(module, std::move(patterns)))) {
+        // Apply patterns greedily (with folding disabled to prevent DCE)
+        GreedyRewriteConfig config;
+        config.enableFolding(false);
+
+        if (failed(applyPatternsGreedily(module, std::move(patterns), config))) {
             // Note: This may not be a hard error - some patterns might not match
             // which is fine, as remaining ops will be handled by CF lowering
         }

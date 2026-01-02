@@ -114,7 +114,7 @@ class Eco_Op<string mnemonic, list<Trait> traits = []>
 //===----------------------------------------------------------------------===//
 
 def Eco_CaseOp : Eco_Op<"case", [
-    RecursiveMemoryEffects
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Pattern match on ADT constructor tag";
   let description = [{

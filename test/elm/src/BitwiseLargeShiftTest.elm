@@ -3,8 +3,8 @@ module BitwiseLargeShiftTest exposing (main)
 {-| Test large shift amounts.
 -}
 
--- CHECK: shift32: 0
--- CHECK: shift63
+-- CHECK: shift32: 4294967296
+-- CHECK: shift63: -9223372036854775808
 
 import Bitwise
 import Html exposing (text)

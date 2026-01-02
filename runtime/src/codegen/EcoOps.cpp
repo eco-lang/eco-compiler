@@ -10,6 +10,7 @@
 
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 using namespace mlir;
 using namespace eco;
@@ -87,6 +88,15 @@ LogicalResult CaseOp::verify() {
   }
 
   return success();
+}
+
+// Implement MemoryEffectsOpInterface for CaseOp
+// Mark the operation as having side effects to prevent DCE from removing it
+// before pattern lowering has a chance to run.
+void CaseOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  // Add a write effect to prevent DCE (case expressions have observable behavior)
+  effects.emplace_back(MemoryEffects::Write::get());
 }
 
 LogicalResult JoinpointOp::verify() {

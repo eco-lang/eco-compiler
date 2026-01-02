@@ -202,6 +202,7 @@ type alias Context =
     , registry : Mono.SpecializationRegistry
     , pendingLambdas : List PendingLambda
     , signatures : Dict Int FuncSignature -- SpecId -> signature for invariant checking
+    , varMappings : Dict String String -- Let-bound name -> SSA variable name
     }
 
 
@@ -221,6 +222,7 @@ initContext mode registry signatures =
     , registry = registry
     , pendingLambdas = []
     , signatures = signatures
+    , varMappings = Dict.empty
     }
 
 
@@ -236,6 +238,27 @@ freshOpId ctx =
     ( "op" ++ String.fromInt ctx.nextOpId
     , { ctx | nextOpId = ctx.nextOpId + 1 }
     )
+
+
+{-| Look up a variable name, checking varMappings first for let-bound aliases.
+This allows let bindings to directly reference the SSA variable from the expression
+rather than going through an eco.construct wrapper.
+-}
+lookupVar : Context -> String -> String
+lookupVar ctx name =
+    case Dict.get name ctx.varMappings of
+        Just ssaVar ->
+            ssaVar
+
+        Nothing ->
+            "%" ++ name
+
+
+{-| Add a variable mapping from a let-bound name to its SSA variable.
+-}
+addVarMapping : String -> String -> Context -> Context
+addVarMapping name ssaVar ctx =
+    { ctx | varMappings = Dict.insert name ssaVar ctx.varMappings }
 
 
 
@@ -1255,7 +1278,7 @@ generateExpr ctx expr =
             generateLiteral ctx lit
 
         Mono.MonoVarLocal name _ ->
-            emptyResult ctx ("%" ++ name)
+            emptyResult ctx (lookupVar ctx name)
 
         Mono.MonoVarGlobal _ specId monoType ->
             generateVarGlobal ctx specId monoType
@@ -1690,6 +1713,23 @@ argVarPairsFromExprs argExprs argVars =
         argVars
 
 
+{-| Generate a Char unary operation (i16 -> i16) with direct kernel call.
+-}
+generateCharUnaryOp : Context -> List MlirOp -> String -> String -> ExprResult
+generateCharUnaryOp ctx argOps charVar kernelName =
+    let
+        ( resVar, ctx2 ) =
+            freshVar ctx
+
+        ( ctx3, callOp ) =
+            ecoCallNamed ctx2 resVar kernelName [ ( charVar, I16 ) ] I16
+    in
+    { ops = argOps ++ [ callOp ]
+    , resultVar = resVar
+    , ctx = ctx3
+    }
+
+
 boxIfNeeded : Context -> String -> Mono.MonoType -> ( List MlirOp, String, Context )
 boxIfNeeded ctx var monoTy =
     let
@@ -1734,6 +1774,81 @@ boxArgsIfNeeded ctx args =
         args
 
 
+{-| Box or unbox arguments to match the function's expected parameter types.
+If the function expects !eco.value but we have an unboxed type, box it.
+If the function expects an unboxed type but we have !eco.value, unbox it.
+-}
+boxToMatchSignature :
+    Context
+    -> List Mono.MonoExpr
+    -> List String
+    -> List Mono.MonoType
+    -> ( List MlirOp, List ( String, MlirType ), Context )
+boxToMatchSignature ctx args argVars expectedTypes =
+    let
+        helper :
+            ( Mono.MonoExpr, String, Mono.MonoType )
+            -> ( List MlirOp, List ( String, MlirType ), Context )
+            -> ( List MlirOp, List ( String, MlirType ), Context )
+        helper ( expr, var, expectedTy ) ( opsAcc, pairsAcc, ctxAcc ) =
+            let
+                exprMlirTy =
+                    monoTypeToMlir (Mono.typeOf expr)
+
+                expectedMlirTy =
+                    monoTypeToMlir expectedTy
+            in
+            if expectedMlirTy == exprMlirTy then
+                -- Types match, no boxing/unboxing needed
+                ( opsAcc, pairsAcc ++ [ ( var, exprMlirTy ) ], ctxAcc )
+
+            else if isEcoValueType expectedMlirTy && not (isEcoValueType exprMlirTy) then
+                -- Function expects boxed, we have unboxed -> box it
+                let
+                    ( boxOps, boxedVar, ctx1 ) =
+                        boxIfNeeded ctxAcc var (Mono.typeOf expr)
+                in
+                ( opsAcc ++ boxOps, pairsAcc ++ [ ( boxedVar, ecoValue ) ], ctx1 )
+
+            else if not (isEcoValueType expectedMlirTy) && isEcoValueType exprMlirTy then
+                -- Function expects unboxed, we have boxed -> unbox it
+                let
+                    ( unboxOps, unboxedVar, ctx1 ) =
+                        unboxToType ctxAcc var expectedMlirTy
+                in
+                ( opsAcc ++ unboxOps, pairsAcc ++ [ ( unboxedVar, expectedMlirTy ) ], ctx1 )
+
+            else
+                -- Types don't match but no boxing solution - use expression type
+                ( opsAcc, pairsAcc ++ [ ( var, exprMlirTy ) ], ctxAcc )
+
+        zipped =
+            List.map3 (\a b c -> ( a, b, c )) args argVars expectedTypes
+    in
+    List.foldl helper ( [], [], ctx ) zipped
+
+
+{-| Unbox a boxed !eco.value to a specific primitive type.
+-}
+unboxToType : Context -> String -> MlirType -> ( List MlirOp, String, Context )
+unboxToType ctx var targetType =
+    let
+        ( unboxedVar, ctx1 ) =
+            freshVar ctx
+
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr ecoValue ])
+
+        ( ctx2, unboxOp ) =
+            mlirOp ctx1 "eco.unbox"
+                |> opBuilder.withOperands [ var ]
+                |> opBuilder.withResults [ ( unboxedVar, targetType ) ]
+                |> opBuilder.withAttrs attrs
+                |> opBuilder.build
+    in
+    ( [ unboxOp ], unboxedVar, ctx2 )
+
+
 generateCall : Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateCall ctx func args resultType =
     case func of
@@ -1742,21 +1857,40 @@ generateCall ctx func args resultType =
                 ( argOps, argVars, ctx1 ) =
                     generateExprList ctx args
 
-                ( resultVar, ctx2 ) =
-                    freshVar ctx1
-
-                argVarPairs : List ( String, MlirType )
-                argVarPairs =
-                    argVarPairsFromExprs args argVars
-
                 funcName : String
                 funcName =
                     specIdToFuncName ctx.registry specId
 
+                -- Look up the function signature to determine expected parameter types
+                maybeSig : Maybe FuncSignature
+                maybeSig =
+                    Dict.get specId ctx.signatures
+
+                -- Compute argument pairs based on whether we have a signature
+                ( boxOps, argVarPairs, ctx1b ) =
+                    case maybeSig of
+                        Just sig ->
+                            -- Use the function's parameter types
+                            -- Box if function expects ecoValue but we have primitive
+                            boxToMatchSignature ctx1 args argVars sig.paramTypes
+
+                        Nothing ->
+                            -- No signature available, use expression types (original behavior)
+                            ( []
+                            , List.map2
+                                (\expr var -> ( var, monoTypeToMlir (Mono.typeOf expr) ))
+                                args
+                                argVars
+                            , ctx1
+                            )
+
+                ( resultVar, ctx2 ) =
+                    freshVar ctx1b
+
                 ( ctx3, callOp ) =
                     ecoCallNamed ctx2 resultVar funcName argVarPairs (monoTypeToMlir resultType)
             in
-            { ops = argOps ++ [ callOp ]
+            { ops = argOps ++ boxOps ++ [ callOp ]
             , resultVar = resultVar
             , ctx = ctx3
             }
@@ -1795,6 +1929,47 @@ generateCall ctx func args resultType =
                     , resultVar = resVar
                     , ctx = ctx7
                     }
+
+                -- Char.toCode: i16 -> i64 (unboxed args)
+                ( "Char", "toCode", [ charVar ] ) ->
+                    let
+                        ( resVar, ctx2 ) =
+                            freshVar ctx1
+
+                        ( ctx3, callOp ) =
+                            ecoCallNamed ctx2 resVar "Elm_Kernel_Char_toCode" [ ( charVar, I16 ) ] I64
+                    in
+                    { ops = argOps ++ [ callOp ]
+                    , resultVar = resVar
+                    , ctx = ctx3
+                    }
+
+                -- Char.fromCode: i64 -> i16 (unboxed args)
+                ( "Char", "fromCode", [ codeVar ] ) ->
+                    let
+                        ( resVar, ctx2 ) =
+                            freshVar ctx1
+
+                        ( ctx3, callOp ) =
+                            ecoCallNamed ctx2 resVar "Elm_Kernel_Char_fromCode" [ ( codeVar, I64 ) ] I16
+                    in
+                    { ops = argOps ++ [ callOp ]
+                    , resultVar = resVar
+                    , ctx = ctx3
+                    }
+
+                -- Char.toLower, toUpper, toLocaleLower, toLocaleUpper: i16 -> i16 (unboxed)
+                ( "Char", "toLower", [ charVar ] ) ->
+                    generateCharUnaryOp ctx1 argOps charVar "Elm_Kernel_Char_toLower"
+
+                ( "Char", "toUpper", [ charVar ] ) ->
+                    generateCharUnaryOp ctx1 argOps charVar "Elm_Kernel_Char_toUpper"
+
+                ( "Char", "toLocaleLower", [ charVar ] ) ->
+                    generateCharUnaryOp ctx1 argOps charVar "Elm_Kernel_Char_toLocaleLower"
+
+                ( "Char", "toLocaleUpper", [ charVar ] ) ->
+                    generateCharUnaryOp ctx1 argOps charVar "Elm_Kernel_Char_toLocaleUpper"
 
                 _ ->
                     case kernelIntrinsic home name argTypes resultType of
@@ -1856,7 +2031,7 @@ generateCall ctx func args resultType =
 
                 allOperandNames : List String
                 allOperandNames =
-                    ("%" ++ name) :: boxedVars
+                    lookupVar ctx name :: boxedVars
 
                 allOperandTypes : List MlirType
                 allOperandTypes =
@@ -2054,20 +2229,14 @@ generateIf ctx branches final =
                 elseRegion =
                     mkRegion [] elseRes.ops elseRetOp
 
-                -- eco.case on Bool: tag 1 for True (then), default for False (else)
+                -- eco.case on Bool: tag 1 for True (then), tag 0 for False (else)
                 ( ctx3, caseOp ) =
-                    ecoCase ctx2 condVar [ 1 ] [ thenRegion, elseRegion ] [ resultMlirType ]
-
-                -- Return dummy result (control exits via eco.return in regions)
-                ( dummyVar, ctx4 ) =
-                    freshVar ctx3
-
-                ( ctx5, dummyOp ) =
-                    ecoConstruct ctx4 dummyVar 0 0 0 []
+                    ecoCase ctx2 condVar [ 1, 0 ] [ thenRegion, elseRegion ] [ resultMlirType ]
             in
-            { ops = condRes.ops ++ [ caseOp, dummyOp ]
-            , resultVar = dummyVar
-            , ctx = ctx5
+            -- Use condVar as placeholder - the lowering will replace everything
+            { ops = condRes.ops ++ [ caseOp ]
+            , resultVar = condVar
+            , ctx = ctx3
             }
 
 
@@ -2084,14 +2253,18 @@ generateLet ctx def body =
                 exprResult =
                     generateExpr ctx expr
 
-                ( ctx1, aliasOp ) =
-                    ecoConstruct exprResult.ctx ("%" ++ name) 0 1 0 [ ( exprResult.resultVar, ecoValue ) ]
+                -- Instead of creating an eco.construct wrapper, just add a mapping
+                -- from the let-bound name to the expression's result variable.
+                -- This preserves the original type and avoids boxing issues.
+                ctx1 : Context
+                ctx1 =
+                    addVarMapping name exprResult.resultVar exprResult.ctx
 
                 bodyResult : ExprResult
                 bodyResult =
                     generateExpr ctx1 body
             in
-            { ops = exprResult.ops ++ [ aliasOp ] ++ bodyResult.ops
+            { ops = exprResult.ops ++ bodyResult.ops
             , resultVar = bodyResult.resultVar
             , ctx = bodyResult.ctx
             }
@@ -2110,14 +2283,16 @@ generateDestruct ctx (Mono.MonoDestructor name path) body =
         ( pathOps, pathVar, ctx1 ) =
             generateMonoPath ctx path
 
-        ( ctx2, aliasOp ) =
-            ecoConstruct ctx1 ("%" ++ name) 0 1 0 [ ( pathVar, ecoValue ) ]
+        -- Use mapping instead of eco.construct wrapper
+        ctx2 : Context
+        ctx2 =
+            addVarMapping name pathVar ctx1
 
         bodyResult : ExprResult
         bodyResult =
             generateExpr ctx2 body
     in
-    { ops = pathOps ++ [ aliasOp ] ++ bodyResult.ops
+    { ops = pathOps ++ bodyResult.ops
     , resultVar = bodyResult.resultVar
     , ctx = bodyResult.ctx
     }
@@ -2127,7 +2302,7 @@ generateMonoPath : Context -> Mono.MonoPath -> ( List MlirOp, String, Context )
 generateMonoPath ctx path =
     case path of
         Mono.MonoRoot name ->
-            ( [], "%" ++ name, ctx )
+            ( [], lookupVar ctx name, ctx )
 
         Mono.MonoIndex index subPath ->
             let
@@ -2428,6 +2603,41 @@ testToTagInt test =
             0
 
 
+{-| Compute the fallback tag for a fan-out based on the edge tests.
+For two-way branches (Bool, Cons/Nil), this computes the "other" tag.
+For N-way branches (custom types), this finds the first missing tag.
+-}
+computeFallbackTag : List DT.Test -> Int
+computeFallbackTag edgeTests =
+    case edgeTests of
+        [ DT.IsBool True ] ->
+            0
+
+        [ DT.IsBool False ] ->
+            1
+
+        [ DT.IsCons ] ->
+            0
+
+        [ DT.IsNil ] ->
+            1
+
+        _ ->
+            -- For custom types with multiple edges, find the first unused tag
+            let
+                usedTags =
+                    List.map testToTagInt edgeTests
+
+                maxTag =
+                    List.maximum usedTags |> Maybe.withDefault 0
+            in
+            -- Find first unused tag from 0 to maxTag+1
+            List.range 0 (maxTag + 1)
+                |> List.filter (\t -> not (List.member t usedTags))
+                |> List.head
+                |> Maybe.withDefault (maxTag + 1)
+
+
 
 -- CASE GENERATION
 
@@ -2503,17 +2713,11 @@ generateLeaf ctx _ choice resultTy =
 
                 ( ctx1, retOp ) =
                     ecoReturn branchRes.ctx branchRes.resultVar resultTy
-
-                -- Return a dummy result var for ExprResult contract
-                ( dummyVar, ctx2 ) =
-                    freshVar ctx1
-
-                ( ctx3, dummyOp ) =
-                    ecoConstruct ctx2 dummyVar 0 0 0 []
             in
-            { ops = branchRes.ops ++ [ retOp, dummyOp ]
-            , resultVar = dummyVar
-            , ctx = ctx3
+            -- The return op MUST be last so mkRegionFromOps picks it as terminator
+            { ops = branchRes.ops ++ [ retOp ]
+            , resultVar = branchRes.resultVar
+            , ctx = ctx1
             }
 
         Mono.Jump index ->
@@ -2560,20 +2764,14 @@ generateChain ctx root testChain success failure resultTy =
         elseRegion =
             mkRegionFromOps elseRes.ops
 
-        -- eco.case on Bool: tag 1 for True (then), fallback for False (else)
+        -- eco.case on Bool: tag 1 for True (then), tag 0 for False (else)
         ( ctx2, caseOp ) =
-            ecoCase elseRes.ctx condVar [ 1 ] [ thenRegion, elseRegion ] [ resultTy ]
-
-        -- Return dummy result
-        ( dummyVar, ctx3 ) =
-            freshVar ctx2
-
-        ( ctx4, dummyOp ) =
-            ecoConstruct ctx3 dummyVar 0 0 0 []
+            ecoCase elseRes.ctx condVar [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
     in
-    { ops = condOps ++ [ caseOp, dummyOp ]
-    , resultVar = dummyVar
-    , ctx = ctx4
+    -- Use condVar as placeholder - the lowering will replace everything
+    { ops = condOps ++ [ caseOp ]
+    , resultVar = condVar
+    , ctx = ctx2
     }
 
 
@@ -2587,8 +2785,19 @@ generateFanOut ctx root path edges fallback resultTy =
             generateDTPath ctx root path
 
         -- Collect tags from edges
-        tags =
+        edgeTags =
             List.map (\( test, _ ) -> testToTagInt test) edges
+
+        -- Compute the fallback tag (for the fallback region)
+        edgeTests =
+            List.map Tuple.first edges
+
+        fallbackTag =
+            computeFallbackTag edgeTests
+
+        -- All tags including the fallback
+        tags =
+            edgeTags ++ [ fallbackTag ]
 
         -- Generate regions for each edge
         ( edgeRegions, ctx2 ) =
@@ -2619,17 +2828,13 @@ generateFanOut ctx root path edges fallback resultTy =
 
         ( ctx3, caseOp ) =
             ecoCase fallbackRes.ctx scrutineeVar tags allRegions [ resultTy ]
-
-        -- Return dummy result
-        ( dummyVar, ctx4 ) =
-            freshVar ctx3
-
-        ( ctx5, dummyOp ) =
-            ecoConstruct ctx4 dummyVar 0 0 0 []
     in
-    { ops = pathOps ++ [ caseOp, dummyOp ]
-    , resultVar = dummyVar
-    , ctx = ctx5
+    -- Return the case op - no dummy construct between case and return!
+    -- The lowering pattern expects: eco.case ... eco.return
+    -- Use scrutineeVar as placeholder resultVar - the lowering will replace everything
+    { ops = pathOps ++ [ caseOp ]
+    , resultVar = scrutineeVar
+    , ctx = ctx3
     }
 
 
@@ -3144,7 +3349,7 @@ ecoCase ctx scrutinee tags regions resultTypes =
                 attrsBase
 
             else
-                Dict.insert "result_types"
+                Dict.insert "caseResultTypes"
                     (ArrayAttr Nothing (List.map TypeAttr resultTypes))
                     attrsBase
     in
@@ -3172,7 +3377,7 @@ ecoJoinpoint ctx id params jpRegion contRegion resultTypes =
                 attrsBase
 
             else
-                Dict.insert "result_types"
+                Dict.insert "jpResultTypes"
                     (ArrayAttr Nothing (List.map TypeAttr resultTypes))
                     attrsBase
 

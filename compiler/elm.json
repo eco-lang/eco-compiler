@@ -1,13 +1,14 @@
 {
     "type": "application",
     "source-directories": [
-        "src"
+        "src",
+	"elm-mlir/src"
     ],
     "elm-version": "0.19.1",
     "dependencies": {
         "direct": {
             "Janiczek/elm-vlq": "1.0.0",
-            "cuducos/elm-format-number": "9.0.1",
+            "coinop-logan/elm-format-number": "1.0.0",
             "dasch/levenshtein": "1.0.3",
             "elm/bytes": "1.0.8",
             "elm/core": "1.0.5",
@@ -27,13 +28,11 @@
             "jxxcarlson/hex": "4.0.1",
             "obiloud/numeric-decimal": "3.0.1",
             "rtfeldman/elm-hex": "1.0.0",
-            "the-sett/elm-mlir": "5.0.0",
             "the-sett/elm-pretty-printer": "3.3.0",
             "truqu/elm-base64": "2.0.4"
         },
         "indirect": {
             "andre-dietrich/parser-combinators": "4.1.0",
-            "coinop-logan/elm-format-number": "1.0.0",
             "elm/file": "1.0.5",
             "elm/parser": "1.1.0",
             "elm/random": "1.0.0",

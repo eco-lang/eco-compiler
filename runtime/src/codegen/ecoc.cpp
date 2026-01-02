@@ -147,6 +147,10 @@ static int runPipeline(ModuleOp module, bool lowerToLLVM) {
 
     // Build the appropriate pipeline based on the emit action.
     if (lowerToLLVM) {
+        // Stage 1: Eco -> Eco transformations.
+        // Generate external declarations for undefined functions (kernel functions, etc.)
+        pm.addPass(eco::createUndefinedFunctionStubPass());
+
         // Stage 2: Eco -> Standard MLIR (func/cf/arith).
 
         // Infer result_types for eco.case ops based on eco.return operands.
