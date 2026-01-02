@@ -6,25 +6,25 @@
 namespace Elm::Kernel::Bitwise {
 
 // Returns bitwise AND of a and b.
-int32_t and_(int32_t a, int32_t b);
+int64_t and_(int64_t a, int64_t b);
 
 // Returns bitwise OR of a and b.
-int32_t or_(int32_t a, int32_t b);
+int64_t or_(int64_t a, int64_t b);
 
 // Returns bitwise XOR of a and b.
-int32_t xor_(int32_t a, int32_t b);
+int64_t xor_(int64_t a, int64_t b);
 
 // Returns bitwise complement of a.
-int32_t complement(int32_t a);
+int64_t complement(int64_t a);
 
 // Returns a shifted left by offset bits.
-int32_t shiftLeftBy(int32_t offset, int32_t a);
+int64_t shiftLeftBy(int64_t offset, int64_t a);
 
 // Returns a shifted right by offset bits (arithmetic shift, sign-extends).
-int32_t shiftRightBy(int32_t offset, int32_t a);
+int64_t shiftRightBy(int64_t offset, int64_t a);
 
 // Returns a shifted right by offset bits (logical shift, zero-fills).
-uint32_t shiftRightZfBy(int32_t offset, int32_t a);
+uint64_t shiftRightZfBy(int64_t offset, int64_t a);
 
 } // namespace Elm::Kernel::Bitwise
 

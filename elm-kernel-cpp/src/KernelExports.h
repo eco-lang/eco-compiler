@@ -43,35 +43,35 @@ int64_t Elm_Kernel_Basics_floor(double x);
 int64_t Elm_Kernel_Basics_round(double x);
 int64_t Elm_Kernel_Basics_truncate(double x);
 double Elm_Kernel_Basics_toFloat(int64_t x);
-int64_t Elm_Kernel_Basics_isInfinite(double x);
-int64_t Elm_Kernel_Basics_isNaN(double x);
-int64_t Elm_Kernel_Basics_and(int64_t a, int64_t b);
-int64_t Elm_Kernel_Basics_or(int64_t a, int64_t b);
-int64_t Elm_Kernel_Basics_xor(int64_t a, int64_t b);
-int64_t Elm_Kernel_Basics_not(int64_t a);
+bool Elm_Kernel_Basics_isInfinite(double x);
+bool Elm_Kernel_Basics_isNaN(double x);
+bool Elm_Kernel_Basics_and(bool a, bool b);
+bool Elm_Kernel_Basics_or(bool a, bool b);
+bool Elm_Kernel_Basics_xor(bool a, bool b);
+bool Elm_Kernel_Basics_not(bool a);
 
 //===----------------------------------------------------------------------===//
 // Bitwise Module
 //===----------------------------------------------------------------------===//
 
-int32_t Elm_Kernel_Bitwise_and(int32_t a, int32_t b);
-int32_t Elm_Kernel_Bitwise_or(int32_t a, int32_t b);
-int32_t Elm_Kernel_Bitwise_xor(int32_t a, int32_t b);
-int32_t Elm_Kernel_Bitwise_complement(int32_t a);
-int32_t Elm_Kernel_Bitwise_shiftLeftBy(int32_t offset, int32_t a);
-int32_t Elm_Kernel_Bitwise_shiftRightBy(int32_t offset, int32_t a);
-uint32_t Elm_Kernel_Bitwise_shiftRightZfBy(int32_t offset, int32_t a);
+int64_t Elm_Kernel_Bitwise_and(int64_t a, int64_t b);
+int64_t Elm_Kernel_Bitwise_or(int64_t a, int64_t b);
+int64_t Elm_Kernel_Bitwise_xor(int64_t a, int64_t b);
+int64_t Elm_Kernel_Bitwise_complement(int64_t a);
+int64_t Elm_Kernel_Bitwise_shiftLeftBy(int64_t offset, int64_t a);
+int64_t Elm_Kernel_Bitwise_shiftRightBy(int64_t offset, int64_t a);
+uint64_t Elm_Kernel_Bitwise_shiftRightZfBy(int64_t offset, int64_t a);
 
 //===----------------------------------------------------------------------===//
 // Char Module
 //===----------------------------------------------------------------------===//
 
-int32_t Elm_Kernel_Char_fromCode(int32_t code);
-int32_t Elm_Kernel_Char_toCode(int32_t c);
-int32_t Elm_Kernel_Char_toLower(int32_t c);
-int32_t Elm_Kernel_Char_toUpper(int32_t c);
-int32_t Elm_Kernel_Char_toLocaleLower(int32_t c);
-int32_t Elm_Kernel_Char_toLocaleUpper(int32_t c);
+uint16_t Elm_Kernel_Char_fromCode(int64_t code);
+int64_t Elm_Kernel_Char_toCode(uint16_t c);
+uint16_t Elm_Kernel_Char_toLower(uint16_t c);
+uint16_t Elm_Kernel_Char_toUpper(uint16_t c);
+uint16_t Elm_Kernel_Char_toLocaleLower(uint16_t c);
+uint16_t Elm_Kernel_Char_toLocaleUpper(uint16_t c);
 
 //===----------------------------------------------------------------------===//
 // String Module
@@ -80,7 +80,7 @@ int32_t Elm_Kernel_Char_toLocaleUpper(int32_t c);
 int64_t Elm_Kernel_String_length(uint64_t str);
 uint64_t Elm_Kernel_String_append(uint64_t a, uint64_t b);
 uint64_t Elm_Kernel_String_join(uint64_t sep, uint64_t stringList);
-uint64_t Elm_Kernel_String_cons(uint32_t c, uint64_t str);
+uint64_t Elm_Kernel_String_cons(uint16_t c, uint64_t str);
 uint64_t Elm_Kernel_String_uncons(uint64_t str);
 uint64_t Elm_Kernel_String_fromList(uint64_t chars);
 uint64_t Elm_Kernel_String_slice(int64_t start, int64_t end, uint64_t str);
@@ -93,9 +93,9 @@ uint64_t Elm_Kernel_String_toLower(uint64_t str);
 uint64_t Elm_Kernel_String_trim(uint64_t str);
 uint64_t Elm_Kernel_String_trimLeft(uint64_t str);
 uint64_t Elm_Kernel_String_trimRight(uint64_t str);
-int64_t Elm_Kernel_String_startsWith(uint64_t prefix, uint64_t str);
-int64_t Elm_Kernel_String_endsWith(uint64_t suffix, uint64_t str);
-int64_t Elm_Kernel_String_contains(uint64_t needle, uint64_t haystack);
+bool Elm_Kernel_String_startsWith(uint64_t prefix, uint64_t str);
+bool Elm_Kernel_String_endsWith(uint64_t suffix, uint64_t str);
+bool Elm_Kernel_String_contains(uint64_t needle, uint64_t haystack);
 uint64_t Elm_Kernel_String_indexes(uint64_t needle, uint64_t haystack);
 uint64_t Elm_Kernel_String_toInt(uint64_t str);
 uint64_t Elm_Kernel_String_toFloat(uint64_t str);
@@ -112,12 +112,12 @@ uint64_t Elm_Kernel_List_cons(uint64_t head, uint64_t tail);
 //===----------------------------------------------------------------------===//
 
 uint64_t Elm_Kernel_Utils_compare(uint64_t a, uint64_t b);
-int64_t Elm_Kernel_Utils_equal(uint64_t a, uint64_t b);
-int64_t Elm_Kernel_Utils_notEqual(uint64_t a, uint64_t b);
-int64_t Elm_Kernel_Utils_lt(uint64_t a, uint64_t b);
-int64_t Elm_Kernel_Utils_le(uint64_t a, uint64_t b);
-int64_t Elm_Kernel_Utils_gt(uint64_t a, uint64_t b);
-int64_t Elm_Kernel_Utils_ge(uint64_t a, uint64_t b);
+bool Elm_Kernel_Utils_equal(uint64_t a, uint64_t b);
+bool Elm_Kernel_Utils_notEqual(uint64_t a, uint64_t b);
+bool Elm_Kernel_Utils_lt(uint64_t a, uint64_t b);
+bool Elm_Kernel_Utils_le(uint64_t a, uint64_t b);
+bool Elm_Kernel_Utils_gt(uint64_t a, uint64_t b);
+bool Elm_Kernel_Utils_ge(uint64_t a, uint64_t b);
 uint64_t Elm_Kernel_Utils_append(uint64_t a, uint64_t b);
 
 //===----------------------------------------------------------------------===//

@@ -23,8 +23,8 @@ uint64_t Elm_Kernel_String_join(uint64_t sep, uint64_t stringList) {
     return Export::encode(result);
 }
 
-uint64_t Elm_Kernel_String_cons(uint32_t c, uint64_t str) {
-    HPointer result = String::cons(static_cast<u16>(c), Export::toPtr(str));
+uint64_t Elm_Kernel_String_cons(uint16_t c, uint64_t str) {
+    HPointer result = String::cons(c, Export::toPtr(str));
     return Export::encode(result);
 }
 
@@ -88,16 +88,16 @@ uint64_t Elm_Kernel_String_trimRight(uint64_t str) {
     return Export::encode(result);
 }
 
-int64_t Elm_Kernel_String_startsWith(uint64_t prefix, uint64_t str) {
-    return Export::encodeBool(String::startsWith(Export::toPtr(prefix), Export::toPtr(str)));
+bool Elm_Kernel_String_startsWith(uint64_t prefix, uint64_t str) {
+    return String::startsWith(Export::toPtr(prefix), Export::toPtr(str));
 }
 
-int64_t Elm_Kernel_String_endsWith(uint64_t suffix, uint64_t str) {
-    return Export::encodeBool(String::endsWith(Export::toPtr(suffix), Export::toPtr(str)));
+bool Elm_Kernel_String_endsWith(uint64_t suffix, uint64_t str) {
+    return String::endsWith(Export::toPtr(suffix), Export::toPtr(str));
 }
 
-int64_t Elm_Kernel_String_contains(uint64_t needle, uint64_t haystack) {
-    return Export::encodeBool(String::contains(Export::toPtr(needle), Export::toPtr(haystack)));
+bool Elm_Kernel_String_contains(uint64_t needle, uint64_t haystack) {
+    return String::contains(Export::toPtr(needle), Export::toPtr(haystack));
 }
 
 uint64_t Elm_Kernel_String_indexes(uint64_t needle, uint64_t haystack) {
