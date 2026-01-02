@@ -29,10 +29,10 @@ module {
     // CHECK: 3.14159
 
     // Character roundtrip
-    %c1 = arith.constant 88 : i32  // 'X'
-    %boxed_c1 = eco.box %c1 : i32 -> !eco.value
-    %unboxed_c1 = eco.unbox %boxed_c1 : !eco.value -> i32
-    %boxed_c1_again = eco.box %unboxed_c1 : i32 -> !eco.value
+    %c1 = arith.constant 88 : i16  // 'X'
+    %boxed_c1 = eco.box %c1 : i16 -> !eco.value
+    %unboxed_c1 = eco.unbox %boxed_c1 : !eco.value -> i16
+    %boxed_c1_again = eco.box %unboxed_c1 : i16 -> !eco.value
     eco.dbg %boxed_c1_again : !eco.value
     // CHECK: 'X'
 

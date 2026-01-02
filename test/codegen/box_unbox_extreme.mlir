@@ -74,10 +74,10 @@ module {
     // CHECK: 1
 
     // Unicode char (max BMP: U+FFFF)
-    %max_bmp = arith.constant 65535 : i32
-    %box_char = eco.box %max_bmp : i32 -> !eco.value
-    %unbox_char = eco.unbox %box_char : !eco.value -> i32
-    %char_ok = arith.cmpi eq, %unbox_char, %max_bmp : i32
+    %max_bmp = arith.constant 65535 : i16
+    %box_char = eco.box %max_bmp : i16 -> !eco.value
+    %unbox_char = eco.unbox %box_char : !eco.value -> i16
+    %char_ok = arith.cmpi eq, %unbox_char, %max_bmp : i16
     %char_ok_ext = arith.extui %char_ok : i1 to i64
     eco.dbg %char_ok_ext : i64
     // CHECK: 1

@@ -87,15 +87,15 @@ module {
     // === Custom with unboxed char ===
     // Note: print_custom doesn't know field types, so chars print as integers
     // The eco.project verifies the values are stored correctly
-    %cA = arith.constant 65 : i32
-    %cB = arith.constant 66 : i32
-    %pair_chars = eco.construct(%cA, %cB) {tag = 2 : i64, size = 2 : i64, unboxed_bitmap = 3 : i64} : (i32, i32) -> !eco.value
+    %cA = arith.constant 65 : i16
+    %cB = arith.constant 66 : i16
+    %pair_chars = eco.construct(%cA, %cB) {tag = 2 : i64, size = 2 : i64, unboxed_bitmap = 3 : i64} : (i16, i16) -> !eco.value
     eco.dbg %pair_chars : !eco.value
     // CHECK: Ctor2 65 66
 
     // Project unboxed char
-    %char_field = eco.project %pair_chars[0] : !eco.value -> i32
-    eco.dbg %char_field : i32
+    %char_field = eco.project %pair_chars[0] : !eco.value -> i16
+    eco.dbg %char_field : i16
     // CHECK: 'A'
 
     // === Negative integer in unboxed field (in list) ===

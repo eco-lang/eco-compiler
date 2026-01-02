@@ -32,16 +32,16 @@ module {
     // CHECK: inf
 
     // Test i32 (Char)
-    %char_A = arith.constant 65 : i32
-    eco.dbg %char_A : i32
+    %char_A = arith.constant 65 : i16
+    eco.dbg %char_A : i16
     // CHECK: 'A'
 
-    %char_newline = arith.constant 10 : i32
-    eco.dbg %char_newline : i32
+    %char_newline = arith.constant 10 : i16
+    eco.dbg %char_newline : i16
     // CHECK: '\n'
 
-    %char_unicode = arith.constant 945 : i32  // Greek alpha
-    eco.dbg %char_unicode : i32
+    %char_unicode = arith.constant 945 : i16  // Greek alpha
+    eco.dbg %char_unicode : i16
     // CHECK: '\u03B1'
 
     // Test i1 (Bool) - via boxing since direct i1 dbg may not work

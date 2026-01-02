@@ -70,26 +70,26 @@ module {
     eco.dbg %ufsci : f64
     // CHECK: 1.5e
 
-    // === Unboxed Characters (i32) ===
+    // === Unboxed Characters (i16) ===
 
-    %ucA = arith.constant 65 : i32
-    eco.dbg %ucA : i32
+    %ucA = arith.constant 65 : i16
+    eco.dbg %ucA : i16
     // CHECK: 'A'
 
-    %uc0 = arith.constant 48 : i32
-    eco.dbg %uc0 : i32
+    %uc0 = arith.constant 48 : i16
+    eco.dbg %uc0 : i16
     // CHECK: '0'
 
-    %ucnl = arith.constant 10 : i32
-    eco.dbg %ucnl : i32
+    %ucnl = arith.constant 10 : i16
+    eco.dbg %ucnl : i16
     // CHECK: '\n'
 
-    %ucspace = arith.constant 32 : i32
-    eco.dbg %ucspace : i32
+    %ucspace = arith.constant 32 : i16
+    eco.dbg %ucspace : i16
     // CHECK: ' '
 
-    %uclambda = arith.constant 955 : i32
-    eco.dbg %uclambda : i32
+    %uclambda = arith.constant 955 : i16
+    eco.dbg %uclambda : i16
     // CHECK: '
 
     // === Boxed Integers ===
@@ -128,18 +128,18 @@ module {
 
     // === Boxed Characters ===
 
-    %cA = arith.constant 65 : i32
-    %bA = eco.box %cA : i32 -> !eco.value
+    %cA = arith.constant 65 : i16
+    %bA = eco.box %cA : i16 -> !eco.value
     eco.dbg %bA : !eco.value
     // CHECK: 'A'
 
-    %c0 = arith.constant 48 : i32
-    %b_zero = eco.box %c0 : i32 -> !eco.value
+    %c0 = arith.constant 48 : i16
+    %b_zero = eco.box %c0 : i16 -> !eco.value
     eco.dbg %b_zero : !eco.value
     // CHECK: '0'
 
-    %cnl = arith.constant 10 : i32
-    %bnl = eco.box %cnl : i32 -> !eco.value
+    %cnl = arith.constant 10 : i16
+    %bnl = eco.box %cnl : i16 -> !eco.value
     eco.dbg %bnl : !eco.value
     // CHECK: '\n'
 

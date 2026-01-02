@@ -1,6 +1,6 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
-// Test eco.expect with unboxed passthrough types (i64, f64, i32).
+// Test eco.expect with unboxed passthrough types (i64, f64, i16).
 
 module {
   func.func @main() -> i64 {
@@ -31,10 +31,10 @@ module {
     eco.dbg %result_neg_f : f64
     // CHECK: -2.5
 
-    // Test with i32 (char) passthrough
-    %charA = arith.constant 65 : i32
-    %result_char = eco.expect %true_cond, %msg, %charA : i32 -> i32
-    eco.dbg %result_char : i32
+    // Test with i16 (char) passthrough
+    %charA = arith.constant 65 : i16
+    %result_char = eco.expect %true_cond, %msg, %charA : i16 -> i16
+    eco.dbg %result_char : i16
     // CHECK: 'A'
 
     // Test with zero values

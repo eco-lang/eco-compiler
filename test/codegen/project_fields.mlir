@@ -49,9 +49,9 @@ module {
 
     // Create constructor with mixed types (all boxed for now)
     %fpi = arith.constant 3.14 : f64
-    %ch = arith.constant 65 : i32  // 'A'
+    %ch = arith.constant 65 : i16  // 'A'
     %bpi = eco.box %fpi : f64 -> !eco.value
-    %bch = eco.box %ch : i32 -> !eco.value
+    %bch = eco.box %ch : i16 -> !eco.value
 
     %mixed = eco.construct(%b100, %bpi, %bch) {tag = 2 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %mixed : !eco.value

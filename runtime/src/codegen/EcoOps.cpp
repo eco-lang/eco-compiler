@@ -120,7 +120,8 @@ LogicalResult ConstructOp::verify() {
       // Check if field type is actually unboxed (primitive type)
       bool isUnboxedType = fieldType.isInteger(64) ||  // i64 int
                            fieldType.isF64() ||         // f64 float
-                           fieldType.isInteger(32);     // i32 char
+                           fieldType.isInteger(16) ||   // i16 char
+                           fieldType.isInteger(1);      // i1 bool
 
       if (bitmapSaysUnboxed && !isUnboxedType) {
         return emitOpError("unboxed_bitmap bit ")

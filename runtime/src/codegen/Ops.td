@@ -95,7 +95,7 @@ def Eco_ConstantKind : I32EnumAttr<"ConstantKind", "Eco embedded constant kind",
 // Unboxed primitive types matching Elm semantics
 def Eco_Int   : I<64>;   // Elm Int (64-bit signed)
 def Eco_Float : F<64>;   // Elm Float (IEEE 754 double)
-def Eco_Char  : I<32>;   // Elm Char (Unicode code point)
+def Eco_Char  : I<16>;   // Elm Char (Unicode BMP code point)
 def Eco_Bool  : I<1>;    // Elm Bool (True/False)
 
 // Any value that can appear in Eco operations (boxed or unboxed)
@@ -1654,7 +1654,100 @@ def Eco_IntShiftRightZfOp : Eco_Op<"int.shru", [Pure]> {
 }
 
 //===----------------------------------------------------------------------===//
-// 10. Reference Counting Placeholders (Future Perceus Support)
+// 10. Boolean Operations
+//===----------------------------------------------------------------------===//
+
+def Eco_BoolNotOp : Eco_Op<"bool.not", [Pure]> {
+  let summary = "Boolean NOT (logical negation)";
+  let description = [{
+    Logical negation of a boolean value.
+
+    ```mlir
+    %result = eco.bool.not %x : i1
+    ```
+  }];
+  let arguments = (ins Eco_Bool:$value);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
+def Eco_BoolAndOp : Eco_Op<"bool.and", [Pure, Commutative]> {
+  let summary = "Boolean AND";
+  let description = [{
+    Logical AND of two boolean values.
+
+    ```mlir
+    %result = eco.bool.and %a, %b : i1
+    ```
+  }];
+  let arguments = (ins Eco_Bool:$lhs, Eco_Bool:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+def Eco_BoolOrOp : Eco_Op<"bool.or", [Pure, Commutative]> {
+  let summary = "Boolean OR";
+  let description = [{
+    Logical OR of two boolean values.
+
+    ```mlir
+    %result = eco.bool.or %a, %b : i1
+    ```
+  }];
+  let arguments = (ins Eco_Bool:$lhs, Eco_Bool:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+def Eco_BoolXorOp : Eco_Op<"bool.xor", [Pure, Commutative]> {
+  let summary = "Boolean XOR";
+  let description = [{
+    Logical XOR of two boolean values.
+
+    ```mlir
+    %result = eco.bool.xor %a, %b : i1
+    ```
+  }];
+  let arguments = (ins Eco_Bool:$lhs, Eco_Bool:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// 11. Character Operations
+//===----------------------------------------------------------------------===//
+
+def Eco_CharToIntOp : Eco_Op<"char.toInt", [Pure]> {
+  let summary = "Convert Char to Int (Char.toCode)";
+  let description = [{
+    Get the Unicode code point of a character as an integer.
+
+    ```mlir
+    %code = eco.char.toInt %c : i16 -> i64
+    ```
+  }];
+  let arguments = (ins Eco_Char:$value);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
+}
+
+def Eco_CharFromIntOp : Eco_Op<"char.fromInt", [Pure]> {
+  let summary = "Convert Int to Char (Char.fromCode)";
+  let description = [{
+    Create a character from a Unicode code point. Values outside valid
+    range (0-0xFFFF) are clamped.
+
+    ```mlir
+    %c = eco.char.fromInt %code : i64 -> i16
+    ```
+  }];
+  let arguments = (ins Eco_Int:$value);
+  let results = (outs Eco_Char:$result);
+  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// 12. Reference Counting Placeholders (Future Perceus Support)
 //===----------------------------------------------------------------------===//
 //
 // Note: The current GC design uses tracing GC, not reference counting.

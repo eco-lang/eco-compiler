@@ -226,9 +226,10 @@ struct DbgOpLowering : public OpConversionPattern<DbgOp> {
                 rewriter.create<LLVM::CallOp>(
                     loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_dbg_print_float"),
                     ValueRange{arg});
-            } else if (origType.isInteger(32)) {
-                // Unboxed i32 (char) -> eco_dbg_print_char
-                auto funcTy = LLVM::LLVMFunctionType::get(voidTy, {i32Ty});
+            } else if (origType.isInteger(16)) {
+                // Unboxed i16 (char) -> eco_dbg_print_char
+                auto i16Ty = IntegerType::get(ctx, 16);
+                auto funcTy = LLVM::LLVMFunctionType::get(voidTy, {i16Ty});
                 getOrInsertFunc(module, rewriter, "eco_dbg_print_char", funcTy);
                 rewriter.create<LLVM::CallOp>(
                     loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_dbg_print_char"),
@@ -300,10 +301,10 @@ struct BoxOpLowering : public OpConversionPattern<BoxOp> {
                 loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_float"),
                 ValueRange{input});
             result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, call.getResult());
-        } else if (inputType.isInteger(32)) {
-            // Box i32 (char) -> eco_alloc_char.
-            auto i32Ty = IntegerType::get(ctx, 32);
-            auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {i32Ty});
+        } else if (inputType.isInteger(16)) {
+            // Box i16 (char) -> eco_alloc_char.
+            auto i16Ty = IntegerType::get(ctx, 16);
+            auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {i16Ty});
             getOrInsertFunc(module, rewriter, "eco_alloc_char", funcTy);
 
             auto call = rewriter.create<LLVM::CallOp>(
@@ -438,9 +439,9 @@ struct ConstructOpLowering : public OpConversionPattern<ConstructOp> {
                 rewriter.create<LLVM::CallOp>(
                     loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_field_f64"),
                     ValueRange{objPtr, idx, fieldVal});
-            } else if (origType.isInteger(32)) {
-                // Unboxed i32 (char) -> sign extend to i64, then eco_store_field_i64
-                auto extended = rewriter.create<LLVM::SExtOp>(loc, i64Ty, fieldVal);
+            } else if (origType.isInteger(16)) {
+                // Unboxed i16 (char) -> zero extend to i64, then eco_store_field_i64
+                auto extended = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, fieldVal);
                 rewriter.create<LLVM::CallOp>(
                     loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_field_i64"),
                     ValueRange{objPtr, idx, extended});
@@ -2582,6 +2583,100 @@ struct IntShiftRightZfOpLowering : public OpConversionPattern<IntShiftRightZfOp>
     }
 };
 
+// ============================================================================
+// Boolean Operations
+// ============================================================================
+
+struct BoolNotOpLowering : public OpConversionPattern<BoolNotOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(BoolNotOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        // Create constant 1 with bit width 1 (i1)
+        auto trueVal = rewriter.create<arith::ConstantIntOp>(loc, 1, /*width=*/1);
+        rewriter.replaceOpWithNewOp<arith::XOrIOp>(op, adaptor.getValue(), trueVal);
+        return success();
+    }
+};
+
+struct BoolAndOpLowering : public OpConversionPattern<BoolAndOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(BoolAndOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::AndIOp>(op, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+struct BoolOrOpLowering : public OpConversionPattern<BoolOrOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(BoolOrOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::OrIOp>(op, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+struct BoolXorOpLowering : public OpConversionPattern<BoolXorOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(BoolXorOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::XOrIOp>(op, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+// ============================================================================
+// Character Operations
+// ============================================================================
+
+struct CharToIntOpLowering : public OpConversionPattern<CharToIntOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(CharToIntOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto i64Ty = IntegerType::get(rewriter.getContext(), 64);
+        // Zero-extend i16 to i64 (char codes are always non-negative)
+        rewriter.replaceOpWithNewOp<arith::ExtUIOp>(op, i64Ty, adaptor.getValue());
+        return success();
+    }
+};
+
+struct CharFromIntOpLowering : public OpConversionPattern<CharFromIntOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(CharFromIntOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto i16Ty = IntegerType::get(ctx, 16);
+
+        Value input = adaptor.getValue();
+
+        // Clamp to valid range [0, 0xFFFF]
+        Value zero = rewriter.create<arith::ConstantIntOp>(loc, 0, /*width=*/64);
+        Value maxChar = rewriter.create<arith::ConstantIntOp>(loc, 0xFFFF, /*width=*/64);
+
+        // clamp: max(0, min(input, 0xFFFF))
+        Value clampedLow = rewriter.create<arith::MaxSIOp>(loc, input, zero);
+        Value clamped = rewriter.create<arith::MinSIOp>(loc, clampedLow, maxChar);
+
+        // Truncate to i16
+        rewriter.replaceOpWithNewOp<arith::TruncIOp>(op, i16Ty, clamped);
+        return success();
+    }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -2736,7 +2831,15 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             IntComplementOpLowering,
             IntShiftLeftOpLowering,
             IntShiftRightOpLowering,
-            IntShiftRightZfOpLowering
+            IntShiftRightZfOpLowering,
+            // Boolean operations
+            BoolNotOpLowering,
+            BoolAndOpLowering,
+            BoolOrOpLowering,
+            BoolXorOpLowering,
+            // Character operations
+            CharToIntOpLowering,
+            CharFromIntOpLowering
         >(typeConverter, ctx);
 
         // Apply the conversion patterns to the module.

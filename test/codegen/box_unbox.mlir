@@ -23,8 +23,8 @@ module {
     // CHECK: 3.14159
 
     // Test boxing characters
-    %c = arith.constant 65 : i32  // 'A'
-    %boxed_char = eco.box %c : i32 -> !eco.value
+    %c = arith.constant 65 : i16  // 'A'
+    %boxed_char = eco.box %c : i16 -> !eco.value
     eco.dbg %boxed_char : !eco.value
     // CHECK: 'A'
 
