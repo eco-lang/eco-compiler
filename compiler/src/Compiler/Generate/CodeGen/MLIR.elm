@@ -83,11 +83,11 @@ ecoBool =
     I1
 
 
-{-| eco.char - unboxed character (i32 unicode codepoint)
+{-| eco.char - unboxed character (i16 unicode codepoint, BMP only)
 -}
 ecoChar : MlirType
 ecoChar =
-    I32
+    I16
 
 
 
@@ -371,6 +371,8 @@ type Intrinsic
     | BinaryInt { op : String }
     | UnaryFloat { op : String }
     | BinaryFloat { op : String }
+    | UnaryBool { op : String }
+    | BinaryBool { op : String }
     | IntToFloat
     | FloatToInt { op : String }
     | IntComparison { op : String }
@@ -548,6 +550,19 @@ basicsIntrinsic name argTypes resultType =
         ( "neq", [ Mono.MFloat, Mono.MFloat ], Mono.MBool ) ->
             Just (FloatComparison { op = "eco.float.ne" })
 
+        -- Boolean operations
+        ( "not", [ Mono.MBool ], Mono.MBool ) ->
+            Just (UnaryBool { op = "eco.bool.not" })
+
+        ( "and", [ Mono.MBool, Mono.MBool ], Mono.MBool ) ->
+            Just (BinaryBool { op = "eco.bool.and" })
+
+        ( "or", [ Mono.MBool, Mono.MBool ], Mono.MBool ) ->
+            Just (BinaryBool { op = "eco.bool.or" })
+
+        ( "xor", [ Mono.MBool, Mono.MBool ], Mono.MBool ) ->
+            Just (BinaryBool { op = "eco.bool.xor" })
+
         _ ->
             Nothing
 
@@ -612,6 +627,21 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
 
                 _ ->
                     ecoUnaryOp ctx op resultVar ( "%error", F64 ) F64
+
+        UnaryBool { op } ->
+            let
+                operand =
+                    List.head argVars |> Maybe.withDefault "%error"
+            in
+            ecoUnaryOp ctx op resultVar ( operand, I1 ) I1
+
+        BinaryBool { op } ->
+            case argVars of
+                [ lhs, rhs ] ->
+                    ecoBinaryOp ctx op resultVar ( lhs, I1 ) ( rhs, I1 ) I1
+
+                _ ->
+                    ecoUnaryOp ctx op resultVar ( "%error", I1 ) I1
 
         IntToFloat ->
             let
@@ -2250,7 +2280,7 @@ generateTest ctx root ( path, test ) =
                     freshVar ctx3
 
                 ( ctx5, cmpOp ) =
-                    ecoBinaryOp ctx4 "arith.cmpi" resVar ( valVar, I32 ) ( constVar, I32 ) I1
+                    ecoBinaryOp ctx4 "arith.cmpi" resVar ( valVar, ecoChar ) ( constVar, ecoChar ) I1
             in
             ( pathOps ++ [ constOp, cmpOp ], resVar, ctx5 )
 
@@ -2641,9 +2671,10 @@ defaultTerminator =
 {-| Generate case expression control flow.
 
 This is the main entry point for case expressions. It:
-1. Emits joinpoints for shared branches
-2. Generates the decision tree control flow
-3. Returns a dummy ExprResult (since real control exits via eco.return/eco.jump)
+
+1.  Emits joinpoints for shared branches
+2.  Generates the decision tree control flow
+3.  Returns a dummy ExprResult (since real control exits via eco.return/eco.jump)
 
 -}
 generateCase : Context -> Name.Name -> Name.Name -> Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> Mono.MonoType -> ExprResult
@@ -3019,8 +3050,8 @@ arithConstantBool ctx resultVar value =
 arithConstantChar : Context -> String -> Int -> ( Context, MlirOp )
 arithConstantChar ctx resultVar codepoint =
     mlirOp ctx "arith.constant"
-        |> opBuilder.withResults [ ( resultVar, I32 ) ]
-        |> opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just I32) codepoint))
+        |> opBuilder.withResults [ ( resultVar, ecoChar ) ]
+        |> opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just ecoChar) codepoint))
         |> opBuilder.build
 
 
