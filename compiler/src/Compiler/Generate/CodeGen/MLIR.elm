@@ -232,6 +232,31 @@ isPolymorphicKernel home name =
             False
 
 
+{-| Check if a type is a type variable (MVar).
+Used for relaxed intrinsic matching when the result type might be polymorphic.
+-}
+isTypeVar : Mono.MonoType -> Bool
+isTypeVar t =
+    case t of
+        Mono.MVar _ _ ->
+            True
+
+        _ ->
+            False
+
+
+{-| Check if a core module function has a kernel implementation to fall back to
+when intrinsics don't match (e.g., due to type mismatches with boxed values).
+
+With relaxed intrinsic matching (matching on argument types only, not result types),
+we no longer need kernel fallbacks for negate and not. The intrinsics should always
+match for concrete Int, Float, or Bool argument types.
+-}
+hasKernelImplementation : String -> String -> Bool
+hasKernelImplementation _ _ =
+    False
+
+
 type alias Context =
     { nextVar : Int
     , nextOpId : Int
@@ -456,171 +481,184 @@ kernelIntrinsic home name argTypes resultType =
 
 basicsIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
 basicsIntrinsic name argTypes resultType =
-    case ( name, argTypes, resultType ) of
-        ( "pi", [], Mono.MFloat ) ->
-            Just (ConstantFloat { value = 3.141592653589793 })
+    -- Note: We match primarily on argument types because the result type from
+    -- the MonoCall might be a type variable (MVar) when the call is used in a
+    -- polymorphic context (e.g., `Debug.log "x" (negate 5)` where the result type
+    -- inherits from Debug.log's `a` parameter). For functions where the return type
+    -- is the same as the argument type, we use wildcard matching on resultType.
+    case ( name, argTypes ) of
+        ( "pi", [] ) ->
+            if resultType == Mono.MFloat || isTypeVar resultType then
+                Just (ConstantFloat { value = 3.141592653589793 })
 
-        ( "e", [], Mono.MFloat ) ->
-            Just (ConstantFloat { value = 2.718281828459045 })
+            else
+                Nothing
 
-        ( "add", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+        ( "e", [] ) ->
+            if resultType == Mono.MFloat || isTypeVar resultType then
+                Just (ConstantFloat { value = 2.718281828459045 })
+
+            else
+                Nothing
+
+        ( "add", [ Mono.MInt, Mono.MInt ] ) ->
             Just (BinaryInt { op = "eco.int.add" })
 
-        ( "sub", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+        ( "sub", [ Mono.MInt, Mono.MInt ] ) ->
             Just (BinaryInt { op = "eco.int.sub" })
 
-        ( "mul", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+        ( "mul", [ Mono.MInt, Mono.MInt ] ) ->
             Just (BinaryInt { op = "eco.int.mul" })
 
-        ( "idiv", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+        ( "idiv", [ Mono.MInt, Mono.MInt ] ) ->
             Just (BinaryInt { op = "eco.int.div" })
 
-        ( "modBy", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+        ( "modBy", [ Mono.MInt, Mono.MInt ] ) ->
             Just (BinaryInt { op = "eco.int.modby" })
 
-        ( "remainderBy", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+        ( "remainderBy", [ Mono.MInt, Mono.MInt ] ) ->
             Just (BinaryInt { op = "eco.int.remainderby" })
 
-        ( "negate", [ Mono.MInt ], Mono.MInt ) ->
+        ( "negate", [ Mono.MInt ] ) ->
             Just (UnaryInt { op = "eco.int.negate" })
 
-        ( "abs", [ Mono.MInt ], Mono.MInt ) ->
+        ( "abs", [ Mono.MInt ] ) ->
             Just (UnaryInt { op = "eco.int.abs" })
 
-        ( "pow", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+        ( "pow", [ Mono.MInt, Mono.MInt ] ) ->
             Just (BinaryInt { op = "eco.int.pow" })
 
-        ( "add", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+        ( "add", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (BinaryFloat { op = "eco.float.add" })
 
-        ( "sub", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+        ( "sub", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (BinaryFloat { op = "eco.float.sub" })
 
-        ( "mul", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+        ( "mul", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (BinaryFloat { op = "eco.float.mul" })
 
-        ( "fdiv", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+        ( "fdiv", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (BinaryFloat { op = "eco.float.div" })
 
-        ( "negate", [ Mono.MFloat ], Mono.MFloat ) ->
+        ( "negate", [ Mono.MFloat ] ) ->
             Just (UnaryFloat { op = "eco.float.negate" })
 
-        ( "abs", [ Mono.MFloat ], Mono.MFloat ) ->
+        ( "abs", [ Mono.MFloat ] ) ->
             Just (UnaryFloat { op = "eco.float.abs" })
 
-        ( "pow", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+        ( "pow", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (BinaryFloat { op = "eco.float.pow" })
 
-        ( "sqrt", [ Mono.MFloat ], Mono.MFloat ) ->
+        ( "sqrt", [ Mono.MFloat ] ) ->
             Just (UnaryFloat { op = "eco.float.sqrt" })
 
-        ( "sin", [ Mono.MFloat ], Mono.MFloat ) ->
+        ( "sin", [ Mono.MFloat ] ) ->
             Just (UnaryFloat { op = "eco.float.sin" })
 
-        ( "cos", [ Mono.MFloat ], Mono.MFloat ) ->
+        ( "cos", [ Mono.MFloat ] ) ->
             Just (UnaryFloat { op = "eco.float.cos" })
 
-        ( "tan", [ Mono.MFloat ], Mono.MFloat ) ->
+        ( "tan", [ Mono.MFloat ] ) ->
             Just (UnaryFloat { op = "eco.float.tan" })
 
-        ( "asin", [ Mono.MFloat ], Mono.MFloat ) ->
+        ( "asin", [ Mono.MFloat ] ) ->
             Just (UnaryFloat { op = "eco.float.asin" })
 
-        ( "acos", [ Mono.MFloat ], Mono.MFloat ) ->
+        ( "acos", [ Mono.MFloat ] ) ->
             Just (UnaryFloat { op = "eco.float.acos" })
 
-        ( "atan", [ Mono.MFloat ], Mono.MFloat ) ->
+        ( "atan", [ Mono.MFloat ] ) ->
             Just (UnaryFloat { op = "eco.float.atan" })
 
-        ( "atan2", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+        ( "atan2", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (BinaryFloat { op = "eco.float.atan2" })
 
-        ( "logBase", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+        ( "logBase", [ Mono.MFloat, Mono.MFloat ] ) ->
             Nothing
 
-        ( "log", [ Mono.MFloat ], Mono.MFloat ) ->
+        ( "log", [ Mono.MFloat ] ) ->
             Just (UnaryFloat { op = "eco.float.log" })
 
-        ( "isNaN", [ Mono.MFloat ], Mono.MBool ) ->
+        ( "isNaN", [ Mono.MFloat ] ) ->
             Just (FloatClassify { op = "eco.float.isNaN" })
 
-        ( "isInfinite", [ Mono.MFloat ], Mono.MBool ) ->
+        ( "isInfinite", [ Mono.MFloat ] ) ->
             Just (FloatClassify { op = "eco.float.isInfinite" })
 
-        ( "toFloat", [ Mono.MInt ], Mono.MFloat ) ->
+        ( "toFloat", [ Mono.MInt ] ) ->
             Just IntToFloat
 
-        ( "round", [ Mono.MFloat ], Mono.MInt ) ->
+        ( "round", [ Mono.MFloat ] ) ->
             Just (FloatToInt { op = "eco.float.round" })
 
-        ( "floor", [ Mono.MFloat ], Mono.MInt ) ->
+        ( "floor", [ Mono.MFloat ] ) ->
             Just (FloatToInt { op = "eco.float.floor" })
 
-        ( "ceiling", [ Mono.MFloat ], Mono.MInt ) ->
+        ( "ceiling", [ Mono.MFloat ] ) ->
             Just (FloatToInt { op = "eco.float.ceiling" })
 
-        ( "truncate", [ Mono.MFloat ], Mono.MInt ) ->
+        ( "truncate", [ Mono.MFloat ] ) ->
             Just (FloatToInt { op = "eco.float.truncate" })
 
-        ( "min", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+        ( "min", [ Mono.MInt, Mono.MInt ] ) ->
             Just (BinaryInt { op = "eco.int.min" })
 
-        ( "max", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+        ( "max", [ Mono.MInt, Mono.MInt ] ) ->
             Just (BinaryInt { op = "eco.int.max" })
 
-        ( "min", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+        ( "min", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (BinaryFloat { op = "eco.float.min" })
 
-        ( "max", [ Mono.MFloat, Mono.MFloat ], Mono.MFloat ) ->
+        ( "max", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (BinaryFloat { op = "eco.float.max" })
 
-        ( "lt", [ Mono.MInt, Mono.MInt ], Mono.MBool ) ->
+        ( "lt", [ Mono.MInt, Mono.MInt ] ) ->
             Just (IntComparison { op = "eco.int.lt" })
 
-        ( "le", [ Mono.MInt, Mono.MInt ], Mono.MBool ) ->
+        ( "le", [ Mono.MInt, Mono.MInt ] ) ->
             Just (IntComparison { op = "eco.int.le" })
 
-        ( "gt", [ Mono.MInt, Mono.MInt ], Mono.MBool ) ->
+        ( "gt", [ Mono.MInt, Mono.MInt ] ) ->
             Just (IntComparison { op = "eco.int.gt" })
 
-        ( "ge", [ Mono.MInt, Mono.MInt ], Mono.MBool ) ->
+        ( "ge", [ Mono.MInt, Mono.MInt ] ) ->
             Just (IntComparison { op = "eco.int.ge" })
 
-        ( "eq", [ Mono.MInt, Mono.MInt ], Mono.MBool ) ->
+        ( "eq", [ Mono.MInt, Mono.MInt ] ) ->
             Just (IntComparison { op = "eco.int.eq" })
 
-        ( "neq", [ Mono.MInt, Mono.MInt ], Mono.MBool ) ->
+        ( "neq", [ Mono.MInt, Mono.MInt ] ) ->
             Just (IntComparison { op = "eco.int.ne" })
 
-        ( "lt", [ Mono.MFloat, Mono.MFloat ], Mono.MBool ) ->
+        ( "lt", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (FloatComparison { op = "eco.float.lt" })
 
-        ( "le", [ Mono.MFloat, Mono.MFloat ], Mono.MBool ) ->
+        ( "le", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (FloatComparison { op = "eco.float.le" })
 
-        ( "gt", [ Mono.MFloat, Mono.MFloat ], Mono.MBool ) ->
+        ( "gt", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (FloatComparison { op = "eco.float.gt" })
 
-        ( "ge", [ Mono.MFloat, Mono.MFloat ], Mono.MBool ) ->
+        ( "ge", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (FloatComparison { op = "eco.float.ge" })
 
-        ( "eq", [ Mono.MFloat, Mono.MFloat ], Mono.MBool ) ->
+        ( "eq", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (FloatComparison { op = "eco.float.eq" })
 
-        ( "neq", [ Mono.MFloat, Mono.MFloat ], Mono.MBool ) ->
+        ( "neq", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (FloatComparison { op = "eco.float.ne" })
 
         -- Boolean operations
-        ( "not", [ Mono.MBool ], Mono.MBool ) ->
+        ( "not", [ Mono.MBool ] ) ->
             Just (UnaryBool { op = "eco.bool.not" })
 
-        ( "and", [ Mono.MBool, Mono.MBool ], Mono.MBool ) ->
+        ( "and", [ Mono.MBool, Mono.MBool ] ) ->
             Just (BinaryBool { op = "eco.bool.and" })
 
-        ( "or", [ Mono.MBool, Mono.MBool ], Mono.MBool ) ->
+        ( "or", [ Mono.MBool, Mono.MBool ] ) ->
             Just (BinaryBool { op = "eco.bool.or" })
 
-        ( "xor", [ Mono.MBool, Mono.MBool ], Mono.MBool ) ->
+        ( "xor", [ Mono.MBool, Mono.MBool ] ) ->
             Just (BinaryBool { op = "eco.bool.xor" })
 
         _ ->
@@ -628,27 +666,27 @@ basicsIntrinsic name argTypes resultType =
 
 
 bitwiseIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
-bitwiseIntrinsic name argTypes resultType =
-    case ( name, argTypes, resultType ) of
-        ( "and", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+bitwiseIntrinsic name argTypes _ =
+    case ( name, argTypes ) of
+        ( "and", [ Mono.MInt, Mono.MInt ] ) ->
             Just (BinaryInt { op = "eco.int.and" })
 
-        ( "or", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+        ( "or", [ Mono.MInt, Mono.MInt ] ) ->
             Just (BinaryInt { op = "eco.int.or" })
 
-        ( "xor", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+        ( "xor", [ Mono.MInt, Mono.MInt ] ) ->
             Just (BinaryInt { op = "eco.int.xor" })
 
-        ( "complement", [ Mono.MInt ], Mono.MInt ) ->
+        ( "complement", [ Mono.MInt ] ) ->
             Just (UnaryInt { op = "eco.int.complement" })
 
-        ( "shiftLeftBy", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+        ( "shiftLeftBy", [ Mono.MInt, Mono.MInt ] ) ->
             Just (BinaryInt { op = "eco.int.shl" })
 
-        ( "shiftRightBy", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+        ( "shiftRightBy", [ Mono.MInt, Mono.MInt ] ) ->
             Just (BinaryInt { op = "eco.int.shr" })
 
-        ( "shiftRightZfBy", [ Mono.MInt, Mono.MInt ], Mono.MInt ) ->
+        ( "shiftRightZfBy", [ Mono.MInt, Mono.MInt ] ) ->
             Just (BinaryInt { op = "eco.int.shru" })
 
         _ ->
@@ -1931,30 +1969,67 @@ generateCall ctx func args resultType =
                             }
 
                         Nothing ->
-                            -- No intrinsic match - fall back to kernel call
-                            -- This handles cases like negate with boxed values
-                            let
-                                sig : FuncSignature
-                                sig =
-                                    kernelFuncSignatureFromType funcType
+                            -- No intrinsic match - check if we should use kernel or compiled function
+                            if hasKernelImplementation moduleName name then
+                                -- Fall back to kernel call (e.g., negate with boxed values)
+                                let
+                                    sig : FuncSignature
+                                    sig =
+                                        kernelFuncSignatureFromType funcType
 
-                                ( boxOps, argVarPairs, ctx1b ) =
-                                    boxToMatchSignature ctx1 args argVars sig.paramTypes
+                                    ( boxOps, argVarPairs, ctx1b ) =
+                                        boxToMatchSignature ctx1 args argVars sig.paramTypes
 
-                                ( resVar, ctx2 ) =
-                                    freshVar ctx1b
+                                    ( resVar, ctx2 ) =
+                                        freshVar ctx1b
 
-                                kernelName : String
-                                kernelName =
-                                    "Elm_Kernel_" ++ moduleName ++ "_" ++ name
+                                    kernelName : String
+                                    kernelName =
+                                        "Elm_Kernel_" ++ moduleName ++ "_" ++ name
 
-                                ( ctx3, callOp ) =
-                                    ecoCallNamed ctx2 resVar kernelName argVarPairs (monoTypeToMlir sig.returnType)
-                            in
-                            { ops = argOps ++ boxOps ++ [ callOp ]
-                            , resultVar = resVar
-                            , ctx = ctx3
-                            }
+                                    ( ctx3, callOp ) =
+                                        ecoCallNamed ctx2 resVar kernelName argVarPairs (monoTypeToMlir sig.returnType)
+                                in
+                                { ops = argOps ++ boxOps ++ [ callOp ]
+                                , resultVar = resVar
+                                , ctx = ctx3
+                                }
+
+                            else
+                                -- Fall back to compiled function call (e.g., min, max, abs, compare)
+                                let
+                                    funcName : String
+                                    funcName =
+                                        specIdToFuncName ctx.registry specId
+
+                                    maybeSig : Maybe FuncSignature
+                                    maybeSig =
+                                        Dict.get specId ctx.signatures
+
+                                    ( boxOps, argVarPairs, ctx1b ) =
+                                        case maybeSig of
+                                            Just sig ->
+                                                boxToMatchSignature ctx1 args argVars sig.paramTypes
+
+                                            Nothing ->
+                                                ( []
+                                                , List.map2
+                                                    (\expr var -> ( var, monoTypeToMlir (Mono.typeOf expr) ))
+                                                    args
+                                                    argVars
+                                                , ctx1
+                                                )
+
+                                    ( resultVar, ctx2 ) =
+                                        freshVar ctx1b
+
+                                    ( ctx3, callOp ) =
+                                        ecoCallNamed ctx2 resultVar funcName argVarPairs (monoTypeToMlir resultType)
+                                in
+                                { ops = argOps ++ boxOps ++ [ callOp ]
+                                , resultVar = resultVar
+                                , ctx = ctx3
+                                }
 
                 Nothing ->
                     -- Regular function call (not a core module)
