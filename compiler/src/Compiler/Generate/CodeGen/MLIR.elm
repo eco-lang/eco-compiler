@@ -16,6 +16,7 @@ in the types.
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
+import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.Mode as Mode
 import Compiler.Optimize.Erased.DecisionTree as DT
@@ -193,6 +194,42 @@ type alias FuncSignature =
     { paramTypes : List Mono.MonoType
     , returnType : Mono.MonoType
     }
+
+
+{-| Derive a FuncSignature from a monomorphic function type.
+Used for kernel functions where we derive the ABI from the Elm type.
+-}
+kernelFuncSignatureFromType : Mono.MonoType -> FuncSignature
+kernelFuncSignatureFromType funcType =
+    let
+        ( argTypes, retType ) =
+            decomposeFunctionType funcType
+    in
+    { paramTypes = argTypes
+    , returnType = retType
+    }
+
+
+{-| Check if a kernel function is polymorphic and needs all-boxed ABI.
+These functions accept any type and must receive boxed !eco.value arguments.
+-}
+isPolymorphicKernel : String -> String -> Bool
+isPolymorphicKernel home name =
+    case home of
+        "Debug" ->
+            -- All Debug module functions are polymorphic
+            True
+
+        "Json" ->
+            -- Json.Decode.succeed, Json.Encode.null, etc.
+            name == "succeed" || name == "null"
+
+        "Platform" ->
+            -- Platform.Cmd.none, Platform.Sub.none
+            name == "none"
+
+        _ ->
+            False
 
 
 type alias Context =
@@ -1852,50 +1889,115 @@ unboxToType ctx var targetType =
 generateCall : Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateCall ctx func args resultType =
     case func of
-        Mono.MonoVarGlobal _ specId _ ->
+        Mono.MonoVarGlobal _ specId funcType ->
             let
                 ( argOps, argVars, ctx1 ) =
                     generateExprList ctx args
 
-                funcName : String
-                funcName =
-                    specIdToFuncName ctx.registry specId
+                argTypes : List Mono.MonoType
+                argTypes =
+                    List.map Mono.typeOf args
 
-                -- Look up the function signature to determine expected parameter types
-                maybeSig : Maybe FuncSignature
-                maybeSig =
-                    Dict.get specId ctx.signatures
+                -- Check if this is a call to a core module function
+                maybeCoreInfo : Maybe ( String, String )
+                maybeCoreInfo =
+                    case Mono.lookupSpecKey specId ctx.registry of
+                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
+                            if pkg == Pkg.core then
+                                Just ( moduleName, name )
 
-                -- Compute argument pairs based on whether we have a signature
-                ( boxOps, argVarPairs, ctx1b ) =
-                    case maybeSig of
-                        Just sig ->
-                            -- Use the function's parameter types
-                            -- Box if function expects ecoValue but we have primitive
-                            boxToMatchSignature ctx1 args argVars sig.paramTypes
+                            else
+                                Nothing
 
                         Nothing ->
-                            -- No signature available, use expression types (original behavior)
-                            ( []
-                            , List.map2
-                                (\expr var -> ( var, monoTypeToMlir (Mono.typeOf expr) ))
-                                args
-                                argVars
-                            , ctx1
-                            )
-
-                ( resultVar, ctx2 ) =
-                    freshVar ctx1b
-
-                ( ctx3, callOp ) =
-                    ecoCallNamed ctx2 resultVar funcName argVarPairs (monoTypeToMlir resultType)
+                            Nothing
             in
-            { ops = argOps ++ boxOps ++ [ callOp ]
-            , resultVar = resultVar
-            , ctx = ctx3
-            }
+            case maybeCoreInfo of
+                Just ( moduleName, name ) ->
+                    -- This is a core module function - check for intrinsic
+                    case kernelIntrinsic moduleName name argTypes resultType of
+                        Just intrinsic ->
+                            -- Generate intrinsic operation directly
+                            let
+                                ( resVar, ctx2 ) =
+                                    freshVar ctx1
 
-        Mono.MonoVarKernel _ home name _ ->
+                                ( ctx3, intrinsicOp ) =
+                                    generateIntrinsicOp ctx2 intrinsic resVar argVars
+                            in
+                            { ops = argOps ++ [ intrinsicOp ]
+                            , resultVar = resVar
+                            , ctx = ctx3
+                            }
+
+                        Nothing ->
+                            -- No intrinsic match - fall back to kernel call
+                            -- This handles cases like negate with boxed values
+                            let
+                                sig : FuncSignature
+                                sig =
+                                    kernelFuncSignatureFromType funcType
+
+                                ( boxOps, argVarPairs, ctx1b ) =
+                                    boxToMatchSignature ctx1 args argVars sig.paramTypes
+
+                                ( resVar, ctx2 ) =
+                                    freshVar ctx1b
+
+                                kernelName : String
+                                kernelName =
+                                    "Elm_Kernel_" ++ moduleName ++ "_" ++ name
+
+                                ( ctx3, callOp ) =
+                                    ecoCallNamed ctx2 resVar kernelName argVarPairs (monoTypeToMlir sig.returnType)
+                            in
+                            { ops = argOps ++ boxOps ++ [ callOp ]
+                            , resultVar = resVar
+                            , ctx = ctx3
+                            }
+
+                Nothing ->
+                    -- Regular function call (not a core module)
+                    let
+                        funcName : String
+                        funcName =
+                            specIdToFuncName ctx.registry specId
+
+                        -- Look up the function signature to determine expected parameter types
+                        maybeSig : Maybe FuncSignature
+                        maybeSig =
+                            Dict.get specId ctx.signatures
+
+                        -- Compute argument pairs based on whether we have a signature
+                        ( boxOps, argVarPairs, ctx1b ) =
+                            case maybeSig of
+                                Just sig ->
+                                    -- Use the function's parameter types
+                                    -- Box if function expects ecoValue but we have primitive
+                                    boxToMatchSignature ctx1 args argVars sig.paramTypes
+
+                                Nothing ->
+                                    -- No signature available, use expression types (original behavior)
+                                    ( []
+                                    , List.map2
+                                        (\expr var -> ( var, monoTypeToMlir (Mono.typeOf expr) ))
+                                        args
+                                        argVars
+                                    , ctx1
+                                    )
+
+                        ( resultVar, ctx2 ) =
+                            freshVar ctx1b
+
+                        ( ctx3, callOp ) =
+                            ecoCallNamed ctx2 resultVar funcName argVarPairs (monoTypeToMlir resultType)
+                    in
+                    { ops = argOps ++ boxOps ++ [ callOp ]
+                    , resultVar = resultVar
+                    , ctx = ctx3
+                    }
+
+        Mono.MonoVarKernel _ home name funcType ->
             let
                 ( argOps, argVars, ctx1 ) =
                     generateExprList ctx args
@@ -1930,47 +2032,6 @@ generateCall ctx func args resultType =
                     , ctx = ctx7
                     }
 
-                -- Char.toCode: i16 -> i64 (unboxed args)
-                ( "Char", "toCode", [ charVar ] ) ->
-                    let
-                        ( resVar, ctx2 ) =
-                            freshVar ctx1
-
-                        ( ctx3, callOp ) =
-                            ecoCallNamed ctx2 resVar "Elm_Kernel_Char_toCode" [ ( charVar, I16 ) ] I64
-                    in
-                    { ops = argOps ++ [ callOp ]
-                    , resultVar = resVar
-                    , ctx = ctx3
-                    }
-
-                -- Char.fromCode: i64 -> i16 (unboxed args)
-                ( "Char", "fromCode", [ codeVar ] ) ->
-                    let
-                        ( resVar, ctx2 ) =
-                            freshVar ctx1
-
-                        ( ctx3, callOp ) =
-                            ecoCallNamed ctx2 resVar "Elm_Kernel_Char_fromCode" [ ( codeVar, I64 ) ] I16
-                    in
-                    { ops = argOps ++ [ callOp ]
-                    , resultVar = resVar
-                    , ctx = ctx3
-                    }
-
-                -- Char.toLower, toUpper, toLocaleLower, toLocaleUpper: i16 -> i16 (unboxed)
-                ( "Char", "toLower", [ charVar ] ) ->
-                    generateCharUnaryOp ctx1 argOps charVar "Elm_Kernel_Char_toLower"
-
-                ( "Char", "toUpper", [ charVar ] ) ->
-                    generateCharUnaryOp ctx1 argOps charVar "Elm_Kernel_Char_toUpper"
-
-                ( "Char", "toLocaleLower", [ charVar ] ) ->
-                    generateCharUnaryOp ctx1 argOps charVar "Elm_Kernel_Char_toLocaleLower"
-
-                ( "Char", "toLocaleUpper", [ charVar ] ) ->
-                    generateCharUnaryOp ctx1 argOps charVar "Elm_Kernel_Char_toLocaleUpper"
-
                 _ ->
                     case kernelIntrinsic home name argTypes resultType of
                         Just intrinsic ->
@@ -1987,32 +2048,58 @@ generateCall ctx func args resultType =
                             }
 
                         Nothing ->
-                            let
-                                argsWithTypes : List ( String, Mono.MonoType )
-                                argsWithTypes =
-                                    List.map2 (\expr var -> ( var, Mono.typeOf expr )) args argVars
+                            -- Check if this is a polymorphic kernel function (e.g., Debug.log)
+                            -- For polymorphic kernels, all arguments must be boxed as !eco.value
+                            if isPolymorphicKernel home name then
+                                let
+                                    argsWithTypes : List ( String, Mono.MonoType )
+                                    argsWithTypes =
+                                        List.map2 (\expr var -> ( var, Mono.typeOf expr )) args argVars
 
-                                ( boxOps, boxedVars, ctx1b ) =
-                                    boxArgsIfNeeded ctx1 argsWithTypes
+                                    ( boxOps, boxedVars, ctx1b ) =
+                                        boxArgsIfNeeded ctx1 argsWithTypes
 
-                                ( resVar, ctx2 ) =
-                                    freshVar ctx1b
+                                    ( resVar, ctx2 ) =
+                                        freshVar ctx1b
 
-                                argVarPairs : List ( String, MlirType )
-                                argVarPairs =
-                                    List.map (\v -> ( v, ecoValue )) boxedVars
+                                    kernelName : String
+                                    kernelName =
+                                        "Elm_Kernel_" ++ home ++ "_" ++ name
 
-                                kernelName : String
-                                kernelName =
-                                    "Elm_Kernel_" ++ home ++ "_" ++ name
+                                    ( ctx3, callOp ) =
+                                        ecoCallNamed ctx2 resVar kernelName (List.map (\v -> ( v, ecoValue )) boxedVars) ecoValue
+                                in
+                                { ops = argOps ++ boxOps ++ [ callOp ]
+                                , resultVar = resVar
+                                , ctx = ctx3
+                                }
 
-                                ( ctx3, callOp ) =
-                                    ecoCallNamed ctx2 resVar kernelName argVarPairs (monoTypeToMlir resultType)
-                            in
-                            { ops = argOps ++ boxOps ++ [ callOp ]
-                            , resultVar = resVar
-                            , ctx = ctx3
-                            }
+                            else
+                                -- Generic kernel ABI path: derive signature from Elm type
+                                let
+                                    sig : FuncSignature
+                                    sig =
+                                        kernelFuncSignatureFromType funcType
+
+                                    -- Use boxToMatchSignature which handles both boxing AND unboxing
+                                    -- based on the ABI types derived from sig.paramTypes
+                                    ( boxOps, argVarPairs, ctx1b ) =
+                                        boxToMatchSignature ctx1 args argVars sig.paramTypes
+
+                                    ( resVar, ctx2 ) =
+                                        freshVar ctx1b
+
+                                    kernelName : String
+                                    kernelName =
+                                        "Elm_Kernel_" ++ home ++ "_" ++ name
+
+                                    ( ctx3, callOp ) =
+                                        ecoCallNamed ctx2 resVar kernelName argVarPairs (monoTypeToMlir sig.returnType)
+                                in
+                                { ops = argOps ++ boxOps ++ [ callOp ]
+                                , resultVar = resVar
+                                , ctx = ctx3
+                                }
 
         Mono.MonoVarLocal name _ ->
             let

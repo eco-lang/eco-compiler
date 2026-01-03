@@ -117,8 +117,10 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
         Can.VarCtor opts home name index _ ->
             Names.registerCtor region home (A.At region name) index opts tipe
 
-        Can.VarDebug home name _ ->
-            Names.registerDebug name home region tipe
+        Can.VarDebug home name (Can.Forall _ debugType) ->
+            -- Use the full function type from the annotation, not the instantiated type
+            -- This is needed for the monomorphizer to correctly derive the kernel ABI
+            Names.registerDebug name home region debugType
 
         Can.VarOperator _ home name (Can.Forall _ funcType) ->
             Names.registerGlobal region home name funcType
@@ -141,10 +143,10 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
 
         Can.Negate subExpr ->
             let
-                numberType =
-                    tipe
+                negateType =
+                    Can.TLambda tipe tipe
             in
-            Names.registerGlobal region ModuleName.basics Name.negate (Can.TLambda numberType numberType)
+            Names.registerGlobal region ModuleName.basics Name.negate negateType
                 |> Names.andThen
                     (\func ->
                         optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes subExpr)

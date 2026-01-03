@@ -25,11 +25,13 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Optimize.Erased.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
+import Utils.Crash as Crash
 
 
 
@@ -947,6 +949,30 @@ specializeExpr expr subst state =
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion home name funcMonoType
+                    in
+                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType, state1 )
+
+                -- Debug function call (Debug.log, Debug.todo, etc.)
+                -- Keep the original polymorphic type for the kernel function signature
+                -- so type variables map to !eco.value at runtime (boxed values).
+                TOpt.VarDebug funcRegion name _ _ funcCanType ->
+                    let
+                        argTypes =
+                            List.map Mono.typeOf monoArgs
+
+                        callSubst =
+                            unifyFuncCall funcCanType argTypes canType subst
+
+                        resultMonoType =
+                            applySubst callSubst canType
+
+                        -- Use empty substitution to keep type variables as MVar
+                        -- This ensures polymorphic kernel functions use !eco.value
+                        funcMonoType =
+                            applySubst Dict.empty funcCanType
+
+                        monoFunc =
+                            Mono.MonoVarKernel funcRegion "Debug" name funcMonoType
                     in
                     ( Mono.MonoCall region monoFunc monoArgs resultMonoType, state1 )
 
