@@ -1689,12 +1689,15 @@ specializeDef def subst state =
 
 
 specializeDestructor : TOpt.Destructor -> Substitution -> Mono.MonoDestructor
-specializeDestructor (TOpt.Destructor name path _) _ =
+specializeDestructor (TOpt.Destructor name path canType) subst =
     let
         monoPath =
             specializePath path
+
+        monoType =
+            applySubst subst canType
     in
-    Mono.MonoDestructor name monoPath
+    Mono.MonoDestructor name monoPath monoType
 
 
 specializePath : TOpt.Path -> Mono.MonoPath

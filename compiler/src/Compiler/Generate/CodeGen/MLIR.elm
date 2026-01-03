@@ -1302,21 +1302,29 @@ generateCycle ctx funcName definitions monoType =
     -- Generate mutually recursive definitions
     -- For now, generate a thunk that creates a record of all the cycle definitions
     let
-        ( defOps, defVars, finalCtx ) =
+        -- Generate expressions and collect results with their types
+        ( defOps, defVarsWithTypes, finalCtx ) =
             List.foldl
                 (\( _, expr ) ( accOps, accVars, accCtx ) ->
                     let
                         result : ExprResult
                         result =
                             generateExpr accCtx expr
+
+                        exprType =
+                            Mono.typeOf expr
                     in
-                    ( accOps ++ result.ops, accVars ++ [ result.resultVar ], result.ctx )
+                    ( accOps ++ result.ops, accVars ++ [ ( result.resultVar, exprType ) ], result.ctx )
                 )
                 ( [], [], ctx )
                 definitions
 
+        -- Box any primitive values before storing in the cycle
+        ( boxOps, boxedVars, ctxAfterBox ) =
+            boxArgsIfNeeded finalCtx defVarsWithTypes
+
         ( resultVar, ctx1 ) =
-            freshVar finalCtx
+            freshVar ctxAfterBox
 
         arity : Int
         arity =
@@ -1324,7 +1332,7 @@ generateCycle ctx funcName definitions monoType =
 
         defVarPairs : List ( String, MlirType )
         defVarPairs =
-            List.map (\v -> ( v, ecoValue )) defVars
+            List.map (\v -> ( v, ecoValue )) boxedVars
 
         ( ctx2, cycleOp ) =
             ecoConstruct ctx1 resultVar 0 arity 0 defVarPairs
@@ -1334,7 +1342,7 @@ generateCycle ctx funcName definitions monoType =
 
         region : MlirRegion
         region =
-            mkRegion [] (defOps ++ [ cycleOp ]) returnOp
+            mkRegion [] (defOps ++ boxOps ++ [ cycleOp ]) returnOp
 
         ( ctx4, funcOp ) =
             funcFunc ctx3 funcName [] (monoTypeToMlir monoType) region
@@ -1388,8 +1396,8 @@ generateExpr ctx expr =
         Mono.MonoRecordCreate fields layout _ ->
             generateRecordCreate ctx fields layout
 
-        Mono.MonoRecordAccess record fieldName index isUnboxed _ ->
-            generateRecordAccess ctx record fieldName index isUnboxed
+        Mono.MonoRecordAccess record fieldName index isUnboxed fieldType ->
+            generateRecordAccess ctx record fieldName index isUnboxed fieldType
 
         Mono.MonoRecordUpdate record updates layout _ ->
             generateRecordUpdate ctx record updates layout
@@ -1632,13 +1640,20 @@ generateList ctx items =
                                 result =
                                     generateExpr accCtx item
 
-                                ( consVar, ctx3 ) =
-                                    freshVar result.ctx
+                                -- Box primitive elements before storing in the list
+                                elemType =
+                                    Mono.typeOf item
 
-                                ( ctx4, consOp ) =
-                                    ecoConstruct ctx3 consVar 1 2 0 [ ( result.resultVar, ecoValue ), ( tailVar, ecoValue ) ]
+                                ( boxOps, boxedVar, ctx3 ) =
+                                    boxIfNeeded result.ctx result.resultVar elemType
+
+                                ( consVar, ctx4 ) =
+                                    freshVar ctx3
+
+                                ( ctx5, consOp ) =
+                                    ecoConstruct ctx4 consVar 1 2 0 [ ( boxedVar, ecoValue ), ( tailVar, ecoValue ) ]
                             in
-                            ( accOps ++ result.ops ++ [ consOp ], consVar, ctx4 )
+                            ( accOps ++ result.ops ++ boxOps ++ [ consOp ], consVar, ctx5 )
                         )
                         ( [], nilVar, ctx2 )
                         items
@@ -2440,10 +2455,13 @@ generateLet ctx def body =
 
 
 generateDestruct : Context -> Mono.MonoDestructor -> Mono.MonoExpr -> ExprResult
-generateDestruct ctx (Mono.MonoDestructor name path) body =
+generateDestruct ctx (Mono.MonoDestructor name path monoType) body =
     let
+        targetType =
+            monoTypeToMlir monoType
+
         ( pathOps, pathVar, ctx1 ) =
-            generateMonoPath ctx path
+            generateMonoPath ctx path targetType
 
         -- Use mapping instead of eco.construct wrapper
         ctx2 : Context
@@ -2460,22 +2478,23 @@ generateDestruct ctx (Mono.MonoDestructor name path) body =
     }
 
 
-generateMonoPath : Context -> Mono.MonoPath -> ( List MlirOp, String, Context )
-generateMonoPath ctx path =
+generateMonoPath : Context -> Mono.MonoPath -> MlirType -> ( List MlirOp, String, Context )
+generateMonoPath ctx path targetType =
     case path of
         Mono.MonoRoot name ->
             ( [], lookupVar ctx name, ctx )
 
         Mono.MonoIndex index subPath ->
             let
+                -- Intermediate projections always produce !eco.value
                 ( subOps, subVar, ctx1 ) =
-                    generateMonoPath ctx subPath
+                    generateMonoPath ctx subPath ecoValue
 
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
                 ( ctx3, projectOp ) =
-                    ecoProject ctx2 resultVar index False subVar ecoValue
+                    ecoProject ctx2 resultVar index ecoValue subVar ecoValue
             in
             ( subOps ++ [ projectOp ]
             , resultVar
@@ -2484,14 +2503,15 @@ generateMonoPath ctx path =
 
         Mono.MonoField index subPath ->
             let
+                -- Intermediate projections always produce !eco.value
                 ( subOps, subVar, ctx1 ) =
-                    generateMonoPath ctx subPath
+                    generateMonoPath ctx subPath ecoValue
 
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
                 ( ctx3, projectOp ) =
-                    ecoProject ctx2 resultVar index False subVar ecoValue
+                    ecoProject ctx2 resultVar index ecoValue subVar ecoValue
             in
             ( subOps ++ [ projectOp ]
             , resultVar
@@ -2499,7 +2519,18 @@ generateMonoPath ctx path =
             )
 
         Mono.MonoUnbox subPath ->
-            generateMonoPath ctx subPath
+            -- First get the boxed value from subpath
+            let
+                ( subOps, subVar, ctx1 ) =
+                    generateMonoPath ctx subPath ecoValue
+
+                ( unboxOps, unboxedVar, ctx2 ) =
+                    unboxToType ctx1 subVar targetType
+            in
+            ( subOps ++ unboxOps
+            , unboxedVar
+            , ctx2
+            )
 
 
 
@@ -2511,39 +2542,41 @@ generateMonoPath ctx path =
 Returns the ops needed to project to the target, the result variable name,
 and the updated context.
 
+The targetType parameter specifies what type the final value should be:
+- For primitive tests (IsBool, IsInt, IsChr), this is the primitive type
+- For ctor tests, this is !eco.value
+
 -}
-generateDTPath : Context -> Name.Name -> DT.Path -> ( List MlirOp, String, Context )
-generateDTPath ctx root dtPath =
+generateDTPath : Context -> Name.Name -> DT.Path -> MlirType -> ( List MlirOp, String, Context )
+generateDTPath ctx root dtPath targetType =
     case dtPath of
         DT.Empty ->
             ( [], "%" ++ root, ctx )
 
         DT.Index index subPath ->
             let
+                -- Intermediate projections always produce !eco.value
                 ( subOps, subVar, ctx1 ) =
-                    generateDTPath ctx root subPath
+                    generateDTPath ctx root subPath ecoValue
 
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
                 ( ctx3, projectOp ) =
-                    ecoProject ctx2 resultVar (Index.toMachine index) False subVar ecoValue
+                    ecoProject ctx2 resultVar (Index.toMachine index) ecoValue subVar ecoValue
             in
             ( subOps ++ [ projectOp ], resultVar, ctx3 )
 
         DT.Unbox subPath ->
-            -- Unbox just accesses the first field
+            -- Unbox the value to the target primitive type
             let
                 ( subOps, subVar, ctx1 ) =
-                    generateDTPath ctx root subPath
+                    generateDTPath ctx root subPath ecoValue
 
-                ( resultVar, ctx2 ) =
-                    freshVar ctx1
-
-                ( ctx3, projectOp ) =
-                    ecoProject ctx2 resultVar 0 False subVar ecoValue
+                ( unboxOps, unboxedVar, ctx2 ) =
+                    unboxToType ctx1 subVar targetType
             in
-            ( subOps ++ [ projectOp ], resultVar, ctx3 )
+            ( subOps ++ unboxOps, unboxedVar, ctx2 )
 
 
 {-| Generate MLIR ops to evaluate a DT.Test, returning a boolean result.
@@ -2555,8 +2588,35 @@ For other tests (IsBool, IsInt, etc.), we generate comparison ops that produce a
 generateTest : Context -> Name.Name -> ( DT.Path, DT.Test ) -> ( List MlirOp, String, Context )
 generateTest ctx root ( path, test ) =
     let
+        -- Determine target type based on the test
+        targetType =
+            case test of
+                DT.IsCtor _ _ _ _ _ ->
+                    ecoValue
+
+                DT.IsBool _ ->
+                    I1
+
+                DT.IsInt _ ->
+                    I64
+
+                DT.IsChr _ ->
+                    ecoChar
+
+                DT.IsStr _ ->
+                    ecoValue
+
+                DT.IsCons ->
+                    ecoValue
+
+                DT.IsNil ->
+                    ecoValue
+
+                DT.IsTuple ->
+                    ecoValue
+
         ( pathOps, valVar, ctx1 ) =
-            generateDTPath ctx root path
+            generateDTPath ctx root path targetType
     in
     case test of
         DT.IsCtor _ _ _ _ _ ->
@@ -2943,8 +3003,9 @@ generateFanOut : Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider
 generateFanOut ctx root path edges fallback resultTy =
     let
         -- Get the scrutinee value at the path
+        -- FanOut is for constructor branching, so we want !eco.value
         ( pathOps, scrutineeVar, ctx1 ) =
-            generateDTPath ctx root path
+            generateDTPath ctx root path ecoValue
 
         -- Collect tags from edges
         edgeTags =
@@ -3074,8 +3135,32 @@ generateRecordCreate ctx fields layout =
         ( fieldsOps, fieldVars, ctx1 ) =
             generateExprList ctx fields
 
-        ( resultVar, ctx2 ) =
-            freshVar ctx1
+        -- Pair field vars with their expression types
+        fieldVarsWithTypes : List ( String, Mono.MonoType )
+        fieldVarsWithTypes =
+            List.map2 (\v expr -> ( v, Mono.typeOf expr )) fieldVars fields
+
+        -- Box fields that need to be boxed (layout says boxed, but expression is primitive)
+        ( boxOps, boxedFieldVars, ctx2 ) =
+            List.foldl
+                (\( ( var, exprType ), fieldInfo ) ( opsAcc, varsAcc, ctxAcc ) ->
+                    if fieldInfo.isUnboxed then
+                        -- Field is stored unboxed, use as-is
+                        ( opsAcc, varsAcc ++ [ var ], ctxAcc )
+
+                    else
+                        -- Field should be boxed - box if needed
+                        let
+                            ( moreOps, boxedVar, newCtx ) =
+                                boxIfNeeded ctxAcc var exprType
+                        in
+                        ( opsAcc ++ moreOps, varsAcc ++ [ boxedVar ], newCtx )
+                )
+                ( [], [], ctx1 )
+                (List.map2 Tuple.pair fieldVarsWithTypes layout.fields)
+
+        ( resultVar, ctx3 ) =
+            freshVar ctx2
 
         fieldVarPairs : List ( String, MlirType )
         fieldVarPairs =
@@ -3089,35 +3174,68 @@ generateRecordCreate ctx fields layout =
                         ecoValue
                     )
                 )
-                fieldVars
+                boxedFieldVars
                 layout.fields
 
-        ( ctx3, constructOp ) =
-            ecoConstruct ctx2 resultVar 0 layout.fieldCount layout.unboxedBitmap fieldVarPairs
+        ( ctx4, constructOp ) =
+            ecoConstruct ctx3 resultVar 0 layout.fieldCount layout.unboxedBitmap fieldVarPairs
     in
-    { ops = fieldsOps ++ [ constructOp ]
+    { ops = fieldsOps ++ boxOps ++ [ constructOp ]
     , resultVar = resultVar
-    , ctx = ctx3
+    , ctx = ctx4
     }
 
 
-generateRecordAccess : Context -> Mono.MonoExpr -> Name.Name -> Int -> Bool -> ExprResult
-generateRecordAccess ctx record _ index isUnboxed =
+generateRecordAccess : Context -> Mono.MonoExpr -> Name.Name -> Int -> Bool -> Mono.MonoType -> ExprResult
+generateRecordAccess ctx record _ index isUnboxed fieldType =
     let
         recordResult : ExprResult
         recordResult =
             generateExpr ctx record
 
-        ( resultVar, ctx1 ) =
+        ( projectVar, ctx1 ) =
             freshVar recordResult.ctx
 
-        ( ctx2, projectOp ) =
-            ecoProject ctx1 resultVar index isUnboxed recordResult.resultVar ecoValue
+        -- Determine the MLIR type for the field
+        fieldMlirType =
+            monoTypeToMlir fieldType
     in
-    { ops = recordResult.ops ++ [ projectOp ]
-    , resultVar = resultVar
-    , ctx = ctx2
-    }
+    if isUnboxed then
+        -- Field is stored unboxed - project directly to the primitive type
+        let
+            ( ctx2, projectOp ) =
+                ecoProject ctx1 projectVar index fieldMlirType recordResult.resultVar ecoValue
+        in
+        { ops = recordResult.ops ++ [ projectOp ]
+        , resultVar = projectVar
+        , ctx = ctx2
+        }
+
+    else if isEcoValueType fieldMlirType then
+        -- Field is boxed and semantic type is also !eco.value - just project
+        let
+            ( ctx2, projectOp ) =
+                ecoProject ctx1 projectVar index ecoValue recordResult.resultVar ecoValue
+        in
+        { ops = recordResult.ops ++ [ projectOp ]
+        , resultVar = projectVar
+        , ctx = ctx2
+        }
+
+    else
+        -- Field is stored boxed but semantic type is primitive
+        -- Project to get !eco.value, then unbox to primitive type
+        let
+            ( ctx2, projectOp ) =
+                ecoProject ctx1 projectVar index ecoValue recordResult.resultVar ecoValue
+
+            ( unboxOps, unboxedVar, ctx3 ) =
+                unboxToType ctx2 projectVar fieldMlirType
+        in
+        { ops = recordResult.ops ++ [ projectOp ] ++ unboxOps
+        , resultVar = unboxedVar
+        , ctx = ctx3
+        }
 
 
 generateRecordUpdate : Context -> Mono.MonoExpr -> List ( Int, Mono.MonoExpr ) -> Mono.RecordLayout -> ExprResult
@@ -3328,16 +3446,19 @@ ecoCallNamed ctx resultVar funcName operands returnType =
 
 
 {-| eco.project - extract a field from a record/custom/tuple
--}
-ecoProject : Context -> String -> Int -> Bool -> String -> MlirType -> ( Context, MlirOp )
-ecoProject ctx resultVar index isUnboxed operand operandType =
-    let
-        resultType =
-            if isUnboxed then
-                I64
 
-            else
-                ecoValue
+    The resultType should be the actual type of the extracted field:
+    - i64 for Int fields
+    - f64 for Float fields
+    - i1 for Bool fields
+    - i16 for Char fields
+    - !eco.value for boxed fields
+-}
+ecoProject : Context -> String -> Int -> MlirType -> String -> MlirType -> ( Context, MlirOp )
+ecoProject ctx resultVar index resultType operand operandType =
+    let
+        isUnboxed =
+            not (isEcoValueType resultType)
 
         attrs =
             Dict.fromList

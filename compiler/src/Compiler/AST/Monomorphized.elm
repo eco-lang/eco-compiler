@@ -419,9 +419,10 @@ type MonoDef
 
 
 {-| Destructuring pattern for extracting values from data structures.
+    Contains the variable name, path to navigate to the value, and the type of the destructured value.
 -}
 type MonoDestructor
-    = MonoDestructor Name MonoPath
+    = MonoDestructor Name MonoPath MonoType
 
 
 {-| Path for navigating into a data structure during destructuring.
