@@ -10,6 +10,7 @@
 
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
 using namespace mlir;
@@ -26,6 +27,28 @@ LogicalResult CaseOp::verify() {
            << getTags().size()
            << ") must match number of alternative regions ("
            << getAlternatives().size() << ")";
+  }
+
+  // Verify scrutinee type is allowed: !eco.value or i1 (Bool)
+  Type scrutineeType = getScrutinee().getType();
+  if (!isa<eco::ValueType>(scrutineeType)) {
+    // For non-eco.value scrutinees, only allow i1 (Bool)
+    if (auto intType = dyn_cast<IntegerType>(scrutineeType)) {
+      if (intType.getWidth() != 1) {
+        return emitOpError("scrutinee must be !eco.value or i1, got ")
+               << scrutineeType;
+      }
+      // For i1 scrutinee, verify tags are only 0 or 1
+      for (int64_t tag : getTags()) {
+        if (tag != 0 && tag != 1) {
+          return emitOpError("i1 scrutinee requires tags in {0, 1}, got ")
+                 << tag;
+        }
+      }
+    } else {
+      return emitOpError("scrutinee must be !eco.value or i1, got ")
+             << scrutineeType;
+    }
   }
 
   // Extract expected result types if specified

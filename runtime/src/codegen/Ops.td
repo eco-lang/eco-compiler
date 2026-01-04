@@ -143,7 +143,7 @@ def Eco_CaseOp : Eco_Op<"case", [
   }];
 
   let arguments = (ins
-    Eco_Value:$scrutinee,
+    Eco_AnyValue:$scrutinee,                   // Accepts !eco.value or i1 (Bool)
     DenseI64ArrayAttr:$tags,
     OptionalAttr<ArrayAttr>:$caseResultTypes  // Array of TypeAttr for SCF lowering
   );

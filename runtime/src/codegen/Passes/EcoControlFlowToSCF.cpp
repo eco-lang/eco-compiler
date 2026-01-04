@@ -69,6 +69,15 @@ SmallVector<Type> getCaseResultTypes(CaseOp op) {
     return types;
 }
 
+/// Check if the case op has an i1 (Bool) scrutinee.
+bool hasI1Scrutinee(CaseOp op) {
+    Type scrutineeType = op.getScrutinee().getType();
+    if (auto intType = dyn_cast<IntegerType>(scrutineeType)) {
+        return intType.getWidth() == 1;
+    }
+    return false;
+}
+
 //===----------------------------------------------------------------------===//
 // Pattern: eco.case with pure returns -> scf.if (2-way case)
 //===----------------------------------------------------------------------===//
@@ -133,16 +142,33 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
         auto loc = op.getLoc();
         auto tags = op.getTags();
 
-        // Create eco.get_tag to extract the constructor tag
-        auto tag = rewriter.create<GetTagOp>(loc, rewriter.getI32Type(),
-                                             op.getScrutinee());
+        // Compute condition based on scrutinee type
+        Value cond;
+        if (hasI1Scrutinee(op)) {
+            // For i1 scrutinee: use the value directly as condition
+            // Convention: tag 1 = True goes to alt1 (then), tag 0 = False goes to alt0 (else)
+            // If tags[1] == 1, condition is the scrutinee directly
+            // If tags[1] == 0, condition is negated
+            if (tags[1] == 1) {
+                cond = op.getScrutinee();
+            } else {
+                // tags[1] == 0: negate the condition (XOR with 1)
+                auto trueConst = rewriter.create<arith::ConstantOp>(
+                    loc, rewriter.getI1Type(), rewriter.getIntegerAttr(rewriter.getI1Type(), 1));
+                cond = rewriter.create<arith::XOrIOp>(loc, op.getScrutinee(), trueConst);
+            }
+        } else {
+            // For eco.value scrutinee: extract tag and compare
+            auto tag = rewriter.create<GetTagOp>(loc, rewriter.getI32Type(),
+                                                 op.getScrutinee());
 
-        // Create comparison: tag == tags[1] (second alternative)
-        // We compare against tag1 so "true" branch is alt1, "else" is alt0
-        auto tagConstant = rewriter.create<arith::ConstantOp>(
-            loc, rewriter.getI32IntegerAttr(tags[1]));
-        auto cond = rewriter.create<arith::CmpIOp>(
-            loc, arith::CmpIPredicate::eq, tag, tagConstant);
+            // Create comparison: tag == tags[1] (second alternative)
+            // We compare against tag1 so "true" branch is alt1, "else" is alt0
+            auto tagConstant = rewriter.create<arith::ConstantOp>(
+                loc, rewriter.getI32IntegerAttr(tags[1]));
+            cond = rewriter.create<arith::CmpIOp>(
+                loc, arith::CmpIPredicate::eq, tag, tagConstant);
+        }
 
         // Create scf.if
         auto ifOp = rewriter.create<scf::IfOp>(loc, resultTypes, cond,
@@ -249,6 +275,10 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
 
         // All alternatives must end with eco.return
         if (!hasPureReturnAlternatives(op))
+            return failure();
+
+        // i1 scrutinee should use the 2-way pattern (scf.if), not index_switch
+        if (hasI1Scrutinee(op))
             return failure();
 
         // Skip cases inside joinpoint bodies - the returns inside are "non-local"

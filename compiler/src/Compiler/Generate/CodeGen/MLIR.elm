@@ -3535,129 +3535,6 @@ generateLeaf ctx _ choice resultTy =
             , ctx = ctx3
             }
 
-
-{-| Generate code for a decision tree for use in scf.if regions.
-    Similar to generateDecider but returns ops WITHOUT eco.return -
-    the caller adds scf.yield instead.
--}
-generateDeciderForScfIf : Context -> Name.Name -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
-generateDeciderForScfIf ctx root decider resultTy =
-    case decider of
-        Mono.Leaf choice ->
-            generateLeafForScfIf ctx root choice resultTy
-
-        Mono.Chain testChain success failure ->
-            -- For nested patterns, we still use scf.if recursively
-            generateChainForScfIf ctx root testChain success failure resultTy
-
-        Mono.FanOut path edges fallback ->
-            -- FanOut in scf.if context: use eco.case but return value for yield
-            generateFanOutForScfIf ctx root path edges fallback resultTy
-
-
-{-| Generate code for a Leaf node in scf.if context (no eco.return).
--}
-generateLeafForScfIf : Context -> Name.Name -> Mono.MonoChoice -> MlirType -> ExprResult
-generateLeafForScfIf ctx _ choice resultTy =
-    case choice of
-        Mono.Inline branchExpr ->
-            let
-                branchRes =
-                    generateExpr ctx branchExpr
-
-                actualTy =
-                    monoTypeToMlir (Mono.typeOf branchExpr)
-
-                ( coerceOps, finalVar, ctx1 ) =
-                    if actualTy == resultTy then
-                        ( [], branchRes.resultVar, branchRes.ctx )
-
-                    else if isEcoValueType resultTy && not (isEcoValueType actualTy) then
-                        boxIfNeeded branchRes.ctx branchRes.resultVar (Mono.typeOf branchExpr)
-
-                    else if not (isEcoValueType resultTy) && isEcoValueType actualTy then
-                        unboxToType branchRes.ctx branchRes.resultVar resultTy
-
-                    else
-                        ( [], branchRes.resultVar, branchRes.ctx )
-            in
-            -- No eco.return - just return the value
-            { ops = branchRes.ops ++ coerceOps
-            , resultVar = finalVar
-            , resultType = resultTy
-            , ctx = ctx1
-            }
-
-        Mono.Jump index ->
-            -- Jump in scf.if context - this is problematic, use a placeholder
-            let
-                ( dummyVar, ctx1 ) =
-                    freshVar ctx
-
-                ( ctx2, dummyOp ) =
-                    ecoConstruct ctx1 dummyVar 0 0 0 []
-            in
-            { ops = [ dummyOp ]
-            , resultVar = dummyVar
-            , resultType = resultTy
-            , ctx = ctx2
-            }
-
-
-{-| Chain handler for scf.if context (no eco.return).
--}
-generateChainForScfIf : Context -> Name.Name -> List ( DT.Path, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
-generateChainForScfIf ctx root testChain success failure resultTy =
-    let
-        ( condOps, condVar, ctx1 ) =
-            generateChainCondition ctx root testChain
-
-        thenBodyRes =
-            generateDeciderForScfIf ctx1 root success resultTy
-
-        ( ctx2, thenYieldOp ) =
-            scfYield thenBodyRes.ctx thenBodyRes.resultVar resultTy
-
-        thenRegion =
-            mkRegion [] thenBodyRes.ops thenYieldOp
-
-        elseBodyRes =
-            generateDeciderForScfIf ctx2 root failure resultTy
-
-        ( ctx3, elseYieldOp ) =
-            scfYield elseBodyRes.ctx elseBodyRes.resultVar resultTy
-
-        elseRegion =
-            mkRegion [] elseBodyRes.ops elseYieldOp
-
-        -- Allocate result variable for scf.if
-        ( ifResultVar, ctx3b ) =
-            freshVar ctx3
-
-        ( ctx4, ifOp ) =
-            scfIf ctx3b condVar ifResultVar thenRegion elseRegion resultTy
-    in
-    { ops = condOps ++ [ ifOp ]
-    , resultVar = ifResultVar
-    , resultType = resultTy
-    , ctx = ctx4
-    }
-
-
-{-| FanOut handler for scf.if context (produces a value for yield).
--}
-generateFanOutForScfIf : Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
-generateFanOutForScfIf ctx root path edges fallback resultTy =
-    -- For now, just generate the first edge or fallback as a simple value
-    -- Full FanOut in scf.if context needs more work
-    case edges of
-        ( _, subTree ) :: _ ->
-            generateDeciderForScfIf ctx root subTree resultTy
-
-        [] ->
-            generateDeciderForScfIf ctx root fallback resultTy
-
-
 {-| Generate code for a Chain node (test chain with success/failure branches).
 -}
 generateChain : Context -> Name.Name -> List ( DT.Path, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
@@ -3676,8 +3553,8 @@ generateChain ctx root testChain success failure resultTy =
 
 
 {-| Special handling for direct Bool ADT pattern matching.
-    For `case b of True -> X; False -> Y`, use scf.if directly with i1.
-    We can't use eco.case for Bool because eco.get_tag dereferences the value.
+    For `case b of True -> X; False -> Y`, use eco.case with i1 scrutinee.
+    eco.case now accepts i1 directly (lowered to scf.if by SCF pass).
 -}
 generateChainForBoolADT : Context -> Name.Name -> DT.Path -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
 generateChainForBoolADT ctx root path success failure resultTy =
@@ -3686,45 +3563,33 @@ generateChainForBoolADT ctx root path success failure resultTy =
         ( pathOps, boolVar, ctx1 ) =
             generateDTPath ctx root path I1
 
-        -- Generate success branch (True) - returns the body ops that produce a value
-        thenBodyRes =
-            generateDeciderForScfIf ctx1 root success resultTy
-
-        -- Generate scf.yield for then branch
-        ( ctx2, thenYieldOp ) =
-            scfYield thenBodyRes.ctx thenBodyRes.resultVar resultTy
+        -- Generate success branch (True) with eco.return
+        thenRes =
+            generateDecider ctx1 root success resultTy
 
         thenRegion =
-            mkRegion [] thenBodyRes.ops thenYieldOp
+            mkRegionFromOps thenRes.ops
 
-        -- Generate failure branch (False)
-        elseBodyRes =
-            generateDeciderForScfIf ctx2 root failure resultTy
-
-        -- Generate scf.yield for else branch
-        ( ctx3, elseYieldOp ) =
-            scfYield elseBodyRes.ctx elseBodyRes.resultVar resultTy
+        -- Generate failure branch (False) with eco.return
+        elseRes =
+            generateDecider thenRes.ctx root failure resultTy
 
         elseRegion =
-            mkRegion [] elseBodyRes.ops elseYieldOp
+            mkRegionFromOps elseRes.ops
 
-        -- Allocate result variable for scf.if
-        ( ifResultVar, ctx3b ) =
-            freshVar ctx3
-
-        -- scf.if with i1 condition directly
-        ( ctx4, ifOp ) =
-            scfIf ctx3b boolVar ifResultVar thenRegion elseRegion resultTy
+        -- eco.case on Bool: tag 1 for True (success), tag 0 for False (failure)
+        ( ctx2, caseOp ) =
+            ecoCase elseRes.ctx boolVar I1 [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
     in
-    { ops = pathOps ++ [ ifOp ]
-    , resultVar = ifResultVar
+    { ops = pathOps ++ [ caseOp ]
+    , resultVar = boolVar -- Dummy; control exits via eco.return inside regions
     , resultType = resultTy
-    , ctx = ctx4
+    , ctx = ctx2
     }
 
 
 {-| General case for Chain node: compute boolean condition and dispatch.
-Uses scf.if with the i1 condition directly to avoid eco.get_tag on embedded constants.
+    Uses eco.case with i1 scrutinee (lowered to scf.if by SCF pass).
 -}
 generateChainGeneral : Context -> Name.Name -> List ( DT.Path, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
 generateChainGeneral ctx root testChain success failure resultTy =
@@ -3733,38 +3598,28 @@ generateChainGeneral ctx root testChain success failure resultTy =
         ( condOps, condVar, ctx1 ) =
             generateChainCondition ctx root testChain
 
-        -- Generate success branch with scf.yield
-        thenBodyRes =
-            generateDeciderForScfIf ctx1 root success resultTy
-
-        ( ctx2, thenYieldOp ) =
-            scfYield thenBodyRes.ctx thenBodyRes.resultVar resultTy
+        -- Generate success branch with eco.return
+        thenRes =
+            generateDecider ctx1 root success resultTy
 
         thenRegion =
-            mkRegion [] thenBodyRes.ops thenYieldOp
+            mkRegionFromOps thenRes.ops
 
-        -- Generate failure branch with scf.yield
-        elseBodyRes =
-            generateDeciderForScfIf ctx2 root failure resultTy
-
-        ( ctx3, elseYieldOp ) =
-            scfYield elseBodyRes.ctx elseBodyRes.resultVar resultTy
+        -- Generate failure branch with eco.return
+        elseRes =
+            generateDecider thenRes.ctx root failure resultTy
 
         elseRegion =
-            mkRegion [] elseBodyRes.ops elseYieldOp
+            mkRegionFromOps elseRes.ops
 
-        -- Allocate result variable for scf.if
-        ( ifResultVar, ctx3b ) =
-            freshVar ctx3
-
-        -- scf.if with i1 condition directly
-        ( ctx4, ifOp ) =
-            scfIf ctx3b condVar ifResultVar thenRegion elseRegion resultTy
+        -- eco.case on Bool: tag 1 for True (success), tag 0 for False (failure)
+        ( ctx2, caseOp ) =
+            ecoCase elseRes.ctx condVar I1 [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
     in
-    { ops = condOps ++ [ ifOp ]
-    , resultVar = ifResultVar
+    { ops = condOps ++ [ caseOp ]
+    , resultVar = condVar -- Dummy; control exits via eco.return inside regions
     , resultType = resultTy
-    , ctx = ctx4
+    , ctx = ctx2
     }
 
 
@@ -3797,9 +3652,8 @@ isBoolFanOut edges =
                     False
 
 
-{-| Handle Bool FanOut with scf.if instead of eco.case.
-    eco.case uses eco.get_tag which dereferences the value as a pointer,
-    but Bool values are embedded constants that can't be dereferenced.
+{-| Handle Bool FanOut with eco.case on i1 scrutinee.
+    eco.case now accepts i1 directly (lowered to scf.if by SCF pass).
 -}
 generateBoolFanOut : Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
 generateBoolFanOut ctx root path edges fallback resultTy =
@@ -3812,38 +3666,29 @@ generateBoolFanOut ctx root path edges fallback resultTy =
         ( trueBranch, falseBranch ) =
             findBoolBranches edges fallback
 
-        -- Generate True branch (then) with scf.yield
-        thenBodyRes =
-            generateDeciderForScfIf ctx1 root trueBranch resultTy
-
-        ( ctx2, thenYieldOp ) =
-            scfYield thenBodyRes.ctx thenBodyRes.resultVar resultTy
+        -- Generate True branch (tag 1) with eco.return
+        thenRes =
+            generateDecider ctx1 root trueBranch resultTy
 
         thenRegion =
-            mkRegion [] thenBodyRes.ops thenYieldOp
+            mkRegionFromOps thenRes.ops
 
-        -- Generate False branch (else) with scf.yield
-        elseBodyRes =
-            generateDeciderForScfIf ctx2 root falseBranch resultTy
-
-        ( ctx3, elseYieldOp ) =
-            scfYield elseBodyRes.ctx elseBodyRes.resultVar resultTy
+        -- Generate False branch (tag 0) with eco.return
+        elseRes =
+            generateDecider thenRes.ctx root falseBranch resultTy
 
         elseRegion =
-            mkRegion [] elseBodyRes.ops elseYieldOp
+            mkRegionFromOps elseRes.ops
 
-        -- Allocate result variable for scf.if
-        ( ifResultVar, ctx3b ) =
-            freshVar ctx3
-
-        -- scf.if with i1 condition directly
-        ( ctx4, ifOp ) =
-            scfIf ctx3b boolVar ifResultVar thenRegion elseRegion resultTy
+        -- eco.case on Bool: tag 1 for True, tag 0 for False
+        -- Regions: [True region, False region] corresponding to tags [1, 0]
+        ( ctx2, caseOp ) =
+            ecoCase elseRes.ctx boolVar I1 [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
     in
-    { ops = pathOps ++ [ ifOp ]
-    , resultVar = ifResultVar
+    { ops = pathOps ++ [ caseOp ]
+    , resultVar = boolVar -- Dummy; control exits via eco.return inside regions
     , resultType = resultTy
-    , ctx = ctx4
+    , ctx = ctx2
     }
 
 
@@ -3870,12 +3715,13 @@ findBoolBranches edges fallback =
     ( findBranch True, findBranch False )
 
 
-{-| General case FanOut using eco.case (for non-Bool patterns).
+{-| General case FanOut using eco.case (for non-Bool ADT patterns).
+    eco.case accepts !eco.value scrutinee; for Bool patterns, generateBoolFanOut uses i1.
 -}
 generateFanOutGeneral : Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
 generateFanOutGeneral ctx root path edges fallback resultTy =
     let
-        -- eco.case only accepts !eco.value, so we always use ecoValue for the scrutinee
+        -- For ADT patterns, use !eco.value scrutinee (boxed heap pointer)
         -- The runtime extracts the tag from the boxed value
         ( pathOps, scrutineeVar, ctx1 ) =
             generateDTPath ctx root path ecoValue
