@@ -242,6 +242,102 @@ isPolymorphicKernel home name =
             False
 
 
+{-| Get the actual C ABI signature for known kernel functions.
+This is used when the Elm type is polymorphic (MonoValue) but the kernel
+expects concrete types. Returns Nothing for polymorphic kernels or
+unknown kernels.
+-}
+actualKernelAbi : String -> String -> Maybe FuncSignature
+actualKernelAbi home name =
+    case home of
+        "Basics" ->
+            -- Basics kernel functions use double (f64) for arithmetic
+            case name of
+                "add" ->
+                    Just { paramTypes = [ Mono.MFloat, Mono.MFloat ], returnType = Mono.MFloat }
+
+                "sub" ->
+                    Just { paramTypes = [ Mono.MFloat, Mono.MFloat ], returnType = Mono.MFloat }
+
+                "mul" ->
+                    Just { paramTypes = [ Mono.MFloat, Mono.MFloat ], returnType = Mono.MFloat }
+
+                "fdiv" ->
+                    Just { paramTypes = [ Mono.MFloat, Mono.MFloat ], returnType = Mono.MFloat }
+
+                "negate" ->
+                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
+
+                "abs" ->
+                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
+
+                "sqrt" ->
+                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
+
+                "ceiling" ->
+                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MInt }
+
+                "floor" ->
+                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MInt }
+
+                "round" ->
+                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MInt }
+
+                "truncate" ->
+                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MInt }
+
+                "toFloat" ->
+                    Just { paramTypes = [ Mono.MInt ], returnType = Mono.MFloat }
+
+                "sin" ->
+                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
+
+                "cos" ->
+                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
+
+                "tan" ->
+                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
+
+                "asin" ->
+                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
+
+                "acos" ->
+                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
+
+                "atan" ->
+                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
+
+                "atan2" ->
+                    Just { paramTypes = [ Mono.MFloat, Mono.MFloat ], returnType = Mono.MFloat }
+
+                "pow" ->
+                    Just { paramTypes = [ Mono.MFloat, Mono.MFloat ], returnType = Mono.MFloat }
+
+                "e" ->
+                    Just { paramTypes = [], returnType = Mono.MFloat }
+
+                "pi" ->
+                    Just { paramTypes = [], returnType = Mono.MFloat }
+
+                "modBy" ->
+                    Just { paramTypes = [ Mono.MInt, Mono.MInt ], returnType = Mono.MInt }
+
+                "remainderBy" ->
+                    Just { paramTypes = [ Mono.MInt, Mono.MInt ], returnType = Mono.MInt }
+
+                "not" ->
+                    Just { paramTypes = [ Mono.MBool ], returnType = Mono.MBool }
+
+                "xor" ->
+                    Just { paramTypes = [ Mono.MBool, Mono.MBool ], returnType = Mono.MBool }
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
 {-| Check if a type is a type variable (MVar).
 Used for relaxed intrinsic matching when the result type might be polymorphic.
 -}
@@ -1155,7 +1251,7 @@ generateDefine ctx funcName expr monoType =
 
 
 generateClosureFunc : Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ( MlirOp, Context )
-generateClosureFunc ctx funcName closureInfo body _ =
+generateClosureFunc ctx funcName closureInfo body monoType =
     let
         argPairs : List ( String, MlirType )
         argPairs =
@@ -1181,9 +1277,15 @@ generateClosureFunc ctx funcName closureInfo body _ =
         exprResult =
             generateExpr ctxWithArgs body
 
+        -- Extract return type from the closure's full type, not the body's type.
+        -- The body's type may be !eco.value if it's a parameter reference,
+        -- but the caller expects the actual return type (e.g., i64 for identity 42).
+        ( _, extractedReturnType ) =
+            decomposeFunctionType monoType
+
         returnType : MlirType
         returnType =
-            monoTypeToMlir (Mono.typeOf body)
+            monoTypeToMlir extractedReturnType
 
         -- Handle type mismatch between expression result and expected return type.
         -- If expression returns !eco.value but function should return a primitive, unbox it.
@@ -2509,12 +2611,15 @@ generateCall ctx func args resultType =
                             -- For polymorphic kernels, all arguments must be boxed as !eco.value
                             if isPolymorphicKernel home name then
                                 let
-                                    argsWithTypes : List ( String, Mono.MonoType )
-                                    argsWithTypes =
-                                        List.map2 (\expr var -> ( var, Mono.typeOf expr )) args argVars
+                                    -- Use generateExprListTyped to get the ACTUAL SSA types
+                                    -- This is critical because Mono.typeOf can be wrong (e.g., MUnit instead of MInt)
+                                    -- which would cause boxArgsIfNeeded to skip boxing primitive values
+                                    ( argOpsTyped, argsWithSsaTypes, ctx1Typed ) =
+                                        generateExprListTyped ctx args
 
+                                    -- Box using the actual SSA types, not the potentially incorrect Mono types
                                     ( boxOps, boxedVars, ctx1b ) =
-                                        boxArgsIfNeeded ctx1 argsWithTypes
+                                        boxArgsWithMlirTypes ctx1Typed argsWithSsaTypes
 
                                     ( resVar, ctx2 ) =
                                         freshVar ctx1b
@@ -2526,18 +2631,31 @@ generateCall ctx func args resultType =
                                     ( ctx3, callOp ) =
                                         ecoCallNamed ctx2 resVar kernelName (List.map (\v -> ( v, ecoValue )) boxedVars) ecoValue
                                 in
-                                { ops = argOps ++ boxOps ++ [ callOp ]
+                                { ops = argOpsTyped ++ boxOps ++ [ callOp ]
                                 , resultVar = resVar
                                 , resultType = ecoValue
                                 , ctx = ctx3
                                 }
 
                             else
-                                -- Generic kernel ABI path: derive signature from Elm type
+                                -- Generic kernel ABI path
+                                -- First check if we have a known actual kernel ABI (for when
+                                -- the Elm type is polymorphic but the C kernel expects concrete types)
                                 let
+                                    elmSig : FuncSignature
+                                    elmSig =
+                                        kernelFuncSignatureFromType funcType
+
                                     sig : FuncSignature
                                     sig =
-                                        kernelFuncSignatureFromType funcType
+                                        case actualKernelAbi home name of
+                                            Just abi ->
+                                                -- Use the actual C ABI, not the polymorphic Elm type
+                                                abi
+
+                                            Nothing ->
+                                                -- Fall back to deriving from Elm type
+                                                elmSig
 
                                     -- Use boxToMatchSignature which handles both boxing AND unboxing
                                     -- based on the ABI types derived from sig.paramTypes
@@ -2556,14 +2674,34 @@ generateCall ctx func args resultType =
 
                                     ( ctx3, callOp ) =
                                         ecoCallNamed ctx2 resVar kernelName argVarPairs kernelResultType
-                                in
-                                { ops = argOps ++ boxOps ++ [ callOp ]
-                                , resultVar = resVar
-                                , resultType = kernelResultType
-                                , ctx = ctx3
-                                }
 
-        Mono.MonoVarLocal name _ ->
+                                    -- If the Elm type expects !eco.value but kernel returns concrete type,
+                                    -- we need to box the result back
+                                    elmResultType =
+                                        monoTypeToMlir elmSig.returnType
+
+                                    needsBoxing =
+                                        isEcoValueType elmResultType && not (isEcoValueType kernelResultType)
+                                in
+                                if needsBoxing then
+                                    let
+                                        ( boxResultOps, boxedVar, ctx4 ) =
+                                            boxIfNeeded ctx3 resVar sig.returnType
+                                    in
+                                    { ops = argOps ++ boxOps ++ [ callOp ] ++ boxResultOps
+                                    , resultVar = boxedVar
+                                    , resultType = ecoValue
+                                    , ctx = ctx4
+                                    }
+
+                                else
+                                    { ops = argOps ++ boxOps ++ [ callOp ]
+                                    , resultVar = resVar
+                                    , resultType = kernelResultType
+                                    , ctx = ctx3
+                                    }
+
+        Mono.MonoVarLocal name funcType ->
             let
                 ( argOps, argVars, ctx1 ) =
                     generateExprList ctx args
@@ -2589,11 +2727,12 @@ generateCall ctx func args resultType =
                 allOperandTypes =
                     List.map (\_ -> ecoValue) allOperandNames
 
+                -- Compute arity from the FUNCTION type, not the result type
                 remainingArity : Int
                 remainingArity =
-                    functionArity resultType
+                    functionArity funcType
 
-                -- papExtend always returns !eco.value (boxed calling convention)
+                -- papExtend handles both partial and saturated cases
                 papExtendAttrs =
                     Dict.fromList
                         [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
@@ -2660,11 +2799,16 @@ generateCall ctx func args resultType =
                 allOperandTypes =
                     List.map (\_ -> ecoValue) allOperandNames
 
+                -- Compute arity from the FUNCTION type, not the result type
+                funcType : Mono.MonoType
+                funcType =
+                    Mono.typeOf func
+
                 remainingArity : Int
                 remainingArity =
-                    functionArity resultType
+                    functionArity funcType
 
-                -- papExtend always returns !eco.value (boxed calling convention)
+                -- papExtend handles both partial and saturated cases
                 papExtendAttrs =
                     Dict.fromList
                         [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
@@ -2719,6 +2863,48 @@ generateExprList ctx exprs =
         ( [], [], ctx )
         exprs
 
+
+{-| Generate expressions and return their ACTUAL MLIR types (not from Mono.typeOf).
+This is important when the Mono types may be incorrect/stale, but the generated
+SSA values have correct types.
+-}
+generateExprListTyped : Context -> List Mono.MonoExpr -> ( List MlirOp, List ( String, MlirType ), Context )
+generateExprListTyped ctx exprs =
+    List.foldl
+        (\expr ( accOps, accVarsWithTypes, accCtx ) ->
+            let
+                result : ExprResult
+                result =
+                    generateExpr accCtx expr
+            in
+            ( accOps ++ result.ops
+            , accVarsWithTypes ++ [ ( result.resultVar, result.resultType ) ]
+            , result.ctx
+            )
+        )
+        ( [], [], ctx )
+        exprs
+
+
+{-| Box arguments to !eco.value using their ACTUAL MLIR types.
+This is safer than boxArgsIfNeeded because it uses the real SSA types
+instead of relying on potentially incorrect Mono types.
+-}
+boxArgsWithMlirTypes :
+    Context
+    -> List ( String, MlirType )
+    -> ( List MlirOp, List String, Context )
+boxArgsWithMlirTypes ctx args =
+    List.foldl
+        (\( var, mlirTy ) ( opsAcc, varsAcc, ctxAcc ) ->
+            let
+                ( moreOps, boxedVar, ctx1 ) =
+                    boxToEcoValue ctxAcc var mlirTy
+            in
+            ( opsAcc ++ moreOps, varsAcc ++ [ boxedVar ], ctx1 )
+        )
+        ( [], [], ctx )
+        args
 
 
 -- TAIL CALL GENERATION
@@ -3011,15 +3197,31 @@ generateDTPath : Context -> Name.Name -> DT.Path -> MlirType -> ( List MlirOp, S
 generateDTPath ctx root dtPath targetType =
     case dtPath of
         DT.Empty ->
-            -- The root variable is the function parameter.
-            -- Function parameters are always !eco.value (boxed).
-            -- If targetType is a primitive, unbox the root variable.
-            if isEcoValueType targetType then
-                ( [], "%" ++ root, ctx )
+            -- The root is the scrutinee variable; look it up in varMappings.
+            -- This correctly handles both boxed (!eco.value) and unboxed (i1, i64) parameters.
+            let
+                ( rootVar, rootTy ) =
+                    lookupVar ctx root
+            in
+            if rootTy == targetType then
+                -- Already the right type (e.g. Bool param already i1)
+                ( [], rootVar, ctx )
+
+            else if isEcoValueType rootTy && not (isEcoValueType targetType) then
+                -- Currently boxed, need primitive -> unbox and update mapping
+                let
+                    ( unboxOps, unboxedVar, ctx1 ) =
+                        unboxToType ctx rootVar targetType
+
+                    -- Make future uses of root see the unboxed SSA value
+                    ctx2 =
+                        addVarMapping root unboxedVar targetType ctx1
+                in
+                ( unboxOps, unboxedVar, ctx2 )
 
             else
-                -- Unbox the root variable to the target primitive type
-                unboxToType ctx ("%" ++ root) targetType
+                -- Types differ but we don't have a boxing rule here; just use rootVar.
+                ( [], rootVar, ctx )
 
         DT.Index index subPath ->
             let
@@ -3571,8 +3773,12 @@ generateChainForBoolADT ctx root path success failure resultTy =
             mkRegionFromOps thenRes.ops
 
         -- Generate failure branch (False) with eco.return
+        -- Fork context: keep ctx1's variable mappings but advance nextVar to avoid SSA conflicts
+        ctxForElse =
+            { ctx1 | nextVar = thenRes.ctx.nextVar }
+
         elseRes =
-            generateDecider thenRes.ctx root failure resultTy
+            generateDecider ctxForElse root failure resultTy
 
         elseRegion =
             mkRegionFromOps elseRes.ops
@@ -3606,8 +3812,12 @@ generateChainGeneral ctx root testChain success failure resultTy =
             mkRegionFromOps thenRes.ops
 
         -- Generate failure branch with eco.return
+        -- Fork context: keep ctx1's variable mappings but advance nextVar to avoid SSA conflicts
+        ctxForElse =
+            { ctx1 | nextVar = thenRes.ctx.nextVar }
+
         elseRes =
-            generateDecider thenRes.ctx root failure resultTy
+            generateDecider ctxForElse root failure resultTy
 
         elseRegion =
             mkRegionFromOps elseRes.ops
@@ -3674,8 +3884,12 @@ generateBoolFanOut ctx root path edges fallback resultTy =
             mkRegionFromOps thenRes.ops
 
         -- Generate False branch (tag 0) with eco.return
+        -- Fork context: keep ctx1's variable mappings but advance nextVar to avoid SSA conflicts
+        ctxForElse =
+            { ctx1 | nextVar = thenRes.ctx.nextVar }
+
         elseRes =
-            generateDecider thenRes.ctx root falseBranch resultTy
+            generateDecider ctxForElse root falseBranch resultTy
 
         elseRegion =
             mkRegionFromOps elseRes.ops
@@ -3849,10 +4063,12 @@ generateCase ctx _ root decider jumps resultMonoType =
         decisionResult =
             generateDecider ctx1b root decider resultMlirType
     in
-    -- Use the actual result from the decision tree, not the dummy value.
-    -- The decision tree generates scf.if/scf.index_switch that returns the proper result.
+    -- Return dummyVar which has the correct resultMlirType.
+    -- The actual control flow exits via eco.return inside the decision tree regions.
+    -- The outer function will add another eco.return using dummyVar, which has the right type.
+    -- The lowering pass will transform eco.case into scf.if/scf.index_switch and handle the returns.
     { ops = joinpointOps ++ dummyOps ++ decisionResult.ops
-    , resultVar = decisionResult.resultVar
+    , resultVar = dummyVar
     , resultType = resultMlirType
     , ctx = decisionResult.ctx
     }
