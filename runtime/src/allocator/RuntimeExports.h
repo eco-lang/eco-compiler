@@ -31,11 +31,12 @@ void* eco_get_output_stream();
 //===----------------------------------------------------------------------===//
 
 /// Allocates a Custom ADT object.
-/// @param ctor_tag The constructor tag (maps to Custom.ctor field)
+/// @param type_id     Custom type id (for printing/reflection, stored in Custom.id)
+/// @param ctor_id     Constructor tag (per Elm ADT, stored in Custom.ctor)
 /// @param field_count Number of pointer-sized fields
 /// @param scalar_bytes Additional bytes for unboxed scalar fields
 /// @return Pointer to the allocated object
-void* eco_alloc_custom(uint32_t ctor_tag, uint32_t field_count, uint32_t scalar_bytes);
+void* eco_alloc_custom(uint32_t type_id, uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes);
 
 /// Allocates a Cons cell.
 /// @return Pointer to the allocated Cons object
@@ -223,6 +224,28 @@ uint32_t eco_get_header_tag(void* obj);
 /// @param obj Pointer to the Custom object
 /// @return The constructor tag
 uint32_t eco_get_custom_ctor(void* obj);
+
+//===----------------------------------------------------------------------===//
+// Custom Constructor Name Tables
+//===----------------------------------------------------------------------===//
+
+/// Static description of a custom constructor for debug printing.
+struct CustomCtorInfo {
+    uint32_t type_id;   ///< Custom type id (matches Custom.id field).
+    uint32_t ctor_id;   ///< Constructor index within that type (matches Custom.ctor).
+    const char* name;   ///< Human-readable constructor name (e.g., "Just", "Nothing").
+};
+
+/// Registers a static table of custom constructors for debug printing.
+/// Typically called once per module with a pointer to a static array.
+/// @param table Pointer to an array of CustomCtorInfo structures
+/// @param count Number of entries in the table
+void eco_register_custom_ctors(const CustomCtorInfo* table, uint32_t count);
+
+/// Extracts the Custom.id (type id) field from a Custom object.
+/// @param obj Pointer to the Custom object
+/// @return The type id value
+uint32_t eco_get_custom_type_id(void* obj);
 
 //===----------------------------------------------------------------------===//
 // Arithmetic Helpers

@@ -371,6 +371,8 @@ type alias Context =
     , pendingLambdas : List PendingLambda
     , signatures : Dict Int FuncSignature -- SpecId -> signature for invariant checking
     , varMappings : Dict String ( String, MlirType ) -- Let-bound name -> (SSA variable name, MLIR type)
+    , typeIds : Dict String Int -- Type name -> unique type ID (for constructor name printing)
+    , nextTypeId : Int -- Next available type ID
     }
 
 
@@ -391,7 +393,31 @@ initContext mode registry signatures =
     , pendingLambdas = []
     , signatures = signatures
     , varMappings = Dict.empty
+    , typeIds = Dict.empty
+    , nextTypeId = 1 -- Start at 1, reserve 0 for "no type"
     }
+
+
+{-| Get or create a unique type ID for a type name.
+Used for custom types to enable constructor name printing.
+-}
+getOrCreateTypeId : String -> Context -> ( Int, Context )
+getOrCreateTypeId typeName ctx =
+    case Dict.get typeName ctx.typeIds of
+        Just id ->
+            ( id, ctx )
+
+        Nothing ->
+            let
+                newId =
+                    ctx.nextTypeId
+            in
+            ( newId
+            , { ctx
+                | typeIds = Dict.insert typeName newId ctx.typeIds
+                , nextTypeId = ctx.nextTypeId + 1
+              }
+            )
 
 
 freshVar : Context -> ( String, Context )
@@ -1166,8 +1192,18 @@ generateNode ctx specId node =
 
         Mono.MonoEnum tag monoType ->
             let
+                -- Look up the spec key to get the constructor name
+                maybeCtorName : Maybe String
+                maybeCtorName =
+                    case Mono.lookupSpecKey specId ctx.registry of
+                        Just ( Mono.Global _ ctorName, _, _ ) ->
+                            Just (Name.toElmString ctorName)
+
+                        Nothing ->
+                            Nothing
+
                 ( ctx1, op ) =
-                    generateEnum ctx funcName tag monoType
+                    generateEnum ctx funcName tag monoType maybeCtorName
             in
             ( op, ctx1 )
 
@@ -1380,20 +1416,47 @@ generateTailFunc ctx funcName params expr monoType =
 
 
 generateCtor : Context -> String -> Mono.CtorLayout -> Mono.MonoType -> ( Context, MlirOp )
-generateCtor ctx funcName ctorLayout _ =
+generateCtor ctx funcName ctorLayout monoType =
     let
         arity : Int
         arity =
             List.length ctorLayout.fields
+
+        -- Extract type name from MCustom for type ID registration
+        maybeTypeName : Maybe String
+        maybeTypeName =
+            case monoType of
+                Mono.MCustom _ typeName _ ->
+                    Just (Name.toElmString typeName)
+
+                _ ->
+                    Nothing
+
+        -- Get or create type ID for this custom type
+        ( typeId, ctxWithTypeId ) =
+            case maybeTypeName of
+                Just typeName ->
+                    let
+                        ( tid, newCtx ) =
+                            getOrCreateTypeId typeName ctx
+                    in
+                    ( Just tid, newCtx )
+
+                Nothing ->
+                    ( Nothing, ctx )
+
+        constructorName : Maybe String
+        constructorName =
+            Just (Name.toElmString ctorLayout.name)
     in
     if arity == 0 then
         -- Nullary constructor
         let
             ( resultVar, ctx1 ) =
-                freshVar ctx
+                freshVar ctxWithTypeId
 
             ( ctx2, constructOp ) =
-                ecoConstruct ctx1 resultVar ctorLayout.tag 0 0 []
+                ecoConstruct ctx1 resultVar ctorLayout.tag 0 0 [] typeId constructorName
 
             ( ctx3, returnOp ) =
                 ecoReturn ctx2 resultVar ecoValue
@@ -1430,10 +1493,10 @@ generateCtor ctx funcName ctorLayout _ =
                 List.map2 Tuple.pair argNames argTypes
 
             ( resultVar, ctx1 ) =
-                freshVar { ctx | nextVar = arity }
+                freshVar { ctxWithTypeId | nextVar = arity }
 
             ( ctx2, constructOp ) =
-                ecoConstruct ctx1 resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs
+                ecoConstruct ctx1 resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs typeId constructorName
 
             ( ctx3, returnOp ) =
                 ecoReturn ctx2 resultVar ecoValue
@@ -1449,14 +1512,37 @@ generateCtor ctx funcName ctorLayout _ =
 -- GENERATE ENUM
 
 
-generateEnum : Context -> String -> Int -> Mono.MonoType -> ( Context, MlirOp )
-generateEnum ctx funcName tag _ =
+generateEnum : Context -> String -> Int -> Mono.MonoType -> Maybe String -> ( Context, MlirOp )
+generateEnum ctx funcName tag monoType maybeCtorName =
     let
+        -- Extract type name from MCustom for type ID registration
+        maybeTypeName : Maybe String
+        maybeTypeName =
+            case monoType of
+                Mono.MCustom _ typeName _ ->
+                    Just (Name.toElmString typeName)
+
+                _ ->
+                    Nothing
+
+        -- Get or create type ID for this custom type
+        ( typeId, ctxWithTypeId ) =
+            case maybeTypeName of
+                Just typeName ->
+                    let
+                        ( tid, newCtx ) =
+                            getOrCreateTypeId typeName ctx
+                    in
+                    ( Just tid, newCtx )
+
+                Nothing ->
+                    ( Nothing, ctx )
+
         ( resultVar, ctx1 ) =
-            freshVar ctx
+            freshVar ctxWithTypeId
 
         ( ctx2, constructOp ) =
-            ecoConstruct ctx1 resultVar tag 0 0 []
+            ecoConstruct ctx1 resultVar tag 0 0 [] typeId maybeCtorName
 
         ( ctx3, returnOp ) =
             ecoReturn ctx2 resultVar ecoValue
@@ -1669,7 +1755,7 @@ generateCycle ctx funcName definitions monoType =
             List.map (\v -> ( v, ecoValue )) boxedVars
 
         ( ctx2, cycleOp ) =
-            ecoConstruct ctx1 resultVar 0 arity 0 defVarPairs
+            ecoConstruct ctx1 resultVar 0 arity 0 defVarPairs Nothing Nothing
 
         ( ctx3, returnOp ) =
             ecoReturn ctx2 resultVar ecoValue
@@ -1978,7 +2064,7 @@ generateList ctx items =
                     freshVar ctx
 
                 ( ctx2, constructOp ) =
-                    ecoConstruct ctx1 var 0 0 0 []
+                    ecoConstruct ctx1 var 0 0 0 [] Nothing Nothing
             in
             { ops = [ constructOp ]
             , resultVar = var
@@ -1992,7 +2078,7 @@ generateList ctx items =
                     freshVar ctx
 
                 ( ctx2, nilOp ) =
-                    ecoConstruct ctx1 nilVar 0 0 0 []
+                    ecoConstruct ctx1 nilVar 0 0 0 [] Nothing Nothing
 
                 ( consOps, finalVar, finalCtx ) =
                     List.foldr
@@ -2010,7 +2096,7 @@ generateList ctx items =
                                     freshVar ctx3
 
                                 ( ctx5, consOp ) =
-                                    ecoConstruct ctx4 consVar 1 2 0 [ ( boxedVar, ecoValue ), ( tailVar, ecoValue ) ]
+                                    ecoConstruct ctx4 consVar 1 2 0 [ ( boxedVar, ecoValue ), ( tailVar, ecoValue ) ] Nothing Nothing
                             in
                             ( accOps ++ result.ops ++ boxOps ++ [ consOp ], consVar, ctx5 )
                         )
@@ -2951,7 +3037,7 @@ generateTailCall ctx name args =
             freshVar ctx2
 
         ( ctx4, constructOp ) =
-            ecoConstruct ctx3 resultVar 0 0 0 []
+            ecoConstruct ctx3 resultVar 0 0 0 [] Nothing Nothing
     in
     { ops = argsOps ++ [ jumpOp, constructOp ]
     , resultVar = resultVar
@@ -3644,7 +3730,7 @@ generateSharedJoinpoints ctx jumps resultTy =
                     freshVar ctx1
 
                 ( ctx3, dummyConstructOp ) =
-                    ecoConstruct ctx2 dummyVar 0 0 0 []
+                    ecoConstruct ctx2 dummyVar 0 0 0 [] Nothing Nothing
 
                 ( ctx4, dummyRetOp ) =
                     ecoReturn ctx3 dummyVar resultTy
@@ -3726,7 +3812,7 @@ generateLeaf ctx _ choice resultTy =
                     freshVar ctx
 
                 ( ctx2, dummyOp ) =
-                    ecoConstruct ctx1 dummyVar 0 0 0 []
+                    ecoConstruct ctx1 dummyVar 0 0 0 [] Nothing Nothing
 
                 ( ctx3, retOp ) =
                     ecoReturn ctx2 dummyVar resultTy
@@ -4127,7 +4213,7 @@ generateRecordCreate ctx fields layout =
                 layout.fields
 
         ( ctx4, constructOp ) =
-            ecoConstruct ctx3 resultVar 0 layout.fieldCount layout.unboxedBitmap fieldVarPairs
+            ecoConstruct ctx3 resultVar 0 layout.fieldCount layout.unboxedBitmap fieldVarPairs Nothing Nothing
     in
     { ops = fieldsOps ++ boxOps ++ [ constructOp ]
     , resultVar = resultVar
@@ -4202,7 +4288,7 @@ generateRecordUpdate ctx record _ _ =
             freshVar recordResult.ctx
 
         ( ctx2, constructOp ) =
-            ecoConstruct ctx1 resultVar 0 1 0 [ ( recordResult.resultVar, ecoValue ) ]
+            ecoConstruct ctx1 resultVar 0 1 0 [ ( recordResult.resultVar, ecoValue ) ] Nothing Nothing
     in
     { ops = recordResult.ops ++ [ constructOp ]
     , resultVar = resultVar
@@ -4264,7 +4350,7 @@ generateTupleCreate ctx elements layout =
                 layout.elements
 
         ( ctx4, constructOp ) =
-            ecoConstruct ctx3 resultVar 0 layout.arity layout.unboxedBitmap elemVarPairs
+            ecoConstruct ctx3 resultVar 0 layout.arity layout.unboxedBitmap elemVarPairs Nothing Nothing
     in
     { ops = elemOps ++ boxOps ++ [ constructOp ]
     , resultVar = resultVar
@@ -4284,7 +4370,7 @@ generateUnit ctx =
             freshVar ctx
 
         ( ctx2, constructOp ) =
-            ecoConstruct ctx1 var 0 0 0 []
+            ecoConstruct ctx1 var 0 0 0 [] Nothing Nothing
     in
     { ops = [ constructOp ]
     , resultVar = var
@@ -4368,9 +4454,15 @@ mlirOp env =
 
 
 {-| eco.construct - create a heap object
+
+Parameters:
+
+  - typeId: Optional type ID for custom types (enables constructor name printing)
+  - constructorName: Optional constructor name (e.g., "Just", "Red")
+
 -}
-ecoConstruct : Context -> String -> Int -> Int -> Int -> List ( String, MlirType ) -> ( Context, MlirOp )
-ecoConstruct ctx resultVar tag size unboxedBitmap operands =
+ecoConstruct : Context -> String -> Int -> Int -> Int -> List ( String, MlirType ) -> Maybe Int -> Maybe String -> ( Context, MlirOp )
+ecoConstruct ctx resultVar tag size unboxedBitmap operands maybeTypeId maybeCtorName =
     let
         operandNames =
             List.map Tuple.first operands
@@ -4383,13 +4475,33 @@ ecoConstruct ctx resultVar tag size unboxedBitmap operands =
                 Dict.singleton "_operand_types"
                     (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) operands))
 
+        typeIdAttr =
+            case maybeTypeId of
+                Just tid ->
+                    Dict.singleton "type_id" (IntAttr Nothing tid)
+
+                Nothing ->
+                    Dict.empty
+
+        constructorAttr =
+            case maybeCtorName of
+                Just name ->
+                    Dict.singleton "constructor" (StringAttr name)
+
+                Nothing ->
+                    Dict.empty
+
         attrs =
             Dict.union operandTypesAttr
-                (Dict.fromList
-                    [ ( "tag", IntAttr Nothing tag )
-                    , ( "size", IntAttr Nothing size )
-                    , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
-                    ]
+                (Dict.union typeIdAttr
+                    (Dict.union constructorAttr
+                        (Dict.fromList
+                            [ ( "tag", IntAttr Nothing tag )
+                            , ( "size", IntAttr Nothing size )
+                            , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
+                            ]
+                        )
+                    )
                 )
     in
     mlirOp ctx "eco.construct"

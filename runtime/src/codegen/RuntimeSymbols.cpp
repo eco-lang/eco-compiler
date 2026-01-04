@@ -156,6 +156,16 @@ void registerRuntimeSymbols(ExecutionEngine &engine) {
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_get_custom_ctor),
                 llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_get_custom_type_id")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_get_custom_type_id),
+                llvm::JITSymbolFlags::Exported);
+
+        // Custom constructor name registration.
+        symbolMap[interner("eco_register_custom_ctors")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_register_custom_ctors),
+                llvm::JITSymbolFlags::Exported);
 
         // Arithmetic helpers.
         symbolMap[interner("eco_int_pow")] =

@@ -347,14 +347,19 @@ def Eco_ConstructOp : Eco_Op<"construct", [Pure]> {
     the number of field operands. The unboxed_bitmap indicates which fields
     are unboxed primitives (bit N is set if field N is unboxed).
 
+    For custom ADTs, type_id is a unique identifier for the type across the
+    program, and constructor is the constructor name for debug printing
+    (e.g., "Just", "Nothing", "Red").
+
     Example:
     ```mlir
-    // Construct a value with 4 fields
-    %val = eco.construct(%f0, %f1, %f2, %f3) {
-      tag = 0,
-      size = 4,
-      unboxed_bitmap = 0
-    } : (!eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
+    // Construct a Maybe.Just with one field
+    %val = eco.construct(%inner) {
+      tag = 1,
+      size = 1,
+      type_id = 42,
+      constructor = "Just"
+    } : (!eco.value) -> !eco.value
     ```
   }];
 
@@ -362,7 +367,9 @@ def Eco_ConstructOp : Eco_Op<"construct", [Pure]> {
     Variadic<Eco_AnyValue>:$fields,
     I64Attr:$tag,
     I64Attr:$size,
-    OptionalAttr<I64Attr>:$unboxed_bitmap
+    OptionalAttr<I64Attr>:$unboxed_bitmap,
+    OptionalAttr<I64Attr>:$type_id,
+    OptionalAttr<StrAttr>:$constructor
   );
   let results = (outs Eco_Value:$result);
 

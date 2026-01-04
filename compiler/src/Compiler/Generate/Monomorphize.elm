@@ -319,9 +319,15 @@ processWorklist state =
 
                     Just toptNode ->
                         -- Specialize this node to concrete types.
+                        -- Pass the global's name for constructor name population.
                         let
+                            ctorName =
+                                case global of
+                                    Mono.Global _ name ->
+                                        name
+
                             ( monoNode, stateAfter ) =
-                                specializeNode toptNode monoType state2
+                                specializeNode ctorName toptNode monoType state2
 
                             newState =
                                 { stateAfter
@@ -338,9 +344,10 @@ processWorklist state =
 
 
 {-| Specialize a typed optimized node to a monomorphized node at the requested concrete type.
+The ctorName parameter is used to populate CtorLayout.name for constructor nodes.
 -}
-specializeNode : TOpt.Node -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
-specializeNode node requestedMonoType state =
+specializeNode : Name.Name -> TOpt.Node -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
+specializeNode ctorName node requestedMonoType state =
     case node of
         TOpt.Define expr _ canType ->
             let
@@ -399,7 +406,7 @@ specializeNode node requestedMonoType state =
                     Index.toMachine index
 
                 layout =
-                    buildCtorLayoutFromArity tag arity ctorMonoType
+                    buildCtorLayoutFromArity ctorName tag arity ctorMonoType
 
                 ctorResultType =
                     extractCtorResultType arity ctorMonoType
@@ -429,7 +436,13 @@ specializeNode node requestedMonoType state =
                     ( Mono.MonoExtern requestedMonoType, state )
 
                 Just linkedNode ->
-                    specializeNode linkedNode requestedMonoType state
+                    let
+                        linkedName =
+                            case linkedGlobal of
+                                TOpt.Global _ name ->
+                                    name
+                    in
+                    specializeNode linkedName linkedNode requestedMonoType state
 
         TOpt.Cycle names values functions _ ->
             specializeCycle names values functions requestedMonoType state
@@ -2207,10 +2220,11 @@ buildFuncType args returnType =
         args
 
 
-{-| Build a constructor layout from tag, arity, and monomorphic type information.
+{-| Build a constructor layout from name, tag, arity, and monomorphic type information.
+The name parameter is used to populate CtorLayout.name for debug printing.
 -}
-buildCtorLayoutFromArity : Int -> Int -> Mono.MonoType -> Mono.CtorLayout
-buildCtorLayoutFromArity tag arity ctorMonoType =
+buildCtorLayoutFromArity : Name.Name -> Int -> Int -> Mono.MonoType -> Mono.CtorLayout
+buildCtorLayoutFromArity ctorName tag arity ctorMonoType =
     let
         fieldTypes =
             extractFieldTypes arity ctorMonoType
@@ -2226,10 +2240,12 @@ buildCtorLayoutFromArity tag arity ctorMonoType =
                 )
                 fieldTypes
 
+        -- Clamp to 32 bits: the runtime Custom.unboxed field is only 32 bits wide.
+        -- Fields at index >= 32 are treated as boxed even if they could be unboxed.
         unboxedBitmap =
             List.foldl
                 (\field acc ->
-                    if field.isUnboxed then
+                    if field.isUnboxed && field.index < 32 then
                         acc + (2 ^ field.index)
 
                     else
@@ -2241,7 +2257,7 @@ buildCtorLayoutFromArity tag arity ctorMonoType =
         unboxedCount =
             List.length (List.filter .isUnboxed fields)
     in
-    { name = ""
+    { name = ctorName
     , tag = tag
     , fields = fields
     , unboxedCount = unboxedCount

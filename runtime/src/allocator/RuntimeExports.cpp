@@ -15,8 +15,53 @@
 #include <cstring>
 #include <sstream>
 #include <string>
+#include <unordered_map>
+#include <mutex>
 
 using namespace Elm;
+
+//===----------------------------------------------------------------------===//
+// Custom Constructor Name Registry
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+/// Key for looking up constructor names: (type_id, ctor_id) pair.
+struct CtorKey {
+    uint32_t type_id;
+    uint32_t ctor_id;
+
+    bool operator==(const CtorKey& other) const {
+        return type_id == other.type_id && ctor_id == other.ctor_id;
+    }
+};
+
+struct CtorKeyHash {
+    std::size_t operator()(const CtorKey& k) const {
+        // Combine type_id and ctor_id into a single hash
+        return std::hash<uint64_t>()(
+            (static_cast<uint64_t>(k.type_id) << 32) | k.ctor_id
+        );
+    }
+};
+
+/// Global map from (type_id, ctor_id) -> constructor name.
+std::unordered_map<CtorKey, std::string, CtorKeyHash> g_customCtorNames;
+
+/// Mutex protecting the constructor name registry.
+std::mutex g_ctorNamesMutex;
+
+/// Look up constructor name. Returns nullptr if not found.
+const char* lookupCtorName(uint32_t type_id, uint32_t ctor_id) {
+    std::lock_guard<std::mutex> lock(g_ctorNamesMutex);
+    auto it = g_customCtorNames.find({type_id, ctor_id});
+    if (it != g_customCtorNames.end()) {
+        return it->second.c_str();
+    }
+    return nullptr;
+}
+
+} // namespace
 
 //===----------------------------------------------------------------------===//
 // Thread-Local Output Stream for Capture Support
@@ -73,8 +118,8 @@ extern "C" void* eco_get_output_stream() {
 // Allocation Functions
 //===----------------------------------------------------------------------===//
 
-extern "C" void* eco_alloc_custom(uint32_t ctor_tag, uint32_t field_count, uint32_t scalar_bytes) {
-    // Calculate size: Header + ctor/unboxed (8 bytes) + fields
+extern "C" void* eco_alloc_custom(uint32_t type_id, uint32_t ctor_tag, uint32_t field_count, uint32_t scalar_bytes) {
+    // Calculate size: Header + ctor/id/unboxed (8 bytes) + fields
     size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes;
 
     void* obj = Allocator::instance().allocate(size, Tag_Custom);
@@ -82,6 +127,7 @@ extern "C" void* eco_alloc_custom(uint32_t ctor_tag, uint32_t field_count, uint3
 
     Custom* custom = static_cast<Custom*>(obj);
     custom->ctor = ctor_tag;
+    custom->id = type_id;
     custom->unboxed = 0;  // Will be set by caller if needed
 
     return obj;
@@ -727,10 +773,17 @@ static void print_tuple3(Tuple3* tuple, int depth) {
 // Print a custom type constructor
 static void print_custom(Custom* custom, int depth) {
     uint32_t ctor = custom->ctor;
+    uint32_t type_id = custom->id;
     uint32_t size = custom->header.size;
 
-    // Print constructor tag
-    output_format("Ctor%u", ctor);
+    // Try to look up the constructor name
+    const char* name = lookupCtorName(type_id, ctor);
+    if (name) {
+        output_text(name);
+    } else {
+        // Fall back to generic Ctor<n> format
+        output_format("Ctor%u", ctor);
+    }
 
     // Print fields if any
     if (size > 0) {
@@ -1102,6 +1155,22 @@ extern "C" uint32_t eco_get_header_tag(void* obj) {
 extern "C" uint32_t eco_get_custom_ctor(void* obj) {
     Custom* custom = static_cast<Custom*>(obj);
     return custom->ctor;
+}
+
+//===----------------------------------------------------------------------===//
+// Custom Constructor Name Tables
+//===----------------------------------------------------------------------===//
+
+extern "C" void eco_register_custom_ctors(const CustomCtorInfo* table, uint32_t count) {
+    std::lock_guard<std::mutex> lock(g_ctorNamesMutex);
+    for (uint32_t i = 0; i < count; i++) {
+        g_customCtorNames[{table[i].type_id, table[i].ctor_id}] = table[i].name;
+    }
+}
+
+extern "C" uint32_t eco_get_custom_type_id(void* obj) {
+    Custom* custom = static_cast<Custom*>(obj);
+    return custom->id;
 }
 
 //===----------------------------------------------------------------------===//
