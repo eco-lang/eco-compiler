@@ -1293,6 +1293,64 @@ generateStubValue ctx resultVar monoType mlirType =
                 |> opBuilder.build
 
 
+{-| Create a dummy value of the given MLIR type.
+Used for case expressions where we need a placeholder result with the correct type
+for the return after the eco.case (which will be replaced by the lowering pass).
+-}
+createDummyValue : Context -> MlirType -> ( List MlirOp, String, Context )
+createDummyValue ctx mlirType =
+    let
+        ( resultVar, ctx1 ) =
+            freshVar ctx
+    in
+    case mlirType of
+        I64 ->
+            let
+                ( ctx2, op ) =
+                    arithConstantInt ctx1 resultVar 0
+            in
+            ( [ op ], resultVar, ctx2 )
+
+        F64 ->
+            let
+                ( ctx2, op ) =
+                    arithConstantFloat ctx1 resultVar 0.0
+            in
+            ( [ op ], resultVar, ctx2 )
+
+        I1 ->
+            let
+                ( ctx2, op ) =
+                    arithConstantBool ctx1 resultVar False
+            in
+            ( [ op ], resultVar, ctx2 )
+
+        I16 ->
+            let
+                ( ctx2, op ) =
+                    arithConstantChar ctx1 resultVar 0
+            in
+            ( [ op ], resultVar, ctx2 )
+
+        _ ->
+            -- For ecoValue and other types, return a boxed Unit value
+            let
+                ( ctx2, op ) =
+                    mlirOp ctx1 "eco.construct"
+                        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+                        |> opBuilder.withAttrs
+                            (Dict.fromList
+                                [ ( "_operand_types", ArrayAttr Nothing [] )
+                                , ( "size", IntAttr Nothing 0 )
+                                , ( "tag", IntAttr Nothing 0 )
+                                , ( "unboxed_bitmap", IntAttr Nothing 0 )
+                                ]
+                            )
+                        |> opBuilder.build
+            in
+            ( [ op ], resultVar, ctx2 )
+
+
 
 -- GENERATE CYCLE
 
@@ -1387,8 +1445,8 @@ generateExpr ctx expr =
         Mono.MonoLet def body _ ->
             generateLet ctx def body
 
-        Mono.MonoDestruct destructor body _ ->
-            generateDestruct ctx destructor body
+        Mono.MonoDestruct destructor body destType ->
+            generateDestruct ctx destructor body destType
 
         Mono.MonoCase scrutinee1 scrutinee2 decider jumps resultType ->
             generateCase ctx scrutinee1 scrutinee2 decider jumps resultType
@@ -2454,11 +2512,25 @@ generateLet ctx def body =
 -- DESTRUCT GENERATION (kept as in original)
 
 
-generateDestruct : Context -> Mono.MonoDestructor -> Mono.MonoExpr -> ExprResult
-generateDestruct ctx (Mono.MonoDestructor name path monoType) body =
+generateDestruct : Context -> Mono.MonoDestructor -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
+generateDestruct ctx (Mono.MonoDestructor name path monoType) body destType =
     let
-        targetType =
+        -- The destructor's monoType is often a placeholder (TVar "?" -> MVar CEcoValue).
+        -- However, the destType (from MonoDestruct) is the correct type of the expression.
+        -- For simple cases where the body is just the bound variable, destType = variable type.
+        destructorMlirType =
             monoTypeToMlir monoType
+
+        destMlirType =
+            monoTypeToMlir destType
+
+        -- Use dest type if destructor type is placeholder ecoValue but dest type is primitive
+        targetType =
+            if isEcoValueType destructorMlirType && not (isEcoValueType destMlirType) then
+                destMlirType
+
+            else
+                destructorMlirType
 
         ( pathOps, pathVar, ctx1 ) =
             generateMonoPath ctx path targetType
@@ -2495,10 +2567,18 @@ generateMonoPath ctx path targetType =
 
                 ( ctx3, projectOp ) =
                     ecoProject ctx2 resultVar index ecoValue subVar ecoValue
+
+                -- Unbox if targetType is a primitive
+                ( unboxOps, finalVar, ctx4 ) =
+                    if isEcoValueType targetType then
+                        ( [], resultVar, ctx3 )
+
+                    else
+                        unboxToType ctx3 resultVar targetType
             in
-            ( subOps ++ [ projectOp ]
-            , resultVar
-            , ctx3
+            ( subOps ++ [ projectOp ] ++ unboxOps
+            , finalVar
+            , ctx4
             )
 
         Mono.MonoField index subPath ->
@@ -2512,10 +2592,18 @@ generateMonoPath ctx path targetType =
 
                 ( ctx3, projectOp ) =
                     ecoProject ctx2 resultVar index ecoValue subVar ecoValue
+
+                -- Unbox if targetType is a primitive
+                ( unboxOps, finalVar, ctx4 ) =
+                    if isEcoValueType targetType then
+                        ( [], resultVar, ctx3 )
+
+                    else
+                        unboxToType ctx3 resultVar targetType
             in
-            ( subOps ++ [ projectOp ]
-            , resultVar
-            , ctx3
+            ( subOps ++ [ projectOp ] ++ unboxOps
+            , finalVar
+            , ctx4
             )
 
         Mono.MonoUnbox subPath ->
@@ -2564,8 +2652,16 @@ generateDTPath ctx root dtPath targetType =
 
                 ( ctx3, projectOp ) =
                     ecoProject ctx2 resultVar (Index.toMachine index) ecoValue subVar ecoValue
+
+                -- Unbox if targetType is a primitive
+                ( unboxOps, finalVar, ctx4 ) =
+                    if isEcoValueType targetType then
+                        ( [], resultVar, ctx3 )
+
+                    else
+                        unboxToType ctx3 resultVar targetType
             in
-            ( subOps ++ [ projectOp ], resultVar, ctx3 )
+            ( subOps ++ [ projectOp ] ++ unboxOps, finalVar, ctx4 )
 
         DT.Unbox subPath ->
             -- Unbox the value to the target primitive type
@@ -2879,11 +2975,33 @@ generateSharedJoinpoints ctx jumps resultTy =
                 branchRes =
                     generateExpr accCtx branchExpr
 
+                -- Get actual type of the branch expression
+                actualTy =
+                    monoTypeToMlir (Mono.typeOf branchExpr)
+
+                -- Coerce to resultTy if needed (box/unbox)
+                ( coerceOps, finalVar, coerceCtx ) =
+                    if actualTy == resultTy then
+                        -- Types match, no coercion needed
+                        ( [], branchRes.resultVar, branchRes.ctx )
+
+                    else if isEcoValueType resultTy && not (isEcoValueType actualTy) then
+                        -- Result expects boxed, we have unboxed -> box it
+                        boxIfNeeded branchRes.ctx branchRes.resultVar (Mono.typeOf branchExpr)
+
+                    else if not (isEcoValueType resultTy) && isEcoValueType actualTy then
+                        -- Result expects unboxed, we have boxed -> unbox it
+                        unboxToType branchRes.ctx branchRes.resultVar resultTy
+
+                    else
+                        -- Types don't match but no coercion solution - use as-is
+                        ( [], branchRes.resultVar, branchRes.ctx )
+
                 ( ctx1, retOp ) =
-                    ecoReturn branchRes.ctx branchRes.resultVar resultTy
+                    ecoReturn coerceCtx finalVar resultTy
 
                 jpRegion =
-                    mkRegion [] branchRes.ops retOp
+                    mkRegion [] (branchRes.ops ++ coerceOps) retOp
 
                 -- Continuation: a dummy region with a return (joinpoint semantics require it)
                 ( dummyVar, ctx2 ) =
@@ -2933,13 +3051,35 @@ generateLeaf ctx _ choice resultTy =
                 branchRes =
                     generateExpr ctx branchExpr
 
-                ( ctx1, retOp ) =
-                    ecoReturn branchRes.ctx branchRes.resultVar resultTy
+                -- Get actual type of the branch expression
+                actualTy =
+                    monoTypeToMlir (Mono.typeOf branchExpr)
+
+                -- Coerce to resultTy if needed (box/unbox)
+                ( coerceOps, finalVar, ctx1 ) =
+                    if actualTy == resultTy then
+                        -- Types match, no coercion needed
+                        ( [], branchRes.resultVar, branchRes.ctx )
+
+                    else if isEcoValueType resultTy && not (isEcoValueType actualTy) then
+                        -- Result expects boxed, we have unboxed -> box it
+                        boxIfNeeded branchRes.ctx branchRes.resultVar (Mono.typeOf branchExpr)
+
+                    else if not (isEcoValueType resultTy) && isEcoValueType actualTy then
+                        -- Result expects unboxed, we have boxed -> unbox it
+                        unboxToType branchRes.ctx branchRes.resultVar resultTy
+
+                    else
+                        -- Types don't match but no coercion solution - use as-is
+                        ( [], branchRes.resultVar, branchRes.ctx )
+
+                ( ctx2, retOp ) =
+                    ecoReturn ctx1 finalVar resultTy
             in
             -- The return op MUST be last so mkRegionFromOps picks it as terminator
-            { ops = branchRes.ops ++ [ retOp ]
-            , resultVar = branchRes.resultVar
-            , ctx = ctx1
+            { ops = branchRes.ops ++ coerceOps ++ [ retOp ]
+            , resultVar = finalVar
+            , ctx = ctx2
             }
 
         Mono.Jump index ->
@@ -3118,10 +3258,17 @@ generateCase ctx _ root decider jumps resultMonoType =
         -- Generate decision tree control flow
         decisionResult =
             generateDecider ctx1 root decider resultMlirType
+
+        -- Create a dummy result value of the correct type.
+        -- The eco.case lowering pass expects an eco.return after the case,
+        -- which it replaces with the scf.if results. The value doesn't matter
+        -- but the type must match for MLIR verification.
+        ( dummyOps, dummyVar, ctx2 ) =
+            createDummyValue decisionResult.ctx resultMlirType
     in
-    { ops = joinpointOps ++ decisionResult.ops
-    , resultVar = decisionResult.resultVar
-    , ctx = decisionResult.ctx
+    { ops = joinpointOps ++ decisionResult.ops ++ dummyOps
+    , resultVar = dummyVar
+    , ctx = ctx2
     }
 
 
