@@ -633,6 +633,76 @@ intrinsicResultMlirType intrinsic =
             ecoFloat
 
 
+{-| Get the expected operand types for an intrinsic operation.
+-}
+intrinsicOperandTypes : Intrinsic -> List MlirType
+intrinsicOperandTypes intrinsic =
+    case intrinsic of
+        UnaryInt _ ->
+            [ I64 ]
+
+        BinaryInt _ ->
+            [ I64, I64 ]
+
+        UnaryFloat _ ->
+            [ F64 ]
+
+        BinaryFloat _ ->
+            [ F64, F64 ]
+
+        UnaryBool _ ->
+            [ I1 ]
+
+        BinaryBool _ ->
+            [ I1, I1 ]
+
+        IntToFloat ->
+            [ I64 ]
+
+        FloatToInt _ ->
+            [ F64 ]
+
+        IntComparison _ ->
+            [ I64, I64 ]
+
+        FloatComparison _ ->
+            [ F64, F64 ]
+
+        FloatClassify _ ->
+            [ F64 ]
+
+        ConstantFloat _ ->
+            []
+
+
+{-| Unbox arguments to match the expected operand types for an intrinsic.
+If an argument has !eco.value type but the intrinsic expects a primitive type,
+an unbox operation is inserted.
+-}
+unboxArgsForIntrinsic : Context -> List ( String, MlirType ) -> Intrinsic -> ( List MlirOp, List String, Context )
+unboxArgsForIntrinsic ctx argsWithTypes intrinsic =
+    let
+        expectedTypes =
+            intrinsicOperandTypes intrinsic
+    in
+    List.foldl
+        (\( ( var, actualType ), expectedType ) ( opsAcc, varsAcc, ctxAcc ) ->
+            if isEcoValueType actualType && not (isEcoValueType expectedType) then
+                -- Need to unbox: actual is !eco.value, expected is primitive
+                let
+                    ( unboxOps, unboxedVar, newCtx ) =
+                        unboxToType ctxAcc var expectedType
+                in
+                ( opsAcc ++ unboxOps, varsAcc ++ [ unboxedVar ], newCtx )
+
+            else
+                -- No unboxing needed
+                ( opsAcc, varsAcc ++ [ var ], ctxAcc )
+        )
+        ( [], [], ctx )
+        (List.map2 Tuple.pair argsWithTypes expectedTypes)
+
+
 kernelIntrinsic : Name.Name -> Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
 kernelIntrinsic home name argTypes resultType =
     case home of
@@ -1588,22 +1658,25 @@ generateExtern ctx funcName monoType =
 {-| Generate a stub value of the given type for extern function bodies.
 -}
 generateStubValue : Context -> String -> Mono.MonoType -> MlirType -> ( Context, MlirOp )
-generateStubValue ctx resultVar monoType mlirType =
-    case monoType of
-        Mono.MInt ->
+generateStubValue ctx resultVar _ mlirType =
+    -- Use mlirType instead of monoType because mlirType represents the actual
+    -- concrete type after monomorphization, which may be a primitive even when
+    -- the monoType is a type variable.
+    case mlirType of
+        I64 ->
             arithConstantInt ctx resultVar 0
 
-        Mono.MFloat ->
+        F64 ->
             arithConstantFloat ctx resultVar 0.0
 
-        Mono.MBool ->
+        I1 ->
             arithConstantBool ctx resultVar False
 
-        Mono.MChar ->
+        I16 ->
             arithConstantChar ctx resultVar 0
 
         _ ->
-            -- For all other types (String, List, Record, Custom, Function, etc.),
+            -- For all other types (EcoValue, etc.),
             -- return a boxed Unit value
             mlirOp ctx "eco.construct"
                 |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
@@ -1685,7 +1758,7 @@ generateCycle ctx funcName definitions monoType =
     -- Generate mutually recursive definitions
     -- For now, generate a thunk that creates a record of all the cycle definitions
     let
-        -- Generate expressions and collect results with their types
+        -- Generate expressions and collect results with their ACTUAL SSA types
         ( defOps, defVarsWithTypes, finalCtx ) =
             List.foldl
                 (\( _, expr ) ( accOps, accVars, accCtx ) ->
@@ -1693,18 +1766,18 @@ generateCycle ctx funcName definitions monoType =
                         result : ExprResult
                         result =
                             generateExpr accCtx expr
-
-                        exprType =
-                            Mono.typeOf expr
                     in
-                    ( accOps ++ result.ops, accVars ++ [ ( result.resultVar, exprType ) ], result.ctx )
+                    ( accOps ++ result.ops
+                    , accVars ++ [ ( result.resultVar, result.resultType ) ]
+                    , result.ctx
+                    )
                 )
                 ( [], [], ctx )
                 definitions
 
-        -- Box any primitive values before storing in the cycle
+        -- Box any primitive values before storing in the cycle using actual SSA types
         ( boxOps, boxedVars, ctxAfterBox ) =
-            boxArgsIfNeeded finalCtx defVarsWithTypes
+            boxArgsWithMlirTypes finalCtx defVarsWithTypes
 
         ( resultVar, ctx1 ) =
             freshVar ctxAfterBox
@@ -2080,7 +2153,8 @@ generateList ctx items =
 generateClosure : Context -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateClosure ctx closureInfo body monoType =
     let
-        ( captureOps, captureVars, ctx1 ) =
+        -- Generate expressions and track ACTUAL SSA types, not Mono types
+        ( captureOps, captureVarsWithTypes, ctx1 ) =
             List.foldl
                 (\( _, expr, _ ) ( accOps, accVars, accCtx ) ->
                     let
@@ -2088,20 +2162,21 @@ generateClosure ctx closureInfo body monoType =
                         result =
                             generateExpr accCtx expr
                     in
-                    ( accOps ++ result.ops, accVars ++ [ result.resultVar ], result.ctx )
+                    ( accOps ++ result.ops
+                    , accVars ++ [ ( result.resultVar, result.resultType ) ]
+                    , result.ctx
+                    )
                 )
                 ( [], [], ctx )
                 closureInfo.captures
 
-        captureVarsWithTypes : List ( String, Mono.MonoType )
-        captureVarsWithTypes =
-            List.map2
-                (\( _, expr, _ ) var -> ( var, Mono.typeOf expr ))
-                closureInfo.captures
-                captureVars
+        captureVars : List String
+        captureVars =
+            List.map Tuple.first captureVarsWithTypes
 
+        -- Box using actual SSA types, not Mono types
         ( boxOps, boxedCaptureVars, ctx1b ) =
-            boxArgsIfNeeded ctx1 captureVarsWithTypes
+            boxArgsWithMlirTypes ctx1 captureVarsWithTypes
 
         ( resultVar, ctx2 ) =
             freshVar ctx1b
@@ -2415,6 +2490,58 @@ boxToMatchSignature ctx args argVars expectedTypes =
     List.foldl helper ( [], [], ctx ) zipped
 
 
+
+{-| Box or unbox arguments (based on ACTUAL SSA types) to match the
+function's expected Mono types.
+-}
+boxToMatchSignatureTyped :
+    Context
+    -> List ( String, MlirType )
+    -> List Mono.MonoType
+    -> ( List MlirOp, List ( String, MlirType ), Context )
+boxToMatchSignatureTyped ctx actualArgs expectedTypes =
+    let
+        helper :
+            ( ( String, MlirType ), Mono.MonoType )
+            -> ( List MlirOp, List ( String, MlirType ), Context )
+            -> ( List MlirOp, List ( String, MlirType ), Context )
+        helper ( ( var, actualTy ), expectedTy ) ( opsAcc, pairsAcc, ctxAcc ) =
+            let
+                expectedMlirTy =
+                    monoTypeToMlir expectedTy
+            in
+            if expectedMlirTy == actualTy then
+                ( opsAcc, pairsAcc ++ [ ( var, actualTy ) ], ctxAcc )
+
+            else if isEcoValueType expectedMlirTy && not (isEcoValueType actualTy) then
+                -- Function expects boxed, we have primitive -> box using actual SSA type
+                let
+                    ( boxOps, boxedVar, ctx1 ) =
+                        boxToEcoValue ctxAcc var actualTy
+                in
+                ( opsAcc ++ boxOps
+                , pairsAcc ++ [ ( boxedVar, ecoValue ) ]
+                , ctx1
+                )
+
+            else if not (isEcoValueType expectedMlirTy) && isEcoValueType actualTy then
+                -- Function expects primitive, we have boxed -> unbox to expected primitive type
+                let
+                    ( unboxOps, unboxedVar, ctx1 ) =
+                        unboxToType ctxAcc var expectedMlirTy
+                in
+                ( opsAcc ++ unboxOps
+                , pairsAcc ++ [ ( unboxedVar, expectedMlirTy ) ]
+                , ctx1
+                )
+
+            else
+                -- No boxing solution (e.g. i64 vs f64) - use actual type for now
+                ( opsAcc, pairsAcc ++ [ ( var, actualTy ) ], ctxAcc )
+    in
+    List.foldl helper ( [], [], ctx ) (List.map2 Tuple.pair actualArgs expectedTypes)
+
+
 {-| Unbox a boxed !eco.value to a specific primitive type.
 -}
 unboxToType : Context -> String -> MlirType -> ( List MlirOp, String, Context )
@@ -2474,8 +2601,13 @@ generateCall ctx func args resultType =
     case func of
         Mono.MonoVarGlobal _ specId funcType ->
             let
-                ( argOps, argVars, ctx1 ) =
-                    generateExprList ctx args
+                -- Use generateExprListTyped to get actual SSA types
+                ( argOps, argsWithTypes, ctx1 ) =
+                    generateExprListTyped ctx args
+
+                argVars : List String
+                argVars =
+                    List.map Tuple.first argsWithTypes
 
                 argTypes : List Mono.MonoType
                 argTypes =
@@ -2526,8 +2658,9 @@ generateCall ctx func args resultType =
                                     sig =
                                         kernelFuncSignatureFromType funcType
 
+                                    -- Use boxToMatchSignatureTyped with actual SSA types
                                     ( boxOps, argVarPairs, ctx1b ) =
-                                        boxToMatchSignature ctx1 args argVars sig.paramTypes
+                                        boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
 
                                     ( resVar, ctx2 ) =
                                         freshVar ctx1b
@@ -2562,16 +2695,12 @@ generateCall ctx func args resultType =
                                     ( boxOps, argVarPairs, ctx1b ) =
                                         case maybeSig of
                                             Just sig ->
-                                                boxToMatchSignature ctx1 args argVars sig.paramTypes
+                                                -- Use boxToMatchSignatureTyped with actual SSA types
+                                                boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
 
                                             Nothing ->
-                                                ( []
-                                                , List.map2
-                                                    (\expr var -> ( var, monoTypeToMlir (Mono.typeOf expr) ))
-                                                    args
-                                                    argVars
-                                                , ctx1
-                                                )
+                                                -- No signature: use actual SSA types
+                                                ( [], argsWithTypes, ctx1 )
 
                                     ( resultVar, ctx2 ) =
                                         freshVar ctx1b
@@ -2600,23 +2729,15 @@ generateCall ctx func args resultType =
                         maybeSig =
                             Dict.get specId ctx.signatures
 
-                        -- Compute argument pairs based on whether we have a signature
+                        -- Use boxToMatchSignatureTyped with actual SSA types
                         ( boxOps, argVarPairs, ctx1b ) =
                             case maybeSig of
                                 Just sig ->
-                                    -- Use the function's parameter types
-                                    -- Box if function expects ecoValue but we have primitive
-                                    boxToMatchSignature ctx1 args argVars sig.paramTypes
+                                    boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
 
                                 Nothing ->
-                                    -- No signature available, use expression types (original behavior)
-                                    ( []
-                                    , List.map2
-                                        (\expr var -> ( var, monoTypeToMlir (Mono.typeOf expr) ))
-                                        args
-                                        argVars
-                                    , ctx1
-                                    )
+                                    -- No signature: use actual SSA types
+                                    ( [], argsWithTypes, ctx1 )
 
                         ( resultVar, ctx2 ) =
                             freshVar ctx1b
@@ -2635,18 +2756,39 @@ generateCall ctx func args resultType =
 
         Mono.MonoVarKernel _ home name funcType ->
             let
-                ( argOps, argVars, ctx1 ) =
-                    generateExprList ctx args
+                -- Use generateExprListTyped to get actual SSA types
+                ( argOps, argsWithTypes, ctx1 ) =
+                    generateExprListTyped ctx args
+
+                argVars : List String
+                argVars =
+                    List.map Tuple.first argsWithTypes
 
                 argTypes : List Mono.MonoType
                 argTypes =
                     List.map Mono.typeOf args
             in
-            case ( home, name, argVars ) of
-                ( "Basics", "logBase", [ baseVar, xVar ] ) ->
+            case ( home, name, argsWithTypes ) of
+                ( "Basics", "logBase", [ ( baseVar, baseType ), ( xVar, xType ) ] ) ->
                     let
+                        -- Unbox baseVar if needed
+                        ( unboxBaseOps, unboxedBaseVar, ctx1a ) =
+                            if isEcoValueType baseType then
+                                unboxToType ctx1 baseVar F64
+
+                            else
+                                ( [], baseVar, ctx1 )
+
+                        -- Unbox xVar if needed
+                        ( unboxXOps, unboxedXVar, ctx1b ) =
+                            if isEcoValueType xType then
+                                unboxToType ctx1a xVar F64
+
+                            else
+                                ( [], xVar, ctx1a )
+
                         ( logXVar, ctx2 ) =
-                            freshVar ctx1
+                            freshVar ctx1b
 
                         ( logBaseVar, ctx3 ) =
                             freshVar ctx2
@@ -2655,15 +2797,15 @@ generateCall ctx func args resultType =
                             freshVar ctx3
 
                         ( ctx5, logXOp ) =
-                            ecoUnaryOp ctx2 "eco.float.log" logXVar ( xVar, F64 ) F64
+                            ecoUnaryOp ctx2 "eco.float.log" logXVar ( unboxedXVar, F64 ) F64
 
                         ( ctx6, logBaseOp ) =
-                            ecoUnaryOp ctx5 "eco.float.log" logBaseVar ( baseVar, F64 ) F64
+                            ecoUnaryOp ctx5 "eco.float.log" logBaseVar ( unboxedBaseVar, F64 ) F64
 
                         ( ctx7, divOp ) =
                             ecoBinaryOp ctx6 "eco.float.div" resVar ( logXVar, F64 ) ( logBaseVar, F64 ) F64
                     in
-                    { ops = argOps ++ [ logXOp, logBaseOp, divOp ]
+                    { ops = argOps ++ unboxBaseOps ++ unboxXOps ++ [ logXOp, logBaseOp, divOp ]
                     , resultVar = resVar
                     , resultType = ecoFloat
                     , ctx = ctx7
@@ -2673,16 +2815,20 @@ generateCall ctx func args resultType =
                     case kernelIntrinsic home name argTypes resultType of
                         Just intrinsic ->
                             let
+                                -- Unbox arguments if needed (e.g., !eco.value -> i64)
+                                ( unboxOps, unboxedArgVars, ctx1b ) =
+                                    unboxArgsForIntrinsic ctx1 argsWithTypes intrinsic
+
                                 ( resVar, ctx2 ) =
-                                    freshVar ctx1
+                                    freshVar ctx1b
 
                                 ( ctx3, intrinsicOp ) =
-                                    generateIntrinsicOp ctx2 intrinsic resVar argVars
+                                    generateIntrinsicOp ctx2 intrinsic resVar unboxedArgVars
 
                                 intrinsicResType =
                                     intrinsicResultMlirType intrinsic
                             in
-                            { ops = argOps ++ [ intrinsicOp ]
+                            { ops = argOps ++ unboxOps ++ [ intrinsicOp ]
                             , resultVar = resVar
                             , resultType = intrinsicResType
                             , ctx = ctx3
@@ -2693,15 +2839,9 @@ generateCall ctx func args resultType =
                             -- For polymorphic kernels, all arguments must be boxed as !eco.value
                             if isPolymorphicKernel home name then
                                 let
-                                    -- Use generateExprListTyped to get the ACTUAL SSA types
-                                    -- This is critical because Mono.typeOf can be wrong (e.g., MUnit instead of MInt)
-                                    -- which would cause boxArgsIfNeeded to skip boxing primitive values
-                                    ( argOpsTyped, argsWithSsaTypes, ctx1Typed ) =
-                                        generateExprListTyped ctx args
-
-                                    -- Box using the actual SSA types, not the potentially incorrect Mono types
+                                    -- Box using the actual SSA types
                                     ( boxOps, boxedVars, ctx1b ) =
-                                        boxArgsWithMlirTypes ctx1Typed argsWithSsaTypes
+                                        boxArgsWithMlirTypes ctx1 argsWithTypes
 
                                     ( resVar, ctx2 ) =
                                         freshVar ctx1b
@@ -2713,7 +2853,7 @@ generateCall ctx func args resultType =
                                     ( ctx3, callOp ) =
                                         ecoCallNamed ctx2 resVar kernelName (List.map (\v -> ( v, ecoValue )) boxedVars) ecoValue
                                 in
-                                { ops = argOpsTyped ++ boxOps ++ [ callOp ]
+                                { ops = argOps ++ boxOps ++ [ callOp ]
                                 , resultVar = resVar
                                 , resultType = ecoValue
                                 , ctx = ctx3
@@ -2721,8 +2861,6 @@ generateCall ctx func args resultType =
 
                             else
                                 -- Generic kernel ABI path
-                                -- First check if we have a known actual kernel ABI (for when
-                                -- the Elm type is polymorphic but the C kernel expects concrete types)
                                 let
                                     elmSig : FuncSignature
                                     elmSig =
@@ -2732,17 +2870,14 @@ generateCall ctx func args resultType =
                                     sig =
                                         case actualKernelAbi home name of
                                             Just abi ->
-                                                -- Use the actual C ABI, not the polymorphic Elm type
                                                 abi
 
                                             Nothing ->
-                                                -- Fall back to deriving from Elm type
                                                 elmSig
 
-                                    -- Use boxToMatchSignature which handles both boxing AND unboxing
-                                    -- based on the ABI types derived from sig.paramTypes
+                                    -- Use boxToMatchSignatureTyped with actual SSA types
                                     ( boxOps, argVarPairs, ctx1b ) =
-                                        boxToMatchSignature ctx1 args argVars sig.paramTypes
+                                        boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
 
                                     ( resVar, ctx2 ) =
                                         freshVar ctx1b
@@ -2757,8 +2892,6 @@ generateCall ctx func args resultType =
                                     ( ctx3, callOp ) =
                                         ecoCallNamed ctx2 resVar kernelName argVarPairs kernelResultType
 
-                                    -- If the Elm type expects !eco.value but kernel returns concrete type,
-                                    -- we need to box the result back
                                     elmResultType =
                                         monoTypeToMlir elmSig.returnType
 
@@ -2768,7 +2901,7 @@ generateCall ctx func args resultType =
                                 if needsBoxing then
                                     let
                                         ( boxResultOps, boxedVar, ctx4 ) =
-                                            boxIfNeeded ctx3 resVar sig.returnType
+                                            boxToEcoValue ctx3 resVar kernelResultType
                                     in
                                     { ops = argOps ++ boxOps ++ [ callOp ] ++ boxResultOps
                                     , resultVar = boxedVar
@@ -2785,15 +2918,13 @@ generateCall ctx func args resultType =
 
         Mono.MonoVarLocal name funcType ->
             let
-                ( argOps, argVars, ctx1 ) =
-                    generateExprList ctx args
+                -- Use generateExprListTyped to get actual SSA types
+                ( argOps, argsWithTypes, ctx1 ) =
+                    generateExprListTyped ctx args
 
-                argsWithTypes : List ( String, Mono.MonoType )
-                argsWithTypes =
-                    List.map2 (\expr var -> ( var, Mono.typeOf expr )) args argVars
-
+                -- Box using actual SSA types
                 ( boxOps, boxedVars, ctx1b ) =
-                    boxArgsIfNeeded ctx1 argsWithTypes
+                    boxArgsWithMlirTypes ctx1 argsWithTypes
 
                 ( resVar, ctx2 ) =
                     freshVar ctx1b
@@ -2860,15 +2991,13 @@ generateCall ctx func args resultType =
                 funcResult =
                     generateExpr ctx func
 
-                ( argOps, argVars, ctx1 ) =
-                    generateExprList funcResult.ctx args
+                -- Use generateExprListTyped to get actual SSA types
+                ( argOps, argsWithTypes, ctx1 ) =
+                    generateExprListTyped funcResult.ctx args
 
-                argsWithTypes : List ( String, Mono.MonoType )
-                argsWithTypes =
-                    List.map2 (\expr var -> ( var, Mono.typeOf expr )) args argVars
-
+                -- Box using actual SSA types
                 ( boxOps, boxedVars, ctx1b ) =
-                    boxArgsIfNeeded ctx1 argsWithTypes
+                    boxArgsWithMlirTypes ctx1 argsWithTypes
 
                 ( resVar, ctx2 ) =
                     freshVar ctx1b
@@ -2995,26 +3124,31 @@ boxArgsWithMlirTypes ctx args =
 generateTailCall : Context -> Name.Name -> List ( Name.Name, Mono.MonoExpr ) -> ExprResult
 generateTailCall ctx name args =
     let
-        ( argsOps, argVars, ctx1 ) =
+        -- Generate arguments and track actual SSA types
+        ( argsOps, argsWithTypes, ctx1 ) =
             List.foldl
-                (\( _, expr ) ( accOps, accVars, accCtx ) ->
+                (\( _, expr ) ( accOps, accVarsWithTypes, accCtx ) ->
                     let
                         result : ExprResult
                         result =
                             generateExpr accCtx expr
                     in
-                    ( accOps ++ result.ops, accVars ++ [ result.resultVar ], result.ctx )
+                    ( accOps ++ result.ops
+                    , accVarsWithTypes ++ [ ( result.resultVar, result.resultType ) ]
+                    , result.ctx
+                    )
                 )
                 ( [], [], ctx )
                 args
 
+        -- Extract variable names and their actual SSA types
         argVarNames : List String
         argVarNames =
-            argVars
+            List.map Tuple.first argsWithTypes
 
         argVarTypes : List MlirType
         argVarTypes =
-            List.map (\( _, expr ) -> monoTypeToMlir (Mono.typeOf expr)) args
+            List.map Tuple.second argsWithTypes
 
         jumpAttrs =
             Dict.fromList
@@ -3693,27 +3827,13 @@ generateSharedJoinpoints ctx jumps resultTy =
                 branchRes =
                     generateExpr accCtx branchExpr
 
-                -- Get actual type of the branch expression
+                -- Use the ACTUAL SSA type from branchRes, not Mono.typeOf
                 actualTy =
-                    monoTypeToMlir (Mono.typeOf branchExpr)
+                    branchRes.resultType
 
-                -- Coerce to resultTy if needed (box/unbox)
+                -- Symmetric boxing/unboxing based on actual vs expected type
                 ( coerceOps, finalVar, coerceCtx ) =
-                    if actualTy == resultTy then
-                        -- Types match, no coercion needed
-                        ( [], branchRes.resultVar, branchRes.ctx )
-
-                    else if isEcoValueType resultTy && not (isEcoValueType actualTy) then
-                        -- Result expects boxed, we have unboxed -> box it
-                        boxIfNeeded branchRes.ctx branchRes.resultVar (Mono.typeOf branchExpr)
-
-                    else if not (isEcoValueType resultTy) && isEcoValueType actualTy then
-                        -- Result expects unboxed, we have boxed -> unbox it
-                        unboxToType branchRes.ctx branchRes.resultVar resultTy
-
-                    else
-                        -- Types don't match but no coercion solution - use as-is
-                        ( [], branchRes.resultVar, branchRes.ctx )
+                    coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
 
                 ( ctx1, retOp ) =
                     ecoReturn coerceCtx finalVar resultTy
@@ -3769,27 +3889,13 @@ generateLeaf ctx _ choice resultTy =
                 branchRes =
                     generateExpr ctx branchExpr
 
-                -- Get actual type of the branch expression
+                -- Use the ACTUAL SSA type from branchRes, not Mono.typeOf
                 actualTy =
-                    monoTypeToMlir (Mono.typeOf branchExpr)
+                    branchRes.resultType
 
-                -- Coerce to resultTy if needed (box/unbox)
+                -- Symmetric boxing/unboxing based on actual vs expected type
                 ( coerceOps, finalVar, ctx1 ) =
-                    if actualTy == resultTy then
-                        -- Types match, no coercion needed
-                        ( [], branchRes.resultVar, branchRes.ctx )
-
-                    else if isEcoValueType resultTy && not (isEcoValueType actualTy) then
-                        -- Result expects boxed, we have unboxed -> box it
-                        boxIfNeeded branchRes.ctx branchRes.resultVar (Mono.typeOf branchExpr)
-
-                    else if not (isEcoValueType resultTy) && isEcoValueType actualTy then
-                        -- Result expects unboxed, we have boxed -> unbox it
-                        unboxToType branchRes.ctx branchRes.resultVar resultTy
-
-                    else
-                        -- Types don't match but no coercion solution - use as-is
-                        ( [], branchRes.resultVar, branchRes.ctx )
+                    coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
 
                 ( ctx2, retOp ) =
                     ecoReturn ctx1 finalVar resultTy
@@ -4163,27 +4269,23 @@ generateCase ctx _ root decider jumps resultMonoType =
 generateRecordCreate : Context -> List Mono.MonoExpr -> Mono.RecordLayout -> ExprResult
 generateRecordCreate ctx fields layout =
     let
-        ( fieldsOps, fieldVars, ctx1 ) =
-            generateExprList ctx fields
-
-        -- Pair field vars with their expression types
-        fieldVarsWithTypes : List ( String, Mono.MonoType )
-        fieldVarsWithTypes =
-            List.map2 (\v expr -> ( v, Mono.typeOf expr )) fieldVars fields
+        -- Use generateExprListTyped to get actual SSA types
+        ( fieldsOps, fieldVarsWithTypes, ctx1 ) =
+            generateExprListTyped ctx fields
 
         -- Box fields that need to be boxed (layout says boxed, but expression is primitive)
         ( boxOps, boxedFieldVars, ctx2 ) =
             List.foldl
-                (\( ( var, exprType ), fieldInfo ) ( opsAcc, varsAcc, ctxAcc ) ->
+                (\( ( var, ssaType ), fieldInfo ) ( opsAcc, varsAcc, ctxAcc ) ->
                     if fieldInfo.isUnboxed then
                         -- Field is stored unboxed, use as-is
                         ( opsAcc, varsAcc ++ [ var ], ctxAcc )
 
                     else
-                        -- Field should be boxed - box if needed
+                        -- Field should be boxed - box using actual SSA type
                         let
                             ( moreOps, boxedVar, newCtx ) =
-                                boxIfNeeded ctxAcc var exprType
+                                boxToEcoValue ctxAcc var ssaType
                         in
                         ( opsAcc ++ moreOps, varsAcc ++ [ boxedVar ], newCtx )
                 )
@@ -4300,27 +4402,23 @@ generateRecordUpdate ctx record _ _ =
 generateTupleCreate : Context -> List Mono.MonoExpr -> Mono.TupleLayout -> ExprResult
 generateTupleCreate ctx elements layout =
     let
-        ( elemOps, elemVars, ctx1 ) =
-            generateExprList ctx elements
-
-        -- Pair element vars with their expression types
-        elemVarsWithTypes : List ( String, Mono.MonoType )
-        elemVarsWithTypes =
-            List.map2 (\v expr -> ( v, Mono.typeOf expr )) elemVars elements
+        -- Use generateExprListTyped to get actual SSA types
+        ( elemOps, elemVarsWithTypes, ctx1 ) =
+            generateExprListTyped ctx elements
 
         -- Box elements that need to be boxed (layout says boxed, but expression is primitive)
         ( boxOps, boxedElemVars, ctx2 ) =
             List.foldl
-                (\( ( var, exprType ), ( _, isUnboxed ) ) ( opsAcc, varsAcc, ctxAcc ) ->
+                (\( ( var, ssaType ), ( _, isUnboxed ) ) ( opsAcc, varsAcc, ctxAcc ) ->
                     if isUnboxed then
                         -- Element is stored unboxed, use as-is
                         ( opsAcc, varsAcc ++ [ var ], ctxAcc )
 
                     else
-                        -- Element should be boxed - box if needed
+                        -- Element should be boxed - box using actual SSA type
                         let
                             ( moreOps, boxedVar, newCtx ) =
-                                boxIfNeeded ctxAcc var exprType
+                                boxToEcoValue ctxAcc var ssaType
                         in
                         ( opsAcc ++ moreOps, varsAcc ++ [ boxedVar ], newCtx )
                 )
