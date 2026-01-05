@@ -12,7 +12,8 @@
 
 namespace Elm::Kernel::Utils {
 
-// Order type constructor tags
+// Order type: type_id 0 is reserved for built-in Order type
+constexpr u16 ORDER_TYPE_ID = 0;
 constexpr u16 ORDER_LT = 0;
 constexpr u16 ORDER_EQ = 1;
 constexpr u16 ORDER_GT = 2;
@@ -168,7 +169,7 @@ HPointer compare(void* a, void* b) {
 
     u16 orderCtor = (n < 0) ? ORDER_LT : (n > 0) ? ORDER_GT : ORDER_EQ;
     // Order has no fields, just the constructor tag
-    return alloc::custom(orderCtor, {}, 0);
+    return alloc::custom(ORDER_TYPE_ID, orderCtor, {}, 0);
 }
 
 // ============================================================================

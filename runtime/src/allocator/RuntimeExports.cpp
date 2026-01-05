@@ -51,14 +51,37 @@ std::unordered_map<CtorKey, std::string, CtorKeyHash> g_customCtorNames;
 /// Mutex protecting the constructor name registry.
 std::mutex g_ctorNamesMutex;
 
+// Forward declaration
+void registerBuiltinCtors();
+
 /// Look up constructor name. Returns nullptr if not found.
 const char* lookupCtorName(uint32_t type_id, uint32_t ctor_id) {
+    // Ensure built-in types are registered
+    registerBuiltinCtors();
+
     std::lock_guard<std::mutex> lock(g_ctorNamesMutex);
     auto it = g_customCtorNames.find({type_id, ctor_id});
     if (it != g_customCtorNames.end()) {
         return it->second.c_str();
     }
     return nullptr;
+}
+
+/// Flag to ensure built-in types are registered only once.
+bool g_builtinsRegistered = false;
+
+/// Register built-in type constructor names (Order, etc.).
+void registerBuiltinCtors() {
+    if (g_builtinsRegistered) return;
+    std::lock_guard<std::mutex> lock(g_ctorNamesMutex);
+    if (g_builtinsRegistered) return;  // Double-check after lock
+
+    // Order type (type_id = 0): LT, EQ, GT
+    g_customCtorNames[{0, 0}] = "LT";
+    g_customCtorNames[{0, 1}] = "EQ";
+    g_customCtorNames[{0, 2}] = "GT";
+
+    g_builtinsRegistered = true;
 }
 
 } // namespace
@@ -661,6 +684,15 @@ static bool is_nil(uint64_t val) {
     return (val & 0xFFFFFFFFFF) == 0 && (val >> 40) == MlirConst_Nil;
 }
 
+// Check if a Custom object is a list cons cell.
+// MLIR generates: List Nil with tag=0, size=0; List Cons with tag=1, size=2.
+// The tail (field 1) must be boxed (not unboxed) since it points to next cell or Nil.
+static inline bool is_list_cons(const Custom* custom) {
+    return custom->ctor == 1 &&
+           custom->header.size == 2 &&
+           (custom->unboxed & 2) == 0;
+}
+
 // Print a list in Elm syntax: [1, 2, 3]
 static void print_list(uint64_t val, int depth) {
     output_char('[');
@@ -695,12 +727,13 @@ static void print_list(uint64_t val, int depth) {
 
         Header* header = static_cast<Header*>(ptr);
 
-        // eco.construct uses Tag_Custom with ctor=0 for list cons cells
+        // eco.construct uses Tag_Custom with ctor=1 for list cons cells
+        // MLIR: List Nil has tag=0, size=0; List Cons has tag=1, size=2
         // Native Cons type uses Tag_Cons
         if (header->tag == Tag_Custom) {
             Custom* custom = static_cast<Custom*>(ptr);
-            // A valid list cons cell has ctor=0, size=2, and tail (field 1) not unboxed
-            if (custom->ctor != 0 || custom->header.size != 2 || (custom->unboxed & 2)) {
+            // Use is_list_cons helper to validate cons cell
+            if (!is_list_cons(custom)) {
                 if (!first) output_text(", ");
                 output_text("<non_cons_custom>");
                 break;
@@ -817,6 +850,29 @@ static void print_custom(Custom* custom, int depth) {
     uint32_t ctor = custom->ctor;
     uint32_t type_id = custom->id;
     uint32_t size = custom->header.size;
+
+    // Check for tuple: MLIR eco.construct with no type_id (0) and ctor=0
+    // Pair: size=2, Triple: size=3
+    if (type_id == 0 && ctor == 0 && (size == 2 || size == 3)) {
+        output_char('(');
+        for (uint32_t i = 0; i < size; i++) {
+            if (i > 0) output_text(",");
+
+            // Check if field is unboxed
+            if (custom->unboxed & (1ULL << i)) {
+                output_format("%lld", (long long)custom->values[i].i);
+            } else {
+                uint64_t val = static_cast<uint64_t>(custom->values[i].i);
+                if (val == 0) {
+                    output_text("<null>");
+                } else if (!print_if_constant(val)) {
+                    print_value(val, depth + 1);
+                }
+            }
+        }
+        output_char(')');
+        return;
+    }
 
     // Try to look up the constructor name
     const char* name = lookupCtorName(type_id, ctor);
@@ -987,13 +1043,9 @@ static void print_value(uint64_t val, int depth) {
 
         case Tag_Custom: {
             Custom* custom = static_cast<Custom*>(ptr);
-            // Check if this is a list cons cell (ctor=0, size=2, tail not unboxed)
-            // A list cons cell has: ctor=0, exactly 2 fields, and the tail (field 1)
-            // must be a pointer (not unboxed) since it points to the next cell or Nil.
-            bool isList = (custom->ctor == 0 &&
-                          custom->header.size == 2 &&
-                          !(custom->unboxed & 2));  // tail must be a pointer
-            if (isList) {
+            // Check if this is a list cons cell using the is_list_cons helper.
+            // MLIR: List Cons has ctor=1, size=2 (NOT ctor=0 which is used for tuples).
+            if (is_list_cons(custom)) {
                 print_list(val, depth);
             } else {
                 print_custom(custom, depth);

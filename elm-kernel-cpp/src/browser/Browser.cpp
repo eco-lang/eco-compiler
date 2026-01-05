@@ -12,6 +12,9 @@
 
 namespace Elm::Kernel::Browser {
 
+// Browser type ID (use generic 1 for compatibility)
+constexpr u16 BROWSER_TYPE_ID = 1;
+
 // Program type tags
 constexpr u16 TAG_ELEMENT = 0;
 constexpr u16 TAG_DOCUMENT = 1;
@@ -46,7 +49,7 @@ static HPointer createViewport(f64 sceneW, f64 sceneH, f64 x, f64 y, f64 w, f64 
 // Helper to create NotFound error
 static HPointer notFound(void* id) {
     HPointer idPtr = Allocator::instance().wrap(id);
-    HPointer notFoundErr = alloc::custom(TAG_NOT_FOUND, {alloc::boxed(idPtr)}, 0);
+    HPointer notFoundErr = alloc::custom(BROWSER_TYPE_ID, TAG_NOT_FOUND, {alloc::boxed(idPtr)}, 0);
     return alloc::err(alloc::boxed(notFoundErr), false);
 }
 
@@ -55,15 +58,15 @@ static HPointer notFound(void* id) {
 // ============================================================================
 
 HPointer element(HPointer impl) {
-    return alloc::custom(TAG_ELEMENT, {alloc::boxed(impl)}, 0);
+    return alloc::custom(BROWSER_TYPE_ID, TAG_ELEMENT, {alloc::boxed(impl)}, 0);
 }
 
 HPointer document(HPointer impl) {
-    return alloc::custom(TAG_DOCUMENT, {alloc::boxed(impl)}, 0);
+    return alloc::custom(BROWSER_TYPE_ID, TAG_DOCUMENT, {alloc::boxed(impl)}, 0);
 }
 
 HPointer application(HPointer impl) {
-    return alloc::custom(TAG_APPLICATION, {alloc::boxed(impl)}, 0);
+    return alloc::custom(BROWSER_TYPE_ID, TAG_APPLICATION, {alloc::boxed(impl)}, 0);
 }
 
 // ============================================================================
@@ -194,11 +197,11 @@ HPointer decodeEvent(DecoderPtr decoder, HPointer event) {
 // ============================================================================
 
 HPointer doc() {
-    return alloc::custom(0, {}, 0);
+    return alloc::custom(BROWSER_TYPE_ID, 0, {}, 0);
 }
 
 HPointer window() {
-    return alloc::custom(0, {}, 0);
+    return alloc::custom(BROWSER_TYPE_ID, 0, {}, 0);
 }
 
 TaskPtr withWindow(std::function<HPointer(HPointer)> func) {
@@ -245,7 +248,7 @@ TaskPtr now() {
 
 HPointer visibilityInfo() {
     // Return Visible (ctor 0) - always visible in stub
-    return alloc::custom(0, {}, 0);
+    return alloc::custom(BROWSER_TYPE_ID, 0, {}, 0);
 }
 
 // ============================================================================

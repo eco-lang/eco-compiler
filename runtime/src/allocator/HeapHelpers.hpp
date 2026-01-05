@@ -445,18 +445,20 @@ inline HPointer tuple3(Unboxable a, Unboxable b, Unboxable c, u32 unboxed_mask) 
 /**
  * Allocates a Custom type value (algebraic data type).
  *
+ * @param type_id      Type ID for the custom type (0 for builtins like Order).
  * @param ctor         Constructor index.
  * @param values       Vector of field values.
  * @param unboxed_mask Bitmap indicating which fields are unboxed.
  * @return HPointer to the allocated Custom value.
  */
-inline HPointer custom(u16 ctor, const std::vector<Unboxable>& values, u64 unboxed_mask) {
+inline HPointer custom(u16 type_id, u16 ctor, const std::vector<Unboxable>& values, u64 unboxed_mask) {
     auto& allocator = Allocator::instance();
     size_t total_size = sizeof(Custom) + values.size() * sizeof(Unboxable);
     total_size = (total_size + 7) & ~7;
 
     Custom* obj = static_cast<Custom*>(allocator.allocate(total_size, Tag_Custom));
     obj->header.size = static_cast<u32>(values.size());
+    obj->id = type_id;
     obj->ctor = ctor;
     obj->unboxed = unboxed_mask;
     for (size_t i = 0; i < values.size(); ++i) {
@@ -475,7 +477,7 @@ inline HPointer custom(u16 ctor, const std::vector<Unboxable>& values, u64 unbox
 inline HPointer just(Unboxable value, bool is_boxed) {
     std::vector<Unboxable> vals = {value};
     u64 mask = is_boxed ? 0 : 1;
-    return custom(0, vals, mask);  // Just is ctor 0 for Maybe after Nothing
+    return custom(1, 0, vals, mask);  // type_id=1, Just is ctor 0 for Maybe
 }
 
 /**
@@ -488,7 +490,7 @@ inline HPointer just(Unboxable value, bool is_boxed) {
 inline HPointer ok(Unboxable value, bool is_boxed) {
     std::vector<Unboxable> vals = {value};
     u64 mask = is_boxed ? 0 : 1;
-    return custom(1, vals, mask);  // Ok is ctor 1 (after Err)
+    return custom(1, 0, vals, mask);  // type_id=1, Ok is ctor 0
 }
 
 /**
@@ -501,7 +503,7 @@ inline HPointer ok(Unboxable value, bool is_boxed) {
 inline HPointer err(Unboxable value, bool is_boxed) {
     std::vector<Unboxable> vals = {value};
     u64 mask = is_boxed ? 0 : 1;
-    return custom(0, vals, mask);  // Err is ctor 0 for Result
+    return custom(1, 1, vals, mask);  // type_id=1, Err is ctor 1
 }
 
 // ============================================================================

@@ -15,6 +15,9 @@ namespace Elm::Kernel::Bytes {
 
 using namespace Elm::BytesOps;
 
+// Endianness type ID (distinct from Order)
+constexpr u16 ENDIANNESS_TYPE_ID = 2;
+
 // Helper to check if HPointer is Nothing
 static bool isNothing(HPointer ptr) {
     return ptr.constant == Const_Nothing + 1;
@@ -58,8 +61,8 @@ i64 width(void* bytes) {
 
 HPointer getHostEndianness() {
     // LE = { ctor: 0 }, BE = { ctor: 1 }
-    u16 orderCtor = isLittleEndian() ? 0 : 1;
-    return alloc::custom(orderCtor, {}, 0);
+    u16 endianCtor = isLittleEndian() ? 0 : 1;
+    return alloc::custom(ENDIANNESS_TYPE_ID, endianCtor, {}, 0);
 }
 
 i64 getStringWidth(void* str) {

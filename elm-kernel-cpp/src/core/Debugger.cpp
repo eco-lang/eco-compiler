@@ -11,7 +11,8 @@
 
 namespace Elm::Kernel::Debugger {
 
-// Expando constructor tags
+// Expando type and constructor tags
+constexpr u16 EXPANDO_TYPE_ID = 3;  // Debugger Expando type
 constexpr u16 TAG_PRIMITIVE = 0;
 constexpr u16 TAG_STRING = 1;
 constexpr u16 TAG_CONSTRUCTOR = 2;
@@ -29,7 +30,7 @@ HPointer init(HPointer value) {
 
     // Return Primitive("<value>")
     HPointer label = alloc::allocStringFromUTF8("<value>");
-    return alloc::custom(TAG_PRIMITIVE, {alloc::boxed(label)}, 0);
+    return alloc::custom(EXPANDO_TYPE_ID, TAG_PRIMITIVE, {alloc::boxed(label)}, 0);
 }
 
 // ============================================================================
