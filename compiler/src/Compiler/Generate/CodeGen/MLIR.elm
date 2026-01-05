@@ -140,6 +140,18 @@ monoTypeToMlir monoType =
                     ecoValue
 
 
+{-| Check if a MonoType is a function type.
+-}
+isFunctionType : Mono.MonoType -> Bool
+isFunctionType monoType =
+    case monoType of
+        Mono.MFunction _ _ ->
+            True
+
+        _ ->
+            False
+
+
 {-| Compute the remaining arity of a MonoType (number of function arrows).
 For MFunction a b, this counts how many nested function arrows there are.
 -}
@@ -2036,6 +2048,10 @@ generateVarKernel ctx home name monoType =
     let
         ( var, ctx1 ) =
             freshVar ctx
+
+        kernelName : String
+        kernelName =
+            "Elm_Kernel_" ++ home ++ "_" ++ name
     in
     -- Check for intrinsic constants (pi, e)
     case kernelIntrinsic home name [] monoType of
@@ -2051,40 +2067,126 @@ generateVarKernel ctx home name monoType =
             }
 
         Just _ ->
-            let
-                kernelName : String
-                kernelName =
-                    "Elm_Kernel_" ++ home ++ "_" ++ name
+            -- Other intrinsic matched with zero args - but check if it's function-typed
+            case monoType of
+                Mono.MFunction _ _ ->
+                    let
+                        arity : Int
+                        arity =
+                            countTotalArity monoType
+                    in
+                    if arity == 0 then
+                        -- Zero-arity function (thunk): call directly
+                        let
+                            resultMlirType =
+                                monoTypeToMlir monoType
 
-                resultMlirType =
-                    monoTypeToMlir monoType
+                            ( ctx2, callOp ) =
+                                ecoCallNamed ctx1 var kernelName [] resultMlirType
+                        in
+                        { ops = [ callOp ]
+                        , resultVar = var
+                        , resultType = resultMlirType
+                        , ctx = ctx2
+                        }
 
-                ( ctx2, callOp ) =
-                    ecoCallNamed ctx1 var kernelName [] resultMlirType
-            in
-            { ops = [ callOp ]
-            , resultVar = var
-            , resultType = resultMlirType
-            , ctx = ctx2
-            }
+                    else
+                        -- Function-typed kernel with arity > 0: create a closure (papCreate)
+                        let
+                            attrs =
+                                Dict.fromList
+                                    [ ( "function", SymbolRefAttr kernelName )
+                                    , ( "arity", IntAttr Nothing arity )
+                                    , ( "num_captured", IntAttr Nothing 0 )
+                                    ]
+
+                            ( ctx2, papOp ) =
+                                mlirOp ctx1 "eco.papCreate"
+                                    |> opBuilder.withResults [ ( var, ecoValue ) ]
+                                    |> opBuilder.withAttrs attrs
+                                    |> opBuilder.build
+                        in
+                        { ops = [ papOp ]
+                        , resultVar = var
+                        , resultType = ecoValue
+                        , ctx = ctx2
+                        }
+
+                _ ->
+                    -- Non-function type: call directly
+                    let
+                        resultMlirType =
+                            monoTypeToMlir monoType
+
+                        ( ctx2, callOp ) =
+                            ecoCallNamed ctx1 var kernelName [] resultMlirType
+                    in
+                    { ops = [ callOp ]
+                    , resultVar = var
+                    , resultType = resultMlirType
+                    , ctx = ctx2
+                    }
 
         Nothing ->
-            let
-                kernelName : String
-                kernelName =
-                    "Elm_Kernel_" ++ home ++ "_" ++ name
+            -- No intrinsic match - check if this is a function type
+            case monoType of
+                Mono.MFunction _ _ ->
+                    let
+                        arity : Int
+                        arity =
+                            countTotalArity monoType
+                    in
+                    if arity == 0 then
+                        -- Zero-arity function (thunk): call directly
+                        let
+                            resultMlirType =
+                                monoTypeToMlir monoType
 
-                resultMlirType =
-                    monoTypeToMlir monoType
+                            ( ctx2, callOp ) =
+                                ecoCallNamed ctx1 var kernelName [] resultMlirType
+                        in
+                        { ops = [ callOp ]
+                        , resultVar = var
+                        , resultType = resultMlirType
+                        , ctx = ctx2
+                        }
 
-                ( ctx2, callOp ) =
-                    ecoCallNamed ctx1 var kernelName [] resultMlirType
-            in
-            { ops = [ callOp ]
-            , resultVar = var
-            , resultType = resultMlirType
-            , ctx = ctx2
-            }
+                    else
+                        -- Function-typed kernel with arity > 0: create a closure (papCreate)
+                        let
+                            attrs =
+                                Dict.fromList
+                                    [ ( "function", SymbolRefAttr kernelName )
+                                    , ( "arity", IntAttr Nothing arity )
+                                    , ( "num_captured", IntAttr Nothing 0 )
+                                    ]
+
+                            ( ctx2, papOp ) =
+                                mlirOp ctx1 "eco.papCreate"
+                                    |> opBuilder.withResults [ ( var, ecoValue ) ]
+                                    |> opBuilder.withAttrs attrs
+                                    |> opBuilder.build
+                        in
+                        { ops = [ papOp ]
+                        , resultVar = var
+                        , resultType = ecoValue
+                        , ctx = ctx2
+                        }
+
+                _ ->
+                    -- Non-function type: call the kernel directly
+                    let
+                        resultMlirType =
+                            monoTypeToMlir monoType
+
+                        ( ctx2, callOp ) =
+                            ecoCallNamed ctx1 var kernelName [] resultMlirType
+                    in
+                    { ops = [ callOp ]
+                    , resultVar = var
+                    , resultType = resultMlirType
+                    , ctx = ctx2
+                    }
 
 
 
@@ -2598,6 +2700,82 @@ coerceResultToType ctx var actualTy expectedTy =
 
 generateCall : Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateCall ctx func args resultType =
+    -- If the result type is still a function, this is a partial application.
+    -- Route through the closure path to avoid direct calls with insufficient args.
+    if isFunctionType resultType then
+        generateClosureApplication ctx func args resultType
+
+    else
+        generateSaturatedCall ctx func args resultType
+
+
+{-| Generate a partial application where the result is still a closure.
+This creates a closure via papExtend rather than attempting a direct call.
+-}
+generateClosureApplication : Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+generateClosureApplication ctx func args resultType =
+    let
+        funcResult : ExprResult
+        funcResult =
+            generateExpr ctx func
+
+        -- Use generateExprListTyped to get actual SSA types
+        ( argOps, argsWithTypes, ctx1 ) =
+            generateExprListTyped funcResult.ctx args
+
+        -- Box using actual SSA types
+        ( boxOps, boxedVars, ctx1b ) =
+            boxArgsWithMlirTypes ctx1 argsWithTypes
+
+        ( resVar, ctx2 ) =
+            freshVar ctx1b
+
+        allOperandNames : List String
+        allOperandNames =
+            funcResult.resultVar :: boxedVars
+
+        allOperandTypes : List MlirType
+        allOperandTypes =
+            List.map (\_ -> ecoValue) allOperandNames
+
+        -- Compute arity from the FUNCTION type, not the result type
+        funcType : Mono.MonoType
+        funcType =
+            Mono.typeOf func
+
+        remainingArity : Int
+        remainingArity =
+            functionArity funcType
+
+        -- papExtend handles both partial and saturated cases
+        papExtendAttrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
+                , ( "remaining_arity", IntAttr Nothing remainingArity )
+                ]
+
+        ( ctx3, papExtendOp ) =
+            mlirOp ctx2 "eco.papExtend"
+                |> opBuilder.withOperands allOperandNames
+                |> opBuilder.withResults [ ( resVar, ecoValue ) ]
+                |> opBuilder.withAttrs papExtendAttrs
+                |> opBuilder.build
+
+        -- Result is a closure (!eco.value)
+        expectedType =
+            monoTypeToMlir resultType
+    in
+    { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
+    , resultVar = resVar
+    , resultType = expectedType
+    , ctx = ctx3
+    }
+
+
+{-| Generate a saturated function call where all arguments are provided.
+-}
+generateSaturatedCall : Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+generateSaturatedCall ctx func args resultType =
     case func of
         Mono.MonoVarGlobal _ specId funcType ->
             let
@@ -3201,32 +3379,37 @@ generateIf ctx branches final =
                 condVar =
                     condRes.resultVar
 
-                -- Get result type from the then branch
-                resultMonoType =
-                    Mono.typeOf thenExpr
-
-                resultMlirType =
-                    monoTypeToMlir resultMonoType
-
-                -- Generate then branch with scf.yield
+                -- Generate then branch first to get its actual result type
                 thenRes =
                     generateExpr condRes.ctx thenExpr
 
+                -- Use the then branch's actual SSA type as the result type
+                resultMlirType =
+                    thenRes.resultType
+
+                -- Coerce then result to target type if needed
+                ( thenCoerceOps, thenFinalVar, thenFinalCtx ) =
+                    coerceResultToType thenRes.ctx thenRes.resultVar thenRes.resultType resultMlirType
+
                 ( ctx1, thenYieldOp ) =
-                    scfYield thenRes.ctx thenRes.resultVar resultMlirType
+                    scfYield thenFinalCtx thenFinalVar resultMlirType
 
                 thenRegion =
-                    mkRegion [] thenRes.ops thenYieldOp
+                    mkRegion [] (thenRes.ops ++ thenCoerceOps) thenYieldOp
 
                 -- Generate else branch (recursive if or final) with scf.yield
                 elseRes =
                     generateIf ctx1 restBranches final
 
+                -- Coerce else result to match then branch's type
+                ( elseCoerceOps, elseFinalVar, elseFinalCtx ) =
+                    coerceResultToType elseRes.ctx elseRes.resultVar elseRes.resultType resultMlirType
+
                 ( ctx2, elseYieldOp ) =
-                    scfYield elseRes.ctx elseRes.resultVar resultMlirType
+                    scfYield elseFinalCtx elseFinalVar resultMlirType
 
                 elseRegion =
-                    mkRegion [] elseRes.ops elseYieldOp
+                    mkRegion [] (elseRes.ops ++ elseCoerceOps) elseYieldOp
 
                 -- Allocate result variable for scf.if
                 ( ifResultVar, ctx2b ) =
@@ -3284,22 +3467,23 @@ generateLet ctx def body =
 generateDestruct : Context -> Mono.MonoDestructor -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateDestruct ctx (Mono.MonoDestructor name path monoType) body destType =
     let
-        -- The destructor's monoType is often a placeholder (TVar "?" -> MVar CEcoValue).
-        -- However, the destType (from MonoDestruct) is the correct type of the expression.
-        -- For simple cases where the body is just the bound variable, destType = variable type.
+        -- The destructor's monoType represents the type of the value at the end of the path.
+        -- This is the type we should use for path generation.
+        --
+        -- IMPORTANT: Do NOT use destType to determine the path's target type!
+        -- destType is the type of the overall body expression, not the destructed value.
+        -- For example, when destructing a list element and the body returns an Int,
+        -- destType would be MInt, but the destructed value is still a list (!eco.value).
+        -- Using destType would incorrectly cause unboxing of lists to i64.
+        --
+        -- The path should produce its natural type, and the body handles any needed
+        -- boxing/unboxing based on how it uses the destructed value.
         destructorMlirType =
             monoTypeToMlir monoType
 
-        destMlirType =
-            monoTypeToMlir destType
-
-        -- Use dest type if destructor type is placeholder ecoValue but dest type is primitive
+        -- Always use the destructor's type for path generation
         targetType =
-            if isEcoValueType destructorMlirType && not (isEcoValueType destMlirType) then
-                destMlirType
-
-            else
-                destructorMlirType
+            destructorMlirType
 
         ( pathOps, pathVar, ctx1 ) =
             generateMonoPath ctx path targetType
@@ -3381,18 +3565,19 @@ generateMonoPath ctx path targetType =
             )
 
         Mono.MonoUnbox subPath ->
-            -- First get the boxed value from subpath
-            let
-                ( subOps, subVar, ctx1 ) =
-                    generateMonoPath ctx subPath ecoValue
-
-                ( unboxOps, unboxedVar, ctx2 ) =
-                    unboxToType ctx1 subVar targetType
-            in
-            ( subOps ++ unboxOps
-            , unboxedVar
-            , ctx2
-            )
+            -- MonoUnbox is a SEMANTIC operation for single-constructor types.
+            -- It means "unwrap the wrapper to access the inner value".
+            -- This is a NO-OP in MLIR - the wrapped and unwrapped values have
+            -- the same runtime representation (!eco.value).
+            --
+            -- NOTE: This is different from eco.unbox which converts !eco.value
+            -- to a primitive type (i64, f64, etc.). eco.unbox is generated by
+            -- MonoIndex when the targetType is a primitive, NOT by MonoUnbox.
+            --
+            -- By always passing through, we avoid generating incorrect sequences
+            -- like: project -> eco.unbox -> project (where eco.unbox produces i64
+            -- but the next project expects !eco.value).
+            generateMonoPath ctx subPath targetType
 
 
 
@@ -3462,15 +3647,19 @@ generateDTPath ctx root dtPath targetType =
             ( subOps ++ [ projectOp ] ++ unboxOps, finalVar, ctx4 )
 
         DT.Unbox subPath ->
-            -- Unbox the value to the target primitive type
-            let
-                ( subOps, subVar, ctx1 ) =
-                    generateDTPath ctx root subPath ecoValue
-
-                ( unboxOps, unboxedVar, ctx2 ) =
-                    unboxToType ctx1 subVar targetType
-            in
-            ( subOps ++ unboxOps, unboxedVar, ctx2 )
+            -- DT.Unbox is a SEMANTIC operation for single-constructor types.
+            -- It means "unwrap the wrapper to access the inner value".
+            -- This is a NO-OP in MLIR - the wrapped and unwrapped values have
+            -- the same runtime representation (!eco.value).
+            --
+            -- NOTE: This is different from eco.unbox which converts !eco.value
+            -- to a primitive type (i64, f64, etc.). eco.unbox is generated by
+            -- DT.Index when the targetType is a primitive, NOT by DT.Unbox.
+            --
+            -- By always passing through, we avoid generating incorrect sequences
+            -- like: project -> eco.unbox -> project (where eco.unbox produces i64
+            -- but the next project expects !eco.value).
+            generateDTPath ctx root subPath targetType
 
 
 {-| Generate MLIR ops to evaluate a DT.Test, returning a boolean result.

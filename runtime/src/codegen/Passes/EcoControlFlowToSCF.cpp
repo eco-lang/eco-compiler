@@ -104,14 +104,21 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
 
     LogicalResult matchAndRewrite(CaseOp op,
                                   PatternRewriter &rewriter) const override {
+        LLVM_DEBUG(llvm::dbgs() << "CaseToScfIfPattern: trying to match eco.case at "
+                                 << op.getLoc() << "\n");
+
         // Only handle 2-alternative cases
         auto alts = op.getAlternatives();
-        if (alts.size() != 2)
+        if (alts.size() != 2) {
+            LLVM_DEBUG(llvm::dbgs() << "  -> rejected: " << alts.size() << " alternatives (need 2)\n");
             return failure();
+        }
 
         // All alternatives must end with eco.return
-        if (!hasPureReturnAlternatives(op))
+        if (!hasPureReturnAlternatives(op)) {
+            LLVM_DEBUG(llvm::dbgs() << "  -> rejected: not all alternatives end with eco.return\n");
             return failure();
+        }
 
         // Skip cases inside joinpoint bodies - the returns inside are "non-local"
         // exits from the joinpoint, which scf.if can't model. These should be
@@ -119,28 +126,39 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
         if (op->getParentOfType<JoinpointOp>())
             return failure();
 
-        // Skip cases nested inside other eco.case alternatives.
-        // When scf.if is lowered to cf.cond_br, it creates multiple blocks,
-        // which violates the parent eco.case's "exactly one block" requirement.
-        // Let CF lowering handle nested cases as a unit.
-        if (op->getParentOfType<CaseOp>())
-            return failure();
+        // NOTE: We intentionally do NOT skip cases nested inside other eco.case
+        // alternatives or inside scf.if/scf.index_switch regions. Nested cases
+        // should be lowered to nested SCF operations. The greedy pattern rewriter
+        // will apply patterns until fixpoint, handling nested structures correctly.
 
         // Get result types (may be empty for void cases)
         auto resultTypes = getCaseResultTypes(op);
 
         // Check for terminal position - this pattern generates control flow that
-        // replaces the case + following return. The next op should be eco.return
-        // (which we'll replace) or at the end of a block (which shouldn't happen
-        // for well-formed IR).
+        // replaces the case + following terminator. The next op should be either:
+        // - eco.return (for top-level cases or cases inside eco.case alternatives)
+        // - scf.yield (for cases inside scf.if/scf.index_switch regions)
         Operation *nextOp = op->getNextNode();
-        if (!nextOp || !isa<ReturnOp>(nextOp)) {
-            // Either at end of block (unusual) or non-return code follows
+        bool hasValidTerminator = nextOp && (isa<ReturnOp>(nextOp) ||
+                                              isa<scf::YieldOp>(nextOp));
+        if (!hasValidTerminator) {
+            // Either at end of block (unusual) or non-terminator code follows
+            LLVM_DEBUG(llvm::dbgs() << "  -> rejected: invalid nextOp (need eco.return or scf.yield)\n");
+            if (nextOp) {
+                LLVM_DEBUG(llvm::dbgs() << "     nextOp is: " << nextOp->getName() << "\n");
+            } else {
+                LLVM_DEBUG(llvm::dbgs() << "     nextOp is null\n");
+            }
             return failure();
         }
 
+        LLVM_DEBUG(llvm::dbgs() << "  -> MATCHED! Converting to scf.if\n");
+        llvm::errs() << "[SCF] Lowering eco.case to scf.if at " << op.getLoc() << "\n";
+
         auto loc = op.getLoc();
         auto tags = op.getTags();
+        llvm::errs() << "[SCF]   tags = [" << tags[0] << ", " << tags[1] << "]\n";
+        llvm::errs() << "[SCF]   hasI1Scrutinee = " << (hasI1Scrutinee(op) ? "true" : "false") << "\n";
 
         // Compute condition based on scrutinee type
         Value cond;
@@ -149,14 +167,18 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
             // Convention: tag 1 = True goes to alt1 (then), tag 0 = False goes to alt0 (else)
             // If tags[1] == 1, condition is the scrutinee directly
             // If tags[1] == 0, condition is negated
+            llvm::errs() << "[SCF]   tags[1] = " << tags[1] << "\n";
             if (tags[1] == 1) {
                 cond = op.getScrutinee();
+                llvm::errs() << "[SCF]   Using scrutinee directly as condition\n";
             } else {
                 // tags[1] == 0: negate the condition (XOR with 1)
                 auto trueConst = rewriter.create<arith::ConstantOp>(
                     loc, rewriter.getI1Type(), rewriter.getIntegerAttr(rewriter.getI1Type(), 1));
                 cond = rewriter.create<arith::XOrIOp>(loc, op.getScrutinee(), trueConst);
+                llvm::errs() << "[SCF]   Negating condition (XOR with 1)\n";
             }
+            llvm::errs() << "[SCF]   then = alt[1], else = alt[0]\n";
         } else {
             // For eco.value scrutinee: extract tag and compare
             auto tag = rewriter.create<GetTagOp>(loc, rewriter.getI32Type(),
@@ -244,13 +266,26 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
         // eco.case doesn't produce SSA results, but the eco.return ops inside
         // each alternative carry result values. After lowering to scf.if,
         // those values come out as scf.if results, and we need to create a new
-        // eco.return to propagate them.
+        // terminator to propagate them.
         rewriter.setInsertionPointAfter(ifOp);
 
-        // Erase the eco.return that follows the case (we verified it exists above)
-        // and create a new one with the scf.if results
+        // Erase the terminator that follows the case (we verified it exists above)
+        // and create a new one with the scf.if results.
+        // Handle both eco.return (top-level/nested in eco.case) and scf.yield
+        // (nested in scf.if/scf.index_switch regions).
+        llvm::errs() << "[SCF]   scf.if has " << ifOp.getNumResults() << " results\n";
+        for (unsigned i = 0; i < ifOp.getNumResults(); ++i) {
+            llvm::errs() << "[SCF]     result " << i << " type: " << ifOp.getResult(i).getType() << "\n";
+        }
+        bool wasYield = isa<scf::YieldOp>(nextOp);
         rewriter.eraseOp(nextOp);
-        rewriter.create<ReturnOp>(loc, ifOp.getResults());
+        if (wasYield) {
+            llvm::errs() << "[SCF]   Creating scf.yield with " << ifOp.getNumResults() << " operands\n";
+            rewriter.create<scf::YieldOp>(loc, ifOp.getResults());
+        } else {
+            llvm::errs() << "[SCF]   Creating eco.return with " << ifOp.getNumResults() << " operands\n";
+            rewriter.create<ReturnOp>(loc, ifOp.getResults());
+        }
 
         rewriter.eraseOp(op);
         return success();
@@ -286,15 +321,17 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
         if (op->getParentOfType<JoinpointOp>())
             return failure();
 
-        // Skip cases nested inside other eco.case alternatives.
-        if (op->getParentOfType<CaseOp>())
-            return failure();
+        // NOTE: We intentionally do NOT skip cases nested inside other eco.case
+        // alternatives or inside scf.if/scf.index_switch regions. Nested cases
+        // should be lowered to nested SCF operations.
 
         auto resultTypes = getCaseResultTypes(op);
 
-        // Check for terminal position - nextOp should be eco.return
+        // Check for terminal position - nextOp should be eco.return or scf.yield
         Operation *nextOp = op->getNextNode();
-        if (!nextOp || !isa<ReturnOp>(nextOp))
+        bool hasValidTerminator = nextOp && (isa<ReturnOp>(nextOp) ||
+                                              isa<scf::YieldOp>(nextOp));
+        if (!hasValidTerminator)
             return failure();
 
         auto loc = op.getLoc();
@@ -363,10 +400,16 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
             }
         }
 
-        // Erase the eco.return that follows and create new one with switch results
+        // Erase the terminator that follows and create new one with switch results
+        // Handle both eco.return and scf.yield
         rewriter.setInsertionPointAfter(switchOp);
+        bool wasYield = isa<scf::YieldOp>(nextOp);
         rewriter.eraseOp(nextOp);
-        rewriter.create<ReturnOp>(loc, switchOp.getResults());
+        if (wasYield) {
+            rewriter.create<scf::YieldOp>(loc, switchOp.getResults());
+        } else {
+            rewriter.create<ReturnOp>(loc, switchOp.getResults());
+        }
 
         rewriter.eraseOp(op);
         return success();

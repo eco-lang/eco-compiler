@@ -351,8 +351,8 @@ inline void runElmTest(const std::string& elmPath) {
 
     auto result = runner.runFile(mlirPath);
 
-    // Clean up MLIR file
-    std::filesystem::remove(mlirPath);
+    // Clean up MLIR file -- temporarily disabled for debugging
+    // std::filesystem::remove(mlirPath);
 
     // Check for execution failure
     if (!result.success) {

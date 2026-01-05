@@ -29,11 +29,36 @@ inline uint64_t fromHPointer(Elm::HPointer ptr) {
     return val;
 }
 
-// Helper to get numeric values from an HPointer.
+// Convert uint64_t to void pointer, handling both raw pointers and HPointers.
+// Same logic as in ExportHelpers.hpp::toPtr().
+inline void* toPtr(uint64_t val) {
+    Elm::HPointer h = toHPointer(val);
+
+    // Check for embedded constants (constant field 1-7).
+    if (h.constant >= 1 && h.constant <= 7) {
+        return nullptr;
+    }
+
+    // If constant is non-zero but outside valid range, it's a raw pointer.
+    if (h.constant != 0) {
+        return reinterpret_cast<void*>(val);
+    }
+
+    // constant == 0: Check padding to distinguish HPointer from raw pointer.
+    // For valid HPointers, padding must be 0.
+    // For raw x86-64 pointers (e.g., 0x7f38835ba0e0), bits 44+ will be non-zero.
+    if (h.padding != 0) {
+        return reinterpret_cast<void*>(val);
+    }
+
+    // padding == 0 and constant == 0: This is a valid HPointer.
+    return Elm::Allocator::instance().resolve(h);
+}
+
+// Helper to get numeric values from a pointer (either raw or HPointer).
 // Returns true if it's an Int (value in intVal), false if Float (value in floatVal).
 inline bool getNumericValue(uint64_t hptr, Elm::i64& intVal, Elm::f64& floatVal) {
-    Elm::HPointer ptr = toHPointer(hptr);
-    void* obj = Elm::Allocator::instance().resolve(ptr);
+    void* obj = toPtr(hptr);
     if (!obj) {
         // Invalid pointer - treat as 0
         intVal = 0;
@@ -55,19 +80,21 @@ inline bool getNumericValue(uint64_t hptr, Elm::i64& intVal, Elm::f64& floatVal)
 }
 
 // Helper to box an integer result.
+// Returns raw pointer (not HPointer) for consistency with JIT's eco.box/unbox.
 inline uint64_t boxInt(Elm::i64 val) {
     void* obj = Elm::Allocator::instance().allocate(sizeof(Elm::ElmInt), Elm::Tag_Int);
     Elm::ElmInt* intObj = static_cast<Elm::ElmInt*>(obj);
     intObj->value = val;
-    return fromHPointer(Elm::Allocator::instance().wrap(obj));
+    return reinterpret_cast<uint64_t>(obj);
 }
 
 // Helper to box a float result.
+// Returns raw pointer (not HPointer) for consistency with JIT's eco.box/unbox.
 inline uint64_t boxFloat(Elm::f64 val) {
     void* obj = Elm::Allocator::instance().allocate(sizeof(Elm::ElmFloat), Elm::Tag_Float);
     Elm::ElmFloat* floatObj = static_cast<Elm::ElmFloat*>(obj);
     floatObj->value = val;
-    return fromHPointer(Elm::Allocator::instance().wrap(obj));
+    return reinterpret_cast<uint64_t>(obj);
 }
 
 } // anonymous namespace

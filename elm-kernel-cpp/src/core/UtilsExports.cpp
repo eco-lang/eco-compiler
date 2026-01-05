@@ -3,6 +3,7 @@
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
 #include "Utils.hpp"
+#include <cstdio>
 
 using namespace Elm;
 using namespace Elm::Kernel;
@@ -39,7 +40,9 @@ bool Elm_Kernel_Utils_ge(uint64_t a, uint64_t b) {
 }
 
 uint64_t Elm_Kernel_Utils_append(uint64_t a, uint64_t b) {
-    HPointer result = Utils::append(Export::toPtr(a), Export::toPtr(b));
+    void* ptrA = Export::toPtr(a);
+    void* ptrB = Export::toPtr(b);
+    HPointer result = Utils::append(ptrA, ptrB);
     return Export::encode(result);
 }
 
