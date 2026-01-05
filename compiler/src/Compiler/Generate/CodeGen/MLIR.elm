@@ -251,26 +251,16 @@ actualKernelAbi : String -> String -> Maybe FuncSignature
 actualKernelAbi home name =
     case home of
         "Basics" ->
-            -- Basics kernel functions use double (f64) for arithmetic
+            -- NOTE: Polymorphic operations (add, sub, mul, negate, abs) should NOT
+            -- be listed here - they should use the monomorphized types from the Elm
+            -- type system to determine whether they're Int or Float operations.
+            -- Only list operations that are always a specific type.
             case name of
-                "add" ->
-                    Just { paramTypes = [ Mono.MFloat, Mono.MFloat ], returnType = Mono.MFloat }
-
-                "sub" ->
-                    Just { paramTypes = [ Mono.MFloat, Mono.MFloat ], returnType = Mono.MFloat }
-
-                "mul" ->
-                    Just { paramTypes = [ Mono.MFloat, Mono.MFloat ], returnType = Mono.MFloat }
-
+                -- fdiv is always Float (integer division uses different operators)
                 "fdiv" ->
                     Just { paramTypes = [ Mono.MFloat, Mono.MFloat ], returnType = Mono.MFloat }
 
-                "negate" ->
-                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
-
-                "abs" ->
-                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
-
+                -- Math functions are always Float
                 "sqrt" ->
                     Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
 
@@ -1260,25 +1250,16 @@ generateDefine ctx funcName expr monoType =
                     monoTypeToMlir monoType
 
                 -- Handle type mismatch between expression result and expected return type.
-                -- If expression returns !eco.value but function should return a primitive, unbox it.
-                ( finalOps, finalVar, ctxFinal ) =
-                    if isEcoValueType exprResult.resultType && not (isEcoValueType retTy) then
-                        -- Need to unbox !eco.value to primitive
-                        let
-                            ( unboxOps, unboxedVar, ctxU ) =
-                                unboxToType exprResult.ctx exprResult.resultVar retTy
-                        in
-                        ( exprResult.ops ++ unboxOps, unboxedVar, ctxU )
-
-                    else
-                        ( exprResult.ops, exprResult.resultVar, exprResult.ctx )
+                -- Uses symmetric coercion: primitive <-> !eco.value in either direction.
+                ( coerceOps, finalVar, ctxFinal ) =
+                    coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType retTy
 
                 ( ctx1, returnOp ) =
                     ecoReturn ctxFinal finalVar retTy
 
                 region : MlirRegion
                 region =
-                    mkRegion [] finalOps returnOp
+                    mkRegion [] (exprResult.ops ++ coerceOps) returnOp
 
                 ( ctx2, funcOp ) =
                     funcFunc ctx1 funcName [] retTy region
@@ -1324,25 +1305,16 @@ generateClosureFunc ctx funcName closureInfo body monoType =
             monoTypeToMlir extractedReturnType
 
         -- Handle type mismatch between expression result and expected return type.
-        -- If expression returns !eco.value but function should return a primitive, unbox it.
-        ( finalOps, finalVar, ctxFinal ) =
-            if isEcoValueType exprResult.resultType && not (isEcoValueType returnType) then
-                -- Need to unbox !eco.value to primitive
-                let
-                    ( unboxOps, unboxedVar, ctxU ) =
-                        unboxToType exprResult.ctx exprResult.resultVar returnType
-                in
-                ( exprResult.ops ++ unboxOps, unboxedVar, ctxU )
-
-            else
-                ( exprResult.ops, exprResult.resultVar, exprResult.ctx )
+        -- Uses symmetric coercion: primitive <-> !eco.value in either direction.
+        ( coerceOps, finalVar, ctxFinal ) =
+            coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType returnType
 
         ( ctx1, returnOp ) =
             ecoReturn ctxFinal finalVar returnType
 
         region : MlirRegion
         region =
-            mkRegion argPairs finalOps returnOp
+            mkRegion argPairs (exprResult.ops ++ coerceOps) returnOp
 
         ( ctx2, funcOp ) =
             funcFunc ctx1 funcName argPairs returnType region
@@ -1385,25 +1357,16 @@ generateTailFunc ctx funcName params expr monoType =
             monoTypeToMlir monoType
 
         -- Handle type mismatch between expression result and expected return type.
-        -- If expression returns !eco.value but function should return a primitive, unbox it.
-        ( finalOps, finalVar, ctxFinal ) =
-            if isEcoValueType exprResult.resultType && not (isEcoValueType retTy) then
-                -- Need to unbox !eco.value to primitive
-                let
-                    ( unboxOps, unboxedVar, ctxU ) =
-                        unboxToType exprResult.ctx exprResult.resultVar retTy
-                in
-                ( exprResult.ops ++ unboxOps, unboxedVar, ctxU )
-
-            else
-                ( exprResult.ops, exprResult.resultVar, exprResult.ctx )
+        -- Uses symmetric coercion: primitive <-> !eco.value in either direction.
+        ( coerceOps, finalVar, ctxFinal ) =
+            coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType retTy
 
         ( ctx1, returnOp ) =
             ecoReturn ctxFinal finalVar retTy
 
         region : MlirRegion
         region =
-            mkRegion argPairs finalOps returnOp
+            mkRegion argPairs (exprResult.ops ++ coerceOps) returnOp
 
         ( ctx2, funcOp ) =
             funcFunc ctx1 funcName argPairs retTy region
@@ -2471,6 +2434,39 @@ unboxToType ctx var targetType =
                 |> opBuilder.build
     in
     ( [ unboxOp ], unboxedVar, ctx2 )
+
+
+{-| Coerce an expression result to a desired MLIR type by inserting
+boxing/unboxing ops when the difference is only boxed vs unboxed.
+Handles both directions:
+- primitive -> !eco.value (box)
+- !eco.value -> primitive (unbox)
+-}
+coerceResultToType : Context -> String -> MlirType -> MlirType -> ( List MlirOp, String, Context )
+coerceResultToType ctx var actualTy expectedTy =
+    if actualTy == expectedTy then
+        -- No coercion needed
+        ( [], var, ctx )
+
+    else if isEcoValueType expectedTy && not (isEcoValueType actualTy) then
+        -- Need primitive -> boxed
+        boxToEcoValue ctx var actualTy
+
+    else if not (isEcoValueType expectedTy) && isEcoValueType actualTy then
+        -- Need boxed -> primitive
+        unboxToType ctx var expectedTy
+
+    else
+        -- Types don't match and no boxing/unboxing solution
+        -- This indicates a monomorphization bug - primitive type mismatches
+        -- (e.g., i64 vs f64) should have been resolved upstream
+        Debug.todo <|
+            "coerceResultToType: cannot coerce "
+                ++ Debug.toString actualTy
+                ++ " to "
+                ++ Debug.toString expectedTy
+                ++ " for variable "
+                ++ var
 
 
 generateCall : Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult

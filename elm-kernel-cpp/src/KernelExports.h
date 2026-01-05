@@ -28,12 +28,14 @@ double Elm_Kernel_Basics_sin(double x);
 double Elm_Kernel_Basics_tan(double x);
 double Elm_Kernel_Basics_sqrt(double x);
 double Elm_Kernel_Basics_log(double x);
-double Elm_Kernel_Basics_pow(double base, double exp);
+// Polymorphic operations take HPointer (tagged Int or Float) and return boxed result.
+// These examine the tag at runtime to determine whether to perform Int or Float arithmetic.
+uint64_t Elm_Kernel_Basics_pow(uint64_t base, uint64_t exp);
+uint64_t Elm_Kernel_Basics_add(uint64_t a, uint64_t b);
+uint64_t Elm_Kernel_Basics_sub(uint64_t a, uint64_t b);
+uint64_t Elm_Kernel_Basics_mul(uint64_t a, uint64_t b);
 double Elm_Kernel_Basics_e();
 double Elm_Kernel_Basics_pi();
-double Elm_Kernel_Basics_add(double a, double b);
-double Elm_Kernel_Basics_sub(double a, double b);
-double Elm_Kernel_Basics_mul(double a, double b);
 double Elm_Kernel_Basics_fdiv(double a, double b);
 int64_t Elm_Kernel_Basics_idiv(int64_t a, int64_t b);
 int64_t Elm_Kernel_Basics_modBy(int64_t modulus, int64_t x);

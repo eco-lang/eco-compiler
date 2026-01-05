@@ -4,7 +4,73 @@
 #include "../ExportHelpers.hpp"
 #include "Basics.hpp"
 
+// Include allocator for polymorphic arithmetic that needs to examine tagged values.
+#include "../../../runtime/src/allocator/Allocator.hpp"
+#include "../../../runtime/src/allocator/Heap.hpp"
+#include <cmath>
+#include <cstring>
+
 using namespace Elm::Kernel;
+
+namespace {
+
+// Helper to reinterpret uint64_t as HPointer (they're both 64 bits).
+inline Elm::HPointer toHPointer(uint64_t val) {
+    Elm::HPointer ptr;
+    static_assert(sizeof(ptr) == sizeof(val), "HPointer must be 64 bits");
+    memcpy(&ptr, &val, sizeof(ptr));
+    return ptr;
+}
+
+// Helper to reinterpret HPointer as uint64_t.
+inline uint64_t fromHPointer(Elm::HPointer ptr) {
+    uint64_t val;
+    memcpy(&val, &ptr, sizeof(val));
+    return val;
+}
+
+// Helper to get numeric values from an HPointer.
+// Returns true if it's an Int (value in intVal), false if Float (value in floatVal).
+inline bool getNumericValue(uint64_t hptr, Elm::i64& intVal, Elm::f64& floatVal) {
+    Elm::HPointer ptr = toHPointer(hptr);
+    void* obj = Elm::Allocator::instance().resolve(ptr);
+    if (!obj) {
+        // Invalid pointer - treat as 0
+        intVal = 0;
+        return true;
+    }
+    Elm::Header* hdr = static_cast<Elm::Header*>(obj);
+    if (hdr->tag == Elm::Tag_Int) {
+        Elm::ElmInt* intObj = static_cast<Elm::ElmInt*>(obj);
+        intVal = intObj->value;
+        return true;
+    } else if (hdr->tag == Elm::Tag_Float) {
+        Elm::ElmFloat* floatObj = static_cast<Elm::ElmFloat*>(obj);
+        floatVal = floatObj->value;
+        return false;
+    }
+    // Unknown type - treat as 0
+    intVal = 0;
+    return true;
+}
+
+// Helper to box an integer result.
+inline uint64_t boxInt(Elm::i64 val) {
+    void* obj = Elm::Allocator::instance().allocate(sizeof(Elm::ElmInt), Elm::Tag_Int);
+    Elm::ElmInt* intObj = static_cast<Elm::ElmInt*>(obj);
+    intObj->value = val;
+    return fromHPointer(Elm::Allocator::instance().wrap(obj));
+}
+
+// Helper to box a float result.
+inline uint64_t boxFloat(Elm::f64 val) {
+    void* obj = Elm::Allocator::instance().allocate(sizeof(Elm::ElmFloat), Elm::Tag_Float);
+    Elm::ElmFloat* floatObj = static_cast<Elm::ElmFloat*>(obj);
+    floatObj->value = val;
+    return fromHPointer(Elm::Allocator::instance().wrap(obj));
+}
+
+} // anonymous namespace
 
 extern "C" {
 
@@ -44,8 +110,89 @@ double Elm_Kernel_Basics_log(double x) {
     return Basics::log(x);
 }
 
-double Elm_Kernel_Basics_pow(double base, double exp) {
-    return Basics::pow(base, exp);
+// Polymorphic pow - examines tags to determine Int or Float arithmetic.
+uint64_t Elm_Kernel_Basics_pow(uint64_t base_ptr, uint64_t exp_ptr) {
+    Elm::i64 base_i, exp_i;
+    Elm::f64 base_f, exp_f;
+    bool base_is_int = getNumericValue(base_ptr, base_i, base_f);
+    bool exp_is_int = getNumericValue(exp_ptr, exp_i, exp_f);
+
+    // If both are ints, do integer power
+    if (base_is_int && exp_is_int) {
+        // Integer power - use repeated multiplication for positive exponents
+        if (exp_i < 0) {
+            // Negative exponent with ints -> result is 0 (integer division)
+            return boxInt(0);
+        }
+        Elm::i64 result = 1;
+        Elm::i64 b = base_i;
+        Elm::i64 e = exp_i;
+        while (e > 0) {
+            if (e & 1) result *= b;
+            b *= b;
+            e >>= 1;
+        }
+        return boxInt(result);
+    }
+
+    // At least one is a float - convert to float arithmetic
+    Elm::f64 base_val = base_is_int ? static_cast<Elm::f64>(base_i) : base_f;
+    Elm::f64 exp_val = exp_is_int ? static_cast<Elm::f64>(exp_i) : exp_f;
+    return boxFloat(std::pow(base_val, exp_val));
+}
+
+// Polymorphic add - examines tags to determine Int or Float arithmetic.
+uint64_t Elm_Kernel_Basics_add(uint64_t a_ptr, uint64_t b_ptr) {
+    Elm::i64 a_i, b_i;
+    Elm::f64 a_f, b_f;
+    bool a_is_int = getNumericValue(a_ptr, a_i, a_f);
+    bool b_is_int = getNumericValue(b_ptr, b_i, b_f);
+
+    // If both are ints, do integer addition
+    if (a_is_int && b_is_int) {
+        return boxInt(a_i + b_i);
+    }
+
+    // At least one is a float - convert to float arithmetic
+    Elm::f64 a_val = a_is_int ? static_cast<Elm::f64>(a_i) : a_f;
+    Elm::f64 b_val = b_is_int ? static_cast<Elm::f64>(b_i) : b_f;
+    return boxFloat(a_val + b_val);
+}
+
+// Polymorphic sub - examines tags to determine Int or Float arithmetic.
+uint64_t Elm_Kernel_Basics_sub(uint64_t a_ptr, uint64_t b_ptr) {
+    Elm::i64 a_i, b_i;
+    Elm::f64 a_f, b_f;
+    bool a_is_int = getNumericValue(a_ptr, a_i, a_f);
+    bool b_is_int = getNumericValue(b_ptr, b_i, b_f);
+
+    // If both are ints, do integer subtraction
+    if (a_is_int && b_is_int) {
+        return boxInt(a_i - b_i);
+    }
+
+    // At least one is a float - convert to float arithmetic
+    Elm::f64 a_val = a_is_int ? static_cast<Elm::f64>(a_i) : a_f;
+    Elm::f64 b_val = b_is_int ? static_cast<Elm::f64>(b_i) : b_f;
+    return boxFloat(a_val - b_val);
+}
+
+// Polymorphic mul - examines tags to determine Int or Float arithmetic.
+uint64_t Elm_Kernel_Basics_mul(uint64_t a_ptr, uint64_t b_ptr) {
+    Elm::i64 a_i, b_i;
+    Elm::f64 a_f, b_f;
+    bool a_is_int = getNumericValue(a_ptr, a_i, a_f);
+    bool b_is_int = getNumericValue(b_ptr, b_i, b_f);
+
+    // If both are ints, do integer multiplication
+    if (a_is_int && b_is_int) {
+        return boxInt(a_i * b_i);
+    }
+
+    // At least one is a float - convert to float arithmetic
+    Elm::f64 a_val = a_is_int ? static_cast<Elm::f64>(a_i) : a_f;
+    Elm::f64 b_val = b_is_int ? static_cast<Elm::f64>(b_i) : b_f;
+    return boxFloat(a_val * b_val);
 }
 
 double Elm_Kernel_Basics_e() {
@@ -54,18 +201,6 @@ double Elm_Kernel_Basics_e() {
 
 double Elm_Kernel_Basics_pi() {
     return Basics::pi();
-}
-
-double Elm_Kernel_Basics_add(double a, double b) {
-    return Basics::add(a, b);
-}
-
-double Elm_Kernel_Basics_sub(double a, double b) {
-    return Basics::sub(a, b);
-}
-
-double Elm_Kernel_Basics_mul(double a, double b) {
-    return Basics::mul(a, b);
 }
 
 double Elm_Kernel_Basics_fdiv(double a, double b) {
