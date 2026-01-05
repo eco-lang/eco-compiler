@@ -11,11 +11,20 @@ crag (ChatGPT + full index) is your primary source of high-level reasoning and
 historical design context.
 
 Global constraints:
-- All commands must be run from /work
+- All commands are to be run from /work
 - Use ONLY serena for semantic code retrieval and editing
 - Never modify code without an explicit design
 - Prefer consulting crag over extended local reasoning
+- crag can take a while to run, so do not set a timeout under 5 minutes on it, if using a timeout
+- Bias toward early escalation rather than repeated guessing.
+- Make only the minimum changes required by the approved design.
 
+If you want to re-run a particular test on its own, say SomeTest, you can do this like this:
+
+   ./build/test/test --filter elm/SomeTest
+   
+Use this technique where possible to save time on running the whole test suite when making changes to try and pass a particular test. Re-run the entire suite only once you get the particular case you are focussing on to pass.
+   
 ================================================================
 
 LOOP:
@@ -48,30 +57,72 @@ LOOP:
 
      Pick the most important issue to fix and provide a complete design that an engineer could follow to fix it, making sure to describe all code changes needed." | crag -n
 
-4. Design validation:
-   - Restate the design as a checklist.
-   - If unclear, re-query crag with a focused question.
+================================================================
+CONFIDENCE GATES (MANDATORY BEFORE IMPLEMENTATION)
 
-5. Implementation:
-   - Implement exactly the approved design using serena.
-   - Do not fix secondary issues unless required.
+You must pass ALL gates below before modifying any code.
 
-6. Rebuild:
+---------------------------------------------------------------
+GATE 1 — DESIGN RESTATEMENT (NO COPYING)
+
+- Restate the crag-provided design in your own words.
+- Present it as a numbered, actionable checklist.
+- Each step MUST reference concrete elements such as:
+  - File paths
+  - Functions
+  - Types
+  - Data structures
+- Do NOT quote crag verbatim.
+- If you cannot restate a step concretely, STOP.
+
+---------------------------------------------------------------
+GATE 2 — INVARIANT IDENTIFICATION
+
+- List the key invariants that this change relies on or must preserve.
+- Examples (illustrative, not exhaustive):
+  - AST structure and immutability
+  - Type inference order
+  - Error reporting guarantees
+  - Elm semantic assumptions enforced by tests
+- For each invariant, briefly state why it must remain true.
+- If any invariant is unclear or uncertain:
+  - STOP
+  - Formulate a focused clarification question
+  - Query crag using:
+    echo "<QUESTION + CONTEXT>" | crag -n
+  - Do NOT modify code.
+
+================================================================
+IMPLEMENTATION
+
+4. Implementation:
+
+   - Implement the approved design exactly as restated.
+   - Use serena exclusively for code search and edits.
+   - Do NOT introduce speculative refactors.
+   - Do NOT fix secondary issues unless explicitly required by the design.
+
+5. Rebuild:
+
    cmake --build build
 
-7. Re-run tests:
+6. Re-run tests:
+
    ./build/test/test --filter elm
 
 ================================================================
-
 ESCALATION RULES:
 
-- If the same failure category appears twice:
-  → Re-consult crag with updated test output and code diffs.
+
+- If the same failure category appears more than once:
+  → Re-consult crag with:
+    - Updated test output
+    - The code you changed
+    - A brief explanation of why the previous design did not resolve the issue
 
 - If you are unsure why a change failed:
-  → Do not guess.
-  → Query crag with a specific question and code context.
+  → Do NOT guess.
+  → Ask crag a small, specific question with relevant code context.
 
 ================================================================
 
