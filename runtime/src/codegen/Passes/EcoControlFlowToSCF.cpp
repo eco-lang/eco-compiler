@@ -153,12 +153,9 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
         }
 
         LLVM_DEBUG(llvm::dbgs() << "  -> MATCHED! Converting to scf.if\n");
-        llvm::errs() << "[SCF] Lowering eco.case to scf.if at " << op.getLoc() << "\n";
 
         auto loc = op.getLoc();
         auto tags = op.getTags();
-        llvm::errs() << "[SCF]   tags = [" << tags[0] << ", " << tags[1] << "]\n";
-        llvm::errs() << "[SCF]   hasI1Scrutinee = " << (hasI1Scrutinee(op) ? "true" : "false") << "\n";
 
         // Compute condition based on scrutinee type
         Value cond;
@@ -167,18 +164,14 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
             // Convention: tag 1 = True goes to alt1 (then), tag 0 = False goes to alt0 (else)
             // If tags[1] == 1, condition is the scrutinee directly
             // If tags[1] == 0, condition is negated
-            llvm::errs() << "[SCF]   tags[1] = " << tags[1] << "\n";
             if (tags[1] == 1) {
                 cond = op.getScrutinee();
-                llvm::errs() << "[SCF]   Using scrutinee directly as condition\n";
             } else {
                 // tags[1] == 0: negate the condition (XOR with 1)
                 auto trueConst = rewriter.create<arith::ConstantOp>(
                     loc, rewriter.getI1Type(), rewriter.getIntegerAttr(rewriter.getI1Type(), 1));
                 cond = rewriter.create<arith::XOrIOp>(loc, op.getScrutinee(), trueConst);
-                llvm::errs() << "[SCF]   Negating condition (XOR with 1)\n";
             }
-            llvm::errs() << "[SCF]   then = alt[1], else = alt[0]\n";
         } else {
             // For eco.value scrutinee: extract tag and compare
             auto tag = rewriter.create<GetTagOp>(loc, rewriter.getI32Type(),
@@ -273,17 +266,11 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
         // and create a new one with the scf.if results.
         // Handle both eco.return (top-level/nested in eco.case) and scf.yield
         // (nested in scf.if/scf.index_switch regions).
-        llvm::errs() << "[SCF]   scf.if has " << ifOp.getNumResults() << " results\n";
-        for (unsigned i = 0; i < ifOp.getNumResults(); ++i) {
-            llvm::errs() << "[SCF]     result " << i << " type: " << ifOp.getResult(i).getType() << "\n";
-        }
         bool wasYield = isa<scf::YieldOp>(nextOp);
         rewriter.eraseOp(nextOp);
         if (wasYield) {
-            llvm::errs() << "[SCF]   Creating scf.yield with " << ifOp.getNumResults() << " operands\n";
             rewriter.create<scf::YieldOp>(loc, ifOp.getResults());
         } else {
-            llvm::errs() << "[SCF]   Creating eco.return with " << ifOp.getNumResults() << " operands\n";
             rewriter.create<ReturnOp>(loc, ifOp.getResults());
         }
 

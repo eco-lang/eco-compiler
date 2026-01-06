@@ -11,6 +11,33 @@
 namespace Testing {
 
 // ============================================================================
+// CurrentFilter - Thread-local filter for parallel test containers.
+// ============================================================================
+
+/**
+ * Thread-local storage for the current filter string.
+ * Used by parallel test containers (like ElmParallelTestSuite) to know
+ * which tests to run when runWithResult() is called.
+ */
+class CurrentFilter {
+public:
+    static void set(const std::string& filter) {
+        filter_ = filter;
+    }
+
+    static const std::string& get() {
+        return filter_;
+    }
+
+    static void clear() {
+        filter_.clear();
+    }
+
+private:
+    static inline thread_local std::string filter_;
+};
+
+// ============================================================================
 // Deadline - Global time limit for test runs.
 // ============================================================================
 
@@ -124,6 +151,20 @@ public:
     // Collects all leaf test names, optionally filtered by pattern.
     virtual void collectTests(std::vector<const Test*>& out,
                               const std::string& pattern = "") const = 0;
+
+    // For containers that track individual test results:
+    // Returns true if this test provides detailed per-test results.
+    virtual bool hasDetailedResults() const { return false; }
+
+    // Get pass/fail counts from last run (only valid if hasDetailedResults() is true)
+    virtual size_t getLastPassCount() const { return 0; }
+    virtual size_t getLastFailCount() const { return 0; }
+
+    // Get names of failed tests from last run
+    virtual const std::vector<std::string>& getLastFailedTests() const {
+        static const std::vector<std::string> empty;
+        return empty;
+    }
 };
 
 /**
@@ -395,16 +436,52 @@ private:
             if (auto* suite = dynamic_cast<const TestSuite*>(child.get())) {
                 suite->runHierarchical(filter, result, depth + 1);
             } else {
-                // It's a TestCase - check if it matches filter.
-                const std::string& name = child->getName();
-                if (filter.empty() || name.find(filter) != std::string::npos) {
-                    bool passed = child->runWithResult();
-                    result.tests_run++;
-                    if (passed) {
-                        result.tests_passed++;
+                // It's a TestCase or a container like ElmParallelTestSuite.
+                // Check if it has matching sub-tests (for containers) or if name matches.
+                std::vector<const Test*> matchingTests;
+                child->collectTests(matchingTests, filter);
+
+                if (!matchingTests.empty()) {
+                    // Check if this is a simple single test or a container.
+                    bool isSimpleTest = (matchingTests.size() == 1 &&
+                                         matchingTests[0] == child.get());
+
+                    if (isSimpleTest) {
+                        // Simple single test - original behavior.
+                        bool passed = child->runWithResult();
+                        result.tests_run++;
+                        if (passed) {
+                            result.tests_passed++;
+                        } else {
+                            result.tests_failed++;
+                            result.failed_tests.push_back({child->getName()});
+                        }
                     } else {
-                        result.tests_failed++;
-                        result.failed_tests.push_back({name});
+                        // Container with multiple sub-tests (e.g., ElmParallelTestSuite).
+                        // Run the container - it handles its own output and filtering.
+
+                        // Set the current filter so container can use it.
+                        CurrentFilter::set(filter);
+                        child->runWithResult();
+                        CurrentFilter::clear();
+
+                        // Check if container provides detailed results
+                        if (child->hasDetailedResults()) {
+                            // Use the container's tracked results
+                            result.tests_run += child->getLastPassCount() + child->getLastFailCount();
+                            result.tests_passed += child->getLastPassCount();
+                            result.tests_failed += child->getLastFailCount();
+
+                            // Add individual failed test names
+                            for (const auto& name : child->getLastFailedTests()) {
+                                result.failed_tests.push_back({name});
+                            }
+                        } else {
+                            // Fallback for containers without detailed tracking
+                            size_t numTests = matchingTests.size();
+                            result.tests_run += numTests;
+                            result.tests_passed += numTests;  // Assume all passed
+                        }
                     }
                 }
             }

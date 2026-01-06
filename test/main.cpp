@@ -636,7 +636,8 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite codegenTests = CodegenTest::buildCodegenTestSuite();
 
     // Elm end-to-end tests (compile Elm -> MLIR -> JIT)
-    Testing::TestSuite elmE2ETests = ElmTest::buildElmTestSuite();
+    // Returns unique_ptr to ElmParallelTestSuite for parallel execution
+    auto elmE2ETests = ElmTest::buildElmTestSuite();
 
     // Root suite containing all sub-suites.
     Testing::TestSuite suite("All Tests");
