@@ -49,10 +49,19 @@ export CC="${CC:-clang}"
 export CXX="${CXX:-clang++}"
 export PATH=$HOME/.local/bin:$PATH
 
-# 6) Default command
+# 6) Configure serena as MCP server for claude (if not already configured)
+claude_settings="${home_dir}/.claude/settings.json"
+if [[ ! -f "${claude_settings}" ]] || ! grep -q '"serena"' "${claude_settings}" 2>/dev/null; then
+  gosu "${uid}:${gid}" claude mcp add serena -- uvx --from git+https://github.com/oraios/serena serena start-mcp-server --context claude-code --project /work 2>/dev/null || true
+fi
+
+# 7) Start serena MCP server in the background
+gosu "${uid}:${gid}" bash -c 'nohup uvx --from git+https://github.com/oraios/serena serena start-mcp-server --context claude-code --project /work > /tmp/serena.log 2>&1 &'
+
+# 8) Default command
 if [[ $# -eq 0 ]]; then
   set -- bash
 fi
 
-# 7) Drop privileges to the detected user
+# 9) Drop privileges to the detected user
 exec gosu "${uid}:${gid}" "$@"

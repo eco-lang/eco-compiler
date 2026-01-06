@@ -72,6 +72,10 @@ RUN ./install_claude.sh
 COPY ./crag_0.1.0_amd64.deb .
 RUN dpkg --install ./crag_0.1.0_amd64.deb
 
+# Install uv (Python package manager from Astral) system-wide
+ENV UV_INSTALL_DIR="/usr/local/bin"
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
 # Workspace
 WORKDIR /work
 
@@ -85,6 +89,9 @@ ENV LD_LIBRARY_PATH=/opt/llvm-mlir/lib
 ENV PATH=/opt/llvm-mlir/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ENV CC=clang
 ENV CXX=clang++
+
+# Expose serena dashboard port
+EXPOSE 24282
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["bash"]
