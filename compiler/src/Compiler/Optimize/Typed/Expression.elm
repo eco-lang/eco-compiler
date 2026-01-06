@@ -1003,13 +1003,34 @@ destruct annotations ((A.At region patternInfo) as pattern) =
 
 
 destructHelp : TOpt.Path -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
-destructHelp path (A.At region patternInfo) revDs =
+destructHelp path pattern revDs =
+    destructHelpWithType Nothing path pattern revDs
+
+
+{-| Destructure a pattern with an optional type hint.
+
+When destructuring constructor arguments, we have access to the argument's type
+from PatternCtorArg. This type hint is used when creating destructors for PVar
+patterns, allowing the type system to track the actual field types instead of
+using placeholder TVar "?" types.
+
+This is critical for correct code generation: when a constructor like Circle Int
+stores its Int field unboxed, the destructor needs to know the field type is Int
+so that eco.project can read the value with the correct unboxed flag.
+-}
+destructHelpWithType : Maybe Can.Type -> TOpt.Path -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
+destructHelpWithType maybeType path (A.At region patternInfo) revDs =
     case patternInfo.node of
         Can.PAnything ->
             Names.pure revDs
 
         Can.PVar name ->
-            Names.pure (TOpt.Destructor name path (Can.TVar "?") :: revDs)
+            -- Use the type hint if available, otherwise fall back to TVar "?"
+            let
+                varType =
+                    Maybe.withDefault (Can.TVar "?") maybeType
+            in
+            Names.pure (TOpt.Destructor name path varType :: revDs)
 
         Can.PRecord fields ->
             let
@@ -1096,20 +1117,20 @@ destructHelp path (A.At region patternInfo) revDs =
 
         Can.PCtor { union, args } ->
             case args of
-                [ Can.PatternCtorArg _ _ arg ] ->
+                [ Can.PatternCtorArg _ argType arg ] ->
                     let
                         (Can.Union unionData) =
                             union
                     in
                     case unionData.opts of
                         Can.Normal ->
-                            destructHelp (TOpt.Index Index.first path) arg revDs
+                            destructHelpWithType (Just argType) (TOpt.Index Index.first path) arg revDs
 
                         Can.Unbox ->
-                            destructHelp (TOpt.Unbox path) arg revDs
+                            destructHelpWithType (Just argType) (TOpt.Unbox path) arg revDs
 
                         Can.Enum ->
-                            destructHelp (TOpt.Index Index.first path) arg revDs
+                            destructHelpWithType (Just argType) (TOpt.Index Index.first path) arg revDs
 
                 _ ->
                     case path of
@@ -1149,8 +1170,8 @@ destructTwo path a b revDs =
 
 
 destructCtorArg : TOpt.Path -> List TOpt.Destructor -> Can.PatternCtorArg -> Names.Tracker (List TOpt.Destructor)
-destructCtorArg path revDs (Can.PatternCtorArg index _ arg) =
-    destructHelp (TOpt.Index index path) arg revDs
+destructCtorArg path revDs (Can.PatternCtorArg index argType arg) =
+    destructHelpWithType (Just argType) (TOpt.Index index path) arg revDs
 
 
 {-| Destructure a case pattern into a list of destructors.

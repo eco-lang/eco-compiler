@@ -449,6 +449,13 @@ struct ConstructOpLowering : public OpConversionPattern<ConstructOp> {
                 rewriter.create<LLVM::CallOp>(
                     loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_field_f64"),
                     ValueRange{objPtr, idx, fieldVal});
+            } else if (origType.isInteger(1)) {
+                // Unboxed i1 (bool) -> zero extend to i64, then eco_store_field_i64
+                // Represent boolean as 0 or 1 in memory, same storage as other unboxed ints
+                auto extended = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, fieldVal);
+                rewriter.create<LLVM::CallOp>(
+                    loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_field_i64"),
+                    ValueRange{objPtr, idx, extended});
             } else if (origType.isInteger(16)) {
                 // Unboxed i16 (char) -> zero extend to i64, then eco_store_field_i64
                 auto extended = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, fieldVal);

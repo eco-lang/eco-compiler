@@ -248,7 +248,21 @@ isPolymorphicKernel home name =
         "Basics" ->
             -- min, max, compare work with any comparable type
             -- These need boxed !eco.value arguments when called as kernel functions
+            -- Numeric operations (add, sub, mul, etc.) are ALSO polymorphic kernels
+            -- because the C++ implementations (Elm_Kernel_Basics_add, etc.) expect
+            -- boxed eco.value pointers, not raw i64 values. When called as kernels
+            -- (not via intrinsics), we must box the arguments.
             name == "min" || name == "max" || name == "compare"
+            || name == "add"
+            || name == "sub"
+            || name == "mul"
+            || name == "idiv"
+            || name == "modBy"
+            || name == "remainderBy"
+            || name == "negate"
+            || name == "abs"
+            || name == "pow"
+            || name == "fdiv"
 
         _ ->
             False
@@ -1981,20 +1995,27 @@ generateVarGlobal ctx specId monoType =
         funcName : String
         funcName =
             specIdToFuncName ctx.registry specId
+
+        -- Use the signature table to determine arity, not just monoType.
+        -- This is more reliable because monoType might be a type variable (MVar)
+        -- even though the underlying function has parameters.
+        maybeSig : Maybe FuncSignature
+        maybeSig =
+            Dict.get specId ctx.signatures
     in
-    case monoType of
-        Mono.MFunction _ _ ->
+    case maybeSig of
+        Just sig ->
             let
                 arity : Int
                 arity =
-                    countTotalArity monoType
+                    List.length sig.paramTypes
             in
             if arity == 0 then
                 -- Zero-arity function (thunk): call directly instead of creating a PAP.
                 -- papCreate requires arity > 0 (num_captured < arity invariant).
                 let
                     resultMlirType =
-                        monoTypeToMlir monoType
+                        monoTypeToMlir sig.returnType
 
                     ( ctx2, callOp ) =
                         ecoCallNamed ctx1 var funcName [] resultMlirType
@@ -2027,20 +2048,65 @@ generateVarGlobal ctx specId monoType =
                 , ctx = ctx2
                 }
 
-        _ ->
-            -- Non-function type: call the function directly (e.g., zero-arg constructors)
-            let
-                resultMlirType =
-                    monoTypeToMlir monoType
+        Nothing ->
+            -- No signature found - fall back to monoType-based logic
+            -- This should only happen for primitives or special cases
+            case monoType of
+                Mono.MFunction _ _ ->
+                    let
+                        arity : Int
+                        arity =
+                            countTotalArity monoType
+                    in
+                    if arity == 0 then
+                        let
+                            resultMlirType =
+                                monoTypeToMlir monoType
 
-                ( ctx2, callOp ) =
-                    ecoCallNamed ctx1 var funcName [] resultMlirType
-            in
-            { ops = [ callOp ]
-            , resultVar = var
-            , resultType = resultMlirType
-            , ctx = ctx2
-            }
+                            ( ctx2, callOp ) =
+                                ecoCallNamed ctx1 var funcName [] resultMlirType
+                        in
+                        { ops = [ callOp ]
+                        , resultVar = var
+                        , resultType = resultMlirType
+                        , ctx = ctx2
+                        }
+
+                    else
+                        let
+                            attrs =
+                                Dict.fromList
+                                    [ ( "function", SymbolRefAttr funcName )
+                                    , ( "arity", IntAttr Nothing arity )
+                                    , ( "num_captured", IntAttr Nothing 0 )
+                                    ]
+
+                            ( ctx2, papOp ) =
+                                mlirOp ctx1 "eco.papCreate"
+                                    |> opBuilder.withResults [ ( var, ecoValue ) ]
+                                    |> opBuilder.withAttrs attrs
+                                    |> opBuilder.build
+                        in
+                        { ops = [ papOp ]
+                        , resultVar = var
+                        , resultType = ecoValue
+                        , ctx = ctx2
+                        }
+
+                _ ->
+                    -- Non-function type: call the function directly (e.g., zero-arg constructors)
+                    let
+                        resultMlirType =
+                            monoTypeToMlir monoType
+
+                        ( ctx2, callOp ) =
+                            ecoCallNamed ctx1 var funcName [] resultMlirType
+                    in
+                    { ops = [ callOp ]
+                    , resultVar = var
+                    , resultType = resultMlirType
+                    , ctx = ctx2
+                    }
 
 
 generateVarKernel : Context -> Name.Name -> Name.Name -> Mono.MonoType -> ExprResult
@@ -3516,52 +3582,43 @@ generateMonoPath ctx path targetType =
 
         Mono.MonoIndex index subPath ->
             let
-                -- Intermediate projections always produce !eco.value
+                -- Navigate to the container object (always !eco.value)
                 ( subOps, subVar, ctx1 ) =
                     generateMonoPath ctx subPath ecoValue
 
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
+                -- Project directly to the targetType.
+                -- If targetType is primitive (i64, f64, i1, i16), ecoProject sets unboxed=true
+                -- and reads the raw value directly from the field.
+                -- If targetType is !eco.value, ecoProject sets unboxed=false and reads a pointer.
+                -- This matches how eco.construct stores fields: primitive types are stored unboxed.
                 ( ctx3, projectOp ) =
-                    ecoProject ctx2 resultVar index ecoValue subVar ecoValue
-
-                -- Unbox if targetType is a primitive
-                ( unboxOps, finalVar, ctx4 ) =
-                    if isEcoValueType targetType then
-                        ( [], resultVar, ctx3 )
-
-                    else
-                        unboxToType ctx3 resultVar targetType
+                    ecoProject ctx2 resultVar index targetType subVar ecoValue
             in
-            ( subOps ++ [ projectOp ] ++ unboxOps
-            , finalVar
-            , ctx4
+            ( subOps ++ [ projectOp ]
+            , resultVar
+            , ctx3
             )
 
         Mono.MonoField index subPath ->
             let
-                -- Intermediate projections always produce !eco.value
+                -- Navigate to the container object (always !eco.value)
                 ( subOps, subVar, ctx1 ) =
                     generateMonoPath ctx subPath ecoValue
 
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
+                -- Project directly to the targetType.
+                -- Same as MonoIndex: primitive types are stored unboxed and should be read directly.
                 ( ctx3, projectOp ) =
-                    ecoProject ctx2 resultVar index ecoValue subVar ecoValue
-
-                -- Unbox if targetType is a primitive
-                ( unboxOps, finalVar, ctx4 ) =
-                    if isEcoValueType targetType then
-                        ( [], resultVar, ctx3 )
-
-                    else
-                        unboxToType ctx3 resultVar targetType
+                    ecoProject ctx2 resultVar index targetType subVar ecoValue
             in
-            ( subOps ++ [ projectOp ] ++ unboxOps
-            , finalVar
-            , ctx4
+            ( subOps ++ [ projectOp ]
+            , resultVar
+            , ctx3
             )
 
         Mono.MonoUnbox subPath ->
@@ -3626,25 +3683,22 @@ generateDTPath ctx root dtPath targetType =
 
         DT.Index index subPath ->
             let
-                -- Intermediate projections always produce !eco.value
+                -- Navigate to the container object (always !eco.value)
                 ( subOps, subVar, ctx1 ) =
                     generateDTPath ctx root subPath ecoValue
 
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
+                -- Project directly to the targetType.
+                -- If targetType is primitive (i64, f64, i1, i16), ecoProject sets unboxed=true
+                -- and reads the raw value directly from the field.
+                -- If targetType is !eco.value, ecoProject sets unboxed=false and reads a pointer.
+                -- This matches how eco.construct stores fields: primitive types are stored unboxed.
                 ( ctx3, projectOp ) =
-                    ecoProject ctx2 resultVar (Index.toMachine index) ecoValue subVar ecoValue
-
-                -- Unbox if targetType is a primitive
-                ( unboxOps, finalVar, ctx4 ) =
-                    if isEcoValueType targetType then
-                        ( [], resultVar, ctx3 )
-
-                    else
-                        unboxToType ctx3 resultVar targetType
+                    ecoProject ctx2 resultVar (Index.toMachine index) targetType subVar ecoValue
             in
-            ( subOps ++ [ projectOp ] ++ unboxOps, finalVar, ctx4 )
+            ( subOps ++ [ projectOp ], resultVar, ctx3 )
 
         DT.Unbox subPath ->
             -- DT.Unbox is a SEMANTIC operation for single-constructor types.
