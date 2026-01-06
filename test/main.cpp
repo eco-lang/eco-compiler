@@ -22,7 +22,7 @@
 #include "allocator/ListOpsTest.hpp"
 #include "allocator/BytesOpsTest.hpp"
 #include "allocator/RuntimeExportsTest.hpp"
-#include "codegen/CodegenTest.hpp"
+#include "codegen/CodegenIsolatedTest.hpp"
 #include "elm/ElmTest.hpp"
 #include "TestSuite.hpp"
 
@@ -632,8 +632,8 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite runtimeExportsTests("RuntimeExports");
     registerRuntimeExportsTests(runtimeExportsTests);
 
-    // Codegen tests (MLIR lowering and JIT execution)
-    Testing::TestSuite codegenTests = CodegenTest::buildCodegenTestSuite();
+    // Codegen tests (MLIR lowering and JIT execution) - parallel isolated execution
+    auto codegenTests = CodegenIsolatedTest::buildCodegenTestSuite();
 
     // Elm end-to-end tests (compile Elm -> MLIR -> JIT)
     // Returns unique_ptr to ElmParallelTestSuite for parallel execution
