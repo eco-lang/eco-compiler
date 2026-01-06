@@ -26,6 +26,9 @@ namespace IsolatedTestRunner {
 constexpr int MAX_PARALLEL_TESTS = 8;
 constexpr int TEST_TIMEOUT_SECONDS = 60;
 
+// Use Color from Testing namespace
+namespace Color = Testing::Color;
+
 // ============================================================================
 // Shared Memory Structure for Parent-Child Communication
 // ============================================================================
@@ -126,20 +129,24 @@ inline void printTestResult(const std::string& name,
                             bool passed,
                             const std::string& error) {
     std::ostringstream oss;
-    oss << "- " << name << "\n";
 
-    // Include captured output
+    // Test name in bold
+    oss << "- " << Color::bold() << name << Color::reset() << "\n";
+
+    // Include captured output (dimmed)
     if (!output.empty()) {
-        oss << output;
+        oss << Color::dim() << output << Color::reset();
         if (output.back() != '\n') {
             oss << "\n";
         }
     }
 
+    // Result status with color
     if (passed) {
-        oss << "OK\n";
+        oss << Color::bold() << Color::green() << "OK" << Color::reset() << "\n";
     } else {
-        oss << "FAILED: " << error << "\n";
+        oss << Color::bold() << Color::red() << "FAILED" << Color::reset()
+            << ": " << Color::red() << error << Color::reset() << "\n";
     }
 
     // Print atomically

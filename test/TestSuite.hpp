@@ -6,9 +6,55 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 namespace Testing {
+
+// ============================================================================
+// ANSI Color Support
+// ============================================================================
+
+/**
+ * ANSI escape codes for terminal colors and formatting.
+ * Colors are only emitted when stdout is a TTY.
+ */
+namespace Color {
+    // Check if stdout supports color (is a TTY)
+    inline bool supportsColor() {
+        static int cached = -1;
+        if (cached == -1) {
+            cached = isatty(STDOUT_FILENO) ? 1 : 0;
+        }
+        return cached == 1;
+    }
+
+    // Reset all formatting
+    inline const char* reset() { return supportsColor() ? "\033[0m" : ""; }
+
+    // Text styles
+    inline const char* bold() { return supportsColor() ? "\033[1m" : ""; }
+    inline const char* dim() { return supportsColor() ? "\033[2m" : ""; }
+    inline const char* italic() { return supportsColor() ? "\033[3m" : ""; }
+
+    // Foreground colors
+    inline const char* red() { return supportsColor() ? "\033[31m" : ""; }
+    inline const char* green() { return supportsColor() ? "\033[32m" : ""; }
+    inline const char* yellow() { return supportsColor() ? "\033[33m" : ""; }
+    inline const char* blue() { return supportsColor() ? "\033[34m" : ""; }
+    inline const char* magenta() { return supportsColor() ? "\033[35m" : ""; }
+    inline const char* cyan() { return supportsColor() ? "\033[36m" : ""; }
+    inline const char* white() { return supportsColor() ? "\033[37m" : ""; }
+    inline const char* gray() { return supportsColor() ? "\033[90m" : ""; }
+
+    // Bright foreground colors
+    inline const char* brightRed() { return supportsColor() ? "\033[91m" : ""; }
+    inline const char* brightGreen() { return supportsColor() ? "\033[92m" : ""; }
+    inline const char* brightYellow() { return supportsColor() ? "\033[93m" : ""; }
+    inline const char* brightBlue() { return supportsColor() ? "\033[94m" : ""; }
+    inline const char* brightMagenta() { return supportsColor() ? "\033[95m" : ""; }
+    inline const char* brightCyan() { return supportsColor() ? "\033[96m" : ""; }
+}
 
 // ============================================================================
 // CurrentFilter - Thread-local filter for parallel test containers.
@@ -180,14 +226,14 @@ public:
 
     // Executes the test function, printing the test name first.
     void run() const override {
-        std::cout << "- " << name_ << std::endl;
+        std::cout << "- " << Color::bold() << name_ << Color::reset() << std::endl;
         testFunc_();
     }
 
     // Executes the test with result tracking.
     // Returns true if passed, false if failed.
     bool runWithResult() const override {
-        std::cout << "- " << name_ << std::endl;
+        std::cout << "- " << Color::bold() << name_ << Color::reset() << std::endl;
         try {
             testFunc_();
             return true;
@@ -195,7 +241,8 @@ public:
             // RapidCheck throws on failure - error already printed
             return false;
         } catch (...) {
-            std::cerr << "Unknown exception in test: " << name_ << std::endl;
+            std::cerr << Color::bold() << Color::red() << "Unknown exception in test: "
+                      << Color::reset() << name_ << std::endl;
             return false;
         }
     }
@@ -239,24 +286,26 @@ public:
 
     // Executes the test function once, printing result.
     void run() const override {
-        std::cout << "- " << name_ << std::endl;
+        std::cout << "- " << Color::bold() << name_ << Color::reset() << std::endl;
         testFunc_();
-        std::cout << "OK" << std::endl;
+        std::cout << Color::bold() << Color::green() << "OK" << Color::reset() << std::endl;
     }
 
     // Executes the test with result tracking.
     // Returns true if passed, false if failed.
     bool runWithResult() const override {
-        std::cout << "- " << name_ << std::endl;
+        std::cout << "- " << Color::bold() << name_ << Color::reset() << std::endl;
         try {
             testFunc_();
-            std::cout << "OK" << std::endl;
+            std::cout << Color::bold() << Color::green() << "OK" << Color::reset() << std::endl;
             return true;
         } catch (const std::exception& e) {
-            std::cerr << "FAILED: " << e.what() << std::endl;
+            std::cerr << Color::bold() << Color::red() << "FAILED" << Color::reset()
+                      << ": " << Color::red() << e.what() << Color::reset() << std::endl;
             return false;
         } catch (...) {
-            std::cerr << "FAILED: Unknown exception" << std::endl;
+            std::cerr << Color::bold() << Color::red() << "FAILED" << Color::reset()
+                      << ": " << Color::red() << "Unknown exception" << Color::reset() << std::endl;
             return false;
         }
     }
@@ -418,7 +467,8 @@ private:
         // Print suite header (skip for root/unnamed suites).
         if (!name_.empty()) {
             std::string indent(depth * 2, ' ');
-            std::cout << indent << "=== " << name_ << " ===" << std::endl;
+            std::cout << indent << Color::bold() << Color::cyan()
+                      << "=== " << name_ << " ===" << Color::reset() << std::endl;
         }
 
         for (const auto& child : children_) {

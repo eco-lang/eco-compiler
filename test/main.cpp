@@ -194,31 +194,38 @@ uint64_t configureRapidCheck(const TestConfig& config) {
 // Prints the test run summary.
 void printTestSummary(const Testing::TestSuiteResult& result, uint64_t seed) {
     std::cout << std::endl;
-    std::cout << "=== Test Summary ===" << std::endl;
+    std::cout << Testing::Color::bold() << Testing::Color::cyan() << "=== Test Summary ==="
+              << Testing::Color::reset() << std::endl;
     std::cout << std::endl;
 
     // Print pass/fail counts.
     std::cout << "Tests run:    " << result.tests_run << std::endl;
-    std::cout << "Tests passed: " << result.tests_passed << std::endl;
-    std::cout << "Tests failed: " << result.tests_failed << std::endl;
+    std::cout << "Tests passed: " << Testing::Color::green() << result.tests_passed
+              << Testing::Color::reset() << std::endl;
+    std::cout << "Tests failed: " << Testing::Color::red() << result.tests_failed
+              << Testing::Color::reset() << std::endl;
 
     // Print overall result.
     std::cout << std::endl;
     if (result.tests_failed == 0) {
-        std::cout << "Result: PASSED" << std::endl;
+        std::cout << "Result: " << Testing::Color::bold() << Testing::Color::green()
+                  << "PASSED" << Testing::Color::reset() << std::endl;
     } else {
-        std::cout << "Result: FAILED" << std::endl;
+        std::cout << "Result: " << Testing::Color::bold() << Testing::Color::red()
+                  << "FAILED" << Testing::Color::reset() << std::endl;
         std::cout << std::endl;
 
         // List failed tests.
-        std::cout << "Failed tests:" << std::endl;
+        std::cout << Testing::Color::bold() << "Failed tests:" << Testing::Color::reset() << std::endl;
         for (const auto& failed : result.failed_tests) {
-            std::cout << "  - " << failed.name << std::endl;
+            std::cout << "  - " << Testing::Color::red() << failed.name
+                      << Testing::Color::reset() << std::endl;
         }
 
         // Print seed for reproduction.
         std::cout << std::endl;
-        std::cout << "To reproduce failures, run with: --seed " << seed << std::endl;
+        std::cout << Testing::Color::yellow() << "To reproduce failures, run with: --seed "
+                  << seed << Testing::Color::reset() << std::endl;
     }
 }
 
@@ -426,20 +433,22 @@ void runInteractive(const Testing::TestSuite& suite, const std::string& path = "
             return;
         }
 
-        std::cout << "\n=== " << display_path << " ===\n\n";
+        std::cout << "\n" << Testing::Color::bold() << Testing::Color::cyan()
+                  << "=== " << display_path << " ===" << Testing::Color::reset() << "\n\n";
 
         // Display children with type indicators.
         for (size_t i = 0; i < children.size(); i++) {
             const auto& child = children[i];
             bool is_suite = dynamic_cast<const Testing::TestSuite*>(child.get()) != nullptr;
-            std::cout << "  " << (i + 1) << ". ";
+            std::cout << "  " << Testing::Color::bold() << (i + 1) << Testing::Color::reset() << ". ";
             if (is_suite) {
-                std::cout << "[Suite] ";
+                std::cout << Testing::Color::magenta() << "[Suite] " << Testing::Color::reset();
             }
             std::cout << child->getName();
             if (is_suite) {
                 auto* sub = static_cast<const Testing::TestSuite*>(child.get());
-                std::cout << " (" << sub->countTests() << " tests)";
+                std::cout << Testing::Color::dim() << " (" << sub->countTests() << " tests)"
+                          << Testing::Color::reset();
             }
             std::cout << "\n";
         }
@@ -491,17 +500,21 @@ void runInteractive(const Testing::TestSuite& suite, const std::string& path = "
         }
 
         // Run selected tests/suites.
-        std::cout << "\nRunning " << selections.size() << " item(s)...\n\n";
+        std::cout << "\n" << Testing::Color::dim() << "Running " << selections.size()
+                  << " item(s)..." << Testing::Color::reset() << "\n\n";
         for (size_t idx : selections) {
             const auto& child = children[idx - 1];
             if (auto* sub_suite = dynamic_cast<const Testing::TestSuite*>(child.get())) {
-                std::cout << "=== " << sub_suite->getName() << " ===\n";
+                std::cout << Testing::Color::bold() << Testing::Color::cyan()
+                          << "=== " << sub_suite->getName() << " ==="
+                          << Testing::Color::reset() << "\n";
                 sub_suite->run("");
             } else {
                 child->run();
             }
         }
-        std::cout << "\nDone. Press Enter to continue...";
+        std::cout << "\n" << Testing::Color::dim() << "Done. Press Enter to continue..."
+                  << Testing::Color::reset();
         std::string dummy;
         std::getline(std::cin, dummy);
     }
@@ -667,7 +680,9 @@ int main(int argc, char* argv[]) {
     // Handle --interactive option.
     if (config.interactive) {
         configureRapidCheck(config);
-        std::cout << "=== Eco Runtime GC Tests - Interactive Mode ===" << std::endl;
+        std::cout << Testing::Color::bold() << Testing::Color::cyan()
+                  << "=== Eco Runtime GC Tests - Interactive Mode ==="
+                  << Testing::Color::reset() << std::endl;
         runInteractive(suite);
         return 0;
     }
@@ -675,10 +690,13 @@ int main(int argc, char* argv[]) {
     // Configure RapidCheck with command line parameters.
     uint64_t seed = configureRapidCheck(config);
 
-    std::cout << "=== Eco Runtime GC Property-Based Tests ===" << std::endl;
+    std::cout << Testing::Color::bold() << Testing::Color::cyan()
+              << "=== Eco Runtime GC Property-Based Tests ==="
+              << Testing::Color::reset() << std::endl;
 
     if (config.show_seed) {
-        std::cout << "Using seed: " << seed << std::endl;
+        std::cout << Testing::Color::dim() << "Using seed: " << seed
+                  << Testing::Color::reset() << std::endl;
     }
 
     if (config.verbose) {
@@ -722,9 +740,11 @@ int main(int argc, char* argv[]) {
             auto remaining = config.duration.value() - elapsed;
             if (remaining.count() < 0) remaining = std::chrono::seconds(0);
 
-            std::cout << "=== Iteration " << iteration
+            std::cout << Testing::Color::bold() << Testing::Color::cyan()
+                      << "=== Iteration " << iteration
                       << " (Elapsed: " << formatDuration(elapsed)
-                      << ", Remaining: " << formatDuration(remaining) << ") ===" << std::endl;
+                      << ", Remaining: " << formatDuration(remaining) << ") ==="
+                      << Testing::Color::reset() << std::endl;
             std::cout << std::endl;
 
             // Run all tests (or filtered subset).
@@ -772,7 +792,9 @@ int main(int argc, char* argv[]) {
 
         for (int iteration = 1; iteration <= config.repeat; iteration++) {
             if (config.repeat > 1) {
-                std::cout << "=== Iteration " << iteration << " of " << config.repeat << " ===" << std::endl;
+                std::cout << Testing::Color::bold() << Testing::Color::cyan()
+                          << "=== Iteration " << iteration << " of " << config.repeat << " ==="
+                          << Testing::Color::reset() << std::endl;
                 std::cout << std::endl;
             }
 
