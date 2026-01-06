@@ -48,6 +48,7 @@ config =
     , NoUnused.Variables.rule
     , NoUnused.Patterns.rule
     , NoUnused.Exports.rule
+        |> Rule.ignoreErrorsForFiles [ "src/Compiler/Parse/Expression.elm" ]
     , Simplify.rule Simplify.defaults
     , NoUnused.CustomTypeConstructors.rule []
     , Docs.ReviewAtDocs.rule

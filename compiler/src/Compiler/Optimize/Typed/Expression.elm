@@ -442,7 +442,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
 {-| Catch a missing local type error and use a fallback.
 -}
 catchMissing : Names.Tracker a -> Names.Tracker a -> Names.Tracker a
-catchMissing fallback tracker =
+catchMissing _ tracker =
     -- In a proper implementation, we'd catch the error
     -- For now, just use the tracker
     tracker
@@ -979,7 +979,7 @@ destructArgs annotations args =
 
 
 destruct : Annotations -> Can.Pattern -> Names.Tracker ( ( A.Located Name, Can.Type ), List TOpt.Destructor )
-destruct annotations ((A.At region patternInfo) as pattern) =
+destruct _ ((A.At region patternInfo) as pattern) =
     case patternInfo.node of
         Can.PVar name ->
             -- Type would come from pattern inference, use placeholder

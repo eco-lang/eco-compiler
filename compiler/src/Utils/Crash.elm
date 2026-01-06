@@ -17,5 +17,4 @@ This function has a polymorphic return type, allowing it to be used anywhere a v
 -}
 crash : String -> a
 crash str =
-    --crash str
-    Debug.todo str
+    crash str

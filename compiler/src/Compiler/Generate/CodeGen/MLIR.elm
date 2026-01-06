@@ -35,6 +35,7 @@ import Mlir.Mlir as Mlir
 import Mlir.Pretty as Pretty
 import OrderedDict
 import System.TypeCheck.IO as IO
+import Utils.Crash exposing (crash)
 
 
 
@@ -2554,6 +2555,38 @@ unboxToType ctx var targetType =
     ( [ unboxOp ], unboxedVar, ctx2 )
 
 
+mlirTypeToString : MlirType -> String
+mlirTypeToString ty =
+    case ty of
+        I1 ->
+            "i1"
+
+        I16 ->
+            "i16"
+
+        I32 ->
+            "i32"
+
+        I64 ->
+            "i64"
+
+        F64 ->
+            "f64"
+
+        NamedStruct s ->
+            "!" ++ s
+
+        FunctionType sig ->
+            let
+                ins =
+                    sig.inputs |> List.map mlirTypeToString |> String.join ", "
+
+                outs =
+                    sig.results |> List.map mlirTypeToString |> String.join ", "
+            in
+            "(" ++ ins ++ ") -> (" ++ outs ++ ")"
+
+
 {-| Coerce an expression result to a desired MLIR type by inserting
 boxing/unboxing ops when the difference is only boxed vs unboxed.
 Handles both directions:
@@ -2580,11 +2613,11 @@ coerceResultToType ctx var actualTy expectedTy =
         -- Types don't match and no boxing/unboxing solution
         -- This indicates a monomorphization bug - primitive type mismatches
         -- (e.g., i64 vs f64) should have been resolved upstream
-        Debug.todo <|
+        crash <|
             "coerceResultToType: cannot coerce "
-                ++ Debug.toString actualTy
+                ++ mlirTypeToString actualTy
                 ++ " to "
-                ++ Debug.toString expectedTy
+                ++ mlirTypeToString expectedTy
                 ++ " for variable "
                 ++ var
 
@@ -3348,7 +3381,7 @@ generateLet ctx def body =
 
 
 generateDestruct : Context -> Mono.MonoDestructor -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
-generateDestruct ctx (Mono.MonoDestructor name path monoType) body destType =
+generateDestruct ctx (Mono.MonoDestructor name path monoType) body _ =
     let
         -- The destructor's monoType represents the type of the value at the end of the path.
         -- This is the type we should use for path generation.

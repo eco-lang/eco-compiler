@@ -669,7 +669,7 @@ type alias MakeBinopFn =
 
 
 runBinopStepperWithIds : A.Region -> IdState -> StepWithIds -> EResult FreeLocals w ( Can.Expr, IdState )
-runBinopStepperWithIds overallRegion state step =
+runBinopStepperWithIds overallRegion _ step =
     case step of
         DoneWithIds expr finalState ->
             ReportingResult.ok ( expr, finalState )

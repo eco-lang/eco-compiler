@@ -211,8 +211,8 @@ runS state0 prog0 =
 
 {-| Frame type for the stateful continuation stack.
 -}
-type FrameS s
-    = FrameS (Constraint -> ProgS s Constraint)
+type alias FrameS s =
+    Constraint -> ProgS s Constraint
 
 
 {-| One step of the stateful interpreter.
@@ -225,7 +225,7 @@ stepS ( prog, state, stack ) =
                 [] ->
                     IO.pure (IO.Done ( value, state ))
 
-                (FrameS k) :: rest ->
+                k :: rest ->
                     IO.pure (IO.Loop ( k value, state, rest ))
 
         StepS instr ->

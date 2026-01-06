@@ -110,11 +110,9 @@ checkCallableTopLevels state =
                                         ++ "  SpecId: "
                                         ++ String.fromInt specId
                                         ++ "\n"
-                                        ++ "  Type: "
-                                        ++ Debug.toString monoType
+                                        ++ "  Type: <MonoType>"
                                         ++ "\n"
-                                        ++ "  Expr: "
-                                        ++ Debug.toString expr
+                                        ++ "  Expr: <MonoExpr>"
                                     )
 
                     else
@@ -491,7 +489,7 @@ specializeCycle :
     -> Mono.MonoType
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
-specializeCycle names valueDefs funcDefs requestedMonoType state =
+specializeCycle _ valueDefs funcDefs requestedMonoType state =
     case ( List.isEmpty funcDefs, state.currentGlobal ) of
         ( True, _ ) ->
             specializeValueOnlyCycle valueDefs requestedMonoType state
@@ -538,7 +536,7 @@ specializeFunctionCycle :
     -> Mono.MonoType
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
-specializeFunctionCycle requestedCanonical requestedName valueDefs funcDefs requestedMonoType state =
+specializeFunctionCycle requestedCanonical requestedName _ funcDefs requestedMonoType state =
     let
         maybeRequestedDef =
             List.filter (defHasName requestedName) funcDefs |> List.head

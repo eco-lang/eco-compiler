@@ -185,8 +185,8 @@ run prog0 =
 {-| Frame type for the continuation stack.
 Each frame is a continuation waiting for a Constraint value.
 -}
-type Frame
-    = Frame (Constraint -> Prog Constraint)
+type alias Frame =
+    Constraint -> Prog Constraint
 
 
 {-| One step of the interpreter.
@@ -203,7 +203,7 @@ step ( prog, stack ) =
                 [] ->
                     IO.pure (IO.Done value)
 
-                (Frame k) :: rest ->
+                k :: rest ->
                     IO.pure (IO.Loop ( k value, rest ))
 
         Step instr ->

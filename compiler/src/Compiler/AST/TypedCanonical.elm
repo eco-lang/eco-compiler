@@ -2,7 +2,6 @@ module Compiler.AST.TypedCanonical exposing
     ( Module(..), ModuleData
     , Expr, Expr_(..)
     , Def(..), Decls(..)
-    , CaseBranch(..), FieldUpdate(..)
     , ExprTypes, NodeTypes
     , fromCanonical, toTypedExpr
     )
@@ -27,11 +26,6 @@ the expression types produced by the type checker.
 # Definitions
 
 @docs Def, Decls
-
-
-# Patterns
-
-@docs CaseBranch, FieldUpdate
 
 
 # Type Mapping
@@ -71,19 +65,6 @@ type Expr_
         { expr : Can.Expr_
         , tipe : Can.Type
         }
-
-
-{-| A typed case branch pairing a pattern with a typed expression body.
--}
-type CaseBranch
-    = CaseBranch Can.Pattern Expr
-
-
-{-| A typed field update with region and typed expression.
--}
-type FieldUpdate
-    = FieldUpdate A.Region Expr
-
 
 
 -- ====== Definitions ======
@@ -226,7 +207,7 @@ optimization. When the optimizer encounters a `Can.Expr` child (e.g., in
 
 -}
 toTypedExpr : ExprTypes -> Can.Expr -> Expr
-toTypedExpr exprTypes ((A.At region info) as expr) =
+toTypedExpr exprTypes (A.At region info) =
     let
         tipe =
             case Dict.get identity info.id exprTypes of

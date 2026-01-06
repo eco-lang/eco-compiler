@@ -14,7 +14,7 @@ It walks the canonical AST to:
 The result is a fixed `nodeTypes` map where all expression IDs have meaningful types,
 plus a `kernelEnv` for typed optimization.
 
-@docs postSolve
+@docs postSolve, NodeTypes
 
 -}
 
@@ -218,7 +218,7 @@ postSolveDef annotations def nodeTypes0 kernel0 =
         Can.Def _ args body ->
             let
                 ( nodeTypes1, kernel1 ) =
-                    postSolvePatterns annotations args nodeTypes0 kernel0
+                    postSolvePatterns args nodeTypes0 kernel0
             in
             postSolveExpr annotations body nodeTypes1 kernel1
 
@@ -228,7 +228,7 @@ postSolveDef annotations def nodeTypes0 kernel0 =
                     List.map Tuple.first typedArgs
 
                 ( nodeTypes1, kernel1 ) =
-                    postSolvePatterns annotations patterns nodeTypes0 kernel0
+                    postSolvePatterns patterns nodeTypes0 kernel0
             in
             postSolveExpr annotations body nodeTypes1 kernel1
 
@@ -236,14 +236,13 @@ postSolveDef annotations def nodeTypes0 kernel0 =
 {-| Walk a list of patterns, processing any nested expressions.
 -}
 postSolvePatterns :
-    Dict String Name Can.Annotation
-    -> List Can.Pattern
+    List Can.Pattern
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
-postSolvePatterns annotations patterns nodeTypes0 kernel0 =
+postSolvePatterns patterns nodeTypes0 kernel0 =
     List.foldl
-        (\pat ( nt, ke ) -> postSolvePattern annotations pat nt ke)
+        (\pat ( nt, ke ) -> postSolvePattern pat nt ke)
         ( nodeTypes0, kernel0 )
         patterns
 
@@ -251,12 +250,11 @@ postSolvePatterns annotations patterns nodeTypes0 kernel0 =
 {-| Process a single pattern (patterns don't contain expressions, but may have nested patterns).
 -}
 postSolvePattern :
-    Dict String Name Can.Annotation
-    -> Can.Pattern
+    Can.Pattern
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
-postSolvePattern annotations (A.At _ patInfo) nodeTypes0 kernel0 =
+postSolvePattern (A.At _ patInfo) nodeTypes0 kernel0 =
     case patInfo.node of
         Can.PAnything ->
             ( nodeTypes0, kernel0 )
@@ -268,7 +266,7 @@ postSolvePattern annotations (A.At _ patInfo) nodeTypes0 kernel0 =
             ( nodeTypes0, kernel0 )
 
         Can.PAlias pat _ ->
-            postSolvePattern annotations pat nodeTypes0 kernel0
+            postSolvePattern pat nodeTypes0 kernel0
 
         Can.PUnit ->
             ( nodeTypes0, kernel0 )
@@ -276,28 +274,28 @@ postSolvePattern annotations (A.At _ patInfo) nodeTypes0 kernel0 =
         Can.PTuple a b cs ->
             let
                 ( nt1, ke1 ) =
-                    postSolvePattern annotations a nodeTypes0 kernel0
+                    postSolvePattern a nodeTypes0 kernel0
 
                 ( nt2, ke2 ) =
-                    postSolvePattern annotations b nt1 ke1
+                    postSolvePattern b nt1 ke1
             in
             List.foldl
-                (\p ( nt, ke ) -> postSolvePattern annotations p nt ke)
+                (\p ( nt, ke ) -> postSolvePattern p nt ke)
                 ( nt2, ke2 )
                 cs
 
         Can.PList pats ->
             List.foldl
-                (\p ( nt, ke ) -> postSolvePattern annotations p nt ke)
+                (\p ( nt, ke ) -> postSolvePattern p nt ke)
                 ( nodeTypes0, kernel0 )
                 pats
 
         Can.PCons hd tl ->
             let
                 ( nt1, ke1 ) =
-                    postSolvePattern annotations hd nodeTypes0 kernel0
+                    postSolvePattern hd nodeTypes0 kernel0
             in
-            postSolvePattern annotations tl nt1 ke1
+            postSolvePattern tl nt1 ke1
 
         Can.PBool _ _ ->
             ( nodeTypes0, kernel0 )
@@ -314,7 +312,7 @@ postSolvePattern annotations (A.At _ patInfo) nodeTypes0 kernel0 =
         Can.PCtor ctorData ->
             List.foldl
                 (\(Can.PatternCtorArg _ _ pat) ( nt, ke ) ->
-                    postSolvePattern annotations pat nt ke
+                    postSolvePattern pat nt ke
                 )
                 ( nodeTypes0, kernel0 )
                 ctorData.args
@@ -338,7 +336,7 @@ postSolveExpr :
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
-postSolveExpr annotations ((A.At _ exprInfo) as expr) nodeTypes0 kernel0 =
+postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
     let
         exprId =
             exprInfo.id
@@ -467,7 +465,7 @@ postSolveExpr annotations ((A.At _ exprInfo) as expr) nodeTypes0 kernel0 =
         Can.LetDestruct pat bound body ->
             let
                 ( nt1, ke1 ) =
-                    postSolvePattern annotations pat nodeTypes0 kernel0
+                    postSolvePattern pat nodeTypes0 kernel0
 
                 ( nt2, ke2 ) =
                     postSolveExpr annotations bound nt1 ke1
@@ -787,7 +785,7 @@ postSolveCase annotations caseExprId scrutinee branches nodeTypes0 kernel0 =
         stepBranch (Can.CaseBranch pat branchExpr) ( nt, ke ) =
             let
                 ( nt2, ke2 ) =
-                    postSolvePattern annotations pat nt ke
+                    postSolvePattern pat nt ke
 
                 ( nt3, ke3 ) =
                     postSolveExpr annotations branchExpr nt2 ke2
@@ -1014,7 +1012,7 @@ postSolveLambda annotations exprId args body nodeTypes0 kernel0 =
     let
         -- First recurse into patterns and body
         ( nodeTypes1, kernel1 ) =
-            postSolvePatterns annotations args nodeTypes0 kernel0
+            postSolvePatterns args nodeTypes0 kernel0
 
         ( nodeTypes2, kernel2 ) =
             postSolveExpr annotations body nodeTypes1 kernel1

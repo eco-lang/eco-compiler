@@ -172,7 +172,7 @@ Uses the stack-safe PatternProg DSL internally.
 
 -}
 addWithIds : Can.Pattern -> E.PExpected Type -> State -> NodeIds.NodeIdState -> IO ( State, NodeIds.NodeIdState )
-addWithIds ((A.At region patternInfo) as pattern) expectation state nodeState0 =
+addWithIds (A.At region patternInfo) expectation state nodeState0 =
     if patternNeedsConstraint patternInfo.node then
         -- CONSTRAINED path: create patVar, add CPattern constraint, add to state
         -- This matches the behavior of `add` for patterns like PUnit, PTuple, etc.
@@ -256,7 +256,7 @@ need them, matching the behavior of `add`/`addProg`.
 
 -}
 addWithIdsProg : Can.Pattern -> E.PExpected Type -> State -> NodeIds.NodeIdState -> PatternProg ( State, NodeIds.NodeIdState )
-addWithIdsProg ((A.At region patternInfo) as pattern) expectation state nodeState0 =
+addWithIdsProg (A.At region patternInfo) expectation state nodeState0 =
     if patternNeedsConstraint patternInfo.node then
         -- CONSTRAINED path: create patVar, add CPattern constraint, add to state
         pMkFlexVar

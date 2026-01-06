@@ -89,7 +89,7 @@ type alias Nodes =
 
 
 addUnions : IO.Canonical -> Annotations -> Dict String Name.Name Can.Union -> TOpt.LocalGraph -> TOpt.LocalGraph
-addUnions home annotations unions (TOpt.LocalGraph data) =
+addUnions home _ unions (TOpt.LocalGraph data) =
     TOpt.LocalGraph { data | nodes = Dict.foldr compare (addUnion home) data.nodes unions }
 
 
@@ -135,7 +135,7 @@ addAliases home annotations aliases graph =
 
 
 addAlias : IO.Canonical -> Annotations -> Name.Name -> Can.Alias -> TOpt.LocalGraph -> TOpt.LocalGraph
-addAlias home annotations name (Can.Alias typeVars tipe) ((TOpt.LocalGraph data) as graph) =
+addAlias home _ name (Can.Alias _ tipe) ((TOpt.LocalGraph data) as graph) =
     case tipe of
         Can.TRecord fields Nothing ->
             let

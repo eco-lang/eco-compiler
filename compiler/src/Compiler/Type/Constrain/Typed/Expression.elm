@@ -1418,7 +1418,7 @@ constrainUpdateWithIdsProg rtv region exprId expr locatedFields expected =
 
 
 constrainUpdateFieldsWithIdsProg : RigidTypeVar -> A.Region -> List ( Name, Can.FieldUpdate ) -> List ( Name, ( IO.Variable, Type, Constraint ) ) -> ProgS ExprIdState (List ( Name, ( IO.Variable, Type, Constraint ) ))
-constrainUpdateFieldsWithIdsProg rtv region fields acc =
+constrainUpdateFieldsWithIdsProg rtv _ fields acc =
     case fields of
         [] ->
             Prog.pureS (List.reverse acc)
@@ -1439,7 +1439,7 @@ constrainUpdateFieldsWithIdsProg rtv region fields acc =
                         constrainWithIdsProg rtv expr expectation
                             |> Prog.andThenS
                                 (\fieldCon ->
-                                    constrainUpdateFieldsWithIdsProg rtv region rest (( name, ( fieldVar, fieldType, fieldCon ) ) :: acc)
+                                    constrainUpdateFieldsWithIdsProg rtv fieldRegion rest (( name, ( fieldVar, fieldType, fieldCon ) ) :: acc)
                                 )
                     )
 
@@ -1490,12 +1490,12 @@ constrainTupleWithIdsProg rtv region a b cs expected =
 
 
 constrainTupleRestWithIdsProg : RigidTypeVar -> A.Region -> List Can.Expr -> List Constraint -> List IO.Variable -> ProgS ExprIdState ( List Constraint, List IO.Variable )
-constrainTupleRestWithIdsProg rtv region cs accCons accVars =
+constrainTupleRestWithIdsProg rtv _ cs accCons accVars =
     case cs of
         [] ->
             Prog.pureS ( List.reverse accCons, List.reverse accVars )
 
-        c :: rest ->
+        ((A.At cRegion _) as c) :: rest ->
             Prog.opMkFlexVarS
                 |> Prog.andThenS
                     (\cVar ->
@@ -1507,7 +1507,7 @@ constrainTupleRestWithIdsProg rtv region cs accCons accVars =
                         constrainWithIdsProg rtv c (NoExpectation cType)
                             |> Prog.andThenS
                                 (\cCon ->
-                                    constrainTupleRestWithIdsProg rtv region rest (cCon :: accCons) (cVar :: accVars)
+                                    constrainTupleRestWithIdsProg rtv cRegion rest (cCon :: accCons) (cVar :: accVars)
                                 )
                     )
 
