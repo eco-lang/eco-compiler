@@ -12,12 +12,9 @@ import Compiler.AST.SourceBuilder
         , accessorExpr
         , binopsExpr
         , boolExpr
-        , callExpr
         , caseExpr
-        , chrExpr
         , define
         , destruct
-        , floatExpr
         , ifExpr
         , intExpr
         , lambdaExpr
@@ -25,7 +22,6 @@ import Compiler.AST.SourceBuilder
         , listExpr
         , makeModule
         , makeModuleWithDefs
-        , negateExpr
         , pAlias
         , pAnything
         , pCons
@@ -412,53 +408,6 @@ expressionCombinationTests expectFn condStr =
         , Test.test ("All destruct patterns " ++ condStr) (allDestructPatterns expectFn)
         , Test.test ("Multiple definitions with various patterns " ++ condStr) (multipleDefinitionsWithVariousPatterns expectFn)
         ]
-
-
-allExpressionTypesInOneModule : (Src.Module -> Expectation) -> (() -> Expectation)
-allExpressionTypesInOneModule expectFn _ =
-    let
-        -- Int, Float, String, Char
-        literals =
-            listExpr [ intExpr 1, floatExpr 2.0, strExpr "s", chrExpr "c" ]
-
-        -- Tuple, Record
-        containers =
-            tupleExpr
-                (recordExpr [ ( "x", intExpr 1 ) ])
-                (tuple3Expr (intExpr 1) (intExpr 2) (intExpr 3))
-
-        -- Lambda, Call
-        functions =
-            letExpr
-                [ define "f" [ pVar "x" ] (varExpr "x") ]
-                (callExpr (varExpr "f") [ intExpr 0 ])
-
-        -- If, Case
-        control =
-            ifExpr (boolExpr True)
-                (caseExpr (intExpr 1) [ ( pVar "n", varExpr "n" ) ])
-                (intExpr 0)
-
-        -- Binop, Negate
-        operators =
-            binopsExpr
-                [ ( negateExpr (intExpr 1), "+" ) ]
-                (intExpr 2)
-
-        -- Accessor, Access, Update
-        records =
-            letExpr
-                [ define "r" [] (recordExpr [ ( "x", intExpr 1 ) ]) ]
-                (tupleExpr
-                    (accessExpr (varExpr "r") "x")
-                    (accessorExpr "x")
-                )
-
-        modul =
-            makeModule "testValue"
-                (listExpr [ literals, containers, functions, control, operators, records ])
-    in
-    expectFn modul
 
 
 multiplePatternTypesInOneFunction : (Src.Module -> Expectation) -> (() -> Expectation)

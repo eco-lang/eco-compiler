@@ -1,16 +1,14 @@
 module Compiler.Type.Constrain.Common exposing
-    ( -- Pattern state
-      State(..), Header
-    , emptyState, addToHeaders, getType
-      -- Pattern helpers
+    ( State(..), Header, emptyState, addToHeaders, getType
     , patternToCategory, patternNeedsConstraint, extractVarFromType
-      -- Args types
-    , Args(..), ArgsProps, makeArgs
-    , TypedArgs(..)
-      -- Def info
+    , Args(..), ArgsProps, makeArgs, TypedArgs(..)
     , RigidTypeVar, Info(..), emptyInfo
-      -- Expression helpers
-    , getName, getAccessName, toShaderRecord, glToType
+    , getName, getAccessName, toShaderRecord
+    -- Pattern state
+    -- Def info
+    -- Expression helpers
+    -- Args types
+    -- Pattern helpers
     )
 
 {-| Shared types and helpers for constraint generation.
@@ -41,13 +39,13 @@ and Typed constraint generation pathways.
 
 # Expression Helpers
 
-@docs getName, getAccessName, toShaderRecord, glToType
+@docs getName, getAccessName, toShaderRecord
 
 -}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Utils.Shader as Shader
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Type as E
 import Compiler.Type.Type as Type exposing (Constraint, Type(..))

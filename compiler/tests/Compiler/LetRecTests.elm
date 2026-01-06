@@ -14,16 +14,12 @@ import Compiler.AST.SourceBuilder
         , define
         , ifExpr
         , intExpr
-        , lambdaExpr
         , letExpr
         , listExpr
         , makeModule
         , pAlias
-        , pAnything
         , pCons
-        , pInt
         , pList
-        , pRecord
         , pTuple
         , pVar
         , recordExpr
@@ -175,24 +171,6 @@ recursiveFnLambdaBody expectFn _ =
     expectFn modul
 
 
-deeplyRecursiveFn : (Src.Module -> Expectation) -> (() -> Expectation)
-deeplyRecursiveFn expectFn _ =
-    let
-        fn =
-            define "countdown"
-                [ pVar "n" ]
-                (caseExpr (varExpr "n")
-                    [ ( pInt 0, listExpr [] )
-                    , ( pVar "x", listExpr [ varExpr "x", callExpr (varExpr "countdown") [ intExpr 0 ] ] )
-                    ]
-                )
-
-        modul =
-            makeModule "testValue" (letExpr [ fn ] (callExpr (varExpr "countdown") [ intExpr 3 ]))
-    in
-    expectFn modul
-
-
 recursiveFnListAccumulator : (Src.Module -> Expectation) -> (() -> Expectation)
 recursiveFnListAccumulator expectFn _ =
     let
@@ -284,32 +262,6 @@ threeMutuallyRecursiveFns expectFn _ =
 
         modul =
             makeModule "testValue" (letExpr [ f, g, h ] (callExpr (varExpr "f") [ intExpr 10 ]))
-    in
-    expectFn modul
-
-
-mutuallyRecursiveDifferentTypes : (Src.Module -> Expectation) -> (() -> Expectation)
-mutuallyRecursiveDifferentTypes expectFn _ =
-    let
-        toList =
-            define "toList"
-                [ pVar "n" ]
-                (ifExpr (boolExpr True)
-                    (listExpr [])
-                    (listExpr [ callExpr (varExpr "toInt") [ intExpr 0 ] ])
-                )
-
-        toInt =
-            define "toInt"
-                [ pVar "xs" ]
-                (caseExpr (varExpr "xs")
-                    [ ( pList [], intExpr 0 )
-                    , ( pAnything, intExpr 1 )
-                    ]
-                )
-
-        modul =
-            makeModule "testValue" (letExpr [ toList, toInt ] (callExpr (varExpr "toList") [ intExpr 3 ]))
     in
     expectFn modul
 
@@ -433,29 +385,6 @@ recursiveWithConsPattern expectFn _ =
     expectFn modul
 
 
-recursiveWithRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
-recursiveWithRecordPattern expectFn _ =
-    let
-        fn =
-            define "getValue"
-                [ pRecord [ "value", "next" ] ]
-                (ifExpr (boolExpr True)
-                    (varExpr "value")
-                    (callExpr (varExpr "getValue") [ varExpr "next" ])
-                )
-
-        arg =
-            recordExpr
-                [ ( "value", intExpr 1 )
-                , ( "next", recordExpr [ ( "value", intExpr 2 ), ( "next", recordExpr [ ( "value", intExpr 3 ), ( "next", recordExpr [] ) ] ) ] )
-                ]
-
-        modul =
-            makeModule "testValue" (letExpr [ fn ] (callExpr (varExpr "getValue") [ arg ]))
-    in
-    expectFn modul
-
-
 recursiveWithAliasPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 recursiveWithAliasPattern expectFn _ =
     let
@@ -564,35 +493,6 @@ twoRecursiveFnsFuzzed expectFn a b =
                         (callExpr (varExpr "f") [ intExpr 1 ])
                         (callExpr (varExpr "g") [ intExpr 2 ])
                     )
-                )
-    in
-    expectFn modul
-
-
-recursiveHigherOrder : (Src.Module -> Expectation) -> (() -> Expectation)
-recursiveHigherOrder expectFn _ =
-    let
-        fn =
-            define "map"
-                [ pVar "f", pVar "list" ]
-                (caseExpr (varExpr "list")
-                    [ ( pList [], listExpr [] )
-                    , ( pCons (pVar "h") (pVar "t")
-                      , listExpr
-                            [ callExpr (varExpr "f") [ varExpr "h" ]
-                            , callExpr (varExpr "map") [ varExpr "f", varExpr "t" ]
-                            ]
-                      )
-                    ]
-                )
-
-        addOne =
-            lambdaExpr [ pVar "x" ] (varExpr "x")
-
-        modul =
-            makeModule "testValue"
-                (letExpr [ fn ]
-                    (callExpr (varExpr "map") [ addOne, listExpr [ intExpr 1, intExpr 2 ] ])
                 )
     in
     expectFn modul

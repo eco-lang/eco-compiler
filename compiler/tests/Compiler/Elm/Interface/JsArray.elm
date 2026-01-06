@@ -1,4 +1,4 @@
-module Compiler.Elm.Interface.JsArray exposing (jsArrayInterface, jsArrayModuleName)
+module Compiler.Elm.Interface.JsArray exposing (jsArrayInterface)
 
 {-| Interface for Elm.JsArray module types and functions used in tests.
 -}
@@ -142,7 +142,7 @@ listA =
 
 {-| JsArray union type definition.
 
-type JsArray a = JsArray_elm_builtin
+type JsArray a = JsArray\_elm\_builtin
 
 -}
 jsArrayUnions : Dict String Name I.Union

@@ -5,7 +5,6 @@ module Compiler.Elm.Interface.List exposing (listInterface)
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Utils.Binop as Binop
-import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
@@ -136,9 +135,6 @@ listValues =
         intType =
             Can.TType ModuleName.basics "Int" []
 
-        boolType =
-            Can.TType ModuleName.basics "Bool" []
-
         listA =
             Can.TType ModuleName.list "List" [ aVar ]
 
@@ -147,9 +143,6 @@ listValues =
 
         listListA =
             Can.TType ModuleName.list "List" [ listA ]
-
-        maybeB =
-            Can.TType ModuleName.maybe "Maybe" [ bVar ]
 
         -- cons : a -> List a -> List a
         consType =

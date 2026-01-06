@@ -145,6 +145,7 @@ type Module
 This is produced by the solver after constraint solving.
 
 This is an alias for `NodeTypes` to maintain backwards compatibility.
+
 -}
 type alias ExprTypes =
     Dict Int Int Can.Type
@@ -155,6 +156,7 @@ type alias ExprTypes =
 Node IDs include both expression IDs and pattern IDs, providing a unified
 mapping for all typed AST nodes. This is produced by the solver after
 constraint solving.
+
 -}
 type alias NodeTypes =
     Dict Int Int Can.Type

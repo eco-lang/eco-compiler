@@ -3,6 +3,7 @@ module Compiler.ArrayTest exposing (expectSuite)
 {-| Tests for Array functions that expose type variable scoping issues.
 
 These are EXACT copies of functions from elm/core Array.elm that fail type checking.
+
 -}
 
 import Compiler.AST.Source as Src
@@ -10,14 +11,12 @@ import Compiler.AST.SourceBuilder
     exposing
         ( AliasDef
         , TypedDef
-        , UnionCtor
         , UnionDef
         , binopsExpr
         , boolExpr
         , callExpr
         , caseExpr
         , define
-        , defineTyped
         , ifExpr
         , intExpr
         , lambdaExpr
@@ -29,20 +28,16 @@ import Compiler.AST.SourceBuilder
         , pCons
         , pCtor
         , pList
-        , pRecord
         , pTuple
         , pVar
         , recordExpr
         , tLambda
         , tRecord
-        , tTuple
         , tType
         , tVar
-        , tupleExpr
         , varExpr
         )
 import Compiler.Data.Name exposing (Name)
-import Compiler.Parse.SyntaxVersion as SV
 import Compiler.Reporting.Annotation as A
 import Expect exposing (Expectation)
 import Test exposing (Test)
@@ -76,21 +71,6 @@ c1 a =
     ( noComments, a )
 
 
-c2 : a -> Src.C2 a
-c2 a =
-    ( ( noComments, noComments ), a )
-
-
-c0Eol : a -> Src.C0Eol a
-c0Eol a =
-    ( Nothing, a )
-
-
-c2Eol : a -> Src.C2Eol a
-c2Eol a =
-    ( ( noComments, noComments, Nothing ), a )
-
-
 {-| Pipe operator expression: left |> right
 -}
 pipeExpr : Src.Expr -> Src.Expr -> Src.Expr
@@ -105,7 +85,7 @@ qualVarExpr moduleName name =
     A.At A.zero (Src.VarQual Src.LowVar moduleName name)
 
 
-{-| Create a qualified constructor (e.g., Array_elm_builtin)
+{-| Create a qualified constructor (e.g., Array\_elm\_builtin)
 -}
 qualCtorExpr : Name -> Src.Expr
 qualCtorExpr name =
@@ -188,7 +168,7 @@ tList a =
 
 
 {-| Array union type definition:
-type Array a = Array_elm_builtin Int Int (Tree a) (JsArray a)
+type Array a = Array\_elm\_builtin Int Int (Tree a) (JsArray a)
 -}
 arrayUnion : UnionDef
 arrayUnion =

@@ -19,7 +19,7 @@ import Compiler.Elm.Source.Array as ArraySource
 import Compiler.Elm.Source.JsArray as JsArraySource
 import Compiler.PackageCompilation as PC
 import Data.Map as Dict exposing (Dict)
-import Expect exposing (Expectation)
+import Expect
 import Test exposing (Test)
 
 
@@ -55,7 +55,7 @@ jsArrayParsingTests =
         [ Test.test "parses JsArray.elm source successfully" <|
             \() ->
                 case PC.parseModule Pkg.core JsArraySource.source of
-                    Ok srcModule ->
+                    Ok _ ->
                         Expect.pass
 
                     Err err ->
@@ -126,7 +126,7 @@ arrayParsingTests =
         [ Test.test "parses Array.elm source successfully" <|
             \() ->
                 case PC.parseModule Pkg.core ArraySource.source of
-                    Ok srcModule ->
+                    Ok _ ->
                         Expect.pass
 
                     Err err ->

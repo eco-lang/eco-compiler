@@ -82,9 +82,9 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Doc as Doc
 import Compiler.Reporting.Error as Error
 import Compiler.Reporting.Error.Syntax as Syntax
-import Result.Extra
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
+import Result.Extra
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
@@ -1913,16 +1913,6 @@ statusDecoder =
                     _ ->
                         Bytes.Decode.fail
             )
-
-
-dictRawMVarMaybeDResultEncoder : Dict String ModuleName.Raw (MVar (Maybe DResult)) -> Bytes.Encode.Encoder
-dictRawMVarMaybeDResultEncoder =
-    BE.assocListDict compare ModuleName.rawEncoder Utils.mVarEncoder
-
-
-moduleNameRawMVarMaybeDResultDecoder : Bytes.Decode.Decoder (Dict String ModuleName.Raw (MVar (Maybe DResult)))
-moduleNameRawMVarMaybeDResultDecoder =
-    BD.assocListDict identity ModuleName.rawDecoder Utils.mVarDecoder
 
 
 dictRawMVarResultErrorModuleDResultEncoder : Dict String ModuleName.Raw (MVar (Result Error.Module DResult)) -> Bytes.Encode.Encoder

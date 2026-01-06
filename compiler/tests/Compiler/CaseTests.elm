@@ -20,7 +20,6 @@ import Compiler.AST.SourceBuilder
         , pRecord
         , pStr
         , pTuple
-        , pUnit
         , pVar
         , recordExpr
         , strExpr
@@ -144,20 +143,6 @@ caseWithThreeBranches expectFn _ =
     expectFn modul
 
 
-caseOnUnit : (Src.Module -> Expectation) -> (() -> Expectation)
-caseOnUnit expectFn _ =
-    let
-        modul =
-            makeModule "testValue"
-                (caseExpr (tupleExpr (intExpr 1) (intExpr 1))
-                    [ ( pUnit, intExpr 0 )
-                    ]
-                )
-    in
-    -- Note: This may fail if unit pattern doesn't match tuple - that's ok
-    expectFn modul
-
-
 caseReturningComplexExpr : (Src.Module -> Expectation) -> (() -> Expectation)
 caseReturningComplexExpr expectFn _ =
     let
@@ -222,20 +207,6 @@ caseOnStringLiterals expectFn _ =
                     [ ( pStr "hello", intExpr 1 )
                     , ( pStr "world", intExpr 2 )
                     , ( pAnything, intExpr 0 )
-                    ]
-                )
-    in
-    expectFn modul
-
-
-caseOnFuzzedInt : (Src.Module -> Expectation) -> (Int -> Expectation)
-caseOnFuzzedInt expectFn n =
-    let
-        modul =
-            makeModule "testValue"
-                (caseExpr (intExpr n)
-                    [ ( pInt 0, strExpr "zero" )
-                    , ( pVar "x", varExpr "x" )
                     ]
                 )
     in

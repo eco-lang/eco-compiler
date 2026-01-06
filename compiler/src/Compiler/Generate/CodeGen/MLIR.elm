@@ -35,7 +35,6 @@ import Mlir.Mlir as Mlir
 import Mlir.Pretty as Pretty
 import OrderedDict
 import System.TypeCheck.IO as IO
-import Utils.Crash exposing (crash)
 
 
 
@@ -75,13 +74,6 @@ ecoInt =
 ecoFloat : MlirType
 ecoFloat =
     F64
-
-
-{-| eco.bool - unboxed boolean (i1)
--}
-ecoBool : MlirType
-ecoBool =
-    I1
 
 
 {-| eco.char - unboxed character (i16 unicode codepoint, BMP only)
@@ -131,7 +123,7 @@ monoTypeToMlir monoType =
         Mono.MFunction _ _ ->
             ecoValue
 
-        Mono.MVar name constraint_ ->
+        Mono.MVar _ constraint_ ->
             case constraint_ of
                 Mono.CNumber ->
                     I64
@@ -252,17 +244,32 @@ isPolymorphicKernel home name =
             -- because the C++ implementations (Elm_Kernel_Basics_add, etc.) expect
             -- boxed eco.value pointers, not raw i64 values. When called as kernels
             -- (not via intrinsics), we must box the arguments.
-            name == "min" || name == "max" || name == "compare"
-            || name == "add"
-            || name == "sub"
-            || name == "mul"
-            || name == "idiv"
-            || name == "modBy"
-            || name == "remainderBy"
-            || name == "negate"
-            || name == "abs"
-            || name == "pow"
-            || name == "fdiv"
+            name
+                == "min"
+                || name
+                == "max"
+                || name
+                == "compare"
+                || name
+                == "add"
+                || name
+                == "sub"
+                || name
+                == "mul"
+                || name
+                == "idiv"
+                || name
+                == "modBy"
+                || name
+                == "remainderBy"
+                || name
+                == "negate"
+                || name
+                == "abs"
+                || name
+                == "pow"
+                || name
+                == "fdiv"
 
         _ ->
             False
@@ -373,6 +380,7 @@ when intrinsics don't match (e.g., due to type mismatches with boxed values).
 With relaxed intrinsic matching (matching on argument types only, not result types),
 we no longer need kernel fallbacks for negate and not. The intrinsics should always
 match for concrete Int, Float, or Bool argument types.
+
 -}
 hasKernelImplementation : String -> String -> Bool
 hasKernelImplementation _ _ =
@@ -2338,10 +2346,6 @@ generateClosure ctx closureInfo body monoType =
                 ( [], [], ctx )
                 closureInfo.captures
 
-        captureVars : List String
-        captureVars =
-            List.map Tuple.first captureVarsWithTypes
-
         -- Box using actual SSA types, not Mono types
         ( boxOps, boxedCaptureVars, ctx1b ) =
             boxArgsWithMlirTypes ctx1 captureVarsWithTypes
@@ -2452,61 +2456,8 @@ isEcoValueType ty =
             False
 
 
-argVarPairsFromExprs : List Mono.MonoExpr -> List String -> List ( String, MlirType )
-argVarPairsFromExprs argExprs argVars =
-    List.map2
-        (\expr var -> ( var, monoTypeToMlir (Mono.typeOf expr) ))
-        argExprs
-        argVars
-
-
-{-| Generate a Char unary operation (i16 -> i16) with direct kernel call.
--}
-generateCharUnaryOp : Context -> List MlirOp -> String -> String -> ExprResult
-generateCharUnaryOp ctx argOps charVar kernelName =
-    let
-        ( resVar, ctx2 ) =
-            freshVar ctx
-
-        ( ctx3, callOp ) =
-            ecoCallNamed ctx2 resVar kernelName [ ( charVar, I16 ) ] I16
-    in
-    { ops = argOps ++ [ callOp ]
-    , resultVar = resVar
-    , resultType = ecoChar
-    , ctx = ctx3
-    }
-
-
-boxIfNeeded : Context -> String -> Mono.MonoType -> ( List MlirOp, String, Context )
-boxIfNeeded ctx var monoTy =
-    let
-        mlirTy =
-            monoTypeToMlir monoTy
-    in
-    if isEcoValueType mlirTy then
-        ( [], var, ctx )
-
-    else
-        let
-            ( boxedVar, ctx1 ) =
-                freshVar ctx
-
-            attrs =
-                Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr mlirTy ])
-
-            ( ctx2, boxOp ) =
-                mlirOp ctx1 "eco.box"
-                    |> opBuilder.withOperands [ var ]
-                    |> opBuilder.withResults [ ( boxedVar, ecoValue ) ]
-                    |> opBuilder.withAttrs attrs
-                    |> opBuilder.build
-        in
-        ( [ boxOp ], boxedVar, ctx2 )
-
-
 {-| Box a value to !eco.value given its MlirType.
-    If already !eco.value, returns unchanged.
+If already !eco.value, returns unchanged.
 -}
 boxToEcoValue : Context -> String -> MlirType -> ( List MlirOp, String, Context )
 boxToEcoValue ctx var mlirTy =
@@ -2529,134 +2480,6 @@ boxToEcoValue ctx var mlirTy =
                     |> opBuilder.build
         in
         ( [ boxOp ], boxedVar, ctx2 )
-
-
-{-| Convert an i1 Bool to an embedded constant !eco.value.
-    This produces the correct HPointer representation:
-    - True = Const_True (3) shifted left by 40 bits = 3298534883328
-    - False = Const_False (4) shifted left by 40 bits = 4398046511104
-    Uses arith.select to choose between the two constants.
--}
-boolToEmbeddedConstant : Context -> String -> ( List MlirOp, String, Context )
-boolToEmbeddedConstant ctx boolVar =
-    let
-        -- True = 3 << 40 = 3298534883328
-        trueConstValue =
-            3298534883328
-
-        -- False = 4 << 40 = 4398046511104
-        falseConstValue =
-            4398046511104
-
-        ( trueVar, ctx1 ) =
-            freshVar ctx
-
-        ( ctx2, trueOp ) =
-            arithConstantInt ctx1 trueVar trueConstValue
-
-        ( falseVar, ctx3 ) =
-            freshVar ctx2
-
-        ( ctx4, falseOp ) =
-            arithConstantInt ctx3 falseVar falseConstValue
-
-        ( resultVar, ctx5 ) =
-            freshVar ctx4
-
-        -- arith.select %bool, %true, %false : i64
-        attrs =
-            Dict.empty
-
-        ( ctx6, selectOp ) =
-            mlirOp ctx5 "arith.select"
-                |> opBuilder.withOperands [ boolVar, trueVar, falseVar ]
-                |> opBuilder.withResults [ ( resultVar, I64 ) ]
-                |> opBuilder.withAttrs attrs
-                |> opBuilder.build
-
-        -- Cast i64 to !eco.value (they're the same bit representation)
-        ( castVar, ctx7 ) =
-            freshVar ctx6
-
-        ( ctx8, castOp ) =
-            mlirOp ctx7 "builtin.unrealized_conversion_cast"
-                |> opBuilder.withOperands [ resultVar ]
-                |> opBuilder.withResults [ ( castVar, ecoValue ) ]
-                |> opBuilder.build
-    in
-    ( [ trueOp, falseOp, selectOp, castOp ], castVar, ctx8 )
-
-
-boxArgsIfNeeded :
-    Context
-    -> List ( String, Mono.MonoType )
-    -> ( List MlirOp, List String, Context )
-boxArgsIfNeeded ctx args =
-    List.foldl
-        (\( var, ty ) ( opsAcc, varsAcc, ctxAcc ) ->
-            let
-                ( moreOps, boxedVar, ctx1 ) =
-                    boxIfNeeded ctxAcc var ty
-            in
-            ( opsAcc ++ moreOps, varsAcc ++ [ boxedVar ], ctx1 )
-        )
-        ( [], [], ctx )
-        args
-
-
-{-| Box or unbox arguments to match the function's expected parameter types.
-If the function expects !eco.value but we have an unboxed type, box it.
-If the function expects an unboxed type but we have !eco.value, unbox it.
--}
-boxToMatchSignature :
-    Context
-    -> List Mono.MonoExpr
-    -> List String
-    -> List Mono.MonoType
-    -> ( List MlirOp, List ( String, MlirType ), Context )
-boxToMatchSignature ctx args argVars expectedTypes =
-    let
-        helper :
-            ( Mono.MonoExpr, String, Mono.MonoType )
-            -> ( List MlirOp, List ( String, MlirType ), Context )
-            -> ( List MlirOp, List ( String, MlirType ), Context )
-        helper ( expr, var, expectedTy ) ( opsAcc, pairsAcc, ctxAcc ) =
-            let
-                exprMlirTy =
-                    monoTypeToMlir (Mono.typeOf expr)
-
-                expectedMlirTy =
-                    monoTypeToMlir expectedTy
-            in
-            if expectedMlirTy == exprMlirTy then
-                -- Types match, no boxing/unboxing needed
-                ( opsAcc, pairsAcc ++ [ ( var, exprMlirTy ) ], ctxAcc )
-
-            else if isEcoValueType expectedMlirTy && not (isEcoValueType exprMlirTy) then
-                -- Function expects boxed, we have unboxed -> box it
-                let
-                    ( boxOps, boxedVar, ctx1 ) =
-                        boxIfNeeded ctxAcc var (Mono.typeOf expr)
-                in
-                ( opsAcc ++ boxOps, pairsAcc ++ [ ( boxedVar, ecoValue ) ], ctx1 )
-
-            else if not (isEcoValueType expectedMlirTy) && isEcoValueType exprMlirTy then
-                -- Function expects unboxed, we have boxed -> unbox it
-                let
-                    ( unboxOps, unboxedVar, ctx1 ) =
-                        unboxToType ctxAcc var expectedMlirTy
-                in
-                ( opsAcc ++ unboxOps, pairsAcc ++ [ ( unboxedVar, expectedMlirTy ) ], ctx1 )
-
-            else
-                -- Types don't match but no boxing solution - use expression type
-                ( opsAcc, pairsAcc ++ [ ( var, exprMlirTy ) ], ctxAcc )
-
-        zipped =
-            List.map3 (\a b c -> ( a, b, c )) args argVars expectedTypes
-    in
-    List.foldl helper ( [], [], ctx ) zipped
-
 
 
 {-| Box or unbox arguments (based on ACTUAL SSA types) to match the
@@ -2734,8 +2557,10 @@ unboxToType ctx var targetType =
 {-| Coerce an expression result to a desired MLIR type by inserting
 boxing/unboxing ops when the difference is only boxed vs unboxed.
 Handles both directions:
-- primitive -> !eco.value (box)
-- !eco.value -> primitive (unbox)
+
+  - primitive -> !eco.value (box)
+  - !eco.value -> primitive (unbox)
+
 -}
 coerceResultToType : Context -> String -> MlirType -> MlirType -> ( List MlirOp, String, Context )
 coerceResultToType ctx var actualTy expectedTy =
@@ -3004,10 +2829,6 @@ generateSaturatedCall ctx func args resultType =
                 ( argOps, argsWithTypes, ctx1 ) =
                     generateExprListTyped ctx args
 
-                argVars : List String
-                argVars =
-                    List.map Tuple.first argsWithTypes
-
                 argTypes : List Mono.MonoType
                 argTypes =
                     List.map Mono.typeOf args
@@ -3210,10 +3031,15 @@ generateSaturatedCall ctx func args resultType =
                 ( unboxOps, finalVar, ctx4 ) =
                     if isEcoValueType expectedType then
                         ( [], resVar, ctx3 )
+
                     else
                         let
-                            ( unboxVar, ctxU ) = freshVar ctx3
-                            attrs = Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr ecoValue ])
+                            ( unboxVar, ctxU ) =
+                                freshVar ctx3
+
+                            attrs =
+                                Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr ecoValue ])
+
                             ( ctxU2, unboxOp ) =
                                 mlirOp ctxU "eco.unbox"
                                     |> opBuilder.withOperands [ resVar ]
@@ -3284,10 +3110,15 @@ generateSaturatedCall ctx func args resultType =
                 ( unboxOps, finalVar, ctx4 ) =
                     if isEcoValueType expectedType then
                         ( [], resVar, ctx3 )
+
                     else
                         let
-                            ( unboxVar, ctxU ) = freshVar ctx3
-                            attrs = Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr ecoValue ])
+                            ( unboxVar, ctxU ) =
+                                freshVar ctx3
+
+                            attrs =
+                                Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr ecoValue ])
+
                             ( ctxU2, unboxOp ) =
                                 mlirOp ctxU "eco.unbox"
                                     |> opBuilder.withOperands [ resVar ]
@@ -3302,21 +3133,6 @@ generateSaturatedCall ctx func args resultType =
             , resultType = expectedType
             , ctx = ctx4
             }
-
-
-generateExprList : Context -> List Mono.MonoExpr -> ( List MlirOp, List String, Context )
-generateExprList ctx exprs =
-    List.foldl
-        (\expr ( accOps, accVars, accCtx ) ->
-            let
-                result : ExprResult
-                result =
-                    generateExpr accCtx expr
-            in
-            ( accOps ++ result.ops, accVars ++ [ result.resultVar ], result.ctx )
-        )
-        ( [], [], ctx )
-        exprs
 
 
 {-| Generate expressions and return their ACTUAL MLIR types (not from Mono.typeOf).
@@ -3360,6 +3176,7 @@ boxArgsWithMlirTypes ctx args =
         )
         ( [], [], ctx )
         args
+
 
 
 -- TAIL CALL GENERATION
@@ -3647,8 +3464,9 @@ Returns the ops needed to project to the target, the result variable name,
 and the updated context.
 
 The targetType parameter specifies what type the final value should be:
-- For primitive tests (IsBool, IsInt, IsChr), this is the primitive type
-- For ctor tests, this is !eco.value
+
+  - For primitive tests (IsBool, IsInt, IsChr), this is the primitive type
+  - For ctor tests, this is !eco.value
 
 -}
 generateDTPath : Context -> Name.Name -> DT.Path -> MlirType -> ( List MlirOp, String, Context )
@@ -3984,38 +3802,6 @@ testToTagInt test =
             0
 
 
-{-| Get the expected scrutinee MLIR type for a decision tree test.
-    For primitive tests (Bool, Int, Char), return the primitive type.
-    For custom type/list tests, return !eco.value.
--}
-testToScrutineeType : DT.Test -> MlirType
-testToScrutineeType test =
-    case test of
-        DT.IsBool _ ->
-            I1
-
-        DT.IsInt _ ->
-            I64
-
-        DT.IsChr _ ->
-            I16
-
-        DT.IsCtor _ _ _ _ _ ->
-            ecoValue
-
-        DT.IsCons ->
-            ecoValue
-
-        DT.IsNil ->
-            ecoValue
-
-        DT.IsTuple ->
-            ecoValue
-
-        DT.IsStr _ ->
-            ecoValue
-
-
 {-| Compute the fallback tag for a fan-out based on the edge tests.
 For two-way branches (Bool, Cons/Nil), this computes the "other" tag.
 For N-way branches (custom types), this finds the first missing tag.
@@ -4150,7 +3936,7 @@ generateLeaf ctx _ choice resultTy =
             , ctx = ctx2
             }
 
-        Mono.Jump index ->
+        Mono.Jump _ ->
             -- Jump to a joinpoint - generate eco.jump
             let
                 ( dummyVar, ctx1 ) =
@@ -4167,6 +3953,7 @@ generateLeaf ctx _ choice resultTy =
             , resultType = resultTy
             , ctx = ctx3
             }
+
 
 {-| Generate code for a Chain node (test chain with success/failure branches).
 -}
@@ -4186,8 +3973,8 @@ generateChain ctx root testChain success failure resultTy =
 
 
 {-| Special handling for direct Bool ADT pattern matching.
-    For `case b of True -> X; False -> Y`, use eco.case with i1 scrutinee.
-    eco.case now accepts i1 directly (lowered to scf.if by SCF pass).
+For `case b of True -> X; False -> Y`, use eco.case with i1 scrutinee.
+eco.case now accepts i1 directly (lowered to scf.if by SCF pass).
 -}
 generateChainForBoolADT : Context -> Name.Name -> DT.Path -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
 generateChainForBoolADT ctx root path success failure resultTy =
@@ -4226,7 +4013,7 @@ generateChainForBoolADT ctx root path success failure resultTy =
 
 
 {-| General case for Chain node: compute boolean condition and dispatch.
-    Uses eco.case with i1 scrutinee (lowered to scf.if by SCF pass).
+Uses eco.case with i1 scrutinee (lowered to scf.if by SCF pass).
 -}
 generateChainGeneral : Context -> Name.Name -> List ( DT.Path, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
 generateChainGeneral ctx root testChain success failure resultTy =
@@ -4294,7 +4081,7 @@ isBoolFanOut edges =
 
 
 {-| Handle Bool FanOut with eco.case on i1 scrutinee.
-    eco.case now accepts i1 directly (lowered to scf.if by SCF pass).
+eco.case now accepts i1 directly (lowered to scf.if by SCF pass).
 -}
 generateBoolFanOut : Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
 generateBoolFanOut ctx root path edges fallback resultTy =
@@ -4361,7 +4148,7 @@ findBoolBranches edges fallback =
 
 
 {-| General case FanOut using eco.case (for non-Bool ADT patterns).
-    eco.case accepts !eco.value scrutinee; for Bool patterns, generateBoolFanOut uses i1.
+eco.case accepts !eco.value scrutinee; for Bool patterns, generateBoolFanOut uses i1.
 -}
 generateFanOutGeneral : Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
 generateFanOutGeneral ctx root path edges fallback resultTy =
@@ -4883,6 +4670,7 @@ ecoCallNamed ctx resultVar funcName operands returnType =
     - i1 for Bool fields
     - i16 for Char fields
     - !eco.value for boxed fields
+
 -}
 ecoProject : Context -> String -> Int -> MlirType -> String -> MlirType -> ( Context, MlirOp )
 ecoProject ctx resultVar index resultType operand operandType =
@@ -5024,28 +4812,6 @@ arithConstantBool ctx resultVar value =
     mlirOp ctx "arith.constant"
         |> opBuilder.withResults [ ( resultVar, I1 ) ]
         |> opBuilder.withAttrs (Dict.singleton "value" (BoolAttr value))
-        |> opBuilder.build
-
-
-{-| eco.constant for Bool values (embedded constants, not heap allocated).
-    These are embedded in the pointer representation and work correctly with eco.case.
-    True has tag 3, False has tag 4 in the embedded constant encoding.
--}
-ecoConstantBool : Context -> String -> Bool -> ( Context, MlirOp )
-ecoConstantBool ctx resultVar value =
-    let
-        -- eco.constant uses Eco_ConstantKind enum: True = 3, False = 4
-        -- In MLIR generic form, enum attrs are represented as typed integers
-        kindAttr =
-            if value then
-                IntAttr (Just I32) 3
-
-            else
-                IntAttr (Just I32) 4
-    in
-    mlirOp ctx "eco.constant"
-        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
-        |> opBuilder.withAttrs (Dict.singleton "kind" kindAttr)
         |> opBuilder.build
 
 
@@ -5192,67 +4958,6 @@ ecoJoinpoint ctx id params jpRegion contRegion resultTypes =
         |> opBuilder.build
 
 
-{-| eco.jump - jump to a joinpoint
-
-Takes the joinpoint id, operands with types, and builds an eco.jump operation.
-The result is a terminator operation.
-
--}
-ecoJump : Context -> Int -> List ( String, MlirType ) -> ( Context, MlirOp )
-ecoJump ctx targetId operands =
-    let
-        operandNames =
-            List.map Tuple.first operands
-
-        operandTypesAttr =
-            if List.isEmpty operands then
-                Dict.empty
-
-            else
-                Dict.singleton "_operand_types"
-                    (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) operands))
-
-        attrs =
-            Dict.union operandTypesAttr
-                (Dict.singleton "target" (IntAttr Nothing targetId))
-    in
-    mlirOp ctx "eco.jump"
-        |> opBuilder.withOperands operandNames
-        |> opBuilder.withAttrs attrs
-        |> opBuilder.isTerminator True
-        |> opBuilder.build
-
-
-{-| eco.jump for tail-recursive calls - jump to a named target (function entry)
-
-Takes the target name (function), operands with types, and builds an eco.jump operation.
-
--}
-ecoJumpNamed : Context -> String -> List ( String, MlirType ) -> ( Context, MlirOp )
-ecoJumpNamed ctx targetName operands =
-    let
-        operandNames =
-            List.map Tuple.first operands
-
-        operandTypesAttr =
-            if List.isEmpty operands then
-                Dict.empty
-
-            else
-                Dict.singleton "_operand_types"
-                    (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) operands))
-
-        attrs =
-            Dict.union operandTypesAttr
-                (Dict.singleton "target" (StringAttr targetName))
-    in
-    mlirOp ctx "eco.jump"
-        |> opBuilder.withOperands operandNames
-        |> opBuilder.withAttrs attrs
-        |> opBuilder.isTerminator True
-        |> opBuilder.build
-
-
 {-| eco.getTag - get the tag from a value (for eco.case scrutinee)
 -}
 ecoGetTag : Context -> String -> String -> ( Context, MlirOp )
@@ -5269,8 +4974,8 @@ ecoGetTag ctx resultVar operand =
 
 
 {-| scf.if - direct structured control flow for i1 boolean conditions.
-    Use this for Bool pattern matching instead of eco.case, since eco.case
-    uses eco.get_tag which dereferences the value as a pointer.
+Use this for Bool pattern matching instead of eco.case, since eco.case
+uses eco.get\_tag which dereferences the value as a pointer.
 -}
 scfIf : Context -> String -> String -> MlirRegion -> MlirRegion -> MlirType -> ( Context, MlirOp )
 scfIf ctx condVar resultVar thenRegion elseRegion resultType =

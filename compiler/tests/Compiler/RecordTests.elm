@@ -584,27 +584,6 @@ updateMultipleFields expectFn _ =
     expectFn modul
 
 
-updateWithComputedValue : (Src.Module -> Expectation) -> (() -> Expectation)
-updateWithComputedValue expectFn _ =
-    let
-        record =
-            recordExpr [ ( "value", intExpr 10 ) ]
-
-        def =
-            define "r" [] record
-
-        newValue =
-            tupleExpr (intExpr 1) (intExpr 2)
-
-        update =
-            updateExpr (varExpr "r") [ ( "value", newValue ) ]
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] update)
-    in
-    expectFn modul
-
-
 chainedUpdates : (Src.Module -> Expectation) -> (() -> Expectation)
 chainedUpdates expectFn _ =
     let

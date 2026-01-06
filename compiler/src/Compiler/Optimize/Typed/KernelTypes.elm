@@ -1,9 +1,7 @@
 module Compiler.Optimize.Typed.KernelTypes exposing
     ( KernelTypeEnv
-    , lookup
-    , hasEntry
-    , insertFirstUsage
-    , buildFunctionType
+    , lookup, hasEntry
+    , insertFirstUsage, buildFunctionType
     )
 
 {-| Kernel function type environment for typed optimization.

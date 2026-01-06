@@ -1,6 +1,4 @@
-module Compiler.Type.Constrain.Erased.Pattern exposing
-    ( add
-    )
+module Compiler.Type.Constrain.Erased.Pattern exposing (add)
 
 {-| Type constraint generation for pattern matching (Erased pathway).
 

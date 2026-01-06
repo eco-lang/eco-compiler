@@ -325,7 +325,8 @@ toNodeOne syntaxVersion env idState (A.At _ (Src.Value valueData)) =
                         Env.addLocals argBindings env
                             |> ReportingResult.andThen
                                 (\newEnv ->
-                                    Expr.verifyBindingsWithIds W.Pattern argBindings
+                                    Expr.verifyBindingsWithIds W.Pattern
+                                        argBindings
                                         (Expr.canonicalizeWithIds syntaxVersion newEnv stateAfterArgs body)
                                         |> ReportingResult.map
                                             (\( ( cbody, finalState ), freeLocals ) ->
@@ -355,7 +356,8 @@ toNodeOne syntaxVersion env idState (A.At _ (Src.Value valueData)) =
                                     Env.addLocals argBindings env
                                         |> ReportingResult.andThen
                                             (\newEnv ->
-                                                Expr.verifyBindingsWithIds W.Pattern argBindings
+                                                Expr.verifyBindingsWithIds W.Pattern
+                                                    argBindings
                                                     (Expr.canonicalizeWithIds syntaxVersion newEnv stateAfterArgs body)
                                                     |> ReportingResult.map
                                                         (\( ( cbody, finalState ), freeLocals ) ->

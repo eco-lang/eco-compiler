@@ -1,7 +1,7 @@
 module Compiler.Canonicalize.Pattern exposing
     ( PResult, Bindings, DupsDict
-    , verify
-    , canonicalizeWithIds, traverseWithIds, verifyWithIds
+    , canonicalizeWithIds, traverseWithIds
+    , verify, verifyWithIds
     )
 
 {-| Canonicalize Elm patterns from source AST to canonical AST.

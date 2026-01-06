@@ -43,11 +43,11 @@ import Compiler.Optimize.Erased.Module as Optimize
 import Compiler.Optimize.Typed.KernelTypes as KernelTypes
 import Compiler.Optimize.Typed.Module as TypedOptimize
 import Compiler.Reporting.Error as E
-import Compiler.Type.PostSolve as PostSolve
 import Compiler.Reporting.Render.Type.Localizer as Localizer
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Type.Constrain.Erased.Module as TypeErased
 import Compiler.Type.Constrain.Typed.Module as TypeTyped
+import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Type
 import Data.Map exposing (Dict)
 import System.TypeCheck.IO as TypeCheck

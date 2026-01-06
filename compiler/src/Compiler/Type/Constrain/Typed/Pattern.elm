@@ -1,6 +1,4 @@
-module Compiler.Type.Constrain.Typed.Pattern exposing
-    ( addWithIds
-    )
+module Compiler.Type.Constrain.Typed.Pattern exposing (addWithIds)
 
 {-| Type constraint generation for pattern matching (Typed pathway).
 

@@ -109,11 +109,6 @@ aVar =
     Can.TVar "a"
 
 
-bVar : Can.Type
-bVar =
-    Can.TVar "b"
-
-
 intType : Can.Type
 intType =
     Can.TType ModuleName.basics "Int" []
@@ -184,7 +179,7 @@ listNodeA =
 
 {-| Array union type definitions.
 
-type Array a = Array_elm_builtin Int Int (Tree a) (JsArray a)
+type Array a = Array\_elm\_builtin Int Int (Tree a) (JsArray a)
 type Node a = SubTree (Tree a) | Leaf (JsArray a)
 
 -}

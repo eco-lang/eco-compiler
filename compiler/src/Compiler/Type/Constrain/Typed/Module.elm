@@ -1,6 +1,4 @@
-module Compiler.Type.Constrain.Typed.Module exposing
-    ( constrainWithIds
-    )
+module Compiler.Type.Constrain.Typed.Module exposing (constrainWithIds)
 
 {-| Generates type constraints for Elm modules during type checking (Typed pathway).
 

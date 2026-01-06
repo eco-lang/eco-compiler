@@ -1,5 +1,9 @@
 module Compiler.AST.SourceBuilder exposing
-    ( -- Comment wrappers
+    ( AliasDef
+    , TypedDef
+    , UnionCtor
+    , UnionDef
+    , -- Comment wrappers
       accessExpr
     , accessorExpr
     , binopsExpr
@@ -9,7 +13,6 @@ module Compiler.AST.SourceBuilder exposing
     , charFuzzer
     , chrExpr
     , define
-    , defineTyped
     , destruct
       -- Pattern builders
     , floatExpr
@@ -45,13 +48,8 @@ module Compiler.AST.SourceBuilder exposing
     , tRecord
     , tTuple
     , tType
-    , tUnit
     , tVar
       -- Type aliases for module building
-    , TypedDef
-    , UnionDef
-    , UnionCtor
-    , AliasDef
     , tuple3Expr
     , tupleExpr
     , unitExpr
@@ -407,13 +405,6 @@ destruct pattern expr =
     Src.Destruct pattern (c1 expr)
 
 
-{-| Create a function/value definition with a type annotation.
--}
-defineTyped : Name -> List Src.Pattern -> Src.Type -> Src.Expr -> Src.Def
-defineTyped name args tipe body =
-    Src.Define (A.At A.zero name) (List.map c1 args) (c1 body) (Just (c1 (c2 tipe)))
-
-
 
 -- ============================================================================
 -- MODULE BUILDERS
@@ -446,16 +437,6 @@ listImport : Src.Import
 listImport =
     Src.Import
         (c1 (A.At A.zero "List"))
-        Nothing
-        (c2 (Src.Open noComments noComments))
-
-
-{-| Import statement for Array exposing everything.
--}
-arrayImport : Src.Import
-arrayImport =
-    Src.Import
-        (c1 (A.At A.zero "Array"))
         Nothing
         (c2 (Src.Open noComments noComments))
 
@@ -608,13 +589,6 @@ tLambda from to =
 tType : Name -> List Src.Type -> Src.Type
 tType name args =
     A.At A.zero (Src.TType A.zero name (List.map c1 args))
-
-
-{-| Create a unit type.
--}
-tUnit : Src.Type
-tUnit =
-    A.At A.zero Src.TUnit
 
 
 {-| Create a tuple type.

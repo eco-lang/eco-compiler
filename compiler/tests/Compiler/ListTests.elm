@@ -6,8 +6,7 @@ module Compiler.ListTests exposing (expectSuite)
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( TypedDef
-        , binopsExpr
+        ( binopsExpr
         , callExpr
         , caseExpr
         , charFuzzer

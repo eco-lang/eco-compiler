@@ -11,12 +11,10 @@ This implementation does not currently allow custom formats.
 
 import Dict exposing (Dict)
 import FormatNumber as Fmt
-import Mlir.Loc as Loc exposing (Loc)
+import Mlir.Loc exposing (Loc)
 import Mlir.Mlir
     exposing
-        ( DenseF64Value(..)
-        , Dim(..)
-        , MlirAttr(..)
+        ( MlirAttr(..)
         , MlirBlock
         , MlirModule
         , MlirOp
@@ -24,7 +22,7 @@ import Mlir.Mlir
         , MlirType(..)
         , Visibility(..)
         )
-import OrderedDict exposing (OrderedDict)
+import OrderedDict
 
 
 
@@ -87,11 +85,6 @@ walkRegion (MlirRegion r) acc =
         |> List.foldl (\( _, b ) a -> walkBlock b a) acc1
 
 
-collectSymbols : MlirModule -> SymbolEnv
-collectSymbols modl =
-    List.foldl walkOp Dict.empty modl.body
-
-
 
 --==== Pretty Printer (generic MLIR form)
 
@@ -107,7 +100,7 @@ ppModule m =
         bodyStr =
             m.body
                 |> List.map (ppOp 1 Dict.empty)
-                |> String.join ""
+                |> String.concat
 
         footer =
             "}"
@@ -128,7 +121,7 @@ ppRegion indent (MlirRegion r) =
             r.blocks
                 |> OrderedDict.toList
                 |> List.map (\( label, blk ) -> ppBlockWithLabel indent label (Dict.fromList blk.args) blk)
-                |> String.join ""
+                |> String.concat
     in
     entryStr ++ labeledStrs
 
@@ -179,7 +172,7 @@ ppBlockWithLabel indent label env0 blk =
             List.foldl step ( [], env0 ) blk.body
 
         bodyStr =
-            bodyLinesRev |> List.reverse |> String.join ""
+            bodyLinesRev |> List.reverse |> String.concat
 
         termStr =
             ppOp (indent + 1) envAfterBody blk.terminator
@@ -312,9 +305,6 @@ ppType ty =
         I1 ->
             "i1"
 
-        I8 ->
-            "i8"
-
         I16 ->
             "i16"
 
@@ -324,20 +314,8 @@ ppType ty =
         I64 ->
             "i64"
 
-        F32 ->
-            "f32"
-
         F64 ->
             "f64"
-
-        Index ->
-            "index"
-
-        MemRef rec ->
-            String.concat [ "memref<", ppDims rec.dims, "x", ppType rec.elem, ">" ]
-
-        StructType fields ->
-            "struct<" ++ (fields |> List.map ppType |> String.join ", ") ++ ">"
 
         NamedStruct s ->
             "!" ++ s
@@ -352,31 +330,10 @@ ppType ty =
             in
             "(" ++ ins ++ ") -> (" ++ outs ++ ")"
 
-        RankedTensor dims elem ->
-            String.concat [ "tensor<", ppDims dims, "x", ppType elem, ">" ]
-
-        UnrankedTensor elem ->
-            "tensor<*x" ++ ppType elem ++ ">"
-
 
 indentPad : Int -> String
 indentPad n =
     String.repeat (2 * n) " "
-
-
-ppDims : List Dim -> String
-ppDims dims =
-    dims
-        |> List.map
-            (\d ->
-                case d of
-                    Static k ->
-                        String.fromInt k
-
-                    Dynamic ->
-                        "*"
-            )
-        |> String.join "x"
 
 
 ppLoc : Loc -> String
@@ -469,26 +426,6 @@ ppAttr attr =
                     ++ " : "
                     ++ ppType t
 
-        FloatAttr f ->
-            let
-                str =
-                    String.fromFloat f
-            in
-            if String.contains "." str then
-                str
-
-            else
-                Fmt.format
-                    { decimals = 1
-                    , thousandSeparator = ""
-                    , decimalSeparator = "."
-                    , negativePrefix = "-"
-                    , negativeSuffix = ""
-                    , positivePrefix = ""
-                    , positiveSuffix = ""
-                    }
-                    f
-
         TypeAttr t ->
             ppType t
 
@@ -500,47 +437,10 @@ ppAttr attr =
                 Nothing ->
                     "[" ++ (xs |> List.map ppAttr |> String.join ", ") ++ "]"
 
-        DenseF64Attr rec ->
-            String.concat
-                [ "dense<"
-                , ppDenseF64 rec.payload.values
-                , "> : "
-                , ppType rec.type_
-                ]
-
-
         SymbolRefAttr s ->
             "@" ++ s
 
         VisibilityAttr v ->
             case v of
-                Public ->
-                    "\"public\""
-
                 Private ->
                     "\"private\""
-
-                Nested ->
-                    "\"nested\""
-
-        UnitAttr ->
-            "unit"
-
-
-ppDenseF64 : DenseF64Value -> String
-ppDenseF64 val =
-    case val of
-        Scalar f ->
-            Fmt.format
-                { decimals = 6
-                , thousandSeparator = ""
-                , decimalSeparator = "."
-                , negativePrefix = "−"
-                , negativeSuffix = ""
-                , positivePrefix = ""
-                , positiveSuffix = ""
-                }
-                f
-
-        Tensor xs ->
-            "[" ++ (List.map ppDenseF64 xs |> String.join ", ") ++ "]"

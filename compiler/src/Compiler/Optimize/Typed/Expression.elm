@@ -1,8 +1,7 @@
 module Compiler.Optimize.Typed.Expression exposing
-    ( Cycle
-    , optimize
+    ( Cycle, Annotations
+    , optimize, optimizePotentialTailCall
     , destructArgs
-    , Annotations, optimizePotentialTailCall
     )
 
 {-| Optimizes TypedCanonical expressions into TypedOptimized expressions.
@@ -1017,6 +1016,7 @@ using placeholder TVar "?" types.
 This is critical for correct code generation: when a constructor like Circle Int
 stores its Int field unboxed, the destructor needs to know the field type is Int
 so that eco.project can read the value with the correct unboxed flag.
+
 -}
 destructHelpWithType : Maybe Can.Type -> TOpt.Path -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
 destructHelpWithType maybeType path (A.At region patternInfo) revDs =

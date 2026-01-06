@@ -25,13 +25,11 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Optimize.Erased.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
-import Utils.Crash as Crash
 
 
 
@@ -74,9 +72,12 @@ isFunctionType monoType =
 Returns an error message if the invariant is violated.
 
 This enforces the invariant:
+
 > Every MonoNode whose MonoType is a function (MFunction) must be callable, i.e.:
-> - either MonoTailFunc params body monoType, or
-> - MonoDefine expr monoType where expr is MonoClosure closureInfo body monoType.
+>
+>   - either MonoTailFunc params body monoType, or
+>   - MonoDefine expr monoType where expr is MonoClosure closureInfo body monoType.
+
 -}
 checkCallableTopLevels : MonoState -> Result String ()
 checkCallableTopLevels state =
@@ -122,9 +123,10 @@ checkCallableTopLevels state =
                 _ ->
                     Nothing
     in
-    case Dict.toList compare state.nodes
-        |> List.filterMap checkNode
-        |> List.head
+    case
+        Dict.toList compare state.nodes
+            |> List.filterMap checkNode
+            |> List.head
     of
         Just msg ->
             Err msg

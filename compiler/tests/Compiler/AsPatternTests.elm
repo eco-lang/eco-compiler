@@ -6,12 +6,10 @@ module Compiler.AsPatternTests exposing (expectSuite)
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( boolExpr
-        , callExpr
+        ( callExpr
         , caseExpr
         , define
         , destruct
-        , ifExpr
         , intExpr
         , lambdaExpr
         , letExpr
@@ -374,25 +372,6 @@ aliasInDeeplyNestedStructure expectFn _ =
     expectFn modul
 
 
-aliasEverywhere : (Src.Module -> Expectation) -> (() -> Expectation)
-aliasEverywhere expectFn _ =
-    let
-        pattern =
-            pAlias
-                (pTuple
-                    (pAlias (pVar "a") "first")
-                    (pAlias (pVar "b") "second")
-                )
-                "whole"
-
-        modul =
-            makeModuleWithDefs "Test"
-                [ ( "allAliased", [ pattern ], listExpr [ varExpr "whole", varExpr "first", varExpr "second" ] )
-                ]
-    in
-    expectFn modul
-
-
 mixedNestedAliases : (Src.Module -> Expectation) -> (() -> Expectation)
 mixedNestedAliases expectFn _ =
     let
@@ -465,23 +444,6 @@ aliasUsedInFunctionBody expectFn _ =
 
         modul =
             makeModule "testValue" (letExpr [ fn ] (callExpr (varExpr "process") [ intExpr 42 ]))
-    in
-    expectFn modul
-
-
-multipleAliasesInRecursiveFunction : (Src.Module -> Expectation) -> (() -> Expectation)
-multipleAliasesInRecursiveFunction expectFn _ =
-    let
-        fn =
-            define "go"
-                [ pAlias (pVar "n") "count", pAlias (pVar "acc") "result" ]
-                (ifExpr (boolExpr True)
-                    (varExpr "result")
-                    (callExpr (varExpr "go") [ intExpr 0, varExpr "count" ])
-                )
-
-        modul =
-            makeModule "testValue" (letExpr [ fn ] (callExpr (varExpr "go") [ intExpr 5, listExpr [] ]))
     in
     expectFn modul
 

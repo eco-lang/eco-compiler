@@ -1,14 +1,10 @@
 module Compiler.PackageCompilation exposing
-    ( CompileResult
-    , CompileError(..)
-    , PathwayDiscrepancy(..)
+    ( CompileResult, CompileError(..), PathwayDiscrepancy(..)
     , parseModule
-    , compileModule
-    , compileModulesInOrder
-    , monomorphize
-    , generateMLIR
+    , compileModule, compileModulesInOrder
+    , monomorphize, generateMLIR
     , errorToString
-    , discrepancyToString
+    , TypeCheckTypedResult
     )
 
 {-| Infrastructure for compiling multiple Elm modules from source strings
@@ -49,7 +45,7 @@ This ensures the standard JS pathway and the MLIR pathway behave consistently.
 
 # Error Formatting
 
-@docs errorToString, discrepancyToString
+@docs errorToString
 
 -}
 
@@ -99,6 +95,7 @@ import System.TypeCheck.IO as TypeCheck
 {-| Result of successfully compiling a module.
 
 Includes both erased optimization (for JS) and typed optimization (for MLIR).
+
 -}
 type alias CompileResult =
     { moduleName : ModuleName.Raw
@@ -120,7 +117,6 @@ type CompileError
     | PatternError (NE.Nonempty PatternMatches.Error)
     | OptimizeError (OneOrMore.OneOrMore MainError.Error)
     | MonomorphizeError String
-    | MLIRGenerationError String
     | PathwayMismatch PathwayDiscrepancy
 
 
@@ -386,6 +382,7 @@ canonicalize pkg ifaces modul =
 {-| Standard (erased) type checking using constrain + run.
 
 This is the JS backend pathway.
+
 -}
 typeCheckErased : Can.Module -> Result (NE.Nonempty TypeError.Error) (Dict String Name.Name Can.Annotation)
 typeCheckErased canonical =
@@ -398,6 +395,7 @@ typeCheckErased canonical =
 
 This produces per-expression type information needed for typed optimization.
 Also runs PostSolve to fix Group B types and compute kernel type environment.
+
 -}
 typeCheckTyped : Can.Module -> Result (NE.Nonempty TypeError.Error) TypeCheckTypedResult
 typeCheckTyped canonical =
@@ -454,6 +452,7 @@ optimizeErased annotations canonical =
 {-| Typed optimization for MLIR backend.
 
 Preserves full type information throughout the optimization process.
+
 -}
 optimizeTyped :
     Dict String Name.Name Can.Annotation
@@ -609,9 +608,6 @@ errorToString error =
 
         MonomorphizeError msg ->
             "Monomorphization error: " ++ msg
-
-        MLIRGenerationError msg ->
-            "MLIR generation error: " ++ msg
 
         PathwayMismatch discrepancy ->
             "PATHWAY MISMATCH: " ++ discrepancyToString discrepancy

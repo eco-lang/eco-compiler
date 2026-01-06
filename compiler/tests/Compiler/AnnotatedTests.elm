@@ -10,14 +10,9 @@ when type annotations with polymorphic type variables are present.
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( TypedDef
-        , boolExpr
+        ( boolExpr
         , callExpr
-        , define
-        , intExpr
         , lambdaExpr
-        , letExpr
-        , listExpr
         , makeModuleWithTypedDefs
         , pVar
         , recordExpr
@@ -25,10 +20,8 @@ import Compiler.AST.SourceBuilder
         , tRecord
         , tTuple
         , tType
-        , tUnit
         , tVar
         , tupleExpr
-        , unitExpr
         , varExpr
         )
 import Expect exposing (Expectation)
@@ -169,7 +162,8 @@ applyAnnotated expectFn _ =
 {-| apply : (a -> b) -> a -> b
 apply f x = f x
 
-test = apply (\n -> n) True
+test = apply (\\n -> n) True
+
 -}
 applyWithUsage : (Src.Module -> Expectation) -> (() -> Expectation)
 applyWithUsage expectFn _ =
@@ -271,7 +265,8 @@ composeAnnotated expectFn _ =
 {-| compose : (b -> c) -> (a -> b) -> a -> c
 compose f g x = f (g x)
 
-test = compose (\x -> x) (\y -> y) True
+test = compose (\\x -> x) (\\y -> y) True
+
 -}
 composeWithUsage : (Src.Module -> Expectation) -> (() -> Expectation)
 composeWithUsage expectFn _ =

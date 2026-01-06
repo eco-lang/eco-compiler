@@ -1,6 +1,7 @@
 module Compiler.Canonicalize.Expression exposing
-    ( EResult, FreeLocals, Uses(..)
-    , IdState, canonicalizeWithIds, gatherTypedArgsWithIds, verifyBindingsWithIds
+    ( EResult, FreeLocals, Uses(..), IdState
+    , canonicalizeWithIds, gatherTypedArgsWithIds
+    , verifyBindingsWithIds
     )
 
 {-| Canonicalize Elm expressions from source AST to canonical AST.

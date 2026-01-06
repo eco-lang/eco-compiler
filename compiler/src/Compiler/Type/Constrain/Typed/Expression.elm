@@ -1,9 +1,6 @@
 module Compiler.Type.Constrain.Typed.Expression exposing
-    ( ExprIdState
-    , emptyExprIdState
+    ( ExprIdState, emptyExprIdState
     , constrainDefWithIds, constrainRecursiveDefsWithIds
-    , constrainArgsWithIds, constrainTypedArgsWithIds
-    , constrainWithIds
     )
 
 {-| Type constraint generation for expressions (Typed pathway).
@@ -21,8 +18,6 @@ expression types from the solver.
 # Constraint Generation with ID Tracking
 
 @docs constrainDefWithIds, constrainRecursiveDefsWithIds
-@docs constrainArgsWithIds, constrainTypedArgsWithIds
-@docs constrainWithIds
 
 -}
 
@@ -33,7 +28,7 @@ import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Type as E exposing (Category(..), Context(..), Expected(..), MaybeName(..), PContext(..), PExpected(..), SubContext(..))
-import Compiler.Type.Constrain.Common as Common exposing (Args(..), Info(..), RigidTypeVar, State(..), TypedArgs(..), emptyInfo, getAccessName, getName, glToType, makeArgs, toShaderRecord)
+import Compiler.Type.Constrain.Common as Common exposing (Args(..), Info(..), RigidTypeVar, State(..), TypedArgs(..), getAccessName, getName, makeArgs, toShaderRecord)
 import Compiler.Type.Constrain.Typed.NodeIds as NodeIds
 import Compiler.Type.Constrain.Typed.Pattern as Pattern
 import Compiler.Type.Constrain.Typed.Program as Prog exposing (ProgS)

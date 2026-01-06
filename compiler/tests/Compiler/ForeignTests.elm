@@ -14,17 +14,11 @@ import Compiler.AST.CanonicalBuilder
         ( callExpr
         , funType
         , intExpr
-        , intType
-        , lambdaExpr
-        , listType
         , makeAnnotation
-        , makeDef
         , makeModule
         , makeModuleWithDecls
         , makeTypedDef
         , pVar
-        , tupleExpr
-        , tupleType
         , varForeignExpr
         , varLocalExpr
         , varType
@@ -174,6 +168,7 @@ polymorphicForeignTests expectFn condStr =
 apply f x = identity (f x)
 
 This tests the interaction between typed definitions and foreign function calls.
+
 -}
 typedDefUsingForeignIdentity : (Can.Module -> Expectation) -> (() -> Expectation)
 typedDefUsingForeignIdentity expectFn _ =
@@ -212,6 +207,7 @@ typedDefUsingForeignIdentity expectFn _ =
 {-| identity (identity 42)
 
 Nested foreign function calls.
+
 -}
 nestedForeignCalls : (Can.Module -> Expectation) -> (() -> Expectation)
 nestedForeignCalls expectFn _ =

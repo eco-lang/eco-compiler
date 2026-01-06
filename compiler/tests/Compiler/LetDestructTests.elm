@@ -541,32 +541,6 @@ aliasDestructFuzzed expectFn n =
     expectFn modul
 
 
-multipleAliasesInDestruct : (Src.Module -> Expectation) -> (() -> Expectation)
-multipleAliasesInDestruct expectFn _ =
-    let
-        pair =
-            tupleExpr (intExpr 1) (intExpr 2)
-
-        def =
-            destruct
-                (pAlias
-                    (pTuple
-                        (pAlias (pVar "a") "first")
-                        (pAlias (pVar "b") "second")
-                    )
-                    "whole"
-                )
-                pair
-
-        modul =
-            makeModule "testValue"
-                (letExpr [ def ]
-                    (listExpr [ varExpr "whole", varExpr "first", varExpr "second", varExpr "a", varExpr "b" ])
-                )
-    in
-    expectFn modul
-
-
 
 -- ============================================================================
 -- COMPLEX DESTRUCTURING (4 tests)

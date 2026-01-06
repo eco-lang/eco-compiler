@@ -1,6 +1,5 @@
 module Compiler.Type.Constrain.Typed.NodeIds exposing
-    ( NodeVarMap
-    , NodeIdState
+    ( NodeVarMap, NodeIdState
     , emptyNodeIdState
     , recordNodeVar
     )

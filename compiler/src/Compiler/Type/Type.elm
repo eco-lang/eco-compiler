@@ -439,6 +439,7 @@ toAnnotation variable =
 
 Similar to toAnnotation but returns just the type without the Forall quantifier.
 Used for building the TypedCanonical AST where each expression needs its type.
+
 -}
 toCanType : Variable -> IO Can.Type
 toCanType variable =

@@ -1,6 +1,4 @@
-module Compiler.Type.Constrain.Erased.Module exposing
-    ( constrain
-    )
+module Compiler.Type.Constrain.Erased.Module exposing (constrain)
 
 {-| Generates type constraints for Elm modules during type checking (Erased pathway).
 

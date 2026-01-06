@@ -1,6 +1,6 @@
 module Mlir.Mlir exposing
     ( MlirAttr(..)
-    , Dim(..), DenseF64, DenseF64Value(..), Visibility(..)
+    , Dim(..), DenseF64Value(..), Visibility(..)
     , MlirType(..)
     , MlirOp
     , MlirBlock, MlirRegion(..), MlirModule
@@ -17,7 +17,7 @@ processing by the MLIR tool-chain and development system.
 ## Atributes
 
 @docs MlirAttr
-@docs Dim, DenseF64, DenseF64Value, Visibility
+@docs Dim, DenseF64Value, Visibility
 
 
 ## Types
@@ -57,43 +57,28 @@ type MlirAttr
     | BoolAttr Bool
     | IntAttr (Maybe MlirType) Int
     | TypedFloatAttr Float MlirType
-    | FloatAttr Float
     | TypeAttr MlirType
     | ArrayAttr (Maybe MlirType) (List MlirAttr)
-    | DenseF64Attr { type_ : MlirType, payload : DenseF64 }
     | SymbolRefAttr String
     | VisibilityAttr Visibility
-    | UnitAttr
 
 
 {-| Function visibility attribute values.
 -}
 type Visibility
-    = Public
-    | Private
-    | Nested
+    = Private
 
 
 {-| Array dimensions.
 -}
 type Dim
     = Static Int
-    | Dynamic
-
-
-{-| Dense F64 values, such as tensors.
--}
-type alias DenseF64 =
-    { shape : List Dim
-    , values : DenseF64Value
-    }
 
 
 {-| Dense F64 values, such as tensors.
 -}
 type DenseF64Value
-    = Scalar Float
-    | Tensor (List DenseF64Value)
+    = Tensor (List DenseF64Value)
 
 
 
@@ -109,19 +94,12 @@ A hard-coded set of common types is provided here.
 -}
 type MlirType
     = I1
-    | I8
     | I16
     | I32
     | I64
-    | F32
     | F64
-    | Index
-    | MemRef { dims : List Dim, elem : MlirType }
-    | StructType (List MlirType)
     | NamedStruct String
     | FunctionType { inputs : List MlirType, results : List MlirType }
-    | RankedTensor (List Dim) MlirType
-    | UnrankedTensor MlirType
 
 
 

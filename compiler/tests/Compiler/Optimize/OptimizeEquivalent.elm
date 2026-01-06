@@ -19,24 +19,19 @@ import Compiler.AST.Source as Src
 import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Canonicalize.Module as Canonicalize
-import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
-import Compiler.Elm.Kernel as K
-import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Optimize.Erased.DecisionTree as DT
 import Compiler.Optimize.Erased.Module as ErasedOptimize
-import Compiler.Optimize.Typed.KernelTypes as KernelTypes
 import Compiler.Optimize.Typed.Module as TypedOptimize
 import Compiler.Reporting.Annotation as A
-import Compiler.Type.PostSolve as PostSolve
-import Compiler.Reporting.Error.Canonicalize as CanError
 import Compiler.Reporting.Result as Result
 import Compiler.Type.Constrain.Erased.Module as ConstrainErased
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
+import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)

@@ -32,12 +32,10 @@ import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.CodeGen.MLIR as MLIR
 import Compiler.Generate.Mode as Mode
 import Compiler.Generate.Monomorphize as Monomorphize
-import Compiler.Optimize.Typed.KernelTypes as KernelTypes
 import Compiler.Optimize.Typed.Module as TypedOptimize
-import Compiler.Reporting.Annotation as A
-import Compiler.Type.PostSolve as PostSolve
 import Compiler.Reporting.Result as Result
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
+import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
 import Data.Map as Dict exposing (Dict)
 import Expect

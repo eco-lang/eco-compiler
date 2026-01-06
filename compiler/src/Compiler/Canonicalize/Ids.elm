@@ -1,6 +1,5 @@
 module Compiler.Canonicalize.Ids exposing
-    ( IdState
-    , initialIdState
+    ( IdState, initialIdState
     , allocId
     )
 

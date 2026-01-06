@@ -159,32 +159,6 @@ filterLikeFunction expectFn _ =
     expectFn modul
 
 
-foldLikeFunction : (Src.Module -> Expectation) -> (() -> Expectation)
-foldLikeFunction expectFn _ =
-    let
-        foldFn =
-            define "myFold"
-                [ pVar "f", pVar "init", pVar "list" ]
-                (caseExpr (varExpr "list")
-                    [ ( pList [], varExpr "init" )
-                    , ( pCons (pVar "h") (pVar "t")
-                      , callExpr (varExpr "f") [ varExpr "h", varExpr "init" ]
-                      )
-                    ]
-                )
-
-        addFn =
-            lambdaExpr [ pVar "a", pVar "b" ] (tupleExpr (varExpr "a") (varExpr "b"))
-
-        modul =
-            makeModule "testValue"
-                (letExpr [ foldFn ]
-                    (callExpr (varExpr "myFold") [ addFn, intExpr 0, listExpr [ intExpr 1 ] ])
-                )
-    in
-    expectFn modul
-
-
 passAccessorFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 passAccessorFunction expectFn _ =
     let
