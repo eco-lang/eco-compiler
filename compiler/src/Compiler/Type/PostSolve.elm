@@ -11,6 +11,8 @@ It walks the canonical AST to:
 The result is a fixed `nodeTypes` map where all expression IDs have meaningful types,
 plus a `kernelEnv` for typed optimization.
 
+@docs postSolve
+
 -}
 
 import Compiler.AST.Canonical as Can

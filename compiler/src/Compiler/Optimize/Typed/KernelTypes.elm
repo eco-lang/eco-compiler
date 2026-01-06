@@ -22,7 +22,7 @@ which uses alias seeding and usage-based inference over the canonical AST.
 
 # Lookup
 
-@docs lookup
+@docs lookup, hasEntry
 
 
 # Helpers for PostSolve
