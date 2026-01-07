@@ -104,7 +104,7 @@ typedef enum {
     Const_EmptyRec,
     Const_True,
     Const_False,
-    Const_Nil,
+    Const_Nil, // Empty list
     Const_Nothing,
     Const_EmptyString
 } Constant;
