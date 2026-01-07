@@ -783,8 +783,30 @@ public:
             return true;  // No tests to run
         }
 
-        // Run tests in parallel - this prints results immediately as tests complete
-        auto summary = runElmTestsParallel(pathsToRun, namesToRun);
+        // Run the first test alone to build/cache packages (avoids race condition
+        // where multiple parallel tests try to compile elm/core simultaneously)
+        std::vector<std::string> firstPath = { pathsToRun[0] };
+        std::vector<std::string> firstName = { namesToRun[0] };
+        auto firstSummary = runElmTestsParallel(firstPath, firstName);
+
+        // If only one test, we're done
+        if (pathsToRun.size() == 1) {
+            lastPassCount_ = firstSummary.passCount;
+            lastFailCount_ = firstSummary.failCount;
+            lastFailedTests_ = firstSummary.failedTests;
+            return firstSummary.failCount == 0;
+        }
+
+        // Run remaining tests in parallel
+        std::vector<std::string> remainingPaths(pathsToRun.begin() + 1, pathsToRun.end());
+        std::vector<std::string> remainingNames(namesToRun.begin() + 1, namesToRun.end());
+        auto summary = runElmTestsParallel(remainingPaths, remainingNames);
+
+        // Combine results from first test and remaining tests
+        summary.passCount += firstSummary.passCount;
+        summary.failCount += firstSummary.failCount;
+        summary.failedTests.insert(summary.failedTests.end(),
+            firstSummary.failedTests.begin(), firstSummary.failedTests.end());
 
         // Store results for TestSuite integration
         lastPassCount_ = summary.passCount;
