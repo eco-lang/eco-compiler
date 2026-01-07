@@ -11,7 +11,7 @@
     - [x] 1.2.2 LLVM Stack Map Investigation → [§1.2.2](#122-llvm-stack-map-investigation)
     - [ ] 1.2.3 LLVM Stack Map Implementation → [§1.2.3](#123-llvm-stack-map-implementation)
   - [ ] 1.3 Process & Thread Model → [§1.3](#13-process--thread-model)
-  - [ ] 1.4 Runtime Testing Infrastructure → [§1.4](#14-runtime-testing-infrastructure)
+  - [ ] 1.4 Runtime Testing Infrastructure → [§1.4](#14-runtime-testing-infrastructure) *(in progress, process isolation complete)*
 
 - [ ] **2. Standard Library Porting** → [§2](#2-standard-library-porting)
   - [ ] 2.1 Guida Runtime to Kernel Packages → [§2.1](#21-guida-runtime-to-kernel-packages)
@@ -45,20 +45,20 @@
   - [ ] 3.4 Multi-target Support → [§3.4](#34-multi-target-support)
 
 - [ ] **4. Compiler Backend** → [§4](#4-compiler-backend)
-  - [ ] 4.1 Guida Backend Replacement → [§4.1](#41-guida-backend-replacement)
+  - [x] 4.1 Guida Backend Replacement → [§4.1](#41-guida-backend-replacement)
     - [x] 4.1.1 Pluggable Backend Architecture → [§4.1.1](#411-pluggable-backend-architecture)
     - [x] 4.1.2 Global AST Analysis & Monomorphization → [§4.1.2](#412-global-ast-analysis--monomorphization)
     - [x] 4.1.3 Dual Backend Implementation → [§4.1.3](#413-dual-backend-implementation)
-    - [ ] 4.1.4 Compiler Test Suite → [§4.1.4](#414-compiler-test-suite)
-  - [ ] 4.2 MLIR Code Generation → [§4.2](#42-mlir-code-generation)
+    - [ ] 4.1.4 Compiler Test Suite → [§4.1.4](#414-compiler-test-suite) *(in progress, fuzz 1 passing)*
+  - [ ] 4.2 MLIR Code Generation → [§4.2](#42-mlir-code-generation) *(core complete, refinements ongoing)*
   - [ ] 4.3 Compiler Testing → [§4.3](#43-compiler-testing)
 
 - [ ] **5. Integration & Self-Compilation** → [§5](#5-integration--self-compilation)
-  - [ ] 5.1 End-to-End Pipeline → [§5.1](#51-end-to-end-pipeline)
-    - [ ] 5.1.1 Pipeline Integration → [§5.1.1](#511-pipeline-integration)
+  - [ ] 5.1 End-to-End Pipeline → [§5.1](#51-end-to-end-pipeline) *(JIT pipeline working)*
+    - [ ] 5.1.1 Pipeline Integration → [§5.1.1](#511-pipeline-integration) *(JIT complete)*
     - [ ] 5.1.2 Command-Line Interface → [§5.1.2](#512-command-line-interface)
     - [ ] 5.1.3 Build System & Packaging → [§5.1.3](#513-build-system--packaging)
-    - [ ] 5.1.4 Linker Integration & Runtime Libraries → [§5.1.4](#514-linker-integration--runtime-libraries)
+    - [ ] 5.1.4 Linker Integration & Runtime Libraries → [§5.1.4](#514-linker-integration--runtime-libraries) *(kernel static libs complete)*
     - [ ] 5.1.5 Debugging Support → [§5.1.5](#515-debugging-support)
   - [ ] 5.2 Bootstrap to Native x86 → [§5.2](#52-bootstrap-to-native-x86)
   - [ ] 5.3 Self-Compilation Milestone → [§5.3](#53-self-compilation-milestone)
@@ -232,14 +232,18 @@ Comprehensive testing for runtime correctness and performance.
 - Property-based tests using RapidCheck
 - Heap snapshot validation
 - GC correctness properties (preservation, collection, stability)
+- Process isolation for E2E tests (Dec 18, 2025) - allows GC stats accumulation across tests
+- Parallel test execution for codegen and E2E tests (Jan 6, 2026)
 
 **Required**:
+- [x] Integration tests with compiled code (ElmE2ETest.cpp)
+- [x] Process isolation for test stability
 - [ ] Performance benchmarks
 - [ ] Stress testing under concurrent load
 - [ ] Memory leak detection
-- [ ] Integration tests with compiled code
 
 **Deliverables**:
+- [x] Process-isolated test runner
 - [ ] Expanded test suite in `test/`
 - [ ] Benchmarking framework
 - [ ] Continuous integration setup
@@ -921,6 +925,7 @@ Implement a lowering pipeline that transforms eco dialect to LLVM IR.
 - [x] Closure conversion (papCreate/papExtend → runtime calls)
 - [x] Heap allocation insertion (construct → allocate + stores)
 - [x] GC safepoint insertion (eco.safepoint → placeholder for stack maps)
+- [x] TCO closure bug fixed (Dec 29, 2025) - closures correctly handled in tail-recursive functions
 - [ ] Tail call optimization (musttail attribute defined, lowering pending)
 
 **Deliverables**:
@@ -970,9 +975,9 @@ Replace the existing Guida compiler backend with one that generates MLIR.
 
 ### 4.1 Guida Backend Replacement
 
-**Status**: Complete
+**Status**: Complete *(all subsections 4.1.1-4.1.3 complete, 4.1.4 test suite in progress)*
 
-The Guida compiler (Elm port) needs its backend modified to support MLIR output alongside JavaScript.
+The Guida compiler (Elm port) has been modified to support MLIR output alongside JavaScript.
 
 **Deliverables**:
 - [x] Pluggable backend architecture
@@ -1081,25 +1086,34 @@ Keep JavaScript backend and add MLIR backend with compiler flags to switch betwe
 
 #### 4.1.4 Compiler Test Suite
 
-**Status**: Not Started
+**Status**: In Progress
 
 Get existing tests running and expand coverage.
 
+**Implementation**:
+- C++ test runner that can compile and execute .elm code via JIT
+- Elm E2E tests run in parallel with process isolation
+- GC stats accumulated across tests
+- Tests pass at `--fuzz 1` level
+
 **Tasks**:
-- [ ] Get Guida's existing test suite running
-- [ ] Verify tests pass with both JavaScript and MLIR backends
+- [x] Get Guida's existing test suite running
+- [x] Set up C++ test runner for Elm code
+- [x] Implement parallel test execution with process isolation
+- [ ] Verify tests pass with both JavaScript and MLIR backends at higher fuzz levels
 - [ ] Expand tests to cover more Elm programs and edge cases
 - [ ] Add regression tests for backend-specific behavior
 - [ ] Create test programs that exercise all Elm language features
 
 **Deliverables**:
-- [ ] Working Guida test suite
+- [x] Working Guida test suite (elm-test at fuzz 1)
+- [x] C++ test runner (`test/ElmE2ETest.cpp`)
 - [ ] Expanded test coverage
 - [ ] Backend comparison tests
 
 ### 4.2 MLIR Code Generation
 
-**Status**: In Progress
+**Status**: In Progress (Core Complete, Refinements Ongoing)
 
 Implement code generation from Elm AST to eco MLIR dialect.
 
@@ -1109,42 +1123,43 @@ Implement code generation from Elm AST to eco MLIR dialect.
 
 **Code Generation Tasks**:
 - [x] Expression translation (basic)
-- [ ] Pattern matching compilation
+- [x] Pattern matching compilation (case..of, if..then using scf dialect)
 - [x] Function definitions
-- [ ] Module system
-- [ ] Foreign function interface
 - [x] Closure representation
 - [x] Data constructor encoding
+- [x] Indirect calls
+- [ ] Module system (multi-module builds)
+- [ ] Foreign function interface
 
-**Known Issues** *(from Elm E2E test suite - 6 passing, 32 failing)*:
+**Resolved Issues** *(from git log - Dec 2025 to Jan 2026)*:
 
-1. **Bool Constant Codegen** *(blocks 12 tests)*
-   - Error: `'arith.constant' op failed to verify that all of {value, result} have same type`
-   - Problem: Boolean constants generated as `{value = 1} : () -> i1` but MLIR requires typed attribute
-   - Fix: Generate `{value = 1 : i1} : () -> i1` or use `true`/`false` literals
-   - Affected: BoolAnd/Or/Not/Xor/TrueFalse/ShortCircuit, CharToCode/ToLower/ToUpper/Unicode, CompareChar/Float
+1. **Bool Constant Codegen** - ✅ Fixed
+   - Fix: Using ByteAttr and TypeIntAttr for constant Bool and Char
+   - Commit: "Using ByteAttr and TypeIntAttr for constant Bool and Char" (Dec 17, 2025)
 
-2. **Monomorphization Unit Type Bug** *(blocks 16 tests)*
-   - Error: `COMPILER BUG - Monomorphization invariant violated! Expected: () Actual: <type>`
-   - Problem: Functions specialized with `()` for parameters that should be `Bool`, `Char`, `Int`, `String`
-   - Example: `CaseBoolTest_boolToStr_$_1` expects `()` but receives `Bool`
-   - Affected: All Case* tests, CeilingToInt, CharIsAlpha/IsDigit, ComparableMinMax, BitwiseShiftRight
+2. **Monomorphization Unit Type Bug** - ✅ Fixed
+   - Fix: Full rewrite of monomorphizer to address deeper issues
+   - Commits: "Full rewrite of monomorphizer" (Dec 18, 2025), guardrails against type variables escaping
 
-3. **Unresolved Type Variable** *(blocks 1 test)*
-   - Error: `Monomorphize.applySubst: unresolved constrained type variable number`
-   - Problem: `number` type constraint not resolved when used with anonymous functions/lambdas
-   - Affected: AnonymousFunctionTest (uses `List.map`, `List.foldl` with lambdas)
+3. **Type Variable Resolution** - ✅ Fixed
+   - Fix: Kernel type mini-solver to fully deduce VarKernel types
+   - Commits: "Post-solver to fill in missing types" (Dec 30, 2025), enhanced detection for `number` and `comparable`
 
-4. **MLIR Type Attribute Inconsistencies** *(blocks 4 tests)*
-   - Symptom: Output shows pointer values instead of actual values (e.g., expected `42`, got `140189276045312`)
-   - Problem: Mismatch between `_operand_types` attributes and actual MLIR SSA types
-   - Example: `eco.construct` says `_operand_types = [!eco.value]` but receives `i64`
-   - Affected: AddTest, BitwiseIdentityTest, BitwiseLargeShiftTest, CharFromCodeTest
+4. **MLIR Type Attribute Inconsistencies** - ✅ Fixed
+   - Fix: Calling kernel functions with concrete params not eco.value, fixed SSA type mismatches
+   - Commits: Multiple fixes (Jan 4-6, 2026) for eco.value vs primitive types
+
+**Current E2E Test Status**:
+- Compilation through front-end and back-end to JIT execution working
+- Tests pass at `--fuzz 1` level
+- Parallel test execution with process isolation
 
 **Deliverables**:
-- [x] Code generation modules (`Compiler/Generate/CodeGen/MLIR.elm`)
-- [x] MLIR builder utilities
-- [ ] Symbol table management
+- [x] Code generation modules (`Compiler/Generate/MLIR.elm`, `MLIRMono.elm`)
+- [x] MLIR builder utilities (`elm-mlir` package vendored)
+- [x] Case/if control flow using SCF dialect
+- [x] Indirect call support
+- [ ] Symbol table management for multi-module builds
 
 ### 4.3 Compiler Testing
 
@@ -1173,7 +1188,7 @@ Bring all components together and achieve self-compilation.
 
 ### 5.1 End-to-End Pipeline
 
-**Status**: Not Started
+**Status**: In Progress (JIT Pipeline Working)
 
 Connect all components into a working compilation pipeline.
 
@@ -1199,25 +1214,35 @@ ECO Runtime (execution)
 ```
 
 **Deliverables**:
-- [ ] Working `eco` compiler binary
-- [ ] Build scripts and packaging
+- [x] Working compilation pipeline (JIT via ecoc)
+- [x] Build scripts (`scripts/compile-elm.sh`)
+- [ ] Working `eco` AOT compiler binary
 - [ ] Usage documentation
 
 #### 5.1.1 Pipeline Integration
 
-**Status**: Not Started
+**Status**: In Progress (JIT Pipeline Complete)
 
 Connect all compiler stages into a working pipeline.
 
+**Current Implementation**:
+- Compilation through Guida frontend → MLIR backend → JIT execution is working
+- Script to run the compiler chain (`scripts/compile-elm.sh`)
+- ecoc driver supports multiple emit modes: `-emit=jit`, `-emit=llvm`, `-emit=mlir-llvm`, `-emit=mlir`
+- Kernel modules linked as static libraries
+
 **Tasks**:
-- [ ] Wire up Guida frontend to MLIR backend
-- [ ] Connect MLIR lowering passes
-- [ ] Integrate LLVM code generation
-- [ ] Produce working native binaries from Elm source
+- [x] Wire up Guida frontend to MLIR backend
+- [x] Connect MLIR lowering passes (EcoToLLVM)
+- [x] Integrate LLVM code generation (via MLIR ExecutionEngine)
+- [x] JIT execution of compiled Elm programs
+- [ ] AOT compilation producing standalone native binaries
+- [ ] Produce working native binaries from Elm source (without JIT)
 
 **Deliverables**:
-- [ ] End-to-end compilation working
-- [ ] Pipeline orchestration code
+- [x] End-to-end JIT compilation working
+- [x] Pipeline orchestration code (`ecoc.cpp`, compile scripts)
+- [ ] AOT native binary generation
 
 #### 5.1.2 Command-Line Interface
 
@@ -1260,19 +1285,27 @@ Create robust build system and distribution packages.
 
 #### 5.1.4 Linker Integration & Runtime Libraries
 
-**Status**: Not Started
+**Status**: In Progress (Kernel Static Libraries Complete)
 
 Link generated code with ECO runtime and Elm base libraries.
 
+**Current Implementation** *(from git log - Dec 16, 2025)*:
+- Kernel modules integrated into CMake build as static libraries
+- All kernel exports imported into ecoc
+- Real kernel implementations linked instead of stub injection
+- Elm compiler code added to CMake build
+
 **Tasks**:
+- [x] Create linkable libraries (.a) for kernel operations implemented in C++
+- [x] Integrate kernel modules into CMake build as static libs
 - [ ] Extract elm/core and other ported Elm base libraries into standalone packages
-- [ ] Create linkable libraries (.a/.so) for all kernel operations implemented in C/C++
 - [ ] Design library discovery and linking as part of eco compilation flow
 - [ ] Handle native library dependencies
-- [ ] Support static and dynamic linking options
+- [ ] Support dynamic linking options (.so)
 
 **Deliverables**:
-- [ ] Standalone kernel library packages
+- [x] Kernel static libraries (elm-kernel-cpp modules)
+- [ ] Standalone kernel library packages for distribution
 - [ ] Linker integration in eco compiler
 - [ ] Library packaging and distribution
 
@@ -1599,29 +1632,43 @@ Runtime Foundation (§1)
   - 272 stub implementations across 16 *Exports.cpp files
   - Some real implementations: Basics arithmetic, Url encoding/decoding, String operations
 
-**Recent Changes**:
+**Recent Changes** *(from git log analysis - Dec 2025 to Jan 2026)*:
+- **JIT Pipeline Working** (Dec 15, 2025):
+  - "Compilation through front end and back end and running under JIT is now working for the first time"
+  - End-to-end pipeline: Elm source → Guida frontend → MLIR backend → JIT execution
+- **Kernel Module Integration** (Dec 16, 2025):
+  - Kernel modules integrated into CMake build as static libraries
+  - Real kernel implementations linked instead of stub injection
+  - C++ test runner for Elm code set up
+- **Monomorphizer Rewrite** (Dec 18, 2025):
+  - Full rewrite of monomorphizer to address deeper issues
+  - Guardrails against type variables escaping monomorphization
+- **Test Infrastructure** (Dec 18 - Jan 6, 2026):
+  - Process isolation for E2E tests with GC stats accumulation
+  - Parallel test execution for codegen and E2E tests
+  - Tests passing at `--fuzz 1` level
+- **TCO Closure Bug Fixed** (Dec 29, 2025)
+- **Type System Fixes** (Dec 30, 2025 - Jan 6, 2026):
+  - Kernel type mini-solver for VarKernel type deduction
+  - Multiple fixes for eco.value vs primitive type mismatches
+  - Pattern matching compilation (case..of, if..then) using SCF dialect
 - **Completed Elm kernel JavaScript audit** (§2.2):
-  - Audited all standard Elm packages for kernel JavaScript code
   - Cataloged 272 core kernel functions across 12 packages
-  - Identified 113 elm-explorations functions (intentionally not implemented)
-  - Created elm_kernel_functions.csv with complete function listing
 - **Completed kernel C++ stub infrastructure** (§2.3):
-  - Created KernelExports.h with all 272 function declarations
-  - Added KERNEL_SYM entries for all functions in RuntimeSymbols.cpp
-  - Implemented stubs in package-organized *Exports.cpp files
-  - Fixed API issues: alloc::listNil(), ElmArray/Tag_Array, alloc::just(val, is_boxed)
-  - Implemented real Url percent encode/decode with UTF-16/UTF-8 conversion
-- Build verified: all 36 tests pass with kernel infrastructure in place
+  - 272 function stubs with KernelExports.h and RuntimeSymbols.cpp entries
+  - Real implementations for Url percent encode/decode
+- Build verified: all tests pass with kernel infrastructure in place
 
-**Next Steps**:
-- Implement real kernel functions (priority: Utils, Basics, List, String for self-hosting)
-- ECO MLIR type system (§3.1.4) - currently using eco.value as opaque pointer
-- Process primitives (§3.1.6) - for Elm concurrency support
-- LLVM stack map implementation (§1.2.3) - precise GC root tracing
-- Connect Guida MLIR output to ECO dialect (§4.2) - wire up compiler backend
-- Rationalize Guida I/O design (§2.1.1)
+**Next Steps** *(in priority order)*:
+1. **Implement real kernel functions (§2.3)** - priority: Utils, Basics, List, String for self-hosting
+2. **Expand test coverage** - move from `--fuzz 1` to higher fuzz levels
+3. **AOT compilation (§5.1.1)** - produce standalone native binaries (currently JIT only)
+4. **ECO MLIR type system (§3.1.4)** - currently using eco.value as opaque pointer
+5. **LLVM stack map implementation (§1.2.3)** - precise GC root tracing
+6. **Process primitives (§3.1.6)** - for Elm concurrency support
+7. **Rationalize Guida I/O design (§2.1.1)** - clean kernel package API
 
 **Active Workstreams**:
-1. Wire Guida MLIR output to ECO dialect (§4.2) - code generation from Elm AST
-2. Guida I/O refactoring (§2.1) - kernel package design
-3. **Elm kernel C++ real implementations (§2.3)** - replace stubs with working code
+1. **Elm kernel C++ real implementations (§2.3)** - replace stubs with working code
+2. Wire Guida MLIR output refinements (§4.2) - code generation improvements
+3. Guida I/O refactoring (§2.1) - kernel package design
