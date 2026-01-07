@@ -3733,8 +3733,13 @@ generateTest ctx root ( path, test ) =
                 ( strVar, ctx2 ) =
                     freshVar ctx1
 
+                -- Empty strings must use eco.constant EmptyString (invariant: never heap-allocated)
                 ( ctx3, strOp ) =
-                    ecoStringLiteral ctx2 strVar s
+                    if s == "" then
+                        ecoConstantEmptyString ctx2 strVar
+
+                    else
+                        ecoStringLiteral ctx2 strVar s
 
                 ( resVar, ctx4 ) =
                     freshVar ctx3
