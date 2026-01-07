@@ -39,7 +39,7 @@ module {
 
     %v3 = eco.load_global @g2
     eco.dbg %v3 : !eco.value
-    // CHECK: [42]
+    // CHECK: Ctor0 42 []
 
     // Update a global multiple times
     %i1 = arith.constant 1 : i64

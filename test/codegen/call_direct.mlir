@@ -26,7 +26,7 @@ module {
     %b2 = eco.box %i2 : i64 -> !eco.value
     %pair = eco.construct.custom(%b1, %b2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %pair : !eco.value
-    // CHECK: [1,
+    // CHECK: Ctor0 1 2
 
     // Simulate box_and_double: double then box
     %i5 = arith.constant 5 : i64

@@ -1730,6 +1730,13 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         auto scrutineeType = scrutinee.getType();
         bool isI1Scrutinee = scrutineeType.isInteger(1);
 
+        // Variables for embedded constant handling (non-i1 case)
+        // These are populated below and used to create CondBranchOp later,
+        // AFTER trailing operations are moved to mergeBlock.
+        Value isConstant;
+        Block *embConstBlock = nullptr;
+        Block *embHeapBlock = nullptr;
+
         if (isI1Scrutinee) {
             // For i1 scrutinees, just zero-extend to i32 for the switch
             ctorTag = rewriter.create<LLVM::ZExtOp>(loc, i32Ty, scrutinee);
@@ -1740,21 +1747,20 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             auto maskF = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0xF);
             auto constField = rewriter.create<LLVM::AndOp>(loc, shifted, maskF);
             auto zero64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0);
-            auto isConstant = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ne,
+            isConstant = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ne,
                                                              constField, zero64);
 
             // Create blocks for constant vs heap case
-            Block *constBlock = rewriter.createBlock(parentRegion);
-            Block *heapBlock = rewriter.createBlock(parentRegion);
+            embConstBlock = rewriter.createBlock(parentRegion);
+            embHeapBlock = rewriter.createBlock(parentRegion);
             Block *tagMergeBlock = rewriter.createBlock(parentRegion);
             tagMergeBlock->addArgument(i32Ty, loc);  // phi for ctorTag
 
-            // Branch based on whether it's a constant
-            rewriter.setInsertionPointToEnd(currentBlock);
-            rewriter.create<cf::CondBranchOp>(loc, isConstant, constBlock, heapBlock);
+            // NOTE: CondBranchOp is created LATER, after trailing ops are moved.
+            // This prevents the CondBranchOp from being moved along with trailing ops.
 
             // Constant case: map Nil (5) to tag 0, others keep their value
-            rewriter.setInsertionPointToStart(constBlock);
+            rewriter.setInsertionPointToStart(embConstBlock);
             auto nilConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 5);
             auto isNil = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::eq,
                                                         constField, nilConst);
@@ -1764,7 +1770,7 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             rewriter.create<cf::BranchOp>(loc, tagMergeBlock, ValueRange{constTag});
 
             // Heap case: load ctor from offset 8
-            rewriter.setInsertionPointToStart(heapBlock);
+            rewriter.setInsertionPointToStart(embHeapBlock);
             auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, scrutinee);
             auto offset8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 8);
             auto ctorPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
@@ -1812,6 +1818,14 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             for (Operation &opToMove : opsToMove) {
                 opToMove.moveBefore(mergeBlock, mergeBlock->end());
             }
+        }
+
+        // NOW create the CondBranchOp for embedded constant handling (non-i1 case).
+        // This must happen AFTER trailing ops are moved, otherwise the CondBranchOp
+        // would be moved along with them, leaving originalOpBlock without a terminator.
+        if (!isI1Scrutinee) {
+            rewriter.setInsertionPointToEnd(originalOpBlock);
+            rewriter.create<cf::CondBranchOp>(loc, isConstant, embConstBlock, embHeapBlock);
         }
 
         // Insert switch at the end of current block (after moving trailing ops).

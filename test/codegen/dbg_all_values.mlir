@@ -157,11 +157,11 @@ module {
     // Boxed values, so unboxed_bitmap = 0
     %l1 = eco.construct.custom(%b42, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %l1 : !eco.value
-    // CHECK: [42]
+    // CHECK: Ctor0 42 []
 
     %l2 = eco.construct.custom(%b0, %l1) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %l2 : !eco.value
-    // CHECK: [0, 42]
+    // CHECK: Ctor0 0 (Ctor0 42 [])
 
     // === Custom Constructors ===
 

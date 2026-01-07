@@ -19,7 +19,7 @@ module {
     %input = eco.construct.custom(%b1, %l2) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %input : !eco.value
-    // CHECK: [1, 2, 3]
+    // CHECK: Ctor0 1 (Ctor0 2 (Ctor0 3 []))
 
     // Manual map (+1) over the list (inlined)
     // Extract elements
@@ -49,7 +49,7 @@ module {
     %result = eco.construct.custom(%m1, %r2) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %result : !eco.value
-    // CHECK: [2, 3, 4]
+    // CHECK: Ctor0 2 (Ctor0 3 (Ctor0 4 []))
 
     // Apply double to each element of [1, 2, 3] (inlined: unbox, mul 2, rebox)
     %two = arith.constant 2 : i64
@@ -67,7 +67,7 @@ module {
     %doubled_list = eco.construct.custom(%d1, %dr2) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %doubled_list : !eco.value
-    // CHECK: [2, 4, 6]
+    // CHECK: Ctor0 2 (Ctor0 4 (Ctor0 6 []))
 
     // Compose: double(add_one(x)) for each element
     // [1,2,3] -> add_one -> [2,3,4] -> double -> [4,6,8]
@@ -85,7 +85,7 @@ module {
     %composed = eco.construct.custom(%c1d, %cr2) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %composed : !eco.value
-    // CHECK: [4, 6, 8]
+    // CHECK: Ctor0 4 (Ctor0 6 (Ctor0 8 []))
 
     %zero = arith.constant 0 : i64
     return %zero : i64

@@ -117,7 +117,7 @@ module {
     // head (!eco.value), tail (!eco.value = Nil) - both boxed
     %list1 = eco.construct.custom(%b42, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %list1 : !eco.value
-    // CHECK: [42]
+    // CHECK: Ctor0 42 []
 
     // Longer list: [1, 2, Nil]
     %i1 = arith.constant 1 : i64
@@ -127,7 +127,7 @@ module {
     %l2 = eco.construct.custom(%b2, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
     %l1 = eco.construct.custom(%b1, %l2) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %l1 : !eco.value
-    // CHECK: [1, 2]
+    // CHECK: Ctor0 1 (Ctor0 2 [])
 
     // === Test structure containing only constants ===
     %all_consts = eco.construct.custom(%nil, %true, %false) {tag = 20 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value

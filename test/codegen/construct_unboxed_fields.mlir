@@ -13,7 +13,7 @@ module {
     %i42 = arith.constant 42 : i64
     %cons_int = eco.construct.custom(%i42, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 1 : i64} : (i64, !eco.value) -> !eco.value
     eco.dbg %cons_int : !eco.value
-    // CHECK: [42]
+    // CHECK: Ctor0 42 []
 
     // === List with multiple unboxed integers ===
     %i1 = arith.constant 1 : i64
@@ -23,7 +23,7 @@ module {
     %l2 = eco.construct.custom(%i2, %l3) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 1 : i64} : (i64, !eco.value) -> !eco.value
     %list_ints = eco.construct.custom(%i1, %l2) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 1 : i64} : (i64, !eco.value) -> !eco.value
     eco.dbg %list_ints : !eco.value
-    // CHECK: [1, 2, 3]
+    // CHECK: Ctor0 1 (Ctor0 2 (Ctor0 3 []))
 
     // === Custom ADT with two unboxed integers (NOT a list) ===
     // Use ctor tag = 10 (not 0) so it's not treated as a Cons cell
@@ -102,7 +102,7 @@ module {
     %ineg = arith.constant -42 : i64
     %cons_neg = eco.construct.custom(%ineg, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 1 : i64} : (i64, !eco.value) -> !eco.value
     eco.dbg %cons_neg : !eco.value
-    // CHECK: [-42]
+    // CHECK: Ctor0 -42 []
 
     %zero = arith.constant 0 : i64
     return %zero : i64

@@ -110,7 +110,7 @@ module {
     // This is the most common case: Cons cell with Nil as tail
     %list1 = eco.construct.custom(%b42, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %list1 : !eco.value
-    // CHECK: [42]
+    // CHECK: Ctor0 42 []
 
     %zero = arith.constant 0 : i64
     return %zero : i64

@@ -1,18 +1,18 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
 // Test eco.construct for building tuple-like structures and eco.project for field access.
-// Note: 2-element tag-0 structs display as list-like, 3+ elements as CtorN format
+// Note: All custom types now display as CtorN format.
 
 module {
   func.func @main() -> i64 {
-    // 2-tuple: (10, 20) - displays as list-like due to Cons-like structure
+    // 2-tuple: (10, 20)
     %i10 = arith.constant 10 : i64
     %i20 = arith.constant 20 : i64
     %b10 = eco.box %i10 : i64 -> !eco.value
     %b20 = eco.box %i20 : i64 -> !eco.value
     %tuple2 = eco.construct.custom(%b10, %b20) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %tuple2 : !eco.value
-    // CHECK: [10,
+    // CHECK: Ctor0 10 20
 
     // Project first field
     %fst = eco.project.custom %tuple2[0] : !eco.value -> !eco.value
@@ -45,14 +45,14 @@ module {
     eco.dbg %last : !eco.value
     // CHECK: 3
 
-    // Mixed types: (42, 3.14) - 2-element tag-0
+    // Mixed types: (42, 3.14)
     %i42 = arith.constant 42 : i64
     %fpi = arith.constant 3.14 : f64
     %b42 = eco.box %i42 : i64 -> !eco.value
     %bpi = eco.box %fpi : f64 -> !eco.value
     %mixed = eco.construct.custom(%b42, %bpi) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %mixed : !eco.value
-    // CHECK: [42,
+    // CHECK: Ctor0 42 3.14
 
     %zero = arith.constant 0 : i64
     return %zero : i64
