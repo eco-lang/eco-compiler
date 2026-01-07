@@ -1583,42 +1583,55 @@ generateCtor ctx funcName ctorLayout monoType =
 generateEnum : Context -> String -> Int -> Mono.MonoType -> Maybe String -> ( Context, MlirOp )
 generateEnum ctx funcName tag monoType maybeCtorName =
     let
-        -- Extract type name from MCustom for type ID registration
-        maybeTypeName : Maybe String
-        maybeTypeName =
-            case monoType of
-                Mono.MCustom _ typeName _ ->
-                    Just (Name.toElmString typeName)
+        ( resultVar, ctx1 ) =
+            freshVar ctx
+
+        -- Check for well-known constants that must use eco.constant
+        ( ctx2, valueOp ) =
+            case maybeCtorName of
+                Just "True" ->
+                    ecoConstantTrue ctx1 resultVar
+
+                Just "False" ->
+                    ecoConstantFalse ctx1 resultVar
+
+                Just "Nothing" ->
+                    ecoConstantNothing ctx1 resultVar
 
                 _ ->
-                    Nothing
-
-        -- Get or create type ID for this custom type
-        ( typeId, ctxWithTypeId ) =
-            case maybeTypeName of
-                Just typeName ->
+                    -- Not a well-known constant, use eco.construct.custom
                     let
-                        ( tid, newCtx ) =
-                            getOrCreateTypeId typeName ctx
+                        -- Extract type name from MCustom for type ID registration
+                        maybeTypeName : Maybe String
+                        maybeTypeName =
+                            case monoType of
+                                Mono.MCustom _ typeName _ ->
+                                    Just (Name.toElmString typeName)
+
+                                _ ->
+                                    Nothing
+
+                        -- Get or create type ID for this custom type
+                        ( typeId, ctxWithTypeId ) =
+                            case maybeTypeName of
+                                Just typeName ->
+                                    let
+                                        ( tid, newCtx ) =
+                                            getOrCreateTypeId typeName ctx1
+                                    in
+                                    ( Just tid, newCtx )
+
+                                Nothing ->
+                                    ( Nothing, ctx1 )
                     in
-                    ( Just tid, newCtx )
-
-                Nothing ->
-                    ( Nothing, ctx )
-
-        ( resultVar, ctx1 ) =
-            freshVar ctxWithTypeId
-
-        -- Use eco.construct.custom for enum values (nullary custom ADT constructors)
-        ( ctx2, constructOp ) =
-            ecoConstructCustom ctx1 resultVar tag 0 0 [] typeId maybeCtorName
+                    ecoConstructCustom ctxWithTypeId resultVar tag 0 0 [] typeId maybeCtorName
 
         ( ctx3, returnOp ) =
             ecoReturn ctx2 resultVar ecoValue
 
         region : MlirRegion
         region =
-            mkRegion [] [ constructOp ] returnOp
+            mkRegion [] [ valueOp ] returnOp
     in
     funcFunc ctx3 funcName [] ecoValue region
 
@@ -1961,8 +1974,13 @@ generateLiteral ctx lit =
                 ( var, ctx1 ) =
                     freshVar ctx
 
+                -- Empty strings must use eco.constant EmptyString (invariant: never heap-allocated)
                 ( ctx2, op ) =
-                    ecoStringLiteral ctx1 var value
+                    if value == "" then
+                        ecoConstantEmptyString ctx1 var
+
+                    else
+                        ecoStringLiteral ctx1 var value
             in
             { ops = [ op ]
             , resultVar = var
@@ -4336,57 +4354,73 @@ generateCase ctx _ root decider jumps resultMonoType =
 
 generateRecordCreate : Context -> List Mono.MonoExpr -> Mono.RecordLayout -> ExprResult
 generateRecordCreate ctx fields layout =
-    let
-        -- Use generateExprListTyped to get actual SSA types
-        ( fieldsOps, fieldVarsWithTypes, ctx1 ) =
-            generateExprListTyped ctx fields
+    -- Empty records must use eco.constant EmptyRec (invariant: never heap-allocated)
+    if layout.fieldCount == 0 then
+        let
+            ( resultVar, ctx1 ) =
+                freshVar ctx
 
-        -- Box fields that need to be boxed (layout says boxed, but expression is primitive)
-        ( boxOps, boxedFieldVars, ctx2 ) =
-            List.foldl
-                (\( ( var, ssaType ), fieldInfo ) ( opsAcc, varsAcc, ctxAcc ) ->
-                    if fieldInfo.isUnboxed then
-                        -- Field is stored unboxed, use as-is
-                        ( opsAcc, varsAcc ++ [ var ], ctxAcc )
+            ( ctx2, emptyRecOp ) =
+                ecoConstantEmptyRec ctx1 resultVar
+        in
+        { ops = [ emptyRecOp ]
+        , resultVar = resultVar
+        , resultType = ecoValue
+        , ctx = ctx2
+        }
 
-                    else
-                        -- Field should be boxed - box using actual SSA type
-                        let
-                            ( moreOps, boxedVar, newCtx ) =
-                                boxToEcoValue ctxAcc var ssaType
-                        in
-                        ( opsAcc ++ moreOps, varsAcc ++ [ boxedVar ], newCtx )
-                )
-                ( [], [], ctx1 )
-                (List.map2 Tuple.pair fieldVarsWithTypes layout.fields)
+    else
+        let
+            -- Use generateExprListTyped to get actual SSA types
+            ( fieldsOps, fieldVarsWithTypes, ctx1 ) =
+                generateExprListTyped ctx fields
 
-        ( resultVar, ctx3 ) =
-            freshVar ctx2
+            -- Box fields that need to be boxed (layout says boxed, but expression is primitive)
+            ( boxOps, boxedFieldVars, ctx2 ) =
+                List.foldl
+                    (\( ( var, ssaType ), fieldInfo ) ( opsAcc, varsAcc, ctxAcc ) ->
+                        if fieldInfo.isUnboxed then
+                            -- Field is stored unboxed, use as-is
+                            ( opsAcc, varsAcc ++ [ var ], ctxAcc )
 
-        fieldVarPairs : List ( String, MlirType )
-        fieldVarPairs =
-            List.map2
-                (\v field ->
-                    ( v
-                    , if field.isUnboxed then
-                        monoTypeToMlir field.monoType
-
-                      else
-                        ecoValue
+                        else
+                            -- Field should be boxed - box using actual SSA type
+                            let
+                                ( moreOps, boxedVar, newCtx ) =
+                                    boxToEcoValue ctxAcc var ssaType
+                            in
+                            ( opsAcc ++ moreOps, varsAcc ++ [ boxedVar ], newCtx )
                     )
-                )
-                boxedFieldVars
-                layout.fields
+                    ( [], [], ctx1 )
+                    (List.map2 Tuple.pair fieldVarsWithTypes layout.fields)
 
-        -- Use eco.construct.record for records
-        ( ctx4, constructOp ) =
-            ecoConstructRecord ctx3 resultVar fieldVarPairs layout.fieldCount layout.unboxedBitmap
-    in
-    { ops = fieldsOps ++ boxOps ++ [ constructOp ]
-    , resultVar = resultVar
-    , resultType = ecoValue
-    , ctx = ctx4
-    }
+            ( resultVar, ctx3 ) =
+                freshVar ctx2
+
+            fieldVarPairs : List ( String, MlirType )
+            fieldVarPairs =
+                List.map2
+                    (\v field ->
+                        ( v
+                        , if field.isUnboxed then
+                            monoTypeToMlir field.monoType
+
+                          else
+                            ecoValue
+                        )
+                    )
+                    boxedFieldVars
+                    layout.fields
+
+            -- Use eco.construct.record for records
+            ( ctx4, constructOp ) =
+                ecoConstructRecord ctx3 resultVar fieldVarPairs layout.fieldCount layout.unboxedBitmap
+        in
+        { ops = fieldsOps ++ boxOps ++ [ constructOp ]
+        , resultVar = resultVar
+        , resultType = ecoValue
+        , ctx = ctx4
+        }
 
 
 generateRecordAccess : Context -> Mono.MonoExpr -> Name.Name -> Int -> Bool -> Mono.MonoType -> ExprResult
@@ -4688,8 +4722,51 @@ ecoConstruct ctx resultVar tag size unboxedBitmap operands maybeTypeId maybeCtor
         |> opBuilder.build
 
 
-{-| eco.constant Nil - create the Nil constant for empty lists
+{-| eco.constant - create an embedded constant value.
+
+Constants from Ops.td (1-indexed for MLIR):
+
+  - Unit = 1
+  - EmptyRec = 2
+  - True = 3
+  - False = 4
+  - Nil = 5
+  - Nothing = 6
+  - EmptyString = 7
+
 -}
+ecoConstantUnit : Context -> String -> ( Context, MlirOp )
+ecoConstantUnit ctx resultVar =
+    mlirOp ctx "eco.constant"
+        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 1))
+        |> opBuilder.build
+
+
+ecoConstantEmptyRec : Context -> String -> ( Context, MlirOp )
+ecoConstantEmptyRec ctx resultVar =
+    mlirOp ctx "eco.constant"
+        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 2))
+        |> opBuilder.build
+
+
+ecoConstantTrue : Context -> String -> ( Context, MlirOp )
+ecoConstantTrue ctx resultVar =
+    mlirOp ctx "eco.constant"
+        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 3))
+        |> opBuilder.build
+
+
+ecoConstantFalse : Context -> String -> ( Context, MlirOp )
+ecoConstantFalse ctx resultVar =
+    mlirOp ctx "eco.constant"
+        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 4))
+        |> opBuilder.build
+
+
 ecoConstantNil : Context -> String -> ( Context, MlirOp )
 ecoConstantNil ctx resultVar =
     mlirOp ctx "eco.constant"
@@ -4698,13 +4775,19 @@ ecoConstantNil ctx resultVar =
         |> opBuilder.build
 
 
-{-| eco.constant Unit - create the Unit constant
--}
-ecoConstantUnit : Context -> String -> ( Context, MlirOp )
-ecoConstantUnit ctx resultVar =
+ecoConstantNothing : Context -> String -> ( Context, MlirOp )
+ecoConstantNothing ctx resultVar =
     mlirOp ctx "eco.constant"
         |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
-        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 4))
+        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 6))
+        |> opBuilder.build
+
+
+ecoConstantEmptyString : Context -> String -> ( Context, MlirOp )
+ecoConstantEmptyString ctx resultVar =
+    mlirOp ctx "eco.constant"
+        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 7))
         |> opBuilder.build
 
 
