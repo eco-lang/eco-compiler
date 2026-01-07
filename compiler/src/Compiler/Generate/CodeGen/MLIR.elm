@@ -1518,20 +1518,33 @@ generateCtor ctx funcName ctorLayout monoType =
             Just (Name.toElmString ctorLayout.name)
     in
     if arity == 0 then
-        -- Nullary constructor - use eco.construct.custom
+        -- Nullary constructor - check for well-known constants first
         let
             ( resultVar, ctx1 ) =
                 freshVar ctxWithTypeId
 
-            ( ctx2, constructOp ) =
-                ecoConstructCustom ctx1 resultVar ctorLayout.tag 0 0 [] typeId constructorName
+            -- Check for well-known constants that must use eco.constant
+            ( ctx2, valueOp ) =
+                case constructorName of
+                    Just "Nothing" ->
+                        ecoConstantNothing ctx1 resultVar
+
+                    Just "True" ->
+                        ecoConstantTrue ctx1 resultVar
+
+                    Just "False" ->
+                        ecoConstantFalse ctx1 resultVar
+
+                    _ ->
+                        -- Not a well-known constant, use eco.construct.custom
+                        ecoConstructCustom ctx1 resultVar ctorLayout.tag 0 0 [] typeId constructorName
 
             ( ctx3, returnOp ) =
                 ecoReturn ctx2 resultVar ecoValue
 
             region : MlirRegion
             region =
-                mkRegion [] [ constructOp ] returnOp
+                mkRegion [] [ valueOp ] returnOp
         in
         funcFunc ctx3 funcName [] ecoValue region
 
