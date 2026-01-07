@@ -169,7 +169,7 @@ HPointer compare(void* a, void* b) {
 
     u16 orderCtor = (n < 0) ? ORDER_LT : (n > 0) ? ORDER_GT : ORDER_EQ;
     // Order has no fields, just the constructor tag
-    return alloc::custom(ORDER_TYPE_ID, orderCtor, {}, 0);
+    return alloc::custom(orderCtor, {}, 0);
 }
 
 // ============================================================================

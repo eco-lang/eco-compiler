@@ -562,13 +562,15 @@ def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure]> {
     the number of field operands. The unboxed_bitmap indicates which fields
     are unboxed primitives (bit N is set if field N is unboxed).
 
+    The optional constructor attribute is for MLIR readability only and is
+    not stored at runtime. Debug printing uses generic Ctor1, Ctor2, etc.
+
     Example:
     ```mlir
     %just = eco.construct.custom(%inner) {
       tag = 1,
       size = 1,
       unboxed_bitmap = 0,
-      type_id = 42,
       constructor = "Just"
     } : (!eco.value) -> !eco.value
     ```
@@ -579,7 +581,6 @@ def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure]> {
     I64Attr:$tag,
     I64Attr:$size,
     DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap,
-    OptionalAttr<I64Attr>:$type_id,
     OptionalAttr<StrAttr>:$constructor
   );
   let results = (outs Eco_Value:$result);

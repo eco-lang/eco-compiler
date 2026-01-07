@@ -62,7 +62,7 @@ i64 width(void* bytes) {
 HPointer getHostEndianness() {
     // LE = { ctor: 0 }, BE = { ctor: 1 }
     u16 endianCtor = isLittleEndian() ? 0 : 1;
-    return alloc::custom(ENDIANNESS_TYPE_ID, endianCtor, {}, 0);
+    return alloc::custom(endianCtor, {}, 0);
 }
 
 i64 getStringWidth(void* str) {

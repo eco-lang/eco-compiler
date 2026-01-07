@@ -395,7 +395,7 @@ HPointer wrapVNode(VNodePtr node) {
     vnodeRegistry.push_back(node);
 
     // Return Custom with index stored as unboxed int
-    return alloc::custom(1, 0, {alloc::unboxedInt(static_cast<i64>(index))}, 1);
+    return alloc::custom(0, {alloc::unboxedInt(static_cast<i64>(index))}, 1);
 }
 
 VNodePtr unwrapVNode(void* value) {

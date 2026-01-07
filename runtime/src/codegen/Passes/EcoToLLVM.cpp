@@ -38,7 +38,6 @@
 #include <codecvt>
 #include <limits>
 #include <locale>
-#include <set>
 
 using namespace mlir;
 using namespace ::eco;
@@ -1122,8 +1121,8 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
         auto voidTy = LLVM::LLVMVoidType::get(ctx);
 
-        // eco_alloc_custom(type_id, ctor_id, field_count, scalar_bytes)
-        auto allocFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i32Ty, i32Ty, i32Ty, i32Ty});
+        // eco_alloc_custom(ctor_id, field_count, scalar_bytes)
+        auto allocFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i32Ty, i32Ty, i32Ty});
         getOrInsertFunc(module, rewriter, "eco_alloc_custom", allocFuncTy);
 
         auto storeFuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty, i64Ty});
@@ -1138,19 +1137,13 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
         auto setUnboxedFuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i64Ty});
         getOrInsertFunc(module, rewriter, "eco_set_unboxed", setUnboxedFuncTy);
 
-        int64_t typeIdVal = 0;
-        if (auto typeId = op.getTypeId()) {
-            typeIdVal = typeId.value();
-        }
-
-        auto typeId = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(typeIdVal));
         auto tag = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(op.getTag()));
         auto size = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(op.getSize()));
         auto scalarBytes = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 0);
 
         auto allocCall = rewriter.create<LLVM::CallOp>(
             loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_custom"),
-            ValueRange{typeId, tag, size, scalarBytes});
+            ValueRange{tag, size, scalarBytes});
         auto objPtr = allocCall.getResult();
 
         // Store each field.
@@ -3080,28 +3073,8 @@ struct CharFromIntOpLowering : public OpConversionPattern<CharFromIntOp> {
 
 namespace {
 
-/// Information about a constructor for debug printing.
-struct CtorInfo {
-    int64_t typeId;
-    int64_t ctorId;
-    std::string name;
-
-    bool operator<(const CtorInfo &other) const {
-        if (typeId != other.typeId) return typeId < other.typeId;
-        if (ctorId != other.ctorId) return ctorId < other.ctorId;
-        return name < other.name;
-    }
-
-    bool operator==(const CtorInfo &other) const {
-        return typeId == other.typeId && ctorId == other.ctorId && name == other.name;
-    }
-};
-
 struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoToLLVMPass)
-
-    /// Collected constructor info for registration.
-    std::set<CtorInfo> constructorInfos;
 
     StringRef getArgument() const override { return "eco-to-llvm"; }
 
@@ -3158,10 +3131,6 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
 
         // Clear joinpoint map for this module.
         joinpointBlocks.clear();
-
-        // Clear and collect constructor info from eco.construct.custom ops.
-        constructorInfos.clear();
-        collectConstructorInfo(module);
 
         patterns.add<
             ConstantOpLowering,
@@ -3281,24 +3250,7 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         generateGlobalRootInit(module, ctx);
     }
 
-    /// Collects constructor info from all eco.construct.custom operations.
-    void collectConstructorInfo(ModuleOp module) {
-        module.walk([&](CustomConstructOp op) {
-            // Only collect if both type_id and constructor are present.
-            auto typeId = op.getTypeId();
-            auto constructor = op.getConstructor();
-            if (typeId && constructor) {
-                CtorInfo info;
-                info.typeId = typeId.value();
-                info.ctorId = op.getTag();
-                info.name = constructor.value().str();
-                constructorInfos.insert(info);
-            }
-        });
-    }
-
-    /// Generates module initialization code to register globals as GC roots
-    /// and constructor names for debug printing.
+    /// Generates module initialization code to register globals as GC roots.
     /// Creates a function __eco_init_globals.
     void generateGlobalRootInit(ModuleOp module, MLIRContext *ctx) {
         // Collect all internal LLVM globals (these came from eco.global).
@@ -3312,7 +3264,7 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         });
 
         // Skip if there's nothing to initialize.
-        if (ecoGlobals.empty() && constructorInfos.empty())
+        if (ecoGlobals.empty())
             return;
 
         auto loc = module.getLoc();
@@ -3321,87 +3273,10 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
 
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
         auto voidTy = LLVM::LLVMVoidType::get(ctx);
-        auto i32Ty = IntegerType::get(ctx, 32);
 
         // Get or create the eco_gc_add_root function declaration.
         auto addRootFuncType = LLVM::LLVMFunctionType::get(voidTy, {ptrTy});
         auto addRootFunc = getOrInsertFunc(module, builder, "eco_gc_add_root", addRootFuncType);
-
-        // Get or create the eco_register_custom_ctors function declaration.
-        auto registerCtorsFuncType = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty});
-        auto registerCtorsFunc = getOrInsertFunc(module, builder, "eco_register_custom_ctors", registerCtorsFuncType);
-
-        // Create global string constants for constructor names and the table.
-        SmallVector<LLVM::GlobalOp> nameGlobals;
-        if (!constructorInfos.empty()) {
-            // Create string globals for each constructor name.
-            int idx = 0;
-            for (const auto &info : constructorInfos) {
-                std::string globalName = "__eco_ctor_name_" + std::to_string(idx++);
-                std::string nullTerminated = info.name + '\0';
-
-                // Create array type for the string.
-                auto i8Ty = IntegerType::get(ctx, 8);
-                auto strTy = LLVM::LLVMArrayType::get(i8Ty, nullTerminated.size());
-
-                auto strGlobal = builder.create<LLVM::GlobalOp>(
-                    loc, strTy, /*isConstant=*/true,
-                    LLVM::Linkage::Private, globalName,
-                    builder.getStringAttr(nullTerminated));
-                nameGlobals.push_back(strGlobal);
-            }
-
-            // Create the CustomCtorInfo table.
-            // struct CustomCtorInfo { uint32_t type_id; uint32_t ctor_id; const char* name; }
-            // For simplicity, we use a packed struct: { i32, i32, ptr }
-            auto ctorInfoTy = LLVM::LLVMStructType::getLiteral(ctx, {i32Ty, i32Ty, ptrTy});
-            auto tableTy = LLVM::LLVMArrayType::get(ctorInfoTy, constructorInfos.size());
-
-            auto tableGlobal = builder.create<LLVM::GlobalOp>(
-                loc, tableTy, /*isConstant=*/true,
-                LLVM::Linkage::Private, "__eco_ctor_table",
-                /*initializer=*/Attribute{});
-            tableGlobal.setUnnamedAddrAttr(LLVM::UnnamedAddrAttr::get(ctx, LLVM::UnnamedAddr::Global));
-
-            // Create initializer region for the table.
-            Region &initRegion = tableGlobal.getInitializerRegion();
-            Block *initBlock = builder.createBlock(&initRegion);
-            builder.setInsertionPointToStart(initBlock);
-
-            // Build array value.
-            Value tableVal = builder.create<LLVM::UndefOp>(loc, tableTy);
-            int i = 0;
-            for (const auto &info : constructorInfos) {
-                // Create struct for this entry.
-                Value structVal = builder.create<LLVM::UndefOp>(loc, ctorInfoTy);
-
-                auto typeIdVal = builder.create<LLVM::ConstantOp>(
-                    loc, i32Ty, static_cast<int32_t>(info.typeId));
-                structVal = builder.create<LLVM::InsertValueOp>(
-                    loc, structVal, typeIdVal, ArrayRef<int64_t>{0});
-
-                auto ctorIdVal = builder.create<LLVM::ConstantOp>(
-                    loc, i32Ty, static_cast<int32_t>(info.ctorId));
-                structVal = builder.create<LLVM::InsertValueOp>(
-                    loc, structVal, ctorIdVal, ArrayRef<int64_t>{1});
-
-                // Get pointer to the name string.
-                auto namePtr = builder.create<LLVM::AddressOfOp>(
-                    loc, ptrTy, nameGlobals[i].getSymName());
-                structVal = builder.create<LLVM::InsertValueOp>(
-                    loc, structVal, namePtr, ArrayRef<int64_t>{2});
-
-                // Insert struct into array.
-                tableVal = builder.create<LLVM::InsertValueOp>(
-                    loc, tableVal, structVal, ArrayRef<int64_t>{i});
-                i++;
-            }
-
-            builder.create<LLVM::ReturnOp>(loc, tableVal);
-
-            // Move insertion point back to module body.
-            builder.setInsertionPointToEnd(module.getBody());
-        }
 
         // Create the __eco_init_globals function.
         // Use External linkage so the JIT can look it up by name.
@@ -3419,15 +3294,6 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             auto globalAddr = builder.create<LLVM::AddressOfOp>(
                 loc, ptrTy, globalOp.getSymName());
             builder.create<LLVM::CallOp>(loc, addRootFunc, ValueRange{globalAddr});
-        }
-
-        // Call eco_register_custom_ctors if we have constructor info.
-        if (!constructorInfos.empty()) {
-            auto tablePtr = builder.create<LLVM::AddressOfOp>(
-                loc, ptrTy, "__eco_ctor_table");
-            auto countVal = builder.create<LLVM::ConstantOp>(
-                loc, i32Ty, static_cast<int32_t>(constructorInfos.size()));
-            builder.create<LLVM::CallOp>(loc, registerCtorsFunc, ValueRange{tablePtr, countVal});
         }
 
         builder.create<LLVM::ReturnOp>(loc, ValueRange{});

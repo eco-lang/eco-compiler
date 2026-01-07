@@ -25,7 +25,7 @@ constexpr u16 ERR_NETWORK = 2;
 // ============================================================================
 
 HPointer emptyBody() {
-    return alloc::custom(HTTP_TYPE_ID, BODY_EMPTY, {}, 0);
+    return alloc::custom(BODY_EMPTY, {}, 0);
 }
 
 // ============================================================================
@@ -47,7 +47,7 @@ TaskPtr toTask(HPointer request) {
     // Always fail with NetworkError for stub
     return Scheduler::binding([](Scheduler::Callback callback) -> std::function<void()> {
         // NetworkError has no fields
-        HPointer networkError = alloc::custom(HTTP_TYPE_ID, ERR_NETWORK, {}, 0);
+        HPointer networkError = alloc::custom(ERR_NETWORK, {}, 0);
         callback(alloc::err(alloc::boxed(networkError), false));
         return []() {};
     });
@@ -59,7 +59,7 @@ TaskPtr toTask(HPointer request) {
 
 HPointer expect(HPointer responseToResult) {
     // Wrap the response handler function as Custom
-    return alloc::custom(HTTP_TYPE_ID, 0, {alloc::boxed(responseToResult)}, 0);
+    return alloc::custom(0, {alloc::boxed(responseToResult)}, 0);
 }
 
 HPointer mapExpect(std::function<HPointer(HPointer)> func, HPointer expectVal) {
@@ -76,18 +76,18 @@ HPointer bytesToBlob(void* bytes, void* mimeType) {
     // Create a blob representation (Custom with bytes and mime type)
     HPointer bytesPtr = Allocator::instance().wrap(bytes);
     HPointer mimePtr = Allocator::instance().wrap(mimeType);
-    return alloc::custom(HTTP_TYPE_ID, 0, {alloc::boxed(bytesPtr), alloc::boxed(mimePtr)}, 0);
+    return alloc::custom(0, {alloc::boxed(bytesPtr), alloc::boxed(mimePtr)}, 0);
 }
 
 HPointer toDataView(void* bytes) {
     // Return bytes wrapped as Custom (stub DataView)
     HPointer bytesPtr = Allocator::instance().wrap(bytes);
-    return alloc::custom(HTTP_TYPE_ID, 0, {alloc::boxed(bytesPtr)}, 0);
+    return alloc::custom(0, {alloc::boxed(bytesPtr)}, 0);
 }
 
 HPointer toFormData(HPointer parts) {
     // Return parts wrapped as Custom (stub FormData)
-    return alloc::custom(HTTP_TYPE_ID, 0, {alloc::boxed(parts)}, 0);
+    return alloc::custom(0, {alloc::boxed(parts)}, 0);
 }
 
 } // namespace Elm::Kernel::Http

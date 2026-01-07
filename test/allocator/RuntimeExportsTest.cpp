@@ -110,7 +110,7 @@ static void test_eco_alloc_custom_fields() {
         uint32_t ctor_tag = *rc::gen::inRange<uint32_t>(0, 100);
         uint32_t field_count = *rc::gen::inRange<uint32_t>(0, 10);
 
-        void* obj = eco_alloc_custom(0, ctor_tag, field_count, 0);
+        void* obj = eco_alloc_custom(ctor_tag, field_count, 0);
         RC_ASSERT(static_cast<bool>(obj));
 
         Custom* custom = static_cast<Custom*>(obj);
@@ -186,7 +186,7 @@ static void test_eco_store_field_custom() {
         uint32_t index = *rc::gen::inRange<uint32_t>(0, field_count);
         uint64_t value = *rc::gen::arbitrary<uint64_t>();
 
-        void* obj = eco_alloc_custom(0, 0, field_count, 0);
+        void* obj = eco_alloc_custom(0, field_count, 0);
         RC_ASSERT(static_cast<bool>(obj));
 
         eco_store_field(obj, index, value);
@@ -269,7 +269,7 @@ static void test_eco_store_field_i64() {
         initAllocator();
         i64 value = *rc::gen::arbitrary<i64>();
 
-        void* obj = eco_alloc_custom(0, 0, 1, 0);
+        void* obj = eco_alloc_custom(0, 1, 0);
         RC_ASSERT(static_cast<bool>(obj));
 
         eco_store_field_i64(obj, 0, value);
@@ -287,7 +287,7 @@ static void test_eco_store_field_f64() {
             return static_cast<double>(x) / 100.0;
         });
 
-        void* obj = eco_alloc_custom(0, 0, 1, 0);
+        void* obj = eco_alloc_custom(0, 1, 0);
         RC_ASSERT(static_cast<bool>(obj));
 
         eco_store_field_f64(obj, 0, value);
@@ -324,7 +324,7 @@ static void test_eco_get_header_tag() {
         void* tuple3Obj = eco_alloc_tuple3(nullptr, nullptr, nullptr, 0);
         RC_ASSERT(eco_get_header_tag(tuple3Obj) == Tag_Tuple3);
 
-        void* customObj = eco_alloc_custom(0, 5, 2, 0);
+        void* customObj = eco_alloc_custom(5, 2, 0);
         RC_ASSERT(eco_get_header_tag(customObj) == Tag_Custom);
 
         void* stringObj = eco_alloc_string(10);
@@ -340,7 +340,7 @@ static void test_eco_get_custom_ctor() {
         initAllocator();
         uint32_t ctor_tag = *rc::gen::inRange<uint32_t>(0, 1000);
 
-        void* obj = eco_alloc_custom(0, ctor_tag, 0, 0);
+        void* obj = eco_alloc_custom(ctor_tag, 0, 0);
         RC_ASSERT(static_cast<bool>(obj));
 
         RC_ASSERT(eco_get_custom_ctor(obj) == ctor_tag);
@@ -474,7 +474,7 @@ static void test_multiple_alloc_types_survive_gc() {
         void* floatObj = eco_alloc_float(3.14159);
         void* charObj = eco_alloc_char('X');
         void* consObj = eco_alloc_cons(nullptr, nullptr, 0);
-        void* customObj = eco_alloc_custom(0, 7, 2, 0);
+        void* customObj = eco_alloc_custom(7, 2, 0);
 
         RC_ASSERT(static_cast<bool>(intObj));
         RC_ASSERT(static_cast<bool>(floatObj));

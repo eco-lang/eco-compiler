@@ -30,7 +30,7 @@ HPointer init(HPointer value) {
 
     // Return Primitive("<value>")
     HPointer label = alloc::allocStringFromUTF8("<value>");
-    return alloc::custom(EXPANDO_TYPE_ID, TAG_PRIMITIVE, {alloc::boxed(label)}, 0);
+    return alloc::custom(TAG_PRIMITIVE, {alloc::boxed(label)}, 0);
 }
 
 // ============================================================================

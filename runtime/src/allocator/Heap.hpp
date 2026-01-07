@@ -59,7 +59,7 @@ typedef double f64;                  // 64-bit floating point.
 #define TAG_BITS 5
 #define CTOR_BITS 16
 #define POINTER_BITS 40
-#define ID_BITS 16
+#define ID_BITS 16  // Process and Task ID field
 
 typedef enum {
     Tag_Int,
@@ -187,8 +187,7 @@ typedef struct {
 typedef struct {
     Header header;           // Header.size contains field count.
     u64 ctor : CTOR_BITS;    // Constructor index within this Elm custom type (16 bits).
-    u64 id : ID_BITS;        // Custom type id (global across program, 16 bits).
-    u64 unboxed : 32;        // Bitmap: bit N set means field N is unboxed (max 32 fields with unboxing).
+    u64 unboxed : 48;        // Bitmap: bit N set means field N is unboxed (max 48 fields with unboxing).
     Unboxable values[];
 } Custom;
 

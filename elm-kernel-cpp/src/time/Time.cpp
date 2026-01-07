@@ -74,7 +74,7 @@ TaskPtr getZoneName() {
         if (tz != nullptr && tz[0] != '\0') {
             // Return Name variant: { ctor: 0, value: tzName }
             HPointer tzNameStr = alloc::allocStringFromUTF8(tz);
-            HPointer nameVariant = alloc::custom(TIME_ZONE_TYPE_ID, 0, {alloc::boxed(tzNameStr)}, 0);
+            HPointer nameVariant = alloc::custom(0, {alloc::boxed(tzNameStr)}, 0);
             callback(nameVariant);
         } else {
             // Return Offset variant: { ctor: 1, value: offset }
@@ -95,7 +95,7 @@ TaskPtr getZoneName() {
             int offset = local_minutes - utc_minutes;
 
             // Create Offset variant: { ctor: 1, value: offset }
-            HPointer offsetVariant = alloc::custom(TIME_ZONE_TYPE_ID, 1, {alloc::unboxedInt(static_cast<i64>(offset))}, 0x1);
+            HPointer offsetVariant = alloc::custom(1, {alloc::unboxedInt(static_cast<i64>(offset))}, 0x1);
             callback(offsetVariant);
         }
 

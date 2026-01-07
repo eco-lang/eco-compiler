@@ -396,8 +396,6 @@ type alias Context =
     , pendingLambdas : List PendingLambda
     , signatures : Dict Int FuncSignature -- SpecId -> signature for invariant checking
     , varMappings : Dict String ( String, MlirType ) -- Let-bound name -> (SSA variable name, MLIR type)
-    , typeIds : Dict String Int -- Type name -> unique type ID (for constructor name printing)
-    , nextTypeId : Int -- Next available type ID
     }
 
 
@@ -418,31 +416,7 @@ initContext mode registry signatures =
     , pendingLambdas = []
     , signatures = signatures
     , varMappings = Dict.empty
-    , typeIds = Dict.empty
-    , nextTypeId = 1 -- Start at 1, reserve 0 for "no type"
     }
-
-
-{-| Get or create a unique type ID for a type name.
-Used for custom types to enable constructor name printing.
--}
-getOrCreateTypeId : String -> Context -> ( Int, Context )
-getOrCreateTypeId typeName ctx =
-    case Dict.get typeName ctx.typeIds of
-        Just id ->
-            ( id, ctx )
-
-        Nothing ->
-            let
-                newId =
-                    ctx.nextTypeId
-            in
-            ( newId
-            , { ctx
-                | typeIds = Dict.insert typeName newId ctx.typeIds
-                , nextTypeId = ctx.nextTypeId + 1
-              }
-            )
 
 
 freshVar : Context -> ( String, Context )
@@ -1490,29 +1464,6 @@ generateCtor ctx funcName ctorLayout monoType =
         arity =
             List.length ctorLayout.fields
 
-        -- Extract type name from MCustom for type ID registration
-        maybeTypeName : Maybe String
-        maybeTypeName =
-            case monoType of
-                Mono.MCustom _ typeName _ ->
-                    Just (Name.toElmString typeName)
-
-                _ ->
-                    Nothing
-
-        -- Get or create type ID for this custom type
-        ( typeId, ctxWithTypeId ) =
-            case maybeTypeName of
-                Just typeName ->
-                    let
-                        ( tid, newCtx ) =
-                            getOrCreateTypeId typeName ctx
-                    in
-                    ( Just tid, newCtx )
-
-                Nothing ->
-                    ( Nothing, ctx )
-
         constructorName : Maybe String
         constructorName =
             Just (Name.toElmString ctorLayout.name)
@@ -1521,7 +1472,7 @@ generateCtor ctx funcName ctorLayout monoType =
         -- Nullary constructor - check for well-known constants first
         let
             ( resultVar, ctx1 ) =
-                freshVar ctxWithTypeId
+                freshVar ctx
 
             -- Check for well-known constants that must use eco.constant
             ( ctx2, valueOp ) =
@@ -1537,7 +1488,7 @@ generateCtor ctx funcName ctorLayout monoType =
 
                     _ ->
                         -- Not a well-known constant, use eco.construct.custom
-                        ecoConstructCustom ctx1 resultVar ctorLayout.tag 0 0 [] typeId constructorName
+                        ecoConstructCustom ctx1 resultVar ctorLayout.tag 0 0 [] constructorName
 
             ( ctx3, returnOp ) =
                 ecoReturn ctx2 resultVar ecoValue
@@ -1574,10 +1525,10 @@ generateCtor ctx funcName ctorLayout monoType =
                 List.map2 Tuple.pair argNames argTypes
 
             ( resultVar, ctx1 ) =
-                freshVar { ctxWithTypeId | nextVar = arity }
+                freshVar { ctx | nextVar = arity }
 
             ( ctx2, constructOp ) =
-                ecoConstructCustom ctx1 resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs typeId constructorName
+                ecoConstructCustom ctx1 resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs constructorName
 
             ( ctx3, returnOp ) =
                 ecoReturn ctx2 resultVar ecoValue
@@ -1594,7 +1545,7 @@ generateCtor ctx funcName ctorLayout monoType =
 
 
 generateEnum : Context -> String -> Int -> Mono.MonoType -> Maybe String -> ( Context, MlirOp )
-generateEnum ctx funcName tag monoType maybeCtorName =
+generateEnum ctx funcName tag _ maybeCtorName =
     let
         ( resultVar, ctx1 ) =
             freshVar ctx
@@ -1613,31 +1564,7 @@ generateEnum ctx funcName tag monoType maybeCtorName =
 
                 _ ->
                     -- Not a well-known constant, use eco.construct.custom
-                    let
-                        -- Extract type name from MCustom for type ID registration
-                        maybeTypeName : Maybe String
-                        maybeTypeName =
-                            case monoType of
-                                Mono.MCustom _ typeName _ ->
-                                    Just (Name.toElmString typeName)
-
-                                _ ->
-                                    Nothing
-
-                        -- Get or create type ID for this custom type
-                        ( typeId, ctxWithTypeId ) =
-                            case maybeTypeName of
-                                Just typeName ->
-                                    let
-                                        ( tid, newCtx ) =
-                                            getOrCreateTypeId typeName ctx1
-                                    in
-                                    ( Just tid, newCtx )
-
-                                Nothing ->
-                                    ( Nothing, ctx1 )
-                    in
-                    ecoConstructCustom ctxWithTypeId resultVar tag 0 0 [] typeId maybeCtorName
+                    ecoConstructCustom ctx1 resultVar tag 0 0 [] maybeCtorName
 
         ( ctx3, returnOp ) =
             ecoReturn ctx2 resultVar ecoValue
@@ -4862,8 +4789,8 @@ ecoConstructRecord ctx resultVar fieldPairs fieldCount unboxedBitmap =
 
 {-| eco.construct.custom - create a custom ADT value
 -}
-ecoConstructCustom : Context -> String -> Int -> Int -> Int -> List ( String, MlirType ) -> Maybe Int -> Maybe String -> ( Context, MlirOp )
-ecoConstructCustom ctx resultVar tag size unboxedBitmap operands maybeTypeId maybeCtorName =
+ecoConstructCustom : Context -> String -> Int -> Int -> Int -> List ( String, MlirType ) -> Maybe String -> ( Context, MlirOp )
+ecoConstructCustom ctx resultVar tag size unboxedBitmap operands maybeCtorName =
     let
         operandNames =
             List.map Tuple.first operands
@@ -4876,14 +4803,6 @@ ecoConstructCustom ctx resultVar tag size unboxedBitmap operands maybeTypeId may
                 Dict.singleton "_operand_types"
                     (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) operands))
 
-        typeIdAttr =
-            case maybeTypeId of
-                Just tid ->
-                    Dict.singleton "type_id" (IntAttr Nothing tid)
-
-                Nothing ->
-                    Dict.empty
-
         constructorAttr =
             case maybeCtorName of
                 Just name ->
@@ -4894,14 +4813,12 @@ ecoConstructCustom ctx resultVar tag size unboxedBitmap operands maybeTypeId may
 
         attrs =
             Dict.union operandTypesAttr
-                (Dict.union typeIdAttr
-                    (Dict.union constructorAttr
-                        (Dict.fromList
-                            [ ( "tag", IntAttr Nothing tag )
-                            , ( "size", IntAttr Nothing size )
-                            , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
-                            ]
-                        )
+                (Dict.union constructorAttr
+                    (Dict.fromList
+                        [ ( "tag", IntAttr Nothing tag )
+                        , ( "size", IntAttr Nothing size )
+                        , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
+                        ]
                     )
                 )
     in
