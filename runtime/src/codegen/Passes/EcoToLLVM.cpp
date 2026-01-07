@@ -910,6 +910,481 @@ struct ProjectOpLowering : public OpConversionPattern<ProjectOp> {
 };
 
 // ============================================================================
+// Type-Specific Construction and Projection Lowerings
+// ============================================================================
+
+// eco.construct.list -> call eco_alloc_cons(head, tail, head_unboxed)
+struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(ListConstructOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto module = op->getParentOfType<ModuleOp>();
+        auto *ctx = rewriter.getContext();
+        auto i32Ty = IntegerType::get(ctx, 32);
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+        // eco_alloc_cons(void* head, void* tail, uint32_t head_unboxed)
+        auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, ptrTy, i32Ty});
+        getOrInsertFunc(module, rewriter, "eco_alloc_cons", funcTy);
+
+        // Convert operands: head and tail are i64 tagged pointers, convert to ptr.
+        auto headVal = adaptor.getHead();
+        auto tailVal = adaptor.getTail();
+        auto headPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, headVal);
+        auto tailPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, tailVal);
+
+        // head_unboxed attribute.
+        uint32_t headUnboxed = op.getHeadUnboxed() ? 1 : 0;
+        auto headUnboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, headUnboxed);
+
+        // Call eco_alloc_cons.
+        auto call = rewriter.create<LLVM::CallOp>(
+            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_cons"),
+            ValueRange{headPtr, tailPtr, headUnboxedVal});
+
+        // Convert result ptr to i64.
+        auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, call.getResult());
+        rewriter.replaceOp(op, result);
+        return success();
+    }
+};
+
+// eco.project.list_head -> load from Cons.head (offset 8)
+struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(ListHeadOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto i8Ty = IntegerType::get(ctx, 8);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+        Value input = adaptor.getList();
+        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, input);
+
+        // Cons layout: Header (8) + head (8) + tail (8).
+        // Head is at offset 8.
+        int64_t offsetBytes = 8;
+        auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
+        auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
+                                                      ValueRange{offset});
+
+        Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+        Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
+        rewriter.replaceOp(op, result);
+        return success();
+    }
+};
+
+// eco.project.list_tail -> load from Cons.tail (offset 16)
+struct ListTailOpLowering : public OpConversionPattern<ListTailOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(ListTailOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto i8Ty = IntegerType::get(ctx, 8);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+        Value input = adaptor.getList();
+        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, input);
+
+        // Cons layout: Header (8) + head (8) + tail (8).
+        // Tail is at offset 16.
+        int64_t offsetBytes = 16;
+        auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
+        auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
+                                                      ValueRange{offset});
+
+        Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+        Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
+        rewriter.replaceOp(op, result);
+        return success();
+    }
+};
+
+// eco.construct.tuple2 -> call eco_alloc_tuple2(a, b, unboxed_mask)
+struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(Tuple2ConstructOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto module = op->getParentOfType<ModuleOp>();
+        auto *ctx = rewriter.getContext();
+        auto i32Ty = IntegerType::get(ctx, 32);
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+        // eco_alloc_tuple2(void* a, void* b, uint32_t unboxed_mask)
+        auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, ptrTy, i32Ty});
+        getOrInsertFunc(module, rewriter, "eco_alloc_tuple2", funcTy);
+
+        auto aVal = adaptor.getA();
+        auto bVal = adaptor.getB();
+        auto aPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, aVal);
+        auto bPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, bVal);
+
+        int64_t unboxedMask = op.getUnboxedBitmap();
+        auto unboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+            static_cast<int32_t>(unboxedMask));
+
+        auto call = rewriter.create<LLVM::CallOp>(
+            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_tuple2"),
+            ValueRange{aPtr, bPtr, unboxedVal});
+
+        auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, call.getResult());
+        rewriter.replaceOp(op, result);
+        return success();
+    }
+};
+
+// eco.construct.tuple3 -> call eco_alloc_tuple3(a, b, c, unboxed_mask)
+struct Tuple3ConstructOpLowering : public OpConversionPattern<Tuple3ConstructOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(Tuple3ConstructOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto module = op->getParentOfType<ModuleOp>();
+        auto *ctx = rewriter.getContext();
+        auto i32Ty = IntegerType::get(ctx, 32);
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+        // eco_alloc_tuple3(void* a, void* b, void* c, uint32_t unboxed_mask)
+        auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, ptrTy, ptrTy, i32Ty});
+        getOrInsertFunc(module, rewriter, "eco_alloc_tuple3", funcTy);
+
+        auto aVal = adaptor.getA();
+        auto bVal = adaptor.getB();
+        auto cVal = adaptor.getC();
+        auto aPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, aVal);
+        auto bPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, bVal);
+        auto cPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, cVal);
+
+        int64_t unboxedMask = op.getUnboxedBitmap();
+        auto unboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+            static_cast<int32_t>(unboxedMask));
+
+        auto call = rewriter.create<LLVM::CallOp>(
+            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_tuple3"),
+            ValueRange{aPtr, bPtr, cPtr, unboxedVal});
+
+        auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, call.getResult());
+        rewriter.replaceOp(op, result);
+        return success();
+    }
+};
+
+// eco.project.tuple2 -> load from Tuple2.a (offset 8) or Tuple2.b (offset 16)
+struct Tuple2ProjectOpLowering : public OpConversionPattern<Tuple2ProjectOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(Tuple2ProjectOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto i8Ty = IntegerType::get(ctx, 8);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+        Value input = adaptor.getTuple();
+        int64_t field = op.getField();
+        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, input);
+
+        // Tuple2 layout: Header (8) + a (8) + b (8).
+        // field 0 = offset 8, field 1 = offset 16.
+        int64_t offsetBytes = 8 + field * 8;
+        auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
+        auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
+                                                      ValueRange{offset});
+
+        Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+        Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
+        rewriter.replaceOp(op, result);
+        return success();
+    }
+};
+
+// eco.project.tuple3 -> load from Tuple3 fields
+struct Tuple3ProjectOpLowering : public OpConversionPattern<Tuple3ProjectOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(Tuple3ProjectOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto i8Ty = IntegerType::get(ctx, 8);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+        Value input = adaptor.getTuple();
+        int64_t field = op.getField();
+        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, input);
+
+        // Tuple3 layout: Header (8) + a (8) + b (8) + c (8).
+        // field 0 = offset 8, field 1 = offset 16, field 2 = offset 24.
+        int64_t offsetBytes = 8 + field * 8;
+        auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
+        auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
+                                                      ValueRange{offset});
+
+        Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+        Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
+        rewriter.replaceOp(op, result);
+        return success();
+    }
+};
+
+// eco.construct.record -> call eco_alloc_record, then store fields
+struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(RecordConstructOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto module = op->getParentOfType<ModuleOp>();
+        auto *ctx = rewriter.getContext();
+        auto i32Ty = IntegerType::get(ctx, 32);
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto f64Ty = Float64Type::get(ctx);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+        auto voidTy = LLVM::LLVMVoidType::get(ctx);
+
+        // eco_alloc_record(uint32_t field_count, uint64_t unboxed_bitmap)
+        auto allocFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i32Ty, i64Ty});
+        getOrInsertFunc(module, rewriter, "eco_alloc_record", allocFuncTy);
+
+        // eco_store_record_field(void* record, uint32_t index, void* value)
+        auto storeFuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty, ptrTy});
+        getOrInsertFunc(module, rewriter, "eco_store_record_field", storeFuncTy);
+
+        // eco_store_record_field_i64(void* record, uint32_t index, int64_t value)
+        auto storeI64FuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty, i64Ty});
+        getOrInsertFunc(module, rewriter, "eco_store_record_field_i64", storeI64FuncTy);
+
+        // eco_store_record_field_f64(void* record, uint32_t index, double value)
+        auto storeF64FuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty, f64Ty});
+        getOrInsertFunc(module, rewriter, "eco_store_record_field_f64", storeF64FuncTy);
+
+        int64_t fieldCount = op.getFieldCount();
+        int64_t unboxedBitmap = op.getUnboxedBitmap();
+
+        auto fieldCountVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+            static_cast<int32_t>(fieldCount));
+        auto unboxedBitmapVal = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, unboxedBitmap);
+
+        auto allocCall = rewriter.create<LLVM::CallOp>(
+            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_record"),
+            ValueRange{fieldCountVal, unboxedBitmapVal});
+        auto objPtr = allocCall.getResult();
+
+        // Store each field.
+        auto origFields = op.getFields();
+        auto fields = adaptor.getFields();
+        for (size_t i = 0; i < fields.size(); i++) {
+            auto idx = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(i));
+            Type origType = origFields[i].getType();
+            Value fieldVal = fields[i];
+
+            if (origType.isF64()) {
+                rewriter.create<LLVM::CallOp>(
+                    loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_record_field_f64"),
+                    ValueRange{objPtr, idx, fieldVal});
+            } else if (origType.isInteger(1) || origType.isInteger(16)) {
+                // Bool or Char -> extend to i64.
+                auto extended = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, fieldVal);
+                rewriter.create<LLVM::CallOp>(
+                    loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_record_field_i64"),
+                    ValueRange{objPtr, idx, extended});
+            } else if (origType.isInteger(64)) {
+                rewriter.create<LLVM::CallOp>(
+                    loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_record_field_i64"),
+                    ValueRange{objPtr, idx, fieldVal});
+            } else {
+                // Boxed !eco.value -> convert to ptr.
+                auto valPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, fieldVal);
+                rewriter.create<LLVM::CallOp>(
+                    loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_record_field"),
+                    ValueRange{objPtr, idx, valPtr});
+            }
+        }
+
+        auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, objPtr);
+        rewriter.replaceOp(op, result);
+        return success();
+    }
+};
+
+// eco.project.record -> load from Record.values[index]
+struct RecordProjectOpLowering : public OpConversionPattern<RecordProjectOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(RecordProjectOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto i8Ty = IntegerType::get(ctx, 8);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+        Value input = adaptor.getRecord();
+        int64_t index = op.getFieldIndex();
+        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, input);
+
+        // Record layout: Header (8) + unboxed (8) + values[index * 8].
+        // Field at index N is at offset 16 + N * 8.
+        int64_t offsetBytes = 16 + index * 8;
+        auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
+        auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
+                                                      ValueRange{offset});
+
+        Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+        Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
+        rewriter.replaceOp(op, result);
+        return success();
+    }
+};
+
+// eco.construct.custom -> call eco_alloc_custom, then store fields
+struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(CustomConstructOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto module = op->getParentOfType<ModuleOp>();
+        auto *ctx = rewriter.getContext();
+        auto i32Ty = IntegerType::get(ctx, 32);
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto f64Ty = Float64Type::get(ctx);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+        auto voidTy = LLVM::LLVMVoidType::get(ctx);
+
+        // eco_alloc_custom(type_id, ctor_id, field_count, scalar_bytes)
+        auto allocFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i32Ty, i32Ty, i32Ty, i32Ty});
+        getOrInsertFunc(module, rewriter, "eco_alloc_custom", allocFuncTy);
+
+        auto storeFuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty, i64Ty});
+        getOrInsertFunc(module, rewriter, "eco_store_field", storeFuncTy);
+
+        auto storeI64FuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty, i64Ty});
+        getOrInsertFunc(module, rewriter, "eco_store_field_i64", storeI64FuncTy);
+
+        auto storeF64FuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty, f64Ty});
+        getOrInsertFunc(module, rewriter, "eco_store_field_f64", storeF64FuncTy);
+
+        auto setUnboxedFuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i64Ty});
+        getOrInsertFunc(module, rewriter, "eco_set_unboxed", setUnboxedFuncTy);
+
+        int64_t typeIdVal = 0;
+        if (auto typeId = op.getTypeId()) {
+            typeIdVal = typeId.value();
+        }
+
+        auto typeId = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(typeIdVal));
+        auto tag = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(op.getTag()));
+        auto size = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(op.getSize()));
+        auto scalarBytes = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 0);
+
+        auto allocCall = rewriter.create<LLVM::CallOp>(
+            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_custom"),
+            ValueRange{typeId, tag, size, scalarBytes});
+        auto objPtr = allocCall.getResult();
+
+        // Store each field.
+        auto origFields = op.getFields();
+        auto fields = adaptor.getFields();
+        for (size_t i = 0; i < fields.size(); i++) {
+            auto idx = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(i));
+            Type origType = origFields[i].getType();
+            Value fieldVal = fields[i];
+
+            if (origType.isF64()) {
+                rewriter.create<LLVM::CallOp>(
+                    loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_field_f64"),
+                    ValueRange{objPtr, idx, fieldVal});
+            } else if (origType.isInteger(1) || origType.isInteger(16)) {
+                auto extended = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, fieldVal);
+                rewriter.create<LLVM::CallOp>(
+                    loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_field_i64"),
+                    ValueRange{objPtr, idx, extended});
+            } else if (origType.isInteger(64)) {
+                rewriter.create<LLVM::CallOp>(
+                    loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_field_i64"),
+                    ValueRange{objPtr, idx, fieldVal});
+            } else {
+                rewriter.create<LLVM::CallOp>(
+                    loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_field"),
+                    ValueRange{objPtr, idx, fieldVal});
+            }
+        }
+
+        // Set unboxed bitmap if non-zero.
+        int64_t bitmap = op.getUnboxedBitmap();
+        if (bitmap != 0) {
+            auto bitmapVal = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, bitmap);
+            rewriter.create<LLVM::CallOp>(
+                loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_set_unboxed"),
+                ValueRange{objPtr, bitmapVal});
+        }
+
+        auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, objPtr);
+        rewriter.replaceOp(op, result);
+        return success();
+    }
+};
+
+// eco.project.custom -> load from Custom.values[index]
+struct CustomProjectOpLowering : public OpConversionPattern<CustomProjectOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(CustomProjectOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto i8Ty = IntegerType::get(ctx, 8);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+        Value input = adaptor.getContainer();
+        int64_t index = op.getFieldIndex();
+        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, input);
+
+        // Custom layout: Header (8) + ctor/unboxed (8) + values[index * 8].
+        // Field at index N is at offset 16 + N * 8.
+        int64_t offsetBytes = 16 + index * 8;
+        auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
+        auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
+                                                      ValueRange{offset});
+
+        Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+        Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
+        rewriter.replaceOp(op, result);
+        return success();
+    }
+};
+
+// ============================================================================
 // eco.string_literal -> global constant + address
 // ============================================================================
 
@@ -1404,15 +1879,74 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         // Extract constructor tag from scrutinee.
         // For Custom objects: ctor field is at offset 8, first 16 bits.
         // Memory layout: [Header (8 bytes)][ctor:16 | unboxed:48][values...]
+        //
+        // Special handling for embedded constants:
+        // - Embedded constants have bits 40-43 non-zero (constant field)
+        // - Nil constant (constant field = 5) should map to tag 0 for list pattern matching
+        // - We must NOT load from embedded constants as they're not valid pointers
+        //
+        // Use conditional branching to avoid loading from invalid addresses.
         Value scrutinee = adaptor.getScrutinee();
-        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, scrutinee);
+        Value ctorTag;
 
-        // Load the ctor field at offset 8 (after the Header).
-        auto offset8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 8);
-        auto ctorPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
-                                                    ValueRange{offset8});
-        // Load as i32 (ctor is 16 bits but we use i32 for switch compatibility).
-        auto ctorTag = rewriter.create<LLVM::LoadOp>(loc, i32Ty, ctorPtr);
+        // Check if scrutinee is i1 (boolean) - if so, skip embedded constant logic
+        // since i1 can only be 0 or 1 and cannot be an embedded constant
+        auto scrutineeType = scrutinee.getType();
+        bool isI1Scrutinee = scrutineeType.isInteger(1);
+
+        if (isI1Scrutinee) {
+            // For i1 scrutinees, just zero-extend to i32 for the switch
+            ctorTag = rewriter.create<LLVM::ZExtOp>(loc, i32Ty, scrutinee);
+        } else {
+            // Check if this is an embedded constant: (scrutinee >> 40) & 0xF != 0
+            auto shift40 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 40);
+            auto shifted = rewriter.create<LLVM::LShrOp>(loc, scrutinee, shift40);
+            auto maskF = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0xF);
+            auto constField = rewriter.create<LLVM::AndOp>(loc, shifted, maskF);
+            auto zero64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0);
+            auto isConstant = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ne,
+                                                             constField, zero64);
+
+            // Create blocks for constant vs heap case
+            Block *constBlock = rewriter.createBlock(parentRegion);
+            Block *heapBlock = rewriter.createBlock(parentRegion);
+            Block *tagMergeBlock = rewriter.createBlock(parentRegion);
+            tagMergeBlock->addArgument(i32Ty, loc);  // phi for ctorTag
+
+            // Branch based on whether it's a constant
+            rewriter.setInsertionPointToEnd(currentBlock);
+            rewriter.create<cf::CondBranchOp>(loc, isConstant, constBlock, heapBlock);
+
+            // Constant case: map Nil (5) to tag 0, others keep their value
+            rewriter.setInsertionPointToStart(constBlock);
+            auto nilConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 5);
+            auto isNil = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::eq,
+                                                        constField, nilConst);
+            auto tag0_64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0);
+            auto constTag64 = rewriter.create<LLVM::SelectOp>(loc, isNil, tag0_64, constField);
+            auto constTag = rewriter.create<LLVM::TruncOp>(loc, i32Ty, constTag64);
+            rewriter.create<cf::BranchOp>(loc, tagMergeBlock, ValueRange{constTag});
+
+            // Heap case: load ctor from offset 8
+            rewriter.setInsertionPointToStart(heapBlock);
+            auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, scrutinee);
+            auto offset8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 8);
+            auto ctorPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
+                                                        ValueRange{offset8});
+            auto ctorFromHeap = rewriter.create<LLVM::LoadOp>(loc, i32Ty, ctorPtr);
+            rewriter.create<cf::BranchOp>(loc, tagMergeBlock, ValueRange{ctorFromHeap});
+
+            // Continue from merge block with phi result
+            rewriter.setInsertionPointToStart(tagMergeBlock);
+            ctorTag = tagMergeBlock->getArgument(0);
+
+            // Update currentBlock to be the merge block for subsequent code
+            currentBlock = tagMergeBlock;
+        }
+
+        // Save the original block containing the CaseOp.
+        // We need this to correctly move operations that follow the CaseOp.
+        Block *originalOpBlock = op->getBlock();
 
         // Create a merge block after the case (where all branches converge).
         Block *mergeBlock = rewriter.createBlock(parentRegion);
@@ -1435,9 +1969,10 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
 
         // Move operations after eco.case to the merge block first.
         // This ensures the switch becomes the terminator.
+        // IMPORTANT: Use originalOpBlock (where CaseOp is) not currentBlock (tagMergeBlock).
         {
             auto opsToMove = llvm::make_early_inc_range(
-                llvm::make_range(std::next(Block::iterator(op)), currentBlock->end()));
+                llvm::make_range(std::next(Block::iterator(op)), originalOpBlock->end()));
             for (Operation &opToMove : opsToMove) {
                 opToMove.moveBefore(mergeBlock, mergeBlock->end());
             }
@@ -2799,6 +3334,18 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             PapCreateOpLowering,
             PapExtendOpLowering,
             ProjectOpLowering,
+            // Type-specific construction/projection
+            ListConstructOpLowering,
+            ListHeadOpLowering,
+            ListTailOpLowering,
+            Tuple2ConstructOpLowering,
+            Tuple3ConstructOpLowering,
+            Tuple2ProjectOpLowering,
+            Tuple3ProjectOpLowering,
+            RecordConstructOpLowering,
+            RecordProjectOpLowering,
+            CustomConstructOpLowering,
+            CustomProjectOpLowering,
             StringLiteralOpLowering,
             ReturnOpLowering,
             CallOpLowering,

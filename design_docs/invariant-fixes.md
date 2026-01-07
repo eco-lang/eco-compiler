@@ -26,16 +26,16 @@ No lists, tuples or records may be allocated as `Custom`.
 
 **File:** `runtime/src/codegen/Ops.td` (you have this as `Ops.td.txt`)
 
-### 1.1. List cons / projections
+### 1.1. List construction / projections
 
-Add new ops for list cons and projections:
+Add new ops for list construction and projections:
 
 ```tablegen
 //===----------------------------------------------------------------------===//
 // 3.x List Operations (Cons / Nil)
 //===----------------------------------------------------------------------===//
 
-def Eco_ListConsOp : Eco_Op<"cons.list", [Pure]> {
+def Eco_ListConstructOp : Eco_Op<"construct.list", [Pure]> {
   let summary = "Construct a list Cons cell";
   let description = [{
     Allocate a list cons cell: head :: tail.
@@ -45,7 +45,7 @@ def Eco_ListConsOp : Eco_Op<"cons.list", [Pure]> {
 
     Example:
     ```mlir
-    %list = eco.cons.list %head, %tail : !eco.value, !eco.value -> !eco.value
+    %list = eco.construct.list %head, %tail : !eco.value, !eco.value -> !eco.value
     ```
   }];
 
@@ -204,12 +204,57 @@ def Eco_RecordProjectOp : Eco_Op<"project.record", [Pure]> {
 }
 ```
 
-### 1.4. Keep `eco.construct` / `eco.project` for ADTs
+### 1.4. Rename `eco.construct` → `eco.construct.custom` and `eco.project` → `eco.project.custom`
 
-Leave the existing `Eco_ConstructOp` and `Eco_ProjectOp` as the **custom ADT** path (backed by `Custom` layout), as in your current dialect.
+**IMPORTANT**: The generic `eco.construct` and `eco.project` ops are being **removed**. All construction and projection must use type-specific ops.
 
-**Intent**:  
-After these additions, the compiler will **never use `eco.construct` / `eco.project` for lists, tuples or records**; those will exclusively go through the new layout‑specific ops.
+Rename the existing `Eco_ConstructOp` and `Eco_ProjectOp` to `Eco_CustomConstructOp` and `Eco_CustomProjectOp`:
+
+```tablegen
+//===----------------------------------------------------------------------===//
+// Custom ADT Operations (user-defined algebraic data types)
+//===----------------------------------------------------------------------===//
+
+def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure]> {
+  let summary = "Construct a custom ADT value";
+  let description = [{
+    Create a custom algebraic data type (ADT) value for a user-defined type.
+    This is ONLY for custom ADTs (Maybe, Result, user types), NOT for:
+    - Lists (use eco.construct.list)
+    - Tuples (use eco.construct.tuple2, eco.construct.tuple3)
+    - Records (use eco.construct.record)
+
+    Example:
+    ```mlir
+    %just = eco.construct.custom(%inner) {tag = 1, size = 1} : (!eco.value) -> !eco.value
+    ```
+  }];
+  // ... existing attributes ...
+}
+
+def Eco_CustomProjectOp : Eco_Op<"project.custom", [Pure]> {
+  let summary = "Project field from custom ADT value";
+  let description = [{
+    Project a field out of a custom ADT value by index.
+    This is ONLY for custom ADTs, NOT for lists/tuples/records.
+
+    Example:
+    ```mlir
+    %inner = eco.project.custom %just[0] : !eco.value -> !eco.value
+    ```
+  }];
+  // ... existing attributes ...
+}
+```
+
+**Migration required**: All existing uses of `eco.construct` and `eco.project` must be updated:
+- Lists → `eco.construct.list`, `eco.project.list_head`, `eco.project.list_tail`
+- Tuples → `eco.construct.tuple2`/`tuple3`, `eco.project.tuple2`/`tuple3`
+- Records → `eco.construct.record`, `eco.project.record`
+- Custom ADTs → `eco.construct.custom`, `eco.project.custom`
+
+**Intent**:
+After these changes, there is **no generic `eco.construct` or `eco.project`**. Each heap type has its own dedicated ops that encode the correct layout assumptions.
 
 ---
 
@@ -221,15 +266,15 @@ You already have patterns lowering eco heap ops (`construct`, `project`, `alloca
 
 Below I show skeletons; you’ll adapt to your existing style and helper utilities.
 
-### 2.1. List cons / projections
+### 2.1. List construction / projections
 
 ```cpp
-struct ListConsOpLowering : public ConvertOpToLLVMPattern<eco::ListConsOp> {
-  using Base = ConvertOpToLLVMPattern<eco::ListConsOp>;
+struct ListConstructOpLowering : public ConvertOpToLLVMPattern<eco::ListConstructOp> {
+  using Base = ConvertOpToLLVMPattern<eco::ListConstructOp>;
   using Base::Base;
 
   LogicalResult
-  matchAndRewrite(eco::ListConsOp op, OpAdaptor adaptor,
+  matchAndRewrite(eco::ListConstructOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     MLIRContext *ctx = op->getContext();
@@ -406,17 +451,26 @@ void populateEcoHeapOpsToLLVMPatterns(TypeConverter &typeConverter,
                                        RewritePatternSet &patterns) {
   using namespace eco;
 
-  // existing patterns for construct, project, allocate_*, box, unbox ...
+  // NOTE: ConstructOpLowering and ProjectOpLowering are REMOVED.
+  // They are replaced by type-specific lowerings below.
 
-  patterns.add<ListConsOpLowering,
-               ListHeadOpLowering,
-               ListTailOpLowering,
-               Tuple2ConstructOpLowering,
-               Tuple3ConstructOpLowering,
-               Tuple2ProjectOpLowering,
-               Tuple3ProjectOpLowering,
-               RecordConstructOpLowering,
-               RecordProjectOpLowering>(typeConverter, patterns.getContext());
+  patterns.add<
+      // List ops
+      ListConstructOpLowering,
+      ListHeadOpLowering,
+      ListTailOpLowering,
+      // Tuple ops
+      Tuple2ConstructOpLowering,
+      Tuple3ConstructOpLowering,
+      Tuple2ProjectOpLowering,
+      Tuple3ProjectOpLowering,
+      // Record ops
+      RecordConstructOpLowering,
+      RecordProjectOpLowering,
+      // Custom ADT ops (renamed from generic construct/project)
+      CustomConstructOpLowering,
+      CustomProjectOpLowering
+  >(typeConverter, patterns.getContext());
 }
 ```
 
@@ -550,11 +604,14 @@ In `RuntimeExports.cpp`:
 
 ### 4.1. New eco op builders
 
-Add helpers near your existing `ecoConstruct`, `ecoProject`, `ecoCallNamed`, `ecoReturn` builders :
+**NOTE**: The existing `ecoConstruct` and `ecoProject` helpers must be **removed** or renamed. Replace them with type-specific builders.
+
+Add helpers for type-specific construction:
 
 ```elm
-ecoListCons : Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> ( Context, MlirOp )
-ecoListCons ctx resultVar ( headVar, headTy ) ( tailVar, tailTy ) =
+-- List construction (replaces ecoConstruct for lists)
+ecoConstructList : Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> ( Context, MlirOp )
+ecoConstructList ctx resultVar ( headVar, headTy ) ( tailVar, tailTy ) =
     let
         operandTypesAttr =
             Dict.singleton "_operand_types"
@@ -563,7 +620,7 @@ ecoListCons ctx resultVar ( headVar, headTy ) ( tailVar, tailTy ) =
         attrs =
             operandTypesAttr
     in
-    mlirOp ctx "eco.cons.list"
+    mlirOp ctx "eco.construct.list"
         |> opBuilder.withOperands [ headVar, tailVar ]
         |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
         |> opBuilder.withAttrs attrs
@@ -601,6 +658,7 @@ ecoProjectListTail ctx resultVar listVar =
 Similarly add builders for tuples and records:
 
 ```elm
+-- Tuple construction
 ecoConstructTuple2 :
     Context -> String -> ( String, MlirType ) -> ( String, MlirType )
     -> ( Context, MlirOp )
@@ -616,7 +674,31 @@ ecoConstructTuple2 ctx resultVar ( aVar, aTy ) ( bVar, bTy ) =
         |> opBuilder.withAttrs operandTypesAttr
         |> opBuilder.build
 
--- eco.construct.tuple3, eco.project.tuple2, eco.project.tuple3 ...
+-- eco.construct.tuple3, eco.project.tuple2, eco.project.tuple3 similarly...
+
+-- Custom ADT construction (renamed from ecoConstruct)
+ecoConstructCustom :
+    Context -> String -> Int -> Int -> Int -> List ( String, MlirType ) -> Maybe Int -> Maybe String
+    -> ( Context, MlirOp )
+ecoConstructCustom ctx resultVar tag size unboxedBitmap fieldPairs typeId constructor =
+    -- Same implementation as old ecoConstruct, but emits "eco.construct.custom"
+    mlirOp ctx "eco.construct.custom"
+        |> opBuilder.withOperands (List.map Tuple.first fieldPairs)
+        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs (buildCustomAttrs tag size unboxedBitmap typeId constructor fieldPairs)
+        |> opBuilder.build
+
+-- Custom ADT projection (renamed from ecoProject)
+ecoProjectCustom :
+    Context -> String -> Int -> MlirType -> Bool -> String
+    -> ( Context, MlirOp )
+ecoProjectCustom ctx resultVar index resultType isUnboxed containerVar =
+    -- Same implementation as old ecoProject, but emits "eco.project.custom"
+    mlirOp ctx "eco.project.custom"
+        |> opBuilder.withOperands [ containerVar ]
+        |> opBuilder.withResults [ ( resultVar, resultType ) ]
+        |> opBuilder.withAttrs (buildProjectAttrs index isUnboxed)
+        |> opBuilder.build
 ```
 
 ```elm
@@ -682,7 +764,7 @@ ecoProjectRecord ctx resultVar index resultType recordVar =
 
 ### 4.2. Fix list generation (HEAP_013, HEAP_010)
 
-Existing `generateList` uses `ecoConstruct` with bogus tags (`0`, `1`) . Replace it with constants + `ecoListCons`:
+Existing `generateList` uses `ecoConstruct` with bogus tags (`0`, `1`) . Replace it with constants + `ecoConstructList`:
 
 ```elm
 generateList : Context -> List Mono.MonoExpr -> ExprResult
@@ -739,7 +821,7 @@ generateList ctx items =
                                     freshVar ctx3
 
                                 ( ctx5, consOp ) =
-                                    ecoListCons ctx4 consVar
+                                    ecoConstructList ctx4 consVar
                                         ( boxedVar, ecoValue )
                                         ( tailVar, ecoValue )
                             in
@@ -760,7 +842,7 @@ generateList ctx items =
 
 This:
 
-- Removes any use of `eco.construct` for lists.
+- Uses `eco.construct.list` instead of the removed generic `eco.construct`.
 - Ensures Nil is an embedded constant, satisfying HEAP_010.
 
 ### 4.3. Fix tuple generation
@@ -1036,5 +1118,30 @@ This fully enforces HEAP_010 (all Unit/Nil as embedded constants, never heap all
 - **CGEN_001 – call arg mismatch**
     - `boxToMatchSignature` and `boxToMatchSignatureTyped` now crash on irreconcilable type mismatches (Section 5.2), instead of silently reusing the wrong types.
 
-Once these changes are in, the “all‑Custom” path is gone for lists/tuples/records, the MLIR and runtime heap invariants line up, and latent monomorphization / boxing bugs are surfaced immediately instead of hiding in the runtime.
+Once these changes are in, the "all‑Custom" path is gone for lists/tuples/records, the MLIR and runtime heap invariants line up, and latent monomorphization / boxing bugs are surfaced immediately instead of hiding in the runtime.
+
+---
+
+## 8. Op Naming Summary
+
+The following table summarizes the complete set of construct/project ops after this change:
+
+| Heap Type | Construct Op | Project Op(s) |
+|-----------|--------------|---------------|
+| List (Cons) | `eco.construct.list` | `eco.project.list_head`, `eco.project.list_tail` |
+| Tuple2 | `eco.construct.tuple2` | `eco.project.tuple2` |
+| Tuple3 | `eco.construct.tuple3` | `eco.project.tuple3` |
+| Record | `eco.construct.record` | `eco.project.record` |
+| Custom ADT | `eco.construct.custom` | `eco.project.custom` |
+
+**Removed ops**:
+- `eco.construct` (generic) — replaced by type-specific ops above
+- `eco.project` (generic) — replaced by type-specific ops above
+
+**Migration checklist for existing code**:
+1. Search for all uses of `"eco.construct"` and replace with appropriate type-specific op
+2. Search for all uses of `"eco.project"` and replace with appropriate type-specific op
+3. Update `ConstructOpLowering` → `CustomConstructOpLowering` (for `eco.construct.custom`)
+4. Update `ProjectOpLowering` → `CustomProjectOpLowering` (for `eco.project.custom`)
+5. Remove generic `Eco_ConstructOp` and `Eco_ProjectOp` definitions from Ops.td
 

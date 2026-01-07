@@ -4,7 +4,7 @@ module Compiler.AST.Monomorphized exposing
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry, emptyRegistry, getOrCreateSpecId, lookupSpecKey
     , MonoGraph(..), MainInfo(..), MonoNode(..)
-    , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
+    , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..), ContainerKind(..)
     , Decider(..), MonoChoice(..)
     , typeOf, canUnbox
     , computeRecordLayout, computeTupleLayout
@@ -425,10 +425,29 @@ type MonoDestructor
     = MonoDestructor Name MonoPath MonoType
 
 
+{-| The kind of container being navigated during destructuring.
+
+This is used to select the correct runtime projection operation:
+  - ListContainer: eco.project.list.head / eco.project.list.tail
+  - Tuple2Container: eco.project.tuple2
+  - Tuple3Container: eco.project.tuple3
+  - CustomContainer: eco.project (generic custom type)
+  - RecordContainer: eco.project (record field access)
+-}
+type ContainerKind
+    = ListContainer
+    | Tuple2Container
+    | Tuple3Container
+    | CustomContainer
+    | RecordContainer
+
+
 {-| Path for navigating into a data structure during destructuring.
+
+MonoIndex now carries ContainerKind to enable type-specific projection ops.
 -}
 type MonoPath
-    = MonoIndex Int MonoPath
+    = MonoIndex Int ContainerKind MonoPath
     | MonoField Int MonoPath
     | MonoUnbox MonoPath
     | MonoRoot Name

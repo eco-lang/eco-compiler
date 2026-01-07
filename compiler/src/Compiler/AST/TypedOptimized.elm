@@ -1,6 +1,6 @@
 module Compiler.AST.TypedOptimized exposing
     ( Expr(..), Global(..), Annotations
-    , Def(..), Destructor(..), Path(..)
+    , Def(..), Destructor(..), Path(..), ContainerHint(..)
     , Decider(..), Choice(..)
     , GlobalGraph(..), LocalGraph(..), LocalGraphData, Node(..), Main(..), EffectsType(..)
     , emptyGlobalGraph, emptyLocalGraph, addGlobalGraph, addLocalGraph
@@ -279,13 +279,25 @@ type Destructor
 
 
 
--- Note: Path doesn't need types - it's just navigation
+-- Note: Path includes container hints for type-specific projection operations
+
+
+{-| Indicates what type of container an Index navigates into.
+This is used to generate type-specific projection operations in MLIR codegen.
+-}
+type ContainerHint
+    = HintList
+    | HintTuple2
+    | HintTuple3
+    | HintCustom
+    | HintUnknown
 
 
 {-| A path describing how to navigate into a data structure for destructuring.
+Index includes a ContainerHint to enable type-specific projection operations.
 -}
 type Path
-    = Index Index.ZeroBased Path
+    = Index Index.ZeroBased ContainerHint Path
     | ArrayIndex Int Path
     | Field Name Path
     | Unbox Path
@@ -1319,13 +1331,58 @@ choiceDecoder =
             )
 
 
+containerHintEncoder : ContainerHint -> Bytes.Encode.Encoder
+containerHintEncoder hint =
+    Bytes.Encode.unsignedInt8
+        (case hint of
+            HintList ->
+                0
+
+            HintTuple2 ->
+                1
+
+            HintTuple3 ->
+                2
+
+            HintCustom ->
+                3
+
+            HintUnknown ->
+                4
+        )
+
+
+containerHintDecoder : Bytes.Decode.Decoder ContainerHint
+containerHintDecoder =
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
+            (\n ->
+                case n of
+                    0 ->
+                        Bytes.Decode.succeed HintList
+
+                    1 ->
+                        Bytes.Decode.succeed HintTuple2
+
+                    2 ->
+                        Bytes.Decode.succeed HintTuple3
+
+                    3 ->
+                        Bytes.Decode.succeed HintCustom
+
+                    _ ->
+                        Bytes.Decode.succeed HintUnknown
+            )
+
+
 pathEncoder : Path -> Bytes.Encode.Encoder
 pathEncoder path =
     case path of
-        Index index subPath ->
+        Index index hint subPath ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 0
                 , Index.zeroBasedEncoder index
+                , containerHintEncoder hint
                 , pathEncoder subPath
                 ]
 
@@ -1363,8 +1420,9 @@ pathDecoder =
             (\idx ->
                 case idx of
                     0 ->
-                        Bytes.Decode.map2 Index
+                        Bytes.Decode.map3 Index
                             Index.zeroBasedDecoder
+                            containerHintDecoder
                             pathDecoder
 
                     1 ->

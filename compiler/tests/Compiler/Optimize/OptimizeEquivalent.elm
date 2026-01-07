@@ -1196,7 +1196,7 @@ compareDestructors (Opt.Destructor n1 p1) (TOpt.Destructor n2 p2 _) =
 comparePaths : Opt.Path -> TOpt.Path -> Maybe String
 comparePaths erasedPath typedPath =
     case ( erasedPath, typedPath ) of
-        ( Opt.Index idx1 rest1, TOpt.Index idx2 rest2 ) ->
+        ( Opt.Index idx1 rest1, TOpt.Index idx2 _ rest2 ) ->
             if idx1 /= idx2 then
                 Just "Path Index mismatch"
 

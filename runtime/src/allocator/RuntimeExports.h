@@ -38,17 +38,52 @@ void* eco_get_output_stream();
 /// @return Pointer to the allocated object
 void* eco_alloc_custom(uint32_t type_id, uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes);
 
-/// Allocates a Cons cell.
+/// Allocates and initializes a Cons cell (list node).
+/// @param head The head element value (boxed pointer or unboxed primitive stored as ptr)
+/// @param tail The tail list pointer (always boxed)
+/// @param head_unboxed 0 if head is a boxed pointer, 1 if head is an unboxed primitive
 /// @return Pointer to the allocated Cons object
-void* eco_alloc_cons();
+void* eco_alloc_cons(void* head, void* tail, uint32_t head_unboxed);
 
-/// Allocates a Tuple2.
+/// Allocates and initializes a Tuple2.
+/// @param a First element (boxed or unboxed)
+/// @param b Second element (boxed or unboxed)
+/// @param unboxed_mask Bitmap: bit 0 = a is unboxed, bit 1 = b is unboxed
 /// @return Pointer to the allocated Tuple2 object
-void* eco_alloc_tuple2();
+void* eco_alloc_tuple2(void* a, void* b, uint32_t unboxed_mask);
 
-/// Allocates a Tuple3.
+/// Allocates and initializes a Tuple3.
+/// @param a First element (boxed or unboxed)
+/// @param b Second element (boxed or unboxed)
+/// @param c Third element (boxed or unboxed)
+/// @param unboxed_mask Bitmap: bit 0 = a, bit 1 = b, bit 2 = c
 /// @return Pointer to the allocated Tuple3 object
-void* eco_alloc_tuple3();
+void* eco_alloc_tuple3(void* a, void* b, void* c, uint32_t unboxed_mask);
+
+/// Allocates a Record with the specified number of fields.
+/// Fields must be stored separately using eco_store_record_field* functions.
+/// @param field_count Number of fields in the record
+/// @param unboxed_bitmap Bitmap indicating which fields are unboxed primitives
+/// @return Pointer to the allocated Record object
+void* eco_alloc_record(uint32_t field_count, uint64_t unboxed_bitmap);
+
+/// Stores a boxed pointer field in a Record.
+/// @param record Pointer to the Record object
+/// @param index Field index
+/// @param value Pointer value to store
+void eco_store_record_field(void* record, uint32_t index, void* value);
+
+/// Stores an unboxed i64 field in a Record.
+/// @param record Pointer to the Record object
+/// @param index Field index
+/// @param value Integer value to store
+void eco_store_record_field_i64(void* record, uint32_t index, int64_t value);
+
+/// Stores an unboxed f64 field in a Record.
+/// @param record Pointer to the Record object
+/// @param index Field index
+/// @param value Float value to store
+void eco_store_record_field_f64(void* record, uint32_t index, double value);
 
 /// Allocates a string with the specified length.
 /// @param length Number of UTF-16 code units

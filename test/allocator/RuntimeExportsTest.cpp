@@ -69,7 +69,8 @@ static void test_eco_alloc_cons_correct_tag() {
     rc::check("eco_alloc_cons creates object with Tag_Cons", []() {
         initAllocator();
 
-        void* obj = eco_alloc_cons();
+        // eco_alloc_cons now takes (head, tail, head_unboxed)
+        void* obj = eco_alloc_cons(nullptr, nullptr, 0);
         RC_ASSERT(static_cast<bool>(obj));
 
         Header* header = static_cast<Header*>(obj);
@@ -81,7 +82,8 @@ static void test_eco_alloc_tuple2_correct_tag() {
     rc::check("eco_alloc_tuple2 creates object with Tag_Tuple2", []() {
         initAllocator();
 
-        void* obj = eco_alloc_tuple2();
+        // eco_alloc_tuple2 now takes (a, b, unboxed_mask)
+        void* obj = eco_alloc_tuple2(nullptr, nullptr, 0);
         RC_ASSERT(static_cast<bool>(obj));
 
         Header* header = static_cast<Header*>(obj);
@@ -93,7 +95,8 @@ static void test_eco_alloc_tuple3_correct_tag() {
     rc::check("eco_alloc_tuple3 creates object with Tag_Tuple3", []() {
         initAllocator();
 
-        void* obj = eco_alloc_tuple3();
+        // eco_alloc_tuple3 now takes (a, b, c, unboxed_mask)
+        void* obj = eco_alloc_tuple3(nullptr, nullptr, nullptr, 0);
         RC_ASSERT(static_cast<bool>(obj));
 
         Header* header = static_cast<Header*>(obj);
@@ -194,56 +197,53 @@ static void test_eco_store_field_custom() {
 }
 
 static void test_eco_store_field_tuple2() {
-    rc::check("eco_store_field stores values in Tuple2 fields", []() {
+    rc::check("eco_alloc_tuple2 initializes values correctly", []() {
         initAllocator();
         uint64_t val_a = *rc::gen::arbitrary<uint64_t>();
         uint64_t val_b = *rc::gen::arbitrary<uint64_t>();
 
-        void* obj = eco_alloc_tuple2();
+        // eco_alloc_tuple2 now initializes fields directly
+        void* obj = eco_alloc_tuple2(reinterpret_cast<void*>(val_a),
+                                      reinterpret_cast<void*>(val_b), 0);
         RC_ASSERT(static_cast<bool>(obj));
 
-        eco_store_field(obj, 0, val_a);
-        eco_store_field(obj, 1, val_b);
-
         Tuple2* tuple = static_cast<Tuple2*>(obj);
-        RC_ASSERT(static_cast<uint64_t>(tuple->a.i) == val_a);
-        RC_ASSERT(static_cast<uint64_t>(tuple->b.i) == val_b);
+        RC_ASSERT(static_cast<uint64_t>(tuple->a.i) == static_cast<i64>(val_a));
+        RC_ASSERT(static_cast<uint64_t>(tuple->b.i) == static_cast<i64>(val_b));
     });
 }
 
 static void test_eco_store_field_tuple3() {
-    rc::check("eco_store_field stores values in Tuple3 fields", []() {
+    rc::check("eco_alloc_tuple3 initializes values correctly", []() {
         initAllocator();
         uint64_t val_a = *rc::gen::arbitrary<uint64_t>();
         uint64_t val_b = *rc::gen::arbitrary<uint64_t>();
         uint64_t val_c = *rc::gen::arbitrary<uint64_t>();
 
-        void* obj = eco_alloc_tuple3();
+        // eco_alloc_tuple3 now initializes fields directly
+        void* obj = eco_alloc_tuple3(reinterpret_cast<void*>(val_a),
+                                      reinterpret_cast<void*>(val_b),
+                                      reinterpret_cast<void*>(val_c), 0);
         RC_ASSERT(static_cast<bool>(obj));
 
-        eco_store_field(obj, 0, val_a);
-        eco_store_field(obj, 1, val_b);
-        eco_store_field(obj, 2, val_c);
-
         Tuple3* tuple = static_cast<Tuple3*>(obj);
-        RC_ASSERT(static_cast<uint64_t>(tuple->a.i) == val_a);
-        RC_ASSERT(static_cast<uint64_t>(tuple->b.i) == val_b);
-        RC_ASSERT(static_cast<uint64_t>(tuple->c.i) == val_c);
+        RC_ASSERT(static_cast<uint64_t>(tuple->a.i) == static_cast<i64>(val_a));
+        RC_ASSERT(static_cast<uint64_t>(tuple->b.i) == static_cast<i64>(val_b));
+        RC_ASSERT(static_cast<uint64_t>(tuple->c.i) == static_cast<i64>(val_c));
     });
 }
 
 static void test_eco_store_field_cons() {
-    rc::check("eco_store_field stores head in Cons cells", []() {
+    rc::check("eco_alloc_cons initializes head correctly", []() {
         initAllocator();
         uint64_t head_val = *rc::gen::arbitrary<uint64_t>();
 
-        void* obj = eco_alloc_cons();
+        // eco_alloc_cons now initializes head directly
+        void* obj = eco_alloc_cons(reinterpret_cast<void*>(head_val), nullptr, 0);
         RC_ASSERT(static_cast<bool>(obj));
 
-        eco_store_field(obj, 0, head_val);
-
         Cons* cons = static_cast<Cons*>(obj);
-        RC_ASSERT(static_cast<uint64_t>(cons->head.i) == head_val);
+        RC_ASSERT(static_cast<uint64_t>(cons->head.i) == static_cast<i64>(head_val));
     });
 }
 
@@ -315,13 +315,13 @@ static void test_eco_get_header_tag() {
         void* charObj = eco_alloc_char('A');
         RC_ASSERT(eco_get_header_tag(charObj) == Tag_Char);
 
-        void* consObj = eco_alloc_cons();
+        void* consObj = eco_alloc_cons(nullptr, nullptr, 0);
         RC_ASSERT(eco_get_header_tag(consObj) == Tag_Cons);
 
-        void* tuple2Obj = eco_alloc_tuple2();
+        void* tuple2Obj = eco_alloc_tuple2(nullptr, nullptr, 0);
         RC_ASSERT(eco_get_header_tag(tuple2Obj) == Tag_Tuple2);
 
-        void* tuple3Obj = eco_alloc_tuple3();
+        void* tuple3Obj = eco_alloc_tuple3(nullptr, nullptr, nullptr, 0);
         RC_ASSERT(eco_get_header_tag(tuple3Obj) == Tag_Tuple3);
 
         void* customObj = eco_alloc_custom(0, 5, 2, 0);
@@ -415,8 +415,8 @@ static void test_field_values_preserved_after_gc() {
     rc::check("field values stored via eco_store_field preserved after GC", []() {
         auto& alloc = initAllocator();
 
-        // Create a tuple2 and store integer values in its fields
-        void* tupleObj = eco_alloc_tuple2();
+        // Create a tuple2 - allocators now initialize fields directly
+        void* tupleObj = eco_alloc_tuple2(nullptr, nullptr, 0);
         RC_ASSERT(static_cast<bool>(tupleObj));
 
         // Allocate two integers
@@ -473,7 +473,7 @@ static void test_multiple_alloc_types_survive_gc() {
         void* intObj = eco_alloc_int(42);
         void* floatObj = eco_alloc_float(3.14159);
         void* charObj = eco_alloc_char('X');
-        void* consObj = eco_alloc_cons();
+        void* consObj = eco_alloc_cons(nullptr, nullptr, 0);
         void* customObj = eco_alloc_custom(0, 7, 2, 0);
 
         RC_ASSERT(static_cast<bool>(intObj));

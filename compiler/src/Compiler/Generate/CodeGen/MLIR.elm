@@ -1518,13 +1518,13 @@ generateCtor ctx funcName ctorLayout monoType =
             Just (Name.toElmString ctorLayout.name)
     in
     if arity == 0 then
-        -- Nullary constructor
+        -- Nullary constructor - use eco.construct.custom
         let
             ( resultVar, ctx1 ) =
                 freshVar ctxWithTypeId
 
             ( ctx2, constructOp ) =
-                ecoConstruct ctx1 resultVar ctorLayout.tag 0 0 [] typeId constructorName
+                ecoConstructCustom ctx1 resultVar ctorLayout.tag 0 0 [] typeId constructorName
 
             ( ctx3, returnOp ) =
                 ecoReturn ctx2 resultVar ecoValue
@@ -1536,7 +1536,7 @@ generateCtor ctx funcName ctorLayout monoType =
         funcFunc ctx3 funcName [] ecoValue region
 
     else
-        -- Constructor with arguments
+        -- Constructor with arguments - use eco.construct.custom
         let
             argNames : List String
             argNames =
@@ -1564,7 +1564,7 @@ generateCtor ctx funcName ctorLayout monoType =
                 freshVar { ctxWithTypeId | nextVar = arity }
 
             ( ctx2, constructOp ) =
-                ecoConstruct ctx1 resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs typeId constructorName
+                ecoConstructCustom ctx1 resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs typeId constructorName
 
             ( ctx3, returnOp ) =
                 ecoReturn ctx2 resultVar ecoValue
@@ -1609,8 +1609,9 @@ generateEnum ctx funcName tag monoType maybeCtorName =
         ( resultVar, ctx1 ) =
             freshVar ctxWithTypeId
 
+        -- Use eco.construct.custom for enum values (nullary custom ADT constructors)
         ( ctx2, constructOp ) =
-            ecoConstruct ctx1 resultVar tag 0 0 [] typeId maybeCtorName
+            ecoConstructCustom ctx1 resultVar tag 0 0 [] typeId maybeCtorName
 
         ( ctx3, returnOp ) =
             ecoReturn ctx2 resultVar ecoValue
@@ -2272,26 +2273,30 @@ generateList : Context -> List Mono.MonoExpr -> ExprResult
 generateList ctx items =
     case items of
         [] ->
+            -- Empty list: use eco.constant Nil (embedded constant, not heap-allocated)
             let
                 ( var, ctx1 ) =
                     freshVar ctx
 
-                ( ctx2, constructOp ) =
-                    ecoConstruct ctx1 var 0 0 0 [] Nothing Nothing
+                ( ctx2, nilOp ) =
+                    ecoConstantNil ctx1 var
             in
-            { ops = [ constructOp ]
+            { ops = [ nilOp ]
             , resultVar = var
             , resultType = ecoValue
             , ctx = ctx2
             }
 
         _ ->
+            -- Non-empty list: use eco.constant Nil for tail, eco.construct.list for cons cells.
+            -- Now that MonoPath carries ContainerKind, projection ops (eco.project.list_head/tail)
+            -- match the Cons layout created by eco.construct.list.
             let
                 ( nilVar, ctx1 ) =
                     freshVar ctx
 
                 ( ctx2, nilOp ) =
-                    ecoConstruct ctx1 nilVar 0 0 0 [] Nothing Nothing
+                    ecoConstantNil ctx1 nilVar
 
                 ( consOps, finalVar, finalCtx ) =
                     List.foldr
@@ -2308,8 +2313,10 @@ generateList ctx items =
                                 ( consVar, ctx4 ) =
                                     freshVar ctx3
 
+                                -- Use eco.construct.list to create cons cells with proper Cons layout
+                                -- head_unboxed=false since we box all list elements
                                 ( ctx5, consOp ) =
-                                    ecoConstruct ctx4 consVar 1 2 0 [ ( boxedVar, ecoValue ), ( tailVar, ecoValue ) ] Nothing Nothing
+                                    ecoConstructList ctx4 consVar ( boxedVar, ecoValue ) ( tailVar, ecoValue ) False
                             in
                             ( accOps ++ result.ops ++ boxOps ++ [ consOp ], consVar, ctx5 )
                         )
@@ -3430,7 +3437,7 @@ generateMonoPath ctx path targetType =
             in
             ( [], varName, ctx )
 
-        Mono.MonoIndex index subPath ->
+        Mono.MonoIndex index containerKind subPath ->
             let
                 -- Navigate to the container object (always !eco.value)
                 ( subOps, subVar, ctx1 ) =
@@ -3439,13 +3446,32 @@ generateMonoPath ctx path targetType =
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
-                -- Project directly to the targetType.
-                -- If targetType is primitive (i64, f64, i1, i16), ecoProject sets unboxed=true
-                -- and reads the raw value directly from the field.
-                -- If targetType is !eco.value, ecoProject sets unboxed=false and reads a pointer.
-                -- This matches how eco.construct stores fields: primitive types are stored unboxed.
+                -- Use type-specific projection ops based on ContainerKind.
+                -- This ensures correct heap layout access for each container type.
                 ( ctx3, projectOp ) =
-                    ecoProject ctx2 resultVar index targetType subVar ecoValue
+                    case containerKind of
+                        Mono.ListContainer ->
+                            if index == 0 then
+                                -- List head
+                                ecoProjectListHead ctx2 resultVar targetType subVar
+
+                            else
+                                -- List tail (index 1)
+                                ecoProjectListTail ctx2 resultVar subVar
+
+                        Mono.Tuple2Container ->
+                            ecoProjectTuple2 ctx2 resultVar index targetType subVar
+
+                        Mono.Tuple3Container ->
+                            ecoProjectTuple3 ctx2 resultVar index targetType subVar
+
+                        Mono.CustomContainer ->
+                            -- Generic projection for custom types
+                            ecoProject ctx2 resultVar index targetType subVar ecoValue
+
+                        Mono.RecordContainer ->
+                            -- Generic projection for records
+                            ecoProject ctx2 resultVar index targetType subVar ecoValue
             in
             ( subOps ++ [ projectOp ]
             , resultVar
@@ -4373,8 +4399,9 @@ generateRecordCreate ctx fields layout =
                 boxedFieldVars
                 layout.fields
 
+        -- Use eco.construct.record for records
         ( ctx4, constructOp ) =
-            ecoConstruct ctx3 resultVar 0 layout.fieldCount layout.unboxedBitmap fieldVarPairs Nothing Nothing
+            ecoConstructRecord ctx3 resultVar fieldVarPairs layout.fieldCount layout.unboxedBitmap
     in
     { ops = fieldsOps ++ boxOps ++ [ constructOp ]
     , resultVar = resultVar
@@ -4506,8 +4533,21 @@ generateTupleCreate ctx elements layout =
                 boxedElemVars
                 layout.elements
 
+        -- Use type-specific tuple construction ops.
+        -- Now that MonoPath carries ContainerKind, projection ops match construction layout.
         ( ctx4, constructOp ) =
-            ecoConstruct ctx3 resultVar 0 layout.arity layout.unboxedBitmap elemVarPairs Nothing Nothing
+            case elemVarPairs of
+                [ ( aVar, aType ), ( bVar, bType ) ] ->
+                    -- 2-tuple: use eco.construct.tuple2
+                    ecoConstructTuple2 ctx3 resultVar ( aVar, aType ) ( bVar, bType ) layout.unboxedBitmap
+
+                [ ( aVar, aType ), ( bVar, bType ), ( cVar, cType ) ] ->
+                    -- 3-tuple: use eco.construct.tuple3
+                    ecoConstructTuple3 ctx3 resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType ) layout.unboxedBitmap
+
+                _ ->
+                    -- Large tuples (>3 elements): use generic eco.construct
+                    ecoConstruct ctx3 resultVar 0 layout.arity layout.unboxedBitmap elemVarPairs Nothing Nothing
     in
     { ops = elemOps ++ boxOps ++ [ constructOp ]
     , resultVar = resultVar
@@ -4526,10 +4566,11 @@ generateUnit ctx =
         ( var, ctx1 ) =
             freshVar ctx
 
-        ( ctx2, constructOp ) =
-            ecoConstruct ctx1 var 0 0 0 [] Nothing Nothing
+        -- Use eco.constant Unit instead of heap-allocating
+        ( ctx2, unitOp ) =
+            ecoConstantUnit ctx1 var
     in
-    { ops = [ constructOp ]
+    { ops = [ unitOp ]
     , resultVar = var
     , resultType = ecoValue
     , ctx = ctx2
@@ -4664,6 +4705,265 @@ ecoConstruct ctx resultVar tag size unboxedBitmap operands maybeTypeId maybeCtor
     mlirOp ctx "eco.construct"
         |> opBuilder.withOperands operandNames
         |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.constant Nil - create the Nil constant for empty lists
+-}
+ecoConstantNil : Context -> String -> ( Context, MlirOp )
+ecoConstantNil ctx resultVar =
+    mlirOp ctx "eco.constant"
+        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 5))
+        |> opBuilder.build
+
+
+{-| eco.constant Unit - create the Unit constant
+-}
+ecoConstantUnit : Context -> String -> ( Context, MlirOp )
+ecoConstantUnit ctx resultVar =
+    mlirOp ctx "eco.constant"
+        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 4))
+        |> opBuilder.build
+
+
+{-| eco.construct.list - create a list cons cell
+-}
+ecoConstructList : Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> Bool -> ( Context, MlirOp )
+ecoConstructList ctx resultVar ( headVar, headType ) ( tailVar, tailType ) headUnboxed =
+    let
+        attrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr headType, TypeAttr tailType ] )
+                , ( "head_unboxed", BoolAttr headUnboxed )
+                ]
+    in
+    mlirOp ctx "eco.construct.list"
+        |> opBuilder.withOperands [ headVar, tailVar ]
+        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.construct.tuple2 - create a 2-tuple
+-}
+ecoConstructTuple2 : Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> Int -> ( Context, MlirOp )
+ecoConstructTuple2 ctx resultVar ( aVar, aType ) ( bVar, bType ) unboxedBitmap =
+    let
+        attrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr aType, TypeAttr bType ] )
+                , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
+                ]
+    in
+    mlirOp ctx "eco.construct.tuple2"
+        |> opBuilder.withOperands [ aVar, bVar ]
+        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.construct.tuple3 - create a 3-tuple
+-}
+ecoConstructTuple3 : Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> ( String, MlirType ) -> Int -> ( Context, MlirOp )
+ecoConstructTuple3 ctx resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType ) unboxedBitmap =
+    let
+        attrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr aType, TypeAttr bType, TypeAttr cType ] )
+                , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
+                ]
+    in
+    mlirOp ctx "eco.construct.tuple3"
+        |> opBuilder.withOperands [ aVar, bVar, cVar ]
+        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.construct.record - create a record
+-}
+ecoConstructRecord : Context -> String -> List ( String, MlirType ) -> Int -> Int -> ( Context, MlirOp )
+ecoConstructRecord ctx resultVar fieldPairs fieldCount unboxedBitmap =
+    let
+        operandNames =
+            List.map Tuple.first fieldPairs
+
+        operandTypesAttr =
+            if List.isEmpty fieldPairs then
+                Dict.empty
+
+            else
+                Dict.singleton "_operand_types"
+                    (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) fieldPairs))
+
+        attrs =
+            Dict.union operandTypesAttr
+                (Dict.fromList
+                    [ ( "field_count", IntAttr Nothing fieldCount )
+                    , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
+                    ]
+                )
+    in
+    mlirOp ctx "eco.construct.record"
+        |> opBuilder.withOperands operandNames
+        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.construct.custom - create a custom ADT value
+-}
+ecoConstructCustom : Context -> String -> Int -> Int -> Int -> List ( String, MlirType ) -> Maybe Int -> Maybe String -> ( Context, MlirOp )
+ecoConstructCustom ctx resultVar tag size unboxedBitmap operands maybeTypeId maybeCtorName =
+    let
+        operandNames =
+            List.map Tuple.first operands
+
+        operandTypesAttr =
+            if List.isEmpty operands then
+                Dict.empty
+
+            else
+                Dict.singleton "_operand_types"
+                    (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) operands))
+
+        typeIdAttr =
+            case maybeTypeId of
+                Just tid ->
+                    Dict.singleton "type_id" (IntAttr Nothing tid)
+
+                Nothing ->
+                    Dict.empty
+
+        constructorAttr =
+            case maybeCtorName of
+                Just name ->
+                    Dict.singleton "constructor" (StringAttr name)
+
+                Nothing ->
+                    Dict.empty
+
+        attrs =
+            Dict.union operandTypesAttr
+                (Dict.union typeIdAttr
+                    (Dict.union constructorAttr
+                        (Dict.fromList
+                            [ ( "tag", IntAttr Nothing tag )
+                            , ( "size", IntAttr Nothing size )
+                            , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
+                            ]
+                        )
+                    )
+                )
+    in
+    mlirOp ctx "eco.construct.custom"
+        |> opBuilder.withOperands operandNames
+        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.project.list\_head - extract head from a cons cell
+-}
+ecoProjectListHead : Context -> String -> MlirType -> String -> ( Context, MlirOp )
+ecoProjectListHead ctx resultVar resultType listVar =
+    let
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr ecoValue ])
+    in
+    mlirOp ctx "eco.project.list_head"
+        |> opBuilder.withOperands [ listVar ]
+        |> opBuilder.withResults [ ( resultVar, resultType ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.project.list\_tail - extract tail from a cons cell
+-}
+ecoProjectListTail : Context -> String -> String -> ( Context, MlirOp )
+ecoProjectListTail ctx resultVar listVar =
+    let
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr ecoValue ])
+    in
+    mlirOp ctx "eco.project.list_tail"
+        |> opBuilder.withOperands [ listVar ]
+        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.project.tuple2 - extract field from a 2-tuple
+-}
+ecoProjectTuple2 : Context -> String -> Int -> MlirType -> String -> ( Context, MlirOp )
+ecoProjectTuple2 ctx resultVar field resultType tupleVar =
+    let
+        attrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr ecoValue ] )
+                , ( "field", IntAttr Nothing field )
+                ]
+    in
+    mlirOp ctx "eco.project.tuple2"
+        |> opBuilder.withOperands [ tupleVar ]
+        |> opBuilder.withResults [ ( resultVar, resultType ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.project.tuple3 - extract field from a 3-tuple
+-}
+ecoProjectTuple3 : Context -> String -> Int -> MlirType -> String -> ( Context, MlirOp )
+ecoProjectTuple3 ctx resultVar field resultType tupleVar =
+    let
+        attrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr ecoValue ] )
+                , ( "field", IntAttr Nothing field )
+                ]
+    in
+    mlirOp ctx "eco.project.tuple3"
+        |> opBuilder.withOperands [ tupleVar ]
+        |> opBuilder.withResults [ ( resultVar, resultType ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.project.record - extract field from a record
+-}
+ecoProjectRecord : Context -> String -> Int -> MlirType -> String -> ( Context, MlirOp )
+ecoProjectRecord ctx resultVar fieldIndex resultType recordVar =
+    let
+        attrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr ecoValue ] )
+                , ( "field_index", IntAttr Nothing fieldIndex )
+                ]
+    in
+    mlirOp ctx "eco.project.record"
+        |> opBuilder.withOperands [ recordVar ]
+        |> opBuilder.withResults [ ( resultVar, resultType ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.project.custom - extract field from a custom ADT
+-}
+ecoProjectCustom : Context -> String -> Int -> MlirType -> String -> ( Context, MlirOp )
+ecoProjectCustom ctx resultVar fieldIndex resultType containerVar =
+    let
+        attrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr ecoValue ] )
+                , ( "field_index", IntAttr Nothing fieldIndex )
+                ]
+    in
+    mlirOp ctx "eco.project.custom"
+        |> opBuilder.withOperands [ containerVar ]
+        |> opBuilder.withResults [ ( resultVar, resultType ) ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build
 

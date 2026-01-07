@@ -1047,14 +1047,14 @@ destructHelpWithType maybeType path (A.At region patternInfo) revDs =
             Names.pure revDs
 
         Can.PTuple a b [] ->
-            destructTwo path a b revDs
+            destructTwo TOpt.HintTuple2 path a b revDs
 
         Can.PTuple a b [ c ] ->
             case path of
                 TOpt.Root _ ->
-                    destructHelp (TOpt.Index Index.first path) a revDs
-                        |> Names.andThen (destructHelp (TOpt.Index Index.second path) b)
-                        |> Names.andThen (destructHelp (TOpt.Index Index.third path) c)
+                    destructHelp (TOpt.Index Index.first TOpt.HintTuple3 path) a revDs
+                        |> Names.andThen (destructHelp (TOpt.Index Index.second TOpt.HintTuple3 path) b)
+                        |> Names.andThen (destructHelp (TOpt.Index Index.third TOpt.HintTuple3 path) c)
 
                 _ ->
                     Names.generate
@@ -1064,17 +1064,17 @@ destructHelpWithType maybeType path (A.At region patternInfo) revDs =
                                     newRoot =
                                         TOpt.Root name
                                 in
-                                destructHelp (TOpt.Index Index.first newRoot) a (TOpt.Destructor name path (Can.TVar "?") :: revDs)
-                                    |> Names.andThen (destructHelp (TOpt.Index Index.second newRoot) b)
-                                    |> Names.andThen (destructHelp (TOpt.Index Index.third newRoot) c)
+                                destructHelp (TOpt.Index Index.first TOpt.HintTuple3 newRoot) a (TOpt.Destructor name path (Can.TVar "?") :: revDs)
+                                    |> Names.andThen (destructHelp (TOpt.Index Index.second TOpt.HintTuple3 newRoot) b)
+                                    |> Names.andThen (destructHelp (TOpt.Index Index.third TOpt.HintTuple3 newRoot) c)
                             )
 
         Can.PTuple a b cs ->
             case path of
                 TOpt.Root _ ->
                     List.foldl (\( index, arg ) -> Names.andThen (destructHelp (TOpt.ArrayIndex index (TOpt.Field "cs" path)) arg))
-                        (destructHelp (TOpt.Index Index.first path) a revDs
-                            |> Names.andThen (destructHelp (TOpt.Index Index.second path) b)
+                        (destructHelp (TOpt.Index Index.first TOpt.HintCustom path) a revDs
+                            |> Names.andThen (destructHelp (TOpt.Index Index.second TOpt.HintCustom path) b)
                         )
                         (List.indexedMap Tuple.pair cs)
 
@@ -1087,8 +1087,8 @@ destructHelpWithType maybeType path (A.At region patternInfo) revDs =
                                         TOpt.Root name
                                 in
                                 List.foldl (\( index, arg ) -> Names.andThen (destructHelp (TOpt.ArrayIndex index (TOpt.Field "cs" newRoot)) arg))
-                                    (destructHelp (TOpt.Index Index.first newRoot) a (TOpt.Destructor name path (Can.TVar "?") :: revDs)
-                                        |> Names.andThen (destructHelp (TOpt.Index Index.second newRoot) b)
+                                    (destructHelp (TOpt.Index Index.first TOpt.HintCustom newRoot) a (TOpt.Destructor name path (Can.TVar "?") :: revDs)
+                                        |> Names.andThen (destructHelp (TOpt.Index Index.second TOpt.HintCustom newRoot) b)
                                     )
                                     (List.indexedMap Tuple.pair cs)
                             )
@@ -1098,10 +1098,10 @@ destructHelpWithType maybeType path (A.At region patternInfo) revDs =
 
         Can.PList (hd :: tl) ->
             -- Use placeholder ID (-1) for synthesized patterns
-            destructTwo path hd (A.At region { id = -1, node = Can.PList tl }) revDs
+            destructTwo TOpt.HintList path hd (A.At region { id = -1, node = Can.PList tl }) revDs
 
         Can.PCons hd tl ->
-            destructTwo path hd tl revDs
+            destructTwo TOpt.HintList path hd tl revDs
 
         Can.PChr _ ->
             Names.pure revDs
@@ -1124,13 +1124,13 @@ destructHelpWithType maybeType path (A.At region patternInfo) revDs =
                     in
                     case unionData.opts of
                         Can.Normal ->
-                            destructHelpWithType (Just argType) (TOpt.Index Index.first path) arg revDs
+                            destructHelpWithType (Just argType) (TOpt.Index Index.first TOpt.HintCustom path) arg revDs
 
                         Can.Unbox ->
                             destructHelpWithType (Just argType) (TOpt.Unbox path) arg revDs
 
                         Can.Enum ->
-                            destructHelpWithType (Just argType) (TOpt.Index Index.first path) arg revDs
+                            destructHelpWithType (Just argType) (TOpt.Index Index.first TOpt.HintCustom path) arg revDs
 
                 _ ->
                     case path of
@@ -1149,12 +1149,12 @@ destructHelpWithType maybeType path (A.At region patternInfo) revDs =
                                     )
 
 
-destructTwo : TOpt.Path -> Can.Pattern -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
-destructTwo path a b revDs =
+destructTwo : TOpt.ContainerHint -> TOpt.Path -> Can.Pattern -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
+destructTwo hint path a b revDs =
     case path of
         TOpt.Root _ ->
-            destructHelp (TOpt.Index Index.first path) a revDs
-                |> Names.andThen (destructHelp (TOpt.Index Index.second path) b)
+            destructHelp (TOpt.Index Index.first hint path) a revDs
+                |> Names.andThen (destructHelp (TOpt.Index Index.second hint path) b)
 
         _ ->
             Names.generate
@@ -1164,14 +1164,14 @@ destructTwo path a b revDs =
                             newRoot =
                                 TOpt.Root name
                         in
-                        destructHelp (TOpt.Index Index.first newRoot) a (TOpt.Destructor name path (Can.TVar "?") :: revDs)
-                            |> Names.andThen (destructHelp (TOpt.Index Index.second newRoot) b)
+                        destructHelp (TOpt.Index Index.first hint newRoot) a (TOpt.Destructor name path (Can.TVar "?") :: revDs)
+                            |> Names.andThen (destructHelp (TOpt.Index Index.second hint newRoot) b)
                     )
 
 
 destructCtorArg : TOpt.Path -> List TOpt.Destructor -> Can.PatternCtorArg -> Names.Tracker (List TOpt.Destructor)
 destructCtorArg path revDs (Can.PatternCtorArg index argType arg) =
-    destructHelpWithType (Just argType) (TOpt.Index index path) arg revDs
+    destructHelpWithType (Just argType) (TOpt.Index index TOpt.HintCustom path) arg revDs
 
 
 {-| Destructure a case pattern into a list of destructors.

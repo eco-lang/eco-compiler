@@ -396,6 +396,12 @@ def Eco_ProjectOp : Eco_Op<"project", [Pure]> {
     // Extract unboxed Int field from tuple
     %x = eco.project %point[0] : !eco.value -> i64
     ```
+
+    DEPRECATED: Use type-specific projection ops instead:
+    - eco.project.list_head / eco.project.list_tail for lists
+    - eco.project.tuple2 / eco.project.tuple3 for tuples
+    - eco.project.record for records
+    - eco.project.custom for custom ADTs
   }];
 
   let arguments = (ins
@@ -405,6 +411,278 @@ def Eco_ProjectOp : Eco_Op<"project", [Pure]> {
   let results = (outs Eco_AnyValue:$field);
 
   let assemblyFormat = "$value `[` $index `]` attr-dict `:` type($value) `->` type($field)";
+}
+
+//===----------------------------------------------------------------------===//
+// 2b. Type-Specific Construction and Projection Operations
+//===----------------------------------------------------------------------===//
+//
+// These ops replace the generic eco.construct and eco.project ops with
+// type-specific versions that enforce HEAP_015: header tag must match
+// the concrete runtime type.
+//
+
+//===----------------------------------------------------------------------===//
+// List Operations (Cons / Nil)
+//===----------------------------------------------------------------------===//
+
+def Eco_ListConstructOp : Eco_Op<"construct.list", [Pure]> {
+  let summary = "Construct a list Cons cell";
+  let description = [{
+    Allocate a list cons cell: head :: tail.
+
+    Head can be boxed (!eco.value) or unboxed primitive (i64, f64, etc.).
+    Tail is always boxed (!eco.value). Nil is represented as an embedded
+    constant via `eco.constant Nil`, not heap-allocated.
+
+    The `head_unboxed` attribute indicates whether head is stored unboxed.
+
+    Example:
+    ```mlir
+    %cons = eco.construct.list %head, %tail {head_unboxed = false}
+      : !eco.value, !eco.value -> !eco.value
+    ```
+  }];
+
+  let arguments = (ins
+    Eco_AnyValue:$head,
+    Eco_Value:$tail,
+    DefaultValuedAttr<BoolAttr, "false">:$head_unboxed
+  );
+  let results = (outs Eco_Value:$result);
+
+  let assemblyFormat = "$head `,` $tail attr-dict `:` type($head) `,` type($tail) `->` type($result)";
+}
+
+def Eco_ListHeadOp : Eco_Op<"project.list_head", [Pure]> {
+  let summary = "Project head of a list Cons cell";
+  let description = [{
+    Project the head field of a non-empty list (Cons cell).
+    Result type depends on whether head is unboxed.
+
+    Example:
+    ```mlir
+    %head = eco.project.list_head %list : !eco.value -> !eco.value
+    ```
+  }];
+
+  let arguments = (ins Eco_Value:$list);
+  let results = (outs Eco_AnyValue:$head);
+
+  let assemblyFormat = "$list attr-dict `:` type($list) `->` type($head)";
+}
+
+def Eco_ListTailOp : Eco_Op<"project.list_tail", [Pure]> {
+  let summary = "Project tail of a list Cons cell";
+  let description = [{
+    Project the tail field of a non-empty list (Cons cell).
+    Tail is always a boxed list pointer (!eco.value).
+
+    Example:
+    ```mlir
+    %tail = eco.project.list_tail %list : !eco.value -> !eco.value
+    ```
+  }];
+
+  let arguments = (ins Eco_Value:$list);
+  let results = (outs Eco_Value:$tail);
+
+  let assemblyFormat = "$list attr-dict `:` type($list) `->` type($tail)";
+}
+
+//===----------------------------------------------------------------------===//
+// Tuple Operations
+//===----------------------------------------------------------------------===//
+
+def Eco_Tuple2ConstructOp : Eco_Op<"construct.tuple2", [Pure]> {
+  let summary = "Construct a 2-tuple";
+  let description = [{
+    Construct a 2-tuple value. Elements may be boxed (!eco.value) or
+    unboxed primitives. The `unboxed_bitmap` attribute indicates which
+    fields are stored unboxed (bit 0 = a, bit 1 = b).
+
+    Example:
+    ```mlir
+    %tuple = eco.construct.tuple2 %a, %b {unboxed_bitmap = 0}
+      : !eco.value, !eco.value -> !eco.value
+    ```
+  }];
+
+  let arguments = (ins
+    Eco_AnyValue:$a,
+    Eco_AnyValue:$b,
+    DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap
+  );
+  let results = (outs Eco_Value:$result);
+
+  let assemblyFormat = "$a `,` $b attr-dict `:` type($a) `,` type($b) `->` type($result)";
+}
+
+def Eco_Tuple3ConstructOp : Eco_Op<"construct.tuple3", [Pure]> {
+  let summary = "Construct a 3-tuple";
+  let description = [{
+    Construct a 3-tuple value. The `unboxed_bitmap` attribute indicates
+    which fields are stored unboxed (bits 0-2 for a, b, c).
+
+    Example:
+    ```mlir
+    %tuple = eco.construct.tuple3 %a, %b, %c {unboxed_bitmap = 0}
+      : !eco.value, !eco.value, !eco.value -> !eco.value
+    ```
+  }];
+
+  let arguments = (ins
+    Eco_AnyValue:$a,
+    Eco_AnyValue:$b,
+    Eco_AnyValue:$c,
+    DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap
+  );
+  let results = (outs Eco_Value:$result);
+
+  let assemblyFormat = "$a `,` $b `,` $c attr-dict `:` type($a) `,` type($b) `,` type($c) `->` type($result)";
+}
+
+def Eco_Tuple2ProjectOp : Eco_Op<"project.tuple2", [Pure]> {
+  let summary = "Project field from 2-tuple";
+  let description = [{
+    Project element 0 or 1 from a 2-tuple. Result type is the concrete
+    SSA type (primitive or !eco.value) based on unboxed status.
+
+    Example:
+    ```mlir
+    %first = eco.project.tuple2 %tuple[0] : !eco.value -> !eco.value
+    ```
+  }];
+
+  let arguments = (ins Eco_Value:$tuple, I64Attr:$field);
+  let results = (outs Eco_AnyValue:$result);
+
+  let assemblyFormat = "$tuple `[` $field `]` attr-dict `:` type($tuple) `->` type($result)";
+}
+
+def Eco_Tuple3ProjectOp : Eco_Op<"project.tuple3", [Pure]> {
+  let summary = "Project field from 3-tuple";
+  let description = [{
+    Project element 0, 1, or 2 from a 3-tuple.
+
+    Example:
+    ```mlir
+    %second = eco.project.tuple3 %tuple[1] : !eco.value -> !eco.value
+    ```
+  }];
+
+  let arguments = (ins Eco_Value:$tuple, I64Attr:$field);
+  let results = (outs Eco_AnyValue:$result);
+
+  let assemblyFormat = "$tuple `[` $field `]` attr-dict `:` type($tuple) `->` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// Record Operations
+//===----------------------------------------------------------------------===//
+
+def Eco_RecordConstructOp : Eco_Op<"construct.record", [Pure]> {
+  let summary = "Construct an Elm record";
+  let description = [{
+    Construct a record with a fixed set of fields. The `field_count` and
+    `unboxed_bitmap` attributes describe layout. Fields may be boxed or
+    unboxed primitives.
+
+    Example:
+    ```mlir
+    %rec = eco.construct.record(%x, %y) {field_count = 2, unboxed_bitmap = 0}
+      : (!eco.value, !eco.value) -> !eco.value
+    ```
+  }];
+
+  let arguments = (ins
+    Variadic<Eco_AnyValue>:$fields,
+    I64Attr:$field_count,
+    I64Attr:$unboxed_bitmap
+  );
+  let results = (outs Eco_Value:$result);
+
+  let assemblyFormat = "`(` $fields `)` attr-dict `:` functional-type($fields, $result)";
+}
+
+def Eco_RecordProjectOp : Eco_Op<"project.record", [Pure]> {
+  let summary = "Project a record field";
+  let description = [{
+    Project the field at a given index from a record. Result type is
+    the concrete SSA type based on unboxed status.
+
+    Example:
+    ```mlir
+    %x = eco.project.record %rec[0] : !eco.value -> !eco.value
+    ```
+  }];
+
+  let arguments = (ins Eco_Value:$record, I64Attr:$field_index);
+  let results = (outs Eco_AnyValue:$result);
+
+  let assemblyFormat = "$record `[` $field_index `]` attr-dict `:` type($record) `->` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// Custom ADT Operations
+//===----------------------------------------------------------------------===//
+
+def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure]> {
+  let summary = "Construct a custom ADT value";
+  let description = [{
+    Create a custom algebraic data type (ADT) value for a user-defined type.
+    This is ONLY for custom ADTs (Maybe, Result, user types), NOT for:
+    - Lists (use eco.construct.list)
+    - Tuples (use eco.construct.tuple2, eco.construct.tuple3)
+    - Records (use eco.construct.record)
+
+    The tag is the numeric constructor discriminant. The size must match
+    the number of field operands. The unboxed_bitmap indicates which fields
+    are unboxed primitives (bit N is set if field N is unboxed).
+
+    Example:
+    ```mlir
+    %just = eco.construct.custom(%inner) {
+      tag = 1,
+      size = 1,
+      unboxed_bitmap = 0,
+      type_id = 42,
+      constructor = "Just"
+    } : (!eco.value) -> !eco.value
+    ```
+  }];
+
+  let arguments = (ins
+    Variadic<Eco_AnyValue>:$fields,
+    I64Attr:$tag,
+    I64Attr:$size,
+    DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap,
+    OptionalAttr<I64Attr>:$type_id,
+    OptionalAttr<StrAttr>:$constructor
+  );
+  let results = (outs Eco_Value:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = "`(` $fields `)` attr-dict `:` functional-type($fields, $result)";
+}
+
+def Eco_CustomProjectOp : Eco_Op<"project.custom", [Pure]> {
+  let summary = "Project field from custom ADT value";
+  let description = [{
+    Project field at given index from a Custom ADT value.
+    Only use for Custom ADTs, not for Lists/Tuples/Records.
+
+    Example:
+    ```mlir
+    %inner = eco.project.custom %just[0] : !eco.value -> !eco.value
+    ```
+  }];
+
+  let arguments = (ins Eco_Value:$container, I64Attr:$field_index);
+  let results = (outs Eco_AnyValue:$result);
+
+  let assemblyFormat = "$container `[` $field_index `]` attr-dict `:` type($container) `->` type($result)";
 }
 
 //===----------------------------------------------------------------------===//

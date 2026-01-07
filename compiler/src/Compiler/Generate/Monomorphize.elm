@@ -1716,12 +1716,12 @@ specializeDestructor (TOpt.Destructor name path canType) subst =
 specializePath : TOpt.Path -> Mono.MonoPath
 specializePath path =
     case path of
-        TOpt.Index index subPath ->
-            Mono.MonoIndex (Index.toMachine index) (specializePath subPath)
+        TOpt.Index index hint subPath ->
+            Mono.MonoIndex (Index.toMachine index) (hintToKind hint) (specializePath subPath)
 
         TOpt.ArrayIndex idx subPath ->
-            -- Treat array index as regular index for now
-            Mono.MonoIndex idx (specializePath subPath)
+            -- Treat array index as regular index for now (large tuples)
+            Mono.MonoIndex idx Mono.CustomContainer (specializePath subPath)
 
         TOpt.Field _ subPath ->
             -- Field access needs index lookup at runtime
@@ -1732,6 +1732,28 @@ specializePath path =
 
         TOpt.Root name ->
             Mono.MonoRoot name
+
+
+{-| Convert ContainerHint to ContainerKind for monomorphized paths.
+-}
+hintToKind : TOpt.ContainerHint -> Mono.ContainerKind
+hintToKind hint =
+    case hint of
+        TOpt.HintList ->
+            Mono.ListContainer
+
+        TOpt.HintTuple2 ->
+            Mono.Tuple2Container
+
+        TOpt.HintTuple3 ->
+            Mono.Tuple3Container
+
+        TOpt.HintCustom ->
+            Mono.CustomContainer
+
+        TOpt.HintUnknown ->
+            -- Default to CustomContainer for unknown hints
+            Mono.CustomContainer
 
 
 specializeDecider : TOpt.Decider TOpt.Choice -> Substitution -> MonoState -> ( Mono.Decider Mono.MonoChoice, MonoState )

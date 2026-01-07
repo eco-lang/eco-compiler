@@ -186,22 +186,83 @@ extern "C" void eco_set_unboxed(void* obj, uint64_t bitmap) {
     }
 }
 
-extern "C" void* eco_alloc_cons() {
+extern "C" void* eco_alloc_cons(void* head, void* tail, uint32_t head_unboxed) {
     size_t size = sizeof(Cons);
     void* obj = Allocator::instance().allocate(size, Tag_Cons);
+    if (!obj) return nullptr;
+
+    Cons* cons = static_cast<Cons*>(obj);
+    cons->header.unboxed = static_cast<u8>(head_unboxed);
+
+    // Store head as raw 64-bit value (handles both ptr and primitive).
+    cons->head.i = reinterpret_cast<i64>(head);
+
+    // Tail is always a boxed list pointer - store as raw 64-bit for JIT mode.
+    cons->tail.ptr = reinterpret_cast<u64>(tail) & 0xFFFFFFFFFF;
+    cons->tail.constant = (reinterpret_cast<u64>(tail) >> 40) & 0xF;
+    cons->tail.padding = 0;
+
     return obj;
 }
 
-extern "C" void* eco_alloc_tuple2() {
+extern "C" void* eco_alloc_tuple2(void* a, void* b, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple2);
     void* obj = Allocator::instance().allocate(size, Tag_Tuple2);
+    if (!obj) return nullptr;
+
+    Tuple2* tup = static_cast<Tuple2*>(obj);
+    tup->header.unboxed = static_cast<u8>(unboxed_mask);
+
+    // Store as raw 64-bit values.
+    tup->a.i = reinterpret_cast<i64>(a);
+    tup->b.i = reinterpret_cast<i64>(b);
+
     return obj;
 }
 
-extern "C" void* eco_alloc_tuple3() {
+extern "C" void* eco_alloc_tuple3(void* a, void* b, void* c, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple3);
     void* obj = Allocator::instance().allocate(size, Tag_Tuple3);
+    if (!obj) return nullptr;
+
+    Tuple3* tup = static_cast<Tuple3*>(obj);
+    tup->header.unboxed = static_cast<u8>(unboxed_mask);
+
+    // Store as raw 64-bit values.
+    tup->a.i = reinterpret_cast<i64>(a);
+    tup->b.i = reinterpret_cast<i64>(b);
+    tup->c.i = reinterpret_cast<i64>(c);
+
     return obj;
+}
+
+extern "C" void* eco_alloc_record(uint32_t field_count, uint64_t unboxed_bitmap) {
+    // Size: Header (8) + unboxed bitmap (8) + fields (N * 8).
+    size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable);
+    void* obj = Allocator::instance().allocate(size, Tag_Record);
+    if (!obj) return nullptr;
+
+    Record* rec = static_cast<Record*>(obj);
+    rec->header.size = field_count;
+    rec->unboxed = unboxed_bitmap;
+
+    return obj;
+}
+
+extern "C" void eco_store_record_field(void* record, uint32_t index, void* value) {
+    Record* rec = static_cast<Record*>(record);
+    // Store as raw 64-bit pointer for JIT mode.
+    rec->values[index].i = reinterpret_cast<i64>(value);
+}
+
+extern "C" void eco_store_record_field_i64(void* record, uint32_t index, int64_t value) {
+    Record* rec = static_cast<Record*>(record);
+    rec->values[index].i = value;
+}
+
+extern "C" void eco_store_record_field_f64(void* record, uint32_t index, double value) {
+    Record* rec = static_cast<Record*>(record);
+    rec->values[index].f = value;
 }
 
 extern "C" void* eco_alloc_string(uint32_t length) {

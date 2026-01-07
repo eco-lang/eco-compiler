@@ -10,12 +10,17 @@ This plan implements the design in `design_docs/invariant-fixes.md` to enforce p
 
 ## Current State Analysis
 
-### What exists:
-- `eco.construct` / `eco.project` ops in Ops.td (generic for all types)
-- `ConstructOpLowering` always calls `eco_alloc_custom` with `Tag_Custom`
-- `ProjectOpLowering` assumes Custom layout: offset = 8 + 8 + index * 8
+### What exists (BEFORE this change):
+- `eco.construct` / `eco.project` ops in Ops.td (generic for all types) - **TO BE REMOVED**
+- `ConstructOpLowering` always calls `eco_alloc_custom` with `Tag_Custom` - **WRONG: violates HEAP_015**
+- `ProjectOpLowering` assumes Custom layout: offset = 8 + 8 + index * 8 - **WRONG for non-Custom types**
 - Runtime has skeleton allocators (`eco_alloc_cons`, `eco_alloc_tuple2`, `eco_alloc_tuple3`) but they don't initialize fields
 - No `eco_alloc_record` exists
+
+### What this plan introduces:
+- Type-specific ops: `eco.construct.list`, `eco.construct.tuple2`, `eco.construct.tuple3`, `eco.construct.record`, `eco.construct.custom`
+- Type-specific projections: `eco.project.list_head`, `eco.project.list_tail`, `eco.project.tuple2`, `eco.project.tuple3`, `eco.project.record`, `eco.project.custom`
+- Removal of generic `eco.construct` and `eco.project`
 
 ### Struct Layouts (from Heap.hpp):
 
@@ -62,8 +67,8 @@ Use type-specific projection ops based on static container type:
 - `MList _` → `eco.project.list_head` / `eco.project.list_tail`
 - `MTuple layout` → `eco.project.tuple2` / `eco.project.tuple3` with `field` attr
 - `MRecord _` → `eco.project.record` with `field_index` attr
-- `MCustom _ _ _` → `eco.project` (generic, reserved for Custom ADTs)
-- `MVar _ CEcoValue` → fallback to generic `eco.project` with runtime dispatch
+- `MCustom _ _ _` → `eco.project.custom` with `field_index` attr
+- `MVar _ CEcoValue` → fallback to `eco.project.custom` (dynamic dispatch at runtime)
 
 ---
 
@@ -181,7 +186,7 @@ extern "C" void eco_store_record_field_f64(void* record, uint32_t index, double 
 // List Operations (Cons / Nil)
 //===----------------------------------------------------------------------===//
 
-def Eco_ListConsOp : Eco_Op<"cons.list", [Pure]> {
+def Eco_ListConstructOp : Eco_Op<"construct.list", [Pure]> {
   let summary = "Construct a list Cons cell";
   let description = [{
     Allocate a list cons cell: head :: tail.
@@ -338,9 +343,55 @@ def Eco_RecordProjectOp : Eco_Op<"project.record", [Pure]> {
 }
 ```
 
-### 2.4 Keep existing `eco.construct` / `eco.project` for Custom ADTs only
+### 2.4 Replace `eco.construct` / `eco.project` with `eco.construct.custom` / `eco.project.custom`
 
-The existing `Eco_ConstructOp` and `Eco_ProjectOp` remain **exclusively for Custom ADTs**. After this change, they should never be used for Lists, Tuples, or Records.
+The generic `Eco_ConstructOp` (`eco.construct`) and `Eco_ProjectOp` (`eco.project`) are **REMOVED**. They are replaced by:
+
+- `Eco_CustomConstructOp` (`eco.construct.custom`) - for Custom ADTs only
+- `Eco_CustomProjectOp` (`eco.project.custom`) - for Custom ADTs only
+
+```tablegen
+def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure]> {
+  let summary = "Construct a custom ADT value";
+  let description = [{
+    Create a custom algebraic data type (ADT) value for a user-defined type.
+    This is ONLY for custom ADTs (Maybe, Result, user types), NOT for:
+    - Lists (use eco.construct.list)
+    - Tuples (use eco.construct.tuple2, eco.construct.tuple3)
+    - Records (use eco.construct.record)
+  }];
+
+  let arguments = (ins
+    Variadic<Eco_AnyValue>:$values,
+    I64Attr:$tag,
+    I64Attr:$size,
+    I64Attr:$unboxed_bitmap,
+    OptionalAttr<I64Attr>:$type_id,
+    OptionalAttr<StrAttr>:$constructor_name
+  );
+  let results = (outs Eco_Value:$result);
+}
+
+def Eco_CustomProjectOp : Eco_Op<"project.custom", [Pure]> {
+  let summary = "Project field from custom ADT value";
+  let description = [{
+    Project field at given index from a Custom ADT value.
+    Only use for Custom ADTs, not for Lists/Tuples/Records.
+  }];
+
+  let arguments = (ins Eco_Value:$container, I64Attr:$field_index);
+  let results = (outs Eco_AnyValue:$result);
+}
+```
+
+**Migration**: All existing uses of `eco.construct` must migrate to the appropriate type-specific op:
+- Lists → `eco.construct.list`
+- Tuple2 → `eco.construct.tuple2`
+- Tuple3 → `eco.construct.tuple3`
+- Records → `eco.construct.record`
+- Custom ADTs → `eco.construct.custom`
+
+Similarly for `eco.project` → type-specific projection ops.
 
 ---
 
@@ -348,13 +399,13 @@ The existing `Eco_ConstructOp` and `Eco_ProjectOp` remain **exclusively for Cust
 
 **File**: `runtime/src/codegen/Passes/EcoToLLVM.cpp`
 
-### 3.1 ListConsOpLowering
+### 3.1 ListConstructOpLowering
 
 ```cpp
-struct ListConsOpLowering : public OpConversionPattern<eco::ListConsOp> {
+struct ListConstructOpLowering : public OpConversionPattern<eco::ListConstructOp> {
     using OpConversionPattern::OpConversionPattern;
 
-    LogicalResult matchAndRewrite(eco::ListConsOp op, OpAdaptor adaptor,
+    LogicalResult matchAndRewrite(eco::ListConstructOp op, OpAdaptor adaptor,
                                   ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
         auto *ctx = rewriter.getContext();
@@ -635,7 +686,7 @@ Add to `populateEcoToLLVMConversionPatterns`:
 
 ```cpp
 patterns.add<
-    ListConsOpLowering,
+    ListConstructOpLowering,
     ListHeadOpLowering,
     ListTailOpLowering,
     Tuple2ConstructOpLowering,
@@ -643,7 +694,9 @@ patterns.add<
     Tuple2ProjectOpLowering,
     Tuple3ProjectOpLowering,
     RecordConstructOpLowering,
-    RecordProjectOpLowering
+    RecordProjectOpLowering,
+    CustomConstructOpLowering,
+    CustomProjectOpLowering
 >(typeConverter, patterns.getContext());
 ```
 
@@ -657,8 +710,8 @@ patterns.add<
 
 ```elm
 -- List operations
-ecoListCons : Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> Bool -> ( Context, MlirOp )
-ecoListCons ctx resultVar ( headVar, headTy ) ( tailVar, tailTy ) headUnboxed =
+ecoConstructList : Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> Bool -> ( Context, MlirOp )
+ecoConstructList ctx resultVar ( headVar, headTy ) ( tailVar, tailTy ) headUnboxed =
     let
         attrs =
             Dict.fromList
@@ -666,7 +719,7 @@ ecoListCons ctx resultVar ( headVar, headTy ) ( tailVar, tailTy ) headUnboxed =
                 , ( "head_unboxed", BoolAttr headUnboxed )
                 ]
     in
-    mlirOp ctx "eco.cons.list"
+    mlirOp ctx "eco.construct.list"
         |> opBuilder.withOperands [ headVar, tailVar ]
         |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
         |> opBuilder.withAttrs attrs
@@ -824,6 +877,59 @@ ecoConstantNil ctx resultVar =
         |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
         |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 5))
         |> opBuilder.build
+
+
+-- Custom ADT operations (for user-defined types like Maybe, Result, etc.)
+ecoConstructCustom : Context -> String -> Int -> Int -> Int -> List ( String, MlirType ) -> Maybe Int -> Maybe String -> ( Context, MlirOp )
+ecoConstructCustom ctx resultVar tag size unboxedBitmap fieldPairs typeId constructor =
+    let
+        operandTypesAttr =
+            if List.isEmpty fieldPairs then
+                Dict.empty
+            else
+                Dict.singleton "_operand_types"
+                    (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) fieldPairs))
+
+        baseAttrs =
+            Dict.fromList
+                [ ( "tag", IntAttr Nothing tag )
+                , ( "size", IntAttr Nothing size )
+                , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
+                ]
+
+        optionalAttrs =
+            List.filterMap identity
+                [ Maybe.map (\id -> ( "type_id", IntAttr Nothing id )) typeId
+                , Maybe.map (\name -> ( "constructor_name", StringAttr name )) constructor
+                ]
+
+        attrs =
+            Dict.union operandTypesAttr (Dict.union baseAttrs (Dict.fromList optionalAttrs))
+
+        operandNames =
+            List.map Tuple.first fieldPairs
+    in
+    mlirOp ctx "eco.construct.custom"
+        |> opBuilder.withOperands operandNames
+        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+ecoProjectCustom : Context -> String -> Int -> MlirType -> String -> ( Context, MlirOp )
+ecoProjectCustom ctx resultVar fieldIndex resultType containerVar =
+    let
+        attrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr ecoValue ] )
+                , ( "field_index", IntAttr Nothing fieldIndex )
+                ]
+    in
+    mlirOp ctx "eco.project.custom"
+        |> opBuilder.withOperands [ containerVar ]
+        |> opBuilder.withResults [ ( resultVar, resultType ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
 ```
 
 ### 4.2 Update `generateList`
@@ -884,7 +990,7 @@ generateList ctx items =
                                     freshVar ctx3
 
                                 ( ctx5, consOp ) =
-                                    ecoListCons ctx4 consVar
+                                    ecoConstructList ctx4 consVar
                                         ( headVar, headTy )
                                         ( tailVar, ecoValue )
                                         headUnboxed
@@ -1226,18 +1332,18 @@ generateMonoPath ctx path containerVar containerType =
                             ( [ op ], pVar, fieldMlirType, ctxOp )
 
                         Mono.MCustom _ _ _ ->
-                            -- Use generic eco.project for Custom ADTs
+                            -- Use eco.project.custom for Custom ADTs
                             let
                                 ( pVar, ctxP ) = freshVar ctx
-                                ( ctxOp, op ) = ecoProject ctxP pVar index ecoValue False containerVar
+                                ( ctxOp, op ) = ecoProjectCustom ctxP pVar index ecoValue containerVar
                             in
                             ( [ op ], pVar, ecoValue, ctxOp )
 
                         _ ->
-                            -- Fallback for MVar CEcoValue or unknown
+                            -- Fallback for MVar CEcoValue or unknown - use eco.project.custom
                             let
                                 ( pVar, ctxP ) = freshVar ctx
-                                ( ctxOp, op ) = ecoProject ctxP pVar index ecoValue False containerVar
+                                ( ctxOp, op ) = ecoProjectCustom ctxP pVar index ecoValue containerVar
                             in
                             ( [ op ], pVar, ecoValue, ctxOp )
 
@@ -1361,8 +1467,8 @@ Within Phase 4, recommended order:
 
 ## Risks and Mitigations
 
-1. **Risk**: Breaking existing code that relies on `eco.construct` for tuples/records
-   - **Mitigation**: Update all codegen paths in MLIR.elm before removing old behavior
+1. **Risk**: Breaking existing code that relies on `eco.construct` / `eco.project`
+   - **Mitigation**: Update all codegen paths in MLIR.elm to use type-specific ops before removing old ops
 
 2. **Risk**: Unboxed bitmap inconsistency between MLIR and runtime
    - **Mitigation**: Debug assertions in lowering to verify bitmap matches SSA types
@@ -1372,3 +1478,35 @@ Within Phase 4, recommended order:
 
 4. **Risk**: Performance regression from additional runtime calls
    - **Mitigation**: Keep allocators simple; consider inlining in lowering later
+
+---
+
+## Appendix: Op Naming Summary
+
+The following table summarizes the type-specific construct and project operations:
+
+| Heap Type | Tag | Construct Op | Project Op(s) | Runtime Allocator |
+|-----------|-----|--------------|---------------|-------------------|
+| List (Cons) | `Tag_Cons` | `eco.construct.list` | `eco.project.list_head`, `eco.project.list_tail` | `eco_alloc_cons` |
+| Tuple2 | `Tag_Tuple2` | `eco.construct.tuple2` | `eco.project.tuple2` | `eco_alloc_tuple2` |
+| Tuple3 | `Tag_Tuple3` | `eco.construct.tuple3` | `eco.project.tuple3` | `eco_alloc_tuple3` |
+| Record | `Tag_Record` | `eco.construct.record` | `eco.project.record` | `eco_alloc_record` |
+| Custom ADT | `Tag_Custom` | `eco.construct.custom` | `eco.project.custom` | `eco_alloc_custom` |
+
+**IMPORTANT**: The generic `eco.construct` and `eco.project` ops are **REMOVED**. All code must use the type-specific variants listed above.
+
+### Migration Checklist
+
+When updating existing code:
+
+- [ ] Replace `eco.construct` (tag=?, size=0) dummy allocations with `eco.constant Unit`
+- [ ] Replace `eco.construct` for lists with `eco.construct.list`
+- [ ] Replace `eco.construct` for tuples with `eco.construct.tuple2` / `eco.construct.tuple3`
+- [ ] Replace `eco.construct` for records with `eco.construct.record`
+- [ ] Replace `eco.construct` for custom ADTs with `eco.construct.custom`
+- [ ] Replace `eco.project` for lists with `eco.project.list_head` / `eco.project.list_tail`
+- [ ] Replace `eco.project` for tuples with `eco.project.tuple2` / `eco.project.tuple3`
+- [ ] Replace `eco.project` for records with `eco.project.record`
+- [ ] Replace `eco.project` for custom ADTs with `eco.project.custom`
+- [ ] Remove old `Eco_ConstructOp` and `Eco_ProjectOp` definitions from Ops.td
+- [ ] Remove old `ConstructOpLowering` and `ProjectOpLowering` from EcoToLLVM.cpp
