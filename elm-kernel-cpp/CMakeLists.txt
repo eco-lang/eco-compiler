@@ -110,9 +110,10 @@ target_include_directories(ElmKernel_Scheduler PUBLIC
 )
 target_compile_features(ElmKernel_Scheduler PUBLIC cxx_std_20)
 
-# Platform module (no exports yet - stubs)
+# Platform module
 add_library(ElmKernel_Platform STATIC
     src/core/Platform.cpp
+    src/core/PlatformExports.cpp
 )
 target_include_directories(ElmKernel_Platform PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -120,9 +121,10 @@ target_include_directories(ElmKernel_Platform PUBLIC
 )
 target_compile_features(ElmKernel_Platform PUBLIC cxx_std_20)
 
-# Process module (no exports yet - stubs)
+# Process module
 add_library(ElmKernel_Process STATIC
     src/core/Process.cpp
+    src/core/ProcessExports.cpp
 )
 target_include_directories(ElmKernel_Process PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -130,9 +132,10 @@ target_include_directories(ElmKernel_Process PUBLIC
 )
 target_compile_features(ElmKernel_Process PUBLIC cxx_std_20)
 
-# Debugger module (no exports yet - stubs)
+# Debugger module
 add_library(ElmKernel_Debugger STATIC
     src/core/Debugger.cpp
+    src/core/DebuggerExports.cpp
 )
 target_include_directories(ElmKernel_Debugger PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -151,9 +154,10 @@ target_include_directories(ElmKernel_VirtualDom PUBLIC
 )
 target_compile_features(ElmKernel_VirtualDom PUBLIC cxx_std_20)
 
-# Json module (no exports yet - complex types)
+# Json module
 add_library(ElmKernel_Json STATIC
     src/json/Json.cpp
+    src/json/JsonExports.cpp
 )
 target_include_directories(ElmKernel_Json PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -161,9 +165,10 @@ target_include_directories(ElmKernel_Json PUBLIC
 )
 target_compile_features(ElmKernel_Json PUBLIC cxx_std_20)
 
-# Browser module (no exports yet - stubs)
+# Browser module
 add_library(ElmKernel_Browser STATIC
     src/browser/Browser.cpp
+    src/browser/BrowserExports.cpp
 )
 target_include_directories(ElmKernel_Browser PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -171,9 +176,10 @@ target_include_directories(ElmKernel_Browser PUBLIC
 )
 target_compile_features(ElmKernel_Browser PUBLIC cxx_std_20)
 
-# Bytes module (no exports yet)
+# Bytes module
 add_library(ElmKernel_Bytes STATIC
     src/bytes/Bytes.cpp
+    src/bytes/BytesExports.cpp
 )
 target_include_directories(ElmKernel_Bytes PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -181,9 +187,10 @@ target_include_directories(ElmKernel_Bytes PUBLIC
 )
 target_compile_features(ElmKernel_Bytes PUBLIC cxx_std_20)
 
-# File module (no exports yet - stubs)
+# File module
 add_library(ElmKernel_File STATIC
     src/file/File.cpp
+    src/file/FileExports.cpp
 )
 target_include_directories(ElmKernel_File PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -191,9 +198,10 @@ target_include_directories(ElmKernel_File PUBLIC
 )
 target_compile_features(ElmKernel_File PUBLIC cxx_std_20)
 
-# Http module (no exports yet - stubs)
+# Http module
 add_library(ElmKernel_Http STATIC
     src/http/Http.cpp
+    src/http/HttpExports.cpp
 )
 target_include_directories(ElmKernel_Http PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -201,9 +209,10 @@ target_include_directories(ElmKernel_Http PUBLIC
 )
 target_compile_features(ElmKernel_Http PUBLIC cxx_std_20)
 
-# Parser module (no exports yet)
+# Parser module
 add_library(ElmKernel_Parser STATIC
     src/parser/Parser.cpp
+    src/parser/ParserExports.cpp
 )
 target_include_directories(ElmKernel_Parser PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -211,9 +220,10 @@ target_include_directories(ElmKernel_Parser PUBLIC
 )
 target_compile_features(ElmKernel_Parser PUBLIC cxx_std_20)
 
-# Regex module (no exports yet - stubs)
+# Regex module
 add_library(ElmKernel_Regex STATIC
     src/regex/Regex.cpp
+    src/regex/RegexExports.cpp
 )
 target_include_directories(ElmKernel_Regex PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -221,9 +231,10 @@ target_include_directories(ElmKernel_Regex PUBLIC
 )
 target_compile_features(ElmKernel_Regex PUBLIC cxx_std_20)
 
-# Time module (no exports yet)
+# Time module
 add_library(ElmKernel_Time STATIC
     src/time/Time.cpp
+    src/time/TimeExports.cpp
 )
 target_include_directories(ElmKernel_Time PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -231,9 +242,10 @@ target_include_directories(ElmKernel_Time PUBLIC
 )
 target_compile_features(ElmKernel_Time PUBLIC cxx_std_20)
 
-# Url module (no exports yet)
+# Url module
 add_library(ElmKernel_Url STATIC
     src/url/Url.cpp
+    src/url/UrlExports.cpp
 )
 target_include_directories(ElmKernel_Url PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src

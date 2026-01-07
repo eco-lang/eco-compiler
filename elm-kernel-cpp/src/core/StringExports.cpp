@@ -3,6 +3,9 @@
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
 #include "String.hpp"
+#include "allocator/Heap.hpp"
+#include "allocator/HeapHelpers.hpp"
+#include <vector>
 
 using namespace Elm;
 using namespace Elm::Kernel;
@@ -118,6 +121,159 @@ uint64_t Elm_Kernel_String_toFloat(uint64_t str) {
 uint64_t Elm_Kernel_String_fromNumber(uint64_t n) {
     HPointer result = String::fromNumber(Export::toPtr(n));
     return Export::encode(result);
+}
+
+//===----------------------------------------------------------------------===//
+// Higher-order String functions (closure-based)
+//===----------------------------------------------------------------------===//
+
+// Helper to call a closure with a single Char argument and get Char result.
+static uint16_t callCharToCharClosure(void* closure_ptr, uint16_t c) {
+    Closure* closure = static_cast<Closure*>(closure_ptr);
+    uint32_t n_values = closure->n_values;
+
+    // Build argument array: captured values + the char argument.
+    void* args[16];
+    for (uint32_t i = 0; i < n_values; i++) {
+        args[i] = reinterpret_cast<void*>(closure->values[i].i);
+    }
+    args[n_values] = reinterpret_cast<void*>(static_cast<uint64_t>(c));
+
+    // Call the evaluator.
+    void* result = closure->evaluator(args);
+    return static_cast<uint16_t>(reinterpret_cast<uint64_t>(result));
+}
+
+// Helper to call a closure with a single Char argument and get Bool result.
+static bool callCharToBoolClosure(void* closure_ptr, uint16_t c) {
+    Closure* closure = static_cast<Closure*>(closure_ptr);
+    uint32_t n_values = closure->n_values;
+
+    void* args[16];
+    for (uint32_t i = 0; i < n_values; i++) {
+        args[i] = reinterpret_cast<void*>(closure->values[i].i);
+    }
+    args[n_values] = reinterpret_cast<void*>(static_cast<uint64_t>(c));
+
+    void* result = closure->evaluator(args);
+    return reinterpret_cast<uint64_t>(result) != 0;
+}
+
+// Helper to call a fold closure: (Char, acc) -> acc
+static uint64_t callFoldClosure(void* closure_ptr, uint16_t c, uint64_t acc) {
+    Closure* closure = static_cast<Closure*>(closure_ptr);
+    uint32_t n_values = closure->n_values;
+
+    void* args[16];
+    for (uint32_t i = 0; i < n_values; i++) {
+        args[i] = reinterpret_cast<void*>(closure->values[i].i);
+    }
+    args[n_values] = reinterpret_cast<void*>(static_cast<uint64_t>(c));
+    args[n_values + 1] = reinterpret_cast<void*>(acc);
+
+    void* result = closure->evaluator(args);
+    return reinterpret_cast<uint64_t>(result);
+}
+
+uint64_t Elm_Kernel_String_map(uint64_t closure, uint64_t str) {
+    void* closure_ptr = reinterpret_cast<void*>(closure);
+    ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
+    if (!s) {
+        return Export::encode(Elm::alloc::emptyString());
+    }
+
+    u32 len = s->header.size;
+    std::vector<u16> result;
+    result.reserve(len);
+
+    for (u32 i = 0; i < len; i++) {
+        u16 mappedChar = callCharToCharClosure(closure_ptr, s->chars[i]);
+        result.push_back(mappedChar);
+    }
+
+    return Export::encode(Elm::alloc::allocString(result.data(), result.size()));
+}
+
+uint64_t Elm_Kernel_String_filter(uint64_t closure, uint64_t str) {
+    void* closure_ptr = reinterpret_cast<void*>(closure);
+    ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
+    if (!s) {
+        return Export::encode(Elm::alloc::emptyString());
+    }
+
+    u32 len = s->header.size;
+    std::vector<u16> result;
+    result.reserve(len);
+
+    for (u32 i = 0; i < len; i++) {
+        if (callCharToBoolClosure(closure_ptr, s->chars[i])) {
+            result.push_back(s->chars[i]);
+        }
+    }
+
+    return Export::encode(Elm::alloc::allocString(result.data(), result.size()));
+}
+
+bool Elm_Kernel_String_any(uint64_t closure, uint64_t str) {
+    void* closure_ptr = reinterpret_cast<void*>(closure);
+    ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
+    if (!s) {
+        return false;
+    }
+
+    u32 len = s->header.size;
+    for (u32 i = 0; i < len; i++) {
+        if (callCharToBoolClosure(closure_ptr, s->chars[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Elm_Kernel_String_all(uint64_t closure, uint64_t str) {
+    void* closure_ptr = reinterpret_cast<void*>(closure);
+    ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
+    if (!s) {
+        return true; // Empty string: all chars satisfy any predicate.
+    }
+
+    u32 len = s->header.size;
+    for (u32 i = 0; i < len; i++) {
+        if (!callCharToBoolClosure(closure_ptr, s->chars[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+uint64_t Elm_Kernel_String_foldl(uint64_t closure, uint64_t acc, uint64_t str) {
+    void* closure_ptr = reinterpret_cast<void*>(closure);
+    ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
+    if (!s) {
+        return acc;
+    }
+
+    uint64_t accumulator = acc;
+    u32 len = s->header.size;
+    for (u32 i = 0; i < len; i++) {
+        accumulator = callFoldClosure(closure_ptr, s->chars[i], accumulator);
+    }
+    return accumulator;
+}
+
+uint64_t Elm_Kernel_String_foldr(uint64_t closure, uint64_t acc, uint64_t str) {
+    void* closure_ptr = reinterpret_cast<void*>(closure);
+    ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
+    if (!s) {
+        return acc;
+    }
+
+    uint64_t accumulator = acc;
+    u32 len = s->header.size;
+    for (u32 i = len; i > 0; i--) {
+        accumulator = callFoldClosure(closure_ptr, s->chars[i - 1], accumulator);
+    }
+    return accumulator;
 }
 
 } // extern "C"
