@@ -26,6 +26,7 @@ import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.Package as Pkg
 import Compiler.Optimize.Erased.DecisionTree as DT
 import Compiler.Optimize.Erased.Module as ErasedOptimize
+import Compiler.Optimize.Typed.DecisionTree as TDT
 import Compiler.Optimize.Typed.Module as TypedOptimize
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Result as Result
@@ -1244,28 +1245,30 @@ compareDeciders erasedDecider typedDecider =
             compareChoices choice1 choice2
 
         ( Opt.Chain tests1 success1 failure1, TOpt.Chain tests2 success2 failure2 ) ->
-            if tests1 /= tests2 then
-                Just "Chain tests mismatch"
+            case compareDTTestLists tests1 tests2 of
+                Just err ->
+                    Just ("Chain tests: " ++ err)
 
-            else
-                case compareDeciders success1 success2 of
-                    Just err ->
-                        Just ("Chain success: " ++ err)
+                Nothing ->
+                    case compareDeciders success1 success2 of
+                        Just err ->
+                            Just ("Chain success: " ++ err)
 
-                    Nothing ->
-                        compareDeciders failure1 failure2
+                        Nothing ->
+                            compareDeciders failure1 failure2
 
         ( Opt.FanOut path1 options1 fallback1, TOpt.FanOut path2 options2 fallback2 ) ->
-            if path1 /= path2 then
-                Just "FanOut path mismatch"
+            case compareDTPaths path1 path2 of
+                Just err ->
+                    Just ("FanOut path: " ++ err)
 
-            else
-                case compareOptionLists options1 options2 of
-                    Just err ->
-                        Just ("FanOut options: " ++ err)
+                Nothing ->
+                    case compareOptionLists options1 options2 of
+                        Just err ->
+                            Just ("FanOut options: " ++ err)
 
-                    Nothing ->
-                        compareDeciders fallback1 fallback2
+                        Nothing ->
+                            compareDeciders fallback1 fallback2
 
         _ ->
             Just "Decider type mismatch"
@@ -1288,7 +1291,7 @@ compareChoices erasedChoice typedChoice =
             Just "Choice type mismatch (Inline vs Jump)"
 
 
-compareOptionLists : List ( DT.Test, Opt.Decider Opt.Choice ) -> List ( DT.Test, TOpt.Decider TOpt.Choice ) -> Maybe String
+compareOptionLists : List ( DT.Test, Opt.Decider Opt.Choice ) -> List ( TDT.Test, TOpt.Decider TOpt.Choice ) -> Maybe String
 compareOptionLists erasedOptions typedOptions =
     if List.length erasedOptions /= List.length typedOptions then
         Just "Options list length mismatch"
@@ -1296,12 +1299,105 @@ compareOptionLists erasedOptions typedOptions =
     else
         let
             compareOption ( test1, decider1 ) ( test2, decider2 ) =
-                if test1 /= test2 then
-                    Just "Option test mismatch"
+                case compareDTTests test1 test2 of
+                    Just err ->
+                        Just err
 
-                else
-                    compareDeciders decider1 decider2
+                    Nothing ->
+                        compareDeciders decider1 decider2
         in
         List.map2 compareOption erasedOptions typedOptions
             |> List.filterMap identity
             |> List.head
+
+
+compareDTTestLists : List ( DT.Path, DT.Test ) -> List ( TDT.Path, TDT.Test ) -> Maybe String
+compareDTTestLists erasedTests typedTests =
+    if List.length erasedTests /= List.length typedTests then
+        Just "Chain tests length mismatch"
+
+    else
+        let
+            compareTest ( path1, test1 ) ( path2, test2 ) =
+                case compareDTPaths path1 path2 of
+                    Just err ->
+                        Just err
+
+                    Nothing ->
+                        compareDTTests test1 test2
+        in
+        List.map2 compareTest erasedTests typedTests
+            |> List.filterMap identity
+            |> List.head
+
+
+compareDTPaths : DT.Path -> TDT.Path -> Maybe String
+compareDTPaths erasedPath typedPath =
+    case ( erasedPath, typedPath ) of
+        ( DT.Empty, TDT.Empty ) ->
+            Nothing
+
+        ( DT.Index idx1 rest1, TDT.Index idx2 _ rest2 ) ->
+            -- Ignore ContainerHint in typed path; just compare index and rest
+            if idx1 /= idx2 then
+                Just "DT Path Index mismatch"
+
+            else
+                compareDTPaths rest1 rest2
+
+        ( DT.Unbox rest1, TDT.Unbox rest2 ) ->
+            compareDTPaths rest1 rest2
+
+        _ ->
+            Just "DT Path structure mismatch"
+
+
+compareDTTests : DT.Test -> TDT.Test -> Maybe String
+compareDTTests erasedTest typedTest =
+    case ( erasedTest, typedTest ) of
+        ( DT.IsCtor home1 name1 idx1 arity1 opts1, TDT.IsCtor home2 name2 idx2 arity2 opts2 ) ->
+            if home1 /= home2 || name1 /= name2 || idx1 /= idx2 || arity1 /= arity2 || opts1 /= opts2 then
+                Just "DT Test IsCtor mismatch"
+
+            else
+                Nothing
+
+        ( DT.IsCons, TDT.IsCons ) ->
+            Nothing
+
+        ( DT.IsNil, TDT.IsNil ) ->
+            Nothing
+
+        ( DT.IsTuple, TDT.IsTuple ) ->
+            Nothing
+
+        ( DT.IsInt i1, TDT.IsInt i2 ) ->
+            if i1 /= i2 then
+                Just "DT Test IsInt mismatch"
+
+            else
+                Nothing
+
+        ( DT.IsChr c1, TDT.IsChr c2 ) ->
+            if c1 /= c2 then
+                Just "DT Test IsChr mismatch"
+
+            else
+                Nothing
+
+        ( DT.IsStr s1, TDT.IsStr s2 ) ->
+            if s1 /= s2 then
+                Just "DT Test IsStr mismatch"
+
+            else
+                Nothing
+
+        ( DT.IsBool b1, TDT.IsBool b2 ) ->
+            if b1 /= b2 then
+                Just "DT Test IsBool mismatch"
+
+            else
+                Nothing
+
+        _ ->
+            Just "DT Test type mismatch"

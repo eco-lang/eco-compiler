@@ -25,7 +25,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Optimize.Erased.DecisionTree as DT
+import Compiler.Optimize.Typed.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)

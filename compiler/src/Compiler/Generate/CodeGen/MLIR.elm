@@ -19,7 +19,7 @@ import Compiler.Data.Name as Name
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.Mode as Mode
-import Compiler.Optimize.Erased.DecisionTree as DT
+import Compiler.Optimize.Typed.DecisionTree as DT
 import Data.Map as EveryDict
 import Dict exposing (Dict)
 import Mlir.Loc as Loc
@@ -3569,7 +3569,7 @@ generateDTPath ctx root dtPath targetType =
                 -- Types differ but we don't have a boxing rule here; just use rootVar.
                 ( [], rootVar, ctx )
 
-        DT.Index index subPath ->
+        DT.Index index hint subPath ->
             let
                 -- Navigate to the container object (always !eco.value)
                 ( subOps, subVar, ctx1 ) =
@@ -3578,13 +3578,36 @@ generateDTPath ctx root dtPath targetType =
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
-                -- Project directly to the targetType.
-                -- If targetType is primitive (i64, f64, i1, i16), ecoProject sets unboxed=true
-                -- and reads the raw value directly from the field.
-                -- If targetType is !eco.value, ecoProject sets unboxed=false and reads a pointer.
-                -- This matches how eco.construct stores fields: primitive types are stored unboxed.
+                fieldIndex : Int
+                fieldIndex =
+                    Index.toMachine index
+
+                -- Use type-specific projection ops based on ContainerHint.
+                -- This ensures correct heap layout access for each container type.
                 ( ctx3, projectOp ) =
-                    ecoProject ctx2 resultVar (Index.toMachine index) targetType subVar ecoValue
+                    case hint of
+                        DT.HintList ->
+                            if fieldIndex == 0 then
+                                -- List head
+                                ecoProjectListHead ctx2 resultVar targetType subVar
+
+                            else
+                                -- List tail (index 1)
+                                ecoProjectListTail ctx2 resultVar subVar
+
+                        DT.HintTuple2 ->
+                            ecoProjectTuple2 ctx2 resultVar fieldIndex targetType subVar
+
+                        DT.HintTuple3 ->
+                            ecoProjectTuple3 ctx2 resultVar fieldIndex targetType subVar
+
+                        DT.HintCustom ->
+                            -- Custom ADTs (Maybe, Result, user types, big tuples)
+                            ecoProjectCustom ctx2 resultVar fieldIndex targetType subVar
+
+                        DT.HintUnknown ->
+                            -- Fallback: treat like custom
+                            ecoProjectCustom ctx2 resultVar fieldIndex targetType subVar
             in
             ( subOps ++ [ projectOp ], resultVar, ctx3 )
 
