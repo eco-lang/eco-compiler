@@ -185,16 +185,16 @@ typedef struct {
 } Cons;
 
 typedef struct {
-    Header header;           // Header.size contains field count (max 63).
+    Header header;           // Header.size contains field count.
     u64 ctor : CTOR_BITS;    // Constructor index within this Elm custom type (16 bits).
     u64 id : ID_BITS;        // Custom type id (global across program, 16 bits).
-    u64 unboxed : 32;        // Bitmap: bit N set means field N is unboxed (max 32 fields).
+    u64 unboxed : 32;        // Bitmap: bit N set means field N is unboxed (max 32 fields with unboxing).
     Unboxable values[];
 } Custom;
 
 typedef struct {
-    Header header; // Header.size contains field count (max 127).
-    u64 unboxed; // Bitmap: bit N set means field N is unboxed (primitive value).
+    Header header; // Header.size contains field count.
+    u64 unboxed; // Bitmap: bit N set means field N is unboxed (max 64 fields with unboxing).
     Unboxable values[];
 } Record;
 
@@ -217,7 +217,7 @@ typedef struct {
     Header header;
     u64 n_values : 6;      // Number of captured values currently stored (0-63).
     u64 max_values : 6;    // Maximum capacity for captured values (0-63).
-    u64 unboxed : 52;      // Bitmap: bit N set means captured value N is unboxed.
+    u64 unboxed : 52;      // Bitmap: bit N set means captured value N is unboxed (max 52 with unboxing).
     EvalFunction evaluator;
     Unboxable values[];
 } Closure;

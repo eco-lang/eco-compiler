@@ -237,9 +237,9 @@ struct HeapConfig {
                 "promotion_age must be >= 1 (must survive at least 1 GC)");
         }
 
-        if (promotion_age > 15) {
+        if (promotion_age > 3) {
             throw std::invalid_argument(
-                "promotion_age must be <= 15 (header age field limit)");
+                "promotion_age must be <= 3 (header age field is 2 bits)");
         }
 
         // ========== 6. Threshold Constraints ==========
