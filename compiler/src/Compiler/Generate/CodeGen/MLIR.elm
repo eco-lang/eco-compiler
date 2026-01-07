@@ -3476,12 +3476,12 @@ generateMonoPath ctx path targetType =
                             ecoProjectTuple3 ctx2 resultVar index targetType subVar
 
                         Mono.CustomContainer ->
-                            -- Generic projection for custom types
-                            ecoProject ctx2 resultVar index targetType subVar ecoValue
+                            -- Type-specific projection for custom ADTs
+                            ecoProjectCustom ctx2 resultVar index targetType subVar
 
                         Mono.RecordContainer ->
-                            -- Generic projection for records
-                            ecoProject ctx2 resultVar index targetType subVar ecoValue
+                            -- Type-specific projection for records
+                            ecoProjectRecord ctx2 resultVar index targetType subVar
             in
             ( subOps ++ [ projectOp ]
             , resultVar
@@ -3497,10 +3497,11 @@ generateMonoPath ctx path targetType =
                 ( resultVar, ctx2 ) =
                     freshVar ctx1
 
-                -- Project directly to the targetType.
-                -- Same as MonoIndex: primitive types are stored unboxed and should be read directly.
+                -- Project directly to the targetType using record projection.
+                -- MonoField is generated from TOpt.Field which is record field access.
+                -- Primitive types are stored unboxed and should be read directly.
                 ( ctx3, projectOp ) =
-                    ecoProject ctx2 resultVar index targetType subVar ecoValue
+                    ecoProjectRecord ctx2 resultVar index targetType subVar
             in
             ( subOps ++ [ projectOp ]
             , resultVar
@@ -4459,7 +4460,7 @@ generateRecordAccess ctx record _ index isUnboxed fieldType =
         -- Field is stored unboxed - project directly to the primitive type
         let
             ( ctx2, projectOp ) =
-                ecoProject ctx1 projectVar index fieldMlirType recordResult.resultVar ecoValue
+                ecoProjectRecord ctx1 projectVar index fieldMlirType recordResult.resultVar
         in
         { ops = recordResult.ops ++ [ projectOp ]
         , resultVar = projectVar
@@ -4471,7 +4472,7 @@ generateRecordAccess ctx record _ index isUnboxed fieldType =
         -- Field is boxed and semantic type is also !eco.value - just project
         let
             ( ctx2, projectOp ) =
-                ecoProject ctx1 projectVar index ecoValue recordResult.resultVar ecoValue
+                ecoProjectRecord ctx1 projectVar index ecoValue recordResult.resultVar
         in
         { ops = recordResult.ops ++ [ projectOp ]
         , resultVar = projectVar
@@ -4484,7 +4485,7 @@ generateRecordAccess ctx record _ index isUnboxed fieldType =
         -- Project to get !eco.value, then unbox to primitive type
         let
             ( ctx2, projectOp ) =
-                ecoProject ctx1 projectVar index ecoValue recordResult.resultVar ecoValue
+                ecoProjectRecord ctx1 projectVar index ecoValue recordResult.resultVar
 
             ( unboxOps, unboxedVar, ctx3 ) =
                 unboxToType ctx2 projectVar fieldMlirType
