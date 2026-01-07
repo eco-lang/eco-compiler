@@ -205,7 +205,14 @@ void printTestSummary(const Testing::TestSuiteResult& result, uint64_t seed) {
     std::cout << "Tests failed: " << Testing::Color::red() << result.tests_failed
               << Testing::Color::reset() << std::endl;
 
-    // Print overall result.
+    // Print seed for reproduction (before result line).
+    if (result.tests_failed > 0) {
+        std::cout << std::endl;
+        std::cout << Testing::Color::yellow() << "To reproduce failures, run with: --seed "
+                  << seed << Testing::Color::reset() << std::endl;
+    }
+
+    // Print overall result (always last).
     std::cout << std::endl;
     if (result.tests_failed == 0) {
         std::cout << "Result: " << Testing::Color::bold() << Testing::Color::green()
@@ -213,19 +220,6 @@ void printTestSummary(const Testing::TestSuiteResult& result, uint64_t seed) {
     } else {
         std::cout << "Result: " << Testing::Color::bold() << Testing::Color::red()
                   << "FAILED" << Testing::Color::reset() << std::endl;
-        std::cout << std::endl;
-
-        // List failed tests.
-        std::cout << Testing::Color::bold() << "Failed tests:" << Testing::Color::reset() << std::endl;
-        for (const auto& failed : result.failed_tests) {
-            std::cout << "  - " << Testing::Color::red() << failed.name
-                      << Testing::Color::reset() << std::endl;
-        }
-
-        // Print seed for reproduction.
-        std::cout << std::endl;
-        std::cout << Testing::Color::yellow() << "To reproduce failures, run with: --seed "
-                  << seed << Testing::Color::reset() << std::endl;
     }
 }
 
