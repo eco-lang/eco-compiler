@@ -8,9 +8,9 @@ module {
     %unit = eco.constant Unit : !eco.value
 
     // Create values with large tags
-    %tag255 = eco.construct(%unit) {tag = 255 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %tag1000 = eco.construct(%unit) {tag = 1000 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %tag32767 = eco.construct(%unit) {tag = 32767 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag255 = eco.construct.custom(%unit) {tag = 255 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag1000 = eco.construct.custom(%unit) {tag = 1000 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag32767 = eco.construct.custom(%unit) {tag = 32767 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Test with tag 255 (max 8-bit value)
     eco.case %tag255 [0, 255, 1000, 32767] {

@@ -8,8 +8,8 @@ module {
     %unit = eco.constant Unit : !eco.value
 
     // Create variants
-    %tag0 = eco.construct(%unit) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %tag1 = eco.construct(%unit) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag0 = eco.construct.custom(%unit) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag1 = eco.construct.custom(%unit) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Case with minimal branches - just return immediately
     eco.case %tag0 [0, 1] {

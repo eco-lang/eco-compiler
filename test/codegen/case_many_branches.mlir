@@ -6,14 +6,14 @@
 module {
   func.func @main() -> i64 {
     // Create values with different tags (0-7)
-    %val0 = eco.construct() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
-    %val1 = eco.construct() {tag = 1 : i64, size = 0 : i64} : () -> !eco.value
-    %val2 = eco.construct() {tag = 2 : i64, size = 0 : i64} : () -> !eco.value
-    %val3 = eco.construct() {tag = 3 : i64, size = 0 : i64} : () -> !eco.value
-    %val4 = eco.construct() {tag = 4 : i64, size = 0 : i64} : () -> !eco.value
-    %val5 = eco.construct() {tag = 5 : i64, size = 0 : i64} : () -> !eco.value
-    %val6 = eco.construct() {tag = 6 : i64, size = 0 : i64} : () -> !eco.value
-    %val7 = eco.construct() {tag = 7 : i64, size = 0 : i64} : () -> !eco.value
+    %val0 = eco.construct.custom() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
+    %val1 = eco.construct.custom() {tag = 1 : i64, size = 0 : i64} : () -> !eco.value
+    %val2 = eco.construct.custom() {tag = 2 : i64, size = 0 : i64} : () -> !eco.value
+    %val3 = eco.construct.custom() {tag = 3 : i64, size = 0 : i64} : () -> !eco.value
+    %val4 = eco.construct.custom() {tag = 4 : i64, size = 0 : i64} : () -> !eco.value
+    %val5 = eco.construct.custom() {tag = 5 : i64, size = 0 : i64} : () -> !eco.value
+    %val6 = eco.construct.custom() {tag = 6 : i64, size = 0 : i64} : () -> !eco.value
+    %val7 = eco.construct.custom() {tag = 7 : i64, size = 0 : i64} : () -> !eco.value
 
     // Test case on tag 0
     eco.case %val0 [0, 1, 2, 3, 4, 5, 6, 7] {

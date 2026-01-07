@@ -35,9 +35,9 @@ module {
 
     // Create a list that references multiple globals
     %nil = eco.constant Nil : !eco.value
-    %list1 = eco.construct(%r3, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %list2 = eco.construct(%r2, %list1) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %list3 = eco.construct(%r1, %list2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %list1 = eco.construct.custom(%r3, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %list2 = eco.construct.custom(%r2, %list1) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %list3 = eco.construct.custom(%r1, %list2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %list3 : !eco.value
     // CHECK: [10, 20, 30]
 
@@ -50,7 +50,7 @@ module {
     // CHECK: [10, 20, 30]
 
     // Project elements from loaded list
-    %head = eco.project %loaded_list[0] : !eco.value -> !eco.value
+    %head = eco.project.custom %loaded_list[0] : !eco.value -> !eco.value
     eco.dbg %head : !eco.value
     // CHECK: 10
 

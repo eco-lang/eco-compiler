@@ -5,7 +5,7 @@
 module {
   func.func @main() -> i64 {
     // Create a Custom with tag 0 (Nothing - no fields)
-    %nothing = eco.construct() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
+    %nothing = eco.construct.custom() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
 
     // Pattern match - should select tag 0 branch
     eco.case %nothing [0, 1] {

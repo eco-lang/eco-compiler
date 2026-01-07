@@ -11,8 +11,8 @@ module {
     %c30 = arith.constant 30 : i64
 
     // True = tag 1, False = tag 0
-    %true = eco.construct() {tag = 1 : i64, size = 0 : i64} : () -> !eco.value
-    %false = eco.construct() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
+    %true = eco.construct.custom() {tag = 1 : i64, size = 0 : i64} : () -> !eco.value
+    %false = eco.construct.custom() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
 
     // Test 1: Simple case dispatch (true branch)
     eco.joinpoint 1(%v: !eco.value) {
@@ -45,21 +45,21 @@ module {
     // CHECK: 20
 
     // Test 3: List sum
-    %nil = eco.construct() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
+    %nil = eco.construct.custom() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
     %b10 = eco.box %c10 : i64 -> !eco.value
     %b20 = eco.box %c20 : i64 -> !eco.value
-    %cons2 = eco.construct(%b20, %nil) {tag = 1 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %cons1 = eco.construct(%b10, %cons2) {tag = 1 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %cons2 = eco.construct.custom(%b20, %nil) {tag = 1 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %cons1 = eco.construct.custom(%b10, %cons2) {tag = 1 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     eco.joinpoint 3(%list: !eco.value, %sum: i64) {
       eco.case %list [0, 1] {
         eco.dbg %sum : i64
         eco.return
       }, {
-        %head = eco.project %list[0] : !eco.value -> !eco.value
+        %head = eco.project.custom %list[0] : !eco.value -> !eco.value
         %head_val = eco.unbox %head : !eco.value -> i64
         %new_sum = arith.addi %sum, %head_val : i64
-        %tail = eco.project %list[1] : !eco.value -> !eco.value
+        %tail = eco.project.custom %list[1] : !eco.value -> !eco.value
         eco.jump 3(%tail, %new_sum : !eco.value, i64)
       }
       eco.return

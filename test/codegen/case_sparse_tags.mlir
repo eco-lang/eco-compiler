@@ -8,10 +8,10 @@ module {
     %unit = eco.constant Unit : !eco.value
 
     // Create values with different sparse tags
-    %tag0 = eco.construct(%unit) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %tag10 = eco.construct(%unit) {tag = 10 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %tag100 = eco.construct(%unit) {tag = 100 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %tag1000 = eco.construct(%unit) {tag = 1000 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag0 = eco.construct.custom(%unit) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag10 = eco.construct.custom(%unit) {tag = 10 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag100 = eco.construct.custom(%unit) {tag = 100 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag1000 = eco.construct.custom(%unit) {tag = 1000 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Test case on tag 0
     eco.case %tag0 [0, 10, 100, 1000] {

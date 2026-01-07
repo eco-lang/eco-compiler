@@ -10,9 +10,9 @@ module {
     %unit = eco.constant Unit : !eco.value
 
     // Create variants with tags 0, 1, 2
-    %tag0 = eco.construct(%unit) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %tag1 = eco.construct(%unit) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %tag2 = eco.construct(%unit) {tag = 2 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag0 = eco.construct.custom(%unit) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag1 = eco.construct.custom(%unit) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag2 = eco.construct.custom(%unit) {tag = 2 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Joinpoint that receives a value computed in each branch
     eco.joinpoint 0(%result: i64) {

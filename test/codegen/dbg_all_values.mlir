@@ -155,28 +155,28 @@ module {
 
     // === Lists (Cons cells) ===
     // Boxed values, so unboxed_bitmap = 0
-    %l1 = eco.construct(%b42, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %l1 = eco.construct.custom(%b42, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %l1 : !eco.value
     // CHECK: [42]
 
-    %l2 = eco.construct(%b0, %l1) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %l2 = eco.construct.custom(%b0, %l1) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %l2 : !eco.value
     // CHECK: [0, 42]
 
     // === Custom Constructors ===
 
     // Single field
-    %ctor1 = eco.construct(%b42) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %ctor1 = eco.construct.custom(%b42) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %ctor1 : !eco.value
     // CHECK: Ctor0 42
 
     // Multiple fields
-    %ctor2 = eco.construct(%b42, %bpi, %bA) {tag = 5 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
+    %ctor2 = eco.construct.custom(%b42, %bpi, %bA) {tag = 5 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %ctor2 : !eco.value
     // CHECK: Ctor5 42 3.14159 'A'
 
     // Nested constructor
-    %nested = eco.construct(%ctor1) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %nested = eco.construct.custom(%ctor1) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %nested : !eco.value
     // CHECK: Ctor1 (Ctor0 42)
 

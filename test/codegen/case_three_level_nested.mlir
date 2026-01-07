@@ -15,13 +15,13 @@ module {
 
     // Build: Just(Ok(Some(42)))
     // Level 3: Some(42) - tag 1, with value
-    %some42 = eco.construct(%b42) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %some42 = eco.construct.custom(%b42) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Level 2: Ok(Some(42)) - tag 1
-    %ok_some = eco.construct(%some42) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %ok_some = eco.construct.custom(%some42) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Level 1: Just(Ok(Some(42))) - tag 1
-    %just_ok_some = eco.construct(%ok_some) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %just_ok_some = eco.construct.custom(%ok_some) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Three level nested case
     eco.case %just_ok_some [0, 1] {
@@ -34,7 +34,7 @@ module {
       %level1 = arith.constant 1 : i64
       eco.dbg %level1 : i64
 
-      %inner1 = eco.project %just_ok_some[0] : !eco.value -> !eco.value
+      %inner1 = eco.project.custom %just_ok_some[0] : !eco.value -> !eco.value
 
       eco.case %inner1 [0, 1] {
         // Err case
@@ -46,7 +46,7 @@ module {
         %level2 = arith.constant 2 : i64
         eco.dbg %level2 : i64
 
-        %inner2 = eco.project %inner1[0] : !eco.value -> !eco.value
+        %inner2 = eco.project.custom %inner1[0] : !eco.value -> !eco.value
 
         eco.case %inner2 [0, 1] {
           // None case
@@ -58,7 +58,7 @@ module {
           %level3 = arith.constant 3 : i64
           eco.dbg %level3 : i64
 
-          %final = eco.project %inner2[0] : !eco.value -> !eco.value
+          %final = eco.project.custom %inner2[0] : !eco.value -> !eco.value
           eco.dbg %final : !eco.value
           eco.return
         }
@@ -73,8 +73,8 @@ module {
     // CHECK: [eco.dbg] 42
 
     // Test a different path: Just(Err(value))
-    %err_val = eco.construct(%b100) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %just_err = eco.construct(%err_val) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %err_val = eco.construct.custom(%b100) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %just_err = eco.construct.custom(%err_val) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     eco.case %just_err [0, 1] {
       %r0 = arith.constant -10 : i64
@@ -84,12 +84,12 @@ module {
       %l1 = arith.constant 10 : i64
       eco.dbg %l1 : i64
 
-      %inner = eco.project %just_err[0] : !eco.value -> !eco.value
+      %inner = eco.project.custom %just_err[0] : !eco.value -> !eco.value
       eco.case %inner [0, 1] {
         // Err case - this should match
         %l2 = arith.constant 20 : i64
         eco.dbg %l2 : i64
-        %err_payload = eco.project %inner[0] : !eco.value -> !eco.value
+        %err_payload = eco.project.custom %inner[0] : !eco.value -> !eco.value
         eco.dbg %err_payload : !eco.value
         eco.return
       }, {

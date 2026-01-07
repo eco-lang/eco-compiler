@@ -7,22 +7,22 @@ module {
   func.func @main() -> i64 {
     // Empty constructor (tag 0, no fields)
     // Like () or a nullary constructor
-    %empty0 = eco.construct() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
+    %empty0 = eco.construct.custom() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
     eco.dbg %empty0 : !eco.value
     // CHECK: Ctor0
 
     // Different tag, still empty
-    %empty1 = eco.construct() {tag = 1 : i64, size = 0 : i64} : () -> !eco.value
+    %empty1 = eco.construct.custom() {tag = 1 : i64, size = 0 : i64} : () -> !eco.value
     eco.dbg %empty1 : !eco.value
     // CHECK: Ctor1
 
     // Third empty variant
-    %empty2 = eco.construct() {tag = 2 : i64, size = 0 : i64} : () -> !eco.value
+    %empty2 = eco.construct.custom() {tag = 2 : i64, size = 0 : i64} : () -> !eco.value
     eco.dbg %empty2 : !eco.value
     // CHECK: Ctor2
 
     // Higher tag number
-    %empty42 = eco.construct() {tag = 42 : i64, size = 0 : i64} : () -> !eco.value
+    %empty42 = eco.construct.custom() {tag = 42 : i64, size = 0 : i64} : () -> !eco.value
     eco.dbg %empty42 : !eco.value
     // CHECK: Ctor42
 
@@ -58,12 +58,12 @@ module {
     // CHECK: 202
 
     // Wrap empty in another constructor (Just Empty)
-    %just_empty = eco.construct(%empty0) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %just_empty = eco.construct.custom(%empty0) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %just_empty : !eco.value
     // CHECK: Ctor1 Ctor0
 
     // Project the empty value back out
-    %projected = eco.project %just_empty[0] : !eco.value -> !eco.value
+    %projected = eco.project.custom %just_empty[0] : !eco.value -> !eco.value
     eco.dbg %projected : !eco.value
     // CHECK: Ctor0
 

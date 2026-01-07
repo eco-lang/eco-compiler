@@ -14,7 +14,7 @@ module {
     %b30 = eco.box %c30 : i64 -> !eco.value
 
     // Create a 3-field constructor
-    %ctor = eco.construct(%b10, %b20, %b30) {tag = 1 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
+    %ctor = eco.construct.custom(%b10, %b20, %b30) {tag = 1 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
 
     // Case dispatch on the constructor
     eco.case %ctor [0, 1, 2] {
@@ -25,9 +25,9 @@ module {
     }, {
       // Tag 1 branch - should execute
       // Project all fields from the scrutinee
-      %f0 = eco.project %ctor[0] : !eco.value -> !eco.value
-      %f1 = eco.project %ctor[1] : !eco.value -> !eco.value
-      %f2 = eco.project %ctor[2] : !eco.value -> !eco.value
+      %f0 = eco.project.custom %ctor[0] : !eco.value -> !eco.value
+      %f1 = eco.project.custom %ctor[1] : !eco.value -> !eco.value
+      %f2 = eco.project.custom %ctor[2] : !eco.value -> !eco.value
 
       %v0 = eco.unbox %f0 : !eco.value -> i64
       %v1 = eco.unbox %f1 : !eco.value -> i64

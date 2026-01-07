@@ -19,12 +19,12 @@ module {
 
     // Test 1: Simple case dispatch (currently CF-lowered)
     // Tag 0 = "Left", Tag 1 = "Right"
-    %left = eco.construct(%b1) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %right = eco.construct(%b2) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %left = eco.construct.custom(%b1) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %right = eco.construct.custom(%b2) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Case on left variant
     eco.case %left [0, 1] {
-      %p = eco.project %left[0] : !eco.value -> !eco.value
+      %p = eco.project.custom %left[0] : !eco.value -> !eco.value
       eco.dbg %p : !eco.value
       eco.return
     }, {
@@ -38,7 +38,7 @@ module {
       eco.dbg %c1 : i64
       eco.return
     }, {
-      %p = eco.project %right[0] : !eco.value -> !eco.value
+      %p = eco.project.custom %right[0] : !eco.value -> !eco.value
       eco.dbg %p : !eco.value
       eco.return
     }
@@ -58,21 +58,21 @@ module {
         eco.return
       }, {
         // Cons case: recurse on tail
-        %tail = eco.project %val[1] : !eco.value -> !eco.value
+        %tail = eco.project.custom %val[1] : !eco.value -> !eco.value
         eco.jump 0(%tail : !eco.value)
       }
       eco.return
     } continuation {
       // Create a simple list: Cons(1, Cons(2, Nil))
-      %nil = eco.construct() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
-      %cons2 = eco.construct(%b2, %nil) {tag = 1 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
-      %cons1 = eco.construct(%b1, %cons2) {tag = 1 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+      %nil = eco.construct.custom() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
+      %cons2 = eco.construct.custom(%b2, %nil) {tag = 1 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+      %cons1 = eco.construct.custom(%b1, %cons2) {tag = 1 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
       eco.jump 0(%cons1 : !eco.value)
     }
     // CHECK: 1
 
     // Test 3: Verify get_tag works with tags > 1
-    %custom = eco.construct(%b1) {tag = 5 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %custom = eco.construct.custom(%b1) {tag = 5 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     %tag5 = eco.get_tag %custom : !eco.value -> i32
     %tag5_64 = arith.extui %tag5 : i32 to i64
     eco.dbg %tag5_64 : i64

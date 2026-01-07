@@ -15,10 +15,10 @@ module {
 
     // Create Maybe-like: Nothing (tag 0), Just (tag 1)
     // Create Result-like: Err (tag 0), Ok (tag 1)
-    %nothing = eco.construct() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
-    %just10 = eco.construct(%b10) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %err20 = eco.construct(%b20) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %ok30 = eco.construct(%b30) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %nothing = eco.construct.custom() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
+    %just10 = eco.construct.custom(%b10) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %err20 = eco.construct.custom(%b20) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %ok30 = eco.construct.custom(%b30) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Outer case on Maybe, inner case on Result
     // Pattern: case maybe of Nothing -> 0; Just r -> case r of Err _ -> 1; Ok v -> v
@@ -29,7 +29,7 @@ module {
       eco.return
     }, {
       // Just branch - extract payload and case on it
-      %payload = eco.project %just10[0] : !eco.value -> !eco.value
+      %payload = eco.project.custom %just10[0] : !eco.value -> !eco.value
 
       // But here payload is just b10, not a Result
       // Let's test with a proper nested structure
@@ -41,7 +41,7 @@ module {
 
     // More realistic: Nested case with actual Result inside Maybe
     // Create Just(Ok(30))
-    %just_ok = eco.construct(%ok30) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %just_ok = eco.construct.custom(%ok30) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     eco.case %just_ok [0, 1] {
       // Nothing
@@ -50,7 +50,7 @@ module {
       eco.return
     }, {
       // Just - extract Result and case on it
-      %inner_result = eco.project %just_ok[0] : !eco.value -> !eco.value
+      %inner_result = eco.project.custom %just_ok[0] : !eco.value -> !eco.value
 
       eco.case %inner_result [0, 1] {
         // Err
@@ -59,7 +59,7 @@ module {
         eco.return
       }, {
         // Ok - extract value
-        %ok_payload = eco.project %inner_result[0] : !eco.value -> !eco.value
+        %ok_payload = eco.project.custom %inner_result[0] : !eco.value -> !eco.value
         %final = eco.unbox %ok_payload : !eco.value -> i64
         eco.dbg %final : i64
         eco.return
@@ -69,17 +69,17 @@ module {
     // CHECK: 30
 
     // Test Just(Err(20))
-    %just_err = eco.construct(%err20) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %just_err = eco.construct.custom(%err20) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     eco.case %just_err [0, 1] {
       %r0 = arith.constant 0 : i64
       eco.dbg %r0 : i64
       eco.return
     }, {
-      %inner = eco.project %just_err[0] : !eco.value -> !eco.value
+      %inner = eco.project.custom %just_err[0] : !eco.value -> !eco.value
       eco.case %inner [0, 1] {
         // Err branch
-        %err_payload = eco.project %inner[0] : !eco.value -> !eco.value
+        %err_payload = eco.project.custom %inner[0] : !eco.value -> !eco.value
         %err_unboxed = eco.unbox %err_payload : !eco.value -> i64
         %negated = eco.int.negate %err_unboxed : i64
         eco.dbg %negated : i64

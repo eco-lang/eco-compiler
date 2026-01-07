@@ -16,21 +16,21 @@ module {
 
     // Create tagged objects
     // Tag 0 = "Left" variant
-    %left = eco.construct(%b1) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %left = eco.construct.custom(%b1) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     // Tag 1 = "Right" variant
-    %right = eco.construct(%b2) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %right = eco.construct.custom(%b2) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Joinpoint where the body needs to case-dispatch on the argument
     eco.joinpoint 0(%val: !eco.value) {
       // This case dispatch inside joinpoint body causes the crash
       eco.case %val [0, 1] {
         // Tag 0 (Left) branch: return the payload
-        %payload = eco.project %val[0] : !eco.value -> !eco.value
+        %payload = eco.project.custom %val[0] : !eco.value -> !eco.value
         eco.dbg %payload : !eco.value
         eco.return
       }, {
         // Tag 1 (Right) branch: return payload * 10
-        %payload = eco.project %val[0] : !eco.value -> !eco.value
+        %payload = eco.project.custom %val[0] : !eco.value -> !eco.value
         %unboxed = eco.unbox %payload : !eco.value -> i64
         %c10 = arith.constant 10 : i64
         %result = eco.int.mul %unboxed, %c10 : i64

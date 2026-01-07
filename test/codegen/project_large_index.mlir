@@ -28,42 +28,42 @@ module {
     %b9 = eco.box %i9 : i64 -> !eco.value
 
     // Create a 10-field constructor
-    %obj = eco.construct(%b0, %b1, %b2, %b3, %b4, %b5, %b6, %b7, %b8, %b9) {tag = 10 : i64, size = 10 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
+    %obj = eco.construct.custom(%b0, %b1, %b2, %b3, %b4, %b5, %b6, %b7, %b8, %b9) {tag = 10 : i64, size = 10 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %obj : !eco.value
     // CHECK: Ctor10 100 101 102 103 104 105 106 107 108 109
 
     // Project field 0 (first)
-    %f0 = eco.project %obj[0] : !eco.value -> !eco.value
+    %f0 = eco.project.custom %obj[0] : !eco.value -> !eco.value
     eco.dbg %f0 : !eco.value
     // CHECK: 100
 
     // Project field 5 (middle)
-    %f5 = eco.project %obj[5] : !eco.value -> !eco.value
+    %f5 = eco.project.custom %obj[5] : !eco.value -> !eco.value
     eco.dbg %f5 : !eco.value
     // CHECK: 105
 
     // Project field 9 (last)
-    %f9 = eco.project %obj[9] : !eco.value -> !eco.value
+    %f9 = eco.project.custom %obj[9] : !eco.value -> !eco.value
     eco.dbg %f9 : !eco.value
     // CHECK: 109
 
     // Project field 7
-    %f7 = eco.project %obj[7] : !eco.value -> !eco.value
+    %f7 = eco.project.custom %obj[7] : !eco.value -> !eco.value
     eco.dbg %f7 : !eco.value
     // CHECK: 107
 
     // Create an 8-field constructor with unboxed integers
-    %obj2 = eco.construct(%i0, %i1, %i2, %i3, %i4, %i5, %i6, %i7) {tag = 8 : i64, size = 8 : i64, unboxed_bitmap = 255 : i64} : (i64, i64, i64, i64, i64, i64, i64, i64) -> !eco.value
+    %obj2 = eco.construct.custom(%i0, %i1, %i2, %i3, %i4, %i5, %i6, %i7) {tag = 8 : i64, size = 8 : i64, unboxed_bitmap = 255 : i64} : (i64, i64, i64, i64, i64, i64, i64, i64) -> !eco.value
     eco.dbg %obj2 : !eco.value
     // CHECK: Ctor8 100 101 102 103 104 105 106 107
 
     // Project unboxed field 6
-    %uf6 = eco.project %obj2[6] : !eco.value -> i64
+    %uf6 = eco.project.custom %obj2[6] : !eco.value -> i64
     eco.dbg %uf6 : i64
     // CHECK: 106
 
     // Project unboxed field 7
-    %uf7 = eco.project %obj2[7] : !eco.value -> i64
+    %uf7 = eco.project.custom %obj2[7] : !eco.value -> i64
     eco.dbg %uf7 : i64
     // CHECK: 107
 

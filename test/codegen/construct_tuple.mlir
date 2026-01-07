@@ -10,17 +10,17 @@ module {
     %i20 = arith.constant 20 : i64
     %b10 = eco.box %i10 : i64 -> !eco.value
     %b20 = eco.box %i20 : i64 -> !eco.value
-    %tuple2 = eco.construct(%b10, %b20) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %tuple2 = eco.construct.custom(%b10, %b20) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %tuple2 : !eco.value
     // CHECK: [10,
 
     // Project first field
-    %fst = eco.project %tuple2[0] : !eco.value -> !eco.value
+    %fst = eco.project.custom %tuple2[0] : !eco.value -> !eco.value
     eco.dbg %fst : !eco.value
     // CHECK: 10
 
     // Project second field
-    %snd = eco.project %tuple2[1] : !eco.value -> !eco.value
+    %snd = eco.project.custom %tuple2[1] : !eco.value -> !eco.value
     eco.dbg %snd : !eco.value
     // CHECK: 20
 
@@ -31,17 +31,17 @@ module {
     %b1 = eco.box %i1 : i64 -> !eco.value
     %b2 = eco.box %i2 : i64 -> !eco.value
     %b3 = eco.box %i3 : i64 -> !eco.value
-    %tuple3 = eco.construct(%b1, %b2, %b3) {tag = 0 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
+    %tuple3 = eco.construct.custom(%b1, %b2, %b3) {tag = 0 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %tuple3 : !eco.value
     // CHECK: Ctor0 1 2 3
 
     // Project middle field from 3-tuple
-    %mid = eco.project %tuple3[1] : !eco.value -> !eco.value
+    %mid = eco.project.custom %tuple3[1] : !eco.value -> !eco.value
     eco.dbg %mid : !eco.value
     // CHECK: 2
 
     // Project last field from 3-tuple
-    %last = eco.project %tuple3[2] : !eco.value -> !eco.value
+    %last = eco.project.custom %tuple3[2] : !eco.value -> !eco.value
     eco.dbg %last : !eco.value
     // CHECK: 3
 
@@ -50,7 +50,7 @@ module {
     %fpi = arith.constant 3.14 : f64
     %b42 = eco.box %i42 : i64 -> !eco.value
     %bpi = eco.box %fpi : f64 -> !eco.value
-    %mixed = eco.construct(%b42, %bpi) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %mixed = eco.construct.custom(%b42, %bpi) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %mixed : !eco.value
     // CHECK: [42,
 

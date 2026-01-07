@@ -24,7 +24,7 @@ module {
     %i2 = arith.constant 2 : i64
     %b1 = eco.box %i1 : i64 -> !eco.value
     %b2 = eco.box %i2 : i64 -> !eco.value
-    %pair = eco.construct(%b1, %b2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %pair = eco.construct.custom(%b1, %b2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %pair : !eco.value
     // CHECK: [1,
 
@@ -44,8 +44,8 @@ module {
     // Create a list and project from it
     // Both fields are boxed (!eco.value), so unboxed_bitmap = 0
     %nil = eco.constant Nil : !eco.value
-    %list = eco.construct(%v1, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %head = eco.project %list[0] : !eco.value -> !eco.value
+    %list = eco.construct.custom(%v1, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %head = eco.project.custom %list[0] : !eco.value -> !eco.value
     eco.dbg %head : !eco.value
     // CHECK: 42
 

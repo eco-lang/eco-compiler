@@ -12,9 +12,9 @@ module {
     %unit = eco.constant Unit : !eco.value
 
     // Create variants
-    %tag0 = eco.construct(%unit) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %tag1 = eco.construct(%unit) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %tag2 = eco.construct(%unit) {tag = 2 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag0 = eco.construct.custom(%unit) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag1 = eco.construct.custom(%unit) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag2 = eco.construct.custom(%unit) {tag = 2 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Outer joinpoint that accumulates a result
     eco.joinpoint 0(%result: i64) {

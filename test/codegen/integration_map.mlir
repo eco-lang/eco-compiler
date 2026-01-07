@@ -14,20 +14,20 @@ module {
     %b1 = eco.box %i1 : i64 -> !eco.value
     %b2 = eco.box %i2 : i64 -> !eco.value
     %b3 = eco.box %i3 : i64 -> !eco.value
-    %l3 = eco.construct(%b3, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %l2 = eco.construct(%b2, %l3) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %input = eco.construct(%b1, %l2) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %l3 = eco.construct.custom(%b3, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %l2 = eco.construct.custom(%b2, %l3) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %input = eco.construct.custom(%b1, %l2) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %input : !eco.value
     // CHECK: [1, 2, 3]
 
     // Manual map (+1) over the list (inlined)
     // Extract elements
-    %h1 = eco.project %input[0] : !eco.value -> !eco.value
-    %t1 = eco.project %input[1] : !eco.value -> !eco.value
-    %h2 = eco.project %t1[0] : !eco.value -> !eco.value
-    %t2 = eco.project %t1[1] : !eco.value -> !eco.value
-    %h3 = eco.project %t2[0] : !eco.value -> !eco.value
+    %h1 = eco.project.custom %input[0] : !eco.value -> !eco.value
+    %t1 = eco.project.custom %input[1] : !eco.value -> !eco.value
+    %h2 = eco.project.custom %t1[0] : !eco.value -> !eco.value
+    %t2 = eco.project.custom %t1[1] : !eco.value -> !eco.value
+    %h3 = eco.project.custom %t2[0] : !eco.value -> !eco.value
 
     // Apply add_one to each element (inlined: unbox, add 1, rebox)
     %one = arith.constant 1 : i64
@@ -44,9 +44,9 @@ module {
     %m3 = eco.box %v3_plus : i64 -> !eco.value
 
     // Rebuild result list [2, 3, 4]
-    %r3 = eco.construct(%m3, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %r2 = eco.construct(%m2, %r3) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %result = eco.construct(%m1, %r2) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %r3 = eco.construct.custom(%m3, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %r2 = eco.construct.custom(%m2, %r3) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %result = eco.construct.custom(%m1, %r2) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %result : !eco.value
     // CHECK: [2, 3, 4]
@@ -62,9 +62,9 @@ module {
     %d3_val = arith.muli %v3, %two : i64
     %d3 = eco.box %d3_val : i64 -> !eco.value
 
-    %dr3 = eco.construct(%d3, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %dr2 = eco.construct(%d2, %dr3) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %doubled_list = eco.construct(%d1, %dr2) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %dr3 = eco.construct.custom(%d3, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %dr2 = eco.construct.custom(%d2, %dr3) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %doubled_list = eco.construct.custom(%d1, %dr2) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %doubled_list : !eco.value
     // CHECK: [2, 4, 6]
@@ -80,9 +80,9 @@ module {
     %c3_val = arith.muli %v3_plus, %two : i64
     %c3d = eco.box %c3_val : i64 -> !eco.value
 
-    %cr3 = eco.construct(%c3d, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %cr2 = eco.construct(%c2d, %cr3) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %composed = eco.construct(%c1d, %cr2) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %cr3 = eco.construct.custom(%c3d, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %cr2 = eco.construct.custom(%c2d, %cr3) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %composed = eco.construct.custom(%c1d, %cr2) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     eco.dbg %composed : !eco.value
     // CHECK: [4, 6, 8]

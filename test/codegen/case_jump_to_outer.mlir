@@ -11,8 +11,8 @@ module {
     // Create a simple structure to match on
     // Tag 0 = continue (jump back), Tag 1 = stop
     %nil = eco.constant Nil : !eco.value
-    %continue_obj = eco.construct(%nil) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %stop_obj = eco.construct(%nil) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %continue_obj = eco.construct.custom(%nil) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %stop_obj = eco.construct.custom(%nil) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Joinpoint that processes objects
     eco.joinpoint 0(%counter: i64, %obj: !eco.value) {

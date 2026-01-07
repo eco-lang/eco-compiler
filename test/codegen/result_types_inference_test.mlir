@@ -11,7 +11,7 @@ module {
     %c30 = arith.constant 30 : i64
     %c40 = arith.constant 40 : i64
 
-    %true = eco.construct() {tag = 1 : i64, size = 0 : i64} : () -> !eco.value
+    %true = eco.construct.custom() {tag = 1 : i64, size = 0 : i64} : () -> !eco.value
 
     eco.case %true [0, 1] {
       eco.dbg %c40 : i64
@@ -28,7 +28,7 @@ module {
     %c50 = arith.constant 50 : i64
     %c60 = arith.constant 60 : i64
 
-    %false = eco.construct() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
+    %false = eco.construct.custom() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
 
     eco.case %false [0, 1] {
       eco.dbg %c50 : i64

@@ -12,11 +12,11 @@ module {
 
     // Create tagged objects with different constructor tags
     // Tag 0 = "Nothing" variant (no payload, but we include one for testing)
-    %nothing = eco.construct(%b1) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %nothing = eco.construct.custom(%b1) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     // Tag 1 = "Just" variant
-    %just = eco.construct(%b2) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %just = eco.construct.custom(%b2) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     // Tag 42 = arbitrary tag
-    %custom = eco.construct(%b1) {tag = 42 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %custom = eco.construct.custom(%b1) {tag = 42 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Extract and print tags
     %tag0 = eco.get_tag %nothing : !eco.value -> i32

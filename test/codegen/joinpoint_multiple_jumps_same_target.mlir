@@ -15,9 +15,9 @@ module {
     %b30 = eco.box %c30 : i64 -> !eco.value
 
     // Create different tagged values
-    %tag0 = eco.construct(%b10) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %tag1 = eco.construct(%b20) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %tag2 = eco.construct(%b30) {tag = 2 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag0 = eco.construct.custom(%b10) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag1 = eco.construct.custom(%b20) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag2 = eco.construct.custom(%b30) {tag = 2 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Test: Multiple case branches with value passing through joinpoint
     eco.joinpoint 0(%result1: i64) {

@@ -336,90 +336,12 @@ def Eco_GetTagOp : Eco_Op<"get_tag", [Pure]> {
   let assemblyFormat = "$value attr-dict `:` type($value) `->` type($tag)";
 }
 
-def Eco_ConstructOp : Eco_Op<"construct", [Pure]> {
-  let summary = "Construct ADT/record/tuple value";
-  let description = [{
-    Create an algebraic data type (ADT) value for a specific constructor.
-    This is a high-level, pure operation representing both allocation and
-    field initialization. It will be lowered to allocation + stores.
-
-    The tag is the numeric constructor discriminant. The size must match
-    the number of field operands. The unboxed_bitmap indicates which fields
-    are unboxed primitives (bit N is set if field N is unboxed).
-
-    For custom ADTs, type_id is a unique identifier for the type across the
-    program, and constructor is the constructor name for debug printing
-    (e.g., "Just", "Nothing", "Red").
-
-    Example:
-    ```mlir
-    // Construct a Maybe.Just with one field
-    %val = eco.construct(%inner) {
-      tag = 1,
-      size = 1,
-      type_id = 42,
-      constructor = "Just"
-    } : (!eco.value) -> !eco.value
-    ```
-  }];
-
-  let arguments = (ins
-    Variadic<Eco_AnyValue>:$fields,
-    I64Attr:$tag,
-    I64Attr:$size,
-    OptionalAttr<I64Attr>:$unboxed_bitmap,
-    OptionalAttr<I64Attr>:$type_id,
-    OptionalAttr<StrAttr>:$constructor
-  );
-  let results = (outs Eco_Value:$result);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = "`(` $fields `)` attr-dict `:` functional-type($fields, $result)";
-}
-
-def Eco_ProjectOp : Eco_Op<"project", [Pure]> {
-  let summary = "Project field from ADT value";
-  let description = [{
-    Project a field out of a constructor (ADT) value by index.
-    No runtime tag checking is performed; using this on the wrong
-    constructor is undefined behavior.
-
-    The result type depends on the field's known type from monomorphization.
-    It may be eco.value (boxed) or a primitive type (unboxed).
-
-    Example:
-    ```mlir
-    // Extract head from Cons cell
-    %head = eco.project %cons[0] : !eco.value -> !eco.value
-
-    // Extract unboxed Int field from tuple
-    %x = eco.project %point[0] : !eco.value -> i64
-    ```
-
-    DEPRECATED: Use type-specific projection ops instead:
-    - eco.project.list_head / eco.project.list_tail for lists
-    - eco.project.tuple2 / eco.project.tuple3 for tuples
-    - eco.project.record for records
-    - eco.project.custom for custom ADTs
-  }];
-
-  let arguments = (ins
-    Eco_Value:$value,
-    I64Attr:$index
-  );
-  let results = (outs Eco_AnyValue:$field);
-
-  let assemblyFormat = "$value `[` $index `]` attr-dict `:` type($value) `->` type($field)";
-}
-
 //===----------------------------------------------------------------------===//
 // 2b. Type-Specific Construction and Projection Operations
 //===----------------------------------------------------------------------===//
 //
-// These ops replace the generic eco.construct and eco.project ops with
-// type-specific versions that enforce HEAP_015: header tag must match
-// the concrete runtime type.
+// Type-specific construction and projection ops enforce HEAP_015: header tag
+// must match the concrete runtime type.
 //
 
 //===----------------------------------------------------------------------===//

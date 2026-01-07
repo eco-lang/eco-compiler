@@ -19,10 +19,10 @@ module {
     // Build a list: [1, 2, 3]
     // Nil = tag 0, size 0
     // Cons(head, tail) = tag 1, size 2
-    %nil = eco.construct() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
-    %cons3 = eco.construct(%b3, %nil) {tag = 1 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %cons2 = eco.construct(%b2, %cons3) {tag = 1 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
-    %cons1 = eco.construct(%b1, %cons2) {tag = 1 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %nil = eco.construct.custom() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
+    %cons3 = eco.construct.custom(%b3, %nil) {tag = 1 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %cons2 = eco.construct.custom(%b2, %cons3) {tag = 1 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %cons1 = eco.construct.custom(%b1, %cons2) {tag = 1 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     // Test 1: Count list length using a loop
     // This is the canonical "fold" pattern that should lower to scf.while
@@ -33,7 +33,7 @@ module {
         eco.return
       }, {
         // Cons case: increment count and continue with tail
-        %tail = eco.project %list[1] : !eco.value -> !eco.value
+        %tail = eco.project.custom %list[1] : !eco.value -> !eco.value
         %new_acc = arith.addi %acc, %c1 : i64
         eco.jump 0(%tail, %new_acc : !eco.value, i64)
       }
@@ -52,10 +52,10 @@ module {
         eco.return
       }, {
         // Cons case: add head to sum and continue with tail
-        %head = eco.project %list2[0] : !eco.value -> !eco.value
+        %head = eco.project.custom %list2[0] : !eco.value -> !eco.value
         %head_val = eco.unbox %head : !eco.value -> i64
         %new_sum = arith.addi %sum, %head_val : i64
-        %tail2 = eco.project %list2[1] : !eco.value -> !eco.value
+        %tail2 = eco.project.custom %list2[1] : !eco.value -> !eco.value
         eco.jump 1(%tail2, %new_sum : !eco.value, i64)
       }
       eco.return
@@ -73,9 +73,9 @@ module {
         eco.return
       }, {
         // Cons case: print head and continue
-        %head3 = eco.project %list3[0] : !eco.value -> !eco.value
+        %head3 = eco.project.custom %list3[0] : !eco.value -> !eco.value
         eco.dbg %head3 : !eco.value
-        %tail3 = eco.project %list3[1] : !eco.value -> !eco.value
+        %tail3 = eco.project.custom %list3[1] : !eco.value -> !eco.value
         eco.jump 2(%tail3 : !eco.value)
       }
       eco.return

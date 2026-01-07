@@ -21,19 +21,19 @@ module {
     %b4 = eco.box %c4 : i64 -> !eco.value
 
     // Build [2]
-    %list2 = eco.construct(%b2, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %list2 = eco.construct.custom(%b2, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     // Build [1, 2]
-    %inner1 = eco.construct(%b1, %list2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %inner1 = eco.construct.custom(%b1, %list2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     // Build [4]
-    %list4 = eco.construct(%b4, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %list4 = eco.construct.custom(%b4, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     // Build [3, 4]
-    %inner2 = eco.construct(%b3, %list4) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %inner2 = eco.construct.custom(%b3, %list4) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     // Build [[3, 4]]
-    %outer2 = eco.construct(%inner2, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %outer2 = eco.construct.custom(%inner2, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     // Build [[1, 2], [3, 4]]
-    %outer = eco.construct(%inner1, %outer2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %outer = eco.construct.custom(%inner1, %outer2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     // Store in global
     eco.store_global %outer, @nested_global
@@ -44,12 +44,12 @@ module {
     // CHECK: [eco.dbg] [[1, 2], [3, 4]]
 
     // Project into the structure to verify it's intact
-    %first_list = eco.project %loaded[0] : !eco.value -> !eco.value
+    %first_list = eco.project.custom %loaded[0] : !eco.value -> !eco.value
     eco.dbg %first_list : !eco.value
     // CHECK: [eco.dbg] [1, 2]
 
-    %second_elem = eco.project %loaded[1] : !eco.value -> !eco.value
-    %second_list = eco.project %second_elem[0] : !eco.value -> !eco.value
+    %second_elem = eco.project.custom %loaded[1] : !eco.value -> !eco.value
+    %second_list = eco.project.custom %second_elem[0] : !eco.value -> !eco.value
     eco.dbg %second_list : !eco.value
     // CHECK: [eco.dbg] [3, 4]
 

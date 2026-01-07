@@ -29,7 +29,7 @@ module {
 
     // Overwrite with different type (store a constructed value)
     %inner = eco.box %c10 : i64 -> !eco.value
-    %ctor = eco.construct(%inner) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %ctor = eco.construct.custom(%inner) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.store_global %ctor, @value
 
     %l3 = eco.load_global @value

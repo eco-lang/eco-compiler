@@ -14,36 +14,36 @@ module {
     %b300 = eco.box %i300 : i64 -> !eco.value
     %b400 = eco.box %i400 : i64 -> !eco.value
 
-    %obj = eco.construct(%b100, %b200, %b300, %b400) {tag = 7 : i64, size = 4 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
+    %obj = eco.construct.custom(%b100, %b200, %b300, %b400) {tag = 7 : i64, size = 4 : i64} : (!eco.value, !eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %obj : !eco.value
     // CHECK: Ctor7 100 200 300 400
 
     // Project field 0
-    %f0 = eco.project %obj[0] : !eco.value -> !eco.value
+    %f0 = eco.project.custom %obj[0] : !eco.value -> !eco.value
     eco.dbg %f0 : !eco.value
     // CHECK: 100
 
     // Project field 1
-    %f1 = eco.project %obj[1] : !eco.value -> !eco.value
+    %f1 = eco.project.custom %obj[1] : !eco.value -> !eco.value
     eco.dbg %f1 : !eco.value
     // CHECK: 200
 
     // Project field 2
-    %f2 = eco.project %obj[2] : !eco.value -> !eco.value
+    %f2 = eco.project.custom %obj[2] : !eco.value -> !eco.value
     eco.dbg %f2 : !eco.value
     // CHECK: 300
 
     // Project field 3
-    %f3 = eco.project %obj[3] : !eco.value -> !eco.value
+    %f3 = eco.project.custom %obj[3] : !eco.value -> !eco.value
     eco.dbg %f3 : !eco.value
     // CHECK: 400
 
     // Create single-field constructor and project
-    %single = eco.construct(%b100) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %single = eco.construct.custom(%b100) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %single : !eco.value
     // CHECK: Ctor1 100
 
-    %single_f0 = eco.project %single[0] : !eco.value -> !eco.value
+    %single_f0 = eco.project.custom %single[0] : !eco.value -> !eco.value
     eco.dbg %single_f0 : !eco.value
     // CHECK: 100
 
@@ -53,15 +53,15 @@ module {
     %bpi = eco.box %fpi : f64 -> !eco.value
     %bch = eco.box %ch : i16 -> !eco.value
 
-    %mixed = eco.construct(%b100, %bpi, %bch) {tag = 2 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
+    %mixed = eco.construct.custom(%b100, %bpi, %bch) {tag = 2 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %mixed : !eco.value
     // CHECK: Ctor2 100 3.14 'A'
 
-    %mixed_f1 = eco.project %mixed[1] : !eco.value -> !eco.value
+    %mixed_f1 = eco.project.custom %mixed[1] : !eco.value -> !eco.value
     eco.dbg %mixed_f1 : !eco.value
     // CHECK: 3.14
 
-    %mixed_f2 = eco.project %mixed[2] : !eco.value -> !eco.value
+    %mixed_f2 = eco.project.custom %mixed[2] : !eco.value -> !eco.value
     eco.dbg %mixed_f2 : !eco.value
     // CHECK: 'A'
 

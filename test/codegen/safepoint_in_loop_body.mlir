@@ -40,7 +40,7 @@ module {
     // Test 3: Safepoint before case dispatch
     %c100 = arith.constant 100 : i64
     %b100 = eco.box %c100 : i64 -> !eco.value
-    %tag0 = eco.construct(%b100) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag0 = eco.construct.custom(%b100) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     eco.joinpoint 2(%val: !eco.value) {
       // Safepoint before pattern matching
@@ -48,7 +48,7 @@ module {
 
       eco.case %val [0, 1] {
         // Tag 0 branch
-        %payload = eco.project %val[0] : !eco.value -> !eco.value
+        %payload = eco.project.custom %val[0] : !eco.value -> !eco.value
         eco.dbg %payload : !eco.value
         eco.return
       }, {

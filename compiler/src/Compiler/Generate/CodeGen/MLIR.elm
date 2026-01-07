@@ -1832,7 +1832,7 @@ generateCycle ctx funcName definitions monoType =
             List.map (\v -> ( v, ecoValue )) boxedVars
 
         ( ctx2, cycleOp ) =
-            ecoConstruct ctx1 resultVar 0 arity 0 defVarPairs Nothing Nothing
+            ecoConstructRecord ctx1 resultVar defVarPairs arity 0
 
         ( ctx3, returnOp ) =
             ecoReturn ctx2 resultVar ecoValue
@@ -4531,7 +4531,7 @@ generateRecordUpdate ctx record _ _ =
             freshVar recordResult.ctx
 
         ( ctx2, constructOp ) =
-            ecoConstruct ctx1 resultVar 0 1 0 [ ( recordResult.resultVar, ecoValue ) ] Nothing Nothing
+            ecoConstructRecord ctx1 resultVar [ ( recordResult.resultVar, ecoValue ) ] 1 0
     in
     { ops = recordResult.ops ++ [ constructOp ]
     , resultVar = resultVar
@@ -4704,64 +4704,6 @@ opBuilder =
 mlirOp : Context -> String -> Mlir.OpBuilder Context
 mlirOp env =
     Mlir.mlirOp (\e -> freshOpId e |> (\( id, ctx ) -> ( ctx, id ))) env
-
-
-{-| eco.construct - create a heap object
-
-Parameters:
-
-  - typeId: Optional type ID for custom types (enables constructor name printing)
-  - constructorName: Optional constructor name (e.g., "Just", "Red")
-
--}
-ecoConstruct : Context -> String -> Int -> Int -> Int -> List ( String, MlirType ) -> Maybe Int -> Maybe String -> ( Context, MlirOp )
-ecoConstruct ctx resultVar tag size unboxedBitmap operands maybeTypeId maybeCtorName =
-    let
-        operandNames =
-            List.map Tuple.first operands
-
-        operandTypesAttr =
-            if List.isEmpty operands then
-                Dict.empty
-
-            else
-                Dict.singleton "_operand_types"
-                    (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) operands))
-
-        typeIdAttr =
-            case maybeTypeId of
-                Just tid ->
-                    Dict.singleton "type_id" (IntAttr Nothing tid)
-
-                Nothing ->
-                    Dict.empty
-
-        constructorAttr =
-            case maybeCtorName of
-                Just name ->
-                    Dict.singleton "constructor" (StringAttr name)
-
-                Nothing ->
-                    Dict.empty
-
-        attrs =
-            Dict.union operandTypesAttr
-                (Dict.union typeIdAttr
-                    (Dict.union constructorAttr
-                        (Dict.fromList
-                            [ ( "tag", IntAttr Nothing tag )
-                            , ( "size", IntAttr Nothing size )
-                            , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
-                            ]
-                        )
-                    )
-                )
-    in
-    mlirOp ctx "eco.construct"
-        |> opBuilder.withOperands operandNames
-        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
-        |> opBuilder.withAttrs attrs
-        |> opBuilder.build
 
 
 {-| eco.constant - create an embedded constant value.
@@ -5095,36 +5037,6 @@ ecoCallNamed ctx resultVar funcName operands returnType =
     mlirOp ctx "eco.call"
         |> opBuilder.withOperands operandNames
         |> opBuilder.withResults [ ( resultVar, returnType ) ]
-        |> opBuilder.withAttrs attrs
-        |> opBuilder.build
-
-
-{-| eco.project - extract a field from a record/custom/tuple
-
-    The resultType should be the actual type of the extracted field:
-    - i64 for Int fields
-    - f64 for Float fields
-    - i1 for Bool fields
-    - i16 for Char fields
-    - !eco.value for boxed fields
-
--}
-ecoProject : Context -> String -> Int -> MlirType -> String -> MlirType -> ( Context, MlirOp )
-ecoProject ctx resultVar index resultType operand operandType =
-    let
-        isUnboxed =
-            not (isEcoValueType resultType)
-
-        attrs =
-            Dict.fromList
-                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr operandType ] )
-                , ( "index", IntAttr Nothing index )
-                , ( "unboxed", BoolAttr isUnboxed )
-                ]
-    in
-    mlirOp ctx "eco.project"
-        |> opBuilder.withOperands [ operand ]
-        |> opBuilder.withResults [ ( resultVar, resultType ) ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build
 

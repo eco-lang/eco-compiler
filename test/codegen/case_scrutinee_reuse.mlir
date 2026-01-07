@@ -11,7 +11,7 @@ module {
     %b20 = eco.box %c20 : i64 -> !eco.value
 
     // Create a Just(10)
-    %just10 = eco.construct(%b10) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %just10 = eco.construct.custom(%b10) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Case on the value, but also use scrutinee inside branches
     eco.case %just10 [0, 1] {
@@ -21,12 +21,12 @@ module {
       eco.return
     }, {
       // Just branch - project from the SAME scrutinee
-      %payload1 = eco.project %just10[0] : !eco.value -> !eco.value
+      %payload1 = eco.project.custom %just10[0] : !eco.value -> !eco.value
       %val1 = eco.unbox %payload1 : !eco.value -> i64
       eco.dbg %val1 : i64
 
       // Use scrutinee again
-      %payload2 = eco.project %just10[0] : !eco.value -> !eco.value
+      %payload2 = eco.project.custom %just10[0] : !eco.value -> !eco.value
       %val2 = eco.unbox %payload2 : !eco.value -> i64
       eco.dbg %val2 : i64
 

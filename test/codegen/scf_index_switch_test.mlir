@@ -10,7 +10,7 @@ module {
     %c30 = arith.constant 30 : i64
 
     // Create a tag=1 value
-    %val = eco.construct() {tag = 1 : i64, size = 0 : i64} : () -> !eco.value
+    %val = eco.construct.custom() {tag = 1 : i64, size = 0 : i64} : () -> !eco.value
 
     eco.case %val [0, 1, 2] {
       eco.dbg %c10 : i64
@@ -32,7 +32,7 @@ module {
     %c60 = arith.constant 60 : i64
 
     // Create a tag=2 value
-    %val = eco.construct() {tag = 2 : i64, size = 0 : i64} : () -> !eco.value
+    %val = eco.construct.custom() {tag = 2 : i64, size = 0 : i64} : () -> !eco.value
 
     eco.case %val [0, 1, 2] {
       eco.dbg %c40 : i64
@@ -55,7 +55,7 @@ module {
     %c4 = arith.constant 4 : i64
 
     // Create a tag=3 value
-    %val = eco.construct() {tag = 3 : i64, size = 0 : i64} : () -> !eco.value
+    %val = eco.construct.custom() {tag = 3 : i64, size = 0 : i64} : () -> !eco.value
 
     eco.case %val [0, 1, 2, 3] {
       eco.dbg %c1 : i64

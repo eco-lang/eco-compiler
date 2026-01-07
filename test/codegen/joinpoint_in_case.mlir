@@ -11,7 +11,7 @@ module {
     %b20 = eco.box %c20 : i64 -> !eco.value
 
     // Create a Just value
-    %just = eco.construct(%b10) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %just = eco.construct.custom(%b10) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Case dispatch
     eco.case %just [0, 1] {
@@ -21,7 +21,7 @@ module {
       eco.return
     }, {
       // Just branch - define a joinpoint inside
-      %payload = eco.project %just[0] : !eco.value -> !eco.value
+      %payload = eco.project.custom %just[0] : !eco.value -> !eco.value
       %init = eco.unbox %payload : !eco.value -> i64
 
       // Simple joinpoint test inside case branch

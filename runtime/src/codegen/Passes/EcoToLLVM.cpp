@@ -378,123 +378,6 @@ struct UnboxOpLowering : public OpConversionPattern<UnboxOp> {
 };
 
 // ============================================================================
-// eco.construct -> eco_alloc_custom + eco_store_field calls
-// ============================================================================
-
-struct ConstructOpLowering : public OpConversionPattern<ConstructOp> {
-    using OpConversionPattern::OpConversionPattern;
-
-    LogicalResult
-    matchAndRewrite(ConstructOp op, OpAdaptor adaptor,
-                    ConversionPatternRewriter &rewriter) const override {
-        auto loc = op.getLoc();
-        auto module = op->getParentOfType<ModuleOp>();
-        auto *ctx = rewriter.getContext();
-        auto i32Ty = IntegerType::get(ctx, 32);
-        auto i64Ty = IntegerType::get(ctx, 64);
-        auto f64Ty = Float64Type::get(ctx);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-        auto voidTy = LLVM::LLVMVoidType::get(ctx);
-
-        // Get or insert function declarations.
-        // eco_alloc_custom(type_id, ctor_id, field_count, scalar_bytes)
-        auto allocFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i32Ty, i32Ty, i32Ty, i32Ty});
-        getOrInsertFunc(module, rewriter, "eco_alloc_custom", allocFuncTy);
-
-        auto storeFuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty, i64Ty});
-        getOrInsertFunc(module, rewriter, "eco_store_field", storeFuncTy);
-
-        auto storeI64FuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty, i64Ty});
-        getOrInsertFunc(module, rewriter, "eco_store_field_i64", storeI64FuncTy);
-
-        auto storeF64FuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty, f64Ty});
-        getOrInsertFunc(module, rewriter, "eco_store_field_f64", storeF64FuncTy);
-
-        auto setUnboxedFuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i64Ty});
-        getOrInsertFunc(module, rewriter, "eco_set_unboxed", setUnboxedFuncTy);
-
-        // Get type_id (default to 0 if not specified).
-        int64_t typeIdVal = 0;
-        if (auto typeId = op.getTypeId()) {
-            typeIdVal = typeId.value();
-        }
-
-        // Allocate the custom object.
-        auto typeId = rewriter.create<LLVM::ConstantOp>(
-            loc, i32Ty, static_cast<int32_t>(typeIdVal));
-        auto tag = rewriter.create<LLVM::ConstantOp>(
-            loc, i32Ty, static_cast<int32_t>(op.getTag()));
-        auto size = rewriter.create<LLVM::ConstantOp>(
-            loc, i32Ty, static_cast<int32_t>(op.getSize()));
-        auto scalarBytes = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 0);
-
-        auto allocCall = rewriter.create<LLVM::CallOp>(
-            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_custom"),
-            ValueRange{typeId, tag, size, scalarBytes});
-        auto objPtr = allocCall.getResult();
-
-        // Store each field into the allocated object.
-        // Use the original field types to determine which store function to use.
-        auto origFields = op.getFields();
-        auto fields = adaptor.getFields();
-        for (size_t i = 0; i < fields.size(); i++) {
-            auto idx = rewriter.create<LLVM::ConstantOp>(
-                loc, i32Ty, static_cast<int32_t>(i));
-
-            Type origType = origFields[i].getType();
-            Value fieldVal = fields[i];
-
-            if (origType.isF64()) {
-                // Unboxed f64 -> eco_store_field_f64
-                rewriter.create<LLVM::CallOp>(
-                    loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_field_f64"),
-                    ValueRange{objPtr, idx, fieldVal});
-            } else if (origType.isInteger(1)) {
-                // Unboxed i1 (bool) -> zero extend to i64, then eco_store_field_i64
-                // Represent boolean as 0 or 1 in memory, same storage as other unboxed ints
-                auto extended = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, fieldVal);
-                rewriter.create<LLVM::CallOp>(
-                    loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_field_i64"),
-                    ValueRange{objPtr, idx, extended});
-            } else if (origType.isInteger(16)) {
-                // Unboxed i16 (char) -> zero extend to i64, then eco_store_field_i64
-                auto extended = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, fieldVal);
-                rewriter.create<LLVM::CallOp>(
-                    loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_field_i64"),
-                    ValueRange{objPtr, idx, extended});
-            } else if (origType.isInteger(64)) {
-                // Unboxed i64 -> eco_store_field_i64
-                rewriter.create<LLVM::CallOp>(
-                    loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_field_i64"),
-                    ValueRange{objPtr, idx, fieldVal});
-            } else {
-                // Boxed !eco.value (converted to i64) -> eco_store_field
-                rewriter.create<LLVM::CallOp>(
-                    loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_field"),
-                    ValueRange{objPtr, idx, fieldVal});
-            }
-        }
-
-        // Set unboxed bitmap if present and non-zero.
-        if (auto unboxedBitmap = op.getUnboxedBitmap()) {
-            int64_t bitmap = unboxedBitmap.value();
-            if (bitmap != 0) {
-                auto bitmapVal = rewriter.create<LLVM::ConstantOp>(
-                    loc, i64Ty, bitmap);
-                rewriter.create<LLVM::CallOp>(
-                    loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_set_unboxed"),
-                    ValueRange{objPtr, bitmapVal});
-            }
-        }
-
-        // Convert pointer to tagged i64 for the result.
-        auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, objPtr);
-        rewriter.replaceOp(op, result);
-        return success();
-    }
-};
-
-// ============================================================================
 // eco.allocate -> call eco_allocate + ptrtoint
 // ============================================================================
 
@@ -865,46 +748,6 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
             rewriter.replaceOp(op, result);
         }
 
-        return success();
-    }
-};
-
-// ============================================================================
-// eco.project -> inttoptr + gep + load
-// ============================================================================
-
-struct ProjectOpLowering : public OpConversionPattern<ProjectOp> {
-    using OpConversionPattern::OpConversionPattern;
-
-    LogicalResult
-    matchAndRewrite(ProjectOp op, OpAdaptor adaptor,
-                    ConversionPatternRewriter &rewriter) const override {
-        auto loc = op.getLoc();
-        auto *ctx = rewriter.getContext();
-        auto i64Ty = IntegerType::get(ctx, 64);
-        auto i8Ty = IntegerType::get(ctx, 8);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-
-        Value input = adaptor.getValue();
-        int64_t index = op.getIndex();
-
-        // Convert tagged i64 to pointer.
-        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, input);
-
-        // Calculate byte offset to the field in Custom object layout.
-        // Custom layout: Header (8) + ctor/unboxed (8) + fields[index * 8].
-        int64_t offsetBytes = 8 + 8 + index * 8;
-        auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
-
-        // Compute field address via GEP.
-        auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
-                                                      ValueRange{offset});
-
-        // Load the field value.
-        Type resultType = getTypeConverter()->convertType(op.getResult().getType());
-        Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
-
-        rewriter.replaceOp(op, result);
         return success();
     }
 };
@@ -3316,7 +3159,7 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // Clear joinpoint map for this module.
         joinpointBlocks.clear();
 
-        // Clear and collect constructor info from eco.construct ops.
+        // Clear and collect constructor info from eco.construct.custom ops.
         constructorInfos.clear();
         collectConstructorInfo(module);
 
@@ -3326,14 +3169,12 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             DbgOpLowering,
             BoxOpLowering,
             UnboxOpLowering,
-            ConstructOpLowering,
             AllocateOpLowering,
             AllocateCtorOpLowering,
             AllocateStringOpLowering,
             AllocateClosureOpLowering,
             PapCreateOpLowering,
             PapExtendOpLowering,
-            ProjectOpLowering,
             // Type-specific construction/projection
             ListConstructOpLowering,
             ListHeadOpLowering,
@@ -3440,9 +3281,9 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         generateGlobalRootInit(module, ctx);
     }
 
-    /// Collects constructor info from all eco.construct operations.
+    /// Collects constructor info from all eco.construct.custom operations.
     void collectConstructorInfo(ModuleOp module) {
-        module.walk([&](ConstructOp op) {
+        module.walk([&](CustomConstructOp op) {
             // Only collect if both type_id and constructor are present.
             auto typeId = op.getTypeId();
             auto constructor = op.getConstructor();

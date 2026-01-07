@@ -11,7 +11,7 @@ module {
 
     // All f64 unboxed (bitmap bits would need to cover f64)
     // Since f64 and i64 are same size, we can use unboxed_bitmap
-    %obj1 = eco.construct(%f1, %f2, %f3) {
+    %obj1 = eco.construct.custom(%f1, %f2, %f3) {
       tag = 0 : i64,
       size = 3 : i64,
       unboxed_bitmap = 7 : i64
@@ -20,9 +20,9 @@ module {
     // CHECK: Ctor
 
     // Project unboxed f64 values
-    %p0 = eco.project %obj1[0] : !eco.value -> f64
-    %p1 = eco.project %obj1[1] : !eco.value -> f64
-    %p2 = eco.project %obj1[2] : !eco.value -> f64
+    %p0 = eco.project.custom %obj1[0] : !eco.value -> f64
+    %p1 = eco.project.custom %obj1[1] : !eco.value -> f64
+    %p2 = eco.project.custom %obj1[2] : !eco.value -> f64
 
     eco.dbg %p0 : f64
     // CHECK: 3.14159
@@ -42,7 +42,7 @@ module {
 
     // Mixed f64 and boxed values
     %b100 = eco.box %f1 : f64 -> !eco.value
-    %obj2 = eco.construct(%f1, %b100, %f2) {
+    %obj2 = eco.construct.custom(%f1, %b100, %f2) {
       tag = 1 : i64,
       size = 3 : i64,
       unboxed_bitmap = 5 : i64
@@ -50,9 +50,9 @@ module {
     eco.dbg %obj2 : !eco.value
     // CHECK: Ctor
 
-    %q0 = eco.project %obj2[0] : !eco.value -> f64
-    %q1 = eco.project %obj2[1] : !eco.value -> !eco.value
-    %q2 = eco.project %obj2[2] : !eco.value -> f64
+    %q0 = eco.project.custom %obj2[0] : !eco.value -> f64
+    %q1 = eco.project.custom %obj2[1] : !eco.value -> !eco.value
+    %q2 = eco.project.custom %obj2[2] : !eco.value -> f64
     eco.dbg %q0 : f64
     // CHECK: 3.14159
     eco.dbg %q1 : !eco.value

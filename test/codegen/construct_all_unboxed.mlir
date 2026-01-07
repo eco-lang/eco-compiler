@@ -12,25 +12,25 @@ module {
 
     // Construct with 4 unboxed i64 fields
     // unboxed_bitmap = 0b1111 = 15
-    %ctor4 = eco.construct(%i1, %i2, %i3, %i4) {tag = 0 : i64, size = 4 : i64, unboxed_bitmap = 15 : i64} : (i64, i64, i64, i64) -> !eco.value
+    %ctor4 = eco.construct.custom(%i1, %i2, %i3, %i4) {tag = 0 : i64, size = 4 : i64, unboxed_bitmap = 15 : i64} : (i64, i64, i64, i64) -> !eco.value
 
     eco.dbg %ctor4 : !eco.value
     // CHECK: Ctor0
 
     // Project each field back
-    %p0 = eco.project %ctor4[0] : !eco.value -> i64
+    %p0 = eco.project.custom %ctor4[0] : !eco.value -> i64
     eco.dbg %p0 : i64
     // CHECK: 1
 
-    %p1 = eco.project %ctor4[1] : !eco.value -> i64
+    %p1 = eco.project.custom %ctor4[1] : !eco.value -> i64
     eco.dbg %p1 : i64
     // CHECK: 2
 
-    %p2 = eco.project %ctor4[2] : !eco.value -> i64
+    %p2 = eco.project.custom %ctor4[2] : !eco.value -> i64
     eco.dbg %p2 : i64
     // CHECK: 3
 
-    %p3 = eco.project %ctor4[3] : !eco.value -> i64
+    %p3 = eco.project.custom %ctor4[3] : !eco.value -> i64
     eco.dbg %p3 : i64
     // CHECK: 4
 
@@ -39,21 +39,21 @@ module {
     %f2 = arith.constant 2.5 : f64
 
     // 2 i64 + 2 f64, all unboxed: bitmap = 0b1111 = 15
-    %mixed = eco.construct(%i1, %f1, %i2, %f2) {tag = 1 : i64, size = 4 : i64, unboxed_bitmap = 15 : i64} : (i64, f64, i64, f64) -> !eco.value
+    %mixed = eco.construct.custom(%i1, %f1, %i2, %f2) {tag = 1 : i64, size = 4 : i64, unboxed_bitmap = 15 : i64} : (i64, f64, i64, f64) -> !eco.value
 
-    %pm0 = eco.project %mixed[0] : !eco.value -> i64
+    %pm0 = eco.project.custom %mixed[0] : !eco.value -> i64
     eco.dbg %pm0 : i64
     // CHECK: 1
 
-    %pm1 = eco.project %mixed[1] : !eco.value -> f64
+    %pm1 = eco.project.custom %mixed[1] : !eco.value -> f64
     eco.dbg %pm1 : f64
     // CHECK: 1.5
 
-    %pm2 = eco.project %mixed[2] : !eco.value -> i64
+    %pm2 = eco.project.custom %mixed[2] : !eco.value -> i64
     eco.dbg %pm2 : i64
     // CHECK: 2
 
-    %pm3 = eco.project %mixed[3] : !eco.value -> f64
+    %pm3 = eco.project.custom %mixed[3] : !eco.value -> f64
     eco.dbg %pm3 : f64
     // CHECK: 2.5
 

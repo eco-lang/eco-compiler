@@ -34,7 +34,7 @@ module {
 
     // Store a constructed value
     %nil = eco.constant Nil : !eco.value
-    %list = eco.construct(%b42, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
+    %list = eco.construct.custom(%b42, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.store_global %list, @g2
 
     %v3 = eco.load_global @g2

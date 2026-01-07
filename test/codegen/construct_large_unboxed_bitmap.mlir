@@ -11,7 +11,7 @@ module {
     %i3 = arith.constant 300 : i64
     %i4 = arith.constant 400 : i64
 
-    %obj1 = eco.construct(%i1, %i2, %i3, %i4) {
+    %obj1 = eco.construct.custom(%i1, %i2, %i3, %i4) {
       tag = 0 : i64,
       size = 4 : i64,
       unboxed_bitmap = 15 : i64
@@ -20,10 +20,10 @@ module {
     // CHECK: Ctor
 
     // Project unboxed fields
-    %p0 = eco.project %obj1[0] : !eco.value -> i64
-    %p1 = eco.project %obj1[1] : !eco.value -> i64
-    %p2 = eco.project %obj1[2] : !eco.value -> i64
-    %p3 = eco.project %obj1[3] : !eco.value -> i64
+    %p0 = eco.project.custom %obj1[0] : !eco.value -> i64
+    %p1 = eco.project.custom %obj1[1] : !eco.value -> i64
+    %p2 = eco.project.custom %obj1[2] : !eco.value -> i64
+    %p3 = eco.project.custom %obj1[3] : !eco.value -> i64
     eco.dbg %p0 : i64
     // CHECK: 100
     eco.dbg %p1 : i64
@@ -37,7 +37,7 @@ module {
     // Fields 0 and 2 are unboxed, fields 1 and 3 are boxed
     %b10 = eco.box %i1 : i64 -> !eco.value
     %b30 = eco.box %i3 : i64 -> !eco.value
-    %obj2 = eco.construct(%i1, %b10, %i3, %b30) {
+    %obj2 = eco.construct.custom(%i1, %b10, %i3, %b30) {
       tag = 1 : i64,
       size = 4 : i64,
       unboxed_bitmap = 5 : i64
@@ -46,10 +46,10 @@ module {
     // CHECK: Ctor
 
     // Project from alternating object
-    %q0 = eco.project %obj2[0] : !eco.value -> i64
-    %q1 = eco.project %obj2[1] : !eco.value -> !eco.value
-    %q2 = eco.project %obj2[2] : !eco.value -> i64
-    %q3 = eco.project %obj2[3] : !eco.value -> !eco.value
+    %q0 = eco.project.custom %obj2[0] : !eco.value -> i64
+    %q1 = eco.project.custom %obj2[1] : !eco.value -> !eco.value
+    %q2 = eco.project.custom %obj2[2] : !eco.value -> i64
+    %q3 = eco.project.custom %obj2[3] : !eco.value -> !eco.value
     eco.dbg %q0 : i64
     // CHECK: 100
     eco.dbg %q1 : !eco.value
@@ -60,7 +60,7 @@ module {
     // CHECK: 300
 
     // Construct with bitmap = 0b1010 = 10 (fields 1, 3 unboxed)
-    %obj3 = eco.construct(%b10, %i2, %b30, %i4) {
+    %obj3 = eco.construct.custom(%b10, %i2, %b30, %i4) {
       tag = 2 : i64,
       size = 4 : i64,
       unboxed_bitmap = 10 : i64
@@ -68,8 +68,8 @@ module {
     eco.dbg %obj3 : !eco.value
     // CHECK: Ctor
 
-    %r1 = eco.project %obj3[1] : !eco.value -> i64
-    %r3 = eco.project %obj3[3] : !eco.value -> i64
+    %r1 = eco.project.custom %obj3[1] : !eco.value -> i64
+    %r3 = eco.project.custom %obj3[3] : !eco.value -> i64
     eco.dbg %r1 : i64
     // CHECK: 200
     eco.dbg %r3 : i64

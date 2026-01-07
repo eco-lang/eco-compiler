@@ -7,7 +7,7 @@ module {
     // Create a Custom with tag 1 (simulating Maybe.Just 42)
     %i42 = arith.constant 42 : i64
     %b42 = eco.box %i42 : i64 -> !eco.value
-    %just = eco.construct(%b42) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %just = eco.construct.custom(%b42) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Pattern match on the constructor
     eco.case %just [0, 1] {
@@ -17,7 +17,7 @@ module {
       eco.return
     }, {
       // Tag 1: Just case - extract the value
-      %inner = eco.project %just[0] : !eco.value -> !eco.value
+      %inner = eco.project.custom %just[0] : !eco.value -> !eco.value
       eco.dbg %inner : !eco.value
       eco.return
     }

@@ -14,7 +14,7 @@ module {
     %b42 = eco.box %c42 : i64 -> !eco.value
 
     // Create Just(42) - tag 1
-    %just = eco.construct(%b42) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %just = eco.construct.custom(%b42) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Case where one branch is "impossible" in our test
     // but the compiler doesn't know that
@@ -25,14 +25,14 @@ module {
       eco.return
     }, {
       // Just branch - will be taken
-      %payload = eco.project %just[0] : !eco.value -> !eco.value
+      %payload = eco.project.custom %just[0] : !eco.value -> !eco.value
       eco.dbg %payload : !eco.value
       eco.return
     }
     // CHECK: [eco.dbg] 42
 
     // Create Nothing - tag 0
-    %nothing = eco.construct() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
+    %nothing = eco.construct.custom() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
 
     eco.case %nothing [0, 1] {
       // Nothing branch - will be taken

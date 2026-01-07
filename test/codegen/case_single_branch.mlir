@@ -6,7 +6,7 @@
 module {
   func.func @main() -> i64 {
     // Create a value with tag 0
-    %val0 = eco.construct() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
+    %val0 = eco.construct.custom() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
 
     // Case with single alternative matching tag 0
     eco.case %val0 [0] {
@@ -17,7 +17,7 @@ module {
     // CHECK: 100
 
     // Create value with tag 5
-    %val5 = eco.construct() {tag = 5 : i64, size = 0 : i64} : () -> !eco.value
+    %val5 = eco.construct.custom() {tag = 5 : i64, size = 0 : i64} : () -> !eco.value
 
     // Case with single alternative matching tag 5
     eco.case %val5 [5] {
@@ -28,7 +28,7 @@ module {
     // CHECK: 200
 
     // Create value with tag 99
-    %val99 = eco.construct() {tag = 99 : i64, size = 0 : i64} : () -> !eco.value
+    %val99 = eco.construct.custom() {tag = 99 : i64, size = 0 : i64} : () -> !eco.value
 
     // Case with single alternative matching tag 99
     eco.case %val99 [99] {
@@ -41,10 +41,10 @@ module {
     // Single branch case with a field
     %i42 = arith.constant 42 : i64
     %b42 = eco.box %i42 : i64 -> !eco.value
-    %with_field = eco.construct(%b42) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %with_field = eco.construct.custom(%b42) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     eco.case %with_field [0] {
-      %field = eco.project %with_field[0] : !eco.value -> !eco.value
+      %field = eco.project.custom %with_field[0] : !eco.value -> !eco.value
       eco.dbg %field : !eco.value
       eco.return
     }

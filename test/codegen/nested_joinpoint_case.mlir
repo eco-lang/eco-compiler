@@ -6,8 +6,8 @@
 module {
   func.func @main() -> i64 {
     %unit = eco.constant Unit : !eco.value
-    %tag0 = eco.construct(%unit) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
-    %tag1 = eco.construct(%unit) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag0 = eco.construct.custom(%unit) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %tag1 = eco.construct.custom(%unit) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Joinpoint that does a case dispatch (tag 0)
     eco.joinpoint 0(%val: !eco.value) {

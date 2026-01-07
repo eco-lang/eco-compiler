@@ -130,43 +130,6 @@ LogicalResult JoinpointOp::verify() {
   return success();
 }
 
-LogicalResult ConstructOp::verify() {
-  // Verify that the number of field operands matches the size attribute.
-  int64_t size = getSize();
-  if (static_cast<int64_t>(getFields().size()) != size) {
-    return emitOpError("number of fields (")
-           << getFields().size()
-           << ") must match size attribute ("
-           << size << ")";
-  }
-
-  // Verify that unboxed_bitmap only has bits set for unboxed fields.
-  // Unboxed types are: i64 (integers), f64 (floats), i32 (chars).
-  // !eco.value fields (including constants) must be marked as boxed (bit = 0).
-  if (auto bitmap = getUnboxedBitmap()) {
-    int64_t unboxedBits = bitmap.value();
-    auto fields = getFields();
-    for (size_t i = 0; i < fields.size(); i++) {
-      bool bitmapSaysUnboxed = (unboxedBits & (1LL << i)) != 0;
-      Type fieldType = fields[i].getType();
-
-      // Check if field type is actually unboxed (primitive type)
-      bool isUnboxedType = fieldType.isInteger(64) ||  // i64 int
-                           fieldType.isF64() ||         // f64 float
-                           fieldType.isInteger(16) ||   // i16 char
-                           fieldType.isInteger(1);      // i1 bool
-
-      if (bitmapSaysUnboxed && !isUnboxedType) {
-        return emitOpError("unboxed_bitmap bit ")
-               << i << " is set but field has boxed type "
-               << fieldType << "; constants and !eco.value must be boxed";
-      }
-    }
-  }
-
-  return success();
-}
-
 LogicalResult CustomConstructOp::verify() {
   // Verify that the number of field operands matches the size attribute.
   int64_t size = getSize();

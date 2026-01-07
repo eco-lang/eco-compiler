@@ -44,23 +44,23 @@ module {
 
     // Cons 3 Nil
     %boxed3 = eco.box %three : i64 -> !eco.value
-    %list1 = eco.construct(%boxed3, %nil) {tag = 1 : i64, size = 2 : i64}
+    %list1 = eco.construct.custom(%boxed3, %nil) {tag = 1 : i64, size = 2 : i64}
       : (!eco.value, !eco.value) -> !eco.value
 
     // Cons 2 (Cons 3 Nil)
     %boxed2 = eco.box %two : i64 -> !eco.value
-    %list2 = eco.construct(%boxed2, %list1) {tag = 1 : i64, size = 2 : i64}
+    %list2 = eco.construct.custom(%boxed2, %list1) {tag = 1 : i64, size = 2 : i64}
       : (!eco.value, !eco.value) -> !eco.value
 
     // Cons 1 (Cons 2 (Cons 3 Nil))
     %boxed1 = eco.box %one : i64 -> !eco.value
-    %list3 = eco.construct(%boxed1, %list2) {tag = 1 : i64, size = 2 : i64}
+    %list3 = eco.construct.custom(%boxed1, %list2) {tag = 1 : i64, size = 2 : i64}
       : (!eco.value, !eco.value) -> !eco.value
 
     // Manually "map" square over each element using indirect closure calls
 
     // Get head of list (field 0), apply square
-    %head1 = eco.project %list3[0] : !eco.value -> !eco.value
+    %head1 = eco.project.custom %list3[0] : !eco.value -> !eco.value
     %squared1 = "eco.call"(%square_fn, %head1) {remaining_arity = 1 : i64}
         : (!eco.value, !eco.value) -> !eco.value
     %result1 = eco.unbox %squared1 : !eco.value -> i64
@@ -68,8 +68,8 @@ module {
     // CHECK: 1
 
     // Get second element, apply square
-    %tail1 = eco.project %list3[1] : !eco.value -> !eco.value
-    %head2 = eco.project %tail1[0] : !eco.value -> !eco.value
+    %tail1 = eco.project.custom %list3[1] : !eco.value -> !eco.value
+    %head2 = eco.project.custom %tail1[0] : !eco.value -> !eco.value
     %squared2 = "eco.call"(%square_fn, %head2) {remaining_arity = 1 : i64}
         : (!eco.value, !eco.value) -> !eco.value
     %result2 = eco.unbox %squared2 : !eco.value -> i64
@@ -77,8 +77,8 @@ module {
     // CHECK: 4
 
     // Get third element, apply square
-    %tail2 = eco.project %tail1[1] : !eco.value -> !eco.value
-    %head3 = eco.project %tail2[0] : !eco.value -> !eco.value
+    %tail2 = eco.project.custom %tail1[1] : !eco.value -> !eco.value
+    %head3 = eco.project.custom %tail2[0] : !eco.value -> !eco.value
     %squared3 = "eco.call"(%square_fn, %head3) {remaining_arity = 1 : i64}
         : (!eco.value, !eco.value) -> !eco.value
     %result3 = eco.unbox %squared3 : !eco.value -> i64

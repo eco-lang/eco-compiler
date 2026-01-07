@@ -14,10 +14,10 @@ module {
     // Create inner: Left 42 (tag=0, one field)
     %i42 = arith.constant 42 : i64
     %b42 = eco.box %i42 : i64 -> !eco.value
-    %left = eco.construct(%b42) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %left = eco.construct.custom(%b42) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // Create outer: Just (Left 42) (tag=1, one field)
-    %just_left = eco.construct(%left) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
+    %just_left = eco.construct.custom(%left) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
     // First case: Test outer constructor (Nothing=0, Just=1)
     eco.case %just_left [0, 1] {
@@ -34,12 +34,12 @@ module {
     // CHECK: 1
 
     // Extract inner value (only valid after Just case)
-    %inner = eco.project %just_left[0] : !eco.value -> !eco.value
+    %inner = eco.project.custom %just_left[0] : !eco.value -> !eco.value
 
     // Second case: Test inner constructor (Left=0, Right=1)
     eco.case %inner [0, 1] {
       // Left case - extract and print value
-      %val = eco.project %inner[0] : !eco.value -> !eco.value
+      %val = eco.project.custom %inner[0] : !eco.value -> !eco.value
       eco.dbg %val : !eco.value
       eco.return
     }, {
