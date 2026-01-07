@@ -1712,19 +1712,8 @@ generateStubValue ctx resultVar _ mlirType =
             arithConstantChar ctx resultVar 0
 
         _ ->
-            -- For all other types (EcoValue, etc.),
-            -- return a boxed Unit value
-            mlirOp ctx "eco.construct"
-                |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
-                |> opBuilder.withAttrs
-                    (Dict.fromList
-                        [ ( "_operand_types", ArrayAttr Nothing [] )
-                        , ( "size", IntAttr Nothing 0 )
-                        , ( "tag", IntAttr Nothing 0 )
-                        , ( "unboxed_bitmap", IntAttr Nothing 0 )
-                        ]
-                    )
-                |> opBuilder.build
+            -- For all other types (EcoValue, etc.), return Unit
+            ecoConstantUnit ctx resultVar
 
 
 {-| Create a dummy value of the given MLIR type.
@@ -1767,20 +1756,10 @@ createDummyValue ctx mlirType =
             ( [ op ], resultVar, ctx2 )
 
         _ ->
-            -- For ecoValue and other types, return a boxed Unit value
+            -- For ecoValue and other types, return Unit
             let
                 ( ctx2, op ) =
-                    mlirOp ctx1 "eco.construct"
-                        |> opBuilder.withResults [ ( resultVar, ecoValue ) ]
-                        |> opBuilder.withAttrs
-                            (Dict.fromList
-                                [ ( "_operand_types", ArrayAttr Nothing [] )
-                                , ( "size", IntAttr Nothing 0 )
-                                , ( "tag", IntAttr Nothing 0 )
-                                , ( "unboxed_bitmap", IntAttr Nothing 0 )
-                                ]
-                            )
-                        |> opBuilder.build
+                    ecoConstantUnit ctx1 resultVar
             in
             ( [ op ], resultVar, ctx2 )
 
@@ -3267,10 +3246,10 @@ generateTailCall ctx name args =
         ( resultVar, ctx3 ) =
             freshVar ctx2
 
-        ( ctx4, constructOp ) =
-            ecoConstruct ctx3 resultVar 0 0 0 [] Nothing Nothing
+        ( ctx4, unitOp ) =
+            ecoConstantUnit ctx3 resultVar
     in
-    { ops = argsOps ++ [ jumpOp, constructOp ]
+    { ops = argsOps ++ [ jumpOp, unitOp ]
     , resultVar = resultVar
     , resultType = ecoValue
     , ctx = ctx4
@@ -3933,14 +3912,14 @@ generateSharedJoinpoints ctx jumps resultTy =
                 ( dummyVar, ctx2 ) =
                     freshVar ctx1
 
-                ( ctx3, dummyConstructOp ) =
-                    ecoConstruct ctx2 dummyVar 0 0 0 [] Nothing Nothing
+                ( ctx3, dummyUnitOp ) =
+                    ecoConstantUnit ctx2 dummyVar
 
                 ( ctx4, dummyRetOp ) =
                     ecoReturn ctx3 dummyVar resultTy
 
                 contRegion =
-                    mkRegion [] [ dummyConstructOp ] dummyRetOp
+                    mkRegion [] [ dummyUnitOp ] dummyRetOp
 
                 ( ctx5, jpOp ) =
                     ecoJoinpoint ctx4 index [] jpRegion contRegion [ resultTy ]
@@ -4001,13 +3980,13 @@ generateLeaf ctx _ choice resultTy =
                 ( dummyVar, ctx1 ) =
                     freshVar ctx
 
-                ( ctx2, dummyOp ) =
-                    ecoConstruct ctx1 dummyVar 0 0 0 [] Nothing Nothing
+                ( ctx2, dummyUnitOp ) =
+                    ecoConstantUnit ctx1 dummyVar
 
                 ( ctx3, retOp ) =
                     ecoReturn ctx2 dummyVar resultTy
             in
-            { ops = [ dummyOp, retOp ]
+            { ops = [ dummyUnitOp, retOp ]
             , resultVar = dummyVar
             , resultType = resultTy
             , ctx = ctx3
