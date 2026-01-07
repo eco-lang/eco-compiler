@@ -4546,8 +4546,8 @@ generateTupleCreate ctx elements layout =
                     ecoConstructTuple3 ctx3 resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType ) layout.unboxedBitmap
 
                 _ ->
-                    -- Large tuples (>3 elements): use generic eco.construct
-                    ecoConstruct ctx3 resultVar 0 layout.arity layout.unboxedBitmap elemVarPairs Nothing Nothing
+                    -- Elm rejects tuples with >3 elements during canonicalization
+                    crash "Compiler.Generate.CodeGen.MLIR" "generateTupleCreate" "unreachable: tuples >3 elements rejected by canonicalization"
     in
     { ops = elemOps ++ boxOps ++ [ constructOp ]
     , resultVar = resultVar
