@@ -3,8 +3,8 @@ module TupleMapSecondTest exposing (main)
 {-| Test Tuple.mapSecond.
 -}
 
--- CHECK: mapSecond1: (1,20)
--- CHECK: mapSecond2: (5,25)
+-- CHECK: mapSecond1: (1, 20)
+-- CHECK: mapSecond2: (5, 25)
 
 import Html exposing (text)
 

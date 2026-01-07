@@ -3,8 +3,8 @@ module TuplePairFuncTest exposing (main)
 {-| Test Tuple.pair function.
 -}
 
--- CHECK: pair1: (1,2)
--- CHECK: pair2: ("a","b")
+-- CHECK: pair1: (1, 2)
+-- CHECK: pair2: ("a", "b")
 
 import Html exposing (text)
 

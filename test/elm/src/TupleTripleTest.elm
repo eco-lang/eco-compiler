@@ -3,8 +3,8 @@ module TupleTripleTest exposing (main)
 {-| Test triple creation.
 -}
 
--- CHECK: triple1: (1,2,3)
--- CHECK: triple2: ("a","b","c")
+-- CHECK: triple1: (1, 2, 3)
+-- CHECK: triple2: ("a", "b", "c")
 
 import Html exposing (text)
 
