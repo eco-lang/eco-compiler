@@ -2,7 +2,8 @@
 //
 // Test eco.float.round with half values (ties).
 // The round operation returns i64 directly.
-// Note: Actual rounding behavior depends on implementation (may not be banker's rounding).
+// Note: Elm uses "round half away from zero" semantics (NOT banker's rounding).
+// This means 2.5 -> 3 and 3.5 -> 4 (always round away from zero at .5).
 
 module {
   func.func @main() -> i64 {
@@ -17,17 +18,18 @@ module {
     eco.dbg %r2 : i64
     // CHECK: [eco.dbg] 4
 
-    // Half values - actual behavior may vary
+    // Half values - Elm uses "round away from zero"
     %f2_5 = arith.constant 2.5 : f64
     %r3 = eco.float.round %f2_5 : f64 -> i64
     eco.dbg %r3 : i64
-    // May be 2 (banker's) or 3 (away from zero)
-    // CHECK: [eco.dbg]
+    // 2.5 rounds to 3 (away from zero)
+    // CHECK: [eco.dbg] 3
 
     %f3_5 = arith.constant 3.5 : f64
     %r4 = eco.float.round %f3_5 : f64 -> i64
     eco.dbg %r4 : i64
-    // CHECK: [eco.dbg]
+    // 3.5 rounds to 4 (away from zero)
+    // CHECK: [eco.dbg] 4
 
     // Negative values
     %fn3_2 = arith.constant -3.2 : f64
