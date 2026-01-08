@@ -548,12 +548,9 @@ extern "C" uint64_t eco_closure_call_saturated(uint64_t closure_hptr, uint64_t* 
 // Runtime Utilities
 //===----------------------------------------------------------------------===//
 
-// Forward declaration - defined below after print_value
-static void* toPointer(uint64_t val);
-
 extern "C" [[noreturn]] void eco_crash(uint64_t message_val) {
-    // Use toPointer() to handle both HPointers (from heap) and raw pointers (from JIT globals like string literals)
-    void* message = toPointer(message_val);
+    // message_val must be an HPointer to a heap-allocated string
+    void* message = hpointerToPtr(message_val);
 
     // Print error message if it's a valid string
     if (message) {
@@ -578,53 +575,6 @@ extern "C" [[noreturn]] void eco_crash(uint64_t message_val) {
 
 // Forward declaration for recursive printing
 static void print_value(uint64_t val, int depth);
-
-// Decode uint64_t to void pointer, handling both raw pointers and HPointers.
-// This mirrors the logic in ExportHelpers.hpp::toPtr().
-//
-// Values can be:
-// 1. Raw pointers (e.g., string literal addresses from JIT globals)
-// 2. HPointers (encoded heap offsets from kernel function results)
-// 3. Embedded constants (special values with constant field 1-7)
-static void* toPointer(uint64_t val) {
-    // Handle null (zero) explicitly
-    if (val == 0) {
-        return nullptr;
-    }
-
-    // Decode as HPointer to check the constant and padding fields
-    HPointer h;
-    memcpy(&h, &val, sizeof(h));
-
-    // Check if this looks like an embedded constant.
-    // Valid embedded constants have constant field values 1-7.
-    if (h.constant >= 1 && h.constant <= 7) {
-        return nullptr;
-    }
-
-    // If constant is non-zero but outside the valid constant range (1-7),
-    // this is a raw pointer address that happens to have high bits set.
-    if (h.constant != 0) {
-        return reinterpret_cast<void*>(val);
-    }
-
-    // constant == 0: This could be either:
-    // 1. A valid HPointer (heap offset) - the ptr field encodes offset / 8
-    // 2. A raw pointer that happens to have bits 40-43 all zero
-    //
-    // Strategy: Check if the padding bits (44-63) are zero.
-    // For valid HPointers, these must be zero.
-    // For raw x86-64 pointers (e.g., 0x7f38835ba0e0), bits 44+ will be non-zero.
-
-    if (h.padding != 0) {
-        // This is a raw pointer - bits 44+ are set
-        return reinterpret_cast<void*>(val);
-    }
-
-    // padding == 0 and constant == 0: This is a valid HPointer
-    // Use resolve() to handle forwarding pointers
-    return Allocator::instance().resolve(h);
-}
 
 // Print a string value
 static void print_string(ElmString* str) {
@@ -774,8 +724,8 @@ static void print_list(uint64_t val, int depth) {
             break;
         }
 
-        // Convert HPointer to raw pointer using toPointer()
-        void* ptr = toPointer(current);
+        // Convert HPointer to raw pointer
+        void* ptr = hpointerToPtr(current);
         if (!ptr) {
             if (!first) output_text(", ");
             output_text("<null>");
@@ -927,8 +877,8 @@ static void print_custom(Custom* custom, int depth) {
                     // Null pointer
                     output_text("<null>");
                 } else if (!print_if_constant(val)) {
-                    // Regular pointer - use toPointer() to handle HPointers correctly
-                    void* ptr = toPointer(val);
+                    // Heap pointer - resolve HPointer
+                    void* ptr = hpointerToPtr(val);
                     bool needs_parens = false;
                     if (ptr) {
                         Header* h = static_cast<Header*>(ptr);
@@ -1016,8 +966,8 @@ static void print_value(uint64_t val, int depth) {
         return;
     }
 
-    // Convert uint64_t to pointer, handling both raw pointers and HPointers
-    void* ptr = toPointer(val);
+    // Convert HPointer to raw pointer via allocator
+    void* ptr = hpointerToPtr(val);
     if (!ptr) {
         output_text("<null>");
         return;
@@ -1180,8 +1130,8 @@ extern "C" void eco_print_elm_value(uint64_t value) {
         return;
     }
 
-    // Convert uint64_t to pointer, handling both raw pointers and HPointers
-    void* ptr = toPointer(value);
+    // Convert HPointer to raw pointer via allocator
+    void* ptr = hpointerToPtr(value);
     if (!ptr) {
         output_text("<null>");
         return;
