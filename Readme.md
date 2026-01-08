@@ -60,3 +60,47 @@ A CMake preset configuration to build with ninja, clang and lld exists in
 `CMakePresets.json`. Set up the build in this project with:
 
     cmake --preset ninja-clang-lld-linux
+
+## Convenience Build Targets
+
+After configuring with a preset, these convenience targets are available:
+
+| Target | Description |
+|--------|-------------|
+| `check` | Incremental build + run tests |
+| `run-tests` | Run tests only (no build) |
+| `rebuild` | Clean + rebuild (no tests) |
+| `full` | Clean + rebuild + run tests |
+
+### Build and test (most common)
+
+    cmake --build build --target check
+
+### Run tests only
+
+    cmake --build build --target run-tests
+
+### Full clean rebuild and test
+
+    cmake --build build --target full
+
+### Filter tests by name
+
+Use the `TEST_FILTER` environment variable with any test target:
+
+    TEST_FILTER=elm cmake --build build --target check
+    TEST_FILTER=String cmake --build build --target run-tests
+
+### Clean rebuild without tests
+
+    cmake --build build --target rebuild
+
+## Running Tests Directly
+
+For more control over test execution, run the test binary directly:
+
+    ./build/test/test                    # Run all tests
+    ./build/test/test --filter elm       # Filter by name
+    ./build/test/test -n 1000            # Run 1000 tests
+    ./build/test/test --seed 42          # Reproducible run
+    ./build/test/test --max-size 500     # Higher complexity tests

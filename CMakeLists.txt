@@ -55,6 +55,24 @@ add_custom_target(rebuild
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
     COMMENT "Clean and rebuild all targets"
+    USES_TERMINAL
+)
+
+# Usage: cmake --build build --target check
+# Usage with filter: TEST_FILTER=elm cmake --build build --target check
+add_custom_target(check
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+    COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
+    COMMENT "Build and run tests"
+    USES_TERMINAL
+)
+
+# Usage: cmake --build build --target run-tests
+# Usage with filter: TEST_FILTER=elm cmake --build build --target run-tests
+add_custom_target(run-tests
+    COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
+    COMMENT "Run tests (no build)"
+    USES_TERMINAL
 )
 
 # Usage: cmake --build build --target full
@@ -64,4 +82,5 @@ add_custom_target(full
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
     COMMENT "Clean, rebuild, and run tests"
+    USES_TERMINAL
 )

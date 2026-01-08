@@ -26,16 +26,36 @@
         "CMAKE_SHARED_LINKER_FLAGS_INIT": "-fuse-ld=lld",
         "CMAKE_BUILD_TYPE": "Debug"
       }
+    },
+    {
+      "name": "ninja-clang-lld-linux-ccache",
+      "displayName": "Ninja + Clang + lld + ccache (Linux)",
+      "inherits": "ninja-clang-lld-linux",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache"
+      }
+    },
+    {
+      "name": "ninja-clang-lld-linux-debug-ccache",
+      "displayName": "Ninja + Clang + lld + ccache (Linux Debug)",
+      "inherits": "ninja-clang-lld-linux-debug",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache"
+      }
     }
   ],
   "buildPresets": [
     {
       "name": "build",
-      "configurePreset": "ninja-clang-lld-linux"
+      "configurePreset": "ninja-clang-lld-linux",
+      "jobs": 0
     },
     {
       "name": "debug",
-      "configurePreset": "ninja-clang-lld-linux-debug"
+      "configurePreset": "ninja-clang-lld-linux-debug",
+      "jobs": 0
     }
   ]
 }
