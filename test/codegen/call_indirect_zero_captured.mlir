@@ -5,7 +5,7 @@
 
 module {
   // Simple double function as an evaluator
-  llvm.func @double_eval(%args: !llvm.ptr) -> !llvm.ptr {
+  llvm.func @double_eval(%args: !llvm.ptr) -> i64 {
     %c0 = llvm.mlir.constant(0 : i64) : i64
     %c8 = llvm.mlir.constant(8 : i64) : i64
 
@@ -14,7 +14,7 @@ module {
     %box_i64 = llvm.load %ptr0 : !llvm.ptr -> i64
 
     // Unbox
-    %box_ptr = llvm.inttoptr %box_i64 : i64 to !llvm.ptr
+    %box_ptr = llvm.call @eco_resolve_hptr(%box_i64) : (i64) -> !llvm.ptr
     %val_ptr = llvm.getelementptr %box_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %val = llvm.load %val_ptr : !llvm.ptr -> i64
 
@@ -23,11 +23,12 @@ module {
     %doubled = llvm.mul %val, %c2 : i64
 
     // Box result
-    %result = llvm.call @eco_alloc_int(%doubled) : (i64) -> !llvm.ptr
-    llvm.return %result : !llvm.ptr
+    %result = llvm.call @eco_alloc_int(%doubled) : (i64) -> i64
+    llvm.return %result : i64
   }
 
-  llvm.func @eco_alloc_int(i64) -> !llvm.ptr
+  llvm.func @eco_alloc_int(i64) -> i64
+  llvm.func @eco_resolve_hptr(i64) -> !llvm.ptr
 
   func.func @main() -> i64 {
     // Create closure with 0 captured values

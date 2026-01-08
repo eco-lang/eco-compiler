@@ -284,33 +284,36 @@ struct BoxOpLowering : public OpConversionPattern<BoxOp> {
 
         if (inputType.isInteger(64)) {
             // Box i64 -> eco_alloc_int.
-            auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {i64Ty});
+            // Runtime returns HPointer as uint64_t directly.
+            auto funcTy = LLVM::LLVMFunctionType::get(i64Ty, {i64Ty});
             getOrInsertFunc(module, rewriter, "eco_alloc_int", funcTy);
 
             auto call = rewriter.create<LLVM::CallOp>(
-                loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_int"),
+                loc, i64Ty, SymbolRefAttr::get(ctx, "eco_alloc_int"),
                 ValueRange{input});
-            result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, call.getResult());
+            result = call.getResult();
         } else if (inputType.isF64()) {
             // Box f64 -> eco_alloc_float.
+            // Runtime returns HPointer as uint64_t directly.
             auto f64Ty = Float64Type::get(ctx);
-            auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {f64Ty});
+            auto funcTy = LLVM::LLVMFunctionType::get(i64Ty, {f64Ty});
             getOrInsertFunc(module, rewriter, "eco_alloc_float", funcTy);
 
             auto call = rewriter.create<LLVM::CallOp>(
-                loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_float"),
+                loc, i64Ty, SymbolRefAttr::get(ctx, "eco_alloc_float"),
                 ValueRange{input});
-            result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, call.getResult());
+            result = call.getResult();
         } else if (inputType.isInteger(16)) {
             // Box i16 (char) -> eco_alloc_char.
+            // Runtime returns HPointer as uint64_t directly.
             auto i16Ty = IntegerType::get(ctx, 16);
-            auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {i16Ty});
+            auto funcTy = LLVM::LLVMFunctionType::get(i64Ty, {i16Ty});
             getOrInsertFunc(module, rewriter, "eco_alloc_char", funcTy);
 
             auto call = rewriter.create<LLVM::CallOp>(
-                loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_char"),
+                loc, i64Ty, SymbolRefAttr::get(ctx, "eco_alloc_char"),
                 ValueRange{input});
-            result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, call.getResult());
+            result = call.getResult();
         } else if (inputType.isInteger(1)) {
             // Box i1 (bool) -> use embedded constant True/False.
             // ConstantKind::True = 3, ConstantKind::False = 4.
@@ -360,8 +363,15 @@ struct UnboxOpLowering : public OpConversionPattern<UnboxOp> {
             return success();
         }
 
-        // Convert tagged i64 to pointer.
-        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, input);
+        // Convert HPointer (i64) to raw pointer via runtime function
+        auto module = op->getParentOfType<ModuleOp>();
+        auto resolveFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i64Ty});
+        getOrInsertFunc(module, rewriter, "eco_resolve_hptr", resolveFuncTy);
+
+        auto resolveCall = rewriter.create<LLVM::CallOp>(
+            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_resolve_hptr"),
+            ValueRange{input});
+        Value ptr = resolveCall.getResult();
 
         // Offset 8 bytes past the Header to access the value field.
         auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 8);
@@ -393,8 +403,9 @@ struct AllocateOpLowering : public OpConversionPattern<AllocateOp> {
         auto i64Ty = IntegerType::get(ctx, 64);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-        // Get or insert eco_allocate declaration: void* eco_allocate(uint64_t size, uint32_t tag)
-        auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {i64Ty, i32Ty});
+        // Get or insert eco_allocate declaration: uint64_t eco_allocate(uint64_t size, uint32_t tag)
+        // Runtime returns HPointer as uint64_t directly.
+        auto funcTy = LLVM::LLVMFunctionType::get(i64Ty, {i64Ty, i32Ty});
         getOrInsertFunc(module, rewriter, "eco_allocate", funcTy);
 
         // The size operand is already converted to i64
@@ -405,13 +416,12 @@ struct AllocateOpLowering : public OpConversionPattern<AllocateOp> {
         // is informational for debugging/GC root registration.
         auto tag = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 7);  // Tag_Custom
 
-        // Call eco_allocate
+        // Call eco_allocate - returns HPointer as uint64_t directly.
         auto call = rewriter.create<LLVM::CallOp>(
-            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_allocate"),
+            loc, i64Ty, SymbolRefAttr::get(ctx, "eco_allocate"),
             ValueRange{size, tag});
 
-        // Convert ptr to i64
-        auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, call.getResult());
+        auto result = call.getResult();
 
         rewriter.replaceOp(op, result);
         return success();
@@ -436,7 +446,8 @@ struct AllocateCtorOpLowering : public OpConversionPattern<AllocateCtorOp> {
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         // Get or insert eco_alloc_custom declaration
-        auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {i32Ty, i32Ty, i32Ty});
+        // Runtime returns HPointer as uint64_t directly.
+        auto funcTy = LLVM::LLVMFunctionType::get(i64Ty, {i32Ty, i32Ty, i32Ty});
         getOrInsertFunc(module, rewriter, "eco_alloc_custom", funcTy);
 
         // Create constants for arguments
@@ -447,13 +458,12 @@ struct AllocateCtorOpLowering : public OpConversionPattern<AllocateCtorOp> {
         auto scalarBytes = rewriter.create<LLVM::ConstantOp>(
             loc, i32Ty, static_cast<int32_t>(op.getScalarBytes()));
 
-        // Call eco_alloc_custom
+        // Call eco_alloc_custom - returns HPointer as uint64_t directly.
         auto call = rewriter.create<LLVM::CallOp>(
-            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_custom"),
+            loc, i64Ty, SymbolRefAttr::get(ctx, "eco_alloc_custom"),
             ValueRange{tag, size, scalarBytes});
 
-        // Convert ptr to i64
-        auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, call.getResult());
+        auto result = call.getResult();
 
         rewriter.replaceOp(op, result);
         return success();
@@ -478,20 +488,20 @@ struct AllocateStringOpLowering : public OpConversionPattern<AllocateStringOp> {
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         // Get or insert eco_alloc_string declaration
-        auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {i32Ty});
+        // Runtime returns HPointer as uint64_t directly.
+        auto funcTy = LLVM::LLVMFunctionType::get(i64Ty, {i32Ty});
         getOrInsertFunc(module, rewriter, "eco_alloc_string", funcTy);
 
         // Create length constant
         auto length = rewriter.create<LLVM::ConstantOp>(
             loc, i32Ty, static_cast<int32_t>(op.getLength()));
 
-        // Call eco_alloc_string
+        // Call eco_alloc_string - returns HPointer as uint64_t directly.
         auto call = rewriter.create<LLVM::CallOp>(
-            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_string"),
+            loc, i64Ty, SymbolRefAttr::get(ctx, "eco_alloc_string"),
             ValueRange{length});
 
-        // Convert ptr to i64
-        auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, call.getResult());
+        auto result = call.getResult();
 
         rewriter.replaceOp(op, result);
         return success();
@@ -516,7 +526,8 @@ struct AllocateClosureOpLowering : public OpConversionPattern<AllocateClosureOp>
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         // Get or insert eco_alloc_closure declaration
-        auto allocClosureTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, i32Ty});
+        // Runtime returns HPointer as uint64_t directly. First param is raw func ptr.
+        auto allocClosureTy = LLVM::LLVMFunctionType::get(i64Ty, {ptrTy, i32Ty});
         getOrInsertFunc(module, rewriter, "eco_alloc_closure", allocClosureTy);
 
         // Get function address for the closure.
@@ -529,13 +540,12 @@ struct AllocateClosureOpLowering : public OpConversionPattern<AllocateClosureOp>
         auto arityConst = rewriter.create<LLVM::ConstantOp>(
             loc, i32Ty, static_cast<int32_t>(op.getArity()));
 
-        // Call eco_alloc_closure(func_ptr, arity)
+        // Call eco_alloc_closure(func_ptr, arity) - returns HPointer as uint64_t directly.
         auto call = rewriter.create<LLVM::CallOp>(
-            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_closure"),
+            loc, i64Ty, SymbolRefAttr::get(ctx, "eco_alloc_closure"),
             ValueRange{funcPtr, arityConst});
 
-        // Convert ptr to i64
-        auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, call.getResult());
+        auto result = call.getResult();
 
         rewriter.replaceOp(op, result);
         return success();
@@ -565,7 +575,8 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         auto captured = adaptor.getCaptured();
 
         // Get or insert eco_alloc_closure declaration.
-        auto allocClosureTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, i32Ty});
+        // Runtime returns HPointer as uint64_t directly. First param is raw func ptr.
+        auto allocClosureTy = LLVM::LLVMFunctionType::get(i64Ty, {ptrTy, i32Ty});
         getOrInsertFunc(module, rewriter, "eco_alloc_closure", allocClosureTy);
 
         // Get function address for the closure.
@@ -576,12 +587,22 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
 
         // Call eco_alloc_closure(func_ptr, arity).
         // This allocates a closure with max_values = arity, n_values = 0.
+        // Returns HPointer as uint64_t directly.
         auto arityConst = rewriter.create<LLVM::ConstantOp>(
             loc, i32Ty, static_cast<int32_t>(arity));
         auto call = rewriter.create<LLVM::CallOp>(
-            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_closure"),
+            loc, i64Ty, SymbolRefAttr::get(ctx, "eco_alloc_closure"),
             ValueRange{funcPtr, arityConst});
-        Value closurePtr = call.getResult();
+        Value closureHPtr = call.getResult();
+
+        // Convert HPointer to raw pointer via runtime function for memory operations.
+        auto resolveFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i64Ty});
+        getOrInsertFunc(module, rewriter, "eco_resolve_hptr", resolveFuncTy);
+
+        auto resolveCall = rewriter.create<LLVM::CallOp>(
+            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_resolve_hptr"),
+            ValueRange{closureHPtr});
+        Value closurePtr = resolveCall.getResult();
 
         // Closure layout:
         //   Header: offset 0, size 8
@@ -638,9 +659,8 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
             rewriter.create<LLVM::StoreOp>(loc, capturedValue, valuePtr);
         }
 
-        // Convert closure ptr to i64 for eco.value representation.
-        auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, closurePtr);
-        rewriter.replaceOp(op, result);
+        // Use the HPointer directly for eco.value representation.
+        rewriter.replaceOp(op, closureHPtr);
         return success();
     }
 };
@@ -666,9 +686,8 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         auto newargs = adaptor.getNewargs();
         int64_t numNewArgs = newargs.size();
 
-        // Convert closure i64 to pointer.
+        // Get closure as i64 (HPointer format).
         Value closureI64 = adaptor.getClosure();
-        Value closurePtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, closureI64);
 
         // Determine if this is a saturated call.
         bool isSaturated = (numNewArgs == remainingArity);
@@ -684,7 +703,8 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
             // Load packed field to get n_values (bits 0-5).
             // For saturated calls, we call a runtime helper that handles extracting
             // captured values and dispatching to the evaluator.
-            auto helperTy = LLVM::LLVMFunctionType::get(i64Ty, {ptrTy, ptrTy, i32Ty});
+            // eco_closure_call_saturated(uint64_t closure, uint64_t* args, uint32_t num_args) -> uint64_t
+            auto helperTy = LLVM::LLVMFunctionType::get(i64Ty, {i64Ty, ptrTy, i32Ty});
             getOrInsertFunc(module, rewriter, "eco_closure_call_saturated", helperTy);
 
             // Build args array on stack.
@@ -709,14 +729,14 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
 
             auto call = rewriter.create<LLVM::CallOp>(
                 loc, i64Ty, SymbolRefAttr::get(ctx, "eco_closure_call_saturated"),
-                ValueRange{closurePtr, argsArray, numNewArgsConst});
+                ValueRange{closureI64, argsArray, numNewArgsConst});
 
             rewriter.replaceOp(op, call.getResult());
         } else {
             // Partial application: allocate new closure with combined captured values.
             // Call runtime helper to create extended closure.
-
-            auto helperTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, ptrTy, i32Ty});
+            // eco_pap_extend(uint64_t closure, uint64_t* args, uint32_t num_args) -> uint64_t (HPointer)
+            auto helperTy = LLVM::LLVMFunctionType::get(i64Ty, {i64Ty, ptrTy, i32Ty});
             getOrInsertFunc(module, rewriter, "eco_pap_extend", helperTy);
 
             // Build args array on stack.
@@ -740,11 +760,11 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                 static_cast<int32_t>(numNewArgs));
 
             auto call = rewriter.create<LLVM::CallOp>(
-                loc, ptrTy, SymbolRefAttr::get(ctx, "eco_pap_extend"),
-                ValueRange{closurePtr, argsArray, numNewArgsConst});
+                loc, i64Ty, SymbolRefAttr::get(ctx, "eco_pap_extend"),
+                ValueRange{closureI64, argsArray, numNewArgsConst});
 
-            auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, call.getResult());
-            rewriter.replaceOp(op, result);
+            // Result is already HPointer as i64, no conversion needed.
+            rewriter.replaceOp(op, call.getResult());
         }
 
         return success();
@@ -769,27 +789,25 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
         auto i64Ty = IntegerType::get(ctx, 64);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-        // eco_alloc_cons(void* head, void* tail, uint32_t head_unboxed)
-        auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, ptrTy, i32Ty});
+        // eco_alloc_cons(uint64_t head, uint64_t tail, uint32_t head_unboxed) -> uint64_t
+        // Runtime takes and returns HPointer as uint64_t directly.
+        auto funcTy = LLVM::LLVMFunctionType::get(i64Ty, {i64Ty, i64Ty, i32Ty});
         getOrInsertFunc(module, rewriter, "eco_alloc_cons", funcTy);
 
-        // Convert operands: head and tail are i64 tagged pointers, convert to ptr.
+        // head and tail are already i64 tagged pointers - pass directly.
         auto headVal = adaptor.getHead();
         auto tailVal = adaptor.getTail();
-        auto headPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, headVal);
-        auto tailPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, tailVal);
 
         // head_unboxed attribute.
         uint32_t headUnboxed = op.getHeadUnboxed() ? 1 : 0;
         auto headUnboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, headUnboxed);
 
-        // Call eco_alloc_cons.
+        // Call eco_alloc_cons - returns HPointer as uint64_t directly.
         auto call = rewriter.create<LLVM::CallOp>(
-            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_cons"),
-            ValueRange{headPtr, tailPtr, headUnboxedVal});
+            loc, i64Ty, SymbolRefAttr::get(ctx, "eco_alloc_cons"),
+            ValueRange{headVal, tailVal, headUnboxedVal});
 
-        // Convert result ptr to i64.
-        auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, call.getResult());
+        auto result = call.getResult();
         rewriter.replaceOp(op, result);
         return success();
     }
@@ -809,7 +827,16 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         Value input = adaptor.getList();
-        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, input);
+
+        // Convert HPointer (i64) to raw pointer via runtime function
+        auto module = op->getParentOfType<ModuleOp>();
+        auto resolveFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i64Ty});
+        getOrInsertFunc(module, rewriter, "eco_resolve_hptr", resolveFuncTy);
+
+        auto resolveCall = rewriter.create<LLVM::CallOp>(
+            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_resolve_hptr"),
+            ValueRange{input});
+        Value ptr = resolveCall.getResult();
 
         // Cons layout: Header (8) + head (8) + tail (8).
         // Head is at offset 8.
@@ -839,7 +866,16 @@ struct ListTailOpLowering : public OpConversionPattern<ListTailOp> {
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         Value input = adaptor.getList();
-        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, input);
+
+        // Convert HPointer (i64) to raw pointer via runtime function
+        auto module = op->getParentOfType<ModuleOp>();
+        auto resolveFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i64Ty});
+        getOrInsertFunc(module, rewriter, "eco_resolve_hptr", resolveFuncTy);
+
+        auto resolveCall = rewriter.create<LLVM::CallOp>(
+            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_resolve_hptr"),
+            ValueRange{input});
+        Value ptr = resolveCall.getResult();
 
         // Cons layout: Header (8) + head (8) + tail (8).
         // Tail is at offset 16.
@@ -869,24 +905,24 @@ struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp>
         auto i64Ty = IntegerType::get(ctx, 64);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-        // eco_alloc_tuple2(void* a, void* b, uint32_t unboxed_mask)
-        auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, ptrTy, i32Ty});
+        // eco_alloc_tuple2(uint64_t a, uint64_t b, uint32_t unboxed_mask) -> uint64_t
+        // Runtime takes and returns HPointer as uint64_t directly.
+        auto funcTy = LLVM::LLVMFunctionType::get(i64Ty, {i64Ty, i64Ty, i32Ty});
         getOrInsertFunc(module, rewriter, "eco_alloc_tuple2", funcTy);
 
+        // a and b are already i64 - pass directly.
         auto aVal = adaptor.getA();
         auto bVal = adaptor.getB();
-        auto aPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, aVal);
-        auto bPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, bVal);
 
         int64_t unboxedMask = op.getUnboxedBitmap();
         auto unboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
             static_cast<int32_t>(unboxedMask));
 
         auto call = rewriter.create<LLVM::CallOp>(
-            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_tuple2"),
-            ValueRange{aPtr, bPtr, unboxedVal});
+            loc, i64Ty, SymbolRefAttr::get(ctx, "eco_alloc_tuple2"),
+            ValueRange{aVal, bVal, unboxedVal});
 
-        auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, call.getResult());
+        auto result = call.getResult();
         rewriter.replaceOp(op, result);
         return success();
     }
@@ -906,26 +942,25 @@ struct Tuple3ConstructOpLowering : public OpConversionPattern<Tuple3ConstructOp>
         auto i64Ty = IntegerType::get(ctx, 64);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-        // eco_alloc_tuple3(void* a, void* b, void* c, uint32_t unboxed_mask)
-        auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, ptrTy, ptrTy, i32Ty});
+        // eco_alloc_tuple3(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) -> uint64_t
+        // Runtime takes and returns HPointer as uint64_t directly.
+        auto funcTy = LLVM::LLVMFunctionType::get(i64Ty, {i64Ty, i64Ty, i64Ty, i32Ty});
         getOrInsertFunc(module, rewriter, "eco_alloc_tuple3", funcTy);
 
+        // a, b, c are already i64 - pass directly.
         auto aVal = adaptor.getA();
         auto bVal = adaptor.getB();
         auto cVal = adaptor.getC();
-        auto aPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, aVal);
-        auto bPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, bVal);
-        auto cPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, cVal);
 
         int64_t unboxedMask = op.getUnboxedBitmap();
         auto unboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
             static_cast<int32_t>(unboxedMask));
 
         auto call = rewriter.create<LLVM::CallOp>(
-            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_tuple3"),
-            ValueRange{aPtr, bPtr, cPtr, unboxedVal});
+            loc, i64Ty, SymbolRefAttr::get(ctx, "eco_alloc_tuple3"),
+            ValueRange{aVal, bVal, cVal, unboxedVal});
 
-        auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, call.getResult());
+        auto result = call.getResult();
         rewriter.replaceOp(op, result);
         return success();
     }
@@ -946,7 +981,16 @@ struct Tuple2ProjectOpLowering : public OpConversionPattern<Tuple2ProjectOp> {
 
         Value input = adaptor.getTuple();
         int64_t field = op.getField();
-        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, input);
+
+        // Convert HPointer (i64) to raw pointer via runtime function
+        auto module = op->getParentOfType<ModuleOp>();
+        auto resolveFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i64Ty});
+        getOrInsertFunc(module, rewriter, "eco_resolve_hptr", resolveFuncTy);
+
+        auto resolveCall = rewriter.create<LLVM::CallOp>(
+            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_resolve_hptr"),
+            ValueRange{input});
+        Value ptr = resolveCall.getResult();
 
         // Tuple2 layout: Header (8) + a (8) + b (8).
         // field 0 = offset 8, field 1 = offset 16.
@@ -977,7 +1021,16 @@ struct Tuple3ProjectOpLowering : public OpConversionPattern<Tuple3ProjectOp> {
 
         Value input = adaptor.getTuple();
         int64_t field = op.getField();
-        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, input);
+
+        // Convert HPointer (i64) to raw pointer via runtime function
+        auto module = op->getParentOfType<ModuleOp>();
+        auto resolveFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i64Ty});
+        getOrInsertFunc(module, rewriter, "eco_resolve_hptr", resolveFuncTy);
+
+        auto resolveCall = rewriter.create<LLVM::CallOp>(
+            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_resolve_hptr"),
+            ValueRange{input});
+        Value ptr = resolveCall.getResult();
 
         // Tuple3 layout: Header (8) + a (8) + b (8) + c (8).
         // field 0 = offset 8, field 1 = offset 16, field 2 = offset 24.
@@ -1009,20 +1062,20 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
         auto voidTy = LLVM::LLVMVoidType::get(ctx);
 
-        // eco_alloc_record(uint32_t field_count, uint64_t unboxed_bitmap)
-        auto allocFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i32Ty, i64Ty});
+        // eco_alloc_record(uint32_t field_count, uint64_t unboxed_bitmap) -> HPointer as i64
+        auto allocFuncTy = LLVM::LLVMFunctionType::get(i64Ty, {i32Ty, i64Ty});
         getOrInsertFunc(module, rewriter, "eco_alloc_record", allocFuncTy);
 
-        // eco_store_record_field(void* record, uint32_t index, void* value)
-        auto storeFuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty, ptrTy});
+        // eco_store_record_field(uint64_t record, uint32_t index, uint64_t value)
+        auto storeFuncTy = LLVM::LLVMFunctionType::get(voidTy, {i64Ty, i32Ty, i64Ty});
         getOrInsertFunc(module, rewriter, "eco_store_record_field", storeFuncTy);
 
-        // eco_store_record_field_i64(void* record, uint32_t index, int64_t value)
-        auto storeI64FuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty, i64Ty});
+        // eco_store_record_field_i64(uint64_t record, uint32_t index, int64_t value)
+        auto storeI64FuncTy = LLVM::LLVMFunctionType::get(voidTy, {i64Ty, i32Ty, i64Ty});
         getOrInsertFunc(module, rewriter, "eco_store_record_field_i64", storeI64FuncTy);
 
-        // eco_store_record_field_f64(void* record, uint32_t index, double value)
-        auto storeF64FuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty, f64Ty});
+        // eco_store_record_field_f64(uint64_t record, uint32_t index, double value)
+        auto storeF64FuncTy = LLVM::LLVMFunctionType::get(voidTy, {i64Ty, i32Ty, f64Ty});
         getOrInsertFunc(module, rewriter, "eco_store_record_field_f64", storeF64FuncTy);
 
         int64_t fieldCount = op.getFieldCount();
@@ -1033,9 +1086,9 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
         auto unboxedBitmapVal = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, unboxedBitmap);
 
         auto allocCall = rewriter.create<LLVM::CallOp>(
-            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_record"),
+            loc, i64Ty, SymbolRefAttr::get(ctx, "eco_alloc_record"),
             ValueRange{fieldCountVal, unboxedBitmapVal});
-        auto objPtr = allocCall.getResult();
+        Value objHPtr = allocCall.getResult();
 
         // Store each field.
         auto origFields = op.getFields();
@@ -1048,28 +1101,27 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
             if (origType.isF64()) {
                 rewriter.create<LLVM::CallOp>(
                     loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_record_field_f64"),
-                    ValueRange{objPtr, idx, fieldVal});
+                    ValueRange{objHPtr, idx, fieldVal});
             } else if (origType.isInteger(1) || origType.isInteger(16)) {
                 // Bool or Char -> extend to i64.
                 auto extended = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, fieldVal);
                 rewriter.create<LLVM::CallOp>(
                     loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_record_field_i64"),
-                    ValueRange{objPtr, idx, extended});
+                    ValueRange{objHPtr, idx, extended});
             } else if (origType.isInteger(64)) {
                 rewriter.create<LLVM::CallOp>(
                     loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_record_field_i64"),
-                    ValueRange{objPtr, idx, fieldVal});
+                    ValueRange{objHPtr, idx, fieldVal});
             } else {
-                // Boxed !eco.value -> convert to ptr.
-                auto valPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, fieldVal);
+                // Boxed !eco.value -> pass as i64 (HPointer format).
                 rewriter.create<LLVM::CallOp>(
                     loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_record_field"),
-                    ValueRange{objPtr, idx, valPtr});
+                    ValueRange{objHPtr, idx, fieldVal});
             }
         }
 
-        auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, objPtr);
-        rewriter.replaceOp(op, result);
+        // Result is already HPointer as i64, no conversion needed.
+        rewriter.replaceOp(op, objHPtr);
         return success();
     }
 };
@@ -1089,7 +1141,16 @@ struct RecordProjectOpLowering : public OpConversionPattern<RecordProjectOp> {
 
         Value input = adaptor.getRecord();
         int64_t index = op.getFieldIndex();
-        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, input);
+
+        // Convert HPointer (i64) to raw pointer via runtime function
+        auto module = op->getParentOfType<ModuleOp>();
+        auto resolveFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i64Ty});
+        getOrInsertFunc(module, rewriter, "eco_resolve_hptr", resolveFuncTy);
+
+        auto resolveCall = rewriter.create<LLVM::CallOp>(
+            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_resolve_hptr"),
+            ValueRange{input});
+        Value ptr = resolveCall.getResult();
 
         // Record layout: Header (8) + unboxed (8) + values[index * 8].
         // Field at index N is at offset 16 + N * 8.
@@ -1121,20 +1182,24 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
         auto voidTy = LLVM::LLVMVoidType::get(ctx);
 
-        // eco_alloc_custom(ctor_id, field_count, scalar_bytes)
-        auto allocFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i32Ty, i32Ty, i32Ty});
+        // eco_alloc_custom(ctor_id, field_count, scalar_bytes) -> HPointer as i64
+        auto allocFuncTy = LLVM::LLVMFunctionType::get(i64Ty, {i32Ty, i32Ty, i32Ty});
         getOrInsertFunc(module, rewriter, "eco_alloc_custom", allocFuncTy);
 
-        auto storeFuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty, i64Ty});
+        // eco_store_field(uint64_t obj, uint32_t index, uint64_t value)
+        auto storeFuncTy = LLVM::LLVMFunctionType::get(voidTy, {i64Ty, i32Ty, i64Ty});
         getOrInsertFunc(module, rewriter, "eco_store_field", storeFuncTy);
 
-        auto storeI64FuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty, i64Ty});
+        // eco_store_field_i64(uint64_t obj, uint32_t index, int64_t value)
+        auto storeI64FuncTy = LLVM::LLVMFunctionType::get(voidTy, {i64Ty, i32Ty, i64Ty});
         getOrInsertFunc(module, rewriter, "eco_store_field_i64", storeI64FuncTy);
 
-        auto storeF64FuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty, f64Ty});
+        // eco_store_field_f64(uint64_t obj, uint32_t index, double value)
+        auto storeF64FuncTy = LLVM::LLVMFunctionType::get(voidTy, {i64Ty, i32Ty, f64Ty});
         getOrInsertFunc(module, rewriter, "eco_store_field_f64", storeF64FuncTy);
 
-        auto setUnboxedFuncTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i64Ty});
+        // eco_set_unboxed(uint64_t obj, uint64_t bitmap)
+        auto setUnboxedFuncTy = LLVM::LLVMFunctionType::get(voidTy, {i64Ty, i64Ty});
         getOrInsertFunc(module, rewriter, "eco_set_unboxed", setUnboxedFuncTy);
 
         auto tag = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(op.getTag()));
@@ -1142,9 +1207,9 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
         auto scalarBytes = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 0);
 
         auto allocCall = rewriter.create<LLVM::CallOp>(
-            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_alloc_custom"),
+            loc, i64Ty, SymbolRefAttr::get(ctx, "eco_alloc_custom"),
             ValueRange{tag, size, scalarBytes});
-        auto objPtr = allocCall.getResult();
+        Value objHPtr = allocCall.getResult();
 
         // Store each field.
         auto origFields = op.getFields();
@@ -1157,20 +1222,21 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
             if (origType.isF64()) {
                 rewriter.create<LLVM::CallOp>(
                     loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_field_f64"),
-                    ValueRange{objPtr, idx, fieldVal});
+                    ValueRange{objHPtr, idx, fieldVal});
             } else if (origType.isInteger(1) || origType.isInteger(16)) {
                 auto extended = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, fieldVal);
                 rewriter.create<LLVM::CallOp>(
                     loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_field_i64"),
-                    ValueRange{objPtr, idx, extended});
+                    ValueRange{objHPtr, idx, extended});
             } else if (origType.isInteger(64)) {
                 rewriter.create<LLVM::CallOp>(
                     loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_field_i64"),
-                    ValueRange{objPtr, idx, fieldVal});
+                    ValueRange{objHPtr, idx, fieldVal});
             } else {
+                // Boxed !eco.value -> pass as i64 (HPointer format).
                 rewriter.create<LLVM::CallOp>(
                     loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_store_field"),
-                    ValueRange{objPtr, idx, fieldVal});
+                    ValueRange{objHPtr, idx, fieldVal});
             }
         }
 
@@ -1180,10 +1246,11 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
             auto bitmapVal = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, bitmap);
             rewriter.create<LLVM::CallOp>(
                 loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_set_unboxed"),
-                ValueRange{objPtr, bitmapVal});
+                ValueRange{objHPtr, bitmapVal});
         }
 
-        auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, objPtr);
+        // Result is already HPointer as i64, no conversion needed.
+        Value result = objHPtr;
         rewriter.replaceOp(op, result);
         return success();
     }
@@ -1197,14 +1264,24 @@ struct CustomProjectOpLowering : public OpConversionPattern<CustomProjectOp> {
     matchAndRewrite(CustomProjectOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
+        auto module = op->getParentOfType<ModuleOp>();
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
         auto i8Ty = IntegerType::get(ctx, 8);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
+        // eco_resolve_hptr(uint64_t hptr) -> void*
+        auto resolveFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i64Ty});
+        getOrInsertFunc(module, rewriter, "eco_resolve_hptr", resolveFuncTy);
+
         Value input = adaptor.getContainer();
         int64_t index = op.getFieldIndex();
-        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, input);
+
+        // Convert HPointer to raw pointer via runtime function
+        auto resolveCall = rewriter.create<LLVM::CallOp>(
+            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_resolve_hptr"),
+            ValueRange{input});
+        Value ptr = resolveCall.getResult();
 
         // Custom layout: Header (8) + ctor/unboxed (8) + values[index * 8].
         // Field at index N is at offset 16 + N * 8.
@@ -1380,8 +1457,15 @@ struct CallOpLowering : public OpConversionPattern<CallOp> {
             auto i64Ty = IntegerType::get(ctx, 64);
             auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-            // Convert closure to pointer
-            Value closurePtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, closureI64);
+            // Convert HPointer to raw pointer via runtime function
+            auto module = op->getParentOfType<ModuleOp>();
+            auto resolveFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i64Ty});
+            getOrInsertFunc(module, rewriter, "eco_resolve_hptr", resolveFuncTy);
+
+            auto resolveCall = rewriter.create<LLVM::CallOp>(
+                loc, ptrTy, SymbolRefAttr::get(ctx, "eco_resolve_hptr"),
+                ValueRange{closureI64});
+            Value closurePtr = resolveCall.getResult();
 
             // Load packed field at offset 8: [n_values:6 | max_values:6 | unboxed:52]
             auto offset8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 8);
@@ -1500,18 +1584,18 @@ struct CrashOpLowering : public OpConversionPattern<CrashOp> {
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
         auto voidTy = LLVM::LLVMVoidType::get(ctx);
 
-        // Get or insert eco_crash declaration: void eco_crash(void* message)
-        auto funcTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy});
+        // Get or insert eco_crash declaration: void eco_crash(uint64_t message)
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto funcTy = LLVM::LLVMFunctionType::get(voidTy, {i64Ty});
         getOrInsertFunc(module, rewriter, "eco_crash", funcTy);
 
-        // Convert the message from i64 (tagged pointer) back to ptr.
-        Value msgPtr = rewriter.create<LLVM::IntToPtrOp>(
-            loc, ptrTy, adaptor.getMessage());
+        // Message is already i64 (HPointer format), pass directly.
+        Value msg = adaptor.getMessage();
 
         // Call eco_crash (which is [[noreturn]])
         rewriter.create<LLVM::CallOp>(
             loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_crash"),
-            ValueRange{msgPtr});
+            ValueRange{msg});
 
         // Add unreachable since eco_crash never returns
         rewriter.create<LLVM::UnreachableOp>(loc);
@@ -1534,11 +1618,11 @@ struct ExpectOpLowering : public OpConversionPattern<ExpectOp> {
         auto loc = op.getLoc();
         auto module = op->getParentOfType<ModuleOp>();
         auto *ctx = rewriter.getContext();
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+        auto i64Ty = IntegerType::get(ctx, 64);
         auto voidTy = LLVM::LLVMVoidType::get(ctx);
 
-        // Get or insert eco_crash declaration.
-        auto funcTy = LLVM::LLVMFunctionType::get(voidTy, {ptrTy});
+        // Get or insert eco_crash declaration: void eco_crash(uint64_t message)
+        auto funcTy = LLVM::LLVMFunctionType::get(voidTy, {i64Ty});
         getOrInsertFunc(module, rewriter, "eco_crash", funcTy);
 
         // Get parent block.
@@ -1550,11 +1634,11 @@ struct ExpectOpLowering : public OpConversionPattern<ExpectOp> {
 
         // In crash block: call eco_crash and unreachable.
         rewriter.setInsertionPointToStart(crashBlock);
-        Value msgPtr = rewriter.create<LLVM::IntToPtrOp>(
-            loc, ptrTy, adaptor.getMessage());
+        // Message is already i64 (HPointer format), pass directly.
+        Value msg = adaptor.getMessage();
         rewriter.create<LLVM::CallOp>(
             loc, TypeRange{}, SymbolRefAttr::get(ctx, "eco_crash"),
-            ValueRange{msgPtr});
+            ValueRange{msg});
         rewriter.create<LLVM::UnreachableOp>(loc);
 
         // In current block: conditional branch - if true continue, else crash.
@@ -1677,7 +1761,16 @@ struct GetTagOpLowering : public OpConversionPattern<GetTagOp> {
         // For Custom objects: ctor field is at offset 8, first 16 bits.
         // Memory layout: [Header (8 bytes)][ctor:16 | unboxed:48][values...]
         Value value = adaptor.getValue();
-        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, value);
+
+        // Convert HPointer (i64) to raw pointer via runtime function
+        auto module = op->getParentOfType<ModuleOp>();
+        auto resolveFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i64Ty});
+        getOrInsertFunc(module, rewriter, "eco_resolve_hptr", resolveFuncTy);
+
+        auto resolveCall = rewriter.create<LLVM::CallOp>(
+            loc, ptrTy, SymbolRefAttr::get(ctx, "eco_resolve_hptr"),
+            ValueRange{value});
+        Value ptr = resolveCall.getResult();
 
         // Load the ctor field at offset 8 (after the Header).
         auto offset8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 8);
@@ -1771,7 +1864,17 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
 
             // Heap case: load ctor from offset 8
             rewriter.setInsertionPointToStart(embHeapBlock);
-            auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, scrutinee);
+
+            // Convert HPointer (i64) to raw pointer via runtime function
+            auto module = op->getParentOfType<ModuleOp>();
+            auto resolveFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {i64Ty});
+            getOrInsertFunc(module, rewriter, "eco_resolve_hptr", resolveFuncTy);
+
+            auto resolveCall = rewriter.create<LLVM::CallOp>(
+                loc, ptrTy, SymbolRefAttr::get(ctx, "eco_resolve_hptr"),
+                ValueRange{scrutinee});
+            Value ptr = resolveCall.getResult();
+
             auto offset8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 8);
             auto ctorPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
                                                         ValueRange{offset8});

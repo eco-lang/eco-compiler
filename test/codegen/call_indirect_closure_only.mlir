@@ -5,23 +5,23 @@
 
 module {
   // A function that uses its captured value
-  llvm.func @return_captured(%args: !llvm.ptr) -> !llvm.ptr {
+  llvm.func @return_captured(%args: !llvm.ptr) -> i64 {
     %c0 = llvm.mlir.constant(0 : i64) : i64
     %c8 = llvm.mlir.constant(8 : i64) : i64
 
     // Get first (and only) captured arg
     %p0 = llvm.getelementptr %args[%c0] : (!llvm.ptr, i64) -> !llvm.ptr, i64
     %b0 = llvm.load %p0 : !llvm.ptr -> i64
-    %ptr0 = llvm.inttoptr %b0 : i64 to !llvm.ptr
+    %ptr0 = llvm.call @eco_resolve_hptr(%b0) : (i64) -> !llvm.ptr
     %vp0 = llvm.getelementptr %ptr0[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %val = llvm.load %vp0 : !llvm.ptr -> i64
 
-    %result = llvm.call @eco_alloc_int(%val) : (i64) -> !llvm.ptr
-    llvm.return %result : !llvm.ptr
+    %result = llvm.call @eco_alloc_int(%val) : (i64) -> i64
+    llvm.return %result : i64
   }
 
   // A function that takes 2 args and returns their sum
-  llvm.func @sum2(%args: !llvm.ptr) -> !llvm.ptr {
+  llvm.func @sum2(%args: !llvm.ptr) -> i64 {
     %c0 = llvm.mlir.constant(0 : i64) : i64
     %c1 = llvm.mlir.constant(1 : i64) : i64
     %c8 = llvm.mlir.constant(8 : i64) : i64
@@ -32,8 +32,8 @@ module {
     %b0 = llvm.load %p0 : !llvm.ptr -> i64
     %b1 = llvm.load %p1 : !llvm.ptr -> i64
 
-    %ptr0 = llvm.inttoptr %b0 : i64 to !llvm.ptr
-    %ptr1 = llvm.inttoptr %b1 : i64 to !llvm.ptr
+    %ptr0 = llvm.call @eco_resolve_hptr(%b0) : (i64) -> !llvm.ptr
+    %ptr1 = llvm.call @eco_resolve_hptr(%b1) : (i64) -> !llvm.ptr
 
     %vp0 = llvm.getelementptr %ptr0[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %vp1 = llvm.getelementptr %ptr1[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
@@ -43,11 +43,12 @@ module {
 
     %sum = llvm.add %v0, %v1 : i64
 
-    %result = llvm.call @eco_alloc_int(%sum) : (i64) -> !llvm.ptr
-    llvm.return %result : !llvm.ptr
+    %result = llvm.call @eco_alloc_int(%sum) : (i64) -> i64
+    llvm.return %result : i64
   }
 
-  llvm.func @eco_alloc_int(i64) -> !llvm.ptr
+  llvm.func @eco_alloc_int(i64) -> i64
+  llvm.func @eco_resolve_hptr(i64) -> !llvm.ptr
 
   func.func @main() -> i64 {
     %c100 = arith.constant 100 : i64

@@ -5176,13 +5176,9 @@ ecoCase ctx scrutinee scrutineeType tags regions resultTypes =
                 ]
 
         attrs =
-            if List.isEmpty resultTypes then
+            Dict.insert "caseResultTypes"
+                (ArrayAttr Nothing (List.map TypeAttr resultTypes))
                 attrsBase
-
-            else
-                Dict.insert "caseResultTypes"
-                    (ArrayAttr Nothing (List.map TypeAttr resultTypes))
-                    attrsBase
     in
     mlirOp ctx "eco.case"
         |> opBuilder.withOperands [ scrutinee ]

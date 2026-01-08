@@ -31,10 +31,6 @@ std::unique_ptr<mlir::Pass> createConstructLoweringPass();
 // These are not used in tracing GC mode.
 std::unique_ptr<mlir::Pass> createRCEliminationPass();
 
-// Infers result_types attribute for eco.case ops based on eco.return operands.
-// This enables SCF lowering patterns to work without explicit annotation.
-std::unique_ptr<mlir::Pass> createResultTypesInferencePass();
-
 // Generates stub functions for undefined callees that crash at runtime.
 // This is a temporary measure to allow compilation while kernel functions
 // are being implemented.

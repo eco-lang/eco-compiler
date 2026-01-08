@@ -51,20 +51,31 @@ LogicalResult CaseOp::verify() {
     }
   }
 
-  // Extract expected result types if specified
+  // CGEN_010 invariant: eco.case ALWAYS requires result_types attribute.
+  // Elm codegen always produces eco.case with result_types and eco.return terminators.
+  // eco.jump is never used as a case alternative terminator.
+  auto caseResultTypesAttr = getCaseResultTypes();
+  if (!caseResultTypesAttr) {
+    return emitOpError("requires 'result_types' (caseResultTypes) attribute; "
+                       "eco.case is always an expression form");
+  }
+
+  // Extract expected result types
   SmallVector<Type> expectedTypes;
-  if (auto resultTypesAttr = getCaseResultTypes()) {
-    for (Attribute attr : *resultTypesAttr) {
-      if (auto typeAttr = dyn_cast<TypeAttr>(attr)) {
-        expectedTypes.push_back(typeAttr.getValue());
-      } else {
-        return emitOpError("result_types must contain TypeAttr elements");
-      }
+  for (Attribute attr : *caseResultTypesAttr) {
+    if (auto typeAttr = dyn_cast<TypeAttr>(attr)) {
+      expectedTypes.push_back(typeAttr.getValue());
+    } else {
+      return emitOpError("result_types must contain TypeAttr elements");
     }
   }
 
-  // Verify that each region has exactly one block with a valid terminator.
-  // Valid terminators are: eco.return or eco.jump
+  // eco.case must have at least one result type (no void cases)
+  if (expectedTypes.empty()) {
+    return emitOpError("result_types must not be empty; void cases are not supported");
+  }
+
+  // Verify that each region has exactly one block with eco.return terminator.
   size_t altIndex = 0;
   for (auto &region : getAlternatives()) {
     if (region.empty()) {
@@ -81,30 +92,29 @@ LogicalResult CaseOp::verify() {
     if (!terminator) {
       return emitOpError("alternative block must have a terminator");
     }
-    if (!isa<ReturnOp, JumpOp>(terminator)) {
-      return emitOpError("alternative block must terminate with eco.return or eco.jump, got ")
-             << terminator->getName();
+
+    // All alternatives must terminate with eco.return (not eco.jump)
+    auto retOp = dyn_cast<ReturnOp>(terminator);
+    if (!retOp) {
+      return emitOpError("alternative ")
+             << altIndex << " must terminate with 'eco.return', got '"
+             << terminator->getName() << "'; eco.jump is not allowed in case alternatives";
     }
 
-    // If result_types is specified, verify eco.return ops have matching types
-    if (!expectedTypes.empty()) {
-      if (auto retOp = dyn_cast<ReturnOp>(terminator)) {
-        auto actualTypes = retOp.getOperandTypes();
-        if (actualTypes.size() != expectedTypes.size()) {
-          return emitOpError("alternative ")
-                 << altIndex << " eco.return has " << actualTypes.size()
-                 << " operands but result_types specifies " << expectedTypes.size();
-        }
-        for (size_t i = 0; i < expectedTypes.size(); ++i) {
-          if (actualTypes[i] != expectedTypes[i]) {
-            return emitOpError("alternative ")
-                   << altIndex << " eco.return operand " << i
-                   << " has type " << actualTypes[i]
-                   << " but result_types specifies " << expectedTypes[i];
-          }
-        }
+    // Validate eco.return operand types match expectedTypes
+    auto actualTypes = retOp.getOperandTypes();
+    if (actualTypes.size() != expectedTypes.size()) {
+      return emitOpError("alternative ")
+             << altIndex << " eco.return has " << actualTypes.size()
+             << " operands but result_types specifies " << expectedTypes.size();
+    }
+    for (size_t i = 0; i < expectedTypes.size(); ++i) {
+      if (actualTypes[i] != expectedTypes[i]) {
+        return emitOpError("alternative ")
+               << altIndex << " eco.return operand " << i
+               << " has type " << actualTypes[i]
+               << " but result_types specifies " << expectedTypes[i];
       }
-      // eco.jump alternatives don't contribute to result_types (they loop)
     }
 
     ++altIndex;
@@ -240,26 +250,30 @@ ParseResult CaseOp::parse(OpAsmParser &parser, OperationState &result) {
 
   result.addAttribute("tags", parser.getBuilder().getDenseI64ArrayAttr(tags));
 
-  // Parse optional result_types [type0, type1, ...]
+  // Parse optional result_types [type0, type1, ...] (can be empty [])
   if (succeeded(parser.parseOptionalKeyword("result_types"))) {
     if (parser.parseLSquare())
       return failure();
 
     SmallVector<Attribute> resultTypeAttrs;
-    Type firstType;
-    if (parser.parseType(firstType))
-      return failure();
-    resultTypeAttrs.push_back(TypeAttr::get(firstType));
-
-    while (succeeded(parser.parseOptionalComma())) {
-      Type nextType;
-      if (parser.parseType(nextType))
+    // Handle empty list case: result_types []
+    if (failed(parser.parseOptionalRSquare())) {
+      // Non-empty list: parse first type, then optional comma-separated types
+      Type firstType;
+      if (parser.parseType(firstType))
         return failure();
-      resultTypeAttrs.push_back(TypeAttr::get(nextType));
-    }
+      resultTypeAttrs.push_back(TypeAttr::get(firstType));
 
-    if (parser.parseRSquare())
-      return failure();
+      while (succeeded(parser.parseOptionalComma())) {
+        Type nextType;
+        if (parser.parseType(nextType))
+          return failure();
+        resultTypeAttrs.push_back(TypeAttr::get(nextType));
+      }
+
+      if (parser.parseRSquare())
+        return failure();
+    }
 
     result.addAttribute("caseResultTypes",
                         parser.getBuilder().getArrayAttr(resultTypeAttrs));

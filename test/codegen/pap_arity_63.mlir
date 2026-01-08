@@ -9,7 +9,7 @@
 module {
   // A function that takes many arguments - we'll test with arity 10
   // as a proxy for testing larger arities (63 is impractical to write out)
-  llvm.func @sum10(%args: !llvm.ptr) -> !llvm.ptr {
+  llvm.func @sum10(%args: !llvm.ptr) -> i64 {
     %c8 = llvm.mlir.constant(8 : i64) : i64
     %sum_init = llvm.mlir.constant(0 : i64) : i64
 
@@ -26,9 +26,9 @@ module {
     %b1 = llvm.load %p1 : !llvm.ptr -> i64
     %b2 = llvm.load %p2 : !llvm.ptr -> i64
 
-    %ptr0 = llvm.inttoptr %b0 : i64 to !llvm.ptr
-    %ptr1 = llvm.inttoptr %b1 : i64 to !llvm.ptr
-    %ptr2 = llvm.inttoptr %b2 : i64 to !llvm.ptr
+    %ptr0 = llvm.call @eco_resolve_hptr(%b0) : (i64) -> !llvm.ptr
+    %ptr1 = llvm.call @eco_resolve_hptr(%b1) : (i64) -> !llvm.ptr
+    %ptr2 = llvm.call @eco_resolve_hptr(%b2) : (i64) -> !llvm.ptr
 
     %vp0 = llvm.getelementptr %ptr0[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %vp1 = llvm.getelementptr %ptr1[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
@@ -41,11 +41,12 @@ module {
     %s1 = llvm.add %v0, %v1 : i64
     %sum = llvm.add %s1, %v2 : i64
 
-    %result = llvm.call @eco_alloc_int(%sum) : (i64) -> !llvm.ptr
-    llvm.return %result : !llvm.ptr
+    %result = llvm.call @eco_alloc_int(%sum) : (i64) -> i64
+    llvm.return %result : i64
   }
 
-  llvm.func @eco_alloc_int(i64) -> !llvm.ptr
+  llvm.func @eco_alloc_int(i64) -> i64
+  llvm.func @eco_resolve_hptr(i64) -> !llvm.ptr
 
   func.func @main() -> i64 {
     %c1 = arith.constant 1 : i64

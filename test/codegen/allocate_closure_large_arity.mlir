@@ -5,7 +5,7 @@
 
 module {
   // Function that sums 10 arguments
-  llvm.func @sum10_eval(%args: !llvm.ptr) -> !llvm.ptr {
+  llvm.func @sum10_eval(%args: !llvm.ptr) -> i64 {
     %c8 = llvm.mlir.constant(8 : i64) : i64
     %sum_init = llvm.mlir.constant(0 : i64) : i64
 
@@ -13,25 +13,26 @@ module {
     %c0 = llvm.mlir.constant(0 : i64) : i64
     %ptr0 = llvm.getelementptr %args[%c0] : (!llvm.ptr, i64) -> !llvm.ptr, i64
     %v0_i64 = llvm.load %ptr0 : !llvm.ptr -> i64
-    %v0_ptr = llvm.inttoptr %v0_i64 : i64 to !llvm.ptr
+    %v0_ptr = llvm.call @eco_resolve_hptr(%v0_i64) : (i64) -> !llvm.ptr
     %val0_ptr = llvm.getelementptr %v0_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %a0 = llvm.load %val0_ptr : !llvm.ptr -> i64
 
     %c1 = llvm.mlir.constant(1 : i64) : i64
     %ptr1 = llvm.getelementptr %args[%c1] : (!llvm.ptr, i64) -> !llvm.ptr, i64
     %v1_i64 = llvm.load %ptr1 : !llvm.ptr -> i64
-    %v1_ptr = llvm.inttoptr %v1_i64 : i64 to !llvm.ptr
+    %v1_ptr = llvm.call @eco_resolve_hptr(%v1_i64) : (i64) -> !llvm.ptr
     %val1_ptr = llvm.getelementptr %v1_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %a1 = llvm.load %val1_ptr : !llvm.ptr -> i64
 
     %s1 = llvm.add %a0, %a1 : i64
 
     // For brevity, just return sum of first 2
-    %boxed = llvm.call @eco_alloc_int(%s1) : (i64) -> !llvm.ptr
-    llvm.return %boxed : !llvm.ptr
+    %boxed = llvm.call @eco_alloc_int(%s1) : (i64) -> i64
+    llvm.return %boxed : i64
   }
 
-  llvm.func @eco_alloc_int(i64) -> !llvm.ptr
+  llvm.func @eco_alloc_int(i64) -> i64
+  llvm.func @eco_resolve_hptr(i64) -> !llvm.ptr
 
   func.func @main() -> i64 {
     // Allocate closure with large arity (10)

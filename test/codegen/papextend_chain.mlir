@@ -5,7 +5,7 @@
 
 module {
   // Function that takes 4 arguments: a*b + c*d
-  llvm.func @combine4_eval(%args: !llvm.ptr) -> !llvm.ptr {
+  llvm.func @combine4_eval(%args: !llvm.ptr) -> i64 {
     %c0 = llvm.mlir.constant(0 : i64) : i64
     %c1 = llvm.mlir.constant(1 : i64) : i64
     %c2 = llvm.mlir.constant(2 : i64) : i64
@@ -23,10 +23,10 @@ module {
     %v2_i64 = llvm.load %ptr2 : !llvm.ptr -> i64
     %v3_i64 = llvm.load %ptr3 : !llvm.ptr -> i64
 
-    %v0_ptr = llvm.inttoptr %v0_i64 : i64 to !llvm.ptr
-    %v1_ptr = llvm.inttoptr %v1_i64 : i64 to !llvm.ptr
-    %v2_ptr = llvm.inttoptr %v2_i64 : i64 to !llvm.ptr
-    %v3_ptr = llvm.inttoptr %v3_i64 : i64 to !llvm.ptr
+    %v0_ptr = llvm.call @eco_resolve_hptr(%v0_i64) : (i64) -> !llvm.ptr
+    %v1_ptr = llvm.call @eco_resolve_hptr(%v1_i64) : (i64) -> !llvm.ptr
+    %v2_ptr = llvm.call @eco_resolve_hptr(%v2_i64) : (i64) -> !llvm.ptr
+    %v3_ptr = llvm.call @eco_resolve_hptr(%v3_i64) : (i64) -> !llvm.ptr
 
     %val0_ptr = llvm.getelementptr %v0_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %val1_ptr = llvm.getelementptr %v1_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
@@ -43,11 +43,12 @@ module {
     %cd = llvm.mul %c, %d : i64
     %result = llvm.add %ab, %cd : i64
 
-    %boxed = llvm.call @eco_alloc_int(%result) : (i64) -> !llvm.ptr
-    llvm.return %boxed : !llvm.ptr
+    %boxed = llvm.call @eco_alloc_int(%result) : (i64) -> i64
+    llvm.return %boxed : i64
   }
 
-  llvm.func @eco_alloc_int(i64) -> !llvm.ptr
+  llvm.func @eco_alloc_int(i64) -> i64
+  llvm.func @eco_resolve_hptr(i64) -> !llvm.ptr
 
   func.func @main() -> i64 {
     %c2 = arith.constant 2 : i64

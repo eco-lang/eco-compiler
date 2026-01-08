@@ -67,10 +67,8 @@ uint64_t Elm_Kernel_Debug_todo(uint64_t message) {
 
 uint64_t Elm_Kernel_Debug_toString(uint64_t value) {
     // Convert the value to its string representation
-    // eco_value_to_string returns a raw pointer which in JIT mode
-    // is directly usable as an i64
-    void* strPtr = eco_value_to_string(value);
-    return reinterpret_cast<uint64_t>(strPtr);
+    // eco_value_to_string returns HPointer as uint64_t
+    return eco_value_to_string(value);
 }
 
 } // extern "C"

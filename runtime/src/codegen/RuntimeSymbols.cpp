@@ -85,6 +85,24 @@ void registerRuntimeSymbols(ExecutionEngine &engine) {
                 llvm::orc::ExecutorAddr::fromPtr(&eco_set_unboxed),
                 llvm::JITSymbolFlags::Exported);
 
+        // Record allocation and field store functions.
+        symbolMap[interner("eco_alloc_record")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_record),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_store_record_field")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_store_record_field),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_store_record_field_i64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_store_record_field_i64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_store_record_field_f64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_store_record_field_f64),
+                llvm::JITSymbolFlags::Exported);
+
         // Closure operations.
         symbolMap[interner("eco_apply_closure")] =
             llvm::orc::ExecutorSymbolDef(
@@ -161,6 +179,12 @@ void registerRuntimeSymbols(ExecutionEngine &engine) {
         symbolMap[interner("eco_int_pow")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_int_pow),
+                llvm::JITSymbolFlags::Exported);
+
+        // HPointer conversion.
+        symbolMap[interner("eco_resolve_hptr")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_resolve_hptr),
                 llvm::JITSymbolFlags::Exported);
 
         // =================================================================

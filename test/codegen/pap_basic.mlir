@@ -7,7 +7,7 @@ module {
   // A simple function that adds two integers.
   // Takes args array: args[0] = a, args[1] = b
   // Returns boxed (a + b)
-  llvm.func @add_two(%args: !llvm.ptr) -> !llvm.ptr {
+  llvm.func @add_two(%args: !llvm.ptr) -> i64 {
     // Load args[0] (first argument)
     %c0 = llvm.mlir.constant(0 : i64) : i64
     %ptr0 = llvm.getelementptr %args[%c0] : (!llvm.ptr, i64) -> !llvm.ptr, i64
@@ -18,13 +18,13 @@ module {
     %ptr1 = llvm.getelementptr %args[%c1] : (!llvm.ptr, i64) -> !llvm.ptr, i64
     %b_i64 = llvm.load %ptr1 : !llvm.ptr -> i64
 
-    // Unbox: values are boxed ElmInt pointers, load the value field at offset 8
-    %a_ptr = llvm.inttoptr %a_i64 : i64 to !llvm.ptr
+    // Unbox: values are boxed ElmInt HPointers, resolve to raw pointer then load value field at offset 8
+    %a_ptr = llvm.call @eco_resolve_hptr(%a_i64) : (i64) -> !llvm.ptr
     %c8 = llvm.mlir.constant(8 : i64) : i64
     %a_val_ptr = llvm.getelementptr %a_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %a = llvm.load %a_val_ptr : !llvm.ptr -> i64
 
-    %b_ptr = llvm.inttoptr %b_i64 : i64 to !llvm.ptr
+    %b_ptr = llvm.call @eco_resolve_hptr(%b_i64) : (i64) -> !llvm.ptr
     %b_val_ptr = llvm.getelementptr %b_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %b = llvm.load %b_val_ptr : !llvm.ptr -> i64
 
@@ -32,12 +32,13 @@ module {
     %sum = llvm.add %a, %b : i64
 
     // Box the result by calling eco_alloc_int
-    %result = llvm.call @eco_alloc_int(%sum) : (i64) -> !llvm.ptr
+    %result = llvm.call @eco_alloc_int(%sum) : (i64) -> i64
 
-    llvm.return %result : !llvm.ptr
+    llvm.return %result : i64
   }
 
-  llvm.func @eco_alloc_int(i64) -> !llvm.ptr
+  llvm.func @eco_alloc_int(i64) -> i64
+  llvm.func @eco_resolve_hptr(i64) -> !llvm.ptr
 
   func.func @main() -> i64 {
     // Create boxed integers

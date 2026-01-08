@@ -116,7 +116,6 @@ target_compile_options(obj.EcoDialect PRIVATE -Wno-ambiguous-reversed-operator)
 
 add_mlir_library(EcoPasses
     Passes/RCElimination.cpp
-    Passes/ResultTypesInference.cpp
     Passes/JoinpointNormalization.cpp
     Passes/EcoControlFlowToSCF.cpp
     Passes/EcoToLLVM.cpp

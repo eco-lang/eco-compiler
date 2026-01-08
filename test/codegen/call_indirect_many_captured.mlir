@@ -5,7 +5,7 @@
 
 module {
   // Function that sums 6 arguments
-  llvm.func @sum6_eval(%args: !llvm.ptr) -> !llvm.ptr {
+  llvm.func @sum6_eval(%args: !llvm.ptr) -> i64 {
     %c8 = llvm.mlir.constant(8 : i64) : i64
     %sum = llvm.mlir.constant(0 : i64) : i64
 
@@ -13,42 +13,42 @@ module {
     %c0 = llvm.mlir.constant(0 : i64) : i64
     %ptr0 = llvm.getelementptr %args[%c0] : (!llvm.ptr, i64) -> !llvm.ptr, i64
     %v0_i64 = llvm.load %ptr0 : !llvm.ptr -> i64
-    %v0_ptr = llvm.inttoptr %v0_i64 : i64 to !llvm.ptr
+    %v0_ptr = llvm.call @eco_resolve_hptr(%v0_i64) : (i64) -> !llvm.ptr
     %val0_ptr = llvm.getelementptr %v0_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %a0 = llvm.load %val0_ptr : !llvm.ptr -> i64
 
     %c1 = llvm.mlir.constant(1 : i64) : i64
     %ptr1 = llvm.getelementptr %args[%c1] : (!llvm.ptr, i64) -> !llvm.ptr, i64
     %v1_i64 = llvm.load %ptr1 : !llvm.ptr -> i64
-    %v1_ptr = llvm.inttoptr %v1_i64 : i64 to !llvm.ptr
+    %v1_ptr = llvm.call @eco_resolve_hptr(%v1_i64) : (i64) -> !llvm.ptr
     %val1_ptr = llvm.getelementptr %v1_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %a1 = llvm.load %val1_ptr : !llvm.ptr -> i64
 
     %c2 = llvm.mlir.constant(2 : i64) : i64
     %ptr2 = llvm.getelementptr %args[%c2] : (!llvm.ptr, i64) -> !llvm.ptr, i64
     %v2_i64 = llvm.load %ptr2 : !llvm.ptr -> i64
-    %v2_ptr = llvm.inttoptr %v2_i64 : i64 to !llvm.ptr
+    %v2_ptr = llvm.call @eco_resolve_hptr(%v2_i64) : (i64) -> !llvm.ptr
     %val2_ptr = llvm.getelementptr %v2_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %a2 = llvm.load %val2_ptr : !llvm.ptr -> i64
 
     %c3 = llvm.mlir.constant(3 : i64) : i64
     %ptr3 = llvm.getelementptr %args[%c3] : (!llvm.ptr, i64) -> !llvm.ptr, i64
     %v3_i64 = llvm.load %ptr3 : !llvm.ptr -> i64
-    %v3_ptr = llvm.inttoptr %v3_i64 : i64 to !llvm.ptr
+    %v3_ptr = llvm.call @eco_resolve_hptr(%v3_i64) : (i64) -> !llvm.ptr
     %val3_ptr = llvm.getelementptr %v3_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %a3 = llvm.load %val3_ptr : !llvm.ptr -> i64
 
     %c4 = llvm.mlir.constant(4 : i64) : i64
     %ptr4 = llvm.getelementptr %args[%c4] : (!llvm.ptr, i64) -> !llvm.ptr, i64
     %v4_i64 = llvm.load %ptr4 : !llvm.ptr -> i64
-    %v4_ptr = llvm.inttoptr %v4_i64 : i64 to !llvm.ptr
+    %v4_ptr = llvm.call @eco_resolve_hptr(%v4_i64) : (i64) -> !llvm.ptr
     %val4_ptr = llvm.getelementptr %v4_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %a4 = llvm.load %val4_ptr : !llvm.ptr -> i64
 
     %c5 = llvm.mlir.constant(5 : i64) : i64
     %ptr5 = llvm.getelementptr %args[%c5] : (!llvm.ptr, i64) -> !llvm.ptr, i64
     %v5_i64 = llvm.load %ptr5 : !llvm.ptr -> i64
-    %v5_ptr = llvm.inttoptr %v5_i64 : i64 to !llvm.ptr
+    %v5_ptr = llvm.call @eco_resolve_hptr(%v5_i64) : (i64) -> !llvm.ptr
     %val5_ptr = llvm.getelementptr %v5_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %a5 = llvm.load %val5_ptr : !llvm.ptr -> i64
 
@@ -59,11 +59,12 @@ module {
     %s01234 = llvm.add %s0123, %a4 : i64
     %total = llvm.add %s01234, %a5 : i64
 
-    %boxed = llvm.call @eco_alloc_int(%total) : (i64) -> !llvm.ptr
-    llvm.return %boxed : !llvm.ptr
+    %boxed = llvm.call @eco_alloc_int(%total) : (i64) -> i64
+    llvm.return %boxed : i64
   }
 
-  llvm.func @eco_alloc_int(i64) -> !llvm.ptr
+  llvm.func @eco_alloc_int(i64) -> i64
+  llvm.func @eco_resolve_hptr(i64) -> !llvm.ptr
 
   func.func @main() -> i64 {
     %c1 = arith.constant 1 : i64

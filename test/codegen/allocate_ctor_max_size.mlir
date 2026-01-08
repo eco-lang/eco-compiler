@@ -21,9 +21,11 @@ module {
     // CHECK: Ctor0
 
     // Verify we can still allocate normal sized ctors after
-    %ctor2 = eco.allocate_ctor {tag = 1 : i64, size = 2 : i64, scalar_bytes = 0 : i64} : !eco.value
+    // Note: tag=1 with size=2 would be confused with list cons cells in printing,
+    // so we use tag=2 to avoid this ambiguity
+    %ctor2 = eco.allocate_ctor {tag = 2 : i64, size = 2 : i64, scalar_bytes = 0 : i64} : !eco.value
     eco.dbg %ctor2 : !eco.value
-    // CHECK: Ctor1
+    // CHECK: Ctor2
 
     %zero = arith.constant 0 : i64
     return %zero : i64

@@ -5,7 +5,7 @@
 
 module {
   // Function that adds three integers
-  llvm.func @add_three(%args: !llvm.ptr) -> !llvm.ptr {
+  llvm.func @add_three(%args: !llvm.ptr) -> i64 {
     %c0 = llvm.mlir.constant(0 : i64) : i64
     %c1 = llvm.mlir.constant(1 : i64) : i64
     %c2 = llvm.mlir.constant(2 : i64) : i64
@@ -21,9 +21,9 @@ module {
     %c_i64 = llvm.load %ptr2 : !llvm.ptr -> i64
 
     // Unbox (values are boxed ElmInt pointers)
-    %a_ptr = llvm.inttoptr %a_i64 : i64 to !llvm.ptr
-    %b_ptr = llvm.inttoptr %b_i64 : i64 to !llvm.ptr
-    %c_ptr = llvm.inttoptr %c_i64 : i64 to !llvm.ptr
+    %a_ptr = llvm.call @eco_resolve_hptr(%a_i64) : (i64) -> !llvm.ptr
+    %b_ptr = llvm.call @eco_resolve_hptr(%b_i64) : (i64) -> !llvm.ptr
+    %c_ptr = llvm.call @eco_resolve_hptr(%c_i64) : (i64) -> !llvm.ptr
 
     %a_val_ptr = llvm.getelementptr %a_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %b_val_ptr = llvm.getelementptr %b_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
@@ -38,11 +38,12 @@ module {
     %sum = llvm.add %sum1, %c : i64
 
     // Box result
-    %result = llvm.call @eco_alloc_int(%sum) : (i64) -> !llvm.ptr
-    llvm.return %result : !llvm.ptr
+    %result = llvm.call @eco_alloc_int(%sum) : (i64) -> i64
+    llvm.return %result : i64
   }
 
-  llvm.func @eco_alloc_int(i64) -> !llvm.ptr
+  llvm.func @eco_alloc_int(i64) -> i64
+  llvm.func @eco_resolve_hptr(i64) -> !llvm.ptr
 
   func.func @main() -> i64 {
     %i1 = arith.constant 1 : i64

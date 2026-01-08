@@ -10,7 +10,7 @@ module {
     %b1 = eco.box %i1 : i64 -> !eco.value
 
     // ERROR: size=3 but only 2 fields provided
-    // CHECK: 'eco.construct' op number of fields (2) must match size attribute (3)
+    // CHECK: 'eco.construct.custom' op number of fields (2) must match size attribute (3)
     %bad = eco.construct.custom(%b1, %nil) {tag = 0 : i64, size = 3 : i64} : (!eco.value, !eco.value) -> !eco.value
 
     %zero = arith.constant 0 : i64

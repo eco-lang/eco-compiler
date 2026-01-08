@@ -59,9 +59,6 @@ void buildEcoToLLVMPipeline(PassManager &pm) {
 
     // Stage 2: Eco -> Standard MLIR (func/cf/arith).
 
-    // Infer result_types for eco.case ops based on eco.return operands.
-    pm.addPass(eco::createResultTypesInferencePass());
-
     // Classify joinpoints for SCF lowering eligibility.
     pm.addPass(eco::createJoinpointNormalizationPass());
 

@@ -5,7 +5,7 @@
 module {
   // Function that uses captured unboxed integers
   // Computes: captured_a + captured_b + arg
-  llvm.func @add_three_ints(%args: !llvm.ptr) -> !llvm.ptr {
+  llvm.func @add_three_ints(%args: !llvm.ptr) -> i64 {
     %c8 = llvm.mlir.constant(8 : i64) : i64
 
     // Load args[0] (first captured int, already raw i64)
@@ -22,7 +22,7 @@ module {
     %c2 = llvm.mlir.constant(2 : i64) : i64
     %ptr2 = llvm.getelementptr %args[%c2] : (!llvm.ptr, i64) -> !llvm.ptr, i64
     %c_i64 = llvm.load %ptr2 : !llvm.ptr -> i64
-    %c_ptr = llvm.inttoptr %c_i64 : i64 to !llvm.ptr
+    %c_ptr = llvm.call @eco_resolve_hptr(%c_i64) : (i64) -> !llvm.ptr
     %c_val_ptr = llvm.getelementptr %c_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %c = llvm.load %c_val_ptr : !llvm.ptr -> i64
 
@@ -31,11 +31,12 @@ module {
     %result_val = llvm.add %sum1, %c : i64
 
     // Box result
-    %result = llvm.call @eco_alloc_int(%result_val) : (i64) -> !llvm.ptr
-    llvm.return %result : !llvm.ptr
+    %result = llvm.call @eco_alloc_int(%result_val) : (i64) -> i64
+    llvm.return %result : i64
   }
 
-  llvm.func @eco_alloc_int(i64) -> !llvm.ptr
+  llvm.func @eco_alloc_int(i64) -> i64
+  llvm.func @eco_resolve_hptr(i64) -> !llvm.ptr
 
   func.func @main() -> i64 {
     // Create unboxed integers to capture

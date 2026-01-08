@@ -6,9 +6,11 @@
 module {
   func.func @main() -> i64 {
     // Allocate with 0 scalar bytes (normal pointer fields)
-    %ctor0 = eco.allocate_ctor {tag = 1 : i64, size = 2 : i64, scalar_bytes = 0 : i64} : !eco.value
+    // Note: tag=1 with size=2 would be confused with list cons cells in printing,
+    // so we use tag=10 to avoid this ambiguity
+    %ctor0 = eco.allocate_ctor {tag = 10 : i64, size = 2 : i64, scalar_bytes = 0 : i64} : !eco.value
     eco.dbg %ctor0 : !eco.value
-    // CHECK: Ctor1
+    // CHECK: Ctor10
 
     // Allocate with 8 scalar bytes (one i64 worth)
     %ctor8 = eco.allocate_ctor {tag = 2 : i64, size = 1 : i64, scalar_bytes = 8 : i64} : !eco.value
