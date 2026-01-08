@@ -26,11 +26,20 @@ To configure and build the project in one step:
 
     docker run --rm -v "$PWD":/work eco-runtime-build
 
-To run an interactive session inside the container for development, recommend creating 
-a named docker volume to preserve your home directory accross session:
+To run an interactive session inside the container for development, recommend creating
+a named docker volume to preserve your home directory across sessions:
 
     docker volume create eco-dev-home
     docker run -it --rm -v "$PWD":/work -v eco-dev-home:/home/dev eco-runtime-build bash
+
+To pass an OpenAI API key (for AI-assisted development tools), use the `-e` flag:
+
+    docker run -it --rm -v "$PWD":/work -v eco-dev-home:/home/dev -e OPENAI_API_KEY="sk-proj-abc123..." eco-runtime-build bash
+
+Or export it first and pass it through:
+
+    export OPENAI_API_KEY="sk-proj-abc123..."
+    docker run -it --rm -v "$PWD":/work -v eco-dev-home:/home/dev -e OPENAI_API_KEY eco-runtime-build bash
 
 Inside the container, you can configure and build manually:
 
