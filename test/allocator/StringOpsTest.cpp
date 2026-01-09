@@ -22,6 +22,13 @@ static HPointer makeString(const std::string& s) {
 
 // Helper to get string content for comparison
 static std::string getString(HPointer ptr) {
+    // Handle embedded constants (e.g., empty string constant)
+    if (alloc::isConstant(ptr)) {
+        if (StringOps::isEmpty(ptr)) return "";
+        // Other constants don't have string representation
+        return "";
+    }
+
     auto& allocator = Allocator::instance();
     void* obj = allocator.resolve(ptr);
     if (!obj) return "";
@@ -67,17 +74,15 @@ static void test_append_concatenates_strings() {
         std::string a = *rc::gen::container<std::string>(rc::gen::inRange<char>(32, 127));
         std::string b = *rc::gen::container<std::string>(rc::gen::inRange<char>(32, 127));
 
-        // Skip if both empty - constants resolve to nullptr
-        if (a.empty() && b.empty()) return;
+        // Skip if either empty - empty strings are constants without heap representation
+        // StringOps::append requires heap-allocated string objects
+        if (a.empty() || b.empty()) return;
 
         HPointer strA = makeString(a);
         HPointer strB = makeString(b);
 
         void* objA = Allocator::instance().resolve(strA);
         void* objB = Allocator::instance().resolve(strB);
-
-        // StringOps::append handles nullptr for empty strings
-        if (!objA || !objB) return;
 
         HPointer result = StringOps::append(objA, objB);
         std::string actual = getString(result);
