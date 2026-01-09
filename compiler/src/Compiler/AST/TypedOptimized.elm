@@ -32,6 +32,11 @@ The key difference from Optimized:
 @docs Def, Destructor, Path
 
 
+# Container Hints
+
+@docs ContainerHint
+
+
 # Pattern Matching
 
 @docs Decider, Choice

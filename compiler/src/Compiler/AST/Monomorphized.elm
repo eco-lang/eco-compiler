@@ -78,6 +78,11 @@ This module defines the data structures for the monomorphized program
 @docs Decider, MonoChoice
 
 
+# Container Classification
+
+@docs ContainerKind
+
+
 # Type Utilities
 
 @docs typeOf, canUnbox
