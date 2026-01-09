@@ -144,6 +144,70 @@ static std::vector<uint16_t> utf8ToUtf16(StringRef utf8) {
 namespace {
 
 // ============================================================================
+// Kernel func.func -> llvm.func external declaration
+// ============================================================================
+// Kernel functions (marked with is_kernel = true attribute) should be converted
+// to LLVM external function declarations without bodies. The actual implementations
+// are provided by the JIT via RuntimeSymbols.cpp.
+
+struct KernelFuncOpLowering : public OpConversionPattern<func::FuncOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(func::FuncOp funcOp, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        // Only handle kernel functions (marked with is_kernel attribute)
+        if (!funcOp->hasAttr("is_kernel"))
+            return failure();  // Let the standard func-to-llvm pattern handle it
+
+        auto loc = funcOp.getLoc();
+        auto *ctx = rewriter.getContext();
+
+        // Convert function type
+        auto funcType = funcOp.getFunctionType();
+        SmallVector<Type> argTypes;
+        for (Type t : funcType.getInputs()) {
+            // !eco.value becomes i64
+            if (isa<ValueType>(t))
+                argTypes.push_back(IntegerType::get(ctx, 64));
+            else
+                argTypes.push_back(t);
+        }
+
+        SmallVector<Type> resultTypes;
+        for (Type t : funcType.getResults()) {
+            // !eco.value becomes i64
+            if (isa<ValueType>(t))
+                resultTypes.push_back(IntegerType::get(ctx, 64));
+            else
+                resultTypes.push_back(t);
+        }
+
+        Type llvmResultType;
+        if (resultTypes.empty()) {
+            llvmResultType = LLVM::LLVMVoidType::get(ctx);
+        } else if (resultTypes.size() == 1) {
+            llvmResultType = resultTypes[0];
+        } else {
+            llvmResultType = LLVM::LLVMStructType::getLiteral(ctx, resultTypes);
+        }
+
+        auto llvmFuncType = LLVM::LLVMFunctionType::get(llvmResultType, argTypes);
+
+        // Create an external LLVM function (no body)
+        auto llvmFunc = rewriter.create<LLVM::LLVMFuncOp>(
+            loc, funcOp.getName(), llvmFuncType);
+
+        // Set external linkage so JIT can resolve the symbol
+        llvmFunc.setLinkage(LLVM::Linkage::External);
+
+        // Erase the original func.func
+        rewriter.eraseOp(funcOp);
+        return success();
+    }
+};
+
+// ============================================================================
 // eco.constant -> i64 constant with embedded tag
 // ============================================================================
 
@@ -3221,8 +3285,12 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // Set up lowering patterns.
         RewritePatternSet patterns(ctx);
 
-        // Add func-to-llvm conversion patterns FIRST - this ensures func.func
-        // is converted to llvm.func before eco.papCreate tries to reference it.
+        // Add kernel function lowering pattern with higher benefit to ensure it runs
+        // before the standard func-to-llvm patterns. This converts kernel func.func
+        // (marked with is_kernel=true) to llvm.func external declarations.
+        patterns.add<KernelFuncOpLowering>(typeConverter, ctx, /*benefit=*/10);
+
+        // Add func-to-llvm conversion patterns - this handles non-kernel func.func.
         populateFuncToLLVMConversionPatterns(typeConverter, patterns);
 
         // Add branch type conversion pattern for cf.br/cf.cond_br when block

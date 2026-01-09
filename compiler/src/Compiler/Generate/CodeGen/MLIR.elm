@@ -215,153 +215,6 @@ kernelFuncSignatureFromType funcType =
     }
 
 
-{-| Check if a kernel function is polymorphic and needs all-boxed ABI.
-These functions accept any type and must receive boxed !eco.value arguments.
--}
-isPolymorphicKernel : String -> String -> Bool
-isPolymorphicKernel home name =
-    case home of
-        "Debug" ->
-            -- All Debug module functions are polymorphic
-            True
-
-        "Json" ->
-            -- Json.Decode.succeed, Json.Encode.null, etc.
-            name == "succeed" || name == "null"
-
-        "Platform" ->
-            -- Platform.Cmd.none, Platform.Sub.none
-            name == "none"
-
-        "Utils" ->
-            -- Utils.compare and Utils.equal work with any comparable/equatable type
-            -- They need boxed !eco.value arguments
-            name == "compare" || name == "equal"
-
-        "Basics" ->
-            -- min, max, compare work with any comparable type
-            -- These need boxed !eco.value arguments when called as kernel functions
-            -- Numeric operations (add, sub, mul, etc.) are ALSO polymorphic kernels
-            -- because the C++ implementations (Elm_Kernel_Basics_add, etc.) expect
-            -- boxed eco.value pointers, not raw i64 values. When called as kernels
-            -- (not via intrinsics), we must box the arguments.
-            name
-                == "min"
-                || name
-                == "max"
-                || name
-                == "compare"
-                || name
-                == "add"
-                || name
-                == "sub"
-                || name
-                == "mul"
-                || name
-                == "idiv"
-                || name
-                == "modBy"
-                || name
-                == "remainderBy"
-                || name
-                == "negate"
-                || name
-                == "abs"
-                || name
-                == "pow"
-                || name
-                == "fdiv"
-
-        _ ->
-            False
-
-
-{-| Get the actual C ABI signature for known kernel functions.
-This is used when the Elm type is polymorphic (MonoValue) but the kernel
-expects concrete types. Returns Nothing for polymorphic kernels or
-unknown kernels.
--}
-actualKernelAbi : String -> String -> Maybe FuncSignature
-actualKernelAbi home name =
-    case home of
-        "Basics" ->
-            -- NOTE: Polymorphic operations (add, sub, mul, negate, abs) should NOT
-            -- be listed here - they should use the monomorphized types from the Elm
-            -- type system to determine whether they're Int or Float operations.
-            -- Only list operations that are always a specific type.
-            case name of
-                -- fdiv is always Float (integer division uses different operators)
-                "fdiv" ->
-                    Just { paramTypes = [ Mono.MFloat, Mono.MFloat ], returnType = Mono.MFloat }
-
-                -- Math functions are always Float
-                "sqrt" ->
-                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
-
-                "ceiling" ->
-                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MInt }
-
-                "floor" ->
-                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MInt }
-
-                "round" ->
-                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MInt }
-
-                "truncate" ->
-                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MInt }
-
-                "toFloat" ->
-                    Just { paramTypes = [ Mono.MInt ], returnType = Mono.MFloat }
-
-                "sin" ->
-                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
-
-                "cos" ->
-                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
-
-                "tan" ->
-                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
-
-                "asin" ->
-                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
-
-                "acos" ->
-                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
-
-                "atan" ->
-                    Just { paramTypes = [ Mono.MFloat ], returnType = Mono.MFloat }
-
-                "atan2" ->
-                    Just { paramTypes = [ Mono.MFloat, Mono.MFloat ], returnType = Mono.MFloat }
-
-                "pow" ->
-                    Just { paramTypes = [ Mono.MFloat, Mono.MFloat ], returnType = Mono.MFloat }
-
-                "e" ->
-                    Just { paramTypes = [], returnType = Mono.MFloat }
-
-                "pi" ->
-                    Just { paramTypes = [], returnType = Mono.MFloat }
-
-                "modBy" ->
-                    Just { paramTypes = [ Mono.MInt, Mono.MInt ], returnType = Mono.MInt }
-
-                "remainderBy" ->
-                    Just { paramTypes = [ Mono.MInt, Mono.MInt ], returnType = Mono.MInt }
-
-                "not" ->
-                    Just { paramTypes = [ Mono.MBool ], returnType = Mono.MBool }
-
-                "xor" ->
-                    Just { paramTypes = [ Mono.MBool, Mono.MBool ], returnType = Mono.MBool }
-
-                _ ->
-                    Nothing
-
-        _ ->
-            Nothing
-
-
 {-| Check if a type is a type variable (MVar).
 Used for relaxed intrinsic matching when the result type might be polymorphic.
 -}
@@ -396,6 +249,7 @@ type alias Context =
     , pendingLambdas : List PendingLambda
     , signatures : Dict Int FuncSignature -- SpecId -> signature for invariant checking
     , varMappings : Dict String ( String, MlirType ) -- Let-bound name -> (SSA variable name, MLIR type)
+    , kernelDecls : Dict String ( List MlirType, MlirType ) -- Kernel function name -> (argTypes, returnType)
     }
 
 
@@ -416,6 +270,7 @@ initContext mode registry signatures =
     , pendingLambdas = []
     , signatures = signatures
     , varMappings = Dict.empty
+    , kernelDecls = Dict.empty
     }
 
 
@@ -457,7 +312,49 @@ addVarMapping name ssaVar mlirTy ctx =
 
 
 
--- ====== SIGNATURE EXTRACTION ======
+-- ======= KERNEL DECLARATION TRACKING
+
+
+{-| Register a kernel function call, tracking it for declaration generation.
+
+The canonical signature for a kernel is taken directly from the call site.
+Subsequent calls to the same kernel name must use exactly the same argument
+and result MLIR types, or we crash with a mismatch error.
+
+This keeps declaration generation in sync with the ABI chosen at the call
+site (which is derived from the Elm MonoType via monoTypeToMlir).
+-}
+registerKernelCall : Context -> String -> List MlirType -> MlirType -> Context
+registerKernelCall ctx name callSiteArgTypes callSiteReturnType =
+    case Dict.get name ctx.kernelDecls of
+        Nothing ->
+            { ctx
+                | kernelDecls =
+                    Dict.insert name ( callSiteArgTypes, callSiteReturnType ) ctx.kernelDecls
+            }
+
+        Just ( existingArgs, existingReturn ) ->
+            if existingArgs == callSiteArgTypes && existingReturn == callSiteReturnType then
+                ctx
+
+            else
+                crash
+                    ("Kernel signature mismatch for "
+                        ++ name
+                        ++ ": existing ("
+                        ++ Debug.toString existingArgs
+                        ++ " -> "
+                        ++ Debug.toString existingReturn
+                        ++ ") vs new ("
+                        ++ Debug.toString callSiteArgTypes
+                        ++ " -> "
+                        ++ Debug.toString callSiteReturnType
+                        ++ ")"
+                    )
+
+
+
+-- ====== SIGNATURE EXTRACTION (for invariant checking)
 
 
 {-| Extract the function signature (param types, return type) from a MonoNode.
@@ -1067,9 +964,22 @@ generateModule mode (Mono.MonoGraph { nodes, main, registry }) =
                 Nothing ->
                     []
 
+        -- Generate kernel function declarations from tracked calls
+        ( kernelDeclOps, _ ) =
+            Dict.foldl
+                (\name sig ( accOps, accCtx ) ->
+                    let
+                        ( newCtx, declOp ) =
+                            generateKernelDecl accCtx name sig
+                    in
+                    ( accOps ++ [ declOp ], newCtx )
+                )
+                ( [], finalCtx )
+                finalCtx.kernelDecls
+
         mlirModule : MlirModule
         mlirModule =
-            { body = lambdaOps ++ ops ++ mainOps
+            { body = kernelDeclOps ++ lambdaOps ++ ops ++ mainOps
             , loc = Loc.unknown
             }
     in
@@ -1650,6 +1560,82 @@ generateStubValue ctx resultVar _ mlirType =
     -- Use mlirType instead of monoType because mlirType represents the actual
     -- concrete type after monomorphization, which may be a primitive even when
     -- the monoType is a type variable.
+    case mlirType of
+        I64 ->
+            arithConstantInt ctx resultVar 0
+
+        F64 ->
+            arithConstantFloat ctx resultVar 0.0
+
+        I1 ->
+            arithConstantBool ctx resultVar False
+
+        I16 ->
+            arithConstantChar ctx resultVar 0
+
+        _ ->
+            -- For all other types (EcoValue, etc.), return Unit
+            ecoConstantUnit ctx resultVar
+
+
+{-| Generate a kernel function declaration with a stub body.
+The stub body is required by MLIR's func dialect (func.func must have a region).
+The stub will be replaced with an external declaration during lowering to LLVM.
+We mark it with an `is_kernel` attribute so the lowering pass can identify it.
+-}
+generateKernelDecl : Context -> String -> ( List MlirType, MlirType ) -> ( Context, MlirOp )
+generateKernelDecl ctx funcName ( argMlirTypes, resultMlirType ) =
+    let
+        -- Create block argument pairs (arg0, arg1, etc.)
+        argPairs : List ( String, MlirType )
+        argPairs =
+            List.indexedMap (\i ty -> ( "%arg" ++ String.fromInt i, ty )) argMlirTypes
+
+        -- Start fresh var counter after block args
+        ctxWithArgs : Context
+        ctxWithArgs =
+            { ctx | nextVar = List.length argPairs }
+
+        -- Create a stub return value of the correct type
+        ( stubVar, ctx1 ) =
+            freshVar ctxWithArgs
+
+        -- Generate stub value based on MLIR type
+        ( ctx2, stubOp ) =
+            generateStubValueFromMlirType ctx1 stubVar resultMlirType
+
+        ( ctx3, returnOp ) =
+            ecoReturn ctx2 stubVar resultMlirType
+
+        region : MlirRegion
+        region =
+            mkRegion argPairs [ stubOp ] returnOp
+
+        attrs =
+            Dict.fromList
+                [ ( "sym_name", StringAttr funcName )
+                , ( "sym_visibility", VisibilityAttr Private )
+                , ( "is_kernel", BoolAttr True ) -- Mark as kernel for lowering
+                , ( "function_type"
+                  , TypeAttr
+                        (FunctionType
+                            { inputs = argMlirTypes
+                            , results = [ resultMlirType ]
+                            }
+                        )
+                  )
+                ]
+    in
+    mlirOp ctx3 "func.func"
+        |> opBuilder.withRegions [ region ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| Generate a stub value for kernel declaration bodies, based on MLIR type.
+-}
+generateStubValueFromMlirType : Context -> String -> MlirType -> ( Context, MlirOp )
+generateStubValueFromMlirType ctx resultVar mlirType =
     case mlirType of
         I64 ->
             arithConstantInt ctx resultVar 0
@@ -2876,86 +2862,38 @@ generateSaturatedCall ctx func args resultType =
                             }
 
                         Nothing ->
-                            -- Check if this is a polymorphic kernel function (e.g., Debug.log)
-                            -- For polymorphic kernels, all arguments must be boxed as !eco.value
-                            if isPolymorphicKernel home name then
-                                let
-                                    -- Box using the actual SSA types
-                                    ( boxOps, boxedVars, ctx1b ) =
-                                        boxArgsWithMlirTypes ctx1 argsWithTypes
+                            -- Generic kernel ABI path derived solely from MonoType.
+                            -- Polymorphic kernels have MVar in their funcType, which
+                            -- monoTypeToMlir maps to !eco.value, so they naturally
+                            -- get all-boxed ABI without name-based checks.
+                            let
+                                elmSig : FuncSignature
+                                elmSig =
+                                    kernelFuncSignatureFromType funcType
 
-                                    ( resVar, ctx2 ) =
-                                        freshVar ctx1b
+                                -- Use boxToMatchSignatureTyped with actual SSA types
+                                ( boxOps, argVarPairs, ctx1b ) =
+                                    boxToMatchSignatureTyped ctx1 argsWithTypes elmSig.paramTypes
 
-                                    kernelName : String
-                                    kernelName =
-                                        "Elm_Kernel_" ++ home ++ "_" ++ name
+                                ( resVar, ctx2 ) =
+                                    freshVar ctx1b
 
-                                    ( ctx3, callOp ) =
-                                        ecoCallNamed ctx2 resVar kernelName (List.map (\v -> ( v, ecoValue )) boxedVars) ecoValue
-                                in
-                                { ops = argOps ++ boxOps ++ [ callOp ]
-                                , resultVar = resVar
-                                , resultType = ecoValue
-                                , ctx = ctx3
-                                }
+                                kernelName : String
+                                kernelName =
+                                    "Elm_Kernel_" ++ home ++ "_" ++ name
 
-                            else
-                                -- Generic kernel ABI path
-                                let
-                                    elmSig : FuncSignature
-                                    elmSig =
-                                        kernelFuncSignatureFromType funcType
+                                resultMlirType : MlirType
+                                resultMlirType =
+                                    monoTypeToMlir elmSig.returnType
 
-                                    sig : FuncSignature
-                                    sig =
-                                        case actualKernelAbi home name of
-                                            Just abi ->
-                                                abi
-
-                                            Nothing ->
-                                                elmSig
-
-                                    -- Use boxToMatchSignatureTyped with actual SSA types
-                                    ( boxOps, argVarPairs, ctx1b ) =
-                                        boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
-
-                                    ( resVar, ctx2 ) =
-                                        freshVar ctx1b
-
-                                    kernelName : String
-                                    kernelName =
-                                        "Elm_Kernel_" ++ home ++ "_" ++ name
-
-                                    kernelResultType =
-                                        monoTypeToMlir sig.returnType
-
-                                    ( ctx3, callOp ) =
-                                        ecoCallNamed ctx2 resVar kernelName argVarPairs kernelResultType
-
-                                    elmResultType =
-                                        monoTypeToMlir elmSig.returnType
-
-                                    needsBoxing =
-                                        isEcoValueType elmResultType && not (isEcoValueType kernelResultType)
-                                in
-                                if needsBoxing then
-                                    let
-                                        ( boxResultOps, boxedVar, ctx4 ) =
-                                            boxToEcoValue ctx3 resVar kernelResultType
-                                    in
-                                    { ops = argOps ++ boxOps ++ [ callOp ] ++ boxResultOps
-                                    , resultVar = boxedVar
-                                    , resultType = ecoValue
-                                    , ctx = ctx4
-                                    }
-
-                                else
-                                    { ops = argOps ++ boxOps ++ [ callOp ]
-                                    , resultVar = resVar
-                                    , resultType = kernelResultType
-                                    , ctx = ctx3
-                                    }
+                                ( ctx3, callOp ) =
+                                    ecoCallNamed ctx2 resVar kernelName argVarPairs resultMlirType
+                            in
+                            { ops = argOps ++ boxOps ++ [ callOp ]
+                            , resultVar = resVar
+                            , resultType = resultMlirType
+                            , ctx = ctx3
+                            }
 
         Mono.MonoVarLocal name funcType ->
             let
@@ -4935,6 +4873,14 @@ ecoProjectCustom ctx resultVar fieldIndex resultType containerVar =
 ecoCallNamed : Context -> String -> String -> List ( String, MlirType ) -> MlirType -> ( Context, MlirOp )
 ecoCallNamed ctx resultVar funcName operands returnType =
     let
+        -- Register kernel functions for declaration generation
+        ctxWithKernel =
+            if String.startsWith "Elm_Kernel_" funcName then
+                registerKernelCall ctx funcName (List.map Tuple.second operands) returnType
+
+            else
+                ctx
+
         operandNames =
             List.map Tuple.first operands
 
@@ -4950,7 +4896,7 @@ ecoCallNamed ctx resultVar funcName operands returnType =
             Dict.union operandTypesAttr
                 (Dict.singleton "callee" (SymbolRefAttr funcName))
     in
-    mlirOp ctx "eco.call"
+    mlirOp ctxWithKernel "eco.call"
         |> opBuilder.withOperands operandNames
         |> opBuilder.withResults [ ( resultVar, returnType ) ]
         |> opBuilder.withAttrs attrs

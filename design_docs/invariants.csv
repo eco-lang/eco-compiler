@@ -20,6 +20,7 @@ CGEN_008;MLIR_Codegen;Attributes;documented;eco.construct eco.project eco.call a
 CGEN_009;MLIR_Codegen;Booleans;documented;Boolean constants must be emitted with typed MLIR attributes such as value equals 1 colon i1 so MLIR verifies that the constant value type and result type agree;PLAN.md known issues section
 CGEN_010;MLIR_Codegen;Case;enforced;Every eco.case in the IR has an explicit result_types attribute and all alternatives eco.return terminators match it;Compiler.Generate.MLIRMono
 CGEN_011;MLIR_Codegen;Functions;enforced;Every function referenced by eco.call must have a corresponding func.func definition or declaration in the module so no undefined function symbols escape MLIR codegen and the UndefinedFunction pass validates this invariant by failing the build on any violation;Compiler.Generate.MLIRMono and UndefinedFunction.cpp
+CGEN_012;MLIR_Codegen;TypeMapping;enforced;monoTypeToMlir maps primitive MonoTypes to their unboxed MLIR types so MInt becomes i64 and MFloat becomes f64 and MBool becomes i1 and MChar becomes i32 and all other MonoTypes including MVar and compound types become eco.value;Compiler.Generate.CodeGen.MLIR
 
 HEAP_001;Runtime_Heap;Header;documented;Every heap object begins with an 8 byte Header struct and the first TAG_BITS bits of the header encode the Tag which denotes the concrete heap object kind;Heap.hpp  
 HEAP_002;Runtime_Heap;Alignment;documented;All heap objects are 8 byte aligned and getObjectSize always rounds object sizes up to a multiple of 8 bytes;AllocatorCommon.hpp  

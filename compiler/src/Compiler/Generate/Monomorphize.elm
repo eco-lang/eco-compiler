@@ -831,7 +831,13 @@ specializeExpr expr subst state =
         TOpt.VarKernel region home name canType ->
             let
                 monoType =
-                    applySubst subst canType
+                    if isAlwaysPolymorphicKernel home name then
+                        -- Preserve type variables so they map to !eco.value
+                        applySubst Dict.empty canType
+
+                    else
+                        -- Fully specialize the function type
+                        applySubst subst canType
             in
             ( Mono.MonoVarKernel region home name monoType, state )
 
@@ -945,7 +951,7 @@ specializeExpr expr subst state =
                     in
                     ( Mono.MonoCall region monoFunc monoArgs resultMonoType, newState )
 
-                -- Polymorphic kernel function call
+                -- Kernel function call
                 TOpt.VarKernel funcRegion home name funcCanType ->
                     let
                         argTypes =
@@ -958,7 +964,14 @@ specializeExpr expr subst state =
                             applySubst callSubst canType
 
                         funcMonoType =
-                            applySubst callSubst funcCanType
+                            if isAlwaysPolymorphicKernel home name then
+                                -- Preserve type variables in the function type so that
+                                -- its ABI is all !eco.value
+                                applySubst Dict.empty funcCanType
+
+                            else
+                                -- Fully specialize the function type
+                                applySubst callSubst funcCanType
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion home name funcMonoType
@@ -2396,6 +2409,56 @@ collectDeciderDeps decider deps =
                     List.foldl (\( _, d ) acc -> collectDeciderDeps d acc) deps edges
             in
             collectDeciderDeps fallback edgeDeps
+
+
+
+-- ========== KERNEL POLYMORPHISM ==========
+
+
+{-| Kernels whose C ABI must remain polymorphic (all boxed eco.value).
+
+For these, we preserve type variables in the function type so that
+monoTypeToMlir maps their parameters/results to !eco.value.
+
+Note: Debug.* kernels are handled via VarDebug special case in specializeExpr,
+not listed here. Most other modules (VirtualDom, Json, etc.) don't need listing
+because their heap types already map to !eco.value via monoTypeToMlir.
+-}
+isAlwaysPolymorphicKernel : String -> String -> Bool
+isAlwaysPolymorphicKernel home name =
+    case home of
+        "Utils" ->
+            -- Polymorphic over comparable/equatable/appendable types
+            name
+                == "compare"
+                || name
+                == "equal"
+                || name
+                == "append"
+                || name
+                == "lt"
+                || name
+                == "le"
+                || name
+                == "gt"
+                || name
+                == "ge"
+                || name
+                == "notEqual"
+
+        "Basics" ->
+            -- Fallback when `number` leaks through monomorphization
+            name
+                == "add"
+                || name
+                == "sub"
+                || name
+                == "mul"
+                || name
+                == "pow"
+
+        _ ->
+            False
 
 
 
