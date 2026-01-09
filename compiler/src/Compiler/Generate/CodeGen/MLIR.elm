@@ -323,6 +323,7 @@ and result MLIR types, or we crash with a mismatch error.
 
 This keeps declaration generation in sync with the ABI chosen at the call
 site (which is derived from the Elm MonoType via monoTypeToMlir).
+
 -}
 registerKernelCall : Context -> String -> List MlirType -> MlirType -> Context
 registerKernelCall ctx name callSiteArgTypes callSiteReturnType =

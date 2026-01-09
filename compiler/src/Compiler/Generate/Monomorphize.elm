@@ -2420,9 +2420,10 @@ collectDeciderDeps decider deps =
 For these, we preserve type variables in the function type so that
 monoTypeToMlir maps their parameters/results to !eco.value.
 
-Note: Debug.* kernels are handled via VarDebug special case in specializeExpr,
+Note: Debug.\* kernels are handled via VarDebug special case in specializeExpr,
 not listed here. Most other modules (VirtualDom, Json, etc.) don't need listing
 because their heap types already map to !eco.value via monoTypeToMlir.
+
 -}
 isAlwaysPolymorphicKernel : String -> String -> Bool
 isAlwaysPolymorphicKernel home name =

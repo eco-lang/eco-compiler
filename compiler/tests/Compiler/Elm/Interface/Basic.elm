@@ -223,7 +223,6 @@ standardBinops =
 
         -- Note: :: (cons) is defined in List interface only.
         -- Test modules should import List to use it.
-
         -- Pipe (precedence 0)
         , binop "|>" "apR" pipeRType Binop.Left 0
         , binop "<|" "apL" pipeLType Binop.Right 0

@@ -6,10 +6,10 @@ module Compiler.AST.Monomorphized exposing
     , MonoGraph(..), MainInfo(..), MonoNode(..)
     , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
     , Decider(..), MonoChoice(..)
+    , ContainerKind(..)
     , typeOf, canUnbox
     , computeRecordLayout, computeTupleLayout
     , toComparableSpecKey
-    , ContainerKind(..)
     )
 
 {-| Monomorphized AST for backends that can optimize using concrete types.
