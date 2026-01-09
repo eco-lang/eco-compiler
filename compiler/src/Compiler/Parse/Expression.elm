@@ -37,7 +37,7 @@ import Compiler.Reporting.Error.Syntax as E
 
 
 
--- TERMS
+-- ====== TERMS ======
 
 
 term : SyntaxVersion -> P.Parser E.Expr Src.Expr
@@ -120,7 +120,7 @@ chompAccessField start expr pos =
 
 
 
--- LISTS
+-- ====== LISTS ======
 
 
 list : SyntaxVersion -> A.Position -> P.Parser E.Expr Src.Expr
@@ -164,7 +164,7 @@ chompListEnd syntaxVersion start ( trailingComments, entries ) =
 
 
 
--- TUPLES
+-- ====== TUPLES ======
 
 
 tuple : SyntaxVersion -> A.Position -> P.Parser E.Expr Src.Expr
@@ -282,7 +282,7 @@ chompTupleEnd syntaxVersion start firstExpr revExprs =
 
 
 
--- RECORDS
+-- ====== RECORDS ======
 
 
 {-| Parse record expressions including record literals and record update syntax.
@@ -431,7 +431,7 @@ chompRecordAccessField start expr pos =
 
 
 
--- FOREIGN ALPHA
+-- ====== FOREIGN ALPHA ======
 
 
 foreignAlpha : (Row -> Col -> x) -> P.Parser x Src.Expr_
@@ -545,7 +545,7 @@ chompField syntaxVersion preCommaComents postCommaComments =
 
 
 
--- EXPRESSIONS
+-- ====== EXPRESSIONS ======
 
 
 {-| Parse a complete Elm expression including operators, function application,
@@ -766,7 +766,7 @@ toCall func revArgs =
 
 
 
--- IF EXPRESSION
+-- ====== IF EXPRESSION ======
 
 
 if_ : SyntaxVersion -> A.Position -> Space.Parser E.Expr (Src.C1 Src.Expr)
@@ -900,7 +900,7 @@ buildIfExpr start newBranch newBranches trailingComments ( ( postElseBranch, els
 
 
 
--- LAMBDA EXPRESSION
+-- ====== LAMBDA EXPRESSION ======
 
 
 function : SyntaxVersion -> A.Position -> Space.Parser E.Expr (Src.C1 Src.Expr)
@@ -960,7 +960,7 @@ chompArgs syntaxVersion trailingComments revArgs =
 
 
 
--- CASE EXPRESSIONS
+-- ====== CASE EXPRESSIONS ======
 
 
 case_ : SyntaxVersion -> A.Position -> Space.Parser E.Expr (Src.C1 Src.Expr)
@@ -1049,7 +1049,7 @@ chompCaseEnd syntaxVersion prePatternComments branches end =
 
 
 
--- LET EXPRESSION
+-- ====== LET EXPRESSION ======
 
 
 let_ : SyntaxVersion -> A.Position -> Space.Parser E.Expr (Src.C1 Src.Expr)
@@ -1102,7 +1102,7 @@ chompLetDefs syntaxVersion revDefs end =
 
 
 
--- LET DEFINITIONS
+-- ====== LET DEFINITIONS ======
 
 
 chompLetDef : SyntaxVersion -> Space.Parser E.Let (Src.C1 (A.Located Src.Def))
@@ -1114,7 +1114,7 @@ chompLetDef syntaxVersion =
 
 
 
--- DEFINITION
+-- ====== DEFINITION ======
 
 
 definition : SyntaxVersion -> Space.Parser E.Let (Src.C1 (A.Located Src.Def))
@@ -1225,7 +1225,7 @@ chompMatchingName expectedName =
 
 
 
--- DESTRUCTURE
+-- ====== DESTRUCTURE ======
 
 
 destructure : SyntaxVersion -> Space.Parser E.Let (Src.C1 (A.Located Src.Def))

@@ -26,7 +26,7 @@ import Compiler.Reporting.Doc as D
 
 
 
--- BUILD REPORTS
+-- ====== BUILD REPORTS ======
 
 
 {-| A compiler diagnostic report containing all information needed to display

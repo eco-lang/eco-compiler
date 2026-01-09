@@ -57,7 +57,7 @@ import Utils.Main as Utils exposing (Chan, MVar)
 
 
 
--- STYLE
+-- ====== STYLE ======
 
 
 {-| Represents different output styles for build reporting.
@@ -90,7 +90,7 @@ terminal =
 
 
 
--- ATTEMPT
+-- ====== ATTEMPT ======
 
 
 {-| Executes a task and converts failures to error reports, exiting on failure.
@@ -164,7 +164,7 @@ exitWithTerminalError mvar helpReport =
 
 
 
--- MARKS
+-- ====== MARKS ======
 
 
 goodMark : D.Doc
@@ -196,7 +196,7 @@ isWindows =
 
 
 
--- KEY
+-- ====== KEY ======
 
 
 {-| Represents a channel for sending progress messages.
@@ -220,7 +220,7 @@ ignorer =
 
 
 
--- ASK
+-- ====== ASK ======
 
 
 {-| Prompts the user with a yes/no question, defaulting to yes on empty input.
@@ -264,7 +264,7 @@ promptAndRetry =
 
 
 
--- DETAILS
+-- ====== DETAILS ======
 
 
 {-| Type alias for dependency resolution progress reporting key.
@@ -465,7 +465,7 @@ clear before after =
 
 
 
--- BUILD
+-- ====== BUILD ======
 
 
 {-| Type alias for build progress reporting key.
@@ -598,7 +598,7 @@ toFinalMessage done result =
 
 
 
--- GENERATE
+-- ====== GENERATE ======
 
 
 {-| Reports code generation results, showing module names and output file.
@@ -700,7 +700,7 @@ putStrFlush str =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 dMsgEncoder : DMsg -> Bytes.Encode.Encoder

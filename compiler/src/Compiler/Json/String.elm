@@ -18,7 +18,7 @@ import Compiler.Parse.Primitives as P
 
 
 
--- FROM
+-- ====== FROM ======
 
 
 {-| Extract a string from a parser snippet.
@@ -36,7 +36,7 @@ fromName =
 
 
 
--- FROM COMMENT
+-- ====== FROM COMMENT ======
 
 
 {-| Extract a string from a comment snippet, properly escaping newlines, quotes, and backslashes.
@@ -108,7 +108,7 @@ addSlice start end revChunks =
 
 
 
--- FROM CHUNKS
+-- ====== FROM CHUNKS ======
 
 
 type Chunk

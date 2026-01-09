@@ -46,7 +46,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- ZERO BASED
+-- ====== ZERO BASED ======
 
 
 {-| A type-safe wrapper for zero-based indices.
@@ -85,7 +85,7 @@ next (ZeroBased i) =
 
 
 
--- DESTRUCT
+-- ====== DESTRUCT ======
 
 
 {-| Convert a zero-based index to a machine integer (0-indexed).
@@ -105,7 +105,7 @@ toHuman (ZeroBased index) =
 
 
 
--- INDEXED MAP
+-- ====== INDEXED MAP ======
 
 
 {-| Map over a list with zero-based indices provided to the mapping function.
@@ -117,8 +117,8 @@ indexedMap func xs =
 
 
 
--- NOTE: indexedTraverse and indexedForA are defined on `Utils`
--- VERIFIED/INDEXED ZIP
+-- ====== VERIFIED/INDEXED ZIP ======
+{- NOTE: indexedTraverse and indexedForA are defined on Utils. -}
 
 
 {-| Result of an indexed zip operation that verifies list lengths match.
@@ -153,7 +153,7 @@ indexedZipWithHelp func index listX listY revListZ =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encode a zero-based index to bytes as an integer.

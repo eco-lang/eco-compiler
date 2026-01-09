@@ -36,7 +36,7 @@ fileSyntaxVersion path =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encodes a SyntaxVersion to bytes for serialization.

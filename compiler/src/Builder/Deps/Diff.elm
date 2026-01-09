@@ -101,7 +101,7 @@ getChanges toComparable keyComparison isEquivalent old new =
 
 
 
--- DIFF
+-- ====== DIFF ======
 
 
 {-| Compare two versions of package documentation to determine what changed.
@@ -134,7 +134,7 @@ diffModule ( Docs.Module m1, Docs.Module m2 ) =
 
 
 
--- EQUIVALENCE
+-- ====== EQUIVALENCE ======
 
 
 isEquivalentUnion : Docs.Union -> Docs.Union -> Bool
@@ -182,7 +182,7 @@ isEquivalentBinop (Docs.Binop data1) (Docs.Binop data2) =
 
 
 
--- DIFF TYPES
+-- ====== DIFF TYPES ======
 
 
 diffType : Type.Type -> Type.Type -> Maybe (List ( Name.Name, Name.Name ))
@@ -281,7 +281,7 @@ diffFields oldRawFields newRawFields =
 
 
 
--- TYPE VARIABLES
+-- ====== TYPE VARIABLES ======
 
 
 isEquivalentRenaming : List ( Name.Name, Name.Name ) -> Bool
@@ -373,7 +373,7 @@ categorizeVar name =
 
 
 
--- MAGNITUDE
+-- ====== MAGNITUDE ======
 
 
 {-| Compute the new version by applying the appropriate bump (MAJOR, MINOR, or PATCH) to the current version.
@@ -446,7 +446,7 @@ changeMagnitude (Changes added changed removed) =
 
 
 
--- GET DOCS
+-- ====== GET DOCS ======
 
 
 {-| Fetch documentation for a specific package version, either from local cache or the package server.

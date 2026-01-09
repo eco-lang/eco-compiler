@@ -68,7 +68,7 @@ import Utils.Main as Utils
 
 
 
--- DOCUMENTATION
+-- ====== DOCUMENTATION ======
 
 
 {-| A collection of documentation for multiple modules indexed by module name.
@@ -136,7 +136,7 @@ type Binop
 
 
 
--- JSON
+-- ====== JSON ======
 
 
 {-| Encodes Documentation to the compiler's internal JSON representation.
@@ -220,7 +220,7 @@ typeDecoder =
 
 
 
--- UNION JSON
+-- ====== UNION JSON ======
 
 
 encodeUnion : ( Name, Union ) -> E.Value
@@ -251,7 +251,7 @@ caseDecoder =
 
 
 
--- ALIAS JSON
+-- ====== ALIAS JSON ======
 
 
 encodeAlias : ( Name, Alias ) -> E.Value
@@ -272,7 +272,7 @@ alias_ =
 
 
 
--- VALUE JSON
+-- ====== VALUE JSON ======
 
 
 encodeValue : ( Name.Name, Value ) -> E.Value
@@ -291,7 +291,7 @@ value =
 
 
 
--- BINOP JSON
+-- ====== BINOP JSON ======
 
 
 encodeBinop : ( Name, Binop ) -> E.Value
@@ -314,7 +314,7 @@ binop =
 
 
 
--- ASSOCIATIVITY JSON
+-- ====== ASSOCIATIVITY JSON ======
 
 
 encodeAssoc : Binop.Associativity -> E.Value
@@ -363,7 +363,7 @@ assocDecoder =
 
 
 
--- PRECEDENCE JSON
+-- ====== PRECEDENCE JSON ======
 
 
 encodePrec : Binop.Precedence -> E.Value
@@ -377,7 +377,7 @@ precDecoder =
 
 
 
--- FROM MODULE
+-- ====== FROM MODULE ======
 
 
 {-| Extracts documentation from a canonical AST module, validating that all exported items have comments and type annotations.
@@ -400,7 +400,7 @@ fromModule ((Can.Module canData) as modul) =
 
 
 
--- PARSE OVERVIEW
+-- ====== PARSE OVERVIEW ======
 
 
 {-| Parses the module overview comment to extract the list of @docs declarations.
@@ -555,7 +555,7 @@ untilDocs src pos end row col =
 
 
 
--- CHECK NAMES
+-- ====== CHECK NAMES ======
 
 
 checkNames : Dict String Name (A.Located Can.Export) -> List (A.Located Name) -> Result E.Error ()
@@ -623,7 +623,7 @@ onlyInExports name (A.At region _) =
 
 
 
--- CHECK DEFS
+-- ====== CHECK DEFS ======
 
 
 checkDefs : Dict String Name (A.Located Can.Export) -> Src.Comment -> Dict String Name Src.Comment -> Can.Module -> Result E.Error Module
@@ -792,7 +792,7 @@ dector (Can.Ctor c) =
 
 
 
--- GATHER TYPES
+-- ====== GATHER TYPES ======
 
 
 type alias Types =
@@ -828,7 +828,7 @@ addDef types def =
 
 
 
--- JSON ENCODERS and DECODERS
+-- ====== JSON ENCODERS and DECODERS ======
 
 
 {-| Encodes Documentation to a standard Json.Encode.Value for external consumption.
@@ -839,7 +839,7 @@ jsonEncoder =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encodes Documentation to a binary format for efficient serialization.

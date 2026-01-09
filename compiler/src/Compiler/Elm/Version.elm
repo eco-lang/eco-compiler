@@ -73,7 +73,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- VERSION
+-- ====== VERSION ======
 
 
 {-| Represents a semantic version with major, minor, and patch components.
@@ -176,7 +176,7 @@ elmCompiler =
 
 
 
--- BUMP
+-- ====== BUMP ======
 
 
 {-| Increment the patch version number by 1 (e.g., 1.2.3 becomes 1.2.4).
@@ -204,7 +204,7 @@ bumpMajor (Version major_ _ _) =
 
 
 
--- TO CHARS
+-- ====== TO CHARS ======
 
 
 {-| Convert a Version to its string representation in the format "major.minor.patch".
@@ -215,7 +215,7 @@ toChars (Version major_ minor patch) =
 
 
 
--- JSON
+-- ====== JSON ======
 
 
 {-| Decode a Version from a JSON string using the custom parser.
@@ -234,7 +234,7 @@ encode version =
 
 
 
--- PARSER
+-- ====== PARSER ======
 
 
 {-| Parse a semantic version string in the format "major.minor.patch".
@@ -319,7 +319,7 @@ isDigit word =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encode a Version to a binary format as three consecutive integers (major, minor, patch).

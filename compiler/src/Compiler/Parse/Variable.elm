@@ -46,7 +46,7 @@ import Data.Set as EverySet exposing (EverySet)
 
 
 
--- LOCAL UPPER
+-- ====== LOCAL UPPER ======
 
 
 {-| Parses an upper-case identifier (type name or constructor) that starts with A-Z.
@@ -72,7 +72,7 @@ upper toError =
 
 
 
--- LOCAL LOWER
+-- ====== LOCAL LOWER ======
 
 
 {-| Parses a lower-case identifier (variable or function name) that starts with a-z.
@@ -135,7 +135,7 @@ reservedWords =
 
 
 
--- MODULE NAME
+-- ====== MODULE NAME ======
 
 
 {-| Parses a module name like 'Html', 'Json.Decode', or 'Data.Map.Internal'.
@@ -201,7 +201,7 @@ moduleNameHelp src pos end col =
 
 
 
--- FOREIGN UPPER
+-- ====== FOREIGN UPPER ======
 
 
 {-| Represents an upper-case name that may be qualified with a module prefix.
@@ -268,7 +268,7 @@ foreignUpperHelp src pos end col =
 
 
 
--- FOREIGN ALPHA
+-- ====== FOREIGN ALPHA ======
 
 
 {-| Parses a qualified or unqualified variable reference (upper or lower case).
@@ -337,7 +337,7 @@ foreignAlphaHelp src pos end col =
 
 
 ---- CHAR CHOMPERS ----
--- DOTS
+-- ====== DOTS ======
 
 
 {-| Checks if the character at the given position is a dot (.).
@@ -348,7 +348,7 @@ isDot src pos end =
 
 
 
--- UPPER CHARS
+-- ====== UPPER CHARS ======
 
 
 {-| Consumes an upper-case identifier including any trailing inner characters (letters, digits, underscores).
@@ -422,7 +422,7 @@ getUpperWidthHelp src pos _ word =
 
 
 
--- LOWER CHARS
+-- ====== LOWER CHARS ======
 
 
 {-| Consumes a lower-case identifier including any trailing inner characters (letters, digits, underscores).
@@ -490,7 +490,7 @@ getLowerWidthHelp src pos _ word =
 
 
 
--- INNER CHARS
+-- ====== INNER CHARS ======
 
 
 {-| Consumes the inner characters of an identifier (letters, digits, underscores).
@@ -573,7 +573,7 @@ getInnerWidthHelp src pos _ word =
 
 
 
--- EXTRACT CHARACTERS
+-- ====== EXTRACT CHARACTERS ======
 
 
 chr2 : String -> Int -> Char -> Char

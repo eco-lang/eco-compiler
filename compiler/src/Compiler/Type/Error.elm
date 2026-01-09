@@ -50,7 +50,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- ERROR TYPES
+-- ====== ERROR TYPES ======
 
 
 {-| Simplified type representation used for error reporting.
@@ -105,7 +105,7 @@ iteratedDealias tipe =
 
 
 
--- TO DOC
+-- ====== TO DOC ======
 
 
 {-| Convert a type to a formatted documentation representation for display in error messages.
@@ -198,7 +198,7 @@ extToDoc ext =
 
 
 
--- DIFF
+-- ====== DIFF ======
 
 
 type Diff a
@@ -275,7 +275,7 @@ merge status1 status2 =
 
 
 
--- COMPARISON
+-- ====== COMPARISON ======
 
 
 {-| Compare two types and return formatted documentation for each along with a list of detected problems.
@@ -558,7 +558,7 @@ toDiffOtherwise localizer ctx (( tipe1, tipe2 ) as pair) =
 
 
 
--- DIFF HELPERS
+-- ====== DIFF HELPERS ======
 
 
 same : L.Localizer -> RT.Context -> Type -> Diff D.Doc
@@ -592,7 +592,7 @@ isSimilar (Diff _ _ status) =
 
 
 
--- IS TYPE?
+-- ====== IS TYPE ======
 
 
 isBool : IO.Canonical -> Name -> Bool
@@ -641,7 +641,7 @@ isList home name =
 
 
 
--- IS SUPER?
+-- ====== IS SUPER ======
 
 
 isSuper : Super -> Type -> Bool
@@ -680,7 +680,7 @@ isSuper super tipe =
 
 
 
--- NAME CLASH
+-- ====== NAME CLASH ======
 
 
 nameClashToDoc : RT.Context -> L.Localizer -> IO.Canonical -> Name -> List Type -> D.Doc
@@ -691,7 +691,7 @@ nameClashToDoc ctx localizer (IO.Canonical _ home) name args =
 
 
 
--- DIFF ALIASED RECORD
+-- ====== DIFF ALIASED RECORD ======
 
 
 diffAliasedRecord : L.Localizer -> Type -> Type -> Maybe (Diff D.Doc)
@@ -705,7 +705,7 @@ diffAliasedRecord localizer t1 t2 =
 
 
 
--- RECORD DIFFS
+-- ====== RECORD DIFFS ======
 
 
 diffRecord : L.Localizer -> Dict String Name Type -> Extension -> Dict String Name Type -> Extension -> Diff D.Doc
@@ -833,7 +833,7 @@ hasFixedFields ext =
 
 
 
--- DIFF RECORD EXTENSION
+-- ====== DIFF RECORD EXTENSION ======
 
 
 extToDiff : Extension -> Extension -> Diff (Maybe D.Doc)
@@ -893,7 +893,7 @@ extToStatus ext1 ext2 =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encode a Type value to bytes for serialization.

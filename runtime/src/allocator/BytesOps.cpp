@@ -1,5 +1,8 @@
 /**
  * Binary Data Operations Implementation.
+ *
+ * Implements byte buffer manipulation for the Elm runtime, including
+ * creation, UTF-8 encoding/decoding, Base64, and hex conversion.
  */
 
 #include "BytesOps.hpp"
@@ -8,6 +11,7 @@
 namespace Elm {
 namespace BytesOps {
 
+// Creates a ByteBuffer from a list of integers (0-255).
 HPointer fromList(HPointer list) {
     auto& allocator = Allocator::instance();
 
@@ -51,11 +55,12 @@ HPointer fromList(HPointer list) {
     return allocator.wrap(buf);
 }
 
+// Creates a ByteBuffer from a UTF-8 encoded string.
 HPointer fromString(void* str) {
-    // Encode string as UTF-8
     return encodeUtf8(str);
 }
 
+// Decodes a ByteBuffer as UTF-8 into an ElmString.
 HPointer decodeUtf8(void* buf) {
     ByteBuffer* b = static_cast<ByteBuffer*>(buf);
     size_t len = b->header.size;
@@ -124,6 +129,7 @@ HPointer decodeUtf8(void* buf) {
     return alloc::just(alloc::boxed(result), true);
 }
 
+// Encodes an ElmString as UTF-8 into a ByteBuffer.
 HPointer encodeUtf8(void* str) {
     ElmString* s = static_cast<ElmString*>(str);
     size_t len = s->header.size;
@@ -172,6 +178,7 @@ HPointer encodeUtf8(void* str) {
     return fromVector(utf8);
 }
 
+// Converts a ByteBuffer to a list of integers (0-255).
 HPointer toList(void* buf) {
     ByteBuffer* b = static_cast<ByteBuffer*>(buf);
     size_t len = b->header.size;
@@ -186,6 +193,7 @@ HPointer toList(void* buf) {
     return result;
 }
 
+// Concatenates a list of ByteBuffers into a single ByteBuffer.
 HPointer concat(HPointer bufferList) {
     auto& allocator = Allocator::instance();
 
@@ -236,12 +244,13 @@ HPointer concat(HPointer bufferList) {
     return allocator.wrap(result);
 }
 
-// Base64 encoding table
+// Base64 encoding table.
 static const char base64_chars[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     "abcdefghijklmnopqrstuvwxyz"
     "0123456789+/";
 
+// Encodes a ByteBuffer as Base64, returning an ElmString.
 HPointer toBase64(void* buf) {
     ByteBuffer* b = static_cast<ByteBuffer*>(buf);
     size_t len = b->header.size;
@@ -274,17 +283,19 @@ HPointer toBase64(void* buf) {
     return alloc::allocString(result);
 }
 
-// Base64 decoding table
+// Decodes a single Base64 character to its 6-bit value.
+// Returns -1 for padding ('='), -2 for invalid characters.
 static int base64_decode_char(char16_t c) {
     if (c >= 'A' && c <= 'Z') return c - 'A';
     if (c >= 'a' && c <= 'z') return c - 'a' + 26;
     if (c >= '0' && c <= '9') return c - '0' + 52;
     if (c == '+') return 62;
     if (c == '/') return 63;
-    if (c == '=') return -1;  // Padding
-    return -2;  // Invalid
+    if (c == '=') return -1;
+    return -2;
 }
 
+// Decodes a Base64 ElmString into a ByteBuffer.
 HPointer fromBase64(void* str) {
     ElmString* s = static_cast<ElmString*>(str);
     size_t len = s->header.size;
@@ -325,8 +336,10 @@ HPointer fromBase64(void* str) {
     return alloc::just(alloc::boxed(buf), true);
 }
 
+// Hex encoding table (lowercase).
 static const char hex_chars[] = "0123456789abcdef";
 
+// Encodes a ByteBuffer as lowercase hexadecimal.
 HPointer toHex(void* buf) {
     ByteBuffer* b = static_cast<ByteBuffer*>(buf);
     size_t len = b->header.size;
@@ -345,6 +358,8 @@ HPointer toHex(void* buf) {
     return alloc::allocString(result);
 }
 
+// Decodes a single hex character to its 4-bit value.
+// Returns -1 for invalid characters.
 static int hex_decode_char(char16_t c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -352,6 +367,7 @@ static int hex_decode_char(char16_t c) {
     return -1;
 }
 
+// Decodes a hexadecimal ElmString into a ByteBuffer.
 HPointer fromHex(void* str) {
     ElmString* s = static_cast<ElmString*>(str);
     size_t len = s->header.size;

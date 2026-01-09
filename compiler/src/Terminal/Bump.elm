@@ -38,7 +38,7 @@ import Utils.Task.Extra as Task
 
 
 
--- RUN
+-- ====== RUN ======
 
 
 {-| Run the version bump command, analyzing API changes and suggesting appropriate version bumps.
@@ -49,7 +49,7 @@ run () () =
 
 
 
--- ENV
+-- ====== ENV ======
 
 
 type alias EnvData =
@@ -127,7 +127,7 @@ validateOutline setup registry outline =
 
 
 
--- BUMP
+-- ====== BUMP ======
 
 
 bump : Env -> Task Exit.Bump ()
@@ -154,7 +154,7 @@ bump ((Env envData) as env) =
 
 
 
--- CHECK NEW PACKAGE
+-- ====== CHECK NEW PACKAGE ======
 
 
 checkNewPackage : FilePath -> Outline.PkgOutline -> Task Never ()
@@ -179,7 +179,7 @@ validateNewPackageVersion root outline version =
 
 
 
--- SUGGEST VERSION
+-- ====== SUGGEST VERSION ======
 
 
 type alias VersionSuggestion =
@@ -273,7 +273,7 @@ buildDocsFromExposed root exposed details =
 
 
 
--- CHANGE VERSION
+-- ====== CHANGE VERSION ======
 
 
 changeVersion : FilePath -> Outline.PkgOutline -> V.Version -> D.Doc -> Task Never ()

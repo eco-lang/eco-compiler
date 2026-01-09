@@ -40,7 +40,7 @@ import Utils.Main as Utils exposing (FilePath)
 
 
 
--- VERSION
+-- ====== VERSION ======
 
 
 {-| Parser for version numbers.
@@ -108,7 +108,7 @@ exampleVersions chars =
 
 
 
--- GUIDA OR ELM FILE
+-- ====== GUIDA OR ELM FILE ======
 
 
 {-| Parser for Guida or Elm source file paths.
@@ -150,7 +150,7 @@ exampleGuidaOrElmFiles _ =
 
 
 
--- FILE PATH
+-- ====== FILE PATH ======
 
 
 {-| Parser for general file paths.
@@ -184,7 +184,7 @@ exampleFilePaths _ =
 
 
 
--- PACKAGE
+-- ====== PACKAGE ======
 
 
 {-| Parser for Elm package names.

@@ -238,7 +238,7 @@ toDefProblemReport source problem =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Serialize a documentation error to bytes for caching or transmission.

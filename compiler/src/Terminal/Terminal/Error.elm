@@ -40,7 +40,7 @@ import Utils.Main as Utils
 
 
 
--- EXIT
+-- ====== EXIT ======
 
 
 exitSuccess : List P.Doc -> Task Never a
@@ -93,7 +93,7 @@ reflow string =
 
 
 
--- HELP
+-- ====== HELP ======
 
 
 {-| Display help text for a command and exit successfully.
@@ -199,7 +199,7 @@ flagsToDocs flags docs =
 
 
 
--- OVERVIEW
+-- ====== OVERVIEW ======
 
 
 {-| Display an overview of all available commands and exit successfully.
@@ -268,7 +268,7 @@ toCommandList exeName commands =
 
 
 
--- UNKNOWN
+-- ====== UNKNOWN ======
 
 
 {-| Display an error for an unknown command and exit with failure.
@@ -319,7 +319,7 @@ exitWithUnknown unknown knowns =
 
 
 
--- ERROR TO DOC
+-- ====== ERROR TO DOC ======
 
 
 {-| Display a parsing error and exit with failure.
@@ -382,7 +382,7 @@ toRed str =
 
 
 
--- ARG ERROR TO DOC
+-- ====== ARG ERROR TO DOC ======
 
 
 argErrorToDocs : ArgError -> Task Never (List P.Doc)
@@ -463,7 +463,7 @@ argErrorToDocs argError =
 
 
 
--- FLAG ERROR TO DOC
+-- ====== FLAG ERROR TO DOC ======
 
 
 flagErrorHelp : String -> String -> List P.Doc -> Task Never (List P.Doc)

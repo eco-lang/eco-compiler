@@ -42,7 +42,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- ERROR
+-- ====== ERROR ======
 
 
 {-| Represents errors that can occur with the main entry point of an Elm program.
@@ -54,7 +54,7 @@ type Error
 
 
 
--- TO REPORT
+-- ====== TO REPORT ======
 
 
 {-| Convert a main entry point error into a user-friendly error report,
@@ -128,7 +128,7 @@ toReport localizer source err =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Serialize a main entry point error to bytes for caching or transmission.

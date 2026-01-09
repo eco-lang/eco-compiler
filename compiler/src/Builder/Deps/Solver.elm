@@ -72,7 +72,7 @@ import Utils.Main as Utils
 
 
 
--- SOLVER
+-- ====== SOLVER ======
 
 
 {-| Monadic solver type that encapsulates backtracking constraint solving.
@@ -129,7 +129,7 @@ type Connection
 
 
 
--- RESULT
+-- ====== RESULT ======
 
 
 {-| Result type for solver operations.
@@ -148,7 +148,7 @@ type SolverResult a
 
 
 
--- VERIFY -- used by Elm.Details
+-- ====== VERIFY ======
 
 
 {-| Package details containing the resolved version and its dependencies.
@@ -208,7 +208,7 @@ noSolution connection =
 
 
 
--- APP SOLUTION
+-- ====== APP SOLUTION ======
 
 
 {-| Complete solution for an application's dependencies.
@@ -254,7 +254,7 @@ getTransitive constraints solution unvisited visited =
 
 
 
--- ADD TO APP - used in Install
+-- ====== ADD TO APP ======
 
 
 {-| Add a package to an application's dependencies.
@@ -339,7 +339,7 @@ addToApp cache connection registry pkg (Outline.AppOutline appData) forTest =
 
 
 
--- ADD TO APP - used in Test
+-- ====== ADD TO TEST APP ======
 
 
 {-| Add a package with a specific constraint to test dependencies.
@@ -411,7 +411,7 @@ addToTestApp cache connection registry pkg con (Outline.AppOutline appData) =
 
 
 
--- REMOVE FROM APP - used in Uninstall
+-- ====== REMOVE FROM APP ======
 
 
 {-| Remove a package from an application's dependencies.
@@ -472,7 +472,7 @@ removeFromApp cache connection registry pkg (Outline.AppOutline appData) =
 
 
 
--- TRY
+-- ====== TRY ======
 
 
 try : Dict ( String, String ) Pkg.Name C.Constraint -> Solver (Dict ( String, String ) Pkg.Name V.Version)
@@ -481,7 +481,7 @@ try constraints =
 
 
 
--- EXPLORE GOALS
+-- ====== EXPLORE GOALS ======
 
 
 type Goals
@@ -560,7 +560,7 @@ addConstraint solved unsolved ( name, newConstraint ) =
 
 
 
--- GET RELEVANT VERSIONS
+-- ====== GET RELEVANT VERSIONS ======
 
 
 getRelevantVersions : Pkg.Name -> C.Constraint -> Solver ( V.Version, List V.Version )
@@ -581,7 +581,7 @@ getRelevantVersions name constraint =
 
 
 
--- GET CONSTRAINTS
+-- ====== GET CONSTRAINTS ======
 
 
 getConstraints : Pkg.Name -> V.Version -> Solver Constraints
@@ -746,7 +746,7 @@ constraintsDecoder =
 
 
 
--- ENVIRONMENT
+-- ====== ENVIRONMENT ======
 
 
 {-| Environment data for solver operations.
@@ -848,7 +848,7 @@ updateCachedRegistry cache manager cachedRegistry =
 
 
 
--- INSTANCES
+-- ====== INSTANCES ======
 
 
 map : (a -> b) -> Solver a -> Solver b
@@ -937,7 +937,7 @@ foldM f b =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Binary encoder for Env, enabling environment serialization.

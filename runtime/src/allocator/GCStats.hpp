@@ -1,3 +1,16 @@
+/**
+ * GC Statistics Tracking.
+ *
+ * Provides comprehensive telemetry for garbage collection performance analysis.
+ * All tracking compiles to zero overhead when ENABLE_GC_STATS is set to 0.
+ *
+ * Tracks:
+ *   - Allocation counts and bytes.
+ *   - Minor/major GC cycle counts and timing histograms.
+ *   - Object survival and promotion rates.
+ *   - AllocBuffer usage.
+ */
+
 #ifndef ECO_GC_STATS_H
 #define ECO_GC_STATS_H
 
@@ -29,7 +42,7 @@ public:
     uint64_t minor_gc_count = 0;
     uint64_t objects_survived = 0;
     uint64_t objects_promoted = 0;
-    uint64_t bytes_freed = 0;  // Cumulative total across all GC cycles.
+    uint64_t bytes_freed = 0;             // Cumulative total across all GC cycles.
 
     // ========== Minor GC Timing Stats ==========
     uint64_t total_minor_gc_time_ns = 0;
@@ -37,16 +50,16 @@ public:
     uint64_t max_minor_gc_time_ns = 0;
 
     // Histogram with extended dynamic range:
-    // - 20 buckets of 5us each (0-100us range)
-    // - 18 buckets of 50us each (100us-1ms range)
-    // - 1 overflow bucket (>1ms)
+    //   - 20 buckets of 5us each (0-100us range).
+    //   - 18 buckets of 50us each (100us-1ms range).
+    //   - 1 overflow bucket (>1ms).
     static constexpr int HISTOGRAM_BUCKETS = 39;
-    static constexpr uint64_t MINOR_HISTOGRAM_FIRST_RANGE = 100000;  // 100us (nanoseconds).
-    static constexpr uint64_t MINOR_HISTOGRAM_SECOND_RANGE = 1000000; // 1ms (nanoseconds).
-    static constexpr uint64_t MINOR_BUCKET_SIZE_SMALL = 5000;   // 5us bucket width (first range).
-    static constexpr uint64_t MINOR_BUCKET_SIZE_LARGE = 50000;  // 50us bucket width (second range).
-    static constexpr int MINOR_BUCKETS_SMALL = 20;  // Number of small buckets (0-100us).
-    static constexpr int MINOR_BUCKETS_LARGE = 18;  // Number of large buckets (100us-1ms).
+    static constexpr uint64_t MINOR_HISTOGRAM_FIRST_RANGE = 100000;   // 100us in nanoseconds.
+    static constexpr uint64_t MINOR_HISTOGRAM_SECOND_RANGE = 1000000; // 1ms in nanoseconds.
+    static constexpr uint64_t MINOR_BUCKET_SIZE_SMALL = 5000;         // 5us bucket width.
+    static constexpr uint64_t MINOR_BUCKET_SIZE_LARGE = 50000;        // 50us bucket width.
+    static constexpr int MINOR_BUCKETS_SMALL = 20;  // Buckets for 0-100us range.
+    static constexpr int MINOR_BUCKETS_LARGE = 18;  // Buckets for 100us-1ms range.
 
     uint64_t minor_time_histogram[HISTOGRAM_BUCKETS] = {0};
 

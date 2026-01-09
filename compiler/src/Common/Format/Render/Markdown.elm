@@ -406,7 +406,7 @@ formatMarkdownInline fixSpecialChars inline =
 
 
 
--- TEXT EXTRA
+-- ====== TEXT EXTRA ======
 
 
 {-| Result of searching for the longest span of a character.

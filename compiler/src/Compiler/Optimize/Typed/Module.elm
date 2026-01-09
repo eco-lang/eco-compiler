@@ -42,7 +42,7 @@ import Utils.Main as Utils
 
 
 
--- OPTIMIZE
+-- ====== OPTIMIZE ======
 
 
 {-| Result type for module optimization operations that can produce errors or warnings.

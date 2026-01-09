@@ -180,7 +180,7 @@ chompModule syntaxVersion projectType =
 
 
 
--- CHECK MODULE
+-- ====== CHECK MODULE ======
 
 
 checkModule : SyntaxVersion -> ProjectType -> Module -> Result E.Error Src.Module
@@ -311,7 +311,7 @@ categorizeDecls values unions aliases ports decls =
 
 
 
--- TO DOCS
+-- ====== TO DOCS ======
 
 
 toDocs : Result A.Region Src.Comment -> List Decl.Decl -> Src.Docs
@@ -356,7 +356,7 @@ addComment maybeComment (A.At _ name) comments =
 
 
 
--- FRESH LINES
+-- ====== FRESH LINES ======
 
 
 freshLine : (Row -> Col -> E.Module) -> P.Parser E.Module Src.FComments
@@ -370,7 +370,7 @@ freshLine toFreshLineError =
 
 
 
--- CHOMP DECLARATIONS
+-- ====== CHOMP DECLARATIONS ======
 
 
 chompDecls : SyntaxVersion -> P.Parser E.Decl (List (Src.C2 Decl.Decl))
@@ -402,7 +402,7 @@ chompInfixes infixes =
 
 
 
--- MODULE DOC COMMENT
+-- ====== MODULE DOC COMMENT ======
 
 
 chompModuleDocCommentSpace : P.Parser E.Module (Src.C1 (Result A.Region Src.Comment))
@@ -463,7 +463,7 @@ type Effects
 
 
 
--- HEADER PARSING HELPERS
+-- ====== HEADER PARSING HELPERS ======
 
 
 type alias ModuleErrContext =
@@ -954,7 +954,7 @@ chompExposing name maybeAlias trailingComments preExposedComments =
 
 
 
--- LISTING
+-- ====== LISTING ======
 
 
 exposing_ : P.Parser E.Exposing Src.Exposing

@@ -37,7 +37,7 @@ import Utils.Crash exposing (crash)
 
 
 
--- HELPERS
+-- ====== HELPERS ======
 
 
 {-| Create a fresh union-find point containing the given descriptor.

@@ -71,8 +71,8 @@ import Utils.Crash exposing (crash)
 
 
 
--- CORE HELPERS
--- RUNNERS
+-- ====== CORE HELPERS ======
+-- ====== RUNNERS ======
 
 
 {-| Parse and decode a JSON string into a value.
@@ -90,7 +90,7 @@ fromByteString (Decoder decode) src =
 
 
 
--- DECODERS
+-- ====== DECODERS ======
 
 
 {-| A JSON decoder that can produce values of type `a` or fail with custom errors of type `x`.
@@ -100,7 +100,7 @@ type Decoder x a
 
 
 
--- ERRORS
+-- ====== ERRORS ======
 
 
 {-| Top-level error type for JSON decoding, containing either a decode problem or a parse error.
@@ -111,7 +111,7 @@ type Error x
 
 
 
--- DECODE PROBLEMS
+-- ====== DECODE PROBLEMS ======
 
 
 {-| Represents a decoding problem with context about where it occurred.
@@ -136,7 +136,7 @@ type DecodeExpectation
 
 
 
--- INSTANCES
+-- ====== INSTANCES ======
 
 
 {-| Transform the value produced by a decoder.
@@ -184,7 +184,7 @@ andThen callback (Decoder decodeA) =
 
 
 
--- STRINGS
+-- ====== STRINGS ======
 
 
 {-| Decode a JSON string value.
@@ -218,7 +218,7 @@ customString parser toBadEnd =
 
 
 
--- INT
+-- ====== INT ======
 
 
 {-| Decode a JSON integer value.
@@ -236,7 +236,7 @@ int =
 
 
 
--- LISTS
+-- ====== LISTS ======
 
 
 {-| Decode a JSON array into a list.
@@ -269,7 +269,7 @@ listHelp ((Decoder decodeA) as decoder) i asts revs =
 
 
 
--- NON-EMPTY LISTS
+-- ====== NON-EMPTY LISTS ======
 
 
 {-| Decode a JSON array into a non-empty list.
@@ -295,7 +295,7 @@ nonEmptyList decoder x =
 
 
 
--- PAIR
+-- ====== PAIR ======
 
 
 {-| Decode a JSON array with exactly two elements into a tuple.
@@ -323,7 +323,7 @@ pair (Decoder decodeA) (Decoder decodeB) =
 
 
 
--- OBJECTS
+-- ====== OBJECTS ======
 
 
 {-| A decoder for JSON object keys.
@@ -385,7 +385,7 @@ snippetToRegion (P.Snippet { length, offRow, offCol }) =
 
 
 
--- FIELDS
+-- ====== FIELDS ======
 
 
 {-| Decode a specific field from a JSON object.
@@ -424,7 +424,7 @@ findField key pairs_ =
 
 
 
--- ONE OF
+-- ====== ONE OF ======
 
 
 {-| Try a list of decoders in order, using the first one that succeeds.
@@ -473,7 +473,7 @@ oneOfError problems prob ps =
 
 
 
--- FAILURE
+-- ====== FAILURE ======
 
 
 {-| Create a decoder that always fails with the given error value.
@@ -486,7 +486,7 @@ failure x =
 
 
 
--- ERRORS
+-- ====== ERRORS ======
 
 
 {-| Transform the error type of a decoder by applying a function to any custom errors.
@@ -516,7 +516,7 @@ mapErrorHelp func problem =
 
 
 
--- AST
+-- ====== AST ======
 
 
 type alias AST =
@@ -534,7 +534,7 @@ type AST_
 
 
 
--- PARSE
+-- ====== PARSE ======
 
 
 type alias Parser a =
@@ -565,7 +565,7 @@ type StringProblem
 
 
 
--- PARSE AST
+-- ====== PARSE AST ======
 
 
 pFile : Parser AST
@@ -593,7 +593,7 @@ pValue =
 
 
 
--- OBJECT
+-- ====== OBJECT ======
 
 
 pObject : Parser AST_
@@ -645,7 +645,7 @@ pField =
 
 
 
--- ARRAY
+-- ====== ARRAY ======
 
 
 pArray : Parser AST_
@@ -684,7 +684,7 @@ pArrayHelp revEntries =
 
 
 
--- STRING
+-- ====== STRING ======
 
 
 pString : (Row -> Col -> ParseError) -> Parser P.Snippet
@@ -847,7 +847,7 @@ isHex word =
 
 
 
--- SPACES
+-- ====== SPACES ======
 
 
 spaces : Parser ()
@@ -895,7 +895,7 @@ eatSpaces src pos end row col =
 
 
 
--- INTS
+-- ====== INTS ======
 
 
 pInt : Parser AST_

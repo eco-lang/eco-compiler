@@ -38,7 +38,7 @@ import Utils.Task.Extra as Task
 
 
 
--- RUN
+-- ====== RUN ======
 
 
 {-| Configuration flags for the format command.
@@ -242,7 +242,7 @@ doIt autoYes whatToDo =
 
 
 
--- MESSAGES
+-- ====== MESSAGES ======
 
 
 type InfoMessage
@@ -355,7 +355,7 @@ toConsoleErrorMessage errorMessage =
 
 
 
--- COMMAND LINE
+-- ====== COMMAND LINE ======
 
 
 type FileType
@@ -422,7 +422,7 @@ type ValidateMode
 
 
 
--- INFO FORMATTER
+-- ====== INFO FORMATTER ======
 
 
 approve : Bool -> PromptMessage -> Task Never Bool
@@ -469,7 +469,7 @@ resultsToJsonString results =
 
 
 
--- RESOLVE FILES
+-- ====== RESOLVE FILES ======
 
 
 type Error
@@ -553,7 +553,7 @@ collectErrors =
 
 
 
--- TRANSFORM FILES
+-- ====== TRANSFORM FILES ======
 
 
 type TranformFilesResult a
@@ -716,7 +716,7 @@ logErrorOr onInfo fn result =
 
 
 
--- FILESYSTEM
+-- ====== FILESYSTEM ======
 
 
 collectFiles : (a -> Task Never (List a)) -> a -> Task Never (List a)
@@ -782,7 +782,7 @@ hasFilename name path =
 
 
 
--- PRELUDE
+-- ====== PRELUDE ======
 
 
 unlines : List String -> String

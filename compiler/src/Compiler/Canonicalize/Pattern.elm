@@ -44,7 +44,7 @@ import Data.Map exposing (Dict)
 
 
 
--- RESULTS
+-- ====== RESULTS ======
 
 
 {-| Result type for pattern canonicalization operations.
@@ -67,7 +67,7 @@ type alias Bindings =
 
 
 
--- VERIFY
+-- ====== VERIFY ======
 
 
 {-| Verify that a pattern has no duplicate bindings and extract all variable bindings.
@@ -122,7 +122,7 @@ verifyWithIds context (ReportingResult.RResult k) =
 
 
 
--- CANONICALIZE
+-- ====== CANONICALIZE ======
 
 
 {-| Tracker for detecting duplicate variable bindings within patterns.
@@ -340,7 +340,7 @@ canonicalizeListWithIds syntaxVersion env state0 list =
 
 
 
--- LOG BINDINGS
+-- ====== LOG BINDINGS ======
 
 
 logVar : Name.Name -> A.Region -> a -> PResult DupsDict w a

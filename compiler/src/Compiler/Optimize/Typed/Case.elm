@@ -31,7 +31,7 @@ import Utils.Main as Utils
 
 
 
--- OPTIMIZE A CASE EXPRESSION
+-- ====== OPTIMIZE A CASE EXPRESSION ======
 
 
 {-| Optimize a typed case expression into a decision tree.
@@ -70,7 +70,7 @@ indexify index ( pattern, branch ) =
 
 
 
--- TREE TO DECIDER
+-- ====== TREE TO DECIDER ======
 --
 -- Decision trees may have some redundancies, so we convert them to a Decider
 -- which has special constructs to avoid code duplication when possible.
@@ -135,7 +135,7 @@ toChain path test successTree failureTree =
 
 
 
--- INSERT CHOICES
+-- ====== INSERT CHOICES ======
 --
 -- If a target appears exactly once in a Decider, the corresponding expression
 -- can be inlined. Whether things are inlined or jumps is called a "choice".

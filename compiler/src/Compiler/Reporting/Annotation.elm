@@ -46,7 +46,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- LOCATED
+-- ====== LOCATED ======
 
 
 {-| A value annotated with its source location.
@@ -99,7 +99,7 @@ merge (At r1 _) (At r2 _) value =
 
 
 
--- POSITION
+-- ====== POSITION ======
 
 
 {-| A single position in source code, represented as row and column numbers.
@@ -122,7 +122,7 @@ at start end a =
 
 
 
--- REGION
+-- ====== REGION ======
 
 
 {-| A contiguous span in source code, from a start position to an end position.
@@ -182,7 +182,7 @@ isMultiline (Region (Position startRow _) (Position endRow _)) =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encode a region to bytes for serialization.

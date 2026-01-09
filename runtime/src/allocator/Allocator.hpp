@@ -177,6 +177,7 @@ private:
     // Commits initial_size bytes immediately, reserves space for growth to max_size.
     char* acquireOldGenRegion(size_t initial_size, size_t max_size);
 
+    // Commits physical memory for a nursery block.
     void commitNursery(char *nursery_base, size_t size);
 
     // ========== Internal Pointer Conversion ==========
@@ -190,6 +191,8 @@ private:
         return heap_base + byte_offset;
     }
 
+    // Converts a physical address to an HPointer without validation.
+    // Internal use only - friends can access for performance-critical GC operations.
     static inline HPointer toPointerRaw(void* obj) {
         HPointer ptr;
         char* heap_base = instance().heap_base;
@@ -219,11 +222,12 @@ public:
         return Allocator::fromPointerRaw(ptr);
     }
 
+    // Converts a physical address to an HPointer.
     static HPointer toPointer(void* obj) {
         return Allocator::toPointerRaw(obj);
     }
 
-    // Reset allocator state for testing.
+    // Resets allocator state for testing.
     static void reset(Allocator& alloc, const HeapConfig* new_config = nullptr) {
         alloc.reset(new_config);
     }

@@ -27,7 +27,7 @@ import Data.Map as Dict exposing (Dict)
 
 
 
--- DELAMBDA
+-- ====== DELAMBDA ======
 
 
 {-| Flatten a function type into a list of its argument types followed by the return type.
@@ -44,7 +44,7 @@ delambda tipe =
 
 
 
--- DEALIAS
+-- ====== DEALIAS ======
 
 
 {-| Expand a type alias by substituting its type parameters with concrete types.
@@ -97,7 +97,7 @@ dealiasField typeTable (FieldType index tipe) =
 
 
 
--- DEEP DEALIAS
+-- ====== DEEP DEALIAS ======
 
 
 {-| Recursively expand all type aliases in a type, replacing them with their concrete definitions.
@@ -133,7 +133,7 @@ deepDealiasField (FieldType index tipe) =
 
 
 
--- ITERATED DEALIAS
+-- ====== ITERATED DEALIAS ======
 
 
 {-| Expand type aliases at the top level only, iterating until no more aliases remain.

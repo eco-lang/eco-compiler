@@ -25,7 +25,7 @@ import System.TypeCheck.IO as IO exposing (IO)
 
 
 
--- OCCURS
+-- ====== OCCURS ======
 
 
 {-| Checks if a type variable occurs within its own definition, which would create an infinite type.

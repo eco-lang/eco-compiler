@@ -21,7 +21,7 @@ for breaking changes.
 
 -}
 
--- MAGNITUDE
+-- ====== MAGNITUDE ======
 
 
 {-| Represents the severity level of a version change in semantic versioning.

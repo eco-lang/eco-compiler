@@ -43,7 +43,7 @@ import Utils.Main as Utils
 
 
 
--- RUN
+-- ====== RUN ======
 
 
 {-| Configuration flags for the init command.
@@ -139,7 +139,7 @@ information question =
 
 
 
--- INIT
+-- ====== INIT ======
 
 
 type alias InitEnv =

@@ -31,7 +31,7 @@ import Utils.Main as Utils
 
 
 
--- MODE
+-- ====== MODE ======
 
 
 {-| Compilation mode determining code generation strategy - development mode with optional debug metadata or production mode with optimizations.
@@ -57,7 +57,7 @@ isDebug mode =
 
 
 
--- SHORTEN FIELD NAMES
+-- ====== SHORTEN FIELD NAMES ======
 
 
 {-| Map from original field names to shortened JavaScript property names for production mode size optimization.

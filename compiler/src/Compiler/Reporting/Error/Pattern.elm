@@ -19,7 +19,7 @@ import Compiler.Reporting.Report as Report
 
 
 
--- TO REPORT
+-- ====== TO REPORT ======
 
 
 {-| Convert a pattern matching error (redundant patterns or incomplete coverage)
@@ -92,7 +92,7 @@ toReport source err =
 
 
 
--- PATTERN TO DOC
+-- ====== PATTERN TO DOC ======
 
 
 unhandledPatternsToDocBlock : List P.Pattern -> D.Doc

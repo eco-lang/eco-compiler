@@ -33,7 +33,7 @@ import Utils.Task.Extra as Task
 
 
 
--- FLAGS
+-- ====== FLAGS ======
 
 
 {-| Compilation flags controlling debug mode, optimization, and source map generation.
@@ -43,7 +43,7 @@ type Flags
 
 
 
--- RUN
+-- ====== RUN ======
 
 
 {-| Build an Elm project from a source file path with the specified flags.
@@ -102,7 +102,7 @@ runHelp root path (Flags debug optimize withSourceMaps) =
 
 
 
--- GET INFORMATION
+-- ====== GET INFORMATION ======
 
 
 getMode : Bool -> Bool -> Task Exit.Make DesiredMode
@@ -122,7 +122,7 @@ getMode debug optimize =
 
 
 
--- BUILD PROJECTS
+-- ====== BUILD PROJECTS ======
 
 
 buildPaths : Reporting.Style -> FilePath -> Details.Details -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
@@ -131,7 +131,7 @@ buildPaths style root details paths =
 
 
 
--- GET MAINS
+-- ====== GET MAINS ======
 
 
 getMains : Build.Artifacts -> List ModuleName.Raw
@@ -165,7 +165,7 @@ isMain targetName modul =
 
 
 
--- TO BUILDER
+-- ====== TO BUILDER ======
 
 
 type DesiredMode
@@ -191,4 +191,4 @@ toBuilder withSourceMaps leadingLines root details desiredMode artifacts =
 
 
 
--- PARSERS
+-- ====== PARSERS ======

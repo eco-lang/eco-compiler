@@ -36,7 +36,7 @@ import Utils.Main as Utils
 
 
 
--- RESULT
+-- ====== RESULT ======
 
 
 {-| Result type for canonicalization operations.
@@ -49,7 +49,7 @@ type alias CResult i w a =
 
 
 
--- TO ANNOTATION
+-- ====== TO ANNOTATION ======
 
 
 {-| Convert a source type to a canonical type annotation.
@@ -66,7 +66,7 @@ toAnnotation syntaxVersion env srcType =
 
 
 
--- CANONICALIZE TYPES
+-- ====== CANONICALIZE TYPES ======
 
 
 {-| Canonicalize a source type expression into a canonical type.
@@ -139,7 +139,7 @@ canonicalizeFields syntaxVersion env fields =
 
 
 
--- CANONICALIZE TYPE
+-- ====== CANONICALIZE TYPE ======
 
 
 canonicalizeType : SyntaxVersion -> Env.Env -> A.Region -> Name.Name -> List Src.Type -> Env.Type -> CResult i w Can.Type
@@ -171,7 +171,7 @@ checkArity expected region name args answer =
 
 
 
--- ADD FREE VARS
+-- ====== ADD FREE VARS ======
 
 
 addFreeVars : Dict String Name.Name () -> Can.Type -> Dict String Name.Name ()

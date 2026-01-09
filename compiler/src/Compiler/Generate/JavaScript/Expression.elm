@@ -242,7 +242,7 @@ generate mode parentModule expression =
 
 
 
--- CODE CHUNKS
+-- ====== CODE CHUNKS ======
 
 
 {-| Generated JavaScript code, either a single expression or a block of statements.
@@ -299,7 +299,7 @@ codeToStmt code =
 
 
 
--- CHARS
+-- ====== CHARS ======
 
 
 toChar : JS.Expr
@@ -308,7 +308,7 @@ toChar =
 
 
 
--- CTOR
+-- ====== CTOR ======
 
 
 {-| Generate JavaScript code for a constructor function with the specified arity.
@@ -345,7 +345,7 @@ ctorToInt home name index =
 
 
 
--- RECORDS
+-- ====== RECORDS ======
 
 
 generateRecord : Mode.Mode -> IO.Canonical -> Dict String Name.Name Opt.Expr -> JS.Expr
@@ -381,7 +381,7 @@ generateField mode name =
 
 
 
--- DEBUG
+-- ====== DEBUG ======
 
 
 generateDebug : Name.Name -> IO.Canonical -> A.Region -> Maybe Name.Name -> JS.Expr
@@ -422,7 +422,7 @@ positionToJsExpr (A.Position line column) =
 
 
 
--- FUNCTION
+-- ====== FUNCTION ======
 
 
 generateFunction : List JsName.Name -> Code -> Code
@@ -473,7 +473,7 @@ funcHelpers =
 
 
 
--- CALLS
+-- ====== CALLS ======
 
 
 generateCall : Mode.Mode -> IO.Canonical -> A.Position -> Opt.Expr -> List Opt.Expr -> JS.Expr
@@ -542,7 +542,7 @@ callHelpers =
 
 
 
--- CORE CALLS
+-- ====== CORE CALLS ======
 
 
 generateCoreCall : Mode.Mode -> IO.Canonical -> A.Position -> Opt.Global -> List Opt.Expr -> JS.Expr
@@ -944,7 +944,7 @@ isStringLiteral expr =
 
 
 
--- SIMPLIFY INFIX OPERATORS
+-- ====== SIMPLIFY INFIX OPERATORS ======
 
 
 strictEq : JS.Expr -> JS.Expr -> JS.Expr
@@ -1046,7 +1046,7 @@ strictNEq left right =
 
 
 
--- TAIL CALL
+-- ====== TAIL CALL ======
 
 
 {-| TODO check if JS minifiers collapse unnecessary temporary variables
@@ -1068,7 +1068,7 @@ generateTailCall mode parentModule name args =
 
 
 
--- DEFINITIONS
+-- ====== DEFINITIONS ======
 
 
 generateDef : Mode.Mode -> IO.Canonical -> Opt.Def -> JS.Stmt
@@ -1092,7 +1092,7 @@ generateTailDef mode parentModule name argNames body =
 
 
 
--- PATHS
+-- ====== PATHS ======
 
 
 generatePath : Mode.Mode -> Opt.Path -> JS.Expr
@@ -1120,7 +1120,7 @@ generatePath mode path =
 
 
 
--- GENERATE IFS
+-- ====== GENERATE IFS ======
 
 
 generateIf : Mode.Mode -> IO.Canonical -> List ( Opt.Expr, Opt.Expr ) -> Opt.Expr -> Code
@@ -1195,7 +1195,7 @@ crushIfsHelp visitedBranches unvisitedBranches final =
 
 
 
--- CASE EXPRESSIONS
+-- ====== CASE EXPRESSIONS ======
 
 
 generateCase : Mode.Mode -> IO.Canonical -> Name.Name -> Name.Name -> Opt.Decider Opt.Choice -> List ( Int, Opt.Expr ) -> List JS.Stmt
@@ -1406,7 +1406,7 @@ generateCaseTest mode root path exampleTest =
 
 
 
--- PATTERN PATHS
+-- ====== PATTERN PATHS ======
 
 
 pathToJsExpr : Mode.Mode -> Name.Name -> DT.Path -> JS.Expr
@@ -1428,7 +1428,7 @@ pathToJsExpr mode root path =
 
 
 
--- GENERATE MAIN
+-- ====== GENERATE MAIN ======
 
 
 {-| Generate the main entry point for an Elm program, handling both static and dynamic initialization.

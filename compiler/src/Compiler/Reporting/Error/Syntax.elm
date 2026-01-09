@@ -89,7 +89,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- ALL SYNTAX ERRORS
+-- ====== ALL SYNTAX ERRORS ======
 
 
 {-| Top-level syntax errors including module name issues, port violations, and parse errors.
@@ -157,7 +157,7 @@ type Exposing
 
 
 
--- DECLARATIONS
+-- ====== DECLARATIONS ======
 
 
 {-| Errors in top-level declarations including ports, type declarations, and definitions.
@@ -202,7 +202,7 @@ type Port
 
 
 
--- TYPE DECLARATIONS
+-- ====== TYPE DECLARATIONS ======
 
 
 {-| Errors in type declaration syntax, dispatching to type alias or custom type errors.
@@ -245,7 +245,7 @@ type CustomType
 
 
 
--- EXPRESSIONS
+-- ====== EXPRESSIONS ======
 
 
 {-| Errors in expression syntax, covering all expression forms from literals to complex structures.
@@ -411,7 +411,7 @@ type Destruct
 
 
 
--- PATTERNS
+-- ====== PATTERNS ======
 
 
 {-| Errors in pattern syntax, covering all pattern forms including literals and structures.
@@ -475,7 +475,7 @@ type PList
 
 
 
--- TYPES
+-- ====== TYPES ======
 
 
 {-| Errors in type annotation syntax, covering all type expression forms.
@@ -523,7 +523,7 @@ type TTuple
 
 
 
--- LITERALS
+-- ====== LITERALS ======
 
 
 {-| Errors specific to character literal parsing, including escape sequences and delimiters.
@@ -567,7 +567,7 @@ type Number
 
 
 
--- MISC
+-- ====== MISC ======
 
 
 {-| Errors related to whitespace and comments, such as tabs or unterminated multi-line comments.
@@ -578,7 +578,7 @@ type Space
 
 
 
--- TO REPORT
+-- ====== TO REPORT ======
 
 
 {-| Convert a syntax error into a user-friendly error report with source code
@@ -1114,7 +1114,7 @@ toParseErrorReport syntaxVersion source modul =
 
 
 
--- WEIRD END
+-- ====== WEIRD END ======
 
 
 toWeirdEndReport : Code.Source -> Row -> Col -> Report.Report
@@ -1273,7 +1273,7 @@ toWeirdEndSyntaxProblemReport source region =
 
 
 
--- IMPORTS
+-- ====== IMPORTS ======
 
 
 toImportReport : Code.Source -> Row -> Col -> Report.Report
@@ -1322,7 +1322,7 @@ toImportReport source row col =
 
 
 
--- EXPOSING
+-- ====== EXPOSING ======
 
 
 toExposingReport : Code.Source -> Exposing -> Row -> Col -> Report.Report
@@ -1705,7 +1705,7 @@ toExposingReport source exposing_ startRow startCol =
 
 
 
--- SPACES
+-- ====== SPACES ======
 
 
 {-| Convert a whitespace-related syntax error into a user-friendly error report,
@@ -1746,7 +1746,7 @@ toSpaceReport source space row col =
 
 
 
--- DECLARATIONS
+-- ====== DECLARATIONS ======
 
 
 toRegion : Row -> Col -> A.Region
@@ -1970,7 +1970,7 @@ toDeclStartWeirdDeclarationReport source region =
 
 
 
--- PORT
+-- ====== PORT ======
 
 
 toPortReport : Code.Source -> Port -> Row -> Col -> Report.Report
@@ -2183,7 +2183,7 @@ portNote =
 
 
 
--- DECL TYPE
+-- ====== DECL TYPE ======
 
 
 toDeclTypeReport : Code.Source -> DeclType -> Row -> Col -> Report.Report
@@ -2717,7 +2717,7 @@ customTypeNote =
 
 
 
--- DECL DEF
+-- ====== DECL DEF ======
 
 
 toDeclDefReport : SyntaxVersion -> Code.Source -> Name -> DeclDef -> Row -> Col -> Report.Report
@@ -3068,7 +3068,7 @@ declDefNote =
 
 
 
--- CONTEXT
+-- ====== CONTEXT ======
 
 
 type Context
@@ -3116,7 +3116,7 @@ isWithin desiredNode context =
 
 
 
--- EXPR REPORTS
+-- ====== EXPR REPORTS ======
 
 
 toExprReport : SyntaxVersion -> Code.Source -> Context -> Expr -> Row -> Col -> Report.Report
@@ -3455,7 +3455,7 @@ toExprReport syntaxVersion source context expr startRow startCol =
 
 
 
--- CHAR
+-- ====== CHAR ======
 
 
 toCharReport : Code.Source -> Char -> Row -> Col -> Report.Report
@@ -3501,7 +3501,7 @@ toCharReport source char row col =
 
 
 
--- STRING
+-- ====== STRING ======
 
 
 toStringReport : Code.Source -> String_ -> Row -> Col -> Report.Report
@@ -3589,7 +3589,7 @@ toStringReport source string row col =
 
 
 
--- ESCAPES
+-- ====== ESCAPES ======
 
 
 toEscapeReport : Code.Source -> Escape -> Row -> Col -> Report.Report
@@ -3717,7 +3717,7 @@ toEscapeReport source escape row col =
 
 
 
--- NUMBERS
+-- ====== NUMBERS ======
 
 
 toNumberReport : SyntaxVersion -> Code.Source -> Number -> Row -> Col -> Report.Report
@@ -3878,7 +3878,7 @@ toNumberReport syntaxVersion source number row col =
 
 
 
--- OPERATORS
+-- ====== OPERATORS ======
 
 
 toOperatorReport : Code.Source -> Context -> BadOperator -> Row -> Col -> Report.Report
@@ -4037,7 +4037,7 @@ toOperatorReport source context operator row col =
 
 
 
--- CASE
+-- ====== CASE ======
 
 
 toLetReport : SyntaxVersion -> Code.Source -> Context -> Let -> Row -> Col -> Report.Report
@@ -4675,7 +4675,7 @@ toLetDestructReport syntaxVersion source destruct startRow startCol =
 
 
 
--- CASE
+-- ====== CASE ======
 
 
 toCaseReport : SyntaxVersion -> Code.Source -> Context -> Case -> Row -> Col -> Report.Report
@@ -4942,7 +4942,7 @@ noteForCaseIndentError =
 
 
 
--- IF
+-- ====== IF ======
 
 
 toIfReport : SyntaxVersion -> Code.Source -> Context -> If -> Row -> Col -> Report.Report
@@ -5211,7 +5211,7 @@ toIfReport syntaxVersion source context if_ startRow startCol =
 
 
 
--- RECORD
+-- ====== RECORD ======
 
 
 toRecordReport : SyntaxVersion -> Code.Source -> Context -> Record -> Row -> Col -> Report.Report
@@ -5672,7 +5672,7 @@ noteForRecordIndentError =
 
 
 
--- TUPLE
+-- ====== TUPLE ======
 
 
 toTupleReport : SyntaxVersion -> Code.Source -> Context -> Tuple -> Row -> Col -> Report.Report
@@ -6373,7 +6373,7 @@ toFuncReport syntaxVersion source context func startRow startCol =
 
 
 
--- PATTERN
+-- ====== PATTERN ======
 
 
 type PContext
@@ -7325,7 +7325,7 @@ toPListReport syntaxVersion source context list startRow startCol =
 
 
 
--- TYPES
+-- ====== TYPES ======
 
 
 type TContext
@@ -8127,7 +8127,7 @@ toTTupleReport source context tuple startRow startCol =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Serialize a syntax error to bytes for caching or transmission.

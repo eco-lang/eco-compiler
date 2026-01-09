@@ -39,7 +39,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- SOURCE
+-- ====== SOURCE ======
 
 
 {-| Escaped GLSL shader source code, ready for embedding in JavaScript.
@@ -49,7 +49,7 @@ type Source
 
 
 
--- TYPES
+-- ====== TYPES ======
 
 
 {-| Type information for shader inputs: attributes, uniforms, and varyings.
@@ -72,7 +72,7 @@ type Type
 
 
 
--- TO BUILDER
+-- ====== TO BUILDER ======
 
 
 {-| Extract the escaped shader source as a string for JavaScript embedding.
@@ -83,7 +83,7 @@ toJsStringBuilder (Source src) =
 
 
 
--- FROM STRING
+-- ====== FROM STRING ======
 
 
 {-| Create shader source from a raw GLSL string, escaping special characters for JavaScript.
@@ -155,7 +155,7 @@ unescape =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encode shader source to binary format.

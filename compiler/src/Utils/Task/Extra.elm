@@ -28,7 +28,7 @@ import Task exposing (Task)
 
 
 
--- TASKS
+-- ====== TASKS ======
 
 
 {-| Converts a fallible task into an infallible task that returns a Result.
@@ -50,7 +50,7 @@ throw =
 
 
 
--- IO
+-- ====== IO ======
 
 
 {-| Converts an infallible task to a task with any error type.
@@ -98,7 +98,7 @@ eio func work =
 
 
 
--- INSTANCES
+-- ====== INSTANCES ======
 
 
 {-| Discards the result of a task, replacing it with unit.

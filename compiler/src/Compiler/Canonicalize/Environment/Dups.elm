@@ -25,7 +25,7 @@ import Utils.Main as Utils
 
 
 
--- DUPLICATE TRACKER
+-- ====== DUPLICATE TRACKER ======
 
 
 {-| Tracks potential duplicate names, storing one or more occurrences of each name.
@@ -41,7 +41,7 @@ type Info value
 
 
 
--- DETECT
+-- ====== DETECT ======
 
 
 {-| Function that constructs a duplicate name error from name and two conflicting regions.
@@ -113,7 +113,7 @@ detectHelp toError name values =
 
 
 
--- CHECK FIELDS
+-- ====== CHECK FIELDS ======
 
 
 {-| Check for duplicate field names in a list of fields, returning located names.
@@ -144,7 +144,7 @@ addField ( A.At region name, value ) dups =
 
 
 
--- BUILDING DICTIONARIES
+-- ====== BUILDING DICTIONARIES ======
 
 
 {-| Create an empty tracker with no names.

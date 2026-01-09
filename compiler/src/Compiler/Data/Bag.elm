@@ -9,7 +9,7 @@ This is useful for collecting results during tree traversals without paying list
 
 -}
 
--- BAGS
+-- ====== BAGS ======
 
 
 {-| A bag data structure that can be empty, contain a single element, or combine two bags.
@@ -21,7 +21,7 @@ type Bag a
 
 
 
--- HELPERS
+-- ====== HELPERS ======
 
 
 {-| Creates an empty bag.
@@ -54,7 +54,7 @@ append left right =
 
 
 
--- TO LIST
+-- ====== TO LIST ======
 
 
 {-| Converts a bag to a list by flattening the tree structure.

@@ -49,7 +49,7 @@ import Utils.Crash exposing (crash)
 
 
 
--- RESULT
+-- ====== RESULT ======
 
 
 {-| Type alias for canonicalization results that can accumulate errors and warnings.
@@ -59,7 +59,7 @@ type alias MResult i w a =
 
 
 
--- MODULES
+-- ====== MODULES ======
 
 
 {-| Canonicalize an entire source module into a canonical module.
@@ -114,7 +114,7 @@ canonicalize pkg ifaces ((Src.Module srcData) as modul) =
 
 
 
--- CANONICALIZE BINOP
+-- ====== CANONICALIZE BINOP ======
 
 
 {-| Convert a source infix operator declaration to a canonical binop.
@@ -142,13 +142,12 @@ canonicalizeBinop (A.At _ (Src.Infix data)) =
 
 
 
--- DECLARATIONS / CYCLE DETECTION
---
--- There are two phases of cycle detection:
---
--- 1. Detect cycles using ALL dependencies => needed for type inference
--- 2. Detect cycles using DIRECT dependencies => nonterminating recursion
---
+-- ====== DECLARATIONS CYCLE DETECTION ======
+{- There are two phases of cycle detection:
+
+   1. Detect cycles using ALL dependencies => needed for type inference
+   2. Detect cycles using DIRECT dependencies => nonterminating recursion
+-}
 
 
 {-| Canonicalize all value declarations in a module with two-phase cycle detection.
@@ -263,12 +262,12 @@ extractDefName def =
 
 
 
--- DECLARATIONS / CYCLE DETECTION SETUP
---
--- toNodeOne and toNodeTwo set up nodes for the two cycle detection phases.
---
--- Phase one nodes track ALL dependencies.
--- This allows us to find cyclic values for type inference.
+-- ====== CYCLE DETECTION SETUP ======
+{- toNodeOne and toNodeTwo set up nodes for the two cycle detection phases.
+
+   Phase one nodes track ALL dependencies.
+   This allows us to find cyclic values for type inference.
+-}
 
 
 {-| Phase one dependency graph node tracking all dependencies.
@@ -411,7 +410,7 @@ addDirects name (Expr.Uses { direct }) directDeps =
 
 
 
--- CANONICALIZE EXPORTS
+-- ====== CANONICALIZE EXPORTS ======
 
 
 {-| Canonicalize the module's export list, validating all exported items exist.

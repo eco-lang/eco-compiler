@@ -1916,7 +1916,7 @@ specializeArg subst ( locName, canType ) =
 
 
 
--- LAMBDA SPECIALIZATION
+-- ====== LAMBDA SPECIALIZATION ======
 -- ========== ETA-EXPANSION HELPERS ==========
 -- ========== TYPE UNIFICATION AND SUBSTITUTION ==========
 

@@ -1,5 +1,10 @@
 # Code Style and Conventions
 
+## Style Definition Files
+
+- **`/work/STYLE.md`** - Root level style guide (C++/runtime)
+- **`/work/compiler/STYLE.md`** - Compiler style guide (Elm)
+
 ## C++ Style (Runtime)
 
 ### Language Standard

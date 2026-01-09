@@ -33,21 +33,20 @@ enum class Color : u32 {
 // Sizing Constants
 // ============================================================================
 
-// ----- Heap Sizing -----
+// Heap sizing.
 constexpr size_t DEFAULT_MAX_HEAP_SIZE = 1ULL * 1024 * 1024 * 1024;  // 1 GB address space.
 constexpr size_t INITIAL_OLD_GEN_SIZE = 1 * 1024 * 1024;             // 1 MB initial commit.
 
-// ----- AllocBuffer Sizing -----
+// AllocBuffer sizing.
 constexpr size_t ALLOC_BUFFER_SIZE = 128 * 1024;  // 128 KB default AllocBuffer.
 
-// ----- Nursery Sizing -----
-// Nursery is composed of blocks (same size as AllocBuffer).
+// Nursery sizing (in blocks, same size as AllocBuffer).
 // Block count must be even (split into from-space and to-space).
 constexpr size_t NURSERY_BLOCK_COUNT = 32;  // 32 blocks = 4 MB total (16 per semi-space).
 
-// ----- Promotion & GC Triggers -----
-constexpr u32 PROMOTION_AGE = 1;                            // Promote objects after surviving 1 minor GC.
-constexpr float NURSERY_GC_THRESHOLD = 0.9f;                // Trigger minor GC when 90% full.
+// Promotion and GC triggers.
+constexpr u32 PROMOTION_AGE = 1;                            // Promote after surviving 1 minor GC.
+constexpr float NURSERY_GC_THRESHOLD = 0.9f;                // Trigger minor GC at 90% full.
 
 // Returns the header of a heap object.
 inline Header *getHeader(void *obj) { return static_cast<Header *>(obj); }
@@ -106,12 +105,11 @@ inline size_t getObjectSize(void *obj) {
             size = sizeof(Forward);
             break;
         case Tag_ByteBuffer:
-            // header.size = byte count
+            // Header size field stores byte count.
             size = sizeof(ByteBuffer) + hdr->size * sizeof(u8);
             break;
         case Tag_Array: {
-            // For arrays, we copy based on length (used elements), not capacity
-            // header.size = capacity, but we use the actual length field for sizing
+            // Size based on length (used elements), not capacity.
             ElmArray *arr = static_cast<ElmArray *>(obj);
             size = sizeof(ElmArray) + arr->length * sizeof(Unboxable);
             break;
@@ -161,7 +159,7 @@ struct HeapConfig {
     // Derived value: total nursery size in bytes.
     size_t nurserySize() const { return nursery_block_count * alloc_buffer_size; }
 
-    // Default constructor using in-class member initializers.
+    // Default constructor uses in-class member initializers.
     HeapConfig() = default;
 
     // Validates all configuration parameters.

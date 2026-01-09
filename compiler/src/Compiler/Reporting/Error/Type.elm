@@ -65,7 +65,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- ERRORS
+-- ====== ERRORS ======
 
 
 {-| Represents type errors discovered during type checking and inference.
@@ -77,7 +77,7 @@ type Error
 
 
 
--- EXPRESSION EXPECTATIONS
+-- ====== EXPRESSION EXPECTATIONS ======
 
 
 {-| Expected type for an expression, with optional context about where the expectation came from.
@@ -147,7 +147,7 @@ type Category
 
 
 
--- PATTERN EXPECTATIONS
+-- ====== PATTERN EXPECTATIONS ======
 
 
 {-| Expected type for a pattern, with optional context about where the expectation came from.
@@ -182,7 +182,7 @@ type PCategory
 
 
 
--- HELPERS
+-- ====== HELPERS ======
 
 
 {-| Replace the type within an Expected value while preserving the error context.
@@ -215,7 +215,7 @@ ptypeReplace expectation tipe =
 
 
 
--- TO REPORT
+-- ====== TO REPORT ======
 
 
 {-| Convert a type error into a user-friendly error report with type diffs,
@@ -235,7 +235,7 @@ toReport source localizer err =
 
 
 
--- TO PATTERN REPORT
+-- ====== TO PATTERN REPORT ======
 
 
 toPatternReport : Code.Source -> L.Localizer -> A.Region -> PCategory -> T.Type -> PExpected T.Type -> Report.Report
@@ -354,7 +354,7 @@ toPatternReport source localizer patternRegion category tipe expected =
 
 
 
--- PATTERN HELPERS
+-- ====== PATTERN HELPERS ======
 
 
 patternTypeComparison : L.Localizer -> T.Type -> T.Type -> String -> String -> List D.Doc -> D.Doc
@@ -407,7 +407,7 @@ addPatternCategory iAmTryingToMatch category =
 
 
 
--- EXPR HELPERS
+-- ====== EXPR HELPERS ======
 
 
 typeComparison : L.Localizer -> T.Type -> T.Type -> String -> String -> List D.Doc -> D.Doc
@@ -819,7 +819,7 @@ problemToHint problem =
 
 
 
--- BAD RIGID HINTS
+-- ====== BAD RIGID HINTS ======
 
 
 badRigidVar : Name -> String -> List D.Doc
@@ -863,7 +863,7 @@ toASuperThing super =
 
 
 
--- BAD SUPER HINTS
+-- ====== BAD SUPER HINTS ======
 
 
 badFlexSuper : T.Direction -> T.Super -> T.Type -> List D.Doc
@@ -1013,7 +1013,7 @@ badFlexFlexSuper s1 s2 =
 
 
 
--- TO EXPR REPORT
+-- ====== TO EXPR REPORT ======
 
 
 toExprReport : Code.Source -> L.Localizer -> A.Region -> Category -> T.Type -> Expected T.Type -> Report.Report
@@ -1439,7 +1439,7 @@ toExprReport source localizer exprRegion category tipe expected =
 
 
 
--- HELPERS
+-- ====== HELPERS ======
 
 
 countArgs : T.Type -> Int
@@ -1453,7 +1453,7 @@ countArgs tipe =
 
 
 
--- FIELD NAME HELPERS
+-- ====== FIELD NAME HELPERS ======
 
 
 toNearbyRecord : L.Localizer -> ( Name, T.Type ) -> List ( Name, T.Type ) -> T.Extension -> D.Doc
@@ -1487,7 +1487,7 @@ extToDoc ext =
 
 
 
--- OP LEFT
+-- ====== OP LEFT ======
 
 
 opLeftToDocs : L.Localizer -> Category -> Name -> T.Type -> T.Type -> ( D.Doc, D.Doc )
@@ -1564,7 +1564,7 @@ opLeftToDocs localizer category op tipe expected =
 
 
 
--- OP RIGHT
+-- ====== OP RIGHT ======
 
 
 type RightDocs
@@ -1756,7 +1756,7 @@ isList tipe =
 
 
 
--- BAD CONS
+-- ====== BAD CONS ======
 
 
 badConsRight : L.Localizer -> Category -> T.Type -> T.Type -> RightDocs
@@ -1841,7 +1841,7 @@ badConsRight localizer category tipe expected =
 
 
 
--- BAD APPEND
+-- ====== BAD APPEND ======
 
 
 type AppendType
@@ -2098,7 +2098,7 @@ badAppendRight localizer category tipe expected =
 
 
 
--- BAD MATH
+-- ====== BAD MATH ======
 
 
 type ThisThenThat
@@ -2424,7 +2424,7 @@ badIDiv localizer direction tipe expected =
 
 
 
--- BAD BOOLS
+-- ====== BAD BOOLS ======
 
 
 badBool : L.Localizer -> D.Doc -> D.Doc -> T.Type -> T.Type -> ( D.Doc, D.Doc )
@@ -2454,7 +2454,7 @@ badBool localizer op direction tipe expected =
 
 
 
--- BAD COMPARISON
+-- ====== BAD COMPARISON ======
 
 
 badCompLeft : L.Localizer -> Category -> String -> String -> T.Type -> T.Type -> ( D.Doc, D.Doc )
@@ -2518,7 +2518,7 @@ badCompRight localizer op tipe expected =
 
 
 
--- BAD EQUALITY
+-- ====== BAD EQUALITY ======
 
 
 badEquality : L.Localizer -> String -> T.Type -> T.Type -> RightDocs
@@ -2540,7 +2540,7 @@ badEquality localizer op tipe expected =
 
 
 
--- INFINITE TYPES
+-- ====== INFINITE TYPES ======
 
 
 toInfiniteReport : Code.Source -> L.Localizer -> A.Region -> Name -> T.Type -> Report.Report
@@ -2560,7 +2560,7 @@ toInfiniteReport source localizer region name overallType =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Serialize a type error to bytes for caching or transmission.

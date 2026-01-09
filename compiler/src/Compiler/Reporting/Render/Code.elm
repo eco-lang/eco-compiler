@@ -41,7 +41,7 @@ import Prelude
 
 
 
--- CODE
+-- ====== CODE ======
 
 
 {-| Represents source code as a list of line numbers paired with their content.
@@ -60,7 +60,7 @@ toSource source =
 
 
 
--- CODE FORMATTING
+-- ====== CODE FORMATTING ======
 
 
 {-| Renders a code snippet showing the specified region with optional highlighting
@@ -104,7 +104,7 @@ toPair source r1 r2 ( oneStart, oneEnd ) ( twoStart, twoMiddle, twoEnd ) =
 
 
 
--- RENDER SNIPPET
+-- ====== RENDER SNIPPET ======
 
 
 render : Source -> A.Region -> Maybe A.Region -> Doc
@@ -188,7 +188,7 @@ addLineNumber addZigZag width start end n line =
 
 
 
--- RENDER PAIR
+-- ====== RENDER PAIR ======
 
 
 type CodePair
@@ -248,7 +248,7 @@ renderPair source region1 region2 =
 
 
 
--- WHAT IS NEXT?
+-- ====== WHAT IS NEXT ======
 
 
 {-| Represents the next syntactic element at a position in the source code.

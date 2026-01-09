@@ -95,7 +95,7 @@ import Utils.Task.Extra as Task
 
 
 
--- DETAILS
+-- ====== DETAILS ======
 
 
 {-| Complete build state for a project including module status, dependencies, and build artifacts.
@@ -131,19 +131,19 @@ type ValidOutline
 
 
 
--- NOTE: we need two ways to detect if a file must be recompiled:
---
--- (1) _time is the modification time from the last time we compiled the file.
--- By checking EQUALITY with the current modification time, we can detect file
--- saves and `git checkout` of previous versions. Both need a recompile.
---
--- (2) _lastChange is the BuildID from the last time a new interface file was
--- generated, and _lastCompile is the BuildID from the last time the file was
--- compiled. These may be different if a file is recompiled but the interface
--- stayed the same. When the _lastCompile is LESS THAN the _lastChange of any
--- imports, we need to recompile. This can happen when a project has multiple
--- entrypoints and some modules are compiled less often than their imports.
---
+{- NOTE: We need two ways to detect if a file must be recompiled:
+
+   (1) _time is the modification time from the last time we compiled the file.
+   By checking EQUALITY with the current modification time, we can detect file
+   saves and `git checkout` of previous versions. Both need a recompile.
+
+   (2) _lastChange is the BuildID from the last time a new interface file was
+   generated, and _lastCompile is the BuildID from the last time the file was
+   compiled. These may be different if a file is recompiled but the interface
+   stayed the same. When the _lastCompile is LESS THAN the _lastChange of any
+   imports, we need to recompile. This can happen when a project has multiple
+   entrypoints and some modules are compiled less often than their imports.
+-}
 
 
 {-| Status information for a local module including file location, modification time, and compilation timestamps.
@@ -184,7 +184,7 @@ type alias Interfaces =
 
 
 
--- LOAD ARTIFACTS
+-- ====== LOAD ARTIFACTS ======
 
 
 {-| Load optimized objects for all dependencies in a background thread.
@@ -277,7 +277,7 @@ loadInterfaces root (Details detailsData) =
 
 
 
--- VERIFY INSTALL -- used by Install
+-- ====== VERIFY INSTALL ======
 
 
 {-| Verify and install all dependencies for a project without loading artifacts.
@@ -309,7 +309,7 @@ runVerifyInstall scope root cache manager connection registry outline time =
 
 
 
--- LOAD -- used by Make, Repl, Reactor, Test
+-- ====== LOAD ======
 
 
 {-| Load project details, verifying dependencies and building them if necessary.
@@ -342,7 +342,7 @@ handleCachedDetails style scope root needsTypedOpt showPackageErrors newTime may
 
 
 
--- GENERATE
+-- ====== GENERATE ======
 
 
 generate : Reporting.Style -> BW.Scope -> FilePath -> Bool -> Bool -> File.Time -> Task Never (Result Exit.Details Details)
@@ -370,7 +370,7 @@ verifyOutline time result =
 
 
 
--- ENV
+-- ====== ENV ======
 
 
 type alias EnvData =
@@ -424,7 +424,7 @@ combineEnvAndOutline key scope root needsTypedOpt showPackageErrors outline mayb
 
 
 
--- VERIFY PROJECT
+-- ====== VERIFY PROJECT ======
 
 
 verifyPkg : Env -> File.Time -> Outline.PkgOutline -> Task Exit.Details Details
@@ -484,7 +484,7 @@ checkAppDeps (Outline.AppOutline appData) =
 
 
 
--- VERIFY CONSTRAINTS
+-- ====== VERIFY CONSTRAINTS ======
 
 
 verifyConstraints : Env -> Dict ( String, String ) Pkg.Name Con.Constraint -> Task Exit.Details (Dict ( String, String ) Pkg.Name Solver.Details)
@@ -508,7 +508,7 @@ verifyConstraints (Env envData) constraints =
 
 
 
--- UNION
+-- ====== UNION ======
 
 
 union : (k -> comparable) -> (k -> k -> Order) -> (k -> v -> v -> Task Exit.Details v) -> Dict comparable k v -> Dict comparable k v -> Task Exit.Details (Dict comparable k v)
@@ -540,7 +540,7 @@ allowEqualDups _ v1 v2 =
 
 
 
--- FORK
+-- ====== FORK ======
 
 
 fork : (a -> Bytes.Encode.Encoder) -> Task Never a -> Task Never (MVar a)
@@ -554,7 +554,7 @@ fork encoder work =
 
 
 
--- VERIFY DEPENDENCIES
+-- ====== VERIFY DEPENDENCIES ======
 
 
 verifyDependencies : Env -> File.Time -> ValidOutline -> Dict ( String, String ) Pkg.Name Solver.Details -> Dict ( String, String ) Pkg.Name a -> Task Exit.Details Details
@@ -686,7 +686,7 @@ gatherForeigns pkg (Artifacts ifaces _) foreigns =
 
 
 
--- VERIFY DEPENDENCY
+-- ====== VERIFY DEPENDENCY ======
 
 
 type Artifacts
@@ -809,7 +809,7 @@ handleDownloadResult ctx result =
 
 
 
--- ARTIFACT CACHE
+-- ====== ARTIFACT CACHE ======
 
 
 type ArtifactCache
@@ -827,7 +827,7 @@ toComparableFingerprint fingerprint =
 
 
 
--- BUILD
+-- ====== BUILD ======
 
 
 {-| Context for building a package.
@@ -1139,7 +1139,7 @@ printPackageCompileErrors cache pkg vsn firstErr restErrs =
 
 
 
--- GATHER
+-- ====== GATHER ======
 
 
 gatherObjects : Dict String ModuleName.Raw DResult -> Opt.GlobalGraph
@@ -1233,7 +1233,7 @@ toLocalInterface func result =
 
 
 
--- GATHER FOREIGN INTERFACES
+-- ====== GATHER FOREIGN INTERFACES ======
 
 
 type ForeignInterface
@@ -1270,7 +1270,7 @@ gatherForeignInterfaces directArtifacts =
 
 
 
--- CRAWL
+-- ====== CRAWL ======
 
 
 type alias StatusDict =
@@ -1435,7 +1435,7 @@ getDepHome fi =
 
 
 
--- COMPILE
+-- ====== COMPILE ======
 
 
 type DResult
@@ -1624,7 +1624,7 @@ getInterface result =
 
 
 
--- MAKE DOCS
+-- ====== MAKE DOCS ======
 
 
 type DocsStatus
@@ -1688,7 +1688,7 @@ toDocs result =
 
 
 
--- DOWNLOAD PACKAGE
+-- ====== DOWNLOAD PACKAGE ======
 
 
 downloadPackage : Stuff.PackageCache -> Http.Manager -> Pkg.Name -> V.Version -> Task Never (Result Exit.PackageProblem ())
@@ -1731,7 +1731,7 @@ endpointDecoder =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Binary encoder for writing project details to cache.

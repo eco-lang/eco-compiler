@@ -43,7 +43,7 @@ import List.Extra as List
 
 
 
--- TO DOC
+-- ====== TO DOC ======
 
 
 {-| Parenthesization context for type rendering. Determines whether parentheses
@@ -201,7 +201,7 @@ vrecord entries maybeExt =
 
 
 
--- SOURCE TYPE TO DOC
+-- ====== SOURCE TYPE TO DOC ======
 
 
 {-| Converts a source-level type (as parsed from user code) into a formatted
@@ -259,7 +259,7 @@ collectSrcArgs tipe =
 
 
 
--- CANONICAL TYPE TO DOC
+-- ====== CANONICAL TYPE TO DOC ======
 
 
 {-| Converts a canonical type (after type checking and resolution) into a

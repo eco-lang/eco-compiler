@@ -34,7 +34,7 @@ import Utils.Main as Utils
 
 
 
--- FREE VARS
+-- ====== FREE VARS ======
 
 
 {-| A mapping from type variable names to their instantiated type representations.
@@ -50,7 +50,7 @@ type alias FreeVars =
 
 
 
--- FROM SOURCE TYPE
+-- ====== FROM SOURCE TYPE ======
 
 
 {-| Convert a source-level type annotation into an internal type representation.

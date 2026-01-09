@@ -100,7 +100,7 @@ outro =
 
 
 
--- INIT
+-- ====== INIT ======
 
 
 init : Terminal.Command
@@ -153,7 +153,7 @@ init =
 
 
 
--- REPL
+-- ====== REPL ======
 
 
 repl : Terminal.Command
@@ -224,7 +224,7 @@ interpreter =
 
 
 
--- MAKE
+-- ====== MAKE ======
 
 
 make : Terminal.Command
@@ -318,7 +318,7 @@ make =
 
 
 
--- INSTALL
+-- ====== INSTALL ======
 
 
 install : Terminal.Command
@@ -394,7 +394,7 @@ install =
 
 
 
--- UNINSTALL
+-- ====== UNINSTALL ======
 
 
 uninstall : Terminal.Command
@@ -464,7 +464,7 @@ uninstall =
 
 
 
--- PUBLISH
+-- ====== PUBLISH ======
 
 
 publish : Terminal.Command
@@ -521,7 +521,7 @@ publish =
 
 
 
--- BUMP
+-- ====== BUMP ======
 
 
 bump : Terminal.Command
@@ -565,7 +565,7 @@ bump =
 
 
 
--- DIFF
+-- ====== DIFF ======
 
 
 diff : Terminal.Command
@@ -659,7 +659,7 @@ diff =
 
 
 
--- FORMAT
+-- ====== FORMAT ======
 
 
 format : Terminal.Command
@@ -729,7 +729,7 @@ output =
 
 
 
--- TEST
+-- ====== TEST ======
 
 
 test : Terminal.Command
@@ -804,7 +804,7 @@ parseInt =
 
 
 
--- HELPERS
+-- ====== HELPERS ======
 
 
 stack : List D.Doc -> D.Doc

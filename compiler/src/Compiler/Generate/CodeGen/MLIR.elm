@@ -39,7 +39,7 @@ import Utils.Crash exposing (crash)
 
 
 
--- BACKEND
+-- ====== BACKEND ======
 
 
 {-| The MLIR backend that generates MLIR code from fully monomorphized IR with all polymorphism resolved.
@@ -53,7 +53,7 @@ backend =
 
 
 
--- ECO DIALECT TYPES
+-- ====== ECO DIALECT TYPES ======
 
 
 {-| eco.value - boxed runtime value
@@ -85,7 +85,7 @@ ecoChar =
 
 
 
--- CONVERT MONOTYPE TO MLIR TYPE
+-- ====== CONVERT MONOTYPE TO MLIR TYPE ======
 
 
 monoTypeToMlir : Mono.MonoType -> MlirType
@@ -190,7 +190,7 @@ decomposeFunctionType monoType =
 
 
 
--- CONTEXT
+-- ====== CONTEXT ======
 
 
 {-| Function signature for invariant checking: param types and return type
@@ -457,7 +457,7 @@ addVarMapping name ssaVar mlirTy ctx =
 
 
 
--- SIGNATURE EXTRACTION (for invariant checking)
+-- ====== SIGNATURE EXTRACTION ======
 
 
 {-| Extract the function signature (param types, return type) from a MonoNode.
@@ -564,7 +564,7 @@ buildSignatures nodes =
 
 
 
--- EXPRESSION RESULT
+-- ====== EXPRESSION RESULT ======
 
 
 type alias ExprResult =
@@ -581,7 +581,7 @@ emptyResult ctx var ty =
 
 
 
--- INTRINSIC DEFINITIONS
+-- ====== INTRINSIC DEFINITIONS ======
 -- (Same as your original; omitted detailed comments for brevity.)
 
 
@@ -1029,8 +1029,7 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
 
 
 
--- OP BUILDER (already defined above)
--- GENERATE MODULE
+-- ====== GENERATE MODULE ======
 
 
 generateModule : Mode.Mode -> Mono.MonoGraph -> String
@@ -1078,7 +1077,7 @@ generateModule mode (Mono.MonoGraph { nodes, main, registry }) =
 
 
 
--- LAMBDA PROCESSING (unchanged)
+-- ====== LAMBDA PROCESSING ======
 
 
 processLambdas : Context -> ( List MlirOp, Context )
@@ -1203,7 +1202,7 @@ generateLambdaFunc ctx lambda =
 
 
 
--- GENERATE MAIN ENTRY
+-- ====== GENERATE MAIN ENTRY ======
 
 
 generateMainEntry : Context -> Mono.MainInfo -> List MlirOp
@@ -1235,7 +1234,7 @@ generateMainEntry ctx mainInfo =
 
 
 
--- GENERATE NODE
+-- ====== GENERATE NODE ======
 
 
 generateNode : Context -> Mono.SpecId -> Mono.MonoNode -> ( MlirOp, Context )
@@ -1304,7 +1303,7 @@ specIdToFuncName registry specId =
 
 
 
--- GENERATE DEFINE
+-- ====== GENERATE DEFINE ======
 
 
 generateDefine : Context -> String -> Mono.MonoExpr -> Mono.MonoType -> ( MlirOp, Context )
@@ -1402,7 +1401,7 @@ generateClosureFunc ctx funcName closureInfo body monoType =
 
 
 
--- GENERATE TAIL FUNC
+-- ====== GENERATE TAIL FUNC ======
 
 
 generateTailFunc : Context -> String -> List ( Name.Name, Mono.MonoType ) -> Mono.MonoExpr -> Mono.MonoType -> ( MlirOp, Context )
@@ -1454,7 +1453,7 @@ generateTailFunc ctx funcName params expr monoType =
 
 
 
--- GENERATE CTOR
+-- ====== GENERATE CTOR ======
 
 
 generateCtor : Context -> String -> Mono.CtorLayout -> Mono.MonoType -> ( Context, MlirOp )
@@ -1541,7 +1540,7 @@ generateCtor ctx funcName ctorLayout monoType =
 
 
 
--- GENERATE ENUM
+-- ====== GENERATE ENUM ======
 
 
 generateEnum : Context -> String -> Int -> Mono.MonoType -> Maybe String -> ( Context, MlirOp )
@@ -1577,7 +1576,7 @@ generateEnum ctx funcName tag _ maybeCtorName =
 
 
 
--- GENERATE EXTERN
+-- ====== GENERATE EXTERN ======
 
 
 generateExtern : Context -> String -> Mono.MonoType -> ( Context, MlirOp )
@@ -1718,7 +1717,7 @@ createDummyValue ctx mlirType =
 
 
 
--- GENERATE CYCLE
+-- ====== GENERATE CYCLE ======
 
 
 generateCycle : Context -> String -> List ( Name.Name, Mono.MonoExpr ) -> Mono.MonoType -> ( MlirOp, Context )
@@ -1775,7 +1774,7 @@ generateCycle ctx funcName definitions monoType =
 
 
 
--- GENERATE EXPRESSION
+-- ====== GENERATE EXPRESSION ======
 
 
 generateExpr : Context -> Mono.MonoExpr -> ExprResult
@@ -1841,7 +1840,7 @@ generateExpr ctx expr =
 
 
 
--- LITERAL GENERATION
+-- ====== LITERAL GENERATION ======
 
 
 generateLiteral : Context -> Mono.Literal -> ExprResult
@@ -1930,7 +1929,7 @@ generateLiteral ctx lit =
 
 
 
--- VARIABLE GENERATION
+-- ====== VARIABLE GENERATION ======
 
 
 generateVarGlobal : Context -> Mono.SpecId -> Mono.MonoType -> ExprResult
@@ -2203,7 +2202,7 @@ generateVarKernel ctx home name monoType =
 
 
 
--- LIST GENERATION
+-- ====== LIST GENERATION ======
 
 
 generateList : Context -> List Mono.MonoExpr -> ExprResult
@@ -2268,7 +2267,7 @@ generateList ctx items =
 
 
 
--- CLOSURE GENERATION
+-- ====== CLOSURE GENERATION ======
 
 
 generateClosure : Context -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
@@ -2388,7 +2387,7 @@ lambdaIdToString lambdaId =
 
 
 
--- CALL GENERATION
+-- ====== CALL GENERATION ======
 
 
 isEcoValueType : MlirType -> Bool
@@ -3156,7 +3155,7 @@ boxArgsWithMlirTypes ctx args =
 
 
 
--- TAIL CALL GENERATION
+-- ====== TAIL CALL GENERATION ======
 
 
 generateTailCall : Context -> Name.Name -> List ( Name.Name, Mono.MonoExpr ) -> ExprResult
@@ -3215,7 +3214,7 @@ generateTailCall ctx name args =
 
 
 
--- IF GENERATION
+-- ====== IF GENERATION ======
 
 
 {-| Generate if expressions using eco.case on Bool.
@@ -3287,7 +3286,7 @@ generateIf ctx branches final =
 
 
 
--- LET GENERATION (kept as in original; you may refine later)
+-- ====== LET GENERATION ======
 
 
 generateLet : Context -> Mono.MonoDef -> Mono.MonoExpr -> ExprResult
@@ -3321,7 +3320,7 @@ generateLet ctx def body =
 
 
 
--- DESTRUCT GENERATION (kept as in original)
+-- ====== DESTRUCT GENERATION ======
 
 
 generateDestruct : Context -> Mono.MonoDestructor -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
@@ -3452,7 +3451,7 @@ generateMonoPath ctx path targetType =
 
 
 
--- DECISION TREE PATH GENERATION
+-- ====== DECISION TREE PATH GENERATION ======
 
 
 {-| Generate MLIR ops to navigate a DT.Path from the root scrutinee.
@@ -3863,7 +3862,7 @@ computeFallbackTag edgeTests =
 
 
 
--- CASE GENERATION
+-- ====== CASE GENERATION ======
 
 
 {-| Generate shared joinpoints for case branches that are referenced multiple times.
@@ -4318,7 +4317,7 @@ generateCase ctx _ root decider jumps resultMonoType =
 
 
 
--- RECORD GENERATION
+-- ====== RECORD GENERATION ======
 
 
 generateRecordCreate : Context -> List Mono.MonoExpr -> Mono.RecordLayout -> ExprResult
@@ -4468,7 +4467,7 @@ generateRecordUpdate ctx record _ _ =
 
 
 
--- TUPLE GENERATION
+-- ====== TUPLE GENERATION ======
 
 
 generateTupleCreate : Context -> List Mono.MonoExpr -> Mono.TupleLayout -> ExprResult
@@ -4539,7 +4538,7 @@ generateTupleCreate ctx elements layout =
 
 
 
--- UNIT GENERATION
+-- ====== UNIT GENERATION ======
 
 
 generateUnit : Context -> ExprResult
@@ -4560,7 +4559,7 @@ generateUnit ctx =
 
 
 
--- ACCESSOR GENERATION
+-- ====== ACCESSOR GENERATION ======
 
 
 generateAccessor : Context -> Name.Name -> ExprResult
@@ -4590,8 +4589,8 @@ generateAccessor ctx fieldName =
 
 
 
--- INVARIANT CHECKS
--- HELPERS
+-- ====== INVARIANT CHECKS ======
+-- ====== HELPERS ======
 
 
 canonicalToMLIRName : IO.Canonical -> String
@@ -4620,7 +4619,7 @@ sanitizeName name =
 
 
 
--- ECO DIALECT OP HELPERS
+-- ====== ECO DIALECT OP HELPERS ======
 
 
 opBuilder : Mlir.OpBuilderFns e

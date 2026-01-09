@@ -105,7 +105,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- FORMAT
+-- ====== FORMAT ======
 
 
 {-| Controls whether a construct should be formatted across multiple lines.
@@ -268,7 +268,7 @@ mapPair fa fb (Pair k v fm) =
 
 
 
--- EXPRESSIONS
+-- ====== EXPRESSIONS ======
 
 
 {-| Expression with source location.
@@ -313,7 +313,7 @@ type VarType
 
 
 
--- DEFINITIONS
+-- ====== DEFINITIONS ======
 
 
 {-| A definition in a let expression: either a function definition or destructuring assignment.
@@ -324,7 +324,7 @@ type Def
 
 
 
--- PATTERN
+-- ====== PATTERN ======
 
 
 {-| Pattern with source location.
@@ -353,7 +353,7 @@ type Pattern_
 
 
 
--- TYPE
+-- ====== TYPE ======
 
 
 {-| Type annotation with source location.
@@ -376,7 +376,7 @@ type Type_
 
 
 
--- MODULE
+-- ====== MODULE ======
 
 
 {-| Data contained in a module, including all top-level declarations.
@@ -517,7 +517,7 @@ type Comment
 
 
 
--- EXPOSING
+-- ====== EXPOSING ======
 
 
 {-| The exposing clause of a module: either exposing all or an explicit list.
@@ -543,7 +543,7 @@ type Privacy
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 fCommentEncoder : FComment -> Bytes.Encode.Encoder

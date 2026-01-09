@@ -41,7 +41,7 @@ import Data.Map exposing (Dict)
 
 
 
--- TYPES
+-- ====== TYPES ======
 
 
 {-| A complete Markdown document with block content.

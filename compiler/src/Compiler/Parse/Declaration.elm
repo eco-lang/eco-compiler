@@ -39,7 +39,7 @@ import Compiler.Reporting.Error.Syntax as E
 
 
 
--- DECLARATION
+-- ====== DECLARATION ======
 
 
 {-| Represents a top-level declaration in an Elm module.
@@ -72,7 +72,7 @@ declaration syntaxVersion =
 
 
 
--- DOC COMMENT
+-- ====== DOC COMMENT ======
 
 
 chompDocComment : P.Parser E.Decl (Src.C1 (Maybe Src.Comment))
@@ -93,7 +93,7 @@ chompDocComment =
 
 
 
--- DEFINITION and ANNOTATION
+-- ====== DEFINITION and ANNOTATION ======
 
 
 valueDecl : SyntaxVersion -> Maybe Src.Comment -> Src.FComments -> A.Position -> Space.Parser E.Decl (Src.C2 Decl)
@@ -220,7 +220,7 @@ chompMatchingName expectedName =
 
 
 
--- TYPE DECLARATIONS
+-- ====== TYPE DECLARATIONS ======
 
 
 typeDecl : Maybe Src.Comment -> A.Position -> Space.Parser E.Decl (Src.C2 Decl)
@@ -284,7 +284,7 @@ typeDecl maybeDocs start =
 
 
 
--- TYPE ALIASES
+-- ====== TYPE ALIASES ======
 
 
 chompAliasNameToEquals : P.Parser E.TypeAlias ( ( A.Located Name, List (Src.C1 (A.Located Name)), Src.FComments ), Src.FComments )
@@ -323,7 +323,7 @@ chompAliasNameToEqualsHelp name args comments =
 
 
 
--- CUSTOM TYPES
+-- ====== CUSTOM TYPES ======
 
 
 chompCustomNameToEquals : Src.FComments -> P.Parser E.CustomType (Src.C1 ( Src.C2 (A.Located Name), List (Src.C1 (A.Located Name)) ))
@@ -364,7 +364,7 @@ chompVariants variants end =
 
 
 
--- PORT
+-- ====== PORT ======
 
 
 portDecl : Maybe Src.Comment -> Space.Parser E.Decl (Src.C2 Decl)
@@ -401,9 +401,7 @@ portDecl maybeDocs =
 
 
 
--- INFIX
--- INVARIANT: always chomps to a freshline
---
+-- ====== INFIX ======
 
 
 {-| Parses an infix operator declaration with associativity, precedence, and function binding.

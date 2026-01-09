@@ -53,7 +53,7 @@ import Utils.Crash exposing (crash)
 
 
 
--- CHUNK
+-- ====== CHUNK ======
 
 
 {-| Represents a parsed chunk of kernel JavaScript code.
@@ -82,7 +82,7 @@ type Chunk
 
 
 
--- COUNT FIELDS
+-- ====== COUNT FIELDS ======
 
 
 {-| Count the number of times each Elm field is referenced in a list of chunks.
@@ -131,7 +131,7 @@ addField chunk fields =
 
 
 
--- FROM FILE
+-- ====== FROM FILE ======
 
 
 {-| Represents the parsed content of a kernel module file.
@@ -196,7 +196,7 @@ ignoreError _ _ _ =
 
 
 
--- PARSE CHUNKS
+-- ====== PARSE CHUNKS ======
 
 
 parseChunks : VarTable -> Enums -> Fields -> P.Parser () (List Chunk)
@@ -389,7 +389,7 @@ lookupEnum word var allEnums =
 
 
 
--- PROCESS IMPORTS
+-- ====== PROCESS IMPORTS ======
 
 
 type alias VarTable =
@@ -478,7 +478,7 @@ toName exposed =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encode a Chunk to bytes for serialization.

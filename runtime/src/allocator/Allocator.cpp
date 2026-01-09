@@ -149,9 +149,9 @@ void Allocator::cleanupThread() {
     tl_heap_ = nullptr;
 }
 
+// Returns the thread-local root set, auto-initializing the thread if needed.
 RootSet &Allocator::getRootSet() {
     if (!tl_heap_) {
-        // Auto-initialize for convenience.
         initThread();
     }
     return tl_heap_->getRootSet();
@@ -183,6 +183,7 @@ void Allocator::majorGC() {
     }
 }
 
+// Returns true if the thread-local nursery usage exceeds the threshold.
 bool Allocator::isNurseryNearFull(float threshold) {
     if (tl_heap_) {
         return tl_heap_->isNurseryNearFull(threshold);
@@ -190,14 +191,17 @@ bool Allocator::isNurseryNearFull(float threshold) {
     return false;
 }
 
+// Returns true if the pointer is in the calling thread's nursery.
 bool Allocator::isInNursery(void *ptr) {
     return tl_heap_ && tl_heap_->isInNursery(ptr);
 }
 
+// Returns true if the pointer is in the calling thread's old gen.
 bool Allocator::isInOldGen(void *ptr) {
     return tl_heap_ && tl_heap_->isInOldGen(ptr);
 }
 
+// Returns the current allocated bytes in thread-local old gen.
 size_t Allocator::getOldGenAllocatedBytes() const {
     if (tl_heap_) {
         return tl_heap_->getOldGenAllocatedBytes();
@@ -209,9 +213,9 @@ size_t Allocator::getOldGenAllocatedBytes() const {
 // Region Allocation (for NurserySpace growth)
 // ============================================================================
 
+// Acquires a block from the low nursery region.
+// Thread-safe: acquires thread_mutex_ to update shared committed counters.
 char* Allocator::acquireNurseryBlockLow(size_t size) {
-    // Called by NurserySpace during initialization or growth.
-    // Thread-safe: acquires thread_mutex_ to update shared nursery committed counters.
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
     // Align size to 8 bytes.
@@ -240,9 +244,9 @@ char* Allocator::acquireNurseryBlockLow(size_t size) {
     return block_base;
 }
 
+// Acquires a block from the high nursery region.
+// Thread-safe: acquires thread_mutex_ to update shared committed counters.
 char* Allocator::acquireNurseryBlockHigh(size_t size) {
-    // Note: This is called by NurserySpace during initialization and growth.
-    // We need our own lock for the shared nursery committed counters.
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
     // Align size to 8 bytes.
@@ -272,6 +276,8 @@ char* Allocator::acquireNurseryBlockHigh(size_t size) {
     return block_base;
 }
 
+// Acquires a block from the old gen region.
+// Thread-safe: acquires thread_mutex_ to update shared committed counters.
 char* Allocator::acquireOldGenBlock(size_t size) {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
@@ -297,8 +303,9 @@ char* Allocator::acquireOldGenBlock(size_t size) {
     return block_base;
 }
 
+// Reserves a region for old gen with initial commit and growth capacity.
+// Pre-condition: caller must hold thread_mutex_.
 char* Allocator::acquireOldGenRegion(size_t initial_size, size_t max_size) {
-    // Note: Caller must hold thread_mutex_.
     // Align sizes to 8 bytes.
     initial_size = (initial_size + 7) & ~7;
     max_size = (max_size + 7) & ~7;
@@ -322,6 +329,8 @@ char* Allocator::acquireOldGenRegion(size_t initial_size, size_t max_size) {
     return region_base;
 }
 
+// Resets the allocator to initial state, optionally with a new configuration.
+// Accumulates stats from all thread heaps before destroying them.
 void Allocator::reset(const HeapConfig* new_config) {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
@@ -353,6 +362,7 @@ void Allocator::reset(const HeapConfig* new_config) {
 // Safe Public Pointer API
 // ============================================================================
 
+// Resolves an HPointer to its physical address, following forwarding pointers.
 void* Allocator::resolve(HPointer ptr) {
     assert(ptr.constant == 0 && "Cannot resolve HPointer with constant field set (embedded constant)");
 
@@ -376,6 +386,7 @@ void* Allocator::resolve(HPointer ptr) {
     return obj;
 }
 
+// Wraps a physical address as an HPointer.
 HPointer Allocator::wrap(void* obj) {
     assert(obj && "Cannot wrap null pointer - Elm never produces null pointers");
     assert((reinterpret_cast<uintptr_t>(obj) & 7) == 0 && "Pointer must be 8-byte aligned");
@@ -384,6 +395,7 @@ HPointer Allocator::wrap(void* obj) {
 }
 
 #if ENABLE_GC_STATS
+// Returns combined statistics from all thread heaps.
 GCStats Allocator::getCombinedStats() const {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
@@ -404,11 +416,13 @@ GCStats Allocator::getCombinedStats() const {
 // Test Access Helper
 // ============================================================================
 
+// Returns the thread-local nursery for testing.
 NurserySpace* AllocatorTestAccess::getNursery(Allocator& alloc) {
     ThreadLocalHeap* heap = alloc.getThreadHeap();
     return heap ? &heap->getNursery() : nullptr;
 }
 
+// Returns the thread-local old gen for testing.
 OldGenSpace* AllocatorTestAccess::getOldGen(Allocator& alloc) {
     ThreadLocalHeap* heap = alloc.getThreadHeap();
     return heap ? &heap->getOldGen() : nullptr;

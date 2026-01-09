@@ -1,7 +1,4 @@
-module Compiler.Type.PostSolve exposing
-    ( postSolve
-    , NodeTypes
-    )
+module Compiler.Type.PostSolve exposing (postSolve, NodeTypes)
 
 {-| PostSolve phase for fixing Group B expression types and computing kernel types.
 

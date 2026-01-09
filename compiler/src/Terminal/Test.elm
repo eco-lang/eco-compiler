@@ -63,7 +63,7 @@ import Utils.Task.Extra as Task
 
 
 
--- RUN
+-- ====== RUN ======
 
 
 {-| Configuration flags for the test command.
@@ -814,7 +814,7 @@ generateElmReportVariant maybeReport =
 
 
 
--- GET INFORMATION
+-- ====== GET INFORMATION ======
 
 
 style : Reporting.Style
@@ -867,7 +867,7 @@ extractLowerName ( _, exposedValue ) =
 
 
 
--- COMMAND LINE
+-- ====== COMMAND LINE ======
 
 
 type FileType
@@ -902,7 +902,7 @@ determineFileType isFile isDirectory =
 
 
 
--- RESOLVE FILES
+-- ====== RESOLVE FILES ======
 
 
 type Error
@@ -976,7 +976,7 @@ collectErrors =
 
 
 
--- FILESYSTEM
+-- ====== FILESYSTEM ======
 
 
 collectFiles : (a -> Task Never (List a)) -> a -> Task Never (List a)
@@ -1046,7 +1046,7 @@ hasFilename name path =
 
 
 
--- ATTEMPT CHANGES
+-- ====== ATTEMPT CHANGES ======
 
 
 attemptChanges : FilePath -> Solver.Env -> Outline.AppOutline -> Task Exit.Test ()
@@ -1065,7 +1065,7 @@ attemptChanges root env appOutline =
 
 
 
--- MAKE APP PLAN
+-- ====== MAKE APP PLAN ======
 
 
 makeAppPlan : Solver.Env -> Pkg.Name -> Outline.AppOutline -> Task Exit.Test Outline.AppOutline
@@ -1151,7 +1151,7 @@ handleAppSolverResult pkg result =
 
 
 
--- MAKE PACKAGE PLAN
+-- ====== MAKE PACKAGE PLAN ======
 
 
 makePkgPlan : Solver.Env -> Dict ( String, String ) Pkg.Name C.Constraint -> Outline.AppOutline -> Task Exit.Test Outline.AppOutline
@@ -1187,7 +1187,7 @@ handlePkgSolverResult env pkg remainingCons result =
 
 
 
--- GET INTERPRETER
+-- ====== GET INTERPRETER ======
 
 
 getInterpreter : Task Never FilePath
@@ -1259,7 +1259,7 @@ buildPaths root details paths =
 
 
 
--- TO BUILDER
+-- ====== TO BUILDER ======
 
 
 toBuilder : Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Test String
@@ -1268,7 +1268,7 @@ toBuilder leadingLines root details artifacts =
 
 
 
--- PARSERS
+-- ====== PARSERS ======
 
 
 {-| Test report output format.

@@ -29,7 +29,7 @@ import System.TypeCheck.IO as IO
 
 
 
--- RESULT
+-- ====== RESULT ======
 
 
 type alias EResult i w a =
@@ -37,7 +37,7 @@ type alias EResult i w a =
 
 
 
--- CANONICALIZE
+-- ====== CANONICALIZE ======
 
 
 {-| Canonicalize effect declarations, including ports and effect managers.
@@ -109,7 +109,7 @@ canonicalize syntaxVersion env values unions effects =
 
 
 
--- CANONICALIZE PORT
+-- ====== CANONICALIZE PORT ======
 
 
 canonicalizePort : SyntaxVersion -> Env.Env -> Src.Port -> EResult i w ( Name.Name, Can.Port )
@@ -185,7 +185,7 @@ canonicalizePort syntaxVersion env (Src.Port _ ( _, A.At region portName ) tipe)
 
 
 
--- VERIFY MANAGER
+-- ====== VERIFY MANAGER ======
 
 
 verifyEffectType : A.Located Name.Name -> Dict String Name.Name a -> EResult i w Name.Name
@@ -217,7 +217,7 @@ verifyManager tagRegion values name =
 
 
 
--- CHECK PAYLOAD TYPES
+-- ====== CHECK PAYLOAD TYPES ======
 
 
 {-| Verify that a type can be used as a port payload.

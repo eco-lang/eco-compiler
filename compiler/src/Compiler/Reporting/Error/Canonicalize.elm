@@ -61,7 +61,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- CANONICALIZATION ERRORS
+-- ====== CANONICALIZATION ERRORS ======
 
 
 {-| Represents errors that occur during canonicalization of Elm source code.
@@ -152,7 +152,7 @@ type alias PossibleNames =
 
 
 
--- KIND
+-- ====== KIND ======
 
 
 {-| Categorizes the kind of name that was not found or exported incorrectly.
@@ -201,7 +201,7 @@ toKindInfo kind name =
 
 
 
--- TO REPORT
+-- ====== TO REPORT ======
 
 
 {-| Convert a canonicalization error into a user-friendly error report with
@@ -1358,7 +1358,7 @@ toQualString prefix name =
 
 
 
--- BAD ALIAS RECURSION
+-- ====== BAD ALIAS RECURSION ======
 
 
 aliasRecursionReport : Code.Source -> A.Region -> Name -> List Name -> Src.Type -> List Name -> Report.Report
@@ -1406,7 +1406,7 @@ aliasToUnionDoc name args tipe =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Serialize a canonicalization error to bytes for caching or transmission.

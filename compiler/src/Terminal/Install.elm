@@ -43,7 +43,7 @@ import Utils.Task.Extra as Task
 
 
 
--- RUN
+-- ====== RUN ======
 
 
 {-| Arguments for the install command.
@@ -125,7 +125,7 @@ installWithOutline root pkg forTest autoYes env oldOutline =
 
 
 
--- ATTEMPT CHANGES
+-- ====== ATTEMPT CHANGES ======
 
 
 type Changes vsn
@@ -269,7 +269,7 @@ handleInstallResult root oldOutline result =
 
 
 
--- MAKE APP PLAN
+-- ====== MAKE APP PLAN ======
 
 
 makeAppPlan : Solver.Env -> Pkg.Name -> Outline.AppOutline -> Bool -> Task Exit.Install (Changes V.Version)
@@ -406,7 +406,7 @@ throwUnknownPackageError connection pkg suggestions =
 
 
 
--- MAKE PACKAGE PLAN
+-- ====== MAKE PACKAGE PLAN ======
 
 
 type alias PkgOutlineInfo =
@@ -630,7 +630,7 @@ addNews pkg new old =
 
 
 
--- CHANGES
+-- ====== CHANGES ======
 
 
 type Change a
@@ -680,7 +680,7 @@ keepNew change =
 
 
 
--- VIEW CHANGE DOCS
+-- ====== VIEW CHANGE DOCS ======
 
 
 type ChangeDocs
@@ -711,7 +711,7 @@ viewNonZero title entries =
 
 
 
--- VIEW CHANGE
+-- ====== VIEW CHANGE ======
 
 
 addChange : (a -> String) -> Widths -> Pkg.Name -> Change a -> ChangeDocs -> ChangeDocs
@@ -761,7 +761,7 @@ pad width string =
 
 
 
--- WIDTHS
+-- ====== WIDTHS ======
 
 
 type Widths

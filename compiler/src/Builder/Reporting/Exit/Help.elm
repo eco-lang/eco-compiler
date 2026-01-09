@@ -36,7 +36,7 @@ import Task exposing (Task)
 
 
 
--- REPORT
+-- ====== REPORT ======
 
 
 {-| Represents an error report that can be displayed to the user or serialized to JSON.
@@ -75,7 +75,7 @@ compilerReport =
 
 
 
--- TO DOC
+-- ====== TO DOC ======
 
 
 {-| Converts a report to a formatted document for terminal output.
@@ -115,7 +115,7 @@ reportToDoc report_ =
 
 
 
--- TO JSON
+-- ====== TO JSON ======
 
 
 {-| Converts a report to JSON format for machine consumption.
@@ -139,7 +139,7 @@ reportToJson report_ =
 
 
 
--- OUTPUT
+-- ====== OUTPUT ======
 
 
 {-| Writes a formatted document to stdout, using ANSI colors if connected to a terminal.

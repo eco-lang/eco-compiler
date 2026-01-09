@@ -34,7 +34,7 @@ import Utils.Main as Utils
 
 
 
--- TYPES
+-- ====== TYPES ======
 
 
 {-| Set of names that participate in a recursive definition cycle.
@@ -54,7 +54,7 @@ type alias Annotations =
 
 
 
--- OPTIMIZE
+-- ====== OPTIMIZE ======
 
 
 {-| Transforms a TypedCanonical expression into a TypedOptimized expression.
@@ -461,7 +461,7 @@ lookupAnnotationType name annotations =
 
 
 
--- TAIL CALL OPTIMIZATION
+-- ====== TAIL CALL OPTIMIZATION ======
 
 
 {-| Optimize an expression in tail position.
@@ -671,7 +671,7 @@ optimizeTailExpr kernelEnv annotations exprTypes cycle rootName argNames resultT
 
 
 
--- DEFINITIONS (inside let expressions)
+-- ====== LET DEFINITIONS ======
 
 
 {-| Extract the name and type of a definition for scope management.
@@ -830,7 +830,7 @@ optimizePotentialTailCallDef kernelEnv annotations exprTypes cycle def =
 
 
 
--- DEFINITIONS
+-- ====== DEFINITIONS ======
 
 
 {-| Optimize a potentially tail-recursive definition.
@@ -963,7 +963,7 @@ wrapDestruct bodyType destructor expr =
 
 
 
--- DESTRUCTURING
+-- ====== DESTRUCTURING ======
 
 
 {-| Converts a list of function argument patterns into argument names with types and destructuring operations.

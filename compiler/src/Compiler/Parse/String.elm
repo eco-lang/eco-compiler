@@ -21,7 +21,7 @@ import Compiler.Reporting.Error.Syntax as E
 
 
 
--- CHARACTER
+-- ====== CHARACTER ======
 
 
 {-| Parses a single-quoted character literal like 'a' or '\\n'.
@@ -114,7 +114,7 @@ chompChar syntaxVersion src pos end row col numChars mostRecent =
 
 
 
--- STRINGS
+-- ====== STRINGS ======
 
 
 {-| Parses a string literal (single-line or multi-line).
@@ -204,7 +204,7 @@ addEscape chunk start end revChunks =
 
 
 
--- SINGLE STRINGS
+-- ====== SINGLE STRINGS ======
 
 
 singleString : SyntaxVersion -> String -> Int -> Int -> Row -> Col -> Int -> List ES.Chunk -> StringResult
@@ -265,7 +265,7 @@ singleString syntaxVersion src pos end row col initialPos revChunks =
 
 
 
--- MULTI STRINGS
+-- ====== MULTI STRINGS ======
 
 
 multiString : SyntaxVersion -> String -> Int -> Int -> Row -> Col -> Int -> Row -> Col -> List ES.Chunk -> StringResult
@@ -339,7 +339,7 @@ multiString syntaxVersion src pos end row col initialPos sr sc revChunks =
 
 
 
--- ESCAPE CHARACTERS
+-- ====== ESCAPE CHARACTERS ======
 
 
 type Escape

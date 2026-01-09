@@ -47,7 +47,7 @@ import System.TypeCheck.IO as IO
 
 
 
--- OUTPUT
+-- ====== OUTPUT ======
 
 
 {-| Output from code generation - either a string or binary data.
@@ -102,7 +102,7 @@ type alias CodeGen =
 
 
 
--- MAINS
+-- ====== MAINS ======
 
 
 {-| Map from module names to their main entry points for standard optimized AST.
@@ -112,7 +112,7 @@ type alias Mains =
 
 
 
--- SOURCE MAPS
+-- ====== SOURCE MAPS ======
 
 
 {-| Configuration for source map generation - either disabled or enabled with module source content.
@@ -123,9 +123,9 @@ type SourceMaps
 
 
 
--- TYPED CODE GEN
+-- ====== TYPED CODE GEN ======
 -- Interface for backends that need full type information (e.g., MLIR)
--- MONO CODE GEN
+-- ====== MONO CODE GEN ======
 -- Interface for backends that work with fully monomorphized IR
 
 

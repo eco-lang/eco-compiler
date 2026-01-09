@@ -50,7 +50,7 @@ import Compiler.Parse.Variable as Var
 
 
 
--- DECLARATIONS
+-- ====== DECLARATIONS ======
 
 
 {-| Parses the 'type' keyword for type declarations.
@@ -75,7 +75,7 @@ port_ tx =
 
 
 
--- IF EXPRESSIONS
+-- ====== IF EXPRESSIONS ======
 
 
 {-| Parses the 'if' keyword for conditional expressions.
@@ -100,7 +100,7 @@ else_ tx =
 
 
 
--- CASE EXPRESSIONS
+-- ====== CASE EXPRESSIONS ======
 
 
 {-| Parses the 'case' keyword for pattern matching expressions.
@@ -118,7 +118,7 @@ of_ tx =
 
 
 
--- LET EXPRESSIONS
+-- ====== LET EXPRESSIONS ======
 
 
 {-| Parses the 'let' keyword for let expressions.
@@ -136,7 +136,7 @@ in_ tx =
 
 
 
--- INFIXES
+-- ====== INFIXES ======
 
 
 {-| Parses the 'infix' keyword for infix operator declarations.
@@ -168,7 +168,7 @@ non_ tx =
 
 
 
--- IMPORTS
+-- ====== IMPORTS ======
 
 
 {-| Parses the 'module' keyword for module declarations.
@@ -200,7 +200,7 @@ as_ tx =
 
 
 
--- EFFECTS
+-- ====== EFFECTS ======
 
 
 {-| Parses the 'effect' keyword for effect module declarations.
@@ -263,7 +263,7 @@ subscription_ toError =
 
 
 
--- KEYWORDS
+-- ====== KEYWORDS ======
 
 
 {-| Helper for parsing a 2-character keyword. Ensures the keyword is not followed by identifier characters.

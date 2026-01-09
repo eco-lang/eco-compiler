@@ -51,7 +51,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- REGISTRY
+-- ====== REGISTRY ======
 
 
 {-| The package registry maps package names to their available versions.
@@ -68,7 +68,7 @@ type KnownVersions
 
 
 
--- READ
+-- ====== READ ======
 
 
 {-| Read the cached registry from disk. Returns Nothing if the cache doesn't exist or is invalid.
@@ -79,7 +79,7 @@ read cache =
 
 
 
--- FETCH
+-- ====== FETCH ======
 
 
 {-| Fetch the complete registry from the package server and cache it locally.
@@ -135,7 +135,7 @@ allPkgsDecoder =
 
 
 
--- UPDATE
+-- ====== UPDATE ======
 
 
 {-| Update an existing registry by fetching only new package versions since the last sync.
@@ -183,7 +183,7 @@ addNew ( name, version ) versions =
 
 
 
--- NEW PACKAGE DECODER
+-- ====== NEW PACKAGE DECODER ======
 
 
 newPkgDecoder : D.Decoder () ( Pkg.Name, V.Version )
@@ -208,7 +208,7 @@ bail _ _ =
 
 
 
--- LATEST
+-- ====== LATEST ======
 
 
 {-| Get the latest registry, either by reading the cache and updating it, or fetching it fresh.
@@ -229,7 +229,7 @@ latest manager cache =
 
 
 
--- GET VERSIONS
+-- ====== GET VERSIONS ======
 
 
 {-| Look up available versions for a package name. Returns Nothing if the package isn't in the registry.
@@ -253,7 +253,7 @@ getVersions_ name (Registry _ versions) =
 
 
 
--- POST
+-- ====== POST ======
 
 
 post : Http.Manager -> String -> D.Decoder x a -> (a -> Task Never b) -> Task Never (Result Exit.RegistryProblem b)
@@ -273,7 +273,7 @@ post manager path decoder callback =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Binary decoder for reading a registry from disk cache.

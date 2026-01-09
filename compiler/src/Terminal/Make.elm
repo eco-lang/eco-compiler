@@ -56,7 +56,7 @@ import Utils.Task.Extra as Task
 
 
 
--- FLAGS
+-- ====== FLAGS ======
 
 
 {-| Configuration data for the make command, containing all flags and options.
@@ -94,7 +94,7 @@ type ReportType
 
 
 
--- RUN
+-- ====== RUN ======
 
 
 {-| Execute the make command with the given source file paths and flags.
@@ -261,7 +261,7 @@ handleMlirOutput ctx target artifacts =
 
 
 
--- GET INFORMATION
+-- ====== GET INFORMATION ======
 
 
 getStyle : Maybe ReportType -> Task Never Reporting.Style
@@ -306,7 +306,7 @@ getExposed (Details.Details detailsData) =
 
 
 
--- BUILD PROJECTS
+-- ====== BUILD PROJECTS ======
 
 
 buildExposed : Reporting.Style -> FilePath -> Details.Details -> Maybe FilePath -> NE.Nonempty ModuleName.Raw -> Task Exit.Make ()
@@ -332,7 +332,7 @@ buildPaths style root details needsTypedOpt paths =
 
 
 
--- GET MAINS
+-- ====== GET MAINS ======
 
 
 getMains : Build.Artifacts -> List ModuleName.Raw
@@ -366,7 +366,7 @@ isMain targetName modul =
 
 
 
--- HAS ONE MAIN
+-- ====== HAS ONE MAIN ======
 
 
 hasOneMain : Build.Artifacts -> Task Exit.Make ModuleName.Raw
@@ -380,7 +380,7 @@ hasOneMain (Build.Artifacts artifacts) =
 
 
 
--- GET MAINLESS
+-- ====== GET MAINLESS ======
 
 
 getNoMains : Build.Artifacts -> List ModuleName.Raw
@@ -408,7 +408,7 @@ getNoMain modules root =
 
 
 
--- GENERATE
+-- ====== GENERATE ======
 
 
 generate : Reporting.Style -> FilePath -> String -> NE.Nonempty ModuleName.Raw -> Task Exit.Make ()
@@ -421,7 +421,7 @@ generate style target builder names =
 
 
 
--- TO BUILDER
+-- ====== TO BUILDER ======
 
 
 toBuilder : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
@@ -459,7 +459,7 @@ toMonoBuilder backend withSourceMaps leadingLines root details desiredMode artif
 
 
 
--- PARSERS
+-- ====== PARSERS ======
 
 
 {-| Parser definition for report type command-line arguments.

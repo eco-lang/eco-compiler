@@ -46,7 +46,7 @@ import Compiler.Parse.Primitives as P exposing (Col, Row)
 
 
 
--- CONSTRAINTS
+-- ====== CONSTRAINTS ======
 
 
 {-| Represents a version constraint as a range with lower and upper bounds.
@@ -77,7 +77,7 @@ range lower lowerOp upperOp upper =
 
 
 
--- COMMON CONSTRAINTS
+-- ====== COMMON CONSTRAINTS ======
 
 
 {-| Creates a constraint that matches exactly one specific version.
@@ -95,7 +95,7 @@ anything =
 
 
 
--- EXTRACT VERSION
+-- ====== EXTRACT VERSION ======
 
 
 {-| Extracts the lower bound version from a constraint.
@@ -106,7 +106,7 @@ lowerBound (Range props) =
 
 
 
--- TO CHARS
+-- ====== TO CHARS ======
 
 
 {-| Converts a constraint to its string representation.
@@ -130,7 +130,7 @@ opToChars op =
 
 
 
--- IS SATISFIED
+-- ====== IS SATISFIED ======
 
 
 {-| Checks whether a given version satisfies the constraint.
@@ -157,7 +157,7 @@ isLess op =
 
 
 
--- INTERSECT
+-- ====== INTERSECT ======
 
 
 {-| Computes the intersection of two constraints.
@@ -209,7 +209,7 @@ intersect (Range r1) (Range r2) =
 
 
 
--- ELM CONSTRAINT
+-- ====== ELM CONSTRAINT ======
 
 
 {-| Checks whether the current Elm compiler version satisfies the constraint.
@@ -237,7 +237,7 @@ defaultElm =
 
 
 
--- CREATE CONSTRAINTS
+-- ====== CREATE CONSTRAINTS ======
 
 
 {-| Creates a constraint from the given version up to (but not including) the next major version.
@@ -257,7 +257,7 @@ untilNextMinor version =
 
 
 
--- JSON
+-- ====== JSON ======
 
 
 {-| Encodes a constraint as a JSON string value.
@@ -276,7 +276,7 @@ decoder =
 
 
 
--- PARSER
+-- ====== PARSER ======
 
 
 {-| Represents errors that can occur when parsing constraint strings.

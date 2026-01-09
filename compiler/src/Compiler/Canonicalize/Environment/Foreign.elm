@@ -71,7 +71,7 @@ infoToVar info =
 
 
 
--- STATE
+-- ====== STATE ======
 
 
 type alias State =
@@ -96,7 +96,7 @@ emptyTypes =
 
 
 
--- TO SAFE IMPORTS
+-- ====== TO SAFE IMPORTS ======
 
 
 toSafeImports : IO.Canonical -> List Src.Import -> List Src.Import
@@ -123,7 +123,7 @@ isNormal (Src.Import ( _, A.At _ name ) maybeAlias _) =
 
 
 
--- ADD IMPORTS
+-- ====== ADD IMPORTS ======
 
 
 addImport : Dict String ModuleName.Raw I.Interface -> State -> Src.Import -> FResult i w State
@@ -215,7 +215,7 @@ addQualified prefix exposed qualified =
 
 
 
--- UNION
+-- ====== UNION ======
 
 
 unionToType : IO.Canonical -> Name -> I.Union -> Maybe ( Env.Type, Env.Exposed Env.Ctor )
@@ -236,7 +236,7 @@ unionToTypeHelp home name ((Can.Union unionData) as union) =
 
 
 
--- ALIAS
+-- ====== ALIAS ======
 
 
 aliasToType : IO.Canonical -> Name -> I.Alias -> Maybe ( Env.Type, Env.Exposed Env.Ctor )
@@ -269,7 +269,7 @@ aliasToTypeHelp home name (Can.Alias vars tipe) =
 
 
 
--- BINOP
+-- ====== BINOP ======
 
 
 binopToBinop : IO.Canonical -> Name -> I.Binop -> Env.Info Env.Binop
@@ -278,7 +278,7 @@ binopToBinop home op (I.Binop data) =
 
 
 
--- ADD EXPOSED VALUE
+-- ====== ADD EXPOSED VALUE ======
 
 
 addExposedValue :

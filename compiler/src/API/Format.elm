@@ -18,7 +18,7 @@ import Compiler.Parse.SyntaxVersion as SV
 
 
 
--- RUN
+-- ====== RUN ======
 
 
 {-| Format Elm source code according to the standard style guide.

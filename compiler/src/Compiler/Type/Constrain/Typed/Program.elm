@@ -45,7 +45,7 @@ import System.TypeCheck.IO as IO exposing (IO)
 
 
 
--- STATEFUL PROGRAM TYPE
+-- ====== STATEFUL PROGRAM TYPE ======
 
 
 {-| A stateful program that threads state through constraint generation.
@@ -79,7 +79,7 @@ type InstrS s a
 
 
 
--- STATEFUL MONAD OPERATIONS
+-- ====== STATEFUL MONAD OPERATIONS ======
 
 
 {-| Lift a pure value into the stateful program.
@@ -156,7 +156,7 @@ bindInstrS f instr =
 
 
 
--- STATEFUL SMART CONSTRUCTORS
+-- ====== STATEFUL SMART CONSTRUCTORS ======
 
 
 {-| Allocate a fresh flexible type variable (stateful version).
@@ -195,7 +195,7 @@ opIOS io =
 
 
 
--- STATEFUL INTERPRETER
+-- ====== STATEFUL INTERPRETER ======
 
 
 {-| Run a stateful constraint program to produce an IO (Constraint, state).

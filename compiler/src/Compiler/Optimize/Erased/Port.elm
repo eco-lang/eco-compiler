@@ -45,7 +45,7 @@ import Utils.Crash exposing (crash)
 
 
 
--- ENCODE
+-- ====== ENCODE ======
 
 
 {-| Generate a JSON encoder function for the given Elm type.
@@ -140,7 +140,7 @@ toEncoder tipe =
 
 
 
--- ENCODE HELPERS
+-- ====== ENCODE HELPERS ======
 
 
 encodeMaybe : Can.Type -> Names.Tracker Opt.Expr
@@ -249,7 +249,7 @@ encodeTuple a b cs =
 
 
 
--- FLAGS DECODER
+-- ====== FLAGS DECODER ======
 
 
 {-| Generate a JSON decoder for program flags.
@@ -267,7 +267,7 @@ toFlagsDecoder tipe =
 
 
 
--- DECODE
+-- ====== DECODE ======
 
 
 {-| Generate a JSON decoder for the given Elm type.
@@ -331,7 +331,7 @@ toDecoder tipe =
 
 
 
--- DECODE MAYBE
+-- ====== DECODE MAYBE ======
 
 
 decodeMaybe : Can.Type -> Names.Tracker Opt.Expr
@@ -370,7 +370,7 @@ decodeMaybe tipe =
 
 
 
--- DECODE LIST
+-- ====== DECODE LIST ======
 
 
 decodeList : Can.Type -> Names.Tracker Opt.Expr
@@ -384,7 +384,7 @@ decodeList tipe =
 
 
 
--- DECODE ARRAY
+-- ====== DECODE ARRAY ======
 
 
 decodeArray : Can.Type -> Names.Tracker Opt.Expr
@@ -398,7 +398,7 @@ decodeArray tipe =
 
 
 
--- DECODE TUPLES
+-- ====== DECODE TUPLES ======
 
 
 decodeTuple0 : Names.Tracker Opt.Expr
@@ -458,7 +458,7 @@ indexAndThen i tipe decoder =
 
 
 
--- DECODE RECORDS
+-- ====== DECODE RECORDS ======
 
 
 decodeRecord : Dict String Name.Name Can.FieldType -> Names.Tracker Opt.Expr
@@ -507,7 +507,7 @@ fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
 
 
 
--- GLOBALS HELPERS
+-- ====== GLOBALS HELPERS ======
 
 
 encode : Name -> Names.Tracker Opt.Expr
@@ -521,7 +521,7 @@ decode name =
 
 
 
--- BYTES HELPERS
+-- ====== BYTES HELPERS ======
 
 
 encodeBytes : Names.Tracker Opt.Expr

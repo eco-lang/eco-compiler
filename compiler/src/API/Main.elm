@@ -41,6 +41,8 @@ main =
     IO.run app
 
 
+{-| Main application task that reads a command and dispatches to the appropriate handler.
+-}
 app : Task Never ()
 app =
     getArgs
@@ -122,33 +124,43 @@ app =
             )
 
 
+{-| Reads command arguments from the runtime via the impure bridge.
+-}
 getArgs : Task Never Args
 getArgs =
     Impure.task "getArgs" [] Impure.EmptyBody (Impure.DecoderResolver argsDecoder)
 
 
+{-| Exits the process after writing a JSON response to stdout.
+-}
 exitWithResponse : Encode.Value -> Task Never a
 exitWithResponse value =
     Impure.task "exitWithResponse" [] (Impure.JsonBody value) Impure.Crash
 
 
 
--- ARGS
+-- ====== ARGS ======
 
 
+{-| Command arguments parsed from the incoming JSON request.
+-}
 type Args
-    = MakeArgs String Bool Bool Bool
-    | FormatArgs String
-    | InstallArgs String
-    | UninstallArgs String
-    | DiagnosticsArgs DiagnosticsSource
+    = MakeArgs String Bool Bool Bool -- path, debug, optimize, sourcemaps.
+    | FormatArgs String -- source code content.
+    | InstallArgs String -- package name string.
+    | UninstallArgs String -- package name string.
+    | DiagnosticsArgs DiagnosticsSource -- source for syntax checking.
 
 
+{-| Source for diagnostics: either inline content or a file path.
+-}
 type DiagnosticsSource
-    = DiagnosticsSourceContent String
-    | DiagnosticsSourcePath String
+    = DiagnosticsSourceContent String -- inline source code.
+    | DiagnosticsSourcePath String -- path to source file.
 
 
+{-| Decodes the incoming JSON command into an Args value.
+-}
 argsDecoder : Decode.Decoder Args
 argsDecoder =
     Decode.field "command" Decode.string

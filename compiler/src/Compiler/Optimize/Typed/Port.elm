@@ -28,7 +28,7 @@ import Utils.Crash exposing (crash)
 
 
 
--- ENCODE
+-- ====== ENCODE ======
 
 
 {-| Generate a typed JSON encoder function for the given Elm type.
@@ -145,7 +145,7 @@ toEncoder tipe =
 
 
 
--- ENCODE HELPERS
+-- ====== ENCODE HELPERS ======
 
 
 encodeMaybe : Can.Type -> Names.Tracker TOpt.Expr
@@ -298,7 +298,7 @@ encodeTuple a b cs =
 
 
 
--- FLAGS DECODER
+-- ====== FLAGS DECODER ======
 
 
 {-| Generate a typed JSON decoder for program flags.
@@ -318,7 +318,7 @@ toFlagsDecoder tipe =
 
 
 
--- DECODE
+-- ====== DECODE ======
 
 
 {-| Generate a typed JSON decoder for the given Elm type.
@@ -381,7 +381,7 @@ toDecoder tipe =
 
 
 
--- DECODE HELPERS
+-- ====== DECODE HELPERS ======
 
 
 decodeMaybe : Can.Type -> Names.Tracker TOpt.Expr
@@ -613,7 +613,7 @@ fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
 
 
 
--- GLOBALS HELPERS
+-- ====== GLOBALS HELPERS ======
 
 
 encode : Name -> Names.Tracker TOpt.Expr
@@ -627,7 +627,7 @@ decode name =
 
 
 
--- BYTES HELPERS
+-- ====== BYTES HELPERS ======
 
 
 encodeBytes : Names.Tracker TOpt.Expr

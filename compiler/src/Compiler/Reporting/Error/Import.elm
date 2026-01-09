@@ -42,7 +42,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- ERROR
+-- ====== ERROR ======
 
 
 {-| Represents an import error with location and problem details.
@@ -71,7 +71,7 @@ type Problem
 
 
 
--- TO REPORT
+-- ====== TO REPORT ======
 
 
 {-| Convert an import error into a user-friendly error report with suggestions
@@ -214,7 +214,7 @@ toSuggestions name unimportedModules =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Serialize an import problem to bytes.

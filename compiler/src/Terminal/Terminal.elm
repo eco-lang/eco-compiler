@@ -39,7 +39,7 @@ import Utils.Main as Utils
 
 
 
--- APP
+-- ====== APP ======
 
 
 {-| Create and run a terminal application with commands.
@@ -84,7 +84,7 @@ app intro outro commands =
 
 
 
--- FLAGS
+-- ====== FLAGS ======
 
 
 {-| A command with no flags.
@@ -118,7 +118,7 @@ more f fs =
 
 
 
--- FLAG
+-- ====== FLAG ======
 
 
 {-| Define a flag that takes a value.
@@ -144,7 +144,7 @@ onOff =
 
 
 
--- FANCY ARGS
+-- ====== FANCY ARGS ======
 
 
 {-| -}

@@ -219,7 +219,7 @@ exprToBuilder expr builder =
 
 
 
--- INDENT LEVEL
+-- ====== INDENT LEVEL ======
 
 
 type Level
@@ -246,7 +246,7 @@ makeLevel level oldTabs =
 
 
 
--- HELPERS
+-- ====== HELPERS ======
 
 
 commaSep : (a -> Builder -> Builder) -> List a -> Builder -> Builder
@@ -280,7 +280,7 @@ commaNewlineSep ((Level _ nextLevel) as level) fn exprs builder =
 
 
 
--- STATEMENTS
+-- ====== STATEMENTS ======
 
 
 fromStmtBlock : Level -> List Stmt -> Builder -> Builder
@@ -456,7 +456,7 @@ fromStmt ((Level indent nextLevel) as level) statement builder =
 
 
 
--- SWITCH CLAUSES
+-- ====== SWITCH CLAUSES ======
 
 
 fromClause : Level -> Case -> Builder -> Builder
@@ -490,7 +490,7 @@ fromClauses level clauses builder =
 
 
 
--- VAR DECLS
+-- ====== VAR DECLS ======
 
 
 varToBuilder : Level -> ( Name.Name, Expr ) -> Builder -> Builder
@@ -502,7 +502,7 @@ varToBuilder level ( name, expr ) builder =
 
 
 
--- EXPRESSIONS
+-- ====== EXPRESSIONS ======
 
 
 type Lines
@@ -908,7 +908,7 @@ fromExprLines level expression =
 
 
 
--- FIELDS
+-- ====== FIELDS ======
 
 
 fromField : Level -> ( Name.Name, Expr ) -> Builder -> Builder
@@ -938,7 +938,7 @@ trackedFromFieldLines level ( _, expr ) =
 
 
 
--- VALUES
+-- ====== VALUES ======
 
 
 fromLValue : Level -> LValue -> Builder -> Builder
@@ -988,7 +988,7 @@ makeBracketedLines level expr bracketedExpr =
 
 
 
--- OPERATORS
+-- ====== OPERATORS ======
 
 
 fromPrefix : PrefixOp -> Builder -> Builder

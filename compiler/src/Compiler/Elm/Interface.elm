@@ -79,7 +79,7 @@ import Utils.Main as Utils
 
 
 
--- INTERFACE
+-- ====== INTERFACE ======
 
 
 {-| Record containing the complete interface data for a module, including its package
@@ -136,7 +136,7 @@ type Binop
 
 
 
--- FROM MODULE
+-- ====== FROM MODULE ======
 
 
 {-| Constructs an interface from a canonical module, extracting only the exported values,
@@ -216,7 +216,7 @@ restrictAliases exports aliases =
 
 
 
--- TO PUBLIC
+-- ====== TO PUBLIC ======
 
 
 {-| Converts a union type to its public representation. Open unions expose all constructors,
@@ -249,7 +249,7 @@ toPublicAlias iAlias =
 
 
 
--- DEPENDENCY INTERFACE
+-- ====== DEPENDENCY INTERFACE ======
 
 
 {-| Represents how a module's interface is exposed to dependencies. Public interfaces
@@ -319,7 +319,7 @@ privatize di =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encodes an interface to binary format for serialization to disk or network transmission.

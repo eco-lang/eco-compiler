@@ -33,7 +33,7 @@ import Utils.Task.Extra as Task
 
 
 
--- RUN
+-- ====== RUN ======
 
 
 {-| Remove a package from the project's dependencies and update elm.json.
@@ -73,7 +73,7 @@ run pkg =
 
 
 
--- ATTEMPT CHANGES
+-- ====== ATTEMPT CHANGES ======
 
 
 type Changes vsn
@@ -113,7 +113,7 @@ attemptChangesHelp root env oldOutline newOutline =
 
 
 
--- MAKE APP PLAN
+-- ====== MAKE APP PLAN ======
 
 
 makeAppPlan : Solver.Env -> Pkg.Name -> Outline.AppOutline -> Task Exit.Uninstall (Changes V.Version)
@@ -149,7 +149,7 @@ makeAppPlan (Solver.Env env) pkg ((Outline.AppOutline appData) as outline) =
 
 
 
--- MAKE PACKAGE PLAN
+-- ====== MAKE PACKAGE PLAN ======
 
 
 makePkgPlan : Pkg.Name -> Outline.PkgOutline -> Task Exit.Uninstall (Changes C.Constraint)

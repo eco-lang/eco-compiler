@@ -31,7 +31,7 @@ import Utils.Main as Utils
 
 
 
--- RESULT
+-- ====== RESULT ======
 
 
 {-| Result type for local environment operations that can fail with canonicalization errors.
@@ -71,7 +71,7 @@ add module_ env =
 
 
 
--- ADD VARS
+-- ====== ADD VARS ======
 
 
 addVars : Src.Module -> Env.Env -> LResult i w Env.Env
@@ -132,7 +132,7 @@ toEffectDups effects =
 
 
 
--- ADD TYPES
+-- ====== ADD TYPES ======
 
 
 addTypes : Src.Module -> Env.Env -> LResult i w Env.Env
@@ -177,7 +177,7 @@ addUnion home types ((A.At _ (Src.Union ( _, A.At _ name ) _ _)) as union) =
 
 
 
--- ADD TYPE ALIASES
+-- ====== ADD TYPE ALIASES ======
 
 
 addAliases : SyntaxVersion -> List (A.Located Src.Alias) -> Env.Env -> LResult i w Env.Env
@@ -252,7 +252,7 @@ addAlias syntaxVersion ({ home, vars, types, ctors, binops, q_vars, q_types, q_c
 
 
 
--- DETECT TYPE ALIAS CYCLES
+-- ====== DETECT TYPE ALIAS CYCLES ======
 
 
 toNode : A.Located Src.Alias -> ( A.Located Src.Alias, Name.Name, List Name.Name )
@@ -296,7 +296,7 @@ getEdges (A.At _ tipe) edges =
 
 
 
--- CHECK FREE VARIABLES
+-- ====== CHECK FREE VARIABLES ======
 
 
 checkUnionFreeVars : A.Located Src.Union -> LResult i w Int
@@ -404,7 +404,7 @@ addFreeVars (A.At region tipe) freeVars =
 
 
 
--- ADD CTORS
+-- ====== ADD CTORS ======
 
 
 addCtors : Src.Module -> Env.Env -> LResult i w ( Env.Env, Unions, Aliases )
@@ -442,7 +442,7 @@ type alias CtorDups =
 
 
 
--- CANONICALIZE ALIAS
+-- ====== CANONICALIZE ALIAS ======
 
 
 canonicalizeAlias : SyntaxVersion -> Env.Env -> A.Located Src.Alias -> LResult i w ( ( Name.Name, Can.Alias ), CtorDups )
@@ -491,7 +491,7 @@ toRecordCtor home name vars fields =
 
 
 
--- CANONICALIZE UNION
+-- ====== CANONICALIZE UNION ======
 
 
 canonicalizeUnion : SyntaxVersion -> Env.Env -> A.Located Src.Union -> LResult i w ( ( Name.Name, Can.Union ), CtorDups )

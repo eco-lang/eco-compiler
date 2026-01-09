@@ -27,7 +27,7 @@ import Compiler.Reporting.Error.Syntax as E
 
 
 
--- TERM
+-- ====== TERM ======
 
 
 {-| Parse a single pattern term without considering operators like cons (::) or aliases.
@@ -116,7 +116,7 @@ termHelp syntaxVersion start =
 
 
 
--- WILDCARD
+-- ====== WILDCARD ======
 
 
 wildcard : SyntaxVersion -> P.Parser E.Pattern Name.Name
@@ -175,7 +175,7 @@ wildcard syntaxVersion =
 
 
 
--- RECORDS
+-- ====== RECORDS ======
 
 
 record : A.Position -> P.Parser E.Pattern Src.Pattern
@@ -224,7 +224,7 @@ recordHelp start vars =
 
 
 
--- TUPLES
+-- ====== TUPLES ======
 
 
 tuple : SyntaxVersion -> A.Position -> P.Parser E.Pattern Src.Pattern
@@ -275,7 +275,7 @@ tupleHelp syntaxVersion start firstPattern revPatterns =
 
 
 
--- LIST
+-- ====== LIST ======
 
 
 list : SyntaxVersion -> A.Position -> P.Parser E.Pattern Src.Pattern
@@ -318,7 +318,7 @@ listHelp syntaxVersion start patterns =
 
 
 
--- EXPRESSION
+-- ====== EXPRESSION ======
 
 
 {-| Parse a complete pattern expression including cons (::) operators and aliases.
@@ -407,7 +407,7 @@ cons ( ( preComments, postComments ), hd ) tl =
 
 
 
--- EXPRESSION PART
+-- ====== EXPRESSION PART ======
 
 
 exprPart : SyntaxVersion -> Space.Parser E.Pattern (Src.C1 Src.Pattern)

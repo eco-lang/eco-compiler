@@ -54,7 +54,7 @@ import System.TypeCheck.IO as IO
 
 
 
--- NAME
+-- ====== NAME ======
 
 
 {-| JavaScript identifier name as a string.
@@ -64,7 +64,7 @@ type alias Name =
 
 
 
--- CONSTRUCTORS
+-- ====== CONSTRUCTORS ======
 
 
 {-| Convert a zero-based index to a compact JavaScript name using ASCII encoding.
@@ -146,7 +146,7 @@ homeToBuilder (IO.Canonical ( author, project ) home) =
 
 
 
--- TEMPORARY NAMES
+-- ====== TEMPORARY NAMES ======
 
 
 {-| Generate a function wrapper name (F2, F3, F4, etc.) for curried function application.
@@ -192,7 +192,7 @@ usd =
 
 
 
--- RESERVED NAMES
+-- ====== RESERVED NAMES ======
 
 
 reservedNames : EverySet String String
@@ -296,7 +296,7 @@ elmReservedWords =
 
 
 
--- INT TO ASCII
+-- ====== INT TO ASCII ======
 
 
 intToAscii : Int -> Name.Name
@@ -338,7 +338,7 @@ intToAsciiHelp width blockSize badFields n =
 
 
 
--- UNSAFE INT TO ASCII
+-- ====== UNSAFE INT TO ASCII ======
 
 
 unsafeIntToAscii : Int -> List Char -> Int -> Name.Name
@@ -360,7 +360,7 @@ unsafeIntToAscii width bytes n =
 
 
 
--- ASCII BYTES
+-- ====== ASCII BYTES ======
 
 
 numStartBytes : Int
@@ -401,7 +401,7 @@ toByte n =
 
 
 
--- BAD FIELDS
+-- ====== BAD FIELDS ======
 
 
 type BadFields

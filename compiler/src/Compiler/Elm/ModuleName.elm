@@ -83,7 +83,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- RAW
+-- ====== RAW ======
 
 
 {-| A raw module name represented as a dotted identifier string.
@@ -127,7 +127,7 @@ toHyphenPath name =
 
 
 
--- JSON
+-- ====== JSON ======
 
 
 {-| Encode a raw module name as a JSON string.
@@ -145,7 +145,7 @@ decoder =
 
 
 
--- PARSER
+-- ====== PARSER ======
 
 
 parser : P.Parser ( Int, Int ) Raw
@@ -213,7 +213,7 @@ chompInner src pos end col =
 
 
 
--- INSTANCES
+-- ====== INSTANCES ======
 
 
 {-| Compare two canonical module names, first by module name then by package name.
@@ -240,7 +240,7 @@ toComparableCanonical (Canonical ( author, project ) name) =
 
 
 
--- CORE
+-- ====== CORE ======
 
 
 {-| Canonical name for the Basics module from elm/core.
@@ -335,7 +335,7 @@ debug =
 
 
 
--- HTML
+-- ====== HTML ======
 
 
 {-| Canonical name for the VirtualDom module from elm/virtual-dom.
@@ -346,7 +346,7 @@ virtualDom =
 
 
 
--- JSON
+-- ====== JSON ======
 
 
 {-| Canonical name for the Json.Decode module from elm/json.
@@ -364,7 +364,7 @@ jsonEncode =
 
 
 
--- BYTES
+-- ====== BYTES ======
 
 
 {-| Canonical name for the Bytes module from elm/bytes.
@@ -375,7 +375,7 @@ bytes =
 
 
 
--- WEBGL
+-- ====== WEBGL ======
 
 
 {-| Canonical name for the WebGL module from elm-explorations/webgl.
@@ -421,7 +421,7 @@ matrix4 =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encode a canonical module name to binary format, including package name and module name.

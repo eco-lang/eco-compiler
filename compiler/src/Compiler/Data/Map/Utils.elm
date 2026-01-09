@@ -14,7 +14,7 @@ import Utils.Main as Utils
 
 
 
--- FROM KEYS
+-- ====== FROM KEYS ======
 
 
 {-| Creates a dictionary from a list of keys by applying a function to each key to generate its value.
@@ -32,7 +32,7 @@ fromKeysA toComparable toValue keys =
 
 
 
--- ANY
+-- ====== ANY ======
 
 
 {-| Checks if any value in the dictionary satisfies the given predicate.

@@ -25,7 +25,7 @@ import Numeric.Integer as NI
 
 
 
--- FROM CHUNKS
+-- ====== FROM CHUNKS ======
 
 
 {-| Represents a portion of a string literal: a slice of the original source,

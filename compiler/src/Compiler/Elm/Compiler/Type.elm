@@ -52,7 +52,7 @@ import Utils.Crash exposing (crash)
 
 
 
--- TYPES
+-- ====== TYPES ======
 
 
 {-| Simplified type representation for documentation and debug metadata.
@@ -86,7 +86,7 @@ type Union
 
 
 
--- TO DOC
+-- ====== TO DOC ======
 
 
 {-| Converts a type to a pretty-printed document representation for display.
@@ -142,7 +142,7 @@ collectLambdas tipe =
 
 
 
--- JSON for TYPE
+-- ====== JSON for TYPE ======
 
 
 {-| Encodes a type as a JSON string containing its pretty-printed representation.
@@ -203,7 +203,7 @@ fromRawType (A.At _ astType) =
 
 
 
--- JSON for PROGRAM
+-- ====== JSON for PROGRAM ======
 
 
 {-| Encodes debug metadata as JSON with the message type, type aliases, and custom types.
@@ -243,8 +243,8 @@ toVariantObject ( name, args ) =
 
 
 
--- JSON ENCODERS and DECODERS
--- ENCODERS and DECODERS
+-- ====== JSON ENCODERS and DECODERS ======
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encodes a type to binary format for efficient serialization.

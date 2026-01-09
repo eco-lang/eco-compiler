@@ -155,10 +155,11 @@ fromString str =
     ...
 ```
 
-For internal (unexposed) functions, use `--` comments when needed:
+For internal (unexposed) functions, use `{-| -}` comments, but only when really needed:
 
 ```elm
--- Normalize the ID by trimming whitespace and lowercasing.
+{-| Normalize the ID by trimming whitespace and lowercasing.
+-}
 normalizeId : String -> String
 normalizeId str =
     str |> String.trim |> String.toLower
@@ -185,6 +186,8 @@ type Expr_
     | VarTopLevel IO.Canonical Name
     | ...
 ```
+
+Avoid using `--` comments at the top-level, except for section separators.
 
 ### Field Comments
 
@@ -249,32 +252,6 @@ type alias Expr =
 type Type
     = TVar Name
     | TLambda Type Type
-```
-
-Or simpler for TEA modules:
-
-```elm
--- MODEL
-
-
-type alias Model =
-    ...
-
-
--- UPDATE
-
-
-update : Msg -> Model -> ( Model, Cmd Msg )
-update =
-    ...
-
-
--- VIEW
-
-
-view : Model -> Html Msg
-view =
-    ...
 ```
 
 ### Internal Implementation Notes

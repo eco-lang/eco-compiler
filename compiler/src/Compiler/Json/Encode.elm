@@ -56,8 +56,8 @@ import Task exposing (Task)
 
 
 
--- CORE HELPERS
--- VALUES
+-- ====== CORE HELPERS ======
+-- ====== VALUES ======
 
 
 {-| Custom JSON value representation for the compiler's encoding needs.
@@ -139,7 +139,7 @@ list encodeEntry entries =
 
 
 
--- CHARS
+-- ====== CHARS ======
 
 
 {-| Create a JSON string value from characters, escaping special characters.
@@ -174,7 +174,7 @@ escape chrs =
 
 
 
--- WRITE TO FILE
+-- ====== WRITE TO FILE ======
 
 
 {-| Write a JSON value to a file with pretty-printing and a trailing newline.
@@ -199,7 +199,7 @@ fileWriteBuilder =
 
 
 
--- ENCODE UGLY
+-- ====== ENCODE UGLY ======
 
 
 {-| Convert a JSON value to a compact string without extra whitespace.
@@ -242,7 +242,7 @@ encodeEntryUgly ( key, entry ) =
 
 
 
--- ENCODE
+-- ====== ENCODE ======
 
 
 encode : Value -> String
@@ -283,7 +283,7 @@ encodeHelp indent value =
 
 
 
--- ENCODE ARRAY
+-- ====== ENCODE ARRAY ======
 
 
 encodeArray : String -> Value -> List Value -> String
@@ -305,7 +305,7 @@ encodeArray indent first rest =
 
 
 
--- ENCODE OBJECT
+-- ====== ENCODE OBJECT ======
 
 
 encodeObject : String -> ( String, Value ) -> List ( String, Value ) -> String
@@ -332,7 +332,7 @@ encodeField indent ( key, value ) =
 
 
 
--- JSON VALUE
+-- ====== JSON VALUE ======
 
 
 {-| Convert the compiler's custom Value type to the standard Json.Encode.Value type.

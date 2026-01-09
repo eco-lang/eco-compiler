@@ -25,7 +25,7 @@ import Utils.Main as Utils
 
 
 
--- UNIFY
+-- ====== UNIFY ======
 
 
 {-| Result of attempting to unify two type variables.
@@ -84,7 +84,7 @@ errorDescriptor =
 
 
 
--- CPS UNIFIER
+-- ====== CPS UNIFIER ======
 
 
 type Unify a
@@ -153,7 +153,7 @@ mismatch =
 
 
 
--- UNIFICATION HELPERS
+-- ====== UNIFICATION HELPERS ======
 
 
 type Context
@@ -181,7 +181,7 @@ reorient (Context props) =
 
 
 
--- MERGE
+-- ====== MERGE ======
 -- merge : Context -> UF.Content -> Unify ( UF.Point UF.Descriptor, UF.Point UF.Descriptor )
 
 
@@ -214,7 +214,7 @@ fresh (Context props) content =
 
 
 
--- ACTUALLY UNIFY THINGS
+-- ====== ACTUALLY UNIFY THINGS ======
 
 
 guardedUnify : IO.Variable -> IO.Variable -> Unify ()
@@ -303,7 +303,7 @@ actuallyUnify ((Context props) as ctx) =
 
 
 
--- UNIFY FLEXIBLE VARIABLES
+-- ====== UNIFY FLEXIBLE VARIABLES ======
 
 
 unifyFlex : Context -> IO.Content -> IO.Content -> Unify ()
@@ -338,7 +338,7 @@ unifyFlex context content otherContent =
 
 
 
--- UNIFY RIGID VARIABLES
+-- ====== UNIFY RIGID VARIABLES ======
 
 
 unifyRigid : Context -> Maybe IO.SuperType -> IO.Content -> IO.Content -> Unify ()
@@ -376,7 +376,7 @@ unifyRigid context maybeSuper content otherContent =
 
 
 
--- UNIFY SUPER VARIABLES
+-- ====== UNIFY SUPER VARIABLES ======
 
 
 unifyFlexSuper : Context -> IO.SuperType -> IO.Content -> IO.Content -> Unify ()
@@ -582,7 +582,7 @@ unifyComparableRecursive var =
 
 
 
--- UNIFY ALIASES
+-- ====== UNIFY ALIASES ======
 
 
 unifyAlias : Context -> IO.Canonical -> Name.Name -> List ( Name.Name, IO.Variable ) -> IO.Variable -> IO.Content -> Unify ()
@@ -673,7 +673,7 @@ unifyAliasArgs vars args1 args2 =
 
 
 
--- UNIFY STRUCTURES
+-- ====== UNIFY STRUCTURES ======
 
 
 unifyStructure : Context -> IO.FlatType -> IO.Content -> IO.Content -> Unify ()
@@ -778,7 +778,7 @@ unifyStructure ((Context props) as ctx) flatType content otherContent =
 
 
 
--- UNIFY ARGS
+-- ====== UNIFY ARGS ======
 
 
 unifyArgs : List IO.Variable -> List IO.Variable -> List IO.Variable -> IO (Result UnifyErr (UnifyOk ()))
@@ -819,7 +819,7 @@ unifyArgs vars args1 args2 =
 
 
 
--- UNIFY RECORDS
+-- ====== UNIFY RECORDS ======
 
 
 unifyRecord : Context -> RecordStructure -> RecordStructure -> Unify ()
@@ -932,7 +932,7 @@ unifyField _ ( actual, expected ) =
 
 
 
--- GATHER RECORD STRUCTURE
+-- ====== GATHER RECORD STRUCTURE ======
 
 
 type RecordStructure

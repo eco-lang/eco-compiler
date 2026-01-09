@@ -704,7 +704,7 @@ unlines xs =
 
 
 
--- GHC.IO
+-- ====== GHC.IO ======
 
 
 {-| A file path represented as a string.
@@ -1408,7 +1408,7 @@ replGetInputLineWithInitial prompt ( left, right ) =
 
 
 
--- NODE
+-- ====== NODE ======
 
 
 {-| Get the directory name of the current module (Node.js \_\_dirname equivalent).
@@ -1432,7 +1432,7 @@ nodeMathRandom =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Decoder for MVar references from binary data.

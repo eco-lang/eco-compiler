@@ -46,7 +46,7 @@ import Data.Map as Dict exposing (Dict)
 
 
 
--- RESULT
+-- ====== RESULT ======
 
 
 {-| A Result monad that threads compiler info and warnings through computations.
@@ -87,7 +87,7 @@ run (RResult k) =
 
 
 
--- LOOP
+-- ====== LOOP ======
 
 
 {-| Represents a step in a loop computation.
@@ -129,7 +129,7 @@ loopHelp callback i w state =
 
 
 
--- HELPERS
+-- ====== HELPERS ======
 
 
 {-| Create a successful RResult with a value.
@@ -169,7 +169,7 @@ throw e =
 
 
 
--- FANCY INSTANCE STUFF
+-- ====== FANCY INSTANCE STUFF ======
 
 
 {-| Transform the value inside a successful RResult.

@@ -430,7 +430,7 @@ dullyellow =
 
 
 
--- STYLE
+-- ====== STYLE ======
 
 
 {-| Represents the styling attributes applied to text in a document.

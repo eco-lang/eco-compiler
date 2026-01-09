@@ -21,7 +21,7 @@ import Data.Map as Dict
 
 
 
--- HAS DEBUG USES
+-- ====== HAS DEBUG USES ======
 
 
 {-| Check whether the optimized code contains any references to Debug functions.

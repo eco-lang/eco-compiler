@@ -55,7 +55,7 @@ import System.TypeCheck.IO exposing (Canonical)
 
 
 
--- RESULT
+-- ====== RESULT ======
 
 
 {-| Result type for environment operations that may produce canonicalization errors.
@@ -65,7 +65,7 @@ type alias EResult i w a =
 
 
 
--- ENVIRONMENT
+-- ====== ENVIRONMENT ======
 
 
 {-| The canonicalization environment tracks all names available in the current scope.
@@ -98,7 +98,7 @@ type alias Qualified a =
 
 
 
--- INFO
+-- ====== INFO ======
 
 
 {-| Information about a name: either specific to one module or ambiguous across multiple.
@@ -137,7 +137,7 @@ mergeInfo info1 info2 =
 
 
 
--- VARIABLES
+-- ====== VARIABLES ======
 
 
 {-| Represents a variable in scope: either local, top-level, or imported from another module.
@@ -151,7 +151,7 @@ type Var
 
 
 
--- TYPES
+-- ====== TYPES ======
 
 
 {-| Represents a type definition: either a type alias or a union (custom) type.
@@ -163,7 +163,7 @@ type Type
 
 
 
--- CTORS
+-- ====== CTORS ======
 
 
 {-| Represents a constructor: either a record constructor or a union type variant.
@@ -175,7 +175,7 @@ type Ctor
 
 
 
--- BINOPS
+-- ====== BINOPS ======
 
 
 {-| Complete information about a binary operator including its precedence,
@@ -198,7 +198,7 @@ type Binop
 
 
 
--- VARIABLE -- ADD LOCALS
+-- ====== ADD LOCALS ======
 
 
 {-| Add local variable bindings to the environment, checking for shadowing.
@@ -243,7 +243,7 @@ addLocalBoth name region var =
 
 
 
--- FIND TYPE
+-- ====== FIND TYPE ======
 
 
 {-| Look up an unqualified type name in the environment.
@@ -284,7 +284,7 @@ findTypeQual region { types, q_types } prefix name =
 
 
 
--- FIND CTOR
+-- ====== FIND CTOR ======
 
 
 {-| Look up an unqualified constructor name in the environment.
@@ -325,7 +325,7 @@ findCtorQual region { ctors, q_ctors } prefix name =
 
 
 
--- FIND BINOP
+-- ====== FIND BINOP ======
 
 
 {-| Look up a binary operator by its symbol in the environment.
@@ -345,7 +345,7 @@ findBinop region { binops } name =
 
 
 
--- TO POSSIBLE NAMES
+-- ====== TO POSSIBLE NAMES ======
 
 
 toPossibleNames : Exposed a -> Qualified a -> Error.PossibleNames

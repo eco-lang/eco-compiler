@@ -25,7 +25,7 @@ import Utils.Crash as Crash
 
 
 
--- SHADER
+-- ====== SHADER ======
 
 
 {-| Parses a GLSL shader block enclosed in [glsl|...|].
@@ -49,7 +49,7 @@ shader ((A.Position row col) as start) =
 
 
 
--- BLOCK
+-- ====== BLOCK ======
 
 
 parseBlock : Parser E.Expr String
@@ -134,7 +134,7 @@ eatShader src pos end row col =
 
 
 
--- GLSL
+-- ====== GLSL ======
 
 
 parseGlsl : Row -> Col -> String -> Parser E.Expr Shader.Types
@@ -192,7 +192,7 @@ failure row col msg =
 
 
 
--- INPUTS
+-- ====== INPUTS ======
 
 
 emptyTypes : Shader.Types

@@ -33,7 +33,7 @@ import Utils.Task.Extra as Task
 
 
 
--- RUN
+-- ====== RUN ======
 
 
 {-| Install a package into the project's dependencies and update elm.json.
@@ -73,7 +73,7 @@ run pkg =
 
 
 
--- ATTEMPT CHANGES
+-- ====== ATTEMPT CHANGES ======
 
 
 type Changes vsn
@@ -121,7 +121,7 @@ attemptChangesHelp root env oldOutline newOutline =
 
 
 
--- MAKE APP PLAN
+-- ====== MAKE APP PLAN ======
 
 
 makeAppPlan : Solver.Env -> Pkg.Name -> Outline.AppOutline -> Task Exit.Install (Changes V.Version)
@@ -212,7 +212,7 @@ makeAppPlan (Solver.Env env) pkg ((Outline.AppOutline appData) as outline) =
 
 
 
--- MAKE PACKAGE PLAN
+-- ====== MAKE PACKAGE PLAN ======
 
 
 makePkgPlan : Solver.Env -> Pkg.Name -> Outline.PkgOutline -> Task Exit.Install (Changes C.Constraint)
@@ -317,7 +317,7 @@ addNews pkg new old =
 
 
 
--- CHANGES
+-- ====== CHANGES ======
 
 
 type Change a

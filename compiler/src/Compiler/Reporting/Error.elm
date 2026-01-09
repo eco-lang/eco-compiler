@@ -188,7 +188,7 @@ toSeparator beforeModule afterModule =
 
 
 
--- MODULE TO DOC
+-- ====== MODULE TO DOC ======
 
 
 moduleToDoc : String -> Module -> D.Doc

@@ -55,7 +55,7 @@ import Utils.Main as Utils
 
 
 
--- PATTERN
+-- ====== PATTERN ======
 
 
 {-| Simplified pattern representation used by the exhaustiveness checker.
@@ -89,7 +89,7 @@ type Literal
 
 
 
--- CREATE SIMPLIFIED PATTERNS
+-- ====== CREATE SIMPLIFIED PATTERNS ======
 
 
 simplify : Can.Pattern -> Pattern
@@ -159,7 +159,7 @@ nil =
 
 
 
--- BUILT-IN UNIONS
+-- ====== BUILT-IN UNIONS ======
 
 
 unit : Can.Union
@@ -255,7 +255,7 @@ nilName =
 
 
 
--- ERROR
+-- ====== ERROR ======
 
 
 {-| Pattern matching error detected during exhaustiveness checking.
@@ -285,7 +285,7 @@ type Context
 
 
 
--- CHECK
+-- ====== CHECK ======
 
 
 {-| Check a canonical module for pattern matching errors.
@@ -309,7 +309,7 @@ check (Can.Module canData) =
 
 
 
--- CHECK DECLS
+-- ====== CHECK DECLS ======
 
 
 checkDecls : Can.Decls -> List Error -> (List Error -> List Error) -> List Error
@@ -326,7 +326,7 @@ checkDecls decls errors cont =
 
 
 
--- CHECK DEFS
+-- ====== CHECK DEFS ======
 
 
 checkDef : Can.Def -> List Error -> List Error
@@ -350,7 +350,7 @@ checkTypedArg ( (A.At region _) as pattern, _ ) errors =
 
 
 
--- CHECK EXPRESSIONS
+-- ====== CHECK EXPRESSIONS ======
 
 
 checkExpr : Can.Expr -> List Error -> List Error
@@ -446,7 +446,7 @@ checkExpr (A.At region exprInfo) errors =
 
 
 
--- CHECK FIELD
+-- ====== CHECK FIELD ======
 
 
 checkField : Can.FieldUpdate -> List Error -> List Error
@@ -455,7 +455,7 @@ checkField (Can.FieldUpdate _ expr) errors =
 
 
 
--- CHECK IF BRANCH
+-- ====== CHECK IF BRANCH ======
 
 
 checkIfBranch : ( Can.Expr, Can.Expr ) -> List Error -> List Error
@@ -464,7 +464,7 @@ checkIfBranch ( condition, branch ) errs =
 
 
 
--- CHECK CASE EXPRESSION
+-- ====== CHECK CASE EXPRESSION ======
 
 
 checkCases : A.Region -> List Can.CaseBranch -> List Error -> List Error
@@ -484,7 +484,7 @@ checkCaseBranch (Can.CaseBranch pattern expr) ( patterns, errors ) =
 
 
 
--- CHECK PATTERNS
+-- ====== CHECK PATTERNS ======
 
 
 checkPatterns : A.Region -> Context -> List Can.Pattern -> List Error -> List Error
@@ -503,13 +503,12 @@ checkPatterns region context patterns errors =
 
 
 
--- EXHAUSTIVE PATTERNS
--- INVARIANTS:
---
---   The initial rows "matrix" are all of length 1
---   The initial count of items per row "n" is also 1
---   The resulting rows are examples of missing patterns
---
+-- ====== EXHAUSTIVE PATTERNS ======
+{- INVARIANTS:
+   The initial rows "matrix" are all of length 1.
+   The initial count of items per row "n" is also 1.
+   The resulting rows are examples of missing patterns.
+-}
 
 
 isExhaustive : List (List Pattern) -> Int -> List (List Pattern)
@@ -578,7 +577,7 @@ recoverCtor union name arity patterns =
 
 
 
--- REDUNDANT PATTERNS
+-- ====== REDUNDANT PATTERNS ======
 
 
 {-| INVARIANT: Produces a list of rows where (forall row. length row == 1)
@@ -664,10 +663,9 @@ isUseful matrix vector =
                                 patterns
 
 
-
--- INVARIANT: (length row == N) ==> (length result == arity + N - 1)
-
-
+{-| Specializes a pattern row for a constructor match.
+INVARIANT: (length row == N) ==> (length result == arity + N - 1).
+-}
 specializeRowByCtor : Name.Name -> Int -> List Pattern -> Maybe (List Pattern)
 specializeRowByCtor ctorName arity row =
     case row of
@@ -688,10 +686,9 @@ specializeRowByCtor ctorName arity row =
             crash "Compiler error! Empty matrices should not get specialized."
 
 
-
--- INVARIANT: (length row == N) ==> (length result == N-1)
-
-
+{-| Specializes a pattern row for a literal match.
+INVARIANT: (length row == N) ==> (length result == N-1).
+-}
 specializeRowByLiteral : Literal -> List Pattern -> Maybe (List Pattern)
 specializeRowByLiteral literal row =
     case row of
@@ -712,10 +709,9 @@ specializeRowByLiteral literal row =
             crash "Compiler error! Empty matrices should not get specialized."
 
 
-
--- INVARIANT: (length row == N) ==> (length result == N-1)
-
-
+{-| Specializes a pattern row for a wildcard match.
+INVARIANT: (length row == N) ==> (length result == N-1).
+-}
 specializeRowByAnything : List Pattern -> Maybe (List Pattern)
 specializeRowByAnything row =
     case row of
@@ -733,7 +729,7 @@ specializeRowByAnything row =
 
 
 
--- ALL CONSTRUCTORS ARE PRESENT?
+-- ====== ALL CONSTRUCTORS PRESENT ======
 
 
 type Complete
@@ -768,7 +764,7 @@ isComplete matrix =
 
 
 
--- COLLECT CTORS
+-- ====== COLLECT CTORS ======
 
 
 collectCtors : List (List Pattern) -> Dict String Name.Name Can.Union
@@ -787,7 +783,7 @@ collectCtorsHelp ctors row =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encode a pattern matching error to bytes for caching or serialization.

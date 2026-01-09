@@ -130,7 +130,7 @@ letPort name port_ makeConstraint =
 
 
 
--- EFFECT MANAGER HELPERS
+-- ====== EFFECT MANAGER HELPERS ======
 
 
 letCmd : IO.Canonical -> Name -> Constraint -> IO Constraint

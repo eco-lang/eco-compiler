@@ -42,6 +42,7 @@ void GCStats::recordAllocation(size_t bytes) {
     bytes_allocated += bytes;
 }
 
+// Records completion of a minor GC cycle with timing and reclaimed bytes.
 void GCStats::recordMinorGCEnd(uint64_t elapsed_ns, size_t freed) {
     minor_gc_count++;
     total_minor_gc_time_ns += elapsed_ns;
@@ -56,6 +57,7 @@ void GCStats::recordMinorGCEnd(uint64_t elapsed_ns, size_t freed) {
     minor_time_histogram[bucket]++;
 }
 
+// Records completion of a major GC cycle with timing.
 void GCStats::recordMajorGCEnd(uint64_t elapsed_ns) {
     major_gc_count++;
     total_major_gc_time_ns += elapsed_ns;
@@ -69,6 +71,7 @@ void GCStats::recordMajorGCEnd(uint64_t elapsed_ns) {
     major_time_histogram[bucket]++;
 }
 
+// Maps a minor GC duration to its histogram bucket index.
 size_t GCStats::getMinorHistogramBucket(uint64_t ns) const {
     if (ns >= MINOR_HISTOGRAM_SECOND_RANGE) {
         return HISTOGRAM_BUCKETS - 1;  // Overflow bucket >1ms.
@@ -82,8 +85,10 @@ size_t GCStats::getMinorHistogramBucket(uint64_t ns) const {
     return ns / MINOR_BUCKET_SIZE_SMALL;
 }
 
+// Maps a major GC duration to its histogram bucket index.
+// Major GC uses millisecond scale buckets (5ms small, 50ms large).
 size_t GCStats::getMajorHistogramBucket(uint64_t ns) const {
-    // Major GC uses millisecond scale buckets
+    // Bucket configuration:
     // - 20 buckets of 5ms each (0-100ms)
     // - 18 buckets of 50ms each (100ms-1000ms)
     // - 1 overflow bucket (>1000ms)
@@ -104,6 +109,7 @@ size_t GCStats::getMajorHistogramBucket(uint64_t ns) const {
     return ns / MAJOR_BUCKET_SMALL;
 }
 
+// Merges statistics from another GCStats instance.
 void GCStats::combine(const GCStats& other) {
     // Combine allocation stats.
     objects_allocated += other.objects_allocated;
@@ -155,6 +161,7 @@ void GCStats::combine(const GCStats& other) {
     }
 }
 
+// Prints a formatted summary to stdout with histograms.
 void GCStats::print() const {
     std::cout << "\n=== GC Statistics ===" << std::endl;
     std::cout << std::endl;
@@ -344,6 +351,7 @@ void GCStats::print() const {
     std::cout << std::endl;
 }
 
+// Resets all statistics to zero.
 void GCStats::reset() {
     // Reset allocation stats.
     objects_allocated = 0;

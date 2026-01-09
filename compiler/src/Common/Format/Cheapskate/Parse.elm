@@ -90,7 +90,7 @@ import Utils.Crash exposing (crash)
 
 
 
--- PARSE
+-- ====== PARSE ======
 
 
 {-| Parse a Markdown document with the given rendering options.
@@ -985,7 +985,7 @@ leaf lastLineIsText =
 
 
 
--- Scanners
+-- ====== SCANNERS ======
 
 
 scanReference : Scanner
@@ -1097,11 +1097,8 @@ parseCodeFence =
             )
 
 
-
--- Parse the start of an HTML block:  either an HTML tag or an
--- HTML comment, with no indentation.
-
-
+{-| Parse the start of an HTML block: either an HTML tag or an HTML comment, with no indentation.
+-}
 parseHtmlBlockStart : Parser ()
 parseHtmlBlockStart =
     let

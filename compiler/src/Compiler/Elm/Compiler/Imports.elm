@@ -21,7 +21,7 @@ import System.TypeCheck.IO as IO
 
 
 
--- DEFAULTS
+-- ====== DEFAULTS ======
 
 
 {-| Returns the list of default imports automatically available in every Elm module.
@@ -49,7 +49,7 @@ import_ (IO.Canonical _ name) maybeAlias exposing_ =
 
 
 
--- EXPOSING
+-- ====== EXPOSING ======
 
 
 closed : Src.Exposing

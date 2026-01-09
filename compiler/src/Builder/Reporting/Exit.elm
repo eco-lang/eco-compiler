@@ -150,7 +150,7 @@ import Utils.Main as Utils exposing (FilePath)
 
 
 
--- RENDERERS
+-- ====== RENDERERS ======
 
 
 {-| Writes a report to stderr with formatted output.
@@ -168,7 +168,7 @@ toJson report =
 
 
 
--- INIT
+-- ====== INIT ======
 
 
 {-| Error conditions that can occur during project initialization.
@@ -234,7 +234,7 @@ initToReport exit =
 
 
 
--- DIFF
+-- ====== DIFF ======
 
 
 {-| Error conditions that can occur when computing package diffs.
@@ -353,7 +353,7 @@ diffToReport diff =
 
 
 
--- BUMP
+-- ====== BUMP ======
 
 
 {-| Error conditions that can occur when bumping package versions.
@@ -507,7 +507,7 @@ bumpToReport bump =
 
 
 
--- OVERVIEW OF VERSIONING
+-- ====== OVERVIEW OF VERSIONING ======
 
 
 {-| Documentation string explaining package versioning for new packages.
@@ -533,7 +533,7 @@ newPackageOverview =
 
 
 
--- PUBLISH
+-- ====== PUBLISH ======
 
 
 {-| Error conditions that can occur when publishing packages.
@@ -1078,7 +1078,7 @@ badZipReport =
 
 
 
--- DOCS
+-- ====== DOCS ======
 
 
 {-| Error conditions that can occur when loading package documentation.
@@ -1138,7 +1138,7 @@ toDocsProblemReport problem context =
 
 
 
--- INSTALL
+-- ====== INSTALL ======
 
 
 {-| Error conditions that can occur when installing packages.
@@ -1378,7 +1378,7 @@ installToReport exit =
 
 
 
--- UNINSTALL
+-- ====== UNINSTALL ======
 
 
 {-| Error conditions that can occur when uninstalling packages.
@@ -1464,7 +1464,7 @@ uninstallToReport exit =
 
 
 
--- SOLVER
+-- ====== SOLVER ======
 
 
 {-| Error conditions that can occur during dependency resolution.
@@ -1519,7 +1519,7 @@ toSolverReport problem =
 
 
 
--- OUTLINE
+-- ====== OUTLINE ======
 
 
 {-| Error conditions that can occur when parsing elm.json files.
@@ -2047,7 +2047,7 @@ toOutlineProblemReport path source _ region problem =
 
 
 
--- DETAILS
+-- ====== DETAILS ======
 
 
 {-| Error conditions that can occur during dependency resolution and validation.
@@ -2263,7 +2263,7 @@ toBadDepRank badDep =
 
 
 
--- PACKAGE PROBLEM
+-- ====== PACKAGE PROBLEM ======
 
 
 {-| Error conditions that can occur when downloading packages.
@@ -2332,7 +2332,7 @@ toPackageProblemReport pkg vsn problem =
 
 
 
--- REGISTRY PROBLEM
+-- ====== REGISTRY PROBLEM ======
 
 
 {-| Error conditions that can occur when accessing the package registry.
@@ -2480,7 +2480,7 @@ toRedirectDoc response =
 
 
 
--- MAKE
+-- ====== MAKE ======
 
 
 {-| Error conditions that can occur during the make/build process.
@@ -2738,7 +2738,7 @@ makeToReport make =
 
 
 
--- BUILD PROBLEM
+-- ====== BUILD PROBLEM ======
 
 
 {-| Represents compilation failures, either from bad modules or project-level issues.
@@ -2971,7 +2971,7 @@ toModuleNameConventionTable srcDir names =
 
 
 
--- GENERATE
+-- ====== GENERATE ======
 
 
 {-| Error conditions that can occur during code generation.
@@ -3021,7 +3021,7 @@ toGenerateReport problem =
 
 
 
--- CORRUPT CACHE
+-- ====== CORRUPT CACHE ======
 
 
 corruptCacheReport : Help.Report
@@ -3037,7 +3037,7 @@ corruptCacheReport =
 
 
 
--- REPL
+-- ====== REPL ======
 
 
 {-| Error conditions that can occur during REPL evaluation.
@@ -3080,7 +3080,7 @@ replToReport problem =
 
 
 
--- TEST
+-- ====== TEST ======
 
 
 {-| Error conditions that can occur when running tests.
@@ -3226,7 +3226,7 @@ testToReport test =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encodes a dependency error to bytes for serialization.

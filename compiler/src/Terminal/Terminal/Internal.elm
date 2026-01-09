@@ -43,7 +43,7 @@ import Text.PrettyPrint.ANSI.Leijen exposing (Doc)
 
 
 
--- COMMAND
+-- ====== COMMAND ======
 
 
 {-| Configuration data for a terminal command.
@@ -95,7 +95,7 @@ type Summary
 
 
 
--- FLAGS
+-- ====== FLAGS ======
 
 
 {-| A collection of command-line flags.
@@ -121,7 +121,7 @@ type Flag
 
 
 
--- PARSERS
+-- ====== PARSERS ======
 
 
 {-| A parser for command-line argument values.
@@ -142,7 +142,7 @@ type Parser
 
 
 
--- ARGS
+-- ====== ARGS ======
 
 
 {-| A specification for command arguments.
@@ -177,7 +177,7 @@ type RequiredArgs
 
 
 
--- ERROR
+-- ====== ERROR ======
 
 
 {-| Top-level error type for command parsing.

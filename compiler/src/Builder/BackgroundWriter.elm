@@ -31,7 +31,7 @@ import Utils.Main as Utils
 
 
 
--- BACKGROUND WRITER
+-- ====== BACKGROUND WRITER ======
 
 
 {-| Represents a scope in which background writes can occur.

@@ -40,7 +40,7 @@ import Compiler.Reporting.Error.Syntax as E
 
 
 
--- SPACE PARSING
+-- ====== SPACE PARSING ======
 
 
 {-| A parser that returns a value along with its ending position.
@@ -51,7 +51,7 @@ type alias Parser x a =
 
 
 
--- CHOMP
+-- ====== CHOMP ======
 
 
 {-| Consumes whitespace and comments, returning any comments found.
@@ -82,7 +82,7 @@ chomp toError =
 
 
 
--- CHECKS -- to be called right after a `chomp`
+-- ====== CHECKS ======
 
 
 {-| Checks that the current column is properly indented relative to the context.
@@ -128,7 +128,7 @@ checkFreshLine toError =
 
 
 
--- CHOMP AND CHECK
+-- ====== CHOMP AND CHECK ======
 
 
 {-| Consumes whitespace and comments, then checks indentation in one operation.
@@ -339,7 +339,7 @@ eatMultiCommentHelp src pos end row col openComments =
 
 
 
--- DOCUMENTATION COMMENT
+-- ====== DOCUMENTATION COMMENT ======
 
 
 {-| Parses a documentation comment (the kind that starts with open-brace, dash, pipe).

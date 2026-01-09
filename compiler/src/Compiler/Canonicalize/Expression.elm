@@ -55,7 +55,7 @@ import Utils.Main as Utils
 
 
 
--- RESULTS
+-- ====== RESULTS ======
 
 
 {-| Result type for expression canonicalization that tracks free variable usage.
@@ -111,7 +111,7 @@ makeExpr region state node =
 
 
 
--- CANONICALIZE
+-- ====== CANONICALIZE ======
 
 
 {-| Transform a source expression with ID state threading.
@@ -513,7 +513,7 @@ traverseUpdateEntriesWithIds syntaxVersion env state entries acc =
 
 
 
--- CANONICALIZE IF BRANCH
+-- ====== CANONICALIZE IF BRANCH ======
 
 
 {-| Canonicalize an if branch (condition and body) while threading IdState.
@@ -552,7 +552,7 @@ traverseIfBranchesWithIds syntaxVersion env state branches =
 
 
 
--- CANONICALIZE CASE BRANCH
+-- ====== CANONICALIZE CASE BRANCH ======
 
 
 {-| Canonicalize a case branch while threading IdState through pattern and expression.
@@ -603,7 +603,7 @@ traverseCaseBranchesWithIds syntaxVersion env state branches =
 
 
 
--- CANONICALIZE BINOPS
+-- ====== CANONICALIZE BINOPS ======
 
 
 {-| Canonicalize binary operators with proper precedence and associativity,
@@ -1291,7 +1291,7 @@ delayUse (Uses { direct, delayed }) =
 
 
 
--- MANAGING BINDINGS
+-- ====== MANAGING BINDINGS ======
 
 
 addUnusedWarning : W.Context -> Name.Name -> A.Region -> List W.Warning -> List W.Warning
@@ -1380,7 +1380,7 @@ verifyBindingsWithIds context andThenings (ReportingResult.RResult k) =
 
 
 
--- FIND VARIABLE
+-- ====== FIND VARIABLE ======
 
 
 findVar : A.Region -> Env.Env -> Name -> EResult FreeLocals w Can.Expr_
@@ -1447,7 +1447,7 @@ toPossibleNames exposed qualified =
 
 
 
--- FIND CTOR
+-- ====== FIND CTOR ======
 
 
 toVarCtor : Name -> Env.Ctor -> Can.Expr_

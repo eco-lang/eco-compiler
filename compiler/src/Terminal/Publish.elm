@@ -46,7 +46,7 @@ import Utils.Task.Extra as Task
 
 
 
--- RUN
+-- ====== RUN ======
 
 
 {-| TODO mandate no "exposing (..)" in packages to make
@@ -58,7 +58,7 @@ run () () =
 
 
 
--- ENV
+-- ====== ENV ======
 
 
 type alias EnvData =
@@ -115,7 +115,7 @@ readOutline ( setup, registry ) =
 
 
 
--- PUBLISH
+-- ====== PUBLISH ======
 
 
 type alias PublishInfo =
@@ -213,7 +213,7 @@ doRegister manager publishData zipHash =
 
 
 
--- VERIFY SUMMARY
+-- ====== VERIFY SUMMARY ======
 
 
 badSummary : String -> Bool
@@ -232,7 +232,7 @@ noExposed exposed =
 
 
 
--- VERIFY README
+-- ====== VERIFY README ======
 
 
 verifyReadme : String -> Task Exit.Publish ()
@@ -268,7 +268,7 @@ validateReadmeSize size =
 
 
 
--- VERIFY LICENSE
+-- ====== VERIFY LICENSE ======
 
 
 verifyLicense : String -> Task Exit.Publish ()
@@ -292,7 +292,7 @@ verifyLicense root =
 
 
 
--- VERIFY BUILD
+-- ====== VERIFY BUILD ======
 
 
 verifyBuild : String -> Task Exit.Publish Docs.Documentation
@@ -333,7 +333,7 @@ buildDocsFromExposed root details exposed =
 
 
 
--- GET GIT
+-- ====== GET GIT ======
 
 
 type Git
@@ -382,7 +382,7 @@ runGitCommand git args =
 
 
 
--- VERIFY GITHUB TAG
+-- ====== VERIFY GITHUB TAG ======
 
 
 verifyTag : Git -> Http.Manager -> Pkg.Name -> V.Version -> Task Exit.Publish String
@@ -435,7 +435,7 @@ commitHashDecoder =
 
 
 
--- VERIFY NO LOCAL CHANGES SINCE TAG
+-- ====== VERIFY NO LOCAL CHANGES SINCE TAG ======
 
 
 verifyNoChanges : Git -> String -> V.Version -> Task Exit.Publish ()
@@ -458,7 +458,7 @@ checkNoLocalChanges vsn exitCode =
 
 
 
--- VERIFY THAT ZIP BUILDS / COMPUTE HASH
+-- ====== VERIFY ZIP ======
 
 
 verifyZip : Env -> Pkg.Name -> V.Version -> Task Exit.Publish Http.Sha
@@ -554,7 +554,7 @@ buildZipFromExposed root details exposed =
 
 
 
--- VERIFY VERSION
+-- ====== VERIFY VERSION ======
 
 
 type GoodVersion
@@ -614,7 +614,7 @@ verifyBump (Env envData) pkg vsn newDocs ((Registry.KnownVersions latest _) as k
 
 
 
--- REGISTER PACKAGES
+-- ====== REGISTER PACKAGES ======
 
 
 register : Http.Manager -> Pkg.Name -> V.Version -> Docs.Documentation -> String -> Http.Sha -> Task Exit.Publish ()
@@ -640,7 +640,7 @@ uploadPackageFiles manager docs sha url =
 
 
 
--- REPORTING
+-- ====== REPORTING ======
 
 
 reportPublishStart : Pkg.Name -> V.Version -> Maybe Registry.KnownVersions -> Task x ()
@@ -655,7 +655,7 @@ reportPublishStart pkg vsn maybeKnownVersions =
 
 
 
--- REPORTING PHASES
+-- ====== REPORTING PHASES ======
 
 
 reportReadmeCheck : Task Never (Result x a) -> Task x a
@@ -804,7 +804,7 @@ makeResultDoc waiting success failure result =
 
 
 
--- MARKS
+-- ====== MARKS ======
 
 
 goodMark : D.Doc

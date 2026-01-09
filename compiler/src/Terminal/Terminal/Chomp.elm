@@ -47,7 +47,7 @@ import Utils.Task.Extra as Task
 
 
 
--- CHOMP INTERFACE
+-- ====== CHOMP INTERFACE ======
 
 
 {-| Main entry point for parsing command-line arguments and flags.
@@ -92,7 +92,7 @@ toSuggest maybeIndex =
 
 
 
--- CHOMPER
+-- ====== CHOMPER ======
 
 
 {-| A parser that consumes and validates command-line argument chunks.
@@ -145,7 +145,7 @@ makeSuggestion suggest maybeUpdate =
 
 
 
--- ARGS
+-- ====== ARGS ======
 
 
 chompArgs : Suggest -> List Chunk -> List (Suggest -> List Chunk -> ( Suggest, Result ArgError a )) -> ( Task Never (List String), Result Error a )
@@ -194,7 +194,7 @@ addSuggest everything suggest =
 
 
 
--- COMPLETE ARGS
+-- ====== COMPLETE ARGS ======
 
 
 {-| Parse arguments and ensure no extra arguments remain.
@@ -249,7 +249,7 @@ chompMultipleHelp parser parserFn revArgs suggest chunks func =
 
 
 
--- REQUIRED ARGS
+-- ====== REQUIRED ARGS ======
 
 
 {-| Create a chomper for a single required argument.
@@ -294,7 +294,7 @@ suggestArg (Parser { suggest }) numChunks targetIndex =
 
 
 
--- PARSER
+-- ====== PARSER ======
 
 
 tryToParse : Suggest -> Parser -> (String -> Maybe a) -> Int -> String -> ( Suggest, Result Expectation a )
@@ -323,7 +323,7 @@ tryToParse suggest (Parser parser) parserFn index string =
 
 
 
--- FLAG
+-- ====== FLAG ======
 
 
 {-| Create a chomper for a boolean on/off flag.
@@ -388,7 +388,7 @@ chompNormalFlag flagName ((Parser { singular, examples }) as parser) parserFn =
 
 
 
--- FIND FLAG
+-- ====== FIND FLAG ======
 
 
 type FoundFlag
@@ -442,7 +442,7 @@ findFlagHelp revPrev loneFlag flagPrefix chunks =
 
 
 
--- CHECK FOR UNKNOWN FLAGS
+-- ====== CHECK FOR UNKNOWN FLAGS ======
 
 
 {-| Verify that all remaining flags are recognized.
@@ -505,7 +505,7 @@ getFlagName flag =
 
 
 
--- CHOMPER INSTANCES
+-- ====== CHOMPER INSTANCES ======
 
 
 {-| Transform the value produced by a chomper.

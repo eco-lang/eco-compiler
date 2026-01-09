@@ -17,7 +17,7 @@ import Levenshtein
 
 
 
--- SORT
+-- ====== SORT ======
 
 
 {-| Sort a list of candidates by their Levenshtein distance from the target string.
@@ -36,7 +36,7 @@ sort target toString =
 
 
 
--- RANK
+-- ====== RANK ======
 
 
 {-| Rank candidates by their Levenshtein distance from the target string.

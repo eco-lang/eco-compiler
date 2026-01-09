@@ -51,7 +51,7 @@ import Utils.Main as Utils
 
 
 
--- EXTRACTION
+-- ====== EXTRACTION ======
 
 
 {-| Converts a canonical type to a simplified documentation type.
@@ -108,7 +108,7 @@ toPublicName (IO.Canonical _ home) name =
 
 
 
--- TRANSITIVELY AVAILABLE TYPES
+-- ====== TRANSITIVELY AVAILABLE TYPES ======
 
 
 {-| Collection of all types (unions and aliases) available from a set of modules.
@@ -169,7 +169,7 @@ fromDependencyInterface home di =
 
 
 
--- EXTRACT MODEL, MSG, AND ANY TRANSITIVE DEPENDENCIES
+-- ====== EXTRACT MODEL AND MSG ======
 
 
 {-| Extracts debug metadata from a message type, including all transitively referenced types.
@@ -255,7 +255,7 @@ extractCtor (Can.Ctor c) =
 
 
 
--- DEPS
+-- ====== DEPS ======
 
 
 type Deps
@@ -268,7 +268,7 @@ noDeps =
 
 
 
--- EXTRACTOR
+-- ====== EXTRACTOR ======
 
 
 type Extractor a
@@ -348,7 +348,7 @@ tupleTraverse f ( a, b ) =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encodes a type collection to binary format.

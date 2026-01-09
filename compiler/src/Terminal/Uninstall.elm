@@ -40,7 +40,7 @@ import Utils.Task.Extra as Task
 
 
 
--- RUN
+-- ====== RUN ======
 
 
 {-| Arguments for the uninstall command.
@@ -121,7 +121,7 @@ uninstallWithOutline root pkg autoYes env oldOutline =
 
 
 
--- ATTEMPT CHANGES
+-- ====== ATTEMPT CHANGES ======
 
 
 type Changes vsn
@@ -198,7 +198,7 @@ handleUninstallResult root oldOutline result =
 
 
 
--- MAKE APP PLAN
+-- ====== MAKE APP PLAN ======
 
 
 makeAppPlan : Solver.Env -> Pkg.Name -> Outline.AppOutline -> Task Exit.Uninstall (Changes V.Version)
@@ -229,7 +229,7 @@ handleAppSolverResult pkg result =
 
 
 
--- MAKE PACKAGE PLAN
+-- ====== MAKE PACKAGE PLAN ======
 
 
 makePkgPlan : Pkg.Name -> Outline.PkgOutline -> Task Exit.Uninstall (Changes C.Constraint)
@@ -263,7 +263,7 @@ makePkgPlan pkg (Outline.PkgOutline pkgData) =
 
 
 
--- CHANGES
+-- ====== CHANGES ======
 
 
 type Change a
@@ -300,7 +300,7 @@ keepChange _ old new =
 
 
 
--- VIEW CHANGE DOCS
+-- ====== VIEW CHANGE DOCS ======
 
 
 type ChangeDocs
@@ -331,7 +331,7 @@ viewNonZero title entries =
 
 
 
--- VIEW CHANGE
+-- ====== VIEW CHANGE ======
 
 
 addChange : (a -> String) -> Widths -> Pkg.Name -> Change a -> ChangeDocs -> ChangeDocs
@@ -381,7 +381,7 @@ pad width string =
 
 
 
--- WIDTHS
+-- ====== WIDTHS ======
 
 
 type Widths

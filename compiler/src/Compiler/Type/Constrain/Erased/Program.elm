@@ -46,7 +46,7 @@ import System.TypeCheck.IO as IO exposing (IO)
 
 
 
--- PROGRAM TYPE
+-- ====== PROGRAM TYPE ======
 
 
 {-| A program representing constraint-generation steps.
@@ -77,7 +77,7 @@ type Instr a
 
 
 
--- MONAD OPERATIONS
+-- ====== MONAD OPERATIONS ======
 
 
 {-| Lift a pure value into the program.
@@ -142,7 +142,7 @@ bindInstr f instr =
 
 
 
--- SMART CONSTRUCTORS
+-- ====== SMART CONSTRUCTORS ======
 
 
 {-| Allocate a fresh flexible type variable.
@@ -168,7 +168,7 @@ opIO io =
 
 
 
--- INTERPRETER
+-- ====== INTERPRETER ======
 
 
 {-| Run a constraint program to produce an IO Constraint.

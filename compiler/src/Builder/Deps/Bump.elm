@@ -27,7 +27,7 @@ import Utils.Main as Utils
 
 
 
--- GET POSSIBILITIES
+-- ====== GET POSSIBILITIES ======
 
 
 {-| Generate all valid version bump possibilities from a package's version history.

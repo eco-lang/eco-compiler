@@ -33,7 +33,7 @@ in many scenarios.
 
 -}
 
--- LIST
+-- ====== LIST ======
 
 
 {-| A non-empty list containing a head element and a (possibly empty) tail.
@@ -64,7 +64,7 @@ toList (Nonempty x xs) =
 
 
 
--- INSTANCES
+-- ====== INSTANCES ======
 
 
 {-| Apply a function to every element in a non-empty list.
@@ -82,7 +82,7 @@ foldr step state (Nonempty x xs) =
 
 
 
--- SORT BY
+-- ====== SORT BY ======
 
 
 {-| Sort a non-empty list by a function that produces a comparable value for each element.

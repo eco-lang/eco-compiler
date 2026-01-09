@@ -1,12 +1,13 @@
 module Compiler.AST.TypedOptimized exposing
     ( Expr(..), Global(..), Annotations
-    , Def(..), Destructor(..), Path(..), ContainerHint(..)
+    , Def(..), Destructor(..), Path(..)
     , Decider(..), Choice(..)
     , GlobalGraph(..), LocalGraph(..), LocalGraphData, Node(..), Main(..), EffectsType(..)
     , emptyGlobalGraph, emptyLocalGraph, addGlobalGraph, addLocalGraph
     , compareGlobal, toComparableGlobal, toKernelGlobal
     , typeOf
     , globalGraphEncoder, globalGraphDecoder, localGraphEncoder, localGraphDecoder
+    , ContainerHint(..)
     )
 
 {-| TypedOptimized AST - like Optimized but preserves type information.
@@ -81,7 +82,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- TYPE ALIASES
+-- ====== TYPE ALIASES ======
 
 
 {-| Annotations dictionary - maps definition names to their type schemes
@@ -91,7 +92,7 @@ type alias Annotations =
 
 
 
--- EXPRESSIONS
+-- ====== EXPRESSIONS ======
 -- Every expression variant carries its type as the LAST argument
 
 
@@ -262,7 +263,7 @@ toKernelGlobal shortName =
 
 
 
--- DEFINITIONS
+-- ====== DEFINITIONS ======
 
 
 {-| A local definition, either a simple value or a tail-recursive function.
@@ -305,7 +306,7 @@ type Path
 
 
 
--- BRANCHING
+-- ====== BRANCHING ======
 
 
 {-| A decision tree for pattern matching, optimized from the canonical AST.
@@ -324,7 +325,7 @@ type Choice
 
 
 
--- OBJECT GRAPH
+-- ====== OBJECT GRAPH ======
 
 
 {-| A graph of all top-level definitions across multiple modules.
@@ -390,7 +391,7 @@ type EffectsType
 
 
 
--- GRAPHS
+-- ====== GRAPHS ======
 
 
 {-| Create an empty global graph (alias for `empty`).
@@ -428,7 +429,7 @@ addLocalGraph (LocalGraph data) (GlobalGraph nodes2 fields2 ann2) =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encode a global graph to binary format.

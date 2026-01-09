@@ -77,7 +77,7 @@ import Utils.Main as Utils exposing (FilePath)
 
 
 
--- OUTLINE
+-- ====== OUTLINE ======
 
 
 {-| Represents the top-level structure of an elm.json file.
@@ -147,7 +147,7 @@ type SrcDir
 
 
 
--- DEFAULTS
+-- ====== DEFAULTS ======
 
 
 {-| The default placeholder summary text for new packages.
@@ -158,7 +158,7 @@ defaultSummary =
 
 
 
--- HELPERS
+-- ====== HELPERS ======
 
 
 {-| Flattens an Exposed structure into a simple list of module names.
@@ -175,7 +175,7 @@ flattenExposed exposed =
 
 
 
--- WRITE
+-- ====== WRITE ======
 
 
 {-| Writes an Outline to an elm.json file at the specified root directory.
@@ -186,7 +186,7 @@ write root outline =
 
 
 
--- JSON ENCODE
+-- ====== JSON ENCODE ======
 
 
 encode : Outline -> E.Value
@@ -256,7 +256,7 @@ encodeSrcDir srcDir =
 
 
 
--- PARSE AND VERIFY
+-- ====== PARSE AND VERIFY ======
 
 
 {-| Reads and validates an elm.json file from the specified root directory.
@@ -383,7 +383,7 @@ isDup paths =
 
 
 
--- GET ALL MODULE PATHS
+-- ====== GET ALL MODULE PATHS ======
 
 
 {-| Recursively discovers all module file paths in the project and its dependencies.
@@ -494,7 +494,7 @@ resolvePackagePaths pkgName vsn =
 
 
 
--- JSON DECODE
+-- ====== JSON DECODE ======
 
 
 {-| A decoder type specialized for outline parsing errors.
@@ -556,7 +556,7 @@ pkgDecoder =
 
 
 
--- JSON DECODE HELPERS
+-- ====== JSON DECODE HELPERS ======
 
 
 nameDecoder : Decoder Pkg.Name
@@ -601,7 +601,7 @@ toSrcDir path =
 
 
 
--- EXPOSED MODULES DECODER
+-- ====== EXPOSED MODULES DECODER ======
 
 
 exposedDecoder : Decoder Exposed
@@ -625,7 +625,7 @@ headerKeyDecoder =
 
 
 
--- BOUND PARSER
+-- ====== BOUND PARSER ======
 
 
 boundParser : Int -> x -> P.Parser x String

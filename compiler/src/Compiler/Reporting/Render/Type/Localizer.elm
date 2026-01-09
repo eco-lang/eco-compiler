@@ -49,7 +49,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- LOCALIZER
+-- ====== LOCALIZER ======
 
 
 {-| Tracks import context to determine how to display qualified type names.
@@ -79,7 +79,7 @@ empty =
 
 
 
--- LOCALIZE
+-- ====== LOCALIZE ======
 
 
 {-| Converts a qualified type name to a Doc using the shortest unambiguous form
@@ -116,7 +116,7 @@ toChars (Localizer localizer) ((IO.Canonical _ home) as moduleName) name =
 
 
 
--- FROM NAMES
+-- ====== FROM NAMES ======
 
 
 {-| Creates a localizer from a dictionary of names, treating all as fully exposed.
@@ -128,7 +128,7 @@ fromNames names =
 
 
 
--- FROM MODULE
+-- ====== FROM MODULE ======
 
 
 {-| Creates a localizer from a source module, extracting import information to
@@ -170,7 +170,7 @@ addType exposed types =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encodes a Localizer to bytes for serialization.

@@ -46,7 +46,7 @@ import Utils.Main as Utils
 
 
 
--- OPTIMIZE
+-- ====== OPTIMIZE ======
 
 
 {-| Set of names that participate in a recursive definition cycle.
@@ -300,7 +300,7 @@ optimize cycle (A.At region exprInfo) =
 
 
 
--- UPDATE
+-- ====== UPDATE ======
 
 
 optimizeUpdate : Cycle -> Can.FieldUpdate -> Names.Tracker Opt.Expr
@@ -309,7 +309,7 @@ optimizeUpdate cycle (Can.FieldUpdate _ expr) =
 
 
 
--- DEFINITION
+-- ====== DEFINITION ======
 
 
 optimizeDef : Cycle -> Can.Def -> Opt.Expr -> Names.Tracker Opt.Expr
@@ -347,7 +347,7 @@ optimizeDefHelp cycle region name args expr body =
 
 
 
--- DESTRUCTURING
+-- ====== DESTRUCTURING ======
 
 
 {-| Converts a list of function argument patterns into argument names and destructuring operations.
@@ -555,7 +555,7 @@ destructCtorArg path revDs (Can.PatternCtorArg index _ arg) =
 
 
 
--- TAIL CALL
+-- ====== TAIL CALL ======
 
 
 {-| Optimizes a recursive definition to use tail calls where possible.
@@ -730,7 +730,7 @@ optimizeTail cycle rootName argNames ((A.At region exprInfo) as locExpr) =
 
 
 
--- DETECT TAIL CALLS
+-- ====== DETECT TAIL CALLS ======
 
 
 toTailDef : A.Region -> Name.Name -> List (A.Located Name.Name) -> List Opt.Destructor -> Opt.Expr -> Opt.Def

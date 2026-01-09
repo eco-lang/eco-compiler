@@ -89,7 +89,7 @@ import Utils.Main as Utils exposing (FilePath, MVar(..))
 
 
 
--- ENVIRONMENT
+-- ====== ENVIRONMENT ======
 
 
 type alias EnvData =
@@ -145,7 +145,7 @@ makeEnv key root (Details.Details detailsData) needsTypedOpt =
 
 
 
--- SOURCE DIRECTORY
+-- ====== SOURCE DIRECTORY ======
 
 
 type AbsoluteSrcDir
@@ -172,7 +172,7 @@ addRelative (AbsoluteSrcDir srcDir) path =
 
 
 
--- FORK
+-- ====== FORK ======
 
 
 {-| PERF try using IORef semephore on file crawl phase?
@@ -195,7 +195,7 @@ forkWithKey toComparable keyComparison encoder func dict =
 
 
 
--- FROM EXPOSED
+-- ====== FROM EXPOSED ======
 
 
 {-| Build a project by compiling a specific list of exposed modules (e.g., for package builds).
@@ -308,7 +308,7 @@ writeDetailsAndReturn root details results =
 
 
 
--- FROM PATHS
+-- ====== FROM PATHS ======
 
 
 {-| Data contained within build artifacts.
@@ -474,7 +474,7 @@ toArtifactsFromResults env foreigns ( results, rroots ) =
 
 
 
--- GET ROOT NAMES
+-- ====== GET ROOT NAMES ======
 
 
 {-| Extract the module names of all root modules from the build artifacts.
@@ -495,7 +495,7 @@ getRootName root =
 
 
 
--- CRAWL
+-- ====== CRAWL ======
 
 
 type alias StatusDict =
@@ -694,7 +694,7 @@ isMain (A.At _ (Src.Value v)) =
 
 
 
--- CHECK MODULE
+-- ====== CHECK MODULE ======
 
 
 type alias ResultDict =
@@ -971,7 +971,7 @@ makeImportError env resultDict name path time source imports problems =
 
 
 
--- CHECK DEPS
+-- ====== CHECK DEPS ======
 
 
 type DepsStatus
@@ -1064,7 +1064,7 @@ checkDepsHelp root results deps new same cached importProblems isBlocked lastDep
 
 
 
--- TO IMPORT ERROR
+-- ====== TO IMPORT ERROR ======
 
 
 toImportErrors : Env -> ResultDict -> List Src.Import -> NE.Nonempty ( ModuleName.Raw, Import.Problem ) -> NE.Nonempty Import.Error
@@ -1101,7 +1101,7 @@ toImportErrors (Env envData) results imports problems =
 
 
 
--- LOAD CACHED INTERFACES
+-- ====== LOAD CACHED INTERFACES ======
 
 
 loadInterfaces : FilePath -> List Dep -> List CDep -> Task Never (Maybe (Dict String ModuleName.Raw I.Interface))
@@ -1153,7 +1153,7 @@ loadInterface root ( name, ciMvar ) =
 
 
 
--- CHECK PROJECT
+-- ====== CHECK PROJECT ======
 
 
 checkMidpoint : MVar (Maybe Dependencies) -> Dict String ModuleName.Raw Status -> Task Never (Result Exit.BuildProjectProblem Dependencies)
@@ -1203,7 +1203,7 @@ checkMidpointAndRoots dmvar statuses sroots =
 
 
 
--- CHECK FOR CYCLES
+-- ====== CHECK FOR CYCLES ======
 
 
 checkForCycles : Dict String ModuleName.Raw Status -> Maybe (NE.Nonempty ModuleName.Raw)
@@ -1270,7 +1270,7 @@ addToGraph name status graph =
 
 
 
--- CHECK UNIQUE ROOTS
+-- ====== CHECK UNIQUE ROOTS ======
 
 
 checkUniqueRoots : Dict String ModuleName.Raw Status -> NE.Nonempty RootStatus -> Maybe Exit.BuildProjectProblem
@@ -1339,7 +1339,7 @@ checkInside name p1 status =
 
 
 
--- COMPILE MODULE
+-- ====== COMPILE MODULE ======
 
 
 compile : Env -> DocsNeed -> Details.Local -> String -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never BResult
@@ -1600,7 +1600,7 @@ projectTypeToPkg projectType =
 
 
 
--- WRITE DETAILS
+-- ====== WRITE DETAILS ======
 
 
 writeDetails : FilePath -> Details.Details -> Dict String ModuleName.Raw BResult -> Task Never ()
@@ -1637,7 +1637,7 @@ addNewLocal name result locals =
 
 
 
--- FINALIZE EXPOSED
+-- ====== FINALIZE EXPOSED ======
 
 
 finalizeExposed : FilePath -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Dict String ModuleName.Raw BResult -> Task Never (Result Exit.BuildProblem docs)
@@ -1712,7 +1712,7 @@ addImportProblems results name problems =
 
 
 
--- DOCS
+-- ====== DOCS ======
 
 
 {-| Specifies how to handle documentation during compilation.
@@ -1823,7 +1823,7 @@ toDocs result =
 -------------------------------------------------------------------------------
 ------ NOW FOR SOME REPL STUFF -------------------------------------------------
 --------------------------------------------------------------------------------
--- FROM REPL
+-- ====== FROM REPL ======
 
 
 {-| Data contained within REPL build artifacts.
@@ -1999,7 +1999,7 @@ finalizeReplArtifacts ((Env envData) as env) source ((Src.Module srcData) as mod
 ------ AFTER THIS, EVERYTHING IS ABOUT HANDLING MODULES GIVEN BY FILEPATH ------
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
--- FIND ROOT
+-- ====== FIND ROOT ======
 
 
 type RootLocation
@@ -2040,7 +2040,7 @@ checkRoots infos =
 
 
 
--- ROOT INFO
+-- ====== ROOT INFO ======
 
 
 type RootInfo
@@ -2143,10 +2143,9 @@ isGoodName name =
             Char.isUpper char && List.all (\c -> Char.isAlphaNum c || c == '_') chars
 
 
-
--- INVARIANT: Dir.canonicalizePath has been run on both inputs
-
-
+{-| Drops the common prefix from two canonicalized paths.
+INVARIANT: Dir.canonicalizePath has been run on both inputs.
+-}
 dropPrefix : List FilePath -> List FilePath -> Maybe (List FilePath)
 dropPrefix roots paths =
     case roots of
@@ -2167,7 +2166,7 @@ dropPrefix roots paths =
 
 
 
--- CRAWL ROOTS
+-- ====== CRAWL ROOTS ======
 
 
 type RootStatus
@@ -2229,7 +2228,7 @@ crawlRoot ((Env envData) as env) mvar root =
 
 
 
--- CHECK ROOTS
+-- ====== CHECK ROOTS ======
 
 
 type RootResult
@@ -2318,7 +2317,7 @@ compileOutside (Env envData) (Details.Local localData) source ifaces modul =
 
 
 
--- TO ARTIFACTS
+-- ====== TO ARTIFACTS ======
 
 
 {-| Represents a root module, either from within the project or from a dependency.
@@ -2439,7 +2438,7 @@ addOutside root modules =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 dictRawMVarBResultEncoder : Dict String ModuleName.Raw (MVar BResult) -> Bytes.Encode.Encoder

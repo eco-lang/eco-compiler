@@ -33,7 +33,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- BINOP STUFF
+-- ====== BINOP STUFF ======
 
 
 {-| Operator precedence level, with higher numbers binding more tightly.
@@ -54,8 +54,8 @@ type Associativity
 
 
 
--- JSON ENCODERS and DECODERS
--- ENCODERS and DECODERS
+-- ====== JSON ENCODERS and DECODERS ======
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encode precedence to binary format.

@@ -57,7 +57,7 @@ import Utils.Main as Utils
 
 
 
--- PATHS
+-- ====== PATHS ======
 
 
 stuff : String -> String
@@ -113,7 +113,7 @@ compilerVersion =
 
 
 
--- ELMI and ELMO
+-- ====== ELMI and ELMO ======
 
 
 {-| Returns the path to a module's .guidai (interface) file.
@@ -143,7 +143,7 @@ toArtifactPath root name ext =
 
 
 
--- ROOT
+-- ====== ROOT ======
 
 
 {-| Searches for the project root by looking for elm.json in the current directory and parent directories.
@@ -176,7 +176,7 @@ findRootHelp dirs =
 
 
 
--- LOCKS
+-- ====== LOCKS ======
 
 
 {-| Executes a task while holding an exclusive lock on the project root's guida-stuff directory.
@@ -203,7 +203,7 @@ withRegistryLock (PackageCache dir) work =
 
 
 
--- PACKAGE CACHES
+-- ====== PACKAGE CACHES ======
 
 
 {-| Represents the package cache directory location.
@@ -241,7 +241,7 @@ typedPackageArtifacts cache name version =
 
 
 
--- CACHE
+-- ====== CACHE ======
 
 
 {-| Returns the REPL cache directory, creating it if necessary.
@@ -283,7 +283,7 @@ getElmHome =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encodes a package cache location to bytes.

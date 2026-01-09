@@ -66,7 +66,7 @@ import Utils.Crash exposing (crash)
 
 
 
--- PARSER
+-- ====== PARSER ======
 
 
 {-| The core parser type that transforms a State into a parse result.
@@ -137,7 +137,7 @@ type alias Col =
 
 
 
--- FUNCTOR
+-- ====== FUNCTOR ======
 
 
 {-| Transform the result of a parser by applying a function to the success value.
@@ -166,7 +166,7 @@ map f (Parser parser) =
 
 
 
--- ONE OF
+-- ====== ONE OF ======
 
 
 {-| Try a list of parsers in order, succeeding with the first one that succeeds.
@@ -204,7 +204,7 @@ oneOfHelp state toError parsers =
 
 
 
--- ONE OF WITH FALLBACK
+-- ====== ONE OF WITH FALLBACK ======
 
 
 {-| Try a list of parsers, returning a fallback value if all fail without consuming input.
@@ -234,7 +234,7 @@ oowfHelp state parsers fallback =
 
 
 
--- MONAD
+-- ====== MONAD ======
 
 
 {-| Create a parser that always succeeds with the given value without consuming input.
@@ -287,7 +287,7 @@ andThen callback (Parser parserA) =
 
 
 
--- FROM BYTESTRING
+-- ====== FROM BYTESTRING ======
 
 
 {-| Run a parser on a complete source string.
@@ -333,7 +333,7 @@ toErr row col toError =
 
 
 
--- FROM SNIPPET
+-- ====== FROM SNIPPET ======
 
 
 {-| A snippet represents a slice of a source file with position information.
@@ -388,7 +388,7 @@ fromSnippet (Parser parser) toBadEnd (Snippet { fptr, offset, length, offRow, of
 
 
 
--- POSITION
+-- ====== POSITION ======
 
 
 {-| Get the current parser position without consuming any input.
@@ -444,7 +444,7 @@ addEnd start value =
 
 
 
--- INDENT
+-- ====== INDENT ======
 
 
 {-| Run a parser with the indentation level set to the current column.
@@ -495,7 +495,7 @@ withBacksetIndent backset (Parser parser) =
 
 
 
--- CONTEXT
+-- ====== CONTEXT ======
 
 
 {-| Parse with contextual error information added to failures.
@@ -573,7 +573,7 @@ specialize addContext (Parser parser) =
 
 
 
--- SYMBOLS
+-- ====== SYMBOLS ======
 
 
 {-| Parse a single specific character.
@@ -629,7 +629,7 @@ word2 w1 w2 toError =
 
 
 
--- LOW-LEVEL CHECKS
+-- ====== LOW-LEVEL CHECKS ======
 
 
 {-| Get a character at a specific index in a string without bounds checking.
@@ -675,7 +675,7 @@ getCharWidth word =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encode a Snippet to bytes for serialization.
@@ -721,7 +721,7 @@ snippetDecoder =
 
 
 
--- LOOP
+-- ====== LOOP ======
 
 
 {-| Control flow type for the `loop` combinator.

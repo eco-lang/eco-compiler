@@ -52,7 +52,7 @@ import Utils.Main as Utils exposing (FilePath)
 
 
 
--- TIME
+-- ====== TIME ======
 
 
 {-| Represents a file modification time.
@@ -76,7 +76,7 @@ zeroTime =
 
 
 
--- BINARY
+-- ====== BINARY ======
 
 
 {-| Writes binary data to a file, creating parent directories if needed.
@@ -129,7 +129,7 @@ readBinary decoder path =
 
 
 
--- WRITE UTF-8
+-- ====== WRITE UTF-8 ======
 
 
 {-| Writes a UTF-8 encoded string to a file.
@@ -140,7 +140,7 @@ writeUtf8 =
 
 
 
--- READ UTF-8
+-- ====== READ UTF-8 ======
 
 
 {-| Reads a UTF-8 encoded file as a string.
@@ -158,7 +158,7 @@ readStdin =
 
 
 
--- WRITE PACKAGE
+-- ====== WRITE PACKAGE ======
 
 
 {-| Extracts a package archive to a destination directory, filtering for relevant files.
@@ -202,7 +202,7 @@ writeEntry destination root entry =
 
 
 
--- EXISTS
+-- ====== EXISTS ======
 
 
 {-| Checks if a file exists at the given path.
@@ -213,7 +213,7 @@ exists path =
 
 
 
--- REMOVE FILES
+-- ====== REMOVE FILES ======
 
 
 {-| Removes a file if it exists, silently succeeding if it doesn't.
@@ -232,7 +232,7 @@ remove path =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encodes a file modification time to bytes.

@@ -70,7 +70,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- EXPRESSIONS
+-- ====== EXPRESSIONS ======
 
 
 {-| Optimized expression representation after optimization passes.
@@ -137,7 +137,7 @@ toComparableGlobal (Global home name) =
 
 
 
--- DEFINITIONS
+-- ====== DEFINITIONS ======
 
 
 {-| A local definition binding a name to an expression.
@@ -164,7 +164,7 @@ type Path
 
 
 
--- BRANCHING
+-- ====== BRANCHING ======
 
 
 {-| Decision tree for compiled pattern matches.
@@ -183,7 +183,7 @@ type Choice
 
 
 
--- OBJECT GRAPH
+-- ====== OBJECT GRAPH ======
 
 
 {-| Graph of all global definitions in a package for dependency analysis.
@@ -235,7 +235,7 @@ type EffectsType
 
 
 
--- GRAPHS
+-- ====== GRAPHS ======
 
 
 {-| Create an empty global graph.
@@ -317,7 +317,7 @@ toKernelGlobal shortName =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encode a global graph to bytes for serialization.

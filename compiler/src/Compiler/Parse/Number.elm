@@ -35,7 +35,7 @@ import Compiler.Reporting.Error.Syntax as E
 
 
 
--- HELPERS
+-- ====== HELPERS ======
 
 
 isDirtyEnd : String -> Int -> Int -> Char -> Bool
@@ -49,7 +49,7 @@ isDecimalDigit word =
 
 
 
--- NUMBERS
+-- ====== NUMBERS ======
 
 
 {-| Represents a parsed numeric literal with its value and source text.
@@ -149,7 +149,7 @@ number syntaxVersion toExpectation toError =
 
 
 
--- CHOMP OUTCOME
+-- ====== CHOMP OUTCOME ======
 
 
 {-| Represents the result of parsing a number: error, integer, or float.
@@ -161,7 +161,7 @@ type Outcome
 
 
 
--- CHOMP INT
+-- ====== CHOMP INT ======
 
 
 chompInt : SyntaxVersion -> String -> Int -> Int -> Int -> Outcome
@@ -195,7 +195,7 @@ chompInt syntaxVersion src pos end n =
 
 
 
--- CHOMP UNDERSCORE
+-- ====== CHOMP UNDERSCORE ======
 
 
 chompUnderscore_ : SyntaxVersion -> String -> Int -> Int -> Int -> Outcome
@@ -265,7 +265,7 @@ chompUnderscoreHelp syntaxVersion src pos end n =
 
 
 
--- CHOMP FRACTION
+-- ====== CHOMP FRACTION ======
 
 
 chompFraction : SyntaxVersion -> String -> Int -> Int -> Int -> Outcome
@@ -338,7 +338,7 @@ chompFractionHelp syntaxVersion src pos end =
 
 
 
--- CHOMP EXPONENT
+-- ====== CHOMP EXPONENT ======
 
 
 chompExponent : SyntaxVersion -> String -> Int -> Int -> Outcome
@@ -400,7 +400,7 @@ chompExponentHelp syntaxVersion src pos end =
 
 
 
--- CHOMP ZERO
+-- ====== CHOMP ZERO ======
 
 
 chompZero : SyntaxVersion -> String -> Int -> Int -> Outcome
@@ -480,7 +480,7 @@ chompBinInt src pos end =
 
 
 
--- CHOMP HEX
+-- ====== CHOMP HEX ======
 
 
 {-| Parses hexadecimal digits and returns the position and parsed integer value.
@@ -563,7 +563,7 @@ stepHex syntaxVersion src pos end word acc =
 
 
 
--- CHOMP BIN
+-- ====== CHOMP BIN ======
 
 
 chompBin : String -> Int -> Int -> ( Int, Int )
@@ -635,7 +635,7 @@ stepBin src pos end word acc =
 
 
 
--- PRECEDENCE
+-- ====== PRECEDENCE ======
 
 
 {-| Parses a single-digit precedence value (0-9) for infix operator declarations.
@@ -663,7 +663,7 @@ precedence toExpectation =
 
 
 
--- CHAR AT POSITION
+-- ====== CHAR AT POSITION ======
 
 
 charAtPos : Int -> String -> Char

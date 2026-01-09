@@ -31,7 +31,7 @@ import Compiler.Reporting.Error.Syntax as E
 
 
 
--- TYPE TERMS
+-- ====== TYPE TERMS ======
 
 
 term : P.Parser E.Type Src.Type
@@ -156,7 +156,7 @@ term =
 
 
 
--- TYPE EXPRESSIONS
+-- ====== TYPE EXPRESSIONS ======
 
 
 {-| Parse a type expression including function types, type applications, and type terms.
@@ -224,7 +224,7 @@ expression trailingComments =
 
 
 
--- TYPE CONSTRUCTORS
+-- ====== TYPE CONSTRUCTORS ======
 
 
 app : A.Position -> Space.Parser E.Type (Src.C1 Src.Type)
@@ -287,7 +287,7 @@ chompArgs preComments args end =
 
 
 
--- TUPLES
+-- ====== TUPLES ======
 
 
 chompTupleEnd : A.Position -> Src.C2Eol Src.Type -> List (Src.C2Eol Src.Type) -> P.Parser E.TTuple Src.Type
@@ -330,7 +330,7 @@ chompTupleEnd start ( firstTimeComments, firstType ) revTypes =
 
 
 
--- RECORD
+-- ====== RECORD ======
 
 
 type alias Field =
@@ -385,7 +385,7 @@ chompField =
 
 
 
--- VARIANT
+-- ====== VARIANT ======
 
 
 {-| Parse a custom type variant declaration.

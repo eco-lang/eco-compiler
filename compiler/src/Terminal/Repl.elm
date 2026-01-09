@@ -78,7 +78,7 @@ import Utils.Task.Extra as Task
 
 
 
--- RUN
+-- ====== RUN ======
 
 
 {-| Configuration flags for the REPL session.
@@ -121,7 +121,7 @@ runReplLoop settings env =
 
 
 
--- WELCOME
+-- ====== WELCOME ======
 
 
 printWelcomeMessage : Task Never ()
@@ -153,7 +153,7 @@ printWelcomeMessage =
 
 
 
--- ENV
+-- ====== ENV ======
 
 
 type Env
@@ -173,7 +173,7 @@ addInterpreter maybeAlternateInterpreter noColors root =
 
 
 
--- LOOP
+-- ====== LOOP ======
 
 
 type Outcome
@@ -209,7 +209,7 @@ handleOutcome env outcome =
 
 
 
--- READ
+-- ====== READ ======
 
 
 {-| Represents a categorized line of user input in the REPL.
@@ -284,11 +284,10 @@ processContinuedLine previousLines input =
 
 
 
--- For compatibility with 0.19.0 such that readers of "Programming Elm" by @jfairbank
--- can get through the REPL section successfully.
---
--- TODO: remove stripLegacyBackslash in next MAJOR release
---
+{- For compatibility with 0.19.0 such that readers of "Programming Elm" by @jfairbank
+   can get through the REPL section successfully.
+   TODO: Remove stripLegacyBackslash in next MAJOR release.
+-}
 
 
 stripLegacyBackslash : String -> String
@@ -327,7 +326,7 @@ renderPrefill lineStart =
 
 
 
--- LINES
+-- ====== LINES ======
 
 
 {-| Accumulates multiple lines of user input.
@@ -376,7 +375,7 @@ getFirstLine (Lines x xs) =
 
 
 
--- CATEGORIZE INPUT
+-- ====== CATEGORIZE INPUT ======
 
 
 {-| Result of analyzing user input to determine if it's complete.
@@ -606,7 +605,7 @@ annotation =
 
 
 
--- EVAL
+-- ====== EVAL ======
 
 
 eval : Env -> IO.ReplState -> Input -> Task Never Outcome
@@ -659,7 +658,7 @@ eval env ((IO.ReplState imports types decls) as state) input =
 
 
 
--- ATTEMPT EVAL
+-- ====== ATTEMPT EVAL ======
 
 
 {-| Describes what kind of output should be generated after evaluation.
@@ -757,7 +756,7 @@ writeAndWaitForProcess stdin handle javascript =
 
 
 
--- TO BYTESTRING
+-- ====== TO BYTESTRING ======
 
 
 toByteString : IO.ReplState -> Output -> String
@@ -790,7 +789,7 @@ outputToBuilder output =
 
 
 
--- TO PRINT NAME
+-- ====== TO PRINT NAME ======
 
 
 toPrintName : Output -> Maybe N.Name
@@ -807,7 +806,7 @@ toPrintName output =
 
 
 
--- HELP MESSAGES
+-- ====== HELP MESSAGES ======
 
 
 toHelpMessage : Maybe String -> String
@@ -826,7 +825,7 @@ genericHelpMessage =
 
 
 
--- GET ROOT
+-- ====== GET ROOT ======
 
 
 getRoot : Task Never FilePath
@@ -889,7 +888,7 @@ defaultDeps =
 
 
 
--- GET INTERPRETER
+-- ====== GET INTERPRETER ======
 
 
 getInterpreter : Maybe String -> Task Never FilePath
@@ -942,7 +941,7 @@ exeNotFound name =
 
 
 
--- SETTINGS
+-- ====== SETTINGS ======
 
 
 initSettings : Task Never Utils.ReplSettings

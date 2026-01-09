@@ -35,7 +35,7 @@ import Utils.Main as Utils
 
 
 
--- CONSTRAIN DEF
+-- ====== CONSTRAIN DEF ======
 
 
 {-| Generate constraints for a single definition in a let-expression. Handles
@@ -51,7 +51,7 @@ constrainDef rtv def bodyCon =
 
 
 
--- CONSTRAIN RECURSIVE DEFS
+-- ====== CONSTRAIN RECURSIVE DEFS ======
 
 
 {-| Generate constraints for a group of mutually recursive definitions in a

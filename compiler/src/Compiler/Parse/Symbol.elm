@@ -35,7 +35,7 @@ import Data.Set as EverySet exposing (EverySet)
 
 
 
--- OPERATOR
+-- ====== OPERATOR ======
 
 
 {-| Represents operators that are reserved and cannot be used as custom infix operators.
@@ -121,7 +121,7 @@ binopCharSet =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encodes a BadOperator to bytes for serialization.

@@ -66,10 +66,11 @@ import Utils.Task.Extra as Task
 
 
 
--- NOTE: This is used by Make, Repl, and Reactor right now. But it may be
--- desireable to have Repl and Reactor to keep foreign objects in memory
--- to make things a bit faster?
--- BACKENDS
+-- ====== BACKENDS ======
+{- NOTE: This is used by Make, Repl, and Reactor right now. But it may be
+   desirable to have Repl and Reactor to keep foreign objects in memory
+   to make things a bit faster?
+-}
 
 
 {-| Standard JavaScript code generation backend.
@@ -87,7 +88,7 @@ mlirBackend =
 
 
 
--- GENERATORS
+-- ====== GENERATORS ======
 
 
 {-| Generates debug-mode output with type information for runtime type checking.
@@ -233,7 +234,7 @@ generateReplOutput backend ansi localizer home name annotations objects =
 
 
 
--- CHECK FOR DEBUG
+-- ====== CHECK FOR DEBUG ======
 
 
 checkForDebugUses : Objects -> Task Exit.Generate ()
@@ -247,7 +248,7 @@ checkForDebugUses (Objects _ locals) =
 
 
 
--- GATHER MAINS
+-- ====== GATHER MAINS ======
 
 
 gatherMains : Pkg.Name -> Objects -> NE.Nonempty Build.Root -> Dict (List String) TypeCheck.Canonical Opt.Main
@@ -271,7 +272,7 @@ lookupMain pkg locals root =
 
 
 
--- LOADING OBJECTS
+-- ====== LOADING OBJECTS ======
 
 
 type LoadingObjects
@@ -317,7 +318,7 @@ readAndStoreCachedObject root name mvar =
 
 
 
--- FINALIZE OBJECTS
+-- ====== FINALIZE OBJECTS ======
 
 
 type Objects
@@ -354,7 +355,7 @@ objectsToGlobalGraph (Objects globals locals) =
 
 
 
--- LOAD TYPES
+-- ====== LOAD TYPES ======
 
 
 loadTypes : FilePath -> Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List Build.Module -> Task Exit.Generate Extract.Types
@@ -424,8 +425,7 @@ loadAndStoreInterfaceTypes root name mvar =
 
 
 
--- TYPED GENERATION (FOR MLIR BACKEND)
--- TYPED OBJECTS LOADING
+-- ====== TYPED OBJECTS LOADING ======
 
 
 type TypedLoadingObjects
@@ -484,7 +484,7 @@ storeTypedGraphWithDefault mvar maybeGraph =
 
 
 
--- FINALIZE TYPED OBJECTS
+-- ====== FINALIZE TYPED OBJECTS ======
 
 
 type TypedObjects
@@ -521,8 +521,7 @@ typedObjectsToGlobalGraph (TypedObjects globals locals) =
 
 
 
--- GATHER TYPED MAINS
--- MONOMORPHIZED GENERATION (FOR MLIR MONO BACKEND)
+-- ====== MONOMORPHIZED GENERATION ======
 
 
 {-| Generates monomorphized output for MLIR mono backend after specializing polymorphic functions.

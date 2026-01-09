@@ -30,7 +30,7 @@ structure is useful for representing hierarchical data with guaranteed non-empti
 
 -}
 
--- ONE OR MORE
+-- ====== ONE OR MORE ======
 
 
 {-| A binary tree structure that guarantees at least one element.
@@ -61,8 +61,8 @@ more =
 
 
 
--- MAP
--- DESTRUCT
+-- ====== MAP ======
+-- ====== DESTRUCT ======
 
 
 {-| Flatten the OneOrMore structure by applying a function to the leftmost element
@@ -94,7 +94,7 @@ destructRight oneOrMore xs =
 
 
 
--- GET FIRST TWO
+-- ====== GET FIRST TWO ======
 
 
 {-| Extract the first element from each of two OneOrMore structures, returning them

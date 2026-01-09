@@ -66,7 +66,7 @@ import Utils.Crash exposing (crash)
 
 
 
--- NAME
+-- ====== NAME ======
 
 
 {-| A string-based name used throughout the compiler for identifiers, module names, and type names.
@@ -77,7 +77,7 @@ type alias Name =
 
 
 
--- TO
+-- ====== TO ======
 
 
 {-| Convert a Name to a list of characters.
@@ -95,7 +95,7 @@ toElmString =
 
 
 
--- FROM
+-- ====== FROM ======
 
 
 {-| Extract a Name from a source string using start and end indices (substring extraction).
@@ -106,7 +106,7 @@ fromPtr src start end =
 
 
 
--- HAS DOT
+-- ====== HAS DOT ======
 
 
 {-| Check if a Name contains a dot character (used for qualified names like "List.map").
@@ -124,7 +124,7 @@ splitDots =
 
 
 
--- GET KERNEL
+-- ====== GET KERNEL ======
 
 
 {-| Strip the "Elm.Kernel." prefix from a kernel module name. Crashes if the name is not a kernel module.
@@ -139,7 +139,7 @@ getKernel name =
 
 
 
--- STARTS WITH
+-- ====== STARTS WITH ======
 
 
 {-| Check if a Name starts with "Elm.Kernel." prefix (identifies kernel modules).
@@ -203,7 +203,7 @@ prefixCompappend =
 
 
 
--- FROM VAR INDEX
+-- ====== FROM VAR INDEX ======
 
 
 {-| Generate a variable name from an index (e.g., 0 -> "_v0", 1 -> "_v1").
@@ -219,7 +219,7 @@ writeDigitsAtEnd prefix n =
 
 
 
--- FROM TYPE VARIABLE
+-- ====== FROM TYPE VARIABLE ======
 
 
 {-| Create a type variable name with an index suffix. If index is 0, returns the name unchanged.
@@ -247,7 +247,7 @@ fromTypeVariable name index =
 
 
 
--- FROM TYPE VARIABLE SCHEME
+-- ====== FROM TYPE VARIABLE SCHEME ======
 
 
 {-| Generate a type variable name from a scheme index (0 -> "a", 1 -> "b", ..., 26 -> "a26", etc.).
@@ -286,7 +286,7 @@ fromTypeVariableScheme scheme =
 
 
 
--- FROM MANY NAMES
+-- ====== FROM MANY NAMES ======
 --
 -- Creating a unique name by combining all the subnames can create names
 -- longer than 256 bytes relatively easily. So instead, the first given name
@@ -319,7 +319,7 @@ blank =
 
 
 
--- FROM WORDS
+-- ====== FROM WORDS ======
 
 
 {-| Construct a Name from a list of characters.
@@ -339,7 +339,7 @@ fromWords words =
 --             do
 --                 writeWord8 mba i w
 --                 writeWords mba (i + 1) ws
--- SEP BY
+-- ====== SEP BY ======
 
 
 {-| Join two Names with a separator character between them.
@@ -350,7 +350,7 @@ sepBy sep ba1 ba2 =
 
 
 
--- COMMON NAMES
+-- ====== COMMON NAMES ======
 
 
 {-| The "Int" type name.

@@ -23,7 +23,7 @@ import Compiler.Reporting.Annotation as A
 
 
 
--- ALL POSSIBLE WARNINGS
+-- ====== ALL POSSIBLE WARNINGS ======
 
 
 {-| Represents a compiler warning that indicates potentially problematic code.
@@ -50,4 +50,4 @@ type Context
 
 
 
--- TO REPORT
+-- ====== TO REPORT ======

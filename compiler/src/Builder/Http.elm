@@ -68,7 +68,7 @@ import Utils.Main as Utils exposing (SomeException)
 
 
 
--- MANAGER
+-- ====== MANAGER ======
 
 
 {-| Represents an HTTP client manager for making requests.
@@ -109,7 +109,7 @@ getManager =
 
 
 
--- URL
+-- ====== URL ======
 
 
 {-| Constructs a URL with query parameters from a base URL and parameter list.
@@ -131,7 +131,7 @@ urlEncodeVars params =
 
 
 
--- FETCH
+-- ====== FETCH ======
 
 
 {-| Represents an HTTP header as a name-value pair.
@@ -182,7 +182,7 @@ accept mime =
 
 
 
--- EXCEPTIONS
+-- ====== EXCEPTIONS ======
 
 
 {-| Represents HTTP request errors including URL problems, HTTP errors, and unexpected failures.
@@ -194,7 +194,7 @@ type Error
 
 
 
--- SHA
+-- ====== SHA ======
 
 
 {-| Represents a SHA hash as a string for package integrity verification.
@@ -211,7 +211,7 @@ shaToChars =
 
 
 
--- FETCH ARCHIVE
+-- ====== FETCH ARCHIVE ======
 
 
 {-| Downloads a package archive from a URL, returning the SHA hash and archive contents.
@@ -238,7 +238,7 @@ getArchive _ url _ _ onSuccess =
 
 
 
--- UPLOAD
+-- ====== UPLOAD ======
 
 
 {-| Represents parts of a multipart form upload.
@@ -315,7 +315,7 @@ stringPart name string =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encodes an HTTP error to bytes for serialization.

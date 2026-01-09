@@ -50,7 +50,7 @@ import Utils.Task.Extra as Task
 
 
 
--- RUN
+-- ====== RUN ======
 
 
 {-| Arguments specifying what to compare.
@@ -84,7 +84,7 @@ run args () =
 
 
 
--- ENVIRONMENT
+-- ====== ENVIRONMENT ======
 
 
 type Env
@@ -138,7 +138,7 @@ addRegistry setup =
 
 
 
--- DIFF
+-- ====== DIFF ======
 
 
 diff : Env -> Args -> Task Exit.Diff ()
@@ -217,7 +217,7 @@ fetchGeneratedDocsAndWrite env oldDocs =
 
 
 
--- GET DOCS
+-- ====== GET DOCS ======
 
 
 getDocs : Env -> Pkg.Name -> Registry.KnownVersions -> V.Version -> Task Exit.Diff Docs.Documentation
@@ -235,7 +235,7 @@ getLatestDocs (Env props) name (Registry.KnownVersions latest _) =
 
 
 
--- READ OUTLINE
+-- ====== READ OUTLINE ======
 
 
 readOutline : Env -> Task Exit.Diff ( Pkg.Name, Registry.KnownVersions )
@@ -275,7 +275,7 @@ validateOutline registry outline =
 
 
 
--- GENERATE DOCS
+-- ====== GENERATE DOCS ======
 
 
 generateDocs : Env -> Task Exit.Diff Docs.Documentation
@@ -310,7 +310,7 @@ buildDocsFromExposed root details exposed =
 
 
 
--- WRITE DIFF
+-- ====== WRITE DIFF ======
 
 
 writeDiff : Docs.Documentation -> Docs.Documentation -> Task Exit.Diff ()
@@ -328,7 +328,7 @@ writeDiff oldDocs newDocs =
 
 
 
--- TO DOC
+-- ====== TO DOC ======
 
 
 toDoc : L.Localizer -> PackageChanges -> D.Doc

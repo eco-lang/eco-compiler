@@ -64,7 +64,7 @@ import Utils.Bytes.Encode as BE
 
 
 
--- PACKAGE NAMES
+-- ====== PACKAGE NAMES ======
 
 
 {-| Represents a package name in the form of (Author, Project).
@@ -110,7 +110,7 @@ type alias Project =
 
 
 
--- HELPERS
+-- ====== HELPERS ======
 
 
 {-| Check if a package is a kernel package (authored by "elm" or "elm-explorations").
@@ -142,7 +142,7 @@ toJsonString ( author, project ) =
 
 
 
--- COMMON PACKAGE NAMES
+-- ====== COMMON PACKAGE NAMES ======
 
 
 toName : Author -> Project -> Name
@@ -262,7 +262,7 @@ elmExplorations =
 
 
 
--- PACKAGE SUGGESTIONS
+-- ====== PACKAGE SUGGESTIONS ======
 
 
 {-| A dictionary mapping common module names to the packages that contain them.
@@ -294,7 +294,7 @@ suggestions =
 
 
 
--- NEARBY NAMES
+-- ====== NEARBY NAMES ======
 
 
 {-| Find up to 4 package names from the given list that are most similar to the target name.
@@ -334,7 +334,7 @@ projectDistance given possibility =
 
 
 
--- JSON
+-- ====== JSON ======
 
 
 {-| JSON decoder for package names. Expects a string in "author/project" format.
@@ -365,7 +365,7 @@ keyDecoder toError =
 
 
 
--- PARSER
+-- ====== PARSER ======
 
 
 {-| Parser for package names in "author/project" format.
@@ -456,7 +456,7 @@ chompName isGoodChar src pos end prevWasDash =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Binary encoder for package names. Encodes author and project as consecutive strings.

@@ -31,7 +31,7 @@ import Utils.Main as Utils
 
 
 
--- TO REPORT
+-- ====== TO REPORT ======
 
 
 {-| Convert a JSON parsing or decoding error into a user-friendly error report
@@ -60,7 +60,7 @@ because (ExplicitReason iNeedThings) problem =
 
 
 
--- PARSE ERROR TO REPORT
+-- ====== PARSE ERROR TO REPORT ======
 
 
 parseErrorToReport : String -> Code.Source -> ParseError -> Reason -> Help.Report
@@ -333,7 +333,7 @@ objectNote =
 
 
 
--- PROBLEM TO REPORT
+-- ====== PROBLEM TO REPORT ======
 
 
 {-| Tracks the path through the JSON structure to the error location.

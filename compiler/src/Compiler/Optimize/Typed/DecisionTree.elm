@@ -48,7 +48,7 @@ import Utils.Main as Utils
 
 
 
--- COMPILE CASES
+-- ====== COMPILE CASES ======
 
 
 {-| Users of this module will mainly interact with this function. It takes
@@ -72,7 +72,7 @@ compile rawBranches =
 
 
 
--- DECISION TREES
+-- ====== DECISION TREES ======
 
 
 {-| A decision tree representation for efficient pattern matching.
@@ -134,7 +134,7 @@ type Path
 
 
 
--- ACTUALLY BUILD DECISION TREES
+-- ====== ACTUALLY BUILD DECISION TREES ======
 
 
 type Branch
@@ -208,7 +208,7 @@ isComplete tests =
 
 
 
--- FLATTEN PATTERNS
+-- ====== FLATTEN PATTERNS ======
 
 
 {-| Flatten type aliases and use the VariantDict to figure out when a tag is
@@ -317,7 +317,7 @@ dearg (Can.PatternCtorArg _ _ pattern) =
 
 
 
--- SUCCESSFULLY MATCH
+-- ====== SUCCESSFULLY MATCH ======
 
 
 {-| If the first branch has no more "decision points" we can finally take that
@@ -340,7 +340,7 @@ checkForMatch branches =
 
 
 
--- GATHER OUTGOING EDGES
+-- ====== GATHER OUTGOING EDGES ======
 
 
 gatherEdges : List Branch -> Path -> ( List ( Test, List Branch ), List Branch )
@@ -366,7 +366,7 @@ gatherEdges branches path =
 
 
 
--- FIND RELEVANT TESTS
+-- ====== FIND RELEVANT TESTS ======
 
 
 testsAtPath : Path -> List Branch -> List Test
@@ -448,7 +448,7 @@ testAtPath selectedPath (Branch _ pathPatterns) =
 
 
 
--- BUILD EDGES
+-- ====== BUILD EDGES ======
 
 
 edgesFor : Path -> List Branch -> Test -> ( Test, List Branch )
@@ -640,7 +640,7 @@ extract selectedPath pathPatterns =
 
 
 
--- FIND IRRELEVANT BRANCHES
+-- ====== FIND IRRELEVANT BRANCHES ======
 
 
 isIrrelevantTo : Path -> Branch -> Bool
@@ -697,7 +697,7 @@ needsTests (A.At _ patternInfo) =
 
 
 
--- PICK A PATH
+-- ====== PICK A PATH ======
 
 
 pickPath : List Branch -> Path
@@ -752,7 +752,7 @@ bests allPaths =
 
 
 
--- PATH PICKING HEURISTICS
+-- ====== PATH PICKING HEURISTICS ======
 
 
 smallDefaults : List Branch -> Path -> Int
@@ -776,7 +776,7 @@ smallBranchingFactor branches path =
 
 
 
--- ENCODERS and DECODERS
+-- ====== ENCODERS and DECODERS ======
 
 
 {-| Encode a ContainerHint to bytes for serialization.

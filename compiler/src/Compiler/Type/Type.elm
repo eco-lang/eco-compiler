@@ -79,7 +79,7 @@ import Utils.Crash exposing (crash)
 
 
 
--- CONSTRAINTS
+-- ====== CONSTRAINTS ======
 
 
 {-| Constraint tree representing type relationships for the solver.
@@ -112,7 +112,7 @@ exists flexVars constraint =
 
 
 
--- TYPE PRIMITIVES
+-- ====== TYPE PRIMITIVES ======
 
 
 {-| Runtime type representation with unification variables.
@@ -134,7 +134,7 @@ type Type
 
 
 
--- DESCRIPTORS
+-- ====== DESCRIPTORS ======
 
 
 makeDescriptor : Content -> Descriptor
@@ -143,7 +143,7 @@ makeDescriptor content =
 
 
 
--- RANKS
+-- ====== RANKS ======
 
 
 {-| Rank value for unranked variables or error states.
@@ -169,7 +169,7 @@ outermostRank =
 
 
 
--- MARKS
+-- ====== MARKS ======
 
 
 {-| Default mark value for unmarked variables.
@@ -205,7 +205,7 @@ nextMark (Mark mark) =
 
 
 
--- FUNCTION TYPES
+-- ====== FUNCTION TYPES ======
 
 
 {-| Constructs a function type from argument to result.
@@ -219,7 +219,7 @@ funType =
 
 
 
--- PRIMITIVE TYPES
+-- ====== PRIMITIVE TYPES ======
 
 
 {-| The Int type.
@@ -265,7 +265,7 @@ never =
 
 
 
--- WEBGL TYPES
+-- ====== WEBGL TYPES ======
 
 
 {-| The Vec2 WebGL type for 2D vectors.
@@ -304,7 +304,7 @@ texture =
 
 
 
--- MAKE FLEX VARIABLES
+-- ====== MAKE FLEX VARIABLES ======
 
 
 {-| Creates a fresh unnamed flexible type variable.
@@ -335,7 +335,7 @@ unnamedFlexVar =
 
 
 
--- MAKE FLEX NUMBERS
+-- ====== MAKE FLEX NUMBERS ======
 
 
 {-| Creates a fresh unnamed flexible number variable.
@@ -366,7 +366,7 @@ unnamedFlexSuper super =
 
 
 
--- MAKE NAMED VARIABLES
+-- ====== MAKE NAMED VARIABLES ======
 
 
 {-| Creates a named flexible variable from a type variable name.
@@ -412,7 +412,7 @@ toSuper name =
 
 
 
--- TO TYPE ANNOTATION
+-- ====== TO TYPE ANNOTATION ======
 
 
 {-| Converts a type variable to a canonical type annotation.
@@ -570,7 +570,7 @@ fieldToCanType variable =
 
 
 
--- TO ERROR TYPE
+-- ====== TO ERROR TYPE ======
 
 
 {-| Converts a type variable to an error type for reporting.
@@ -750,7 +750,7 @@ termToErrorType term =
 
 
 
--- MANAGE FRESH VARIABLE NAMES
+-- ====== MANAGE FRESH VARIABLE NAMES ======
 
 
 type alias NameStateData =
@@ -773,7 +773,7 @@ makeNameState takenNames =
 
 
 
--- FRESH VAR NAMES
+-- ====== FRESH VAR NAMES ======
 
 
 getFreshVarName : StateT NameState Name
@@ -812,7 +812,7 @@ getFreshVarNameHelp index taken =
 
 
 
--- FRESH SUPER NAMES
+-- ====== FRESH SUPER NAMES ======
 
 
 getFreshSuperName : SuperType -> StateT NameState Name
@@ -883,7 +883,7 @@ getFreshSuperHelp prefix index taken =
 
 
 
--- GET ALL VARIABLE NAMES
+-- ====== GET ALL VARIABLE NAMES ======
 
 
 getVarNames : Variable -> Dict String Name Variable -> IO (Dict String Name Variable)
@@ -951,7 +951,7 @@ getVarNames var takenNames =
 
 
 
--- REGISTER NAME / RENAME DUPLICATES
+-- ====== REGISTER NAME ======
 
 
 addName : Int -> Name -> Variable -> (Name -> Content) -> Dict String Name Variable -> IO (Dict String Name Variable)

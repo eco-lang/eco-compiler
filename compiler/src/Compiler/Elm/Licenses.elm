@@ -33,7 +33,7 @@ import Data.Map as Dict exposing (Dict)
 
 
 
--- LICENSES
+-- ====== LICENSES ======
 
 
 {-| Represents a validated OSI-approved SPDX license identifier.
@@ -74,7 +74,7 @@ decoder toError =
 
 
 
--- CHECK
+-- ====== CHECK ======
 
 
 check : String -> Result (List String) License
@@ -98,7 +98,7 @@ check givenCode =
 
 
 
--- LIST OF LICENSES
+-- ====== LIST OF LICENSES ======
 
 
 osiApprovedSpdxLicenses : Dict String String String

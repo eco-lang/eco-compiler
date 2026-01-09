@@ -4,11 +4,12 @@ module Compiler.AST.Monomorphized exposing
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry, emptyRegistry, getOrCreateSpecId, lookupSpecKey
     , MonoGraph(..), MainInfo(..), MonoNode(..)
-    , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..), ContainerKind(..)
+    , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
     , Decider(..), MonoChoice(..)
     , typeOf, canUnbox
     , computeRecordLayout, computeTupleLayout
     , toComparableSpecKey
+    , ContainerKind(..)
     )
 
 {-| Monomorphized AST for backends that can optimize using concrete types.
@@ -103,7 +104,7 @@ import System.TypeCheck.IO as IO
 
 
 -- ============================================================================
--- MONOMORPHIC TYPES (No type variables)
+-- ====== MONOMORPHIC TYPES ======
 -- ============================================================================
 
 
@@ -187,7 +188,7 @@ type Constraint
 
 
 -- ============================================================================
--- LAYOUTS (Runtime representation info)
+-- ====== LAYOUTS ======
 -- ============================================================================
 
 
@@ -233,7 +234,7 @@ type alias TupleLayout =
 
 
 -- ============================================================================
--- LAMBDA SETS
+-- ====== LAMBDA SETS ======
 -- ============================================================================
 
 
@@ -245,7 +246,7 @@ type LambdaId
 
 
 -- ============================================================================
--- SPECIALIZATION KEYS AND IDS
+-- ====== SPECIALIZATION KEYS AND IDS ======
 -- ============================================================================
 
 
@@ -320,7 +321,7 @@ lookupSpecKey specId registry =
 
 
 -- ============================================================================
--- MONO GRAPH
+-- ====== MONO GRAPH ======
 -- ============================================================================
 
 
@@ -346,7 +347,7 @@ type MainInfo
 
 
 -- ============================================================================
--- MONO NODES
+-- ====== MONO NODES ======
 -- ============================================================================
 
 
@@ -365,7 +366,7 @@ type MonoNode
 
 
 -- ============================================================================
--- MONO EXPRESSIONS
+-- ====== MONO EXPRESSIONS ======
 -- ============================================================================
 
 
@@ -428,11 +429,13 @@ type MonoDestructor
 {-| The kind of container being navigated during destructuring.
 
 This is used to select the correct runtime projection operation:
+
   - ListContainer: eco.project.list.head / eco.project.list.tail
   - Tuple2Container: eco.project.tuple2
   - Tuple3Container: eco.project.tuple3
   - CustomContainer: eco.project (generic custom type)
   - RecordContainer: eco.project (record field access)
+
 -}
 type ContainerKind
     = ListContainer
@@ -445,6 +448,7 @@ type ContainerKind
 {-| Path for navigating into a data structure during destructuring.
 
 MonoIndex now carries ContainerKind to enable type-specific projection ops.
+
 -}
 type MonoPath
     = MonoIndex Int ContainerKind MonoPath
@@ -476,7 +480,7 @@ type MonoChoice
 
 
 -- ============================================================================
--- TYPE UTILITIES
+-- ====== TYPE UTILITIES ======
 -- ============================================================================
 
 
@@ -563,7 +567,7 @@ canUnbox monoType =
 
 
 -- ============================================================================
--- LAYOUT COMPUTATION
+-- ====== LAYOUT COMPUTATION ======
 -- ============================================================================
 
 
@@ -643,7 +647,7 @@ computeTupleLayout types =
 
 
 -- ============================================================================
--- COMPARISON FUNCTIONS
+-- ====== COMPARISON FUNCTIONS ======
 -- ============================================================================
 
 
