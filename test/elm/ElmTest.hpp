@@ -13,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <regex>
@@ -251,6 +252,165 @@ inline std::string verifyPatterns(const std::string& output,
 }
 
 // ============================================================================
+// Two-Phase Compilation Support
+// ============================================================================
+
+/**
+ * Result of compiling a single Elm file to MLIR.
+ */
+struct CompileResult {
+    std::string elmPath;
+    std::string mlirPath;
+    bool success;
+    std::string errorMessage;
+};
+
+/**
+ * Check if an Elm file needs recompilation.
+ * Returns true if .mlir doesn't exist or .elm is newer than .mlir.
+ */
+inline bool needsRecompile(const std::string& elmPath, const std::string& mlirPath) {
+    if (!std::filesystem::exists(mlirPath)) {
+        return true;
+    }
+    auto elmTime = std::filesystem::last_write_time(elmPath);
+    auto mlirTime = std::filesystem::last_write_time(mlirPath);
+    return elmTime > mlirTime;
+}
+
+/**
+ * Get the MLIR output path for an Elm source file.
+ * MLIR files are stored in guida-stuff/mlir/ relative to elm.json root.
+ */
+inline std::string getMlirPath(const std::string& elmPath) {
+    std::string elmTestDir = getElmTestDir();
+    std::string filename = std::filesystem::path(elmPath).stem().string();
+    return elmTestDir + "/guida-stuff/mlir/" + filename + ".mlir";
+}
+
+/**
+ * Ensure the MLIR output directory exists.
+ */
+inline void ensureMlirDirExists() {
+    std::string elmTestDir = getElmTestDir();
+    std::string mlirDir = elmTestDir + "/guida-stuff/mlir";
+    std::filesystem::create_directories(mlirDir);
+}
+
+/**
+ * Compile a single Elm file to MLIR.
+ * Returns a CompileResult with success status and paths.
+ */
+inline CompileResult compileElmToMlir(const std::string& elmPath) {
+    CompileResult result;
+    result.elmPath = elmPath;
+    result.mlirPath = getMlirPath(elmPath);
+    result.success = false;
+
+    // Check for incremental compilation
+    if (!needsRecompile(elmPath, result.mlirPath)) {
+        result.success = true;
+        return result;
+    }
+
+    std::string guidaPath = getGuidaPath();
+    std::string elmTestDir = getElmTestDir();
+
+    // Compile Elm to MLIR using guida
+    std::string compileCmd = "cd \"" + elmTestDir + "\" && node \"" + guidaPath +
+                             "\" make \"" + elmPath + "\" --output=\"" + result.mlirPath + "\"";
+
+    auto [exitCode, output] = executeCommand(compileCmd);
+
+    if (exitCode != 0) {
+        // Clean up partial MLIR file if it exists
+        std::filesystem::remove(result.mlirPath);
+
+        std::ostringstream msg;
+        msg << "Guida compilation failed (exit code " << exitCode << ")\n";
+        msg << "Command: " << compileCmd << "\n";
+        msg << "Output:\n" << output.substr(0, 1000);
+        result.errorMessage = msg.str();
+        return result;
+    }
+
+    // Verify MLIR was generated
+    if (!std::filesystem::exists(result.mlirPath)) {
+        std::ostringstream msg;
+        msg << "MLIR file not generated: " << result.mlirPath << "\n";
+        msg << "Compiler output:\n" << output;
+        result.errorMessage = msg.str();
+        return result;
+    }
+
+    result.success = true;
+    return result;
+}
+
+/**
+ * Compile all Elm test files to MLIR in a single process (Phase 1).
+ * This avoids d.dat race conditions by running compilations sequentially.
+ * Supports incremental compilation - skips files where .mlir is up-to-date.
+ *
+ * @param elmPaths List of .elm file paths to compile
+ * @return Vector of CompileResults (one per input file)
+ */
+inline std::vector<CompileResult> compileAllElmTests(const std::vector<std::string>& elmPaths) {
+    std::vector<CompileResult> results;
+    results.reserve(elmPaths.size());
+
+    // Ensure output directory exists
+    ensureMlirDirExists();
+
+    size_t total = elmPaths.size();
+    size_t compiled = 0;
+    size_t skipped = 0;
+    size_t failed = 0;
+
+    std::cout << "Compiling " << total << " Elm tests..." << std::endl;
+
+    for (size_t i = 0; i < elmPaths.size(); i++) {
+        const auto& elmPath = elmPaths[i];
+        std::string filename = std::filesystem::path(elmPath).filename().string();
+        std::string mlirPath = getMlirPath(elmPath);
+
+        // Check if we can skip
+        bool willSkip = !needsRecompile(elmPath, mlirPath);
+
+        // Show progress
+        std::cout << "  [" << std::setw(3) << (i + 1) << "/" << total << "] "
+                  << filename;
+
+        if (willSkip) {
+            std::cout << " (cached)" << std::endl;
+            skipped++;
+            CompileResult result;
+            result.elmPath = elmPath;
+            result.mlirPath = mlirPath;
+            result.success = true;
+            results.push_back(result);
+        } else {
+            std::cout << std::flush;
+            auto result = compileElmToMlir(elmPath);
+            results.push_back(result);
+
+            if (result.success) {
+                std::cout << " ok" << std::endl;
+                compiled++;
+            } else {
+                std::cout << " FAILED" << std::endl;
+                failed++;
+            }
+        }
+    }
+
+    std::cout << "Compilation complete: " << compiled << " compiled, "
+              << skipped << " cached, " << failed << " failed" << std::endl;
+
+    return results;
+}
+
+// ============================================================================
 // EcoRunner-based Test Execution
 // ============================================================================
 
@@ -347,18 +507,75 @@ inline void runElmTest(const std::string& elmPath) {
     }
 }
 
+/**
+ * Run a single Elm test from a pre-compiled MLIR file (Phase 2).
+ *
+ * This function assumes the MLIR file already exists (compiled in Phase 1).
+ * It reads CHECK patterns from the original Elm source, runs the MLIR
+ * through EcoRunner, and verifies the output.
+ *
+ * @param mlirPath Path to the pre-compiled .mlir file
+ * @param elmPath Path to the original .elm source (for CHECK patterns)
+ */
+inline void runElmTestFromMlir(const std::string& mlirPath, const std::string& elmPath) {
+    // Read Elm source for expected patterns
+    std::string elmContent = readFile(elmPath);
+    auto checkPatterns = extractCheckPatterns(elmContent);
+    std::string expectedOutput = extractExpectedOutput(elmContent);
+
+    // If no CHECK patterns and there's an expected output, use that
+    if (checkPatterns.empty() && !expectedOutput.empty()) {
+        checkPatterns.push_back(expectedOutput);
+    }
+
+    // Verify MLIR file exists (should have been compiled in Phase 1)
+    if (!std::filesystem::exists(mlirPath)) {
+        throw std::runtime_error("MLIR file not found: " + mlirPath +
+                                 " (should have been compiled in Phase 1)");
+    }
+
+    // Run MLIR through EcoRunner (in-process)
+    auto& runner = getRunner();
+    runner.reset();
+
+    auto result = runner.runFile(mlirPath);
+
+    // Check for execution failure
+    if (!result.success) {
+        std::ostringstream msg;
+        msg << "JIT execution failed: " << result.errorMessage << "\n";
+        msg << "Output:\n" << result.output.substr(0, 500);
+        throw std::runtime_error(msg.str());
+    }
+
+    // Verify output patterns
+    if (!checkPatterns.empty()) {
+        std::string error = verifyPatterns(result.output, checkPatterns);
+        if (!error.empty()) {
+            std::ostringstream msg;
+            msg << error << "\n";
+            msg << "Actual output:\n" << result.output.substr(0, 500);
+            if (result.output.length() > 500) {
+                msg << "\n... (truncated)";
+            }
+            throw std::runtime_error(msg.str());
+        }
+    }
+}
+
 // ============================================================================
 // Parallel Test Execution with GCStats
 // ============================================================================
 
 /**
- * Run multiple Elm tests in parallel with GCStats accumulation.
+ * Run multiple MLIR tests in parallel with GCStats accumulation (Phase 2).
  *
- * This wraps IsolatedTestRunner::runTestsParallel with Elm-specific
- * functionality for GCStats collection.
+ * This function runs pre-compiled MLIR files through EcoRunner in parallel.
+ * It assumes all MLIR files have already been compiled (Phase 1).
  */
-inline IsolatedTestRunner::ParallelTestSummary runElmTestsParallel(
-    const std::vector<std::string>& testPaths,
+inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
+    const std::vector<std::string>& mlirPaths,
+    const std::vector<std::string>& elmPaths,
     const std::vector<std::string>& testNames)
 {
     // We need custom shared memory for GCStats, so we can't use the
@@ -367,7 +584,7 @@ inline IsolatedTestRunner::ParallelTestSummary runElmTestsParallel(
 
     using namespace IsolatedTestRunner;
 
-    const size_t numTests = testPaths.size();
+    const size_t numTests = mlirPaths.size();
     if (numTests == 0) {
         return {};
     }
@@ -378,7 +595,8 @@ inline IsolatedTestRunner::ParallelTestSummary runElmTestsParallel(
     // Elm-specific contexts with extended shared memory
     struct ElmTestContext {
         size_t index;
-        std::string path;
+        std::string mlirPath;   // Pre-compiled MLIR file
+        std::string elmPath;    // Original Elm source (for CHECK patterns)
         std::string name;
         ElmSharedTestResult* shared;
         pid_t pid;
@@ -392,7 +610,8 @@ inline IsolatedTestRunner::ParallelTestSummary runElmTestsParallel(
     std::vector<ElmTestContext> contexts(numTests);
     for (size_t i = 0; i < numTests; i++) {
         contexts[i].index = i;
-        contexts[i].path = testPaths[i];
+        contexts[i].mlirPath = mlirPaths[i];
+        contexts[i].elmPath = elmPaths[i];
         contexts[i].name = testNames[i];
         contexts[i].shared = nullptr;
         contexts[i].pid = 0;
@@ -469,7 +688,8 @@ inline IsolatedTestRunner::ParallelTestSummary runElmTestsParallel(
                 close(ctx.outputPipe[1]);
 
                 try {
-                    runElmTest(ctx.path);
+                    // Run pre-compiled MLIR (no compilation in child process)
+                    runElmTestFromMlir(ctx.mlirPath, ctx.elmPath);
                     ctx.shared->passed = true;
                     ctx.shared->completed = true;
                 } catch (const std::exception& e) {
@@ -760,6 +980,10 @@ public:
     /**
      * Run tests matching the filter pattern.
      * This is the main execution entry point.
+     *
+     * Two-phase approach to avoid d.dat race condition:
+     * - Phase 1: Compile all Elm → MLIR sequentially (single process)
+     * - Phase 2: Run MLIR tests in parallel (isolated processes)
      */
     bool runFiltered(const std::string& filter) const {
         // Collect tests matching the filter
@@ -783,37 +1007,54 @@ public:
             return true;  // No tests to run
         }
 
-        // Run the first test alone to build/cache packages (avoids race condition
-        // where multiple parallel tests try to compile elm/core simultaneously)
-        std::vector<std::string> firstPath = { pathsToRun[0] };
-        std::vector<std::string> firstName = { namesToRun[0] };
-        auto firstSummary = runElmTestsParallel(firstPath, firstName);
+        // Clear previous results
+        lastPassCount_ = 0;
+        lastFailCount_ = 0;
+        lastFailedTests_.clear();
 
-        // If only one test, we're done
-        if (pathsToRun.size() == 1) {
-            lastPassCount_ = firstSummary.passCount;
-            lastFailCount_ = firstSummary.failCount;
-            lastFailedTests_ = firstSummary.failedTests;
-            return firstSummary.failCount == 0;
+        // ================================================================
+        // PHASE 1: Compile all Elm files to MLIR (sequential, single process)
+        // ================================================================
+        auto compileResults = compileAllElmTests(pathsToRun);
+
+        // Separate successful compilations from failures
+        std::vector<std::string> mlirPaths;
+        std::vector<std::string> elmPaths;
+        std::vector<std::string> testNames;
+        size_t compileFailed = 0;
+
+        for (size_t i = 0; i < compileResults.size(); i++) {
+            const auto& result = compileResults[i];
+            if (result.success) {
+                mlirPaths.push_back(result.mlirPath);
+                elmPaths.push_back(result.elmPath);
+                testNames.push_back(namesToRun[i]);
+            } else {
+                // Report compilation failure immediately
+                IsolatedTestRunner::printTestResult(namesToRun[i], "",
+                    false, result.errorMessage);
+                lastFailedTests_.push_back(namesToRun[i]);
+                compileFailed++;
+            }
         }
 
-        // Run remaining tests in parallel
-        std::vector<std::string> remainingPaths(pathsToRun.begin() + 1, pathsToRun.end());
-        std::vector<std::string> remainingNames(namesToRun.begin() + 1, namesToRun.end());
-        auto summary = runElmTestsParallel(remainingPaths, remainingNames);
+        // ================================================================
+        // PHASE 2: Run MLIR tests in parallel (no Guida compiler involved)
+        // ================================================================
+        std::cout << "\nRunning " << mlirPaths.size() << " MLIR tests in parallel...\n";
 
-        // Combine results from first test and remaining tests
-        summary.passCount += firstSummary.passCount;
-        summary.failCount += firstSummary.failCount;
-        summary.failedTests.insert(summary.failedTests.end(),
-            firstSummary.failedTests.begin(), firstSummary.failedTests.end());
+        IsolatedTestRunner::ParallelTestSummary summary;
+        if (!mlirPaths.empty()) {
+            summary = runMlirTestsParallel(mlirPaths, elmPaths, testNames);
+        }
 
-        // Store results for TestSuite integration
+        // Combine compilation failures with runtime failures
         lastPassCount_ = summary.passCount;
-        lastFailCount_ = summary.failCount;
-        lastFailedTests_ = summary.failedTests;
+        lastFailCount_ = summary.failCount + compileFailed;
+        lastFailedTests_.insert(lastFailedTests_.end(),
+            summary.failedTests.begin(), summary.failedTests.end());
 
-        return summary.failCount == 0;
+        return lastFailCount_ == 0;
     }
 
     /**
