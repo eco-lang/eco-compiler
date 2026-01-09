@@ -40,8 +40,8 @@ extern "C" {
 
 uint64_t Elm_Kernel_Debug_log(uint64_t tag, uint64_t value) {
     // log prints the tag and value, then returns the value unchanged
-    // In JIT mode, parameters are raw 64-bit pointers
-    std::string tagStr = elmStringToStd(reinterpret_cast<void*>(tag));
+    // In JIT mode, parameters are HPointers (logical pointers)
+    std::string tagStr = elmStringToStd(Elm::Kernel::Export::toPtr(tag));
 
     // Output to the captured stream (or stderr if not capturing)
     // Use eco_print_elm_value to unwrap Guida's Ctor0 box wrappers
@@ -55,8 +55,8 @@ uint64_t Elm_Kernel_Debug_log(uint64_t tag, uint64_t value) {
 }
 
 uint64_t Elm_Kernel_Debug_todo(uint64_t message) {
-    // In JIT mode, parameters are raw 64-bit pointers
-    std::string msgStr = elmStringToStd(reinterpret_cast<void*>(message));
+    // In JIT mode, parameters are HPointers (logical pointers)
+    std::string msgStr = elmStringToStd(Elm::Kernel::Export::toPtr(message));
     eco_output_text("Debug.todo: ");
     eco_output_text(msgStr.c_str());
     eco_output_text("\n");

@@ -55,6 +55,12 @@ public:
      */
     void* allocate(size_t size, Tag tag);
 
+    /**
+     * Allocates an object directly in old generation (bypasses nursery).
+     * Use for permanent objects like string literals.
+     */
+    void* allocatePermanent(size_t size, Tag tag);
+
     // ========== Garbage Collection ==========
 
     /** Triggers a minor GC on the nursery. */

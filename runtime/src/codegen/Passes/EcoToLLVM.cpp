@@ -1298,7 +1298,7 @@ struct CustomProjectOpLowering : public OpConversionPattern<CustomProjectOp> {
 };
 
 // ============================================================================
-// eco.string_literal -> global constant + address
+// eco.string_literal -> heap allocation via eco_alloc_string_literal
 // ============================================================================
 
 struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
@@ -1311,6 +1311,7 @@ struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
         auto module = op->getParentOfType<ModuleOp>();
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
+        auto i32Ty = IntegerType::get(ctx, 32);
         auto i16Ty = IntegerType::get(ctx, 16);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
@@ -1328,55 +1329,38 @@ struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
         // Convert UTF-8 to UTF-16 for Elm's string representation.
         auto utf16 = utf8ToUtf16(utf8Value);
 
-        // Generate a unique global name for this string literal.
+        // Generate a unique global name for this string's character data.
         static int stringCounter = 0;
-        std::string globalName = "__eco_str_" + std::to_string(stringCounter++);
+        std::string dataGlobalName = "__eco_str_data_" + std::to_string(stringCounter++);
 
-        // Build the header with tag and size.
-        // Header layout: tag(5) | color(2) | pin(1) | epoch(2) | age(2) | unboxed(3) | padding(1) | refcount(16) | size(32).
-        uint64_t header = 3;  // Tag_String.
-        header |= static_cast<uint64_t>(utf16.size()) << 32;
-
-        // Create global with header + UTF-16 data.
-        // Layout: [header:i64, chars:array<N x i16>].
+        // Create global constant array with just the UTF-16 character data.
         auto charArrayTy = LLVM::LLVMArrayType::get(i16Ty, utf16.size());
-        auto structTy = LLVM::LLVMStructType::getLiteral(ctx, {i64Ty, charArrayTy});
 
-        // Build the initializer for the global string.
-        // Use APInt to handle surrogate pairs (values > 32767) correctly.
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(module.getBody());
 
-        // Create the LLVM global with the struct type.
+        // Create the LLVM global for character data.
         auto global = rewriter.create<LLVM::GlobalOp>(
-            loc, structTy, /*isConstant=*/true, LLVM::Linkage::Internal,
-            globalName, Attribute());
+            loc, charArrayTy, /*isConstant=*/true, LLVM::Linkage::Internal,
+            dataGlobalName, Attribute());
 
-        // Initialize the global with header and character data.
+        // Initialize the global with character data.
         {
             Block *initBlock = rewriter.createBlock(&global.getInitializer());
             rewriter.setInsertionPointToStart(initBlock);
 
-            // Start with an undefined struct value.
-            auto undef = rewriter.create<LLVM::UndefOp>(loc, structTy);
+            // Start with an undefined array value.
+            auto undef = rewriter.create<LLVM::UndefOp>(loc, charArrayTy);
 
-            // Insert the header at index 0.
-            auto headerVal = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, header);
-            auto withHeader = rewriter.create<LLVM::InsertValueOp>(
-                loc, structTy, undef, headerVal, ArrayRef<int64_t>{0});
-
-            // Insert each UTF-16 character into the array at index 1.
-            // Note: Use APInt to avoid signedness issues with surrogate pairs
-            // (UTF-16 code units in 0xD800-0xDFFF range are > 32767).
-            Value current = withHeader;
+            // Insert each UTF-16 character into the array.
+            Value current = undef;
             for (size_t i = 0; i < utf16.size(); i++) {
-                // Create APInt with 16 bits, treating value as unsigned
                 llvm::APInt charInt(16, utf16[i], /*isSigned=*/false);
                 auto charAttr = rewriter.getIntegerAttr(i16Ty, charInt);
                 auto charVal = rewriter.create<LLVM::ConstantOp>(loc, i16Ty, charAttr);
                 current = rewriter.create<LLVM::InsertValueOp>(
-                    loc, structTy, current, charVal,
-                    ArrayRef<int64_t>{1, static_cast<int64_t>(i)});
+                    loc, charArrayTy, current, charVal,
+                    ArrayRef<int64_t>{static_cast<int64_t>(i)});
             }
 
             rewriter.create<LLVM::ReturnOp>(loc, current);
@@ -1385,11 +1369,24 @@ struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
         // Restore insertion point to the original operation location.
         rewriter.setInsertionPoint(op);
 
-        // Get the address of the global and convert to tagged i64.
-        auto addr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, globalName);
-        auto result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, addr);
+        // Declare eco_alloc_string_literal if not already present.
+        auto funcTy = LLVM::LLVMFunctionType::get(i64Ty, {ptrTy, i32Ty});
+        getOrInsertFunc(module, rewriter, "eco_alloc_string_literal", funcTy);
 
-        rewriter.replaceOp(op, result);
+        // Get pointer to the character data global.
+        auto dataPtr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, dataGlobalName);
+
+        // Create length constant.
+        auto lengthVal = rewriter.create<LLVM::ConstantOp>(
+            loc, i32Ty, static_cast<int32_t>(utf16.size()));
+
+        // Call eco_alloc_string_literal to allocate on heap (in OldGen).
+        auto result = rewriter.create<LLVM::CallOp>(
+            loc, TypeRange{i64Ty},
+            SymbolRefAttr::get(ctx, "eco_alloc_string_literal"),
+            ValueRange{dataPtr, lengthVal});
+
+        rewriter.replaceOp(op, result.getResult());
         return success();
     }
 };

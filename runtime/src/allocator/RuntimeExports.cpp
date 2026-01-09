@@ -26,8 +26,9 @@ namespace {
 
 /// Convert a raw void* pointer to a uint64_t HPointer representation.
 /// The HPointer will have constant=0, indicating a regular heap pointer.
+/// Note: Elm never produces null pointers, so obj must be a valid heap pointer.
+/// Validation is performed in Allocator::wrap().
 inline uint64_t ptrToHPointer(void* obj) {
-    if (!obj) return 0;
     HPointer hp = Allocator::instance().wrap(obj);
     uint64_t result;
     memcpy(&result, &hp, sizeof(result));
@@ -36,10 +37,15 @@ inline uint64_t ptrToHPointer(void* obj) {
 
 /// Convert a uint64_t HPointer representation to a raw void* pointer.
 /// Uses Allocator::resolve() to handle forwarding pointers during GC.
+/// Returns nullptr for embedded constants (Nil, True, False, Unit, etc.)
+/// since they don't have actual heap objects.
 inline void* hpointerToPtr(uint64_t val) {
-    if (val == 0) return nullptr;
     HPointer hp;
     memcpy(&hp, &val, sizeof(hp));
+    // Embedded constants don't have heap objects - return nullptr.
+    if (hp.constant != 0) {
+        return nullptr;
+    }
     return Allocator::instance().resolve(hp);
 }
 
@@ -242,6 +248,22 @@ extern "C" uint64_t eco_alloc_string(uint32_t length) {
 
     ElmString* str = static_cast<ElmString*>(obj);
     str->header.size = length;
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_string_literal(const uint16_t* chars, uint32_t length) {
+    // Allocate string literal directly in old generation (permanent, never collected).
+    // Size: Header + length * sizeof(u16), aligned to 8 bytes
+    size_t size = sizeof(Header) + length * sizeof(u16);
+    size = (size + 7) & ~7;  // Align to 8 bytes
+
+    void* obj = Allocator::instance().allocatePermanent(size, Tag_String);
+    if (!obj) return 0;
+
+    ElmString* str = static_cast<ElmString*>(obj);
+    str->header.size = length;
+    std::memcpy(str->chars, chars, length * sizeof(u16));
 
     return ptrToHPointer(obj);
 }

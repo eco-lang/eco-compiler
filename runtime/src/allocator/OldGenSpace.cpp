@@ -29,9 +29,7 @@ extern char* g_heap_base;
 // Does not follow forwarding pointers (use Allocator::resolve() for that).
 void* readBarrier(HPointer& ptr) {
     // Check for embedded constants.
-    if (ptr.constant != 0) {
-        return nullptr;  // It's a constant, not a heap pointer.
-    }
+    assert(ptr.constant == 0 && "Cannot read barrier on embedded constant");
 
     // Convert logical pointer to physical address and return.
     return g_heap_base + (ptr.ptr << 3);

@@ -68,6 +68,10 @@ public:
     // Delegates to the calling thread's ThreadLocalHeap.
     void *allocate(size_t size, Tag tag);
 
+    // Allocates an object directly in old generation (bypasses nursery).
+    // Use for permanent objects like string literals that should never be collected.
+    void *allocatePermanent(size_t size, Tag tag);
+
     // ========== Garbage Collection ==========
 
     // Triggers a minor GC on the thread-local nursery.
@@ -180,7 +184,7 @@ private:
     // Raw pointer conversion without forwarding resolution.
     // Internal use only - friends can access for performance-critical GC operations.
     static inline void* fromPointerRaw(HPointer ptr) {
-        if (ptr.constant != 0) return nullptr;
+        assert(ptr.constant == 0 && "Cannot convert HPointer with constant field set (embedded constant)");
         char* heap_base = instance().heap_base;
         uintptr_t byte_offset = static_cast<uintptr_t>(ptr.ptr) << 3;
         return heap_base + byte_offset;

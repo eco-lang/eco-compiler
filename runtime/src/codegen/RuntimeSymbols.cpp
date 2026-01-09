@@ -46,6 +46,10 @@ void registerRuntimeSymbols(ExecutionEngine &engine) {
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_string),
                 llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_string_literal")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_string_literal),
+                llvm::JITSymbolFlags::Exported);
         symbolMap[interner("eco_alloc_closure")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_closure),

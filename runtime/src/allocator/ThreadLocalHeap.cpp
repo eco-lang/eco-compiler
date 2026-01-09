@@ -81,6 +81,45 @@ void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
     return nullptr;
 }
 
+void* ThreadLocalHeap::allocatePermanent(size_t size, Tag tag) {
+    // Allocate directly in old generation - for permanent objects like string literals.
+    void* obj = old_gen_.allocate(size);
+    if (obj) {
+        Header* hdr = getHeader(obj);
+        std::memset(hdr, 0, sizeof(Header));
+        hdr->tag = tag;
+
+        // For variable-sized types, hdr->size stores element count.
+        switch (tag) {
+            case Tag_String:
+                hdr->size = (size - sizeof(ElmString)) / sizeof(u16);
+                break;
+            case Tag_Custom:
+                hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);
+                break;
+            case Tag_Record:
+                hdr->size = (size - sizeof(Record)) / sizeof(Unboxable);
+                break;
+            case Tag_DynRecord:
+                hdr->size = (size - sizeof(DynRecord)) / sizeof(HPointer);
+                break;
+            case Tag_FieldGroup:
+                hdr->size = (size - sizeof(FieldGroup)) / sizeof(u32);
+                break;
+            case Tag_Closure:
+                hdr->size = (size - sizeof(Closure)) / sizeof(Unboxable);
+                break;
+            default:
+                hdr->size = size;
+                break;
+        }
+        return obj;
+    }
+
+    assert(false && "Failed to allocate in old gen.");
+    return nullptr;
+}
+
 void ThreadLocalHeap::minorGC() {
     nursery_.minorGC(old_gen_);
 }

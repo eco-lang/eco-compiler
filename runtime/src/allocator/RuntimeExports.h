@@ -89,6 +89,13 @@ void eco_store_record_field_f64(uint64_t record, uint32_t index, double value);
 /// @return HPointer (as uint64_t) to the allocated ElmString object
 uint64_t eco_alloc_string(uint32_t length);
 
+/// Allocates a string literal directly in old generation (permanent, never collected).
+/// Used for compile-time string constants.
+/// @param chars Pointer to UTF-16 character data
+/// @param length Number of UTF-16 code units
+/// @return HPointer (as uint64_t) to the allocated ElmString object
+uint64_t eco_alloc_string_literal(const uint16_t* chars, uint32_t length);
+
 /// Allocates a closure object.
 /// @param func_ptr Pointer to the evaluator function
 /// @param num_captures Number of captured values

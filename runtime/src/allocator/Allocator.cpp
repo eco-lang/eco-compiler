@@ -163,6 +163,12 @@ void *Allocator::allocate(size_t size, Tag tag) {
     return tl_heap_->allocate(size, tag);
 }
 
+// Allocates directly in old generation (bypasses nursery).
+void *Allocator::allocatePermanent(size_t size, Tag tag) {
+    assert(tl_heap_ && "Thread not initialized - call initThread() first");
+    return tl_heap_->allocatePermanent(size, tag);
+}
+
 // Triggers a minor GC on the thread-local nursery.
 void Allocator::minorGC() {
     if (tl_heap_) {
@@ -348,9 +354,7 @@ void Allocator::reset(const HeapConfig* new_config) {
 // ============================================================================
 
 void* Allocator::resolve(HPointer ptr) {
-    if (ptr.constant != 0) {
-        return nullptr;  // Embedded constant (Nil, True, False, Unit)
-    }
+    assert(ptr.constant == 0 && "Cannot resolve HPointer with constant field set (embedded constant)");
 
     void* obj = fromPointerRaw(ptr);
     assert(obj && "Null pointer from valid HPointer");
@@ -373,6 +377,9 @@ void* Allocator::resolve(HPointer ptr) {
 }
 
 HPointer Allocator::wrap(void* obj) {
+    assert(obj && "Cannot wrap null pointer - Elm never produces null pointers");
+    assert((reinterpret_cast<uintptr_t>(obj) & 7) == 0 && "Pointer must be 8-byte aligned");
+    assert(isInHeap(obj) && "Pointer must be within heap");
     return toPointerRaw(obj);
 }
 
