@@ -42,6 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git build-essential python3 pkg-config \
     cmake ninja-build clang lld zlib1g-dev libxml2-dev \
     gosu curl libcmark-dev ccache \
+    less \
  && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js for Guida compiler builds

@@ -44,6 +44,12 @@ add_subdirectory(elm-kernel-cpp)
 add_subdirectory(compiler)
 
 # Clean target support - mark guida-stuff directories for cleaning
+# Note: ADDITIONAL_CLEAN_FILES is the modern name (CMake 3.15+), ADDITIONAL_MAKE_CLEAN_FILES
+# is the legacy name. Both are set for maximum compatibility.
+set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES
+    "${CMAKE_SOURCE_DIR}/test/elm/guida-stuff"
+    "${CMAKE_SOURCE_DIR}/compiler/examples/guida-stuff"
+)
 set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_MAKE_CLEAN_FILES
     "${CMAKE_SOURCE_DIR}/test/elm/guida-stuff"
     "${CMAKE_SOURCE_DIR}/compiler/examples/guida-stuff"
@@ -52,9 +58,11 @@ set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_MAKE_CLEAN_FILES
 # Convenience targets for common workflows
 # Usage: cmake --build build --target rebuild
 add_custom_target(rebuild
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm/guida-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/compiler/examples/guida-stuff"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
-    COMMENT "Clean and rebuild all targets"
+    COMMENT "Clean guida-stuff, rebuild all targets"
     USES_TERMINAL
 )
 
@@ -78,9 +86,11 @@ add_custom_target(run-tests
 # Usage: cmake --build build --target full
 # Usage with filter: TEST_FILTER=elm cmake --build build --target full
 add_custom_target(full
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm/guida-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/compiler/examples/guida-stuff"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
-    COMMENT "Clean, rebuild, and run tests"
+    COMMENT "Clean guida-stuff, rebuild, and run tests"
     USES_TERMINAL
 )
