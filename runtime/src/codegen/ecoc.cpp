@@ -149,7 +149,7 @@ static int runPipeline(ModuleOp module, bool lowerToLLVM) {
     if (lowerToLLVM) {
         // Stage 1: Eco -> Eco transformations.
         // Generate external declarations for undefined functions (kernel functions, etc.)
-        pm.addPass(eco::createUndefinedFunctionStubPass());
+        pm.addPass(eco::createUndefinedFunctionPass());
 
         // Stage 2: Eco -> Standard MLIR (func/cf/arith).
 

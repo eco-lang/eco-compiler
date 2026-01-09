@@ -50,7 +50,7 @@ void buildEcoToEcoPipeline(PassManager &pm) {
     pm.addPass(eco::createRCEliminationPass());
 
     // Generate external declarations for undefined functions (kernel functions, etc.)
-    pm.addPass(eco::createUndefinedFunctionStubPass());
+    pm.addPass(eco::createUndefinedFunctionPass());
 }
 
 void buildEcoToLLVMPipeline(PassManager &pm) {

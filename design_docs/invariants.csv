@@ -19,6 +19,7 @@ CGEN_007;MLIR_Codegen;Signatures;enforced;boxToMatchSignature and boxToMatchSign
 CGEN_008;MLIR_Codegen;Attributes;documented;eco.construct eco.project eco.call and eco.return always carry an _operand_types attribute whose entries exactly match the MLIR SSA operand types used at that call site;Compiler.Generate.MLIRMono  
 CGEN_009;MLIR_Codegen;Booleans;documented;Boolean constants must be emitted with typed MLIR attributes such as value equals 1 colon i1 so MLIR verifies that the constant value type and result type agree;PLAN.md known issues section
 CGEN_010;MLIR_Codegen;Case;enforced;Every eco.case in the IR has an explicit result_types attribute and all alternatives eco.return terminators match it;Compiler.Generate.MLIRMono
+CGEN_011;MLIR_Codegen;Functions;enforced;Every function referenced by eco.call must have a corresponding func.func definition or declaration in the module so no undefined function symbols escape MLIR codegen and the UndefinedFunction pass validates this invariant by failing the build on any violation;Compiler.Generate.MLIRMono and UndefinedFunction.cpp
 
 HEAP_001;Runtime_Heap;Header;documented;Every heap object begins with an 8 byte Header struct and the first TAG_BITS bits of the header encode the Tag which denotes the concrete heap object kind;Heap.hpp  
 HEAP_002;Runtime_Heap;Alignment;documented;All heap objects are 8 byte aligned and getObjectSize always rounds object sizes up to a multiple of 8 bytes;AllocatorCommon.hpp  

@@ -31,10 +31,10 @@ std::unique_ptr<mlir::Pass> createConstructLoweringPass();
 // These are not used in tracing GC mode.
 std::unique_ptr<mlir::Pass> createRCEliminationPass();
 
-// Generates stub functions for undefined callees that crash at runtime.
-// This is a temporary measure to allow compilation while kernel functions
-// are being implemented.
-std::unique_ptr<mlir::Pass> createUndefinedFunctionStubPass();
+// Validates that all functions referenced by eco.call are defined or declared.
+// Enforces invariant CGEN_011: no undefined function symbols may escape codegen.
+// Fails the build if any undefined functions are found.
+std::unique_ptr<mlir::Pass> createUndefinedFunctionPass();
 
 // ========== Stage 2: Eco -> Standard MLIR (func/cf/arith) ==========
 

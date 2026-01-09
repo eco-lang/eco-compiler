@@ -38,7 +38,7 @@ runtime/src/codegen/Passes,EcoToLLVM.cpp
 runtime/src/codegen/Passes,JoinpointNormalization.cpp
 runtime/src/codegen/Passes,RCElimination.cpp
 runtime/src/codegen/Passes,ResultTypesInference.cpp
-runtime/src/codegen/Passes,UndefinedFunctionStub.cpp
+runtime/src/codegen/Passes,UndefinedFunction.cpp
 runtime/src/codegen,RuntimeSymbols.cpp
 runtime/src/codegen,RuntimeSymbols.h
 runtime/src/codegen,ecoc.cpp

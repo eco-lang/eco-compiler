@@ -1,6 +1,6 @@
 # Plan: Fix Duplicate Kernel Symbol Definitions
 
-## Status: COMPLETED
+## Status: COMPLETED (superseded by CGEN_011)
 
 ## Problem Statement
 
@@ -11,35 +11,40 @@ duplicate definition of symbol 'Elm_Kernel_List_cons'
 
 This happened because:
 1. The MLIR code calls kernel functions like `@Elm_Kernel_List_cons` via `eco.call`
-2. The `UndefinedFunctionStubPass` generated stub functions with bodies that crash
+2. The original `UndefinedFunctionStubPass` generated stub functions with bodies
 3. The JIT's `symbolMap` in `ecoc.cpp` also registers the real kernel implementations
 4. Result: both a stub definition and the real implementation exist -> duplicate symbol error
 
-## Root Cause
+## Solution Evolution
 
-The original `UndefinedFunctionStubPass` created **function definitions** (with crash bodies) for ALL undefined functions, including kernel functions. But kernel functions are provided by the runtime and registered via the JIT symbol map. Having both a definition and a JIT symbol caused duplicate definition errors.
+### Original Solution (superseded)
 
-## Solution Implemented
+Modified the pass to create **external declarations** instead of stub definitions.
 
-Modified `UndefinedFunctionStubPass` to create **external declarations** (func.func without a body) instead of stub definitions. This allows:
-1. LLVM lowering to work (it needs declarations for called functions)
-2. The JIT to resolve the symbols at runtime from the symbol map
-3. No duplicate definitions since declarations don't conflict with JIT symbols
+### Current Solution (CGEN_011)
 
-## Changes Made
+The pass has been redesigned as `UndefinedFunctionPass` which:
+1. **Does NOT generate any stubs or declarations**
+2. **Validates** that all called functions are already defined/declared
+3. **Fails the build** if any undefined functions are found
 
-1. `/work/runtime/src/codegen/Passes/UndefinedFunctionStub.cpp`:
-   - Removed the code that creates function bodies (entry block, eco.crash, etc.)
-   - Now only creates `func::FuncOp` declarations without bodies
-   - Updated header comment to reflect new behavior
+This enforces invariant **CGEN_011**: MLIR codegen must generate all function declarations before this validation pass runs.
 
-## Testing
+## Rationale for Change
 
-After the fix:
-```
-$ /work/build/runtime/src/codegen/ecoc Simple.mlir --emit=jit
-main() returned: 67108887
-JIT execution completed successfully
-```
+1. **Masks bugs**: Auto-generating stubs hides codegen bugs
+2. **Wrong signatures**: Inferring signatures from call sites may be incorrect
+3. **Single responsibility**: MLIR codegen should own declaration generation
+4. **Fail fast**: Better to fail early with clear error than link-time issues
 
-The duplicate symbol error is resolved and the program runs successfully.
+## Files Changed
+
+- `/work/runtime/src/codegen/Passes/UndefinedFunction.cpp` (renamed from UndefinedFunctionStub.cpp)
+- `/work/runtime/src/codegen/Passes.h`
+- `/work/design_docs/pass_undefined_function_theory.md`
+- `/work/design_docs/invariants.csv` (added CGEN_011)
+
+## See Also
+
+- Design doc: `design_docs/pass_undefined_function_theory.md`
+- Invariant: CGEN_011 in `design_docs/invariants.csv`

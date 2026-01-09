@@ -119,7 +119,7 @@ add_mlir_library(EcoPasses
     Passes/JoinpointNormalization.cpp
     Passes/EcoControlFlowToSCF.cpp
     Passes/EcoToLLVM.cpp
-    Passes/UndefinedFunctionStub.cpp
+    Passes/UndefinedFunction.cpp
 
     PARTIAL_SOURCES_INTENDED
 
