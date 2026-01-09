@@ -1,5 +1,8 @@
 module Compiler.AST.CanonicalBuilder exposing
-    ( callExpr
+    ( boolType
+    , callExpr
+    , charType
+    , floatType
     , funType
     , intExpr
     , intType
@@ -15,6 +18,8 @@ module Compiler.AST.CanonicalBuilder exposing
     , makeTypedDef
     , pVar
       -- Type builders for typed definitions
+    , stringType
+    , tFunc
     , tupleExpr
     , tupleType
     , varForeignExpr
@@ -346,3 +351,42 @@ funType from to =
 varType : Name.Name -> Can.Type
 varType name =
     Can.TVar name
+
+
+{-| Float type.
+-}
+floatType : Can.Type
+floatType =
+    Can.TType (IO.Canonical Pkg.core "Basics") "Float" []
+
+
+{-| Bool type.
+-}
+boolType : Can.Type
+boolType =
+    Can.TType (IO.Canonical Pkg.core "Basics") "Bool" []
+
+
+{-| Char type.
+-}
+charType : Can.Type
+charType =
+    Can.TType (IO.Canonical Pkg.core "Char") "Char" []
+
+
+{-| String type.
+-}
+stringType : Can.Type
+stringType =
+    Can.TType (IO.Canonical Pkg.core "String") "String" []
+
+
+{-| Create a multi-argument function type (curried).
+
+    tFunc [ intType, intType ] intType
+    -- equivalent to: Int -> Int -> Int
+
+-}
+tFunc : List Can.Type -> Can.Type -> Can.Type
+tFunc args result =
+    List.foldr Can.TLambda result args

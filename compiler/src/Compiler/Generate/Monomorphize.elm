@@ -25,6 +25,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Generate.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Optimize.Typed.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
@@ -823,23 +824,17 @@ specializeExpr expr subst state =
 
         TOpt.VarDebug region name _ _ canType ->
             let
-                monoType =
-                    applySubst subst canType
+                funcMonoType =
+                    deriveKernelAbiType ( "Debug", name ) canType subst
             in
-            ( Mono.MonoVarKernel region "Debug" name monoType, state )
+            ( Mono.MonoVarKernel region "Debug" name funcMonoType, state )
 
         TOpt.VarKernel region home name canType ->
             let
-                monoType =
-                    if isAlwaysPolymorphicKernel home name then
-                        -- Preserve type variables so they map to !eco.value
-                        applySubst Dict.empty canType
-
-                    else
-                        -- Fully specialize the function type
-                        applySubst subst canType
+                funcMonoType =
+                    deriveKernelAbiType ( home, name ) canType subst
             in
-            ( Mono.MonoVarKernel region home name monoType, state )
+            ( Mono.MonoVarKernel region home name funcMonoType, state )
 
         TOpt.List region exprs canType ->
             let
@@ -960,18 +955,13 @@ specializeExpr expr subst state =
                         callSubst =
                             unifyFuncCall funcCanType argTypes canType subst
 
+                        -- Expression result: fully resolved
                         resultMonoType =
                             applySubst callSubst canType
 
+                        -- Kernel ABI: uses algorithm
                         funcMonoType =
-                            if isAlwaysPolymorphicKernel home name then
-                                -- Preserve type variables in the function type so that
-                                -- its ABI is all !eco.value
-                                applySubst Dict.empty funcCanType
-
-                            else
-                                -- Fully specialize the function type
-                                applySubst callSubst funcCanType
+                            deriveKernelAbiType ( home, name ) funcCanType callSubst
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion home name funcMonoType
@@ -979,8 +969,6 @@ specializeExpr expr subst state =
                     ( Mono.MonoCall region monoFunc monoArgs resultMonoType, state1 )
 
                 -- Debug function call (Debug.log, Debug.todo, etc.)
-                -- Keep the original polymorphic type for the kernel function signature
-                -- so type variables map to !eco.value at runtime (boxed values).
                 TOpt.VarDebug funcRegion name _ _ funcCanType ->
                     let
                         argTypes =
@@ -989,13 +977,13 @@ specializeExpr expr subst state =
                         callSubst =
                             unifyFuncCall funcCanType argTypes canType subst
 
+                        -- Expression result: fully resolved
                         resultMonoType =
                             applySubst callSubst canType
 
-                        -- Use empty substitution to keep type variables as MVar
-                        -- This ensures polymorphic kernel functions use !eco.value
+                        -- Kernel ABI: uses algorithm (Debug is always polymorphic)
                         funcMonoType =
-                            applySubst Dict.empty funcCanType
+                            deriveKernelAbiType ( "Debug", name ) funcCanType callSubst
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion "Debug" name funcMonoType
@@ -1267,9 +1255,12 @@ ensureCallableTopLevel expr monoType state =
                         monoType
                         state
 
-                Mono.MonoVarKernel region home name _ ->
+                Mono.MonoVarKernel region home name kernelAbiType ->
+                    -- IMPORTANT: Keep the original kernel ABI type, don't replace with monoType.
+                    -- The kernel ABI type was derived by deriveKernelAbiType and must remain
+                    -- consistent across all call sites (polymorphic kernels use boxed ABI).
                     makeAliasClosure
-                        (Mono.MonoVarKernel region home name monoType)
+                        (Mono.MonoVarKernel region home name kernelAbiType)
                         region
                         argTypes
                         retType
@@ -2412,54 +2403,30 @@ collectDeciderDeps decider deps =
 
 
 
--- ========== KERNEL POLYMORPHISM ==========
+-- ========== KERNEL ABI TYPE DERIVATION ==========
 
 
-{-| Kernels whose C ABI must remain polymorphic (all boxed eco.value).
+{-| Derive the MonoType for a kernel function's ABI.
 
-For these, we preserve type variables in the function type so that
-monoTypeToMlir maps their parameters/results to !eco.value.
-
-Note: Debug.\* kernels are handled via VarDebug special case in specializeExpr,
-not listed here. Most other modules (VirtualDom, Json, etc.) don't need listing
-because their heap types already map to !eco.value via monoTypeToMlir.
+Uses the KernelAbi module to determine the correct ABI mode, then applies
+the appropriate conversion. This separates expression result types (fully
+resolved) from kernel ABI types (which may preserve polymorphism).
 
 -}
-isAlwaysPolymorphicKernel : String -> String -> Bool
-isAlwaysPolymorphicKernel home name =
-    case home of
-        "Utils" ->
-            -- Polymorphic over comparable/equatable/appendable types
-            name
-                == "compare"
-                || name
-                == "equal"
-                || name
-                == "append"
-                || name
-                == "lt"
-                || name
-                == "le"
-                || name
-                == "gt"
-                || name
-                == "ge"
-                || name
-                == "notEqual"
+deriveKernelAbiType : ( String, String ) -> Can.Type -> Substitution -> Mono.MonoType
+deriveKernelAbiType kernelId canFuncType callSubst =
+    case KernelAbi.deriveKernelAbiMode kernelId canFuncType of
+        KernelAbi.UseSubstitution ->
+            -- Monomorphic kernel: apply call-site substitution
+            applySubst callSubst canFuncType
 
-        "Basics" ->
-            -- Fallback when `number` leaks through monomorphization
-            name
-                == "add"
-                || name
-                == "sub"
-                || name
-                == "mul"
-                || name
-                == "pow"
+        KernelAbi.PreserveVars ->
+            -- Polymorphic kernel: preserve type vars as CEcoValue
+            KernelAbi.canTypeToMonoType_preserveVars canFuncType
 
-        _ ->
-            False
+        KernelAbi.NumberBoxed ->
+            -- Number-boxed kernel: treat CNumber as CEcoValue
+            KernelAbi.canTypeToMonoType_numberBoxed canFuncType
 
 
 
