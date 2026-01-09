@@ -100,15 +100,30 @@ treeToDecider tree =
             toChain path test successTree failureTree
 
         -- many options
+        -- INVARIANT: When DT.Decision has Nothing as fallback, the edges list
+        -- forms an exhaustive set of tests. The last edge is treated as the
+        -- catch-all case. This is guaranteed by:
+        -- 1. Pattern exhaustiveness checking in Compiler.Reporting.Error.PatternMatches
+        -- 2. The isComplete function in DecisionTree.elm
+        -- 3. gatherEdges only returning empty fallback when isComplete returns True
         DT.Decision path edges Nothing ->
-            let
-                ( necessaryTests, fallback ) =
-                    ( Prelude.init edges, Tuple.second (Prelude.last edges) )
-            in
-            Opt.FanOut
-                path
-                (List.map (Tuple.mapSecond treeToDecider) necessaryTests)
-                (treeToDecider fallback)
+            case edges of
+                [] ->
+                    crash "treeToDecider: empty edges with no fallback (should be unreachable)"
+
+                [ ( _, singleTree ) ] ->
+                    -- Single edge with no fallback means it's guaranteed to match
+                    treeToDecider singleTree
+
+                _ ->
+                    let
+                        ( necessaryTests, fallback ) =
+                            ( Prelude.init edges, Tuple.second (Prelude.last edges) )
+                    in
+                    Opt.FanOut
+                        path
+                        (List.map (Tuple.mapSecond treeToDecider) necessaryTests)
+                        (treeToDecider fallback)
 
         DT.Decision path edges (Just fallback) ->
             Opt.FanOut path (List.map (Tuple.mapSecond treeToDecider) edges) (treeToDecider fallback)

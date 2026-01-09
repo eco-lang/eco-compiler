@@ -171,16 +171,14 @@ void *Allocator::allocatePermanent(size_t size, Tag tag) {
 
 // Triggers a minor GC on the thread-local nursery.
 void Allocator::minorGC() {
-    if (tl_heap_) {
-        tl_heap_->minorGC();
-    }
+    assert(tl_heap_ && "Thread not initialized - call initThread() first");
+    tl_heap_->minorGC();
 }
 
 // Triggers a major GC on the thread-local old gen.
 void Allocator::majorGC() {
-    if (tl_heap_) {
-        tl_heap_->majorGC();
-    }
+    assert(tl_heap_ && "Thread not initialized - call initThread() first");
+    tl_heap_->majorGC();
 }
 
 // Returns true if the thread-local nursery usage exceeds the threshold.
