@@ -315,6 +315,112 @@ def is_iife(loop_body: str, func_end: int) -> bool:
     return bool(re.match(r'\s*\([^)]*\)', after_func))
 
 
+# Known synchronous higher-order functions that execute their callback immediately.
+# Closures passed directly to these functions are safe even in TCO loops.
+SYNC_HOFS = {
+    # elm/core List
+    '$elm$core$List$map',
+    '$elm$core$List$indexedMap',
+    '$elm$core$List$foldl',
+    '$elm$core$List$foldr',
+    '$elm$core$List$filter',
+    '$elm$core$List$filterMap',
+    '$elm$core$List$all',
+    '$elm$core$List$any',
+    '$elm$core$List$concatMap',
+    '$elm$core$List$sortBy',
+    '$elm$core$List$sortWith',
+    '$elm$core$List$partition',
+    # elm/core Array
+    '$elm$core$Array$map',
+    '$elm$core$Array$indexedMap',
+    '$elm$core$Array$foldl',
+    '$elm$core$Array$foldr',
+    '$elm$core$Array$filter',
+    # elm/core Dict
+    '$elm$core$Dict$map',
+    '$elm$core$Dict$foldl',
+    '$elm$core$Dict$foldr',
+    '$elm$core$Dict$filter',
+    '$elm$core$Dict$partition',
+    # elm/core Set
+    '$elm$core$Set$map',
+    '$elm$core$Set$foldl',
+    '$elm$core$Set$foldr',
+    '$elm$core$Set$filter',
+    '$elm$core$Set$partition',
+    # elm/core Maybe
+    '$elm$core$Maybe$map',
+    '$elm$core$Maybe$andThen',
+    '$elm$core$Maybe$withDefault',
+    # elm/core Result
+    '$elm$core$Result$map',
+    '$elm$core$Result$mapError',
+    '$elm$core$Result$andThen',
+    '$elm$core$Result$withDefault',
+    # elm/core String
+    '$elm$core$String$foldl',
+    '$elm$core$String$foldr',
+    '$elm$core$String$filter',
+    '$elm$core$String$map',
+    '$elm$core$String$any',
+    '$elm$core$String$all',
+    # Common runtime helpers
+    '_List_map',
+    '_List_map2',
+    '_List_map3',
+    '_List_map4',
+    '_List_map5',
+}
+
+
+def is_passed_to_sync_hof(loop_body: str, closure_start: int) -> bool:
+    """
+    Check if the closure is passed as an argument to a known synchronous HOF.
+
+    This detects patterns like:
+        A2($elm$core$List$filter, function(...){...}, list)
+        A3($elm$core$List$foldl, function(...){...}, init, list)
+
+    Returns True if the closure is passed to a sync HOF (and thus safe).
+    """
+    # Look backwards from closure to find what it's being passed to
+    search_start = max(0, closure_start - 300)
+    before = loop_body[search_start:closure_start]
+
+    # We're looking for patterns like:
+    #   A2($elm$core$List$filter,\n    function
+    #   A3($elm$core$List$foldl,\n    function
+    # The closure is an argument to an A2/A3/etc call
+
+    # Find the most recent A2/A3/etc call with a sync HOF
+    # Pattern: A\d+\s*\(\s*HOF_NAME\s*,
+    for hof_name in SYNC_HOFS:
+        # Look for the HOF name followed by comma, then eventually our closure
+        pattern = re.compile(
+            r'A\d+\s*\(\s*' + re.escape(hof_name) + r'\s*,',
+            re.DOTALL
+        )
+        for match in pattern.finditer(before):
+            # Check if we're still inside this call (haven't hit the closing paren)
+            # by counting parens from the match to the closure
+            after_match = before[match.end():]
+            paren_depth = 1  # We're inside the A2( call
+            for char in after_match:
+                if char == '(':
+                    paren_depth += 1
+                elif char == ')':
+                    paren_depth -= 1
+                    if paren_depth == 0:
+                        # Closed before reaching the closure
+                        break
+            else:
+                # We reached the closure while still inside the A2(...) call
+                return True
+
+    return False
+
+
 def find_branch_end(loop_body: str, start_pos: int) -> tuple[str, int]:
     """
     Find how the current branch ends (return, continue, or break).
@@ -376,18 +482,25 @@ def is_closure_in_return_statement(loop_body: str, closure_start: int) -> bool:
             function () { ... },  // <- closure is here
             moreArgs);
 
+        return _List_fromArray([{
+            run: function () { ... }  // <- closure is here
+        }]);
+
     Returns True if the closure appears to be in a return statement.
     """
-    # Find the statement start by looking backwards for semicolon, opening brace,
-    # or switch case/default
+    # Scan backwards from the closure to find 'return' at the same expression nesting level.
+    # We stop if we hit ';' at depth 0 (statement boundary).
     search_start = max(0, closure_start - 500)
     before = loop_body[search_start:closure_start]
 
-    # Track nesting to find statement boundary
+    # Track nesting - when scanning backwards:
+    # ')' increases depth, '(' decreases it
+    # ']' increases depth, '[' decreases it
+    # '}' increases depth (entering a nested block/object), '{' decreases it
     paren_depth = 0
     brace_depth = 0
+    bracket_depth = 0
 
-    # Scan backwards
     for i in range(len(before) - 1, -1, -1):
         char = before[i]
 
@@ -396,30 +509,31 @@ def is_closure_in_return_statement(loop_body: str, closure_start: int) -> bool:
         elif char == '(':
             if paren_depth > 0:
                 paren_depth -= 1
-            else:
-                # Unmatched open paren - check what's before it
-                # Look for 'return' before this
-                prefix = before[:i].rstrip()
-                if prefix.endswith('return'):
-                    return True
+        elif char == ']':
+            bracket_depth += 1
+        elif char == '[':
+            if bracket_depth > 0:
+                bracket_depth -= 1
         elif char == '}':
             brace_depth += 1
         elif char == '{':
             if brace_depth > 0:
                 brace_depth -= 1
-            else:
-                # Reached start of block - statement must start after this
-                break
+            # Don't break on { - we might be in an object literal inside a return
         elif char == ';':
-            if paren_depth == 0 and brace_depth == 0:
-                # Statement boundary - check what follows
-                break
-        elif paren_depth == 0 and brace_depth == 0:
-            # Check for 'return' keyword at statement level
+            if paren_depth == 0 and brace_depth == 0 and bracket_depth == 0:
+                # Statement boundary - no return found before this
+                return False
+        elif paren_depth == 0 and brace_depth == 0 and bracket_depth == 0:
+            # Check for 'return' keyword at expression level
+            # We need to check if the text starting at position i is 'return'
             remaining = before[i:]
             if remaining.startswith('return'):
-                if i == 0 or not before[i-1].isalnum():
-                    return True
+                # Make sure it's the keyword, not part of another identifier
+                if i == 0 or not before[i-1].isalnum() and before[i-1] != '_' and before[i-1] != '$':
+                    # Make sure 'return' is followed by non-alphanumeric
+                    if len(remaining) == 6 or not remaining[6].isalnum():
+                        return True
 
     return False
 
@@ -570,6 +684,11 @@ def find_closure_capture_bugs(filepath: str, strict: bool = True) -> list[dict]:
 
             func_body = loop_body[func_start_brace:func_end + 1]
             func_pos_in_loop = func_match.start()
+
+            # Check if the closure is passed to a known synchronous HOF
+            # (e.g., List.filter, List.map) - these execute immediately, so safe
+            if is_passed_to_sync_hof(loop_body, func_pos_in_loop):
+                continue
 
             # Check if the closure is part of a return statement
             if strict:
