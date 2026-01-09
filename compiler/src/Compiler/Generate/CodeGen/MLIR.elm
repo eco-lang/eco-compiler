@@ -3343,10 +3343,6 @@ generateMonoPath ctx path targetType =
                         Mono.CustomContainer ->
                             -- Type-specific projection for custom ADTs
                             ecoProjectCustom ctx2 resultVar index targetType subVar
-
-                        Mono.RecordContainer ->
-                            -- Type-specific projection for records
-                            ecoProjectRecord ctx2 resultVar index targetType subVar
             in
             ( subOps ++ [ projectOp ]
             , resultVar

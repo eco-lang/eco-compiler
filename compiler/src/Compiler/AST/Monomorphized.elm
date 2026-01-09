@@ -447,7 +447,6 @@ type ContainerKind
     | Tuple2Container
     | Tuple3Container
     | CustomContainer
-    | RecordContainer
 
 
 {-| Path for navigating into a data structure during destructuring.
