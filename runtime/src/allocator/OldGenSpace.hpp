@@ -379,7 +379,8 @@ public:
 
     // Free lists.
     static FreeCell* getFreeList(const OldGenSpace& oldgen, size_t cls) {
-        return cls < NUM_SIZE_CLASSES ? oldgen.free_lists_[cls] : nullptr;
+        assert(cls < NUM_SIZE_CLASSES && "getFreeList: invalid size class (>= NUM_SIZE_CLASSES)");
+        return oldgen.free_lists_[cls];
     }
 
     // Block metadata.
