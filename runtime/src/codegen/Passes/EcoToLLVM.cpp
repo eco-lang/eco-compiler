@@ -276,7 +276,6 @@ struct BoxOpLowering : public OpConversionPattern<BoxOp> {
         auto module = op->getParentOfType<ModuleOp>();
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         Value input = adaptor.getValue();
         Type inputType = input.getType();
@@ -401,7 +400,6 @@ struct AllocateOpLowering : public OpConversionPattern<AllocateOp> {
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         // Get or insert eco_allocate declaration: uint64_t eco_allocate(uint64_t size, uint32_t tag)
         // Runtime returns HPointer as uint64_t directly.
@@ -443,7 +441,6 @@ struct AllocateCtorOpLowering : public OpConversionPattern<AllocateCtorOp> {
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         // Get or insert eco_alloc_custom declaration
         // Runtime returns HPointer as uint64_t directly.
@@ -485,7 +482,6 @@ struct AllocateStringOpLowering : public OpConversionPattern<AllocateStringOp> {
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         // Get or insert eco_alloc_string declaration
         // Runtime returns HPointer as uint64_t directly.
@@ -787,7 +783,6 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         // eco_alloc_cons(uint64_t head, uint64_t tail, uint32_t head_unboxed) -> uint64_t
         // Runtime takes and returns HPointer as uint64_t directly.
@@ -903,7 +898,6 @@ struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp>
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         // eco_alloc_tuple2(uint64_t a, uint64_t b, uint32_t unboxed_mask) -> uint64_t
         // Runtime takes and returns HPointer as uint64_t directly.
@@ -940,7 +934,6 @@ struct Tuple3ConstructOpLowering : public OpConversionPattern<Tuple3ConstructOp>
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         // eco_alloc_tuple3(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) -> uint64_t
         // Runtime takes and returns HPointer as uint64_t directly.
@@ -1059,7 +1052,6 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
         auto f64Ty = Float64Type::get(ctx);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
         auto voidTy = LLVM::LLVMVoidType::get(ctx);
 
         // eco_alloc_record(uint32_t field_count, uint64_t unboxed_bitmap) -> HPointer as i64
@@ -1179,7 +1171,6 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
         auto f64Ty = Float64Type::get(ctx);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
         auto voidTy = LLVM::LLVMVoidType::get(ctx);
 
         // eco_alloc_custom(ctor_id, field_count, scalar_bytes) -> HPointer as i64
@@ -1578,7 +1569,6 @@ struct CrashOpLowering : public OpConversionPattern<CrashOp> {
         auto loc = op.getLoc();
         auto module = op->getParentOfType<ModuleOp>();
         auto *ctx = rewriter.getContext();
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
         auto voidTy = LLVM::LLVMVoidType::get(ctx);
 
         // Get or insert eco_crash declaration: void eco_crash(uint64_t message)

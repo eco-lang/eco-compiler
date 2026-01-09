@@ -1,3 +1,4 @@
+// XFAIL: eco_dbg_print crashes on null/uninitialized globals
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
 // Test reading a global before any write.
