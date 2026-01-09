@@ -6,6 +6,8 @@ The JoinpointNormalization pass analyzes and classifies `eco.joinpoint` operatio
 
 **File**: `runtime/src/codegen/Passes/JoinpointNormalization.cpp`
 
+**Phase**: MLIR_Codegen (see `invariants.csv` for related CGEN_* invariants)
+
 ## Pseudocode
 
 ```
@@ -86,7 +88,9 @@ A joinpoint is classified as an SCF-candidate if ALL of:
 3. Non-qualifying joinpoints remain unchanged (no attributes added)
 4. No IR structure is modified - this is purely an analysis pass
 
-## Invariants
+## Pass Behavior Guarantees
+
+These are behavioral properties of the pass itself, not system-wide invariants (see `invariants.csv` for CGEN_* invariants):
 
 1. **Attribute Idempotence**: Running the pass multiple times produces identical results
 2. **Conservative Classification**: Only joinpoints that definitively match the pattern are marked; ambiguous cases are left for CF lowering

@@ -4,7 +4,78 @@
 
 The EcoToLLVM pass is the main lowering pass that converts ECO dialect operations to LLVM dialect. It handles type conversion, heap allocation, control flow, arithmetic operations, and function calls. This is the final dialect conversion before LLVM IR generation.
 
-**File**: `runtime/src/codegen/Passes/EcoToLLVM.cpp`
+**Phase**: MLIR_Codegen (Stage 3)
+
+**Pipeline Position**: Final ECO-to-LLVM step, runs after all Stage 2 passes
+
+## Modular Structure
+
+The pass is internally modularized by concern while remaining a single pass externally. This improves maintainability while keeping the public API stable.
+
+### File Organization
+
+```
+runtime/src/codegen/Passes/
+├── EcoToLLVM.cpp              # Pass orchestrator (~150 lines)
+├── EcoToLLVMInternal.h        # Private header: EcoRuntime, layout constants, type converter
+├── EcoToLLVMRuntime.cpp       # Runtime function helper implementation
+├── EcoToLLVMTypes.cpp         # Constants, string literals
+├── EcoToLLVMHeap.cpp          # Heap allocation, boxing, construct/project
+├── EcoToLLVMClosures.cpp      # Closures, PAP, calls
+├── EcoToLLVMControlFlow.cpp   # Case, joinpoint, jump, return, get_tag
+├── EcoToLLVMArith.cpp         # Arithmetic, comparisons, conversions
+├── EcoToLLVMGlobals.cpp       # Globals, GC root initialization
+├── EcoToLLVMErrorDebug.cpp    # Crash, expect, dbg, safepoint
+└── EcoToLLVMFunc.cpp          # Kernel function lowering
+```
+
+### Shared Infrastructure
+
+**EcoTypeConverter**: Extends `LLVMTypeConverter` to convert `!eco.value` → `i64`.
+
+**EcoRuntime**: Lightweight helper (passed by value) for declaring and caching runtime function references. Provides `getOrCreate*()` methods for all runtime functions.
+
+**EcoCFContext**: Per-pass context for control flow lowering. Stores joinpoint block mappings keyed by `(function, joinpoint-id)` to avoid clashes across functions and eliminate static global state.
+
+**Layout Constants**: Centralized in `namespace eco::detail::layout`:
+- `HeaderSize`, `PtrSize`, `Alignment`
+- Object-specific offsets (Cons, Tuple, Record, Custom, Closure)
+
+**Value Encoding**: Centralized in `namespace eco::detail::value_enc`:
+- `ConstFieldShift = 40`
+- `ConstantKind` enum (Unit, True, False, Nil, EmptyString, etc.)
+- `encodeConstant()` helper
+
+### Pattern Modules
+
+Each module provides an internal `populate*Patterns()` function:
+
+| Module | Patterns | Purpose |
+|--------|----------|---------|
+| Types | 2 | `eco.constant`, `eco.string_literal` |
+| Heap | 17 | Box, Unbox, Allocate*, List*, Tuple*, Record*, Custom* |
+| Closures | 4 | `papCreate`, `papExtend`, `call` (direct + indirect) |
+| ControlFlow | 5 | `case`, `joinpoint`, `jump`, `return`, `get_tag` |
+| Arith | 59 | Int*, Float*, Bool*, Char* ops |
+| Globals | 3 | `global`, `load_global`, `store_global` |
+| ErrorDebug | 4 | `safepoint`, `dbg`, `crash`, `expect` |
+| Func | 1 | Kernel function lowering |
+
+## Related Invariants
+
+This pass implements and depends on several documented invariants:
+
+| Invariant | Relevance |
+|-----------|-----------|
+| **CGEN_012** | Type mapping: MInt→i64, MFloat→f64, MBool→i1, MChar→i32, others→eco.value |
+| **HEAP_001** | Every heap object begins with 8-byte Header; tag encodes object kind |
+| **HEAP_002** | All heap objects are 8-byte aligned |
+| **HEAP_008** | HPointer is 40-bit offset from heap_base (encoded in i64) |
+| **HEAP_010** | Embedded constants (Unit, True, False, Nil, EmptyString) via HPointer.constant field |
+| **HEAP_014** | HPointer with constant≠0 are embedded constants, not heap pointers |
+| **HEAP_016** | Runtime eco_alloc_* functions return uint64_t (HPointer representation) |
+| **XPHASE_001** | RecordLayout/TupleLayout/CtorLayout must match eco.construct attributes and C++ structs |
+| **XPHASE_002** | eco.value pointers correspond to HPointer-based heap objects |
 
 ## Type Conversion
 
@@ -195,6 +266,13 @@ eco.call %closure(%newargs) remaining_arity=N
 
 ### 8. Control Flow
 
+**EcoCFContext**: Manages joinpoint block mappings with per-function scoping:
+```cpp
+struct EcoCFContext {
+    DenseMap<pair<Operation*, int64_t>, Block*> joinpointBlocks;
+};
+```
+
 **eco.case (non-SCF lowered):**
 ```
 eco.case %scrutinee [tags...] { alternatives... }
@@ -221,8 +299,10 @@ eco.joinpoint id(args) { body } continuation { ... }
     -> contBlock: continuation code, jumps to jpBlock
     -> jpBlock(args): body code
     -> exitBlock: code after joinpoint
+    -> Store jpBlock in EcoCFContext keyed by (func, id)
 
 eco.jump id(args)
+    -> Look up target block from EcoCFContext
     -> cf.br jpBlock(args)
 ```
 
@@ -383,12 +463,15 @@ This registers global variables as GC roots.
 4. Global root initialization function is generated
 5. Module is valid LLVM dialect IR
 
-## Invariants
+## Pass Behavior Guarantees
+
+These are behavioral properties of the pass itself (see "Related Invariants" section above for system-wide invariants):
 
 1. **Type Preservation**: Converted types maintain bit-width and semantics
-2. **Memory Safety**: All heap accesses use correct offsets from object layouts
+2. **Memory Safety**: All heap accesses use correct offsets from object layouts (per HEAP_001, HEAP_002)
 3. **SSA Preservation**: Value flow through control flow is preserved via block arguments
 4. **No Dead Code**: Every path through converted case/joinpoint has proper terminator
+5. **No Static Global State**: Joinpoint mappings use per-pass EcoCFContext, not static globals
 
 ## Runtime Functions Referenced
 
@@ -407,6 +490,7 @@ The pass generates calls to these runtime functions:
 | `eco_store_*_field*` | Field storage |
 | `eco_pap_extend` | Partial application |
 | `eco_closure_call_saturated` | Saturated closure call |
+| `eco_resolve_hptr` | Convert HPointer to raw pointer |
 | `eco_crash` | Runtime error |
 | `eco_dbg_print*` | Debug output |
 | `eco_gc_add_root` | GC root registration |
@@ -415,6 +499,6 @@ The pass generates calls to these runtime functions:
 
 ## Relationship to Other Passes
 
-- **Requires**: All earlier ECO passes
+- **Requires**: All earlier ECO passes (JoinpointNormalization, EcoControlFlowToSCF, RCElimination, UndefinedFunction)
 - **Enables**: LLVM optimization and code generation
-- **Pipeline Position**: Final ECO-to-LLVM step
+- **Pipeline Position**: Final ECO-to-LLVM step (Stage 3)

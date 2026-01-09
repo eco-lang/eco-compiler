@@ -6,6 +6,8 @@ The RCElimination pass validates that no reference counting operations exist in 
 
 **File**: `runtime/src/codegen/Passes/RCElimination.cpp`
 
+**Phase**: MLIR_Codegen (see `invariants.csv` for related CGEN_* and HEAP_* invariants)
+
 ## Pseudocode
 
 ```
@@ -72,7 +74,9 @@ This pass serves as a **verification checkpoint** in the compilation pipeline.
 1. **If pass succeeds**: No RC operations exist in the module
 2. **If pass fails**: At least one RC operation was found; compilation halts with error messages identifying the offending operations
 
-## Invariants
+## Pass Behavior Guarantees
+
+These are behavioral properties of the pass itself, not system-wide invariants (see `invariants.csv` for CGEN_* and HEAP_* invariants):
 
 1. **No Modification**: Pass never modifies IR, only inspects
 2. **Complete Scan**: Every operation in the module is checked
@@ -118,7 +122,7 @@ For now, the pass ensures the simple tracing GC model is maintained.
 ## Relationship to GC Design
 
 ECO's tracing GC provides:
-- **No write barriers** (Elm's immutability guarantees no old-to-young pointers)
+- **No write barriers** (Elm's immutability guarantees no old-to-young pointers) — see **HEAP_005**
 - **Generational collection** (nursery + old generation)
 - **No reference counts** in object headers
 

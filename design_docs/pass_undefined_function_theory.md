@@ -4,6 +4,8 @@
 
 The UndefinedFunction pass validates that all functions referenced by `eco.call` operations are defined or declared in the module. This enforces invariant CGEN_011: no undefined function symbols may escape MLIR codegen.
 
+In practice, this pass catches undefined **kernel functions** (e.g., `Elm_Kernel_Basics_add`), since user-defined functions are always generated with definitions. If a kernel function call is emitted but its declaration is missing, this pass will fail with an error.
+
 **File**: `runtime/src/codegen/Passes/UndefinedFunction.cpp`
 
 ## Pseudocode
@@ -107,7 +109,9 @@ The MLIR codegen phase (`Compiler.Generate.MLIRMono`) is responsible for:
 1. **User functions**: Generated as `func.func` definitions with bodies
 2. **Kernel functions**: Generated as `func.func private` declarations (no body)
 
-Kernel function declarations are generated when the codegen encounters calls to functions like:
+**Important**: Stubs for **all** kernel functions are generated during the Elm MLIR codegen phase. The types for these stubs are derived during **monomorphization**, which determines the concrete types for each kernel function call site. This means every kernel function that is called will have a corresponding declaration with the correct monomorphized signature.
+
+Example kernel functions:
 - `Elm_Kernel_Basics_add`, `_sub`, `_mul`, etc.
 - `Elm_Kernel_List_cons`, `_map`, `_filter`, etc.
 - `Elm_Kernel_String_append`, `_length`, etc.

@@ -6,6 +6,10 @@ The EcoControlFlowToSCF pass lowers eligible `eco.case` and `eco.joinpoint` oper
 
 **File**: `runtime/src/codegen/Passes/EcoControlFlowToSCF.cpp`
 
+**Phase**: MLIR_Codegen (see `invariants.csv` for related CGEN_* invariants)
+
+**Related Invariant**: **CGEN_010** — Every `eco.case` has an explicit `result_types` attribute and all alternative `eco.return` terminators match it. This pass depends on this invariant for correct type inference during SCF lowering.
+
 ## Lowering Patterns
 
 | Source Operation | Target Operation | Condition |
@@ -161,7 +165,9 @@ FUNCTION matchAndRewrite(joinpointOp):
 4. `eco.return` terminators inside converted operations become `scf.yield`
 5. SSA value flow is preserved through SCF operation results
 
-## Invariants
+## Pass Behavior Guarantees
+
+These are behavioral properties of the pass itself, not system-wide invariants (see `invariants.csv` for CGEN_* invariants, particularly **CGEN_010** referenced above):
 
 1. **Terminal Position**: Patterns only match case ops followed by `eco.return` or `scf.yield`
 2. **Pure Returns**: All alternatives must end with `eco.return` (not `eco.jump`)
