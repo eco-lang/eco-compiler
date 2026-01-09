@@ -4,8 +4,8 @@ module ListLiteralTest exposing (main)
 -}
 
 -- CHECK: list1: [1]
--- CHECK: list2: [1,2,3]
--- CHECK: list3: [10,20,30,40,50]
+-- CHECK: list2: [1, 2, 3]
+-- CHECK: list3: [10, 20, 30, 40, 50]
 
 import Html exposing (text)
 

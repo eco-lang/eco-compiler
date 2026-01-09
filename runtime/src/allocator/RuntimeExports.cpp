@@ -9,7 +9,9 @@
 #include "Allocator.hpp"
 #include "Heap.hpp"
 #include "HeapHelpers.hpp"
+#include "TypeInfo.hpp"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -83,6 +85,22 @@ void output_char(char c) {
         *tl_output_stream << c;
     } else {
         fputc(c, stderr);
+    }
+}
+
+/// Helper to print float values with proper Infinity and NaN formatting.
+/// Elm uses "Infinity", "-Infinity", and "NaN" (not "inf", "-inf", "nan").
+void print_float(double d) {
+    if (std::isinf(d)) {
+        if (d > 0) {
+            output_text("Infinity");
+        } else {
+            output_text("-Infinity");
+        }
+    } else if (std::isnan(d)) {
+        output_text("NaN");
+    } else {
+        output_format("%g", d);
     }
 }
 
@@ -598,7 +616,21 @@ extern "C" [[noreturn]] void eco_crash(uint64_t message_val) {
 // Forward declaration for recursive printing
 static void print_value(uint64_t val, int depth);
 
-// Print a string value
+// Print string content (without quotes) - for Debug.log labels
+static void print_string_content(ElmString* str) {
+    Header* header = &str->header;
+    for (uint32_t i = 0; i < header->size; i++) {
+        u16 c = str->chars[i];
+        if (c < 128) {
+            output_char(static_cast<char>(c));
+        } else {
+            // Print non-ASCII as unicode escape
+            output_format("\\u%04X", c);
+        }
+    }
+}
+
+// Print a string value (with quotes)
 static void print_string(ElmString* str) {
     Header* header = &str->header;
     output_char('"');
@@ -642,6 +674,37 @@ static void print_char(u16 c) {
         output_char(static_cast<char>(c));
     }
     output_char('\'');
+}
+
+// Print an unboxed primitive value from a container field.
+// ONLY called when: (1) unboxed bitmap indicates field is unboxed, AND
+//                   (2) type graph says field type is primitive.
+// NEVER called from eco_dbg_print_typed directly - that always receives
+// boxed HPointer values.
+static void printPrimitive(uint64_t bits, Elm::EcoPrimKind kind) {
+    switch (kind) {
+    case Elm::EcoPrimKind::Int:
+        output_format("%lld", (long long)static_cast<int64_t>(bits));
+        break;
+    case Elm::EcoPrimKind::Float: {
+        double d;
+        std::memcpy(&d, &bits, sizeof(d));
+        print_float(d);
+        break;
+    }
+    case Elm::EcoPrimKind::Char:
+        print_char(static_cast<u16>(bits));
+        break;
+    case Elm::EcoPrimKind::Bool:
+        output_text(bits ? "True" : "False");
+        break;
+    case Elm::EcoPrimKind::String:
+        // String is NEVER unboxed - if we get here, it's a bug.
+        // Fall through to print as pointer (will likely show <null> or garbage).
+        assert(false && "String cannot be unboxed");
+        output_text("<unboxed-string-bug>");
+        break;
+    }
 }
 
 // MLIR ConstantKind enum (1-based, from Ops.td)
@@ -1006,7 +1069,7 @@ static void print_value(uint64_t val, int depth) {
 
         case Tag_Float: {
             ElmFloat* floatval = static_cast<ElmFloat*>(ptr);
-            output_format("%g", floatval->value);
+            print_float(floatval->value);
             break;
         }
 
@@ -1132,6 +1195,437 @@ extern "C" void eco_dbg_print_char(int32_t value) {
     output_text("[eco.dbg] ");
     print_char(static_cast<u16>(value));
     output_text("\n");
+}
+
+// Global type graph pointer - set by eco_register_type_graph from JITed code
+static const Elm::EcoTypeGraph* g_type_graph = nullptr;
+
+// Register the type graph from JITed code
+extern "C" void eco_register_type_graph(const void* graph) {
+    g_type_graph = static_cast<const Elm::EcoTypeGraph*>(graph);
+}
+
+// Forward declaration for recursive printing
+static void print_typed_value(uint64_t value, uint32_t type_id, int depth);
+
+// Helper to print a label (string value without quotes)
+static void print_label(uint64_t value) {
+    void* ptr = hpointerToPtr(value);
+    if (ptr) {
+        Header* header = static_cast<Header*>(ptr);
+        if (header->tag == Tag_String) {
+            ElmString* str = static_cast<ElmString*>(ptr);
+            print_string_content(str);
+        } else {
+            // Not a string, print as value
+            print_value(value, 0);
+        }
+    } else {
+        output_text("<null>");
+    }
+}
+
+// Debug print with full type information using the global type graph.
+// When called with 2 args where type_ids[0] == -1, this is a Debug.log call
+// and we format as "label: value\n"
+extern "C" void eco_dbg_print_typed(uint64_t* values, uint32_t* type_ids, uint32_t num_args) {
+    // Special case for Debug.log: 2 args, first type_id is -1 (label)
+    if (num_args == 2 && type_ids[0] == (uint32_t)-1) {
+        print_label(values[0]);
+        output_text(": ");
+        print_typed_value(values[1], type_ids[1], 0);
+        output_text("\n");
+        return;
+    }
+
+    // General case: print each value on its own line
+    for (uint32_t i = 0; i < num_args; ++i) {
+        if (type_ids[i] == (uint32_t)-1) {
+            // Raw label, print without quotes
+            print_label(values[i]);
+        } else {
+            print_typed_value(values[i], type_ids[i], 0);
+        }
+        output_text("\n");
+    }
+}
+
+// Print a value using type information from the type graph
+static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
+    // Prevent infinite recursion
+    if (depth > 50) {
+        output_text("...");
+        return;
+    }
+
+    // Assert type graph is available and type_id is valid
+    assert(g_type_graph && "Type graph not initialized");
+    assert(g_type_graph->types && "Type graph has no types array");
+    assert(type_id < g_type_graph->type_count && "Invalid type_id");
+    if (!g_type_graph || !g_type_graph->types || type_id >= g_type_graph->type_count) {
+        // Safety fallback in release builds
+        print_value(value, depth);
+        return;
+    }
+
+    const Elm::EcoTypeInfo* typeInfo = &g_type_graph->types[type_id];
+
+    switch (typeInfo->kind) {
+    case Elm::EcoTypeKind::Primitive:
+        // INVARIANT: At the dbg boundary, primitives are ALWAYS boxed (!eco.value).
+        // The value is an HPointer to a heap object (ElmInt, ElmFloat, ElmChar,
+        // ElmString) or an embedded constant (True, False, EmptyString).
+        // Just use the generic value printer which dispatches on heap tag.
+        print_value(value, depth);
+        break;
+
+    case Elm::EcoTypeKind::List: {
+        // Get element type for typed recursive printing
+        uint32_t elem_type_id = typeInfo->data.list.elem_type_id;
+
+        // Assert element type is in valid range
+        assert(elem_type_id < g_type_graph->type_count && "Invalid elem_type_id in List type graph");
+
+        output_char('[');
+        bool first = true;
+        uint64_t current = value;
+        int count = 0;
+        const int MAX_LIST_ITEMS = 100;
+
+        while (count < MAX_LIST_ITEMS) {
+            // Check for Nil (end of list)
+            if (is_nil(current)) {
+                break;
+            }
+
+            // Check for other embedded constants
+            uint64_t ptr_part = current & 0xFFFFFFFFFF;
+            uint64_t const_part = current >> 40;
+            if (ptr_part == 0 && const_part >= 1 && const_part <= 7) {
+                break;
+            }
+
+            void* ptr = hpointerToPtr(current);
+            if (!ptr) break;
+
+            Header* header = static_cast<Header*>(ptr);
+
+            // Handle both Tag_Cons and Tag_Custom (ctor=1) for list cons cells
+            uint64_t head_val;
+            uint64_t tail_val;
+            bool head_unboxed = false;
+
+            if (header->tag == Tag_Cons) {
+                Cons* cons = static_cast<Cons*>(ptr);
+                head_val = static_cast<uint64_t>(cons->head.i);
+                head_unboxed = (cons->header.unboxed & 1);
+                tail_val = cons->tail.ptr | (static_cast<uint64_t>(cons->tail.constant) << 40);
+            } else if (header->tag == Tag_Custom) {
+                Custom* custom = static_cast<Custom*>(ptr);
+                if (!is_list_cons(custom)) break;
+                head_val = static_cast<uint64_t>(custom->values[0].i);
+                head_unboxed = (custom->unboxed & 1);
+                tail_val = static_cast<uint64_t>(custom->values[1].i);
+            } else {
+                break;
+            }
+
+            if (!first) output_text(", ");
+            first = false;
+
+            // Print head with type info
+            if (head_unboxed) {
+                // Value is unboxed - use printPrimitive based on element type
+                const Elm::EcoTypeInfo* elemType = &g_type_graph->types[elem_type_id];
+                if (elemType->kind == Elm::EcoTypeKind::Primitive) {
+                    printPrimitive(head_val, elemType->data.primitive.prim_kind);
+                } else if (elemType->kind == Elm::EcoTypeKind::Polymorphic &&
+                           elemType->data.polymorphic.constraint == Elm::EcoConstraintKind::Number) {
+                    // Number constraint with unboxed value - assume Int
+                    printPrimitive(head_val, Elm::EcoPrimKind::Int);
+                } else {
+                    // Unboxed but type graph says non-primitive - type mismatch
+                    assert(false && "List head is unboxed but element type is not primitive");
+                    output_format("<unboxed-non-prim:0x%llx>", (unsigned long long)head_val);
+                }
+            } else {
+                // Value is boxed (HPointer) - recurse with type info
+                print_typed_value(head_val, elem_type_id, depth + 1);
+            }
+
+            current = tail_val;
+            count++;
+        }
+
+        if (count >= MAX_LIST_ITEMS) {
+            output_text(", ...");
+        }
+        output_char(']');
+        break;
+    }
+
+    case Elm::EcoTypeKind::Tuple: {
+        uint16_t arity = typeInfo->data.tuple.arity;
+        uint32_t first_field = typeInfo->data.tuple.first_field;
+
+        // Assert fields array is valid
+        assert(g_type_graph->fields && "Type graph has no fields array");
+        assert(first_field + arity <= g_type_graph->field_count && "Tuple field indices out of bounds");
+
+        // Assert field types are in valid range
+        for (uint16_t i = 0; i < arity; i++) {
+            assert(g_type_graph->fields[first_field + i].type_id < g_type_graph->type_count &&
+                   "Invalid field type_id in Tuple type graph");
+        }
+
+        void* ptr = hpointerToPtr(value);
+        if (!ptr) {
+            output_text("<null>");
+            break;
+        }
+
+        Header* header = static_cast<Header*>(ptr);
+
+        if (header->tag == Tag_Tuple2 && arity == 2) {
+            Tuple2* tuple = static_cast<Tuple2*>(ptr);
+            uint32_t type_a = g_type_graph->fields[first_field].type_id;
+            uint32_t type_b = g_type_graph->fields[first_field + 1].type_id;
+            uint8_t unboxed = tuple->header.unboxed;
+
+            output_char('(');
+            // Field a
+            if (unboxed & 1) {
+                const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_a];
+                assert(ft->kind == Elm::EcoTypeKind::Primitive &&
+                       "Tuple field a is unboxed but type is not primitive");
+                printPrimitive(static_cast<uint64_t>(tuple->a.i), ft->data.primitive.prim_kind);
+            } else {
+                print_typed_value(static_cast<uint64_t>(tuple->a.i), type_a, depth + 1);
+            }
+            output_text(", ");
+            // Field b
+            if (unboxed & 2) {
+                const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_b];
+                assert(ft->kind == Elm::EcoTypeKind::Primitive &&
+                       "Tuple field b is unboxed but type is not primitive");
+                printPrimitive(static_cast<uint64_t>(tuple->b.i), ft->data.primitive.prim_kind);
+            } else {
+                print_typed_value(static_cast<uint64_t>(tuple->b.i), type_b, depth + 1);
+            }
+            output_char(')');
+        } else if (header->tag == Tag_Tuple3 && arity == 3) {
+            Tuple3* tuple = static_cast<Tuple3*>(ptr);
+            uint32_t type_a = g_type_graph->fields[first_field].type_id;
+            uint32_t type_b = g_type_graph->fields[first_field + 1].type_id;
+            uint32_t type_c = g_type_graph->fields[first_field + 2].type_id;
+            uint8_t unboxed = tuple->header.unboxed;
+
+            output_char('(');
+            // Field a
+            if (unboxed & 1) {
+                const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_a];
+                assert(ft->kind == Elm::EcoTypeKind::Primitive &&
+                       "Tuple3 field a is unboxed but type is not primitive");
+                printPrimitive(static_cast<uint64_t>(tuple->a.i), ft->data.primitive.prim_kind);
+            } else {
+                print_typed_value(static_cast<uint64_t>(tuple->a.i), type_a, depth + 1);
+            }
+            output_text(", ");
+            // Field b
+            if (unboxed & 2) {
+                const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_b];
+                assert(ft->kind == Elm::EcoTypeKind::Primitive &&
+                       "Tuple3 field b is unboxed but type is not primitive");
+                printPrimitive(static_cast<uint64_t>(tuple->b.i), ft->data.primitive.prim_kind);
+            } else {
+                print_typed_value(static_cast<uint64_t>(tuple->b.i), type_b, depth + 1);
+            }
+            output_text(", ");
+            // Field c
+            if (unboxed & 4) {
+                const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_c];
+                assert(ft->kind == Elm::EcoTypeKind::Primitive &&
+                       "Tuple3 field c is unboxed but type is not primitive");
+                printPrimitive(static_cast<uint64_t>(tuple->c.i), ft->data.primitive.prim_kind);
+            } else {
+                print_typed_value(static_cast<uint64_t>(tuple->c.i), type_c, depth + 1);
+            }
+            output_char(')');
+        } else {
+            // Tag doesn't match expected tuple type
+            assert(false && "Tuple tag mismatch - value doesn't match type");
+            output_text("<tuple-mismatch>");
+        }
+        break;
+    }
+
+    case Elm::EcoTypeKind::Record: {
+        uint32_t first_field = typeInfo->data.record.first_field;
+        uint32_t field_count = typeInfo->data.record.field_count;
+
+        void* ptr = hpointerToPtr(value);
+        if (!ptr) {
+            output_text("<null>");
+            break;
+        }
+
+        Header* header = static_cast<Header*>(ptr);
+        if (header->tag != Tag_Record) {
+            print_value(value, depth);
+            break;
+        }
+
+        Record* record = static_cast<Record*>(ptr);
+        uint32_t actual_size = record->header.size;
+        uint64_t unboxed = record->unboxed;
+
+        output_text("{ ");
+        for (uint32_t i = 0; i < actual_size && i < field_count; i++) {
+            if (i > 0) output_text(", ");
+
+            // Get field info from type graph
+            if (g_type_graph->fields && first_field + i < g_type_graph->field_count) {
+                const Elm::EcoFieldInfo* field = &g_type_graph->fields[first_field + i];
+
+                // Print field name if available
+                if (g_type_graph->strings && field->name_index < g_type_graph->string_count) {
+                    output_text(g_type_graph->strings[field->name_index]);
+                } else {
+                    output_format("f%u", i);
+                }
+                output_text(" = ");
+
+                // Print field value - check unboxed bitmap from heap
+                uint64_t field_val = static_cast<uint64_t>(record->values[i].i);
+                bool is_unboxed = (unboxed & (1ULL << i)) != 0;
+
+                if (is_unboxed) {
+                    const Elm::EcoTypeInfo* ft = &g_type_graph->types[field->type_id];
+                    assert(ft->kind == Elm::EcoTypeKind::Primitive &&
+                           "Record field is unboxed but type is not primitive");
+                    printPrimitive(field_val, ft->data.primitive.prim_kind);
+                } else {
+                    print_typed_value(field_val, field->type_id, depth + 1);
+                }
+            } else {
+                // Fallback without type info
+                output_format("f%u = ", i);
+                uint64_t field_val = static_cast<uint64_t>(record->values[i].i);
+                print_value(field_val, depth + 1);
+            }
+        }
+        output_text(" }");
+        break;
+    }
+
+    case Elm::EcoTypeKind::Custom: {
+        uint32_t first_ctor = typeInfo->data.custom.first_ctor;
+        uint32_t ctor_count = typeInfo->data.custom.ctor_count;
+
+        // Check for embedded constants first
+        if (print_if_constant(value)) {
+            break;
+        }
+
+        void* ptr = hpointerToPtr(value);
+        if (!ptr) {
+            output_text("<null>");
+            break;
+        }
+
+        Header* header = static_cast<Header*>(ptr);
+        assert(header->tag == Tag_Custom && "Expected Custom tag for Custom type");
+        if (header->tag != Tag_Custom) {
+            output_text("<not-custom>");
+            break;
+        }
+
+        Custom* custom = static_cast<Custom*>(ptr);
+        uint32_t ctor_id = custom->ctor;
+        uint32_t size = custom->header.size;
+
+        // Assert constructor info is available
+        assert(g_type_graph->ctors && "Type graph has no ctors array");
+        assert(ctor_count > 0 && "Custom type has no constructors in type graph - codegen bug");
+        assert(ctor_id < ctor_count && "Constructor id out of bounds");
+
+        const Elm::EcoCtorInfo* ctor_info = &g_type_graph->ctors[first_ctor + ctor_id];
+
+        // Assert constructor name is available
+        assert(g_type_graph->strings && "Type graph has no strings array");
+        assert(ctor_info->name_index < g_type_graph->string_count &&
+               "Constructor name_index out of bounds");
+
+        // Print constructor name
+        output_text(g_type_graph->strings[ctor_info->name_index]);
+
+        // Print fields if any
+        if (size > 0) {
+            // Assert field info is available
+            assert(g_type_graph->fields && "Type graph has no fields array");
+            assert(ctor_info->field_count == size && "Field count mismatch");
+            assert(ctor_info->first_field + size <= g_type_graph->field_count &&
+                   "Field indices out of bounds");
+
+            for (uint32_t i = 0; i < size; i++) {
+                output_char(' ');
+
+                uint64_t field_val = static_cast<uint64_t>(custom->values[i].i);
+                bool is_unboxed = (custom->unboxed & (1ULL << i)) != 0;
+
+                // Get field type from ctor info
+                uint32_t field_type_id = g_type_graph->fields[ctor_info->first_field + i].type_id;
+
+                // Assert field type is in valid range
+                assert(field_type_id < g_type_graph->type_count &&
+                       "Invalid field type_id in Custom type graph");
+
+                // Check if nested custom needs parentheses (only for boxed values)
+                bool needs_parens = false;
+                if (!is_unboxed) {
+                    void* field_ptr = hpointerToPtr(field_val);
+                    if (field_ptr) {
+                        Header* h = static_cast<Header*>(field_ptr);
+                        needs_parens = (h->tag == Tag_Custom &&
+                                       static_cast<Custom*>(field_ptr)->header.size > 0);
+                    }
+                }
+
+                if (needs_parens) output_char('(');
+
+                if (is_unboxed) {
+                    // Unboxed value - use printPrimitive with type from type graph
+                    const Elm::EcoTypeInfo* ft = &g_type_graph->types[field_type_id];
+                    assert(ft->kind == Elm::EcoTypeKind::Primitive &&
+                           "Custom field is unboxed but type is not primitive");
+                    printPrimitive(field_val, ft->data.primitive.prim_kind);
+                } else {
+                    print_typed_value(field_val, field_type_id, depth + 1);
+                }
+
+                if (needs_parens) output_char(')');
+            }
+        }
+        break;
+    }
+
+    case Elm::EcoTypeKind::Function:
+        // Functions are printed as closures
+        output_text("<function>");
+        break;
+
+    case Elm::EcoTypeKind::Polymorphic:
+        // Polymorphic type variable - value is always boxed (!eco.value).
+        // Just dispatch based on heap tag via print_value.
+        // For Number constraint, this will print Int or Float correctly.
+        // For EcoValue constraint, it handles any heap type.
+        print_value(value, depth);
+        break;
+
+    default:
+        output_format("[unknown_kind:%d] 0x%llx", (int)typeInfo->kind, (unsigned long long)value);
+        break;
+    }
 }
 
 // Output text to the current output stream (for kernel functions)

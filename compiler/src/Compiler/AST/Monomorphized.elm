@@ -9,7 +9,7 @@ module Compiler.AST.Monomorphized exposing
     , ContainerKind(..)
     , typeOf, canUnbox
     , computeRecordLayout, computeTupleLayout
-    , toComparableSpecKey
+    , toComparableSpecKey, toComparableMonoType
     )
 
 {-| Monomorphized AST for backends that can optimize using concrete types.

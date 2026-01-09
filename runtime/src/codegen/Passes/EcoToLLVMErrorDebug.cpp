@@ -58,39 +58,85 @@ struct DbgOpLowering : public OpConversionPattern<DbgOp> {
         auto origArgs = op.getArgs();
         auto args = adaptor.getArgs();
 
-        for (size_t i = 0; i < args.size(); i++) {
-            Type origType = origArgs[i].getType();
-            Value arg = args[i];
+        // Check if we have type IDs for typed printing
+        auto argTypeIds = op.getArgTypeIds();
+        if (argTypeIds && argTypeIds->size() == args.size() && !args.empty()) {
+            // Use eco_dbg_print_typed for typed output
+            auto func = runtime.getOrCreateDbgPrintTyped(rewriter);
+            uint32_t numArgs = args.size();
 
-            if (origType.isInteger(64)) {
-                // Unboxed i64 -> eco_dbg_print_int
-                auto func = runtime.getOrCreateDbgPrintInt(rewriter);
-                rewriter.create<LLVM::CallOp>(loc, func, ValueRange{arg});
-            } else if (origType.isF64()) {
-                // Unboxed f64 -> eco_dbg_print_float
-                auto func = runtime.getOrCreateDbgPrintFloat(rewriter);
-                rewriter.create<LLVM::CallOp>(loc, func, ValueRange{arg});
-            } else if (origType.isInteger(16)) {
-                // Unboxed i16 (char) -> eco_dbg_print_char
-                auto func = runtime.getOrCreateDbgPrintChar(rewriter);
-                rewriter.create<LLVM::CallOp>(loc, func, ValueRange{arg});
-            } else {
-                // Boxed value (!eco.value) -> eco_dbg_print with array
-                auto func = runtime.getOrCreateDbgPrint(rewriter);
+            // Allocate arrays for values and type_ids
+            auto valArrayTy = LLVM::LLVMArrayType::get(i64Ty, numArgs);
+            auto typeArrayTy = LLVM::LLVMArrayType::get(i32Ty, numArgs);
+            auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 1);
+            auto valuesAlloca = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, valArrayTy, one);
+            auto typesAlloca = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, typeArrayTy, one);
 
-                // Allocate single-element array on stack
-                auto arrayTy = LLVM::LLVMArrayType::get(i64Ty, 1);
-                auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 1);
-                auto alloca = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, arrayTy, one);
+            // Fill the arrays
+            for (size_t i = 0; i < numArgs; i++) {
+                Value arg = args[i];
+                int64_t typeId = (*argTypeIds)[i];
 
-                // Store the value
+                // INVARIANT: All eco.dbg operands are !eco.value, which converts
+                // to i64 (HPointer) via EcoTypeConverter. No primitive conversions
+                // needed - the Elm frontend boxes primitives before eco.dbg.
+                assert(arg.getType().isInteger(64) &&
+                       "eco.dbg argument must be i64 (boxed !eco.value)");
+                Value valAsI64 = arg;
+
+                // Store value
+                auto idx = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, (int64_t)i);
                 auto zero = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 0);
-                auto gep = rewriter.create<LLVM::GEPOp>(loc, ptrTy, arrayTy, alloca,
-                                                        ValueRange{zero, zero});
-                rewriter.create<LLVM::StoreOp>(loc, arg, gep);
+                auto valGep = rewriter.create<LLVM::GEPOp>(loc, ptrTy, valArrayTy, valuesAlloca,
+                                                          ValueRange{zero, idx});
+                rewriter.create<LLVM::StoreOp>(loc, valAsI64, valGep);
 
-                // Call eco_dbg_print
-                rewriter.create<LLVM::CallOp>(loc, func, ValueRange{alloca, one});
+                // Store type_id
+                auto typeIdCst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, (int64_t)typeId);
+                auto typeGep = rewriter.create<LLVM::GEPOp>(loc, ptrTy, typeArrayTy, typesAlloca,
+                                                           ValueRange{zero, idx});
+                rewriter.create<LLVM::StoreOp>(loc, typeIdCst, typeGep);
+            }
+
+            // Call eco_dbg_print_typed
+            auto numArgsCst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, (int64_t)numArgs);
+            rewriter.create<LLVM::CallOp>(loc, func, ValueRange{valuesAlloca, typesAlloca, numArgsCst});
+        } else {
+            // Fall back to existing behavior without type info
+            for (size_t i = 0; i < args.size(); i++) {
+                Type origType = origArgs[i].getType();
+                Value arg = args[i];
+
+                if (origType.isInteger(64)) {
+                    // Unboxed i64 -> eco_dbg_print_int
+                    auto func = runtime.getOrCreateDbgPrintInt(rewriter);
+                    rewriter.create<LLVM::CallOp>(loc, func, ValueRange{arg});
+                } else if (origType.isF64()) {
+                    // Unboxed f64 -> eco_dbg_print_float
+                    auto func = runtime.getOrCreateDbgPrintFloat(rewriter);
+                    rewriter.create<LLVM::CallOp>(loc, func, ValueRange{arg});
+                } else if (origType.isInteger(16)) {
+                    // Unboxed i16 (char) -> eco_dbg_print_char
+                    auto func = runtime.getOrCreateDbgPrintChar(rewriter);
+                    rewriter.create<LLVM::CallOp>(loc, func, ValueRange{arg});
+                } else {
+                    // Boxed value (!eco.value) -> eco_dbg_print with array
+                    auto func = runtime.getOrCreateDbgPrint(rewriter);
+
+                    // Allocate single-element array on stack
+                    auto arrayTy = LLVM::LLVMArrayType::get(i64Ty, 1);
+                    auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 1);
+                    auto alloca = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, arrayTy, one);
+
+                    // Store the value
+                    auto zero = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 0);
+                    auto gep = rewriter.create<LLVM::GEPOp>(loc, ptrTy, arrayTy, alloca,
+                                                            ValueRange{zero, zero});
+                    rewriter.create<LLVM::StoreOp>(loc, arg, gep);
+
+                    // Call eco_dbg_print
+                    rewriter.create<LLVM::CallOp>(loc, func, ValueRange{alloca, one});
+                }
             }
         }
 

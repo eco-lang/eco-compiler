@@ -300,16 +300,57 @@ def Eco_DbgOp : Eco_Op<"dbg"> {
     Debug/log operation for development. Can be lowered to runtime
     debug print calls or stripped entirely in release builds.
 
+    When `arg_type_ids` is present, uses the global type graph for
+    pretty-printing with full Elm syntax (field names, constructor names).
+
     Example:
     ```mlir
     eco.dbg %value1, %value2 : !eco.value, i64
+    eco.dbg %x : !eco.value { arg_type_ids = [0 : i64] }
     ```
   }];
 
-  let arguments = (ins Variadic<Eco_AnyValue>:$args);
+  let arguments = (ins
+    Variadic<Eco_AnyValue>:$args,
+    OptionalAttr<DenseI64ArrayAttr>:$arg_type_ids
+  );
   let results = (outs);
 
   let assemblyFormat = "($args^ `:` type($args))? attr-dict";
+}
+
+def Eco_TypeTableOp : Eco_Op<"type_table", [HasParent<"::mlir::ModuleOp">]> {
+  let summary = "Global type information graph for debug/reflection";
+  let description = [{
+    Module-level operation that holds the serialized type graph for the
+    compiled Elm program. Used by eco.dbg with arg_type_ids for typed
+    debug printing with full Elm syntax.
+
+    Lowered to LLVM globals that form the EcoTypeGraph struct, which the
+    runtime accesses via the __eco_type_graph symbol.
+
+    Example:
+    ```mlir
+    eco.type_table {
+      types = [...],
+      fields = [...],
+      ctors = [...],
+      func_args = [...],
+      strings = [...]
+    }
+    ```
+  }];
+
+  let arguments = (ins
+    OptionalAttr<ArrayAttr>:$types,
+    OptionalAttr<ArrayAttr>:$fields,
+    OptionalAttr<ArrayAttr>:$ctors,
+    OptionalAttr<ArrayAttr>:$func_args,
+    OptionalAttr<ArrayAttr>:$strings
+  );
+  let results = (outs);
+
+  let assemblyFormat = "attr-dict";
 }
 
 //===----------------------------------------------------------------------===//

@@ -744,6 +744,18 @@ specializeExpr expr subst state =
                                 Just (TOpt.DefineTailFunc _ args _ _ returnType) ->
                                     applySubst subst (buildFuncType args returnType)
 
+                                Just (TOpt.Enum _ enumCanType) ->
+                                    -- Nullary constructor - type is the custom type directly
+                                    applySubst subst enumCanType
+
+                                Just (TOpt.Ctor _ arity ctorCanType) ->
+                                    -- Constructor with fields - extract result type from function type
+                                    let
+                                        ctorMonoType =
+                                            applySubst subst ctorCanType
+                                    in
+                                    extractCtorResultType arity ctorMonoType
+
                                 _ ->
                                     -- For Link, Kernel, etc. - keep the original type
                                     monoType0
@@ -767,8 +779,23 @@ specializeExpr expr subst state =
 
         TOpt.VarEnum region global _ canType ->
             let
-                monoType =
+                monoType0 =
                     applySubst subst canType
+
+                -- If the type is an unresolved type variable (MVar), look up the actual
+                -- type from the enum's definition.
+                monoType =
+                    case monoType0 of
+                        Mono.MVar _ _ ->
+                            case Dict.get TOpt.toComparableGlobal global state.toptNodes of
+                                Just (TOpt.Enum _ enumCanType) ->
+                                    applySubst subst enumCanType
+
+                                _ ->
+                                    monoType0
+
+                        _ ->
+                            monoType0
 
                 monoGlobal =
                     toptGlobalToMono global

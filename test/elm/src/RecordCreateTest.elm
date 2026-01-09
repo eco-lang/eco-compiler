@@ -4,7 +4,7 @@ module RecordCreateTest exposing (main)
 -}
 
 -- CHECK: record1: { x = 1, y = 2 }
--- CHECK: record2: { name = "Alice", age = 30 }
+-- CHECK: record2: { age = 30, name = "Alice" }
 
 import Html exposing (text)
 

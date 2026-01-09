@@ -204,6 +204,19 @@ void eco_dbg_print_float(double value);
 /// @param value The character (Unicode code point)
 void eco_dbg_print_char(int32_t value);
 
+/// Debug print with full type information (for eco.dbg with arg_type_ids).
+/// Uses the global type graph (__eco_type_graph) to pretty-print values
+/// with proper Elm syntax including field names and constructor names.
+/// @param values Array of 64-bit values (pointers or unboxed numbers)
+/// @param type_ids Array of TypeIds (one per value)
+/// @param num_args Number of values
+void eco_dbg_print_typed(uint64_t* values, uint32_t* type_ids, uint32_t num_args);
+
+/// Register the global type graph from JITed code.
+/// Called at module initialization before main runs.
+/// @param graph Pointer to the EcoTypeGraph structure (opaque, uses void* for C linkage)
+void eco_register_type_graph(const void* graph);
+
 /// Outputs text to the current output stream (stderr or capture buffer).
 /// Used by kernel functions like Debug.log.
 /// @param text The text to output

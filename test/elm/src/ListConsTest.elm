@@ -4,8 +4,8 @@ module ListConsTest exposing (main)
 -}
 
 -- CHECK: cons1: [1]
--- CHECK: cons2: [1,2]
--- CHECK: cons3: [1,2,3]
+-- CHECK: cons2: [1, 2]
+-- CHECK: cons3: [1, 2, 3]
 
 import Html exposing (text)
 

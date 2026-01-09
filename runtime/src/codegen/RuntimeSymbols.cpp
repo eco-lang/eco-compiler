@@ -142,6 +142,14 @@ void registerRuntimeSymbols(ExecutionEngine &engine) {
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_dbg_print_char),
                 llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_dbg_print_typed")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_dbg_print_typed),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_register_type_graph")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_register_type_graph),
+                llvm::JITSymbolFlags::Exported);
 
         // GC interface.
         symbolMap[interner("eco_safepoint")] =

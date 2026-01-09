@@ -207,6 +207,12 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateGcAddRoot(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_gc_add_root", funcTy);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateRegisterTypeGraph(OpBuilder &builder) const {
+    // eco_register_type_graph(graph: ptr) -> void
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {PTR_TY});
+    return getOrCreateFunc(builder, "eco_register_type_graph", funcTy);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateIntPow(OpBuilder &builder) const {
     // eco_int_pow(base: i64, exp: i64) -> i64
     auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY});
@@ -239,6 +245,12 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateDbgPrintChar(OpBuilder &builder) const {
     // eco_dbg_print_char(value: i16) -> void
     auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I16_TY});
     return getOrCreateFunc(builder, "eco_dbg_print_char", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateDbgPrintTyped(OpBuilder &builder) const {
+    // eco_dbg_print_typed(values: ptr, type_ids: ptr, num_args: i32) -> void
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {PTR_TY, PTR_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_dbg_print_typed", funcTy);
 }
 
 //===----------------------------------------------------------------------===//

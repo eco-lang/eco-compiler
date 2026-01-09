@@ -250,6 +250,18 @@ type alias Context =
     , signatures : Dict Int FuncSignature -- SpecId -> signature for invariant checking
     , varMappings : Dict String ( String, MlirType ) -- Let-bound name -> (SSA variable name, MLIR type)
     , kernelDecls : Dict String ( List MlirType, MlirType ) -- Kernel function name -> (argTypes, returnType)
+    , typeRegistry : TypeRegistry -- Type graph: MonoType -> TypeId for debug printing
+    }
+
+
+{-| Registry for mapping MonoTypes to TypeIds for the global type graph.
+Used by eco.dbg with arg\_type\_ids for typed debug printing.
+-}
+type alias TypeRegistry =
+    { nextTypeId : Int
+    , typeIds : Dict (List String) Int -- comparable key -> TypeId
+    , typeInfos : List ( Int, Mono.MonoType ) -- List of (TypeId, MonoType) for building type table
+    , ctorLayouts : Dict (List String) (List Mono.CtorLayout) -- type key -> ctor layouts for custom types
     }
 
 
@@ -271,7 +283,156 @@ initContext mode registry signatures =
     , signatures = signatures
     , varMappings = Dict.empty
     , kernelDecls = Dict.empty
+    , typeRegistry = emptyTypeRegistry
     }
+
+
+{-| Empty type registry for initialization.
+-}
+emptyTypeRegistry : TypeRegistry
+emptyTypeRegistry =
+    { nextTypeId = 0
+    , typeIds = Dict.empty
+    , typeInfos = []
+    , ctorLayouts = Dict.empty
+    }
+
+
+{-| Get or create a TypeId for a MonoType.
+If the type already exists in the registry, returns the existing TypeId.
+Otherwise, creates a new TypeId and registers the type.
+-}
+getOrCreateTypeIdForMonoType : Mono.MonoType -> Context -> ( Int, Context )
+getOrCreateTypeIdForMonoType monoType ctx =
+    let
+        key =
+            Mono.toComparableMonoType monoType
+
+        reg =
+            ctx.typeRegistry
+    in
+    case Dict.get key reg.typeIds of
+        Just typeId ->
+            ( typeId, ctx )
+
+        Nothing ->
+            -- First, recursively register any nested types
+            let
+                ctxWithNested =
+                    registerNestedTypes monoType ctx
+
+                regAfterNested =
+                    ctxWithNested.typeRegistry
+
+                typeId =
+                    regAfterNested.nextTypeId
+
+                newReg =
+                    { nextTypeId = typeId + 1
+                    , typeIds = Dict.insert key typeId regAfterNested.typeIds
+                    , typeInfos = ( typeId, monoType ) :: regAfterNested.typeInfos
+                    , ctorLayouts = regAfterNested.ctorLayouts
+                    }
+            in
+            ( typeId, { ctxWithNested | typeRegistry = newReg } )
+
+
+{-| Register nested types for a MonoType.
+This ensures all element/field/argument types are registered before the containing type.
+-}
+registerNestedTypes : Mono.MonoType -> Context -> Context
+registerNestedTypes monoType ctx =
+    case monoType of
+        Mono.MList elemType ->
+            -- Register element type
+            Tuple.second (getOrCreateTypeIdForMonoType elemType ctx)
+
+        Mono.MTuple layout ->
+            -- Register all element types
+            List.foldl
+                (\( elemType, _ ) accCtx ->
+                    Tuple.second (getOrCreateTypeIdForMonoType elemType accCtx)
+                )
+                ctx
+                layout.elements
+
+        Mono.MRecord layout ->
+            -- Register all field types
+            List.foldl
+                (\fieldInfo accCtx ->
+                    Tuple.second (getOrCreateTypeIdForMonoType fieldInfo.monoType accCtx)
+                )
+                ctx
+                layout.fields
+
+        Mono.MCustom _ _ args ->
+            -- Register all type argument types
+            List.foldl
+                (\argType accCtx ->
+                    Tuple.second (getOrCreateTypeIdForMonoType argType accCtx)
+                )
+                ctx
+                args
+
+        Mono.MFunction argTypes resultType ->
+            -- Register all argument types and result type
+            let
+                ctxWithArgs =
+                    List.foldl
+                        (\argType accCtx ->
+                            Tuple.second (getOrCreateTypeIdForMonoType argType accCtx)
+                        )
+                        ctx
+                        argTypes
+            in
+            Tuple.second (getOrCreateTypeIdForMonoType resultType ctxWithArgs)
+
+        -- Primitives have no nested types
+        Mono.MInt ->
+            ctx
+
+        Mono.MFloat ->
+            ctx
+
+        Mono.MChar ->
+            ctx
+
+        Mono.MBool ->
+            ctx
+
+        Mono.MString ->
+            ctx
+
+        Mono.MUnit ->
+            ctx
+
+        Mono.MVar _ _ ->
+            ctx
+
+
+{-| Register a constructor layout for a custom type.
+Called during generateCtor to collect constructor info for the type graph.
+-}
+registerCtorLayout : Mono.MonoType -> Mono.CtorLayout -> Context -> Context
+registerCtorLayout monoType ctorLayout ctx =
+    let
+        key =
+            Mono.toComparableMonoType monoType
+
+        reg =
+            ctx.typeRegistry
+
+        existingCtors =
+            Dict.get key reg.ctorLayouts
+                |> Maybe.withDefault []
+
+        newCtors =
+            ctorLayout :: existingCtors
+
+        newReg =
+            { reg | ctorLayouts = Dict.insert key newCtors reg.ctorLayouts }
+    in
+    { ctx | typeRegistry = newReg }
 
 
 freshVar : Context -> ( String, Context )
@@ -402,11 +563,22 @@ extractNodeSignature node =
                 }
 
         Mono.MonoExtern monoType ->
-            -- External - treat as nullary for now
-            Just
-                { paramTypes = []
-                , returnType = monoType
-                }
+            -- External value or function.
+            -- If it's a function type, decompose it to get arguments + result.
+            case monoType of
+                Mono.MFunction _ _ ->
+                    let
+                        ( argMonoTypes, resultMonoType ) =
+                            decomposeFunctionType monoType
+                    in
+                    Just
+                        { paramTypes = argMonoTypes
+                        , returnType = resultMonoType
+                        }
+
+                -- Non-function externs are not callable; no signature.
+                _ ->
+                    Nothing
 
         Mono.MonoPortIncoming expr monoType ->
             case expr of
@@ -927,6 +1099,537 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
 
 
 
+
+-- ====== TYPE TABLE GENERATION ======
+
+
+{-| Generate the eco.type\_table op containing the global type graph.
+This op holds all type descriptors for debug printing with arg\_type\_ids.
+-}
+generateTypeTable : Context -> MlirOp
+generateTypeTable ctx =
+    let
+        -- Sort typeInfos by typeId for deterministic output
+        sortedTypes : List ( Int, Mono.MonoType )
+        sortedTypes =
+            ctx.typeRegistry.typeInfos
+                |> List.sortBy Tuple.first
+
+        -- Build accumulators for strings, fields, ctors, and func_args
+        -- as we traverse the types
+        emptyAccum =
+            { strings = Dict.empty -- string -> index
+            , nextStringIndex = 0
+            , fields = [] -- List of field entries (reversed)
+            , nextFieldIndex = 0
+            , ctors = [] -- List of ctor entries (reversed)
+            , nextCtorIndex = 0
+            , funcArgs = [] -- List of arg type_ids (reversed)
+            , nextFuncArgIndex = 0
+            , typeAttrs = [] -- List of type descriptor attrs (reversed)
+            , typeIds = ctx.typeRegistry.typeIds -- For looking up nested type IDs
+            , ctorLayouts = ctx.typeRegistry.ctorLayouts -- For custom type constructors
+            }
+
+        -- Process each type and build all arrays
+        finalAccum =
+            List.foldl processType emptyAccum sortedTypes
+
+        -- Build the eco.type_table op
+        typesAttr =
+            ArrayAttr Nothing (List.reverse finalAccum.typeAttrs)
+
+        fieldsAttr =
+            ArrayAttr Nothing (List.reverse finalAccum.fields)
+
+        ctorsAttr =
+            ArrayAttr Nothing (List.reverse finalAccum.ctors)
+
+        funcArgsAttr =
+            ArrayAttr Nothing (List.reverse finalAccum.funcArgs |> List.map (\i -> IntAttr Nothing i))
+
+        stringsAttr =
+            finalAccum.strings
+                |> Dict.toList
+                |> List.sortBy Tuple.second
+                |> List.map (\( s, _ ) -> StringAttr s)
+                |> ArrayAttr Nothing
+    in
+    { name = "eco.type_table"
+    , id = ""
+    , operands = []
+    , results = []
+    , attrs =
+        Dict.empty
+            |> Dict.insert "types" typesAttr
+            |> Dict.insert "fields" fieldsAttr
+            |> Dict.insert "ctors" ctorsAttr
+            |> Dict.insert "func_args" funcArgsAttr
+            |> Dict.insert "strings" stringsAttr
+    , regions = []
+    , isTerminator = False
+    , loc = Loc.unknown
+    , successors = []
+    }
+
+
+{-| Accumulator for building the type graph arrays.
+-}
+type alias TypeTableAccum =
+    { strings : Dict String Int
+    , nextStringIndex : Int
+    , fields : List MlirAttr
+    , nextFieldIndex : Int
+    , ctors : List MlirAttr
+    , nextCtorIndex : Int
+    , funcArgs : List Int
+    , nextFuncArgIndex : Int
+    , typeAttrs : List MlirAttr
+    , typeIds : Dict (List String) Int -- MonoType comparable key -> TypeId
+    , ctorLayouts : Dict (List String) (List Mono.CtorLayout) -- type key -> ctor layouts
+    }
+
+
+{-| Get or create a string index in the string table.
+-}
+getOrCreateStringIndex : String -> TypeTableAccum -> ( Int, TypeTableAccum )
+getOrCreateStringIndex str accum =
+    case Dict.get str accum.strings of
+        Just idx ->
+            ( idx, accum )
+
+        Nothing ->
+            ( accum.nextStringIndex
+            , { accum
+                | strings = Dict.insert str accum.nextStringIndex accum.strings
+                , nextStringIndex = accum.nextStringIndex + 1
+              }
+            )
+
+
+-- ====== TYPE KIND ENUMS ======
+
+
+{-| Kind of type in the global type graph.
+These values must match the C++ EcoTypeKind enum in TypeInfo.hpp.
+-}
+type TypeKind
+    = TKPrimitive
+    | TKList
+    | TKTuple
+    | TKRecord
+    | TKCustom
+    | TKFunction
+    | TKPolymorphic
+
+
+{-| Kind of primitive type.
+These values must match the C++ EcoPrimKind enum in TypeInfo.hpp.
+-}
+type PrimKind
+    = PKInt
+    | PKFloat
+    | PKChar
+    | PKBool
+    | PKString
+    | PKUnit
+
+
+{-| Convert a TypeKind to its integer tag for MLIR emission.
+-}
+typeKindToTag : TypeKind -> Int
+typeKindToTag kind =
+    case kind of
+        TKPrimitive ->
+            0
+
+        TKList ->
+            1
+
+        TKTuple ->
+            2
+
+        TKRecord ->
+            3
+
+        TKCustom ->
+            4
+
+        TKFunction ->
+            5
+
+        TKPolymorphic ->
+            6
+
+
+{-| Convert a PrimKind to its integer tag for MLIR emission.
+-}
+primKindToTag : PrimKind -> Int
+primKindToTag primKind =
+    case primKind of
+        PKInt ->
+            0
+
+        PKFloat ->
+            1
+
+        PKChar ->
+            2
+
+        PKBool ->
+            3
+
+        PKString ->
+            4
+
+        PKUnit ->
+            5
+
+
+{-| Process a single type entry and add it to the accumulator.
+-}
+processType : ( Int, Mono.MonoType ) -> TypeTableAccum -> TypeTableAccum
+processType ( typeId, monoType ) accum =
+    case monoType of
+        Mono.MInt ->
+            addPrimitiveType typeId PKInt accum
+
+        Mono.MFloat ->
+            addPrimitiveType typeId PKFloat accum
+
+        Mono.MChar ->
+            addPrimitiveType typeId PKChar accum
+
+        Mono.MBool ->
+            addPrimitiveType typeId PKBool accum
+
+        Mono.MString ->
+            addPrimitiveType typeId PKString accum
+
+        Mono.MUnit ->
+            -- Unit is treated as a primitive for printing
+            addPrimitiveType typeId PKUnit accum
+
+        Mono.MList elemType ->
+            addListType typeId elemType accum
+
+        Mono.MTuple layout ->
+            addTupleType typeId layout accum
+
+        Mono.MRecord layout ->
+            addRecordType typeId layout accum
+
+        Mono.MCustom _ typeName _ ->
+            addCustomType typeId typeName monoType accum
+
+        Mono.MFunction argTypes resultType ->
+            addFunctionType typeId argTypes resultType accum
+
+        Mono.MVar _ constraint ->
+            -- Polymorphic type variable - can leak through monomorphization
+            -- The runtime will determine the actual type from the boxed value's tag
+            addPolymorphicType typeId constraint accum
+
+
+{-| Add a primitive type descriptor.
+-}
+addPrimitiveType : Int -> PrimKind -> TypeTableAccum -> TypeTableAccum
+addPrimitiveType typeId primKind accum =
+    let
+        typeAttr =
+            ArrayAttr Nothing
+                [ IntAttr Nothing typeId
+                , IntAttr Nothing (typeKindToTag TKPrimitive)
+                , IntAttr Nothing (primKindToTag primKind)
+                ]
+    in
+    { accum | typeAttrs = typeAttr :: accum.typeAttrs }
+
+
+{-| Add a polymorphic type descriptor for a type variable with constraint.
+Type kind 6 = Polymorphic
+Constraint values: 0=number, 1=eco_value (unconstrained)
+-}
+addPolymorphicType : Int -> Mono.Constraint -> TypeTableAccum -> TypeTableAccum
+addPolymorphicType typeId constraint accum =
+    let
+        constraintValue =
+            case constraint of
+                Mono.CNumber ->
+                    0
+
+                Mono.CEcoValue ->
+                    1
+
+        typeAttr =
+            ArrayAttr Nothing
+                [ IntAttr Nothing typeId
+                , IntAttr Nothing (typeKindToTag TKPolymorphic)
+                , IntAttr Nothing constraintValue
+                ]
+    in
+    { accum | typeAttrs = typeAttr :: accum.typeAttrs }
+
+
+{-| Look up a TypeId for a MonoType in the accumulator's typeIds dict.
+Returns 0 if not found (should not happen for properly registered types).
+-}
+lookupTypeId : Mono.MonoType -> TypeTableAccum -> Int
+lookupTypeId monoType accum =
+    let
+        key =
+            Mono.toComparableMonoType monoType
+    in
+    Dict.get key accum.typeIds |> Maybe.withDefault 0
+
+
+{-| Add a list type descriptor.
+-}
+addListType : Int -> Mono.MonoType -> TypeTableAccum -> TypeTableAccum
+addListType typeId elemType accum =
+    let
+        elemTypeId =
+            lookupTypeId elemType accum
+
+        typeAttr =
+            ArrayAttr Nothing
+                [ IntAttr Nothing typeId
+                , IntAttr Nothing (typeKindToTag TKList)
+                , IntAttr Nothing elemTypeId
+                ]
+    in
+    { accum | typeAttrs = typeAttr :: accum.typeAttrs }
+
+
+{-| Add a tuple type descriptor.
+-}
+addTupleType : Int -> Mono.TupleLayout -> TypeTableAccum -> TypeTableAccum
+addTupleType typeId layout accum =
+    let
+        firstField =
+            accum.nextFieldIndex
+
+        fieldCount =
+            layout.arity
+
+        -- Add fields with actual type IDs
+        accumWithFields =
+            List.foldl
+                (\( elemType, _ ) acc ->
+                    let
+                        elemTypeId =
+                            lookupTypeId elemType acc
+
+                        fieldAttr =
+                            ArrayAttr Nothing
+                                [ IntAttr Nothing 0 -- name_index: not used for tuples
+                                , IntAttr Nothing elemTypeId
+                                ]
+                    in
+                    { acc
+                        | fields = fieldAttr :: acc.fields
+                        , nextFieldIndex = acc.nextFieldIndex + 1
+                    }
+                )
+                accum
+                layout.elements
+
+        typeAttr =
+            ArrayAttr Nothing
+                [ IntAttr Nothing typeId
+                , IntAttr Nothing (typeKindToTag TKTuple)
+                , IntAttr Nothing layout.arity
+                , IntAttr Nothing firstField
+                , IntAttr Nothing fieldCount
+                ]
+    in
+    { accumWithFields | typeAttrs = typeAttr :: accumWithFields.typeAttrs }
+
+
+{-| Add a record type descriptor.
+-}
+addRecordType : Int -> Mono.RecordLayout -> TypeTableAccum -> TypeTableAccum
+addRecordType typeId layout accum =
+    let
+        firstField =
+            accum.nextFieldIndex
+
+        fieldCount =
+            layout.fieldCount
+
+        -- Add fields with names and actual type IDs
+        accumWithFields =
+            List.foldl
+                (\fieldInfo acc ->
+                    let
+                        ( nameIndex, accWithString ) =
+                            getOrCreateStringIndex (Name.toElmString fieldInfo.name) acc
+
+                        fieldTypeId =
+                            lookupTypeId fieldInfo.monoType accWithString
+
+                        fieldAttr =
+                            ArrayAttr Nothing
+                                [ IntAttr Nothing nameIndex
+                                , IntAttr Nothing fieldTypeId
+                                ]
+                    in
+                    { accWithString
+                        | fields = fieldAttr :: accWithString.fields
+                        , nextFieldIndex = accWithString.nextFieldIndex + 1
+                    }
+                )
+                accum
+                layout.fields
+
+        typeAttr =
+            ArrayAttr Nothing
+                [ IntAttr Nothing typeId
+                , IntAttr Nothing (typeKindToTag TKRecord)
+                , IntAttr Nothing firstField
+                , IntAttr Nothing fieldCount
+                ]
+    in
+    { accumWithFields | typeAttrs = typeAttr :: accumWithFields.typeAttrs }
+
+
+{-| Add a custom type descriptor with constructor information.
+-}
+addCustomType : Int -> Name.Name -> Mono.MonoType -> TypeTableAccum -> TypeTableAccum
+addCustomType typeId typeName monoType accum =
+    let
+        -- Look up constructor layouts
+        key =
+            Mono.toComparableMonoType monoType
+
+        ctorLayouts =
+            Dict.get key accum.ctorLayouts
+                |> Maybe.withDefault []
+                |> List.sortBy .tag
+
+        firstCtor =
+            accum.nextCtorIndex
+
+        ctorCount =
+            List.length ctorLayouts
+
+        -- Add each constructor and its fields
+        accumWithCtors =
+            List.foldl addCtorInfo accum ctorLayouts
+
+        typeAttr =
+            ArrayAttr Nothing
+                [ IntAttr Nothing typeId
+                , IntAttr Nothing (typeKindToTag TKCustom)
+                , IntAttr Nothing firstCtor
+                , IntAttr Nothing ctorCount
+                ]
+    in
+    { accumWithCtors | typeAttrs = typeAttr :: accumWithCtors.typeAttrs }
+
+
+{-| Add constructor info for a single constructor.
+-}
+addCtorInfo : Mono.CtorLayout -> TypeTableAccum -> TypeTableAccum
+addCtorInfo ctorLayout accum =
+    let
+        -- Add constructor name to string table
+        ( nameIndex, accWithName ) =
+            getOrCreateStringIndex (Name.toElmString ctorLayout.name) accum
+
+        firstField =
+            accWithName.nextFieldIndex
+
+        fieldCount =
+            List.length ctorLayout.fields
+
+        -- Add fields for this constructor
+        accumWithFields =
+            List.foldl
+                (\fieldInfo acc ->
+                    let
+                        fieldTypeId =
+                            lookupTypeId fieldInfo.monoType acc
+
+                        -- Field attr: [name_index, type_id]
+                        -- For constructor fields, name is typically not used,
+                        -- but we include it for completeness
+                        ( fieldNameIndex, accWithFieldName ) =
+                            getOrCreateStringIndex (Name.toElmString fieldInfo.name) acc
+
+                        fieldAttr =
+                            ArrayAttr Nothing
+                                [ IntAttr Nothing fieldNameIndex
+                                , IntAttr Nothing fieldTypeId
+                                ]
+                    in
+                    { accWithFieldName
+                        | fields = fieldAttr :: accWithFieldName.fields
+                        , nextFieldIndex = accWithFieldName.nextFieldIndex + 1
+                    }
+                )
+                accWithName
+                ctorLayout.fields
+
+        -- Constructor attr: [ctor_id, name_index, first_field, field_count]
+        -- Note: ctor_id comes from ctorLayout.tag (the constructor's index within its type)
+        ctorAttr =
+            ArrayAttr Nothing
+                [ IntAttr Nothing ctorLayout.tag
+                , IntAttr Nothing nameIndex
+                , IntAttr Nothing firstField
+                , IntAttr Nothing fieldCount
+                ]
+    in
+    { accumWithFields
+        | ctors = ctorAttr :: accumWithFields.ctors
+        , nextCtorIndex = accumWithFields.nextCtorIndex + 1
+    }
+
+
+{-| Add a function type descriptor.
+-}
+addFunctionType : Int -> List Mono.MonoType -> Mono.MonoType -> TypeTableAccum -> TypeTableAccum
+addFunctionType typeId argTypes resultType accum =
+    let
+        firstArgType =
+            accum.nextFuncArgIndex
+
+        argCount =
+            List.length argTypes
+
+        -- Add arg type_ids with actual type IDs
+        accumWithArgs =
+            List.foldl
+                (\argType acc ->
+                    let
+                        argTypeId =
+                            lookupTypeId argType acc
+                    in
+                    { acc
+                        | funcArgs = argTypeId :: acc.funcArgs
+                        , nextFuncArgIndex = acc.nextFuncArgIndex + 1
+                    }
+                )
+                accum
+                argTypes
+
+        resultTypeId =
+            lookupTypeId resultType accumWithArgs
+
+        typeAttr =
+            ArrayAttr Nothing
+                [ IntAttr Nothing typeId
+                , IntAttr Nothing (typeKindToTag TKFunction)
+                , IntAttr Nothing firstArgType
+                , IntAttr Nothing argCount
+                , IntAttr Nothing resultTypeId
+                ]
+    in
+    { accumWithArgs | typeAttrs = typeAttr :: accumWithArgs.typeAttrs }
+
+
+
 -- ====== GENERATE MODULE ======
 
 
@@ -978,9 +1681,14 @@ generateModule mode (Mono.MonoGraph { nodes, main, registry }) =
                 ( [], finalCtx )
                 finalCtx.kernelDecls
 
+        -- Generate the type table op for debug printing
+        typeTableOp : MlirOp
+        typeTableOp =
+            generateTypeTable finalCtx
+
         mlirModule : MlirModule
         mlirModule =
-            { body = kernelDeclOps ++ lambdaOps ++ ops ++ mainOps
+            { body = [ typeTableOp ] ++ kernelDeclOps ++ lambdaOps ++ ops ++ mainOps
             , loc = Loc.unknown
             }
     in
@@ -1369,7 +2077,14 @@ generateTailFunc ctx funcName params expr monoType =
 
 generateCtor : Context -> String -> Mono.CtorLayout -> Mono.MonoType -> ( Context, MlirOp )
 generateCtor ctx funcName ctorLayout monoType =
+    -- Register the custom type and its constructor for the type graph
     let
+        ( _, ctxWithType ) =
+            getOrCreateTypeIdForMonoType monoType ctx
+
+        ctxWithCtor =
+            registerCtorLayout monoType ctorLayout ctxWithType
+
         arity : Int
         arity =
             List.length ctorLayout.fields
@@ -1382,7 +2097,7 @@ generateCtor ctx funcName ctorLayout monoType =
         -- Nullary constructor - check for well-known constants first
         let
             ( resultVar, ctx1 ) =
-                freshVar ctx
+                freshVar ctxWithCtor
 
             -- Check for well-known constants that must use eco.constant
             ( ctx2, valueOp ) =
@@ -1435,7 +2150,7 @@ generateCtor ctx funcName ctorLayout monoType =
                 List.map2 Tuple.pair argNames argTypes
 
             ( resultVar, ctx1 ) =
-                freshVar { ctx | nextVar = arity }
+                freshVar { ctxWithCtor | nextVar = arity }
 
             ( ctx2, constructOp ) =
                 ecoConstructCustom ctx1 resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs constructorName
@@ -1455,10 +2170,32 @@ generateCtor ctx funcName ctorLayout monoType =
 
 
 generateEnum : Context -> String -> Int -> Mono.MonoType -> Maybe String -> ( Context, MlirOp )
-generateEnum ctx funcName tag _ maybeCtorName =
+generateEnum ctx funcName tag monoType maybeCtorName =
     let
+        -- Register the custom type and its constructor for the type graph
+        ( _, ctxWithType ) =
+            getOrCreateTypeIdForMonoType monoType ctx
+
+        -- Create and register a CtorLayout for this enum constructor
+        ctxWithCtor =
+            case maybeCtorName of
+                Just ctorName ->
+                    let
+                        ctorLayout =
+                            { name = ctorName
+                            , tag = tag
+                            , fields = []
+                            , unboxedCount = 0
+                            , unboxedBitmap = 0
+                            }
+                    in
+                    registerCtorLayout monoType ctorLayout ctxWithType
+
+                Nothing ->
+                    ctxWithType
+
         ( resultVar, ctx1 ) =
-            freshVar ctx
+            freshVar ctxWithCtor
 
         -- Check for well-known constants that must use eco.constant
         ( ctx2, valueOp ) =
@@ -1783,8 +2520,8 @@ generateExpr ctx expr =
         Mono.MonoVarKernel _ home name monoType ->
             generateVarKernel ctx home name monoType
 
-        Mono.MonoList _ items _ ->
-            generateList ctx items
+        Mono.MonoList _ items listType ->
+            generateList ctx items listType
 
         Mono.MonoClosure closureInfo body monoType ->
             generateClosure ctx closureInfo body monoType
@@ -2192,14 +2929,19 @@ generateVarKernel ctx home name monoType =
 -- ====== LIST GENERATION ======
 
 
-generateList : Context -> List Mono.MonoExpr -> ExprResult
-generateList ctx items =
+generateList : Context -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+generateList ctx items listType =
+    -- Register the list type for the type graph
+    let
+        ( _, ctxWithType ) =
+            getOrCreateTypeIdForMonoType listType ctx
+    in
     case items of
         [] ->
             -- Empty list: use eco.constant Nil (embedded constant, not heap-allocated)
             let
                 ( var, ctx1 ) =
-                    freshVar ctx
+                    freshVar ctxWithType
 
                 ( ctx2, nilOp ) =
                     ecoConstantNil ctx1 var
@@ -2216,7 +2958,7 @@ generateList ctx items =
             -- match the Cons layout created by eco.construct.list.
             let
                 ( nilVar, ctx1 ) =
-                    freshVar ctx
+                    freshVar ctxWithType
 
                 ( ctx2, nilOp ) =
                     ecoConstantNil ctx1 nilVar
@@ -2837,6 +3579,73 @@ generateSaturatedCall ctx func args resultType =
                     , resultVar = resVar
                     , resultType = ecoFloat
                     , ctx = ctx7
+                    }
+
+                ( "Debug", "log", [ ( labelVar, _ ), ( valueVar, valueType ) ] ) ->
+                    -- Special handling for Debug.log with typed output
+                    -- Emit eco.dbg with arg_type_ids, then return the value
+                    let
+                        -- Get the type of the value being logged
+                        valueMonoType : Mono.MonoType
+                        valueMonoType =
+                            case args of
+                                [ _, valueExpr ] ->
+                                    Mono.typeOf valueExpr
+
+                                _ ->
+                                    Mono.MUnit
+
+                        -- Get or create a type ID for this type
+                        ( typeId, ctx1b ) =
+                            getOrCreateTypeIdForMonoType valueMonoType ctx1
+
+                        -- Box the value if needed for eco.dbg
+                        ( boxOps, boxedValueVar, ctx1c ) =
+                            if isEcoValueType valueType then
+                                ( [], valueVar, ctx1b )
+
+                            else
+                                let
+                                    ( boxVar, ctx1c_ ) =
+                                        freshVar ctx1b
+
+                                    boxAttrs =
+                                        Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr valueType ])
+
+                                    ( ctx1c__, boxOp ) =
+                                        mlirOp ctx1c_ "eco.box"
+                                            |> opBuilder.withOperands [ valueVar ]
+                                            |> opBuilder.withResults [ ( boxVar, ecoValue ) ]
+                                            |> opBuilder.withAttrs boxAttrs
+                                            |> opBuilder.build
+                                in
+                                ( [ boxOp ], boxVar, ctx1c__ )
+
+                        -- Create eco.dbg op with arg_type_ids
+                        -- We only pass the value with its type_id
+                        -- The label is printed separately by the runtime
+                        ( ctx2, dbgOp ) =
+                            mlirOp ctx1c "eco.dbg"
+                                |> opBuilder.withOperands [ labelVar, boxedValueVar ]
+                                |> opBuilder.withAttrs
+                                    (Dict.fromList
+                                        [ ( "_operand_types"
+                                          , ArrayAttr Nothing [ TypeAttr ecoValue, TypeAttr ecoValue ]
+                                          )
+                                        , ( "arg_type_ids"
+                                          , ArrayAttr (Just I64)
+                                                [ IntAttr Nothing (-1)  -- -1 for string label (to be printed as string)
+                                                , IntAttr Nothing typeId  -- typeId for value
+                                                ]
+                                          )
+                                        ]
+                                    )
+                                |> opBuilder.build
+                    in
+                    { ops = argOps ++ boxOps ++ [ dbgOp ]
+                    , resultVar = boxedValueVar  -- Return the value (boxed)
+                    , resultType = ecoValue
+                    , ctx = ctx2
                     }
 
                 _ ->
@@ -4257,11 +5066,19 @@ generateCase ctx _ root decider jumps resultMonoType =
 
 generateRecordCreate : Context -> List Mono.MonoExpr -> Mono.RecordLayout -> ExprResult
 generateRecordCreate ctx fields layout =
+    -- Register the record type for the type graph
+    let
+        recordType =
+            Mono.MRecord layout
+
+        ( _, ctxWithType ) =
+            getOrCreateTypeIdForMonoType recordType ctx
+    in
     -- Empty records must use eco.constant EmptyRec (invariant: never heap-allocated)
     if layout.fieldCount == 0 then
         let
             ( resultVar, ctx1 ) =
-                freshVar ctx
+                freshVar ctxWithType
 
             ( ctx2, emptyRecOp ) =
                 ecoConstantEmptyRec ctx1 resultVar
@@ -4276,7 +5093,7 @@ generateRecordCreate ctx fields layout =
         let
             -- Use generateExprListTyped to get actual SSA types
             ( fieldsOps, fieldVarsWithTypes, ctx1 ) =
-                generateExprListTyped ctx fields
+                generateExprListTyped ctxWithType fields
 
             -- Box fields that need to be boxed (layout says boxed, but expression is primitive)
             ( boxOps, boxedFieldVars, ctx2 ) =
@@ -4407,10 +5224,17 @@ generateRecordUpdate ctx record _ _ =
 
 generateTupleCreate : Context -> List Mono.MonoExpr -> Mono.TupleLayout -> ExprResult
 generateTupleCreate ctx elements layout =
+    -- Register the tuple type for the type graph
     let
+        tupleType =
+            Mono.MTuple layout
+
+        ( _, ctxWithType ) =
+            getOrCreateTypeIdForMonoType tupleType ctx
+
         -- Use generateExprListTyped to get actual SSA types
         ( elemOps, elemVarsWithTypes, ctx1 ) =
-            generateExprListTyped ctx elements
+            generateExprListTyped ctxWithType elements
 
         -- Box elements that need to be boxed (layout says boxed, but expression is primitive)
         ( boxOps, boxedElemVars, ctx2 ) =
