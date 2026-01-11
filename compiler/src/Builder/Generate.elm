@@ -43,6 +43,8 @@ import Builder.Stuff as Stuff
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Optimized as Opt
+import Compiler.AST.TypeEnv as TypeEnv
+import Compiler.AST.TypedModuleArtifact as TMod
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as N
 import Compiler.Data.NonEmptyList as NE
@@ -267,7 +269,7 @@ lookupMain pkg locals root =
         Build.Inside name ->
             Dict.get identity name locals |> Maybe.andThen (toPair name)
 
-        Build.Outside name _ g _ ->
+        Build.Outside name _ g _ _ ->
             toPair name g
 
 
@@ -296,7 +298,7 @@ loadModuleObjects root modules mvar =
 loadObject : FilePath -> Build.Module -> Task Never ( ModuleName.Raw, MVar (Maybe Opt.LocalGraph) )
 loadObject root modul =
     case modul of
-        Build.Fresh name _ graph _ ->
+        Build.Fresh name _ graph _ _ ->
             Utils.newMVar (Utils.maybeEncoder Opt.localGraphEncoder) (Just graph)
                 |> Task.map (\mvar -> ( name, mvar ))
 
@@ -390,7 +392,7 @@ mergeLoadedTypes foreigns results =
 loadTypesHelp : FilePath -> Build.Module -> Task Never (MVar (Maybe Extract.Types))
 loadTypesHelp root modul =
     case modul of
-        Build.Fresh name iface _ _ ->
+        Build.Fresh name iface _ _ _ ->
             Utils.newMVar (Utils.maybeEncoder Extract.typesEncoder) (Just (Extract.fromInterface name iface))
 
         Build.Cached name _ ciMVar ->
@@ -429,7 +431,7 @@ loadAndStoreInterfaceTypes root name mvar =
 
 
 type TypedLoadingObjects
-    = TypedLoadingObjects (MVar (Maybe TOpt.GlobalGraph)) (Dict String ModuleName.Raw (MVar (Maybe TOpt.LocalGraph)))
+    = TypedLoadingObjects (MVar (Maybe Details.PackageTypedArtifacts)) (Dict String ModuleName.Raw (MVar (Maybe TMod.TypedModuleArtifact)))
 
 
 loadTypedObjects : FilePath -> Details.Details -> List Build.Module -> Task Exit.Generate TypedLoadingObjects
@@ -440,84 +442,135 @@ loadTypedObjects root details modules =
         )
 
 
-loadTypedModuleObjects : FilePath -> List Build.Module -> MVar (Maybe TOpt.GlobalGraph) -> Task Never TypedLoadingObjects
+loadTypedModuleObjects : FilePath -> List Build.Module -> MVar (Maybe Details.PackageTypedArtifacts) -> Task Never TypedLoadingObjects
 loadTypedModuleObjects root modules mvar =
     Utils.listTraverse (loadTypedObject root) modules
         |> Task.map (\mvars -> TypedLoadingObjects mvar (Dict.fromList identity mvars))
 
 
-loadTypedObject : FilePath -> Build.Module -> Task Never ( ModuleName.Raw, MVar (Maybe TOpt.LocalGraph) )
+loadTypedObject : FilePath -> Build.Module -> Task Never ( ModuleName.Raw, MVar (Maybe TMod.TypedModuleArtifact) )
 loadTypedObject root modul =
     case modul of
-        Build.Fresh name _ _ maybeTypedGraph ->
-            -- Use the typed graph from the build if available, otherwise empty
-            let
-                graph : TOpt.LocalGraph
-                graph =
-                    Maybe.withDefault TOpt.emptyLocalGraph maybeTypedGraph
-            in
-            Utils.newMVar (Utils.maybeEncoder TOpt.localGraphEncoder) (Just graph)
-                |> Task.map (\mvar -> ( name, mvar ))
+        Build.Fresh name _ _ maybeTypedGraph maybeTypeEnv ->
+            -- Use the typed graph and type env from the build if available
+            case ( maybeTypedGraph, maybeTypeEnv ) of
+                ( Just typedGraph, Just typeEnv ) ->
+                    let
+                        artifact : TMod.TypedModuleArtifact
+                        artifact =
+                            { typedGraph = typedGraph
+                            , typeEnv = typeEnv
+                            }
+                    in
+                    Utils.newMVar (Utils.maybeEncoder TMod.typedModuleArtifactEncoder) (Just artifact)
+                        |> Task.map (\mvar -> ( name, mvar ))
+
+                _ ->
+                    -- No typed info available, create empty MVar (will fall back to cached)
+                    Utils.newEmptyMVar
+                        |> Task.andThen (forkLoadTypedCachedObject root name)
 
         Build.Cached name _ _ ->
             Utils.newEmptyMVar
                 |> Task.andThen (forkLoadTypedCachedObject root name)
 
 
-forkLoadTypedCachedObject : FilePath -> ModuleName.Raw -> MVar (Maybe TOpt.LocalGraph) -> Task Never ( ModuleName.Raw, MVar (Maybe TOpt.LocalGraph) )
+forkLoadTypedCachedObject : FilePath -> ModuleName.Raw -> MVar (Maybe TMod.TypedModuleArtifact) -> Task Never ( ModuleName.Raw, MVar (Maybe TMod.TypedModuleArtifact) )
 forkLoadTypedCachedObject root name mvar =
     Utils.forkIO (readAndStoreTypedCachedObject root name mvar)
         |> Task.map (\_ -> ( name, mvar ))
 
 
-readAndStoreTypedCachedObject : FilePath -> ModuleName.Raw -> MVar (Maybe TOpt.LocalGraph) -> Task Never ()
+readAndStoreTypedCachedObject : FilePath -> ModuleName.Raw -> MVar (Maybe TMod.TypedModuleArtifact) -> Task Never ()
 readAndStoreTypedCachedObject root name mvar =
-    File.readBinary TOpt.localGraphDecoder (Stuff.guidato root name)
-        |> Task.andThen (storeTypedGraphWithDefault mvar)
+    File.readBinary TMod.typedModuleArtifactDecoder (Stuff.guidato root name)
+        |> Task.andThen (storeTypedArtifactWithDefault mvar)
 
 
-storeTypedGraphWithDefault : MVar (Maybe TOpt.LocalGraph) -> Maybe TOpt.LocalGraph -> Task Never ()
-storeTypedGraphWithDefault mvar maybeGraph =
+storeTypedArtifactWithDefault : MVar (Maybe TMod.TypedModuleArtifact) -> Maybe TMod.TypedModuleArtifact -> Task Never ()
+storeTypedArtifactWithDefault mvar maybeArtifact =
     -- If .guidato file doesn't exist, return Nothing to signal an error
     -- This happens when modules were cached from a non-MLIR build
-    Utils.putMVar (Utils.maybeEncoder TOpt.localGraphEncoder) mvar maybeGraph
+    Utils.putMVar (Utils.maybeEncoder TMod.typedModuleArtifactEncoder) mvar maybeArtifact
 
 
 
 -- ====== FINALIZE TYPED OBJECTS ======
 
 
+{-| Combined typed data for a module.
+-}
+type alias ModuleTyped =
+    { graph : TOpt.LocalGraph
+    , env : TypeEnv.ModuleTypeEnv
+    }
+
+
 type TypedObjects
-    = TypedObjects TOpt.GlobalGraph (Dict String ModuleName.Raw TOpt.LocalGraph)
+    = TypedObjects TOpt.GlobalGraph TypeEnv.GlobalTypeEnv (Dict String ModuleName.Raw ModuleTyped)
 
 
 finalizeTypedObjects : TypedLoadingObjects -> Task Exit.Generate TypedObjects
 finalizeTypedObjects (TypedLoadingObjects mvar mvars) =
     Task.eio identity
-        (Utils.readMVar (BD.maybe TOpt.globalGraphDecoder) mvar
-            |> Task.andThen (collectTypedLocalObjects mvars)
+        (Utils.readMVar (BD.maybe Details.packageTypedArtifactsDecoder) mvar
+            |> Task.andThen (collectTypedLocalArtifacts mvars)
         )
 
 
-collectTypedLocalObjects : Dict String ModuleName.Raw (MVar (Maybe TOpt.LocalGraph)) -> Maybe TOpt.GlobalGraph -> Task Never (Result Exit.Generate TypedObjects)
-collectTypedLocalObjects mvars globalResult =
-    Utils.mapTraverse identity compare (Utils.readMVar (BD.maybe TOpt.localGraphDecoder)) mvars
-        |> Task.map (combineTypedGlobalAndLocalObjects globalResult)
+collectTypedLocalArtifacts : Dict String ModuleName.Raw (MVar (Maybe TMod.TypedModuleArtifact)) -> Maybe Details.PackageTypedArtifacts -> Task Never (Result Exit.Generate TypedObjects)
+collectTypedLocalArtifacts mvars globalArtifacts =
+    Utils.mapTraverse identity compare (Utils.readMVar (BD.maybe TMod.typedModuleArtifactDecoder)) mvars
+        |> Task.map (combineTypedGlobalAndLocalObjects globalArtifacts)
 
 
-combineTypedGlobalAndLocalObjects : Maybe TOpt.GlobalGraph -> Dict String ModuleName.Raw (Maybe TOpt.LocalGraph) -> Result Exit.Generate TypedObjects
-combineTypedGlobalAndLocalObjects globalResult results =
-    case Maybe.map2 TypedObjects globalResult (Utils.sequenceDictMaybe identity compare results) of
-        Just loaded ->
-            Ok loaded
+combineTypedGlobalAndLocalObjects : Maybe Details.PackageTypedArtifacts -> Dict String ModuleName.Raw (Maybe TMod.TypedModuleArtifact) -> Result Exit.Generate TypedObjects
+combineTypedGlobalAndLocalObjects maybeGlobalArtifacts results =
+    let
+        -- Convert TypedModuleArtifact to ModuleTyped
+        toModuleTyped : TMod.TypedModuleArtifact -> ModuleTyped
+        toModuleTyped artifact =
+            { graph = artifact.typedGraph
+            , env = artifact.typeEnv
+            }
 
-        Nothing ->
+        -- Sequence the dict of Maybe values
+        maybeLocalModules : Maybe (Dict String ModuleName.Raw ModuleTyped)
+        maybeLocalModules =
+            Utils.sequenceDictMaybe identity compare results
+                |> Maybe.map (Dict.map (\_ -> toModuleTyped))
+    in
+    case ( maybeGlobalArtifacts, maybeLocalModules ) of
+        ( Just globalArtifacts, Just localModules ) ->
+            Ok (TypedObjects globalArtifacts.typedGraph globalArtifacts.typeEnv localModules)
+
+        ( Nothing, Just localModules ) ->
+            -- No package artifacts, just use empty globals
+            Ok (TypedObjects TOpt.emptyGlobalGraph TypeEnv.emptyGlobalTypeEnv localModules)
+
+        _ ->
             Err Exit.GenerateCannotLoadArtifacts
 
 
 typedObjectsToGlobalGraph : TypedObjects -> TOpt.GlobalGraph
-typedObjectsToGlobalGraph (TypedObjects globals locals) =
-    Dict.foldr compare (\_ -> TOpt.addLocalGraph) globals locals
+typedObjectsToGlobalGraph (TypedObjects globals _ locals) =
+    Dict.foldr compare (\_ modTyped acc -> TOpt.addLocalGraph modTyped.graph acc) globals locals
+
+
+typedObjectsToGlobalTypeEnv : TypedObjects -> TypeEnv.GlobalTypeEnv
+typedObjectsToGlobalTypeEnv (TypedObjects _ globalEnv locals) =
+    -- Merge local module type envs into the global type env from packages
+    Dict.foldr compare
+        (\_ modTyped acc ->
+            let
+                modEnv : TypeEnv.ModuleTypeEnv
+                modEnv =
+                    modTyped.env
+            in
+            Dict.insert ModuleName.toComparableCanonical modEnv.home modEnv acc
+        )
+        globalEnv
+        locals
 
 
 
@@ -544,27 +597,37 @@ generateMonoDevOutput backend withSourceMaps leadingLines root roots objects =
         baseGraph =
             typedObjectsToGlobalGraph objects
 
+        baseTypeEnv : TypeEnv.GlobalTypeEnv
+        baseTypeEnv =
+            typedObjectsToGlobalTypeEnv objects
+
         -- Add typed graphs from roots (for Outside roots that have typed graphs)
         typedGraph : TOpt.GlobalGraph
         typedGraph =
             List.foldl addRootTypedGraph baseGraph (NE.toList roots)
+
+        -- Add type envs from roots (for Outside roots that have type envs)
+        globalTypeEnv : TypeEnv.GlobalTypeEnv
+        globalTypeEnv =
+            List.foldl addRootTypeEnv baseTypeEnv (NE.toList roots)
     in
-    case Monomorphize.monomorphize "main" typedGraph of
+    case Monomorphize.monomorphize "main" globalTypeEnv typedGraph of
         Err err ->
             Task.throw (Exit.GenerateMonomorphizationError err)
 
         Ok monoGraph ->
             prepareSourceMaps withSourceMaps root
-                |> Task.map (generateMonoOutput backend leadingLines mode monoGraph)
+                |> Task.map (generateMonoOutput backend leadingLines mode monoGraph globalTypeEnv)
 
 
-generateMonoOutput : CodeGen.MonoCodeGen -> Int -> Mode.Mode -> Mono.MonoGraph -> CodeGen.SourceMaps -> CodeGen.Output
-generateMonoOutput backend leadingLines mode monoGraph sourceMaps =
+generateMonoOutput : CodeGen.MonoCodeGen -> Int -> Mode.Mode -> Mono.MonoGraph -> TypeEnv.GlobalTypeEnv -> CodeGen.SourceMaps -> CodeGen.Output
+generateMonoOutput backend leadingLines mode monoGraph typeEnv sourceMaps =
     backend.generate
         { sourceMaps = sourceMaps
         , leadingLines = leadingLines
         , mode = mode
         , graph = monoGraph
+        , typeEnv = typeEnv
         }
 
 
@@ -575,10 +638,26 @@ addRootTypedGraph root graph =
             -- Inside roots are already in the modules list
             graph
 
-        Build.Outside _ _ _ maybeTypedGraph ->
+        Build.Outside _ _ _ maybeTypedGraph _ ->
             case maybeTypedGraph of
                 Just typedGraph ->
                     TOpt.addLocalGraph typedGraph graph
 
                 Nothing ->
                     graph
+
+
+addRootTypeEnv : Build.Root -> TypeEnv.GlobalTypeEnv -> TypeEnv.GlobalTypeEnv
+addRootTypeEnv root globalEnv =
+    case root of
+        Build.Inside _ ->
+            -- Inside roots are already in the modules list
+            globalEnv
+
+        Build.Outside _ _ _ _ maybeTypeEnv ->
+            case maybeTypeEnv of
+                Just modEnv ->
+                    Dict.insert ModuleName.toComparableCanonical modEnv.home modEnv globalEnv
+
+                Nothing ->
+                    globalEnv

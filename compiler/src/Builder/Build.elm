@@ -58,6 +58,8 @@ import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
+import Compiler.AST.TypeEnv as TypeEnv
+import Compiler.AST.TypedModuleArtifact as TMod
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Compile as Compile
 import Compiler.Data.Map.Utils as Map
@@ -330,7 +332,7 @@ type Artifacts
 {-| Represents a compiled module, either freshly compiled or loaded from cache.
 -}
 type Module
-    = Fresh ModuleName.Raw I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph)
+    = Fresh ModuleName.Raw I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe TypeEnv.ModuleTypeEnv)
     | Cached ModuleName.Raw Bool (MVar CachedInterface)
 
 
@@ -490,7 +492,7 @@ getRootName root =
         Inside name ->
             name
 
-        Outside name _ _ _ ->
+        Outside name _ _ _ _ ->
             name
 
 
@@ -707,8 +709,8 @@ Tracks whether the module was freshly compiled, unchanged from cache, or encount
 
 -}
 type BResult
-    = RNew Details.Local I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe Docs.Module)
-    | RSame Details.Local I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe Docs.Module)
+    = RNew Details.Local I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe TypeEnv.ModuleTypeEnv) (Maybe Docs.Module)
+    | RSame Details.Local I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe TypeEnv.ModuleTypeEnv) (Maybe Docs.Module)
     | RCached Bool Details.BuildID (MVar CachedInterface)
     | RNotFound Import.Problem
     | RProblem Error.Module
@@ -1013,10 +1015,10 @@ checkDepsHelp root results deps new same cached importProblems isBlocked lastDep
                 |> Task.andThen
                     (\result ->
                         case result of
-                            RNew (Details.Local localData) iface _ _ _ ->
+                            RNew (Details.Local localData) iface _ _ _ _ ->
                                 checkDepsHelp root results otherDeps (( dep, iface ) :: new) same cached importProblems isBlocked (max localData.lastChange lastDepChange) lastCompile
 
-                            RSame (Details.Local localData) iface _ _ _ ->
+                            RSame (Details.Local localData) iface _ _ _ _ ->
                                 checkDepsHelp root results otherDeps new (( dep, iface ) :: same) cached importProblems isBlocked (max localData.lastChange lastDepChange) lastCompile
 
                             RCached _ lastChange mvar ->
@@ -1371,6 +1373,7 @@ type alias CompileResultContext =
     , iface : I.Interface
     , objects : Opt.LocalGraph
     , typedObjects : Maybe TOpt.LocalGraph
+    , typeEnv : Maybe TypeEnv.ModuleTypeEnv
     , docs : Maybe Docs.Module
     }
 
@@ -1436,6 +1439,7 @@ handleCompileResult key root pkg buildID docsNeed path time deps main lastChange
                             , iface = I.fromModule pkg canonical annotations
                             , objects = objects
                             , typedObjects = maybeTypedObjects
+                            , typeEnv = Nothing
                             , docs = docs
                             }
                     in
@@ -1451,12 +1455,20 @@ writeObjectsAndFinalizeCompile ctx =
 
 writeTypedObjectsIfNeeded : CompileResultContext -> Task Never ()
 writeTypedObjectsIfNeeded ctx =
-    case ctx.typedObjects of
-        Nothing ->
-            Task.succeed ()
+    case ( ctx.typedObjects, ctx.typeEnv ) of
+        ( Just typedObjs, Just moduleEnv ) ->
+            let
+                artifact : TMod.TypedModuleArtifact
+                artifact =
+                    { typedGraph = typedObjs
+                    , typeEnv = moduleEnv
+                    }
+            in
+            File.writeBinary TMod.typedModuleArtifactEncoder (Stuff.guidato ctx.root ctx.name) artifact
 
-        Just typedObjs ->
-            File.writeBinary TOpt.localGraphEncoder (Stuff.guidato ctx.root ctx.name) typedObjs
+        _ ->
+            -- No typed info or type env (erased build); do not write .guidato
+            Task.succeed ()
 
 
 checkInterfaceAndFinalize : CompileResultContext -> Task Never BResult
@@ -1504,7 +1516,7 @@ buildRSame ctx =
                 , lastCompile = ctx.buildID
                 }
     in
-    RSame local ctx.iface ctx.objects ctx.typedObjects ctx.docs
+    RSame local ctx.iface ctx.objects ctx.typedObjects ctx.typeEnv ctx.docs
 
 
 buildRNew : CompileResultContext -> BResult
@@ -1520,7 +1532,7 @@ buildRNew ctx =
                 , lastCompile = ctx.buildID
                 }
     in
-    RNew local ctx.iface ctx.objects ctx.typedObjects ctx.docs
+    RNew local ctx.iface ctx.objects ctx.typedObjects ctx.typeEnv ctx.docs
 
 
 compileWithTypedOpt :
@@ -1583,6 +1595,7 @@ handleTypedCompileResult key root pkg buildID docsNeed path time deps main lastC
                             , iface = I.fromModule pkg typedArtifacts.canonical typedArtifacts.annotations
                             , objects = typedArtifacts.objects
                             , typedObjects = Just typedArtifacts.typedObjects
+                            , typeEnv = Just typedArtifacts.typeEnv
                             , docs = docs
                             }
                     in
@@ -1611,10 +1624,10 @@ writeDetails root (Details.Details detailsData) results =
 addNewLocal : ModuleName.Raw -> BResult -> Dict String ModuleName.Raw Details.Local -> Dict String ModuleName.Raw Details.Local
 addNewLocal name result locals =
     case result of
-        RNew local _ _ _ _ ->
+        RNew local _ _ _ _ _ ->
             Dict.insert identity name local locals
 
-        RSame local _ _ _ _ ->
+        RSame local _ _ _ _ _ ->
             Dict.insert identity name local locals
 
         RCached _ _ _ ->
@@ -1658,10 +1671,10 @@ finalizeExposed root docsGoal exposed results =
 addErrors : BResult -> List Error.Module -> List Error.Module
 addErrors result errors =
     case result of
-        RNew _ _ _ _ _ ->
+        RNew _ _ _ _ _ _ ->
             errors
 
-        RSame _ _ _ _ _ ->
+        RSame _ _ _ _ _ _ ->
             errors
 
         RCached _ _ _ ->
@@ -1686,10 +1699,10 @@ addErrors result errors =
 addImportProblems : Dict String ModuleName.Raw BResult -> ModuleName.Raw -> List ( ModuleName.Raw, Import.Problem ) -> List ( ModuleName.Raw, Import.Problem )
 addImportProblems results name problems =
     case Utils.find identity name results of
-        RNew _ _ _ _ _ ->
+        RNew _ _ _ _ _ _ ->
             problems
 
-        RSame _ _ _ _ _ ->
+        RSame _ _ _ _ _ _ ->
             problems
 
         RCached _ _ _ ->
@@ -1794,10 +1807,10 @@ finalizeDocs goal results =
 toDocs : BResult -> Maybe Docs.Module
 toDocs result =
     case result of
-        RNew _ _ _ _ d ->
+        RNew _ _ _ _ _ d ->
             d
 
-        RSame _ _ _ _ d ->
+        RSame _ _ _ _ _ d ->
             d
 
         RCached _ _ _ ->
@@ -1953,7 +1966,7 @@ finalizeReplArtifacts ((Env envData) as env) source ((Src.Module srcData) as mod
 
                                     m : Module
                                     m =
-                                        Fresh (Src.getName modul) (I.fromModule pkg canonical annotations) objects Nothing
+                                        Fresh (Src.getName modul) (I.fromModule pkg canonical annotations) objects Nothing Nothing
 
                                     ms : List Module
                                     ms =
@@ -2233,7 +2246,7 @@ crawlRoot ((Env envData) as env) mvar root =
 
 type RootResult
     = RInside ModuleName.Raw
-    | ROutsideOk ModuleName.Raw I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph)
+    | ROutsideOk ModuleName.Raw I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe TypeEnv.ModuleTypeEnv)
     | ROutsideErr Error.Module
     | ROutsideBlocked
 
@@ -2295,7 +2308,7 @@ compileOutside (Env envData) (Details.Local localData) source ifaces modul =
                             Reporting.report envData.key Reporting.BDone
                                 |> Task.map
                                     (\_ ->
-                                        ROutsideOk name (I.fromModule pkg typedArtifacts.canonical typedArtifacts.annotations) typedArtifacts.objects (Just typedArtifacts.typedObjects)
+                                        ROutsideOk name (I.fromModule pkg typedArtifacts.canonical typedArtifacts.annotations) typedArtifacts.objects (Just typedArtifacts.typedObjects) (Just typedArtifacts.typeEnv)
                                     )
 
                         Err errors ->
@@ -2309,7 +2322,7 @@ compileOutside (Env envData) (Details.Local localData) source ifaces modul =
                     case result of
                         Ok (Compile.Artifacts canonical annotations objects) ->
                             Reporting.report envData.key Reporting.BDone
-                                |> Task.map (\_ -> ROutsideOk name (I.fromModule pkg canonical annotations) objects Nothing)
+                                |> Task.map (\_ -> ROutsideOk name (I.fromModule pkg canonical annotations) objects Nothing Nothing)
 
                         Err errors ->
                             Error.Module name localData.path localData.time source errors |> ROutsideErr |> Task.succeed
@@ -2324,7 +2337,7 @@ compileOutside (Env envData) (Details.Local localData) source ifaces modul =
 -}
 type Root
     = Inside ModuleName.Raw
-    | Outside ModuleName.Raw I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph)
+    | Outside ModuleName.Raw I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe TypeEnv.ModuleTypeEnv)
 
 
 toArtifacts : Env -> Dependencies -> Dict String ModuleName.Raw BResult -> NE.Nonempty RootResult -> Result Exit.BuildProblem Artifacts
@@ -2352,11 +2365,11 @@ gatherProblemsOrMains results (NE.Nonempty rootResult rootResults) =
                 RInside n ->
                     ( es, Inside n :: roots )
 
-                ROutsideOk n i o t ->
-                    ( es, Outside n i o t :: roots )
+                ROutsideOk n i o t e ->
+                    ( es, Outside n i o t e :: roots )
 
-                ROutsideErr e ->
-                    ( e :: es, roots )
+                ROutsideErr err ->
+                    ( err :: es, roots )
 
                 ROutsideBlocked ->
                     ( es, roots )
@@ -2372,10 +2385,10 @@ gatherProblemsOrMains results (NE.Nonempty rootResult rootResults) =
         ( RInside _, ( e :: es, _ ) ) ->
             Err (NE.Nonempty e es)
 
-        ( ROutsideOk n i o t, ( [], ms ) ) ->
-            Ok (NE.Nonempty (Outside n i o t) ms)
+        ( ROutsideOk n i o t env, ( [], ms ) ) ->
+            Ok (NE.Nonempty (Outside n i o t env) ms)
 
-        ( ROutsideOk _ _ _ _, ( e :: es, _ ) ) ->
+        ( ROutsideOk _ _ _ _ _, ( e :: es, _ ) ) ->
             Err (NE.Nonempty e es)
 
         ( ROutsideErr e, ( es, _ ) ) ->
@@ -2391,11 +2404,11 @@ gatherProblemsOrMains results (NE.Nonempty rootResult rootResults) =
 addInside : ModuleName.Raw -> BResult -> List Module -> List Module
 addInside name result modules =
     case result of
-        RNew _ iface objs typedObjs _ ->
-            Fresh name iface objs typedObjs :: modules
+        RNew _ iface objs typedObjs typeEnv _ ->
+            Fresh name iface objs typedObjs typeEnv :: modules
 
-        RSame _ iface objs typedObjs _ ->
-            Fresh name iface objs typedObjs :: modules
+        RSame _ iface objs typedObjs typeEnv _ ->
+            Fresh name iface objs typedObjs typeEnv :: modules
 
         RCached main _ mvar ->
             Cached name main mvar :: modules
@@ -2427,8 +2440,8 @@ addOutside root modules =
         RInside _ ->
             modules
 
-        ROutsideOk name iface objs typedObjs ->
-            Fresh name iface objs typedObjs :: modules
+        ROutsideOk name iface objs typedObjs typeEnv ->
+            Fresh name iface objs typedObjs typeEnv :: modules
 
         ROutsideErr _ ->
             modules
@@ -2449,23 +2462,25 @@ dictRawMVarBResultEncoder =
 bResultEncoder : BResult -> Bytes.Encode.Encoder
 bResultEncoder bResult =
     case bResult of
-        RNew local iface objects typedObjects docs ->
+        RNew local iface objects typedObjects typeEnv docs ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 0
                 , Details.localEncoder local
                 , I.interfaceEncoder iface
                 , Opt.localGraphEncoder objects
                 , BE.maybe TOpt.localGraphEncoder typedObjects
+                , BE.maybe TypeEnv.moduleTypeEnvEncoder typeEnv
                 , BE.maybe Docs.bytesModuleEncoder docs
                 ]
 
-        RSame local iface objects typedObjects docs ->
+        RSame local iface objects typedObjects typeEnv docs ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 1
                 , Details.localEncoder local
                 , I.interfaceEncoder iface
                 , Opt.localGraphEncoder objects
                 , BE.maybe TOpt.localGraphEncoder typedObjects
+                , BE.maybe TypeEnv.moduleTypeEnvEncoder typeEnv
                 , BE.maybe Docs.bytesModuleEncoder docs
                 ]
 
@@ -2509,19 +2524,21 @@ bResultDecoder =
             (\idx ->
                 case idx of
                     0 ->
-                        Bytes.Decode.map5 RNew
+                        BD.map6 RNew
                             Details.localDecoder
                             I.interfaceDecoder
                             Opt.localGraphDecoder
                             (BD.maybe TOpt.localGraphDecoder)
+                            (BD.maybe TypeEnv.moduleTypeEnvDecoder)
                             (BD.maybe Docs.bytesModuleDecoder)
 
                     1 ->
-                        Bytes.Decode.map5 RSame
+                        BD.map6 RSame
                             Details.localDecoder
                             I.interfaceDecoder
                             Opt.localGraphDecoder
                             (BD.maybe TOpt.localGraphDecoder)
+                            (BD.maybe TypeEnv.moduleTypeEnvDecoder)
                             (BD.maybe Docs.bytesModuleDecoder)
 
                     2 ->
@@ -2706,13 +2723,14 @@ rootResultEncoder rootResult =
                 , ModuleName.rawEncoder name
                 ]
 
-        ROutsideOk name iface objs typedObjs ->
+        ROutsideOk name iface objs typedObjs typeEnv ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 1
                 , ModuleName.rawEncoder name
                 , I.interfaceEncoder iface
                 , Opt.localGraphEncoder objs
                 , BE.maybe TOpt.localGraphEncoder typedObjs
+                , BE.maybe TypeEnv.moduleTypeEnvEncoder typeEnv
                 ]
 
         ROutsideErr err ->
@@ -2735,11 +2753,12 @@ rootResultDecoder =
                         Bytes.Decode.map RInside ModuleName.rawDecoder
 
                     1 ->
-                        Bytes.Decode.map4 ROutsideOk
+                        Bytes.Decode.map5 ROutsideOk
                             ModuleName.rawDecoder
                             I.interfaceDecoder
                             Opt.localGraphDecoder
                             (BD.maybe TOpt.localGraphDecoder)
+                            (BD.maybe TypeEnv.moduleTypeEnvDecoder)
 
                     2 ->
                         Bytes.Decode.map ROutsideErr Error.moduleDecoder
@@ -2873,13 +2892,14 @@ rootEncoder root =
                 , ModuleName.rawEncoder name
                 ]
 
-        Outside name iface objs typedObjs ->
+        Outside name iface objs typedObjs typeEnv ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 1
                 , ModuleName.rawEncoder name
                 , I.interfaceEncoder iface
                 , Opt.localGraphEncoder objs
                 , BE.maybe TOpt.localGraphEncoder typedObjs
+                , BE.maybe TypeEnv.moduleTypeEnvEncoder typeEnv
                 ]
 
 
@@ -2893,11 +2913,12 @@ rootDecoder =
                         Bytes.Decode.map Inside ModuleName.rawDecoder
 
                     1 ->
-                        Bytes.Decode.map4 Outside
+                        Bytes.Decode.map5 Outside
                             ModuleName.rawDecoder
                             I.interfaceDecoder
                             Opt.localGraphDecoder
                             (BD.maybe TOpt.localGraphDecoder)
+                            (BD.maybe TypeEnv.moduleTypeEnvDecoder)
 
                     _ ->
                         Bytes.Decode.fail
@@ -2907,13 +2928,14 @@ rootDecoder =
 moduleEncoder : Module -> Bytes.Encode.Encoder
 moduleEncoder modul =
     case modul of
-        Fresh name iface objs typedObjs ->
+        Fresh name iface objs typedObjs typeEnv ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 0
                 , ModuleName.rawEncoder name
                 , I.interfaceEncoder iface
                 , Opt.localGraphEncoder objs
                 , BE.maybe TOpt.localGraphEncoder typedObjs
+                , BE.maybe TypeEnv.moduleTypeEnvEncoder typeEnv
                 ]
 
         Cached name main mvar ->
@@ -2932,11 +2954,12 @@ moduleDecoder =
             (\idx ->
                 case idx of
                     0 ->
-                        Bytes.Decode.map4 Fresh
+                        Bytes.Decode.map5 Fresh
                             ModuleName.rawDecoder
                             I.interfaceDecoder
                             Opt.localGraphDecoder
                             (BD.maybe TOpt.localGraphDecoder)
+                            (BD.maybe TypeEnv.moduleTypeEnvDecoder)
 
                     1 ->
                         Bytes.Decode.map3 Cached

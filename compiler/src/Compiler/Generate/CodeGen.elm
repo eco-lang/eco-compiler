@@ -2,7 +2,7 @@ module Compiler.Generate.CodeGen exposing
     ( Output(..), outputToString
     , SourceMaps(..)
     , Mains
-    , CodeGen, MonoCodeGen
+    , CodeGen, MonoCodeGen, MonoCodeGenConfig
     )
 
 {-| Backend interface definitions for code generation.
@@ -32,13 +32,14 @@ It supports three different backend types based on the level of type information
 
 # Backend Interfaces
 
-@docs CodeGen, MonoCodeGen
+@docs CodeGen, MonoCodeGen, MonoCodeGenConfig
 
 -}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Optimized as Opt
+import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Data.Name as Name
 import Compiler.Generate.Mode as Mode
 import Compiler.Reporting.Render.Type.Localizer as L
@@ -133,11 +134,16 @@ type SourceMaps
 -}
 type alias MonoCodeGen =
     { -- Generate a complete program from the monomorphized graph
-      generate :
-        { sourceMaps : SourceMaps
-        , leadingLines : Int
-        , mode : Mode.Mode
-        , graph : Mono.MonoGraph
-        }
-        -> Output
+      generate : MonoCodeGenConfig -> Output
+    }
+
+
+{-| Configuration for monomorphized code generation.
+-}
+type alias MonoCodeGenConfig =
+    { sourceMaps : SourceMaps
+    , leadingLines : Int
+    , mode : Mode.Mode
+    , graph : Mono.MonoGraph
+    , typeEnv : TypeEnv.GlobalTypeEnv -- Complete union definitions for all custom types
     }

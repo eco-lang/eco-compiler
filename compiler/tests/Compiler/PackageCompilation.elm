@@ -54,6 +54,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedCanonical as TCan
+import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name
@@ -503,7 +504,7 @@ monomorphizeAny (TOpt.GlobalGraph nodes _ _) =
             Err "No function found in graph"
 
         Just ( TOpt.Global _ name, _ ) ->
-            Monomorphize.monomorphize name (TOpt.GlobalGraph nodes Dict.empty Dict.empty)
+            Monomorphize.monomorphize name TypeEnv.emptyGlobal (TOpt.GlobalGraph nodes Dict.empty Dict.empty)
 
 
 {-| Find any entry point in the global graph (the first defined function).
@@ -544,6 +545,7 @@ generateMLIR monoGraph =
             , leadingLines = 0
             , mode = Mode.Dev Nothing
             , graph = monoGraph
+            , typeEnv = TypeEnv.emptyGlobal
             }
 
         output =

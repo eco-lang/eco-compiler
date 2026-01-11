@@ -32,6 +32,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedCanonical as TCan
+import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name exposing (Name)
@@ -80,6 +81,7 @@ type alias TypedArtifactsData =
     , annotations : Dict String Name Can.Annotation
     , objects : Opt.LocalGraph
     , typedObjects : TOpt.LocalGraph
+    , typeEnv : TypeEnv.ModuleTypeEnv
     }
 
 
@@ -145,6 +147,10 @@ compileTyped pkg ifaces modul =
             |> (\canonicalResult ->
                     case canonicalResult of
                         Ok canonical ->
+                            let
+                                moduleTypeEnv =
+                                    TypeEnv.fromCanonical canonical
+                            in
                             typeCheckTyped modul canonical
                                 |> Result.andThen
                                     (\{ annotations, typedCanonical, nodeTypes, kernelEnv } ->
@@ -162,6 +168,7 @@ compileTyped pkg ifaces modul =
                                                                                 , annotations = annotations
                                                                                 , objects = objects
                                                                                 , typedObjects = typedObjects
+                                                                                , typeEnv = moduleTypeEnv
                                                                                 }
                                                                         )
                                                             )

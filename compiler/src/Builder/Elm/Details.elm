@@ -2,8 +2,9 @@ module Builder.Elm.Details exposing
     ( Details(..), DetailsData, BuildID, ValidOutline(..)
     , Local(..), LocalData, Foreign(..), Status
     , Extras, Interfaces
+    , PackageTypedArtifacts, packageTypedArtifactsEncoder, packageTypedArtifactsDecoder
     , load, verifyInstall
-    , loadObjects, loadTypedObjects, loadInterfaces
+    , loadObjects, loadTypedObjects, loadTypeEnvs, loadInterfaces
     , detailsEncoder, localEncoder, localDecoder
     )
 
@@ -62,6 +63,7 @@ import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
+import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Compile as Compile
 import Compiler.Data.Name as Name
@@ -207,9 +209,9 @@ loadObjects root (Details detailsData) =
 {-| Load typed global objects for MLIR backend.
 Loads both local typed objects and typed objects from all package dependencies.
 -}
-loadTypedObjects : FilePath -> Details -> Task Never (MVar (Maybe TOpt.GlobalGraph))
+loadTypedObjects : FilePath -> Details -> Task Never (MVar (Maybe PackageTypedArtifacts))
 loadTypedObjects root (Details detailsData) =
-    fork (Utils.maybeEncoder TOpt.globalGraphEncoder)
+    fork (Utils.maybeEncoder packageTypedArtifactsEncoder)
         (Stuff.getPackageCache
             |> Task.andThen (loadAllTypedObjects root detailsData.deps)
         )
@@ -217,50 +219,139 @@ loadTypedObjects root (Details detailsData) =
 
 {-| Load typed objects from local project and all packages.
 -}
-loadAllTypedObjects : FilePath -> Dict ( String, String ) Pkg.Name V.Version -> Stuff.PackageCache -> Task Never (Maybe TOpt.GlobalGraph)
+loadAllTypedObjects : FilePath -> Dict ( String, String ) Pkg.Name V.Version -> Stuff.PackageCache -> Task Never (Maybe PackageTypedArtifacts)
 loadAllTypedObjects root deps cache =
-    -- Load local typed objects
+    -- Load local typed objects (graph only - type envs come from Fresh modules)
     File.readBinary TOpt.globalGraphDecoder (Stuff.typedObjects root)
         |> Task.andThen
             (\maybeLocal ->
-                -- Load typed objects from all dependencies
-                loadPackageTypedObjects cache deps
-                    |> Task.map (combineTypedObjects maybeLocal)
+                -- Load typed objects from all dependencies (both graph and type env)
+                loadPackageTypedArtifacts cache deps
+                    |> Task.map (combineTypedArtifacts maybeLocal)
             )
 
 
 {-| Load typed objects from all package dependencies.
 -}
-loadPackageTypedObjects : Stuff.PackageCache -> Dict ( String, String ) Pkg.Name V.Version -> Task Never TOpt.GlobalGraph
-loadPackageTypedObjects cache deps =
-    Utils.mapTraverseWithKey identity Pkg.compareName (loadSinglePackageTypedObjects cache) deps
-        |> Task.map (\loadedGraphs -> Dict.foldl compare (\_ graph acc -> TOpt.addGlobalGraph graph acc) TOpt.emptyGlobalGraph loadedGraphs)
+loadPackageTypedArtifacts : Stuff.PackageCache -> Dict ( String, String ) Pkg.Name V.Version -> Task Never PackageTypedArtifacts
+loadPackageTypedArtifacts cache deps =
+    Utils.mapTraverseWithKey identity Pkg.compareName (loadSinglePackageTypedArtifacts cache) deps
+        |> Task.map
+            (\loadedArtifacts ->
+                Dict.foldl compare
+                    (\_ arts acc ->
+                        { typedGraph = TOpt.addGlobalGraph arts.typedGraph acc.typedGraph
+                        , typeEnv = TypeEnv.mergeGlobalTypeEnv arts.typeEnv acc.typeEnv
+                        }
+                    )
+                    { typedGraph = TOpt.emptyGlobalGraph, typeEnv = TypeEnv.emptyGlobalTypeEnv }
+                    loadedArtifacts
+            )
 
 
 {-| Load typed objects from a single package.
 -}
-loadSinglePackageTypedObjects : Stuff.PackageCache -> Pkg.Name -> V.Version -> Task Never TOpt.GlobalGraph
-loadSinglePackageTypedObjects cache pkg vsn =
+loadSinglePackageTypedArtifacts : Stuff.PackageCache -> Pkg.Name -> V.Version -> Task Never PackageTypedArtifacts
+loadSinglePackageTypedArtifacts cache pkg vsn =
     let
         path : String
         path =
             Stuff.typedPackageArtifacts cache pkg vsn
     in
-    File.readBinary TOpt.globalGraphDecoder path
-        |> Task.map (Maybe.withDefault TOpt.emptyGlobalGraph)
+    File.readBinary packageTypedArtifactsDecoder path
+        |> Task.map (Maybe.withDefault { typedGraph = TOpt.emptyGlobalGraph, typeEnv = TypeEnv.emptyGlobalTypeEnv })
 
 
-{-| Combine local and package typed objects.
+{-| Combine local and package typed artifacts.
 -}
-combineTypedObjects : Maybe TOpt.GlobalGraph -> TOpt.GlobalGraph -> Maybe TOpt.GlobalGraph
-combineTypedObjects maybeLocal packageGraphs =
+combineTypedArtifacts : Maybe TOpt.GlobalGraph -> PackageTypedArtifacts -> Maybe PackageTypedArtifacts
+combineTypedArtifacts maybeLocal packageArtifacts =
     case maybeLocal of
         Just local ->
-            Just (TOpt.addGlobalGraph local packageGraphs)
+            Just
+                { typedGraph = TOpt.addGlobalGraph local packageArtifacts.typedGraph
+                , typeEnv = packageArtifacts.typeEnv
+                }
 
         Nothing ->
-            -- Return package graphs (which may be empty)
-            Just packageGraphs
+            -- Return package artifacts (which may be empty)
+            Just packageArtifacts
+
+
+
+-- ====== PACKAGE TYPED ARTIFACTS ======
+
+
+{-| Combined typed artifacts for a package, containing both the typed global graph
+and the global type environment.
+-}
+type alias PackageTypedArtifacts =
+    { typedGraph : TOpt.GlobalGraph
+    , typeEnv : TypeEnv.GlobalTypeEnv
+    }
+
+
+{-| Encode package typed artifacts.
+-}
+packageTypedArtifactsEncoder : PackageTypedArtifacts -> Bytes.Encode.Encoder
+packageTypedArtifactsEncoder arts =
+    Bytes.Encode.sequence
+        [ TOpt.globalGraphEncoder arts.typedGraph
+        , TypeEnv.globalTypeEnvEncoder arts.typeEnv
+        ]
+
+
+{-| Decode package typed artifacts.
+-}
+packageTypedArtifactsDecoder : Bytes.Decode.Decoder PackageTypedArtifacts
+packageTypedArtifactsDecoder =
+    Bytes.Decode.map2 PackageTypedArtifacts
+        TOpt.globalGraphDecoder
+        TypeEnv.globalTypeEnvDecoder
+
+
+
+-- ====== LOAD TYPE ENVIRONMENTS ======
+
+
+{-| Load global type environments from all package dependencies.
+Returns an MVar that will contain the type environments when loading completes.
+-}
+loadTypeEnvs : FilePath -> Details -> Task Never (MVar (Maybe TypeEnv.GlobalTypeEnv))
+loadTypeEnvs root (Details detailsData) =
+    fork (Utils.maybeEncoder TypeEnv.globalTypeEnvEncoder)
+        (Stuff.getPackageCache
+            |> Task.andThen (loadAllTypeEnvs root detailsData.deps)
+        )
+
+
+{-| Load type environments from all packages.
+-}
+loadAllTypeEnvs : FilePath -> Dict ( String, String ) Pkg.Name V.Version -> Stuff.PackageCache -> Task Never (Maybe TypeEnv.GlobalTypeEnv)
+loadAllTypeEnvs _ deps cache =
+    loadPackageTypeEnvs cache deps
+        |> Task.map Just
+
+
+{-| Load type environments from all package dependencies.
+-}
+loadPackageTypeEnvs : Stuff.PackageCache -> Dict ( String, String ) Pkg.Name V.Version -> Task Never TypeEnv.GlobalTypeEnv
+loadPackageTypeEnvs cache deps =
+    Utils.mapTraverseWithKey identity Pkg.compareName (loadSinglePackageTypeEnv cache) deps
+        |> Task.map (\loaded -> Dict.foldl compare (\_ env acc -> Dict.union env acc) TypeEnv.emptyGlobal loaded)
+
+
+{-| Load type environment from a single package.
+-}
+loadSinglePackageTypeEnv : Stuff.PackageCache -> Pkg.Name -> V.Version -> Task Never TypeEnv.GlobalTypeEnv
+loadSinglePackageTypeEnv cache pkg vsn =
+    let
+        path : String
+        path =
+            Stuff.typedPackageArtifacts cache pkg vsn
+    in
+    File.readBinary packageTypedArtifactsDecoder path
+        |> Task.map (Maybe.map .typeEnv >> Maybe.withDefault TypeEnv.emptyGlobal)
 
 
 {-| Load type interfaces for all dependencies in a background thread.
@@ -1060,11 +1151,21 @@ writePackageArtifacts ctx exposedDict docsStatus resultDict =
                     (\_ ->
                         if ctx.needsTypedOpt then
                             let
-                                typedObjects : TOpt.GlobalGraph
-                                typedObjects =
+                                typedGraph : TOpt.GlobalGraph
+                                typedGraph =
                                     gatherTypedObjects successes
+
+                                typeEnv : TypeEnv.GlobalTypeEnv
+                                typeEnv =
+                                    gatherTypeEnvs successes
+
+                                pkgTyped : PackageTypedArtifacts
+                                pkgTyped =
+                                    { typedGraph = typedGraph
+                                    , typeEnv = typeEnv
+                                    }
                             in
-                            File.writeBinary TOpt.globalGraphEncoder typedPath typedObjects
+                            File.writeBinary packageTypedArtifactsEncoder typedPath pkgTyped
 
                         else
                             Task.succeed ()
@@ -1150,7 +1251,7 @@ gatherObjects results =
 addLocalGraph : ModuleName.Raw -> DResult -> Opt.GlobalGraph -> Opt.GlobalGraph
 addLocalGraph name status graph =
     case status of
-        RLocal _ objs _ _ ->
+        RLocal _ objs _ _ _ ->
             Opt.addLocalGraph objs graph
 
         RForeign _ ->
@@ -1175,7 +1276,7 @@ gatherTypedObjects results =
 addTypedLocalGraph : ModuleName.Raw -> DResult -> TOpt.GlobalGraph -> TOpt.GlobalGraph
 addTypedLocalGraph _ status graph =
     case status of
-        RLocal _ _ maybeTypedObjs _ ->
+        RLocal _ _ maybeTypedObjs _ _ ->
             case maybeTypedObjs of
                 Just typedObjs ->
                     TOpt.addLocalGraph typedObjs graph
@@ -1192,6 +1293,36 @@ addTypedLocalGraph _ status graph =
 
         RKernelForeign ->
             graph
+
+
+{-| Gather type environments from DResult dictionary for monomorphization.
+-}
+gatherTypeEnvs : Dict String ModuleName.Raw DResult -> TypeEnv.GlobalTypeEnv
+gatherTypeEnvs results =
+    Dict.foldr compare addTypeEnv TypeEnv.emptyGlobal results
+
+
+{-| Add a module type environment to the global type environment.
+-}
+addTypeEnv : ModuleName.Raw -> DResult -> TypeEnv.GlobalTypeEnv -> TypeEnv.GlobalTypeEnv
+addTypeEnv _ status acc =
+    case status of
+        RLocal _ _ _ maybeEnv _ ->
+            case maybeEnv of
+                Just moduleEnv ->
+                    Dict.insert ModuleName.toComparableCanonical moduleEnv.home moduleEnv acc
+
+                Nothing ->
+                    acc
+
+        RForeign _ ->
+            acc
+
+        RKernelLocal _ ->
+            acc
+
+        RKernelForeign ->
+            acc
 
 
 gatherInterfaces : Dict String ModuleName.Raw () -> Dict String ModuleName.Raw DResult -> Dict String ModuleName.Raw I.DependencyInterface
@@ -1219,7 +1350,7 @@ gatherInterfaces exposed artifacts =
 toLocalInterface : (I.Interface -> a) -> DResult -> Maybe a
 toLocalInterface func result =
     case result of
-        RLocal iface _ _ _ ->
+        RLocal iface _ _ _ _ ->
             Just (func iface)
 
         RForeign _ ->
@@ -1439,7 +1570,7 @@ getDepHome fi =
 
 
 type DResult
-    = RLocal I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe Docs.Module)
+    = RLocal I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe TypeEnv.ModuleTypeEnv) (Maybe Docs.Module)
     | RForeign I.Interface
     | RKernelLocal (List Kernel.Chunk)
     | RKernelForeign
@@ -1550,7 +1681,7 @@ handleCompileResult ctx modul docsStatus result =
                 docs =
                     makeDocs docsStatus canonical
             in
-            Task.succeed (Ok (RLocal iface objects Nothing docs))
+            Task.succeed (Ok (RLocal iface objects Nothing Nothing docs))
 
 
 {-| Handle result of typed compilation (with typed optimization for MLIR).
@@ -1604,13 +1735,13 @@ handleTypedCompileResult ctx modul docsStatus result =
                 docs =
                     makeDocs docsStatus data.canonical
             in
-            Task.succeed (Ok (RLocal iface data.objects (Just data.typedObjects) docs))
+            Task.succeed (Ok (RLocal iface data.objects (Just data.typedObjects) (Just data.typeEnv) docs))
 
 
 getInterface : DResult -> Maybe I.Interface
 getInterface result =
     case result of
-        RLocal iface _ _ _ ->
+        RLocal iface _ _ _ _ ->
             Just iface
 
         RForeign iface ->
@@ -1674,7 +1805,7 @@ writeDocs cache pkg vsn status results =
 toDocs : DResult -> Maybe Docs.Module
 toDocs result =
     case result of
-        RLocal _ _ _ docs ->
+        RLocal _ _ _ _ docs ->
             docs
 
         RForeign _ ->
@@ -1961,12 +2092,13 @@ resultErrorModuleDResultDecoder =
 dResultEncoder : DResult -> Bytes.Encode.Encoder
 dResultEncoder dResult =
     case dResult of
-        RLocal ifaces objects typedObjects docs ->
+        RLocal ifaces objects typedObjects typeEnv docs ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 0
                 , I.interfaceEncoder ifaces
                 , Opt.localGraphEncoder objects
                 , BE.maybe TOpt.localGraphEncoder typedObjects
+                , BE.maybe TypeEnv.moduleTypeEnvEncoder typeEnv
                 , BE.maybe Docs.bytesModuleEncoder docs
                 ]
 
@@ -1993,10 +2125,11 @@ dResultDecoder =
             (\idx ->
                 case idx of
                     0 ->
-                        Bytes.Decode.map4 RLocal
+                        Bytes.Decode.map5 RLocal
                             I.interfaceDecoder
                             Opt.localGraphDecoder
                             (BD.maybe TOpt.localGraphDecoder)
+                            (BD.maybe TypeEnv.moduleTypeEnvDecoder)
                             (BD.maybe Docs.bytesModuleDecoder)
 
                     1 ->

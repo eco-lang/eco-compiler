@@ -22,6 +22,7 @@ The monomorphization algorithm works as follows:
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
+import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
@@ -48,6 +49,7 @@ type alias MonoState =
     , currentModule : IO.Canonical
     , toptNodes : Dict (List String) TOpt.Global TOpt.Node
     , currentGlobal : Maybe Mono.Global
+    , globalTypeEnv : TypeEnv.GlobalTypeEnv
     }
 
 
@@ -143,20 +145,20 @@ checkCallableTopLevels state =
 This is useful for testing when the entry point is not named "main".
 
 -}
-monomorphize : Name -> TOpt.GlobalGraph -> Result String Mono.MonoGraph
-monomorphize entryPointName (TOpt.GlobalGraph nodes _ _) =
+monomorphize : Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph -> Result String Mono.MonoGraph
+monomorphize entryPointName globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
     case findEntryPoint entryPointName nodes of
         Nothing ->
             Err ("No " ++ entryPointName ++ " function found")
 
         Just ( mainGlobal, mainType ) ->
-            monomorphizeFromEntry mainGlobal mainType nodes
+            monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes
 
 
 {-| Perform monomorphization from a given entry point.
 -}
-monomorphizeFromEntry : TOpt.Global -> Can.Type -> Dict (List String) TOpt.Global TOpt.Node -> Result String Mono.MonoGraph
-monomorphizeFromEntry mainGlobal mainType nodes =
+monomorphizeFromEntry : TOpt.Global -> Can.Type -> TypeEnv.GlobalTypeEnv -> Dict (List String) TOpt.Global TOpt.Node -> Result String Mono.MonoGraph
+monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes =
     let
         mainMonoType : Mono.MonoType
         mainMonoType =
@@ -170,7 +172,7 @@ monomorphizeFromEntry mainGlobal mainType nodes =
 
         initialState : MonoState
         initialState =
-            initState currentModule nodes
+            initState currentModule nodes globalTypeEnv
 
         stateWithMain : MonoState
         stateWithMain =
@@ -205,8 +207,8 @@ monomorphizeFromEntry mainGlobal mainType nodes =
             Ok
                 (Mono.MonoGraph
                     { nodes = finalState.nodes
-                    , main = mainInfo
                     , registry = finalState.registry
+                    , main = mainInfo
                     }
                 )
 
@@ -217,8 +219,8 @@ monomorphizeFromEntry mainGlobal mainType nodes =
 
 {-| Initialize the monomorphization state with empty worklist and registry.
 -}
-initState : IO.Canonical -> Dict (List String) TOpt.Global TOpt.Node -> MonoState
-initState currentModule toptNodes =
+initState : IO.Canonical -> Dict (List String) TOpt.Global TOpt.Node -> TypeEnv.GlobalTypeEnv -> MonoState
+initState currentModule toptNodes globalTypeEnv =
     { worklist = []
     , nodes = Dict.empty
     , inProgress = EverySet.empty
@@ -227,6 +229,7 @@ initState currentModule toptNodes =
     , currentModule = currentModule
     , toptNodes = toptNodes
     , currentGlobal = Nothing
+    , globalTypeEnv = globalTypeEnv
     }
 
 
@@ -748,13 +751,10 @@ specializeExpr expr subst state =
                                     -- Nullary constructor - type is the custom type directly
                                     applySubst subst enumCanType
 
-                                Just (TOpt.Ctor _ arity ctorCanType) ->
-                                    -- Constructor with fields - extract result type from function type
-                                    let
-                                        ctorMonoType =
-                                            applySubst subst ctorCanType
-                                    in
-                                    extractCtorResultType arity ctorMonoType
+                                Just (TOpt.Ctor _ _ ctorCanType) ->
+                                    -- Constructor with fields - use full function type
+                                    -- so that unification in specializeNode works correctly
+                                    applySubst subst ctorCanType
 
                                 _ ->
                                     -- For Link, Kernel, etc. - keep the original type
@@ -1994,6 +1994,22 @@ unifyHelp canType monoType subst =
     case ( canType, monoType ) of
         ( Can.TVar name, _ ) ->
             Dict.insert identity name monoType subst
+
+        -- Handle primitive types from elm/core that map to specialized MonoTypes
+        ( Can.TType (IO.Canonical ( "elm", "core" ) "Basics") "Int" [], Mono.MInt ) ->
+            subst
+
+        ( Can.TType (IO.Canonical ( "elm", "core" ) "Basics") "Float" [], Mono.MFloat ) ->
+            subst
+
+        ( Can.TType (IO.Canonical ( "elm", "core" ) "Basics") "Bool" [], Mono.MBool ) ->
+            subst
+
+        ( Can.TType (IO.Canonical ( "elm", "core" ) "Char") "Char" [], Mono.MChar ) ->
+            subst
+
+        ( Can.TType (IO.Canonical ( "elm", "core" ) "String") "String" [], Mono.MString ) ->
+            subst
 
         ( Can.TLambda from to, Mono.MFunction args ret ) ->
             case args of
