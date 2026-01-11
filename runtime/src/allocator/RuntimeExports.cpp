@@ -90,6 +90,7 @@ void output_char(char c) {
 
 /// Helper to print float values with proper Infinity and NaN formatting.
 /// Elm uses "Infinity", "-Infinity", and "NaN" (not "inf", "-inf", "nan").
+/// -0.0 is printed as "0", like Elm does.
 void print_float(double d) {
     if (std::isinf(d)) {
         if (d > 0) {
@@ -99,6 +100,9 @@ void print_float(double d) {
         }
     } else if (std::isnan(d)) {
         output_text("NaN");
+    } else if (d == 0.0) {
+        // Print both +0.0 and -0.0 as "0", like Elm does.
+        output_text("0");
     } else {
         output_format("%g", d);
     }
@@ -1187,7 +1191,9 @@ extern "C" void eco_dbg_print_int(int64_t value) {
 
 // Debug print for unboxed float (f64)
 extern "C" void eco_dbg_print_float(double value) {
-    output_format("[eco.dbg] %g\n", value);
+    output_text("[eco.dbg] ");
+    print_float(value);
+    output_text("\n");
 }
 
 // Debug print for unboxed char (i32 Unicode code point)

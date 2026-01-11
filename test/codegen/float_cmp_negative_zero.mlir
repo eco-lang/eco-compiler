@@ -55,9 +55,9 @@ module {
     %div_pos = eco.float.div %one, %pos_zero : f64
     %div_neg = eco.float.div %one, %neg_zero : f64
     eco.dbg %div_pos : f64
-    // CHECK: inf
+    // CHECK: Infinity
     eco.dbg %div_neg : f64
-    // CHECK: -inf
+    // CHECK: -Infinity
 
     // min/max with zeros
     %min_zeros = eco.float.min %neg_zero, %pos_zero : f64

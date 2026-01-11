@@ -30,7 +30,7 @@ module {
     %inf = arith.constant 0x7FF0000000000000 : f64
     %result4 = eco.expect %cond_true, %msg, %inf : f64 -> f64
     eco.dbg %result4 : f64
-    // CHECK: inf
+    // CHECK: Infinity
 
     // Test with zero
     %zero_f = arith.constant 0.0 : f64

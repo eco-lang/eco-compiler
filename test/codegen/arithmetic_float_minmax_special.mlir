@@ -44,12 +44,12 @@ module {
     // max(+Inf, x) = +Inf
     %max_inf_x = eco.float.max %pos_inf, %f5 : f64
     eco.dbg %max_inf_x : f64
-    // CHECK: inf
+    // CHECK: Infinity
 
     // min(-Inf, x) = -Inf
     %min_neg_inf_x = eco.float.min %neg_inf, %f5 : f64
     eco.dbg %min_neg_inf_x : f64
-    // CHECK: -inf
+    // CHECK: -Infinity
 
     // max(-Inf, x) = x
     %max_neg_inf_x = eco.float.max %neg_inf, %f5 : f64
@@ -59,12 +59,12 @@ module {
     // min(+Inf, -Inf) = -Inf
     %min_inf_inf = eco.float.min %pos_inf, %neg_inf : f64
     eco.dbg %min_inf_inf : f64
-    // CHECK: -inf
+    // CHECK: -Infinity
 
     // max(+Inf, -Inf) = +Inf
     %max_inf_inf = eco.float.max %pos_inf, %neg_inf : f64
     eco.dbg %max_inf_inf : f64
-    // CHECK: inf
+    // CHECK: Infinity
 
     // min(+0.0, -0.0) behavior (IEEE 754: either is valid)
     // LLVM minnum typically returns -0.0

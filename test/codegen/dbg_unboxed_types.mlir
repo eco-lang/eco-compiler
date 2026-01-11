@@ -29,7 +29,7 @@ module {
 
     %float_inf = arith.constant 0x7FF0000000000000 : f64
     eco.dbg %float_inf : f64
-    // CHECK: inf
+    // CHECK: Infinity
 
     // Test i32 (Char)
     %char_A = arith.constant 65 : i16

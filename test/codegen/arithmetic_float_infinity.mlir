@@ -12,37 +12,37 @@ module {
     // 1.0 / 0.0 = +Inf
     %pos_inf = eco.float.div %f1, %f0 : f64
     eco.dbg %pos_inf : f64
-    // CHECK: inf
+    // CHECK: Infinity
 
     // -1.0 / 0.0 = -Inf
     %neg_inf = eco.float.div %neg1, %f0 : f64
     eco.dbg %neg_inf : f64
-    // CHECK: -inf
+    // CHECK: -Infinity
 
     // Inf + x = Inf
     %inf_add = eco.float.add %pos_inf, %f1 : f64
     eco.dbg %inf_add : f64
-    // CHECK: inf
+    // CHECK: Infinity
 
     // Inf - x = Inf
     %inf_sub = eco.float.sub %pos_inf, %f1 : f64
     eco.dbg %inf_sub : f64
-    // CHECK: inf
+    // CHECK: Infinity
 
     // Inf * positive = Inf
     %inf_mul = eco.float.mul %pos_inf, %f2 : f64
     eco.dbg %inf_mul : f64
-    // CHECK: inf
+    // CHECK: Infinity
 
     // Inf * negative = -Inf
     %inf_mul_neg = eco.float.mul %pos_inf, %neg1 : f64
     eco.dbg %inf_mul_neg : f64
-    // CHECK: -inf
+    // CHECK: -Infinity
 
     // Inf / x = Inf
     %inf_div = eco.float.div %pos_inf, %f2 : f64
     eco.dbg %inf_div : f64
-    // CHECK: inf
+    // CHECK: Infinity
 
     // x / Inf = 0
     %div_inf = eco.float.div %f1, %pos_inf : f64
@@ -52,27 +52,27 @@ module {
     // Inf - Inf = NaN
     %inf_minus_inf = eco.float.sub %pos_inf, %pos_inf : f64
     eco.dbg %inf_minus_inf : f64
-    // CHECK: nan
+    // CHECK: NaN
 
     // Inf / Inf = NaN
     %inf_div_inf = eco.float.div %pos_inf, %pos_inf : f64
     eco.dbg %inf_div_inf : f64
-    // CHECK: nan
+    // CHECK: NaN
 
     // abs(-Inf) = Inf
     %abs_neg_inf = eco.float.abs %neg_inf : f64
     eco.dbg %abs_neg_inf : f64
-    // CHECK: inf
+    // CHECK: Infinity
 
     // negate(Inf) = -Inf
     %neg_pos_inf = eco.float.negate %pos_inf : f64
     eco.dbg %neg_pos_inf : f64
-    // CHECK: -inf
+    // CHECK: -Infinity
 
     // sqrt(Inf) = Inf
     %sqrt_inf = eco.float.sqrt %pos_inf : f64
     eco.dbg %sqrt_inf : f64
-    // CHECK: inf
+    // CHECK: Infinity
 
     %zero = arith.constant 0 : i64
     return %zero : i64

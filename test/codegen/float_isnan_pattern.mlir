@@ -10,7 +10,7 @@ module {
     %zero_f = arith.constant 0.0 : f64
     %nan = eco.float.div %zero_f, %zero_f : f64
     eco.dbg %nan : f64
-    // CHECK: nan
+    // CHECK: NaN
 
     // NaN == NaN: ordered comparison returns false (correct)
     %nan_eq_nan = eco.float.eq %nan, %nan : f64

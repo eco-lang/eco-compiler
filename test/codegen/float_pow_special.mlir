@@ -44,12 +44,12 @@ module {
     // Inf^2 = Inf
     %pinf_2 = eco.float.pow %inf, %two : f64
     eco.dbg %pinf_2 : f64
-    // CHECK: inf
+    // CHECK: Infinity
 
     // 2^Inf = Inf
     %p2_inf = eco.float.pow %two, %inf : f64
     eco.dbg %p2_inf : f64
-    // CHECK: inf
+    // CHECK: Infinity
 
     // (-1)^Inf = 1 (absolute value is 1)
     %pn1_inf = eco.float.pow %neg_one, %inf : f64
