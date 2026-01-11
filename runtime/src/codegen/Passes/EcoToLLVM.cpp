@@ -27,12 +27,43 @@
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
+#include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 
 using namespace mlir;
 using namespace eco;
 using namespace eco::detail;
+
+//===----------------------------------------------------------------------===//
+// Arith Type Conversion Patterns
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+/// Pattern to type-convert arith.select operations.
+/// This is needed when scf.if is lowered to arith.select but the types
+/// still contain eco.value.
+struct SelectOpTypeConversion : public OpConversionPattern<arith::SelectOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(arith::SelectOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        // Get the converted result type
+        Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+        if (!resultType)
+            return failure();
+
+        // Create a new select with converted types
+        rewriter.replaceOpWithNewOp<arith::SelectOp>(
+            op, resultType, adaptor.getCondition(),
+            adaptor.getTrueValue(), adaptor.getFalseValue());
+        return success();
+    }
+};
+
+} // namespace
 
 //===----------------------------------------------------------------------===//
 // Pass Definition
@@ -63,11 +94,48 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // Set up conversion target
         ConversionTarget target(*ctx);
         target.addLegalDialect<LLVM::LLVMDialect>();
-        target.addLegalDialect<arith::ArithDialect>();
         target.addLegalOp<ModuleOp>();
 
-        // cf dialect is legal (branches will be type-converted if needed)
-        target.addLegalDialect<cf::ControlFlowDialect>();
+        // Arith ops are dynamically legal: only if they don't contain eco.value types.
+        // This ensures arith.select (from scf.if lowering) gets type-converted.
+        target.addDynamicallyLegalDialect<arith::ArithDialect>(
+            [&](Operation *op) {
+                for (auto operand : op->getOperands()) {
+                    if (isa<eco::ValueType>(operand.getType()))
+                        return false;
+                }
+                for (auto result : op->getResults()) {
+                    if (isa<eco::ValueType>(result.getType()))
+                        return false;
+                }
+                return true;
+            });
+
+        // CF ops are dynamically legal: only if they don't contain eco.value types.
+        // This ensures the branch type conversion patterns convert CF ops with eco types.
+        target.addDynamicallyLegalDialect<cf::ControlFlowDialect>(
+            [&](Operation *op) {
+                // Check if any operand or result has eco.value type
+                for (auto operand : op->getOperands()) {
+                    if (isa<eco::ValueType>(operand.getType()))
+                        return false;
+                }
+                for (auto result : op->getResults()) {
+                    if (isa<eco::ValueType>(result.getType()))
+                        return false;
+                }
+                // Check block argument types for branch ops
+                if (auto branchOp = dyn_cast<BranchOpInterface>(op)) {
+                    for (auto successorIdx : llvm::seq<unsigned>(0, op->getNumSuccessors())) {
+                        Block *successor = op->getSuccessor(successorIdx);
+                        for (auto arg : successor->getArguments()) {
+                            if (isa<eco::ValueType>(arg.getType()))
+                                return false;
+                        }
+                    }
+                }
+                return true;
+            });
 
         // func dialect: convert to LLVM
         target.addIllegalOp<func::FuncOp>();
@@ -98,7 +166,17 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         populateBranchOpInterfaceTypeConversionPattern(patterns, typeConverter);
 
         // Add SCF structural type conversion patterns
+        // This adds patterns to convert SCF ops' types and marks SCF ops as dynamically legal.
         scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter, patterns, target);
+
+        // Add SCF-to-CF lowering patterns
+        // Since this runs in the same pass as type conversion, SCF ops will have their
+        // types converted before being lowered to CF ops.
+        populateSCFToControlFlowConversionPatterns(patterns);
+
+        // Add arith type conversion pattern for select ops
+        // (needed when scf.if is lowered to arith.select with eco.value types)
+        patterns.add<SelectOpTypeConversion>(typeConverter, ctx);
 
         // Add all ECO lowering patterns from modular files
         populateEcoTypePatterns(typeConverter, patterns, runtime);

@@ -18,6 +18,7 @@
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
+#include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 
 #include "mlir/Pass/PassManager.h"
@@ -68,12 +69,9 @@ void buildEcoToLLVMPipeline(PassManager &pm) {
 
     pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
 
-    // Convert SCF to CF before EcoToLLVM.
-    // This creates cf.br/cf.cond_br with !eco.value types, which
-    // EcoToLLVM will then convert to LLVM types.
-    pm.addPass(createSCFToControlFlowPass());
-
     // Stage 3: Eco -> LLVM Dialect.
+    // Note: SCF-to-CF conversion is now part of EcoToLLVM to ensure
+    // proper type conversion happens for SCF ops before lowering to CF.
     // This also handles remaining eco control flow ops (case/joinpoint/jump)
     // that weren't lowered to SCF. Also includes func-to-llvm conversion.
     pm.addPass(eco::createEcoToLLVMPass());
@@ -83,6 +81,11 @@ void buildEcoToLLVMPipeline(PassManager &pm) {
     // converted before eco.papCreate tries to reference them.
     pm.addPass(createConvertControlFlowToLLVMPass());
     pm.addPass(createArithToLLVMConversionPass());
+
+    // Clean up any leftover unrealized_conversion_cast operations.
+    // These can occur when type conversions create intermediate casts that
+    // form cancel-able pairs (A->B followed by B->A).
+    pm.addPass(createReconcileUnrealizedCastsPass());
 }
 
 } // namespace eco

@@ -21,6 +21,27 @@ EcoTypeConverter::EcoTypeConverter(MLIRContext *ctx) : LLVMTypeConverter(ctx) {
     addConversion([ctx](eco::ValueType type) {
         return IntegerType::get(ctx, 64);
     });
+
+    // Source materialization: create i64 from !eco.value
+    // This is called when converted operations need values from unconverted operations.
+    // Since eco.value is represented as i64 (tagged pointer), no actual conversion
+    // is needed at runtime - they're the same bit representation.
+    // Use UnrealizedConversionCastOp which works with any types.
+    addSourceMaterialization([](OpBuilder &builder, Type resultType,
+                                ValueRange inputs, Location loc) -> Value {
+        if (inputs.size() != 1)
+            return nullptr;
+        return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs).getResult(0);
+    });
+
+    // Target materialization: create !eco.value from i64
+    // This is called when unconverted operations need values from converted operations.
+    addTargetMaterialization([](OpBuilder &builder, Type resultType,
+                                ValueRange inputs, Location loc) -> Value {
+        if (inputs.size() != 1)
+            return nullptr;
+        return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs).getResult(0);
+    });
 }
 
 //===----------------------------------------------------------------------===//

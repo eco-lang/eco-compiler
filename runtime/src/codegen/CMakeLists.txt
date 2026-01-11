@@ -155,6 +155,7 @@ add_mlir_library(EcoPasses
     MLIRArithToLLVM
     MLIRControlFlowToLLVM
     MLIRSCFToControlFlow
+    MLIRReconcileUnrealizedCasts
 )
 
 target_compile_features(obj.EcoPasses PRIVATE cxx_std_17)
@@ -233,6 +234,7 @@ target_link_libraries(ecoc PRIVATE
     MLIRArithToLLVM
     MLIRControlFlowToLLVM
     MLIRSCFToControlFlow
+    MLIRReconcileUnrealizedCasts
     MLIRExecutionEngine
     MLIRTargetLLVMIRExport
     MLIRBuiltinToLLVMIRTranslation
@@ -298,6 +300,7 @@ add_mlir_library(EcoRunner
     MLIRArithToLLVM
     MLIRControlFlowToLLVM
     MLIRSCFToControlFlow
+    MLIRReconcileUnrealizedCasts
     MLIRExecutionEngine
     MLIRTargetLLVMIRExport
     MLIRBuiltinToLLVMIRTranslation
