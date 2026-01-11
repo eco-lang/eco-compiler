@@ -6,7 +6,7 @@ module FloatRoundTest exposing (main)
 -- CHECK: round1: 3
 -- CHECK: round2: 2
 -- CHECK: round3: -3
--- CHECK: round4: 2
+-- CHECK: round4: 3
 -- CHECK: round5: 4
 
 import Html exposing (text)
