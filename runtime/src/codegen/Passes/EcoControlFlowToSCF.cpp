@@ -78,6 +78,22 @@ bool hasI1Scrutinee(CaseOp op) {
     return false;
 }
 
+/// Check if this is an integer case (case_kind = "int").
+bool isIntegerCase(CaseOp op) {
+    auto caseKindAttr = op.getCaseKindAttr();
+    if (!caseKindAttr)
+        return false;
+    return caseKindAttr.getValue() == "int";
+}
+
+/// Check if this is a character case (case_kind = "chr").
+bool isCharCase(CaseOp op) {
+    auto caseKindAttr = op.getCaseKindAttr();
+    if (!caseKindAttr)
+        return false;
+    return caseKindAttr.getValue() == "chr";
+}
+
 //===----------------------------------------------------------------------===//
 // Pattern: eco.case with pure returns -> scf.if (2-way case)
 //===----------------------------------------------------------------------===//
@@ -172,8 +188,29 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
                     loc, rewriter.getI1Type(), rewriter.getIntegerAttr(rewriter.getI1Type(), 1));
                 cond = rewriter.create<arith::XOrIOp>(loc, op.getScrutinee(), trueConst);
             }
+        } else if (isIntegerCase(op)) {
+            // For integer case: unbox the scrutinee and compare directly
+            auto i64Ty = rewriter.getI64Type();
+            auto unboxed = rewriter.create<UnboxOp>(loc, i64Ty, op.getScrutinee());
+
+            // Create comparison: value == tags[1] (second alternative)
+            // We compare against tag1 so "true" branch is alt1, "else" is alt0
+            auto tagConstant = rewriter.create<arith::ConstantOp>(
+                loc, rewriter.getI64IntegerAttr(tags[1]));
+            cond = rewriter.create<arith::CmpIOp>(
+                loc, arith::CmpIPredicate::eq, unboxed, tagConstant);
+        } else if (isCharCase(op)) {
+            // For char case: unbox the scrutinee to i16 and compare directly
+            auto i16Ty = rewriter.getIntegerType(16);
+            auto unboxed = rewriter.create<UnboxOp>(loc, i16Ty, op.getScrutinee());
+
+            // Create comparison: value == tags[1] (second alternative)
+            auto tagConstant = rewriter.create<arith::ConstantOp>(
+                loc, rewriter.getIntegerAttr(i16Ty, tags[1]));
+            cond = rewriter.create<arith::CmpIOp>(
+                loc, arith::CmpIPredicate::eq, unboxed, tagConstant);
         } else {
-            // For eco.value scrutinee: extract tag and compare
+            // For eco.value scrutinee (ADT constructor): extract tag and compare
             auto tag = rewriter.create<GetTagOp>(loc, rewriter.getI32Type(),
                                                  op.getScrutinee());
 
@@ -301,6 +338,11 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
 
         // i1 scrutinee should use the 2-way pattern (scf.if), not index_switch
         if (hasI1Scrutinee(op))
+            return failure();
+
+        // Integer and char cases don't work well with scf.index_switch since their
+        // values may not be sequential. Let them fall through to CF lowering.
+        if (isIntegerCase(op) || isCharCase(op))
             return failure();
 
         // Skip cases inside joinpoint bodies - the returns inside are "non-local"

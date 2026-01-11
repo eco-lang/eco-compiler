@@ -145,7 +145,8 @@ def Eco_CaseOp : Eco_Op<"case", [
   let arguments = (ins
     Eco_AnyValue:$scrutinee,                   // Accepts !eco.value or i1 (Bool)
     DenseI64ArrayAttr:$tags,
-    OptionalAttr<ArrayAttr>:$caseResultTypes  // Array of TypeAttr for SCF lowering
+    OptionalAttr<ArrayAttr>:$caseResultTypes,  // Array of TypeAttr for SCF lowering
+    OptionalAttr<StrAttr>:$case_kind           // "ctor", "int", "chr", or "str"
   );
   let regions = (region VariadicRegion<AnyRegion>:$alternatives);
   let results = (outs);

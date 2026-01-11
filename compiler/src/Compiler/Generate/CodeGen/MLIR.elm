@@ -4818,6 +4818,44 @@ testToTagInt test =
             0
 
 
+{-| Determine the case kind from a DT.Test for use with eco.case.
+
+Returns a string indicating how the runtime should handle the case:
+
+  - "ctor" for ADT constructor matching (uses GetTagOp)
+  - "int" for integer matching (unboxes to i64 and compares)
+  - "chr" for character matching (unboxes to i16 and compares)
+  - "str" for string matching (uses string comparison)
+
+-}
+caseKindFromTest : DT.Test -> String
+caseKindFromTest test =
+    case test of
+        DT.IsCtor _ _ _ _ _ ->
+            "ctor"
+
+        DT.IsCons ->
+            "ctor"
+
+        DT.IsNil ->
+            "ctor"
+
+        DT.IsBool _ ->
+            "ctor"
+
+        DT.IsInt _ ->
+            "int"
+
+        DT.IsChr _ ->
+            "chr"
+
+        DT.IsStr _ ->
+            "str"
+
+        DT.IsTuple ->
+            "ctor"
+
+
 {-| Compute the fallback tag for a fan-out based on the edge tests.
 For two-way branches (Bool, Cons/Nil), this computes the "other" tag.
 For N-way branches (custom types), this finds the first missing tag.
@@ -4887,22 +4925,20 @@ generateSharedJoinpoints ctx jumps resultTy =
                     mkRegion [] (branchRes.ops ++ coerceOps) retOp
 
                 -- Continuation: a dummy region with a return (joinpoint semantics require it)
-                ( dummyVar, ctx2 ) =
-                    freshVar ctx1
+                -- Use createDummyValue to generate correct type for resultTy
+                ( dummyOps, dummyVar, ctx2 ) =
+                    createDummyValue ctx1 resultTy
 
-                ( ctx3, dummyUnitOp ) =
-                    ecoConstantUnit ctx2 dummyVar
-
-                ( ctx4, dummyRetOp ) =
-                    ecoReturn ctx3 dummyVar resultTy
+                ( ctx3, dummyRetOp ) =
+                    ecoReturn ctx2 dummyVar resultTy
 
                 contRegion =
-                    mkRegion [] [ dummyUnitOp ] dummyRetOp
+                    mkRegion [] dummyOps dummyRetOp
 
-                ( ctx5, jpOp ) =
-                    ecoJoinpoint ctx4 index [] jpRegion contRegion [ resultTy ]
+                ( ctx4, jpOp ) =
+                    ecoJoinpoint ctx3 index [] jpRegion contRegion [ resultTy ]
             in
-            ( ctx5, accOps ++ [ jpOp ] )
+            ( ctx4, accOps ++ [ jpOp ] )
         )
         ( ctx, [] )
         jumps
@@ -4954,20 +4990,18 @@ generateLeaf ctx _ choice resultTy =
 
         Mono.Jump _ ->
             -- Jump to a joinpoint - generate eco.jump
+            -- Use createDummyValue to generate correct type for resultTy
             let
-                ( dummyVar, ctx1 ) =
-                    freshVar ctx
+                ( dummyOps, dummyVar, ctx1 ) =
+                    createDummyValue ctx resultTy
 
-                ( ctx2, dummyUnitOp ) =
-                    ecoConstantUnit ctx1 dummyVar
-
-                ( ctx3, retOp ) =
-                    ecoReturn ctx2 dummyVar resultTy
+                ( ctx2, retOp ) =
+                    ecoReturn ctx1 dummyVar resultTy
             in
-            { ops = [ dummyUnitOp, retOp ]
+            { ops = dummyOps ++ [ retOp ]
             , resultVar = dummyVar
             , resultType = resultTy
-            , ctx = ctx3
+            , ctx = ctx2
             }
 
 
@@ -5019,7 +5053,7 @@ generateChainForBoolADT ctx root path success failure resultTy =
 
         -- eco.case on Bool: tag 1 for True (success), tag 0 for False (failure)
         ( ctx2, caseOp ) =
-            ecoCase elseRes.ctx boolVar I1 [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
+            ecoCase elseRes.ctx boolVar I1 "ctor" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
     in
     { ops = pathOps ++ [ caseOp ]
     , resultVar = boolVar -- Dummy; control exits via eco.return inside regions
@@ -5058,7 +5092,7 @@ generateChainGeneral ctx root testChain success failure resultTy =
 
         -- eco.case on Bool: tag 1 for True (success), tag 0 for False (failure)
         ( ctx2, caseOp ) =
-            ecoCase elseRes.ctx condVar I1 [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
+            ecoCase elseRes.ctx condVar I1 "ctor" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
     in
     { ops = condOps ++ [ caseOp ]
     , resultVar = condVar -- Dummy; control exits via eco.return inside regions
@@ -5131,7 +5165,7 @@ generateBoolFanOut ctx root path edges fallback resultTy =
         -- eco.case on Bool: tag 1 for True, tag 0 for False
         -- Regions: [True region, False region] corresponding to tags [1, 0]
         ( ctx2, caseOp ) =
-            ecoCase elseRes.ctx boolVar I1 [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
+            ecoCase elseRes.ctx boolVar I1 "ctor" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
     in
     { ops = pathOps ++ [ caseOp ]
     , resultVar = boolVar -- Dummy; control exits via eco.return inside regions
@@ -5185,6 +5219,15 @@ generateFanOutGeneral ctx root path edges fallback resultTy =
         fallbackTag =
             computeFallbackTag edgeTests
 
+        -- Determine case kind from the first edge test
+        caseKind =
+            case edgeTests of
+                firstTest :: _ ->
+                    caseKindFromTest firstTest
+
+                [] ->
+                    "ctor"
+
         -- All tags including the fallback
         tags =
             edgeTags ++ [ fallbackTag ]
@@ -5217,8 +5260,9 @@ generateFanOutGeneral ctx root path edges fallback resultTy =
             edgeRegions ++ [ fallbackRegion ]
 
         -- eco.case always uses !eco.value for scrutinee
+        -- Pass caseKind to inform runtime how to handle matching
         ( ctx3, caseOp ) =
-            ecoCase fallbackRes.ctx scrutineeVar ecoValue tags allRegions [ resultTy ]
+            ecoCase fallbackRes.ctx scrutineeVar ecoValue caseKind tags allRegions [ resultTy ]
     in
     -- Return the case op - no dummy construct between case and return!
     -- The lowering pattern expects: eco.case ... eco.return
@@ -6176,17 +6220,19 @@ funcFunc ctx funcName args returnType bodyRegion =
 
 {-| eco.case - pattern matching control flow
 
-Takes a scrutinee SSA name, list of tags, list of regions (one per alternative),
-and result types. Emits an eco.case operation.
+Takes a scrutinee SSA name, scrutinee type, case kind ("ctor", "int", "chr", "str"),
+list of tags, list of regions (one per alternative), and result types.
+Emits an eco.case operation.
 
 -}
-ecoCase : Context -> String -> MlirType -> List Int -> List MlirRegion -> List MlirType -> ( Context, MlirOp )
-ecoCase ctx scrutinee scrutineeType tags regions resultTypes =
+ecoCase : Context -> String -> MlirType -> String -> List Int -> List MlirRegion -> List MlirType -> ( Context, MlirOp )
+ecoCase ctx scrutinee scrutineeType caseKind tags regions resultTypes =
     let
         attrsBase =
             Dict.fromList
                 [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr scrutineeType ] )
                 , ( "tags", ArrayAttr (Just I64) (List.map (\t -> IntAttr Nothing t) tags) )
+                , ( "case_kind", StringAttr caseKind )
                 ]
 
         attrs =

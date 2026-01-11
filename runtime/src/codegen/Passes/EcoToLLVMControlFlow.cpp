@@ -85,6 +85,167 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                    EcoRuntime runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
+    /// Lower integer or character case expressions.
+    /// For these, we unbox the scrutinee and compare against the tag values directly.
+    /// The last alternative is treated as the default (wildcard).
+    LogicalResult
+    lowerIntegerOrCharCase(CaseOp op, OpAdaptor adaptor,
+                           ConversionPatternRewriter &rewriter,
+                           bool isIntCase) const {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto i16Ty = IntegerType::get(ctx, 16);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+        auto i8Ty = IntegerType::get(ctx, 8);
+
+        Block *currentBlock = op->getBlock();
+        Region *parentRegion = currentBlock->getParent();
+        Block *originalOpBlock = op->getBlock();
+
+        Value scrutinee = adaptor.getScrutinee();
+
+        // Unbox the scrutinee to get the actual integer/char value
+        // 1. Resolve HPointer to raw pointer
+        auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+        auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{scrutinee});
+        Value ptr = resolveCall.getResult();
+
+        // 2. Offset past header (8 bytes) to get to value field
+        auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
+        auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr, ValueRange{offset});
+
+        // 3. Load the unboxed value (always i64 for Int, then truncate for Char)
+        Value unboxedValue = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valuePtr);
+
+        // For char case, truncate to i16
+        if (!isIntCase) {
+            unboxedValue = rewriter.create<LLVM::TruncOp>(loc, i16Ty, unboxedValue);
+        }
+
+        ArrayRef<int64_t> tags = op.getTags();
+        auto alternatives = op.getAlternatives();
+
+        // Create merge block
+        Block *mergeBlock = rewriter.createBlock(parentRegion);
+        mergeBlock->moveBefore(currentBlock->getNextNode());
+
+        // Create case blocks for each alternative
+        SmallVector<Block *> caseBlocks;
+        for (size_t i = 0; i < alternatives.size(); ++i) {
+            Block *caseBlock = rewriter.createBlock(parentRegion);
+            caseBlock->moveBefore(mergeBlock);
+            caseBlocks.push_back(caseBlock);
+        }
+
+        // Move operations after eco.case to merge block
+        {
+            auto opsToMove = llvm::make_early_inc_range(
+                llvm::make_range(std::next(Block::iterator(op)), originalOpBlock->end()));
+            for (Operation &opToMove : opsToMove) {
+                opToMove.moveBefore(mergeBlock, mergeBlock->end());
+            }
+        }
+
+        // The LAST alternative is the default (wildcard)
+        // Build case values for all but the last alternative
+        SmallVector<int64_t> caseValues;
+        SmallVector<Block *> caseDests;
+        for (size_t i = 0; i < alternatives.size() - 1; ++i) {
+            caseValues.push_back(tags[i]);
+            caseDests.push_back(caseBlocks[i]);
+        }
+
+        // Default block is the last alternative (wildcard)
+        Block *defaultBlock = caseBlocks.back();
+
+        rewriter.setInsertionPointToEnd(currentBlock);
+
+        // Create cf.switch with the unboxed value
+        SmallVector<ValueRange> caseOperands(caseDests.size(), ValueRange{});
+
+        // cf::SwitchOp requires APInt case values
+        unsigned bitWidth = isIntCase ? 64 : 16;
+        SmallVector<llvm::APInt> caseValuesAPInt;
+        for (int64_t v : caseValues) {
+            caseValuesAPInt.push_back(llvm::APInt(bitWidth, v));
+        }
+
+        rewriter.create<cf::SwitchOp>(
+            loc, unboxedValue, defaultBlock, ValueRange{},
+            ArrayRef<llvm::APInt>(caseValuesAPInt),
+            caseDests, caseOperands);
+
+        Value originalScrutinee = op->getOperand(0);
+
+        // Check if the merge block only has an eco.return (terminal case position)
+        // In this case, the eco.return ops in alternatives should remain as
+        // function terminators, not be replaced with branches.
+        bool isTerminalCase = false;
+        if (!mergeBlock->empty()) {
+            if (mergeBlock->getOperations().size() == 1 &&
+                isa<ReturnOp>(&mergeBlock->front())) {
+                isTerminalCase = true;
+            }
+        }
+
+        // Inline each alternative region
+        for (size_t i = 0; i < alternatives.size(); ++i) {
+            Region &altRegion = alternatives[i];
+            Block *caseBlock = caseBlocks[i];
+
+            if (altRegion.empty()) {
+                rewriter.setInsertionPointToEnd(caseBlock);
+                if (isTerminalCase) {
+                    // Copy the return op from merge block
+                    if (!mergeBlock->empty()) {
+                        if (auto retOp = dyn_cast<ReturnOp>(&mergeBlock->front())) {
+                            rewriter.clone(*retOp);
+                        }
+                    }
+                } else {
+                    rewriter.create<cf::BranchOp>(loc, mergeBlock);
+                }
+                continue;
+            }
+
+            Block &entryBlock = altRegion.front();
+            rewriter.inlineBlockBefore(&entryBlock, caseBlock, caseBlock->end());
+        }
+
+        // Replace uses of original scrutinee
+        for (Block *caseBlock : caseBlocks) {
+            for (Operation &blockOp : *caseBlock) {
+                blockOp.replaceUsesOfWith(originalScrutinee, scrutinee);
+            }
+        }
+
+        // Fix terminators only for non-terminal cases
+        if (!isTerminalCase) {
+            for (Block *caseBlock : caseBlocks) {
+                if (caseBlock->empty())
+                    continue;
+
+                Operation *term = caseBlock->getTerminator();
+                if (isa<ReturnOp>(term)) {
+                    rewriter.setInsertionPoint(term);
+                    rewriter.create<cf::BranchOp>(loc, mergeBlock);
+                    rewriter.eraseOp(term);
+                }
+            }
+        }
+        // For terminal cases, keep eco.return ops which will be converted
+        // to func.return by the ReturnOpLowering pattern.
+
+        // Erase the merge block if it's a terminal case (no code needs to follow)
+        if (isTerminalCase) {
+            rewriter.eraseBlock(mergeBlock);
+        }
+
+        rewriter.eraseOp(op);
+        return success();
+    }
+
     LogicalResult
     matchAndRewrite(CaseOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
@@ -99,10 +260,21 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         Region *parentRegion = currentBlock->getParent();
 
         Value scrutinee = adaptor.getScrutinee();
-        Value ctorTag;
 
         auto scrutineeType = scrutinee.getType();
         bool isI1Scrutinee = scrutineeType.isInteger(1);
+
+        // Check if this is an integer case
+        auto caseKindAttr = op.getCaseKindAttr();
+        bool isIntCase = caseKindAttr && caseKindAttr.getValue() == "int";
+        bool isChrCase = caseKindAttr && caseKindAttr.getValue() == "chr";
+
+        // Handle integer/char cases: unbox and switch on actual value
+        if (isIntCase || isChrCase) {
+            return lowerIntegerOrCharCase(op, adaptor, rewriter, isIntCase);
+        }
+
+        Value ctorTag;
 
         Value isConstant;
         Block *embConstBlock = nullptr;
