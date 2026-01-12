@@ -95,7 +95,7 @@ This module defines the data structures for the monomorphized program
 
 # Comparison and Ordering
 
-@docs toComparableSpecKey
+@docs toComparableSpecKey, toComparableMonoType
 
 -}
 

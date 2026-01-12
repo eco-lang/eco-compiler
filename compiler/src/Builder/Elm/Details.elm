@@ -31,6 +31,11 @@ resolution, verification, and parallel compilation.
 @docs Extras, Interfaces
 
 
+# Typed Artifacts
+
+@docs PackageTypedArtifacts, packageTypedArtifactsEncoder, packageTypedArtifactsDecoder
+
+
 # Loading and Verification
 
 @docs load, verifyInstall
@@ -38,7 +43,7 @@ resolution, verification, and parallel compilation.
 
 # Artifact Loading
 
-@docs loadObjects, loadTypedObjects, loadInterfaces
+@docs loadObjects, loadTypedObjects, loadTypeEnvs, loadInterfaces
 
 
 # Serialization

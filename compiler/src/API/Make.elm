@@ -149,7 +149,7 @@ getMain modules root =
             else
                 Nothing
 
-        Build.Outside name _ (Opt.LocalGraph maybeMain _ _) _ ->
+        Build.Outside name _ (Opt.LocalGraph maybeMain _ _) _ _ ->
             maybeMain
                 |> Maybe.map (\_ -> name)
 
@@ -157,7 +157,7 @@ getMain modules root =
 isMain : ModuleName.Raw -> Build.Module -> Bool
 isMain targetName modul =
     case modul of
-        Build.Fresh name _ (Opt.LocalGraph maybeMain _ _) _ ->
+        Build.Fresh name _ (Opt.LocalGraph maybeMain _ _) _ _ ->
             Maybe.isJust maybeMain && name == targetName
 
         Build.Cached name mainIsDefined _ ->
