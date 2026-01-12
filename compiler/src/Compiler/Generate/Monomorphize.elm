@@ -32,6 +32,7 @@ import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
+import Utils.Crash
 
 
 
@@ -146,7 +147,7 @@ checkCallableTopLevels state =
 This is useful for testing when the entry point is not named "main".
 
 -}
-monomorphize : Name -> TypeEnv.GlobalTypeEnv -> (TOpt.GlobalGraph Can.Type) -> Result String Mono.MonoGraph
+monomorphize : Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Can.Type -> Result String Mono.MonoGraph
 monomorphize entryPointName globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
     case findEntryPoint entryPointName nodes of
         Nothing ->
@@ -301,10 +302,13 @@ processWorklist state =
 
             else
                 let
+                    -- Clear varTypes when starting a new function specialization
+                    -- because we're entering a new scope with different local variables
                     state2 =
                         { state1
                             | inProgress = EverySet.insert identity specId state1.inProgress
                             , currentGlobal = Just global
+                            , varTypes = Dict.empty
                         }
 
                     toptGlobal =
@@ -352,7 +356,7 @@ processWorklist state =
 {-| Specialize a typed optimized node to a monomorphized node at the requested concrete type.
 The ctorName parameter is used to populate CtorLayout.name for constructor nodes.
 -}
-specializeNode : Name.Name -> (TOpt.Node Can.Type) -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
+specializeNode : Name.Name -> TOpt.Node Can.Type -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
 specializeNode ctorName node requestedMonoType state =
     case node of
         TOpt.Define expr _ canType ->
@@ -392,8 +396,32 @@ specializeNode ctorName node requestedMonoType state =
                 monoArgs =
                     List.map (specializeArg subst) args
 
+                -- Add param names -> types to varTypes for path type derivation
+                newVarTypes =
+                    List.foldl
+                        (\( name, monoParamType ) vt -> Dict.insert identity name monoParamType vt)
+                        state.varTypes
+                        monoArgs
+
+                stateWithParams =
+                    { state | varTypes = newVarTypes }
+
+                -- Build an augmented substitution that includes type variables from parameter types
+                augmentedSubst =
+                    List.foldl
+                        (\( ( _, canParamType ), ( _, monoParamType ) ) s ->
+                            case canParamType of
+                                Can.TVar varName ->
+                                    Dict.insert identity varName monoParamType s
+
+                                _ ->
+                                    s
+                        )
+                        subst
+                        (List.map2 Tuple.pair args monoArgs)
+
                 ( monoBody, state1 ) =
-                    specializeExpr body subst state
+                    specializeExpr body augmentedSubst stateWithParams
 
                 monoReturnType =
                     applySubst subst returnType
@@ -490,7 +518,7 @@ specializeNode ctorName node requestedMonoType state =
 -}
 specializeCycle :
     List Name
-    -> List ( Name, (TOpt.Expr Can.Type) )
+    -> List ( Name, TOpt.Expr Can.Type )
     -> List (TOpt.Def Can.Type)
     -> Mono.MonoType
     -> MonoState
@@ -517,7 +545,7 @@ specializeCycle _ valueDefs funcDefs requestedMonoType state =
 {-| Specialize a cycle containing only value definitions.
 -}
 specializeValueOnlyCycle :
-    List ( Name, (TOpt.Expr Can.Type) )
+    List ( Name, TOpt.Expr Can.Type )
     -> Mono.MonoType
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
@@ -537,7 +565,7 @@ specializeValueOnlyCycle valueDefs requestedMonoType state =
 specializeFunctionCycle :
     IO.Canonical
     -> Name
-    -> List ( Name, (TOpt.Expr Can.Type) )
+    -> List ( Name, TOpt.Expr Can.Type )
     -> List (TOpt.Def Can.Type)
     -> Mono.MonoType
     -> MonoState
@@ -594,7 +622,7 @@ own MonoTailFunc/MonoDefine node).
 specializeFunc :
     IO.Canonical
     -> Substitution
-    -> (TOpt.Def Can.Type)
+    -> TOpt.Def Can.Type
     -> ( Dict Int Int Mono.MonoNode, MonoState )
     -> ( Dict Int Int Mono.MonoNode, MonoState )
 specializeFunc requestedCanonical sharedSubst def ( accNodes, accState ) =
@@ -633,7 +661,7 @@ specializeFunc requestedCanonical sharedSubst def ( accNodes, accState ) =
 
 specializeFuncDefInCycle :
     Substitution
-    -> (TOpt.Def Can.Type)
+    -> TOpt.Def Can.Type
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
 specializeFuncDefInCycle subst def state =
@@ -656,8 +684,32 @@ specializeFuncDefInCycle subst def state =
                 monoArgs =
                     List.map (specializeArg subst) args
 
+                -- Add param names -> types to varTypes for path type derivation
+                newVarTypes =
+                    List.foldl
+                        (\( name, monoParamType ) vt -> Dict.insert identity name monoParamType vt)
+                        state.varTypes
+                        monoArgs
+
+                stateWithParams =
+                    { state | varTypes = newVarTypes }
+
+                -- Build an augmented substitution that includes type variables from parameter types
+                augmentedSubst =
+                    List.foldl
+                        (\( ( _, canParamType ), ( _, monoParamType ) ) s ->
+                            case canParamType of
+                                Can.TVar varName ->
+                                    Dict.insert identity varName monoParamType s
+
+                                _ ->
+                                    s
+                        )
+                        subst
+                        (List.map2 Tuple.pair args monoArgs)
+
                 ( monoBody, state1 ) =
-                    specializeExpr body subst state
+                    specializeExpr body augmentedSubst stateWithParams
 
                 monoReturnType =
                     applySubst subst returnType
@@ -672,7 +724,7 @@ specializeFuncDefInCycle subst def state =
 {-| Specialize a list of value definitions in a cycle.
 -}
 specializeValueDefs :
-    List ( Name, (TOpt.Expr Can.Type) )
+    List ( Name, TOpt.Expr Can.Type )
     -> Substitution
     -> MonoState
     -> ( List ( Name, Mono.MonoExpr ), MonoState )
@@ -695,7 +747,7 @@ specializeValueDefs values subst state =
 
 {-| Specialize a typed optimized expression to a monomorphized expression by applying type substitutions.
 -}
-specializeExpr : (TOpt.Expr Can.Type) -> Substitution -> MonoState -> ( Mono.MonoExpr, MonoState )
+specializeExpr : TOpt.Expr Can.Type -> Substitution -> MonoState -> ( Mono.MonoExpr, MonoState )
 specializeExpr expr subst state =
     case expr of
         TOpt.Bool _ value _ ->
@@ -1153,8 +1205,21 @@ specializeExpr expr subst state =
                 ( monoDef, state1 ) =
                     specializeDef def subst state
 
+                -- Add the let-bound variable to varTypes for path type derivation
+                defName =
+                    getDefName def
+
+                defCanType =
+                    getDefCanonicalType def
+
+                defMonoType =
+                    applySubst subst defCanType
+
+                stateWithVar =
+                    { state1 | varTypes = Dict.insert identity defName defMonoType state1.varTypes }
+
                 ( monoBody, state2 ) =
-                    specializeExpr body subst state1
+                    specializeExpr body subst stateWithVar
             in
             ( Mono.MonoLet monoDef monoBody monoType, state2 )
 
@@ -1183,11 +1248,20 @@ specializeExpr expr subst state =
                 monoType =
                     applySubst subst canType
 
+                -- Save initial varTypes - each branch is a mutually exclusive code path
+                initialVarTypes =
+                    state.varTypes
+
                 ( monoDecider, state1 ) =
                     specializeDecider decider subst state
 
+                -- Reset varTypes for jump targets - they should start with initial varTypes
+                -- (before any bindings from inline branches), not varTypes leaked from inline branches
+                state1WithResetVarTypes =
+                    { state1 | varTypes = initialVarTypes }
+
                 ( monoJumps, state2 ) =
-                    specializeJumps jumps subst state1
+                    specializeJumps jumps subst state1WithResetVarTypes
             in
             ( Mono.MonoCase label root monoDecider monoJumps monoType, state2 )
 
@@ -1311,7 +1385,7 @@ specializeExprs exprs subst state =
 {-| Specialize a list of named expressions.
 -}
 specializeNamedExprs :
-    List ( Name, (TOpt.Expr Can.Type) )
+    List ( Name, TOpt.Expr Can.Type )
     -> Substitution
     -> MonoState
     -> ( List ( Name, Mono.MonoExpr ), MonoState )
@@ -1331,19 +1405,29 @@ specializeNamedExprs namedExprs subst state =
 {-| Specialize if-expression branches (condition-body pairs).
 -}
 specializeBranches :
-    List ( (TOpt.Expr Can.Type), (TOpt.Expr Can.Type) )
+    List ( TOpt.Expr Can.Type, TOpt.Expr Can.Type )
     -> Substitution
     -> MonoState
     -> ( List ( Mono.MonoExpr, Mono.MonoExpr ), MonoState )
 specializeBranches branches subst state =
+    let
+        -- Save the initial varTypes - each branch body is a mutually exclusive code path
+        -- (conditions are all evaluated, but only one body is taken)
+        initialVarTypes =
+            state.varTypes
+    in
     List.foldr
         (\( cond, body ) ( acc, st ) ->
             let
                 ( mCond, st1 ) =
                     specializeExpr cond subst st
 
+                -- Reset varTypes for body (bodies are mutually exclusive)
+                st1WithResetVarTypes =
+                    { st1 | varTypes = initialVarTypes }
+
                 ( mBody, st2 ) =
-                    specializeExpr body subst st1
+                    specializeExpr body subst st1WithResetVarTypes
             in
             ( ( mCond, mBody ) :: acc, st2 )
         )
@@ -1775,7 +1859,7 @@ extractCtorResultType n monoType =
 
 {-| Check if a definition has the given name.
 -}
-defHasName : Name -> (TOpt.Def Can.Type) -> Bool
+defHasName : Name -> TOpt.Def Can.Type -> Bool
 defHasName targetName def =
     case def of
         TOpt.Def _ name _ _ ->
@@ -1787,7 +1871,7 @@ defHasName targetName def =
 
 {-| Get the name from a definition.
 -}
-getDefName : (TOpt.Def Can.Type) -> Name
+getDefName : TOpt.Def Can.Type -> Name
 getDefName def =
     case def of
         TOpt.Def _ name _ _ ->
@@ -1799,7 +1883,7 @@ getDefName def =
 
 {-| Get the canonical type from a definition.
 -}
-getDefCanonicalType : (TOpt.Def Can.Type) -> Can.Type
+getDefCanonicalType : TOpt.Def Can.Type -> Can.Type
 getDefCanonicalType def =
     case def of
         TOpt.Def _ _ _ canType ->
@@ -1815,7 +1899,7 @@ getDefCanonicalType def =
 
 {-| Specialize a local definition.
 -}
-specializeDef : (TOpt.Def Can.Type) -> Substitution -> MonoState -> ( Mono.MonoDef, MonoState )
+specializeDef : TOpt.Def Can.Type -> Substitution -> MonoState -> ( Mono.MonoDef, MonoState )
 specializeDef def subst state =
     case def of
         TOpt.Def _ name expr _ ->
@@ -1825,37 +1909,48 @@ specializeDef def subst state =
             in
             ( Mono.MonoDef name monoExpr, stateAfter )
 
-        TOpt.TailDef _ name _ expr _ ->
+        TOpt.TailDef _ name args expr _ ->
             let
+                -- Convert params to mono types
+                monoArgs =
+                    List.map (specializeArg subst) args
+
+                -- Add param names -> types to varTypes for path type derivation
+                newVarTypes =
+                    List.foldl
+                        (\( pname, monoParamType ) vt -> Dict.insert identity pname monoParamType vt)
+                        state.varTypes
+                        monoArgs
+
+                stateWithParams =
+                    { state | varTypes = newVarTypes }
+
+                -- Build an augmented substitution that includes type variables from parameter types
+                augmentedSubst =
+                    List.foldl
+                        (\( pname, monoParamType ) s ->
+                            Dict.insert identity pname monoParamType s
+                        )
+                        subst
+                        monoArgs
+
                 ( monoExpr, stateAfter ) =
-                    specializeExpr expr subst state
+                    specializeExpr expr augmentedSubst stateWithParams
             in
             ( Mono.MonoTailDef name monoExpr, stateAfter )
 
 
-specializeDestructor : (TOpt.Destructor Can.Type) -> Substitution -> VarTypes -> Mono.MonoDestructor
-specializeDestructor (TOpt.Destructor name path canType) subst varTypes =
+specializeDestructor : TOpt.Destructor Can.Type -> Substitution -> VarTypes -> Mono.MonoDestructor
+specializeDestructor (TOpt.Destructor name path canType) subst _ =
     let
         monoPath =
             specializePath path
 
-        -- Derive the destructor's type from the path structure and varTypes.
-        -- This is critical because placeholder type variables like "?" may be
-        -- incorrectly mapped in the substitution (e.g., mapped to the container type
-        -- instead of the extracted element type).
-        derivedType =
-            derivePathType varTypes path
-
-        -- If derivation fails (returns MVar "?"), fall back to substitution
+        -- Use the destructor's stored type, monomorphized via substitution.
+        -- This is more reliable than deriving from path, especially for custom types
+        -- where the path index refers to constructor arguments, not type parameters.
         monoType =
-            case derivedType of
-                Mono.MVar "?" _ ->
-                    applySubst subst canType
-
-                _ ->
-                    derivedType
-
-        -- Debug removed
+            applySubst subst canType
     in
     Mono.MonoDestructor name monoPath monoType
 
@@ -1915,26 +2010,42 @@ specializeDecider decider subst state =
 
         TOpt.Chain testChain success failure ->
             let
+                -- Save initial varTypes - success and failure are mutually exclusive paths
+                initialVarTypes =
+                    state.varTypes
+
                 ( monoSuccess, state1 ) =
                     specializeDecider success subst state
 
+                -- Reset varTypes for failure branch
+                state1WithResetVarTypes =
+                    { state1 | varTypes = initialVarTypes }
+
                 ( monoFailure, state2 ) =
-                    specializeDecider failure subst state1
+                    specializeDecider failure subst state1WithResetVarTypes
             in
             ( Mono.Chain testChain monoSuccess monoFailure, state2 )
 
         TOpt.FanOut path edges fallback ->
             let
+                -- Save initial varTypes - edges and fallback are mutually exclusive paths
+                initialVarTypes =
+                    state.varTypes
+
                 ( monoEdges, state1 ) =
                     specializeEdges edges subst state
 
+                -- Reset varTypes for fallback branch
+                state1WithResetVarTypes =
+                    { state1 | varTypes = initialVarTypes }
+
                 ( monoFallback, state2 ) =
-                    specializeDecider fallback subst state1
+                    specializeDecider fallback subst state1WithResetVarTypes
             in
             ( Mono.FanOut path monoEdges monoFallback, state2 )
 
 
-specializeChoice : (TOpt.Choice Can.Type) -> Substitution -> MonoState -> ( Mono.MonoChoice, MonoState )
+specializeChoice : TOpt.Choice Can.Type -> Substitution -> MonoState -> ( Mono.MonoChoice, MonoState )
 specializeChoice choice subst state =
     case choice of
         TOpt.Inline expr ->
@@ -1950,11 +2061,21 @@ specializeChoice choice subst state =
 
 specializeEdges : List ( DT.Test, TOpt.Decider (TOpt.Choice Can.Type) ) -> Substitution -> MonoState -> ( List ( DT.Test, Mono.Decider Mono.MonoChoice ), MonoState )
 specializeEdges edges subst state =
+    let
+        -- Save the initial varTypes - each edge should start with the same varTypes
+        -- because edges are mutually exclusive code paths
+        initialVarTypes =
+            state.varTypes
+    in
     List.foldr
         (\( test, decider ) ( acc, st ) ->
             let
+                -- Reset varTypes to initial state for this edge
+                stWithResetVarTypes =
+                    { st | varTypes = initialVarTypes }
+
                 ( monoDecider, newSt ) =
-                    specializeDecider decider subst st
+                    specializeDecider decider subst stWithResetVarTypes
             in
             ( ( test, monoDecider ) :: acc, newSt )
         )
@@ -1962,13 +2083,22 @@ specializeEdges edges subst state =
         edges
 
 
-specializeJumps : List ( Int, (TOpt.Expr Can.Type) ) -> Substitution -> MonoState -> ( List ( Int, Mono.MonoExpr ), MonoState )
+specializeJumps : List ( Int, TOpt.Expr Can.Type ) -> Substitution -> MonoState -> ( List ( Int, Mono.MonoExpr ), MonoState )
 specializeJumps jumps subst state =
+    let
+        -- Save the initial varTypes - each jump target is a mutually exclusive code path
+        initialVarTypes =
+            state.varTypes
+    in
     List.foldr
         (\( idx, expr ) ( acc, st ) ->
             let
+                -- Reset varTypes to initial state for this jump target
+                stWithResetVarTypes =
+                    { st | varTypes = initialVarTypes }
+
                 ( monoExpr, newSt ) =
-                    specializeExpr expr subst st
+                    specializeExpr expr subst stWithResetVarTypes
             in
             ( ( idx, monoExpr ) :: acc, newSt )
         )
@@ -2074,95 +2204,10 @@ type alias Substitution =
     Dict String Name Mono.MonoType
 
 
-{-| Mapping of variable names to their MonoTypes, used for deriving destructor types from paths.
+{-| Mapping of variable names to their MonoTypes, used during specialization.
 -}
 type alias VarTypes =
     Dict String Name Mono.MonoType
-
-
-{-| Derive the result type of a path given the types of root variables.
-This is critical when placeholder type variables like "?" are used in destructors,
-because we need to compute the actual type from the path structure.
--}
-derivePathType : VarTypes -> TOpt.Path -> Mono.MonoType
-derivePathType varTypes path =
-    case path of
-        TOpt.Root name ->
-            Dict.get identity name varTypes
-                |> Maybe.withDefault (Mono.MVar "?" Mono.CEcoValue)
-
-        TOpt.Index index hint subPath ->
-            let
-                containerType =
-                    derivePathType varTypes subPath
-            in
-            case ( hint, containerType ) of
-                ( TOpt.HintTuple2, Mono.MTuple layout ) ->
-                    case List.drop (Index.toMachine index) layout.elements of
-                        ( elemType, _ ) :: _ ->
-                            elemType
-
-                        [] ->
-                            Mono.MVar "?" Mono.CEcoValue
-
-                ( TOpt.HintTuple3, Mono.MTuple layout ) ->
-                    case List.drop (Index.toMachine index) layout.elements of
-                        ( elemType, _ ) :: _ ->
-                            elemType
-
-                        [] ->
-                            Mono.MVar "?" Mono.CEcoValue
-
-                ( TOpt.HintList, Mono.MList innerType ) ->
-                    if Index.toMachine index == 0 then
-                        innerType
-
-                    else
-                        -- Tail returns the list type
-                        containerType
-
-                ( TOpt.HintCustom, Mono.MCustom _ _ args ) ->
-                    -- For custom types, get the indexed argument
-                    case List.drop (Index.toMachine index) args of
-                        argType :: _ ->
-                            argType
-
-                        [] ->
-                            Mono.MVar "?" Mono.CEcoValue
-
-                _ ->
-                    -- Fallback to boxed value for unknown cases
-                    Mono.MVar "?" Mono.CEcoValue
-
-        TOpt.ArrayIndex _ subPath ->
-            -- Array index - for now fallback to boxed value
-            Mono.MVar "?" Mono.CEcoValue
-
-        TOpt.Field name subPath ->
-            let
-                containerType =
-                    derivePathType varTypes subPath
-            in
-            case containerType of
-                Mono.MRecord layout ->
-                    -- Find the field in the layout
-                    List.foldl
-                        (\field acc ->
-                            if field.name == name then
-                                field.monoType
-
-                            else
-                                acc
-                        )
-                        (Mono.MVar "?" Mono.CEcoValue)
-                        layout.fields
-
-                _ ->
-                    Mono.MVar "?" Mono.CEcoValue
-
-        TOpt.Unbox subPath ->
-            -- Unbox typically doesn't change the semantic type
-            derivePathType varTypes subPath
 
 
 {-| Unify a function call by matching argument types and result type.

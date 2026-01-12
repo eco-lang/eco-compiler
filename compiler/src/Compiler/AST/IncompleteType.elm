@@ -40,18 +40,18 @@ import Utils.Crash
     in the compilation pipeline. The location string tracks where in the source
     code this ToSolve originated, for debugging purposes.
 
+TODO: This can now be removed. ToSolve is never mapped to anything other than a crash.
+
 -}
 type IncompleteType
     = Complete Can.Type
     | ToSolve String
 
 
-{-| Convert `IncompleteType` back to canonical, mapping `ToSolve` to `TVar "?"`.
+{-| Convert `IncompleteType` back to canonical.
 
 This is used at the boundary where the typed pipeline feeds into downstream
-consumers (like monomorphization) that expect `Can.Type`. The mapping ensures
-backward compatibility: any `ToSolve` becomes `TVar "?"`, which monomorphization
-handles by producing `MVar "?" CEcoValue`.
+consumers (like monomorphization) that expect `Can.Type`.
 
 -}
 toCanonicalPreservingUnknown : IncompleteType -> Can.Type
@@ -61,7 +61,6 @@ toCanonicalPreservingUnknown itype =
             t
 
         ToSolve source ->
-            --Can.TVar "?"
             Utils.Crash.crash (source ++ " Escaped TVar \"?\"")
 
 

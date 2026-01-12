@@ -6,15 +6,22 @@ module Compiler.CaseTests exposing (expectSuite)
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( caseExpr
+        ( TypedDef
+        , UnionCtor
+        , UnionDef
+        , binopsExpr
+        , callExpr
+        , caseExpr
         , define
         , intExpr
         , letExpr
         , listExpr
         , makeModule
+        , makeModuleWithTypedDefsUnionsAliases
         , pAlias
         , pAnything
         , pCons
+        , pCtor
         , pInt
         , pList
         , pRecord
@@ -23,6 +30,8 @@ import Compiler.AST.SourceBuilder
         , pVar
         , recordExpr
         , strExpr
+        , tLambda
+        , tType
         , tupleExpr
         , varExpr
         )
@@ -41,6 +50,7 @@ expectSuite expectFn condStr =
         , recordPatternTests expectFn condStr
         , aliasPatternTests expectFn condStr
         , nestedCaseTests expectFn condStr
+        , customTypePatternTests expectFn condStr
         , caseFuzzTests expectFn condStr
         ]
 
@@ -650,6 +660,108 @@ caseInBranchBody expectFn _ =
 
         modul =
             makeModule "testValue" case_
+    in
+    expectFn modul
+
+
+
+-- ============================================================================
+-- CUSTOM TYPE PATTERNS (2 tests)
+-- ============================================================================
+
+
+customTypePatternTests : (Src.Module -> Expectation) -> String -> Test
+customTypePatternTests expectFn condStr =
+    Test.describe ("Custom type pattern matching " ++ condStr)
+        [ Test.test ("Case on custom type with multiple constructors " ++ condStr) (caseOnCustomTypeMultipleConstructors expectFn)
+        , Test.test ("Case on custom type with payload extraction " ++ condStr) (caseOnCustomTypePayloadExtraction expectFn)
+        ]
+
+
+{-| Tests case expression on a custom type with multiple constructors.
+Corresponds to E2E test: CaseCustomTypeTest.elm
+
+    type Shape
+        = Circle Int
+        | Rectangle Int Int
+
+    area shape =
+        case shape of
+            Circle r -> r * r
+            Rectangle w h -> w * h
+
+-}
+caseOnCustomTypeMultipleConstructors : (Src.Module -> Expectation) -> (() -> Expectation)
+caseOnCustomTypeMultipleConstructors expectFn _ =
+    let
+        -- Define the Shape union type
+        shapeUnion : UnionDef
+        shapeUnion =
+            { name = "Shape"
+            , args = []
+            , ctors =
+                [ { name = "Circle", args = [ tType "Int" [] ] }
+                , { name = "Rectangle", args = [ tType "Int" [], tType "Int" [] ] }
+                ]
+            }
+
+        -- Define the area function
+        -- area : Shape -> Int
+        -- area shape = case shape of ...
+        areaFn : TypedDef
+        areaFn =
+            { name = "area"
+            , args = [ pVar "shape" ]
+            , tipe = tLambda (tType "Shape" []) (tType "Int" [])
+            , body =
+                caseExpr (varExpr "shape")
+                    [ ( pCtor "Circle" [ pVar "r" ]
+                      , binopsExpr [ ( varExpr "r", "*" ) ] (varExpr "r")
+                      )
+                    , ( pCtor "Rectangle" [ pVar "w", pVar "h" ]
+                      , binopsExpr [ ( varExpr "w", "*" ) ] (varExpr "h")
+                      )
+                    ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test" [ areaFn ] [ shapeUnion ] []
+    in
+    expectFn modul
+
+
+{-| Tests case expression that extracts values from a custom type.
+Similar to the area function but focused on extraction.
+-}
+caseOnCustomTypePayloadExtraction : (Src.Module -> Expectation) -> (() -> Expectation)
+caseOnCustomTypePayloadExtraction expectFn _ =
+    let
+        -- Define a simple wrapper type
+        wrapperUnion : UnionDef
+        wrapperUnion =
+            { name = "Wrapper"
+            , args = []
+            , ctors =
+                [ { name = "Wrap", args = [ tType "Int" [] ] }
+                ]
+            }
+
+        -- Define the unwrap function
+        -- unwrap : Wrapper -> Int
+        -- unwrap w = case w of Wrap x -> x
+        unwrapFn : TypedDef
+        unwrapFn =
+            { name = "unwrap"
+            , args = [ pVar "w" ]
+            , tipe = tLambda (tType "Wrapper" []) (tType "Int" [])
+            , body =
+                caseExpr (varExpr "w")
+                    [ ( pCtor "Wrap" [ pVar "x" ], varExpr "x" )
+                    ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test" [ unwrapFn ] [ wrapperUnion ] []
     in
     expectFn modul
 

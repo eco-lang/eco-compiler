@@ -127,13 +127,27 @@ monoTypeToMlir monoType =
         Mono.MFunction _ _ ->
             ecoValue
 
-        Mono.MVar _ constraint_ ->
+        Mono.MVar name constraint_ ->
+            --let
+            --    res =
             case constraint_ of
                 Mono.CNumber ->
                     I64
 
                 Mono.CEcoValue ->
                     ecoValue
+
+
+
+--
+--    _ =
+--        Debug.log ""
+--            { res = res
+--            , name = name
+--            , constraint = constraint_
+--            }
+--in
+--res
 
 
 {-| Check if a MonoType is a function type.
@@ -1355,7 +1369,6 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
 
 
 
-
 -- ====== TYPE TABLE GENERATION ======
 
 
@@ -1461,6 +1474,7 @@ getOrCreateStringIndex str accum =
                 , nextStringIndex = accum.nextStringIndex + 1
               }
             )
+
 
 
 -- ====== TYPE KIND ENUMS ======
@@ -1604,7 +1618,7 @@ addPrimitiveType typeId primKind accum =
 
 {-| Add a polymorphic type descriptor for a type variable with constraint.
 Type kind 6 = Polymorphic
-Constraint values: 0=number, 1=eco_value (unconstrained)
+Constraint values: 0=number, 1=eco\_value (unconstrained)
 -}
 addPolymorphicType : Int -> Mono.Constraint -> TypeTableAccum -> TypeTableAccum
 addPolymorphicType typeId constraint accum =
@@ -3918,8 +3932,8 @@ generateSaturatedCall ctx func args resultType =
                                           )
                                         , ( "arg_type_ids"
                                           , ArrayAttr (Just I64)
-                                                [ IntAttr Nothing (-1)  -- -1 for string label (to be printed as string)
-                                                , IntAttr Nothing typeId  -- typeId for value
+                                                [ IntAttr Nothing -1 -- -1 for string label (to be printed as string)
+                                                , IntAttr Nothing typeId -- typeId for value
                                                 ]
                                           )
                                         ]
@@ -3927,7 +3941,7 @@ generateSaturatedCall ctx func args resultType =
                                 |> opBuilder.build
                     in
                     { ops = argOps ++ boxOps ++ [ dbgOp ]
-                    , resultVar = boxedValueVar  -- Return the value (boxed)
+                    , resultVar = boxedValueVar -- Return the value (boxed)
                     , resultType = ecoValue
                     , ctx = ctx2
                     }

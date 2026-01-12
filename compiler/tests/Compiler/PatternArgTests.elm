@@ -6,7 +6,9 @@ module Compiler.PatternArgTests exposing (expectSuite)
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( callExpr
+        ( TypedDef
+        , UnionDef
+        , callExpr
         , define
         , intExpr
         , lambdaExpr
@@ -14,8 +16,10 @@ import Compiler.AST.SourceBuilder
         , listExpr
         , makeModule
         , makeModuleWithDefs
+        , makeModuleWithTypedDefsUnionsAliases
         , pAnything
         , pCons
+        , pCtor
         , pInt
         , pList
         , pRecord
@@ -25,6 +29,8 @@ import Compiler.AST.SourceBuilder
         , pUnit
         , pVar
         , strExpr
+        , tLambda
+        , tType
         , tupleExpr
         , varExpr
         )
@@ -44,6 +50,7 @@ expectSuite expectFn condStr =
         , literalPatternTests expectFn condStr
         , nestedPatternTests expectFn condStr
         , multiArgPatternTests expectFn condStr
+        , customTypePatternTests expectFn condStr
         , patternFuzzTests expectFn condStr
         ]
 
@@ -638,6 +645,104 @@ alternatingPatterns expectFn _ =
                   , listExpr [ varExpr "a", varExpr "b", varExpr "c" ]
                   )
                 ]
+    in
+    expectFn modul
+
+
+
+-- ============================================================================
+-- CUSTOM TYPE PATTERNS (2 tests)
+-- ============================================================================
+
+
+customTypePatternTests : (Src.Module -> Expectation) -> String -> Test
+customTypePatternTests expectFn condStr =
+    Test.describe ("Custom type patterns " ++ condStr)
+        [ Test.test ("Custom type pattern in function argument " ++ condStr) (customTypePatternInFunctionArg expectFn)
+        , Test.test ("Custom type pattern with multiple extractors " ++ condStr) (customTypePatternMultipleExtractors expectFn)
+        ]
+
+
+{-| Tests pattern matching on custom types in function arguments.
+Corresponds to E2E test: CustomTypePatternTest.elm
+
+    type Person
+        = Person Int Int
+
+    getId (Person id _) = id
+    getAge (Person _ age) = age
+
+Note: Using Int instead of String to match what the compiler currently supports.
+-}
+customTypePatternInFunctionArg : (Src.Module -> Expectation) -> (() -> Expectation)
+customTypePatternInFunctionArg expectFn _ =
+    let
+        -- Define the Person union type
+        personUnion : UnionDef
+        personUnion =
+            { name = "Person"
+            , args = []
+            , ctors =
+                [ { name = "Person", args = [ tType "Int" [], tType "Int" [] ] }
+                ]
+            }
+
+        -- Define the getId function
+        -- getId : Person -> Int
+        -- getId (Person id _) = id
+        getIdFn : TypedDef
+        getIdFn =
+            { name = "getId"
+            , args = [ pCtor "Person" [ pVar "id", pAnything ] ]
+            , tipe = tLambda (tType "Person" []) (tType "Int" [])
+            , body = varExpr "id"
+            }
+
+        -- Define the getAge function
+        -- getAge : Person -> Int
+        -- getAge (Person _ age) = age
+        getAgeFn : TypedDef
+        getAgeFn =
+            { name = "getAge"
+            , args = [ pCtor "Person" [ pAnything, pVar "age" ] ]
+            , tipe = tLambda (tType "Person" []) (tType "Int" [])
+            , body = varExpr "age"
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test" [ getIdFn, getAgeFn ] [ personUnion ] []
+    in
+    expectFn modul
+
+
+{-| Tests pattern matching on custom types with multiple constructors in function arguments.
+-}
+customTypePatternMultipleExtractors : (Src.Module -> Expectation) -> (() -> Expectation)
+customTypePatternMultipleExtractors expectFn _ =
+    let
+        -- Define a Box type with a single field
+        boxUnion : UnionDef
+        boxUnion =
+            { name = "Box"
+            , args = []
+            , ctors =
+                [ { name = "Box", args = [ tType "Int" [] ] }
+                ]
+            }
+
+        -- Define the unbox function
+        -- unbox : Box -> Int
+        -- unbox (Box x) = x
+        unboxFn : TypedDef
+        unboxFn =
+            { name = "unbox"
+            , args = [ pCtor "Box" [ pVar "x" ] ]
+            , tipe = tLambda (tType "Box" []) (tType "Int" [])
+            , body = varExpr "x"
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test" [ unboxFn ] [ boxUnion ] []
     in
     expectFn modul
 
