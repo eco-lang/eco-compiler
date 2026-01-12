@@ -33,7 +33,7 @@ type MonoType
     | MList MonoType
     | MTuple TupleLayout
     | MRecord RecordLayout
-    | MCustom Name CustomLayout MonoType  -- name, layout, original type
+    | MCustom IO.Canonical Name (List MonoType)  -- module, name, type args
     | MFunction (List MonoType) MonoType
     | MVar Name Constraint  -- Still polymorphic (for kernel ABIs)
 ```
@@ -44,21 +44,26 @@ Type variables can have constraints:
 
 ```elm
 type Constraint
-    = CUnconstrained
-    | CEcoValue       -- Always boxed (heap pointer)
-    | CNumber         -- Must resolve to Int or Float
+    = CEcoValue       -- Always boxed (heap pointer), can survive to codegen
+    | CNumber         -- Must resolve to Int or Float before codegen
 ```
 
-- `CEcoValue`: Used for kernel functions that work on any boxed value
-- `CNumber`: Used for `number` typeclass (arithmetic operations)
+- `CEcoValue`: Used for kernel functions that work on any boxed value. Can remain unspecialized through to MLIR codegen where it becomes `eco.value`.
+- `CNumber`: Used for `number` typeclass (arithmetic operations). MUST be resolved to `MInt` or `MFloat` by specialization; any remaining `CNumber` at codegen is a compiler bug.
 
 ### SpecKey and SpecId
 
 Functions are identified by their specialization:
 
 ```elm
-type SpecKey = SpecKey Global (List MonoType)  -- function + type args
-type SpecId = SpecId Int  -- unique numeric ID
+type SpecKey = SpecKey Global MonoType (Maybe LambdaId)  -- function + specialized type + optional lambda id
+type alias SpecId = Int  -- unique numeric ID
+```
+
+The `LambdaId` identifies anonymous lambdas (closures) that need separate specializations:
+
+```elm
+type LambdaId = AnonymousLambda IO.Canonical Int  -- module + unique index
 ```
 
 ### Substitution
@@ -162,18 +167,21 @@ FUNCTION specializeExpr(expr, subst, state):
 
 ### Record Layout
 
-Records get concrete field layouts:
+Records get concrete field layouts with unboxing information:
 
 ```elm
 type alias RecordLayout =
-    { fields : List FieldInfo
-    , totalSize : Int  -- in words
+    { fieldCount : Int
+    , unboxedCount : Int
+    , unboxedBitmap : Int      -- bitmask of which fields are unboxed
+    , fields : List FieldInfo
     }
 
 type alias FieldInfo =
     { name : Name
-    , fieldType : MonoType
-    , offset : Int  -- word offset
+    , index : Int
+    , monoType : MonoType
+    , isUnboxed : Bool  -- True for MInt/MFloat stored inline
     }
 ```
 
@@ -181,25 +189,25 @@ type alias FieldInfo =
 
 ```elm
 type alias TupleLayout =
-    { elements : List MonoType
-    , size : Int  -- 2 or 3 for Tuple2/Tuple3
+    { arity : Int           -- 2 or 3
+    , unboxedBitmap : Int   -- bitmask of which elements are unboxed
+    , elements : List (MonoType, Bool)  -- (type, isUnboxed)
     }
 ```
 
-### Custom Type Layout
+### Constructor Layout
 
 ```elm
-type alias CustomLayout =
-    { typeName : Name
-    , ctors : List CtorLayout
-    }
-
 type alias CtorLayout =
     { name : Name
     , tag : Int
-    , fields : List MonoType
+    , fields : List FieldInfo
+    , unboxedCount : Int
+    , unboxedBitmap : Int
     }
 ```
+
+Note: Custom types don't have a separate `CustomLayout` type. The `MCustom` variant stores `(IO.Canonical, Name, List MonoType)` - the module path, type name, and type arguments. Constructor layouts are computed on-demand during code generation.
 
 ## Type Conversion: Canonical to Mono
 
@@ -280,9 +288,9 @@ Tracks all generated specializations:
 
 ```elm
 type alias SpecializationRegistry =
-    { specIdToKey : Dict Int SpecId SpecKey
-    , keyToSpecId : Dict (List String) SpecKey SpecId
-    , nextSpecId : Int
+    { nextId : Int
+    , mapping : Dict (List String) (List String) SpecId    -- SpecKey -> SpecId
+    , reverseMapping : Dict Int Int (Global, MonoType, Maybe LambdaId)  -- SpecId -> info
     }
 ```
 
@@ -291,26 +299,32 @@ type alias SpecializationRegistry =
 The final output:
 
 ```elm
-type alias MonoGraph =
-    { specs : Dict Int SpecId MonoNode
-    , main : SpecId
-    , registry : SpecializationRegistry
-    , kernels : Dict (List String) Global KernelAbi
-    , typeEnv : GlobalTypeEnv
-    }
+type MonoGraph =
+    MonoGraph
+        { nodes : Dict Int Int MonoNode
+        , main : Maybe MainInfo
+        , registry : SpecializationRegistry
+        }
+
+type MainInfo
+    = StaticMain SpecId  -- main specialization ID
 
 type MonoNode
-    = MonoDefine MonoExpr (List SpecId)
-    | MonoTailFunc (List (Name, MonoType)) MonoExpr
-    | MonoCtor Int CtorLayout
-    | MonoEnum Int
+    = MonoDefine MonoExpr MonoType
+    | MonoTailFunc (List (Name, MonoType)) MonoExpr MonoType
+    | MonoCtor CtorLayout MonoType
+    | MonoEnum Int MonoType
+    | MonoExtern MonoType                    -- External/foreign function
+    | MonoPortIncoming MonoExpr MonoType     -- Incoming port
+    | MonoPortOutgoing MonoExpr MonoType     -- Outgoing port
+    | MonoCycle (List (Name, MonoExpr)) MonoType  -- Mutually recursive definitions
 ```
 
 ## Data Structures
 
 ### MonoState
 
-Internal state during monomorphization:
+Internal state during monomorphization (conceptual; actual implementation may vary):
 
 ```elm
 type alias MonoState =
@@ -319,17 +333,19 @@ type alias MonoState =
     , worklist : List WorkItem
     , processed : Set (List String) SpecKey
     , registry : SpecializationRegistry
-    , specs : Dict Int SpecId MonoNode
-    , kernels : Dict (List String) Global KernelAbi
+    , nodes : Dict Int Int MonoNode
     }
 ```
 
 ### WorkItem
 
+A work item identifies a function/definition to specialize at a particular type:
+
 ```elm
 type alias WorkItem =
     { global : Global
     , monoType : MonoType
+    , lambdaId : Maybe LambdaId  -- for closures
     }
 ```
 

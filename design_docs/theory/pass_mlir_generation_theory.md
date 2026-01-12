@@ -102,7 +102,7 @@ MonoTypes map to MLIR types:
 | MList _ | `!eco.value` | Heap list |
 | MTuple _ | `!eco.value` | Heap tuple |
 | MRecord _ | `!eco.value` | Heap record |
-| MCustom _ _ | `!eco.value` | Heap custom type |
+| MCustom _ _ _ | `!eco.value` | Heap custom type |
 | MFunction _ _ | `!eco.value` | Closure |
 | MVar _ CEcoValue | `!eco.value` | Boxed polymorphic |
 | MVar _ CNumber | varies | Int or Float |
@@ -140,6 +140,7 @@ type alias Context =
     , mode : Mode.Mode             -- Debug/Release mode
     , registry : SpecializationRegistry
     , pendingLambdas : List PendingLambda
+    , pendingWrappers : List PendingWrapper  -- Boxed wrappers for PAP targets
     , signatures : Dict Int FuncSignature
     , varMappings : Dict String (String, MlirType)
     , kernelDecls : Dict String (List MlirType, MlirType)
