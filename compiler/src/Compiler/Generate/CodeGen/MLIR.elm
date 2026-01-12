@@ -250,6 +250,7 @@ type alias Context =
     , mode : Mode.Mode
     , registry : Mono.SpecializationRegistry
     , pendingLambdas : List PendingLambda
+    , pendingWrappers : List PendingWrapper -- Boxed wrappers for PAP targets with unboxed params
     , signatures : Dict.Dict Int FuncSignature -- SpecId -> signature for invariant checking
     , varMappings : Dict.Dict String ( String, MlirType ) -- Let-bound name -> (SSA variable name, MLIR type)
     , kernelDecls : Dict.Dict String ( List MlirType, MlirType ) -- Kernel function name -> (argTypes, returnType)
@@ -277,6 +278,17 @@ type alias PendingLambda =
     }
 
 
+{-| A pending wrapper is generated for functions used in PAPs that have unboxed params.
+The wrapper accepts !eco.value params, unboxes them, calls the target, and boxes the result.
+-}
+type alias PendingWrapper =
+    { wrapperName : String
+    , targetFuncName : String
+    , paramTypes : List Mono.MonoType
+    , returnType : Mono.MonoType
+    }
+
+
 initContext : Mode.Mode -> Mono.SpecializationRegistry -> Dict.Dict Int FuncSignature -> TypeEnv.GlobalTypeEnv -> Context
 initContext mode registry signatures typeEnv =
     { nextVar = 0
@@ -284,6 +296,7 @@ initContext mode registry signatures typeEnv =
     , mode = mode
     , registry = registry
     , pendingLambdas = []
+    , pendingWrappers = []
     , signatures = signatures
     , varMappings = Dict.empty
     , kernelDecls = Dict.empty
@@ -2946,16 +2959,39 @@ generateVarGlobal ctx specId monoType =
 
             else
                 -- Function-typed global with arity > 0: create a closure (papCreate) with no captures
+                -- Check if any param needs unboxing - if so, we need a boxed wrapper for PAP usage
                 let
+                    needsWrapper =
+                        List.any (\ty -> not (isEcoValueType (monoTypeToMlir ty))) sig.paramTypes
+
+                    ( targetName, ctx2 ) =
+                        if needsWrapper then
+                            let
+                                wrapperName =
+                                    funcName ++ "_pap_wrapper"
+
+                                wrapper : PendingWrapper
+                                wrapper =
+                                    { wrapperName = wrapperName
+                                    , targetFuncName = funcName
+                                    , paramTypes = sig.paramTypes
+                                    , returnType = sig.returnType
+                                    }
+                            in
+                            ( wrapperName, { ctx1 | pendingWrappers = wrapper :: ctx1.pendingWrappers } )
+
+                        else
+                            ( funcName, ctx1 )
+
                     attrs =
                         Dict.fromList
-                            [ ( "function", SymbolRefAttr funcName )
+                            [ ( "function", SymbolRefAttr targetName )
                             , ( "arity", IntAttr Nothing arity )
                             , ( "num_captured", IntAttr Nothing 0 )
                             ]
 
-                    ( ctx2, papOp ) =
-                        mlirOp ctx1 "eco.papCreate"
+                    ( ctx3, papOp ) =
+                        mlirOp ctx2 "eco.papCreate"
                             |> opBuilder.withResults [ ( var, ecoValue ) ]
                             |> opBuilder.withAttrs attrs
                             |> opBuilder.build
@@ -2963,7 +2999,7 @@ generateVarGlobal ctx specId monoType =
                 { ops = [ papOp ]
                 , resultVar = var
                 , resultType = ecoValue
-                , ctx = ctx2
+                , ctx = ctx3
                 }
 
         Nothing ->

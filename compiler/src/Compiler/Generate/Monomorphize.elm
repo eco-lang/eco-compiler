@@ -50,6 +50,7 @@ type alias MonoState =
     , toptNodes : Dict (List String) TOpt.Global TOpt.Node
     , currentGlobal : Maybe Mono.Global
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
+    , varTypes : Dict String Name Mono.MonoType -- Mapping of variable names to their MonoTypes
     }
 
 
@@ -230,6 +231,7 @@ initState currentModule toptNodes globalTypeEnv =
     , toptNodes = toptNodes
     , currentGlobal = Nothing
     , globalTypeEnv = globalTypeEnv
+    , varTypes = Dict.empty
     }
 
 
@@ -878,20 +880,69 @@ specializeExpr expr subst state =
                 monoType =
                     applySubst subst canType
 
-                paramPairs =
-                    List.map (\( name, t ) -> ( name, t )) params
+                -- Extract param types from the function type
+                funcTypeParams =
+                    extractParamTypes monoType
+
+                -- Derive parameter types using a hybrid approach:
+                -- 1. First try to use applySubst on the param's canonical type
+                -- 2. If that gives a placeholder (MVar "?" ...), use the corresponding
+                --    type from the function type if available
+                -- 3. Otherwise keep the placeholder
+                -- This handles both:
+                -- - Normal case: params have real types in the substitution
+                -- - Curried case: extra params beyond what's in the function type
+                deriveParamType : Int -> ( Name, Can.Type ) -> ( Name, Mono.MonoType )
+                deriveParamType idx ( name, paramCanType ) =
+                    let
+                        substType =
+                            applySubst subst paramCanType
+                    in
+                    case substType of
+                        Mono.MVar _ _ ->
+                            -- Unresolved type variable - try to get from function type
+                            case List.drop idx funcTypeParams of
+                                funcParamType :: _ ->
+                                    ( name, funcParamType )
+
+                                [] ->
+                                    -- Extra param beyond function type (curried)
+                                    ( name, substType )
+
+                        _ ->
+                            ( name, substType )
 
                 monoParams =
-                    List.map (\( name, t ) -> ( name, applySubst subst t )) paramPairs
+                    List.indexedMap deriveParamType params
 
                 lambdaId =
                     Mono.AnonymousLambda state.currentModule state.lambdaCounter
 
+                -- Add param names -> types to varTypes for path type derivation
+                newVarTypes =
+                    List.foldl
+                        (\( name, monoParamType ) vt -> Dict.insert identity name monoParamType vt)
+                        state.varTypes
+                        monoParams
+
                 stateWithLambda =
-                    { state | lambdaCounter = state.lambdaCounter + 1 }
+                    { state
+                        | lambdaCounter = state.lambdaCounter + 1
+                        , varTypes = newVarTypes
+                    }
+
+                -- Build an augmented substitution that includes the param name -> type mappings.
+                -- This ensures destructors inside the function body can resolve their types.
+                augmentedSubst =
+                    List.foldl
+                        (\( name, monoParamType ) s ->
+                            Dict.insert identity name monoParamType s
+                        )
+                        subst
+                        monoParams
 
                 ( monoBody, stateAfter ) =
-                    specializeExpr body subst stateWithLambda
+                    specializeExpr body augmentedSubst stateWithLambda
 
                 captures =
                     computeClosureCaptures monoParams monoBody
@@ -909,20 +960,63 @@ specializeExpr expr subst state =
                 monoType =
                     applySubst subst canType
 
-                paramPairs =
-                    List.map (\( locName, t ) -> ( A.toValue locName, t )) params
+                -- Extract param types from the function type
+                funcTypeParams =
+                    extractParamTypes monoType
+
+                -- Derive parameter types using a hybrid approach (same as Function case)
+                deriveParamType : Int -> ( A.Located Name, Can.Type ) -> ( Name, Mono.MonoType )
+                deriveParamType idx ( locName, paramCanType ) =
+                    let
+                        name =
+                            A.toValue locName
+
+                        substType =
+                            applySubst subst paramCanType
+                    in
+                    case substType of
+                        Mono.MVar _ _ ->
+                            -- Unresolved type variable - try to get from function type
+                            case List.drop idx funcTypeParams of
+                                funcParamType :: _ ->
+                                    ( name, funcParamType )
+
+                                [] ->
+                                    ( name, substType )
+
+                        _ ->
+                            ( name, substType )
 
                 monoParams =
-                    List.map (\( name, t ) -> ( name, applySubst subst t )) paramPairs
+                    List.indexedMap deriveParamType params
 
                 lambdaId =
                     Mono.AnonymousLambda state.currentModule state.lambdaCounter
 
+                -- Add param names -> types to varTypes for path type derivation
+                newVarTypes =
+                    List.foldl
+                        (\( name, monoParamType ) vt -> Dict.insert identity name monoParamType vt)
+                        state.varTypes
+                        monoParams
+
                 stateWithLambda =
-                    { state | lambdaCounter = state.lambdaCounter + 1 }
+                    { state
+                        | lambdaCounter = state.lambdaCounter + 1
+                        , varTypes = newVarTypes
+                    }
+
+                -- Build an augmented substitution that includes the param name -> type mappings.
+                augmentedSubst =
+                    List.foldl
+                        (\( name, monoParamType ) s ->
+                            Dict.insert identity name monoParamType s
+                        )
+                        subst
+                        monoParams
 
                 ( monoBody, stateAfter ) =
-                    specializeExpr body subst stateWithLambda
+                    specializeExpr body augmentedSubst stateWithLambda
 
                 captures =
                     computeClosureCaptures monoParams monoBody
@@ -1070,10 +1164,17 @@ specializeExpr expr subst state =
                     applySubst subst canType
 
                 monoDestructor =
-                    specializeDestructor destructor subst
+                    specializeDestructor destructor subst state.varTypes
+
+                -- Add the destructured variable to varTypes for nested destructors
+                (Mono.MonoDestructor destructorName _ destructorType) =
+                    monoDestructor
+
+                stateWithVar =
+                    { state | varTypes = Dict.insert identity destructorName destructorType state.varTypes }
 
                 ( monoBody, stateAfter ) =
-                    specializeExpr body subst state
+                    specializeExpr body subst stateWithVar
             in
             ( Mono.MonoDestruct monoDestructor monoBody monoType, stateAfter )
 
@@ -1732,14 +1833,29 @@ specializeDef def subst state =
             ( Mono.MonoTailDef name monoExpr, stateAfter )
 
 
-specializeDestructor : TOpt.Destructor -> Substitution -> Mono.MonoDestructor
-specializeDestructor (TOpt.Destructor name path canType) subst =
+specializeDestructor : TOpt.Destructor -> Substitution -> VarTypes -> Mono.MonoDestructor
+specializeDestructor (TOpt.Destructor name path canType) subst varTypes =
     let
         monoPath =
             specializePath path
 
+        -- Derive the destructor's type from the path structure and varTypes.
+        -- This is critical because placeholder type variables like "?" may be
+        -- incorrectly mapped in the substitution (e.g., mapped to the container type
+        -- instead of the extracted element type).
+        derivedType =
+            derivePathType varTypes path
+
+        -- If derivation fails (returns MVar "?"), fall back to substitution
         monoType =
-            applySubst subst canType
+            case derivedType of
+                Mono.MVar "?" _ ->
+                    applySubst subst canType
+
+                _ ->
+                    derivedType
+
+        -- Debug removed
     in
     Mono.MonoDestructor name monoPath monoType
 
@@ -1958,6 +2074,97 @@ type alias Substitution =
     Dict String Name Mono.MonoType
 
 
+{-| Mapping of variable names to their MonoTypes, used for deriving destructor types from paths.
+-}
+type alias VarTypes =
+    Dict String Name Mono.MonoType
+
+
+{-| Derive the result type of a path given the types of root variables.
+This is critical when placeholder type variables like "?" are used in destructors,
+because we need to compute the actual type from the path structure.
+-}
+derivePathType : VarTypes -> TOpt.Path -> Mono.MonoType
+derivePathType varTypes path =
+    case path of
+        TOpt.Root name ->
+            Dict.get identity name varTypes
+                |> Maybe.withDefault (Mono.MVar "?" Mono.CEcoValue)
+
+        TOpt.Index index hint subPath ->
+            let
+                containerType =
+                    derivePathType varTypes subPath
+            in
+            case ( hint, containerType ) of
+                ( TOpt.HintTuple2, Mono.MTuple layout ) ->
+                    case List.drop (Index.toMachine index) layout.elements of
+                        ( elemType, _ ) :: _ ->
+                            elemType
+
+                        [] ->
+                            Mono.MVar "?" Mono.CEcoValue
+
+                ( TOpt.HintTuple3, Mono.MTuple layout ) ->
+                    case List.drop (Index.toMachine index) layout.elements of
+                        ( elemType, _ ) :: _ ->
+                            elemType
+
+                        [] ->
+                            Mono.MVar "?" Mono.CEcoValue
+
+                ( TOpt.HintList, Mono.MList innerType ) ->
+                    if Index.toMachine index == 0 then
+                        innerType
+
+                    else
+                        -- Tail returns the list type
+                        containerType
+
+                ( TOpt.HintCustom, Mono.MCustom _ _ args ) ->
+                    -- For custom types, get the indexed argument
+                    case List.drop (Index.toMachine index) args of
+                        argType :: _ ->
+                            argType
+
+                        [] ->
+                            Mono.MVar "?" Mono.CEcoValue
+
+                _ ->
+                    -- Fallback to boxed value for unknown cases
+                    Mono.MVar "?" Mono.CEcoValue
+
+        TOpt.ArrayIndex _ subPath ->
+            -- Array index - for now fallback to boxed value
+            Mono.MVar "?" Mono.CEcoValue
+
+        TOpt.Field name subPath ->
+            let
+                containerType =
+                    derivePathType varTypes subPath
+            in
+            case containerType of
+                Mono.MRecord layout ->
+                    -- Find the field in the layout
+                    List.foldl
+                        (\field acc ->
+                            if field.name == name then
+                                field.monoType
+
+                            else
+                                acc
+                        )
+                        (Mono.MVar "?" Mono.CEcoValue)
+                        layout.fields
+
+                _ ->
+                    Mono.MVar "?" Mono.CEcoValue
+
+        TOpt.Unbox subPath ->
+            -- Unbox typically doesn't change the semantic type
+            derivePathType varTypes subPath
+
+
 {-| Unify a function call by matching argument types and result type.
 -}
 unifyFuncCall :
@@ -2108,6 +2315,24 @@ unifyArgsOnly canFuncType argTypes subst =
             subst
 
 
+{-| Extract parameter types from a MFunction type.
+When we have a function type MFunction [arg1, arg2, ...] returnType,
+this extracts the list of argument types [arg1, arg2, ...].
+For non-function types, returns an empty list.
+-}
+extractParamTypes : Mono.MonoType -> List Mono.MonoType
+extractParamTypes monoType =
+    -- For curried functions, recursively extract all param types.
+    -- E.g., (a -> x) -> (a, b) -> (x, b) is MFunction [funcType] (MFunction [tupleType] result)
+    -- and we need to return [funcType, tupleType]
+    case monoType of
+        Mono.MFunction argTypes returnType ->
+            argTypes ++ extractParamTypes returnType
+
+        _ ->
+            []
+
+
 {-| Apply a type substitution to a canonical type to produce a monomorphic type.
 -}
 applySubst : Substitution -> Can.Type -> Mono.MonoType
@@ -2119,7 +2344,25 @@ applySubst subst canType =
                     monoType
 
                 Nothing ->
-                    Mono.MVar name (constraintFromName name)
+                    -- Resolve constrained type variables to their default types.
+                    -- This follows Elm's defaulting rules:
+                    -- - "number" constraint defaults to Int
+                    -- - Other type variables become MVar for runtime polymorphism
+                    --
+                    -- Note: Elm's type inference uses more constraints (comparable, appendable),
+                    -- but by the time we get here, those are typically resolved. The number
+                    -- constraint is common from numeric literals like 42.
+                    let
+                        constraint =
+                            constraintFromName name
+                    in
+                    case constraint of
+                        Mono.CNumber ->
+                            Mono.MInt
+
+                        Mono.CEcoValue ->
+                            -- Truly polymorphic type variable - keep as MVar
+                            Mono.MVar name constraint
 
         Can.TLambda from to ->
             Mono.MFunction [ applySubst subst from ] (applySubst subst to)
