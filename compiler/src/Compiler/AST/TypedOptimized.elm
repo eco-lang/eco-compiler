@@ -17,9 +17,14 @@ such as the MLIR backend which performs monomorphization.
 
 The key difference from Optimized:
 
-  - Every Expr carries its Can.Type
+  - Every Expr carries a type annotation (parameterized as `t`)
   - Nodes carry type information for definitions
   - LocalGraph includes the full annotations dictionary
+
+The types are parameterized over the type annotation `t`, allowing:
+
+  - `Expr IncompleteType` during typed optimization (where some types may be unknown)
+  - `Expr Can.Type` for downstream consumers like monomorphization
 
 
 # Core Types
@@ -71,6 +76,7 @@ The key difference from Optimized:
 import Bytes.Decode
 import Bytes.Encode
 import Compiler.AST.Canonical as Can
+import Compiler.AST.IncompleteType as IT
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
@@ -101,44 +107,50 @@ type alias Annotations =
 -- Every expression variant carries its type as the LAST argument
 
 
-{-| Typed optimized expression. Each variant carries its canonical type as the last argument.
+{-| Typed optimized expression. Each variant carries its type annotation as the last argument.
+
+The type parameter `t` is the type of the annotation:
+
+  - `Expr IT.IncompleteType` during typed optimization (some types may be unknown)
+  - `Expr Can.Type` for downstream consumers like monomorphization
+
 -}
-type Expr
-    = Bool A.Region Bool Can.Type
-    | Chr A.Region String Can.Type
-    | Str A.Region String Can.Type
-    | Int A.Region Int Can.Type
-    | Float A.Region Float Can.Type
-    | VarLocal Name Can.Type
-    | TrackedVarLocal A.Region Name Can.Type
-    | VarGlobal A.Region Global Can.Type
-    | VarEnum A.Region Global Index.ZeroBased Can.Type
-    | VarBox A.Region Global Can.Type
-    | VarCycle A.Region IO.Canonical Name Can.Type
-    | VarDebug A.Region Name IO.Canonical (Maybe Name) Can.Type
-    | VarKernel A.Region Name Name Can.Type
-    | List A.Region (List Expr) Can.Type
-    | Function (List ( Name, Can.Type )) Expr Can.Type -- params with types, body, function type
-    | TrackedFunction (List ( A.Located Name, Can.Type )) Expr Can.Type
-    | Call A.Region Expr (List Expr) Can.Type
-    | TailCall Name (List ( Name, Expr )) Can.Type
-    | If (List ( Expr, Expr )) Expr Can.Type
-    | Let Def Expr Can.Type
-    | Destruct Destructor Expr Can.Type
-    | Case Name Name (Decider Choice) (List ( Int, Expr )) Can.Type
-    | Accessor A.Region Name Can.Type
-    | Access Expr A.Region Name Can.Type
-    | Update A.Region Expr (Dict String (A.Located Name) Expr) Can.Type
-    | Record (Dict String Name Expr) Can.Type
-    | TrackedRecord A.Region (Dict String (A.Located Name) Expr) Can.Type
-    | Unit Can.Type
-    | Tuple A.Region Expr Expr (List Expr) Can.Type
-    | Shader Shader.Source (EverySet String Name) (EverySet String Name) Can.Type
+type Expr t
+    = Bool A.Region Bool t
+    | Chr A.Region String t
+    | Str A.Region String t
+    | Int A.Region Int t
+    | Float A.Region Float t
+    | VarLocal Name t
+    | TrackedVarLocal A.Region Name t
+    | VarGlobal A.Region Global t
+    | VarEnum A.Region Global Index.ZeroBased t
+    | VarBox A.Region Global t
+    | VarCycle A.Region IO.Canonical Name t
+    | VarDebug A.Region Name IO.Canonical (Maybe Name) t
+    | VarKernel A.Region Name Name t
+    | List A.Region (List (Expr t)) t
+    | Function (List ( Name, t )) (Expr t) t -- params with types, body, function type
+    | TrackedFunction (List ( A.Located Name, t )) (Expr t) t
+    | Call A.Region (Expr t) (List (Expr t)) t
+    | TailCall Name (List ( Name, Expr t )) t
+    | If (List ( Expr t, Expr t )) (Expr t) t
+    | Let (Def t) (Expr t) t
+    | Destruct (Destructor t) (Expr t) t
+    | Case Name Name (Decider (Choice t)) (List ( Int, Expr t )) t
+    | Accessor A.Region Name t
+    | Access (Expr t) A.Region Name t
+    | Update A.Region (Expr t) (Dict String (A.Located Name) (Expr t)) t
+    | Record (Dict String Name (Expr t)) t
+    | TrackedRecord A.Region (Dict String (A.Located Name) (Expr t)) t
+    | Unit t
+    | Tuple A.Region (Expr t) (Expr t) (List (Expr t)) t
+    | Shader Shader.Source (EverySet String Name) (EverySet String Name) t
 
 
-{-| Extract the canonical type from any expression.
+{-| Extract the type annotation from any expression.
 -}
-typeOf : Expr -> Can.Type
+typeOf : Expr t -> t
 typeOf expr =
     case expr of
         Bool _ _ t ->
@@ -272,16 +284,22 @@ toKernelGlobal shortName =
 
 
 {-| A local definition, either a simple value or a tail-recursive function.
+
+The type parameter `t` is the type of the annotation (see `Expr`).
+
 -}
-type Def
-    = Def A.Region Name Expr Can.Type -- name, body, type of the definition
-    | TailDef A.Region Name (List ( A.Located Name, Can.Type )) Expr Can.Type -- name, typed args, body, return type
+type Def t
+    = Def A.Region Name (Expr t) t -- name, body, type of the definition
+    | TailDef A.Region Name (List ( A.Located Name, t )) (Expr t) t -- name, typed args, body, return type
 
 
 {-| Destructuring pattern that extracts a value from a data structure.
+
+The type parameter `t` is the type of the destructured value's annotation.
+
 -}
-type Destructor
-    = Destructor Name Path Can.Type -- name, path, type of destructured value
+type Destructor t
+    = Destructor Name Path t -- name, path, type of destructured value
 
 
 
@@ -323,9 +341,12 @@ type Decider a
 
 
 {-| Represents the action taken when a pattern match succeeds.
+
+The type parameter `t` is the type annotation on expressions (see `Expr`).
+
 -}
-type Choice
-    = Inline Expr
+type Choice t
+    = Inline (Expr t)
     | Jump Int
 
 
@@ -334,9 +355,12 @@ type Choice
 
 
 {-| A graph of all top-level definitions across multiple modules.
+
+The type parameter `t` is the type annotation used in expressions and nodes.
+
 -}
-type GlobalGraph
-    = GlobalGraph (Dict (List String) Global Node) (Dict String Name Int) Annotations
+type GlobalGraph t
+    = GlobalGraph (Dict (List String) Global (Node t)) (Dict String Name Int) Annotations
 
 
 
@@ -344,19 +368,25 @@ type GlobalGraph
 
 
 {-| Data structure for a single module's dependency graph.
+
+The type parameter `t` is the type annotation used in expressions and nodes.
+
 -}
-type alias LocalGraphData =
-    { main : Maybe Main
-    , nodes : Dict (List String) Global Node
+type alias LocalGraphData t =
+    { main : Maybe (Main t)
+    , nodes : Dict (List String) Global (Node t)
     , fields : Dict String Name Int
     , annotations : Annotations
     }
 
 
 {-| A graph of top-level definitions for a single module.
+
+The type parameter `t` is the type annotation used in expressions and nodes.
+
 -}
-type LocalGraph
-    = LocalGraph LocalGraphData
+type LocalGraph t
+    = LocalGraph (LocalGraphData t)
 
 
 
@@ -364,27 +394,33 @@ type LocalGraph
 
 
 {-| Information about the main entry point of an Elm program.
+
+The type parameter `t` is the type annotation on the decoder expression.
+
 -}
-type Main
+type Main t
     = Static
-    | Dynamic Can.Type Expr
+    | Dynamic t (Expr t)
 
 
 {-| A node in the dependency graph representing a top-level definition.
+
+The type parameter `t` is the type annotation used in expressions.
+
 -}
-type Node
-    = Define Expr (EverySet (List String) Global) Can.Type -- body, deps, type
-    | TrackedDefine A.Region Expr (EverySet (List String) Global) Can.Type
-    | DefineTailFunc A.Region (List ( A.Located Name, Can.Type )) Expr (EverySet (List String) Global) Can.Type -- typed args, body, deps, return type
-    | Ctor Index.ZeroBased Int Can.Type -- index, arity, constructor type
-    | Enum Index.ZeroBased Can.Type
-    | Box Can.Type
+type Node t
+    = Define (Expr t) (EverySet (List String) Global) t -- body, deps, type
+    | TrackedDefine A.Region (Expr t) (EverySet (List String) Global) t
+    | DefineTailFunc A.Region (List ( A.Located Name, t )) (Expr t) (EverySet (List String) Global) t -- typed args, body, deps, return type
+    | Ctor Index.ZeroBased Int t -- index, arity, constructor type
+    | Enum Index.ZeroBased t
+    | Box t
     | Link Global
-    | Cycle (List Name) (List ( Name, Expr )) (List Def) (EverySet (List String) Global)
+    | Cycle (List Name) (List ( Name, Expr t )) (List (Def t)) (EverySet (List String) Global)
     | Manager EffectsType
     | Kernel (List K.Chunk) (EverySet (List String) Global)
-    | PortIncoming Expr (EverySet (List String) Global) Can.Type
-    | PortOutgoing Expr (EverySet (List String) Global) Can.Type
+    | PortIncoming (Expr t) (EverySet (List String) Global) t -- decoder expr, deps, port type
+    | PortOutgoing (Expr t) (EverySet (List String) Global) t -- encoder expr, deps, port type
 
 
 {-| The type of effects manager (commands, subscriptions, or both).
@@ -401,21 +437,21 @@ type EffectsType
 
 {-| Create an empty global graph (alias for `empty`).
 -}
-emptyGlobalGraph : GlobalGraph
+emptyGlobalGraph : GlobalGraph t
 emptyGlobalGraph =
     GlobalGraph Dict.empty Dict.empty Dict.empty
 
 
 {-| Create an empty local graph with no definitions.
 -}
-emptyLocalGraph : LocalGraph
+emptyLocalGraph : LocalGraph t
 emptyLocalGraph =
     LocalGraph { main = Nothing, nodes = Dict.empty, fields = Dict.empty, annotations = Dict.empty }
 
 
 {-| Merge two global graphs by unioning their nodes, fields, and annotations.
 -}
-addGlobalGraph : GlobalGraph -> GlobalGraph -> GlobalGraph
+addGlobalGraph : GlobalGraph t -> GlobalGraph t -> GlobalGraph t
 addGlobalGraph (GlobalGraph nodes1 fields1 ann1) (GlobalGraph nodes2 fields2 ann2) =
     GlobalGraph
         (Dict.union nodes1 nodes2)
@@ -425,7 +461,7 @@ addGlobalGraph (GlobalGraph nodes1 fields1 ann1) (GlobalGraph nodes2 fields2 ann
 
 {-| Add a local graph's definitions to a global graph.
 -}
-addLocalGraph : LocalGraph -> GlobalGraph -> GlobalGraph
+addLocalGraph : LocalGraph t -> GlobalGraph t -> GlobalGraph t
 addLocalGraph (LocalGraph data) (GlobalGraph nodes2 fields2 ann2) =
     GlobalGraph
         (Dict.union data.nodes nodes2)
@@ -435,11 +471,13 @@ addLocalGraph (LocalGraph data) (GlobalGraph nodes2 fields2 ann2) =
 
 
 -- ====== ENCODERS and DECODERS ======
+-- Note: Serialization operates on Can.Type instantiations (Expr Can.Type, etc.)
+-- because serialization happens after finalization.
 
 
 {-| Encode a global graph to binary format.
 -}
-globalGraphEncoder : GlobalGraph -> Bytes.Encode.Encoder
+globalGraphEncoder : GlobalGraph Can.Type -> Bytes.Encode.Encoder
 globalGraphEncoder (GlobalGraph nodes fields annotations) =
     Bytes.Encode.sequence
         [ BE.assocListDict compareGlobal globalEncoder nodeEncoder nodes
@@ -450,7 +488,7 @@ globalGraphEncoder (GlobalGraph nodes fields annotations) =
 
 {-| Decode a global graph from binary format.
 -}
-globalGraphDecoder : Bytes.Decode.Decoder GlobalGraph
+globalGraphDecoder : Bytes.Decode.Decoder (GlobalGraph Can.Type)
 globalGraphDecoder =
     Bytes.Decode.map3 GlobalGraph
         (BD.assocListDict toComparableGlobal globalDecoder nodeDecoder)
@@ -460,7 +498,7 @@ globalGraphDecoder =
 
 {-| Encode a local graph to binary format.
 -}
-localGraphEncoder : LocalGraph -> Bytes.Encode.Encoder
+localGraphEncoder : LocalGraph Can.Type -> Bytes.Encode.Encoder
 localGraphEncoder (LocalGraph data) =
     Bytes.Encode.sequence
         [ BE.maybe mainEncoder data.main
@@ -472,7 +510,7 @@ localGraphEncoder (LocalGraph data) =
 
 {-| Decode a local graph from binary format.
 -}
-localGraphDecoder : Bytes.Decode.Decoder LocalGraph
+localGraphDecoder : Bytes.Decode.Decoder (LocalGraph Can.Type)
 localGraphDecoder =
     Bytes.Decode.map4
         (\main nodes fields annotations ->
@@ -484,7 +522,7 @@ localGraphDecoder =
         (BD.assocListDict identity BD.string Can.annotationDecoder)
 
 
-mainEncoder : Main -> Bytes.Encode.Encoder
+mainEncoder : Main Can.Type -> Bytes.Encode.Encoder
 mainEncoder main_ =
     case main_ of
         Static ->
@@ -498,7 +536,7 @@ mainEncoder main_ =
                 ]
 
 
-mainDecoder : Bytes.Decode.Decoder Main
+mainDecoder : Bytes.Decode.Decoder (Main Can.Type)
 mainDecoder =
     Bytes.Decode.unsignedInt8
         |> Bytes.Decode.andThen
@@ -532,7 +570,7 @@ globalDecoder =
         BD.string
 
 
-nodeEncoder : Node -> Bytes.Encode.Encoder
+nodeEncoder : Node Can.Type -> Bytes.Encode.Encoder
 nodeEncoder node =
     case node of
         Define expr deps tipe ->
@@ -628,7 +666,7 @@ nodeEncoder node =
                 ]
 
 
-nodeDecoder : Bytes.Decode.Decoder Node
+nodeDecoder : Bytes.Decode.Decoder (Node Can.Type)
 nodeDecoder =
     Bytes.Decode.unsignedInt8
         |> Bytes.Decode.andThen
@@ -734,7 +772,7 @@ typedNameDecoder =
         Can.typeDecoder
 
 
-exprEncoder : Expr -> Bytes.Encode.Encoder
+exprEncoder : Expr Can.Type -> Bytes.Encode.Encoder
 exprEncoder expr =
     case expr of
         Bool region value tipe ->
@@ -987,7 +1025,7 @@ exprEncoder expr =
                 ]
 
 
-exprDecoder : Bytes.Decode.Decoder Expr
+exprDecoder : Bytes.Decode.Decoder (Expr Can.Type)
 exprDecoder =
     Bytes.Decode.unsignedInt8
         |> Bytes.Decode.andThen
@@ -1186,7 +1224,7 @@ exprDecoder =
             )
 
 
-defEncoder : Def -> Bytes.Encode.Encoder
+defEncoder : Def Can.Type -> Bytes.Encode.Encoder
 defEncoder def =
     case def of
         Def region name expr tipe ->
@@ -1209,7 +1247,7 @@ defEncoder def =
                 ]
 
 
-defDecoder : Bytes.Decode.Decoder Def
+defDecoder : Bytes.Decode.Decoder (Def Can.Type)
 defDecoder =
     Bytes.Decode.unsignedInt8
         |> Bytes.Decode.andThen
@@ -1235,7 +1273,7 @@ defDecoder =
             )
 
 
-destructorEncoder : Destructor -> Bytes.Encode.Encoder
+destructorEncoder : Destructor Can.Type -> Bytes.Encode.Encoder
 destructorEncoder (Destructor name path tipe) =
     Bytes.Encode.sequence
         [ BE.string name
@@ -1244,7 +1282,7 @@ destructorEncoder (Destructor name path tipe) =
         ]
 
 
-destructorDecoder : Bytes.Decode.Decoder Destructor
+destructorDecoder : Bytes.Decode.Decoder (Destructor Can.Type)
 destructorDecoder =
     Bytes.Decode.map3 Destructor
         BD.string
@@ -1304,7 +1342,7 @@ deciderDecoder decoder =
             )
 
 
-choiceEncoder : Choice -> Bytes.Encode.Encoder
+choiceEncoder : Choice Can.Type -> Bytes.Encode.Encoder
 choiceEncoder choice =
     case choice of
         Inline value ->
@@ -1320,7 +1358,7 @@ choiceEncoder choice =
                 ]
 
 
-choiceDecoder : Bytes.Decode.Decoder Choice
+choiceDecoder : Bytes.Decode.Decoder (Choice Can.Type)
 choiceDecoder =
     Bytes.Decode.unsignedInt8
         |> Bytes.Decode.andThen

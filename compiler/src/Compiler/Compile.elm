@@ -80,7 +80,7 @@ type alias TypedArtifactsData =
     { canonical : Can.Module
     , annotations : Dict String Name Can.Annotation
     , objects : Opt.LocalGraph
-    , typedObjects : TOpt.LocalGraph
+    , typedObjects : (TOpt.LocalGraph Can.Type)
     , typeEnv : TypeEnv.ModuleTypeEnv
     }
 
@@ -302,7 +302,7 @@ optimize modul annotations canonical =
 -- Performs typed optimization from a TypedCanonical module.
 
 
-typedOptimizeFromTyped : Src.Module -> Dict String Name.Name Can.Annotation -> TCan.NodeTypes -> KernelTypes.KernelTypeEnv -> TCan.Module -> Result E.Error TOpt.LocalGraph
+typedOptimizeFromTyped : Src.Module -> Dict String Name.Name Can.Annotation -> TCan.NodeTypes -> KernelTypes.KernelTypeEnv -> TCan.Module -> Result E.Error (TOpt.LocalGraph Can.Type)
 typedOptimizeFromTyped modul annotations nodeTypes kernelEnv tcanModule =
     case Tuple.second (ReportingResult.run (TypedOptimize.optimizeTyped annotations nodeTypes kernelEnv tcanModule)) of
         Ok localGraph ->

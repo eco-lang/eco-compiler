@@ -501,13 +501,13 @@ storeTypedArtifactWithDefault mvar maybeArtifact =
 {-| Combined typed data for a module.
 -}
 type alias ModuleTyped =
-    { graph : TOpt.LocalGraph
+    { graph : (TOpt.LocalGraph Can.Type)
     , env : TypeEnv.ModuleTypeEnv
     }
 
 
 type TypedObjects
-    = TypedObjects TOpt.GlobalGraph TypeEnv.GlobalTypeEnv (Dict String ModuleName.Raw ModuleTyped)
+    = TypedObjects (TOpt.GlobalGraph Can.Type) TypeEnv.GlobalTypeEnv (Dict String ModuleName.Raw ModuleTyped)
 
 
 finalizeTypedObjects : TypedLoadingObjects -> Task Exit.Generate TypedObjects
@@ -552,7 +552,7 @@ combineTypedGlobalAndLocalObjects maybeGlobalArtifacts results =
             Err Exit.GenerateCannotLoadArtifacts
 
 
-typedObjectsToGlobalGraph : TypedObjects -> TOpt.GlobalGraph
+typedObjectsToGlobalGraph : TypedObjects -> (TOpt.GlobalGraph Can.Type)
 typedObjectsToGlobalGraph (TypedObjects globals _ locals) =
     Dict.foldr compare (\_ modTyped acc -> TOpt.addLocalGraph modTyped.graph acc) globals locals
 
@@ -593,7 +593,7 @@ generateMonoDevOutput backend withSourceMaps leadingLines root roots objects =
         mode =
             Mode.Dev Nothing
 
-        baseGraph : TOpt.GlobalGraph
+        baseGraph : (TOpt.GlobalGraph Can.Type)
         baseGraph =
             typedObjectsToGlobalGraph objects
 
@@ -602,7 +602,7 @@ generateMonoDevOutput backend withSourceMaps leadingLines root roots objects =
             typedObjectsToGlobalTypeEnv objects
 
         -- Add typed graphs from roots (for Outside roots that have typed graphs)
-        typedGraph : TOpt.GlobalGraph
+        typedGraph : (TOpt.GlobalGraph Can.Type)
         typedGraph =
             List.foldl addRootTypedGraph baseGraph (NE.toList roots)
 
@@ -631,7 +631,7 @@ generateMonoOutput backend leadingLines mode monoGraph typeEnv sourceMaps =
         }
 
 
-addRootTypedGraph : Build.Root -> TOpt.GlobalGraph -> TOpt.GlobalGraph
+addRootTypedGraph : Build.Root -> (TOpt.GlobalGraph Can.Type) -> (TOpt.GlobalGraph Can.Type)
 addRootTypedGraph root graph =
     case root of
         Build.Inside _ ->

@@ -55,6 +55,7 @@ names to their types, enabling type-aware optimization.
 -}
 
 import Compiler.AST.Canonical as Can
+import Compiler.AST.IncompleteType as IT
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
@@ -78,7 +79,7 @@ Threads through four pieces of state:
   - A unique ID counter for generating fresh variable names
   - A set of global dependencies (functions, constructors, kernels)
   - A dictionary tracking field name usage counts
-  - A dictionary of local variable types (Name -> Can.Type)
+  - A dictionary of local variable types (Name -> IT.IncompleteType)
 
 -}
 type Tracker a
@@ -86,7 +87,7 @@ type Tracker a
         (Int
          -> EverySet (List String) TOpt.Global
          -> Dict String Name Int
-         -> Dict String Name Can.Type
+         -> Dict String Name IT.IncompleteType
          -> TResult a
         )
 
@@ -99,13 +100,13 @@ type alias TResultProps =
     { uid : Int
     , deps : EverySet (List String) TOpt.Global
     , fields : Dict String Name Int
-    , locals : Dict String Name Can.Type
+    , locals : Dict String Name IT.IncompleteType
     }
 
 
 {-| Helper to construct TResult with positional args
 -}
-tResult : Int -> EverySet (List String) TOpt.Global -> Dict String Name Int -> Dict String Name Can.Type -> a -> TResult a
+tResult : Int -> EverySet (List String) TOpt.Global -> Dict String Name Int -> Dict String Name IT.IncompleteType -> a -> TResult a
 tResult uid deps fields locals value =
     TResult { uid = uid, deps = deps, fields = fields, locals = locals } value
 
@@ -170,8 +171,8 @@ Creates a VarGlobal expression referencing the function/value and adds it to the
 dependency set so the code generator knows to import it.
 
 -}
-registerGlobal : A.Region -> IO.Canonical -> Name -> Can.Type -> Tracker TOpt.Expr
-registerGlobal region home name tipe =
+registerGlobal : A.Region -> IO.Canonical -> Name -> IT.IncompleteType -> Tracker (TOpt.Expr IT.IncompleteType)
+registerGlobal region home name itype =
     Tracker <|
         \uid deps fields locals ->
             let
@@ -179,7 +180,7 @@ registerGlobal region home name tipe =
                 global =
                     TOpt.Global home name
             in
-            tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields locals (TOpt.VarGlobal region global tipe)
+            tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields locals (TOpt.VarGlobal region global itype)
 
 
 {-| Register a dependency on a Debug module function and return a debug variable reference.
@@ -188,8 +189,8 @@ Debug functions are special-cased to support conditional compilation and removal
 in production builds. The home module is tracked for context.
 
 -}
-registerDebug : Name -> IO.Canonical -> A.Region -> Can.Type -> Tracker TOpt.Expr
-registerDebug name home region tipe =
+registerDebug : Name -> IO.Canonical -> A.Region -> IT.IncompleteType -> Tracker (TOpt.Expr IT.IncompleteType)
+registerDebug name home region itype =
     Tracker <|
         \uid deps fields locals ->
             let
@@ -197,7 +198,7 @@ registerDebug name home region tipe =
                 global =
                     TOpt.Global ModuleName.debug name
             in
-            tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields locals (TOpt.VarDebug region name home Nothing tipe)
+            tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields locals (TOpt.VarDebug region name home Nothing itype)
 
 
 {-| Register a dependency on a type constructor and return an optimized expression.
@@ -209,8 +210,8 @@ Handles three cases based on constructor options:
   - Unbox: Single-argument constructor, returns VarBox and registers identity dependency
 
 -}
-registerCtor : A.Region -> IO.Canonical -> A.Located Name -> Index.ZeroBased -> Can.CtorOpts -> Can.Type -> Tracker TOpt.Expr
-registerCtor region home (A.At _ name) index opts tipe =
+registerCtor : A.Region -> IO.Canonical -> A.Located Name -> Index.ZeroBased -> Can.CtorOpts -> IT.IncompleteType -> Tracker (TOpt.Expr IT.IncompleteType)
+registerCtor region home (A.At _ name) index opts itype =
     Tracker <|
         \uid deps fields locals ->
             let
@@ -224,34 +225,34 @@ registerCtor region home (A.At _ name) index opts tipe =
             in
             case opts of
                 Can.Normal ->
-                    tResult uid newDeps fields locals (TOpt.VarGlobal region global tipe)
+                    tResult uid newDeps fields locals (TOpt.VarGlobal region global itype)
 
                 Can.Enum ->
                     let
-                        boolType =
-                            Can.TType ModuleName.basics "Bool" []
+                        boolIType =
+                            IT.Complete (Can.TType ModuleName.basics "Bool" [])
                     in
                     tResult uid newDeps fields locals <|
                         case name of
                             "True" ->
                                 if home == ModuleName.basics then
-                                    TOpt.Bool region True boolType
+                                    TOpt.Bool region True boolIType
 
                                 else
-                                    TOpt.VarEnum region global index tipe
+                                    TOpt.VarEnum region global index itype
 
                             "False" ->
                                 if home == ModuleName.basics then
-                                    TOpt.Bool region False boolType
+                                    TOpt.Bool region False boolIType
 
                                 else
-                                    TOpt.VarEnum region global index tipe
+                                    TOpt.VarEnum region global index itype
 
                             _ ->
-                                TOpt.VarEnum region global index tipe
+                                TOpt.VarEnum region global index itype
 
                 Can.Unbox ->
-                    tResult uid (EverySet.insert TOpt.toComparableGlobal identity newDeps) fields locals (TOpt.VarBox region global tipe)
+                    tResult uid (EverySet.insert TOpt.toComparableGlobal identity newDeps) fields locals (TOpt.VarBox region global itype)
 
 
 identity : TOpt.Global
@@ -322,13 +323,13 @@ All bindings are visible within the provided Tracker computation and are automat
 removed when that computation completes.
 
 -}
-withVarTypes : List ( Name, Can.Type ) -> Tracker a -> Tracker a
+withVarTypes : List ( Name, IT.IncompleteType ) -> Tracker a -> Tracker a
 withVarTypes bindings (Tracker inner) =
     Tracker <|
         \uid deps fields locals ->
             let
                 extendedLocals =
-                    List.foldl (\( name, tipe ) acc -> Dict.insert Basics.identity name tipe acc) locals bindings
+                    List.foldl (\( name, itype ) acc -> Dict.insert Basics.identity name itype acc) locals bindings
             in
             case inner uid deps fields extendedLocals of
                 TResult props value ->
@@ -342,13 +343,13 @@ Returns the type if the variable is in scope, or crashes with an error message
 if the variable is not found. This should not happen in well-typed code.
 
 -}
-lookupLocalType : Name -> Tracker Can.Type
+lookupLocalType : Name -> Tracker IT.IncompleteType
 lookupLocalType name =
     Tracker <|
         \uid deps fields locals ->
             case Dict.get Basics.identity name locals of
-                Just tipe ->
-                    tResult uid deps fields locals tipe
+                Just itype ->
+                    tResult uid deps fields locals itype
 
                 Nothing ->
                     crash ("Local variable not in scope: " ++ name)

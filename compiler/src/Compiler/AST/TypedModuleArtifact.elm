@@ -23,6 +23,7 @@ the optimized code and the type definitions it needs.
 
 import Bytes.Decode
 import Bytes.Encode
+import Compiler.AST.Canonical as Can
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 
@@ -34,7 +35,7 @@ import Compiler.AST.TypedOptimized as TOpt
 {-| Combined artifact for a single module containing typed IR and type definitions.
 -}
 type alias TypedModuleArtifact =
-    { typedGraph : TOpt.LocalGraph
+    { typedGraph : (TOpt.LocalGraph Can.Type)
     , typeEnv : TypeEnv.ModuleTypeEnv
     }
 

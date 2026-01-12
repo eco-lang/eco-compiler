@@ -135,7 +135,7 @@ runWithIdsTypeCheck modul =
 -- ============================================================================
 
 
-runTypedOptimization : Dict String Name.Name Can.Annotation -> Dict Int Int Can.Type -> Can.Module -> Result String TOpt.LocalGraph
+runTypedOptimization : Dict String Name.Name Can.Annotation -> Dict Int Int Can.Type -> Can.Module -> Result String (TOpt.LocalGraph Can.Type)
 runTypedOptimization annotations exprTypes canModule =
     let
         -- Run PostSolve to fix Group B types and compute kernel env
@@ -171,7 +171,7 @@ The LocalGraph contains the module's definitions. We wrap it into a GlobalGraph
 which is the input format for monomorphization.
 
 -}
-localGraphToGlobalGraph : TOpt.LocalGraph -> TOpt.GlobalGraph
+localGraphToGlobalGraph : (TOpt.LocalGraph Can.Type) -> (TOpt.GlobalGraph Can.Type)
 localGraphToGlobalGraph localGraph =
     TOpt.addLocalGraph localGraph TOpt.emptyGlobalGraph
 
@@ -188,7 +188,7 @@ This is useful for testing when the entry point name is not known in advance.
 Test modules use various names like "testValue", "dup", "capture", etc.
 
 -}
-monomorphizeAny : TOpt.GlobalGraph -> Result String Mono.MonoGraph
+monomorphizeAny : (TOpt.GlobalGraph Can.Type) -> Result String Mono.MonoGraph
 monomorphizeAny (TOpt.GlobalGraph nodes _ _) =
     case findAnyEntryPoint nodes of
         Nothing ->
@@ -200,7 +200,7 @@ monomorphizeAny (TOpt.GlobalGraph nodes _ _) =
 
 {-| Find any entry point in the global graph (the first defined function).
 -}
-findAnyEntryPoint : Dict (List String) TOpt.Global TOpt.Node -> Maybe ( TOpt.Global, Can.Type )
+findAnyEntryPoint : Dict (List String) TOpt.Global (TOpt.Node Can.Type) -> Maybe ( TOpt.Global, Can.Type )
 findAnyEntryPoint nodes =
     Dict.foldl TOpt.compareGlobal
         (\global node acc ->

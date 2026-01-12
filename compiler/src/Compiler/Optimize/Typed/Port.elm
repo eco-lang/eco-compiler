@@ -6,7 +6,10 @@ module Compiler.Optimize.Typed.Port exposing
 {-| Generates typed JSON encoders and decoders for port types.
 
 This is the typed version of Compiler.Optimize.Erased.Port. It produces
-TOpt.Expr values with type annotations instead of Opt.Expr.
+(TOpt.Expr IT.IncompleteType) values with IncompleteType annotations instead of Opt.Expr.
+
+Port types are always fully known (not polymorphic), so all type annotations
+use `IT.Complete` to wrap the canonical types.
 
 @docs toEncoder
 @docs toDecoder, toFlagsDecoder
@@ -15,6 +18,7 @@ TOpt.Expr values with type annotations instead of Opt.Expr.
 
 import Basics.Extra exposing (flip)
 import Compiler.AST.Canonical as Can
+import Compiler.AST.IncompleteType as IT
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.AST.Utils.Type as Type
 import Compiler.Data.Index as Index
@@ -33,7 +37,7 @@ import Utils.Crash exposing (crash)
 
 {-| Generate a typed JSON encoder function for the given Elm type.
 -}
-toEncoder : Can.Type -> Names.Tracker TOpt.Expr
+toEncoder : Can.Type -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 toEncoder tipe =
     case tipe of
         Can.TAlias _ _ args alias ->
@@ -53,7 +57,7 @@ toEncoder tipe =
                             funcType =
                                 Can.TLambda Can.TUnit (Can.TType ModuleName.jsonEncode "Value" [])
                         in
-                        TOpt.Function [ ( Name.dollar, Can.TUnit ) ] null funcType
+                        TOpt.Function [ ( Name.dollar, IT.Complete Can.TUnit ) ] null (IT.Complete funcType)
                     )
 
         Can.TTuple a b cs ->
@@ -75,7 +79,7 @@ toEncoder tipe =
                         encode "string"
 
                     else if name == Name.value then
-                        Names.registerGlobal A.zero ModuleName.basics Name.identity_ (Can.TLambda tipe tipe)
+                        Names.registerGlobal A.zero ModuleName.basics Name.identity_ (IT.Complete (Can.TLambda tipe tipe))
 
                     else if name == Name.bytes then
                         encodeBytes
@@ -107,7 +111,7 @@ toEncoder tipe =
                 valueType =
                     Can.TType ModuleName.jsonEncode "Value" []
 
-                encodeField : ( Name, Can.FieldType ) -> Names.Tracker TOpt.Expr
+                encodeField : ( Name, Can.FieldType ) -> Names.Tracker (TOpt.Expr IT.IncompleteType)
                 encodeField ( name, Can.FieldType _ fieldType ) =
                     toEncoder fieldType
                         |> Names.map
@@ -117,9 +121,9 @@ toEncoder tipe =
                                         Can.TTuple (Can.TType ModuleName.basics "String" []) valueType []
 
                                     value =
-                                        TOpt.Call A.zero encoder [ TOpt.Access (TOpt.VarLocal Name.dollar tipe) A.zero name fieldType ] valueType
+                                        TOpt.Call A.zero encoder [ TOpt.Access (TOpt.VarLocal Name.dollar (IT.Complete tipe)) A.zero name (IT.Complete fieldType) ] (IT.Complete valueType)
                                 in
-                                TOpt.Tuple A.zero (TOpt.Str A.zero (Name.toElmString name) (Can.TType ModuleName.basics "String" [])) value [] tupleType
+                                TOpt.Tuple A.zero (TOpt.Str A.zero (Name.toElmString name) (IT.Complete (Can.TType ModuleName.basics "String" []))) value [] (IT.Complete tupleType)
                             )
             in
             encode "object"
@@ -136,9 +140,9 @@ toEncoder tipe =
                                             Can.TLambda tipe valueType
                                     in
                                     Names.registerFieldDict fields
-                                        (TOpt.Function [ ( Name.dollar, tipe ) ]
-                                            (TOpt.Call A.zero object [ TOpt.List A.zero keyValuePairs listType ] valueType)
-                                            funcType
+                                        (TOpt.Function [ ( Name.dollar, IT.Complete tipe ) ]
+                                            (TOpt.Call A.zero object [ TOpt.List A.zero keyValuePairs (IT.Complete listType) ] (IT.Complete valueType))
+                                            (IT.Complete funcType)
                                         )
                                 )
                     )
@@ -148,7 +152,7 @@ toEncoder tipe =
 -- ====== ENCODE HELPERS ======
 
 
-encodeMaybe : Can.Type -> Names.Tracker TOpt.Expr
+encodeMaybe : Can.Type -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 encodeMaybe tipe =
     let
         maybeType =
@@ -163,29 +167,29 @@ encodeMaybe tipe =
                 toEncoder tipe
                     |> Names.andThen
                         (\encoder ->
-                            Names.registerGlobal A.zero ModuleName.maybe "destruct" (Can.TVar "destruct")
+                            Names.registerGlobal A.zero ModuleName.maybe "destruct" (IT.Complete (Can.TVar "destruct"))
                                 |> Names.map
                                     (\destruct ->
                                         let
                                             funcType =
                                                 Can.TLambda maybeType valueType
                                         in
-                                        TOpt.Function [ ( Name.dollar, maybeType ) ]
+                                        TOpt.Function [ ( Name.dollar, IT.Complete maybeType ) ]
                                             (TOpt.Call A.zero
                                                 destruct
                                                 [ null
                                                 , encoder
-                                                , TOpt.VarLocal Name.dollar maybeType
+                                                , TOpt.VarLocal Name.dollar (IT.Complete maybeType)
                                                 ]
-                                                valueType
+                                                (IT.Complete valueType)
                                             )
-                                            funcType
+                                            (IT.Complete funcType)
                                     )
                         )
             )
 
 
-encodeList : Can.Type -> Names.Tracker TOpt.Expr
+encodeList : Can.Type -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 encodeList tipe =
     let
         valueType =
@@ -197,12 +201,12 @@ encodeList tipe =
                 toEncoder tipe
                     |> Names.map
                         (\encoder ->
-                            TOpt.Call A.zero list [ encoder ] (Can.TLambda (Can.TType ModuleName.list "List" [ tipe ]) valueType)
+                            TOpt.Call A.zero list [ encoder ] (IT.Complete (Can.TLambda (Can.TType ModuleName.list "List" [ tipe ]) valueType))
                         )
             )
 
 
-encodeArray : Can.Type -> Names.Tracker TOpt.Expr
+encodeArray : Can.Type -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 encodeArray tipe =
     let
         valueType =
@@ -214,12 +218,12 @@ encodeArray tipe =
                 toEncoder tipe
                     |> Names.map
                         (\encoder ->
-                            TOpt.Call A.zero array [ encoder ] (Can.TLambda (Can.TType ModuleName.array "Array" [ tipe ]) valueType)
+                            TOpt.Call A.zero array [ encoder ] (IT.Complete (Can.TLambda (Can.TType ModuleName.array "Array" [ tipe ]) valueType))
                         )
             )
 
 
-encodeTuple : Can.Type -> Can.Type -> List Can.Type -> Names.Tracker TOpt.Expr
+encodeTuple : Can.Type -> Can.Type -> List Can.Type -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 encodeTuple a b cs =
     let
         tupleType =
@@ -231,23 +235,23 @@ encodeTuple a b cs =
         listValueType =
             Can.TType ModuleName.list "List" [ valueType ]
 
-        let_ : Name -> Can.Type -> Index.ZeroBased -> TOpt.Expr -> TOpt.Expr
+        let_ : Name -> Can.Type -> Index.ZeroBased -> (TOpt.Expr IT.IncompleteType) -> (TOpt.Expr IT.IncompleteType)
         let_ arg argType index body =
-            TOpt.Destruct (TOpt.Destructor arg (TOpt.Index index TOpt.HintUnknown (TOpt.Root Name.dollar)) argType) body (TOpt.typeOf body)
+            TOpt.Destruct (TOpt.Destructor arg (TOpt.Index index TOpt.HintUnknown (TOpt.Root Name.dollar)) (IT.Complete argType)) body (TOpt.typeOf body)
 
-        letCs_ : Name -> Can.Type -> Int -> TOpt.Expr -> TOpt.Expr
+        letCs_ : Name -> Can.Type -> Int -> (TOpt.Expr IT.IncompleteType) -> (TOpt.Expr IT.IncompleteType)
         letCs_ arg argType index body =
-            TOpt.Destruct (TOpt.Destructor arg (TOpt.ArrayIndex index (TOpt.Field "cs" (TOpt.Root Name.dollar))) argType) body (TOpt.typeOf body)
+            TOpt.Destruct (TOpt.Destructor arg (TOpt.ArrayIndex index (TOpt.Field "cs" (TOpt.Root Name.dollar))) (IT.Complete argType)) body (TOpt.typeOf body)
 
-        encodeArg : Name -> Can.Type -> Names.Tracker TOpt.Expr
+        encodeArg : Name -> Can.Type -> Names.Tracker (TOpt.Expr IT.IncompleteType)
         encodeArg arg argType =
             toEncoder argType
-                |> Names.map (\encoder -> TOpt.Call A.zero encoder [ TOpt.VarLocal arg argType ] valueType)
+                |> Names.map (\encoder -> TOpt.Call A.zero encoder [ TOpt.VarLocal arg (IT.Complete argType) ] (IT.Complete valueType))
     in
     encode "list"
         |> Names.andThen
             (\list ->
-                Names.registerGlobal A.zero ModuleName.basics Name.identity_ (Can.TLambda listValueType listValueType)
+                Names.registerGlobal A.zero ModuleName.basics Name.identity_ (IT.Complete (Can.TLambda listValueType listValueType))
                     |> Names.andThen
                         (\identity ->
                             encodeArg "a" a
@@ -276,7 +280,7 @@ encodeTuple a b cs =
                                                                     funcType =
                                                                         Can.TLambda tupleType valueType
                                                                 in
-                                                                TOpt.Function [ ( Name.dollar, tupleType ) ]
+                                                                TOpt.Function [ ( Name.dollar, IT.Complete tupleType ) ]
                                                                     (let_ "a"
                                                                         a
                                                                         Index.first
@@ -284,12 +288,12 @@ encodeTuple a b cs =
                                                                             b
                                                                             Index.second
                                                                             (List.foldr (\( i, index, argType ) -> letCs_ (JsName.fromIndex index) argType i)
-                                                                                (TOpt.Call A.zero list [ identity, TOpt.List A.zero args listValueType ] valueType)
+                                                                                (TOpt.Call A.zero list [ identity, TOpt.List A.zero args (IT.Complete listValueType) ] (IT.Complete valueType))
                                                                                 indexedCs
                                                                             )
                                                                         )
                                                                     )
-                                                                    funcType
+                                                                    (IT.Complete funcType)
                                                             )
                                                 )
                                     )
@@ -303,14 +307,14 @@ encodeTuple a b cs =
 
 {-| Generate a typed JSON decoder for program flags.
 -}
-toFlagsDecoder : Can.Type -> Names.Tracker TOpt.Expr
+toFlagsDecoder : Can.Type -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 toFlagsDecoder tipe =
     case tipe of
         Can.TUnit ->
             decode "succeed"
                 |> Names.map
                     (\succeed ->
-                        TOpt.Call A.zero succeed [ TOpt.Unit Can.TUnit ] (Can.TType ModuleName.jsonDecode "Decoder" [ Can.TUnit ])
+                        TOpt.Call A.zero succeed [ TOpt.Unit (IT.Complete Can.TUnit) ] (IT.Complete (Can.TType ModuleName.jsonDecode "Decoder" [ Can.TUnit ]))
                     )
 
         _ ->
@@ -323,7 +327,7 @@ toFlagsDecoder tipe =
 
 {-| Generate a typed JSON decoder for the given Elm type.
 -}
-toDecoder : Can.Type -> Names.Tracker TOpt.Expr
+toDecoder : Can.Type -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 toDecoder tipe =
     case tipe of
         Can.TLambda _ _ ->
@@ -384,7 +388,7 @@ toDecoder tipe =
 -- ====== DECODE HELPERS ======
 
 
-decodeMaybe : Can.Type -> Names.Tracker TOpt.Expr
+decodeMaybe : Can.Type -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 decodeMaybe tipe =
     let
         maybeType =
@@ -393,10 +397,10 @@ decodeMaybe tipe =
         decoderType =
             Can.TType ModuleName.jsonDecode "Decoder" [ maybeType ]
     in
-    Names.registerGlobal A.zero ModuleName.maybe "Nothing" maybeType
+    Names.registerGlobal A.zero ModuleName.maybe "Nothing" (IT.Complete maybeType)
         |> Names.andThen
             (\nothing ->
-                Names.registerGlobal A.zero ModuleName.maybe "Just" (Can.TLambda tipe maybeType)
+                Names.registerGlobal A.zero ModuleName.maybe "Just" (IT.Complete (Can.TLambda tipe maybeType))
                     |> Names.andThen
                         (\just ->
                             decode "oneOf"
@@ -418,12 +422,12 @@ decodeMaybe tipe =
                                                                             TOpt.Call A.zero
                                                                                 oneOf
                                                                                 [ TOpt.List A.zero
-                                                                                    [ TOpt.Call A.zero null [ nothing ] decoderType
-                                                                                    , TOpt.Call A.zero map_ [ just, subDecoder ] decoderType
+                                                                                    [ TOpt.Call A.zero null [ nothing ] (IT.Complete decoderType)
+                                                                                    , TOpt.Call A.zero map_ [ just, subDecoder ] (IT.Complete decoderType)
                                                                                     ]
-                                                                                    listType
+                                                                                    (IT.Complete listType)
                                                                                 ]
-                                                                                decoderType
+                                                                                (IT.Complete decoderType)
                                                                         )
                                                             )
                                                 )
@@ -432,7 +436,7 @@ decodeMaybe tipe =
             )
 
 
-decodeList : Can.Type -> Names.Tracker TOpt.Expr
+decodeList : Can.Type -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 decodeList tipe =
     let
         listType =
@@ -447,12 +451,12 @@ decodeList tipe =
                 toDecoder tipe
                     |> Names.map
                         (\subDecoder ->
-                            TOpt.Call A.zero list [ subDecoder ] decoderType
+                            TOpt.Call A.zero list [ subDecoder ] (IT.Complete decoderType)
                         )
             )
 
 
-decodeArray : Can.Type -> Names.Tracker TOpt.Expr
+decodeArray : Can.Type -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 decodeArray tipe =
     let
         arrayType =
@@ -467,12 +471,12 @@ decodeArray tipe =
                 toDecoder tipe
                     |> Names.map
                         (\subDecoder ->
-                            TOpt.Call A.zero array [ subDecoder ] decoderType
+                            TOpt.Call A.zero array [ subDecoder ] (IT.Complete decoderType)
                         )
             )
 
 
-decodeTuple0 : Names.Tracker TOpt.Expr
+decodeTuple0 : Names.Tracker (TOpt.Expr IT.IncompleteType)
 decodeTuple0 =
     let
         decoderType =
@@ -481,11 +485,11 @@ decodeTuple0 =
     decode "null"
         |> Names.map
             (\null ->
-                TOpt.Call A.zero null [ TOpt.Unit Can.TUnit ] decoderType
+                TOpt.Call A.zero null [ TOpt.Unit (IT.Complete Can.TUnit) ] (IT.Complete decoderType)
             )
 
 
-decodeTuple : Can.Type -> Can.Type -> List Can.Type -> Names.Tracker TOpt.Expr
+decodeTuple : Can.Type -> Can.Type -> List Can.Type -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 decodeTuple a b cs =
     let
         tupleType =
@@ -507,20 +511,20 @@ decodeTuple a b cs =
                                 ( [ a ], b )
 
                     tuple =
-                        TOpt.Tuple A.zero (toLocal 0 a) (toLocal 1 b) (List.indexedMap (\i c -> toLocal (i + 2) c) cs) tupleType
+                        TOpt.Tuple A.zero (toLocal 0 a) (toLocal 1 b) (List.indexedMap (\i c -> toLocal (i + 2) c) cs) (IT.Complete tupleType)
                 in
                 List.foldr (\( i, c ) -> Names.andThen (indexAndThen i c))
-                    (indexAndThen (List.length cs + 1) lastElem (TOpt.Call A.zero succeed [ tuple ] decoderType))
+                    (indexAndThen (List.length cs + 1) lastElem (TOpt.Call A.zero succeed [ tuple ] (IT.Complete decoderType)))
                     (List.indexedMap Tuple.pair allElems)
             )
 
 
-toLocal : Int -> Can.Type -> TOpt.Expr
+toLocal : Int -> Can.Type -> (TOpt.Expr IT.IncompleteType)
 toLocal index tipe =
-    TOpt.VarLocal (Name.fromVarIndex index) tipe
+    TOpt.VarLocal (Name.fromVarIndex index) (IT.Complete tipe)
 
 
-indexAndThen : Int -> Can.Type -> TOpt.Expr -> Names.Tracker TOpt.Expr
+indexAndThen : Int -> Can.Type -> (TOpt.Expr IT.IncompleteType) -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 indexAndThen i tipe decoder =
     let
         decoderResultType =
@@ -537,15 +541,15 @@ indexAndThen i tipe decoder =
                                     (\typeDecoder ->
                                         let
                                             funcType =
-                                                Can.TLambda tipe decoderResultType
+                                                IT.buildFunctionType [ IT.Complete tipe ] decoderResultType
 
                                             subDecoderType =
                                                 Can.TType ModuleName.jsonDecode "Decoder" [ tipe ]
                                         in
                                         TOpt.Call A.zero
                                             andThen
-                                            [ TOpt.Function [ ( Name.fromVarIndex i, tipe ) ] decoder funcType
-                                            , TOpt.Call A.zero index [ TOpt.Int A.zero i (Can.TType ModuleName.basics "Int" []), typeDecoder ] subDecoderType
+                                            [ TOpt.Function [ ( Name.fromVarIndex i, IT.Complete tipe ) ] decoder funcType
+                                            , TOpt.Call A.zero index [ TOpt.Int A.zero i (IT.Complete (Can.TType ModuleName.basics "Int" [])), typeDecoder ] (IT.Complete subDecoderType)
                                             ]
                                             decoderResultType
                                     )
@@ -553,18 +557,18 @@ indexAndThen i tipe decoder =
             )
 
 
-decodeRecord : Dict String Name.Name Can.FieldType -> Can.Type -> Names.Tracker TOpt.Expr
+decodeRecord : Dict String Name.Name Can.FieldType -> Can.Type -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 decodeRecord fields recordType =
     let
         decoderType =
             Can.TType ModuleName.jsonDecode "Decoder" [ recordType ]
 
-        toFieldExpr : Name -> Can.FieldType -> TOpt.Expr
+        toFieldExpr : Name -> Can.FieldType -> (TOpt.Expr IT.IncompleteType)
         toFieldExpr name (Can.FieldType _ fieldType) =
-            TOpt.VarLocal name fieldType
+            TOpt.VarLocal name (IT.Complete fieldType)
 
         record =
-            TOpt.Record (Dict.map toFieldExpr fields) recordType
+            TOpt.Record (Dict.map toFieldExpr fields) (IT.Complete recordType)
     in
     decode "succeed"
         |> Names.andThen
@@ -573,13 +577,13 @@ decodeRecord fields recordType =
                     |> Names.andThen
                         (\fieldDecoders ->
                             List.foldl (\fieldDecoder -> Names.andThen (\optCall -> fieldAndThen optCall fieldDecoder))
-                                (Names.pure (TOpt.Call A.zero succeed [ record ] decoderType))
+                                (Names.pure (TOpt.Call A.zero succeed [ record ] (IT.Complete decoderType)))
                                 fieldDecoders
                         )
             )
 
 
-fieldAndThen : TOpt.Expr -> ( Name.Name, Can.FieldType ) -> Names.Tracker TOpt.Expr
+fieldAndThen : (TOpt.Expr IT.IncompleteType) -> ( Name.Name, Can.FieldType ) -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
     let
         decoderResultType =
@@ -596,15 +600,15 @@ fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
                                     (\typeDecoder ->
                                         let
                                             funcType =
-                                                Can.TLambda tipe decoderResultType
+                                                IT.buildFunctionType [ IT.Complete tipe ] decoderResultType
 
                                             subDecoderType =
                                                 Can.TType ModuleName.jsonDecode "Decoder" [ tipe ]
                                         in
                                         TOpt.Call A.zero
                                             andThen
-                                            [ TOpt.Function [ ( key, tipe ) ] decoder funcType
-                                            , TOpt.Call A.zero field [ TOpt.Str A.zero (Name.toElmString key) (Can.TType ModuleName.basics "String" []), typeDecoder ] subDecoderType
+                                            [ TOpt.Function [ ( key, IT.Complete tipe ) ] decoder funcType
+                                            , TOpt.Call A.zero field [ TOpt.Str A.zero (Name.toElmString key) (IT.Complete (Can.TType ModuleName.basics "String" [])), typeDecoder ] (IT.Complete subDecoderType)
                                             ]
                                             decoderResultType
                                     )
@@ -616,25 +620,25 @@ fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
 -- ====== GLOBALS HELPERS ======
 
 
-encode : Name -> Names.Tracker TOpt.Expr
+encode : Name -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 encode name =
-    Names.registerGlobal A.zero ModuleName.jsonEncode name (Can.TVar name)
+    Names.registerGlobal A.zero ModuleName.jsonEncode name (IT.Complete (Can.TVar name))
 
 
-decode : Name -> Names.Tracker TOpt.Expr
+decode : Name -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 decode name =
-    Names.registerGlobal A.zero ModuleName.jsonDecode name (Can.TVar name)
+    Names.registerGlobal A.zero ModuleName.jsonDecode name (IT.Complete (Can.TVar name))
 
 
 
 -- ====== BYTES HELPERS ======
 
 
-encodeBytes : Names.Tracker TOpt.Expr
+encodeBytes : Names.Tracker (TOpt.Expr IT.IncompleteType)
 encodeBytes =
-    Names.registerKernel Name.json (TOpt.VarKernel A.zero Name.json "encodeBytes" (Can.TVar "encodeBytes"))
+    Names.registerKernel Name.json (TOpt.VarKernel A.zero Name.json "encodeBytes" (IT.Complete (Can.TVar "encodeBytes")))
 
 
-decodeBytes : Names.Tracker TOpt.Expr
+decodeBytes : Names.Tracker (TOpt.Expr IT.IncompleteType)
 decodeBytes =
-    Names.registerKernel Name.json (TOpt.VarKernel A.zero Name.json "decodeBytes" (Can.TVar "decodeBytes"))
+    Names.registerKernel Name.json (TOpt.VarKernel A.zero Name.json "decodeBytes" (IT.Complete (Can.TVar "decodeBytes")))
