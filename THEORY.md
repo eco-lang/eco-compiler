@@ -2,7 +2,7 @@
 
 This document captures the essential insights and design rationale for the eco-runtime garbage collector. It is written for an engineer joining the project who wants to quickly build a working understanding of how the system thinks, not just how it works.
 
-For the broader project context, see PLAN.md. ECO (Elm Compiler Offline) is a native compilation backend and runtime for Elm, targeting high-performance multi-threaded execution via LLVM. This runtime provides memory management for compiled Elm programs.
+For the broader project context, see [PLAN.md](PLAN.md). ECO (Elm Compiler Offline) is a native compilation backend and runtime for Elm, targeting high-performance multi-threaded execution via LLVM. This runtime provides memory management for compiled Elm programs.
 
 ## The Core Insight: Elm's Immutability Changes Everything
 
@@ -310,7 +310,7 @@ The design philosophy is: start simple, prove correctness, then optimize. Comple
 
 # Compiler Backend Pipeline
 
-The ECO compiler backend transforms Elm source code into native executables via MLIR and LLVM. This section provides an overview of the compilation pipeline; detailed theory documents for each pass are in `design_docs/theory/`.
+The ECO compiler backend transforms Elm source code into native executables via MLIR and LLVM. This section provides an overview of the compilation pipeline; detailed theory documents for each pass are in [`design_docs/theory/`](design_docs/theory/).
 
 ## Pipeline Overview
 
@@ -363,7 +363,7 @@ After type inference, some expressions have incomplete types:
 
 The PostSolve pass walks the AST, computing concrete types and building a `KernelTypeEnv` for typed optimization.
 
-**See**: `design_docs/theory/pass_post_solve_theory.md`
+**See**: [PostSolve Theory](design_docs/theory/pass_post_solve_theory.md)
 
 ### Typed Optimization
 
@@ -379,7 +379,7 @@ type Expr
 
 This enables type-directed code generation and monomorphization.
 
-**See**: `design_docs/theory/pass_typed_optimization_theory.md`
+**See**: [Typed Optimization Theory](design_docs/theory/pass_typed_optimization_theory.md)
 
 ### Monomorphization
 
@@ -402,7 +402,7 @@ Each specialization gets a unique `SpecId`. The pass also computes concrete layo
 - `SpecKey`: (Global, [MonoType]) identifying a specialization
 - `SpecializationRegistry`: Maps SpecKey ↔ SpecId
 
-**See**: `design_docs/theory/pass_monomorphization_theory.md`
+**See**: [Monomorphization Theory](design_docs/theory/pass_monomorphization_theory.md)
 
 ### MLIR Generation
 
@@ -412,7 +412,7 @@ Converts MonoGraph to MLIR using the ECO dialect:
 - **Type table**: `eco.type_table` op with type descriptors for debug printing
 - **Closures**: Lambdas hoisted to top-level, captured values tracked
 
-**See**: `design_docs/theory/pass_mlir_generation_theory.md`, `design_docs/theory/pass_type_table_theory.md`
+**See**: [MLIR Generation Theory](design_docs/theory/pass_mlir_generation_theory.md), [Type Table Theory](design_docs/theory/pass_type_table_theory.md)
 
 ### ECO Dialect Lowering
 
@@ -423,7 +423,7 @@ Stage 2 passes transform ECO dialect toward LLVM:
 - **RC Elimination**: Removes reference counting ops (unused in tracing GC)
 - **Undefined Function Stubs**: Generates stubs for missing functions
 
-**See**: `design_docs/theory/pass_joinpoint_normalization_theory.md`, `design_docs/theory/pass_eco_control_flow_to_scf_theory.md`, `design_docs/theory/pass_rc_elimination_theory.md`, `design_docs/theory/pass_undefined_function_theory.md`
+**See**: [JoinPoint Normalization Theory](design_docs/theory/pass_joinpoint_normalization_theory.md), [ECO Control Flow to SCF Theory](design_docs/theory/pass_eco_control_flow_to_scf_theory.md), [RC Elimination Theory](design_docs/theory/pass_rc_elimination_theory.md), [Undefined Function Theory](design_docs/theory/pass_undefined_function_theory.md)
 
 ### EcoToLLVM
 
@@ -434,7 +434,7 @@ Final lowering from ECO dialect to LLVM dialect:
 - Closure creation and invocation
 - Tagged pointer encoding for embedded constants
 
-**See**: `design_docs/theory/pass_eco_to_llvm_theory.md`
+**See**: [EcoToLLVM Theory](design_docs/theory/pass_eco_to_llvm_theory.md)
 
 ## Type Information Flow
 
@@ -472,17 +472,17 @@ Example: `Basics.add` is a kernel function implemented in C++ that the generated
 
 ## Detailed Documentation
 
-Each pass has comprehensive documentation in `design_docs/theory/`:
+Each pass has comprehensive documentation in [`design_docs/theory/`](design_docs/theory/):
 
 | Document | Pass |
 |----------|------|
-| `pass_post_solve_theory.md` | PostSolve type fixing |
-| `pass_typed_optimization_theory.md` | Type-preserving optimization |
-| `pass_monomorphization_theory.md` | Polymorphism elimination |
-| `pass_type_table_theory.md` | Runtime type metadata |
-| `pass_mlir_generation_theory.md` | MLIR code generation |
-| `pass_joinpoint_normalization_theory.md` | Joinpoint cleanup |
-| `pass_eco_control_flow_to_scf_theory.md` | Control flow lowering |
-| `pass_rc_elimination_theory.md` | RC operation removal |
-| `pass_undefined_function_theory.md` | Missing function stubs |
-| `pass_eco_to_llvm_theory.md` | Final LLVM lowering |
+| [pass_post_solve_theory.md](design_docs/theory/pass_post_solve_theory.md) | PostSolve type fixing |
+| [pass_typed_optimization_theory.md](design_docs/theory/pass_typed_optimization_theory.md) | Type-preserving optimization |
+| [pass_monomorphization_theory.md](design_docs/theory/pass_monomorphization_theory.md) | Polymorphism elimination |
+| [pass_type_table_theory.md](design_docs/theory/pass_type_table_theory.md) | Runtime type metadata |
+| [pass_mlir_generation_theory.md](design_docs/theory/pass_mlir_generation_theory.md) | MLIR code generation |
+| [pass_joinpoint_normalization_theory.md](design_docs/theory/pass_joinpoint_normalization_theory.md) | Joinpoint cleanup |
+| [pass_eco_control_flow_to_scf_theory.md](design_docs/theory/pass_eco_control_flow_to_scf_theory.md) | Control flow lowering |
+| [pass_rc_elimination_theory.md](design_docs/theory/pass_rc_elimination_theory.md) | RC operation removal |
+| [pass_undefined_function_theory.md](design_docs/theory/pass_undefined_function_theory.md) | Missing function stubs |
+| [pass_eco_to_llvm_theory.md](design_docs/theory/pass_eco_to_llvm_theory.md) | Final LLVM lowering |
