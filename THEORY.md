@@ -305,3 +305,184 @@ Remaining opportunities:
 - **NUMA-aware allocation**: Thread affinity for memory locality on multi-socket systems
 
 The design philosophy is: start simple, prove correctness, then optimize. Complexity is added only when necessary.
+
+---
+
+# Compiler Backend Pipeline
+
+The ECO compiler backend transforms Elm source code into native executables via MLIR and LLVM. This section provides an overview of the compilation pipeline; detailed theory documents for each pass are in `design_docs/theory/`.
+
+## Pipeline Overview
+
+The compiler backend consists of several phases:
+
+```
+Elm Source
+    ↓
+[Standard Elm Frontend: Parse, Canonicalize, Type Check]
+    ↓
+┌─────────────────────────────────────────────────────┐
+│  ECO Backend Pipeline                               │
+│                                                     │
+│  PostSolve                                          │
+│    - Fix Group B expression types                   │
+│    - Infer kernel function types                    │
+│    ↓                                                │
+│  Typed Optimization                                 │
+│    - Preserve types through optimization            │
+│    - Pattern match compilation                      │
+│    ↓                                                │
+│  Monomorphization                                   │
+│    - Specialize polymorphic functions               │
+│    - Compute concrete layouts                       │
+│    ↓                                                │
+│  MLIR Generation (ECO Dialect)                      │
+│    - Generate typed IR                              │
+│    - Build type table for debug printing            │
+│    ↓                                                │
+│  ECO Dialect Lowering (Stage 2)                     │
+│    - JoinPoint normalization                        │
+│    - Control flow to SCF                            │
+│    - RC elimination                                 │
+│    ↓                                                │
+│  LLVM Dialect (Stage 3)                             │
+│    - EcoToLLVM lowering                             │
+│    ↓                                                │
+│  LLVM IR → Native Code                              │
+└─────────────────────────────────────────────────────┘
+```
+
+## Key Backend Passes
+
+### PostSolve (Type Fixing)
+
+After type inference, some expressions have incomplete types:
+
+- **Group B expressions**: Literals (String, Float), containers (List, Tuple, Record), and lambdas get synthetic type variables that need structural type computation.
+- **Kernel functions**: `VarKernel` references don't have annotations; their types are inferred from usage patterns.
+
+The PostSolve pass walks the AST, computing concrete types and building a `KernelTypeEnv` for typed optimization.
+
+**See**: `design_docs/theory/pass_post_solve_theory.md`
+
+### Typed Optimization
+
+The standard Elm compiler discards types after type checking since JavaScript doesn't need them. ECO's TypedOptimized AST preserves type information on every expression:
+
+```elm
+type Expr
+    = Bool A.Region Bool Can.Type
+    | Int A.Region Int Can.Type
+    | Call A.Region Expr (List Expr) Can.Type
+    -- Every variant carries Can.Type
+```
+
+This enables type-directed code generation and monomorphization.
+
+**See**: `design_docs/theory/pass_typed_optimization_theory.md`
+
+### Monomorphization
+
+Elm's parametric polymorphism must be resolved for native code. The monomorphizer uses a worklist algorithm to generate specialized versions of polymorphic functions:
+
+```
+identity : a -> a
+identity x = x
+
+-- With uses: identity 42, identity "hi"
+-- Generates:
+--   identity<Int> : Int -> Int
+--   identity<String> : String -> String
+```
+
+Each specialization gets a unique `SpecId`. The pass also computes concrete layouts for records, tuples, and custom types.
+
+**Key concepts**:
+- `MonoType`: Monomorphized type (MInt, MFloat, MList MonoType, etc.)
+- `SpecKey`: (Global, [MonoType]) identifying a specialization
+- `SpecializationRegistry`: Maps SpecKey ↔ SpecId
+
+**See**: `design_docs/theory/pass_monomorphization_theory.md`
+
+### MLIR Generation
+
+Converts MonoGraph to MLIR using the ECO dialect:
+
+- **ECO operations**: `eco.construct.list`, `eco.project.record`, `eco.call`, etc.
+- **Type table**: `eco.type_table` op with type descriptors for debug printing
+- **Closures**: Lambdas hoisted to top-level, captured values tracked
+
+**See**: `design_docs/theory/pass_mlir_generation_theory.md`, `design_docs/theory/pass_type_table_theory.md`
+
+### ECO Dialect Lowering
+
+Stage 2 passes transform ECO dialect toward LLVM:
+
+- **JoinPoint Normalization**: Ensures joinpoints have single entry
+- **ECO Control Flow to SCF**: Converts eco.case to scf.if/switch
+- **RC Elimination**: Removes reference counting ops (unused in tracing GC)
+- **Undefined Function Stubs**: Generates stubs for missing functions
+
+**See**: `design_docs/theory/pass_joinpoint_normalization_theory.md`, `design_docs/theory/pass_eco_control_flow_to_scf_theory.md`, `design_docs/theory/pass_rc_elimination_theory.md`, `design_docs/theory/pass_undefined_function_theory.md`
+
+### EcoToLLVM
+
+Final lowering from ECO dialect to LLVM dialect:
+
+- Type conversion: `!eco.value` → `i64` (tagged pointers)
+- Heap allocation via runtime calls
+- Closure creation and invocation
+- Tagged pointer encoding for embedded constants
+
+**See**: `design_docs/theory/pass_eco_to_llvm_theory.md`
+
+## Type Information Flow
+
+A key design principle is **type preservation**: type information flows through the entire pipeline.
+
+```
+Can.Type (Canonical)
+    ↓ PostSolve fixes incomplete types
+Can.Type (complete)
+    ↓ Typed Optimization preserves types
+TOpt.Expr with Can.Type
+    ↓ Monomorphization specializes to concrete types
+MonoType (MInt, MFloat, MList MonoType, ...)
+    ↓ MLIR Generation maps to MLIR types
+MlirType (i64, f64, !eco.value, ...)
+    ↓ EcoToLLVM
+LLVM types
+```
+
+This enables:
+- **Unboxing optimization**: Primitives stored inline in containers
+- **Type-specific operations**: Different code for Int vs Float arithmetic
+- **Debug printing**: Type table provides runtime type introspection
+
+## Kernel Functions
+
+Kernel functions are C++/runtime implementations called from Elm code. They're handled specially:
+
+1. **PostSolve** infers types from aliases and usage
+2. **Typed Optimization** tracks them as `VarKernel` expressions
+3. **MLIR Generation** emits declarations (not definitions)
+4. **Linking** connects to C++ implementations in the runtime
+
+Example: `Basics.add` is a kernel function implemented in C++ that the generated code calls.
+
+## Detailed Documentation
+
+Each pass has comprehensive documentation in `design_docs/theory/`:
+
+| Document | Pass |
+|----------|------|
+| `pass_post_solve_theory.md` | PostSolve type fixing |
+| `pass_typed_optimization_theory.md` | Type-preserving optimization |
+| `pass_monomorphization_theory.md` | Polymorphism elimination |
+| `pass_type_table_theory.md` | Runtime type metadata |
+| `pass_mlir_generation_theory.md` | MLIR code generation |
+| `pass_joinpoint_normalization_theory.md` | Joinpoint cleanup |
+| `pass_eco_control_flow_to_scf_theory.md` | Control flow lowering |
+| `pass_rc_elimination_theory.md` | RC operation removal |
+| `pass_undefined_function_theory.md` | Missing function stubs |
+| `pass_eco_to_llvm_theory.md` | Final LLVM lowering |

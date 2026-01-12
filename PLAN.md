@@ -1024,10 +1024,19 @@ Analyze the Guida/Elm Global AST and consider necessary changes for native compi
 - Added `needsTypedOpt` flag to compilation environment to trigger typed optimization when targeting MLIR
 
 **Key Files**:
-- `Compiler/AST/TypedOptimized.elm`: Typed AST definitions with full type annotations
-- `Compiler/Optimize/Mono.elm`: Monomorphization pass implementation
-- `Compiler/Type/Occurs.elm`: Type specialization utilities
+- `Compiler/AST/TypedOptimized.elm`: Typed AST definitions with full type annotations (every expression carries `Can.Type`)
+- `Compiler/AST/Monomorphized.elm`: Monomorphized AST with `MonoType`, layouts, and `SpecializationRegistry`
+- `Compiler/Generate/Monomorphize.elm`: Worklist-based monomorphization algorithm (~2500 lines)
+- `Compiler/Type/PostSolve.elm`: Post-solver that fixes Group B expression types and infers kernel function types
+- `Compiler/Optimize/Typed/Module.elm`: Entry point for type-preserving optimization
 - `Builder/Build.elm`: Modified to pass `needsTypedOpt` flag and handle typed compilation for root modules
+
+**Theory Documentation**:
+- `design_docs/theory/pass_post_solve_theory.md`: PostSolve pass theory
+- `design_docs/theory/pass_typed_optimization_theory.md`: Type-preserving optimization theory
+- `design_docs/theory/pass_monomorphization_theory.md`: Monomorphization algorithm theory
+- `design_docs/theory/pass_type_table_theory.md`: Runtime type table construction
+- `design_docs/theory/pass_mlir_generation_theory.md`: MLIR code generation theory
 
 **Tasks**:
 - [x] Study the Global AST structure and how it represents Elm programs
@@ -1658,6 +1667,15 @@ Runtime Foundation (§1)
   - 272 function stubs with KernelExports.h and RuntimeSymbols.cpp entries
   - Real implementations for Url percent encode/decode
 - Build verified: all tests pass with kernel infrastructure in place
+- **Backend Pipeline Documentation** (Jan 11, 2026):
+  - Added comprehensive theory documents for compiler backend passes:
+    - `pass_post_solve_theory.md`: PostSolve type fixing and kernel type inference
+    - `pass_typed_optimization_theory.md`: Type-preserving optimization
+    - `pass_monomorphization_theory.md`: Worklist-based polymorphism elimination
+    - `pass_type_table_theory.md`: Runtime type metadata construction
+    - `pass_mlir_generation_theory.md`: MLIR code generation from MonoGraph
+  - Updated `THEORY.md` with Compiler Backend Pipeline overview
+  - Updated `PLAN.md` with current key files and theory documentation references
 
 **Next Steps** *(in priority order)*:
 1. **Implement real kernel functions (§2.3)** - priority: Utils, Basics, List, String for self-hosting
