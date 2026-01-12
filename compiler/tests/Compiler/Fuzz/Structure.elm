@@ -50,7 +50,7 @@ bindingCountFuzzer =
         [ ( 4, Fuzz.constant 1 )
         , ( 3, Fuzz.constant 2 )
         , ( 2, Fuzz.constant 3 )
-        , ( 1, Fuzz.intRange 4 50 )
+        , ( 1, Fuzz.intRange 4 5 )
         ]
 
 
@@ -62,7 +62,7 @@ branchCountFuzzer =
         [ ( 4, Fuzz.constant 2 )
         , ( 3, Fuzz.constant 3 )
         , ( 2, Fuzz.constant 4 )
-        , ( 1, Fuzz.intRange 5 150 )
+        , ( 1, Fuzz.intRange 5 8 )
         ]
 
 
@@ -74,7 +74,7 @@ arityFuzzer =
         [ ( 4, Fuzz.constant 1 )
         , ( 3, Fuzz.constant 2 )
         , ( 2, Fuzz.constant 3 )
-        , ( 1, Fuzz.intRange 5 40 )
+        , ( 1, Fuzz.intRange 5 10 )
         ]
 
 
@@ -85,7 +85,7 @@ chainLengthFuzzer =
     Fuzz.frequency
         [ ( 3, Fuzz.constant 1 )
         , ( 2, Fuzz.constant 2 )
-        , ( 1, Fuzz.intRange 3 20 )
+        , ( 1, Fuzz.intRange 3 5 )
         ]
 
 

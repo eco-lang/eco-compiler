@@ -13,7 +13,7 @@
     "build:bin": "./scripts/build.sh bin",
     "buildself": "./scripts/build-self.sh bin",
     "watch": "onchange \"src/**/*.elm\" -- npm run build:bin",
-    "test": "elm-test --fuzz 1",
+    "test": "elm-test --fuzz 10",
     "elm-format": "elm-format . --yes",
     "prepare": "npm run build"
   },
