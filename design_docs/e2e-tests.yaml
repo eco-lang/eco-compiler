@@ -1,0 +1,2316 @@
+# E2E Test Patterns Report
+# Source: /work/test/elm/src/
+#
+# These tests use standalone Elm modules with:
+# - Module declarations exposing main
+# - CHECK comments for expected output validation
+# - Debug.log for actual output
+#
+# Test structure pattern:
+#   module XxxTest exposing (main)
+#   -- CHECK: name: expectedValue
+#   main = let _ = Debug.log "name" (expression) in text "done"
+
+---
+
+# =============================================================================
+# INTEGER ARITHMETIC
+# =============================================================================
+
+- source_file: IntAddTest.elm
+  category: Integer Arithmetic
+  name: Integer Addition
+  patterns:
+    - name: add1_positive_addition
+      elm_source: |
+        10 + 3
+      expected: "13"
+    - name: add2_opposite_values
+      elm_source: |
+        5 + -5
+      expected: "0"
+    - name: add3_negative_addition
+      elm_source: |
+        -2 + -3
+      expected: "-5"
+
+- source_file: IntSubTest.elm
+  category: Integer Arithmetic
+  name: Integer Subtraction
+  patterns:
+    - name: sub1_positive_subtraction
+      elm_source: |
+        10 - 3
+      expected: "7"
+    - name: sub2_subtract_negative
+      elm_source: |
+        5 - -5
+      expected: "10"
+    - name: sub3_negative_subtraction
+      elm_source: |
+        -2 - -3
+      expected: "1"
+
+- source_file: IntMulTest.elm
+  category: Integer Arithmetic
+  name: Integer Multiplication
+  patterns:
+    - name: mul1_positive_multiplication
+      elm_source: |
+        10 * 3
+      expected: "30"
+    - name: mul2_mixed_sign
+      elm_source: |
+        5 * -3
+      expected: "-15"
+    - name: mul3_negative_multiplication
+      elm_source: |
+        -2 * -3
+      expected: "6"
+    - name: mul4_multiply_by_zero
+      elm_source: |
+        0 * 100
+      expected: "0"
+
+- source_file: IntDivTest.elm
+  category: Integer Arithmetic
+  name: Integer Division
+  patterns:
+    - name: div1_positive_division
+      elm_source: |
+        10 // 3
+      expected: "3"
+    - name: div2_negative_dividend
+      elm_source: |
+        -10 // 3
+      expected: "-3"
+    - name: div3_negative_divisor
+      elm_source: |
+        10 // -3
+      expected: "-3"
+    - name: div4_both_negative
+      elm_source: |
+        -10 // -3
+      expected: "3"
+
+- source_file: IntModByTest.elm
+  category: Integer Arithmetic
+  name: Integer Modulo (floored division)
+  patterns:
+    - name: mod1_basic_modulo
+      elm_source: |
+        modBy 4 7
+      expected: "3"
+    - name: mod2_negative_dividend
+      elm_source: |
+        modBy 4 -7
+      expected: "1"
+    - name: mod5_zero_dividend
+      elm_source: |
+        modBy 5 0
+      expected: "0"
+
+- source_file: IntRemainderByTest.elm
+  category: Integer Arithmetic
+  name: Integer Remainder (truncated division)
+  patterns:
+    - name: rem1_basic_remainder
+      elm_source: |
+        remainderBy 4 7
+      expected: "3"
+    - name: rem2_negative_dividend
+      elm_source: |
+        remainderBy 4 -7
+      expected: "-3"
+    - name: rem3_negative_divisor
+      elm_source: |
+        remainderBy -4 7
+      expected: "3"
+    - name: rem4_both_negative
+      elm_source: |
+        remainderBy -4 -7
+      expected: "-3"
+
+- source_file: IntAbsTest.elm
+  category: Integer Arithmetic
+  name: Integer Absolute Value
+  patterns:
+    - name: abs1_positive
+      elm_source: |
+        abs 5
+      expected: "5"
+    - name: abs2_negative
+      elm_source: |
+        abs -5
+      expected: "5"
+    - name: abs3_zero
+      elm_source: |
+        abs 0
+      expected: "0"
+
+- source_file: IntNegateTest.elm
+  category: Integer Arithmetic
+  name: Integer Negation
+  patterns:
+    - name: neg1_negate_positive
+      elm_source: |
+        negate 5
+      expected: "-5"
+    - name: neg2_negate_negative
+      elm_source: |
+        negate -5
+      expected: "5"
+    - name: neg3_negate_zero
+      elm_source: |
+        negate 0
+      expected: "0"
+
+- source_file: IntPowTest.elm
+  category: Integer Arithmetic
+  name: Integer Exponentiation
+  patterns:
+    - name: pow1_basic_power
+      elm_source: |
+        2 ^ 3
+      expected: "8"
+    - name: pow2_power_of_zero
+      elm_source: |
+        5 ^ 0
+      expected: "1"
+    - name: pow3_large_power
+      elm_source: |
+        2 ^ 10
+      expected: "1024"
+    - name: pow4_negative_base
+      elm_source: |
+        (-2) ^ 3
+      expected: "-8"
+
+- source_file: IntCompareTest.elm
+  category: Integer Comparison
+  name: Integer Comparison Operators
+  patterns:
+    - name: lt_less_than
+      elm_source: |
+        3 < 10
+      expected: "True"
+    - name: gt_greater_than
+      elm_source: |
+        10 > 3
+      expected: "True"
+    - name: le1_less_or_equal
+      elm_source: |
+        3 <= 10
+      expected: "True"
+    - name: le2_equal_case
+      elm_source: |
+        5 <= 5
+      expected: "True"
+    - name: ge1_greater_or_equal
+      elm_source: |
+        10 >= 3
+      expected: "True"
+    - name: ge2_equal_case
+      elm_source: |
+        5 >= 5
+      expected: "True"
+    - name: eq_equality
+      elm_source: |
+        5 == 5
+      expected: "True"
+    - name: ne_inequality
+      elm_source: |
+        5 /= 3
+      expected: "True"
+
+- source_file: IntMinMaxTest.elm
+  category: Integer Comparison
+  name: Integer Min/Max Functions
+  patterns:
+    - name: min1_positive_values
+      elm_source: |
+        min 10 3
+      expected: "3"
+    - name: min2_with_negative
+      elm_source: |
+        min -5 5
+      expected: "-5"
+    - name: max1_positive_values
+      elm_source: |
+        max 10 3
+      expected: "10"
+    - name: max2_with_negative
+      elm_source: |
+        max -5 5
+      expected: "5"
+
+- source_file: IntDivByZeroTest.elm
+  category: Integer Edge Cases
+  name: Division by Zero
+  patterns:
+    - name: divZero1_positive_dividend
+      elm_source: |
+        10 // 0
+      expected: "0"
+    - name: divZero2_negative_dividend
+      elm_source: |
+        -5 // 0
+      expected: "0"
+
+- source_file: IntOverflowTest.elm
+  category: Integer Edge Cases
+  name: Integer Overflow
+  patterns:
+    - name: overflow_max_int_plus_one
+      elm_source: |
+        let big = 9223372036854775807 in big + 1
+      expected: "(implementation specific)"
+
+# =============================================================================
+# FLOAT ARITHMETIC
+# =============================================================================
+
+- source_file: FloatAddTest.elm
+  category: Float Arithmetic
+  name: Float Addition
+  patterns:
+    - name: add1_basic_float_addition
+      elm_source: |
+        10.0 + 3.0
+      expected: "13"
+    - name: add2_float_cancellation
+      elm_source: |
+        5.0 + -5.0
+      expected: "0"
+    - name: add3_negative_float_addition
+      elm_source: |
+        -2.0 + -3.0
+      expected: "-5"
+
+- source_file: FloatSubTest.elm
+  category: Float Arithmetic
+  name: Float Subtraction
+  patterns:
+    - name: sub1_basic_float_subtraction
+      elm_source: |
+        10.0 - 3.0
+      expected: "7"
+    - name: sub2_subtract_negative_float
+      elm_source: |
+        5.0 - -5.0
+      expected: "10"
+    - name: sub3_negative_float_subtraction
+      elm_source: |
+        -2.0 - -3.0
+      expected: "1"
+
+- source_file: FloatMulTest.elm
+  category: Float Arithmetic
+  name: Float Multiplication
+  patterns:
+    - name: mul1_basic_float_multiplication
+      elm_source: |
+        10.0 * 3.0
+      expected: "30"
+    - name: mul2_mixed_sign_float
+      elm_source: |
+        5.0 * -3.0
+      expected: "-15"
+    - name: mul3_negative_float_multiplication
+      elm_source: |
+        -2.0 * -3.0
+      expected: "6"
+    - name: mul4_multiply_float_by_zero
+      elm_source: |
+        0.0 * 100.0
+      expected: "0"
+
+- source_file: FloatDivTest.elm
+  category: Float Arithmetic
+  name: Float Division
+  patterns:
+    - name: div1_basic_float_division
+      elm_source: |
+        10.0 / 4.0
+      expected: "2.5"
+    - name: div2_negative_dividend_float
+      elm_source: |
+        -10.0 / 4.0
+      expected: "-2.5"
+    - name: div3_negative_divisor_float
+      elm_source: |
+        10.0 / -4.0
+      expected: "-2.5"
+    - name: div4_both_negative_float
+      elm_source: |
+        -10.0 / -4.0
+      expected: "2.5"
+
+- source_file: FloatAbsTest.elm
+  category: Float Arithmetic
+  name: Float Absolute Value
+  patterns:
+    - name: abs1_positive_float
+      elm_source: |
+        abs 3.14
+      expected: "3.14"
+    - name: abs2_negative_float
+      elm_source: |
+        abs -3.14
+      expected: "3.14"
+    - name: abs3_zero_float
+      elm_source: |
+        abs 0.0
+      expected: "0"
+
+- source_file: FloatNegateTest.elm
+  category: Float Arithmetic
+  name: Float Negation
+  patterns:
+    - name: neg1_negate_positive_float
+      elm_source: |
+        negate 3.14
+      expected: "-3.14"
+    - name: neg2_negate_negative_float
+      elm_source: |
+        negate -3.14
+      expected: "3.14"
+    - name: neg3_negate_zero_float
+      elm_source: |
+        negate 0.0
+      expected: "0"
+
+- source_file: FloatPowTest.elm
+  category: Float Arithmetic
+  name: Float Exponentiation
+  patterns:
+    - name: pow1_basic_float_power
+      elm_source: |
+        2.0 ^ 3.0
+      expected: "8"
+    - name: pow2_float_power_of_zero
+      elm_source: |
+        5.0 ^ 0.0
+      expected: "1"
+    - name: pow3_large_float_power
+      elm_source: |
+        2.0 ^ 10.0
+      expected: "1024"
+    - name: pow4_negative_exponent
+      elm_source: |
+        2.0 ^ -1.0
+      expected: "0.5"
+
+- source_file: FloatSqrtTest.elm
+  category: Float Arithmetic
+  name: Float Square Root
+  patterns:
+    - name: sqrt1_perfect_square_4
+      elm_source: |
+        sqrt 4.0
+      expected: "2"
+    - name: sqrt2_perfect_square_9
+      elm_source: |
+        sqrt 9.0
+      expected: "3"
+    - name: sqrt3_zero
+      elm_source: |
+        sqrt 0.0
+      expected: "0"
+
+- source_file: FloatCeilingTest.elm
+  category: Float Rounding
+  name: Float Ceiling
+  patterns:
+    - name: ceil1_positive_fraction
+      elm_source: |
+        ceiling 2.3
+      expected: "3"
+    - name: ceil2_exact_integer
+      elm_source: |
+        ceiling 2.0
+      expected: "2"
+    - name: ceil3_small_negative_fraction
+      elm_source: |
+        ceiling -2.3
+      expected: "-2"
+    - name: ceil4_large_negative_fraction
+      elm_source: |
+        ceiling -2.7
+      expected: "-2"
+
+- source_file: FloatFloorTest.elm
+  category: Float Rounding
+  name: Float Floor
+  patterns:
+    - name: floor1_positive_fraction
+      elm_source: |
+        floor 2.7
+      expected: "2"
+    - name: floor2_exact_integer
+      elm_source: |
+        floor 2.0
+      expected: "2"
+    - name: floor3_small_negative_fraction
+      elm_source: |
+        floor -2.3
+      expected: "-3"
+    - name: floor4_large_negative_fraction
+      elm_source: |
+        floor -2.7
+      expected: "-3"
+
+- source_file: FloatRoundTest.elm
+  category: Float Rounding
+  name: Float Round (banker's rounding - ties to even)
+  patterns:
+    - name: round1_high_fraction
+      elm_source: |
+        round 2.7
+      expected: "3"
+    - name: round2_low_fraction
+      elm_source: |
+        round 2.3
+      expected: "2"
+    - name: round3_negative_fraction
+      elm_source: |
+        round -2.7
+      expected: "-3"
+    - name: round4_tie_even_2
+      elm_source: |
+        round 2.5
+      expected: "3"
+    - name: round5_tie_even_3
+      elm_source: |
+        round 3.5
+      expected: "4"
+
+- source_file: FloatTruncateTest.elm
+  category: Float Rounding
+  name: Float Truncate (toward zero)
+  patterns:
+    - name: trunc1_positive_high_fraction
+      elm_source: |
+        truncate 2.7
+      expected: "2"
+    - name: trunc2_positive_low_fraction
+      elm_source: |
+        truncate 2.3
+      expected: "2"
+    - name: trunc3_negative_low_fraction
+      elm_source: |
+        truncate -2.3
+      expected: "-2"
+    - name: trunc4_negative_high_fraction
+      elm_source: |
+        truncate -2.7
+      expected: "-2"
+
+- source_file: FloatCompareTest.elm
+  category: Float Comparison
+  name: Float Comparison Operators
+  patterns:
+    - name: lt_float_less_than
+      elm_source: |
+        3.14 < 10.0
+      expected: "True"
+    - name: gt_float_greater_than
+      elm_source: |
+        10.0 > 3.14
+      expected: "True"
+    - name: le_float_equal_case
+      elm_source: |
+        3.14 <= 3.14
+      expected: "True"
+    - name: ge_float_equal_case
+      elm_source: |
+        3.14 >= 3.14
+      expected: "True"
+    - name: eq_float_equality
+      elm_source: |
+        3.14 == 3.14
+      expected: "True"
+    - name: ne_float_inequality
+      elm_source: |
+        3.14 /= 2.71
+      expected: "True"
+
+- source_file: FloatMinMaxTest.elm
+  category: Float Comparison
+  name: Float Min/Max Functions
+  patterns:
+    - name: min1_float_values
+      elm_source: |
+        min 10.0 3.14
+      expected: "3.14"
+    - name: min2_float_with_negative
+      elm_source: |
+        min -5.0 5.0
+      expected: "-5"
+    - name: max1_float_values
+      elm_source: |
+        max 10.0 3.14
+      expected: "10"
+    - name: max2_float_with_negative
+      elm_source: |
+        max -5.0 5.0
+      expected: "5"
+
+- source_file: FloatInfinityTest.elm
+  category: Float Special Values
+  name: Float Infinity
+  patterns:
+    - name: isInf1_positive_infinity
+      elm_source: |
+        isInfinite (1.0 / 0.0)
+      expected: "True"
+    - name: isInf2_negative_infinity
+      elm_source: |
+        isInfinite (-1.0 / 0.0)
+      expected: "True"
+    - name: isInf3_finite_value
+      elm_source: |
+        isInfinite 3.14
+      expected: "False"
+
+- source_file: FloatNaNTest.elm
+  category: Float Special Values
+  name: Float NaN
+  patterns:
+    - name: isNaN1_zero_over_zero
+      elm_source: |
+        isNaN (0.0 / 0.0)
+      expected: "True"
+    - name: isNaN2_finite_value
+      elm_source: |
+        isNaN 3.14
+      expected: "False"
+    - name: nanProp_nan_propagation
+      elm_source: |
+        (0.0 / 0.0) + 1.0
+      expected: "NaN"
+
+- source_file: FloatNegativeZeroTest.elm
+  category: Float Special Values
+  name: Float Negative Zero
+  patterns:
+    - name: eq_negative_zero_equality
+      elm_source: |
+        -0.0 == 0.0
+      expected: "True"
+    - name: div1_positive_infinity_from_zero
+      elm_source: |
+        1.0 / 0.0
+      expected: "Infinity"
+    - name: div2_negative_infinity_from_neg_zero
+      elm_source: |
+        1.0 / -0.0
+      expected: "-Infinity"
+
+# =============================================================================
+# BITWISE OPERATIONS
+# =============================================================================
+
+- source_file: BitwiseAndTest.elm
+  category: Bitwise Operations
+  name: Bitwise AND
+  patterns:
+    - name: and_basic_overlap
+      elm_source: |
+        Bitwise.and 15 8
+      expected: "8"
+    - name: and_no_overlap
+      elm_source: |
+        Bitwise.and 15 16
+      expected: "0"
+    - name: and_same_value
+      elm_source: |
+        Bitwise.and 15 15
+      expected: "15"
+
+- source_file: BitwiseOrTest.elm
+  category: Bitwise Operations
+  name: Bitwise OR
+  patterns:
+    - name: or_basic_combine
+      elm_source: |
+        Bitwise.or 15 8
+      expected: "15"
+    - name: or_different_bits
+      elm_source: |
+        Bitwise.or 15 16
+      expected: "31"
+    - name: or_same_value
+      elm_source: |
+        Bitwise.or 15 15
+      expected: "15"
+
+- source_file: BitwiseXorTest.elm
+  category: Bitwise Operations
+  name: Bitwise XOR
+  patterns:
+    - name: xor_different_bits
+      elm_source: |
+        Bitwise.xor 15 8
+      expected: "7"
+    - name: xor_disjoint_sets
+      elm_source: |
+        Bitwise.xor 15 16
+      expected: "31"
+    - name: xor_same_value
+      elm_source: |
+        Bitwise.xor 15 15
+      expected: "0"
+
+- source_file: BitwiseComplementTest.elm
+  category: Bitwise Operations
+  name: Bitwise Complement
+  patterns:
+    - name: complement_zero
+      elm_source: |
+        Bitwise.complement 0
+      expected: "-1"
+    - name: complement_positive
+      elm_source: |
+        Bitwise.complement 15
+      expected: "-16"
+
+- source_file: BitwiseIdentityTest.elm
+  category: Bitwise Operations
+  name: Bitwise Identity Properties
+  patterns:
+    - name: identity_and_self
+      elm_source: |
+        let x = 42 in Bitwise.and x x
+      expected: "42"
+    - name: identity_or_self
+      elm_source: |
+        let x = 42 in Bitwise.or x x
+      expected: "42"
+    - name: identity_xor_self
+      elm_source: |
+        let x = 42 in Bitwise.xor x x
+      expected: "0"
+
+- source_file: BitwiseShiftLeftTest.elm
+  category: Bitwise Operations
+  name: Bitwise Shift Left
+  patterns:
+    - name: shift_left_4bits
+      elm_source: |
+        Bitwise.shiftLeftBy 4 1
+      expected: "16"
+    - name: shift_left_1bit
+      elm_source: |
+        Bitwise.shiftLeftBy 1 16
+      expected: "32"
+    - name: shift_left_10bits
+      elm_source: |
+        Bitwise.shiftLeftBy 10 1
+      expected: "1024"
+
+- source_file: BitwiseShiftRightTest.elm
+  category: Bitwise Operations
+  name: Bitwise Shift Right (arithmetic)
+  patterns:
+    - name: shift_right_arithmetic_4bits
+      elm_source: |
+        Bitwise.shiftRightBy 4 16
+      expected: "1"
+    - name: shift_right_arithmetic_1bit
+      elm_source: |
+        Bitwise.shiftRightBy 1 16
+      expected: "8"
+    - name: shift_right_arithmetic_negative
+      elm_source: |
+        Bitwise.shiftRightBy 4 -1
+      expected: "-1"
+
+- source_file: BitwiseShiftRightZfTest.elm
+  category: Bitwise Operations
+  name: Bitwise Shift Right Zero Fill
+  patterns:
+    - name: shift_right_zero_fill_4bits
+      elm_source: |
+        Bitwise.shiftRightZfBy 4 16
+      expected: "1"
+    - name: shift_right_zero_fill_1bit
+      elm_source: |
+        Bitwise.shiftRightZfBy 1 16
+      expected: "8"
+
+- source_file: BitwiseLargeShiftTest.elm
+  category: Bitwise Operations
+  name: Bitwise Large Shifts
+  patterns:
+    - name: shift_left_32bits
+      elm_source: |
+        Bitwise.shiftLeftBy 32 1
+      expected: "(implementation specific)"
+    - name: shift_left_63bits
+      elm_source: |
+        Bitwise.shiftLeftBy 63 1
+      expected: "(implementation specific)"
+
+# =============================================================================
+# BOOLEAN OPERATIONS
+# =============================================================================
+
+- source_file: BoolAndTest.elm
+  category: Boolean Operations
+  name: Boolean AND
+  patterns:
+    - name: and_true_true
+      elm_source: |
+        True && True
+      expected: "True"
+    - name: and_true_false
+      elm_source: |
+        True && False
+      expected: "False"
+    - name: and_false_true
+      elm_source: |
+        False && True
+      expected: "False"
+    - name: and_false_false
+      elm_source: |
+        False && False
+      expected: "False"
+
+- source_file: BoolOrTest.elm
+  category: Boolean Operations
+  name: Boolean OR
+  patterns:
+    - name: or_true_true
+      elm_source: |
+        True || True
+      expected: "True"
+    - name: or_true_false
+      elm_source: |
+        True || False
+      expected: "True"
+    - name: or_false_true
+      elm_source: |
+        False || True
+      expected: "True"
+    - name: or_false_false
+      elm_source: |
+        False || False
+      expected: "False"
+
+- source_file: BoolNotTest.elm
+  category: Boolean Operations
+  name: Boolean NOT
+  patterns:
+    - name: not_true
+      elm_source: |
+        not True
+      expected: "False"
+    - name: not_false
+      elm_source: |
+        not False
+      expected: "True"
+
+- source_file: BoolXorTest.elm
+  category: Boolean Operations
+  name: Boolean XOR
+  patterns:
+    - name: xor_true_true
+      elm_source: |
+        xor True True
+      expected: "False"
+    - name: xor_true_false
+      elm_source: |
+        xor True False
+      expected: "True"
+    - name: xor_false_true
+      elm_source: |
+        xor False True
+      expected: "True"
+    - name: xor_false_false
+      elm_source: |
+        xor False False
+      expected: "False"
+
+- source_file: BoolTrueFalseTest.elm
+  category: Boolean Operations
+  name: Boolean Literals
+  patterns:
+    - name: literal_true
+      elm_source: |
+        True
+      expected: "True"
+    - name: literal_false
+      elm_source: |
+        False
+      expected: "False"
+
+- source_file: BoolShortCircuitTest.elm
+  category: Boolean Operations
+  name: Boolean Short-Circuit Evaluation
+  patterns:
+    - name: short_circuit_and_false
+      elm_source: |
+        False && True
+      expected: "False"
+    - name: short_circuit_or_true
+      elm_source: |
+        True || False
+      expected: "True"
+
+# =============================================================================
+# STRING OPERATIONS
+# =============================================================================
+
+- source_file: StringConcatTest.elm
+  category: String Operations
+  name: String Concatenation
+  patterns:
+    - name: concat_operator_basic
+      elm_source: |
+        "Hello" ++ "World"
+      expected: "\"HelloWorld\""
+    - name: concat_operator_with_space
+      elm_source: |
+        "Hello" ++ " " ++ "World"
+      expected: "\"Hello World\""
+    - name: concat_function
+      elm_source: |
+        String.append "foo" "bar"
+      expected: "\"foobar\""
+
+- source_file: StringEmptyTest.elm
+  category: String Operations
+  name: Empty String
+  patterns:
+    - name: empty_string_literal
+      elm_source: |
+        ""
+      expected: "\"\""
+    - name: is_empty_check
+      elm_source: |
+        String.isEmpty ""
+      expected: "True"
+
+- source_file: StringLengthTest.elm
+  category: String Operations
+  name: String Length
+  patterns:
+    - name: length_nonempty
+      elm_source: |
+        String.length "Hello"
+      expected: "5"
+    - name: length_empty
+      elm_source: |
+        String.length ""
+      expected: "0"
+    - name: length_with_punctuation
+      elm_source: |
+        String.length "Hello, World!"
+      expected: "13"
+
+- source_file: StringLiteralTest.elm
+  category: String Operations
+  name: String Literals
+  patterns:
+    - name: literal_simple
+      elm_source: |
+        "Hello"
+      expected: "\"Hello\""
+    - name: literal_with_punctuation
+      elm_source: |
+        "Hello, World!"
+      expected: "\"Hello, World!\""
+    - name: literal_alphanumeric
+      elm_source: |
+        "abc123"
+      expected: "\"abc123\""
+
+- source_file: StringEscapesTest.elm
+  category: String Operations
+  name: String Escapes
+  patterns:
+    - name: escape_newline
+      elm_source: |
+        "line1\nline2"
+      expected: "\"line1\\nline2\""
+    - name: escape_tab
+      elm_source: |
+        "col1\tcol2"
+      expected: "\"col1\\tcol2\""
+    - name: escape_quote
+      elm_source: |
+        "\""
+      expected: "\"\\\"\""
+
+- source_file: StringUnicodeTest.elm
+  category: String Operations
+  name: String Unicode
+  patterns:
+    - name: unicode_greek_text
+      elm_source: |
+        "alpha beta gamma"
+      expected: "\"alpha beta gamma\""
+    - name: unicode_emoji_text
+      elm_source: |
+        "hello"
+      expected: "\"hello\""
+    - name: unicode_chinese_text
+      elm_source: |
+        "hello"
+      expected: "\"hello\""
+
+# =============================================================================
+# CHARACTER OPERATIONS
+# =============================================================================
+
+- source_file: CharFromCodeTest.elm
+  category: Character Operations
+  name: Char.fromCode
+  patterns:
+    - name: from_code_uppercase
+      elm_source: |
+        Char.fromCode 65
+      expected: "'A'"
+    - name: from_code_lowercase
+      elm_source: |
+        Char.fromCode 97
+      expected: "'a'"
+    - name: from_code_digit
+      elm_source: |
+        Char.fromCode 48
+      expected: "'0'"
+
+- source_file: CharToCodeTest.elm
+  category: Character Operations
+  name: Char.toCode
+  patterns:
+    - name: to_code_uppercase
+      elm_source: |
+        Char.toCode 'A'
+      expected: "65"
+    - name: to_code_lowercase
+      elm_source: |
+        Char.toCode 'a'
+      expected: "97"
+    - name: to_code_digit
+      elm_source: |
+        Char.toCode '0'
+      expected: "48"
+
+- source_file: CharToLowerTest.elm
+  category: Character Operations
+  name: Char.toLower
+  patterns:
+    - name: to_lower_uppercase
+      elm_source: |
+        Char.toLower 'A'
+      expected: "'a'"
+    - name: to_lower_uppercase_z
+      elm_source: |
+        Char.toLower 'Z'
+      expected: "'z'"
+    - name: to_lower_digit
+      elm_source: |
+        Char.toLower '0'
+      expected: "'0'"
+
+- source_file: CharToUpperTest.elm
+  category: Character Operations
+  name: Char.toUpper
+  patterns:
+    - name: to_upper_lowercase
+      elm_source: |
+        Char.toUpper 'a'
+      expected: "'A'"
+    - name: to_upper_lowercase_z
+      elm_source: |
+        Char.toUpper 'z'
+      expected: "'Z'"
+    - name: to_upper_digit
+      elm_source: |
+        Char.toUpper '0'
+      expected: "'0'"
+
+- source_file: CharIsAlphaTest.elm
+  category: Character Operations
+  name: Char.isAlpha
+  patterns:
+    - name: is_alpha_lowercase
+      elm_source: |
+        Char.isAlpha 'a'
+      expected: "True"
+    - name: is_alpha_uppercase
+      elm_source: |
+        Char.isAlpha 'Z'
+      expected: "True"
+    - name: is_alpha_digit
+      elm_source: |
+        Char.isAlpha '0'
+      expected: "False"
+    - name: is_alpha_space
+      elm_source: |
+        Char.isAlpha ' '
+      expected: "False"
+
+- source_file: CharIsDigitTest.elm
+  category: Character Operations
+  name: Char.isDigit
+  patterns:
+    - name: is_digit_zero
+      elm_source: |
+        Char.isDigit '0'
+      expected: "True"
+    - name: is_digit_nine
+      elm_source: |
+        Char.isDigit '9'
+      expected: "True"
+    - name: is_digit_lowercase
+      elm_source: |
+        Char.isDigit 'a'
+      expected: "False"
+    - name: is_digit_uppercase
+      elm_source: |
+        Char.isDigit 'A'
+      expected: "False"
+
+- source_file: CharUnicodeTest.elm
+  category: Character Operations
+  name: Char Unicode
+  patterns:
+    - name: unicode_greek_lambda
+      elm_source: |
+        Char.toCode '\u{03BB}'
+      expected: "955"
+    - name: unicode_euro_sign
+      elm_source: |
+        Char.toCode '\u{20AC}'
+      expected: "8364"
+
+# =============================================================================
+# LIST OPERATIONS
+# =============================================================================
+
+- source_file: ListLiteralTest.elm
+  category: List Operations
+  name: List Literal Syntax
+  patterns:
+    - name: single_element_list
+      elm_source: |
+        [1]
+      expected: "[1]"
+    - name: three_element_list
+      elm_source: |
+        [1, 2, 3]
+      expected: "[1, 2, 3]"
+    - name: five_element_list
+      elm_source: |
+        [10, 20, 30, 40, 50]
+      expected: "[10, 20, 30, 40, 50]"
+
+- source_file: ListConcatTest.elm
+  category: List Operations
+  name: List Concatenation
+  patterns:
+    - name: concat_operator
+      elm_source: |
+        [1, 2] ++ [3, 4]
+      expected: "[1, 2, 3, 4]"
+    - name: concat_function
+      elm_source: |
+        List.concat [[1, 2], [3, 4], [5, 6]]
+      expected: "[1, 2, 3, 4, 5, 6]"
+    - name: concat_with_empty
+      elm_source: |
+        [] ++ [1, 2, 3]
+      expected: "[1, 2, 3]"
+
+- source_file: ListConsTest.elm
+  category: List Operations
+  name: List Cons Operator
+  patterns:
+    - name: single_cons
+      elm_source: |
+        1 :: []
+      expected: "[1]"
+    - name: double_cons
+      elm_source: |
+        1 :: 2 :: []
+      expected: "[1, 2]"
+    - name: triple_cons
+      elm_source: |
+        1 :: 2 :: 3 :: []
+      expected: "[1, 2, 3]"
+
+- source_file: ListEmptyTest.elm
+  category: List Operations
+  name: Empty List
+  patterns:
+    - name: empty_list_literal
+      elm_source: |
+        []
+      expected: "[]"
+    - name: list_isEmpty_empty
+      elm_source: |
+        List.isEmpty []
+      expected: "True"
+
+- source_file: ListFilterTest.elm
+  category: List Operations
+  name: List.filter
+  patterns:
+    - name: filter_even_numbers
+      elm_source: |
+        List.filter (\x -> modBy 2 x == 0) [1, 2, 3, 4, 5]
+      expected: "[2, 4]"
+    - name: filter_positive_numbers
+      elm_source: |
+        List.filter (\x -> x > 0) [-1, 0, 1, 2, 3]
+      expected: "[1, 2, 3]"
+    - name: filter_empty_list
+      elm_source: |
+        List.filter (\x -> modBy 2 x == 0) []
+      expected: "[]"
+
+- source_file: ListFoldlTest.elm
+  category: List Operations
+  name: List.foldl
+  patterns:
+    - name: foldl_with_addition
+      elm_source: |
+        List.foldl (+) 0 [1, 2, 3, 4]
+      expected: "10"
+    - name: foldl_with_multiplication
+      elm_source: |
+        List.foldl (*) 1 [1, 2, 3, 4]
+      expected: "24"
+    - name: foldl_with_string_concat
+      elm_source: |
+        List.foldl (++) "" ["a", "b", "c"]
+      expected: "\"cba\""
+
+- source_file: ListFoldrTest.elm
+  category: List Operations
+  name: List.foldr
+  patterns:
+    - name: foldr_with_addition
+      elm_source: |
+        List.foldr (+) 0 [1, 2, 3, 4]
+      expected: "10"
+    - name: foldr_with_string_concat
+      elm_source: |
+        List.foldr (++) "" ["a", "b", "c"]
+      expected: "\"abc\""
+
+- source_file: ListHeadTailTest.elm
+  category: List Operations
+  name: List.head and List.tail
+  patterns:
+    - name: head_nonempty
+      elm_source: |
+        List.head [1, 2, 3]
+      expected: "Just 1"
+    - name: head_empty
+      elm_source: |
+        List.head []
+      expected: "Nothing"
+    - name: tail_nonempty
+      elm_source: |
+        List.tail [1, 2, 3]
+      expected: "Just [2, 3]"
+    - name: tail_empty
+      elm_source: |
+        List.tail []
+      expected: "Nothing"
+
+- source_file: ListLengthTest.elm
+  category: List Operations
+  name: List.length
+  patterns:
+    - name: length_empty
+      elm_source: |
+        List.length []
+      expected: "0"
+    - name: length_3_elements
+      elm_source: |
+        List.length [1, 2, 3]
+      expected: "3"
+    - name: length_5_elements
+      elm_source: |
+        List.length [1, 2, 3, 4, 5]
+      expected: "5"
+
+- source_file: ListMapTest.elm
+  category: List Operations
+  name: List.map
+  patterns:
+    - name: map_double
+      elm_source: |
+        List.map (\x -> x * 2) [1, 2, 3]
+      expected: "[2, 4, 6]"
+    - name: map_empty
+      elm_source: |
+        List.map (\x -> x * 2) []
+      expected: "[]"
+    - name: map_square
+      elm_source: |
+        List.map (\x -> x * x) [1, 2, 3]
+      expected: "[1, 4, 9]"
+
+- source_file: ListReverseTest.elm
+  category: List Operations
+  name: List.reverse
+  patterns:
+    - name: reverse_empty
+      elm_source: |
+        List.reverse []
+      expected: "[]"
+    - name: reverse_3_elements
+      elm_source: |
+        List.reverse [1, 2, 3]
+      expected: "[3, 2, 1]"
+    - name: reverse_5_elements
+      elm_source: |
+        List.reverse [1, 2, 3, 4, 5]
+      expected: "[5, 4, 3, 2, 1]"
+
+- source_file: ListTakeDropTest.elm
+  category: List Operations
+  name: List.take and List.drop
+  patterns:
+    - name: take_first_2
+      elm_source: |
+        List.take 2 [1, 2, 3, 4, 5]
+      expected: "[1, 2]"
+    - name: take_0
+      elm_source: |
+        List.take 0 [1, 2, 3]
+      expected: "[]"
+    - name: drop_first_2
+      elm_source: |
+        List.drop 2 [1, 2, 3, 4, 5]
+      expected: "[3, 4, 5]"
+    - name: drop_0
+      elm_source: |
+        List.drop 0 [1, 2, 3, 4, 5]
+      expected: "[1, 2, 3, 4, 5]"
+
+# =============================================================================
+# MAYBE OPERATIONS
+# =============================================================================
+
+- source_file: MaybeJustTest.elm
+  category: Maybe Operations
+  name: Maybe Just Constructor
+  patterns:
+    - name: just_integer
+      elm_source: |
+        Just 42
+      expected: "Just 42"
+    - name: just_string
+      elm_source: |
+        Just "hello"
+      expected: "Just \"hello\""
+    - name: just_boolean
+      elm_source: |
+        Just True
+      expected: "Just True"
+
+- source_file: MaybeNothingTest.elm
+  category: Maybe Operations
+  name: Maybe Nothing Constructor
+  patterns:
+    - name: nothing_value
+      elm_source: |
+        Nothing
+      expected: "Nothing"
+
+- source_file: MaybePatternMatchTest.elm
+  category: Maybe Operations
+  name: Maybe Pattern Matching
+  patterns:
+    - name: case_just
+      elm_source: |
+        case Just 42 of
+            Just x -> x
+            Nothing -> 0
+      expected: "42"
+    - name: case_nothing
+      elm_source: |
+        case Nothing of
+            Just x -> x
+            Nothing -> 0
+      expected: "0"
+
+- source_file: MaybeWithDefaultTest.elm
+  category: Maybe Operations
+  name: Maybe.withDefault
+  patterns:
+    - name: withDefault_just
+      elm_source: |
+        Maybe.withDefault 0 (Just 42)
+      expected: "42"
+    - name: withDefault_nothing
+      elm_source: |
+        Maybe.withDefault 0 Nothing
+      expected: "0"
+
+- source_file: MaybeAndThenTest.elm
+  category: Maybe Operations
+  name: Maybe.andThen
+  patterns:
+    - name: andThen_success
+      elm_source: |
+        Maybe.andThen (\x -> if modBy 2 x == 0 then Just (x // 2) else Nothing) (Just 42)
+      expected: "Just 21"
+    - name: andThen_fail
+      elm_source: |
+        Maybe.andThen (\x -> if modBy 2 x == 0 then Just (x // 2) else Nothing) (Just 41)
+      expected: "Nothing"
+    - name: andThen_nothing
+      elm_source: |
+        Maybe.andThen (\x -> if modBy 2 x == 0 then Just (x // 2) else Nothing) Nothing
+      expected: "Nothing"
+
+- source_file: MaybeMapTest.elm
+  category: Maybe Operations
+  name: Maybe.map
+  patterns:
+    - name: map_just
+      elm_source: |
+        Maybe.map (\x -> x * 2) (Just 42)
+      expected: "Just 84"
+    - name: map_nothing
+      elm_source: |
+        Maybe.map (\x -> x * 2) Nothing
+      expected: "Nothing"
+
+# =============================================================================
+# RESULT OPERATIONS
+# =============================================================================
+
+- source_file: ResultOkTest.elm
+  category: Result Operations
+  name: Result Ok Constructor
+  patterns:
+    - name: ok_integer
+      elm_source: |
+        Ok 42
+      expected: "Ok 42"
+    - name: ok_string
+      elm_source: |
+        Ok "success"
+      expected: "Ok \"success\""
+
+- source_file: ResultErrTest.elm
+  category: Result Operations
+  name: Result Err Constructor
+  patterns:
+    - name: err_string
+      elm_source: |
+        Err "failed"
+      expected: "Err \"failed\""
+    - name: err_integer
+      elm_source: |
+        Err 404
+      expected: "Err 404"
+
+- source_file: ResultWithDefaultTest.elm
+  category: Result Operations
+  name: Result.withDefault
+  patterns:
+    - name: withDefault_ok
+      elm_source: |
+        Result.withDefault 0 (Ok 42)
+      expected: "42"
+    - name: withDefault_err
+      elm_source: |
+        Result.withDefault 0 (Err "error")
+      expected: "0"
+
+- source_file: ResultAndThenTest.elm
+  category: Result Operations
+  name: Result.andThen
+  patterns:
+    - name: andThen_success
+      elm_source: |
+        Result.andThen (\x -> if modBy 2 x == 0 then Ok (x // 2) else Err "odd") (Ok 42)
+      expected: "Ok 21"
+    - name: andThen_fail
+      elm_source: |
+        Result.andThen (\x -> if modBy 2 x == 0 then Ok (x // 2) else Err "odd") (Ok 41)
+      expected: "Err \"odd\""
+    - name: andThen_err
+      elm_source: |
+        Result.andThen (\x -> if modBy 2 x == 0 then Ok (x // 2) else Err "odd") (Err "original")
+      expected: "Err \"original\""
+
+- source_file: ResultMapTest.elm
+  category: Result Operations
+  name: Result.map
+  patterns:
+    - name: map_ok
+      elm_source: |
+        Result.map (\x -> x * 2) (Ok 42)
+      expected: "Ok 84"
+    - name: map_err
+      elm_source: |
+        Result.map (\x -> x * 2) (Err "error")
+      expected: "Err \"error\""
+
+# =============================================================================
+# TUPLE OPERATIONS
+# =============================================================================
+
+- source_file: TuplePairTest.elm
+  category: Tuple Operations
+  name: Tuple Pair Creation
+  patterns:
+    - name: integer_pair
+      elm_source: |
+        (1, 2)
+      expected: "(1, 2)"
+    - name: string_pair
+      elm_source: |
+        ("a", "b")
+      expected: "(\"a\", \"b\")"
+    - name: boolean_pair
+      elm_source: |
+        (True, False)
+      expected: "(True, False)"
+
+- source_file: TupleFirstTest.elm
+  category: Tuple Operations
+  name: Tuple.first
+  patterns:
+    - name: first_integer_pair
+      elm_source: |
+        Tuple.first (1, 2)
+      expected: "1"
+    - name: first_string_pair
+      elm_source: |
+        Tuple.first ("hello", "world")
+      expected: "\"hello\""
+
+- source_file: TupleSecondTest.elm
+  category: Tuple Operations
+  name: Tuple.second
+  patterns:
+    - name: second_integer_pair
+      elm_source: |
+        Tuple.second (1, 2)
+      expected: "2"
+    - name: second_string_pair
+      elm_source: |
+        Tuple.second ("hello", "world")
+      expected: "\"world\""
+
+- source_file: TupleTripleTest.elm
+  category: Tuple Operations
+  name: Triple Creation
+  patterns:
+    - name: integer_triple
+      elm_source: |
+        (1, 2, 3)
+      expected: "(1, 2, 3)"
+    - name: string_triple
+      elm_source: |
+        ("a", "b", "c")
+      expected: "(\"a\", \"b\", \"c\")"
+
+- source_file: TupleMapFirstTest.elm
+  category: Tuple Operations
+  name: Tuple.mapFirst
+  patterns:
+    - name: mapFirst_multiply
+      elm_source: |
+        Tuple.mapFirst (\x -> x * 2) (1, 10)
+      expected: "(2, 10)"
+    - name: mapFirst_add
+      elm_source: |
+        Tuple.mapFirst (\x -> x + 5) (5, 20)
+      expected: "(10, 20)"
+
+- source_file: TupleMapSecondTest.elm
+  category: Tuple Operations
+  name: Tuple.mapSecond
+  patterns:
+    - name: mapSecond_multiply
+      elm_source: |
+        Tuple.mapSecond (\x -> x * 2) (1, 10)
+      expected: "(1, 20)"
+    - name: mapSecond_add
+      elm_source: |
+        Tuple.mapSecond (\x -> x + 5) (5, 20)
+      expected: "(5, 25)"
+
+- source_file: TuplePairFuncTest.elm
+  category: Tuple Operations
+  name: Tuple.pair Function
+  patterns:
+    - name: pair_integers
+      elm_source: |
+        Tuple.pair 1 2
+      expected: "(1, 2)"
+    - name: pair_strings
+      elm_source: |
+        Tuple.pair "a" "b"
+      expected: "(\"a\", \"b\")"
+
+# =============================================================================
+# CASE EXPRESSIONS
+# =============================================================================
+
+- source_file: CaseBoolTest.elm
+  category: Case Expressions
+  name: Case on Bool
+  patterns:
+    - name: bool_case_expression
+      elm_source: |
+        boolToStr b =
+            case b of
+                True -> "yes"
+                False -> "no"
+      expected: "Function with bool case"
+
+- source_file: CaseIntTest.elm
+  category: Case Expressions
+  name: Case on Int with Wildcard
+  patterns:
+    - name: int_case_expression
+      elm_source: |
+        describeNum n =
+            case n of
+                1 -> "one"
+                2 -> "two"
+                _ -> "other"
+      expected: "Function with int case"
+
+- source_file: CaseStringTest.elm
+  category: Case Expressions
+  name: Case on String with Wildcard
+  patterns:
+    - name: string_case_expression
+      elm_source: |
+        strToNum s =
+            case s of
+                "one" -> 1
+                "two" -> 2
+                _ -> 0
+      expected: "Function with string case"
+
+- source_file: CaseListTest.elm
+  category: Case Expressions
+  name: Case on List Pattern
+  patterns:
+    - name: list_case_expression
+      elm_source: |
+        describeList list =
+            case list of
+                [] -> "empty"
+                [_] -> "one"
+                _ -> "many"
+      expected: "Function with list case"
+
+- source_file: CaseMaybeTest.elm
+  category: Case Expressions
+  name: Case on Maybe Type
+  patterns:
+    - name: maybe_case_expression
+      elm_source: |
+        maybeToInt maybe =
+            case maybe of
+                Just x -> x
+                Nothing -> -1
+      expected: "Function with maybe case"
+
+- source_file: CaseCustomTypeTest.elm
+  category: Case Expressions
+  name: Case on Custom Type
+  patterns:
+    - name: custom_type_case_expression
+      elm_source: |
+        type Shape
+            = Circle Int
+            | Rectangle Int Int
+
+        area shape =
+            case shape of
+                Circle r -> r * r
+                Rectangle w h -> w * h
+      expected: "Function with custom type case"
+
+- source_file: CaseDefaultTest.elm
+  category: Case Expressions
+  name: Case with Wildcard Default
+  patterns:
+    - name: wildcard_default_case
+      elm_source: |
+        classify n =
+            case n of
+                42 -> "special"
+                _ -> "normal"
+      expected: "Function with wildcard case"
+
+- source_file: CaseNestedTest.elm
+  category: Case Expressions
+  name: Nested Case Expressions
+  patterns:
+    - name: nested_case_expression
+      elm_source: |
+        describe a b =
+            case a of
+                Just _ ->
+                    case b of
+                        Just _ -> "both"
+                        Nothing -> "first"
+                Nothing ->
+                    case b of
+                        Just _ -> "second"
+                        Nothing -> "neither"
+      expected: "Function with nested case"
+
+- source_file: CaseDeeplyNestedTest.elm
+  category: Case Expressions
+  name: Three-Level Nested Case Expressions
+  patterns:
+    - name: deeply_nested_case
+      elm_source: |
+        describeThree a b c =
+            case a of
+                Just _ ->
+                    case b of
+                        Just _ ->
+                            case c of
+                                Just _ -> "all"
+                                Nothing -> "two"
+                        Nothing -> "one"
+                Nothing -> "none"
+      expected: "Function with deeply nested case"
+
+- source_file: CaseManyBranchesTest.elm
+  category: Case Expressions
+  name: Case with Many Branches
+  patterns:
+    - name: many_branches_case
+      elm_source: |
+        dayName n =
+            case n of
+                1 -> "Monday"
+                2 -> "Tuesday"
+                3 -> "Wednesday"
+                4 -> "Thursday"
+                5 -> "Friday"
+                6 -> "Saturday"
+                7 -> "Sunday"
+                _ -> "Unknown"
+      expected: "Function with many-branch case"
+
+# =============================================================================
+# FUNCTIONS
+# =============================================================================
+
+- source_file: FunctionBasicTest.elm
+  category: Functions
+  name: Basic Function Definition
+  patterns:
+    - name: basic_functions
+      elm_source: |
+        add a b = a + b
+        double x = x * 2
+        identity x = x
+      expected: "Basic function definitions"
+
+- source_file: FunctionMultiArgTest.elm
+  category: Functions
+  name: Multi-Argument Function
+  patterns:
+    - name: multi_arg_functions
+      elm_source: |
+        addThree a b c = a + b + c
+        addFour a b c d = a + b + c + d
+        addFive a b c d e = a + b + c + d + e
+      expected: "Multi-argument function definitions"
+
+- source_file: AnonymousFunctionTest.elm
+  category: Functions
+  name: Anonymous Functions (Lambdas)
+  patterns:
+    - name: lambda_with_list_map
+      elm_source: |
+        List.map (\x -> x * 2) [1, 2, 3]
+      expected: "[2, 4, 6]"
+    - name: lambda_with_list_foldl
+      elm_source: |
+        List.foldl (\x acc -> x + acc) 0 [1, 2, 3, 4, 5]
+      expected: "15"
+    - name: lambda_with_list_filter
+      elm_source: |
+        List.filter (\x -> modBy 2 x == 0) [1, 2, 3, 4, 5]
+      expected: "[2, 4]"
+
+- source_file: HigherOrderTest.elm
+  category: Functions
+  name: Higher-Order Functions
+  patterns:
+    - name: higher_order_apply
+      elm_source: |
+        apply f x = f x
+        twice f x = f (f x)
+        double x = x * 2
+        square x = x * x
+      expected: "Higher-order function definitions"
+
+- source_file: PartialApplicationTest.elm
+  category: Functions
+  name: Partial Application (Currying)
+  patterns:
+    - name: partial_application
+      elm_source: |
+        add a b = a + b
+        multiply a b = a * b
+
+        let
+            add5 = add 5
+            triple = multiply 3
+            addOne = add 1
+        in
+        (add5 10, triple 4, addOne 100)
+      expected: "(15, 12, 101)"
+
+- source_file: PartialAppChainTest.elm
+  category: Functions
+  name: Chained Partial Application
+  patterns:
+    - name: chained_partial_application
+      elm_source: |
+        addThree a b c = a + b + c
+
+        let
+            addTo3 = addThree 3
+            addTo3And4 = addTo3 4
+        in
+        addTo3And4 5
+      expected: "12"
+
+# =============================================================================
+# FUNCTION COMPOSITION AND PIPING
+# =============================================================================
+
+- source_file: CompositionTest.elm
+  category: Function Composition
+  name: Function Composition
+  patterns:
+    - name: forward_composition
+      elm_source: |
+        double x = x * 2
+        addOne x = x + 1
+
+        let
+            addOneThenDouble = addOne >> double
+        in
+        addOneThenDouble 4
+      expected: "10"
+    - name: backward_composition
+      elm_source: |
+        double x = x * 2
+        addOne x = x + 1
+
+        let
+            doubleThenAddOne = addOne << double
+        in
+        doubleThenAddOne 4
+      expected: "9"
+
+- source_file: PipelineTest.elm
+  category: Function Composition
+  name: Pipeline Operations
+  patterns:
+    - name: forward_pipe
+      elm_source: |
+        double x = x * 2
+        addOne x = x + 1
+
+        5 |> double |> addOne |> addOne
+      expected: "12"
+    - name: backward_pipe
+      elm_source: |
+        double x = x * 2
+        addOne x = x + 1
+
+        double <| addOne <| 4
+      expected: "10"
+
+# =============================================================================
+# LET EXPRESSIONS
+# =============================================================================
+
+- source_file: LetBasicTest.elm
+  category: Let Expressions
+  name: Basic Let Bindings
+  patterns:
+    - name: basic_let_bindings
+      elm_source: |
+        let
+            x = 2
+            y = 3
+            result1 = x + y
+            greeting = "hello"
+            name = "world"
+            result2 = greeting ++ " " ++ name
+        in
+        (result1, result2)
+      expected: "(5, \"hello world\")"
+
+- source_file: LetMultipleTest.elm
+  category: Let Expressions
+  name: Multiple Let Bindings
+  patterns:
+    - name: multiple_let_bindings
+      elm_source: |
+        let
+            a = 1
+            b = 2
+            c = 3
+            d = 4
+            e = 5
+            sum = a + b + c + d + e
+            product = a * b * c * d * e
+        in
+        (sum, product)
+      expected: "(15, 120)"
+
+- source_file: LetNestedTest.elm
+  category: Let Expressions
+  name: Nested Let Expressions
+  patterns:
+    - name: nested_let
+      elm_source: |
+        let
+            outer =
+                let
+                    inner = 10
+                in
+                inner * 3
+        in
+        outer
+      expected: "30"
+
+- source_file: LetDestructuringTest.elm
+  category: Let Expressions
+  name: Pattern Destructuring in Let
+  patterns:
+    - name: tuple_destructuring
+      elm_source: |
+        let
+            (first, second) = (1, 2)
+            (a, b, c) = (10, 20, 30)
+        in
+        (first, second, a)
+      expected: "(1, 2, 10)"
+
+# =============================================================================
+# RECURSION
+# =============================================================================
+
+- source_file: RecursiveFactorialTest.elm
+  category: Recursion
+  name: Simple Recursion (Factorial)
+  patterns:
+    - name: factorial_recursion
+      elm_source: |
+        factorial n =
+            if n <= 1 then
+                1
+            else
+                n * factorial (n - 1)
+      expected: "Recursive factorial function"
+
+- source_file: RecursiveFibonacciTest.elm
+  category: Recursion
+  name: Multiple Recursive Calls (Fibonacci)
+  patterns:
+    - name: fibonacci_recursion
+      elm_source: |
+        fib n =
+            if n <= 0 then
+                0
+            else if n == 1 then
+                1
+            else
+                fib (n - 1) + fib (n - 2)
+      expected: "Recursive fibonacci function"
+
+- source_file: RecursiveListLengthTest.elm
+  category: Recursion
+  name: Recursive List Traversal
+  patterns:
+    - name: list_length_recursion
+      elm_source: |
+        myLength list =
+            case list of
+                [] -> 0
+                _ :: rest -> 1 + myLength rest
+      expected: "Recursive list length function"
+
+- source_file: TailRecursiveSumTest.elm
+  category: Recursion
+  name: Tail Recursion with Accumulator
+  patterns:
+    - name: tail_recursive_sum
+      elm_source: |
+        sumHelper n acc =
+            if n <= 0 then
+                acc
+            else
+                sumHelper (n - 1) (acc + n)
+
+        sumTo n = sumHelper n 0
+      expected: "Tail recursive sum function"
+
+- source_file: MutualRecursionTest.elm
+  category: Recursion
+  name: Mutually Recursive Functions
+  patterns:
+    - name: mutual_recursion
+      elm_source: |
+        isEven n =
+            if n == 0 then
+                True
+            else
+                isOdd (n - 1)
+
+        isOdd n =
+            if n == 0 then
+                False
+            else
+                isEven (n - 1)
+      expected: "Mutually recursive even/odd functions"
+
+# =============================================================================
+# RECORDS
+# =============================================================================
+
+- source_file: RecordCreateTest.elm
+  category: Records
+  name: Record Creation
+  patterns:
+    - name: simple_record_creation
+      elm_source: |
+        { x = 1, y = 2 }
+      expected: "{ x = 1, y = 2 }"
+    - name: record_with_string
+      elm_source: |
+        { name = "Alice", age = 30 }
+      expected: "{ age = 30, name = \"Alice\" }"
+
+- source_file: RecordAccessTest.elm
+  category: Records
+  name: Record Field Access
+  patterns:
+    - name: simple_field_access
+      elm_source: |
+        let point = { x = 1, y = 2 }
+        in (point.x, point.y)
+      expected: "(1, 2)"
+    - name: string_field_access
+      elm_source: |
+        let person = { name = "Alice", age = 30 }
+        in person.name
+      expected: "\"Alice\""
+
+- source_file: RecordAccessorFunctionTest.elm
+  category: Records
+  name: Record Accessor Functions
+  patterns:
+    - name: accessor_with_list_map
+      elm_source: |
+        let
+            people = [ { name = "Alice", age = 30 }, { name = "Bob", age = 25 } ]
+        in
+        List.map .name people
+      expected: "[\"Alice\", \"Bob\"]"
+    - name: accessor_with_points
+      elm_source: |
+        let
+            points = [ { x = 1, y = 2 }, { x = 4, y = 5 } ]
+        in
+        List.map .x points
+      expected: "[1, 4]"
+
+- source_file: RecordUpdateTest.elm
+  category: Records
+  name: Record Update Syntax
+  patterns:
+    - name: single_field_update
+      elm_source: |
+        let original = { x = 1, y = 2 }
+        in { original | x = 10 }
+      expected: "{ x = 10, y = 2 }"
+
+# =============================================================================
+# CUSTOM TYPES
+# =============================================================================
+
+- source_file: CustomTypeBasicTest.elm
+  category: Custom Types
+  name: Basic Custom Type Constructors
+  patterns:
+    - name: simple_variants
+      elm_source: |
+        type Color = Red | Green | Blue
+
+        (Red, Green, Blue)
+      expected: "(Red, Green, Blue)"
+
+- source_file: CustomTypeMultiFieldTest.elm
+  category: Custom Types
+  name: Custom Type with Multiple Fields
+  patterns:
+    - name: multi_field_variant
+      elm_source: |
+        type Person = Person String Int Bool
+
+        Person "Alice" 30 True
+      expected: "Person \"Alice\" 30 True"
+
+- source_file: CustomTypeNestedTest.elm
+  category: Custom Types
+  name: Nested/Recursive Custom Types
+  patterns:
+    - name: tree_structure
+      elm_source: |
+        type Tree a = Leaf a | Node (Tree a) (Tree a)
+
+        Node (Leaf 1) (Node (Leaf 2) (Leaf 3))
+      expected: "Node (Leaf 1) (Node (Leaf 2) (Leaf 3))"
+
+- source_file: CustomTypePatternTest.elm
+  category: Custom Types
+  name: Pattern Matching Custom Types
+  patterns:
+    - name: extract_from_custom_type
+      elm_source: |
+        type Person = Person String Int
+
+        let
+            getName (Person name _) = name
+            getAge (Person _ age) = age
+        in
+        (getName (Person "Alice" 30), getAge (Person "Alice" 30))
+      expected: "(\"Alice\", 30)"
+
+# =============================================================================
+# COMPARISON OPERATIONS
+# =============================================================================
+
+- source_file: EqualityTest.elm
+  category: Comparison
+  name: Equality and Inequality
+  patterns:
+    - name: int_equality
+      elm_source: |
+        5 == 5
+      expected: "True"
+    - name: int_inequality
+      elm_source: |
+        5 == 6
+      expected: "False"
+    - name: int_not_equal
+      elm_source: |
+        5 /= 6
+      expected: "True"
+    - name: list_equality
+      elm_source: |
+        [1, 2, 3] == [1, 2, 3]
+      expected: "True"
+
+- source_file: CompareIntTest.elm
+  category: Comparison
+  name: Integer compare Function
+  patterns:
+    - name: compare_int_lt
+      elm_source: |
+        compare 1 2
+      expected: "LT"
+    - name: compare_int_gt
+      elm_source: |
+        compare 3 2
+      expected: "GT"
+    - name: compare_int_eq
+      elm_source: |
+        compare 5 5
+      expected: "EQ"
+
+- source_file: CompareFloatTest.elm
+  category: Comparison
+  name: Float compare Function
+  patterns:
+    - name: compare_float_lt
+      elm_source: |
+        compare 1.5 2.5
+      expected: "LT"
+    - name: compare_float_gt
+      elm_source: |
+        compare 3.14 2.71
+      expected: "GT"
+    - name: compare_float_eq
+      elm_source: |
+        compare 5.0 5.0
+      expected: "EQ"
+
+- source_file: CompareStringTest.elm
+  category: Comparison
+  name: String compare Function
+  patterns:
+    - name: compare_string_lt
+      elm_source: |
+        compare "apple" "banana"
+      expected: "LT"
+    - name: compare_string_gt
+      elm_source: |
+        compare "zebra" "ant"
+      expected: "GT"
+    - name: compare_string_eq
+      elm_source: |
+        compare "hello" "hello"
+      expected: "EQ"
+
+- source_file: CompareCharTest.elm
+  category: Comparison
+  name: Char compare Function
+  patterns:
+    - name: compare_char_lt
+      elm_source: |
+        compare 'a' 'b'
+      expected: "LT"
+    - name: compare_char_gt
+      elm_source: |
+        compare 'z' 'a'
+      expected: "GT"
+    - name: compare_char_eq
+      elm_source: |
+        compare 'x' 'x'
+      expected: "EQ"
+
+- source_file: ComparableMinMaxTest.elm
+  category: Comparison
+  name: Min/Max on Comparable Types
+  patterns:
+    - name: min_string
+      elm_source: |
+        min "apple" "zebra"
+      expected: "\"apple\""
+    - name: max_string
+      elm_source: |
+        max "apple" "zebra"
+      expected: "\"zebra\""
+    - name: min_char
+      elm_source: |
+        min 'a' 'z'
+      expected: "'a'"
+    - name: max_char
+      elm_source: |
+        max 'a' 'z'
+      expected: "'z'"
+
+# =============================================================================
+# TYPE CONVERSION
+# =============================================================================
+
+- source_file: ToFloatTest.elm
+  category: Type Conversion
+  name: Int to Float Conversion
+  patterns:
+    - name: toFloat_positive
+      elm_source: |
+        toFloat 42
+      expected: "42"
+    - name: toFloat_negative
+      elm_source: |
+        toFloat -10
+      expected: "-10"
+    - name: toFloat_zero
+      elm_source: |
+        toFloat 0
+      expected: "0"
+
+- source_file: CeilingToIntTest.elm
+  category: Type Conversion
+  name: Float to Int via Ceiling
+  patterns:
+    - name: ceiling_positive
+      elm_source: |
+        ceiling 2.3
+      expected: "3"
+    - name: ceiling_negative
+      elm_source: |
+        ceiling -2.7
+      expected: "-2"
+
+- source_file: FloorToIntTest.elm
+  category: Type Conversion
+  name: Float to Int via Floor
+  patterns:
+    - name: floor_positive
+      elm_source: |
+        floor 2.7
+      expected: "2"
+    - name: floor_negative
+      elm_source: |
+        floor -2.3
+      expected: "-3"
+
+- source_file: RoundToIntTest.elm
+  category: Type Conversion
+  name: Float to Int via Round
+  patterns:
+    - name: round_high_positive
+      elm_source: |
+        round 2.7
+      expected: "3"
+    - name: round_low_positive
+      elm_source: |
+        round 2.3
+      expected: "2"
+    - name: round_negative
+      elm_source: |
+        round -2.7
+      expected: "-3"
+
+- source_file: TruncateToIntTest.elm
+  category: Type Conversion
+  name: Float to Int via Truncate
+  patterns:
+    - name: truncate_positive
+      elm_source: |
+        truncate 2.7
+      expected: "2"
+    - name: truncate_negative
+      elm_source: |
+        truncate -2.7
+      expected: "-2"
+
+# =============================================================================
+# BASIC TESTS
+# =============================================================================
+
+- source_file: HelloTest.elm
+  category: Basic Operations
+  name: Simple String Output
+  patterns:
+    - name: hello_string
+      elm_source: |
+        let msg = "hello"
+        in Debug.log "HelloTest" msg
+      expected: "\"hello\""
+
+- source_file: AddTest.elm
+  category: Basic Operations
+  name: Numeric Literal Output
+  patterns:
+    - name: numeric_literal
+      elm_source: |
+        let result = 42
+        in Debug.log "AddTest" result
+      expected: "42"

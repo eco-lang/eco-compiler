@@ -1,0 +1,3246 @@
+# elm-test Test Patterns
+# This documents all test patterns in /work/compiler/tests/Compiler/
+# Tests use SourceBuilder helpers to programmatically build AST
+# elm_source shows equivalent Elm code for what the AST constructs
+
+# =============================================================================
+# LiteralTests.elm - 40 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/LiteralTests.elm
+  category: Literals - Int
+  name: Int Literals
+  patterns:
+    - name: Random int
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = n  -- where n is fuzzed int
+    - name: Zero
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 0
+    - name: Positive int
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 42
+    - name: Negative int
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = -42
+    - name: Large positive int
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 2147483647
+    - name: Large negative int
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = -2147483648
+    - name: Int one
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 1
+    - name: Int negative one
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = -1
+
+- source_file: compiler/tests/Compiler/LiteralTests.elm
+  category: Literals - Float
+  name: Float Literals
+  patterns:
+    - name: Random float
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = f  -- where f is fuzzed float
+    - name: Zero float
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 0.0
+    - name: Small positive float
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 0.001
+    - name: Large float
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 1.0e10
+    - name: Negative float
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = -3.14
+    - name: Pi
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 3.14159265359
+    - name: Scientific notation positive
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 1.5e8
+    - name: Scientific notation negative exponent
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 1.5e-8
+
+- source_file: compiler/tests/Compiler/LiteralTests.elm
+  category: Literals - String
+  name: String Literals
+  patterns:
+    - name: Random string
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = "s"  -- where s is fuzzed string
+    - name: Empty string
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = ""
+    - name: Single char string
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = "a"
+    - name: Hello world
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = "Hello, World!"
+    - name: String with escapes
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = "hello\nworld\ttab"
+    - name: Unicode string
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = "hello 世界"
+    - name: String with quotes
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = "He said \"hello\""
+    - name: Long string
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = "aaaa...aaaa"  -- 100 'a's
+
+- source_file: compiler/tests/Compiler/LiteralTests.elm
+  category: Literals - Char
+  name: Char Literals
+  patterns:
+    - name: Random char
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 'c'  -- where c is fuzzed char
+    - name: Letter char
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 'a'
+    - name: Digit char
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = '5'
+    - name: Symbol char
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = '@'
+    - name: Space char
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = ' '
+    - name: Uppercase char
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 'Z'
+
+- source_file: compiler/tests/Compiler/LiteralTests.elm
+  category: Literals - Unit
+  name: Unit Expressions
+  patterns:
+    - name: Unit expression
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = ()
+    - name: Multiple unit modules
+      elm_source: |
+        module TestA exposing (testValue)
+        testValue = ()
+
+        module TestB exposing (testValue)
+        testValue = ()
+
+- source_file: compiler/tests/Compiler/LiteralTests.elm
+  category: Literals - Bool
+  name: Boolean Literals
+  patterns:
+    - name: "True"
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = True
+    - name: "False"
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = False
+    - name: Random bool
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = b  -- where b is fuzzed bool
+    - name: Two bools in modules
+      elm_source: |
+        module TestA exposing (testValue)
+        testValue = b1  -- fuzzed
+
+        module TestB exposing (testValue)
+        testValue = b2  -- fuzzed
+
+- source_file: compiler/tests/Compiler/LiteralTests.elm
+  category: Literals - Combined
+  name: Combined Literal Types
+  patterns:
+    - name: Int and float in modules
+      elm_source: |
+        module TestA exposing (testValue)
+        testValue = n  -- fuzzed int
+
+        module TestB exposing (testValue)
+        testValue = f  -- fuzzed float
+    - name: String and char in modules
+      elm_source: |
+        module TestA exposing (testValue)
+        testValue = "s"
+
+        module TestB exposing (testValue)
+        testValue = 'c'
+    - name: Int with unit in modules
+      elm_source: |
+        module TestA exposing (testValue)
+        testValue = n
+
+        module TestB exposing (testValue)
+        testValue = ()
+    - name: All literal types
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (42, 3.14, "hello", 'x', (), True)
+
+# =============================================================================
+# BinopTests.elm - 52 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/BinopTests.elm
+  category: Binary Operations - Arithmetic
+  name: Arithmetic Binops
+  patterns:
+    - name: Simple addition
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 1 + 2
+    - name: Simple subtraction
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 5 - 3
+    - name: Simple multiplication
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 4 * 5
+    - name: Simple division
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 10.0 / 2.0
+    - name: Integer division
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 10 // 3
+    - name: Modulo
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = modBy 3 10
+    - name: Power
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 2.0 ^ 3.0
+    - name: Fuzzed addition
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = a + b  -- fuzzed int values
+
+- source_file: compiler/tests/Compiler/BinopTests.elm
+  category: Binary Operations - Comparison
+  name: Comparison Binops
+  patterns:
+    - name: Equals
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 1 == 1
+    - name: Not equals
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 1 /= 2
+    - name: Less than
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 1 < 2
+    - name: Greater than
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 2 > 1
+    - name: Less than or equal
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 1 <= 1
+    - name: Greater than or equal
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 2 >= 1
+    - name: Fuzzed comparison
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = a < b  -- fuzzed int values
+    - name: Compare on strings
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = "a" < "b"
+
+- source_file: compiler/tests/Compiler/BinopTests.elm
+  category: Binary Operations - Logical
+  name: Logical Binops
+  patterns:
+    - name: And
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = True && False
+    - name: Or
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = True || False
+    - name: Fuzzed and
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = a && b  -- fuzzed bool values
+    - name: Fuzzed or
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = a || b  -- fuzzed bool values
+    - name: Chained and
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = True && True && True
+    - name: Chained or
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = False || False || True
+
+- source_file: compiler/tests/Compiler/BinopTests.elm
+  category: Binary Operations - String
+  name: String Binops
+  patterns:
+    - name: String concat
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = "hello" ++ " world"
+    - name: Fuzzed string concat
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = a ++ b  -- fuzzed string values
+    - name: Multiple string concat
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = "a" ++ "b" ++ "c"
+    - name: String concat with empty
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = "" ++ "test"
+
+- source_file: compiler/tests/Compiler/BinopTests.elm
+  category: Binary Operations - List
+  name: List Binops
+  patterns:
+    - name: List append
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [1, 2] ++ [3, 4]
+    - name: Cons operator
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 1 :: [2, 3]
+    - name: Fuzzed list append
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = ints ++ [0]  -- fuzzed list
+    - name: Fuzzed cons
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = n :: []  -- fuzzed int
+
+- source_file: compiler/tests/Compiler/BinopTests.elm
+  category: Binary Operations - Chained
+  name: Chained Binops
+  patterns:
+    - name: Three-element addition chain
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 1 + 2 + 3
+    - name: Mixed arithmetic chain
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 1 + 2 * 3
+    - name: Long chain
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 1 + 2 + 3 + 4 + 5
+    - name: Fuzzed chain
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = a + b + c  -- fuzzed values
+    - name: Chain of comparisons
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 1 < 2
+    - name: Chain with different operators
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = 1 + 2 - 3 * 4
+
+- source_file: compiler/tests/Compiler/BinopTests.elm
+  category: Binary Operations - Nested
+  name: Nested Binops
+  patterns:
+    - name: Binop in tuple
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (1 + 2, 3)
+    - name: Binop in list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [1 + 2, 3]
+    - name: Multiple binops in tuple
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (1 + 2, 3 * 4)
+    - name: Binop with variable operands
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                x = 1
+                y = 2
+            in
+            x + y
+    - name: Binop with negate
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = -1 + 2
+    - name: Complex nested binops
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (1 + 2) * (3 + 4)
+
+- source_file: compiler/tests/Compiler/BinopTests.elm
+  category: Binary Operations - With Complex Expressions
+  name: Binops with Complex Expressions
+  patterns:
+    - name: Binop with function call
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let f x = x
+            in f 1 + 2
+    - name: Binop with lambda
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (\x -> x, \y -> y)
+    - name: Binop with record access
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let r = { x = 1, y = 2 }
+            in r.x + r.y
+    - name: Binop with if expression
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (if True then 1 else 0) + 2
+    - name: Binop inside let body
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = 1
+            in x + 2
+    - name: Binop with parens
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (1 + 2) * 3
+
+- source_file: compiler/tests/Compiler/BinopTests.elm
+  category: Binary Operations - Fuzzed
+  name: Fuzzed Binop Tests
+  patterns:
+    - name: Three fuzzed ints in chain
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = a + b + c  -- fuzzed
+    - name: Fuzzed float division
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = a / b  -- fuzzed floats
+    - name: Fuzzed string comparison
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = a == b  -- fuzzed strings
+    - name: Fuzzed bool chain
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = a && b || c  -- fuzzed bools
+
+# =============================================================================
+# OperatorTests.elm - 20 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/OperatorTests.elm
+  category: Control Flow - If Expression
+  name: If Expressions
+  patterns:
+    - name: Simple if
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = if True then 1 else 0
+    - name: If with fuzzed condition
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = if b then 1 else 0  -- fuzzed bool
+    - name: If with fuzzed branches
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = if True then a else b  -- fuzzed int values
+    - name: If returning tuples
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = if True then (1, 2) else (3, 4)
+    - name: If returning lists
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = if False then [1, 2] else []
+    - name: Nested if
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = if True then (if True then 1 else 2) else 0
+    - name: If in else branch
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = if False then 1 else (if True then 2 else 3)
+    - name: Deeply nested if
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = if True then 1 else (if True then 2 else (if True then 3 else 4))
+    - name: If with variable condition
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let cond = True
+            in if cond then 1 else 0
+    - name: If with all fuzzed values
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = if cond then thenVal else elseVal  -- all fuzzed
+
+- source_file: compiler/tests/Compiler/OperatorTests.elm
+  category: Operators - Unary Negate
+  name: Negate Expressions
+  patterns:
+    - name: Negate int
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = -42
+    - name: Negate fuzzed int
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = -n  -- fuzzed int
+    - name: Negate float
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = -3.14
+    - name: Negate fuzzed float
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = -f  -- fuzzed float
+    - name: Double negate
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = --42
+    - name: Negate variable
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = 42
+            in -x
+
+- source_file: compiler/tests/Compiler/OperatorTests.elm
+  category: Combined - If and Negate
+  name: Combined Tests
+  patterns:
+    - name: If with negate condition
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = if True then -1 else -2
+    - name: Negate inside if branches
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = if True then -1 else 1
+    - name: If inside tuple with negate
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = ((if True then 1 else 0), -5)
+    - name: Multiple ifs and negates in list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [(if True then 1 else 0), (if False then 2 else 3), -4, -5]
+
+# =============================================================================
+# CaseTests.elm - 32 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/CaseTests.elm
+  category: Case - Simple
+  name: Simple Case Expressions
+  patterns:
+    - name: Case on variable with wildcard
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = 42
+            in case x of
+                _ -> 0
+    - name: Case with single variable pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = 42
+            in case x of
+                y -> y
+    - name: Case with two branches
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = 1
+            in case x of
+                0 -> "zero"
+                _ -> "other"
+    - name: Case with three branches
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = 1
+            in case x of
+                0 -> "zero"
+                1 -> "one"
+                _ -> "other"
+    - name: Case returning complex expression
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = 42
+            in case x of
+                y -> (y, [y])
+
+- source_file: compiler/tests/Compiler/CaseTests.elm
+  category: Case - Literal Pattern Matching
+  name: Literal Pattern Matching
+  patterns:
+    - name: Case on int literals
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case 5 of
+                0 -> "zero"
+                1 -> "one"
+                5 -> "five"
+                _ -> "other"
+    - name: Case on string literals
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case "hello" of
+                "hello" -> 1
+                "world" -> 2
+                _ -> 0
+    - name: Case with many int branches
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case 5 of
+                0 -> 0
+                1 -> 10
+                2 -> 20
+                3 -> 30
+                4 -> 40
+                5 -> 50
+                6 -> 60
+                7 -> 70
+                8 -> 80
+                9 -> 90
+                _ -> -1
+    - name: Case on fuzzed string
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case fuzzedStr of
+                "" -> 0
+                x -> 1
+    - name: Case with negative int patterns
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case -5 of
+                -1 -> "minus one"
+                0 -> "zero"
+                1 -> "one"
+                _ -> "other"
+
+- source_file: compiler/tests/Compiler/CaseTests.elm
+  category: Case - Tuple Pattern Matching
+  name: Tuple Pattern Matching
+  patterns:
+    - name: Case on tuple with var patterns
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case (1, 2) of
+                (a, b) -> (b, a)
+    - name: Case on tuple with literal patterns
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case (0, 1) of
+                (0, 0) -> "both zero"
+                (0, y) -> "first zero"
+                (x, 0) -> "second zero"
+                _ -> "neither"
+    - name: Case on fuzzed tuple
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case (a, b) of
+                (x, y) -> (y, x)  -- fuzzed values
+    - name: Case on nested tuples
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case ((1, 2), 3) of
+                ((a, b), c) -> a
+
+- source_file: compiler/tests/Compiler/CaseTests.elm
+  category: Case - List Pattern Matching
+  name: List Pattern Matching
+  patterns:
+    - name: Case on empty list pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case [] of
+                [] -> "empty"
+                _ -> "not empty"
+    - name: Case on cons pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case [1, 2] of
+                h :: t -> h
+                [] -> 0
+    - name: Case on fixed-length list pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case [1, 2, 3] of
+                [a, b, c] -> b
+                _ -> 0
+    - name: Case with nested cons patterns
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case [1, 2, 3] of
+                a :: (b :: rest) -> b
+                _ -> 0
+
+- source_file: compiler/tests/Compiler/CaseTests.elm
+  category: Case - Record Pattern Matching
+  name: Record Pattern Matching
+  patterns:
+    - name: Case on single-field record pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case { x = 10 } of
+                { x } -> x
+    - name: Case on multi-field record pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case { x = 10, y = 20 } of
+                { x, y } -> (x, y)
+    - name: Case on fuzzed record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case { value = n } of
+                { value } -> value  -- n fuzzed
+    - name: Case on partial record pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case { a = 1, b = 2, c = 3 } of
+                { a, c } -> (a, c)
+
+- source_file: compiler/tests/Compiler/CaseTests.elm
+  category: Case - Alias Pattern Matching
+  name: Alias Pattern Matching
+  patterns:
+    - name: Case with simple alias pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case 42 of
+                x as whole -> (x, whole)
+    - name: Case with tuple alias pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case (1, 2) of
+                (a, b) as pair -> pair
+    - name: Case with list alias pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case [1, 2] of
+                (h :: t) as list -> list
+                [] -> []
+    - name: Case with fuzzed alias pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case n of
+                x as y -> (x, y)  -- n fuzzed
+
+- source_file: compiler/tests/Compiler/CaseTests.elm
+  category: Case - Nested
+  name: Nested Case Expressions
+  patterns:
+    - name: Case inside case
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case 2 of
+                0 -> "outer zero"
+                _ ->
+                    case 1 of
+                        0 -> "zero"
+                        _ -> "other"
+    - name: Case in branch body
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case (1, 2) of
+                (a, b) ->
+                    case a of
+                        0 -> b
+                        _ -> a
+
+- source_file: compiler/tests/Compiler/CaseTests.elm
+  category: Case - Custom Type
+  name: Custom Type Pattern Matching
+  patterns:
+    - name: Case on custom type with multiple constructors
+      elm_source: |
+        module Test exposing (testValue)
+
+        type Shape
+            = Circle Int
+            | Rectangle Int Int
+
+        testValue shape =
+            case shape of
+                Circle r -> r * r
+                Rectangle w h -> w * h
+    - name: Case on custom type with payload extraction
+      elm_source: |
+        module Test exposing (testValue)
+
+        type Wrapper
+            = Wrap Int
+
+        testValue w =
+            case w of
+                Wrap x -> x
+
+# =============================================================================
+# ListTests.elm - 31 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/ListTests.elm
+  category: Lists - Empty
+  name: Empty Lists
+  patterns:
+    - name: Empty list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = []
+    - name: Two empty lists
+      elm_source: |
+        module TestA exposing (testValue)
+        testValue = []
+
+        module TestB exposing (testValue)
+        testValue = []
+    - name: Empty int list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue : List Int
+        testValue = []
+    - name: Empty string list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue : List String
+        testValue = []
+
+- source_file: compiler/tests/Compiler/ListTests.elm
+  category: Lists - Single Element
+  name: Single Element Lists
+  patterns:
+    - name: Single int list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [n]  -- fuzzed int
+    - name: Single string list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [s]  -- fuzzed string
+    - name: Single float list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [f]  -- fuzzed float
+    - name: Single char list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [c]  -- fuzzed char
+
+- source_file: compiler/tests/Compiler/ListTests.elm
+  category: Lists - Multiple Element
+  name: Multiple Element Lists
+  patterns:
+    - name: Two-element int list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [a, b]  -- fuzzed ints
+    - name: Three-element int list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [a, b, c]  -- fuzzed ints
+    - name: Five-element int list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [1, 2, 3, 4, 5]
+    - name: Two-element string list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [a, b]  -- fuzzed strings
+    - name: Three-element float list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [a, b, c]  -- fuzzed floats
+    - name: Ten-element int list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    - name: Large int list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [1, 2, 3, ..., 100]  -- 100 elements
+
+- source_file: compiler/tests/Compiler/ListTests.elm
+  category: Lists - Nested
+  name: Nested Lists
+  patterns:
+    - name: List of lists
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [[1, 2], [3, 4]]
+    - name: Deeply nested list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [[[1]]]
+    - name: List of tuples
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [(1, "a"), (2, "b")]
+    - name: List of records
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [{ x = 1 }, { x = 2 }]
+
+- source_file: compiler/tests/Compiler/ListTests.elm
+  category: Lists - Mixed
+  name: Mixed Element Types
+  patterns:
+    - name: List of int tuples
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [(1, 2), (3, 4)]
+    - name: List of string tuples
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [("a", "b"), ("c", "d")]
+    - name: List with nested lists of different sizes
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [[1, 2], [3], []]
+    - name: List of records with multiple fields
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [{ x = 1, y = "a" }, { x = 2, y = "b" }]
+
+# =============================================================================
+# TupleTests.elm - 31 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/TupleTests.elm
+  category: Tuples - 2-Tuples
+  name: 2-Tuples
+  patterns:
+    - name: Pair of ints
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (a, b)  -- fuzzed ints
+    - name: Pair of floats
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (a, b)  -- fuzzed floats
+    - name: Pair of strings
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (a, b)  -- fuzzed strings
+    - name: Pair with units
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = ((), ())
+    - name: Pair of bools
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (a, b)  -- fuzzed bools
+    - name: Pair of chars
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (a, b)  -- fuzzed chars
+
+- source_file: compiler/tests/Compiler/TupleTests.elm
+  category: Tuples - 3-Tuples
+  name: 3-Tuples
+  patterns:
+    - name: Triple of ints
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (a, b, c)  -- fuzzed ints
+    - name: Triple of mixed types
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (a, b, c)  -- int, string, float (fuzzed)
+    - name: Triple with bools
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (True, False, True)
+    - name: Triple of strings
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (a, b, c)  -- fuzzed strings
+    - name: Triple of floats
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (a, b, c)  -- fuzzed floats
+    - name: Triple with units
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = ((), (), ())
+
+- source_file: compiler/tests/Compiler/TupleTests.elm
+  category: Tuples - Nested
+  name: Nested Tuples
+  patterns:
+    - name: Tuple containing tuple
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = ((1, 2), 3)
+    - name: Tuple containing nested tuples
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = ((1, 2), ("a", "b"))
+    - name: Deeply nested tuple
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (0, ((1, 2), 3))
+    - name: 3-tuple containing 2-tuples
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = ((1, 2), (3, 4), (5, 6))
+    - name: 2-tuple containing 3-tuples
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = ((1, 2, 3), (4, 5, 6))
+    - name: Triple nested three levels deep
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = ((1, 2, 3), 4, 5)
+
+- source_file: compiler/tests/Compiler/TupleTests.elm
+  category: Tuples - Mixed Types
+  name: Mixed Type Tuples
+  patterns:
+    - name: Int and String pair
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (n, s)  -- fuzzed int and string
+    - name: Tuple with list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = ([1, 2], "hello")
+    - name: Tuple with record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = ({ x = 10 }, 20)
+    - name: Tuple with char
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (c, 42)  -- fuzzed char
+    - name: Triple with list and record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = ([1], { y = "test" }, 5)
+    - name: Triple of int string float
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (n, s, f)  -- fuzzed
+
+# =============================================================================
+# RecordTests.elm - 39 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/RecordTests.elm
+  category: Records - Empty
+  name: Empty Records
+  patterns:
+    - name: Empty record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = {}
+    - name: Two empty records
+      elm_source: |
+        module TestA exposing (testValue)
+        testValue = {}
+
+        module TestB exposing (testValue)
+        testValue = {}
+
+- source_file: compiler/tests/Compiler/RecordTests.elm
+  category: Records - Single Field
+  name: Single Field Records
+  patterns:
+    - name: Record with int field
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { value = n }  -- fuzzed int
+    - name: Record with string field
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { name = s }  -- fuzzed string
+    - name: Record with float field
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { amount = f }  -- fuzzed float
+    - name: Record with bool field
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { active = b }  -- fuzzed bool
+    - name: Record with list field
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { items = [1, 2] }
+    - name: Record with tuple field
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { pair = (1, "a") }
+
+- source_file: compiler/tests/Compiler/RecordTests.elm
+  category: Records - Multi-Field
+  name: Multi-Field Records
+  patterns:
+    - name: Two-field record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { id = n, name = s }  -- fuzzed
+    - name: Three-field record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { id = n, name = s, active = b }  -- fuzzed
+    - name: Five-field record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { a = 1, b = 2, c = 3, d = 4, e = 5 }
+    - name: Record with mixed types
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { count = 42, name = "test", value = 3.14, enabled = True }
+    - name: Record with two int fields
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { x = a, y = b }  -- fuzzed ints
+    - name: Record with ten fields
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { field0 = 0, field1 = 1, field2 = 2, field3 = 3, field4 = 4, field5 = 5, field6 = 6, field7 = 7, field8 = 8, field9 = 9 }
+
+- source_file: compiler/tests/Compiler/RecordTests.elm
+  category: Records - Nested
+  name: Nested Records
+  patterns:
+    - name: Record containing record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { nested = { x = 10 } }
+    - name: Deeply nested record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { outer = { inner = { value = 42 } }, name = "test" }
+    - name: Record with list field nested
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { items = [1, 2, 3] }
+    - name: Record with tuple field nested
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { pair = (1, "one") }
+    - name: Multiple levels of nesting
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { x = { y = { z = 1 }, count = 2 }, label = "outer" }
+    - name: Record containing list of records
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { items = [{ id = 1 }, { id = 2 }] }
+
+- source_file: compiler/tests/Compiler/RecordTests.elm
+  category: Records - Access
+  name: Record Access
+  patterns:
+    - name: Access single field
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let r = { x = 10 }
+            in r.x
+    - name: Access from multi-field record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let r = { x = 10, y = 20 }
+            in r.y
+    - name: Chained access
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let r = { nested = { value = 42 } }
+            in r.nested.value
+    - name: Multiple accesses
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let r = { x = 1, y = 2 }
+            in (r.x, r.y)
+
+- source_file: compiler/tests/Compiler/RecordTests.elm
+  category: Records - Accessor Functions
+  name: Record Accessor Functions
+  patterns:
+    - name: Accessor function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = .x
+    - name: Different accessor function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = .name
+    - name: Multiple accessor functions
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (.x, .y)
+    - name: Accessor in list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [.a, .b, .c]
+
+- source_file: compiler/tests/Compiler/RecordTests.elm
+  category: Records - Update
+  name: Record Update
+  patterns:
+    - name: Update single field
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let r = { x = 10, y = 20 }
+            in { r | x = 100 }
+    - name: Update multiple fields
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let r = { x = 10, y = 20, z = 30 }
+            in { r | x = 100, z = 300 }
+    - name: Chained updates
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                r = { x = 1, y = 2 }
+                r2 = { r | x = 10 }
+            in
+            { r2 | y = 20 }
+    - name: Update with fuzzed value
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let r = { count = 0 }
+            in { r | count = n }  -- fuzzed
+    - name: Update all fields
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let r = { a = 1, b = 2, c = 3 }
+            in { r | a = 10, b = 20, c = 30 }
+
+# =============================================================================
+# FunctionTests.elm - 39 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/FunctionTests.elm
+  category: Functions - Lambda
+  name: Lambda Expressions
+  patterns:
+    - name: Identity lambda
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \x -> x
+    - name: Const lambda
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \x -> 42
+    - name: Two-argument lambda
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \x y -> x
+    - name: Three-argument lambda
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \a b c -> b
+    - name: Lambda returning tuple
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \x y -> (x, y)
+    - name: Lambda returning record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \x -> { value = x }
+    - name: Lambda returning list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \x y -> [x, y]
+    - name: Lambda with wildcard pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \_ -> 0
+
+- source_file: compiler/tests/Compiler/FunctionTests.elm
+  category: Functions - Call
+  name: Function Calls
+  patterns:
+    - name: Call with no args
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let f = \() -> 42
+            in f ()
+    - name: Call with one int arg
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let f = \x -> x
+            in f n  -- fuzzed
+    - name: Call with two args
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let f = \x y -> x
+            in f a b  -- fuzzed
+    - name: Call with three args
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let f = \x y z -> y
+            in f a b c  -- fuzzed
+    - name: Call with complex args
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let f = \x y -> x
+            in f (1, 2) ["a", "b"]
+    - name: Nested calls
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let f = \x -> x
+            in f (f 1)
+
+- source_file: compiler/tests/Compiler/FunctionTests.elm
+  category: Functions - Partial Application
+  name: Partial Application
+  patterns:
+    - name: Partially applied two-arg function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let f = \x y -> (x, y)
+            in f 1
+    - name: Partially applied three-arg function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let f = \a b c -> a
+            in f 1 2
+    - name: Chained partial application
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                f = \a b c -> a
+                p1 = f 1
+            in
+            p1 2
+    - name: Partial application with complex arg
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let f = \x y -> x
+            in f { value = 42 }
+
+- source_file: compiler/tests/Compiler/FunctionTests.elm
+  category: Functions - Nested
+  name: Nested Functions
+  patterns:
+    - name: Lambda returning lambda
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \x -> \y -> y
+    - name: Triple nested lambda
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \x -> \y -> \z -> z
+    - name: Lambda inside let inside lambda
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \x ->
+            let inner = \y -> y
+            in inner x
+    - name: Multiple lambdas in tuple
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (\x -> x, \y -> 0)
+    - name: Lambda in list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [\x -> x]
+    - name: Lambda in record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { fn = \x -> x }
+
+- source_file: compiler/tests/Compiler/FunctionTests.elm
+  category: Functions - Pattern Parameters
+  name: Functions with Pattern Parameters
+  patterns:
+    - name: Lambda with tuple pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \(x, y) -> (y, x)
+    - name: Lambda with record pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \{ x, y } -> x
+    - name: Lambda with mixed patterns
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \a (b, c) _ -> b
+    - name: Top-level function with patterns
+      elm_source: |
+        module Test exposing (swap)
+        swap (a, b) = (b, a)
+
+- source_file: compiler/tests/Compiler/FunctionTests.elm
+  category: Functions - Higher-Order
+  name: Higher-Order Functions
+  patterns:
+    - name: Apply function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let apply = \f x -> f x
+            in apply (\y -> y) 42
+    - name: Compose functions
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let compose = \f g x -> f (g x)
+            in compose
+    - name: Function returning function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let makeAdder = \n -> \x -> x
+            in makeAdder
+
+# =============================================================================
+# HigherOrderTests.elm - 37 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/HigherOrderTests.elm
+  category: Higher-Order - Function as Argument
+  name: Function as Argument
+  patterns:
+    - name: Pass lambda to function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let apply = \f x -> f x
+            in apply (\n -> n) 42
+    - name: Pass named function to higher-order
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                identity = \x -> x
+                apply = \f x -> f x
+            in
+            apply identity 42
+    - name: Map-like function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                myMap = \f list ->
+                    case list of
+                        [] -> []
+                        h :: t -> [f h]
+            in
+            myMap (\x -> (x, x)) [1, 2]
+    - name: Filter-like function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                myFilter = \pred list ->
+                    case list of
+                        [] -> []
+                        h :: t -> if pred h then [h] else []
+            in
+            myFilter (\_ -> True) [1]
+    - name: Pass accessor function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let apply = \f x -> f x
+            in apply .name { name = "test" }
+
+- source_file: compiler/tests/Compiler/HigherOrderTests.elm
+  category: Higher-Order - Function Returning Function
+  name: Function Returning Function
+  patterns:
+    - name: Function returning lambda
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let makeAdder = \n -> \x -> (n, x)
+            in makeAdder 5 3
+    - name: Curried function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let add = \a -> \b -> (a, b)
+            in add 1 2
+    - name: Triple nested function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let triple = \a -> \b -> \c -> [a, b, c]
+            in triple 1 2 3
+    - name: Function factory
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                makeTransform = \factor -> \x -> (x, factor)
+                double = makeTransform 2
+            in
+            double 5
+    - name: Return lambda based on condition
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let choose = \flag -> if flag then \x -> x else \_ -> 0
+            in (choose True) 42
+    - name: Closure over multiple variables
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let makeClosure = \a b c -> \x -> [a, b, c, x]
+            in makeClosure 1 2 3 4
+
+- source_file: compiler/tests/Compiler/HigherOrderTests.elm
+  category: Higher-Order - Composition
+  name: Composition
+  patterns:
+    - name: Manual compose
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let compose = \f g -> \x -> f (g x)
+            in compose
+    - name: Compose two functions
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                compose = \f g -> \x -> f (g x)
+                fn1 = \n -> (n, 0)
+                fn2 = \n -> n
+            in
+            (compose fn1 fn2) 42
+    - name: Flip function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                flip = \f -> \a b -> f b a
+                pair = \x y -> (x, y)
+            in
+            (flip pair) 1 2
+    - name: Const function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let const = \a -> \_ -> a
+            in (const 42) "ignored"
+    - name: Identity composition
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                identity = \x -> x
+                compose = \f g -> \x -> f (g x)
+            in
+            (compose identity identity) 1
+    - name: Pipe-like apply
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                pipe = \x f -> f x
+                fn = \n -> (n, n)
+            in
+            pipe 5 fn
+
+# =============================================================================
+# LetTests.elm - 30 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/LetTests.elm
+  category: Let - Simple
+  name: Simple Let
+  patterns:
+    - name: Let with single int binding
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = 42
+            in x
+    - name: Let with fuzzed int binding
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = n  -- fuzzed
+            in x
+    - name: Let with string binding
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = s  -- fuzzed
+            in x
+    - name: Let with unit body
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = 42
+            in ()
+    - name: Let with tuple body
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = 42
+            in (x, x)
+    - name: Let with list body
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = 42
+            in [x]
+
+- source_file: compiler/tests/Compiler/LetTests.elm
+  category: Let - Multiple Bindings
+  name: Multiple Bindings
+  patterns:
+    - name: Let with two bindings
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                x = 1
+                y = 2
+            in
+            (x, y)
+    - name: Let with three bindings
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                a = 1
+                b = 2
+                c = 3
+            in
+            [a, b, c]
+    - name: Let with two fuzzed bindings
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                x = a  -- fuzzed
+                y = b  -- fuzzed
+            in
+            (x, y)
+    - name: Let with binding using previous binding
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                x = 1
+                y = (x, 2)
+            in
+            y
+    - name: Let with five bindings
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                v1 = 1
+                v2 = 2
+                v3 = 3
+                v4 = 4
+                v5 = 5
+            in
+            [v1, v2, v3, v4, v5]
+    - name: Let with chained references
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                a = 1
+                b = a
+                c = b
+            in
+            c
+
+- source_file: compiler/tests/Compiler/LetTests.elm
+  category: Let - Nested
+  name: Nested Let
+  patterns:
+    - name: Let inside let
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = 1
+            in let y = 2
+               in y
+    - name: Deeply nested let
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = 1
+            in let y = 2
+               in let z = 3
+                  in z
+    - name: Let in binding value
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = let inner = 42 in inner
+            in x
+    - name: Multiple nested lets
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            (let a = 1 in a, let b = 2 in b)
+    - name: Nested let with fuzzed value
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = let y = n in y  -- n fuzzed
+            in x
+    - name: Let inside list inside let
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let x = 0
+            in [1, let y = 2 in y, 3]
+
+- source_file: compiler/tests/Compiler/LetTests.elm
+  category: Let - Functions
+  name: Let with Functions
+  patterns:
+    - name: Let with function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let f = \x -> x
+            in f 42
+    - name: Let with two-arg function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let add = \x y -> (x, y)
+            in add 1 2
+    - name: Let with lambda binding
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let f = (\x -> x)
+            in f 42
+    - name: Let with multiple functions
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                identity = \x -> x
+                const = \x y -> x
+            in
+            (identity 1, const 2 3)
+    - name: Let with function calling another function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                double = \x -> (x, x)
+                doubleTwice = \y -> double (double y)
+            in
+            doubleTwice 1
+    - name: Let with function using fuzzed value
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let addN = \x -> (x, n)  -- n fuzzed
+            in addN 0
+
+# =============================================================================
+# LetDestructTests.elm - 36 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/LetDestructTests.elm
+  category: Let - Destructuring - Tuple
+  name: Tuple Destructuring
+  patterns:
+    - name: Destruct 2-tuple
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let (a, b) = (1, 2)
+            in a
+    - name: Destruct fuzzed tuple
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let (x, y) = (a, b)  -- fuzzed
+            in (y, x)
+    - name: Destruct 3-tuple
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let (a, b, c) = (1, 2, 3)
+            in b
+    - name: Destruct tuple with wildcard
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let (x, _) = (1, 2)
+            in x
+    - name: Multiple tuple destructs
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                (a, b) = (1, 2)
+                (c, d) = (3, 4)
+            in
+            [a, b, c, d]
+    - name: Destruct fuzzed 3-tuple
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let (x, y, z) = (a, b, c)  -- fuzzed
+            in (z, y, x)
+
+- source_file: compiler/tests/Compiler/LetDestructTests.elm
+  category: Let - Destructuring - Record
+  name: Record Destructuring
+  patterns:
+    - name: Destruct single field record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let { x } = { x = 42 }
+            in x
+    - name: Destruct multi-field record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let { x, y } = { x = 1, y = 2 }
+            in (x, y)
+    - name: Destruct fuzzed record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let { first, second } = { first = a, second = b }  -- fuzzed
+            in (first, second)
+    - name: Destruct partial record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let { a, c } = { a = 1, b = 2, c = 3 }
+            in (a, c)
+    - name: Multiple record destructs
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                { x } = { x = 1 }
+                { y } = { y = 2 }
+            in
+            (x, y)
+    - name: Destruct record with many fields
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let { a, b, c, d, e, f } = { a = 0, b = 1, c = 2, d = 3, e = 4, f = 5 }
+            in a
+
+- source_file: compiler/tests/Compiler/LetDestructTests.elm
+  category: Let - Destructuring - List
+  name: List Destructuring
+  patterns:
+    - name: Destruct cons pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let h :: t = [1, 2, 3]
+            in h
+    - name: Destruct fixed list pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let [a, b] = [1, 2]
+            in (a, b)
+    - name: Destruct fuzzed list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let h :: t = [a, b]  -- fuzzed
+            in h
+    - name: Destruct nested cons
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let a :: b :: rest = [1, 2, 3]
+            in (a, b)
+
+- source_file: compiler/tests/Compiler/LetDestructTests.elm
+  category: Let - Destructuring - Nested
+  name: Nested Destructuring
+  patterns:
+    - name: Destruct tuple of tuples
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let ((a, b), (c, d)) = ((1, 2), (3, 4))
+            in [a, b, c, d]
+    - name: Destruct tuple with record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let ({ x }, y) = ({ x = 1 }, 2)
+            in (x, y)
+    - name: Destruct record with nested tuple
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let r = { pair = (1, 2) }
+            in r.pair
+    - name: Deeply nested destruct
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let ((a, (b, c)), d) = ((1, (2, 3)), 4)
+            in [a, b, c, d]
+    - name: Nested destruct with fuzzed values
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let ((x, y), _) = ((a, b), 0)  -- fuzzed
+            in (x, y)
+    - name: Triple nested destruct
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let ((a, b), (c, d), (e, f)) = ((1, 2), (3, 4), (5, 6))
+            in [a, b, c, d, e, f]
+
+- source_file: compiler/tests/Compiler/LetDestructTests.elm
+  category: Let - Destructuring - Alias
+  name: Alias Destructuring
+  patterns:
+    - name: Destruct with simple alias
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let ((a, b) as whole) = (1, 2)
+            in (whole, a)
+    - name: Destruct with nested alias
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let (((a, b) as inner), c) = ((1, 2), 3)
+            in (inner, a)
+    - name: Alias destruct with fuzzed value
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let ((x, _) as pair) = (n, 0)  -- n fuzzed
+            in (pair, x)
+
+# =============================================================================
+# LetRecTests.elm - 26 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/LetRecTests.elm
+  category: Let - Recursion - Self-Recursive
+  name: Self-Recursive Functions
+  patterns:
+    - name: Simple recursive function
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let f = \n -> if True then 1 else f 0
+            in f 5
+    - name: Recursive function with case
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let len = \list ->
+                    case list of
+                        [] -> 0
+                        h :: t -> len t
+            in
+            len [1, 2]
+    - name: Recursive function returning tuple
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let f = \n -> if True then (0, 1) else f 0
+            in f 3
+    - name: Recursive function with fuzzed base case
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let f = \x -> if True then n else f 0  -- n fuzzed
+            in f 1
+    - name: Recursive function with multiple args
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let f = \a b -> if True then b else f b a
+            in f 1 2
+    - name: Recursive function with lambda body
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let f = \n -> if True then 0 else f 0
+            in f 5
+    - name: Recursive function with list accumulator
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let collect = \n acc -> if True then acc else collect 0 [n]
+            in collect 5 []
+
+- source_file: compiler/tests/Compiler/LetRecTests.elm
+  category: Let - Recursion - Mutual
+  name: Mutually Recursive Functions
+  patterns:
+    - name: Two mutually recursive functions
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                isEven = \n -> if True then True else isOdd 0
+                isOdd = \n -> if True then False else isEven 0
+            in
+            isEven 4
+    - name: Three mutually recursive functions
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                f = \n -> if True then 0 else g 0
+                g = \n -> if True then 1 else h 0
+                h = \n -> if True then 2 else f 0
+            in
+            f 10
+    - name: Mutually recursive with fuzzed value
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                ping = \x -> if True then n else pong x  -- n fuzzed
+                pong = \x -> ping x
+            in
+            ping 5
+    - name: Mutually recursive returning tuples
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                f = \n -> if True then (0, 1) else g 0
+                g = \n -> f 0
+            in
+            f 3
+    - name: Nested mutually recursive
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let outer = \n ->
+                    let
+                        inner1 = \x -> if True then 0 else inner2 x
+                        inner2 = \x -> inner1 x
+                    in
+                    inner1 n
+            in
+            outer 5
+
+- source_file: compiler/tests/Compiler/LetRecTests.elm
+  category: Let - Recursion - Patterns
+  name: Recursive with Patterns
+  patterns:
+    - name: Recursive with tuple pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let process = \(a, b) -> if True then 0 else process (b, a)
+            in process (1, 2)
+    - name: Recursive with cons pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let sum = \list ->
+                    case list of
+                        [] -> 0
+                        h :: t -> sum t
+            in
+            sum [1, 2, 3]
+    - name: Recursive with alias pattern
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let process = \(x as whole) -> if True then (x, whole) else process x
+            in process 5
+
+# =============================================================================
+# AnnotatedTests.elm - 17 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/AnnotatedTests.elm
+  category: Type Annotations - Polymorphic
+  name: Polymorphic Type Annotations
+  patterns:
+    - name: Identity with annotation
+      elm_source: |
+        module Test exposing (identity)
+        identity : a -> a
+        identity x = x
+    - name: Const with annotation
+      elm_source: |
+        module Test exposing (const)
+        const : a -> b -> a
+        const x y = x
+    - name: Bool identity
+      elm_source: |
+        module Test exposing (boolIdentity)
+        boolIdentity : Bool -> Bool
+        boolIdentity x = x
+    - name: Apply function
+      elm_source: |
+        module Test exposing (apply)
+        apply : (a -> b) -> a -> b
+        apply f x = f x
+    - name: Apply with usage
+      elm_source: |
+        module Test exposing (apply, test)
+        apply : (a -> b) -> a -> b
+        apply f x = f x
+        test = apply (\n -> n) True
+    - name: Flip function
+      elm_source: |
+        module Test exposing (flip)
+        flip : (a -> b -> c) -> b -> a -> c
+        flip f y x = f x y
+    - name: Compose function
+      elm_source: |
+        module Test exposing (compose)
+        compose : (b -> c) -> (a -> b) -> a -> c
+        compose f g x = f (g x)
+    - name: Compose with usage
+      elm_source: |
+        module Test exposing (compose, test)
+        compose : (b -> c) -> (a -> b) -> a -> c
+        compose f g x = f (g x)
+        test = compose (\x -> x) (\y -> y) True
+    - name: On function
+      elm_source: |
+        module Test exposing (on)
+        on : (b -> b -> c) -> (a -> b) -> a -> a -> c
+        on f g x y = f (g x) (g y)
+    - name: Pair function
+      elm_source: |
+        module Test exposing (pair)
+        pair : a -> b -> (a, b)
+        pair x y = (x, y)
+    - name: Wrap in tuple
+      elm_source: |
+        module Test exposing (wrapInTuple)
+        wrapInTuple : a -> (a, a)
+        wrapInTuple x = (x, x)
+    - name: Make pair
+      elm_source: |
+        module Test exposing (makePair)
+        makePair : a -> b -> (a, b)
+        makePair x y = (x, y)
+    - name: Const tuple
+      elm_source: |
+        module Test exposing (constTuple)
+        constTuple : a -> b -> (a, a)
+        constTuple x y = (x, x)
+    - name: Make record
+      elm_source: |
+        module Test exposing (makeXY)
+        makeXY : a -> b -> { x : a, y : b }
+        makeXY x y = { x = x, y = y }
+    - name: Make record with same type
+      elm_source: |
+        module Test exposing (makeSame)
+        makeSame : a -> { x : a, y : a }
+        makeSame val = { x = val, y = val }
+    - name: Duplicate
+      elm_source: |
+        module Test exposing (duplicate)
+        duplicate : a -> (a, a)
+        duplicate x = (x, x)
+    - name: Nest tuple
+      elm_source: |
+        module Test exposing (nest)
+        nest : a -> b -> ((a, b), (b, a))
+        nest x y = ((x, y), (y, x))
+
+# =============================================================================
+# AsPatternTests.elm - 24 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/AsPatternTests.elm
+  category: As-Patterns - Simple
+  name: Simple As-Patterns
+  patterns:
+    - name: Alias on variable
+      elm_source: |
+        module Test exposing (dup)
+        dup x@y = (x, y)
+    - name: Alias on wildcard
+      elm_source: |
+        module Test exposing (capture)
+        capture _@x = x
+    - name: Multiple aliases
+      elm_source: |
+        module Test exposing (both)
+        both a@x b@y = (x, y)
+    - name: Alias in lambda
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \x@whole -> (x, whole)
+
+- source_file: compiler/tests/Compiler/AsPatternTests.elm
+  category: As-Patterns - Tuple
+  name: Tuple As-Patterns
+  patterns:
+    - name: Alias on 2-tuple
+      elm_source: |
+        module Test exposing (withPair)
+        withPair (a, b)@pair = (pair, a)
+    - name: Alias on 3-tuple
+      elm_source: |
+        module Test exposing (withTriple)
+        withTriple (a, b, c)@triple = triple
+    - name: Nested alias in tuple
+      elm_source: |
+        module Test exposing (parts)
+        parts (x@first, y@second) = [first, second]
+    - name: Alias on nested tuple
+      elm_source: |
+        module Test exposing (deep)
+        deep ((a, b), c)@whole = whole
+
+- source_file: compiler/tests/Compiler/AsPatternTests.elm
+  category: As-Patterns - Record
+  name: Record As-Patterns
+  patterns:
+    - name: Alias on record pattern
+      elm_source: |
+        module Test exposing (withRecord)
+        withRecord { x, y }@point = (point, x)
+    - name: Alias on single-field record
+      elm_source: |
+        module Test exposing (getValue)
+        getValue { value }@wrapper = (wrapper, value)
+    - name: Multiple record aliases
+      elm_source: |
+        module Test exposing (combine)
+        combine { a }@r1 { b }@r2 = (r1, r2)
+    - name: Alias on record with many fields
+      elm_source: |
+        module Test exposing (allFields)
+        allFields { a, b, c, d }@rec = rec
+
+- source_file: compiler/tests/Compiler/AsPatternTests.elm
+  category: As-Patterns - List
+  name: List As-Patterns
+  patterns:
+    - name: Alias on cons pattern
+      elm_source: |
+        module Test exposing (withList)
+        withList (h :: t)@list = (list, h)
+    - name: Alias on fixed list pattern
+      elm_source: |
+        module Test exposing (pairList)
+        pairList [a, b]@both = both
+    - name: Nested alias in list
+      elm_source: |
+        module Test exposing (parts)
+        parts (h@head :: t@tail) = (head, tail)
+    - name: Alias on nested cons
+      elm_source: |
+        module Test exposing (twoOrMore)
+        twoOrMore (a :: (b :: rest))@list = list
+
+- source_file: compiler/tests/Compiler/AsPatternTests.elm
+  category: As-Patterns - Nested
+  name: Nested As-Patterns
+  patterns:
+    - name: Multiple levels of alias
+      elm_source: |
+        module Test exposing (levels)
+        levels (x@inner)@outer = [x, inner, outer]
+    - name: Alias in deeply nested structure
+      elm_source: |
+        module Test exposing (deep)
+        deep ((a, b)@inner, c) = (inner, a)
+    - name: Mixed nested aliases
+      elm_source: |
+        module Test exposing (mixed)
+        mixed ({ x }, (h :: _)@list)@all = all
+    - name: Alias in case branch
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case (1, 2) of
+                (a, b)@pair -> pair
+    - name: Alias in let destruct
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let (a, b)@pair = (1, 2)
+            in pair
+    - name: Alias used in function body
+      elm_source: |
+        module Test exposing (process)
+        process x@original = (original, x)
+
+# =============================================================================
+# PatternArgTests.elm - 42 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/PatternArgTests.elm
+  category: Pattern Arguments - Variable
+  name: Variable Patterns
+  patterns:
+    - name: Single variable pattern
+      elm_source: |
+        module Test exposing (identity)
+        identity x = x
+    - name: Two variable patterns
+      elm_source: |
+        module Test exposing (first)
+        first x y = x
+    - name: Three variable patterns
+      elm_source: |
+        module Test exposing (second)
+        second a b c = b
+    - name: Variable pattern returning tuple
+      elm_source: |
+        module Test exposing (swap)
+        swap x y = (y, x)
+    - name: Variable pattern returning list
+      elm_source: |
+        module Test exposing (toList)
+        toList x = [x]
+    - name: Multiple functions with variable patterns
+      elm_source: |
+        module Test exposing (f, g)
+        f x = x
+        g y = y
+
+- source_file: compiler/tests/Compiler/PatternArgTests.elm
+  category: Pattern Arguments - Wildcard
+  name: Wildcard Patterns
+  patterns:
+    - name: Single wildcard pattern
+      elm_source: |
+        module Test exposing (const)
+        const _ = 42
+    - name: Wildcard with variable
+      elm_source: |
+        module Test exposing (const)
+        const x _ = x
+    - name: Multiple wildcards
+      elm_source: |
+        module Test exposing (zero)
+        zero _ _ _ = 0
+    - name: Wildcard in lambda
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \_ -> 0
+
+- source_file: compiler/tests/Compiler/PatternArgTests.elm
+  category: Pattern Arguments - Tuple
+  name: Tuple Pattern Arguments
+  patterns:
+    - name: 2-tuple pattern
+      elm_source: |
+        module Test exposing (fst)
+        fst (x, y) = x
+    - name: 3-tuple pattern
+      elm_source: |
+        module Test exposing (snd3)
+        snd3 (a, b, c) = b
+    - name: Tuple pattern with wildcard
+      elm_source: |
+        module Test exposing (snd)
+        snd (_, y) = y
+    - name: Nested tuple pattern
+      elm_source: |
+        module Test exposing (deep)
+        deep ((a, b), c) = a
+    - name: Tuple pattern in lambda
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \(x, y) -> x
+    - name: Multiple tuple pattern args
+      elm_source: |
+        module Test exposing (addPairs)
+        addPairs (a, b) (c, d) = (a, c)
+
+- source_file: compiler/tests/Compiler/PatternArgTests.elm
+  category: Pattern Arguments - Record
+  name: Record Pattern Arguments
+  patterns:
+    - name: Single field record pattern
+      elm_source: |
+        module Test exposing (getX)
+        getX { x } = x
+    - name: Multi-field record pattern
+      elm_source: |
+        module Test exposing (getXY)
+        getXY { x, y } = (x, y)
+    - name: Record pattern in lambda
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \{ name } -> name
+    - name: Record pattern with many fields
+      elm_source: |
+        module Test exposing (getAll)
+        getAll { a, b, c, d, e } = a
+    - name: Multiple record pattern args
+      elm_source: |
+        module Test exposing (combine)
+        combine { x } { y } = (x, y)
+    - name: Record pattern with variable
+      elm_source: |
+        module Test exposing (extract)
+        extract { value } default = value
+
+- source_file: compiler/tests/Compiler/PatternArgTests.elm
+  category: Pattern Arguments - List
+  name: List Pattern Arguments
+  patterns:
+    - name: Cons pattern
+      elm_source: |
+        module Test exposing (head)
+        head (h :: t) = h
+    - name: Fixed list pattern
+      elm_source: |
+        module Test exposing (firstTwo)
+        firstTwo [a, b] = (a, b)
+    - name: Nested cons pattern
+      elm_source: |
+        module Test exposing (secondElem)
+        secondElem (_ :: (x :: _)) = x
+    - name: List pattern in lambda
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \(x :: _) -> x
+
+- source_file: compiler/tests/Compiler/PatternArgTests.elm
+  category: Pattern Arguments - Literal
+  name: Literal Pattern Arguments
+  patterns:
+    - name: Int literal pattern
+      elm_source: |
+        module Test exposing (isZero)
+        isZero 0 = "zero"
+    - name: String literal pattern
+      elm_source: |
+        module Test exposing (greet)
+        greet "hello" = "hi"
+    - name: Unit pattern
+      elm_source: |
+        module Test exposing (unit)
+        unit () = 0
+    - name: Multiple literal patterns
+      elm_source: |
+        module Test exposing (match)
+        match 0 "" = 0
+
+- source_file: compiler/tests/Compiler/PatternArgTests.elm
+  category: Pattern Arguments - Complex
+  name: Complex Pattern Arguments
+  patterns:
+    - name: Deeply nested tuple
+      elm_source: |
+        module Test exposing (extract)
+        extract ((a, b), (c, d)) = a
+    - name: Mixed nested patterns
+      elm_source: |
+        module Test exposing (mixed)
+        mixed ({ x }, (h :: _)) = (x, h)
+    - name: Triple nested patterns
+      elm_source: |
+        module Test exposing (complex)
+        complex ((a, b), { x, y }, (h :: t)) = a
+    - name: Nested with wildcards
+      elm_source: |
+        module Test exposing (corners)
+        corners ((x, _), (_, y)) = (x, y)
+    - name: Five args with mixed patterns
+      elm_source: |
+        module Test exposing (fiveArgs)
+        fiveArgs a (b, c) { d } _ e = a
+    - name: All same pattern type
+      elm_source: |
+        module Test exposing (allTuples)
+        allTuples (a, b) (c, d) (e, f) = a
+    - name: All wildcards
+      elm_source: |
+        module Test exposing (ignoreAll)
+        ignoreAll _ _ _ _ = 0
+    - name: Alternating patterns
+      elm_source: |
+        module Test exposing (alternate)
+        alternate a _ b _ c = [a, b, c]
+
+- source_file: compiler/tests/Compiler/PatternArgTests.elm
+  category: Pattern Arguments - Custom Type
+  name: Custom Type Pattern Arguments
+  patterns:
+    - name: Custom type pattern in function argument
+      elm_source: |
+        module Test exposing (Person, getId, getAge)
+        type Person = Person Int Int
+        getId (Person id _) = id
+        getAge (Person _ age) = age
+    - name: Custom type pattern with multiple extractors
+      elm_source: |
+        module Test exposing (Box, unbox)
+        type Box a = Box a
+        unbox (Box x) = x
+
+# =============================================================================
+# MultiDefTests.elm - 17 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/MultiDefTests.elm
+  category: Multiple Definitions
+  name: Multiple Top-Level Definitions
+  patterns:
+    - name: Two identical structure definitions
+      elm_source: |
+        module Test exposing (a, b)
+        a = 1 + 2
+        b = 1 + 2
+    - name: Three simple value definitions
+      elm_source: |
+        module Test exposing (a, b, c)
+        a = 1
+        b = 2
+        c = 3
+    - name: Multiple functions same arity
+      elm_source: |
+        module Test exposing (f, g)
+        f x = x + 1
+        g y = y * 2
+    - name: Multiple functions different arities
+      elm_source: |
+        module Test exposing (a, f, g, h)
+        a = 42
+        f x = x
+        g x y = x + y
+        h x y z = x + y + z
+    - name: Functions that call each other
+      elm_source: |
+        module Test exposing (f, g)
+        f x = g x
+        g y = y + 1
+    - name: Multiple definitions with let expressions
+      elm_source: |
+        module Test exposing (a, b)
+        a = let x = 1 in x
+        b = let y = 2 in y
+    - name: Multiple definitions with case expressions
+      elm_source: |
+        module Test exposing (f, g)
+        f x = case x of
+            0 -> 1
+            _ -> 2
+        g y = case y of
+            0 -> 3
+            _ -> 4
+    - name: Multiple definitions with if expressions
+      elm_source: |
+        module Test exposing (a, b, c)
+        a = if True then 1 else 2
+        b = if True then 3 else 4
+        c = if True then 5 else 6
+    - name: Multiple definitions with lambdas
+      elm_source: |
+        module Test exposing (f, g, h)
+        f = \x -> x
+        g = \y -> y + 1
+        h = \a b -> a + b
+    - name: Multiple definitions with records
+      elm_source: |
+        module Test exposing (a, b, c)
+        a = { x = 1 }
+        b = { y = 2, z = 3 }
+        c = { p = 4, q = 5, r = 6 }
+    - name: Multiple definitions with binary operators
+      elm_source: |
+        module Test exposing (a, b, c, d)
+        a = 1 + 2
+        b = 3 * 4
+        c = 5 - 6
+        d = 7.0 / 8.0
+    - name: Large module with many definitions
+      elm_source: |
+        module Test exposing (..)
+        -- 15 definitions mixing values, functions, lets, cases,
+        -- ifs, lambdas, records, tuples, lists, and strings
+    - name: Nested lets multiple defs
+      elm_source: |
+        module Test exposing (a, b)
+        a = let x = let y = 1 in y in x
+        b = let p = let q = 2 in q in p
+    - name: Tuple pattern multiple defs
+      elm_source: |
+        module Test exposing (f, g)
+        f (a, b) = a + b
+        g (x, y) = x * y
+    - name: List pattern multiple defs
+      elm_source: |
+        module Test exposing (f, g)
+        f [a] = a
+        g [x, y] = x + y
+    - name: Record pattern multiple defs
+      elm_source: |
+        module Test exposing (f, g)
+        f { x } = x
+        g { a, b } = a + b
+    - name: Mixed expressions and patterns
+      elm_source: |
+        module Test exposing (..)
+        -- Complex module with 8 definitions using
+        -- various patterns and expressions
+
+# =============================================================================
+# EdgeCaseTests.elm - 23 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/EdgeCaseTests.elm
+  category: Edge Cases - Parens
+  name: Parentheses Edge Cases
+  patterns:
+    - name: Parens around literal
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (42)
+    - name: Parens around binop
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (1 + 2) * 3
+    - name: Nested parens
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (((1)))
+    - name: Parens around lambda
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (\x -> x)
+
+- source_file: compiler/tests/Compiler/EdgeCaseTests.elm
+  category: Edge Cases - Records
+  name: Record Edge Cases
+  patterns:
+    - name: Record access in binop
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let r = { x = 1, y = 2 }
+            in r.x + r.y
+    - name: Nested record updates
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                r = { x = 1, y = 2 }
+                r2 = { r | x = 10 }
+            in
+            { r2 | y = 20 }
+    - name: Lambda in record update
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let r = { fn = \x -> 0 }
+            in { r | fn = \x -> x }
+
+- source_file: compiler/tests/Compiler/EdgeCaseTests.elm
+  category: Edge Cases - Control Flow
+  name: Control Flow Edge Cases
+  patterns:
+    - name: Case in if
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            if True then
+                case 1 of
+                    n -> n
+            else
+                0
+    - name: If in case
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case 1 of
+                n -> if True then n else 0
+    - name: Multiple accessors in list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [.a, .b, .c, .d]
+
+- source_file: compiler/tests/Compiler/EdgeCaseTests.elm
+  category: Edge Cases - Empty Values
+  name: Empty Value Edge Cases
+  patterns:
+    - name: Empty record
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = {}
+    - name: Empty list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = []
+    - name: Unit expression
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = ()
+    - name: Lambda with no body complexity
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \x -> x
+
+- source_file: compiler/tests/Compiler/EdgeCaseTests.elm
+  category: Edge Cases - Deep Nesting
+  name: Deep Nesting Edge Cases
+  patterns:
+    - name: Deeply nested lists
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [[[[1]]]]
+    - name: Deeply nested tuples
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = ((((1, 2), 3), 4), 5)
+    - name: Deeply nested lets
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let a = 1 in
+            let b = 2 in
+            let c = 3 in
+            let d = 4 in d
+    - name: Deeply nested records
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = { nested = { nested = { nested = { value = 1 } } } }
+
+- source_file: compiler/tests/Compiler/EdgeCaseTests.elm
+  category: Edge Cases - Complex Patterns
+  name: Complex Pattern Edge Cases
+  patterns:
+    - name: Multiple pattern types in one function
+      elm_source: |
+        module Test exposing (complex)
+        complex a (b, c) { d, e } (f :: _) (g@h) = [a, b, d, f, g]
+    - name: All destruct patterns
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                (a, b) = (1, 2)
+                { x } = { x = 3 }
+                (h :: t) = [4, 5]
+                (v@w) = 6
+            in
+            [a, x, h, v]
+    - name: Multiple definitions with various patterns
+      elm_source: |
+        module Test exposing (f1, f2, f3, f4, f5)
+        f1 x = x
+        f2 (a, b) = a
+        f3 { name } = name
+        f4 _ = 0
+        f5 a b c = b
+
+# =============================================================================
+# TypeCheckFails.elm - 12 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/TypeCheckFails.elm
+  category: Type Checking - Edge Cases
+  name: Type Checking Challenge Patterns
+  patterns:
+    - name: Alias everywhere
+      elm_source: |
+        module Test exposing (allAliased)
+        allAliased ((a@first, b@second))@whole = [whole, first, second]
+    - name: Multiple aliases in recursive function
+      elm_source: |
+        module Test exposing (go)
+        go (n@count) (acc@result) = if True then result else go 0 count
+    - name: Case on unit
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case (1, 1) of
+                () -> 0
+    - name: Case on fuzzed int
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            case n of  -- fuzzed
+                0 -> "zero"
+                x -> x  -- Type mismatch expected
+    - name: All expression types in one module
+      elm_source: |
+        module Test exposing (..)
+        -- Complex module combining literals, containers,
+        -- functions, control flow, operators, and records
+    - name: Fold-like function
+      elm_source: |
+        module Test exposing (myFold)
+        myFold f init list =
+            case list of
+                [] -> init
+                h :: t -> f h init
+    - name: Multiple aliases in destruct
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let ((a@first, b@second))@whole = (1, 2)
+            in [whole, first, second, a, b]
+    - name: Deeply recursive function
+      elm_source: |
+        module Test exposing (countdown)
+        countdown n =
+            case n of
+                0 -> []
+                x -> [x, countdown 0]
+    - name: Mutually recursive different types
+      elm_source: |
+        module Test exposing (toList, toInt)
+        toList n = if True then [] else [toInt 0]
+        toInt xs =
+            case xs of
+                [] -> 0
+                _ -> 1
+    - name: Recursive with record pattern
+      elm_source: |
+        module Test exposing (getValue)
+        getValue { value, next } = if True then value else getValue next
+    - name: Recursive higher order
+      elm_source: |
+        module Test exposing (map)
+        map f list =
+            case list of
+                [] -> []
+                h :: t -> [f h, map f t]
+    - name: Update with computed value
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let
+                r = { value = 10 }
+                newValue = (1, 2)
+            in
+            { r | value = newValue }
+
+# =============================================================================
+# ForeignTests.elm - 6 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/ForeignTests.elm
+  category: Foreign Functions
+  name: VarForeign Expressions
+  patterns:
+    - name: VarForeign identity
+      elm_source: |
+        -- Reference to foreign function
+        identity : a -> a
+    - name: VarForeign const
+      elm_source: |
+        -- Reference to foreign function
+        always : a -> b -> a
+    - name: Call identity on int
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = identity 42
+    - name: Call const on int and int
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = always 1 2
+    - name: Typed def using foreign identity
+      elm_source: |
+        module Test exposing (apply)
+        apply : (a -> b) -> a -> b
+        apply f x = identity (f x)
+    - name: Nested foreign calls
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = identity (identity 42)
+
+# =============================================================================
+# KernelTests.elm - 20 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/KernelTests.elm
+  category: Kernel Functions
+  name: VarKernel Expressions
+  patterns:
+    - name: VarKernel List.batch
+      elm_source: |
+        -- Reference to Elm.Kernel.List.batch
+    - name: VarKernel Platform.batch
+      elm_source: |
+        -- Reference to Elm.Kernel.Platform.batch
+    - name: VarKernel Scheduler.succeed
+      elm_source: |
+        -- Reference to Elm.Kernel.Scheduler.succeed
+    - name: VarKernel Process.spawn
+      elm_source: |
+        -- Reference to Elm.Kernel.Process.spawn
+    - name: VarKernel JsArray.empty
+      elm_source: |
+        -- Reference to Elm.Kernel.JsArray.empty
+    - name: VarKernel Utils.Tuple2
+      elm_source: |
+        -- Reference to Elm.Kernel.Utils.Tuple2
+    - name: Kernel call with int arg
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = List.singleton 42
+    - name: Kernel call with multiple args
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = List.cons 1 []
+    - name: Nested kernel calls
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = List.head (List.singleton 1)
+    - name: Multiple kernel calls in tuple
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = (List.head [], List.tail [])
+    - name: Kernel function as higher-order argument
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let apply f x = f x
+            in apply List.singleton 42
+    - name: Kernel function in list
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [List.head, List.tail, List.length]
+    - name: Kernel in lambda body
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = \x -> List.singleton x
+    - name: Kernel in let binding
+      elm_source: |
+        module Test exposing (testValue)
+        testValue =
+            let result = List.singleton 1
+            in result
+    - name: Multiple kernel same module
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [List.cons, List.singleton, List.append]
+    - name: Kernel different modules
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [List.cons, Platform.batch, Scheduler.succeed]
+    - name: Kernel with complex args
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = Utils.pair (1, 2) [3, 4]
+    - name: Chained kernel calls
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = List.head (List.tail (List.singleton 1))
+    - name: Kernel call with fuzzed int
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = List.singleton n  -- fuzzed
+    - name: Multiple kernel calls with fuzzed ints
+      elm_source: |
+        module Test exposing (testValue)
+        testValue = [List.singleton a, List.singleton b, List.singleton c]  -- fuzzed
+
+# =============================================================================
+# DeepFuzzTests.elm - 26 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/DeepFuzzTests.elm
+  category: Deep Fuzz - Expressions
+  name: Deep Expression Fuzzing
+  patterns:
+    - name: Shallow fuzzed int expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Random int expression with depth 2
+        testValue = <randomly generated int expression>
+    - name: Medium fuzzed int expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Random int expression with depth 3
+        testValue = <randomly generated int expression>
+    - name: Deep fuzzed int expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Random int expression with depth 4
+        testValue = <randomly generated int expression>
+    - name: Shallow fuzzed float expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Random float expression with depth 2
+        testValue = <randomly generated float expression>
+    - name: Medium fuzzed float expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Random float expression with depth 3
+        testValue = <randomly generated float expression>
+    - name: Shallow fuzzed string expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Random string expression with depth 2
+        testValue = <randomly generated string expression>
+    - name: Medium fuzzed string expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Random string expression with depth 3
+        testValue = <randomly generated string expression>
+    - name: Shallow fuzzed bool expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Random bool expression with depth 2
+        testValue = <randomly generated bool expression>
+    - name: Medium fuzzed bool expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Random bool expression with depth 3
+        testValue = <randomly generated bool expression>
+
+- source_file: compiler/tests/Compiler/DeepFuzzTests.elm
+  category: Deep Fuzz - Containers
+  name: Container Fuzzing
+  patterns:
+    - name: List of int expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Fuzzed list of int expressions
+        testValue = [<int exprs>]
+    - name: Tuple expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Fuzzed tuple with int and string
+        testValue = (<int expr>, <string expr>)
+    - name: 3-tuple expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Fuzzed triple with int, string, bool
+        testValue = (<int>, <string>, <bool>)
+    - name: Record expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Fuzzed record with fields {x: Int, y: String}
+        testValue = { x = <int>, y = <string> }
+    - name: Mixed container expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Random combination of list, tuple, record expressions
+        testValue = <randomly generated container>
+
+- source_file: compiler/tests/Compiler/DeepFuzzTests.elm
+  category: Deep Fuzz - Control Flow
+  name: Control Flow Fuzzing
+  patterns:
+    - name: Multi-binding let expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Let expression with multiple bindings, depth 3
+        testValue = let ... in <expr>
+    - name: Multi-branch case expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Case expression with multiple branches, depth 3
+        testValue = case <expr> of ...
+    - name: Nested let expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Nested let expressions, depth 4, 3 levels
+        testValue = let ... in let ... in let ... in <expr>
+    - name: Lambda expression
+      elm_source: |
+        module Test exposing (testValue)
+        -- Fuzzed lambda expression with int type, depth 3
+        testValue = \x -> <int expr using x>
+
+- source_file: compiler/tests/Compiler/DeepFuzzTests.elm
+  category: Deep Fuzz - Binops
+  name: Binary Operator Fuzzing
+  patterns:
+    - name: Arithmetic binop chain
+      elm_source: |
+        module Test exposing (testValue)
+        -- Chain of arithmetic operators (+, -, *, /), depth 3
+        testValue = <int> + <int> * <int> - <int>
+    - name: Boolean binop chain
+      elm_source: |
+        module Test exposing (testValue)
+        -- Chain of boolean operators (&&, ||), depth 3
+        testValue = <bool> && <bool> || <bool>
+    - name: Comparison binop chain
+      elm_source: |
+        module Test exposing (testValue)
+        -- Chain of comparison operators (<, >, <=, >=), depth 3
+        testValue = <int> < <int>
+    - name: Equality binop chain
+      elm_source: |
+        module Test exposing (testValue)
+        -- Chain of equality operators (==, /=), depth 3
+        testValue = <val> == <val>
+    - name: Append binop chain
+      elm_source: |
+        module Test exposing (testValue)
+        -- Chain of append operators (++), depth 3
+        testValue = <string> ++ <string> ++ <string>
+
+- source_file: compiler/tests/Compiler/DeepFuzzTests.elm
+  category: Deep Fuzz - Modules
+  name: Module Fuzzing
+  patterns:
+    - name: Shallow multi-def module
+      elm_source: |
+        module Test exposing (..)
+        -- Module with multiple definitions, depth 2
+    - name: Medium multi-def module
+      elm_source: |
+        module Test exposing (..)
+        -- Module with multiple definitions, depth 3
+
+# =============================================================================
+# ArrayTest.elm - 6 patterns
+# =============================================================================
+
+- source_file: compiler/tests/Compiler/ArrayTest.elm
+  category: Array Type Variable Scoping
+  name: Real-World Library Function Patterns
+  patterns:
+    - name: repeat function
+      elm_source: |
+        repeat : Int -> a -> Array a
+        repeat n e =
+            initialize n (\_ -> e)
+    - name: push function
+      elm_source: |
+        push : a -> Array a -> Array a
+        push a ((Array_elm_builtin _ _ _ tail) as array) =
+            unsafeReplaceTail (JsArray.push a tail) array
+    - name: slice function
+      elm_source: |
+        slice : Int -> Int -> Array a -> Array a
+        slice from to array =
+            let
+                correctFrom = translateIndex from array
+                correctTo = translateIndex to array
+            in
+            if correctFrom > correctTo then
+                empty
+            else
+                array
+                    |> sliceRight correctTo
+                    |> sliceLeft correctFrom
+    - name: fromListHelp function
+      elm_source: |
+        -- Helper function for list-to-array conversion
+        -- with complex type signature
+    - name: append function
+      elm_source: |
+        -- Complex array append function
+        -- with multiple builder operations
+    - name: sliceLeft function
+      elm_source: |
+        -- Helper function for slicing arrays
+        -- from left position
