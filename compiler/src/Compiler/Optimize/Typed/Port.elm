@@ -235,11 +235,11 @@ encodeTuple a b cs =
         listValueType =
             Can.TType ModuleName.list "List" [ valueType ]
 
-        let_ : Name -> Can.Type -> Index.ZeroBased -> (TOpt.Expr IT.IncompleteType) -> (TOpt.Expr IT.IncompleteType)
+        let_ : Name -> Can.Type -> Index.ZeroBased -> TOpt.Expr IT.IncompleteType -> TOpt.Expr IT.IncompleteType
         let_ arg argType index body =
             TOpt.Destruct (TOpt.Destructor arg (TOpt.Index index TOpt.HintUnknown (TOpt.Root Name.dollar)) (IT.Complete argType)) body (TOpt.typeOf body)
 
-        letCs_ : Name -> Can.Type -> Int -> (TOpt.Expr IT.IncompleteType) -> (TOpt.Expr IT.IncompleteType)
+        letCs_ : Name -> Can.Type -> Int -> TOpt.Expr IT.IncompleteType -> TOpt.Expr IT.IncompleteType
         letCs_ arg argType index body =
             TOpt.Destruct (TOpt.Destructor arg (TOpt.ArrayIndex index (TOpt.Field "cs" (TOpt.Root Name.dollar))) (IT.Complete argType)) body (TOpt.typeOf body)
 
@@ -519,12 +519,12 @@ decodeTuple a b cs =
             )
 
 
-toLocal : Int -> Can.Type -> (TOpt.Expr IT.IncompleteType)
+toLocal : Int -> Can.Type -> TOpt.Expr IT.IncompleteType
 toLocal index tipe =
     TOpt.VarLocal (Name.fromVarIndex index) (IT.Complete tipe)
 
 
-indexAndThen : Int -> Can.Type -> (TOpt.Expr IT.IncompleteType) -> Names.Tracker (TOpt.Expr IT.IncompleteType)
+indexAndThen : Int -> Can.Type -> TOpt.Expr IT.IncompleteType -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 indexAndThen i tipe decoder =
     let
         decoderResultType =
@@ -563,7 +563,7 @@ decodeRecord fields recordType =
         decoderType =
             Can.TType ModuleName.jsonDecode "Decoder" [ recordType ]
 
-        toFieldExpr : Name -> Can.FieldType -> (TOpt.Expr IT.IncompleteType)
+        toFieldExpr : Name -> Can.FieldType -> TOpt.Expr IT.IncompleteType
         toFieldExpr name (Can.FieldType _ fieldType) =
             TOpt.VarLocal name (IT.Complete fieldType)
 
@@ -583,7 +583,7 @@ decodeRecord fields recordType =
             )
 
 
-fieldAndThen : (TOpt.Expr IT.IncompleteType) -> ( Name.Name, Can.FieldType ) -> Names.Tracker (TOpt.Expr IT.IncompleteType)
+fieldAndThen : TOpt.Expr IT.IncompleteType -> ( Name.Name, Can.FieldType ) -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
     let
         decoderResultType =

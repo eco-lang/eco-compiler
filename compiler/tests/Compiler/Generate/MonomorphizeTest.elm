@@ -10,15 +10,15 @@ The expected ABI types are derived from the actual C signatures in:
 elm-kernel-cpp/src/KernelExports.h
 
 Key mapping from C types to MLIR/MonoType:
-- uint64_t → eco.value (MVar with CEcoValue, or boxed pointer)
-- int64_t → I64 (MInt)
-- double → F64 (MFloat)
-- bool → I1 (MBool)
-- uint16_t → I16 (MChar)
+
+  - uint64\_t → eco.value (MVar with CEcoValue, or boxed pointer)
+  - int64\_t → I64 (MInt)
+  - double → F64 (MFloat)
+  - bool → I1 (MBool)
+  - uint16\_t → I16 (MChar)
 
 -}
 
-import Compiler.AST.Canonical as Can
 import Compiler.AST.CanonicalBuilder
     exposing
         ( boolType
@@ -326,11 +326,12 @@ kernelExportsAbiTests =
 {-| Tests for Basics module kernels.
 
 From KernelExports.h:
-- int64\_t Elm\_Kernel\_Basics\_modBy(int64\_t modulus, int64\_t x)
-- int64\_t Elm\_Kernel\_Basics\_floor(double x)
-- double Elm\_Kernel\_Basics\_toFloat(int64\_t x)
-- uint64\_t Elm\_Kernel\_Basics\_add(uint64\_t a, uint64\_t b) -- number-boxed
-- bool Elm\_Kernel\_Basics\_isNaN(double x)
+
+  - int64\_t Elm\_Kernel\_Basics\_modBy(int64\_t modulus, int64\_t x)
+  - int64\_t Elm\_Kernel\_Basics\_floor(double x)
+  - double Elm\_Kernel\_Basics\_toFloat(int64\_t x)
+  - uint64\_t Elm\_Kernel\_Basics\_add(uint64\_t a, uint64\_t b) -- number-boxed
+  - bool Elm\_Kernel\_Basics\_isNaN(double x)
 
 -}
 basicsModuleTests : Test
@@ -412,8 +413,9 @@ basicsModuleTests =
 {-| Tests for List module kernels.
 
 From KernelExports.h:
-- uint64\_t Elm\_Kernel\_List\_cons(uint64\_t head, uint64\_t tail)
-  C ABI: (eco.value, eco.value) -> eco.value
+
+  - uint64\_t Elm\_Kernel\_List\_cons(uint64\_t head, uint64\_t tail)
+    C ABI: (eco.value, eco.value) -> eco.value
 
 -}
 listModuleTests : Test
@@ -454,10 +456,11 @@ listModuleTests =
 {-| Tests for Utils module kernels.
 
 From KernelExports.h:
-- bool Elm\_Kernel\_Utils\_equal(uint64\_t a, uint64\_t b)
-- bool Elm\_Kernel\_Utils\_lt(uint64\_t a, uint64\_t b)
-- uint64\_t Elm\_Kernel\_Utils\_compare(uint64\_t a, uint64\_t b)
-- uint64\_t Elm\_Kernel\_Utils\_append(uint64\_t a, uint64\_t b)
+
+  - bool Elm\_Kernel\_Utils\_equal(uint64\_t a, uint64\_t b)
+  - bool Elm\_Kernel\_Utils\_lt(uint64\_t a, uint64\_t b)
+  - uint64\_t Elm\_Kernel\_Utils\_compare(uint64\_t a, uint64\_t b)
+  - uint64\_t Elm\_Kernel\_Utils\_append(uint64\_t a, uint64\_t b)
 
 All polymorphic - take eco.value args.
 
@@ -533,8 +536,9 @@ utilsModuleTests =
 {-| Tests for String module kernels.
 
 From KernelExports.h:
-- int64\_t Elm\_Kernel\_String\_length(uint64\_t str)
-- uint64\_t Elm\_Kernel\_String\_append(uint64\_t a, uint64\_t b)
+
+  - int64\_t Elm\_Kernel\_String\_length(uint64\_t str)
+  - uint64\_t Elm\_Kernel\_String\_append(uint64\_t a, uint64\_t b)
 
 String is passed as uint64\_t (eco.value pointer to String object).
 
@@ -578,8 +582,9 @@ stringModuleTests =
 {-| Tests for Char module kernels.
 
 From KernelExports.h:
-- uint16\_t Elm\_Kernel\_Char\_fromCode(int64\_t code)
-- int64\_t Elm\_Kernel\_Char\_toCode(uint16\_t c)
+
+  - uint16\_t Elm\_Kernel\_Char\_fromCode(int64\_t code)
+  - int64\_t Elm\_Kernel\_Char\_toCode(uint16\_t c)
 
 -}
 charModuleTests : Test

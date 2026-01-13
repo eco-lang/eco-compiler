@@ -1,8 +1,6 @@
 module Compiler.Generate.Monomorphize.KernelAbi exposing
-    ( KernelAbiMode(..)
-    , deriveKernelAbiMode
-    , canTypeToMonoType_preserveVars
-    , canTypeToMonoType_numberBoxed
+    ( KernelAbiMode(..), deriveKernelAbiMode
+    , canTypeToMonoType_preserveVars, canTypeToMonoType_numberBoxed
     )
 
 {-| Kernel ABI type derivation for monomorphization.

@@ -7,10 +7,8 @@ import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
-        , UnionCtor
         , UnionDef
         , binopsExpr
-        , callExpr
         , caseExpr
         , define
         , intExpr
@@ -687,8 +685,11 @@ Corresponds to E2E test: CaseCustomTypeTest.elm
 
     area shape =
         case shape of
-            Circle r -> r * r
-            Rectangle w h -> w * h
+            Circle r ->
+                r * r
+
+            Rectangle w h ->
+                w * h
 
 -}
 caseOnCustomTypeMultipleConstructors : (Src.Module -> Expectation) -> (() -> Expectation)

@@ -100,7 +100,7 @@ optimizeTyped annotations exprTypes kernelEnv (TCan.Module tData) =
 {-| Convert a TypedLocalGraph to a CanonLocalGraph by mapping all IncompleteType
 annotations back to Can.Type using toCanonicalPreservingUnknown.
 -}
-finalizeLocalGraph : (TOpt.LocalGraph IT.IncompleteType) -> (TOpt.LocalGraph Can.Type)
+finalizeLocalGraph : TOpt.LocalGraph IT.IncompleteType -> TOpt.LocalGraph Can.Type
 finalizeLocalGraph (TOpt.LocalGraph data) =
     TOpt.LocalGraph
         { main = Maybe.map finalizeMain data.main
@@ -110,7 +110,7 @@ finalizeLocalGraph (TOpt.LocalGraph data) =
         }
 
 
-finalizeMain : (TOpt.Main IT.IncompleteType) -> (TOpt.Main Can.Type)
+finalizeMain : TOpt.Main IT.IncompleteType -> TOpt.Main Can.Type
 finalizeMain main_ =
     case main_ of
         TOpt.Static ->
@@ -120,7 +120,7 @@ finalizeMain main_ =
             TOpt.Dynamic (IT.toCanonicalPreservingUnknown msgType) (finalizeExpr decoder)
 
 
-finalizeNode : (TOpt.Node IT.IncompleteType) -> (TOpt.Node Can.Type)
+finalizeNode : TOpt.Node IT.IncompleteType -> TOpt.Node Can.Type
 finalizeNode node =
     let
         fin =
@@ -170,7 +170,7 @@ finalizeNode node =
             TOpt.PortOutgoing (finalizeExpr encoder) deps (fin tipe)
 
 
-finalizeDef : (TOpt.Def IT.IncompleteType) -> (TOpt.Def Can.Type)
+finalizeDef : TOpt.Def IT.IncompleteType -> TOpt.Def Can.Type
 finalizeDef def =
     case def of
         TOpt.Def region name expr itype ->
@@ -184,7 +184,7 @@ finalizeDef def =
             TOpt.TailDef region name (List.map finalizeArg args) (finalizeExpr body) (IT.toCanonicalPreservingUnknown itype)
 
 
-finalizeExpr : (TOpt.Expr IT.IncompleteType) -> (TOpt.Expr Can.Type)
+finalizeExpr : TOpt.Expr IT.IncompleteType -> TOpt.Expr Can.Type
 finalizeExpr expr =
     let
         fin =
@@ -264,7 +264,8 @@ finalizeExpr expr =
             TOpt.Destruct (finalizeDestructor destructor) (finalizeExpr body) (fin itype)
 
         TOpt.Case label root decider jumps itype ->
-            TOpt.Case label root
+            TOpt.Case label
+                root
                 (finalizeDecider decider)
                 (List.map (Tuple.mapSecond finalizeExpr) jumps)
                 (fin itype)
@@ -294,7 +295,7 @@ finalizeExpr expr =
             TOpt.Shader src attrs uniforms (fin itype)
 
 
-finalizeDestructor : (TOpt.Destructor IT.IncompleteType) -> (TOpt.Destructor Can.Type)
+finalizeDestructor : TOpt.Destructor IT.IncompleteType -> TOpt.Destructor Can.Type
 finalizeDestructor (TOpt.Destructor name path itype) =
     TOpt.Destructor name path (IT.toCanonicalPreservingUnknown itype)
 
@@ -312,7 +313,7 @@ finalizeDecider decider =
             TOpt.FanOut path (List.map (Tuple.mapSecond finalizeDecider) edges) (finalizeDecider fallback)
 
 
-finalizeChoice : (TOpt.Choice IT.IncompleteType) -> (TOpt.Choice Can.Type)
+finalizeChoice : TOpt.Choice IT.IncompleteType -> TOpt.Choice Can.Type
 finalizeChoice choice =
     case choice of
         TOpt.Inline expr ->
@@ -330,7 +331,7 @@ type alias TypedNodes =
     Dict (List String) TOpt.Global (TOpt.Node IT.IncompleteType)
 
 
-addUnions : IO.Canonical -> Annotations -> Dict String Name.Name Can.Union -> (TOpt.LocalGraph IT.IncompleteType) -> (TOpt.LocalGraph IT.IncompleteType)
+addUnions : IO.Canonical -> Annotations -> Dict String Name.Name Can.Union -> TOpt.LocalGraph IT.IncompleteType -> TOpt.LocalGraph IT.IncompleteType
 addUnions home _ unions (TOpt.LocalGraph data) =
     TOpt.LocalGraph { data | nodes = Dict.foldr compare (addUnion home) data.nodes unions }
 
@@ -352,7 +353,7 @@ addCtorNode home typeName unionData (Can.Ctor c) nodes =
         ctorType =
             IT.Complete (List.foldr Can.TLambda resultType c.args)
 
-        node : (TOpt.Node IT.IncompleteType)
+        node : TOpt.Node IT.IncompleteType
         node =
             case unionData.opts of
                 Can.Normal ->
@@ -371,12 +372,12 @@ addCtorNode home typeName unionData (Can.Ctor c) nodes =
 -- ====== Type Aliases ======
 
 
-addAliases : IO.Canonical -> Annotations -> Dict String Name.Name Can.Alias -> (TOpt.LocalGraph IT.IncompleteType) -> (TOpt.LocalGraph IT.IncompleteType)
+addAliases : IO.Canonical -> Annotations -> Dict String Name.Name Can.Alias -> TOpt.LocalGraph IT.IncompleteType -> TOpt.LocalGraph IT.IncompleteType
 addAliases home annotations aliases graph =
     Dict.foldr compare (addAlias home annotations) graph aliases
 
 
-addAlias : IO.Canonical -> Annotations -> Name.Name -> Can.Alias -> (TOpt.LocalGraph IT.IncompleteType) -> (TOpt.LocalGraph IT.IncompleteType)
+addAlias : IO.Canonical -> Annotations -> Name.Name -> Can.Alias -> TOpt.LocalGraph IT.IncompleteType -> TOpt.LocalGraph IT.IncompleteType
 addAlias home _ name (Can.Alias _ tipe) ((TOpt.LocalGraph data) as graph) =
     case tipe of
         Can.TRecord fields Nothing ->
@@ -403,7 +404,7 @@ addAlias home _ name (Can.Alias _ tipe) ((TOpt.LocalGraph data) as graph) =
                         fieldList
 
                 -- Build record body: { field1 = field1, field2 = field2, ... }
-                bodyRecord : (TOpt.Expr IT.IncompleteType)
+                bodyRecord : TOpt.Expr IT.IncompleteType
                 bodyRecord =
                     TOpt.Record
                         (Dict.map
@@ -414,11 +415,11 @@ addAlias home _ name (Can.Alias _ tipe) ((TOpt.LocalGraph data) as graph) =
                         )
                         (IT.Complete tipe)
 
-                function : (TOpt.Expr IT.IncompleteType)
+                function : TOpt.Expr IT.IncompleteType
                 function =
                     TOpt.TrackedFunction argNamesWithTypes bodyRecord (IT.Complete funcType)
 
-                node : (TOpt.Node IT.IncompleteType)
+                node : TOpt.Node IT.IncompleteType
                 node =
                     TOpt.Define function EverySet.empty (IT.Complete funcType)
             in
@@ -443,7 +444,7 @@ addRecordCtorField name _ fields =
 -- ====== Effects ======
 
 
-addEffects : IO.Canonical -> Annotations -> Can.Effects -> (TOpt.LocalGraph IT.IncompleteType) -> (TOpt.LocalGraph IT.IncompleteType)
+addEffects : IO.Canonical -> Annotations -> Can.Effects -> TOpt.LocalGraph IT.IncompleteType -> TOpt.LocalGraph IT.IncompleteType
 addEffects home annotations effects ((TOpt.LocalGraph data) as graph) =
     case effects of
         Can.NoEffects ->
@@ -466,7 +467,7 @@ addEffects home annotations effects ((TOpt.LocalGraph data) as graph) =
                 sub =
                     TOpt.Global home "subscription"
 
-                link : (TOpt.Node IT.IncompleteType)
+                link : TOpt.Node IT.IncompleteType
                 link =
                     TOpt.Link fx
 
@@ -489,7 +490,7 @@ addEffects home annotations effects ((TOpt.LocalGraph data) as graph) =
             TOpt.LocalGraph { data | nodes = newNodes }
 
 
-addPort : IO.Canonical -> Annotations -> Name.Name -> Can.Port -> (TOpt.LocalGraph IT.IncompleteType) -> (TOpt.LocalGraph IT.IncompleteType)
+addPort : IO.Canonical -> Annotations -> Name.Name -> Can.Port -> TOpt.LocalGraph IT.IncompleteType -> TOpt.LocalGraph IT.IncompleteType
 addPort home annotations name port_ graph =
     case port_ of
         Can.Incoming { payload } ->
@@ -506,7 +507,7 @@ addPort home annotations name port_ graph =
                 ( deps, fields, decoder ) =
                     Names.run (Port.toDecoder payload)
 
-                node : (TOpt.Node IT.IncompleteType)
+                node : TOpt.Node IT.IncompleteType
                 node =
                     TOpt.PortIncoming decoder deps portType
             in
@@ -526,7 +527,7 @@ addPort home annotations name port_ graph =
                 ( deps, fields, encoder ) =
                     Names.run (Port.toEncoder payload)
 
-                node : (TOpt.Node IT.IncompleteType)
+                node : TOpt.Node IT.IncompleteType
                 node =
                     TOpt.PortOutgoing encoder deps portType
             in
@@ -537,7 +538,7 @@ addPort home annotations name port_ graph =
 -- ====== Graph Helper ======
 
 
-addToGraph : TOpt.Global -> (TOpt.Node IT.IncompleteType) -> Dict String Name.Name Int -> (TOpt.LocalGraph IT.IncompleteType) -> (TOpt.LocalGraph IT.IncompleteType)
+addToGraph : TOpt.Global -> TOpt.Node IT.IncompleteType -> Dict String Name.Name Int -> TOpt.LocalGraph IT.IncompleteType -> TOpt.LocalGraph IT.IncompleteType
 addToGraph name node fields (TOpt.LocalGraph data) =
     TOpt.LocalGraph
         { data
@@ -550,7 +551,7 @@ addToGraph name node fields (TOpt.LocalGraph data) =
 -- ====== Value Declarations ======
 
 
-addDecls : IO.Canonical -> Annotations -> ExprTypes -> KernelTypes.KernelTypeEnv -> TCan.Decls -> (TOpt.LocalGraph IT.IncompleteType) -> MResult i (List W.Warning) (TOpt.LocalGraph IT.IncompleteType)
+addDecls : IO.Canonical -> Annotations -> ExprTypes -> KernelTypes.KernelTypeEnv -> TCan.Decls -> TOpt.LocalGraph IT.IncompleteType -> MResult i (List W.Warning) (TOpt.LocalGraph IT.IncompleteType)
 addDecls home annotations exprTypes kernelEnv decls graph =
     ReportingResult.loop (addDeclsHelp home annotations exprTypes kernelEnv) ( decls, graph )
 
@@ -560,8 +561,8 @@ addDeclsHelp :
     -> Annotations
     -> ExprTypes
     -> KernelTypes.KernelTypeEnv
-    -> ( TCan.Decls, (TOpt.LocalGraph IT.IncompleteType) )
-    -> MResult i (List W.Warning) (ReportingResult.Step ( TCan.Decls, (TOpt.LocalGraph IT.IncompleteType) ) (TOpt.LocalGraph IT.IncompleteType))
+    -> ( TCan.Decls, TOpt.LocalGraph IT.IncompleteType )
+    -> MResult i (List W.Warning) (ReportingResult.Step ( TCan.Decls, TOpt.LocalGraph IT.IncompleteType ) (TOpt.LocalGraph IT.IncompleteType))
 addDeclsHelp home annotations exprTypes kernelEnv ( decls, graph ) =
     case decls of
         TCan.Declare def subDecls ->
@@ -622,7 +623,7 @@ defToName def =
 -- ====== Single Definitions ======
 
 
-addDef : IO.Canonical -> Annotations -> ExprTypes -> KernelTypes.KernelTypeEnv -> TCan.Def -> (TOpt.LocalGraph IT.IncompleteType) -> MResult i (List W.Warning) (TOpt.LocalGraph IT.IncompleteType)
+addDef : IO.Canonical -> Annotations -> ExprTypes -> KernelTypes.KernelTypeEnv -> TCan.Def -> TOpt.LocalGraph IT.IncompleteType -> MResult i (List W.Warning) (TOpt.LocalGraph IT.IncompleteType)
 addDef home annotations exprTypes kernelEnv def graph =
     case def of
         TCan.Def (A.At region name) args body ->
@@ -646,7 +647,7 @@ addDefHelp :
     -> Name.Name
     -> List Can.Pattern
     -> TCan.Expr
-    -> (TOpt.LocalGraph IT.IncompleteType)
+    -> TOpt.LocalGraph IT.IncompleteType
     -> MResult i w (TOpt.LocalGraph IT.IncompleteType)
 addDefHelp region annotations exprTypes kernelEnv home name args body ((TOpt.LocalGraph data) as graph) =
     if name /= Name.main_ then
@@ -657,7 +658,7 @@ addDefHelp region annotations exprTypes kernelEnv home name args body ((TOpt.Loc
             (Can.Forall _ tipe) =
                 Utils.find identity name annotations
 
-            addMain : ( EverySet (List String) TOpt.Global, Dict String Name.Name Int, (TOpt.Main IT.IncompleteType) ) -> (TOpt.LocalGraph IT.IncompleteType)
+            addMain : ( EverySet (List String) TOpt.Global, Dict String Name.Name Int, TOpt.Main IT.IncompleteType ) -> TOpt.LocalGraph IT.IncompleteType
             addMain ( deps, fields, main ) =
                 TOpt.LocalGraph
                     { data
@@ -700,8 +701,8 @@ addDefNode :
     -> List Can.Pattern
     -> TCan.Expr
     -> EverySet (List String) TOpt.Global
-    -> (TOpt.LocalGraph IT.IncompleteType)
-    -> (TOpt.LocalGraph IT.IncompleteType)
+    -> TOpt.LocalGraph IT.IncompleteType
+    -> TOpt.LocalGraph IT.IncompleteType
 addDefNode home annotations exprTypes kernelEnv region name args body mainDeps graph =
     let
         -- Get the def type from annotations
@@ -758,7 +759,7 @@ addDefNode home annotations exprTypes kernelEnv region name args body mainDeps g
 
 {-| Wrap an expression in a Destruct node.
 -}
-wrapDestruct : IT.IncompleteType -> (TOpt.Destructor IT.IncompleteType) -> (TOpt.Expr IT.IncompleteType) -> (TOpt.Expr IT.IncompleteType)
+wrapDestruct : IT.IncompleteType -> TOpt.Destructor IT.IncompleteType -> TOpt.Expr IT.IncompleteType -> TOpt.Expr IT.IncompleteType
 wrapDestruct bodyType destructor expr =
     TOpt.Destruct destructor expr bodyType
 
@@ -769,12 +770,12 @@ wrapDestruct bodyType destructor expr =
 
 type State
     = State
-        { values : List ( Name.Name, (TOpt.Expr IT.IncompleteType) )
+        { values : List ( Name.Name, TOpt.Expr IT.IncompleteType )
         , functions : List (TOpt.Def IT.IncompleteType)
         }
 
 
-addRecDefs : IO.Canonical -> Annotations -> ExprTypes -> KernelTypes.KernelTypeEnv -> List TCan.Def -> (TOpt.LocalGraph IT.IncompleteType) -> (TOpt.LocalGraph IT.IncompleteType)
+addRecDefs : IO.Canonical -> Annotations -> ExprTypes -> KernelTypes.KernelTypeEnv -> List TCan.Def -> TOpt.LocalGraph IT.IncompleteType -> TOpt.LocalGraph IT.IncompleteType
 addRecDefs home annotations exprTypes kernelEnv defs (TOpt.LocalGraph data) =
     let
         names : List Name.Name
@@ -834,7 +835,7 @@ addValueName def names =
             names
 
 
-addLink : IO.Canonical -> (TOpt.Node IT.IncompleteType) -> TCan.Def -> TypedNodes -> TypedNodes
+addLink : IO.Canonical -> TOpt.Node IT.IncompleteType -> TCan.Def -> TypedNodes -> TypedNodes
 addLink home link def links =
     case def of
         TCan.Def (A.At _ name) _ _ ->

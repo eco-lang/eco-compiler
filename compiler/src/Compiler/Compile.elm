@@ -31,8 +31,8 @@ The compilation pipeline consists of four phases:
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
-import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypeEnv as TypeEnv
+import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name exposing (Name)
@@ -80,7 +80,7 @@ type alias TypedArtifactsData =
     { canonical : Can.Module
     , annotations : Dict String Name Can.Annotation
     , objects : Opt.LocalGraph
-    , typedObjects : (TOpt.LocalGraph Can.Type)
+    , typedObjects : TOpt.LocalGraph Can.Type
     , typeEnv : TypeEnv.ModuleTypeEnv
     }
 

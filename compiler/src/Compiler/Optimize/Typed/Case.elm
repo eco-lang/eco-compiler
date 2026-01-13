@@ -38,9 +38,8 @@ import Utils.Main as Utils
 {-| Optimize a typed case expression into a decision tree.
 Takes a temporary variable name, the root variable being matched, the pattern-matched branches,
 and the result type. Returns an optimized Case expression with decision tree and inline/jump choices.
-
 -}
-optimize : Name.Name -> Name.Name -> List ( Can.Pattern, (TOpt.Expr IT.IncompleteType) ) -> IT.IncompleteType -> (TOpt.Expr IT.IncompleteType)
+optimize : Name.Name -> Name.Name -> List ( Can.Pattern, TOpt.Expr IT.IncompleteType ) -> IT.IncompleteType -> TOpt.Expr IT.IncompleteType
 optimize temp root optBranches resultType =
     let
         ( patterns, indexedBranches ) =
@@ -156,7 +155,7 @@ countTargets decisionTree =
             Utils.mapUnionsWith identity compare (+) (List.map countTargets (fallback :: List.map Tuple.second tests))
 
 
-createChoices : Dict Int Int Int -> ( Int, (TOpt.Expr IT.IncompleteType) ) -> ( ( Int, (TOpt.Choice IT.IncompleteType) ), Maybe ( Int, (TOpt.Expr IT.IncompleteType) ) )
+createChoices : Dict Int Int Int -> ( Int, TOpt.Expr IT.IncompleteType ) -> ( ( Int, TOpt.Choice IT.IncompleteType ), Maybe ( Int, TOpt.Expr IT.IncompleteType ) )
 createChoices targetCounts ( target, branch ) =
     if Dict.get identity target targetCounts == Just 1 then
         ( ( target, TOpt.Inline branch )

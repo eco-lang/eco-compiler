@@ -35,7 +35,7 @@ import Compiler.AST.TypedOptimized as TOpt
 {-| Combined artifact for a single module containing typed IR and type definitions.
 -}
 type alias TypedModuleArtifact =
-    { typedGraph : (TOpt.LocalGraph Can.Type)
+    { typedGraph : TOpt.LocalGraph Can.Type
     , typeEnv : TypeEnv.ModuleTypeEnv
     }
 

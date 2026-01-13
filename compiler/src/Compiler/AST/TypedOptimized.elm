@@ -4,7 +4,7 @@ module Compiler.AST.TypedOptimized exposing
     , ContainerHint(..)
     , Decider(..), Choice(..)
     , GlobalGraph(..), LocalGraph(..), LocalGraphData, Node(..), Main(..), EffectsType(..)
-    , emptyGlobalGraph, emptyLocalGraph, addGlobalGraph, addLocalGraph
+    , emptyGlobalGraph, addGlobalGraph, addLocalGraph
     , compareGlobal, toComparableGlobal, toKernelGlobal
     , typeOf
     , globalGraphEncoder, globalGraphDecoder, localGraphEncoder, localGraphDecoder
@@ -54,7 +54,7 @@ The types are parameterized over the type annotation `t`, allowing:
 
 # Graph Operations
 
-@docs emptyGlobalGraph, emptyLocalGraph, addGlobalGraph, addLocalGraph
+@docs emptyGlobalGraph, addGlobalGraph, addLocalGraph
 
 
 # Global Reference Utilities
@@ -76,7 +76,6 @@ The types are parameterized over the type annotation `t`, allowing:
 import Bytes.Decode
 import Bytes.Encode
 import Compiler.AST.Canonical as Can
-import Compiler.AST.IncompleteType as IT
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
@@ -440,13 +439,6 @@ type EffectsType
 emptyGlobalGraph : GlobalGraph t
 emptyGlobalGraph =
     GlobalGraph Dict.empty Dict.empty Dict.empty
-
-
-{-| Create an empty local graph with no definitions.
--}
-emptyLocalGraph : LocalGraph t
-emptyLocalGraph =
-    LocalGraph { main = Nothing, nodes = Dict.empty, fields = Dict.empty, annotations = Dict.empty }
 
 
 {-| Merge two global graphs by unioning their nodes, fields, and annotations.

@@ -216,7 +216,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
 
         Can.If branches final ->
             let
-                optimizeBranch : ( Can.Expr, Can.Expr ) -> Names.Tracker ( (TOpt.Expr IT.IncompleteType), (TOpt.Expr IT.IncompleteType) )
+                optimizeBranch : ( Can.Expr, Can.Expr ) -> Names.Tracker ( TOpt.Expr IT.IncompleteType, TOpt.Expr IT.IncompleteType )
                 optimizeBranch ( condition, thenExpr ) =
                     let
                         optCond =
@@ -305,7 +305,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
 
         Can.Case scrutinee branches ->
             let
-                optimizeBranch : Name -> Can.CaseBranch -> Names.Tracker ( Can.Pattern, (TOpt.Expr IT.IncompleteType) )
+                optimizeBranch : Name -> Can.CaseBranch -> Names.Tracker ( Can.Pattern, TOpt.Expr IT.IncompleteType )
                 optimizeBranch root (Can.CaseBranch pattern branch) =
                     destructCase exprTypes root pattern
                         |> Names.andThen
@@ -366,7 +366,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
 
         Can.Update recordExpr fieldUpdates ->
             let
-                optimizeFieldUpdate : ( A.Located Name, Can.FieldUpdate ) -> Names.Tracker ( A.Located Name, (TOpt.Expr IT.IncompleteType) )
+                optimizeFieldUpdate : ( A.Located Name, Can.FieldUpdate ) -> Names.Tracker ( A.Located Name, TOpt.Expr IT.IncompleteType )
                 optimizeFieldUpdate ( locName, Can.FieldUpdate _ fieldExpr ) =
                     optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes fieldExpr)
                         |> Names.map (\optExpr -> ( locName, optExpr ))
@@ -391,7 +391,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
 
         Can.Record fields ->
             let
-                optimizeField : ( A.Located Name, Can.Expr ) -> Names.Tracker ( A.Located Name, (TOpt.Expr IT.IncompleteType) )
+                optimizeField : ( A.Located Name, Can.Expr ) -> Names.Tracker ( A.Located Name, TOpt.Expr IT.IncompleteType )
                 optimizeField ( locName, fieldExpr ) =
                     optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes fieldExpr)
                         |> Names.map (\optExpr -> ( locName, optExpr ))
@@ -723,7 +723,7 @@ optimizeDef :
     -> Cycle
     -> Can.Def
     -> IT.IncompleteType
-    -> (TOpt.Expr IT.IncompleteType)
+    -> TOpt.Expr IT.IncompleteType
     -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 optimizeDef kernelEnv annotations exprTypes cycle def resultType body =
     case def of
@@ -744,7 +744,7 @@ optimizeDefHelp :
     -> List Can.Pattern
     -> Can.Expr
     -> IT.IncompleteType
-    -> (TOpt.Expr IT.IncompleteType)
+    -> TOpt.Expr IT.IncompleteType
     -> Names.Tracker (TOpt.Expr IT.IncompleteType)
 optimizeDefHelp kernelEnv annotations exprTypes cycle region name args expr resultType body =
     case args of
@@ -884,7 +884,7 @@ optimizePotentialTailCall kernelEnv annotations exprTypes cycle region name args
 
 {-| Check if an expression contains a tail call to the given function.
 -}
-hasTailCall : Name -> (TOpt.Expr IT.IncompleteType) -> Bool
+hasTailCall : Name -> TOpt.Expr IT.IncompleteType -> Bool
 hasTailCall funcName expr =
     case expr of
         TOpt.TailCall callName _ _ ->
@@ -930,7 +930,7 @@ decidecHasTailCall funcName decider =
 
 {-| Wrap an expression in a Destruct node.
 -}
-wrapDestruct : IT.IncompleteType -> (TOpt.Destructor IT.IncompleteType) -> (TOpt.Expr IT.IncompleteType) -> (TOpt.Expr IT.IncompleteType)
+wrapDestruct : IT.IncompleteType -> TOpt.Destructor IT.IncompleteType -> TOpt.Expr IT.IncompleteType -> TOpt.Expr IT.IncompleteType
 wrapDestruct bodyType destructor expr =
     TOpt.Destruct destructor expr bodyType
 
@@ -948,6 +948,7 @@ lookupPatternType exprTypes patId location =
     if patId < 0 then
         -- Synthetic pattern (negative ID), no type available
         IT.ToSolve (location ++ ": synthetic")
+
     else
         case Dict.get identity patId exprTypes of
             Just t ->
@@ -1063,7 +1064,7 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
             let
                 -- For record fields, we need to look up each field's type from the pattern
                 -- The pattern itself has a record type, but we need to extract field types
-                toDestruct : Name -> (TOpt.Destructor IT.IncompleteType)
+                toDestruct : Name -> TOpt.Destructor IT.IncompleteType
                 toDestruct name =
                     -- Try to get record field type from pattern's type
                     let

@@ -2,9 +2,9 @@ module Builder.Elm.Details exposing
     ( Details(..), DetailsData, BuildID, ValidOutline(..)
     , Local(..), LocalData, Foreign(..), Status
     , Extras, Interfaces
-    , PackageTypedArtifacts, packageTypedArtifactsEncoder, packageTypedArtifactsDecoder
+    , PackageTypedArtifacts, packageTypedArtifactsDecoder
     , load, verifyInstall
-    , loadObjects, loadTypedObjects, loadTypeEnvs, loadInterfaces
+    , loadObjects, loadTypedObjects, loadInterfaces
     , detailsEncoder, localEncoder, localDecoder
     )
 
@@ -33,7 +33,7 @@ resolution, verification, and parallel compilation.
 
 # Typed Artifacts
 
-@docs PackageTypedArtifacts, packageTypedArtifactsEncoder, packageTypedArtifactsDecoder
+@docs PackageTypedArtifacts, packageTypedArtifactsDecoder
 
 
 # Loading and Verification
@@ -43,7 +43,7 @@ resolution, verification, and parallel compilation.
 
 # Artifact Loading
 
-@docs loadObjects, loadTypedObjects, loadTypeEnvs, loadInterfaces
+@docs loadObjects, loadTypedObjects, loadInterfaces
 
 
 # Serialization
@@ -291,7 +291,7 @@ combineTypedArtifacts maybeLocal packageArtifacts =
 and the global type environment.
 -}
 type alias PackageTypedArtifacts =
-    { typedGraph : (TOpt.GlobalGraph Can.Type)
+    { typedGraph : TOpt.GlobalGraph Can.Type
     , typeEnv : TypeEnv.GlobalTypeEnv
     }
 
@@ -317,46 +317,6 @@ packageTypedArtifactsDecoder =
 
 
 -- ====== LOAD TYPE ENVIRONMENTS ======
-
-
-{-| Load global type environments from all package dependencies.
-Returns an MVar that will contain the type environments when loading completes.
--}
-loadTypeEnvs : FilePath -> Details -> Task Never (MVar (Maybe TypeEnv.GlobalTypeEnv))
-loadTypeEnvs root (Details detailsData) =
-    fork (Utils.maybeEncoder TypeEnv.globalTypeEnvEncoder)
-        (Stuff.getPackageCache
-            |> Task.andThen (loadAllTypeEnvs root detailsData.deps)
-        )
-
-
-{-| Load type environments from all packages.
--}
-loadAllTypeEnvs : FilePath -> Dict ( String, String ) Pkg.Name V.Version -> Stuff.PackageCache -> Task Never (Maybe TypeEnv.GlobalTypeEnv)
-loadAllTypeEnvs _ deps cache =
-    loadPackageTypeEnvs cache deps
-        |> Task.map Just
-
-
-{-| Load type environments from all package dependencies.
--}
-loadPackageTypeEnvs : Stuff.PackageCache -> Dict ( String, String ) Pkg.Name V.Version -> Task Never TypeEnv.GlobalTypeEnv
-loadPackageTypeEnvs cache deps =
-    Utils.mapTraverseWithKey identity Pkg.compareName (loadSinglePackageTypeEnv cache) deps
-        |> Task.map (\loaded -> Dict.foldl compare (\_ env acc -> Dict.union env acc) TypeEnv.emptyGlobal loaded)
-
-
-{-| Load type environment from a single package.
--}
-loadSinglePackageTypeEnv : Stuff.PackageCache -> Pkg.Name -> V.Version -> Task Never TypeEnv.GlobalTypeEnv
-loadSinglePackageTypeEnv cache pkg vsn =
-    let
-        path : String
-        path =
-            Stuff.typedPackageArtifacts cache pkg vsn
-    in
-    File.readBinary packageTypedArtifactsDecoder path
-        |> Task.map (Maybe.map .typeEnv >> Maybe.withDefault TypeEnv.emptyGlobal)
 
 
 {-| Load type interfaces for all dependencies in a background thread.
@@ -1156,7 +1116,7 @@ writePackageArtifacts ctx exposedDict docsStatus resultDict =
                     (\_ ->
                         if ctx.needsTypedOpt then
                             let
-                                typedGraph : (TOpt.GlobalGraph Can.Type)
+                                typedGraph : TOpt.GlobalGraph Can.Type
                                 typedGraph =
                                     gatherTypedObjects successes
 
@@ -1271,14 +1231,14 @@ addLocalGraph name status graph =
 
 {-| Gather typed objects from DResult dictionary for MLIR backend.
 -}
-gatherTypedObjects : Dict String ModuleName.Raw DResult -> (TOpt.GlobalGraph Can.Type)
+gatherTypedObjects : Dict String ModuleName.Raw DResult -> TOpt.GlobalGraph Can.Type
 gatherTypedObjects results =
     Dict.foldr compare addTypedLocalGraph TOpt.emptyGlobalGraph results
 
 
 {-| Add a typed local graph to the global graph.
 -}
-addTypedLocalGraph : ModuleName.Raw -> DResult -> (TOpt.GlobalGraph Can.Type) -> (TOpt.GlobalGraph Can.Type)
+addTypedLocalGraph : ModuleName.Raw -> DResult -> TOpt.GlobalGraph Can.Type -> TOpt.GlobalGraph Can.Type
 addTypedLocalGraph _ status graph =
     case status of
         RLocal _ _ maybeTypedObjs _ _ ->

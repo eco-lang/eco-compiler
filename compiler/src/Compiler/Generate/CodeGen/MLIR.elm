@@ -23,7 +23,7 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.Mode as Mode
 import Compiler.Optimize.Typed.DecisionTree as DT
-import Data.Map as EveryDict exposing (Dict)
+import Data.Map as EveryDict
 import Dict
 import Mlir.Loc as Loc
 import Mlir.Mlir as Mlir
@@ -127,7 +127,7 @@ monoTypeToMlir monoType =
         Mono.MFunction _ _ ->
             ecoValue
 
-        Mono.MVar name constraint_ ->
+        Mono.MVar _ constraint_ ->
             --let
             --    res =
             case constraint_ of
@@ -1963,7 +1963,7 @@ generateModule mode typeEnv (Mono.MonoGraph { nodes, main, registry }) =
 
         mlirModule : MlirModule
         mlirModule =
-            { body = [ typeTableOp ] ++ kernelDeclOps ++ lambdaOps ++ ops ++ mainOps
+            { body = typeTableOp :: kernelDeclOps ++ lambdaOps ++ ops ++ mainOps
             , loc = Loc.unknown
             }
     in
