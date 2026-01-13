@@ -269,7 +269,7 @@ loadSinglePackageTypedArtifacts cache pkg vsn =
 
 {-| Combine local and package typed artifacts.
 -}
-combineTypedArtifacts : Maybe (TOpt.GlobalGraph Can.Type) -> PackageTypedArtifacts -> Maybe PackageTypedArtifacts
+combineTypedArtifacts : Maybe TOpt.GlobalGraph -> PackageTypedArtifacts -> Maybe PackageTypedArtifacts
 combineTypedArtifacts maybeLocal packageArtifacts =
     case maybeLocal of
         Just local ->
@@ -291,7 +291,7 @@ combineTypedArtifacts maybeLocal packageArtifacts =
 and the global type environment.
 -}
 type alias PackageTypedArtifacts =
-    { typedGraph : TOpt.GlobalGraph Can.Type
+    { typedGraph : TOpt.GlobalGraph
     , typeEnv : TypeEnv.GlobalTypeEnv
     }
 
@@ -1116,7 +1116,7 @@ writePackageArtifacts ctx exposedDict docsStatus resultDict =
                     (\_ ->
                         if ctx.needsTypedOpt then
                             let
-                                typedGraph : TOpt.GlobalGraph Can.Type
+                                typedGraph : TOpt.GlobalGraph
                                 typedGraph =
                                     gatherTypedObjects successes
 
@@ -1231,14 +1231,14 @@ addLocalGraph name status graph =
 
 {-| Gather typed objects from DResult dictionary for MLIR backend.
 -}
-gatherTypedObjects : Dict String ModuleName.Raw DResult -> TOpt.GlobalGraph Can.Type
+gatherTypedObjects : Dict String ModuleName.Raw DResult -> TOpt.GlobalGraph
 gatherTypedObjects results =
     Dict.foldr compare addTypedLocalGraph TOpt.emptyGlobalGraph results
 
 
 {-| Add a typed local graph to the global graph.
 -}
-addTypedLocalGraph : ModuleName.Raw -> DResult -> TOpt.GlobalGraph Can.Type -> TOpt.GlobalGraph Can.Type
+addTypedLocalGraph : ModuleName.Raw -> DResult -> TOpt.GlobalGraph -> TOpt.GlobalGraph
 addTypedLocalGraph _ status graph =
     case status of
         RLocal _ _ maybeTypedObjs _ _ ->
@@ -1535,7 +1535,7 @@ getDepHome fi =
 
 
 type DResult
-    = RLocal I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Can.Type)) (Maybe TypeEnv.ModuleTypeEnv) (Maybe Docs.Module)
+    = RLocal I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe TypeEnv.ModuleTypeEnv) (Maybe Docs.Module)
     | RForeign I.Interface
     | RKernelLocal (List Kernel.Chunk)
     | RKernelForeign

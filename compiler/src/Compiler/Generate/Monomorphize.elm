@@ -47,7 +47,7 @@ type alias MonoState =
     , registry : Mono.SpecializationRegistry
     , lambdaCounter : Int
     , currentModule : IO.Canonical
-    , toptNodes : Dict (List String) TOpt.Global (TOpt.Node Can.Type)
+    , toptNodes : Dict (List String) TOpt.Global TOpt.Node
     , currentGlobal : Maybe Mono.Global
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
     , varTypes : Dict String Name Mono.MonoType -- Mapping of variable names to their MonoTypes
@@ -146,7 +146,7 @@ checkCallableTopLevels state =
 This is useful for testing when the entry point is not named "main".
 
 -}
-monomorphize : Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Can.Type -> Result String Mono.MonoGraph
+monomorphize : Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph -> Result String Mono.MonoGraph
 monomorphize entryPointName globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
     case findEntryPoint entryPointName nodes of
         Nothing ->
@@ -158,7 +158,7 @@ monomorphize entryPointName globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
 
 {-| Perform monomorphization from a given entry point.
 -}
-monomorphizeFromEntry : TOpt.Global -> Can.Type -> TypeEnv.GlobalTypeEnv -> Dict (List String) TOpt.Global (TOpt.Node Can.Type) -> Result String Mono.MonoGraph
+monomorphizeFromEntry : TOpt.Global -> Can.Type -> TypeEnv.GlobalTypeEnv -> Dict (List String) TOpt.Global TOpt.Node -> Result String Mono.MonoGraph
 monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes =
     let
         mainMonoType : Mono.MonoType
@@ -220,7 +220,7 @@ monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes =
 
 {-| Initialize the monomorphization state with empty worklist and registry.
 -}
-initState : IO.Canonical -> Dict (List String) TOpt.Global (TOpt.Node Can.Type) -> TypeEnv.GlobalTypeEnv -> MonoState
+initState : IO.Canonical -> Dict (List String) TOpt.Global TOpt.Node -> TypeEnv.GlobalTypeEnv -> MonoState
 initState currentModule toptNodes globalTypeEnv =
     { worklist = []
     , nodes = Dict.empty
@@ -237,7 +237,7 @@ initState currentModule toptNodes globalTypeEnv =
 
 {-| Find an entry point by name in the global graph.
 -}
-findEntryPoint : Name -> Dict (List String) TOpt.Global (TOpt.Node Can.Type) -> Maybe ( TOpt.Global, Can.Type )
+findEntryPoint : Name -> Dict (List String) TOpt.Global TOpt.Node -> Maybe ( TOpt.Global, Can.Type )
 findEntryPoint entryPointName nodes =
     Dict.foldl TOpt.compareGlobal
         (\global node acc ->
@@ -355,7 +355,7 @@ processWorklist state =
 {-| Specialize a typed optimized node to a monomorphized node at the requested concrete type.
 The ctorName parameter is used to populate CtorLayout.name for constructor nodes.
 -}
-specializeNode : Name.Name -> TOpt.Node Can.Type -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
+specializeNode : Name.Name -> TOpt.Node -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
 specializeNode ctorName node requestedMonoType state =
     case node of
         TOpt.Define expr _ canType ->
@@ -517,8 +517,8 @@ specializeNode ctorName node requestedMonoType state =
 -}
 specializeCycle :
     List Name
-    -> List ( Name, TOpt.Expr Can.Type )
-    -> List (TOpt.Def Can.Type)
+    -> List ( Name, TOpt.Expr )
+    -> List TOpt.Def
     -> Mono.MonoType
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
@@ -544,7 +544,7 @@ specializeCycle _ valueDefs funcDefs requestedMonoType state =
 {-| Specialize a cycle containing only value definitions.
 -}
 specializeValueOnlyCycle :
-    List ( Name, TOpt.Expr Can.Type )
+    List ( Name, TOpt.Expr )
     -> Mono.MonoType
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
@@ -564,8 +564,8 @@ specializeValueOnlyCycle valueDefs requestedMonoType state =
 specializeFunctionCycle :
     IO.Canonical
     -> Name
-    -> List ( Name, TOpt.Expr Can.Type )
-    -> List (TOpt.Def Can.Type)
+    -> List ( Name, TOpt.Expr )
+    -> List TOpt.Def
     -> Mono.MonoType
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
@@ -621,7 +621,7 @@ own MonoTailFunc/MonoDefine node).
 specializeFunc :
     IO.Canonical
     -> Substitution
-    -> TOpt.Def Can.Type
+    -> TOpt.Def
     -> ( Dict Int Int Mono.MonoNode, MonoState )
     -> ( Dict Int Int Mono.MonoNode, MonoState )
 specializeFunc requestedCanonical sharedSubst def ( accNodes, accState ) =
@@ -660,7 +660,7 @@ specializeFunc requestedCanonical sharedSubst def ( accNodes, accState ) =
 
 specializeFuncDefInCycle :
     Substitution
-    -> TOpt.Def Can.Type
+    -> TOpt.Def
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
 specializeFuncDefInCycle subst def state =
@@ -723,7 +723,7 @@ specializeFuncDefInCycle subst def state =
 {-| Specialize a list of value definitions in a cycle.
 -}
 specializeValueDefs :
-    List ( Name, TOpt.Expr Can.Type )
+    List ( Name, TOpt.Expr )
     -> Substitution
     -> MonoState
     -> ( List ( Name, Mono.MonoExpr ), MonoState )
@@ -746,7 +746,7 @@ specializeValueDefs values subst state =
 
 {-| Specialize a typed optimized expression to a monomorphized expression by applying type substitutions.
 -}
-specializeExpr : TOpt.Expr Can.Type -> Substitution -> MonoState -> ( Mono.MonoExpr, MonoState )
+specializeExpr : TOpt.Expr -> Substitution -> MonoState -> ( Mono.MonoExpr, MonoState )
 specializeExpr expr subst state =
     case expr of
         TOpt.Bool _ value _ ->
@@ -758,11 +758,31 @@ specializeExpr expr subst state =
         TOpt.Str _ value _ ->
             ( Mono.MonoLiteral (Mono.LStr value) Mono.MString, state )
 
-        TOpt.Int _ value _ ->
-            ( Mono.MonoLiteral (Mono.LInt value) Mono.MInt, state )
+        TOpt.Int _ value canType ->
+            let
+                monoType =
+                    applySubst subst canType
+            in
+            case monoType of
+                -- Int literal used at Float type: treat it as a float literal
+                Mono.MFloat ->
+                    let
+                        _ =
+                            Debug.log "specializeExpr"
+                                "Int literal used at Float type: treat it as a float literal"
+                    in
+                    ( Mono.MonoLiteral (Mono.LFloat (toFloat value)) monoType, state )
 
-        TOpt.Float _ value _ ->
-            ( Mono.MonoLiteral (Mono.LFloat value) Mono.MFloat, state )
+                -- All other cases: keep it as an int literal
+                _ ->
+                    ( Mono.MonoLiteral (Mono.LInt value) monoType, state )
+
+        TOpt.Float _ value canType ->
+            let
+                monoType =
+                    applySubst subst canType
+            in
+            ( Mono.MonoLiteral (Mono.LFloat value) monoType, state )
 
         TOpt.VarLocal name canType ->
             let
@@ -1367,7 +1387,7 @@ specializeExpr expr subst state =
 
 {-| Specialize a list of expressions.
 -}
-specializeExprs : List (TOpt.Expr Can.Type) -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
+specializeExprs : List TOpt.Expr -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
 specializeExprs exprs subst state =
     List.foldr
         (\e ( acc, st ) ->
@@ -1384,7 +1404,7 @@ specializeExprs exprs subst state =
 {-| Specialize a list of named expressions.
 -}
 specializeNamedExprs :
-    List ( Name, TOpt.Expr Can.Type )
+    List ( Name, TOpt.Expr )
     -> Substitution
     -> MonoState
     -> ( List ( Name, Mono.MonoExpr ), MonoState )
@@ -1404,7 +1424,7 @@ specializeNamedExprs namedExprs subst state =
 {-| Specialize if-expression branches (condition-body pairs).
 -}
 specializeBranches :
-    List ( TOpt.Expr Can.Type, TOpt.Expr Can.Type )
+    List ( TOpt.Expr, TOpt.Expr )
     -> Substitution
     -> MonoState
     -> ( List ( Mono.MonoExpr, Mono.MonoExpr ), MonoState )
@@ -1858,7 +1878,7 @@ extractCtorResultType n monoType =
 
 {-| Check if a definition has the given name.
 -}
-defHasName : Name -> TOpt.Def Can.Type -> Bool
+defHasName : Name -> TOpt.Def -> Bool
 defHasName targetName def =
     case def of
         TOpt.Def _ name _ _ ->
@@ -1870,7 +1890,7 @@ defHasName targetName def =
 
 {-| Get the name from a definition.
 -}
-getDefName : TOpt.Def Can.Type -> Name
+getDefName : TOpt.Def -> Name
 getDefName def =
     case def of
         TOpt.Def _ name _ _ ->
@@ -1882,7 +1902,7 @@ getDefName def =
 
 {-| Get the canonical type from a definition.
 -}
-getDefCanonicalType : TOpt.Def Can.Type -> Can.Type
+getDefCanonicalType : TOpt.Def -> Can.Type
 getDefCanonicalType def =
     case def of
         TOpt.Def _ _ _ canType ->
@@ -1898,7 +1918,7 @@ getDefCanonicalType def =
 
 {-| Specialize a local definition.
 -}
-specializeDef : TOpt.Def Can.Type -> Substitution -> MonoState -> ( Mono.MonoDef, MonoState )
+specializeDef : TOpt.Def -> Substitution -> MonoState -> ( Mono.MonoDef, MonoState )
 specializeDef def subst state =
     case def of
         TOpt.Def _ name expr _ ->
@@ -1939,7 +1959,7 @@ specializeDef def subst state =
             ( Mono.MonoTailDef name monoExpr, stateAfter )
 
 
-specializeDestructor : TOpt.Destructor Can.Type -> Substitution -> VarTypes -> Mono.MonoDestructor
+specializeDestructor : TOpt.Destructor -> Substitution -> VarTypes -> Mono.MonoDestructor
 specializeDestructor (TOpt.Destructor name path canType) subst _ =
     let
         monoPath =
@@ -1997,7 +2017,7 @@ hintToKind hint =
             Mono.CustomContainer
 
 
-specializeDecider : TOpt.Decider (TOpt.Choice Can.Type) -> Substitution -> MonoState -> ( Mono.Decider Mono.MonoChoice, MonoState )
+specializeDecider : TOpt.Decider TOpt.Choice -> Substitution -> MonoState -> ( Mono.Decider Mono.MonoChoice, MonoState )
 specializeDecider decider subst state =
     case decider of
         TOpt.Leaf choice ->
@@ -2044,7 +2064,7 @@ specializeDecider decider subst state =
             ( Mono.FanOut path monoEdges monoFallback, state2 )
 
 
-specializeChoice : TOpt.Choice Can.Type -> Substitution -> MonoState -> ( Mono.MonoChoice, MonoState )
+specializeChoice : TOpt.Choice -> Substitution -> MonoState -> ( Mono.MonoChoice, MonoState )
 specializeChoice choice subst state =
     case choice of
         TOpt.Inline expr ->
@@ -2058,7 +2078,7 @@ specializeChoice choice subst state =
             ( Mono.Jump index, state )
 
 
-specializeEdges : List ( DT.Test, TOpt.Decider (TOpt.Choice Can.Type) ) -> Substitution -> MonoState -> ( List ( DT.Test, Mono.Decider Mono.MonoChoice ), MonoState )
+specializeEdges : List ( DT.Test, TOpt.Decider TOpt.Choice ) -> Substitution -> MonoState -> ( List ( DT.Test, Mono.Decider Mono.MonoChoice ), MonoState )
 specializeEdges edges subst state =
     let
         -- Save the initial varTypes - each edge should start with the same varTypes
@@ -2082,7 +2102,7 @@ specializeEdges edges subst state =
         edges
 
 
-specializeJumps : List ( Int, TOpt.Expr Can.Type ) -> Substitution -> MonoState -> ( List ( Int, Mono.MonoExpr ), MonoState )
+specializeJumps : List ( Int, TOpt.Expr ) -> Substitution -> MonoState -> ( List ( Int, Mono.MonoExpr ), MonoState )
 specializeJumps jumps subst state =
     let
         -- Save the initial varTypes - each jump target is a mutually exclusive code path
@@ -2105,7 +2125,7 @@ specializeJumps jumps subst state =
         jumps
 
 
-specializeRecordFields : Dict String Name (TOpt.Expr Can.Type) -> Mono.RecordLayout -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
+specializeRecordFields : Dict String Name TOpt.Expr -> Mono.RecordLayout -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
 specializeRecordFields fields layout subst state =
     -- Fields need to be in layout order
     let
@@ -2130,7 +2150,7 @@ specializeRecordFields fields layout subst state =
         layout.fields
 
 
-specializeTrackedRecordFields : Dict String (A.Located Name) (TOpt.Expr Can.Type) -> Mono.RecordLayout -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
+specializeTrackedRecordFields : Dict String (A.Located Name) TOpt.Expr -> Mono.RecordLayout -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
 specializeTrackedRecordFields fields layout subst state =
     let
         -- Convert A.Located Name keyed dict to String keyed dict
@@ -2157,7 +2177,7 @@ specializeTrackedRecordFields fields layout subst state =
         layout.fields
 
 
-specializeUpdates : Dict String (A.Located Name) (TOpt.Expr Can.Type) -> Mono.RecordLayout -> Substitution -> MonoState -> ( List ( Int, Mono.MonoExpr ), MonoState )
+specializeUpdates : Dict String (A.Located Name) TOpt.Expr -> Mono.RecordLayout -> Substitution -> MonoState -> ( List ( Int, Mono.MonoExpr ), MonoState )
 specializeUpdates updates layout subst state =
     Dict.foldl A.compareLocated
         (\locName expr ( acc, st ) ->
@@ -2388,20 +2408,16 @@ applySubst subst canType =
                     monoType
 
                 Nothing ->
-                    -- Resolve constrained type variables to their default types.
-                    -- This follows Elm's defaulting rules:
-                    -- - "number" constraint defaults to Int
-                    -- - Other type variables become MVar for runtime polymorphism
-                    --
-                    -- Note: Elm's type inference uses more constraints (comparable, appendable),
-                    -- but by the time we get here, those are typically resolved. The number
-                    -- constraint is common from numeric literals like 42.
                     let
                         constraint =
                             constraintFromName name
                     in
                     case constraint of
                         Mono.CNumber ->
+                            -- If a number typeclass has not been resolved, we use MInt in the belief that
+                            -- this is safe, since only int literals can remain polymorphic at runtime, float
+                            -- literals already all are Float.
+                            -- TODO: Record the above as an invariant.
                             Mono.MInt
 
                         Mono.CEcoValue ->

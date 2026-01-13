@@ -41,6 +41,7 @@ module Compiler.AST.SourceBuilder exposing
     , pVar
       -- Module builders
     , parensExpr
+    , qualVarExpr
     , recordExpr
     , strExpr
       -- Type builders
@@ -180,6 +181,13 @@ boolExpr b =
 varExpr : Name -> Src.Expr
 varExpr name =
     A.At A.zero (Src.Var Src.LowVar name)
+
+
+{-| Create a qualified variable reference (e.g., Basics.abs, List.map).
+-}
+qualVarExpr : String -> Name -> Src.Expr
+qualVarExpr moduleName name =
+    A.At A.zero (Src.VarQual Src.LowVar moduleName name)
 
 
 {-| Create a List expression.

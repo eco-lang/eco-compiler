@@ -8,7 +8,7 @@ module Compiler.Optimize.Typed.Expression exposing
 
 This module transforms TypedCanonical AST (where every expression has its type)
 into TypedOptimized representation suitable for code generation. Each TOpt.Expr
-carries an IncompleteType annotation.
+carries a Can.Type annotation.
 
 @docs Cycle, Annotations
 @docs optimize, optimizePotentialTailCall
@@ -17,7 +17,6 @@ carries an IncompleteType annotation.
 -}
 
 import Compiler.AST.Canonical as Can
-import Compiler.AST.IncompleteType as IT
 import Compiler.AST.TypedCanonical as TCan exposing (ExprTypes)
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.AST.Utils.Shader as Shader
@@ -30,7 +29,7 @@ import Compiler.Optimize.Typed.Names as Names
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
-import Utils.Crash as Crash
+import Utils.Crash
 import Utils.Main as Utils
 
 
@@ -55,6 +54,33 @@ type alias Annotations =
 
 
 
+-- ====== TYPE HELPERS ======
+
+
+{-| Build a function type from argument types and a result type.
+-}
+buildFunctionType : List Can.Type -> Can.Type -> Can.Type
+buildFunctionType argTypes resultType =
+    List.foldr Can.TLambda resultType argTypes
+
+
+{-| Peel n argument types from a function type to get the result type.
+-}
+peelFunctionType : Int -> Can.Type -> Can.Type
+peelFunctionType n tipe =
+    if n <= 0 then
+        tipe
+
+    else
+        case tipe of
+            Can.TLambda _ result ->
+                peelFunctionType (n - 1) result
+
+            _ ->
+                tipe
+
+
+
 -- ====== OPTIMIZE ======
 
 
@@ -67,14 +93,14 @@ The `exprTypes` parameter is needed to convert subexpressions (which are still
 `Can.Expr`) back to `TCan.Expr` when recursing.
 
 -}
-optimize : KernelTypes.KernelTypeEnv -> Annotations -> ExprTypes -> Cycle -> TCan.Expr -> Names.Tracker (TOpt.Expr IT.IncompleteType)
+optimize : KernelTypes.KernelTypeEnv -> Annotations -> ExprTypes -> Cycle -> TCan.Expr -> Names.Tracker TOpt.Expr
 optimize kernelEnv annotations exprTypes cycle (A.At region texpr) =
     case texpr of
         TCan.TypedExpr { expr, tipe } ->
             optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr
 
 
-optimizeExpr : KernelTypes.KernelTypeEnv -> Annotations -> ExprTypes -> Cycle -> A.Region -> IT.IncompleteType -> Can.Expr_ -> Names.Tracker (TOpt.Expr IT.IncompleteType)
+optimizeExpr : KernelTypes.KernelTypeEnv -> Annotations -> ExprTypes -> Cycle -> A.Region -> Can.Type -> Can.Expr_ -> Names.Tracker TOpt.Expr
 optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
     case expr of
         Can.VarLocal name ->
@@ -102,10 +128,10 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
                             t
 
                         Nothing ->
-                            Crash.crash
+                            Utils.Crash.crash
                                 ("Typed.Expression.optimizeExpr: Missing kernel type for " ++ home ++ "." ++ name)
             in
-            Names.registerKernel home (TOpt.VarKernel region home name (IT.Complete kernelType))
+            Names.registerKernel home (TOpt.VarKernel region home name kernelType)
 
         Can.VarForeign home name _ ->
             Names.registerGlobal region home name tipe
@@ -116,22 +142,23 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
         Can.VarDebug home name (Can.Forall _ debugType) ->
             -- Use the full function type from the annotation, not the instantiated type
             -- This is needed for the monomorphizer to correctly derive the kernel ABI
-            Names.registerDebug name home region (IT.Complete debugType)
+            Names.registerDebug name home region debugType
 
         Can.VarOperator _ home name (Can.Forall _ funcType) ->
-            Names.registerGlobal region home name (IT.Complete funcType)
+            Names.registerGlobal region home name funcType
 
         Can.Chr chr ->
-            Names.registerKernel Name.utils (TOpt.Chr region chr (IT.Complete (Can.TType ModuleName.basics "Char" [])))
+            Names.registerKernel Name.utils (TOpt.Chr region chr (Can.TType ModuleName.basics "Char" []))
 
         Can.Str str ->
-            Names.pure (TOpt.Str region str (IT.Complete (Can.TType ModuleName.basics "String" [])))
+            Names.pure (TOpt.Str region str (Can.TType ModuleName.basics "String" []))
 
         Can.Int int ->
-            Names.pure (TOpt.Int region int (IT.Complete (Can.TType ModuleName.basics "Int" [])))
+            -- Use the canonical type `tipe` computed by PostSolve / type inference
+            Names.pure (TOpt.Int region int tipe)
 
         Can.Float float ->
-            Names.pure (TOpt.Float region float (IT.Complete (Can.TType ModuleName.basics "Float" [])))
+            Names.pure (TOpt.Float region float tipe)
 
         Can.List entries ->
             Names.traverse (optimize kernelEnv annotations exprTypes cycle << TCan.toTypedExpr exprTypes) entries
@@ -140,7 +167,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
         Can.Negate subExpr ->
             let
                 negateType =
-                    IT.buildFunctionType [ tipe ] tipe
+                    buildFunctionType [ tipe ] tipe
             in
             Names.registerGlobal region ModuleName.basics Name.negate negateType
                 |> Names.andThen
@@ -155,7 +182,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
                 optimizeArg =
                     optimize kernelEnv annotations exprTypes cycle << TCan.toTypedExpr exprTypes
             in
-            Names.registerGlobal region home name (IT.Complete funcType)
+            Names.registerGlobal region home name funcType
                 |> Names.andThen
                     (\optFunc ->
                         optimizeArg left
@@ -188,7 +215,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
 
                             -- Compute body type by peeling off arg types from function type
                             bodyType =
-                                IT.peelFunctionType (List.length args) tipe
+                                peelFunctionType (List.length args) tipe
                         in
                         Names.withVarTypes allBindings
                             (optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes body))
@@ -216,7 +243,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
 
         Can.If branches final ->
             let
-                optimizeBranch : ( Can.Expr, Can.Expr ) -> Names.Tracker ( TOpt.Expr IT.IncompleteType, TOpt.Expr IT.IncompleteType )
+                optimizeBranch : ( Can.Expr, Can.Expr ) -> Names.Tracker ( TOpt.Expr, TOpt.Expr )
                 optimizeBranch ( condition, thenExpr ) =
                     let
                         optCond =
@@ -305,7 +332,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
 
         Can.Case scrutinee branches ->
             let
-                optimizeBranch : Name -> Can.CaseBranch -> Names.Tracker ( Can.Pattern, TOpt.Expr IT.IncompleteType )
+                optimizeBranch : Name -> Can.CaseBranch -> Names.Tracker ( Can.Pattern, TOpt.Expr )
                 optimizeBranch root (Can.CaseBranch pattern branch) =
                     destructCase exprTypes root pattern
                         |> Names.andThen
@@ -366,7 +393,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
 
         Can.Update recordExpr fieldUpdates ->
             let
-                optimizeFieldUpdate : ( A.Located Name, Can.FieldUpdate ) -> Names.Tracker ( A.Located Name, TOpt.Expr IT.IncompleteType )
+                optimizeFieldUpdate : ( A.Located Name, Can.FieldUpdate ) -> Names.Tracker ( A.Located Name, TOpt.Expr )
                 optimizeFieldUpdate ( locName, Can.FieldUpdate _ fieldExpr ) =
                     optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes fieldExpr)
                         |> Names.map (\optExpr -> ( locName, optExpr ))
@@ -391,7 +418,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
 
         Can.Record fields ->
             let
-                optimizeField : ( A.Located Name, Can.Expr ) -> Names.Tracker ( A.Located Name, TOpt.Expr IT.IncompleteType )
+                optimizeField : ( A.Located Name, Can.Expr ) -> Names.Tracker ( A.Located Name, TOpt.Expr )
                 optimizeField ( locName, fieldExpr ) =
                     optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes fieldExpr)
                         |> Names.map (\optExpr -> ( locName, optExpr ))
@@ -411,7 +438,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
                     )
 
         Can.Unit ->
-            Names.registerKernel Name.utils (TOpt.Unit (IT.Complete Can.TUnit))
+            Names.registerKernel Name.utils (TOpt.Unit Can.TUnit)
 
         Can.Tuple a b cs ->
             let
@@ -447,14 +474,14 @@ catchMissing _ tracker =
 
 {-| Look up the type of a top-level definition from annotations.
 -}
-lookupAnnotationType : Name -> Annotations -> IT.IncompleteType
+lookupAnnotationType : Name -> Annotations -> Can.Type
 lookupAnnotationType name annotations =
     case Dict.get identity name annotations of
         Just (Can.Forall _ tipe) ->
-            IT.Complete tipe
+            tipe
 
         Nothing ->
-            IT.ToSolve "Expression.lookupAnnotationType: no annotation"
+            Utils.Crash.crash "Expression.lookupAnnotationType: no annotation"
 
 
 
@@ -471,10 +498,10 @@ optimizeTail :
     -> ExprTypes
     -> Cycle
     -> Name
-    -> List ( A.Located Name, IT.IncompleteType )
-    -> IT.IncompleteType
+    -> List ( A.Located Name, Can.Type )
+    -> Can.Type
     -> TCan.Expr
-    -> Names.Tracker (TOpt.Expr IT.IncompleteType)
+    -> Names.Tracker TOpt.Expr
 optimizeTail kernelEnv annotations exprTypes cycle rootName argNames resultType (A.At region texpr) =
     case texpr of
         TCan.TypedExpr { expr, tipe } ->
@@ -487,12 +514,12 @@ optimizeTailExpr :
     -> ExprTypes
     -> Cycle
     -> Name
-    -> List ( A.Located Name, IT.IncompleteType )
-    -> IT.IncompleteType
+    -> List ( A.Located Name, Can.Type )
+    -> Can.Type
     -> A.Region
-    -> IT.IncompleteType
+    -> Can.Type
     -> Can.Expr_
-    -> Names.Tracker (TOpt.Expr IT.IncompleteType)
+    -> Names.Tracker TOpt.Expr
 optimizeTailExpr kernelEnv annotations exprTypes cycle rootName argNames resultType region tipe expr =
     case expr of
         Can.Call func callArgs ->
@@ -677,7 +704,7 @@ For TypedDef, builds the function type from explicit arg types and result type.
 For Def, looks up pattern and expression types from exprTypes.
 
 -}
-getDefNameAndType : ExprTypes -> Can.Def -> ( Name, IT.IncompleteType )
+getDefNameAndType : ExprTypes -> Can.Def -> ( Name, Can.Type )
 getDefNameAndType exprTypes def =
     case def of
         Can.Def (A.At _ name) args (A.At _ bodyInfo) ->
@@ -688,10 +715,10 @@ getDefNameAndType exprTypes def =
                         (\(A.At _ patInfo) ->
                             case Dict.get identity patInfo.id exprTypes of
                                 Just t ->
-                                    IT.Complete t
+                                    t
 
                                 Nothing ->
-                                    IT.ToSolve "Expression.extractDefNameAndType: arg type"
+                                    Utils.Crash.crash "Expression.extractDefNameAndType: arg type"
                         )
                         args
 
@@ -699,19 +726,19 @@ getDefNameAndType exprTypes def =
                 bodyType =
                     case Dict.get identity bodyInfo.id exprTypes of
                         Just t ->
-                            IT.Complete t
+                            t
 
                         Nothing ->
-                            IT.ToSolve "Expression.extractDefNameAndType: body type"
+                            Utils.Crash.crash "Expression.extractDefNameAndType: body type"
             in
-            ( name, IT.buildFunctionType argTypes bodyType )
+            ( name, buildFunctionType argTypes bodyType )
 
         Can.TypedDef (A.At _ name) _ typedArgs _ resultType ->
             let
                 argTypes =
-                    List.map (IT.Complete << Tuple.second) typedArgs
+                    List.map Tuple.second typedArgs
             in
-            ( name, IT.buildFunctionType argTypes (IT.Complete resultType) )
+            ( name, buildFunctionType argTypes resultType )
 
 
 {-| Optimize a definition inside a let expression.
@@ -722,9 +749,9 @@ optimizeDef :
     -> ExprTypes
     -> Cycle
     -> Can.Def
-    -> IT.IncompleteType
-    -> TOpt.Expr IT.IncompleteType
-    -> Names.Tracker (TOpt.Expr IT.IncompleteType)
+    -> Can.Type
+    -> TOpt.Expr
+    -> Names.Tracker TOpt.Expr
 optimizeDef kernelEnv annotations exprTypes cycle def resultType body =
     case def of
         Can.Def (A.At region name) args expr ->
@@ -743,9 +770,9 @@ optimizeDefHelp :
     -> Name
     -> List Can.Pattern
     -> Can.Expr
-    -> IT.IncompleteType
-    -> TOpt.Expr IT.IncompleteType
-    -> Names.Tracker (TOpt.Expr IT.IncompleteType)
+    -> Can.Type
+    -> TOpt.Expr
+    -> Names.Tracker TOpt.Expr
 optimizeDefHelp kernelEnv annotations exprTypes cycle region name args expr resultType body =
     case args of
         [] ->
@@ -790,7 +817,7 @@ optimizeDefHelp kernelEnv annotations exprTypes cycle region name args expr resu
                                             List.map Tuple.second argNamesWithTypes
 
                                         funcType =
-                                            IT.buildFunctionType argTypes bodyType
+                                            buildFunctionType argTypes bodyType
 
                                         wrappedBody =
                                             List.foldr (wrapDestruct bodyType) oexpr destructors
@@ -812,7 +839,7 @@ optimizePotentialTailCallDef :
     -> ExprTypes
     -> Cycle
     -> Can.Def
-    -> Names.Tracker (TOpt.Def IT.IncompleteType)
+    -> Names.Tracker TOpt.Def
 optimizePotentialTailCallDef kernelEnv annotations exprTypes cycle def =
     case def of
         Can.Def (A.At region name) args body ->
@@ -824,8 +851,7 @@ optimizePotentialTailCallDef kernelEnv annotations exprTypes cycle def =
             optimizePotentialTailCall kernelEnv annotations exprTypes cycle region name args (TCan.toTypedExpr exprTypes body) defType
 
         Can.TypedDef (A.At region name) _ typedArgs body defType ->
-            -- Wrap Can.Type in IT.Complete for optimizePotentialTailCall
-            optimizePotentialTailCall kernelEnv annotations exprTypes cycle region name (List.map Tuple.first typedArgs) (TCan.toTypedExpr exprTypes body) (IT.Complete defType)
+            optimizePotentialTailCall kernelEnv annotations exprTypes cycle region name (List.map Tuple.first typedArgs) (TCan.toTypedExpr exprTypes body) defType
 
 
 
@@ -843,8 +869,8 @@ optimizePotentialTailCall :
     -> Name
     -> List Can.Pattern
     -> TCan.Expr
-    -> IT.IncompleteType
-    -> Names.Tracker (TOpt.Def IT.IncompleteType)
+    -> Can.Type
+    -> Names.Tracker TOpt.Def
 optimizePotentialTailCall kernelEnv annotations exprTypes cycle region name args body defType =
     destructArgs exprTypes args
         |> Names.andThen
@@ -863,7 +889,7 @@ optimizePotentialTailCall kernelEnv annotations exprTypes cycle region name args
                         argBindings ++ destructorBindings
 
                     bodyType =
-                        IT.peelFunctionType (List.length args) defType
+                        peelFunctionType (List.length args) defType
                 in
                 Names.withVarTypes allBindings
                     (optimizeTail kernelEnv annotations exprTypes cycle name argNamesWithTypes bodyType body)
@@ -884,7 +910,7 @@ optimizePotentialTailCall kernelEnv annotations exprTypes cycle region name args
 
 {-| Check if an expression contains a tail call to the given function.
 -}
-hasTailCall : Name -> TOpt.Expr IT.IncompleteType -> Bool
+hasTailCall : Name -> TOpt.Expr -> Bool
 hasTailCall funcName expr =
     case expr of
         TOpt.TailCall callName _ _ ->
@@ -910,7 +936,7 @@ hasTailCall funcName expr =
 {-| Check if a decider contains a tail call to the given function.
 This is needed to detect tail calls in inlined Case branches.
 -}
-decidecHasTailCall : Name -> TOpt.Decider (TOpt.Choice IT.IncompleteType) -> Bool
+decidecHasTailCall : Name -> TOpt.Decider TOpt.Choice -> Bool
 decidecHasTailCall funcName decider =
     case decider of
         TOpt.Leaf choice ->
@@ -930,7 +956,7 @@ decidecHasTailCall funcName decider =
 
 {-| Wrap an expression in a Destruct node.
 -}
-wrapDestruct : IT.IncompleteType -> TOpt.Destructor IT.IncompleteType -> TOpt.Expr IT.IncompleteType -> TOpt.Expr IT.IncompleteType
+wrapDestruct : Can.Type -> TOpt.Destructor -> TOpt.Expr -> TOpt.Expr
 wrapDestruct bodyType destructor expr =
     TOpt.Destruct destructor expr bodyType
 
@@ -943,24 +969,24 @@ wrapDestruct bodyType destructor expr =
 Returns Complete if found, ToSolve with location info if not found.
 Negative IDs are synthetic patterns that won't have types.
 -}
-lookupPatternType : ExprTypes -> Int -> String -> IT.IncompleteType
+lookupPatternType : ExprTypes -> Int -> String -> Can.Type
 lookupPatternType exprTypes patId location =
     if patId < 0 then
         -- Synthetic pattern (negative ID), no type available
-        IT.ToSolve (location ++ ": synthetic")
+        Utils.Crash.crash (location ++ ": synthetic")
 
     else
         case Dict.get identity patId exprTypes of
             Just t ->
-                IT.Complete t
+                t
 
             Nothing ->
-                IT.ToSolve (location ++ ": not in exprTypes")
+                Utils.Crash.crash (location ++ ": not in exprTypes")
 
 
 {-| Converts a list of function argument patterns into argument names with types and destructuring operations.
 -}
-destructArgs : ExprTypes -> List Can.Pattern -> Names.Tracker ( List ( A.Located Name, IT.IncompleteType ), List (TOpt.Destructor IT.IncompleteType) )
+destructArgs : ExprTypes -> List Can.Pattern -> Names.Tracker ( List ( A.Located Name, Can.Type ), List TOpt.Destructor )
 destructArgs exprTypes args =
     Names.traverse (destruct exprTypes) args
         |> Names.map List.unzip
@@ -970,7 +996,7 @@ destructArgs exprTypes args =
             )
 
 
-destruct : ExprTypes -> Can.Pattern -> Names.Tracker ( ( A.Located Name, IT.IncompleteType ), List (TOpt.Destructor IT.IncompleteType) )
+destruct : ExprTypes -> Can.Pattern -> Names.Tracker ( ( A.Located Name, Can.Type ), List TOpt.Destructor )
 destruct exprTypes ((A.At region patternInfo) as pattern) =
     case patternInfo.node of
         Can.PVar name ->
@@ -1004,14 +1030,14 @@ destruct exprTypes ((A.At region patternInfo) as pattern) =
                     )
 
 
-destructHelp : ExprTypes -> TOpt.Path -> Can.Pattern -> List (TOpt.Destructor IT.IncompleteType) -> Names.Tracker (List (TOpt.Destructor IT.IncompleteType))
+destructHelp : ExprTypes -> TOpt.Path -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
 destructHelp exprTypes path pattern revDs =
     destructHelpWithType exprTypes Nothing Nothing path pattern revDs
 
 
 {-| Internal helper that also threads parent pattern ID for synthetic patterns.
 -}
-destructHelpWithParent : ExprTypes -> Int -> TOpt.Path -> Can.Pattern -> List (TOpt.Destructor IT.IncompleteType) -> Names.Tracker (List (TOpt.Destructor IT.IncompleteType))
+destructHelpWithParent : ExprTypes -> Int -> TOpt.Path -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
 destructHelpWithParent exprTypes parentPatId path pattern revDs =
     destructHelpWithType exprTypes (Just parentPatId) Nothing path pattern revDs
 
@@ -1032,7 +1058,7 @@ stores its Int field unboxed, the destructor needs to know the field type is Int
 so that eco.project can read the value with the correct unboxed flag.
 
 -}
-destructHelpWithType : ExprTypes -> Maybe Int -> Maybe Can.Type -> TOpt.Path -> Can.Pattern -> List (TOpt.Destructor IT.IncompleteType) -> Names.Tracker (List (TOpt.Destructor IT.IncompleteType))
+destructHelpWithType : ExprTypes -> Maybe Int -> Maybe Can.Type -> TOpt.Path -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
 destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patternInfo) revDs =
     let
         -- Use parent pattern ID if provided and current pattern is synthetic
@@ -1053,7 +1079,7 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
                 varType =
                     case maybeType of
                         Just t ->
-                            IT.Complete t
+                            t
 
                         Nothing ->
                             lookupPatternType exprTypes effectivePatId "Expression.destructHelpWithType: PVar"
@@ -1064,7 +1090,7 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
             let
                 -- For record fields, we need to look up each field's type from the pattern
                 -- The pattern itself has a record type, but we need to extract field types
-                toDestruct : Name -> TOpt.Destructor IT.IncompleteType
+                toDestruct : Name -> TOpt.Destructor
                 toDestruct name =
                     -- Try to get record field type from pattern's type
                     let
@@ -1073,10 +1099,10 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
                                 Just (Can.TRecord fieldDict _) ->
                                     case Dict.get identity name fieldDict of
                                         Just (Can.FieldType _ t) ->
-                                            IT.Complete t
+                                            t
 
                                         Nothing ->
-                                            IT.ToSolve ("Expression.destructHelpWithType: PRecord field " ++ name ++ " not in type")
+                                            Utils.Crash.crash ("Expression.destructHelpWithType: PRecord field " ++ name ++ " not in type")
 
                                 _ ->
                                     lookupPatternType exprTypes effectivePatId ("Expression.destructHelpWithType: PRecord " ++ name)
@@ -1208,7 +1234,7 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
                                     )
 
 
-destructTwo : ExprTypes -> Int -> TOpt.ContainerHint -> TOpt.Path -> Can.Pattern -> Can.Pattern -> List (TOpt.Destructor IT.IncompleteType) -> Names.Tracker (List (TOpt.Destructor IT.IncompleteType))
+destructTwo : ExprTypes -> Int -> TOpt.ContainerHint -> TOpt.Path -> Can.Pattern -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
 destructTwo exprTypes parentPatId hint path a b revDs =
     case path of
         TOpt.Root _ ->
@@ -1234,7 +1260,7 @@ destructTwo exprTypes parentPatId hint path a b revDs =
                     )
 
 
-destructCtorArg : ExprTypes -> TOpt.Path -> List (TOpt.Destructor IT.IncompleteType) -> Can.PatternCtorArg -> Names.Tracker (List (TOpt.Destructor IT.IncompleteType))
+destructCtorArg : ExprTypes -> TOpt.Path -> List TOpt.Destructor -> Can.PatternCtorArg -> Names.Tracker (List TOpt.Destructor)
 destructCtorArg exprTypes path revDs (Can.PatternCtorArg index argType arg) =
     destructHelpWithType exprTypes Nothing (Just argType) (TOpt.Index index TOpt.HintCustom path) arg revDs
 
@@ -1242,7 +1268,7 @@ destructCtorArg exprTypes path revDs (Can.PatternCtorArg index argType arg) =
 {-| Destructure a case pattern into a list of destructors.
 This is used when processing case branches.
 -}
-destructCase : ExprTypes -> Name -> Can.Pattern -> Names.Tracker (List (TOpt.Destructor IT.IncompleteType))
+destructCase : ExprTypes -> Name -> Can.Pattern -> Names.Tracker (List TOpt.Destructor)
 destructCase exprTypes rootName pattern =
     destructHelp exprTypes (TOpt.Root rootName) pattern []
         |> Names.map List.reverse

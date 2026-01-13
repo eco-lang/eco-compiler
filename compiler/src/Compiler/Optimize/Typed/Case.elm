@@ -21,7 +21,6 @@ when the same code would be reached through different pattern match paths.
 -}
 
 import Compiler.AST.Canonical as Can
-import Compiler.AST.IncompleteType as IT
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name
 import Compiler.Optimize.Typed.DecisionTree as DT
@@ -39,7 +38,7 @@ import Utils.Main as Utils
 Takes a temporary variable name, the root variable being matched, the pattern-matched branches,
 and the result type. Returns an optimized Case expression with decision tree and inline/jump choices.
 -}
-optimize : Name.Name -> Name.Name -> List ( Can.Pattern, TOpt.Expr IT.IncompleteType ) -> IT.IncompleteType -> TOpt.Expr IT.IncompleteType
+optimize : Name.Name -> Name.Name -> List ( Can.Pattern, TOpt.Expr ) -> Can.Type -> TOpt.Expr
 optimize temp root optBranches resultType =
     let
         ( patterns, indexedBranches ) =
@@ -155,7 +154,7 @@ countTargets decisionTree =
             Utils.mapUnionsWith identity compare (+) (List.map countTargets (fallback :: List.map Tuple.second tests))
 
 
-createChoices : Dict Int Int Int -> ( Int, TOpt.Expr IT.IncompleteType ) -> ( ( Int, TOpt.Choice IT.IncompleteType ), Maybe ( Int, TOpt.Expr IT.IncompleteType ) )
+createChoices : Dict Int Int Int -> ( Int, TOpt.Expr ) -> ( ( Int, TOpt.Choice ), Maybe ( Int, TOpt.Expr ) )
 createChoices targetCounts ( target, branch ) =
     if Dict.get identity target targetCounts == Just 1 then
         ( ( target, TOpt.Inline branch )
@@ -168,10 +167,10 @@ createChoices targetCounts ( target, branch ) =
         )
 
 
-insertChoices : Dict Int Int (TOpt.Choice IT.IncompleteType) -> TOpt.Decider Int -> TOpt.Decider (TOpt.Choice IT.IncompleteType)
+insertChoices : Dict Int Int TOpt.Choice -> TOpt.Decider Int -> TOpt.Decider TOpt.Choice
 insertChoices choiceDict decider =
     let
-        go : TOpt.Decider Int -> TOpt.Decider (TOpt.Choice IT.IncompleteType)
+        go : TOpt.Decider Int -> TOpt.Decider TOpt.Choice
         go =
             insertChoices choiceDict
     in

@@ -104,7 +104,7 @@ type alias CompileResult =
     , canonical : Can.Module
     , annotations : Dict String Name.Name Can.Annotation
     , objects : Opt.LocalGraph
-    , typedObjects : (TOpt.LocalGraph Can.Type)
+    , typedObjects : (TOpt.LocalGraph)
     , interface : I.Interface
     }
 
@@ -130,7 +130,7 @@ type PathwayDiscrepancy
         }
     | OptimizeMismatch
         { erasedResult : Result (OneOrMore.OneOrMore MainError.Error) Opt.LocalGraph
-        , typedResult : Result (OneOrMore.OneOrMore MainError.Error) (TOpt.LocalGraph Can.Type)
+        , typedResult : Result (OneOrMore.OneOrMore MainError.Error) (TOpt.LocalGraph)
         }
 
 
@@ -460,7 +460,7 @@ optimizeTyped :
     -> TCan.NodeTypes
     -> KernelTypes.KernelTypeEnv
     -> TCan.Module
-    -> Result (OneOrMore.OneOrMore MainError.Error) (TOpt.LocalGraph Can.Type)
+    -> Result (OneOrMore.OneOrMore MainError.Error) (TOpt.LocalGraph)
 optimizeTyped annotations nodeTypes kernelEnv tcanModule =
     Tuple.second (RResult.run (TypedOptimize.optimizeTyped annotations nodeTypes kernelEnv tcanModule))
 
@@ -497,7 +497,7 @@ This is useful for testing when the entry point name is not known in advance.
 Test modules use various names like "testValue", etc.
 
 -}
-monomorphizeAny : (TOpt.GlobalGraph Can.Type) -> Result String Mono.MonoGraph
+monomorphizeAny : (TOpt.GlobalGraph) -> Result String Mono.MonoGraph
 monomorphizeAny (TOpt.GlobalGraph nodes _ _) =
     case findAnyEntryPoint nodes of
         Nothing ->
@@ -509,7 +509,7 @@ monomorphizeAny (TOpt.GlobalGraph nodes _ _) =
 
 {-| Find any entry point in the global graph (the first defined function).
 -}
-findAnyEntryPoint : Dict (List String) TOpt.Global (TOpt.Node Can.Type) -> Maybe ( TOpt.Global, Can.Type )
+findAnyEntryPoint : Dict (List String) TOpt.Global (TOpt.Node) -> Maybe ( TOpt.Global, Can.Type )
 findAnyEntryPoint nodes =
     Dict.foldl TOpt.compareGlobal
         (\global node acc ->

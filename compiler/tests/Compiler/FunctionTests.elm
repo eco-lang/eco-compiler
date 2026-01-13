@@ -6,22 +6,30 @@ module Compiler.FunctionTests exposing (expectSuite)
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( callExpr
+        ( TypedDef
+        , binopsExpr
+        , callExpr
         , define
         , floatExpr
+        , ifExpr
         , intExpr
         , lambdaExpr
         , letExpr
         , listExpr
         , makeModule
         , makeModuleWithDefs
+        , makeModuleWithTypedDefs
         , negateExpr
         , pAnything
         , pRecord
         , pTuple
         , pVar
+        , qualVarExpr
         , recordExpr
         , strExpr
+        , tLambda
+        , tType
+        , tVar
         , tupleExpr
         , varExpr
         )
@@ -40,6 +48,8 @@ expectSuite expectFn condStr =
         , functionWithPatternsTests expectFn condStr
         , higherOrderTests expectFn condStr
         , negateTests expectFn condStr
+        , absTests expectFn condStr
+        , polymorphicNumberTests expectFn condStr
         , functionFuzzTests expectFn condStr
         ]
 
@@ -650,6 +660,245 @@ doubleNegate expectFn _ =
     let
         modul =
             makeModule "testValue" (negateExpr (negateExpr (intExpr 42)))
+    in
+    expectFn modul
+
+
+
+-- ============================================================================
+-- ABS (6 tests)
+-- ============================================================================
+
+
+absTests : (Src.Module -> Expectation) -> String -> Test
+absTests expectFn condStr =
+    Test.describe ("Abs expressions " ++ condStr)
+        [ Test.test ("Abs positive int " ++ condStr) (absPositiveInt expectFn)
+        , Test.test ("Abs negative int " ++ condStr) (absNegativeInt expectFn)
+        , Test.test ("Abs zero int " ++ condStr) (absZeroInt expectFn)
+        , Test.test ("Abs positive float " ++ condStr) (absPositiveFloat expectFn)
+        , Test.test ("Abs negative float " ++ condStr) (absNegativeFloat expectFn)
+        , Test.test ("Abs zero float " ++ condStr) (absZeroFloat expectFn)
+        ]
+
+
+absPositiveInt : (Src.Module -> Expectation) -> (() -> Expectation)
+absPositiveInt expectFn _ =
+    let
+        modul =
+            makeModule "testValue" (callExpr (qualVarExpr "Basics" "abs") [ intExpr 5 ])
+    in
+    expectFn modul
+
+
+absNegativeInt : (Src.Module -> Expectation) -> (() -> Expectation)
+absNegativeInt expectFn _ =
+    let
+        modul =
+            makeModule "testValue" (callExpr (qualVarExpr "Basics" "abs") [ negateExpr (intExpr 5) ])
+    in
+    expectFn modul
+
+
+absZeroInt : (Src.Module -> Expectation) -> (() -> Expectation)
+absZeroInt expectFn _ =
+    let
+        modul =
+            makeModule "testValue" (callExpr (qualVarExpr "Basics" "abs") [ intExpr 0 ])
+    in
+    expectFn modul
+
+
+absPositiveFloat : (Src.Module -> Expectation) -> (() -> Expectation)
+absPositiveFloat expectFn _ =
+    let
+        modul =
+            makeModule "testValue" (callExpr (qualVarExpr "Basics" "abs") [ floatExpr 3.14 ])
+    in
+    expectFn modul
+
+
+absNegativeFloat : (Src.Module -> Expectation) -> (() -> Expectation)
+absNegativeFloat expectFn _ =
+    let
+        modul =
+            makeModule "testValue" (callExpr (qualVarExpr "Basics" "abs") [ negateExpr (floatExpr 3.14) ])
+    in
+    expectFn modul
+
+
+absZeroFloat : (Src.Module -> Expectation) -> (() -> Expectation)
+absZeroFloat expectFn _ =
+    let
+        modul =
+            makeModule "testValue" (callExpr (qualVarExpr "Basics" "abs") [ floatExpr 0.0 ])
+    in
+    expectFn modul
+
+
+
+-- ============================================================================
+-- POLYMORPHIC NUMBER FUNCTIONS (3 tests)
+-- Tests for polymorphic functions with `number` type variable that contain
+-- Int literals in their body. When called with Float, the Int literals must
+-- be promoted to Float during monomorphization.
+-- ============================================================================
+
+
+polymorphicNumberTests : (Src.Module -> Expectation) -> String -> Test
+polymorphicNumberTests expectFn condStr =
+    Test.describe ("Polymorphic number functions " ++ condStr)
+        [ Test.test ("zabs with Int (baseline) " ++ condStr) (zabsWithInt expectFn)
+        , Test.test ("zabs with Float (Int literal promoted) " ++ condStr) (zabsWithFloat expectFn)
+        , Test.test ("zabs with zero Float " ++ condStr) (zabsWithZeroFloat expectFn)
+        ]
+
+
+{-| Define zabs : number -> number with an Int literal 0 in the body.
+
+    zabs : number -> number
+    zabs n =
+        if n < 0 then
+            -n
+        else
+            n
+
+    testValue = zabs 5
+
+When called with Int, this is straightforward - the 0 stays as Int.
+
+-}
+zabsWithInt : (Src.Module -> Expectation) -> (() -> Expectation)
+zabsWithInt expectFn _ =
+    let
+        -- Type: number -> number
+        zabsType =
+            tLambda (tVar "number") (tVar "number")
+
+        -- Body: if n < 0 then -n else n
+        zabsBody =
+            ifExpr
+                (binopsExpr [ ( varExpr "n", "<" ) ] (intExpr 0))
+                (negateExpr (varExpr "n"))
+                (varExpr "n")
+
+        zabsDef : TypedDef
+        zabsDef =
+            { name = "zabs"
+            , args = [ pVar "n" ]
+            , tipe = zabsType
+            , body = zabsBody
+            }
+
+        -- testValue : Int = zabs 5
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body = callExpr (varExpr "zabs") [ intExpr 5 ]
+            }
+
+        modul =
+            makeModuleWithTypedDefs "Test" [ zabsDef, testValueDef ]
+    in
+    expectFn modul
+
+
+{-| Define zabs : number -> number with an Int literal 0 in the body.
+
+    zabs : number -> number
+    zabs n =
+        if n < 0 then
+            -n
+        else
+            n
+
+    testValue : Float
+    testValue = zabs 3.14
+
+When called with Float, the 0 literal must be promoted to Float during
+monomorphization. This triggers the "Int literal used at Float type" code path.
+
+-}
+zabsWithFloat : (Src.Module -> Expectation) -> (() -> Expectation)
+zabsWithFloat expectFn _ =
+    let
+        -- Type: number -> number
+        zabsType =
+            tLambda (tVar "number") (tVar "number")
+
+        -- Body: if n < 0 then -n else n
+        zabsBody =
+            ifExpr
+                (binopsExpr [ ( varExpr "n", "<" ) ] (intExpr 0))
+                (negateExpr (varExpr "n"))
+                (varExpr "n")
+
+        zabsDef : TypedDef
+        zabsDef =
+            { name = "zabs"
+            , args = [ pVar "n" ]
+            , tipe = zabsType
+            , body = zabsBody
+            }
+
+        -- testValue : Float = zabs 3.14
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Float" []
+            , body = callExpr (varExpr "zabs") [ floatExpr 3.14 ]
+            }
+
+        modul =
+            makeModuleWithTypedDefs "Test" [ zabsDef, testValueDef ]
+    in
+    expectFn modul
+
+
+{-| Similar to zabsWithFloat but with 0.0 as argument.
+
+    testValue : Float
+    testValue = zabs 0.0
+
+This also triggers Float specialization.
+
+-}
+zabsWithZeroFloat : (Src.Module -> Expectation) -> (() -> Expectation)
+zabsWithZeroFloat expectFn _ =
+    let
+        -- Type: number -> number
+        zabsType =
+            tLambda (tVar "number") (tVar "number")
+
+        -- Body: if n < 0 then -n else n
+        zabsBody =
+            ifExpr
+                (binopsExpr [ ( varExpr "n", "<" ) ] (intExpr 0))
+                (negateExpr (varExpr "n"))
+                (varExpr "n")
+
+        zabsDef : TypedDef
+        zabsDef =
+            { name = "zabs"
+            , args = [ pVar "n" ]
+            , tipe = zabsType
+            , body = zabsBody
+            }
+
+        -- testValue : Float = zabs 0.0
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Float" []
+            , body = callExpr (varExpr "zabs") [ floatExpr 0.0 ]
+            }
+
+        modul =
+            makeModuleWithTypedDefs "Test" [ zabsDef, testValueDef ]
     in
     expectFn modul
 

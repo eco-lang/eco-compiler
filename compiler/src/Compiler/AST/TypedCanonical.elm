@@ -9,12 +9,8 @@ module Compiler.AST.TypedCanonical exposing
 {-| The TypedCanonical AST pairs each canonical expression with its inferred type.
 
 This module provides a typed view of the canonical AST where every expression
-carries an `IncompleteType` annotation. It is built by zipping the canonical AST with
+carries a `Can.Type` annotation. It is built by zipping the canonical AST with
 the expression types produced by the type checker.
-
-The `IncompleteType` wrapper allows expressions to have either a complete canonical
-type (`Complete Can.Type`) or an unknown type placeholder (`ToSolve`) for synthetic
-expressions that don't have recorded types.
 
 
 # Modules
@@ -44,7 +40,6 @@ expressions that don't have recorded types.
 -}
 
 import Compiler.AST.Canonical as Can
-import Compiler.AST.IncompleteType as IT
 import Compiler.AST.Source as Src
 import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
@@ -64,15 +59,11 @@ type alias Expr =
 
 
 {-| A typed expression node containing the original canonical expression and its type.
-
-The type is wrapped in `IncompleteType` to allow for unknown type placeholders
-(`ToSolve`) for synthetic expressions that don't have recorded types.
-
 -}
 type Expr_
     = TypedExpr
         { expr : Can.Expr_
-        , tipe : IT.IncompleteType
+        , tipe : Can.Type
         }
 
 
@@ -215,25 +206,22 @@ This is the key function for accessing types of subexpressions during
 optimization. When the optimizer encounters a `Can.Expr` child (e.g., in
 `Can.Lambda args body`), it uses this to wrap it with its type.
 
-Types are wrapped in `IncompleteType`:
-
-  - Found types become `IT.Complete t`
-  - Synthetic expressions (id < 0) become `IT.ToSolve`
+Synthetic expressions (id < 0) will crash as they should not exist in valid ASTs.
 
 -}
 toTypedExpr : ExprTypes -> Can.Expr -> Expr
 toTypedExpr exprTypes (A.At region info) =
     let
-        tipe : IT.IncompleteType
+        tipe : Can.Type
         tipe =
             case Dict.get identity info.id exprTypes of
                 Just t ->
-                    IT.Complete t
+                    t
 
                 Nothing ->
-                    -- For expressions with placeholder IDs (-1), use ToSolve
+                    -- For expressions with placeholder IDs (-1), crash
                     if info.id < 0 then
-                        IT.ToSolve "TypedCanonical.toTypedExpr: placeholder ID"
+                        Utils.Crash.crash "TypedCanonical.toTypedExpr: placeholder ID"
 
                     else
                         crash ("Missing type for expr id " ++ String.fromInt info.id)
