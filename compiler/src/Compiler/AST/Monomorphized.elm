@@ -337,6 +337,7 @@ type MonoGraph
         { nodes : Dict Int Int MonoNode
         , main : Maybe MainInfo
         , registry : SpecializationRegistry
+        , ctorLayouts : Dict (List String) (List String) (List CtorLayout)
         }
 
 

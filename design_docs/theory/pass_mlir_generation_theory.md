@@ -122,14 +122,15 @@ generateModule :
 ### Processing Order
 
 1. Build function signatures for all specializations
-2. Initialize Context with TypeRegistry
+2. Initialize Context with TypeRegistry (seeded with `MonoGraph.ctorLayouts`)
 3. Generate nodes for each specialization
 4. Process pending lambdas (closures)
-5. Fill missing constructor layouts
-6. Generate main entry point
-7. Generate kernel function declarations
-8. Generate type table
-9. Emit MLIR module
+5. Generate main entry point
+6. Generate kernel function declarations
+7. Generate type table (uses pre-computed `ctorLayouts` from monomorphization)
+8. Emit MLIR module
+
+Note: Constructor layouts are computed during monomorphization and stored in `MonoGraph.ctorLayouts`. MLIR codegen only consumes this pre-computed map and does not re-derive layouts from `GlobalTypeEnv`.
 
 ### Context Structure
 
@@ -144,8 +145,7 @@ type alias Context =
     , signatures : Dict Int FuncSignature
     , varMappings : Dict String (String, MlirType)
     , kernelDecls : Dict String (List MlirType, MlirType)
-    , typeRegistry : TypeRegistry
-    , typeEnv : GlobalTypeEnv
+    , typeRegistry : TypeRegistry  -- Seeded with ctorLayouts from MonoGraph
     }
 ```
 

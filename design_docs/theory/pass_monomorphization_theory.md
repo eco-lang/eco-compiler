@@ -207,7 +207,7 @@ type alias CtorLayout =
     }
 ```
 
-Note: Custom types don't have a separate `CustomLayout` type. The `MCustom` variant stores `(IO.Canonical, Name, List MonoType)` - the module path, type name, and type arguments. Constructor layouts are computed on-demand during code generation.
+Note: Custom types don't have a separate `CustomLayout` type. The `MCustom` variant stores `(IO.Canonical, Name, List MonoType)` - the module path, type name, and type arguments. The monomorphization pass computes `CtorLayout` for all constructors of each instantiated `MCustom` type (including constructors never directly used in code) and stores them in `MonoGraph.ctorLayouts`. Backends (MLIR) only consume this map and must not re-derive constructor layouts from `GlobalTypeEnv`.
 
 ## Type Conversion: Canonical to Mono
 
@@ -304,6 +304,7 @@ type MonoGraph =
         { nodes : Dict Int Int MonoNode
         , main : Maybe MainInfo
         , registry : SpecializationRegistry
+        , ctorLayouts : Dict (List String) (List String) (List CtorLayout)  -- type key -> complete ctor layouts
         }
 
 type MainInfo

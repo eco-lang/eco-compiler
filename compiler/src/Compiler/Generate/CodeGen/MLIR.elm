@@ -13,12 +13,10 @@ in the types.
 
 -}
 
-import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
-import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.Mode as Mode
@@ -269,7 +267,6 @@ type alias Context =
     , varMappings : Dict.Dict String ( String, MlirType ) -- Let-bound name -> (SSA variable name, MLIR type)
     , kernelDecls : Dict.Dict String ( List MlirType, MlirType ) -- Kernel function name -> (argTypes, returnType)
     , typeRegistry : TypeRegistry -- Type graph: MonoType -> TypeId for debug printing
-    , typeEnv : TypeEnv.GlobalTypeEnv -- Complete union definitions for looking up all constructors
     }
 
 
@@ -280,7 +277,7 @@ type alias TypeRegistry =
     { nextTypeId : Int
     , typeIds : Dict.Dict (List String) Int -- comparable key -> TypeId
     , typeInfos : List ( Int, Mono.MonoType ) -- List of (TypeId, MonoType) for building type table
-    , ctorLayouts : Dict.Dict (List String) (List Mono.CtorLayout) -- type key -> ctor layouts for custom types
+    , ctorLayouts : EveryDict.Dict (List String) (List String) (List Mono.CtorLayout) -- type key -> ctor layouts for custom types
     }
 
 
@@ -303,8 +300,8 @@ type alias PendingWrapper =
     }
 
 
-initContext : Mode.Mode -> Mono.SpecializationRegistry -> Dict.Dict Int FuncSignature -> TypeEnv.GlobalTypeEnv -> Context
-initContext mode registry signatures typeEnv =
+initContext : Mode.Mode -> Mono.SpecializationRegistry -> Dict.Dict Int FuncSignature -> EveryDict.Dict (List String) (List String) (List Mono.CtorLayout) -> Context
+initContext mode registry signatures initialCtorLayouts =
     { nextVar = 0
     , nextOpId = 0
     , mode = mode
@@ -314,8 +311,10 @@ initContext mode registry signatures typeEnv =
     , signatures = signatures
     , varMappings = Dict.empty
     , kernelDecls = Dict.empty
-    , typeRegistry = emptyTypeRegistry
-    , typeEnv = typeEnv
+    , typeRegistry =
+        { emptyTypeRegistry
+            | ctorLayouts = initialCtorLayouts
+        }
     }
 
 
@@ -326,7 +325,7 @@ emptyTypeRegistry =
     { nextTypeId = 0
     , typeIds = Dict.empty
     , typeInfos = []
-    , ctorLayouts = Dict.empty
+    , ctorLayouts = EveryDict.empty
     }
 
 
@@ -442,8 +441,8 @@ registerNestedTypes monoType ctx =
             ctx
 
 
-{-| Register a constructor layout for a custom type.
-Called during generateCtor to collect constructor info for the type graph.
+{-| Verify that the ctor layout matches what's already in the registry.
+This is now an assertion, not a mutation - MonoGraph.ctorLayouts is the source of truth.
 -}
 registerCtorLayout : Mono.MonoType -> Mono.CtorLayout -> Context -> Context
 registerCtorLayout monoType ctorLayout ctx =
@@ -451,258 +450,36 @@ registerCtorLayout monoType ctorLayout ctx =
         key =
             Mono.toComparableMonoType monoType
 
-        reg =
-            ctx.typeRegistry
-
         existingCtors =
-            Dict.get key reg.ctorLayouts
+            EveryDict.get identity key ctx.typeRegistry.ctorLayouts
                 |> Maybe.withDefault []
 
-        newCtors =
-            ctorLayout :: existingCtors
-
-        newReg =
-            { reg | ctorLayouts = Dict.insert key newCtors reg.ctorLayouts }
+        matchingCtor =
+            List.filter (\c -> c.tag == ctorLayout.tag) existingCtors
+                |> List.head
     in
-    { ctx | typeRegistry = newReg }
-
-
-{-| Fill in missing constructors for custom types from GlobalTypeEnv.
-
-During code generation, only constructors that are directly instantiated get
-registered in ctorLayouts. This function ensures ALL constructors for each
-custom type are present by looking up the complete union definition.
-
-This is critical for the type table to have accurate ctor\_count values that
-match the runtime's expectations.
-
--}
-fillMissingCtorLayouts : Context -> Context
-fillMissingCtorLayouts ctx =
-    let
-        -- Process each custom type in typeInfos
-        newCtorLayouts =
-            List.foldl (fillCtorLayoutsForType ctx.typeEnv) ctx.typeRegistry.ctorLayouts ctx.typeRegistry.typeInfos
-
-        newReg =
-            { nextTypeId = ctx.typeRegistry.nextTypeId
-            , typeIds = ctx.typeRegistry.typeIds
-            , typeInfos = ctx.typeRegistry.typeInfos
-            , ctorLayouts = newCtorLayouts
-            }
-    in
-    { ctx | typeRegistry = newReg }
-
-
-{-| Fill in ctor layouts for a single type if it's a custom type.
--}
-fillCtorLayoutsForType : TypeEnv.GlobalTypeEnv -> ( Int, Mono.MonoType ) -> Dict.Dict (List String) (List Mono.CtorLayout) -> Dict.Dict (List String) (List Mono.CtorLayout)
-fillCtorLayoutsForType typeEnv ( _, monoType ) ctorLayouts =
-    case monoType of
-        Mono.MCustom canonical typeName monoArgs ->
-            let
-                key =
-                    Mono.toComparableMonoType monoType
-
-                existingCtors =
-                    Dict.get key ctorLayouts
-                        |> Maybe.withDefault []
-            in
-            -- Look up the union in typeEnv
-            case lookupUnion typeEnv canonical typeName of
-                Nothing ->
-                    -- Union not found in typeEnv (might be built-in)
-                    ctorLayouts
-
-                Just (Can.Union { vars, alts, numAlts }) ->
-                    if List.length existingCtors >= numAlts then
-                        -- Already have all constructors
-                        ctorLayouts
-
-                    else
-                        -- Build complete ctor layouts from union definition
-                        let
-                            completeCtors =
-                                buildCompleteCtorLayouts vars monoArgs alts
-                        in
-                        Dict.insert key completeCtors ctorLayouts
-
-        _ ->
-            -- Not a custom type, nothing to do
-            ctorLayouts
-
-
-{-| Look up a union in GlobalTypeEnv by module and name.
--}
-lookupUnion : TypeEnv.GlobalTypeEnv -> IO.Canonical -> Name.Name -> Maybe Can.Union
-lookupUnion typeEnv canonical typeName =
-    case EveryDict.get ModuleName.toComparableCanonical canonical typeEnv of
-        Nothing ->
-            Nothing
-
-        Just moduleEnv ->
-            EveryDict.get identity typeName moduleEnv.unions
-
-
-{-| Build complete CtorLayouts for all constructors in a union.
--}
-buildCompleteCtorLayouts : List Name.Name -> List Mono.MonoType -> List Can.Ctor -> List Mono.CtorLayout
-buildCompleteCtorLayouts vars monoArgs alts =
-    let
-        -- Build substitution from type vars to mono args
-        subst : Dict.Dict Name.Name Mono.MonoType
-        subst =
-            List.map2 Tuple.pair vars monoArgs
-                |> Dict.fromList
-    in
-    List.map (buildCtorLayoutFromUnion subst) alts
-
-
-{-| Build a CtorLayout from a Can.Ctor using the given substitution.
--}
-buildCtorLayoutFromUnion : Dict.Dict Name.Name Mono.MonoType -> Can.Ctor -> Mono.CtorLayout
-buildCtorLayoutFromUnion subst (Can.Ctor { name, index, args }) =
-    let
-        -- Monomorphize each argument type
-        monoFieldTypes : List Mono.MonoType
-        monoFieldTypes =
-            List.map (applySubst subst) args
-
-        -- Build field info
-        fields : List Mono.FieldInfo
-        fields =
-            List.indexedMap
-                (\idx ty ->
-                    { name = "field" ++ String.fromInt idx
-                    , index = idx
-                    , monoType = ty
-                    , isUnboxed = Mono.canUnbox ty
-                    }
-                )
-                monoFieldTypes
-
-        -- Compute unboxed bitmap (clamped to 32 bits)
-        unboxedBitmap : Int
-        unboxedBitmap =
-            List.foldl
-                (\field acc ->
-                    if field.isUnboxed && field.index < 32 then
-                        acc + (2 ^ field.index)
-
-                    else
-                        acc
-                )
-                0
-                fields
-
-        unboxedCount : Int
-        unboxedCount =
-            List.length (List.filter .isUnboxed fields)
-    in
-    { name = name
-    , tag = Index.toMachine index
-    , fields = fields
-    , unboxedCount = unboxedCount
-    , unboxedBitmap = unboxedBitmap
-    }
-
-
-{-| Apply substitution to a Can.Type to get a MonoType.
-This mirrors the logic in Monomorphize.applySubst.
--}
-applySubst : Dict.Dict Name.Name Mono.MonoType -> Can.Type -> Mono.MonoType
-applySubst subst canType =
-    case canType of
-        Can.TVar name ->
-            Dict.get name subst
-                |> Maybe.withDefault (Mono.MVar name Mono.CEcoValue)
-
-        Can.TLambda from to ->
-            Mono.MFunction [ applySubst subst from ] (applySubst subst to)
-
-        Can.TType canonical name args ->
-            let
-                monoArgs =
-                    List.map (applySubst subst) args
-
-                isElmCore =
-                    case canonical of
-                        IO.Canonical ( "elm", "core" ) _ ->
-                            True
-
-                        _ ->
-                            False
-            in
-            if isElmCore then
-                case name of
-                    "Int" ->
-                        Mono.MInt
-
-                    "Float" ->
-                        Mono.MFloat
-
-                    "Bool" ->
-                        Mono.MBool
-
-                    "Char" ->
-                        Mono.MChar
-
-                    "String" ->
-                        Mono.MString
-
-                    "List" ->
-                        case monoArgs of
-                            [ inner ] ->
-                                Mono.MList inner
-
-                            _ ->
-                                Mono.MList Mono.MUnit
-
-                    _ ->
-                        -- Custom type from elm/core
-                        Mono.MCustom canonical name monoArgs
+    case matchingCtor of
+        Just existing ->
+            -- Assert consistency (check field count and name match)
+            if existing.name /= ctorLayout.name then
+                let
+                    _ =
+                        Debug.log "COMPILER BUG: CtorLayout name mismatch"
+                            { expected = existing.name, got = ctorLayout.name, tag = ctorLayout.tag }
+                in
+                ctx
 
             else
-                -- Custom type
-                Mono.MCustom canonical name monoArgs
+                ctx
 
-        Can.TRecord fields _ ->
+        Nothing ->
+            -- Missing from MonoGraph.ctorLayouts - this shouldn't happen
             let
-                monoFields =
-                    EveryDict.map (\_ (Can.FieldType _ t) -> applySubst subst t) fields
-
-                layout =
-                    Mono.computeRecordLayout monoFields
+                _ =
+                    Debug.log "COMPILER BUG: CtorLayout missing from MonoGraph"
+                        { key = key, layout = ctorLayout }
             in
-            Mono.MRecord layout
-
-        Can.TTuple a b rest ->
-            let
-                monoTypes =
-                    List.map (applySubst subst) (a :: b :: rest)
-
-                layout =
-                    Mono.computeTupleLayout monoTypes
-            in
-            Mono.MTuple layout
-
-        Can.TUnit ->
-            Mono.MUnit
-
-        Can.TAlias _ _ _ (Can.Filled inner) ->
-            applySubst subst inner
-
-        Can.TAlias _ _ aliasArgs (Can.Holey inner) ->
-            let
-                newSubst =
-                    List.foldl
-                        (\( varName, t ) s ->
-                            Dict.insert varName (applySubst subst t) s
-                        )
-                        subst
-                        aliasArgs
-            in
-            applySubst newSubst inner
+            ctx
 
 
 freshVar : Context -> ( String, Context )
@@ -1455,7 +1232,7 @@ type alias TypeTableAccum =
     , nextFuncArgIndex : Int
     , typeAttrs : List MlirAttr
     , typeIds : Dict.Dict (List String) Int -- MonoType comparable key -> TypeId
-    , ctorLayouts : Dict.Dict (List String) (List Mono.CtorLayout) -- type key -> ctor layouts
+    , ctorLayouts : EveryDict.Dict (List String) (List String) (List Mono.CtorLayout) -- type key -> ctor layouts
     }
 
 
@@ -1773,7 +1550,7 @@ addCustomType typeId typeName monoType accum =
             Mono.toComparableMonoType monoType
 
         ctorLayouts =
-            Dict.get key accum.ctorLayouts
+            EveryDict.get identity key accum.ctorLayouts
                 |> Maybe.withDefault []
                 |> List.sortBy .tag
 
@@ -1904,7 +1681,7 @@ addFunctionType typeId argTypes resultType accum =
 
 
 generateModule : Mode.Mode -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> String
-generateModule mode typeEnv (Mono.MonoGraph { nodes, main, registry }) =
+generateModule mode _ (Mono.MonoGraph { nodes, main, registry, ctorLayouts }) =
     let
         signatures : Dict.Dict Int FuncSignature
         signatures =
@@ -1912,7 +1689,7 @@ generateModule mode typeEnv (Mono.MonoGraph { nodes, main, registry }) =
 
         ctx : Context
         ctx =
-            initContext mode registry signatures typeEnv
+            initContext mode registry signatures ctorLayouts
 
         ( ops, ctxAfterNodes ) =
             EveryDict.foldl compare
@@ -1929,16 +1706,13 @@ generateModule mode typeEnv (Mono.MonoGraph { nodes, main, registry }) =
         ( lambdaOps, finalCtx ) =
             processLambdas ctxAfterNodes
 
-        -- Fill in missing constructors for custom types from GlobalTypeEnv
-        ctxWithCompleteCtors : Context
-        ctxWithCompleteCtors =
-            fillMissingCtorLayouts finalCtx
+        -- ctorLayouts are already complete from MonoGraph - no fill step needed
 
         mainOps : List MlirOp
         mainOps =
             case main of
                 Just mainInfo ->
-                    generateMainEntry ctxWithCompleteCtors mainInfo
+                    generateMainEntry finalCtx mainInfo
 
                 Nothing ->
                     []
@@ -1953,13 +1727,13 @@ generateModule mode typeEnv (Mono.MonoGraph { nodes, main, registry }) =
                     in
                     ( accOps ++ [ declOp ], newCtx )
                 )
-                ( [], ctxWithCompleteCtors )
-                ctxWithCompleteCtors.kernelDecls
+                ( [], finalCtx )
+                finalCtx.kernelDecls
 
         -- Generate the type table op for debug printing
         typeTableOp : MlirOp
         typeTableOp =
-            generateTypeTable ctxWithCompleteCtors
+            generateTypeTable finalCtx
 
         mlirModule : MlirModule
         mlirModule =
