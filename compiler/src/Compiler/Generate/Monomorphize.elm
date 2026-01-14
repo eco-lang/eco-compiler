@@ -773,11 +773,6 @@ specializeExpr expr subst state =
             case monoType of
                 -- Int literal used at Float type: treat it as a float literal
                 Mono.MFloat ->
-                    let
-                        _ =
-                            Debug.log "specializeExpr"
-                                "Int literal used at Float type: treat it as a float literal"
-                    in
                     ( Mono.MonoLiteral (Mono.LFloat (toFloat value)) monoType, state )
 
                 -- All other cases: keep it as an int literal

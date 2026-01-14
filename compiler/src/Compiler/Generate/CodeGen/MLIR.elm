@@ -126,26 +126,12 @@ monoTypeToMlir monoType =
             ecoValue
 
         Mono.MVar _ constraint_ ->
-            --let
-            --    res =
             case constraint_ of
                 Mono.CNumber ->
                     I64
 
                 Mono.CEcoValue ->
                     ecoValue
-
-
-
---
---    _ =
---        Debug.log ""
---            { res = res
---            , name = name
---            , constraint = constraint_
---            }
---in
---res
 
 
 {-| Check if a MonoType is a function type.
@@ -1707,7 +1693,6 @@ generateModule mode _ (Mono.MonoGraph { nodes, main, registry, ctorLayouts }) =
             processLambdas ctxAfterNodes
 
         -- ctorLayouts are already complete from MonoGraph - no fill step needed
-
         mainOps : List MlirOp
         mainOps =
             case main of
