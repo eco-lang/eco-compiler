@@ -951,18 +951,9 @@ specializeExpr expr subst state =
                 monoType =
                     applySubst subst canType
 
-                -- Extract param types from the function type
                 funcTypeParams =
                     extractParamTypes monoType
 
-                -- Derive parameter types using a hybrid approach:
-                -- 1. First try to use applySubst on the param's canonical type
-                -- 2. If that gives a placeholder (MVar "?" ...), use the corresponding
-                --    type from the function type if available
-                -- 3. Otherwise keep the placeholder
-                -- This handles both:
-                -- - Normal case: params have real types in the substitution
-                -- - Curried case: extra params beyond what's in the function type
                 deriveParamType : Int -> ( Name, Can.Type ) -> ( Name, Mono.MonoType )
                 deriveParamType idx ( name, paramCanType ) =
                     let
@@ -971,13 +962,11 @@ specializeExpr expr subst state =
                     in
                     case substType of
                         Mono.MVar _ _ ->
-                            -- Unresolved type variable - try to get from function type
                             case List.drop idx funcTypeParams of
                                 funcParamType :: _ ->
                                     ( name, funcParamType )
 
                                 [] ->
-                                    -- Extra param beyond function type (curried)
                                     ( name, substType )
 
                         _ ->
@@ -989,10 +978,11 @@ specializeExpr expr subst state =
                 lambdaId =
                     Mono.AnonymousLambda state.currentModule state.lambdaCounter
 
-                -- Add param names -> types to varTypes for path type derivation
                 newVarTypes =
                     List.foldl
-                        (\( name, monoParamType ) vt -> Dict.insert identity name monoParamType vt)
+                        (\( name, monoParamType ) vt ->
+                            Dict.insert identity name monoParamType vt
+                        )
                         state.varTypes
                         monoParams
 
@@ -1002,15 +992,19 @@ specializeExpr expr subst state =
                         , varTypes = newVarTypes
                     }
 
-                -- Build an augmented substitution that includes the param name -> type mappings.
-                -- This ensures destructors inside the function body can resolve their types.
+                -- FIX: only insert type variables into Substitution
                 augmentedSubst =
                     List.foldl
-                        (\( name, monoParamType ) s ->
-                            Dict.insert identity name monoParamType s
+                        (\( ( _, paramCanType ), ( _, monoParamType ) ) s ->
+                            case paramCanType of
+                                Can.TVar varName ->
+                                    Dict.insert identity varName monoParamType s
+
+                                _ ->
+                                    s
                         )
                         subst
-                        monoParams
+                        (List.map2 Tuple.pair params monoParams)
 
                 ( monoBody, stateAfter ) =
                     specializeExpr body augmentedSubst stateWithLambda
@@ -1031,11 +1025,9 @@ specializeExpr expr subst state =
                 monoType =
                     applySubst subst canType
 
-                -- Extract param types from the function type
                 funcTypeParams =
                     extractParamTypes monoType
 
-                -- Derive parameter types using a hybrid approach (same as Function case)
                 deriveParamType : Int -> ( A.Located Name, Can.Type ) -> ( Name, Mono.MonoType )
                 deriveParamType idx ( locName, paramCanType ) =
                     let
@@ -1047,7 +1039,6 @@ specializeExpr expr subst state =
                     in
                     case substType of
                         Mono.MVar _ _ ->
-                            -- Unresolved type variable - try to get from function type
                             case List.drop idx funcTypeParams of
                                 funcParamType :: _ ->
                                     ( name, funcParamType )
@@ -1064,10 +1055,11 @@ specializeExpr expr subst state =
                 lambdaId =
                     Mono.AnonymousLambda state.currentModule state.lambdaCounter
 
-                -- Add param names -> types to varTypes for path type derivation
                 newVarTypes =
                     List.foldl
-                        (\( name, monoParamType ) vt -> Dict.insert identity name monoParamType vt)
+                        (\( name, monoParamType ) vt ->
+                            Dict.insert identity name monoParamType vt
+                        )
                         state.varTypes
                         monoParams
 
@@ -1077,14 +1069,19 @@ specializeExpr expr subst state =
                         , varTypes = newVarTypes
                     }
 
-                -- Build an augmented substitution that includes the param name -> type mappings.
+                -- FIX: only use type variable names from paramCanType
                 augmentedSubst =
                     List.foldl
-                        (\( name, monoParamType ) s ->
-                            Dict.insert identity name monoParamType s
+                        (\( ( _, paramCanType ), ( _, monoParamType ) ) s ->
+                            case paramCanType of
+                                Can.TVar varName ->
+                                    Dict.insert identity varName monoParamType s
+
+                                _ ->
+                                    s
                         )
                         subst
-                        monoParams
+                        (List.map2 Tuple.pair params monoParams)
 
                 ( monoBody, stateAfter ) =
                     specializeExpr body augmentedSubst stateWithLambda
@@ -1930,28 +1927,34 @@ specializeDef def subst state =
 
         TOpt.TailDef _ name args expr _ ->
             let
-                -- Convert params to mono types
                 monoArgs =
                     List.map (specializeArg subst) args
 
-                -- Add param names -> types to varTypes for path type derivation
+                -- Param names -> types go into varTypes (term env), as before
                 newVarTypes =
                     List.foldl
-                        (\( pname, monoParamType ) vt -> Dict.insert identity pname monoParamType vt)
+                        (\( pname, monoParamType ) vt ->
+                            Dict.insert identity pname monoParamType vt
+                        )
                         state.varTypes
                         monoArgs
 
                 stateWithParams =
                     { state | varTypes = newVarTypes }
 
-                -- Build an augmented substitution that includes type variables from parameter types
+                -- Substitution is ONLY for type variables
                 augmentedSubst =
                     List.foldl
-                        (\( pname, monoParamType ) s ->
-                            Dict.insert identity pname monoParamType s
+                        (\( ( _, canParamType ), ( _, monoParamType ) ) s ->
+                            case canParamType of
+                                Can.TVar varName ->
+                                    Dict.insert identity varName monoParamType s
+
+                                _ ->
+                                    s
                         )
                         subst
-                        monoArgs
+                        (List.map2 Tuple.pair args monoArgs)
 
                 ( monoExpr, stateAfter ) =
                     specializeExpr expr augmentedSubst stateWithParams
