@@ -1652,8 +1652,11 @@ generateModule mode _ (Mono.MonoGraph { nodes, main, registry, ctorLayouts }) =
                 ( [], ctx )
                 nodes
 
-        ( lambdaOps, finalCtx ) =
+        ( lambdaOps, ctxAfterLambdas ) =
             processLambdas ctxAfterNodes
+
+        ( wrapperOps, finalCtx ) =
+            processPendingWrappers ctxAfterLambdas
 
         -- ctorLayouts are already complete from MonoGraph - no fill step needed
         mainOps : List MlirOp
@@ -1815,6 +1818,137 @@ generateLambdaFunc ctx lambda =
             funcFunc ctx1 lambda.name allArgPairs ecoValue region
     in
     ( funcOp, ctx2 )
+
+
+
+-- ====== PAP WRAPPER FUNCTION GENERATION ======
+
+
+{-| Generate all pending PAP wrapper functions accumulated in the context.
+
+Clears ctx.pendingWrappers and returns the generated func.func ops plus the
+updated context.
+
+-}
+processPendingWrappers : Context -> ( List MlirOp, Context )
+processPendingWrappers ctx =
+    case ctx.pendingWrappers of
+        [] ->
+            ( [], ctx )
+
+        wrappers ->
+            let
+                ctxCleared : Context
+                ctxCleared =
+                    { ctx | pendingWrappers = [] }
+
+                ( ops, ctxAfter ) =
+                    List.foldl
+                        (\wrapper ( accOps, accCtx ) ->
+                            let
+                                ( op, newCtx ) =
+                                    generatePapWrapper accCtx wrapper
+                            in
+                            ( accOps ++ [ op ], newCtx )
+                        )
+                        ( [], ctxCleared )
+                        wrappers
+            in
+            ( ops, ctxAfter )
+
+
+{-| Generate a PAP wrapper function.
+
+The wrapper has this ABI:
+
+    wrapperName : (!eco.value, !eco.value, ..., !eco.value) -> !eco.value
+
+It:
+
+  - Accepts all arguments boxed (!eco.value)
+  - Unboxes any primitive params according to paramTypes
+  - Calls the underlying target function (targetFuncName) with the correct
+    primitive / boxed types (monoTypeToMlir paramTypes)
+  - Boxes the result back to !eco.value if needed
+
+-}
+generatePapWrapper : Context -> PendingWrapper -> ( MlirOp, Context )
+generatePapWrapper ctx wrapper =
+    let
+        paramCount : Int
+        paramCount =
+            List.length wrapper.paramTypes
+
+        -- Wrapper's external signature: all params boxed as !eco.value
+        argNames : List String
+        argNames =
+            List.indexedMap (\i _ -> "%arg" ++ String.fromInt i) wrapper.paramTypes
+
+        argPairs : List ( String, MlirType )
+        argPairs =
+            List.map (\name -> ( name, ecoValue )) argNames
+
+        -- Start body with args in scope; next SSA id after args
+        ctxWithArgs : Context
+        ctxWithArgs =
+            { ctx | nextVar = paramCount }
+
+        -- Unbox parameters that need primitive types
+        ( unboxOps, callArgs, ctx1 ) =
+            List.foldl
+                (\( name, monoParamType ) ( opsAcc, argsAcc, ctxAcc ) ->
+                    let
+                        paramMlirTy : MlirType
+                        paramMlirTy =
+                            monoTypeToMlir monoParamType
+                    in
+                    if isEcoValueType paramMlirTy then
+                        -- Parameter is already !eco.value; pass through as-is
+                        ( opsAcc
+                        , argsAcc ++ [ ( name, ecoValue ) ]
+                        , ctxAcc
+                        )
+
+                    else
+                        -- Need to unbox from !eco.value to the primitive type
+                        let
+                            ( moreOps, unboxedVar, ctxAcc1 ) =
+                                unboxToType ctxAcc name paramMlirTy
+                        in
+                        ( opsAcc ++ moreOps
+                        , argsAcc ++ [ ( unboxedVar, paramMlirTy ) ]
+                        , ctxAcc1
+                        )
+                )
+                ( [], [], ctxWithArgs )
+                (List.map2 Tuple.pair argNames wrapper.paramTypes)
+
+        -- Call the underlying target function with unboxed/boxed params
+        ( rawResultVar, ctx2 ) =
+            freshVar ctx1
+
+        targetResultTy : MlirType
+        targetResultTy =
+            monoTypeToMlir wrapper.returnType
+
+        ( ctx3, callOp ) =
+            ecoCallNamed ctx2 rawResultVar wrapper.targetFuncName callArgs targetResultTy
+
+        -- Wrapper must return !eco.value; box primitive result if needed
+        ( boxOps, finalResultVar, ctx4 ) =
+            boxToEcoValue ctx3 rawResultVar targetResultTy
+
+        ( ctx5, returnOp ) =
+            ecoReturn ctx4 finalResultVar ecoValue
+
+        region : MlirRegion
+        region =
+            mkRegion argPairs (unboxOps ++ [ callOp ] ++ boxOps) returnOp
+
+        ( ctxFinal, funcOp ) =
+            funcFunc ctx5 wrapper.wrapperName argPairs ecoValue region
+    in
+    ( funcOp, ctxFinal )
 
 
 
