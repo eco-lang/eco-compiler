@@ -49,7 +49,7 @@ backend : CodeGen.MonoCodeGen
 backend =
     { generate =
         \config ->
-            generateModule config.mode config.typeEnv config.graph |> CodeGen.TextOutput
+            generateProgram config.mode config.typeEnv config.graph |> CodeGen.TextOutput
     }
 
 
@@ -1626,11 +1626,11 @@ addFunctionType typeId argTypes resultType accum =
 
 
 
--- ====== GENERATE MODULE ======
+-- ====== GENERATE WHOLE PROGRAM ======
 
 
-generateModule : Mode.Mode -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> String
-generateModule mode _ (Mono.MonoGraph { nodes, main, registry, ctorLayouts }) =
+generateProgram : Mode.Mode -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> String
+generateProgram mode _ (Mono.MonoGraph { nodes, main, registry, ctorLayouts }) =
     let
         signatures : Dict.Dict Int FuncSignature
         signatures =
