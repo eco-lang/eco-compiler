@@ -28,6 +28,7 @@ import Compiler.Optimize.Typed.KernelTypes as KernelTypes
 import Compiler.Optimize.Typed.Names as Names
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
+import System.TypeCheck.IO as IO
 import Data.Set as EverySet exposing (EverySet)
 import Utils.Crash
 import Utils.Main as Utils
@@ -86,66 +87,81 @@ peelFunctionType n tipe =
 
 {-| Transforms a TypedCanonical expression into a TypedOptimized expression.
 
-Takes the kernel type environment, annotations, expression types map, cycle names,
-and a typed expression. The type of the expression is taken from the TypedCanonical node.
+Takes the kernel type environment, annotations, expression types map, home module,
+cycle names, and a typed expression. The type of the expression is taken from the
+TypedCanonical node.
 
 The `exprTypes` parameter is needed to convert subexpressions (which are still
 `Can.Expr`) back to `TCan.Expr` when recursing.
 
+The `home` parameter is needed to create `VarCycle` references for local recursive
+definitions.
+
 -}
-optimize : KernelTypes.KernelTypeEnv -> Annotations -> ExprTypes -> Cycle -> TCan.Expr -> Names.Tracker TOpt.Expr
-optimize kernelEnv annotations exprTypes cycle (A.At region texpr) =
+optimize : KernelTypes.KernelTypeEnv -> Annotations -> ExprTypes -> IO.Canonical -> Cycle -> TCan.Expr -> Names.Tracker TOpt.Expr
+optimize kernelEnv annotations exprTypes home cycle (A.At region texpr) =
     case texpr of
         TCan.TypedExpr { expr, tipe } ->
-            optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr
+            optimizeExpr kernelEnv annotations exprTypes home cycle region tipe expr
 
 
-optimizeExpr : KernelTypes.KernelTypeEnv -> Annotations -> ExprTypes -> Cycle -> A.Region -> Can.Type -> Can.Expr_ -> Names.Tracker TOpt.Expr
-optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
+optimizeExpr : KernelTypes.KernelTypeEnv -> Annotations -> ExprTypes -> IO.Canonical -> Cycle -> A.Region -> Can.Type -> Can.Expr_ -> Names.Tracker TOpt.Expr
+optimizeExpr kernelEnv annotations exprTypes home cycle region tipe expr =
     case expr of
         Can.VarLocal name ->
-            Names.lookupLocalType name
-                |> Names.map (\localType -> TOpt.TrackedVarLocal region name localType)
-                |> catchMissing (Names.pure (TOpt.TrackedVarLocal region name tipe))
+            -- Check if this local variable is part of a recursive cycle
+            if EverySet.member identity name cycle then
+                -- For local recursive definitions, create a VarCycle reference
+                -- to ensure it gets properly linked to the global cycle node
+                let
+                    defType =
+                        lookupAnnotationType name annotations
+                in
+                Names.pure (TOpt.VarCycle region home name defType)
 
-        Can.VarTopLevel home name ->
+            else
+                Names.lookupLocalType name
+                    |> Names.map (\localType -> TOpt.TrackedVarLocal region name localType)
+                    |> catchMissing (Names.pure (TOpt.TrackedVarLocal region name tipe))
+
+        Can.VarTopLevel varHome name ->
             let
                 defType =
                     lookupAnnotationType name annotations
             in
             if EverySet.member identity name cycle then
-                Names.pure (TOpt.VarCycle region home name defType)
+                Names.pure (TOpt.VarCycle region varHome name defType)
 
             else
-                Names.registerGlobal region home name defType
+                Names.registerGlobal region varHome name defType
 
-        Can.VarKernel home name ->
+        Can.VarKernel kernelHome name ->
             let
                 kernelType : Can.Type
                 kernelType =
-                    case KernelTypes.lookup home name kernelEnv of
+                    case KernelTypes.lookup kernelHome name kernelEnv of
                         Just t ->
                             t
 
                         Nothing ->
                             Utils.Crash.crash
-                                ("Typed.Expression.optimizeExpr: Missing kernel type for " ++ home ++ "." ++ name)
+                                ("Typed.Expression.optimizeExpr: Missing kernel type for " ++ kernelHome ++ "." ++ name)
             in
-            Names.registerKernel home (TOpt.VarKernel region home name kernelType)
+            Names.registerKernel kernelHome (TOpt.VarKernel region kernelHome name kernelType)
 
-        Can.VarForeign home name _ ->
-            Names.registerGlobal region home name tipe
+        Can.VarForeign foreignHome name _ ->
+            Names.registerGlobal region foreignHome name tipe
 
-        Can.VarCtor opts home name index _ ->
-            Names.registerCtor region home (A.At region name) index opts tipe
+        Can.VarCtor opts ctorHome name index _ ->
+            Names.registerCtor region ctorHome (A.At region name) index opts tipe
 
-        Can.VarDebug home name (Can.Forall _ debugType) ->
+        Can.VarDebug debugHome name (Can.Forall _ debugType) ->
             -- Use the full function type from the annotation, not the instantiated type
             -- This is needed for the monomorphizer to correctly derive the kernel ABI
-            Names.registerDebug name home region debugType
+            Names.registerDebug name debugHome region debugType
 
-        Can.VarOperator _ home name (Can.Forall _ funcType) ->
-            Names.registerGlobal region home name funcType
+        Can.VarOperator _ opHome name (Can.Forall _ funcType) ->
+            Names.registerGlobal region opHome name funcType
 
         Can.Chr chr ->
             Names.registerKernel Name.utils (TOpt.Chr region chr (Can.TType ModuleName.basics "Char" []))
@@ -161,7 +177,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
             Names.pure (TOpt.Float region float tipe)
 
         Can.List entries ->
-            Names.traverse (optimize kernelEnv annotations exprTypes cycle << TCan.toTypedExpr exprTypes) entries
+            Names.traverse (optimize kernelEnv annotations exprTypes home cycle << TCan.toTypedExpr exprTypes) entries
                 |> Names.andThen (\optEntries -> Names.registerKernel Name.list (TOpt.List region optEntries tipe))
 
         Can.Negate subExpr ->
@@ -172,17 +188,17 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
             Names.registerGlobal region ModuleName.basics Name.negate negateType
                 |> Names.andThen
                     (\func ->
-                        optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes subExpr)
+                        optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes subExpr)
                             |> Names.map (\optSub -> TOpt.Call region func [ optSub ] tipe)
                     )
 
         -- Binop: use the annotation from the constructor
-        Can.Binop _ home name (Can.Forall _ funcType) left right ->
+        Can.Binop _ binopHome name (Can.Forall _ funcType) left right ->
             let
                 optimizeArg =
-                    optimize kernelEnv annotations exprTypes cycle << TCan.toTypedExpr exprTypes
+                    optimize kernelEnv annotations exprTypes home cycle << TCan.toTypedExpr exprTypes
             in
-            Names.registerGlobal region home name funcType
+            Names.registerGlobal region binopHome name funcType
                 |> Names.andThen
                     (\optFunc ->
                         optimizeArg left
@@ -218,7 +234,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
                                 peelFunctionType (List.length args) tipe
                         in
                         Names.withVarTypes allBindings
-                            (optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes body))
+                            (optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes body))
                             |> Names.map
                                 (\obody ->
                                     let
@@ -232,7 +248,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
         Can.Call func args ->
             let
                 optimizeArg =
-                    optimize kernelEnv annotations exprTypes cycle << TCan.toTypedExpr exprTypes
+                    optimize kernelEnv annotations exprTypes home cycle << TCan.toTypedExpr exprTypes
             in
             optimizeArg func
                 |> Names.andThen
@@ -247,10 +263,10 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
                 optimizeBranch ( condition, thenExpr ) =
                     let
                         optCond =
-                            optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes condition)
+                            optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes condition)
 
                         optThen =
-                            optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes thenExpr)
+                            optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes thenExpr)
                     in
                     optCond
                         |> Names.andThen (\c -> optThen |> Names.map (\t -> ( c, t )))
@@ -258,7 +274,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
             Names.traverse optimizeBranch branches
                 |> Names.andThen
                     (\optBranches ->
-                        optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes final)
+                        optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes final)
                             |> Names.map (\optFinal -> TOpt.If optBranches optFinal tipe)
                     )
 
@@ -269,8 +285,8 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
                     getDefNameAndType exprTypes def
             in
             Names.withVarTypes [ ( defName, defType ) ]
-                (optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes body))
-                |> Names.andThen (optimizeDef kernelEnv annotations exprTypes cycle def tipe)
+                (optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes body))
+                |> Names.andThen (optimizeDef kernelEnv annotations exprTypes home cycle def tipe)
 
         Can.LetRec defs body ->
             -- For LetRec, all definitions are mutually recursive, so add all names to scope
@@ -281,11 +297,11 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
             case defs of
                 [ def ] ->
                     Names.withVarTypes defBindings
-                        (optimizePotentialTailCallDef kernelEnv annotations exprTypes cycle def)
+                        (optimizePotentialTailCallDef kernelEnv annotations exprTypes home cycle def)
                         |> Names.andThen
                             (\tailCallDef ->
                                 Names.withVarTypes defBindings
-                                    (optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes body))
+                                    (optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes body))
                                     |> Names.map (\obody -> TOpt.Let tailCallDef obody tipe)
                             )
 
@@ -293,9 +309,9 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
                     Names.withVarTypes defBindings
                         (List.foldl
                             (\def bod ->
-                                Names.andThen (optimizeDef kernelEnv annotations exprTypes cycle def tipe) bod
+                                Names.andThen (optimizeDef kernelEnv annotations exprTypes home cycle def tipe) bod
                             )
-                            (optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes body))
+                            (optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes body))
                             defs
                         )
 
@@ -303,7 +319,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
             destruct exprTypes pattern
                 |> Names.andThen
                     (\( ( A.At nameRegion name, patternType ), destructs ) ->
-                        optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes boundExpr)
+                        optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes boundExpr)
                             |> Names.andThen
                                 (\oBoundExpr ->
                                     let
@@ -315,7 +331,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
                                             ( name, patternType ) :: destructorBindings
                                     in
                                     Names.withVarTypes allBindings
-                                        (optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes body))
+                                        (optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes body))
                                         |> Names.map
                                             (\obody ->
                                                 let
@@ -343,7 +359,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
                                         List.map (\(TOpt.Destructor n _ t) -> ( n, t )) destructors
                                 in
                                 Names.withVarTypes destructorBindings
-                                    (optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes branch))
+                                    (optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes branch))
                                     |> Names.map
                                         (\obranch ->
                                             ( pattern, List.foldr (wrapDestruct tipe) obranch destructors )
@@ -353,7 +369,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
             Names.generate
                 |> Names.andThen
                     (\temp ->
-                        optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes scrutinee)
+                        optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes scrutinee)
                             |> Names.andThen
                                 (\optScrutinee ->
                                     case optScrutinee of
@@ -385,7 +401,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
             Names.registerField field (TOpt.Accessor region field tipe)
 
         Can.Access recordExpr (A.At _ field) ->
-            optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes recordExpr)
+            optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes recordExpr)
                 |> Names.andThen
                     (\optRecord ->
                         Names.registerField field (TOpt.Access optRecord region field tipe)
@@ -395,13 +411,13 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
             let
                 optimizeFieldUpdate : ( A.Located Name, Can.FieldUpdate ) -> Names.Tracker ( A.Located Name, TOpt.Expr )
                 optimizeFieldUpdate ( locName, Can.FieldUpdate _ fieldExpr ) =
-                    optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes fieldExpr)
+                    optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes fieldExpr)
                         |> Names.map (\optExpr -> ( locName, optExpr ))
 
                 fieldUpdateList =
                     Dict.toList A.compareLocated fieldUpdates
             in
-            optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes recordExpr)
+            optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes recordExpr)
                 |> Names.andThen
                     (\optRecord ->
                         Names.traverse optimizeFieldUpdate fieldUpdateList
@@ -420,7 +436,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
             let
                 optimizeField : ( A.Located Name, Can.Expr ) -> Names.Tracker ( A.Located Name, TOpt.Expr )
                 optimizeField ( locName, fieldExpr ) =
-                    optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes fieldExpr)
+                    optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes fieldExpr)
                         |> Names.map (\optExpr -> ( locName, optExpr ))
 
                 fieldList : List ( A.Located Name, Can.Expr )
@@ -443,7 +459,7 @@ optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr =
         Can.Tuple a b cs ->
             let
                 optimizeArg =
-                    optimize kernelEnv annotations exprTypes cycle << TCan.toTypedExpr exprTypes
+                    optimize kernelEnv annotations exprTypes home cycle << TCan.toTypedExpr exprTypes
             in
             optimizeArg a
                 |> Names.andThen
@@ -496,22 +512,24 @@ optimizeTail :
     KernelTypes.KernelTypeEnv
     -> Annotations
     -> ExprTypes
+    -> IO.Canonical
     -> Cycle
     -> Name
     -> List ( A.Located Name, Can.Type )
     -> Can.Type
     -> TCan.Expr
     -> Names.Tracker TOpt.Expr
-optimizeTail kernelEnv annotations exprTypes cycle rootName argNames resultType (A.At region texpr) =
+optimizeTail kernelEnv annotations exprTypes home cycle rootName argNames resultType (A.At region texpr) =
     case texpr of
         TCan.TypedExpr { expr, tipe } ->
-            optimizeTailExpr kernelEnv annotations exprTypes cycle rootName argNames resultType region tipe expr
+            optimizeTailExpr kernelEnv annotations exprTypes home cycle rootName argNames resultType region tipe expr
 
 
 optimizeTailExpr :
     KernelTypes.KernelTypeEnv
     -> Annotations
     -> ExprTypes
+    -> IO.Canonical
     -> Cycle
     -> Name
     -> List ( A.Located Name, Can.Type )
@@ -520,12 +538,12 @@ optimizeTailExpr :
     -> Can.Type
     -> Can.Expr_
     -> Names.Tracker TOpt.Expr
-optimizeTailExpr kernelEnv annotations exprTypes cycle rootName argNames resultType region tipe expr =
+optimizeTailExpr kernelEnv annotations exprTypes home cycle rootName argNames resultType region tipe expr =
     case expr of
         Can.Call func callArgs ->
             let
                 optimizeArg =
-                    optimize kernelEnv annotations exprTypes cycle << TCan.toTypedExpr exprTypes
+                    optimize kernelEnv annotations exprTypes home cycle << TCan.toTypedExpr exprTypes
             in
             Names.traverse optimizeArg callArgs
                 |> Names.andThen
@@ -559,17 +577,17 @@ optimizeTailExpr kernelEnv annotations exprTypes cycle rootName argNames resultT
         Can.If branches final ->
             let
                 optimizeBranch ( condition, branch ) =
-                    optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes condition)
+                    optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes condition)
                         |> Names.andThen
                             (\optCond ->
-                                optimizeTail kernelEnv annotations exprTypes cycle rootName argNames resultType (TCan.toTypedExpr exprTypes branch)
+                                optimizeTail kernelEnv annotations exprTypes home cycle rootName argNames resultType (TCan.toTypedExpr exprTypes branch)
                                     |> Names.map (\optBranch -> ( optCond, optBranch ))
                             )
             in
             Names.traverse optimizeBranch branches
                 |> Names.andThen
                     (\optBranches ->
-                        optimizeTail kernelEnv annotations exprTypes cycle rootName argNames resultType (TCan.toTypedExpr exprTypes final)
+                        optimizeTail kernelEnv annotations exprTypes home cycle rootName argNames resultType (TCan.toTypedExpr exprTypes final)
                             |> Names.map (\optFinal -> TOpt.If optBranches optFinal tipe)
                     )
 
@@ -580,8 +598,8 @@ optimizeTailExpr kernelEnv annotations exprTypes cycle rootName argNames resultT
                     getDefNameAndType exprTypes def
             in
             Names.withVarTypes [ ( defName, defType ) ]
-                (optimizeTail kernelEnv annotations exprTypes cycle rootName argNames resultType (TCan.toTypedExpr exprTypes body))
-                |> Names.andThen (optimizeDef kernelEnv annotations exprTypes cycle def tipe)
+                (optimizeTail kernelEnv annotations exprTypes home cycle rootName argNames resultType (TCan.toTypedExpr exprTypes body))
+                |> Names.andThen (optimizeDef kernelEnv annotations exprTypes home cycle def tipe)
 
         Can.LetRec defs body ->
             -- For LetRec, all definitions are mutually recursive, so add all names to scope
@@ -592,11 +610,11 @@ optimizeTailExpr kernelEnv annotations exprTypes cycle rootName argNames resultT
             case defs of
                 [ def ] ->
                     Names.withVarTypes defBindings
-                        (optimizePotentialTailCallDef kernelEnv annotations exprTypes cycle def)
+                        (optimizePotentialTailCallDef kernelEnv annotations exprTypes home cycle def)
                         |> Names.andThen
                             (\tailCallDef ->
                                 Names.withVarTypes defBindings
-                                    (optimizeTail kernelEnv annotations exprTypes cycle rootName argNames resultType (TCan.toTypedExpr exprTypes body))
+                                    (optimizeTail kernelEnv annotations exprTypes home cycle rootName argNames resultType (TCan.toTypedExpr exprTypes body))
                                     |> Names.map (\obody -> TOpt.Let tailCallDef obody tipe)
                             )
 
@@ -604,9 +622,9 @@ optimizeTailExpr kernelEnv annotations exprTypes cycle rootName argNames resultT
                     Names.withVarTypes defBindings
                         (List.foldl
                             (\def bod ->
-                                Names.andThen (optimizeDef kernelEnv annotations exprTypes cycle def tipe) bod
+                                Names.andThen (optimizeDef kernelEnv annotations exprTypes home cycle def tipe) bod
                             )
-                            (optimizeTail kernelEnv annotations exprTypes cycle rootName argNames resultType (TCan.toTypedExpr exprTypes body))
+                            (optimizeTail kernelEnv annotations exprTypes home cycle rootName argNames resultType (TCan.toTypedExpr exprTypes body))
                             defs
                         )
 
@@ -614,7 +632,7 @@ optimizeTailExpr kernelEnv annotations exprTypes cycle rootName argNames resultT
             destruct exprTypes pattern
                 |> Names.andThen
                     (\( ( A.At nameRegion name, patternType ), destructs ) ->
-                        optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes boundExpr)
+                        optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes boundExpr)
                             |> Names.andThen
                                 (\oBoundExpr ->
                                     let
@@ -625,7 +643,7 @@ optimizeTailExpr kernelEnv annotations exprTypes cycle rootName argNames resultT
                                             ( name, patternType ) :: destructorBindings
                                     in
                                     Names.withVarTypes allBindings
-                                        (optimizeTail kernelEnv annotations exprTypes cycle rootName argNames resultType (TCan.toTypedExpr exprTypes body))
+                                        (optimizeTail kernelEnv annotations exprTypes home cycle rootName argNames resultType (TCan.toTypedExpr exprTypes body))
                                         |> Names.map
                                             (\obody ->
                                                 let
@@ -651,7 +669,7 @@ optimizeTailExpr kernelEnv annotations exprTypes cycle rootName argNames resultT
                                         List.map (\(TOpt.Destructor n _ t) -> ( n, t )) destructors
                                 in
                                 Names.withVarTypes destructorBindings
-                                    (optimizeTail kernelEnv annotations exprTypes cycle rootName argNames resultType (TCan.toTypedExpr exprTypes branch))
+                                    (optimizeTail kernelEnv annotations exprTypes home cycle rootName argNames resultType (TCan.toTypedExpr exprTypes branch))
                                     |> Names.map
                                         (\obranch ->
                                             ( pattern, List.foldr (wrapDestruct tipe) obranch destructors )
@@ -661,7 +679,7 @@ optimizeTailExpr kernelEnv annotations exprTypes cycle rootName argNames resultT
             Names.generate
                 |> Names.andThen
                     (\temp ->
-                        optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes scrutinee)
+                        optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes scrutinee)
                             |> Names.andThen
                                 (\optScrutinee ->
                                     case optScrutinee of
@@ -691,7 +709,7 @@ optimizeTailExpr kernelEnv annotations exprTypes cycle rootName argNames resultT
 
         -- For other expressions, use regular optimization (not in tail position)
         _ ->
-            optimizeExpr kernelEnv annotations exprTypes cycle region tipe expr
+            optimizeExpr kernelEnv annotations exprTypes home cycle region tipe expr
 
 
 
@@ -747,24 +765,26 @@ optimizeDef :
     KernelTypes.KernelTypeEnv
     -> Annotations
     -> ExprTypes
+    -> IO.Canonical
     -> Cycle
     -> Can.Def
     -> Can.Type
     -> TOpt.Expr
     -> Names.Tracker TOpt.Expr
-optimizeDef kernelEnv annotations exprTypes cycle def resultType body =
+optimizeDef kernelEnv annotations exprTypes home cycle def resultType body =
     case def of
         Can.Def (A.At region name) args expr ->
-            optimizeDefHelp kernelEnv annotations exprTypes cycle region name args expr resultType body
+            optimizeDefHelp kernelEnv annotations exprTypes home cycle region name args expr resultType body
 
         Can.TypedDef (A.At region name) _ typedArgs expr _ ->
-            optimizeDefHelp kernelEnv annotations exprTypes cycle region name (List.map Tuple.first typedArgs) expr resultType body
+            optimizeDefHelp kernelEnv annotations exprTypes home cycle region name (List.map Tuple.first typedArgs) expr resultType body
 
 
 optimizeDefHelp :
     KernelTypes.KernelTypeEnv
     -> Annotations
     -> ExprTypes
+    -> IO.Canonical
     -> Cycle
     -> A.Region
     -> Name
@@ -773,10 +793,10 @@ optimizeDefHelp :
     -> Can.Type
     -> TOpt.Expr
     -> Names.Tracker TOpt.Expr
-optimizeDefHelp kernelEnv annotations exprTypes cycle region name args expr resultType body =
+optimizeDefHelp kernelEnv annotations exprTypes home cycle region name args expr resultType body =
     case args of
         [] ->
-            optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes expr)
+            optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes expr)
                 |> Names.map
                     (\oexpr ->
                         let
@@ -805,7 +825,7 @@ optimizeDefHelp kernelEnv annotations exprTypes cycle region name args expr resu
                                 argBindings ++ destructorBindings
                         in
                         Names.withVarTypes allBindings
-                            (optimize kernelEnv annotations exprTypes cycle (TCan.toTypedExpr exprTypes expr))
+                            (optimize kernelEnv annotations exprTypes home cycle (TCan.toTypedExpr exprTypes expr))
                             |> Names.map
                                 (\oexpr ->
                                     let
@@ -837,10 +857,11 @@ optimizePotentialTailCallDef :
     KernelTypes.KernelTypeEnv
     -> Annotations
     -> ExprTypes
+    -> IO.Canonical
     -> Cycle
     -> Can.Def
     -> Names.Tracker TOpt.Def
-optimizePotentialTailCallDef kernelEnv annotations exprTypes cycle def =
+optimizePotentialTailCallDef kernelEnv annotations exprTypes home cycle def =
     case def of
         Can.Def (A.At region name) args body ->
             let
@@ -848,10 +869,10 @@ optimizePotentialTailCallDef kernelEnv annotations exprTypes cycle def =
                 ( _, defType ) =
                     getDefNameAndType exprTypes def
             in
-            optimizePotentialTailCall kernelEnv annotations exprTypes cycle region name args (TCan.toTypedExpr exprTypes body) defType
+            optimizePotentialTailCall kernelEnv annotations exprTypes home cycle region name args (TCan.toTypedExpr exprTypes body) defType
 
         Can.TypedDef (A.At region name) _ typedArgs body defType ->
-            optimizePotentialTailCall kernelEnv annotations exprTypes cycle region name (List.map Tuple.first typedArgs) (TCan.toTypedExpr exprTypes body) defType
+            optimizePotentialTailCall kernelEnv annotations exprTypes home cycle region name (List.map Tuple.first typedArgs) (TCan.toTypedExpr exprTypes body) defType
 
 
 
@@ -864,6 +885,7 @@ optimizePotentialTailCall :
     KernelTypes.KernelTypeEnv
     -> Annotations
     -> ExprTypes
+    -> IO.Canonical
     -> Cycle
     -> A.Region
     -> Name
@@ -871,7 +893,7 @@ optimizePotentialTailCall :
     -> TCan.Expr
     -> Can.Type
     -> Names.Tracker TOpt.Def
-optimizePotentialTailCall kernelEnv annotations exprTypes cycle region name args body defType =
+optimizePotentialTailCall kernelEnv annotations exprTypes home cycle region name args body defType =
     destructArgs exprTypes args
         |> Names.andThen
             (\( argNamesWithTypes, destructors ) ->
@@ -892,7 +914,7 @@ optimizePotentialTailCall kernelEnv annotations exprTypes cycle region name args
                         peelFunctionType (List.length args) defType
                 in
                 Names.withVarTypes allBindings
-                    (optimizeTail kernelEnv annotations exprTypes cycle name argNamesWithTypes bodyType body)
+                    (optimizeTail kernelEnv annotations exprTypes home cycle name argNamesWithTypes bodyType body)
                     |> Names.map
                         (\obody ->
                             let

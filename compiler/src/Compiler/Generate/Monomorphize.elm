@@ -1728,12 +1728,18 @@ findFreeLocals bound expr =
             else
                 [ name ]
 
-        Mono.MonoClosure _ _ _ ->
-            -- Nested closures compute their own captures; do not descend.
-            []
+        Mono.MonoClosure closureInfo body _ ->
+            -- Descend into nested closures with their params added to bound.
+            -- This ensures outer closures capture all variables needed by inner closures.
+            let
+                closureParams =
+                    List.map Tuple.first closureInfo.params
 
-        -- Alternatively, you could choose to recurse into body
-        -- with closure params added to bound if you want combined info.
+                newBound =
+                    List.foldl (\name acc -> EverySet.insert identity name acc) bound closureParams
+            in
+            findFreeLocals newBound body
+
         Mono.MonoLet def body _ ->
             let
                 ( defName, defExpr ) =
@@ -1741,7 +1747,7 @@ findFreeLocals bound expr =
                         Mono.MonoDef n e ->
                             ( n, e )
 
-                        Mono.MonoTailDef n e ->
+                        Mono.MonoTailDef n _ e ->
                             ( n, e )
 
                 freeInDef =
@@ -1962,7 +1968,7 @@ specializeDef def subst state =
                 ( monoExpr, stateAfter ) =
                     specializeExpr expr augmentedSubst stateWithParams
             in
-            ( Mono.MonoTailDef name monoExpr, stateAfter )
+            ( Mono.MonoTailDef name monoArgs monoExpr, stateAfter )
 
 
 specializeDestructor : TOpt.Destructor -> Substitution -> VarTypes -> Mono.MonoDestructor
@@ -2701,7 +2707,7 @@ collectDepsHelp expr deps =
                         Mono.MonoDef _ e ->
                             collectDepsHelp e deps
 
-                        Mono.MonoTailDef _ e ->
+                        Mono.MonoTailDef _ _ e ->
                             collectDepsHelp e deps
             in
             collectDepsHelp body defDeps
@@ -2899,7 +2905,7 @@ collectCustomTypesFromExpr expr acc =
                         Mono.MonoDef _ e ->
                             collectCustomTypesFromExpr e accWithType
 
-                        Mono.MonoTailDef _ e ->
+                        Mono.MonoTailDef _ _ e ->
                             collectCustomTypesFromExpr e accWithType
             in
             collectCustomTypesFromExpr body defAcc

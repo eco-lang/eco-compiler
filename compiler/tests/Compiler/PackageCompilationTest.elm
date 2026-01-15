@@ -289,15 +289,11 @@ typedPathwayTests =
                                 Expect.fail ("Compile failed: " ++ PC.errorToString err)
 
                             Ok result ->
-                                case PC.monomorphize result of
+                                case PC.generateMLIRFromResult result of
                                     Err err ->
-                                        Expect.fail ("Monomorphization failed: " ++ PC.errorToString err)
+                                        Expect.fail ("MLIR generation failed: " ++ PC.errorToString err)
 
-                                    Ok monoGraph ->
-                                        let
-                                            mlirOutput =
-                                                PC.generateMLIR monoGraph
-                                        in
+                                    Ok mlirOutput ->
                                         if String.isEmpty mlirOutput then
                                             Expect.fail "MLIR output is empty"
 
@@ -347,15 +343,11 @@ typedPathwayTests =
                     Ok results ->
                         case List.filter (\r -> r.moduleName == "Array") results of
                             [ arrayResult ] ->
-                                case PC.monomorphize arrayResult of
+                                case PC.generateMLIRFromResult arrayResult of
                                     Err err ->
-                                        Expect.fail ("Array monomorphization failed: " ++ PC.errorToString err)
+                                        Expect.fail ("Array MLIR generation failed: " ++ PC.errorToString err)
 
-                                    Ok monoGraph ->
-                                        let
-                                            mlirOutput =
-                                                PC.generateMLIR monoGraph
-                                        in
+                                    Ok mlirOutput ->
                                         if String.isEmpty mlirOutput then
                                             Expect.fail "MLIR output is empty"
 

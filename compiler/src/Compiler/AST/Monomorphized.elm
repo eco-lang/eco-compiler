@@ -422,7 +422,7 @@ type alias ClosureInfo =
 -}
 type MonoDef
     = MonoDef Name MonoExpr
-    | MonoTailDef Name MonoExpr
+    | MonoTailDef Name (List ( Name, MonoType )) MonoExpr
 
 
 {-| Destructuring pattern for extracting values from data structures.

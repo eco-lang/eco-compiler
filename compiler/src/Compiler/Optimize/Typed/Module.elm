@@ -731,7 +731,7 @@ addDefNode home annotations exprTypes kernelEnv region name args body mainDeps g
             Names.run <|
                 case args of
                     [] ->
-                        Expr.optimize kernelEnv annotations exprTypes EverySet.empty body
+                        Expr.optimize kernelEnv annotations exprTypes home EverySet.empty body
 
                     _ ->
                         Expr.destructArgs exprTypes args
@@ -755,7 +755,7 @@ addDefNode home annotations exprTypes kernelEnv region name args body mainDeps g
                                             argBindings ++ destructorBindings
                                     in
                                     Names.withVarTypes allBindings
-                                        (Expr.optimize kernelEnv annotations exprTypes EverySet.empty body)
+                                        (Expr.optimize kernelEnv annotations exprTypes home EverySet.empty body)
                                         |> Names.map
                                             (\obody ->
                                                 let
@@ -800,7 +800,7 @@ addRecDefs home annotations exprTypes kernelEnv defs (TOpt.LocalGraph data) =
 
         cycle : EverySet String Name.Name
         cycle =
-            List.foldr addValueName EverySet.empty defs
+            List.foldr addCycleName EverySet.empty defs
 
         links : TypedNodes
         links =
@@ -808,7 +808,7 @@ addRecDefs home annotations exprTypes kernelEnv defs (TOpt.LocalGraph data) =
 
         ( deps, fields, State { values, functions } ) =
             Names.run <|
-                List.foldl (\def -> Names.andThen (\state -> addRecDef annotations exprTypes kernelEnv cycle state def))
+                List.foldl (\def -> Names.andThen (\state -> addRecDef home annotations exprTypes kernelEnv cycle state def))
                     (Names.pure (State { values = [], functions = [] }))
                     defs
     in
@@ -831,20 +831,17 @@ toName def =
             name
 
 
-addValueName : TCan.Def -> EverySet String Name.Name -> EverySet String Name.Name
-addValueName def names =
+addCycleName : TCan.Def -> EverySet String Name.Name -> EverySet String Name.Name
+addCycleName def names =
     case def of
-        TCan.Def (A.At _ name) [] _ ->
+        TCan.Def (A.At _ name) _ _ ->
+            -- Add both value and function names to the cycle set
+            -- so that references to recursive functions are properly
+            -- converted to VarCycle
             EverySet.insert identity name names
 
-        TCan.Def _ _ _ ->
-            names
-
-        TCan.TypedDef (A.At _ name) _ [] _ _ ->
+        TCan.TypedDef (A.At _ name) _ _ _ _ ->
             EverySet.insert identity name names
-
-        TCan.TypedDef _ _ _ _ _ ->
-            names
 
 
 addLink : IO.Canonical -> TOpt.Node -> TCan.Def -> TypedNodes -> TypedNodes
@@ -857,8 +854,8 @@ addLink home link def links =
             Dict.insert TOpt.toComparableGlobal (TOpt.Global home name) link links
 
 
-addRecDef : Annotations -> ExprTypes -> KernelTypes.KernelTypeEnv -> EverySet String Name.Name -> State -> TCan.Def -> Names.Tracker State
-addRecDef annotations exprTypes kernelEnv cycle (State state) def =
+addRecDef : IO.Canonical -> Annotations -> ExprTypes -> KernelTypes.KernelTypeEnv -> EverySet String Name.Name -> State -> TCan.Def -> Names.Tracker State
+addRecDef home annotations exprTypes kernelEnv cycle (State state) def =
     case def of
         TCan.Def (A.At region name) args body ->
             let
@@ -873,11 +870,11 @@ addRecDef annotations exprTypes kernelEnv cycle (State state) def =
             in
             case args of
                 [] ->
-                    Expr.optimize kernelEnv annotations exprTypes cycle body
+                    Expr.optimize kernelEnv annotations exprTypes home cycle body
                         |> Names.map (\obody -> State { state | values = ( name, obody ) :: state.values })
 
                 _ ->
-                    Expr.optimizePotentialTailCall kernelEnv annotations exprTypes cycle region name args body defType
+                    Expr.optimizePotentialTailCall kernelEnv annotations exprTypes home cycle region name args body defType
                         |> Names.map (\odef -> State { state | functions = odef :: state.functions })
 
         TCan.TypedDef (A.At region name) _ typedArgs body _ ->
@@ -893,9 +890,9 @@ addRecDef annotations exprTypes kernelEnv cycle (State state) def =
             in
             case typedArgs of
                 [] ->
-                    Expr.optimize kernelEnv annotations exprTypes cycle body
+                    Expr.optimize kernelEnv annotations exprTypes home cycle body
                         |> Names.map (\obody -> State { state | values = ( name, obody ) :: state.values })
 
                 _ ->
-                    Expr.optimizePotentialTailCall kernelEnv annotations exprTypes cycle region name (List.map Tuple.first typedArgs) body defType
+                    Expr.optimizePotentialTailCall kernelEnv annotations exprTypes home cycle region name (List.map Tuple.first typedArgs) body defType
                         |> Names.map (\odef -> State { state | functions = odef :: state.functions })

@@ -28,6 +28,7 @@ import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.CodeGen.MLIR as MLIR
@@ -95,14 +96,18 @@ expectMLIRGeneration srcModule =
                             let
                                 globalGraph =
                                     localGraphToGlobalGraph localGraph
+
+                                -- Build GlobalTypeEnv from the canonical module
+                                globalTypeEnv =
+                                    buildGlobalTypeEnv canModule
                             in
-                            case monomorphizeAny globalGraph of
+                            case monomorphizeAny globalTypeEnv globalGraph of
                                 Err monoErr ->
                                     Expect.fail ("Monomorphization failed: " ++ monoErr)
 
                                 Ok monoGraph ->
                                     -- Run MLIR code generation
-                                    case runMLIRGeneration monoGraph of
+                                    case runMLIRGeneration globalTypeEnv monoGraph of
                                         Err mlirErr ->
                                             Expect.fail ("MLIR generation failed: " ++ mlirErr)
 
@@ -179,20 +184,37 @@ localGraphToGlobalGraph localGraph =
 
 
 -- ============================================================================
+-- TYPE ENVIRONMENT
+-- ============================================================================
+
+
+{-| Build a GlobalTypeEnv from a canonical module.
+-}
+buildGlobalTypeEnv : Can.Module -> TypeEnv.GlobalTypeEnv
+buildGlobalTypeEnv canModule =
+    let
+        moduleTypeEnv =
+            TypeEnv.fromCanonical canModule
+    in
+    Dict.singleton ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv
+
+
+
+-- ============================================================================
 -- MONOMORPHIZATION
 -- ============================================================================
 
 
 {-| Monomorphize using the first defined function as entry point.
 -}
-monomorphizeAny : (TOpt.GlobalGraph) -> Result String Mono.MonoGraph
-monomorphizeAny (TOpt.GlobalGraph nodes _ _) =
+monomorphizeAny : TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph -> Result String Mono.MonoGraph
+monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
     case findAnyEntryPoint nodes of
         Nothing ->
             Err "No function found in graph"
 
         Just ( TOpt.Global _ name, _ ) ->
-            Monomorphize.monomorphize name TypeEnv.emptyGlobal (TOpt.GlobalGraph nodes Dict.empty Dict.empty)
+            Monomorphize.monomorphize name globalTypeEnv (TOpt.GlobalGraph nodes Dict.empty Dict.empty)
 
 
 {-| Find any entry point in the global graph (the first defined function).
@@ -228,15 +250,15 @@ findAnyEntryPoint nodes =
 
 {-| Run MLIR code generation on a monomorphized graph.
 -}
-runMLIRGeneration : Mono.MonoGraph -> Result String String
-runMLIRGeneration monoGraph =
+runMLIRGeneration : TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Result String String
+runMLIRGeneration globalTypeEnv monoGraph =
     let
         config =
             { sourceMaps = CodeGen.NoSourceMaps
             , leadingLines = 0
             , mode = Mode.Dev Nothing
             , graph = monoGraph
-            , typeEnv = TypeEnv.emptyGlobal
+            , typeEnv = globalTypeEnv
             }
 
         output =

@@ -31,6 +31,7 @@ import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.Monomorphize as Monomorphize
 import Compiler.Optimize.Typed.Module as TypedOptimize
@@ -95,8 +96,12 @@ expectMonomorphization srcModule =
                             let
                                 globalGraph =
                                     localGraphToGlobalGraph localGraph
+
+                                -- Build GlobalTypeEnv from the canonical module
+                                globalTypeEnv =
+                                    buildGlobalTypeEnv canModule
                             in
-                            case monomorphizeAny globalGraph of
+                            case monomorphizeAny globalTypeEnv globalGraph of
                                 Err monoErr ->
                                     Expect.fail ("Monomorphization failed: " ++ monoErr)
 
@@ -178,6 +183,27 @@ localGraphToGlobalGraph localGraph =
 
 
 -- ============================================================================
+-- TYPE ENVIRONMENT
+-- ============================================================================
+
+
+{-| Build a GlobalTypeEnv from a canonical module.
+
+This extracts the union and alias definitions from the module and wraps them
+in a GlobalTypeEnv keyed by the module's canonical name.
+
+-}
+buildGlobalTypeEnv : Can.Module -> TypeEnv.GlobalTypeEnv
+buildGlobalTypeEnv canModule =
+    let
+        moduleTypeEnv =
+            TypeEnv.fromCanonical canModule
+    in
+    Dict.singleton ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv
+
+
+
+-- ============================================================================
 -- MONOMORPHIZATION (test-specific entry point finder)
 -- ============================================================================
 
@@ -188,14 +214,14 @@ This is useful for testing when the entry point name is not known in advance.
 Test modules use various names like "testValue", "dup", "capture", etc.
 
 -}
-monomorphizeAny : (TOpt.GlobalGraph) -> Result String Mono.MonoGraph
-monomorphizeAny (TOpt.GlobalGraph nodes _ _) =
+monomorphizeAny : TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph -> Result String Mono.MonoGraph
+monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
     case findAnyEntryPoint nodes of
         Nothing ->
             Err "No function found in graph"
 
         Just ( TOpt.Global _ name, _ ) ->
-            Monomorphize.monomorphize name TypeEnv.emptyGlobal (TOpt.GlobalGraph nodes Dict.empty Dict.empty)
+            Monomorphize.monomorphize name globalTypeEnv (TOpt.GlobalGraph nodes Dict.empty Dict.empty)
 
 
 {-| Find any entry point in the global graph (the first defined function).

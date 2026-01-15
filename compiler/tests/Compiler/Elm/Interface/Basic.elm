@@ -37,7 +37,7 @@ basicsInterface =
         }
 
 
-{-| Basic unions: Bool (True/False), Int, and Float.
+{-| Basic unions: Bool (True/False), Int, Float, String, and Char.
 -}
 basicsUnions : Dict String Name I.Union
 basicsUnions =
@@ -74,11 +74,31 @@ basicsUnions =
                 , numAlts = 0
                 , opts = Can.Normal
                 }
+
+        -- String type (opaque, no constructors exposed)
+        stringUnion =
+            Can.Union
+                { vars = []
+                , alts = []
+                , numAlts = 0
+                , opts = Can.Normal
+                }
+
+        -- Char type (opaque, no constructors exposed)
+        charUnion =
+            Can.Union
+                { vars = []
+                , alts = []
+                , numAlts = 0
+                , opts = Can.Normal
+                }
     in
     Dict.fromList identity
         [ ( "Bool", I.OpenUnion boolUnion )
         , ( "Int", I.ClosedUnion intUnion )
         , ( "Float", I.ClosedUnion floatUnion )
+        , ( "String", I.ClosedUnion stringUnion )
+        , ( "Char", I.ClosedUnion charUnion )
         ]
 
 

@@ -47,7 +47,7 @@ sccTests =
                     modul =
                         SB.makeModuleWithDefs "FnDep"
                             [ ( "helper", [ SB.pVar "x" ], SB.varExpr "x" )
-                            , ( "main"
+                            , ( "result"
                               , []
                               , SB.callExpr (SB.varExpr "helper") [ SB.intExpr 42 ]
                               )

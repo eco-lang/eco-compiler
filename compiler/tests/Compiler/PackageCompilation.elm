@@ -2,7 +2,7 @@ module Compiler.PackageCompilation exposing
     ( CompileResult, CompileError(..), PathwayDiscrepancy(..)
     , parseModule
     , compileModule, compileModulesInOrder
-    , monomorphize, generateMLIR
+    , monomorphize, generateMLIR, generateMLIRFromResult
     , errorToString
     , TypeCheckTypedResult
     )
@@ -482,13 +482,28 @@ monomorphize result =
     let
         globalGraph =
             TOpt.addLocalGraph result.typedObjects TOpt.emptyGlobalGraph
+
+        -- Build GlobalTypeEnv from the canonical module
+        globalTypeEnv =
+            buildGlobalTypeEnv result.canonical
     in
-    case monomorphizeAny globalGraph of
+    case monomorphizeAny globalTypeEnv globalGraph of
         Ok monoGraph ->
             Ok monoGraph
 
         Err errMsg ->
             Err (MonomorphizeError errMsg)
+
+
+{-| Build a GlobalTypeEnv from a canonical module.
+-}
+buildGlobalTypeEnv : Can.Module -> TypeEnv.GlobalTypeEnv
+buildGlobalTypeEnv canModule =
+    let
+        moduleTypeEnv =
+            TypeEnv.fromCanonical canModule
+    in
+    Dict.singleton ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv
 
 
 {-| Monomorphize using the first defined function as entry point.
@@ -497,14 +512,14 @@ This is useful for testing when the entry point name is not known in advance.
 Test modules use various names like "testValue", etc.
 
 -}
-monomorphizeAny : (TOpt.GlobalGraph) -> Result String Mono.MonoGraph
-monomorphizeAny (TOpt.GlobalGraph nodes _ _) =
+monomorphizeAny : TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph -> Result String Mono.MonoGraph
+monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
     case findAnyEntryPoint nodes of
         Nothing ->
             Err "No function found in graph"
 
         Just ( TOpt.Global _ name, _ ) ->
-            Monomorphize.monomorphize name TypeEnv.emptyGlobal (TOpt.GlobalGraph nodes Dict.empty Dict.empty)
+            Monomorphize.monomorphize name globalTypeEnv (TOpt.GlobalGraph nodes Dict.empty Dict.empty)
 
 
 {-| Find any entry point in the global graph (the first defined function).
@@ -537,21 +552,40 @@ findAnyEntryPoint nodes =
 Returns the MLIR output as a string.
 
 -}
-generateMLIR : Mono.MonoGraph -> String
-generateMLIR monoGraph =
+generateMLIR : TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> String
+generateMLIR globalTypeEnv monoGraph =
     let
         config =
             { sourceMaps = CodeGen.NoSourceMaps
             , leadingLines = 0
             , mode = Mode.Dev Nothing
             , graph = monoGraph
-            , typeEnv = TypeEnv.emptyGlobal
+            , typeEnv = globalTypeEnv
             }
 
         output =
             MLIR.backend.generate config
     in
     CodeGen.outputToString output
+
+
+{-| Convenience function to generate MLIR from a CompileResult.
+
+This handles building the GlobalTypeEnv and running monomorphization internally.
+
+-}
+generateMLIRFromResult : CompileResult -> Result CompileError String
+generateMLIRFromResult result =
+    let
+        globalTypeEnv =
+            buildGlobalTypeEnv result.canonical
+    in
+    case monomorphize result of
+        Err err ->
+            Err err
+
+        Ok monoGraph ->
+            Ok (generateMLIR globalTypeEnv monoGraph)
 
 
 
