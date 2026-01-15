@@ -427,47 +427,6 @@ registerNestedTypes monoType ctx =
             ctx
 
 
-{-| Verify that the ctor layout matches what's already in the registry.
-This is now an assertion, not a mutation - MonoGraph.ctorLayouts is the source of truth.
--}
-registerCtorLayout : Mono.MonoType -> Mono.CtorLayout -> Context -> Context
-registerCtorLayout monoType ctorLayout ctx =
-    let
-        key =
-            Mono.toComparableMonoType monoType
-
-        existingCtors =
-            EveryDict.get identity key ctx.typeRegistry.ctorLayouts
-                |> Maybe.withDefault []
-
-        matchingCtor =
-            List.filter (\c -> c.tag == ctorLayout.tag) existingCtors
-                |> List.head
-    in
-    case matchingCtor of
-        Just existing ->
-            -- Assert consistency (check field count and name match)
-            if existing.name /= ctorLayout.name then
-                let
-                    _ =
-                        Debug.log "COMPILER BUG: CtorLayout name mismatch"
-                            { expected = existing.name, got = ctorLayout.name, tag = ctorLayout.tag }
-                in
-                ctx
-
-            else
-                ctx
-
-        Nothing ->
-            -- Missing from MonoGraph.ctorLayouts - this shouldn't happen
-            let
-                _ =
-                    Debug.log "COMPILER BUG: CtorLayout missing from MonoGraph"
-                        { key = key, layout = ctorLayout }
-            in
-            ctx
-
-
 freshVar : Context -> ( String, Context )
 freshVar ctx =
     ( "%" ++ String.fromInt ctx.nextVar
@@ -2116,9 +2075,6 @@ generateCtor ctx funcName ctorLayout monoType =
         ( _, ctxWithType ) =
             getOrCreateTypeIdForMonoType monoType ctx
 
-        ctxWithCtor =
-            registerCtorLayout monoType ctorLayout ctxWithType
-
         arity : Int
         arity =
             List.length ctorLayout.fields
@@ -2131,7 +2087,7 @@ generateCtor ctx funcName ctorLayout monoType =
         -- Nullary constructor - check for well-known constants first
         let
             ( resultVar, ctx1 ) =
-                freshVar ctxWithCtor
+                freshVar ctxWithType
 
             -- Check for well-known constants that must use eco.constant
             ( ctx2, valueOp ) =
@@ -2184,7 +2140,7 @@ generateCtor ctx funcName ctorLayout monoType =
                 List.map2 Tuple.pair argNames argTypes
 
             ( resultVar, ctx1 ) =
-                freshVar { ctxWithCtor | nextVar = arity }
+                freshVar { ctxWithType | nextVar = arity }
 
             ( ctx2, constructOp ) =
                 ecoConstructCustom ctx1 resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs constructorName
@@ -2210,26 +2166,8 @@ generateEnum ctx funcName tag monoType maybeCtorName =
         ( _, ctxWithType ) =
             getOrCreateTypeIdForMonoType monoType ctx
 
-        -- Create and register a CtorLayout for this enum constructor
-        ctxWithCtor =
-            case maybeCtorName of
-                Just ctorName ->
-                    let
-                        ctorLayout =
-                            { name = ctorName
-                            , tag = tag
-                            , fields = []
-                            , unboxedCount = 0
-                            , unboxedBitmap = 0
-                            }
-                    in
-                    registerCtorLayout monoType ctorLayout ctxWithType
-
-                Nothing ->
-                    ctxWithType
-
         ( resultVar, ctx1 ) =
-            freshVar ctxWithCtor
+            freshVar ctxWithType
 
         -- Check for well-known constants that must use eco.constant
         ( ctx2, valueOp ) =

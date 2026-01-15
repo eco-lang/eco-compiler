@@ -33,6 +33,7 @@ import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
+import Utils.Crash
 
 
 
@@ -3115,13 +3116,14 @@ computeCtorLayoutsForGraph globalTypeEnv nodes =
                     in
                     case lookupUnion globalTypeEnv canonical typeName of
                         Nothing ->
-                            -- Union not found (built-in) - log and skip
-                            let
-                                _ =
-                                    Debug.log "Missing union for ctor layout"
-                                        (ModuleName.toComparableCanonical canonical ++ [ typeName ])
-                            in
-                            acc
+                            -- Canonical Union not found for custom constructor.
+                            Utils.Crash.crash
+                                ("Missing union for ctor layout: "
+                                    ++ (ModuleName.toComparableCanonical canonical
+                                            ++ [ typeName ]
+                                            |> String.join " "
+                                       )
+                                )
 
                         Just (Can.Union unionData) ->
                             let
