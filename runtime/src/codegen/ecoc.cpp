@@ -139,6 +139,8 @@ static OwningOpRef<ModuleOp> loadMLIR(MLIRContext &context,
 // Pass Pipeline Construction
 //===----------------------------------------------------------------------===//
 
+
+
 static int runPipeline(ModuleOp module, bool lowerToLLVM) {
     PassManager pm(module->getName());
 
@@ -148,21 +150,8 @@ static int runPipeline(ModuleOp module, bool lowerToLLVM) {
 
     // Build the appropriate pipeline based on the emit action.
     if (lowerToLLVM) {
-        // Stage 1: Eco -> Eco transformations.
-        // Generate external declarations for undefined functions (kernel functions, etc.)
-        pm.addPass(eco::createUndefinedFunctionPass());
-
-        // Stage 2: Eco -> Standard MLIR (func/cf/arith).
-        pm.addPass(eco::createJoinpointNormalizationPass());
-        pm.addPass(eco::createEcoControlFlowToSCFPass());
-        pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
-
-        // Stage 3: Eco -> LLVM Dialect.
-        pm.addPass(eco::createEcoToLLVMPass());
-        pm.addPass(createSCFToControlFlowPass());
-        pm.addPass(createConvertControlFlowToLLVMPass());
-        pm.addPass(createArithToLLVMConversionPass());
-        pm.addPass(createReconcileUnrealizedCastsPass());
+        // Use the shared pipeline from EcoPipeline.cpp
+        eco::buildEcoToLLVMPipeline(pm);
     }
 
     if (failed(pm.run(module)))
