@@ -453,6 +453,10 @@ lookupVar ctx name =
             ( ssaVar, mlirTy )
 
         Nothing ->
+            let
+                _ =
+                    Debug.todo ("lookupVar" ++ ": " ++ ("Failed to find " ++ name))
+            in
             -- Function parameters default to !eco.value
             ( "%" ++ name, ecoValue )
 
