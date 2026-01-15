@@ -121,7 +121,7 @@ expectEquivalentTypeChecking : Src.Module -> Expect.Expectation
 expectEquivalentTypeChecking srcModule =
     let
         result =
-            Canonicalize.canonicalize Pkg.core Basic.testIfaces srcModule
+            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces srcModule
     in
     case Result.run result of
         ( _, Err errors ) ->
@@ -304,7 +304,7 @@ expectEquivalentTypeCheckingFails : Src.Module -> Expect.Expectation
 expectEquivalentTypeCheckingFails srcModule =
     let
         result =
-            Canonicalize.canonicalize Pkg.core Basic.testIfaces srcModule
+            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces srcModule
     in
     case Result.run result of
         ( _, Err errors ) ->

@@ -31,7 +31,7 @@ expectGlobalNamesQualified : Src.Module -> Expect.Expectation
 expectGlobalNamesQualified modul =
     let
         result =
-            Canonicalize.canonicalize Pkg.core Basic.testIfaces modul
+            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces modul
     in
     case Result.run result of
         ( _, Err errors ) ->

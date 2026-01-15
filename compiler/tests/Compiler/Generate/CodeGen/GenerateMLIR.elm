@@ -53,7 +53,7 @@ expectMLIRGeneration : Src.Module -> Expect.Expectation
 expectMLIRGeneration srcModule =
     let
         canonResult =
-            Canonicalize.canonicalize Pkg.core Basic.testIfaces srcModule
+            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces srcModule
     in
     case Result.run canonResult of
         ( _, Err errors ) ->

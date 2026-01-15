@@ -134,7 +134,7 @@ expectNoDuplicateErrors : Src.Module -> Expect.Expectation
 expectNoDuplicateErrors modul =
     let
         result =
-            Canonicalize.canonicalize Pkg.core Basic.testIfaces modul
+            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces modul
     in
     case Result.run result of
         ( _, Err errors ) ->
@@ -204,7 +204,7 @@ expectSpecificError : (CanError.Error -> Bool) -> String -> Src.Module -> Expect
 expectSpecificError errorPredicate errorDescription modul =
     let
         result =
-            Canonicalize.canonicalize Pkg.core Basic.testIfaces modul
+            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces modul
     in
     case Result.run result of
         ( _, Err errors ) ->

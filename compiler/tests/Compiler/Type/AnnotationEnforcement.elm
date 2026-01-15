@@ -86,7 +86,7 @@ canonicalizeModule : Src.Module -> Result String Can.Module
 canonicalizeModule srcModule =
     let
         result =
-            Canonicalize.canonicalize Pkg.core Basic.testIfaces srcModule
+            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces srcModule
     in
     case Result.run result of
         ( _, Err errors ) ->
