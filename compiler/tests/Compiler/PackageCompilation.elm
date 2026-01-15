@@ -2,9 +2,9 @@ module Compiler.PackageCompilation exposing
     ( CompileResult, CompileError(..), PathwayDiscrepancy(..)
     , parseModule
     , compileModule, compileModulesInOrder
-    , monomorphize, generateMLIR, generateMLIRFromResult
+    , monomorphize, generateMLIR
     , errorToString
-    , TypeCheckTypedResult
+    , TypeCheckTypedResult, generateMLIRFromResult
     )
 
 {-| Infrastructure for compiling multiple Elm modules from source strings
@@ -53,8 +53,8 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
-import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypeEnv as TypeEnv
+import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name
@@ -65,7 +65,7 @@ import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
-import Compiler.Generate.CodeGen.MLIR as MLIR
+import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
 import Compiler.Generate.Monomorphize as Monomorphize
 import Compiler.Nitpick.PatternMatches as PatternMatches
@@ -105,7 +105,7 @@ type alias CompileResult =
     , canonical : Can.Module
     , annotations : Dict String Name.Name Can.Annotation
     , objects : Opt.LocalGraph
-    , typedObjects : (TOpt.LocalGraph)
+    , typedObjects : TOpt.LocalGraph
     , interface : I.Interface
     }
 
@@ -131,7 +131,7 @@ type PathwayDiscrepancy
         }
     | OptimizeMismatch
         { erasedResult : Result (OneOrMore.OneOrMore MainError.Error) Opt.LocalGraph
-        , typedResult : Result (OneOrMore.OneOrMore MainError.Error) (TOpt.LocalGraph)
+        , typedResult : Result (OneOrMore.OneOrMore MainError.Error) TOpt.LocalGraph
         }
 
 
@@ -461,7 +461,7 @@ optimizeTyped :
     -> TCan.NodeTypes
     -> KernelTypes.KernelTypeEnv
     -> TCan.Module
-    -> Result (OneOrMore.OneOrMore MainError.Error) (TOpt.LocalGraph)
+    -> Result (OneOrMore.OneOrMore MainError.Error) TOpt.LocalGraph
 optimizeTyped annotations nodeTypes kernelEnv tcanModule =
     Tuple.second (RResult.run (TypedOptimize.optimizeTyped annotations nodeTypes kernelEnv tcanModule))
 
@@ -570,7 +570,7 @@ monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
 
 {-| Find any entry point in the global graph (the first defined function).
 -}
-findAnyEntryPoint : Dict (List String) TOpt.Global (TOpt.Node) -> Maybe ( TOpt.Global, Can.Type )
+findAnyEntryPoint : Dict (List String) TOpt.Global TOpt.Node -> Maybe ( TOpt.Global, Can.Type )
 findAnyEntryPoint nodes =
     Dict.foldl TOpt.compareGlobal
         (\global node acc ->

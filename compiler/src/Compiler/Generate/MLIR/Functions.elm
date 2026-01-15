@@ -192,10 +192,6 @@ dumpMonoExprStructure indent expr =
 
 generateDefine : Ctx.Context -> String -> Mono.MonoExpr -> Mono.MonoType -> ( MlirOp, Ctx.Context )
 generateDefine ctx funcName expr monoType =
-    let
-        _ =
-            Debug.log ("generateDefine " ++ funcName) (dumpMonoExprStructure "" expr)
-    in
     case expr of
         Mono.MonoClosure closureInfo body _ ->
             generateClosureFunc ctx funcName closureInfo body monoType

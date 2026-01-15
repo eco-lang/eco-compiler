@@ -20,8 +20,8 @@ The test verifies that MLIR generation completes successfully and produces outpu
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypeEnv as TypeEnv
+import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name
@@ -31,7 +31,7 @@ import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
-import Compiler.Generate.CodeGen.MLIR as MLIR
+import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
 import Compiler.Generate.Monomorphize as Monomorphize
 import Compiler.Optimize.Typed.Module as TypedOptimize
@@ -54,7 +54,7 @@ expectMLIRGeneration : Src.Module -> Expect.Expectation
 expectMLIRGeneration srcModule =
     let
         canonResult =
-            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces srcModule
+            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
     in
     case Result.run canonResult of
         ( _, Err errors ) ->
@@ -145,7 +145,7 @@ runWithIdsTypeCheck modul =
 -- ============================================================================
 
 
-runTypedOptimization : Dict String Name.Name Can.Annotation -> Dict Int Int Can.Type -> Can.Module -> Result String (TOpt.LocalGraph)
+runTypedOptimization : Dict String Name.Name Can.Annotation -> Dict Int Int Can.Type -> Can.Module -> Result String TOpt.LocalGraph
 runTypedOptimization annotations exprTypes canModule =
     let
         -- Run PostSolve to fix Group B types and compute kernel env
@@ -177,7 +177,7 @@ runTypedOptimization annotations exprTypes canModule =
 
 {-| Convert a LocalGraph to a GlobalGraph for monomorphization.
 -}
-localGraphToGlobalGraph : (TOpt.LocalGraph) -> (TOpt.GlobalGraph)
+localGraphToGlobalGraph : TOpt.LocalGraph -> TOpt.GlobalGraph
 localGraphToGlobalGraph localGraph =
     TOpt.addLocalGraph localGraph TOpt.emptyGlobalGraph
 
@@ -219,7 +219,7 @@ monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
 
 {-| Find any entry point in the global graph (the first defined function).
 -}
-findAnyEntryPoint : Dict (List String) TOpt.Global (TOpt.Node) -> Maybe ( TOpt.Global, Can.Type )
+findAnyEntryPoint : Dict (List String) TOpt.Global TOpt.Node -> Maybe ( TOpt.Global, Can.Type )
 findAnyEntryPoint nodes =
     Dict.foldl TOpt.compareGlobal
         (\global node acc ->
