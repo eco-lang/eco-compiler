@@ -59,32 +59,15 @@ void buildEcoToLLVMPipeline(PassManager &pm) {
     buildEcoToEcoPipeline(pm);
 
     // Stage 2: Eco -> Standard MLIR (func/cf/arith).
-
-    // Classify joinpoints for SCF lowering eligibility.
     pm.addPass(eco::createJoinpointNormalizationPass());
-
-    // Lower eligible eco.case/joinpoint to SCF dialect.
-    // Non-eligible ops are left for the CF path in EcoToLLVM.
     pm.addPass(eco::createEcoControlFlowToSCFPass());
-
     pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
 
     // Stage 3: Eco -> LLVM Dialect.
-    // Note: SCF-to-CF conversion is now part of EcoToLLVM to ensure
-    // proper type conversion happens for SCF ops before lowering to CF.
-    // This also handles remaining eco control flow ops (case/joinpoint/jump)
-    // that weren't lowered to SCF. Also includes func-to-llvm conversion.
     pm.addPass(eco::createEcoToLLVMPass());
-
-    // Standard MLIR dialect conversions to LLVM.
-    // Note: func-to-llvm is now part of EcoToLLVM to ensure functions are
-    // converted before eco.papCreate tries to reference them.
+    pm.addPass(createSCFToControlFlowPass());
     pm.addPass(createConvertControlFlowToLLVMPass());
     pm.addPass(createArithToLLVMConversionPass());
-
-    // Clean up any leftover unrealized_conversion_cast operations.
-    // These can occur when type conversions create intermediate casts that
-    // form cancel-able pairs (A->B followed by B->A).
     pm.addPass(createReconcileUnrealizedCastsPass());
 }
 

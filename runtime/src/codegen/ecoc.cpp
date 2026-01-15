@@ -31,6 +31,7 @@
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
+#include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 
 #include "mlir/ExecutionEngine/ExecutionEngine.h"
 #include "mlir/ExecutionEngine/OptUtils.h"
@@ -152,29 +153,16 @@ static int runPipeline(ModuleOp module, bool lowerToLLVM) {
         pm.addPass(eco::createUndefinedFunctionPass());
 
         // Stage 2: Eco -> Standard MLIR (func/cf/arith).
-
-        // Classify joinpoints for SCF lowering eligibility.
         pm.addPass(eco::createJoinpointNormalizationPass());
-
-        // Lower eligible eco.case/joinpoint to SCF dialect.
-        // Non-eligible ops are left for the CF path in EcoToLLVM.
         pm.addPass(eco::createEcoControlFlowToSCFPass());
-
         pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
 
         // Stage 3: Eco -> LLVM Dialect.
-        // Run EcoToLLVM BEFORE SCF-to-CF so that scf.while loop-carried values
-        // are already i64 when CF blocks are created.
         pm.addPass(eco::createEcoToLLVMPass());
-
-        // Convert SCF to CF after EcoToLLVM.
-        // Now the scf.while ops have i64 types, so cf.br/cf.cond_br blocks
-        // will be created with i64 arguments (not !eco.value).
         pm.addPass(createSCFToControlFlowPass());
-
-        // Standard MLIR dialect conversions to LLVM.
         pm.addPass(createConvertControlFlowToLLVMPass());
         pm.addPass(createArithToLLVMConversionPass());
+        pm.addPass(createReconcileUnrealizedCastsPass());
     }
 
     if (failed(pm.run(module)))
