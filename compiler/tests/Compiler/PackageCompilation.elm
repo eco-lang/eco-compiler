@@ -61,6 +61,7 @@ import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface as I
+import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
@@ -476,16 +477,29 @@ optimizeTyped annotations nodeTypes kernelEnv tcanModule =
 This takes a CompileResult and runs the typed pathway through monomorphization,
 producing a MonoGraph that can be used for MLIR code generation.
 
+Uses extendedTestIfaces to provide type information for dependencies like JsArray.
+
 -}
 monomorphize : CompileResult -> Result CompileError Mono.MonoGraph
 monomorphize result =
+    monomorphizeWithIfaces extendedTestIfaces result
+
+
+{-| Monomorphize the typed compilation result with explicit interfaces.
+
+This takes a CompileResult and interfaces, and runs the typed pathway through
+monomorphization, producing a MonoGraph that can be used for MLIR code generation.
+
+-}
+monomorphizeWithIfaces : Dict String ModuleName.Raw I.Interface -> CompileResult -> Result CompileError Mono.MonoGraph
+monomorphizeWithIfaces ifaces result =
     let
         globalGraph =
             TOpt.addLocalGraph result.typedObjects TOpt.emptyGlobalGraph
 
-        -- Build GlobalTypeEnv from the canonical module
+        -- Build GlobalTypeEnv from both the canonical module and the interfaces
         globalTypeEnv =
-            buildGlobalTypeEnv result.canonical
+            buildGlobalTypeEnvWithIfaces ifaces result.canonical
     in
     case monomorphizeAny globalTypeEnv globalGraph of
         Ok monoGraph ->
@@ -504,6 +518,38 @@ buildGlobalTypeEnv canModule =
             TypeEnv.fromCanonical canModule
     in
     Dict.singleton ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv
+
+
+{-| Build a GlobalTypeEnv from both a canonical module and interfaces.
+
+This merges type information from interfaces (like JsArray) with the current
+module's type definitions, enabling monomorphization to look up constructor
+layouts for all referenced types.
+
+-}
+buildGlobalTypeEnvWithIfaces : Dict String ModuleName.Raw I.Interface -> Can.Module -> TypeEnv.GlobalTypeEnv
+buildGlobalTypeEnvWithIfaces ifaces canModule =
+    let
+        -- Build from interfaces first
+        ifaceTypeEnv =
+            TypeEnv.fromInterfaces ifaces
+
+        -- Build from current module
+        moduleTypeEnv =
+            TypeEnv.fromCanonical canModule
+    in
+    -- Module takes precedence over interfaces
+    Dict.insert ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv ifaceTypeEnv
+
+
+{-| Extended test interfaces including all modules needed for package compilation tests.
+
+This includes Basics, List, Maybe, JsArray, Bitwise, Tuple, String, and Char.
+
+-}
+extendedTestIfaces : Dict String ModuleName.Raw I.Interface
+extendedTestIfaces =
+    Basic.testIfaces
 
 
 {-| Monomorphize using the first defined function as entry point.
@@ -572,13 +618,14 @@ generateMLIR globalTypeEnv monoGraph =
 {-| Convenience function to generate MLIR from a CompileResult.
 
 This handles building the GlobalTypeEnv and running monomorphization internally.
+Uses extendedTestIfaces to provide type information for dependencies like JsArray.
 
 -}
 generateMLIRFromResult : CompileResult -> Result CompileError String
 generateMLIRFromResult result =
     let
         globalTypeEnv =
-            buildGlobalTypeEnv result.canonical
+            buildGlobalTypeEnvWithIfaces extendedTestIfaces result.canonical
     in
     case monomorphize result of
         Err err ->

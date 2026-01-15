@@ -272,6 +272,7 @@ type alias PendingLambda =
     , captures : List ( Name.Name, Mono.MonoType )
     , params : List ( Name.Name, Mono.MonoType )
     , body : Mono.MonoExpr
+    , siblingMappings : Dict.Dict String ( String, MlirType ) -- For mutually recursive let bindings
     }
 
 
@@ -454,8 +455,11 @@ lookupVar ctx name =
 
         Nothing ->
             let
+                keys =
+                    Dict.keys ctx.varMappings
+
                 _ =
-                    Debug.todo ("lookupVar" ++ ": " ++ ("Failed to find " ++ name))
+                    Debug.todo ("lookupVar" ++ ": " ++ ("Failed to find " ++ name ++ " in [" ++ String.join ", " keys ++ "]"))
             in
             -- Function parameters default to !eco.value
             ( "%" ++ name, ecoValue )
@@ -1794,9 +1798,18 @@ generateLambdaFunc ctx lambda =
                 )
                 lambda.params
 
+        -- Merge sibling mappings with captures and params (captures/params take precedence)
+        siblingKeys : List String
+        siblingKeys =
+            Dict.keys lambda.siblingMappings
+
+        varMappingsWithSiblings : Dict.Dict String ( String, MlirType )
+        varMappingsWithSiblings =
+            Dict.union varMappingsWithParams lambda.siblingMappings
+
         ctxWithArgs : Context
         ctxWithArgs =
-            { ctxAfterUnbox | varMappings = varMappingsWithParams }
+            { ctxAfterUnbox | varMappings = varMappingsWithSiblings }
 
         exprResult : ExprResult
         exprResult =
@@ -2056,8 +2069,64 @@ specIdToFuncName registry specId =
 -- ====== GENERATE DEFINE ======
 
 
+{-| Debug helper: dump the structure of a MonoExpr showing all let bindings and var references.
+-}
+dumpMonoExprStructure : String -> Mono.MonoExpr -> String
+dumpMonoExprStructure indent expr =
+    case expr of
+        Mono.MonoLet def body _ ->
+            let
+                defName =
+                    case def of
+                        Mono.MonoDef name _ ->
+                            "MonoDef " ++ name
+
+                        Mono.MonoTailDef name _ _ ->
+                            "MonoTailDef " ++ name
+            in
+            indent ++ "MonoLet (" ++ defName ++ ")\n" ++ dumpMonoExprStructure (indent ++ "  ") body
+
+        Mono.MonoClosure closureInfo innerBody _ ->
+            let
+                paramNames =
+                    List.map Tuple.first closureInfo.params
+
+                captureNames =
+                    List.map (\( n, _, _ ) -> n) closureInfo.captures
+            in
+            indent
+                ++ "MonoClosure (params=["
+                ++ String.join ", " paramNames
+                ++ "], captures=["
+                ++ String.join ", " captureNames
+                ++ "])\n"
+                ++ dumpMonoExprStructure (indent ++ "  ") innerBody
+
+        Mono.MonoVarLocal name _ ->
+            indent ++ "MonoVarLocal " ++ name
+
+        Mono.MonoVarGlobal _ specId _ ->
+            indent ++ "MonoVarGlobal (specId=" ++ String.fromInt specId ++ ")"
+
+        Mono.MonoCall _ func _ _ ->
+            indent ++ "MonoCall\n" ++ dumpMonoExprStructure (indent ++ "  ") func
+
+        Mono.MonoIf branches final _ ->
+            indent ++ "MonoIf (" ++ String.fromInt (List.length branches) ++ " branches)"
+
+        Mono.MonoCase _ _ _ _ _ ->
+            indent ++ "MonoCase"
+
+        _ ->
+            indent ++ "Other"
+
+
 generateDefine : Context -> String -> Mono.MonoExpr -> Mono.MonoType -> ( MlirOp, Context )
 generateDefine ctx funcName expr monoType =
+    let
+        _ =
+            Debug.log ("generateDefine " ++ funcName) (dumpMonoExprStructure "" expr)
+    in
     case expr of
         Mono.MonoClosure closureInfo body _ ->
             generateClosureFunc ctx funcName closureInfo body monoType
@@ -2646,6 +2715,18 @@ generateExpr ctx expr =
             generateIf ctx branches final
 
         Mono.MonoLet def body _ ->
+            let
+                defName =
+                    case def of
+                        Mono.MonoDef n _ ->
+                            n
+
+                        Mono.MonoTailDef n _ _ ->
+                            n
+
+                _ =
+                    Debug.log "generateExpr MonoLet" defName
+            in
             generateLet ctx def body
 
         Mono.MonoDestruct destructor body destType ->
@@ -3138,7 +3219,7 @@ generateClosure ctx closureInfo body monoType =
         -- Generate expressions and track ACTUAL SSA types, not Mono types
         ( captureOps, captureVarsWithTypes, ctx1 ) =
             List.foldl
-                (\( _, expr, _ ) ( accOps, accVars, accCtx ) ->
+                (\( capName, expr, _ ) ( accOps, accVars, accCtx ) ->
                     let
                         result : ExprResult
                         result =
@@ -3177,6 +3258,7 @@ generateClosure ctx closureInfo body monoType =
             , captures = captureTypes
             , params = closureInfo.params
             , body = body
+            , siblingMappings = ctx.varMappings -- Preserve sibling refs for mutually recursive lets
             }
     in
     if arity == 0 then
@@ -4220,6 +4302,9 @@ generateLet ctx def body =
     let
         boundNames =
             collectLetBoundNames (Mono.MonoLet def body Mono.MUnit)
+
+        _ =
+            Debug.log "generateLet" ( boundNames, Dict.keys ctx.varMappings )
 
         ctxWithPlaceholders =
             addPlaceholderMappings boundNames ctx

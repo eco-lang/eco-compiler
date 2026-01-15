@@ -459,11 +459,31 @@ jsArrayImport =
         (c2 (Src.Open noComments noComments))
 
 
+{-| Import statement for String exposing everything.
+-}
+stringImport : Src.Import
+stringImport =
+    Src.Import
+        (c1 (A.At A.zero "String"))
+        Nothing
+        (c2 (Src.Open noComments noComments))
+
+
+{-| Import statement for Char exposing everything.
+-}
+charImport : Src.Import
+charImport =
+    Src.Import
+        (c1 (A.At A.zero "Char"))
+        Nothing
+        (c2 (Src.Open noComments noComments))
+
+
 {-| Standard imports for test modules.
 -}
 standardImports : List Src.Import
 standardImports =
-    [ basicsImport, maybeImport, listImport, jsArrayImport ]
+    [ basicsImport, maybeImport, listImport, jsArrayImport, stringImport, charImport ]
 
 
 {-| Create a simple module with a single top-level definition.

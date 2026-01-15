@@ -37,7 +37,8 @@ basicsInterface =
         }
 
 
-{-| Basic unions: Bool (True/False), Int, Float, String, and Char.
+{-| Basic unions: Bool (True/False), Int, and Float.
+String and Char are in their own modules (String.String, Char.Char).
 -}
 basicsUnions : Dict String Name I.Union
 basicsUnions =
@@ -74,31 +75,11 @@ basicsUnions =
                 , numAlts = 0
                 , opts = Can.Normal
                 }
-
-        -- String type (opaque, no constructors exposed)
-        stringUnion =
-            Can.Union
-                { vars = []
-                , alts = []
-                , numAlts = 0
-                , opts = Can.Normal
-                }
-
-        -- Char type (opaque, no constructors exposed)
-        charUnion =
-            Can.Union
-                { vars = []
-                , alts = []
-                , numAlts = 0
-                , opts = Can.Normal
-                }
     in
     Dict.fromList identity
         [ ( "Bool", I.OpenUnion boolUnion )
         , ( "Int", I.ClosedUnion intUnion )
         , ( "Float", I.ClosedUnion floatUnion )
-        , ( "String", I.ClosedUnion stringUnion )
-        , ( "Char", I.ClosedUnion charUnion )
         ]
 
 
@@ -249,7 +230,51 @@ standardBinops =
         ]
 
 
-{-| Test environment with Basics, List, Maybe, JsArray, Bitwise, and Tuple module interfaces.
+{-| String module interface - exports the String type.
+-}
+stringInterface : I.Interface
+stringInterface =
+    let
+        stringUnion =
+            Can.Union
+                { vars = []
+                , alts = []
+                , numAlts = 0
+                , opts = Can.Normal
+                }
+    in
+    I.Interface
+        { home = Pkg.core
+        , values = Dict.empty
+        , unions = Dict.singleton identity "String" (I.ClosedUnion stringUnion)
+        , aliases = Dict.empty
+        , binops = Dict.empty
+        }
+
+
+{-| Char module interface - exports the Char type.
+-}
+charInterface : I.Interface
+charInterface =
+    let
+        charUnion =
+            Can.Union
+                { vars = []
+                , alts = []
+                , numAlts = 0
+                , opts = Can.Normal
+                }
+    in
+    I.Interface
+        { home = Pkg.core
+        , values = Dict.empty
+        , unions = Dict.singleton identity "Char" (I.ClosedUnion charUnion)
+        , aliases = Dict.empty
+        , binops = Dict.empty
+        }
+
+
+{-| Test environment with Basics, List, Maybe, JsArray, Bitwise, Tuple, String, and Char module interfaces.
 -}
 testIfaces : Dict String Name I.Interface
 testIfaces =
@@ -260,6 +285,8 @@ testIfaces =
         , ( "Elm.JsArray", JsArrayInterface.jsArrayInterface )
         , ( "Bitwise", BitwiseInterface.bitwiseInterface )
         , ( "Tuple", TupleInterface.tupleInterface )
+        , ( "String", stringInterface )
+        , ( "Char", charInterface )
         ]
 
 

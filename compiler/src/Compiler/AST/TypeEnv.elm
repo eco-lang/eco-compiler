@@ -1,6 +1,6 @@
 module Compiler.AST.TypeEnv exposing
     ( ModuleTypeEnv, GlobalTypeEnv
-    , fromCanonical, emptyGlobal, emptyGlobalTypeEnv, mergeGlobalTypeEnv
+    , fromCanonical, fromInterface, fromInterfaces, emptyGlobal, emptyGlobalTypeEnv, mergeGlobalTypeEnv
     , moduleTypeEnvEncoder, moduleTypeEnvDecoder
     , globalTypeEnvEncoder, globalTypeEnvDecoder
     )
@@ -36,6 +36,7 @@ import Bytes.Decode
 import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Name exposing (Name)
+import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as IO
@@ -75,6 +76,40 @@ fromCanonical (Can.Module moduleData) =
     , unions = moduleData.unions
     , aliases = moduleData.aliases
     }
+
+
+{-| Extract a type environment from an interface.
+
+Takes the module name (e.g., "Elm.JsArray") and the interface, and produces
+a ModuleTypeEnv suitable for monomorphization lookups.
+
+-}
+fromInterface : ModuleName.Raw -> I.Interface -> ModuleTypeEnv
+fromInterface moduleName (I.Interface data) =
+    { home = IO.Canonical data.home moduleName
+    , unions = Dict.map (\_ iUnion -> I.extractUnion iUnion) data.unions
+    , aliases = Dict.map (\_ iAlias -> I.extractAlias iAlias) data.aliases
+    }
+
+
+{-| Build a GlobalTypeEnv from a dictionary of interfaces.
+
+This is useful for test infrastructure where interfaces define the types
+available for monomorphization (e.g., JsArray, List, Maybe).
+
+-}
+fromInterfaces : Dict String ModuleName.Raw I.Interface -> GlobalTypeEnv
+fromInterfaces ifaces =
+    Dict.foldl compare
+        (\moduleName iface acc ->
+            let
+                moduleTypeEnv =
+                    fromInterface moduleName iface
+            in
+            Dict.insert ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv acc
+        )
+        Dict.empty
+        ifaces
 
 
 {-| Empty global type environment.

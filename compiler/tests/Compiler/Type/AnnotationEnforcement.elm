@@ -141,8 +141,31 @@ canErrorToString error =
                 ++ (maybeModule |> Maybe.map (\m -> m ++ ".") |> Maybe.withDefault "")
                 ++ name
 
+        CanError.NotFoundType _ maybeModule name _ ->
+            "NotFoundType: "
+                ++ (maybeModule |> Maybe.map (\m -> m ++ ".") |> Maybe.withDefault "")
+                ++ name
+
+        CanError.ImportNotFound _ name _ ->
+            "ImportNotFound: " ++ name
+
+        CanError.ImportExposingNotFound _ _ name _ ->
+            "ImportExposingNotFound: " ++ name
+
+        CanError.Shadowing name _ _ ->
+            "Shadowing: " ++ name
+
+        CanError.BadArity _ _ name expected actual ->
+            "BadArity: " ++ name ++ " expected " ++ String.fromInt expected ++ " got " ++ String.fromInt actual
+
+        CanError.AmbiguousType _ _ name _ _ ->
+            "AmbiguousType: " ++ name
+
+        CanError.AmbiguousVar _ _ name _ _ ->
+            "AmbiguousVar: " ++ name
+
         _ ->
-            "Other canonicalization error"
+            Debug.toString error
 
 
 {-| Convert a region to a string.
