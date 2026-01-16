@@ -12,6 +12,7 @@ module Compiler.AST.SourceBuilder exposing
     , caseExpr
     , charFuzzer
     , chrExpr
+    , ctorExpr
     , define
     , destruct
       -- Pattern builders
@@ -181,6 +182,13 @@ boolExpr b =
 varExpr : Name -> Src.Expr
 varExpr name =
     A.At A.zero (Src.Var Src.LowVar name)
+
+
+{-| Create a constructor expression (e.g., Just, Nothing, custom type constructors).
+-}
+ctorExpr : Name -> Src.Expr
+ctorExpr name =
+    A.At A.zero (Src.Var Src.CapVar name)
 
 
 {-| Create a qualified variable reference (e.g., Basics.abs, List.map).

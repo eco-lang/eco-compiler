@@ -7,7 +7,7 @@ This module combines all invariant tests from different phases:
   - Canonicalization (CANON_001-006)
   - Type checking (TYPE_001-006)
   - Typed optimization (TOPT_001-005)
-  - Monomorphization (MONO_001-014)
+  - Monomorphization (MONO_001-015)
   - Post-solve (POST_001-004)
 
 See design_docs/invariant-test-logic.md for the full list of invariants.
@@ -29,6 +29,10 @@ import Compiler.Generate.MonoNumericResolutionTest as MonoNumericResolutionTest
 import Compiler.Generate.MonoTypeShapeTest as MonoTypeShapeTest
 import Compiler.Generate.MonomorphizeTest as MonomorphizeTest
 import Compiler.Generate.TypedOptimizedMonomorphizeTest as TypedOptimizedMonomorphizeTest
+import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
+import Compiler.SpecializeConstructorTests as SpecializeConstructorTests
+import Compiler.SpecializeCycleTests as SpecializeCycleTests
+import Compiler.SpecializeExprTests as SpecializeExprTests
 import Compiler.Optimize.AnnotationsPreservedTest as AnnotationsPreservedTest
 import Compiler.Optimize.DeciderExhaustiveTest as DeciderExhaustiveTest
 import Compiler.Optimize.FunctionTypeEncodeTest as FunctionTypeEncodeTest
@@ -113,4 +117,10 @@ monomorphizationInvariants =
         , MonoFunctionArityTest.suite -- MONO_012
         , MonomorphizeTest.suite -- General monomorphization tests
         , TypedOptimizedMonomorphizeTest.suite -- Integration tests
+
+        -- Specialize.elm coverage tests
+        , SpecializeCycleTests.suite -- Cycle detection and mutual recursion
+        , SpecializeConstructorTests.suite -- Constructor specialization
+        , SpecializeAccessorTests.suite -- MONO_015: Accessor extension variable unification
+        , SpecializeExprTests.suite -- Expression branch coverage
         ]
