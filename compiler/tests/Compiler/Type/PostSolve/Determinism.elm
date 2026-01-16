@@ -14,16 +14,17 @@ produces identical results. This is important for:
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.Generate.TypedOptimizedMonomorphize as TOMono
 import Expect
 
 
-{-| Verify that type inference produces deterministic results.
-
-Uses the existing typed optimization and monomorphization pipeline.
-Successful compilation implies deterministic type inference.
-
+{-| Verify that PostSolve is deterministic for Group B and kernels.
 -}
 expectDeterministicTypes : Src.Module -> Expect.Expectation
 expectDeterministicTypes srcModule =
-    TOMono.expectMonomorphization srcModule
+    -- TODO_TEST_LOGIC
+    -- Given the same canonical module and initial solver-produced NodeTypes:
+    --   * Run PostSolve multiple times and on different machines/build variants.
+    --   * Assert the resulting fixed NodeTypes and KernelTypeEnv are byte-for-byte identical
+    --     (or structurally equal).
+    -- Oracle: No nondeterminism in PostSolve outputs; hashed summaries remain stable across runs.
+    Debug.todo "PostSolve is deterministic for Group B and kernels"

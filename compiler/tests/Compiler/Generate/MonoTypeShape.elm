@@ -14,16 +14,19 @@ that monomorphization produces valid MonoTypes.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.Generate.TypedOptimizedMonomorphize as TOMono
 import Expect
 
 
 {-| MONO_001: Verify all MonoTypes are fully elaborated.
-
-Uses the existing typed optimization and monomorphization pipeline.
-Successful monomorphization implies MonoTypes are properly elaborated.
-
 -}
 expectMonoTypesFullyElaborated : Src.Module -> Expect.Expectation
 expectMonoTypesFullyElaborated srcModule =
-    TOMono.expectMonomorphization srcModule
+    -- TODO_TEST_LOGIC
+    -- Inspect MonoTypes in the monomorphized IR:
+    --   * Confirm that source-level types are represented as MInt, MFloat, MList, MTuple,
+    --     MRecord, MCustom, or MFunction.
+    --   * Confirm the only remaining generic vars are MVar with an attached Constraint
+    --     (CEcoValue or CNumber, etc.).
+    -- Oracle: No other kind of partially inferred or unspecialized type representation
+    -- survives at this phase.
+    Debug.todo "MonoType encodes fully elaborated runtime shapes"

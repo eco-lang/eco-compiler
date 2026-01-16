@@ -17,27 +17,30 @@ all expressions carry types.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.Generate.TypedOptimizedMonomorphize as TOMono
 import Expect
 
 
 {-| TOPT_001: Verify all expressions have types.
-
-Uses the existing typed optimization and monomorphization pipeline.
-Successful monomorphization implies all expressions carry valid types.
-
 -}
 expectAllExprsHaveTypes : Src.Module -> Expect.Expectation
 expectAllExprsHaveTypes srcModule =
-    TOMono.expectMonomorphization srcModule
+    -- TODO_TEST_LOGIC
+    -- For each TypedOptimized.Expr variant:
+    --   * Assert the last constructor argument is a Can.Type.
+    --   * Implement typeOf via pattern-match, and test that for all expressions (after optimization),
+    --     typeOf returns that last field.
+    -- Oracle: No expression constructor missing a trailing type; typeOf is total and returns the stored type.
+    Debug.todo "TypedOptimized expressions always carry types"
 
 
 {-| TOPT_001: Verify all types are well-formed.
-
-Uses the existing typed optimization and monomorphization pipeline.
-Successful monomorphization implies all types are well-formed.
-
 -}
 expectTypesWellFormed : Src.Module -> Expect.Expectation
 expectTypesWellFormed srcModule =
-    TOMono.expectMonomorphization srcModule
+    -- TODO_TEST_LOGIC
+    -- For each TypedOptimized.Expr, verify the attached Can.Type is well-formed:
+    --   * No dangling type variable references.
+    --   * All type constructors refer to defined types.
+    --   * Type arities match definitions.
+    -- Oracle: All types pass well-formedness checks.
+    Debug.todo "TypedOptimized types are well-formed"

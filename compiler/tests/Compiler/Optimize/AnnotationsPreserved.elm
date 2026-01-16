@@ -17,16 +17,18 @@ annotations are preserved through optimization.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.Generate.TypedOptimizedMonomorphize as TOMono
 import Expect
 
 
 {-| Verify that all top-level annotations are preserved in the LocalGraphData.
-
-Uses the existing typed optimization and monomorphization pipeline.
-Successful monomorphization implies annotations are properly preserved.
-
 -}
 expectAnnotationsPreserved : Src.Module -> Expect.Expectation
 expectAnnotationsPreserved srcModule =
-    TOMono.expectMonomorphization srcModule
+    -- TODO_TEST_LOGIC
+    -- For each top-level definition:
+    --   * Compare its type scheme from type checking with the corresponding entry
+    --     in Annotations inside LocalGraphData.
+    --   * Assert every top-level name present in the module exists in the Annotations dict
+    --     with identical scheme.
+    -- Oracle: No missing or altered top-level schemes; later passes never need to re-run inference.
+    Debug.todo "Top-level annotations preserved in local graph"

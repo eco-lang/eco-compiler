@@ -16,16 +16,19 @@ type caching works correctly.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.Generate.TypedOptimizedMonomorphize as TOMono
 import Expect
 
 
 {-| Verify that cached type info is consistent.
-
-Uses the existing typed optimization and monomorphization pipeline.
-Successful compilation implies type caching is correct.
-
 -}
 expectTypeInfoCached : Src.Module -> Expect.Expectation
 expectTypeInfoCached srcModule =
-    TOMono.expectMonomorphization srcModule
+    -- TODO_TEST_LOGIC
+    -- For nodes VarForeign, VarCtor, VarDebug, VarOperator, and Binop, and patterns PCtor / PatternCtorArg:
+    --   * Assert their cached Can.Annotation / Can.Type fields are present and consistent
+    --     with the canonical type environment.
+    --   * Randomly pick such nodes, recompute types via interface lookup, and compare
+    --     with cached types.
+    -- Oracle: No mismatch between cached types and environment-derived types;
+    -- missing caches fail the test.
+    Debug.todo "Cached type info for special vars and patterns"

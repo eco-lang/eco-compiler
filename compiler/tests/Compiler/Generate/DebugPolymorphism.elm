@@ -17,16 +17,17 @@ debug kernel polymorphism is correctly handled.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.Generate.TypedOptimizedMonomorphize as TOMono
 import Expect
 
 
-{-| Verify that Debug.* functions correctly handle polymorphic values.
-
-Uses the existing typed optimization and monomorphization pipeline.
-Successful monomorphization implies debug polymorphism is handled correctly.
-
+{-| Verify that Debug kernel calls remain polymorphic with CEcoValue.
 -}
 expectDebugPolymorphismResolved : Src.Module -> Expect.Expectation
 expectDebugPolymorphismResolved srcModule =
-    TOMono.expectMonomorphization srcModule
+    -- TODO_TEST_LOGIC
+    -- Identify polymorphic Debug kernel calls:
+    --   * Check that monomorphization applies an empty substitution to keep type variables as MVar.
+    --   * Assert those MVars always carry CEcoValue constraint and do not show up in
+    --     layout-influencing positions.
+    -- Oracle: Debug calls retain polymorphic MonoTypes; only CEcoValue constraints appear.
+    Debug.todo "Debug kernel calls remain polymorphic with CEcoValue"

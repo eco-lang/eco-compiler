@@ -16,16 +16,19 @@ rank polymorphism is correctly handled.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.Generate.TypedOptimizedMonomorphize as TOMono
 import Expect
 
 
-{-| Verify that rank polymorphism is correctly handled.
-
-Uses the existing typed optimization and monomorphization pipeline.
-Successful compilation implies rank polymorphism is handled correctly.
-
+{-| Verify that rank-based let-polymorphism is enforced.
 -}
 expectRankPolymorphismValid : Src.Module -> Expect.Expectation
 expectRankPolymorphismValid srcModule =
-    TOMono.expectMonomorphization srcModule
+    -- TODO_TEST_LOGIC
+    -- Construct nested lets that should or should not generalize (e.g., classic ML rank examples,
+    -- value restriction style cases). Inspect rank pools:
+    --   * Ensure only variables at the correct rank are quantified.
+    --   * Younger variables are frozen or promoted according to rules.
+    --   * Unsound polymorphism across scopes does not appear in inferred schemes.
+    -- Oracle: Resulting type schemes match expected rank-based polymorphism;
+    -- attempts to exploit unsound generalization fail.
+    Debug.todo "Rank-based let-polymorphism is enforced"

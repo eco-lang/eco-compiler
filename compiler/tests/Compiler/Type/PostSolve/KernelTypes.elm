@@ -10,16 +10,19 @@ List, etc. are correctly resolved and consistent throughout the module.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.Generate.TypedOptimizedMonomorphize as TOMono
 import Expect
 
 
-{-| Verify that kernel types are correctly resolved.
-
-Uses the existing typed optimization and monomorphization pipeline.
-Successful compilation implies kernel types are correctly resolved.
-
+{-| Verify that kernel function types are inferred from usage.
 -}
 expectKernelTypesValid : Src.Module -> Expect.Expectation
 expectKernelTypesValid srcModule =
-    TOMono.expectMonomorphization srcModule
+    -- TODO_TEST_LOGIC
+    -- Build modules with kernel alias definitions referencing VarKernel and various usage forms
+    -- (calls, ctors, binops, case branches). Run PostSolve and:
+    --   * Verify the seeding from aliases.
+    --   * Trace first-usage-wins scheme-to-type unification and confirm the resulting
+    --     KernelTypeEnv matches the observed usage patterns.
+    -- Oracle: Each (home, name) kernel pair has a consistent canonical function type;
+    -- conflicting usages surface as bugs, not silent merges.
+    Debug.todo "Kernel function types inferred from usage"

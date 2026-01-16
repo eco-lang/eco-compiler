@@ -16,16 +16,19 @@ import resolution works correctly.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.Generate.TypedOptimizedMonomorphize as TOMono
 import Expect
 
 
 {-| Verify that all imports are properly resolved.
-
-Uses the existing typed optimization and monomorphization pipeline.
-Successful compilation implies all imports are correctly resolved.
-
 -}
 expectImportsResolved : Src.Module -> Expect.Expectation
 expectImportsResolved srcModule =
-    TOMono.expectMonomorphization srcModule
+    -- TODO_TEST_LOGIC
+    -- Build interface maps with/without specific modules and exposed symbols.
+    -- Run Foreign.createInitialEnv and canonicalization; verify that:
+    --   * Valid imports resolve and populate the environment.
+    --   * Missing modules yield ImportNotFound.
+    --   * Missing exposed values/types/ctors/operators yield ImportExposingNotFound.
+    --   * Ambiguous imports between multiple modules produce the corresponding Ambiguous* errors.
+    -- Oracle: Every import reference either resolves uniquely or yields the exact expected error kind.
+    Debug.todo "Imports resolve to valid interfaces"

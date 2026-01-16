@@ -16,16 +16,19 @@ CEcoValue layout is correctly computed.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.Generate.TypedOptimizedMonomorphize as TOMono
 import Expect
 
 
-{-| Verify that CEcoValue layouts are consistent with MonoTypes.
-
-Uses the existing typed optimization and monomorphization pipeline.
-Successful monomorphization implies CEcoValue layouts are correct.
-
+{-| Verify that CEcoValue MVars do not affect layout.
 -}
 expectValidCEcoValueLayout : Src.Module -> Expect.Expectation
 expectValidCEcoValueLayout srcModule =
-    TOMono.expectMonomorphization srcModule
+    -- TODO_TEST_LOGIC
+    -- For every MVar with CEcoValue:
+    --   * Check that its usage appears only in positions that do not impact layout/calling convention
+    --     (e.g., ECO-only metadata).
+    --   * Assert that record/tuple/ctor layouts and MLIR signatures are identical under any
+    --     substitution of concrete source types for those vars.
+    -- Oracle: Changing CEcoValue type arguments does not change runtime layout or calling convention;
+    -- tests via differential substitution.
+    Debug.todo "CEcoValue MVars do not affect layout"

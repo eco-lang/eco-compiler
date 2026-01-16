@@ -15,27 +15,29 @@ polymorphism is properly resolved before code generation.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.Generate.TypedOptimizedMonomorphize as TOMono
 import Expect
 
 
 {-| MONO_002: Verify no CNumber MVars remain at MLIR codegen entry.
-
-Uses the existing typed optimization and monomorphization pipeline.
-Successful monomorphization implies all numeric polymorphism is resolved.
-
 -}
 expectNoNumericPolymorphism : Src.Module -> Expect.Expectation
 expectNoNumericPolymorphism srcModule =
-    TOMono.expectMonomorphization srcModule
+    -- TODO_TEST_LOGIC
+    -- At the boundary to MLIR generation, traverse all reachable MonoTypes and assert:
+    --   * No MVar has a CNumber constraint.
+    --   * Any such occurrence is reported as a compiler bug in tests.
+    -- Oracle: All numeric polymorphism is fully resolved; remaining MVars are non-numeric only.
+    Debug.todo "No CNumber MVar at MLIR codegen entry"
 
 
 {-| MONO_008: Verify primitive numeric types are fixed in all calls.
-
-Uses the existing typed optimization and monomorphization pipeline.
-Successful monomorphization implies numeric types are concrete at call sites.
-
 -}
 expectNumericTypesResolved : Src.Module -> Expect.Expectation
 expectNumericTypesResolved srcModule =
-    TOMono.expectMonomorphization srcModule
+    -- TODO_TEST_LOGIC
+    -- At each specialized function call:
+    --   * Unify the canonical function type with monomorphic argument MonoTypes.
+    --   * Assert all primitive numeric types are concretely MInt or MFloat.
+    --   * If a mismatch is detected, classify as a monomorphization bug and treat as test failure.
+    -- Oracle: No unresolved or inconsistent numeric type at call sites.
+    Debug.todo "Primitive numeric types are fixed in calls"
