@@ -1,4 +1,12 @@
-module Compiler.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
+module Compiler.Generate.TypedOptimizedMonomorphize exposing
+    ( expectMonomorphization
+    , runToMonoGraph
+    , runToTypedOptimized
+    , runToPostSolve
+    , PostSolveResult
+    , TypeCheckResult
+    , TypedOptResult
+    )
 
 {-| Test infrastructure for verifying that TypedOptimized code can be monomorphized.
 
@@ -34,8 +42,9 @@ import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.Monomorphize as Monomorphize
+import Compiler.Optimize.Typed.KernelTypes as KernelTypes
 import Compiler.Optimize.Typed.Module as TypedOptimize
-import Compiler.Reporting.Result as Result
+import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
@@ -56,7 +65,7 @@ expectMonomorphization srcModule =
         canonResult =
             Canonicalize.canonicalize ("eco", "example") Basic.testIfaces srcModule
     in
-    case Result.run canonResult of
+    case RResult.run canonResult of
         ( _, Err errors ) ->
             let
                 errorList =
@@ -156,7 +165,7 @@ runTypedOptimization annotations exprTypes canModule =
         typedModule =
             TCan.fromCanonical canModule fixedNodeTypes
     in
-    case Result.run (TypedOptimize.optimizeTyped annotations fixedNodeTypes kernelEnv typedModule) of
+    case RResult.run (TypedOptimize.optimizeTyped annotations fixedNodeTypes kernelEnv typedModule) of
         ( _, Ok graph ) ->
             Ok graph
 
@@ -275,3 +284,120 @@ verifyMonoGraph (Mono.MonoGraph data) =
 
             else
                 Expect.pass
+
+
+
+-- ============================================================================
+-- PIPELINE HELPERS FOR INVARIANT TESTING
+-- ============================================================================
+
+
+{-| Result of type checking, containing annotations and node types.
+-}
+type alias TypeCheckResult =
+    { annotations : Dict String Name.Name Can.Annotation
+    , nodeTypes : Dict Int Int Can.Type
+    }
+
+
+{-| Result of PostSolve, containing fixed node types, kernel env, and canonical module.
+-}
+type alias PostSolveResult =
+    { nodeTypes : PostSolve.NodeTypes
+    , kernelEnv : KernelTypes.KernelTypeEnv
+    , canonical : Can.Module
+    , annotations : Dict String Name.Name Can.Annotation
+    }
+
+
+{-| Run the pipeline and return the MonoGraph for invariant testing.
+-}
+runToMonoGraph : Src.Module -> Result String Mono.MonoGraph
+runToMonoGraph srcModule =
+    case runToTypedOptimized srcModule of
+        Err msg ->
+            Err msg
+
+        Ok { localGraph, canonical } ->
+            let
+                globalGraph =
+                    localGraphToGlobalGraph localGraph
+
+                globalTypeEnv =
+                    buildGlobalTypeEnv canonical
+            in
+            monomorphizeAny globalTypeEnv globalGraph
+
+
+{-| Result of typed optimization pipeline.
+-}
+type alias TypedOptResult =
+    { localGraph : TOpt.LocalGraph
+    , canonical : Can.Module
+    , nodeTypes : PostSolve.NodeTypes
+    , annotations : Dict String Name.Name Can.Annotation
+    }
+
+
+{-| Run the pipeline through typed optimization and return the LocalGraph.
+-}
+runToTypedOptimized : Src.Module -> Result String TypedOptResult
+runToTypedOptimized srcModule =
+    case runToPostSolve srcModule of
+        Err msg ->
+            Err msg
+
+        Ok postSolveResult ->
+            let
+                typedModule =
+                    TCan.fromCanonical postSolveResult.canonical postSolveResult.nodeTypes
+            in
+            case RResult.run (TypedOptimize.optimizeTyped postSolveResult.annotations postSolveResult.nodeTypes postSolveResult.kernelEnv typedModule) of
+                ( _, Ok graph ) ->
+                    Ok
+                        { localGraph = graph
+                        , canonical = postSolveResult.canonical
+                        , nodeTypes = postSolveResult.nodeTypes
+                        , annotations = postSolveResult.annotations
+                        }
+
+                ( _, Err _ ) ->
+                    Err "Typed optimization produced an error"
+
+
+{-| Run the pipeline through PostSolve and return the results.
+-}
+runToPostSolve : Src.Module -> Result String PostSolveResult
+runToPostSolve srcModule =
+    let
+        canonResult =
+            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces srcModule
+    in
+    case RResult.run canonResult of
+        ( _, Err errors ) ->
+            let
+                errorCount =
+                    OneOrMore.destruct (::) errors |> List.length
+            in
+            Err ("Canonicalization failed with " ++ String.fromInt errorCount ++ " error(s)")
+
+        ( _, Ok canModule ) ->
+            let
+                typeCheckResult =
+                    IO.unsafePerformIO (runWithIdsTypeCheck canModule)
+            in
+            case typeCheckResult of
+                Err errCount ->
+                    Err ("Type checking failed with " ++ String.fromInt errCount ++ " error(s)")
+
+                Ok typedData ->
+                    let
+                        postSolveResult =
+                            PostSolve.postSolve typedData.annotations canModule typedData.nodeTypes
+                    in
+                    Ok
+                        { nodeTypes = postSolveResult.nodeTypes
+                        , kernelEnv = postSolveResult.kernelEnv
+                        , canonical = canModule
+                        , annotations = typedData.annotations
+                        }

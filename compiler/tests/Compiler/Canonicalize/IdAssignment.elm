@@ -136,7 +136,6 @@ expectUniqueIds modul =
 findDuplicates : List Int -> List Int
 findDuplicates ids =
     let
-        countOccurrences : List Int -> Dict Int Int Int
         countOccurrences =
             List.foldl
                 (\id acc ->

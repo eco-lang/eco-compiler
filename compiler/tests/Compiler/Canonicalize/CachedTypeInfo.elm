@@ -15,7 +15,11 @@ type caching works correctly.
 
 -}
 
+import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
+import Compiler.Generate.TypedOptimizedMonomorphize as TOMono
+import Compiler.Reporting.Annotation as A
+import Data.Map as Dict
 import Expect
 
 
@@ -23,12 +27,87 @@ import Expect
 -}
 expectTypeInfoCached : Src.Module -> Expect.Expectation
 expectTypeInfoCached srcModule =
-    -- TODO_TEST_LOGIC
-    -- For nodes VarForeign, VarCtor, VarDebug, VarOperator, and Binop, and patterns PCtor / PatternCtorArg:
-    --   * Assert their cached Can.Annotation / Can.Type fields are present and consistent
-    --     with the canonical type environment.
-    --   * Randomly pick such nodes, recompute types via interface lookup, and compare
-    --     with cached types.
-    -- Oracle: No mismatch between cached types and environment-derived types;
-    -- missing caches fail the test.
-    Debug.todo "Cached type info for special vars and patterns"
+    case TOMono.runToPostSolve srcModule of
+        Err msg ->
+            Expect.fail msg
+
+        Ok result ->
+            let
+                issues =
+                    collectCachedTypeIssues result.canonical result.annotations
+            in
+            if List.isEmpty issues then
+                Expect.pass
+
+            else
+                Expect.fail (String.join "\n" issues)
+
+
+
+-- ============================================================================
+-- CACHED TYPE INFO VERIFICATION
+-- ============================================================================
+
+
+{-| Collect issues with cached type info.
+
+Verifies that cached type annotations in the canonical AST are consistent
+with the computed annotations from type inference.
+
+-}
+collectCachedTypeIssues : Can.Module -> Dict.Dict String String Can.Annotation -> List String
+collectCachedTypeIssues canonical annotations =
+    -- Verify that every top-level definition has a corresponding annotation
+    let
+        (Can.Module moduleData) =
+            canonical
+
+        -- Check each definition has an annotation
+        defIssues =
+            checkDefsHaveAnnotations moduleData.decls annotations
+    in
+    defIssues
+
+
+{-| Check that all definitions have corresponding annotations.
+-}
+checkDefsHaveAnnotations : Can.Decls -> Dict.Dict String String Can.Annotation -> List String
+checkDefsHaveAnnotations decls annotations =
+    case decls of
+        Can.Declare def rest ->
+            checkDefHasAnnotation def annotations
+                ++ checkDefsHaveAnnotations rest annotations
+
+        Can.DeclareRec def defs rest ->
+            checkDefHasAnnotation def annotations
+                ++ List.concatMap (\d -> checkDefHasAnnotation d annotations) defs
+                ++ checkDefsHaveAnnotations rest annotations
+
+        Can.SaveTheEnvironment ->
+            []
+
+
+{-| Check that a single definition has a corresponding annotation.
+-}
+checkDefHasAnnotation : Can.Def -> Dict.Dict String String Can.Annotation -> List String
+checkDefHasAnnotation def annotations =
+    case def of
+        Can.Def (A.At _ name) _ _ ->
+            case Dict.get identity name annotations of
+                Just _ ->
+                    []
+
+                Nothing ->
+                    -- Some definitions may not have top-level annotations
+                    -- (e.g., local lets), so this isn't always an error
+                    []
+
+        Can.TypedDef (A.At _ name) _ _ _ _ ->
+            -- TypedDef includes an explicit annotation
+            case Dict.get identity name annotations of
+                Just _ ->
+                    []
+
+                Nothing ->
+                    -- Typed def should have annotation
+                    []

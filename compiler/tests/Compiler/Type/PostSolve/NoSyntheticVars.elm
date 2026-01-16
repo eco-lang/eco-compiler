@@ -12,7 +12,10 @@ remain in the final types. All type variables should be either:
 
 -}
 
+import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
+import Compiler.Generate.TypedOptimizedMonomorphize as TOMono
+import Data.Map as Dict
 import Expect
 
 
@@ -20,11 +23,117 @@ import Expect
 -}
 expectNoSyntheticVars : Src.Module -> Expect.Expectation
 expectNoSyntheticVars srcModule =
-    -- TODO_TEST_LOGIC
-    -- Scan NodeTypes for non-kernel expressions after PostSolve:
-    --   * Assert all types contain no unconstrained synthetic vars.
-    --   * For any placeholder kind that remain by design (kernel-related), assert they're
-    --     limited to kernel expressions.
-    -- Oracle: NodeTypes is fully concrete for non-kernel expressions;
-    -- any remaining synthetic variables are flagged as a violation.
-    Debug.todo "No unconstrained synthetic variables remain after PostSolve"
+    case TOMono.runToPostSolve srcModule of
+        Err msg ->
+            Expect.fail msg
+
+        Ok result ->
+            let
+                issues =
+                    collectSyntheticVarIssues result.nodeTypes
+            in
+            if List.isEmpty issues then
+                Expect.pass
+
+            else
+                Expect.fail (String.join "\n" issues)
+
+
+
+-- ============================================================================
+-- SYNTHETIC VARIABLE VERIFICATION
+-- ============================================================================
+
+
+{-| Collect synthetic variable issues from node types.
+-}
+collectSyntheticVarIssues : Dict.Dict Int Int Can.Type -> List String
+collectSyntheticVarIssues nodeTypes =
+    Dict.foldl compare
+        (\nodeId canType acc ->
+            let
+                context =
+                    "NodeId " ++ String.fromInt nodeId
+            in
+            checkForSyntheticVars context canType ++ acc
+        )
+        []
+        nodeTypes
+
+
+{-| Check a type for synthetic variables.
+
+Synthetic variables are unification variables that should be resolved
+by PostSolve. They typically have:
+
+  - Numeric names
+  - Special prefixes from the solver
+
+-}
+checkForSyntheticVars : String -> Can.Type -> List String
+checkForSyntheticVars context canType =
+    case canType of
+        Can.TVar name ->
+            if isSyntheticVariable name then
+                [ context ++ ": Found unconstrained synthetic variable '" ++ name ++ "'" ]
+
+            else
+                []
+
+        Can.TLambda argType resultType ->
+            checkForSyntheticVars context argType
+                ++ checkForSyntheticVars context resultType
+
+        Can.TType _ _ args ->
+            List.concatMap (checkForSyntheticVars context) args
+
+        Can.TRecord fields _ ->
+            Dict.foldl compare
+                (\_ (Can.FieldType _ fieldType) acc ->
+                    checkForSyntheticVars context fieldType ++ acc
+                )
+                []
+                fields
+
+        Can.TUnit ->
+            []
+
+        Can.TTuple a b cs ->
+            checkForSyntheticVars context a
+                ++ checkForSyntheticVars context b
+                ++ List.concatMap (checkForSyntheticVars context) cs
+
+        Can.TAlias _ _ args aliasedType ->
+            List.concatMap (\( _, argType ) -> checkForSyntheticVars context argType) args
+                ++ (case aliasedType of
+                        Can.Holey t ->
+                            checkForSyntheticVars context t
+
+                        Can.Filled t ->
+                            checkForSyntheticVars context t
+                   )
+
+
+{-| Check if a type variable name indicates a synthetic variable.
+
+Synthetic variables from unification typically:
+
+  - Have purely numeric names (e.g., "0", "1", "23")
+  - Have special prefixes like "_" or internal markers
+
+User-declared type variables use lowercase letters (a, b, msg, etc.)
+
+-}
+isSyntheticVariable : String -> Bool
+isSyntheticVariable name =
+    case String.uncons name of
+        Just ( first, rest ) ->
+            -- Synthetic variables often:
+            -- 1. Start with digits
+            -- 2. Are purely numeric
+            -- 3. Start with underscore (internal)
+            Char.isDigit first || (first == '_' && not (String.isEmpty rest))
+
+        Nothing ->
+            -- Empty name is suspicious
+            True
