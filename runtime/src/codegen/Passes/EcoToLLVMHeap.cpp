@@ -136,7 +136,6 @@ struct AllocateOpLowering : public OpConversionPattern<AllocateOp> {
         auto loc = op.getLoc();
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
-        auto i64Ty = IntegerType::get(ctx, 64);
 
         auto func = runtime.getOrCreateAllocate(rewriter);
         auto size = adaptor.getSize();

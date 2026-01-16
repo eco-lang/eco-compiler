@@ -1627,10 +1627,6 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         // For EcoValue constraint, it handles any heap type.
         print_value(value, depth);
         break;
-
-    default:
-        output_format("[unknown_kind:%d] 0x%llx", (int)typeInfo->kind, (unsigned long long)value);
-        break;
     }
 }
 

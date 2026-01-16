@@ -61,8 +61,6 @@ struct IntDivOpLowering : public OpConversionPattern<IntDivOp> {
     matchAndRewrite(IntDivOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto *ctx = rewriter.getContext();
-        auto i64Ty = IntegerType::get(ctx, 64);
 
         Value lhs = adaptor.getLhs();
         Value rhs = adaptor.getRhs();
@@ -89,8 +87,6 @@ struct IntModByOpLowering : public OpConversionPattern<IntModByOp> {
     matchAndRewrite(IntModByOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto *ctx = rewriter.getContext();
-        auto i64Ty = IntegerType::get(ctx, 64);
 
         Value modulus = adaptor.getModulus();
         Value x = adaptor.getX();
@@ -201,8 +197,6 @@ struct IntPowOpLowering : public OpConversionPattern<IntPowOp> {
     matchAndRewrite(IntPowOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto *ctx = rewriter.getContext();
-        auto i64Ty = IntegerType::get(ctx, 64);
 
         auto func = runtime.getOrCreateIntPow(rewriter);
         auto call = rewriter.create<LLVM::CallOp>(loc, func,
@@ -781,8 +775,6 @@ struct IntComplementOpLowering : public OpConversionPattern<IntComplementOp> {
     matchAndRewrite(IntComplementOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto *ctx = rewriter.getContext();
-        auto i64Ty = IntegerType::get(ctx, 64);
 
         // complement(x) = x XOR -1 (all bits set)
         auto allOnes = rewriter.create<arith::ConstantIntOp>(loc, -1, /*width=*/64);
@@ -837,8 +829,6 @@ struct BoolNotOpLowering : public OpConversionPattern<BoolNotOp> {
     matchAndRewrite(BoolNotOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto *ctx = rewriter.getContext();
-        auto i1Ty = IntegerType::get(ctx, 1);
         auto one = rewriter.create<arith::ConstantIntOp>(loc, 1, /*width=*/1);
         rewriter.replaceOpWithNewOp<arith::XOrIOp>(op, adaptor.getValue(), one);
         return success();
