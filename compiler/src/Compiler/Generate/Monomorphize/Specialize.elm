@@ -68,6 +68,19 @@ import Utils.Crash
 
 
 
+-- ========== INTERNAL TYPES ==========
+
+
+{-| A processed argument that might be pending accessor specialization.
+Accessors need special handling because they must be specialized AFTER
+call-site type unification to receive the fully-resolved record type.
+-}
+type ProcessedArg
+    = ResolvedArg Mono.MonoExpr
+    | PendingAccessor A.Region Name Can.Type
+
+
+
 -- ========== NODE SPECIALIZATION ==========
 
 
@@ -784,35 +797,40 @@ specializeExpr expr subst state =
             ( Mono.MonoClosure closureInfo monoBody monoType, stateAfter )
 
         TOpt.Call region func args canType ->
+            -- Two-phase argument processing: defer accessor specialization until after
+            -- call-site type unification, so accessors receive fully-resolved record types.
             let
-                ( monoArgs, state1 ) =
-                    specializeExprs args subst state
+                ( processedArgs, argTypes, state1 ) =
+                    processCallArgs args subst state
             in
             case func of
                 TOpt.VarGlobal funcRegion global funcCanType ->
                     let
-                        argTypes =
-                            List.map Mono.typeOf monoArgs
-
                         callSubst =
                             TypeSubst.unifyFuncCall funcCanType argTypes canType subst
 
-                        resultMonoType =
-                            TypeSubst.applySubst callSubst canType
-
                         funcMonoType =
                             TypeSubst.applySubst callSubst funcCanType
+
+                        paramTypes =
+                            TypeSubst.extractParamTypes funcMonoType
+
+                        ( monoArgs, state2 ) =
+                            resolveProcessedArgs processedArgs paramTypes callSubst state1
+
+                        resultMonoType =
+                            TypeSubst.applySubst callSubst canType
 
                         monoGlobal =
                             toptGlobalToMono global
 
                         ( specId, newRegistry ) =
-                            Mono.getOrCreateSpecId monoGlobal funcMonoType Nothing state1.registry
+                            Mono.getOrCreateSpecId monoGlobal funcMonoType Nothing state2.registry
 
                         newState =
-                            { state1
+                            { state2
                                 | registry = newRegistry
-                                , worklist = SpecializeGlobal monoGlobal funcMonoType Nothing :: state1.worklist
+                                , worklist = SpecializeGlobal monoGlobal funcMonoType Nothing :: state2.worklist
                             }
 
                         monoFunc =
@@ -822,51 +840,82 @@ specializeExpr expr subst state =
 
                 TOpt.VarKernel funcRegion home name funcCanType ->
                     let
-                        argTypes =
-                            List.map Mono.typeOf monoArgs
-
                         callSubst =
                             TypeSubst.unifyFuncCall funcCanType argTypes canType subst
-
-                        resultMonoType =
-                            TypeSubst.applySubst callSubst canType
 
                         funcMonoType =
                             deriveKernelAbiType ( home, name ) funcCanType callSubst
 
-                        monoFunc =
-                            Mono.MonoVarKernel funcRegion home name funcMonoType
-                    in
-                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType, state1 )
+                        paramTypes =
+                            TypeSubst.extractParamTypes funcMonoType
 
-                TOpt.VarDebug funcRegion name _ _ funcCanType ->
-                    let
-                        argTypes =
-                            List.map Mono.typeOf monoArgs
-
-                        callSubst =
-                            TypeSubst.unifyFuncCall funcCanType argTypes canType subst
+                        ( monoArgs, state2 ) =
+                            resolveProcessedArgs processedArgs paramTypes callSubst state1
 
                         resultMonoType =
                             TypeSubst.applySubst callSubst canType
 
+                        monoFunc =
+                            Mono.MonoVarKernel funcRegion home name funcMonoType
+                    in
+                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType, state2 )
+
+                TOpt.VarDebug funcRegion name _ _ funcCanType ->
+                    let
+                        callSubst =
+                            TypeSubst.unifyFuncCall funcCanType argTypes canType subst
+
                         funcMonoType =
                             deriveKernelAbiType ( "Debug", name ) funcCanType callSubst
+
+                        paramTypes =
+                            TypeSubst.extractParamTypes funcMonoType
+
+                        ( monoArgs, state2 ) =
+                            resolveProcessedArgs processedArgs paramTypes callSubst state1
+
+                        resultMonoType =
+                            TypeSubst.applySubst callSubst canType
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion "Debug" name funcMonoType
                     in
-                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType, state1 )
+                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType, state2 )
 
                 _ ->
+                    -- Fallback: locally-bound or non-global function.
+                    -- We still want accessor args to see fully-resolved record types,
+                    -- so we run unifyFuncCall on the *canonical* type of `func`.
                     let
-                        ( monoFunc, state2 ) =
-                            specializeExpr func subst state1
+                        funcCanType =
+                            TOpt.typeOf func
 
+                        -- Unify the local function's canonical type with the actual arg types
+                        -- and the expected result type at this call site.
+                        callSubst =
+                            TypeSubst.unifyFuncCall funcCanType argTypes canType subst
+
+                        -- Monomorphized function type for this *call*, with call-site constraints.
+                        funcMonoType =
+                            TypeSubst.applySubst callSubst funcCanType
+
+                        -- Parameter types derived from the unified function type.
+                        paramTypes =
+                            TypeSubst.extractParamTypes funcMonoType
+
+                        -- Resolve pending accessors using the unified substitution and param types.
+                        ( monoArgs, state2 ) =
+                            resolveProcessedArgs processedArgs paramTypes callSubst state1
+
+                        -- Now specialize the callee expression itself under the unified substitution.
+                        ( monoFunc, state3 ) =
+                            specializeExpr func callSubst state2
+
+                        -- Call result type, also under the unified substitution.
                         resultMonoType =
-                            TypeSubst.applySubst subst canType
+                            TypeSubst.applySubst callSubst canType
                     in
-                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType, state2 )
+                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType, state3 )
 
         TOpt.TailCall name args canType ->
             let
@@ -955,6 +1004,18 @@ specializeExpr expr subst state =
             ( Mono.MonoCase label root monoDecider monoJumps monoType, state2 )
 
         TOpt.Accessor region fieldName canType ->
+            -- NOTE: This handles standalone accessor expressions (not passed as arguments).
+            -- The MonoType derived here may have an incomplete record layout if the
+            -- accessor's row variable is not yet bound in the substitution.
+            --
+            -- INVARIANT: Any accessor that is actually *invoked* at runtime must be
+            -- specialized via the virtual-global mechanism (Mono.Accessor + worklist),
+            -- which happens in resolveProcessedArg when the accessor is passed as an
+            -- argument to a function call. The virtual-global path derives the accessor's
+            -- MonoType from the fully-resolved parameter type, ensuring correct field indices.
+            --
+            -- A standalone accessor with incomplete type is only acceptable if it never
+            -- participates in layout-dependent operations (e.g., dead code or debug output).
             let
                 monoType =
                     TypeSubst.applySubst subst canType
@@ -1081,6 +1142,185 @@ specializeExprs exprs subst state =
         )
         ( [], state )
         exprs
+
+
+{-| Process call arguments, deferring accessor specialization.
+
+Returns:
+
+  - processed args (some are PendingAccessor),
+  - the monomorphic arg types for call-site unification,
+  - updated MonoState.
+
+-}
+processCallArgs :
+    List TOpt.Expr
+    -> Substitution
+    -> MonoState
+    -> ( List ProcessedArg, List Mono.MonoType, MonoState )
+processCallArgs args subst state =
+    List.foldr
+        (\arg ( accArgs, accTypes, st ) ->
+            case arg of
+                TOpt.Accessor region fieldName canType ->
+                    let
+                        -- Type for unification only; may have incomplete row.
+                        -- We will NOT use this to derive the accessor's final MonoType.
+                        monoType =
+                            TypeSubst.applySubst subst canType
+                    in
+                    ( PendingAccessor region fieldName canType :: accArgs
+                    , monoType :: accTypes
+                    , st
+                    )
+
+                _ ->
+                    let
+                        ( monoExpr, st1 ) =
+                            specializeExpr arg subst st
+                    in
+                    ( ResolvedArg monoExpr :: accArgs
+                    , Mono.typeOf monoExpr :: accTypes
+                    , st1
+                    )
+        )
+        ( [], [], state )
+        args
+
+
+{-| Resolve a single processed argument.
+
+For PendingAccessor, derives the accessor's MonoType from the expected
+parameter type (which must be a record), NOT from the accessor's canonical type.
+
+-}
+resolveProcessedArg :
+    ProcessedArg
+    -> Maybe Mono.MonoType
+    -> Substitution
+    -> MonoState
+    -> ( Mono.MonoExpr, MonoState )
+resolveProcessedArg processedArg maybeParamType subst state =
+    case processedArg of
+        ResolvedArg monoExpr ->
+            ( monoExpr, state )
+
+        PendingAccessor region fieldName _ ->
+            case maybeParamType of
+                Just (Mono.MFunction [ Mono.MRecord layout ] _) ->
+                    -- The parameter type is a function from record to something.
+                    -- Derive accessor's MonoType from the full record layout.
+                    let
+                        maybeFieldInfo =
+                            List.filter (\f -> f.name == fieldName) layout.fields
+                                |> List.head
+
+                        fieldType =
+                            case maybeFieldInfo of
+                                Just fi ->
+                                    fi.monoType
+
+                                Nothing ->
+                                    Utils.Crash.crash
+                                        "Specialize"
+                                        "resolveProcessedArg"
+                                        ("Field " ++ fieldName ++ " not found in record layout. This is a compiler bug.")
+
+                        recordType =
+                            Mono.MRecord layout
+
+                        accessorMonoType =
+                            Mono.MFunction [ recordType ] fieldType
+
+                        accessorGlobal =
+                            Mono.Accessor fieldName
+
+                        ( specId, newRegistry ) =
+                            Mono.getOrCreateSpecId accessorGlobal accessorMonoType Nothing state.registry
+
+                        newState =
+                            { state
+                                | registry = newRegistry
+                                , worklist = SpecializeGlobal accessorGlobal accessorMonoType Nothing :: state.worklist
+                            }
+                    in
+                    ( Mono.MonoVarGlobal region specId accessorMonoType, newState )
+
+                Just (Mono.MRecord layout) ->
+                    -- The parameter type is directly a record (accessor applied to record).
+                    -- This case handles when the accessor IS the function being called.
+                    let
+                        maybeFieldInfo =
+                            List.filter (\f -> f.name == fieldName) layout.fields
+                                |> List.head
+
+                        fieldType =
+                            case maybeFieldInfo of
+                                Just fi ->
+                                    fi.monoType
+
+                                Nothing ->
+                                    Utils.Crash.crash
+                                        "Specialize"
+                                        "resolveProcessedArg"
+                                        ("Field " ++ fieldName ++ " not found in record layout (direct). This is a compiler bug.")
+
+                        recordType =
+                            Mono.MRecord layout
+
+                        accessorMonoType =
+                            Mono.MFunction [ recordType ] fieldType
+
+                        accessorGlobal =
+                            Mono.Accessor fieldName
+
+                        ( specId, newRegistry ) =
+                            Mono.getOrCreateSpecId accessorGlobal accessorMonoType Nothing state.registry
+
+                        newState =
+                            { state
+                                | registry = newRegistry
+                                , worklist = SpecializeGlobal accessorGlobal accessorMonoType Nothing :: state.worklist
+                            }
+                    in
+                    ( Mono.MonoVarGlobal region specId accessorMonoType, newState )
+
+                _ ->
+                    Utils.Crash.crash
+                        "Specialize"
+                        "resolveProcessedArg"
+                        "Accessor argument did not receive a record parameter type after monomorphization. This is a compiler bug."
+
+
+{-| Resolve a list of processed arguments using the callee's parameter types.
+-}
+resolveProcessedArgs :
+    List ProcessedArg
+    -> List Mono.MonoType
+    -> Substitution
+    -> MonoState
+    -> ( List Mono.MonoExpr, MonoState )
+resolveProcessedArgs processedArgs paramTypes subst state =
+    let
+        step processedArg ( acc, st, remainingParams ) =
+            let
+                ( maybeParam, rest ) =
+                    case remainingParams of
+                        p :: ps ->
+                            ( Just p, ps )
+
+                        [] ->
+                            ( Nothing, [] )
+
+                ( monoExpr, st1 ) =
+                    resolveProcessedArg processedArg maybeParam subst st
+            in
+            ( monoExpr :: acc, st1, rest )
+
+        ( revArgs, finalState, _ ) =
+            List.foldl step ( [], state, paramTypes ) processedArgs
+    in
+    ( List.reverse revArgs, finalState )
 
 
 {-| Specialize a list of named expressions.
