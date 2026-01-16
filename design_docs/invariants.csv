@@ -90,6 +90,8 @@ MONO_013;Monomorphization;Layouts;documented;For each custom type every construc
 
 MONO_014;Monomorphization;Layouts;documented;Structurally equivalent record and tuple types share RecordLayout or TupleLayout identifiers or at least have layouts with identical indices and unboxedBitmap so layout metadata is canonical and does not spuriously duplicate equivalent layouts;Compiler.AST.Monomorphized
 
+MONO_015;Monomorphization;Accessors;enforced;When an accessor like .name with canonical type { ext | name : T } -> T is passed as a first-class function argument to a call site the accessor extension variable ext must be unified with the full record type inferred from other arguments at that call site so that specialization receives the complete record layout not just the explicitly named fields;Compiler.Generate.Monomorphize.Specialize|Compiler.Generate.Monomorphize.TypeSubst
+
 # =============================================================================
 # MLIR CODEGEN PHASE - Generate MLIR from monomorphized IR
 # =============================================================================
