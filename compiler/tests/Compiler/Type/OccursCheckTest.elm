@@ -25,8 +25,9 @@ infiniteTypeTests =
           -- for edge cases that might slip through.
           Test.test "self-referential through function application" <|
             \_ ->
-                -- This may or may not trigger infinite type depending on implementation
-                -- f x = f  -- f : a -> (a -> b) which could unify a with (a -> b)
+                -- f x = f creates an infinite type: f : a -> ∞
+                -- The type of f would need to satisfy: f : a -> f_type where f_type = a -> f_type
+                -- Elm correctly detects and rejects this as an infinite type.
                 let
                     modul =
                         SB.makeModuleWithDefs "SelfRef"
@@ -36,8 +37,7 @@ infiniteTypeTests =
                               )
                             ]
                 in
-                -- This should either detect infinite type or succeed with polymorphic type
-                expectNoInfiniteTypes modul
+                expectInfiniteTypeDetected modul
         ]
 
 

@@ -84,7 +84,7 @@ MONO_010;Monomorphization;Types;enforced;MonoGraph is type complete and contains
 
 MONO_011;Monomorphization;Graph;documented;MonoGraph is closed and hygienic every MonoVarLocal refers to a binder in scope every MonoVarGlobal and SpecId refers to an existing MonoNode and there are no orphan specializations or unreachable SpecIds in the SpecializationRegistry;Compiler.AST.Monomorphized
 
-MONO_012;Monomorphization;Closures;documented;For every function or closure node the function MonoType arity matches its parameter list and closure information and all call sites supply arguments consistent with that MonoType so full and partial applications are always well formed;Compiler.Generate.Monomorphize
+MONO_012;Monomorphization;Closures;documented;For every function or closure node the function MonoType flattened arity (computed by recursively peeling nested MFunction layers e.g. MFunction [a] (MFunction [b] c) has flattened arity 2) is at least as large as the parameter list length and all call sites supply arguments not exceeding that flattened arity so full and partial applications are always well formed and closures returning functions (nested lambdas) are valid;Compiler.Generate.Monomorphize
 
 MONO_013;Monomorphization;Layouts;documented;For each custom type every constructor has a CtorLayout whose field count ordering and unboxedBitmap match the constructor's fields and all construction and pattern matching nodes that use that constructor are consistent with its CtorLayout;Compiler.AST.Monomorphized
 
