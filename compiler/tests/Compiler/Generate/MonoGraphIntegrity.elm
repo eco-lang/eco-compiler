@@ -347,9 +347,6 @@ collectCustomTypeRefsFromExpr expr =
         Mono.MonoUnit ->
             []
 
-        Mono.MonoAccessor _ _ monoType ->
-            collectCustomTypeRefsFromType monoType
-
 
 {-| Collect custom type references from a MonoDef.
 -}

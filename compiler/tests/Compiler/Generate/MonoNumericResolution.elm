@@ -191,9 +191,6 @@ collectExprCNumberIssues context expr =
         Mono.MonoUnit ->
             []
 
-        Mono.MonoAccessor _ _ monoType ->
-            checkForCNumber context monoType
-
 
 {-| Collect CNumber issues from a MonoDef.
 -}

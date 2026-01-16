@@ -1,23 +1,8 @@
 module Compiler.Generate.MLIR.Expr exposing
-    ( ExprResult
-    , emptyResult
-    , generateExpr
-    , generateList
-    , generateClosure
-    , generateCall
-    , generateTailCall
-    , generateIf
-    , generateLet
-    , generateRecordCreate
-    , generateRecordAccess
-    , generateRecordUpdate
-    , generateTupleCreate
-    , generateUnit
-    , boxToEcoValue
-    , boxToMatchSignatureTyped
-    , coerceResultToType
-    , generateExprListTyped
-    , boxArgsWithMlirTypes
+    ( ExprResult, emptyResult
+    , generateExpr, generateList, generateClosure, generateCall, generateTailCall, generateIf, generateLet
+    , generateRecordCreate, generateRecordAccess, generateRecordUpdate, generateTupleCreate, generateUnit
+    , boxToEcoValue, boxToMatchSignatureTyped, coerceResultToType, generateExprListTyped, boxArgsWithMlirTypes
     )
 
 {-| Expression generation for the MLIR backend.
@@ -147,6 +132,7 @@ createDummyValue ctx mlirType =
             ( [ op ], resultVar, ctx2 )
 
 
+
 -- ====== GENERATE EXPRESSION ======
 
 
@@ -195,9 +181,6 @@ generateExpr ctx expr =
 
                         Mono.MonoTailDef n _ _ ->
                             n
-
-                _ =
-                    Debug.log "generateExpr MonoLet" defName
             in
             generateLet ctx def body
 
@@ -1722,9 +1705,6 @@ generateLet ctx def body =
     let
         boundNames =
             collectLetBoundNames (Mono.MonoLet def body Mono.MUnit)
-
-        _ =
-            Debug.log "generateLet" ( boundNames, Dict.keys ctx.varMappings )
 
         ctxWithPlaceholders =
             addPlaceholderMappings boundNames ctx
