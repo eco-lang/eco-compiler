@@ -381,4 +381,89 @@ basicsValues =
         , ( "abs"
           , mkAnnotation (Can.TLambda numberVar numberVar)
           )
+
+        -- Float constants and math functions
+        -- pi : Float
+        , ( "pi"
+          , mkAnnotation floatType
+          )
+
+        -- e : Float
+        , ( "e"
+          , mkAnnotation floatType
+          )
+
+        -- sqrt : Float -> Float
+        , ( "sqrt"
+          , mkAnnotation (Can.TLambda floatType floatType)
+          )
+
+        -- sin : Float -> Float
+        , ( "sin"
+          , mkAnnotation (Can.TLambda floatType floatType)
+          )
+
+        -- cos : Float -> Float
+        , ( "cos"
+          , mkAnnotation (Can.TLambda floatType floatType)
+          )
+
+        -- tan : Float -> Float
+        , ( "tan"
+          , mkAnnotation (Can.TLambda floatType floatType)
+          )
+
+        -- asin : Float -> Float
+        , ( "asin"
+          , mkAnnotation (Can.TLambda floatType floatType)
+          )
+
+        -- acos : Float -> Float
+        , ( "acos"
+          , mkAnnotation (Can.TLambda floatType floatType)
+          )
+
+        -- atan : Float -> Float
+        , ( "atan"
+          , mkAnnotation (Can.TLambda floatType floatType)
+          )
+
+        -- atan2 : Float -> Float -> Float
+        , ( "atan2"
+          , mkAnnotation (Can.TLambda floatType (Can.TLambda floatType floatType))
+          )
+
+        -- round : Float -> Int
+        , ( "round"
+          , mkAnnotation (Can.TLambda floatType intType)
+          )
+
+        -- truncate : Float -> Int
+        , ( "truncate"
+          , mkAnnotation (Can.TLambda floatType intType)
+          )
+
+        -- isNaN : Float -> Bool
+        , ( "isNaN"
+          , mkAnnotation (Can.TLambda floatType boolType)
+          )
+
+        -- isInfinite : Float -> Bool
+        , ( "isInfinite"
+          , mkAnnotation (Can.TLambda floatType boolType)
+          )
+
+        -- min : comparable -> comparable -> comparable
+        , ( "min"
+          , let
+                comparableVar =
+                    Can.TVar "comparable"
+            in
+            mkAnnotation (Can.TLambda comparableVar (Can.TLambda comparableVar comparableVar))
+          )
+
+        -- clamp : number -> number -> number -> number
+        , ( "clamp"
+          , mkAnnotation (Can.TLambda numberVar (Can.TLambda numberVar (Can.TLambda numberVar numberVar)))
+          )
         ]

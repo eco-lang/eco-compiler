@@ -10,9 +10,13 @@ the typed optimization pipeline and then monomorphization.
 import Compiler.AnnotatedTests as AnnotatedTests
 import Compiler.AsPatternTests as AsPatternTests
 import Compiler.BinopTests as BinopTests
+import Compiler.BitwiseTests as BitwiseTests
 import Compiler.CaseTests as CaseTests
+import Compiler.ClosureTests as ClosureTests
+import Compiler.ControlFlowTests as ControlFlowTests
 import Compiler.DeepFuzzTests as DeepFuzzTests
 import Compiler.EdgeCaseTests as EdgeCaseTests
+import Compiler.FloatMathTests as FloatMathTests
 import Compiler.FunctionTests as FunctionTests
 import Compiler.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 import Compiler.HigherOrderTests as HigherOrderTests
@@ -24,6 +28,7 @@ import Compiler.LiteralTests as LiteralTests
 import Compiler.MultiDefTests as MultiDefTests
 import Compiler.OperatorTests as OperatorTests
 import Compiler.PatternArgTests as PatternArgTests
+import Compiler.PatternMatchingTests as PatternMatchingTests
 import Compiler.RecordTests as RecordTests
 import Compiler.TupleTests as TupleTests
 import Test exposing (Test)
@@ -52,4 +57,11 @@ suite =
 
         -- Deep structural fuzz tests
         , DeepFuzzTests.expectSuite expectMonomorphization "monomorphizes"
+
+        -- MLIR and Monomorphize coverage tests
+        , BitwiseTests.expectSuite expectMonomorphization "monomorphizes"
+        , FloatMathTests.expectSuite expectMonomorphization "monomorphizes"
+        , PatternMatchingTests.expectSuite expectMonomorphization "monomorphizes"
+        , ClosureTests.expectSuite expectMonomorphization "monomorphizes"
+        , ControlFlowTests.expectSuite expectMonomorphization "monomorphizes"
         ]

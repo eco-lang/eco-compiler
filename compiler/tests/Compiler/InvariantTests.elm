@@ -29,6 +29,11 @@ import Compiler.Generate.MonoNumericResolutionTest as MonoNumericResolutionTest
 import Compiler.Generate.MonoTypeShapeTest as MonoTypeShapeTest
 import Compiler.Generate.MonomorphizeTest as MonomorphizeTest
 import Compiler.Generate.TypedOptimizedMonomorphizeTest as TypedOptimizedMonomorphizeTest
+import Compiler.BitwiseTests as BitwiseTests
+import Compiler.ClosureTests as ClosureTests
+import Compiler.ControlFlowTests as ControlFlowTests
+import Compiler.FloatMathTests as FloatMathTests
+import Compiler.PatternMatchingTests as PatternMatchingTests
 import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
 import Compiler.SpecializeConstructorTests as SpecializeConstructorTests
 import Compiler.SpecializeCycleTests as SpecializeCycleTests
@@ -123,4 +128,11 @@ monomorphizationInvariants =
         , SpecializeConstructorTests.suite -- Constructor specialization
         , SpecializeAccessorTests.suite -- MONO_015: Accessor extension variable unification
         , SpecializeExprTests.suite -- Expression branch coverage
+
+        -- MLIR and Monomorphize coverage tests
+        , BitwiseTests.suite -- MLIR.Intrinsics.bitwiseIntrinsic
+        , FloatMathTests.suite -- MLIR.Intrinsics.basicsIntrinsic float operations
+        , PatternMatchingTests.suite -- MLIR.Patterns coverage
+        , ClosureTests.suite -- Monomorphize.Closure coverage
+        , ControlFlowTests.suite -- MLIR.Expr control flow coverage
         ]

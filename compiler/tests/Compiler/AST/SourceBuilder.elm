@@ -26,10 +26,14 @@ module Compiler.AST.SourceBuilder exposing
     , makeModuleWithDefs
     , makeModuleWithTypedDefs
     , makeModuleWithTypedDefsUnionsAliases
+    , makeModuleWithTypedDefsUnionsAliasesExtended
+    , bitwiseImport
+    , extendedImports
       -- Fuzzers
     , negateExpr
     , pAlias
     , pAnything
+    , pChr
     , pCons
     , pCtor
     , pInt
@@ -345,6 +349,13 @@ pStr s =
     A.At A.zero (Src.PStr s False)
 
 
+{-| Character literal pattern.
+-}
+pChr : String -> Src.Pattern
+pChr c =
+    A.At A.zero (Src.PChr c)
+
+
 {-| Unit pattern.
 -}
 pUnit : Src.Pattern
@@ -487,11 +498,28 @@ charImport =
         (c2 (Src.Open noComments noComments))
 
 
+{-| Import statement for Bitwise exposing everything.
+-}
+bitwiseImport : Src.Import
+bitwiseImport =
+    Src.Import
+        (c1 (A.At A.zero "Bitwise"))
+        Nothing
+        (c2 (Src.Open noComments noComments))
+
+
 {-| Standard imports for test modules.
 -}
 standardImports : List Src.Import
 standardImports =
     [ basicsImport, maybeImport, listImport, jsArrayImport, stringImport, charImport ]
+
+
+{-| Extended imports including Bitwise for tests that need bitwise operations.
+-}
+extendedImports : List Src.Import
+extendedImports =
+    [ basicsImport, maybeImport, listImport, jsArrayImport, stringImport, charImport, bitwiseImport ]
 
 
 {-| Create a simple module with a single top-level definition.
@@ -742,6 +770,40 @@ makeModuleWithTypedDefsUnionsAliases moduleName defs unions aliases =
         , exports = A.At A.zero (Src.Open noComments noComments)
         , docs = Src.NoDocs A.zero []
         , imports = standardImports
+        , values = values
+        , unions = List.map makeUnion unions
+        , aliases = List.map makeAlias aliases
+        , infixes = []
+        , effects = Src.NoEffects
+        }
+
+
+{-| Create a module with typed definitions, unions, aliases, and extended imports (including Bitwise).
+-}
+makeModuleWithTypedDefsUnionsAliasesExtended : Name -> List TypedDef -> List UnionDef -> List AliasDef -> Src.Module
+makeModuleWithTypedDefsUnionsAliasesExtended moduleName defs unions aliases =
+    let
+        values =
+            List.map
+                (\{ name, args, tipe, body } ->
+                    A.At A.zero
+                        (Src.Value
+                            { comments = noComments
+                            , name = c1 (A.At A.zero name)
+                            , args = List.map c1 args
+                            , body = c1 body
+                            , tipe = Just (c1 (c2 tipe))
+                            }
+                        )
+                )
+                defs
+    in
+    Src.Module
+        { syntaxVersion = SV.Elm
+        , name = Just (A.At A.zero moduleName)
+        , exports = A.At A.zero (Src.Open noComments noComments)
+        , docs = Src.NoDocs A.zero []
+        , imports = extendedImports
         , values = values
         , unions = List.map makeUnion unions
         , aliases = List.map makeAlias aliases
