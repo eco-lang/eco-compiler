@@ -1,6 +1,7 @@
 module Compiler.Generate.MLIR.Context exposing
     ( Context
     , FuncSignature
+    , PendingAccessor
     , PendingLambda
     , PendingWrapper
     , TypeRegistry
@@ -96,6 +97,7 @@ type alias Context =
     , registry : Mono.SpecializationRegistry
     , pendingLambdas : List PendingLambda
     , pendingWrappers : List PendingWrapper -- Boxed wrappers for PAP targets with unboxed params
+    , pendingAccessors : List PendingAccessor -- Record field accessor functions (.fieldName)
     , signatures : Dict.Dict Int FuncSignature -- SpecId -> signature for invariant checking
     , varMappings : Dict.Dict String ( String, MlirType ) -- Let-bound name -> (SSA variable name, MLIR type)
     , kernelDecls : Dict.Dict String ( List MlirType, MlirType ) -- Kernel function name -> (argTypes, returnType)
@@ -134,6 +136,18 @@ type alias PendingWrapper =
     }
 
 
+{-| A pending accessor is generated when a field accessor (.fieldName) is used as a value.
+The accessor function takes a record and returns the specified field.
+-}
+type alias PendingAccessor =
+    { accessorName : String
+    , fieldName : Name.Name
+    , fieldIndex : Int
+    , isUnboxed : Bool
+    , fieldType : Mono.MonoType
+    }
+
+
 initContext : Mode.Mode -> Mono.SpecializationRegistry -> Dict.Dict Int FuncSignature -> EveryDict.Dict (List String) (List String) (List Mono.CtorLayout) -> Context
 initContext mode registry signatures initialCtorLayouts =
     { nextVar = 0
@@ -142,6 +156,7 @@ initContext mode registry signatures initialCtorLayouts =
     , registry = registry
     , pendingLambdas = []
     , pendingWrappers = []
+    , pendingAccessors = []
     , signatures = signatures
     , varMappings = Dict.empty
     , kernelDecls = Dict.empty

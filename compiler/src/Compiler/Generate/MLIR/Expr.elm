@@ -194,8 +194,8 @@ generateExpr ctx expr =
         Mono.MonoUnit ->
             generateUnit ctx
 
-        Mono.MonoAccessor _ fieldName _ ->
-            generateAccessor ctx fieldName
+        Mono.MonoAccessor _ fieldName monoType ->
+            generateAccessor ctx fieldName monoType
 
 
 
@@ -2515,27 +2515,82 @@ generateUnit ctx =
 -- ====== ACCESSOR GENERATION ======
 
 
-generateAccessor : Ctx.Context -> Name.Name -> ExprResult
-generateAccessor ctx fieldName =
-    let
-        ( var, ctx1 ) =
-            Ctx.freshVar ctx
+{-| Generate an accessor function reference (.fieldName).
 
-        attrs =
-            Dict.fromList
-                [ ( "function", SymbolRefAttr ("accessor_" ++ fieldName) )
-                , ( "arity", IntAttr Nothing 1 )
-                , ( "num_captured", IntAttr Nothing 0 )
-                ]
+The accessor type should be MFunction [recordType] fieldType.
+We extract the record layout to find the field index and whether it's unboxed,
+then generate a PAP referencing the accessor function (which will be generated
+by processPendingAccessors).
 
-        ( ctx2, papOp ) =
-            Ops.mlirOp ctx1 "eco.papCreate"
-                |> Ops.opBuilder.withResults [ ( var, Types.ecoValue ) ]
-                |> Ops.opBuilder.withAttrs attrs
-                |> Ops.opBuilder.build
-    in
-    { ops = [ papOp ]
-    , resultVar = var
-    , resultType = Types.ecoValue
-    , ctx = ctx2
-    }
+-}
+generateAccessor : Ctx.Context -> Name.Name -> Mono.MonoType -> ExprResult
+generateAccessor ctx fieldName monoType =
+    case monoType of
+        Mono.MFunction [ Mono.MRecord recordLayout ] fieldType ->
+            let
+                -- Find the field in the record layout
+                maybeFieldInfo =
+                    recordLayout.fields
+                        |> List.indexedMap Tuple.pair
+                        |> List.filter (\( _, info ) -> info.name == fieldName)
+                        |> List.head
+
+                ( fieldIndex, isUnboxed ) =
+                    case maybeFieldInfo of
+                        Just ( idx, info ) ->
+                            ( idx, info.isUnboxed )
+
+                        Nothing ->
+                            -- This shouldn't happen if the type checker is correct
+                            crash "Compiler.Generate.MLIR.Expr" "generateAccessor" ("Field not found: " ++ fieldName)
+
+                -- Generate a unique accessor name based on field name and record layout
+                -- This ensures we generate different accessors for different record types
+                accessorName =
+                    "accessor_" ++ fieldName ++ "_" ++ String.fromInt (List.length recordLayout.fields) ++ "_" ++ String.fromInt fieldIndex
+
+                -- Check if this accessor is already pending
+                alreadyPending =
+                    List.any (\a -> a.accessorName == accessorName) ctx.pendingAccessors
+
+                pendingAccessor : Ctx.PendingAccessor
+                pendingAccessor =
+                    { accessorName = accessorName
+                    , fieldName = fieldName
+                    , fieldIndex = fieldIndex
+                    , isUnboxed = isUnboxed
+                    , fieldType = fieldType
+                    }
+
+                ctx1 =
+                    if alreadyPending then
+                        ctx
+
+                    else
+                        { ctx | pendingAccessors = pendingAccessor :: ctx.pendingAccessors }
+
+                ( var, ctx2 ) =
+                    Ctx.freshVar ctx1
+
+                attrs =
+                    Dict.fromList
+                        [ ( "function", SymbolRefAttr accessorName )
+                        , ( "arity", IntAttr Nothing 1 )
+                        , ( "num_captured", IntAttr Nothing 0 )
+                        ]
+
+                ( ctx3, papOp ) =
+                    Ops.mlirOp ctx2 "eco.papCreate"
+                        |> Ops.opBuilder.withResults [ ( var, Types.ecoValue ) ]
+                        |> Ops.opBuilder.withAttrs attrs
+                        |> Ops.opBuilder.build
+            in
+            { ops = [ papOp ]
+            , resultVar = var
+            , resultType = Types.ecoValue
+            , ctx = ctx3
+            }
+
+        _ ->
+            -- Accessor type should always be a function from record to field type
+            crash "Compiler.Generate.MLIR.Expr" "generateAccessor" ("Expected MFunction [MRecord ...] fieldType, got: " ++ Debug.toString monoType)
