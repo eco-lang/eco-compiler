@@ -1,8 +1,4 @@
-module Compiler.Generate.MLIR.Functions exposing
-    ( generateMainEntry
-    , generateNode
-    , generateKernelDecl
-    )
+module Compiler.Generate.MLIR.Functions exposing (generateMainEntry, generateNode, generateKernelDecl)
 
 {-| Function generation for the MLIR backend.
 
@@ -34,6 +30,7 @@ import Data.Map as EveryDict
 import Dict
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion(..), MlirType(..), Visibility(..))
 import System.TypeCheck.IO as IO
+
 
 
 -- ====== GENERATE MAIN ENTRY ======
@@ -158,15 +155,25 @@ dumpMonoExprStructure indent expr =
     case expr of
         Mono.MonoLet def body _ ->
             let
-                defName =
+                ( defName, defExpr ) =
                     case def of
-                        Mono.MonoDef name _ ->
-                            "MonoDef " ++ name
+                        Mono.MonoDef name defBody ->
+                            ( "MonoDef " ++ name, defBody )
 
-                        Mono.MonoTailDef name _ _ ->
-                            "MonoTailDef " ++ name
+                        Mono.MonoTailDef name _ defBody ->
+                            ( "MonoTailDef " ++ name, defBody )
             in
-            indent ++ "MonoLet (" ++ defName ++ ")\n" ++ dumpMonoExprStructure (indent ++ "  ") body
+            indent
+                ++ "MonoLet ("
+                ++ defName
+                ++ ")\n"
+                ++ indent
+                ++ "  def =\n"
+                ++ dumpMonoExprStructure (indent ++ "    ") defExpr
+                ++ "\n"
+                ++ indent
+                ++ "  body =\n"
+                ++ dumpMonoExprStructure (indent ++ "    ") body
 
         Mono.MonoClosure closureInfo innerBody _ ->
             let
@@ -752,6 +759,3 @@ generateCycle ctx funcName definitions monoType =
             Ops.funcFunc ctx3 funcName [] (Types.monoTypeToMlir monoType) region
     in
     ( funcOp, ctx4 )
-
-
-

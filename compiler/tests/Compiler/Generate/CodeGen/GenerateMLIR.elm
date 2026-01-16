@@ -109,10 +109,11 @@ expectMLIRGeneration srcModule =
                                     -- Run MLIR code generation
                                     case runMLIRGeneration globalTypeEnv monoGraph of
                                         Err mlirErr ->
-                                            Expect.fail ("MLIR generation failed: " ++ mlirErr)
+                                            Expect.fail
+                                                ("MLIR generation failed: " ++ mlirErr)
 
                                         Ok output ->
-                                            verifyMLIROutput output
+                                            verifyMLIROutput monoGraph output
 
 
 
@@ -281,13 +282,15 @@ Currently checks:
   - The output contains at least one MLIR operation
 
 -}
-verifyMLIROutput : String -> Expect.Expectation
-verifyMLIROutput output =
+verifyMLIROutput : Mono.MonoGraph -> String -> Expect.Expectation
+verifyMLIROutput monoGraph output =
     if String.isEmpty output then
-        Expect.fail "MLIR output is empty"
+        Expect.fail
+            "MLIR output is empty\n\nMonomorphized IR:\n"
 
     else if not (String.contains "func.func" output || String.contains "eco." output) then
-        Expect.fail "MLIR output doesn't contain expected operations"
+        Expect.fail
+            "MLIR output doesn't contain expected operations\n\nMonomorphized IR:\n"
 
     else
         Expect.pass

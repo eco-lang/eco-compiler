@@ -117,6 +117,7 @@ type alias Context =
     , pendingWrappers : List PendingWrapper -- Boxed wrappers for PAP targets with unboxed params
     , signatures : Dict.Dict Int FuncSignature -- SpecId -> signature for invariant checking
     , varMappings : Dict.Dict String ( String, MlirType ) -- Let-bound name -> (SSA variable name, MLIR type)
+    , currentLetSiblings : Dict.Dict String ( String, MlirType ) -- Sibling mappings for current let-rec group
     , kernelDecls : Dict.Dict String ( List MlirType, MlirType ) -- Kernel function name -> (argTypes, returnType)
     , typeRegistry : TypeRegistry -- Type graph: MonoType -> TypeId for debug printing
     }
@@ -179,6 +180,7 @@ initContext mode registry signatures initialCtorLayouts =
     , pendingWrappers = []
     , signatures = signatures
     , varMappings = Dict.empty
+    , currentLetSiblings = Dict.empty
     , kernelDecls = Dict.empty
     , typeRegistry =
         { emptyTypeRegistry
@@ -341,11 +343,22 @@ lookupVar ctx name =
 
         Nothing ->
             let
-                keys =
+                varKeys =
                     Dict.keys ctx.varMappings
 
+                siblingKeys =
+                    Dict.keys ctx.currentLetSiblings
+
                 _ =
-                    Debug.todo ("lookupVar" ++ ": " ++ ("Failed to find " ++ name ++ " in [" ++ String.join ", " keys ++ "]"))
+                    Debug.todo
+                        ("lookupVar: Failed to find "
+                            ++ name
+                            ++ "\n  varMappings: ["
+                            ++ String.join ", " varKeys
+                            ++ "]\n  currentLetSiblings: ["
+                            ++ String.join ", " siblingKeys
+                            ++ "]"
+                        )
             in
             -- Function parameters default to !eco.value
             ( "%" ++ name, Types.ecoValue )

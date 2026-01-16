@@ -1,15 +1,7 @@
 module Compiler.Generate.Monomorphize.Closure exposing
-    ( ensureCallableTopLevel
-    , flattenFunctionType
-    , makeAliasClosure
-    , makeGeneralClosure
-    , makeAliasClosureOverExpr
-    , freshParams
-    , extractRegion
-    , computeClosureCaptures
-    , findFreeLocals
-    , collectDeciderFreeLocals
-    , dedupeNames
+    ( ensureCallableTopLevel, flattenFunctionType, makeAliasClosure, makeGeneralClosure, makeAliasClosureOverExpr
+    , freshParams, extractRegion
+    , computeClosureCaptures, findFreeLocals, collectDeciderFreeLocals, dedupeNames
     )
 
 {-| Closure handling and capture analysis for monomorphization.
@@ -337,26 +329,30 @@ findFreeLocals bound expr =
             in
             findFreeLocals newBound body
 
-        Mono.MonoLet def body _ ->
+        Mono.MonoLet _ _ _ ->
+            -- For mutually recursive let-bindings, we need to collect ALL names
+            -- from the entire let-chain first, add them all to bound, and only
+            -- THEN analyze each definition. This ensures that when inner1's
+            -- definition references inner2, inner2 is already in bound.
             let
-                ( defName, defExpr ) =
-                    case def of
-                        Mono.MonoDef n e ->
-                            ( n, e )
+                ( allDefs, finalBody ) =
+                    collectLetChain expr
 
-                        Mono.MonoTailDef n _ e ->
-                            ( n, e )
+                -- Add all names from the let-chain to bound BEFORE analyzing definitions
+                allNames =
+                    List.map Tuple.first allDefs
 
-                freeInDef =
-                    findFreeLocals bound defExpr
+                boundWithAllNames =
+                    List.foldl (\name acc -> EverySet.insert identity name acc) bound allNames
 
-                newBound =
-                    EverySet.insert identity defName bound
+                -- Now analyze each definition with all sibling names in scope
+                freeInDefs =
+                    List.concatMap (\( _, defExpr ) -> findFreeLocals boundWithAllNames defExpr) allDefs
 
                 freeInBody =
-                    findFreeLocals newBound body
+                    findFreeLocals boundWithAllNames finalBody
             in
-            freeInDef ++ freeInBody
+            freeInDefs ++ freeInBody
 
         Mono.MonoIf branches final _ ->
             let
@@ -408,6 +404,39 @@ findFreeLocals bound expr =
 
         _ ->
             []
+
+
+{-| Collect all definitions from a let-chain, returning them along with the final body.
+
+For example, given:
+MonoLet (def1) (MonoLet (def2) (MonoLet (def3) finalBody))
+
+Returns:
+( [ (name1, expr1), (name2, expr2), (name3, expr3) ], finalBody )
+
+This is used by findFreeLocals to handle mutually recursive let-bindings correctly.
+
+-}
+collectLetChain : Mono.MonoExpr -> ( List ( Name, Mono.MonoExpr ), Mono.MonoExpr )
+collectLetChain expr =
+    case expr of
+        Mono.MonoLet def body _ ->
+            let
+                ( defName, defExpr ) =
+                    case def of
+                        Mono.MonoDef n e ->
+                            ( n, e )
+
+                        Mono.MonoTailDef n _ e ->
+                            ( n, e )
+
+                ( restDefs, finalBody ) =
+                    collectLetChain body
+            in
+            ( ( defName, defExpr ) :: restDefs, finalBody )
+
+        _ ->
+            ( [], expr )
 
 
 {-| Collect free local variables from a pattern match decider tree.

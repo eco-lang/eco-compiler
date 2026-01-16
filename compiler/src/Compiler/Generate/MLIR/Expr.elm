@@ -708,13 +708,23 @@ generateClosure ctx closureInfo body monoType =
         captureTypes =
             List.map (\( name, expr, _ ) -> ( name, Mono.typeOf expr )) closureInfo.captures
 
+        -- Use currentLetSiblings if inside a let-rec group, otherwise fall back to varMappings
+        -- This ensures closures in mutually recursive let bindings see all siblings
+        baseSiblings : Dict.Dict String ( String, MlirType )
+        baseSiblings =
+            if Dict.isEmpty ctx.currentLetSiblings then
+                ctx.varMappings
+
+            else
+                ctx.currentLetSiblings
+
         pendingLambda : Ctx.PendingLambda
         pendingLambda =
             { name = lambdaIdToString closureInfo.lambdaId
             , captures = captureTypes
             , params = closureInfo.params
             , body = body
-            , siblingMappings = ctx.varMappings -- Preserve sibling refs for mutually recursive lets
+            , siblingMappings = baseSiblings
             }
     in
     if arity == 0 then
@@ -1701,13 +1711,24 @@ addPlaceholderMappings names ctx =
 generateLet : Ctx.Context -> Mono.MonoDef -> Mono.MonoExpr -> ExprResult
 generateLet ctx def body =
     -- For mutually recursive definitions, add placeholder mappings for all
-    -- names in the Let chain before generating any closures
+    -- names in the Let chain before generating any closures.
+    -- We also set currentLetSiblings so that closures created in this group
+    -- capture the correct sibling environment.
     let
         boundNames =
             collectLetBoundNames (Mono.MonoLet def body Mono.MUnit)
 
-        ctxWithPlaceholders =
+        -- Save outer siblings for restoration on exit (lexical scoping)
+        outerSiblings =
+            ctx.currentLetSiblings
+
+        -- Build placeholder mappings for the whole let-group
+        groupVarMappings =
             addPlaceholderMappings boundNames ctx
+
+        -- Set both varMappings and currentLetSiblings to the group environment
+        ctxWithPlaceholders =
+            { groupVarMappings | currentLetSiblings = groupVarMappings.varMappings }
     in
     case def of
         Mono.MonoDef name expr ->
@@ -1726,11 +1747,20 @@ generateLet ctx def body =
                 bodyResult : ExprResult
                 bodyResult =
                     generateExpr ctx1 body
+
+                -- Restore outer siblings on exit from the let-rec group
+                bodyCtx : Ctx.Context
+                bodyCtx =
+                    bodyResult.ctx
+
+                ctxOut : Ctx.Context
+                ctxOut =
+                    { bodyCtx | currentLetSiblings = outerSiblings }
             in
             { ops = exprResult.ops ++ bodyResult.ops
             , resultVar = bodyResult.resultVar
             , resultType = bodyResult.resultType
-            , ctx = bodyResult.ctx
+            , ctx = ctxOut
             }
 
         Mono.MonoTailDef name params funcBody ->
@@ -1764,8 +1794,21 @@ generateLet ctx def body =
                 -- Generate the let body (which calls the function)
                 bodyResult =
                     generateExpr ctxWithFunc body
+
+                -- Restore outer siblings on exit from the let-rec group
+                bodyCtx : Ctx.Context
+                bodyCtx =
+                    bodyResult.ctx
+
+                ctxOut : Ctx.Context
+                ctxOut =
+                    { bodyCtx | currentLetSiblings = outerSiblings }
             in
-            bodyResult
+            { ops = bodyResult.ops
+            , resultVar = bodyResult.resultVar
+            , resultType = bodyResult.resultType
+            , ctx = ctxOut
+            }
 
 
 
