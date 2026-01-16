@@ -272,9 +272,6 @@ extractRegion expr =
         Mono.MonoUnit ->
             A.zero
 
-        Mono.MonoAccessor region _ _ ->
-            region
-
 
 
 -- ========== CLOSURE CAPTURE ANALYSIS ==========

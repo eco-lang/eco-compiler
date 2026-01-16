@@ -69,11 +69,8 @@ generateProgram mode _ (Mono.MonoGraph { nodes, main, registry, ctorLayouts }) =
         ( lambdaOps, ctxAfterLambdas ) =
             Lambdas.processLambdas ctxAfterNodes
 
-        ( wrapperOps, ctxAfterWrappers ) =
+        ( wrapperOps, finalCtx ) =
             Lambdas.processPendingWrappers ctxAfterLambdas
-
-        ( accessorOps, finalCtx ) =
-            Lambdas.processPendingAccessors ctxAfterWrappers
 
         -- ctorLayouts are already complete from MonoGraph - no fill step needed
         mainOps : List MlirOp
@@ -105,7 +102,7 @@ generateProgram mode _ (Mono.MonoGraph { nodes, main, registry, ctorLayouts }) =
 
         mlirModule : MlirModule
         mlirModule =
-            { body = typeTableOp :: kernelDeclOps ++ wrapperOps ++ accessorOps ++ lambdaOps ++ ops ++ mainOps
+            { body = typeTableOp :: kernelDeclOps ++ wrapperOps ++ lambdaOps ++ ops ++ mainOps
             , loc = Loc.unknown
             }
     in

@@ -99,6 +99,9 @@ checkCallableTopLevels state =
                                             Just ( Mono.Global (IO.Canonical ( author, pkg ) moduleName) name, _, _ ) ->
                                                 author ++ "/" ++ pkg ++ ":" ++ moduleName ++ "." ++ name
 
+                                            Just ( Mono.Accessor fieldName, _, _ ) ->
+                                                "accessor_" ++ fieldName
+
                                             Nothing ->
                                                 "unknown"
                                 in
@@ -302,34 +305,13 @@ processWorklist state =
                             , currentGlobal = Just global
                             , varTypes = Dict.empty
                         }
-
-                    toptGlobal =
-                        monoGlobalToTOpt global
                 in
-                case Dict.get TOpt.toComparableGlobal toptGlobal state2.toptNodes of
-                    Nothing ->
-                        -- External or missing definition; treat as extern.
+                case global of
+                    Mono.Accessor fieldName ->
+                        -- Handle accessor specialization
                         let
-                            newState =
-                                { state2
-                                    | nodes = Dict.insert identity specId (Mono.MonoExtern monoType) state2.nodes
-                                    , inProgress = EverySet.remove identity specId state2.inProgress
-                                    , currentGlobal = Nothing
-                                }
-                        in
-                        processWorklist newState
-
-                    Just toptNode ->
-                        -- Specialize this node to concrete types.
-                        -- Pass the global's name for constructor name population.
-                        let
-                            ctorName =
-                                case global of
-                                    Mono.Global _ name ->
-                                        name
-
                             ( monoNode, stateAfter ) =
-                                Specialize.specializeNode ctorName toptNode monoType state2
+                                specializeAccessorGlobal fieldName monoType state2
 
                             newState =
                                 { stateAfter
@@ -339,6 +321,78 @@ processWorklist state =
                                 }
                         in
                         processWorklist newState
+
+                    Mono.Global _ _ ->
+                        -- Existing logic with monoGlobalToTOpt and toptNodes lookup
+                        let
+                            toptGlobal =
+                                monoGlobalToTOpt global
+                        in
+                        case Dict.get TOpt.toComparableGlobal toptGlobal state2.toptNodes of
+                            Nothing ->
+                                -- External or missing definition; treat as extern.
+                                let
+                                    newState =
+                                        { state2
+                                            | nodes = Dict.insert identity specId (Mono.MonoExtern monoType) state2.nodes
+                                            , inProgress = EverySet.remove identity specId state2.inProgress
+                                            , currentGlobal = Nothing
+                                        }
+                                in
+                                processWorklist newState
+
+                            Just toptNode ->
+                                -- Specialize this node to concrete types.
+                                -- Pass the global's name for constructor name population.
+                                let
+                                    ctorName =
+                                        case global of
+                                            Mono.Global _ name ->
+                                                name
+
+                                            Mono.Accessor _ ->
+                                                ""
+
+                                    ( monoNode, stateAfter ) =
+                                        Specialize.specializeNode ctorName toptNode monoType state2
+
+                                    newState =
+                                        { stateAfter
+                                            | nodes = Dict.insert identity specId monoNode stateAfter.nodes
+                                            , inProgress = EverySet.remove identity specId stateAfter.inProgress
+                                            , currentGlobal = Nothing
+                                        }
+                                in
+                                processWorklist newState
+
+
+
+specializeAccessorGlobal : Name -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
+specializeAccessorGlobal fieldName monoType state =
+    case monoType of
+        Mono.MFunction [ Mono.MRecord layout ] fieldType ->
+            let
+                ( fieldIndex, isUnboxed ) =
+                    Specialize.lookupFieldIndex fieldName (Mono.MRecord layout)
+
+                paramName =
+                    "record"
+
+                recordType =
+                    Mono.MRecord layout
+
+                bodyExpr =
+                    Mono.MonoRecordAccess
+                        (Mono.MonoVarLocal paramName recordType)
+                        fieldName
+                        fieldIndex
+                        isUnboxed
+                        fieldType
+            in
+            ( Mono.MonoTailFunc [ ( paramName, recordType ) ] bodyExpr monoType, state )
+
+        _ ->
+            Utils.Crash.crash "Monomorphize" "specializeAccessorGlobal" "Expected MFunction [MRecord ...] fieldType"
 
 
 {-| Substitution mapping type variable names to their concrete monomorphic types.
@@ -574,8 +628,13 @@ toptGlobalToMono (TOpt.Global canonical name) =
 {-| Convert a monomorphized global reference to a typed optimized global reference.
 -}
 monoGlobalToTOpt : Mono.Global -> TOpt.Global
-monoGlobalToTOpt (Mono.Global canonical name) =
-    TOpt.Global canonical name
+monoGlobalToTOpt global =
+    case global of
+        Mono.Global canonical name ->
+            TOpt.Global canonical name
+
+        Mono.Accessor _ ->
+            Utils.Crash.crash "Monomorphize" "monoGlobalToTOpt" "Accessor should be handled before calling monoGlobalToTOpt"
 
 
 

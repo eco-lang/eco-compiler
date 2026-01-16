@@ -1,24 +1,10 @@
 module Compiler.Generate.MLIR.Context exposing
-    ( Context
-    , FuncSignature
-    , PendingAccessor
-    , PendingLambda
-    , PendingWrapper
-    , TypeRegistry
-    , initContext
-    , emptyTypeRegistry
-    , freshVar
-    , freshOpId
-    , lookupVar
-    , addVarMapping
-    , getOrCreateTypeIdForMonoType
-    , registerNestedTypes
-    , registerKernelCall
-    , extractNodeSignature
-    , buildSignatures
-    , kernelFuncSignatureFromType
-    , isTypeVar
-    , hasKernelImplementation
+    ( Context, FuncSignature, PendingLambda, PendingWrapper, TypeRegistry
+    , initContext, emptyTypeRegistry
+    , freshVar, freshOpId, lookupVar, addVarMapping
+    , getOrCreateTypeIdForMonoType, registerNestedTypes, registerKernelCall
+    , extractNodeSignature, buildSignatures, kernelFuncSignatureFromType
+    , isTypeVar, hasKernelImplementation
     )
 
 {-| MLIR code generation context.
@@ -129,7 +115,6 @@ type alias Context =
     , registry : Mono.SpecializationRegistry
     , pendingLambdas : List PendingLambda
     , pendingWrappers : List PendingWrapper -- Boxed wrappers for PAP targets with unboxed params
-    , pendingAccessors : List PendingAccessor -- Record field accessor functions (.fieldName)
     , signatures : Dict.Dict Int FuncSignature -- SpecId -> signature for invariant checking
     , varMappings : Dict.Dict String ( String, MlirType ) -- Let-bound name -> (SSA variable name, MLIR type)
     , kernelDecls : Dict.Dict String ( List MlirType, MlirType ) -- Kernel function name -> (argTypes, returnType)
@@ -192,7 +177,6 @@ initContext mode registry signatures initialCtorLayouts =
     , registry = registry
     , pendingLambdas = []
     , pendingWrappers = []
-    , pendingAccessors = []
     , signatures = signatures
     , varMappings = Dict.empty
     , kernelDecls = Dict.empty

@@ -64,6 +64,7 @@ import Compiler.Optimize.Typed.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as IO
+import Utils.Crash
 
 
 
@@ -255,6 +256,10 @@ specializeCycle _ valueDefs funcDefs requestedMonoType state =
                 funcDefs
                 requestedMonoType
                 state
+
+        ( False, Just (Mono.Accessor _) ) ->
+            -- Accessors are virtual globals and don't participate in cycles
+            Utils.Crash.crash "Specialize" "specializeCycle" "Accessor should not appear in cycles"
 
 
 {-| Specialize a cycle containing only value definitions.
@@ -953,8 +958,20 @@ specializeExpr expr subst state =
             let
                 monoType =
                     TypeSubst.applySubst subst canType
+
+                accessorGlobal =
+                    Mono.Accessor fieldName
+
+                ( specId, newRegistry ) =
+                    Mono.getOrCreateSpecId accessorGlobal monoType Nothing state.registry
+
+                newState =
+                    { state
+                        | registry = newRegistry
+                        , worklist = SpecializeGlobal accessorGlobal monoType Nothing :: state.worklist
+                    }
             in
-            ( Mono.MonoAccessor region fieldName monoType, state )
+            ( Mono.MonoVarGlobal region specId monoType, newState )
 
         TOpt.Access record _ fieldName canType ->
             let
@@ -1624,5 +1641,10 @@ toptGlobalToMono (TOpt.Global canonical name) =
 {-| Convert a monomorphized global reference to a typed optimized global reference.
 -}
 monoGlobalToTOpt : Mono.Global -> TOpt.Global
-monoGlobalToTOpt (Mono.Global canonical name) =
-    TOpt.Global canonical name
+monoGlobalToTOpt global =
+    case global of
+        Mono.Global canonical name ->
+            TOpt.Global canonical name
+
+        Mono.Accessor _ ->
+            Utils.Crash.crash "Specialize" "monoGlobalToTOpt" "Accessor should be handled before calling monoGlobalToTOpt"

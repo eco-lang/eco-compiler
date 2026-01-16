@@ -105,6 +105,10 @@ generateNode ctx specId node =
                         Just ( Mono.Global _ ctorName, _, _ ) ->
                             Just (Name.toElmString ctorName)
 
+                        Just ( Mono.Accessor _, _, _ ) ->
+                            -- Accessors don't have constructor names
+                            Nothing
+
                         Nothing ->
                             Nothing
 
@@ -135,6 +139,9 @@ specIdToFuncName registry specId =
     case Mono.lookupSpecKey specId registry of
         Just ( Mono.Global home name, _, _ ) ->
             Names.canonicalToMLIRName home ++ "_" ++ Names.sanitizeName name ++ "_$_" ++ String.fromInt specId
+
+        Just ( Mono.Accessor fieldName, _, _ ) ->
+            "accessor_" ++ Names.sanitizeName fieldName ++ "_$_" ++ String.fromInt specId
 
         Nothing ->
             "unknown_$_" ++ String.fromInt specId

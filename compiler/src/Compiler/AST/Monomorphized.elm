@@ -255,10 +255,12 @@ type LambdaId
 -- ============================================================================
 
 
-{-| A reference to a top-level definition in a module.
+{-| A reference to a top-level definition in a module, or a virtual
+global for record field accessors (.field).
 -}
 type Global
     = Global IO.Canonical Name
+    | Accessor Name
 
 
 {-| Key identifying a unique specialization of a polymorphic function.
@@ -396,7 +398,6 @@ type MonoExpr
     | MonoRecordUpdate MonoExpr (List ( Int, MonoExpr )) RecordLayout MonoType
     | MonoTupleCreate Region (List MonoExpr) TupleLayout MonoType
     | MonoUnit
-    | MonoAccessor Region Name MonoType -- Polymorphic global, to be resolved at call site
 
 
 {-| Literal values in monomorphized expressions.
@@ -545,9 +546,6 @@ typeOf expr =
         MonoUnit ->
             MUnit
 
-        MonoAccessor _ _ t ->
-            t
-
 
 {-| Determine whether a type can be unboxed (stored inline without heap allocation).
 -}
@@ -659,8 +657,13 @@ computeTupleLayout types =
 {-| Convert a global reference to a comparable key for use in dictionaries.
 -}
 toComparableGlobal : Global -> List String
-toComparableGlobal (Global home name) =
-    ModuleName.toComparableCanonical home ++ [ name ]
+toComparableGlobal global =
+    case global of
+        Global home name ->
+            "Global" :: ModuleName.toComparableCanonical home ++ [ name ]
+
+        Accessor fieldName ->
+            [ "Accessor", fieldName ]
 
 
 {-| Convert a monomorphic type to a comparable key for use in dictionaries.

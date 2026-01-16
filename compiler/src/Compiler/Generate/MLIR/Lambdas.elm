@@ -1,6 +1,5 @@
 module Compiler.Generate.MLIR.Lambdas exposing
     ( processLambdas
-    , processPendingAccessors
     , processPendingWrappers
     )
 
@@ -10,7 +9,6 @@ This module handles:
 
   - Processing pending lambdas into func.func ops
   - Generating PAP wrapper functions for unboxed params
-  - Generating accessor functions for record field access (.fieldName)
 
 @docs processLambdas, processPendingAccessors, processPendingWrappers
 
@@ -289,110 +287,3 @@ generatePapWrapper ctx wrapper =
             Ops.funcFunc ctx5 wrapper.wrapperName argPairs Types.ecoValue region
     in
     ( funcOp, ctxFinal )
-
-
-
--- ====== ACCESSOR FUNCTION GENERATION ======
-
-
-{-| Generate all pending accessor functions accumulated in the context.
-
-Clears ctx.pendingAccessors and returns the generated func.func ops plus the
-updated context.
-
-An accessor function has this signature:
-
-    accessorName : (!eco.value) -> !eco.value
-
-It:
-
-  - Takes a record as !eco.value
-  - Projects the specified field using eco.project.record
-  - Returns the field value (boxing primitive fields to !eco.value if needed)
-
--}
-processPendingAccessors : Ctx.Context -> ( List MlirOp, Ctx.Context )
-processPendingAccessors ctx =
-    case ctx.pendingAccessors of
-        [] ->
-            ( [], ctx )
-
-        accessors ->
-            let
-                ctxCleared : Ctx.Context
-                ctxCleared =
-                    { ctx | pendingAccessors = [] }
-
-                ( ops, ctxAfter ) =
-                    List.foldl
-                        (\accessor ( accOps, accCtx ) ->
-                            let
-                                ( op, newCtx ) =
-                                    generateAccessorFunc accCtx accessor
-                            in
-                            ( accOps ++ [ op ], newCtx )
-                        )
-                        ( [], ctxCleared )
-                        accessors
-            in
-            ( ops, ctxAfter )
-
-
-{-| Generate an accessor function for a record field.
-
-The accessor takes a record (!eco.value) and returns the field value (!eco.value).
-
--}
-generateAccessorFunc : Ctx.Context -> Ctx.PendingAccessor -> ( MlirOp, Ctx.Context )
-generateAccessorFunc ctx accessor =
-    let
-        -- Accessor takes one argument: the record
-        recordArgName : String
-        recordArgName =
-            "%record"
-
-        argPairs : List ( String, MlirType )
-        argPairs =
-            [ ( recordArgName, Types.ecoValue ) ]
-
-        -- Start body with args in scope; next SSA id after args
-        ctxWithArgs : Ctx.Context
-        ctxWithArgs =
-            { ctx | nextVar = 1 }
-
-        -- Project the field from the record
-        ( projectVar, ctx1 ) =
-            Ctx.freshVar ctxWithArgs
-
-        fieldMlirType : MlirType
-        fieldMlirType =
-            Types.monoTypeToMlir accessor.fieldType
-
-        -- The type we project to depends on whether the field is stored unboxed
-        projectToType : MlirType
-        projectToType =
-            if accessor.isUnboxed then
-                fieldMlirType
-
-            else
-                Types.ecoValue
-
-        ( ctx2, projectOp ) =
-            Ops.ecoProjectRecord ctx1 projectVar accessor.fieldIndex projectToType recordArgName
-
-        -- Box the result to !eco.value if it's a primitive type
-        ( boxOps, finalResultVar, ctx3 ) =
-            Expr.boxToEcoValue ctx2 projectVar projectToType
-
-        ( ctx4, returnOp ) =
-            Ops.ecoReturn ctx3 finalResultVar Types.ecoValue
-
-        region : MlirRegion
-        region =
-            Ops.mkRegion argPairs ([ projectOp ] ++ boxOps) returnOp
-
-        ( ctxFinal, funcOp ) =
-            Ops.funcFunc ctx4 accessor.accessorName argPairs Types.ecoValue region
-    in
-    ( funcOp, ctxFinal )
-

@@ -124,18 +124,48 @@ unifyHelp canType monoType subst =
                 _ ->
                     subst
 
-        ( Can.TRecord fields _, Mono.MRecord layout ) ->
-            List.foldl
-                (\fieldInfo s ->
-                    case Dict.get identity fieldInfo.name fields of
-                        Just (Can.FieldType _ fieldType) ->
-                            unifyHelp fieldType fieldInfo.monoType s
+        ( Can.TRecord fields maybeExtension, Mono.MRecord layout ) ->
+            let
+                -- First unify matching fields
+                substWithFields =
+                    List.foldl
+                        (\fieldInfo s ->
+                            case Dict.get identity fieldInfo.name fields of
+                                Just (Can.FieldType _ fieldType) ->
+                                    unifyHelp fieldType fieldInfo.monoType s
+
+                                Nothing ->
+                                    s
+                        )
+                        subst
+                        layout.fields
+
+                -- Then bind extension variable to remaining fields
+                substWithExtension =
+                    case maybeExtension of
+                        Just extName ->
+                            let
+                                -- Fields in layout that are not in the canonical record
+                                remainingFields =
+                                    List.filter
+                                        (\f -> Dict.get identity f.name fields == Nothing)
+                                        layout.fields
+
+                                -- Create a record type with the remaining fields
+                                remainingLayout =
+                                    Mono.computeRecordLayout
+                                        (List.foldl
+                                            (\f d -> Dict.insert identity f.name f.monoType d)
+                                            Dict.empty
+                                            remainingFields
+                                        )
+                            in
+                            Dict.insert identity extName (Mono.MRecord remainingLayout) substWithFields
 
                         Nothing ->
-                            s
-                )
-                subst
-                layout.fields
+                            substWithFields
+            in
+            substWithExtension
 
         ( Can.TTuple a b rest, Mono.MTuple layout ) ->
             let
@@ -285,10 +315,32 @@ applySubst subst canType =
                 -- Custom type
                 Mono.MCustom canonical name monoArgs
 
-        Can.TRecord fields _ ->
+        Can.TRecord fields maybeExtension ->
             let
-                monoFields =
+                -- Get base fields from extension variable if present
+                baseFields =
+                    case maybeExtension of
+                        Just extName ->
+                            case Dict.get identity extName subst of
+                                Just (Mono.MRecord baseLayout) ->
+                                    List.foldl
+                                        (\f d -> Dict.insert identity f.name f.monoType d)
+                                        Dict.empty
+                                        baseLayout.fields
+
+                                _ ->
+                                    Dict.empty
+
+                        Nothing ->
+                            Dict.empty
+
+                -- Convert explicit fields to mono types
+                extensionFields =
                     Dict.map (\_ (Can.FieldType _ t) -> applySubst subst t) fields
+
+                -- Merge: extension fields override base fields
+                monoFields =
+                    Dict.union extensionFields baseFields
 
                 layout =
                     Mono.computeRecordLayout monoFields
