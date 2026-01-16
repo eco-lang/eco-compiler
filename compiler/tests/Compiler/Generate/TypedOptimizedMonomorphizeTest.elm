@@ -8,6 +8,7 @@ the typed optimization pipeline and then monomorphization.
 -}
 
 import Compiler.AnnotatedTests as AnnotatedTests
+import Compiler.ArrayTest as ArrayTest
 import Compiler.AsPatternTests as AsPatternTests
 import Compiler.BinopTests as BinopTests
 import Compiler.BitwiseTests as BitwiseTests
@@ -30,6 +31,10 @@ import Compiler.OperatorTests as OperatorTests
 import Compiler.PatternArgTests as PatternArgTests
 import Compiler.PatternMatchingTests as PatternMatchingTests
 import Compiler.RecordTests as RecordTests
+import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
+import Compiler.SpecializeConstructorTests as SpecializeConstructorTests
+import Compiler.SpecializeCycleTests as SpecializeCycleTests
+import Compiler.SpecializeExprTests as SpecializeExprTests
 import Compiler.TupleTests as TupleTests
 import Test exposing (Test)
 
@@ -38,10 +43,16 @@ suite : Test
 suite =
     Test.describe "TypedOptimized code monomorphizes successfully"
         [ AnnotatedTests.expectSuite expectMonomorphization "monomorphizes"
+        , ArrayTest.expectSuite expectMonomorphization "monomorphizes"
         , AsPatternTests.expectSuite expectMonomorphization "monomorphizes"
         , BinopTests.expectSuite expectMonomorphization "monomorphizes"
+        , BitwiseTests.expectSuite expectMonomorphization "monomorphizes"
         , CaseTests.expectSuite expectMonomorphization "monomorphizes"
+        , ClosureTests.expectSuite expectMonomorphization "monomorphizes"
+        , ControlFlowTests.expectSuite expectMonomorphization "monomorphizes"
+        , DeepFuzzTests.expectSuite expectMonomorphization "monomorphizes"
         , EdgeCaseTests.expectSuite expectMonomorphization "monomorphizes"
+        , FloatMathTests.expectSuite expectMonomorphization "monomorphizes"
         , FunctionTests.expectSuite expectMonomorphization "monomorphizes"
         , HigherOrderTests.expectSuite expectMonomorphization "monomorphizes"
         , LetDestructTests.expectSuite expectMonomorphization "monomorphizes"
@@ -52,16 +63,11 @@ suite =
         , MultiDefTests.expectSuite expectMonomorphization "monomorphizes"
         , OperatorTests.expectSuite expectMonomorphization "monomorphizes"
         , PatternArgTests.expectSuite expectMonomorphization "monomorphizes"
-        , RecordTests.expectSuite expectMonomorphization "monomorphizes"
-        , TupleTests.expectSuite expectMonomorphization "monomorphizes"
-
-        -- Deep structural fuzz tests
-        , DeepFuzzTests.expectSuite expectMonomorphization "monomorphizes"
-
-        -- MLIR and Monomorphize coverage tests
-        , BitwiseTests.expectSuite expectMonomorphization "monomorphizes"
-        , FloatMathTests.expectSuite expectMonomorphization "monomorphizes"
         , PatternMatchingTests.expectSuite expectMonomorphization "monomorphizes"
-        , ClosureTests.expectSuite expectMonomorphization "monomorphizes"
-        , ControlFlowTests.expectSuite expectMonomorphization "monomorphizes"
+        , RecordTests.expectSuite expectMonomorphization "monomorphizes"
+        , SpecializeAccessorTests.expectSuite expectMonomorphization "monomorphizes"
+        , SpecializeConstructorTests.expectSuite expectMonomorphization "monomorphizes"
+        , SpecializeCycleTests.expectSuite expectMonomorphization "monomorphizes"
+        , SpecializeExprTests.expectSuite expectMonomorphization "monomorphizes"
+        , TupleTests.expectSuite expectMonomorphization "monomorphizes"
         ]
