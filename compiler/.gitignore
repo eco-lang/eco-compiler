@@ -22,3 +22,4 @@ assets/some-application/index.html
 
 # Examples
 examples/index.html
+.coverage/
