@@ -77,7 +77,7 @@ checkNodeArity specId node =
                     List.length params
 
                 typeArity =
-                    getFunctionArity monoType
+                    getFlattenedArity monoType
 
                 arityIssue =
                     if typeArity /= paramCount then
@@ -101,19 +101,71 @@ checkNodeArity specId node =
             []
 
 
-{-| Get the arity (number of parameters) from a function type.
+{-| Flatten a curried function type into a list of argument types and a final return type.
+
+For example, `MFunction [a] (MFunction [b] c)` becomes `([a, b], c)`.
+
 -}
-getFunctionArity : Mono.MonoType -> Int
-getFunctionArity monoType =
+flattenFunctionType : Mono.MonoType -> ( List Mono.MonoType, Mono.MonoType )
+flattenFunctionType monoType =
     case monoType of
-        Mono.MFunction paramTypes _ ->
-            List.length paramTypes
+        Mono.MFunction params result ->
+            let
+                ( innerParams, innerResult ) =
+                    flattenFunctionType result
+            in
+            ( params ++ innerParams, innerResult )
+
+        _ ->
+            ( [], monoType )
+
+
+{-| Get the flattened arity (total number of parameters) from a function type.
+
+This computes the flattened arity by peeling nested MFunction layers.
+For example, `MFunction [a] (MFunction [b] c)` has flattened arity 2.
+
+Used for call site checks to prevent over-application.
+
+-}
+getFlattenedArity : Mono.MonoType -> Int
+getFlattenedArity monoType =
+    let
+        ( params, _ ) =
+            flattenFunctionType monoType
+    in
+    List.length params
+
+
+{-| Get the top-level arity from a function type (without flattening).
+
+For example, `MFunction [a] (MFunction [b] c)` has top-level arity 1.
+A closure with this type legitimately has 1 param and returns a function.
+
+Used for closure parameter checks where the closure may return another function.
+
+-}
+getTopLevelArity : Mono.MonoType -> Int
+getTopLevelArity monoType =
+    case monoType of
+        Mono.MFunction params _ ->
+            List.length params
 
         _ ->
             0
 
 
 {-| Check that a type and expression have consistent arity.
+
+For closures, we check the flattened arity since Elm represents multi-param
+functions as single closures with flattened params (e.g., `\x y -> expr`
+becomes one closure with params=[x,y] and type `a -> b -> c`).
+
+NOTE: Explicitly nested lambdas like `\x -> \y -> expr` (as opposed to `\x y -> expr`)
+create separate closures, each with their own params. For such closures, the
+body is itself a closure, and the outer closure's params will be fewer than
+the flattened arity. This is valid - we only fail if params > flattened arity.
+
 -}
 checkTypeExprArityConsistency : String -> Mono.MonoType -> Mono.MonoExpr -> List String
 checkTypeExprArityConsistency context monoType expr =
@@ -124,9 +176,11 @@ checkTypeExprArityConsistency context monoType expr =
                     List.length closureInfo.params
 
                 typeArity =
-                    getFunctionArity monoType
+                    getFlattenedArity monoType
             in
-            if typeArity /= paramCount then
+            -- Closure can have fewer params than flattened arity (returns a function),
+            -- but should never have MORE params than the type allows
+            if paramCount > typeArity then
                 [ context ++ ": Closure has " ++ String.fromInt paramCount ++ " params but definition type has arity " ++ String.fromInt typeArity ]
 
             else
@@ -137,21 +191,27 @@ checkTypeExprArityConsistency context monoType expr =
 
 
 {-| Collect arity issues from expressions.
+
+For closures: check that params don't exceed flattened arity.
+For calls: check that args don't exceed flattened arity (prevent over-application).
+
 -}
 collectExprArityIssues : String -> Mono.MonoExpr -> List String
 collectExprArityIssues context expr =
     case expr of
         Mono.MonoClosure closureInfo bodyExpr monoType ->
-            -- Check closure parameter count vs closure's own function type
+            -- Check closure parameter count vs closure's flattened function type.
+            -- A closure can have fewer params than flattened arity if it returns a function,
+            -- but it should never have MORE params than the type allows.
             let
                 paramCount =
                     List.length closureInfo.params
 
                 typeArity =
-                    getFunctionArity monoType
+                    getFlattenedArity monoType
 
                 closureIssue =
-                    if typeArity /= paramCount then
+                    if paramCount > typeArity then
                         [ context ++ ": Closure expression has " ++ String.fromInt paramCount ++ " params but its type has arity " ++ String.fromInt typeArity ]
 
                     else
@@ -162,14 +222,14 @@ collectExprArityIssues context expr =
                 ++ collectExprArityIssues context bodyExpr
 
         Mono.MonoCall _ fnExpr argExprs monoType ->
-            -- Check that call site doesn't over-apply
+            -- Check that call site doesn't over-apply (use flattened arity)
             -- (Partial application is allowed, so under-application is fine)
             let
                 fnType =
                     Mono.typeOf fnExpr
 
                 fnArity =
-                    getFunctionArity fnType
+                    getFlattenedArity fnType
 
                 argCount =
                     List.length argExprs
@@ -241,7 +301,7 @@ collectDefArityIssues context def =
                     List.length params
 
                 typeArity =
-                    getFunctionArity exprType
+                    getFlattenedArity exprType
 
                 -- For tail defs, the expression should be the body, not a function
                 -- So we just collect issues from the expression
