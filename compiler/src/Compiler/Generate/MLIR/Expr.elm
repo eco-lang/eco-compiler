@@ -25,6 +25,26 @@ module Compiler.Generate.MLIR.Expr exposing
 
 This module handles generation of MLIR code for all Elm expressions.
 
+
+# Result Type
+
+@docs ExprResult, emptyResult
+
+
+# Expression Generation
+
+@docs generateExpr, generateList, generateClosure, generateCall, generateTailCall, generateIf, generateLet
+
+
+# Data Structure Generation
+
+@docs generateRecordCreate, generateRecordAccess, generateRecordUpdate, generateTupleCreate, generateUnit, generateAccessor
+
+
+# Boxing and Coercion
+
+@docs boxToEcoValue, boxToMatchSignatureTyped, coerceResultToType, generateExprListTyped, boxArgsWithMlirTypes
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
@@ -50,6 +70,8 @@ import Utils.Crash exposing (crash)
 -- ====== EXPRESSION RESULT ======
 
 
+{-| Result of generating MLIR code for an expression.
+-}
 type alias ExprResult =
     { ops : List MlirOp
     , resultVar : String
@@ -58,6 +80,8 @@ type alias ExprResult =
     }
 
 
+{-| Create an empty expression result with no ops.
+-}
 emptyResult : Ctx.Context -> String -> MlirType -> ExprResult
 emptyResult ctx var ty =
     { ops = [], resultVar = var, resultType = ty, ctx = ctx }
@@ -124,6 +148,8 @@ createDummyValue ctx mlirType =
 -- ====== GENERATE EXPRESSION ======
 
 
+{-| Generate MLIR code for a monomorphic expression.
+-}
 generateExpr : Ctx.Context -> Mono.MonoExpr -> ExprResult
 generateExpr ctx expr =
     case expr of
@@ -587,6 +613,8 @@ generateVarKernel ctx home name monoType =
 -- ====== LIST GENERATION ======
 
 
+{-| Generate MLIR code for a list literal.
+-}
 generateList : Ctx.Context -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateList ctx items listType =
     -- Register the list type for the type graph
@@ -657,6 +685,8 @@ generateList ctx items listType =
 -- ====== CLOSURE GENERATION ======
 
 
+{-| Generate MLIR code for a closure.
+-}
 generateClosure : Ctx.Context -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateClosure ctx closureInfo body monoType =
     let
@@ -890,6 +920,8 @@ coerceResultToType ctx var actualTy expectedTy =
                 ++ var
 
 
+{-| Generate MLIR code for a function call.
+-}
 generateCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateCall ctx func args resultType =
     -- If the result type is still a function, this is a partial application.
@@ -1502,6 +1534,8 @@ boxArgsWithMlirTypes ctx args =
 -- ====== TAIL CALL GENERATION ======
 
 
+{-| Generate MLIR code for a tail call.
+-}
 generateTailCall : Ctx.Context -> Name.Name -> List ( Name.Name, Mono.MonoExpr ) -> ExprResult
 generateTailCall ctx name args =
     let
@@ -1676,6 +1710,8 @@ addPlaceholderMappings names ctx =
         names
 
 
+{-| Generate MLIR code for a let expression.
+-}
 generateLet : Ctx.Context -> Mono.MonoDef -> Mono.MonoExpr -> ExprResult
 generateLet ctx def body =
     -- For mutually recursive definitions, add placeholder mappings for all
@@ -2258,6 +2294,8 @@ generateCase ctx _ root decider jumps resultMonoType =
 -- ====== RECORD GENERATION ======
 
 
+{-| Generate MLIR code to create a record.
+-}
 generateRecordCreate : Ctx.Context -> List Mono.MonoExpr -> Mono.RecordLayout -> ExprResult
 generateRecordCreate ctx fields layout =
     -- Register the record type for the type graph
@@ -2337,6 +2375,8 @@ generateRecordCreate ctx fields layout =
         }
 
 
+{-| Generate MLIR code to access a record field.
+-}
 generateRecordAccess : Ctx.Context -> Mono.MonoExpr -> Name.Name -> Int -> Bool -> Mono.MonoType -> ExprResult
 generateRecordAccess ctx record _ index isUnboxed fieldType =
     let
@@ -2392,6 +2432,8 @@ generateRecordAccess ctx record _ index isUnboxed fieldType =
         }
 
 
+{-| Generate MLIR code to update record fields.
+-}
 generateRecordUpdate : Ctx.Context -> Mono.MonoExpr -> List ( Int, Mono.MonoExpr ) -> Mono.RecordLayout -> ExprResult
 generateRecordUpdate ctx record _ _ =
     let
@@ -2416,6 +2458,8 @@ generateRecordUpdate ctx record _ _ =
 -- ====== TUPLE GENERATION ======
 
 
+{-| Generate MLIR code to create a tuple.
+-}
 generateTupleCreate : Ctx.Context -> List Mono.MonoExpr -> Mono.TupleLayout -> ExprResult
 generateTupleCreate ctx elements layout =
     -- Register the tuple type for the type graph
@@ -2494,6 +2538,8 @@ generateTupleCreate ctx elements layout =
 -- ====== UNIT GENERATION ======
 
 
+{-| Generate MLIR code for a Unit value.
+-}
 generateUnit : Ctx.Context -> ExprResult
 generateUnit ctx =
     let

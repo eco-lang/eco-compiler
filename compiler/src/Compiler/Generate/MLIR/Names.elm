@@ -7,6 +7,8 @@ module Compiler.Generate.MLIR.Names exposing
 
 This module provides functions for converting Elm names to MLIR-safe identifiers.
 
+@docs canonicalToMLIRName, sanitizeName
+
 -}
 
 import System.TypeCheck.IO as IO

@@ -22,7 +22,7 @@ definitions when specializing polymorphic code.
 
 # Builders
 
-@docs fromCanonical, emptyGlobal, emptyGlobalTypeEnv, mergeGlobalTypeEnv
+@docs fromCanonical, fromInterface, fromInterfaces, emptyGlobal, emptyGlobalTypeEnv, mergeGlobalTypeEnv
 
 
 # Serialization

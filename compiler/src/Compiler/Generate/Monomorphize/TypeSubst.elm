@@ -14,6 +14,21 @@ module Compiler.Generate.Monomorphize.TypeSubst exposing
 This module handles converting canonical types to monomorphic types
 by applying type variable substitutions.
 
+
+# Substitution
+
+@docs applySubst
+
+
+# Type Conversion
+
+@docs canTypeToMonoType, constraintFromName
+
+
+# Unification
+
+@docs unify, unifyHelp, unifyFuncCall, unifyArgsOnly, extractParamTypes
+
 -}
 
 import Compiler.AST.Canonical as Can
@@ -156,6 +171,8 @@ unifyHelp canType monoType subst =
             subst
 
 
+{-| Unify function arguments only, ignoring the result type.
+-}
 unifyArgsOnly : Can.Type -> List Mono.MonoType -> Substitution -> Substitution
 unifyArgsOnly canFuncType argTypes subst =
     case ( canFuncType, argTypes ) of

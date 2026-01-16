@@ -24,6 +24,31 @@ module Compiler.Generate.Monomorphize.Specialize exposing
 This module handles converting typed optimized expressions and nodes
 into monomorphized form by applying type substitutions.
 
+
+# Specialization
+
+@docs specializeNode, specializeCycle, specializeExpr, specializeDecider, specializeArg
+
+
+# Definition Utilities
+
+@docs defHasName, getDefName, getDefCanonicalType
+
+
+# Type Extraction
+
+@docs extractCtorResultType, getRecordLayout, getTupleLayout, lookupFieldIndex
+
+
+# Type Building
+
+@docs buildFuncType, buildCtorLayoutFromArity, extractFieldTypes, deriveKernelAbiType
+
+
+# Global Conversion
+
+@docs toptGlobalToMono, monoGlobalToTOpt
+
 -}
 
 import Compiler.AST.Canonical as Can
@@ -1254,6 +1279,8 @@ hintToKind hint =
             Mono.CustomContainer
 
 
+{-| Specialize a pattern match decider tree.
+-}
 specializeDecider : TOpt.Decider TOpt.Choice -> Substitution -> MonoState -> ( Mono.Decider Mono.MonoChoice, MonoState )
 specializeDecider decider subst state =
     case decider of
@@ -1431,6 +1458,8 @@ specializeUpdates updates layout subst state =
         updates
 
 
+{-| Specialize a function argument by applying type substitution.
+-}
 specializeArg : Substitution -> ( A.Located Name, Can.Type ) -> ( Name, Mono.MonoType )
 specializeArg subst ( locName, canType ) =
     ( A.toValue locName, TypeSubst.applySubst subst canType )
@@ -1456,6 +1485,8 @@ getRecordLayout monoType =
             }
 
 
+{-| Extract the tuple layout from a tuple MonoType.
+-}
 getTupleLayout : Mono.MonoType -> Mono.TupleLayout
 getTupleLayout monoType =
     case monoType of

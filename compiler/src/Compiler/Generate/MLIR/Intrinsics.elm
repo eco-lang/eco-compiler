@@ -13,6 +13,8 @@ module Compiler.Generate.MLIR.Intrinsics exposing
 This module defines intrinsics for core Elm operations that can be
 directly lowered to efficient MLIR operations without kernel calls.
 
+@docs Intrinsic, kernelIntrinsic, intrinsicResultMlirType, intrinsicOperandTypes, unboxArgsForIntrinsic, unboxToType, generateIntrinsicOp
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
@@ -28,6 +30,8 @@ import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))
 -- ====== INTRINSIC TYPE ======
 
 
+{-| Intrinsic operation type representing operations that can be lowered directly to MLIR.
+-}
 type Intrinsic
     = UnaryInt { op : String }
     | BinaryInt { op : String }
@@ -188,6 +192,8 @@ unboxArgsForIntrinsic ctx argsWithTypes intrinsic =
 -- ====== INTRINSIC LOOKUP ======
 
 
+{-| Look up an intrinsic for a kernel function call.
+-}
 kernelIntrinsic : Name.Name -> Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
 kernelIntrinsic home name argTypes resultType =
     case home of
@@ -419,6 +425,8 @@ bitwiseIntrinsic name argTypes _ =
 -- ====== INTRINSIC OP GENERATION ======
 
 
+{-| Generate an MLIR operation for an intrinsic.
+-}
 generateIntrinsicOp : Ctx.Context -> Intrinsic -> String -> List String -> ( Ctx.Context, MlirOp )
 generateIntrinsicOp ctx intrinsic resultVar argVars =
     case intrinsic of

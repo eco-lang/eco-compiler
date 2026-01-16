@@ -16,6 +16,21 @@ This module handles:
   - Custom type collection (finding all MCustom types)
   - Union type lookup
 
+
+# Dependency Collection
+
+@docs collectDepsHelp, collectDeciderDeps
+
+
+# Custom Type Collection
+
+@docs collectCustomTypesFromMonoType, collectCustomTypesFromExpr, collectCustomTypesFromDecider, collectAllCustomTypes
+
+
+# Union Type Lookup
+
+@docs lookupUnion
+
 -}
 
 import Compiler.AST.Canonical as Can
@@ -102,6 +117,8 @@ collectDepsHelp expr deps =
             deps
 
 
+{-| Collect dependencies from a pattern match decider tree.
+-}
 collectDeciderDeps : Mono.Decider Mono.MonoChoice -> EverySet Int Int -> EverySet Int Int
 collectDeciderDeps decider deps =
     case decider of

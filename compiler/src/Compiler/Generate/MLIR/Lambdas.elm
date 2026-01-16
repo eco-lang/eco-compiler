@@ -12,6 +12,8 @@ This module handles:
   - Generating PAP wrapper functions for unboxed params
   - Generating accessor functions for record field access (.fieldName)
 
+@docs processLambdas, processPendingAccessors, processPendingWrappers
+
 -}
 
 import Compiler.Generate.MLIR.Context as Ctx
@@ -26,6 +28,8 @@ import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion(..), MlirType(..))
 -- ====== LAMBDA PROCESSING ======
 
 
+{-| Process pending lambdas and generate their function definitions.
+-}
 processLambdas : Ctx.Context -> ( List MlirOp, Ctx.Context )
 processLambdas ctx =
     case ctx.pendingLambdas of

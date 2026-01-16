@@ -15,6 +15,16 @@ layout decisions (field ordering, unboxing bitmaps, indices, etc.).
 The monomorphization phase produces these shapes, and a separate layout phase
 converts them to backend-specific layouts with field indices and unboxing info.
 
+
+# Types
+
+@docs MRecordShape, MTupleShape, CtorShape
+
+
+# Comparable Conversions
+
+@docs toComparableRecordShape, toComparableTupleShape, toComparableCtorShape
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
@@ -73,7 +83,7 @@ type alias CtorShape =
 -}
 toComparableRecordShape : MRecordShape -> List ( String, List String )
 toComparableRecordShape shape =
-    Dict.toList identity shape.fields
+    Dict.toList compare shape.fields
         |> List.map (\( name, monoType ) -> ( name, Mono.toComparableMonoType monoType ))
 
 

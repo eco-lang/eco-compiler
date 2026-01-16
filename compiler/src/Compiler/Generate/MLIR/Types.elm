@@ -14,6 +14,21 @@ This module provides:
   - MonoType to MlirType conversion
   - Function type utilities
 
+
+# Eco Dialect Types
+
+@docs ecoValue, ecoInt, ecoFloat, ecoChar
+
+
+# Type Conversion
+
+@docs monoTypeToMlir, mlirTypeToString
+
+
+# Function Type Utilities
+
+@docs isFunctionType, functionArity, countTotalArity, decomposeFunctionType, isEcoValueType
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
@@ -56,6 +71,8 @@ ecoChar =
 -- ====== CONVERT MONOTYPE TO MLIR TYPE ======
 
 
+{-| Convert a MonoType to an MLIR type.
+-}
 monoTypeToMlir : Mono.MonoType -> MlirType
 monoTypeToMlir monoType =
     case monoType of

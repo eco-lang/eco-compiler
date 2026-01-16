@@ -16,6 +16,8 @@ This module handles generation of all function types:
   - Externs
   - Cycles
 
+@docs generateMainEntry, generateNode, generateKernelDecl
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
@@ -37,6 +39,8 @@ import System.TypeCheck.IO as IO
 -- ====== GENERATE MAIN ENTRY ======
 
 
+{-| Generate the main entry point function.
+-}
 generateMainEntry : Ctx.Context -> Mono.MainInfo -> List MlirOp
 generateMainEntry ctx mainInfo =
     case mainInfo of
@@ -69,6 +73,8 @@ generateMainEntry ctx mainInfo =
 -- ====== GENERATE NODE ======
 
 
+{-| Generate MLIR code for a monomorphized node.
+-}
 generateNode : Ctx.Context -> Mono.SpecId -> Mono.MonoNode -> ( MlirOp, Ctx.Context )
 generateNode ctx specId node =
     let

@@ -26,6 +26,36 @@ module Compiler.Generate.MLIR.Context exposing
 This module provides the Context type and related utilities for tracking
 state during MLIR code generation.
 
+
+# Types
+
+@docs Context, FuncSignature, PendingAccessor, PendingLambda, PendingWrapper, TypeRegistry
+
+
+# Context Management
+
+@docs initContext, emptyTypeRegistry
+
+
+# Variable Management
+
+@docs freshVar, freshOpId, lookupVar, addVarMapping
+
+
+# Type Registration
+
+@docs getOrCreateTypeIdForMonoType, registerNestedTypes, registerKernelCall
+
+
+# Signature Utilities
+
+@docs extractNodeSignature, buildSignatures, kernelFuncSignatureFromType
+
+
+# Type Inspection
+
+@docs isTypeVar, hasKernelImplementation
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
@@ -90,6 +120,8 @@ hasKernelImplementation _ _ =
     False
 
 
+{-| MLIR code generation context holding state during code generation.
+-}
 type alias Context =
     { nextVar : Int
     , nextOpId : Int
@@ -116,6 +148,8 @@ type alias TypeRegistry =
     }
 
 
+{-| A pending lambda to be generated as a separate function.
+-}
 type alias PendingLambda =
     { name : String
     , captures : List ( Name.Name, Mono.MonoType )
@@ -148,6 +182,8 @@ type alias PendingAccessor =
     }
 
 
+{-| Initialize a code generation context.
+-}
 initContext : Mode.Mode -> Mono.SpecializationRegistry -> Dict.Dict Int FuncSignature -> EveryDict.Dict (List String) (List String) (List Mono.CtorLayout) -> Context
 initContext mode registry signatures initialCtorLayouts =
     { nextVar = 0
@@ -290,6 +326,8 @@ registerNestedTypes monoType ctx =
             ctx
 
 
+{-| Generate a fresh SSA variable name.
+-}
 freshVar : Context -> ( String, Context )
 freshVar ctx =
     ( "%" ++ String.fromInt ctx.nextVar
@@ -297,6 +335,8 @@ freshVar ctx =
     )
 
 
+{-| Generate a fresh operation ID for MLIR operations.
+-}
 freshOpId : Context -> ( String, Context )
 freshOpId ctx =
     ( "op" ++ String.fromInt ctx.nextOpId

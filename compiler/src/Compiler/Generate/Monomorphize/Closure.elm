@@ -20,6 +20,21 @@ This module handles:
   - Computing closure captures (free variables)
   - Finding free local variables in expressions
 
+
+# Closure Creation
+
+@docs ensureCallableTopLevel, flattenFunctionType, makeAliasClosure, makeGeneralClosure, makeAliasClosureOverExpr
+
+
+# Parameters and Regions
+
+@docs freshParams, extractRegion
+
+
+# Free Variable Analysis
+
+@docs computeClosureCaptures, findFreeLocals, collectDeciderFreeLocals, dedupeNames
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
@@ -96,6 +111,8 @@ flattenFunctionType monoType =
             ( [], monoType )
 
 
+{-| Create an alias closure wrapping a callee expression.
+-}
 makeAliasClosure :
     Mono.MonoExpr
     -> A.Region
@@ -133,6 +150,8 @@ makeAliasClosure calleeExpr region argTypes retType funcType state =
     ( closureExpr, stateWithLambda )
 
 
+{-| Create a general closure around an expression.
+-}
 makeGeneralClosure :
     Mono.MonoExpr
     -> List Mono.MonoType
@@ -172,6 +191,8 @@ makeGeneralClosure expr argTypes retType funcType state =
     ( closureExpr, stateWithLambda )
 
 
+{-| Create an alias closure wrapping an existing expression.
+-}
 makeAliasClosureOverExpr :
     Mono.MonoExpr
     -> List Mono.MonoType
@@ -186,6 +207,8 @@ makeAliasClosureOverExpr expr argTypes retType funcType state =
     makeGeneralClosure expr argTypes retType funcType state
 
 
+{-| Generate fresh parameter names for a list of types.
+-}
 freshParams : List Mono.MonoType -> List ( Name, Mono.MonoType )
 freshParams argTypes =
     List.indexedMap
@@ -193,6 +216,8 @@ freshParams argTypes =
         argTypes
 
 
+{-| Extract the source region from a monomorphic expression.
+-}
 extractRegion : Mono.MonoExpr -> A.Region
 extractRegion expr =
     case expr of
@@ -388,6 +413,8 @@ findFreeLocals bound expr =
             []
 
 
+{-| Collect free local variables from a pattern match decider tree.
+-}
 collectDeciderFreeLocals :
     EverySet String Name
     -> Mono.Decider Mono.MonoChoice
@@ -417,6 +444,8 @@ collectDeciderFreeLocals bound decider =
             freeEdges ++ freeFallback
 
 
+{-| Remove duplicate names from a list while preserving order.
+-}
 dedupeNames : List Name -> List Name
 dedupeNames names =
     let

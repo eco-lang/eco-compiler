@@ -44,6 +44,41 @@ module Compiler.Generate.MLIR.Ops exposing
 This module provides helper functions for building MLIR operations
 in the eco dialect and standard dialects (arith, scf, func).
 
+
+# Op Builder Plumbing
+
+@docs opBuilder, mlirOp, mkRegion, funcFunc
+
+
+# Eco Constants
+
+@docs ecoConstantUnit, ecoConstantEmptyRec, ecoConstantTrue, ecoConstantFalse, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString
+
+
+# Eco Constructors
+
+@docs ecoConstructList, ecoConstructTuple2, ecoConstructTuple3, ecoConstructRecord, ecoConstructCustom
+
+
+# Eco Projections
+
+@docs ecoProjectListHead, ecoProjectListTail, ecoProjectTuple2, ecoProjectTuple3, ecoProjectRecord, ecoProjectCustom
+
+
+# Eco Operations
+
+@docs ecoCallNamed, ecoReturn, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoJoinpoint, ecoGetTag
+
+
+# Arith Operations
+
+@docs arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, arithCmpI
+
+
+# SCF Operations
+
+@docs scfIf, scfYield
+
 -}
 
 import Compiler.Generate.MLIR.Context as Ctx
@@ -64,11 +99,15 @@ import OrderedDict
 -- ====== OP BUILDER PLUMBING ======
 
 
+{-| Operation builder functions for MLIR.
+-}
 opBuilder : Mlir.OpBuilderFns e
 opBuilder =
     Mlir.opBuilder
 
 
+{-| Create an MLIR operation with the given opcode.
+-}
 mlirOp : Ctx.Context -> String -> Mlir.OpBuilder Ctx.Context
 mlirOp env =
     Mlir.mlirOp (\e -> Ctx.freshOpId e |> (\( id, ctx ) -> ( ctx, id ))) env
@@ -99,6 +138,8 @@ ecoConstantUnit ctx resultVar =
         |> opBuilder.build
 
 
+{-| Create an eco.constant op for an empty record.
+-}
 ecoConstantEmptyRec : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantEmptyRec ctx resultVar =
     mlirOp ctx "eco.constant"
@@ -107,6 +148,8 @@ ecoConstantEmptyRec ctx resultVar =
         |> opBuilder.build
 
 
+{-| Create an eco.constant op for True.
+-}
 ecoConstantTrue : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantTrue ctx resultVar =
     mlirOp ctx "eco.constant"
@@ -115,6 +158,8 @@ ecoConstantTrue ctx resultVar =
         |> opBuilder.build
 
 
+{-| Create an eco.constant op for False.
+-}
 ecoConstantFalse : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantFalse ctx resultVar =
     mlirOp ctx "eco.constant"
@@ -123,6 +168,8 @@ ecoConstantFalse ctx resultVar =
         |> opBuilder.build
 
 
+{-| Create an eco.constant op for Nil (empty list).
+-}
 ecoConstantNil : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantNil ctx resultVar =
     mlirOp ctx "eco.constant"
@@ -131,6 +178,8 @@ ecoConstantNil ctx resultVar =
         |> opBuilder.build
 
 
+{-| Create an eco.constant op for Nothing.
+-}
 ecoConstantNothing : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantNothing ctx resultVar =
     mlirOp ctx "eco.constant"
@@ -139,6 +188,8 @@ ecoConstantNothing ctx resultVar =
         |> opBuilder.build
 
 
+{-| Create an eco.constant op for an empty string.
+-}
 ecoConstantEmptyString : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantEmptyString ctx resultVar =
     mlirOp ctx "eco.constant"

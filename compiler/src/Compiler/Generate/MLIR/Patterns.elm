@@ -17,6 +17,8 @@ This module handles:
   - Case kind determination
   - Fallback tag computation
 
+@docs generateMonoPath, generateDTPath, generateTest, generateChainCondition, testToTagInt, caseKindFromTest, computeFallbackTag
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
@@ -34,6 +36,8 @@ import Mlir.Mlir exposing (MlirOp, MlirType(..))
 -- ====== MONO PATH GENERATION ======
 
 
+{-| Generate MLIR ops to navigate a MonoPath and extract a value.
+-}
 generateMonoPath : Ctx.Context -> Mono.MonoPath -> MlirType -> ( List MlirOp, String, Ctx.Context )
 generateMonoPath ctx path targetType =
     case path of

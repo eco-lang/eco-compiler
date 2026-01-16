@@ -13,6 +13,21 @@ module Compiler.Generate.Monomorphize.State exposing
 This module contains the core state threading types used throughout
 the monomorphization process.
 
+
+# Types
+
+@docs MonoState, WorkItem, Substitution, VarTypes
+
+
+# Initialization
+
+@docs initState, emptySubstitution
+
+
+# Utilities
+
+@docs freshLambdaId
+
 -}
 
 import Compiler.AST.Monomorphized as Mono

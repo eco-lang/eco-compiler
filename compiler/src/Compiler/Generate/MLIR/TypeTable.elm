@@ -9,6 +9,8 @@ module Compiler.Generate.MLIR.TypeTable exposing
 This module generates the eco.type\_table op containing the global type graph
 for runtime debug printing with arg\_type\_ids.
 
+@docs generateTypeTable, TypeKind, PrimKind
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
