@@ -22,7 +22,7 @@ This module handles generation of MLIR code for all Elm expressions.
 
 # Data Structure Generation
 
-@docs generateRecordCreate, generateRecordAccess, generateRecordUpdate, generateTupleCreate, generateUnit, generateAccessor
+@docs generateRecordCreate, generateRecordAccess, generateRecordUpdate, generateTupleCreate, generateUnit
 
 
 # Boxing and Coercion

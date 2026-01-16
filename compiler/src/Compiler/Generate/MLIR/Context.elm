@@ -15,7 +15,7 @@ state during MLIR code generation.
 
 # Types
 
-@docs Context, FuncSignature, PendingAccessor, PendingLambda, PendingWrapper, TypeRegistry
+@docs Context, FuncSignature, PendingLambda, PendingWrapper, TypeRegistry
 
 
 # Context Management

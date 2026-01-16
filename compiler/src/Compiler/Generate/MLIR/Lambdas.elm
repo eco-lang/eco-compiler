@@ -10,7 +10,7 @@ This module handles:
   - Processing pending lambdas into func.func ops
   - Generating PAP wrapper functions for unboxed params
 
-@docs processLambdas, processPendingAccessors, processPendingWrappers
+@docs processLambdas, processPendingWrappers
 
 -}
 
