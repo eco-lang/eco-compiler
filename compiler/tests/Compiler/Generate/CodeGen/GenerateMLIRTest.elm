@@ -15,6 +15,7 @@ import Compiler.BitwiseTests as BitwiseTests
 import Compiler.CaseTests as CaseTests
 import Compiler.ClosureTests as ClosureTests
 import Compiler.ControlFlowTests as ControlFlowTests
+import Compiler.DecisionTreeAdvancedTests as DecisionTreeAdvancedTests
 import Compiler.DeepFuzzTests as DeepFuzzTests
 import Compiler.EdgeCaseTests as EdgeCaseTests
 import Compiler.FloatMathTests as FloatMathTests
@@ -30,6 +31,7 @@ import Compiler.MultiDefTests as MultiDefTests
 import Compiler.OperatorTests as OperatorTests
 import Compiler.PatternArgTests as PatternArgTests
 import Compiler.PatternMatchingTests as PatternMatchingTests
+import Compiler.Type.PostSolve.PostSolveExprTests as PostSolveExprTests
 import Compiler.RecordTests as RecordTests
 import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
 import Compiler.SpecializeConstructorTests as SpecializeConstructorTests
@@ -50,6 +52,7 @@ suite =
         , CaseTests.expectSuite expectMLIRGeneration "generates MLIR"
         , ClosureTests.expectSuite expectMLIRGeneration "generates MLIR"
         , ControlFlowTests.expectSuite expectMLIRGeneration "generates MLIR"
+        , DecisionTreeAdvancedTests.expectSuite expectMLIRGeneration "generates MLIR"
         , DeepFuzzTests.expectSuite expectMLIRGeneration "generates MLIR"
         , EdgeCaseTests.expectSuite expectMLIRGeneration "generates MLIR"
         , FloatMathTests.expectSuite expectMLIRGeneration "generates MLIR"
@@ -64,6 +67,7 @@ suite =
         , OperatorTests.expectSuite expectMLIRGeneration "generates MLIR"
         , PatternArgTests.expectSuite expectMLIRGeneration "generates MLIR"
         , PatternMatchingTests.expectSuite expectMLIRGeneration "generates MLIR"
+        , PostSolveExprTests.expectSuite expectMLIRGeneration "generates MLIR"
         , RecordTests.expectSuite expectMLIRGeneration "generates MLIR"
         , SpecializeAccessorTests.expectSuite expectMLIRGeneration "generates MLIR"
         , SpecializeConstructorTests.expectSuite expectMLIRGeneration "generates MLIR"

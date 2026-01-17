@@ -15,6 +15,7 @@ import Compiler.BitwiseTests as BitwiseTests
 import Compiler.CaseTests as CaseTests
 import Compiler.ClosureTests as ClosureTests
 import Compiler.ControlFlowTests as ControlFlowTests
+import Compiler.DecisionTreeAdvancedTests as DecisionTreeAdvancedTests
 import Compiler.DeepFuzzTests as DeepFuzzTests
 import Compiler.EdgeCaseTests as EdgeCaseTests
 import Compiler.FloatMathTests as FloatMathTests
@@ -30,6 +31,7 @@ import Compiler.MultiDefTests as MultiDefTests
 import Compiler.OperatorTests as OperatorTests
 import Compiler.PatternArgTests as PatternArgTests
 import Compiler.PatternMatchingTests as PatternMatchingTests
+import Compiler.Type.PostSolve.PostSolveExprTests as PostSolveExprTests
 import Compiler.RecordTests as RecordTests
 import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
 import Compiler.SpecializeConstructorTests as SpecializeConstructorTests
@@ -50,6 +52,7 @@ suite =
         , CaseTests.expectSuite expectMonomorphization "monomorphizes"
         , ClosureTests.expectSuite expectMonomorphization "monomorphizes"
         , ControlFlowTests.expectSuite expectMonomorphization "monomorphizes"
+        , DecisionTreeAdvancedTests.expectSuite expectMonomorphization "monomorphizes"
         , DeepFuzzTests.expectSuite expectMonomorphization "monomorphizes"
         , EdgeCaseTests.expectSuite expectMonomorphization "monomorphizes"
         , FloatMathTests.expectSuite expectMonomorphization "monomorphizes"
@@ -64,6 +67,7 @@ suite =
         , OperatorTests.expectSuite expectMonomorphization "monomorphizes"
         , PatternArgTests.expectSuite expectMonomorphization "monomorphizes"
         , PatternMatchingTests.expectSuite expectMonomorphization "monomorphizes"
+        , PostSolveExprTests.expectSuite expectMonomorphization "monomorphizes"
         , RecordTests.expectSuite expectMonomorphization "monomorphizes"
         , SpecializeAccessorTests.expectSuite expectMonomorphization "monomorphizes"
         , SpecializeConstructorTests.expectSuite expectMonomorphization "monomorphizes"
