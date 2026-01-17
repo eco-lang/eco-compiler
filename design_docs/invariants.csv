@@ -124,6 +124,56 @@ CGEN_013;MLIR_Codegen;Types;documented;At MLIR codegen time any MonoType compone
 
 CGEN_014;MLIR_Codegen;CtorLayouts;enforced;MLIR codegen does not consult GlobalTypeEnv for union definitions and relies solely on MonoGraph.ctorLayouts for constructor metadata so all CtorLayout information is pre-computed during monomorphization and passed to MLIR codegen via the MonoGraph;Compiler.Generate.CodeGen.MLIR and Compiler.Generate.Monomorphize
 
+CGEN_015;MLIR_Codegen;TypeMapping;enforced;monoTypeToMlir maps MChar to i16 (Eco_Char) not i32 and all codegen char constants and ops must use i16;Compiler.Generate.MLIR.Types and runtime/src/codegen/Ops.td
+
+CGEN_016;MLIR_Codegen;Construction;enforced;List values are constructed only with eco.construct.list for Cons cells and eco.constant Nil for empty lists and never with eco.construct.custom;Compiler.Generate.MLIR.Expr and runtime/src/codegen/Ops.td
+
+CGEN_017;MLIR_Codegen;Construction;enforced;Tuples are constructed only with eco.construct.tuple2 for 2-tuples and eco.construct.tuple3 for 3-tuples and never with eco.construct.custom;Compiler.Generate.MLIR.Expr and runtime/src/codegen/Ops.td
+
+CGEN_018;MLIR_Codegen;Construction;enforced;Records are constructed with eco.construct.record when field_count is nonzero and empty records are always eco.constant EmptyRec and never heap allocated;Compiler.Generate.MLIR.Expr and runtime/src/codegen/Ops.td
+
+CGEN_019;MLIR_Codegen;Constants;enforced;Well known singleton values Unit True False Nil Nothing EmptyString and EmptyRec are always created via eco.constant and never via eco.construct or allocation;Compiler.Generate.MLIR.Ops and Compiler.Generate.MLIR.Expr
+
+CGEN_020;MLIR_Codegen;Construction;enforced;eco.construct.custom is used only for user defined custom ADTs and its tag size and unboxed_bitmap attributes and operand count match the CtorLayout selected from MonoGraph.ctorLayouts;Compiler.Generate.MLIR.Functions and Compiler.Generate.MLIR.Expr and Compiler.Generate.Monomorphize
+
+CGEN_021;MLIR_Codegen;Projection;enforced;List destructuring uses eco.project.list_head and eco.project.list_tail only and never eco.project.custom or tuple or record projection ops;Compiler.Generate.MLIR.Ops and runtime/src/codegen/Ops.td
+
+CGEN_022;MLIR_Codegen;Projection;enforced;Tuple destructuring uses eco.project.tuple2 or eco.project.tuple3 with field index in range and never eco.project.custom or eco.project.record;Compiler.Generate.MLIR.Ops and runtime/src/codegen/Ops.td
+
+CGEN_023;MLIR_Codegen;Projection;enforced;Record field access uses eco.project.record with field_index in range and never eco.project.custom;Compiler.Generate.MLIR.Ops and runtime/src/codegen/Ops.td
+
+CGEN_024;MLIR_Codegen;Projection;enforced;Custom ADT field access uses eco.project.custom with field_index in range and no other projection op is used for custom ADT fields;Compiler.Generate.MLIR.Ops and runtime/src/codegen/Ops.td
+
+CGEN_025;MLIR_Codegen;TypeConsistency;enforced;All eco.construct.* operations produce !eco.value results regardless of whether any fields are stored unboxed;runtime/src/codegen/Ops.td
+
+CGEN_026;MLIR_Codegen;UnboxedBitmap;enforced;For eco.construct.tuple2 eco.construct.tuple3 eco.construct.record and eco.construct.custom the unboxed_bitmap has bit N set if and only if operand N is a primitive MLIR type and not !eco.value;runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Expr and Compiler.Generate.MLIR.Ops
+
+CGEN_027;MLIR_Codegen;UnboxedBitmap;enforced;For eco.construct.list the head_unboxed attribute is true if and only if the head operand has a primitive MLIR type;runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Ops
+
+CGEN_028;MLIR_Codegen;ControlFlow;enforced;Every eco.case alternative region terminates with eco.return or eco.jump and no alternative falls through without an explicit terminator;runtime/src/codegen/Ops.td
+
+CGEN_029;MLIR_Codegen;ControlFlow;enforced;eco.case tags array length equals the number of alternative regions;runtime/src/codegen/Ops.td
+
+CGEN_030;MLIR_Codegen;ControlFlow;enforced;eco.jump target refers to a lexically enclosing eco.joinpoint with matching id and jump argument types match the joinpoint block argument types;runtime/src/codegen/Ops.td and runtime/src/codegen/Passes/EcoToLLVM and JoinpointNormalization.cpp
+
+CGEN_031;MLIR_Codegen;ControlFlow;enforced;Within a single func.func each eco.joinpoint id is unique to avoid joinpoint target ambiguity during lowering;runtime/src/codegen/Passes/EcoToLLVM
+
+CGEN_032;MLIR_Codegen;Attributes;enforced;_operand_types is required and must match SSA operand types when an op has one or more operands and may be omitted for zero operand ops;Compiler.Generate.MLIR.Ops and Compiler.Generate.MLIR.Expr
+
+CGEN_033;MLIR_Codegen;Closures;enforced;eco.papCreate requires arity greater than 0 and num_captured equals the number of captured operands and num_captured is less than arity;Compiler.Generate.MLIR.Expr and runtime/src/codegen/Ops.td
+
+CGEN_034;MLIR_Codegen;Closures;documented;MLIR codegen emits eco.papExtend with !eco.value result type and produces primitive results only by inserting an eco.unbox after papExtend when the expected result type is primitive;Compiler.Generate.MLIR.Expr and runtime/src/codegen/Ops.td
+
+CGEN_035;MLIR_Codegen;ModuleStructure;enforced;Each module has at most one eco.type_table op at module scope;Compiler.Generate.CodeGen.MLIR
+
+CGEN_036;MLIR_Codegen;ModuleStructure;enforced;When eco.dbg carries arg_type_ids each referenced type id must refer to a valid entry in the module eco.type_table;Compiler.Generate.CodeGen.MLIR
+
+CGEN_037;MLIR_Codegen;Case;enforced;eco.case scrutinee representation and case_kind agree: scrutinee is i1 only for boolean cases and scrutinee is !eco.value for ctor/int/chr/str cases and if case_kind is present it matches the scrutinee interpretation;runtime/src/codegen/Ops.td
+
+CGEN_038;MLIR_Codegen;KernelABI;enforced;All calls to the same kernel function name use exactly the same MLIR argument and result types across the whole module and any mismatch is a codegen bug;Compiler.Generate.MLIR.Context
+
+CGEN_039;MLIR_Codegen;LoweringBoundary;documented;MLIR codegen does not emit eco.allocate eco.allocate_ctor eco.allocate_string or eco.allocate_closure and these allocation ops are introduced only by later lowering from eco.construct and related high level ops;runtime/src/codegen/Ops.td
+
 # =============================================================================
 # RUNTIME HEAP PHASE - Memory layout and GC invariants
 # =============================================================================
