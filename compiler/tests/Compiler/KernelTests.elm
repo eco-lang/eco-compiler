@@ -40,7 +40,7 @@ expectSuite expectFn condStr =
 
 
 -- ============================================================================
--- SIMPLE KERNEL EXPRESSIONS (6 tests)
+-- SIMPLE KERNEL EXPRESSIONS (8 tests)
 -- ============================================================================
 
 
@@ -53,6 +53,8 @@ simpleKernelTests expectFn condStr =
         , Test.test ("VarKernel Process.spawn " ++ condStr) (varKernelProcessSpawn expectFn)
         , Test.test ("VarKernel JsArray.empty " ++ condStr) (varKernelJsArrayEmpty expectFn)
         , Test.test ("VarKernel Utils.Tuple2 " ++ condStr) (varKernelUtilsTuple2 expectFn)
+        , Test.test ("VarKernel Basics.pi (ConstantFloat intrinsic) " ++ condStr) (varKernelBasicsPi expectFn)
+        , Test.test ("VarKernel Basics.add (intrinsic function arity>0) " ++ condStr) (varKernelBasicsAdd expectFn)
         ]
 
 
@@ -112,6 +114,34 @@ varKernelUtilsTuple2 expectFn _ =
         modul =
             makeModule "testValue"
                 (varKernelExpr 1 "Utils" "Tuple2")
+    in
+    expectFn modul
+
+
+{-| Tests the ConstantFloat intrinsic branch in generateVarKernel.
+Basics.pi is recognized as a constant float intrinsic and generates
+an arith.constant operation directly.
+-}
+varKernelBasicsPi : (Can.Module -> Expectation) -> (() -> Expectation)
+varKernelBasicsPi expectFn _ =
+    let
+        modul =
+            makeModule "testValue"
+                (varKernelExpr 1 "Basics" "pi")
+    in
+    expectFn modul
+
+
+{-| Tests the intrinsic function with arity > 0 branch in generateVarKernel.
+Basics.add is an intrinsic function that, when referenced without being called,
+creates a papCreate (partial application) closure with arity 2.
+-}
+varKernelBasicsAdd : (Can.Module -> Expectation) -> (() -> Expectation)
+varKernelBasicsAdd expectFn _ =
+    let
+        modul =
+            makeModule "testValue"
+                (varKernelExpr 1 "Basics" "add")
     in
     expectFn modul
 
