@@ -1,4 +1,8 @@
-module Compiler.Generate.CodeGen.GenerateMLIR exposing (expectMLIRGeneration)
+module Compiler.Generate.CodeGen.GenerateMLIR exposing
+    ( expectMLIRGeneration
+    , compileToMlirModule
+    , CompileResult
+    )
 
 {-| Test infrastructure for verifying that monomorphized code can be compiled to MLIR.
 
@@ -14,6 +18,16 @@ This module runs the full typed compilation pipeline through MLIR code generatio
 8.  MLIR code generation
 
 The test verifies that MLIR generation completes successfully and produces output.
+
+
+# Test Functions
+
+@docs expectMLIRGeneration
+
+
+# Compilation for Invariant Testing
+
+@docs compileToMlirModule, CompileResult
 
 -}
 
@@ -40,6 +54,7 @@ import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
 import Data.Map as Dict exposing (Dict)
 import Expect
+import Mlir.Mlir exposing (MlirModule)
 import System.TypeCheck.IO as IO
 
 
@@ -306,3 +321,70 @@ verifyMLIROutput monoGraph output =
 
     else
         Expect.pass
+
+
+
+-- ============================================================================
+-- MLIR MODULE COMPILATION FOR INVARIANT TESTING
+-- ============================================================================
+
+
+{-| Result of compiling to MlirModule.
+-}
+type alias CompileResult =
+    { mlirModule : MlirModule
+    , monoGraph : Mono.MonoGraph
+    }
+
+
+{-| Compile a source module to MlirModule for invariant testing.
+
+Returns the MlirModule and MonoGraph on success, or an error message on failure.
+
+-}
+compileToMlirModule : Src.Module -> Result String CompileResult
+compileToMlirModule srcModule =
+    let
+        canonResult =
+            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
+    in
+    case Result.run canonResult of
+        ( _, Err errors ) ->
+            let
+                errorCount =
+                    OneOrMore.destruct (::) errors |> List.length
+            in
+            Err ("Canonicalization failed with " ++ String.fromInt errorCount ++ " error(s)")
+
+        ( _, Ok canModule ) ->
+            let
+                typeCheckResult =
+                    IO.unsafePerformIO (runWithIdsTypeCheck canModule)
+            in
+            case typeCheckResult of
+                Err errCount ->
+                    Err ("Type checking failed with " ++ String.fromInt errCount ++ " error(s)")
+
+                Ok typedData ->
+                    case runTypedOptimization typedData.annotations typedData.nodeTypes canModule of
+                        Err optErr ->
+                            Err ("Typed optimization failed: " ++ optErr)
+
+                        Ok localGraph ->
+                            let
+                                globalGraph =
+                                    localGraphToGlobalGraph localGraph
+
+                                globalTypeEnv =
+                                    buildGlobalTypeEnv canModule
+                            in
+                            case monomorphizeAny globalTypeEnv globalGraph of
+                                Err monoErr ->
+                                    Err ("Monomorphization failed: " ++ monoErr)
+
+                                Ok monoGraph ->
+                                    let
+                                        mlirModule =
+                                            MLIR.generateMlirModule (Mode.Dev Nothing) globalTypeEnv monoGraph
+                                    in
+                                    Ok { mlirModule = mlirModule, monoGraph = monoGraph }

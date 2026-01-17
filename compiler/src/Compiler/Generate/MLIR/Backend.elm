@@ -1,4 +1,4 @@
-module Compiler.Generate.MLIR.Backend exposing (backend)
+module Compiler.Generate.MLIR.Backend exposing (backend, generateMlirModule)
 
 {-| MLIR code generation backend for the Monomorphized IR.
 
@@ -6,7 +6,7 @@ This backend generates MLIR from fully specialized, monomorphic code.
 All polymorphism has been resolved and layout information is embedded
 in the types.
 
-@docs backend
+@docs backend, generateMlirModule
 
 -}
 
@@ -43,8 +43,10 @@ backend =
 -- ====== GENERATE WHOLE PROGRAM ======
 
 
-generateProgram : Mode.Mode -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> String
-generateProgram mode _ (Mono.MonoGraph { nodes, main, registry, ctorLayouts }) =
+{-| Generate an MlirModule directly, for use in invariant testing.
+-}
+generateMlirModule : Mode.Mode -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> MlirModule
+generateMlirModule mode _ (Mono.MonoGraph { nodes, main, registry, ctorLayouts }) =
     let
         signatures : Dict.Dict Int Ctx.FuncSignature
         signatures =
@@ -99,11 +101,12 @@ generateProgram mode _ (Mono.MonoGraph { nodes, main, registry, ctorLayouts }) =
         typeTableOp : MlirOp
         typeTableOp =
             TypeTable.generateTypeTable finalCtx
-
-        mlirModule : MlirModule
-        mlirModule =
-            { body = typeTableOp :: kernelDeclOps ++ wrapperOps ++ lambdaOps ++ ops ++ mainOps
-            , loc = Loc.unknown
-            }
     in
-    Pretty.ppModule mlirModule
+    { body = typeTableOp :: kernelDeclOps ++ wrapperOps ++ lambdaOps ++ ops ++ mainOps
+    , loc = Loc.unknown
+    }
+
+
+generateProgram : Mode.Mode -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> String
+generateProgram mode typeEnv monoGraph =
+    Pretty.ppModule (generateMlirModule mode typeEnv monoGraph)
