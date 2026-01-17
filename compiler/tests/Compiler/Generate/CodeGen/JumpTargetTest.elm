@@ -10,7 +10,8 @@ matching id, and argument types must match.
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( caseExpr
+        ( boolExpr
+        , caseExpr
         , define
         , ifExpr
         , intExpr
@@ -241,7 +242,7 @@ jumpHasTargetTest _ =
     let
         modul =
             makeModule "testValue"
-                (ifExpr (varExpr "True") (intExpr 1) (intExpr 1))
+                (ifExpr (boolExpr True) (intExpr 1) (intExpr 1))
     in
     runInvariantTest modul
 
@@ -252,7 +253,7 @@ jumpTargetsJoinpointTest _ =
     let
         modul =
             makeModule "testValue"
-                (ifExpr (varExpr "True") (intExpr 42) (intExpr 42))
+                (ifExpr (boolExpr True) (intExpr 42) (intExpr 42))
     in
     runInvariantTest modul
 
@@ -264,7 +265,7 @@ jumpArgCountTest _ =
         modul =
             makeModule "testValue"
                 (letExpr [ define "x" [] (intExpr 10) ]
-                    (ifExpr (varExpr "True") (varExpr "x") (varExpr "x"))
+                    (ifExpr (boolExpr True) (varExpr "x") (varExpr "x"))
                 )
     in
     runInvariantTest modul
@@ -276,7 +277,7 @@ sharedCaseJumpsTest _ =
     let
         modul =
             makeModule "testValue"
-                (caseExpr (varExpr "True")
+                (caseExpr (boolExpr True)
                     [ ( pCtor "True" [], intExpr 1 )
                     , ( pCtor "False" [], intExpr 1 )
                     ]

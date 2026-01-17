@@ -10,13 +10,18 @@ must always use `eco.constant`, never `eco.construct.custom`.
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( intExpr
+        ( UnionDef
+        , boolExpr
+        , ctorExpr
+        , intExpr
         , listExpr
         , makeModule
+        , makeModuleWithTypedDefsUnionsAliases
         , recordExpr
         , strExpr
+        , tType
+        , tVar
         , unitExpr
-        , varExpr
         )
 import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import Compiler.Generate.CodeGen.Invariants
@@ -163,6 +168,34 @@ checkEmptyStringLiteral op =
 -- TEST HELPER
 
 
+{-| Maybe union type for tests.
+-}
+maybeUnion : UnionDef
+maybeUnion =
+    { name = "Maybe"
+    , args = [ "a" ]
+    , ctors =
+        [ { name = "Just", args = [ tVar "a" ] }
+        , { name = "Nothing", args = [] }
+        ]
+    }
+
+
+{-| Helper to create a module that includes the Maybe type.
+-}
+makeModuleWithMaybe : String -> Src.Expr -> Src.Module
+makeModuleWithMaybe name expr =
+    makeModuleWithTypedDefsUnionsAliases "Test"
+        [ { name = name
+          , args = []
+          , tipe = tType "Maybe" [ tType "Int" [] ]
+          , body = expr
+          }
+        ]
+        [ maybeUnion ]
+        []
+
+
 runInvariantTest : Src.Module -> Expectation
 runInvariantTest srcModule =
     case compileToMlirModule srcModule of
@@ -184,12 +217,12 @@ unitConstantTest _ =
 
 trueLiteralTest : () -> Expectation
 trueLiteralTest _ =
-    runInvariantTest (makeModule "testValue" (varExpr "True"))
+    runInvariantTest (makeModule "testValue" (boolExpr True))
 
 
 falseLiteralTest : () -> Expectation
 falseLiteralTest _ =
-    runInvariantTest (makeModule "testValue" (varExpr "False"))
+    runInvariantTest (makeModule "testValue" (boolExpr False))
 
 
 nilConstantTest : () -> Expectation
@@ -199,7 +232,7 @@ nilConstantTest _ =
 
 nothingConstantTest : () -> Expectation
 nothingConstantTest _ =
-    runInvariantTest (makeModule "testValue" (varExpr "Nothing"))
+    runInvariantTest (makeModuleWithMaybe "testValue" (ctorExpr "Nothing"))
 
 
 emptyRecConstantTest : () -> Expectation
@@ -213,8 +246,8 @@ noCustomSingletonsTest _ =
     runInvariantTest
         (makeModule "testValue"
             (listExpr
-                [ varExpr "True"
-                , varExpr "False"
+                [ boolExpr True
+                , boolExpr False
                 ]
             )
         )

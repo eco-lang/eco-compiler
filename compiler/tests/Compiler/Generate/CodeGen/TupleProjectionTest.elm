@@ -10,8 +10,7 @@ with valid field indices.
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( callExpr
-        , caseExpr
+        ( caseExpr
         , intExpr
         , makeModule
         , pTuple
@@ -175,18 +174,28 @@ tuple2FieldRangeTest _ =
 
 tuple2OperandCountTest : () -> Expectation
 tuple2OperandCountTest _ =
-    runInvariantTest
-        (makeModule "testValue"
-            (callExpr (varExpr "Tuple.first") [ tupleExpr (intExpr 1) (intExpr 2) ])
-        )
+    -- Use pattern matching to project first element
+    let
+        modul =
+            makeModule "testValue"
+                (caseExpr (tupleExpr (intExpr 10) (intExpr 20))
+                    [ ( pTuple (pVar "first") (pVar "second"), varExpr "first" ) ]
+                )
+    in
+    runInvariantTest modul
 
 
 tuple2ResultCountTest : () -> Expectation
 tuple2ResultCountTest _ =
-    runInvariantTest
-        (makeModule "testValue"
-            (callExpr (varExpr "Tuple.second") [ tupleExpr (intExpr 1) (intExpr 2) ])
-        )
+    -- Use pattern matching to project second element
+    let
+        modul =
+            makeModule "testValue"
+                (caseExpr (tupleExpr (intExpr 100) (intExpr 200))
+                    [ ( pTuple (pVar "a") (pVar "b"), varExpr "b" ) ]
+                )
+    in
+    runInvariantTest modul
 
 
 tuple3FieldAttrTest : () -> Expectation
@@ -215,15 +224,25 @@ tuple3FieldRangeTest _ =
 
 tupleFirstTest : () -> Expectation
 tupleFirstTest _ =
-    runInvariantTest
-        (makeModule "testValue"
-            (callExpr (varExpr "Tuple.first") [ tupleExpr (intExpr 1) (intExpr 2) ])
-        )
+    -- Pattern matching extracts first element using field=0
+    let
+        modul =
+            makeModule "testValue"
+                (caseExpr (tupleExpr (intExpr 5) (intExpr 6))
+                    [ ( pTuple (pVar "x") (pVar "y"), varExpr "x" ) ]
+                )
+    in
+    runInvariantTest modul
 
 
 tupleSecondTest : () -> Expectation
 tupleSecondTest _ =
-    runInvariantTest
-        (makeModule "testValue"
-            (callExpr (varExpr "Tuple.second") [ tupleExpr (intExpr 1) (intExpr 2) ])
-        )
+    -- Pattern matching extracts second element using field=1
+    let
+        modul =
+            makeModule "testValue"
+                (caseExpr (tupleExpr (intExpr 7) (intExpr 8))
+                    [ ( pTuple (pVar "x") (pVar "y"), varExpr "y" ) ]
+                )
+    in
+    runInvariantTest modul

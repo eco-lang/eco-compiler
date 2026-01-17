@@ -10,11 +10,14 @@ Attributes must have valid `tag` and `size`, and `size` must match operand count
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( callExpr
+        ( UnionDef
+        , callExpr
+        , ctorExpr
         , intExpr
-        , makeModule
+        , makeModuleWithTypedDefsUnionsAliases
         , strExpr
-        , varExpr
+        , tType
+        , tVar
         )
 import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import Compiler.Generate.CodeGen.Invariants
@@ -134,6 +137,34 @@ checkCustomOp op =
 -- TEST HELPER
 
 
+{-| Maybe union type for tests.
+-}
+maybeUnion : UnionDef
+maybeUnion =
+    { name = "Maybe"
+    , args = [ "a" ]
+    , ctors =
+        [ { name = "Just", args = [ tVar "a" ] }
+        , { name = "Nothing", args = [] }
+        ]
+    }
+
+
+{-| Helper to create a module that includes the Maybe type.
+-}
+makeModuleWithMaybe : String -> Src.Expr -> Src.Module
+makeModuleWithMaybe name expr =
+    makeModuleWithTypedDefsUnionsAliases "Test"
+        [ { name = name
+          , args = []
+          , tipe = tType "Maybe" [ tType "Int" [] ]
+          , body = expr
+          }
+        ]
+        [ maybeUnion ]
+        []
+
+
 runInvariantTest : Src.Module -> Expectation
 runInvariantTest srcModule =
     case compileToMlirModule srcModule of
@@ -150,25 +181,25 @@ runInvariantTest srcModule =
 
 justValueTest : () -> Expectation
 justValueTest _ =
-    runInvariantTest (makeModule "testValue" (callExpr (varExpr "Just") [ intExpr 5 ]))
+    runInvariantTest (makeModuleWithMaybe "testValue" (callExpr (ctorExpr "Just") [ intExpr 5 ]))
 
 
 tagAttributeTest : () -> Expectation
 tagAttributeTest _ =
     -- Any custom ADT usage should have the tag attribute
-    runInvariantTest (makeModule "testValue" (callExpr (varExpr "Just") [ strExpr "hello" ]))
+    runInvariantTest (makeModuleWithMaybe "testValue" (callExpr (ctorExpr "Just") [ intExpr 1 ]))
 
 
 sizeAttributeTest : () -> Expectation
 sizeAttributeTest _ =
     -- Any custom ADT usage should have the size attribute
-    runInvariantTest (makeModule "testValue" (callExpr (varExpr "Just") [ intExpr 42 ]))
+    runInvariantTest (makeModuleWithMaybe "testValue" (callExpr (ctorExpr "Just") [ intExpr 42 ]))
 
 
 sizeMatchesOperandsTest : () -> Expectation
 sizeMatchesOperandsTest _ =
     -- Size should match the number of operands
-    runInvariantTest (makeModule "testValue" (callExpr (varExpr "Just") [ intExpr 1 ]))
+    runInvariantTest (makeModuleWithMaybe "testValue" (callExpr (ctorExpr "Just") [ intExpr 1 ]))
 
 
 builtInNotCustomTest : () -> Expectation
@@ -176,8 +207,8 @@ builtInNotCustomTest _ =
     -- Ensure built-in types aren't being constructed with custom ops
     -- Testing Maybe and List together to verify separation
     runInvariantTest
-        (makeModule "testValue"
-            (callExpr (varExpr "Just")
+        (makeModuleWithMaybe "testValue"
+            (callExpr (ctorExpr "Just")
                 [ intExpr 1 ]
             )
         )

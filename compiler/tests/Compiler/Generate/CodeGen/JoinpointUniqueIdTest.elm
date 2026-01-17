@@ -9,7 +9,8 @@ Within a single `func.func`, each `eco.joinpoint` id must be unique.
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( caseExpr
+        ( boolExpr
+        , caseExpr
         , define
         , ifExpr
         , intExpr
@@ -183,7 +184,7 @@ joinpointHasIdTest _ =
     let
         modul =
             makeModule "testValue"
-                (ifExpr (varExpr "True") (intExpr 1) (intExpr 1))
+                (ifExpr (boolExpr True) (intExpr 1) (intExpr 1))
     in
     runInvariantTest modul
 
@@ -195,8 +196,8 @@ joinpointIdsUniqueTest _ =
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "a" [] (ifExpr (varExpr "True") (intExpr 1) (intExpr 1))
-                    , define "b" [] (ifExpr (varExpr "False") (intExpr 2) (intExpr 2))
+                    [ define "a" [] (ifExpr (boolExpr True) (intExpr 1) (intExpr 1))
+                    , define "b" [] (ifExpr (boolExpr False) (intExpr 2) (intExpr 2))
                     ]
                     (varExpr "a")
                 )
@@ -211,9 +212,9 @@ multipleJoinpointsTest _ =
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "x" [] (ifExpr (varExpr "True") (intExpr 1) (intExpr 1))
-                    , define "y" [] (ifExpr (varExpr "False") (intExpr 2) (intExpr 2))
-                    , define "z" [] (ifExpr (varExpr "True") (intExpr 3) (intExpr 3))
+                    [ define "x" [] (ifExpr (boolExpr True) (intExpr 1) (intExpr 1))
+                    , define "y" [] (ifExpr (boolExpr False) (intExpr 2) (intExpr 2))
+                    , define "z" [] (ifExpr (boolExpr True) (intExpr 3) (intExpr 3))
                     ]
                     (varExpr "x")
                 )
@@ -227,12 +228,12 @@ nestedCasesTest _ =
     let
         modul =
             makeModule "testValue"
-                (caseExpr (varExpr "True")
+                (caseExpr (boolExpr True)
                     [ ( pCtor "True" []
-                      , ifExpr (varExpr "False") (intExpr 1) (intExpr 1)
+                      , ifExpr (boolExpr False) (intExpr 1) (intExpr 1)
                       )
                     , ( pCtor "False" []
-                      , ifExpr (varExpr "True") (intExpr 2) (intExpr 2)
+                      , ifExpr (boolExpr True) (intExpr 2) (intExpr 2)
                       )
                     ]
                 )

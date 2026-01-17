@@ -13,12 +13,18 @@ module Compiler.Generate.CodeGen.PapCreateArityTest exposing (suite)
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( binopsExpr
+        ( UnionDef
+        , binopsExpr
         , callExpr
+        , ctorExpr
         , intExpr
         , lambdaExpr
         , makeModule
+        , makeModuleWithTypedDefsUnionsAliases
         , pVar
+        , qualVarExpr
+        , tType
+        , tVar
         , varExpr
         )
 import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
@@ -165,6 +171,34 @@ checkPapCreateOp op =
 -- TEST HELPER
 
 
+{-| Maybe union type for tests.
+-}
+maybeUnion : UnionDef
+maybeUnion =
+    { name = "Maybe"
+    , args = [ "a" ]
+    , ctors =
+        [ { name = "Just", args = [ tVar "a" ] }
+        , { name = "Nothing", args = [] }
+        ]
+    }
+
+
+{-| Helper to create a module that includes the Maybe type.
+-}
+makeModuleWithMaybe : String -> Src.Expr -> Src.Module
+makeModuleWithMaybe name expr =
+    makeModuleWithTypedDefsUnionsAliases "Test"
+        [ { name = name
+          , args = []
+          , tipe = tType "Maybe" [ tType "Int" [] ]
+          , body = expr
+          }
+        ]
+        [ maybeUnion ]
+        []
+
+
 runInvariantTest : Src.Module -> Expectation
 runInvariantTest srcModule =
     case compileToMlirModule srcModule of
@@ -195,7 +229,7 @@ hasNumCapturedTest _ =
     let
         modul =
             makeModule "testValue"
-                (callExpr (varExpr "List.map") [ lambdaExpr [ pVar "x" ] (varExpr "x") ])
+                (callExpr (qualVarExpr "List" "map") [ lambdaExpr [ pVar "x" ] (varExpr "x") ])
     in
     runInvariantTest modul
 
@@ -204,8 +238,8 @@ arityPositiveTest : () -> Expectation
 arityPositiveTest _ =
     let
         modul =
-            makeModule "testValue"
-                (callExpr (varExpr "Just") [ intExpr 1 ])
+            makeModuleWithMaybe "testValue"
+                (callExpr (ctorExpr "Just") [ intExpr 1 ])
     in
     runInvariantTest modul
 

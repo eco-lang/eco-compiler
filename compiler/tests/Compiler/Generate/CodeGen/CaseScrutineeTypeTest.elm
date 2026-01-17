@@ -9,15 +9,21 @@ module Compiler.Generate.CodeGen.CaseScrutineeTypeTest exposing (suite)
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( caseExpr
+        ( UnionDef
+        , boolExpr
+        , caseExpr
+        , ctorExpr
         , ifExpr
         , intExpr
         , listExpr
         , makeModule
+        , makeModuleWithTypedDefsUnionsAliases
         , pCons
         , pCtor
         , pList
         , pVar
+        , tType
+        , tVar
         , varExpr
         )
 import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
@@ -150,6 +156,34 @@ typeToString t =
 -- TEST HELPER
 
 
+{-| Maybe union type for tests.
+-}
+maybeUnion : UnionDef
+maybeUnion =
+    { name = "Maybe"
+    , args = [ "a" ]
+    , ctors =
+        [ { name = "Just", args = [ tVar "a" ] }
+        , { name = "Nothing", args = [] }
+        ]
+    }
+
+
+{-| Helper to create a module that includes the Maybe type.
+-}
+makeModuleWithMaybe : String -> Src.Expr -> Src.Module
+makeModuleWithMaybe name expr =
+    makeModuleWithTypedDefsUnionsAliases "Test"
+        [ { name = name
+          , args = []
+          , tipe = tType "Int" []
+          , body = expr
+          }
+        ]
+        [ maybeUnion ]
+        []
+
+
 runInvariantTest : Src.Module -> Expectation
 runInvariantTest srcModule =
     case compileToMlirModule srcModule of
@@ -169,7 +203,7 @@ booleanCaseI1Test _ =
     let
         modul =
             makeModule "testValue"
-                (ifExpr (varExpr "True") (intExpr 1) (intExpr 0))
+                (ifExpr (boolExpr True) (intExpr 1) (intExpr 0))
     in
     runInvariantTest modul
 
@@ -178,8 +212,8 @@ adtCaseEcoValueTest : () -> Expectation
 adtCaseEcoValueTest _ =
     let
         modul =
-            makeModule "testValue"
-                (caseExpr (varExpr "Nothing")
+            makeModuleWithMaybe "testValue"
+                (caseExpr (ctorExpr "Nothing")
                     [ ( pCtor "Just" [ pVar "x" ], varExpr "x" )
                     , ( pCtor "Nothing" [], intExpr 0 )
                     ]
@@ -207,8 +241,8 @@ caseKindCtorTest _ =
     -- ADT case should use !eco.value
     let
         modul =
-            makeModule "testValue"
-                (caseExpr (varExpr "Nothing")
+            makeModuleWithMaybe "testValue"
+                (caseExpr (ctorExpr "Nothing")
                     [ ( pCtor "Nothing" [], intExpr 0 )
                     , ( pCtor "Just" [ pVar "v" ], varExpr "v" )
                     ]

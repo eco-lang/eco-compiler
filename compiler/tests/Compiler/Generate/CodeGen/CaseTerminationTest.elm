@@ -10,16 +10,22 @@ Every `eco.case` alternative region must terminate with `eco.return`,
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( caseExpr
+        ( UnionDef
+        , boolExpr
+        , caseExpr
+        , ctorExpr
         , ifExpr
         , intExpr
         , listExpr
         , makeModule
+        , makeModuleWithTypedDefsUnionsAliases
         , pCons
         , pCtor
         , pList
         , pVar
         , strExpr
+        , tType
+        , tVar
         , varExpr
         )
 import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
@@ -124,6 +130,34 @@ checkBlockTermination parentId branchIndex blockName block =
 -- TEST HELPER
 
 
+{-| Maybe union type for tests.
+-}
+maybeUnion : UnionDef
+maybeUnion =
+    { name = "Maybe"
+    , args = [ "a" ]
+    , ctors =
+        [ { name = "Just", args = [ tVar "a" ] }
+        , { name = "Nothing", args = [] }
+        ]
+    }
+
+
+{-| Helper to create a module that includes the Maybe type.
+-}
+makeModuleWithMaybe : String -> Src.Expr -> Src.Module
+makeModuleWithMaybe name expr =
+    makeModuleWithTypedDefsUnionsAliases "Test"
+        [ { name = name
+          , args = []
+          , tipe = tType "Int" []
+          , body = expr
+          }
+        ]
+        [ maybeUnion ]
+        []
+
+
 runInvariantTest : Src.Module -> Expectation
 runInvariantTest srcModule =
     case compileToMlirModule srcModule of
@@ -143,7 +177,7 @@ booleanCaseTest _ =
     let
         modul =
             makeModule "testValue"
-                (ifExpr (varExpr "True") (intExpr 1) (intExpr 0))
+                (ifExpr (boolExpr True) (intExpr 1) (intExpr 0))
     in
     runInvariantTest modul
 
@@ -152,8 +186,8 @@ maybeCaseTest : () -> Expectation
 maybeCaseTest _ =
     let
         modul =
-            makeModule "testValue"
-                (caseExpr (varExpr "Nothing")
+            makeModuleWithMaybe "testValue"
+                (caseExpr (ctorExpr "Nothing")
                     [ ( pCtor "Just" [ pVar "x" ], varExpr "x" )
                     , ( pCtor "Nothing" [], intExpr 0 )
                     ]
@@ -181,9 +215,9 @@ nestedCaseTest _ =
     let
         modul =
             makeModule "testValue"
-                (caseExpr (varExpr "True")
+                (caseExpr (boolExpr True)
                     [ ( pCtor "True" []
-                      , caseExpr (varExpr "False")
+                      , caseExpr (boolExpr False)
                             [ ( pCtor "True" [], intExpr 1 )
                             , ( pCtor "False" [], intExpr 2 )
                             ]
@@ -201,6 +235,6 @@ caseWithJoinpointTest _ =
     let
         modul =
             makeModule "testValue"
-                (ifExpr (varExpr "True") (intExpr 1) (intExpr 1))
+                (ifExpr (boolExpr True) (intExpr 1) (intExpr 1))
     in
     runInvariantTest modul

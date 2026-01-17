@@ -12,8 +12,10 @@ import Compiler.AST.SourceBuilder
         ( callExpr
         , intExpr
         , lambdaExpr
+        , listExpr
         , makeModule
         , pVar
+        , qualVarExpr
         , varExpr
         )
 import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
@@ -150,10 +152,10 @@ singleResultTest _ =
         modul =
             makeModule "testValue"
                 (callExpr
-                    (callExpr (varExpr "List.map")
+                    (callExpr (qualVarExpr "List" "map")
                         [ lambdaExpr [ pVar "x" ] (varExpr "x") ]
                     )
-                    [ varExpr "[]" ]
+                    [ listExpr [] ]
                 )
     in
     runInvariantTest modul
@@ -161,10 +163,11 @@ singleResultTest _ =
 
 resultTypeTest : () -> Expectation
 resultTypeTest _ =
+    -- Identity function application
     let
         modul =
             makeModule "testValue"
-                (callExpr (varExpr "identity") [ intExpr 5 ])
+                (callExpr (lambdaExpr [ pVar "x" ] (varExpr "x")) [ intExpr 5 ])
     in
     runInvariantTest modul
 

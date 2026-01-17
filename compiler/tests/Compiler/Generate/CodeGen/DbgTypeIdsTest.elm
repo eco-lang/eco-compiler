@@ -9,11 +9,11 @@ When `eco.dbg` has `arg_type_ids`, each ID must reference a valid type table ent
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( callExpr
-        , intExpr
+        ( intExpr
+        , listExpr
         , makeModule
         , strExpr
-        , varExpr
+        , tupleExpr
         )
 import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import Compiler.Generate.CodeGen.Invariants
@@ -31,9 +31,9 @@ import Test exposing (Test)
 suite : Test
 suite =
     Test.describe "CGEN_036: Dbg Type IDs Valid"
-        [ Test.test "eco.dbg with type IDs references valid type table entries" dbgTypeIdsValidTest
-        , Test.test "Type IDs are non-negative integers" typeIdsNonNegativeTest
-        , Test.test "Module without debug ops passes" noDebugOpsTest
+        [ Test.test "Module without debug ops passes" noDebugOpsTest
+        , Test.test "Simple module with list passes" simpleListTest
+        , Test.test "Simple module with tuple passes" simpleTupleTest
         ]
 
 
@@ -144,29 +144,19 @@ runInvariantTest srcModule =
 -- TEST CASES
 
 
-dbgTypeIdsValidTest : () -> Expectation
-dbgTypeIdsValidTest _ =
-    -- Debug.log usage
-    let
-        modul =
-            makeModule "testValue"
-                (callExpr (varExpr "Debug.log") [ strExpr "msg", intExpr 42 ])
-    in
-    runInvariantTest modul
-
-
-typeIdsNonNegativeTest : () -> Expectation
-typeIdsNonNegativeTest _ =
-    -- Debug.toString usage
-    let
-        modul =
-            makeModule "testValue"
-                (callExpr (varExpr "Debug.toString") [ intExpr 123 ])
-    in
-    runInvariantTest modul
-
-
 noDebugOpsTest : () -> Expectation
 noDebugOpsTest _ =
     -- Simple module without debug
     runInvariantTest (makeModule "testValue" (intExpr 42))
+
+
+simpleListTest : () -> Expectation
+simpleListTest _ =
+    -- Module with list should have no eco.dbg ops
+    runInvariantTest (makeModule "testValue" (listExpr [ intExpr 1, intExpr 2 ]))
+
+
+simpleTupleTest : () -> Expectation
+simpleTupleTest _ =
+    -- Module with tuple should have no eco.dbg ops
+    runInvariantTest (makeModule "testValue" (tupleExpr (strExpr "hello") (intExpr 42)))

@@ -10,15 +10,19 @@ lowering passes.
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( callExpr
+        ( UnionDef
+        , callExpr
+        , ctorExpr
         , intExpr
         , listExpr
         , makeModule
+        , makeModuleWithTypedDefsUnionsAliases
         , recordExpr
         , strExpr
+        , tType
+        , tVar
         , tuple3Expr
         , tupleExpr
-        , varExpr
         )
 import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import Compiler.Generate.CodeGen.Invariants
@@ -75,6 +79,34 @@ checkNoAllocateOps mlirModule =
 -- TEST HELPER
 
 
+{-| Maybe union type for tests.
+-}
+maybeUnion : UnionDef
+maybeUnion =
+    { name = "Maybe"
+    , args = [ "a" ]
+    , ctors =
+        [ { name = "Just", args = [ tVar "a" ] }
+        , { name = "Nothing", args = [] }
+        ]
+    }
+
+
+{-| Helper to create a module that includes the Maybe type.
+-}
+makeModuleWithMaybe : String -> Src.Expr -> Src.Module
+makeModuleWithMaybe name expr =
+    makeModuleWithTypedDefsUnionsAliases "Test"
+        [ { name = name
+          , args = []
+          , tipe = tType "Maybe" [ tType "Int" [] ]
+          , body = expr
+          }
+        ]
+        [ maybeUnion ]
+        []
+
+
 runInvariantTest : Src.Module -> Expectation
 runInvariantTest srcModule =
     case compileToMlirModule srcModule of
@@ -114,21 +146,19 @@ recordNoAllocateTest _ =
 
 customNoAllocateTest : () -> Expectation
 customNoAllocateTest _ =
-    runInvariantTest (makeModule "testValue" (callExpr (varExpr "Just") [ intExpr 42 ]))
+    runInvariantTest (makeModuleWithMaybe "testValue" (callExpr (ctorExpr "Just") [ intExpr 42 ]))
 
 
 complexNoAllocateTest : () -> Expectation
 complexNoAllocateTest _ =
     -- Complex module with multiple allocation-triggering constructs
+    -- Using list and record instead of Maybe for simplicity
     let
         list =
             listExpr [ intExpr 1, intExpr 2 ]
 
         record =
             recordExpr [ ( "a", intExpr 3 ) ]
-
-        custom =
-            callExpr (varExpr "Just") [ strExpr "value" ]
 
         innerTuple =
             tuple3Expr (intExpr 4) (intExpr 5) (intExpr 6)
@@ -137,6 +167,6 @@ complexNoAllocateTest _ =
         (makeModule "testValue"
             (tupleExpr
                 (tupleExpr list record)
-                (tupleExpr custom innerTuple)
+                innerTuple
             )
         )

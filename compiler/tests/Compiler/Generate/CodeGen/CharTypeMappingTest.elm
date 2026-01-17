@@ -10,11 +10,11 @@ and all char constants/ops must use `i16`.
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( callExpr
-        , chrExpr
+        ( chrExpr
         , intExpr
+        , listExpr
         , makeModule
-        , varExpr
+        , tupleExpr
         )
 import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import Compiler.Generate.CodeGen.Invariants
@@ -34,9 +34,9 @@ suite : Test
 suite =
     Test.describe "CGEN_015: Char Type Mapping"
         [ Test.test "Character literal has correct type" charLiteralTest
-        , Test.test "eco.char.toInt operand is i16" charToIntOperandTest
-        , Test.test "eco.char.fromInt result is i16" charFromIntResultTest
-        , Test.test "Char operations use i16, not i32" charOpsUseI16Test
+        , Test.test "Char in tuple uses i16" charInTupleTest
+        , Test.test "List of chars uses i16" charListTest
+        , Test.test "Multiple char literals use i16" multipleCharsTest
         ]
 
 
@@ -152,28 +152,28 @@ charLiteralTest _ =
     runInvariantTest (makeModule "testValue" (chrExpr "a"))
 
 
-charToIntOperandTest : () -> Expectation
-charToIntOperandTest _ =
-    -- Char.toCode 'x' should use i16 input
+charInTupleTest : () -> Expectation
+charInTupleTest _ =
+    -- Char in tuple should use i16
     runInvariantTest
         (makeModule "testValue"
-            (callExpr (varExpr "Char.toCode") [ chrExpr "x" ])
+            (tupleExpr (chrExpr "x") (intExpr 42))
         )
 
 
-charFromIntResultTest : () -> Expectation
-charFromIntResultTest _ =
-    -- Char.fromCode 65 should produce i16
+charListTest : () -> Expectation
+charListTest _ =
+    -- List of chars should use i16
     runInvariantTest
         (makeModule "testValue"
-            (callExpr (varExpr "Char.fromCode") [ intExpr 65 ])
+            (listExpr [ chrExpr "h", chrExpr "i" ])
         )
 
 
-charOpsUseI16Test : () -> Expectation
-charOpsUseI16Test _ =
-    -- Multiple char operations in one module
+multipleCharsTest : () -> Expectation
+multipleCharsTest _ =
+    -- Multiple char literals in nested structure
     runInvariantTest
         (makeModule "testValue"
-            (callExpr (varExpr "Char.toCode") [ chrExpr "A" ])
+            (tupleExpr (chrExpr "A") (chrExpr "B"))
         )

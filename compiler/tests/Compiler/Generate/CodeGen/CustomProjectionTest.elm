@@ -9,12 +9,16 @@ Custom ADT field access must use `eco.project.custom` with valid field index.
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( callExpr
+        ( UnionDef
+        , callExpr
         , caseExpr
+        , ctorExpr
         , intExpr
-        , makeModule
+        , makeModuleWithTypedDefsUnionsAliases
         , pCtor
         , pVar
+        , tType
+        , tVar
         , varExpr
         )
 import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
@@ -109,6 +113,34 @@ checkCustomProjectOp op =
 -- TEST HELPER
 
 
+{-| Maybe union type for tests.
+-}
+maybeUnion : UnionDef
+maybeUnion =
+    { name = "Maybe"
+    , args = [ "a" ]
+    , ctors =
+        [ { name = "Just", args = [ tVar "a" ] }
+        , { name = "Nothing", args = [] }
+        ]
+    }
+
+
+{-| Helper to create a module that includes the Maybe type.
+-}
+makeModuleWithMaybe : String -> Src.Expr -> Src.Module
+makeModuleWithMaybe name expr =
+    makeModuleWithTypedDefsUnionsAliases "Test"
+        [ { name = name
+          , args = []
+          , tipe = tType "Int" []
+          , body = expr
+          }
+        ]
+        [ maybeUnion ]
+        []
+
+
 runInvariantTest : Src.Module -> Expectation
 runInvariantTest srcModule =
     case compileToMlirModule srcModule of
@@ -127,8 +159,8 @@ fieldIndexAttrTest : () -> Expectation
 fieldIndexAttrTest _ =
     let
         modul =
-            makeModule "testValue"
-                (caseExpr (callExpr (varExpr "Just") [ intExpr 5 ])
+            makeModuleWithMaybe "testValue"
+                (caseExpr (callExpr (ctorExpr "Just") [ intExpr 5 ])
                     [ ( pCtor "Just" [ pVar "x" ], varExpr "x" )
                     , ( pCtor "Nothing" [], intExpr 0 )
                     ]
@@ -141,8 +173,8 @@ fieldIndexNonNegativeTest : () -> Expectation
 fieldIndexNonNegativeTest _ =
     let
         modul =
-            makeModule "testValue"
-                (caseExpr (callExpr (varExpr "Just") [ intExpr 42 ])
+            makeModuleWithMaybe "testValue"
+                (caseExpr (callExpr (ctorExpr "Just") [ intExpr 42 ])
                     [ ( pCtor "Just" [ pVar "v" ], varExpr "v" )
                     , ( pCtor "Nothing" [], intExpr 0 )
                     ]
@@ -155,8 +187,8 @@ operandCountTest : () -> Expectation
 operandCountTest _ =
     let
         modul =
-            makeModule "testValue"
-                (caseExpr (callExpr (varExpr "Just") [ intExpr 1 ])
+            makeModuleWithMaybe "testValue"
+                (caseExpr (callExpr (ctorExpr "Just") [ intExpr 1 ])
                     [ ( pCtor "Just" [ pVar "x" ], varExpr "x" )
                     , ( pCtor "Nothing" [], intExpr 0 )
                     ]
@@ -169,8 +201,8 @@ resultCountTest : () -> Expectation
 resultCountTest _ =
     let
         modul =
-            makeModule "testValue"
-                (caseExpr (callExpr (varExpr "Just") [ intExpr 99 ])
+            makeModuleWithMaybe "testValue"
+                (caseExpr (callExpr (ctorExpr "Just") [ intExpr 99 ])
                     [ ( pCtor "Just" [ pVar "value" ], varExpr "value" )
                     , ( pCtor "Nothing" [], intExpr 0 )
                     ]
@@ -183,8 +215,8 @@ maybeJustTest : () -> Expectation
 maybeJustTest _ =
     let
         modul =
-            makeModule "testValue"
-                (caseExpr (callExpr (varExpr "Just") [ intExpr 10 ])
+            makeModuleWithMaybe "testValue"
+                (caseExpr (callExpr (ctorExpr "Just") [ intExpr 10 ])
                     [ ( pCtor "Just" [ pVar "x" ], varExpr "x" )
                     , ( pCtor "Nothing" [], intExpr 0 )
                     ]
