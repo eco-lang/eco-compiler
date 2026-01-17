@@ -338,16 +338,44 @@ findFreeLocals bound expr =
                 ( allDefs, finalBody ) =
                     collectLetChain expr
 
+                -- Extract name from a MonoDef
+                defName def =
+                    case def of
+                        Mono.MonoDef n _ ->
+                            n
+
+                        Mono.MonoTailDef n _ _ ->
+                            n
+
                 -- Add all names from the let-chain to bound BEFORE analyzing definitions
                 allNames =
-                    List.map Tuple.first allDefs
+                    List.map defName allDefs
 
                 boundWithAllNames =
                     List.foldl (\name acc -> EverySet.insert identity name acc) bound allNames
 
+                -- Analyze a definition's expression, adding MonoTailDef params to bound
+                analyzeDef def =
+                    case def of
+                        Mono.MonoDef _ defExpr ->
+                            findFreeLocals boundWithAllNames defExpr
+
+                        Mono.MonoTailDef _ params defExpr ->
+                            -- For tail-recursive functions, add the function's params to bound
+                            -- before analyzing the body. This prevents params from being
+                            -- incorrectly identified as free variables.
+                            let
+                                paramNames =
+                                    List.map Tuple.first params
+
+                                boundWithParams =
+                                    List.foldl (\name acc -> EverySet.insert identity name acc) boundWithAllNames paramNames
+                            in
+                            findFreeLocals boundWithParams defExpr
+
                 -- Now analyze each definition with all sibling names in scope
                 freeInDefs =
-                    List.concatMap (\( _, defExpr ) -> findFreeLocals boundWithAllNames defExpr) allDefs
+                    List.concatMap analyzeDef allDefs
 
                 freeInBody =
                     findFreeLocals boundWithAllNames finalBody
@@ -412,28 +440,21 @@ For example, given:
 MonoLet (def1) (MonoLet (def2) (MonoLet (def3) finalBody))
 
 Returns:
-( [ (name1, expr1), (name2, expr2), (name3, expr3) ], finalBody )
+( [ def1, def2, def3 ], finalBody )
 
 This is used by findFreeLocals to handle mutually recursive let-bindings correctly.
+The full MonoDef is returned so that MonoTailDef params can be properly handled.
 
 -}
-collectLetChain : Mono.MonoExpr -> ( List ( Name, Mono.MonoExpr ), Mono.MonoExpr )
+collectLetChain : Mono.MonoExpr -> ( List Mono.MonoDef, Mono.MonoExpr )
 collectLetChain expr =
     case expr of
         Mono.MonoLet def body _ ->
             let
-                ( defName, defExpr ) =
-                    case def of
-                        Mono.MonoDef n e ->
-                            ( n, e )
-
-                        Mono.MonoTailDef n _ e ->
-                            ( n, e )
-
                 ( restDefs, finalBody ) =
                     collectLetChain body
             in
-            ( ( defName, defExpr ) :: restDefs, finalBody )
+            ( def :: restDefs, finalBody )
 
         _ ->
             ( [], expr )
