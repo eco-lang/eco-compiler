@@ -1,22 +1,6 @@
 module Compiler.Generate.Monomorphize.Specialize exposing
     ( specializeNode
-    , specializeCycle
-    , specializeExpr
-    , specializeDecider
-    , specializeArg
-    , defHasName
-    , getDefName
-    , getDefCanonicalType
-    , extractCtorResultType
-    , getRecordLayout
-    , getTupleLayout
     , lookupFieldIndex
-    , buildFuncType
-    , buildCtorLayoutFromArity
-    , extractFieldTypes
-    , deriveKernelAbiType
-    , toptGlobalToMono
-    , monoGlobalToTOpt
     )
 
 {-| Expression and node specialization for monomorphization.
@@ -27,27 +11,21 @@ into monomorphized form by applying type substitutions.
 
 # Specialization
 
-@docs specializeNode, specializeCycle, specializeExpr, specializeDecider, specializeArg
+@docs specializeNode
 
 
 # Definition Utilities
 
-@docs defHasName, getDefName, getDefCanonicalType
-
 
 # Type Extraction
 
-@docs extractCtorResultType, getRecordLayout, getTupleLayout, lookupFieldIndex
+@docs lookupFieldIndex
 
 
 # Type Building
 
-@docs buildFuncType, buildCtorLayoutFromArity, extractFieldTypes, deriveKernelAbiType
-
 
 # Global Conversion
-
-@docs toptGlobalToMono, monoGlobalToTOpt
 
 -}
 
@@ -58,7 +36,7 @@ import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Generate.Monomorphize.Closure as Closure
 import Compiler.Generate.Monomorphize.KernelAbi as KernelAbi
-import Compiler.Generate.Monomorphize.State as State exposing (MonoState, Substitution, VarTypes, WorkItem(..))
+import Compiler.Generate.Monomorphize.State exposing (MonoState, Substitution, VarTypes, WorkItem(..))
 import Compiler.Generate.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Optimize.Typed.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
@@ -211,11 +189,7 @@ specializeNode ctorName node requestedMonoType state =
             ( Mono.MonoExtern requestedMonoType, state )
 
         TOpt.Cycle names valueDefs funcDefs _ ->
-            let
-                ( monoNode, state1 ) =
-                    specializeCycle names valueDefs funcDefs requestedMonoType state
-            in
-            ( monoNode, state1 )
+            specializeCycle names valueDefs funcDefs requestedMonoType state
 
         TOpt.PortIncoming expr _ canType ->
             let
@@ -1876,15 +1850,3 @@ deriveKernelAbiType kernelId canFuncType callSubst =
 toptGlobalToMono : TOpt.Global -> Mono.Global
 toptGlobalToMono (TOpt.Global canonical name) =
     Mono.Global canonical name
-
-
-{-| Convert a monomorphized global reference to a typed optimized global reference.
--}
-monoGlobalToTOpt : Mono.Global -> TOpt.Global
-monoGlobalToTOpt global =
-    case global of
-        Mono.Global canonical name ->
-            TOpt.Global canonical name
-
-        Mono.Accessor _ ->
-            Utils.Crash.crash "Specialize" "monoGlobalToTOpt" "Accessor should be handled before calling monoGlobalToTOpt"

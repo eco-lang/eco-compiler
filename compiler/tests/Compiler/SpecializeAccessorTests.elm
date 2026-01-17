@@ -4,7 +4,7 @@ module Compiler.SpecializeAccessorTests exposing (expectSuite, suite)
 
 These tests cover:
 
-  - MONO_015: Accessor extension variable unification at call sites
+  - MONO\_015: Accessor extension variable unification at call sites
   - Accessors passed to higher-order functions (List.map, List.filter, etc.)
   - Accessor specialization for different record types
   - Virtual global generation for accessors
@@ -21,9 +21,7 @@ import Compiler.AST.SourceBuilder
         , binopsExpr
         , boolExpr
         , callExpr
-        , caseExpr
         , define
-        , ifExpr
         , intExpr
         , lambdaExpr
         , letExpr
@@ -36,8 +34,6 @@ import Compiler.AST.SourceBuilder
         , tLambda
         , tRecord
         , tType
-        , tVar
-        , tupleExpr
         , varExpr
         )
 import Compiler.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
@@ -84,7 +80,7 @@ accessorToMapTests expectFn condStr =
 
 
 {-| List.map .name records - basic accessor as function.
-Tests MONO_015: Accessor extension variable unification.
+Tests MONO\_015: Accessor extension variable unification.
 -}
 mapAccessorOnRecords : (Src.Module -> Expectation) -> (() -> Expectation)
 mapAccessorOnRecords expectFn _ =

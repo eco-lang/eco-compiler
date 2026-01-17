@@ -1,10 +1,9 @@
 module Compiler.Type.AnnotationEnforcement exposing
-    ( expectAnnotationEnforced
-    , expectAnnotationMismatchError
+    ( expectAnnotationMismatchError
     , expectMatchingAnnotationSucceeds
     )
 
-{-| Test logic for invariant TYPE_006: Annotations are enforced, not ignored.
+{-| Test logic for invariant TYPE\_006: Annotations are enforced, not ignored.
 
 For expressions with explicit annotations:
 
@@ -20,14 +19,13 @@ import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
-import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as CanError
 import Compiler.Reporting.Error.Type as TypeError
 import Compiler.Reporting.Result as Result
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Solve as Solve
-import Data.Map as Dict exposing (Dict)
+import Data.Map exposing (Dict)
 import Expect
 import System.TypeCheck.IO as IO
 
@@ -86,7 +84,7 @@ canonicalizeModule : Src.Module -> Result String Can.Module
 canonicalizeModule srcModule =
     let
         result =
-            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces srcModule
+            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
     in
     case Result.run result of
         ( _, Err errors ) ->

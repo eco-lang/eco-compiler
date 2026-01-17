@@ -1,8 +1,6 @@
-module Compiler.Canonicalize.ImportResolution exposing
-    ( expectImportsResolved
-    )
+module Compiler.Canonicalize.ImportResolution exposing (expectImportsResolved)
 
-{-| Test logic for invariant CANON_004: Import resolution produces valid references.
+{-| Test logic for invariant CANON\_004: Import resolution produces valid references.
 
 For each import statement:
 
@@ -108,25 +106,25 @@ In canonical form, all references should be fully qualified with valid module na
 collectExprImportIssues : Can.Expr -> List String
 collectExprImportIssues (A.At _ exprInfo) =
     case exprInfo.node of
-        Can.VarForeign home _ _ ->
+        Can.VarForeign _ _ _ ->
             -- Foreign variables should have valid home modules
             -- The home module should exist (validated during canonicalization)
             []
 
-        Can.VarCtor _ home _ _ _ ->
+        Can.VarCtor _ _ _ _ _ ->
             -- Constructor references should have valid home modules
             []
 
-        Can.VarOperator _ home _ _ ->
+        Can.VarOperator _ _ _ _ ->
             -- Operator references should have valid home modules
             []
 
-        Can.Binop _ home _ _ left right ->
+        Can.Binop _ _ _ _ left right ->
             -- Binop should have valid home module
             collectExprImportIssues left
                 ++ collectExprImportIssues right
 
-        Can.Lambda args body ->
+        Can.Lambda _ body ->
             collectExprImportIssues body
 
         Can.Call fn args ->

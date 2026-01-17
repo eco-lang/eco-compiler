@@ -27,8 +27,6 @@ module Compiler.AST.SourceBuilder exposing
     , makeModuleWithTypedDefs
     , makeModuleWithTypedDefsUnionsAliases
     , makeModuleWithTypedDefsUnionsAliasesExtended
-    , bitwiseImport
-    , extendedImports
       -- Fuzzers
     , negateExpr
     , pAlias

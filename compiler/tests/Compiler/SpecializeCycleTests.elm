@@ -4,7 +4,7 @@ module Compiler.SpecializeCycleTests exposing (expectSuite, suite)
 
 These tests cover:
 
-  - MONO_004: All functions are callable MonoNodes
+  - MONO\_004: All functions are callable MonoNodes
   - Cycle functions: visitCycleNodes, insertCycleNodePlaceholders, etc.
   - Mutual recursion: value-only and function mutual recursion
 
@@ -13,29 +13,18 @@ These tests cover:
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( TypedDef
-        , accessExpr
-        , binopsExpr
+        ( binopsExpr
         , boolExpr
         , callExpr
         , caseExpr
         , define
         , ifExpr
         , intExpr
-        , lambdaExpr
         , letExpr
         , listExpr
         , makeModule
-        , makeModuleWithDefs
-        , makeModuleWithTypedDefs
-        , pCons
-        , pCtor
-        , pInt
         , pList
         , pVar
-        , tLambda
-        , tType
-        , tVar
         , varExpr
         )
 import Compiler.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)

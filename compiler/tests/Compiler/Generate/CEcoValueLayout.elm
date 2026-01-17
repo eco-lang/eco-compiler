@@ -1,8 +1,6 @@
-module Compiler.Generate.CEcoValueLayout exposing
-    ( expectValidCEcoValueLayout
-    )
+module Compiler.Generate.CEcoValueLayout exposing (expectValidCEcoValueLayout)
 
-{-| Test logic for invariant MONO_003: CEcoValue layout is consistent.
+{-| Test logic for invariant MONO\_003: CEcoValue layout is consistent.
 
 For each monomorphized value:
 
@@ -173,13 +171,13 @@ checkCtorLayoutCEcoValue context layout =
 collectExprCEcoValueIssues : String -> Mono.MonoExpr -> List String
 collectExprCEcoValueIssues context expr =
     case expr of
-        Mono.MonoClosure closureInfo bodyExpr monoType ->
+        Mono.MonoClosure closureInfo bodyExpr _ ->
             -- Closure parameter types should be concrete for unboxed values
             List.concatMap (\( _, t ) -> checkCEcoValueInLayoutPosition context t) closureInfo.params
                 ++ List.concatMap (\( _, e, _ ) -> collectExprCEcoValueIssues context e) closureInfo.captures
                 ++ collectExprCEcoValueIssues context bodyExpr
 
-        Mono.MonoList _ exprs monoType ->
+        Mono.MonoList _ exprs _ ->
             List.concatMap (collectExprCEcoValueIssues context) exprs
 
         Mono.MonoCall _ fnExpr argExprs _ ->

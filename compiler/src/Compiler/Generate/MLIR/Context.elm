@@ -1,9 +1,9 @@
 module Compiler.Generate.MLIR.Context exposing
     ( Context, FuncSignature, PendingLambda, PendingWrapper, TypeRegistry
-    , initContext, emptyTypeRegistry
+    , initContext
     , freshVar, freshOpId, lookupVar, addVarMapping
-    , getOrCreateTypeIdForMonoType, registerNestedTypes, registerKernelCall
-    , extractNodeSignature, buildSignatures, kernelFuncSignatureFromType
+    , getOrCreateTypeIdForMonoType, registerKernelCall
+    , buildSignatures, kernelFuncSignatureFromType
     , isTypeVar, hasKernelImplementation
     )
 
@@ -20,7 +20,7 @@ state during MLIR code generation.
 
 # Context Management
 
-@docs initContext, emptyTypeRegistry
+@docs initContext
 
 
 # Variable Management
@@ -30,12 +30,12 @@ state during MLIR code generation.
 
 # Type Registration
 
-@docs getOrCreateTypeIdForMonoType, registerNestedTypes, registerKernelCall
+@docs getOrCreateTypeIdForMonoType, registerKernelCall
 
 
 # Signature Utilities
 
-@docs extractNodeSignature, buildSignatures, kernelFuncSignatureFromType
+@docs buildSignatures, kernelFuncSignatureFromType
 
 
 # Type Inspection
@@ -50,7 +50,7 @@ import Compiler.Generate.MLIR.Types as Types
 import Compiler.Generate.Mode as Mode
 import Data.Map as EveryDict
 import Dict
-import Mlir.Mlir exposing (MlirType(..))
+import Mlir.Mlir exposing (MlirType)
 import Utils.Crash exposing (crash)
 
 
@@ -153,18 +153,6 @@ type alias PendingWrapper =
     , targetFuncName : String
     , paramTypes : List Mono.MonoType
     , returnType : Mono.MonoType
-    }
-
-
-{-| A pending accessor is generated when a field accessor (.fieldName) is used as a value.
-The accessor function takes a record and returns the specified field.
--}
-type alias PendingAccessor =
-    { accessorName : String
-    , fieldName : Name.Name
-    , fieldIndex : Int
-    , isUnboxed : Bool
-    , fieldType : Mono.MonoType
     }
 
 
@@ -342,25 +330,6 @@ lookupVar ctx name =
             ( ssaVar, mlirTy )
 
         Nothing ->
-            let
-                varKeys =
-                    Dict.keys ctx.varMappings
-
-                siblingKeys =
-                    Dict.keys ctx.currentLetSiblings
-
-                _ =
-                    Debug.todo
-                        ("lookupVar: Failed to find "
-                            ++ name
-                            ++ "\n  varMappings: ["
-                            ++ String.join ", " varKeys
-                            ++ "]\n  currentLetSiblings: ["
-                            ++ String.join ", " siblingKeys
-                            ++ "]"
-                        )
-            in
-            -- Function parameters default to !eco.value
             ( "%" ++ name, Types.ecoValue )
 
 

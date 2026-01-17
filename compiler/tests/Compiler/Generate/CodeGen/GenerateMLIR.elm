@@ -29,7 +29,6 @@ import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
@@ -192,8 +191,9 @@ localGraphToGlobalGraph localGraph =
 {-| Build a GlobalTypeEnv from a canonical module and test interfaces.
 
 This extracts the union and alias definitions from:
-1. The test module itself (e.g., Array with its Node, Builder types)
-2. All test interfaces (Basics, List, Maybe, JsArray, etc.)
+
+1.  The test module itself (e.g., Array with its Node, Builder types)
+2.  All test interfaces (Basics, List, Maybe, JsArray, etc.)
 
 Both are needed for monomorphization to find all referenced types.
 

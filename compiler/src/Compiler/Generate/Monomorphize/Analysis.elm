@@ -1,10 +1,5 @@
 module Compiler.Generate.Monomorphize.Analysis exposing
-    ( collectDepsHelp
-    , collectDeciderDeps
-    , collectCustomTypesFromMonoType
-    , collectCustomTypesFromExpr
-    , collectCustomTypesFromDecider
-    , collectAllCustomTypes
+    ( collectAllCustomTypes
     , lookupUnion
     )
 
@@ -19,12 +14,10 @@ This module handles:
 
 # Dependency Collection
 
-@docs collectDepsHelp, collectDeciderDeps
-
 
 # Custom Type Collection
 
-@docs collectCustomTypesFromMonoType, collectCustomTypesFromExpr, collectCustomTypesFromDecider, collectAllCustomTypes
+@docs collectAllCustomTypes
 
 
 # Union Type Lookup

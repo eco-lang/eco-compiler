@@ -1,8 +1,6 @@
-module Compiler.Optimize.AnnotationsPreserved exposing
-    ( expectAnnotationsPreserved
-    )
+module Compiler.Optimize.AnnotationsPreserved exposing (expectAnnotationsPreserved)
 
-{-| Test logic for invariant TOPT_003: Top-level annotations preserved in local graph.
+{-| Test logic for invariant TOPT\_003: Top-level annotations preserved in local graph.
 
 For each top-level definition:
 
@@ -16,7 +14,6 @@ annotations are preserved through optimization.
 
 -}
 
-import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Generate.TypedOptimizedMonomorphize as TOMono

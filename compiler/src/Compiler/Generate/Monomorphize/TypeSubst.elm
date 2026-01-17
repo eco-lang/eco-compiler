@@ -1,12 +1,7 @@
 module Compiler.Generate.Monomorphize.TypeSubst exposing
     ( applySubst
     , canTypeToMonoType
-    , constraintFromName
-    , unify
-    , unifyHelp
-    , unifyFuncCall
-    , unifyArgsOnly
-    , extractParamTypes
+    , unify, unifyFuncCall, extractParamTypes
     )
 
 {-| Type substitution and unification for monomorphization.
@@ -22,12 +17,12 @@ by applying type variable substitutions.
 
 # Type Conversion
 
-@docs canTypeToMonoType, constraintFromName
+@docs canTypeToMonoType
 
 
 # Unification
 
-@docs unify, unifyHelp, unifyFuncCall, unifyArgsOnly, extractParamTypes
+@docs unify, unifyFuncCall, extractParamTypes
 
 -}
 
@@ -139,33 +134,29 @@ unifyHelp canType monoType subst =
                         )
                         subst
                         layout.fields
-
-                -- Then bind extension variable to remaining fields
-                substWithExtension =
-                    case maybeExtension of
-                        Just extName ->
-                            let
-                                -- Fields in layout that are not in the canonical record
-                                remainingFields =
-                                    List.filter
-                                        (\f -> Dict.get identity f.name fields == Nothing)
-                                        layout.fields
-
-                                -- Create a record type with the remaining fields
-                                remainingLayout =
-                                    Mono.computeRecordLayout
-                                        (List.foldl
-                                            (\f d -> Dict.insert identity f.name f.monoType d)
-                                            Dict.empty
-                                            remainingFields
-                                        )
-                            in
-                            Dict.insert identity extName (Mono.MRecord remainingLayout) substWithFields
-
-                        Nothing ->
-                            substWithFields
             in
-            substWithExtension
+            case maybeExtension of
+                Just extName ->
+                    let
+                        -- Fields in layout that are not in the canonical record
+                        remainingFields =
+                            List.filter
+                                (\f -> Dict.get identity f.name fields == Nothing)
+                                layout.fields
+
+                        -- Create a record type with the remaining fields
+                        remainingLayout =
+                            Mono.computeRecordLayout
+                                (List.foldl
+                                    (\f d -> Dict.insert identity f.name f.monoType d)
+                                    Dict.empty
+                                    remainingFields
+                                )
+                    in
+                    Dict.insert identity extName (Mono.MRecord remainingLayout) substWithFields
+
+                Nothing ->
+                    substWithFields
 
         ( Can.TTuple a b rest, Mono.MTuple layout ) ->
             let

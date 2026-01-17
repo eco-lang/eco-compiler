@@ -1,8 +1,6 @@
-module Compiler.Type.RankPolymorphism exposing
-    ( expectRankPolymorphismValid
-    )
+module Compiler.Type.RankPolymorphism exposing (expectRankPolymorphismValid)
 
-{-| Test logic for invariant TYPE_005: Rank polymorphism is correctly handled.
+{-| Test logic for invariant TYPE\_005: Rank polymorphism is correctly handled.
 
 For each let-binding and function:
 
@@ -89,7 +87,7 @@ checkAnnotationRank name annotation =
 checkTypeForRankIssues : String -> Dict.Dict String String () -> Can.Type -> List String
 checkTypeForRankIssues context freeVars canType =
     case canType of
-        Can.TVar name ->
+        Can.TVar _ ->
             -- Type variables should either be free or properly bound
             -- For now, just verify basic validity
             []

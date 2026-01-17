@@ -16,27 +16,19 @@ import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
-        , UnionCtor
         , UnionDef
         , binopsExpr
         , boolExpr
         , callExpr
         , caseExpr
         , ctorExpr
-        , ifExpr
         , intExpr
-        , lambdaExpr
-        , letExpr
-        , listExpr
         , makeModuleWithTypedDefsUnionsAliases
         , pCtor
-        , pInt
         , pVar
-        , strExpr
         , tLambda
         , tType
         , tVar
-        , tupleExpr
         , varExpr
         )
 import Compiler.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
@@ -104,9 +96,9 @@ customEnumType expectFn _ =
             , tipe = tLambda (tType "Color" []) (tType "Int" [])
             , body =
                 caseExpr (varExpr "color")
-                    [ ( pCtor "Red" [], intExpr 0xFF0000 )
-                    , ( pCtor "Green" [], intExpr 0x00FF00 )
-                    , ( pCtor "Blue" [], intExpr 0x0000FF )
+                    [ ( pCtor "Red" [], intExpr 0x00FF0000 )
+                    , ( pCtor "Green" [], intExpr 0xFF00 )
+                    , ( pCtor "Blue" [], intExpr 0xFF )
                     ]
             }
 

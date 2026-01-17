@@ -1,11 +1,9 @@
 module Compiler.Generate.CEcoValueLayoutTest exposing (suite)
 
-{-| Test suite for invariant MONO_003: CEcoValue layout is consistent.
-
+{-| Test suite for invariant MONO\_003: CEcoValue layout is consistent.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.AST.SourceBuilder as SB
 import Compiler.AnnotatedTests as AnnotatedTests
 import Compiler.ArrayTest as ArrayTest
 import Compiler.AsPatternTests as AsPatternTests

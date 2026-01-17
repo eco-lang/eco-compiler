@@ -41,7 +41,6 @@ import Compiler.AST.SourceBuilder
         , tLambda
         , tTuple
         , tType
-        , tVar
         , tupleExpr
         , varExpr
         )
@@ -146,7 +145,7 @@ multipleCharPatternsTest expectFn _ =
                     , ( pChr "1", intExpr 1 )
                     , ( pChr "2", intExpr 2 )
                     , ( pChr "3", intExpr 3 )
-                    , ( pVar "_", intExpr (-1) )
+                    , ( pVar "_", intExpr -1 )
                     ]
             }
 
@@ -266,7 +265,7 @@ digitCharPatternTest expectFn _ =
                     , ( pChr "7", intExpr 7 )
                     , ( pChr "8", intExpr 8 )
                     , ( pChr "9", intExpr 9 )
-                    , ( pVar "_", intExpr (-1) )
+                    , ( pVar "_", intExpr -1 )
                     ]
             }
 
@@ -838,7 +837,7 @@ multipleSpecificThenFallbackTest expectFn _ =
                     , ( pInt 3, intExpr 2 )
                     , ( pInt 4, intExpr 3 )
                     , ( pInt 5, intExpr 5 )
-                    , ( pVar "_", intExpr (-1) )
+                    , ( pVar "_", intExpr -1 )
                     ]
             }
 

@@ -23,7 +23,6 @@ the optimized code and the type definitions it needs.
 
 import Bytes.Decode
 import Bytes.Encode
-import Compiler.AST.Canonical as Can
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 

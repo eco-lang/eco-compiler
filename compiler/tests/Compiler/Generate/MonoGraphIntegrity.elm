@@ -1,16 +1,16 @@
 module Compiler.Generate.MonoGraphIntegrity exposing
     ( expectCallableMonoNodes
-    , expectMonoGraphComplete
     , expectMonoGraphClosed
+    , expectMonoGraphComplete
     , expectSpecRegistryComplete
     )
 
 {-| Test logic for invariants:
 
-  - MONO_004: All functions are callable MonoNodes
-  - MONO_010: MonoGraph is type complete
-  - MONO_011: MonoGraph is closed and hygienic
-  - MONO_005: Specialization registry is complete and consistent
+  - MONO\_004: All functions are callable MonoNodes
+  - MONO\_010: MonoGraph is type complete
+  - MONO\_011: MonoGraph is closed and hygienic
+  - MONO\_005: Specialization registry is complete and consistent
 
 This module reuses the existing typed optimization pipeline to verify
 MonoGraph integrity. Successful monomorphization implies all these
@@ -21,12 +21,12 @@ invariants are satisfied.
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.Generate.TypedOptimizedMonomorphize as TOMono
-import Data.Map as Dict exposing (Dict)
+import Data.Map as Dict
 import Data.Set as Set exposing (EverySet)
 import Expect
 
 
-{-| MONO_004: Verify that all function-typed nodes are callable.
+{-| MONO\_004: Verify that all function-typed nodes are callable.
 -}
 expectCallableMonoNodes : Src.Module -> Expect.Expectation
 expectCallableMonoNodes srcModule =
@@ -46,7 +46,7 @@ expectCallableMonoNodes srcModule =
                 Expect.fail (String.join "\n" issues)
 
 
-{-| MONO_010: Verify MonoGraph is type complete.
+{-| MONO\_010: Verify MonoGraph is type complete.
 -}
 expectMonoGraphComplete : Src.Module -> Expect.Expectation
 expectMonoGraphComplete srcModule =
@@ -66,7 +66,7 @@ expectMonoGraphComplete srcModule =
                 Expect.fail (String.join "\n" issues)
 
 
-{-| MONO_011: Verify MonoGraph is closed and hygienic.
+{-| MONO\_011: Verify MonoGraph is closed and hygienic.
 -}
 expectMonoGraphClosed : Src.Module -> Expect.Expectation
 expectMonoGraphClosed srcModule =
@@ -86,7 +86,7 @@ expectMonoGraphClosed srcModule =
                 Expect.fail (String.join "\n" issues)
 
 
-{-| MONO_005: Verify specialization registry is complete.
+{-| MONO\_005: Verify specialization registry is complete.
 -}
 expectSpecRegistryComplete : Src.Module -> Expect.Expectation
 expectSpecRegistryComplete srcModule =
@@ -163,7 +163,7 @@ checkNodeCallability specId node =
             -- Enum constructors are callable
             []
 
-        Mono.MonoExtern monoType ->
+        Mono.MonoExtern _ ->
             -- Externs with function types are callable (FFI)
             []
 
@@ -190,66 +190,7 @@ checkNodeCallability specId node =
 -}
 collectCompletenessIssues : Mono.MonoGraph -> List String
 collectCompletenessIssues (Mono.MonoGraph data) =
-    let
-        -- Collect all custom type references
-        customTypeRefs =
-            Dict.foldl compare
-                (\_ node acc -> collectCustomTypeRefsFromNode node ++ acc)
-                []
-                data.nodes
-
-        -- Check that all referenced custom types have ctor layouts
-        ctorLayoutIssues =
-            List.filterMap
-                (\( canonical, name ) ->
-                    let
-                        key =
-                            ( canonical, name )
-                    in
-                    -- Check if ctorLayouts has an entry for this type
-                    -- Note: ctorLayouts is Dict (List String) (List String) (List CtorLayout)
-                    -- The key is (comparable Canonical, comparable Name)
-                    Nothing
-                )
-                customTypeRefs
-    in
-    ctorLayoutIssues
-
-
-{-| Collect custom type references from a node.
--}
-collectCustomTypeRefsFromNode : Mono.MonoNode -> List ( List String, String )
-collectCustomTypeRefsFromNode node =
-    case node of
-        Mono.MonoDefine expr monoType ->
-            collectCustomTypeRefsFromType monoType
-                ++ collectCustomTypeRefsFromExpr expr
-
-        Mono.MonoTailFunc params expr monoType ->
-            collectCustomTypeRefsFromType monoType
-                ++ List.concatMap (\( _, t ) -> collectCustomTypeRefsFromType t) params
-                ++ collectCustomTypeRefsFromExpr expr
-
-        Mono.MonoCtor _ monoType ->
-            collectCustomTypeRefsFromType monoType
-
-        Mono.MonoEnum _ monoType ->
-            collectCustomTypeRefsFromType monoType
-
-        Mono.MonoExtern monoType ->
-            collectCustomTypeRefsFromType monoType
-
-        Mono.MonoPortIncoming expr monoType ->
-            collectCustomTypeRefsFromType monoType
-                ++ collectCustomTypeRefsFromExpr expr
-
-        Mono.MonoPortOutgoing expr monoType ->
-            collectCustomTypeRefsFromType monoType
-                ++ collectCustomTypeRefsFromExpr expr
-
-        Mono.MonoCycle defs monoType ->
-            collectCustomTypeRefsFromType monoType
-                ++ List.concatMap (\( _, expr ) -> collectCustomTypeRefsFromExpr expr) defs
+    []
 
 
 {-| Collect custom type references from a MonoType.
@@ -257,7 +198,7 @@ collectCustomTypeRefsFromNode node =
 collectCustomTypeRefsFromType : Mono.MonoType -> List ( List String, String )
 collectCustomTypeRefsFromType monoType =
     case monoType of
-        Mono.MCustom canonical name typeArgs ->
+        Mono.MCustom _ _ typeArgs ->
             -- Note: canonical is IO.Canonical, we'd need to extract its comparable form
             -- For now, skip the lookup check since we can't easily compare
             List.concatMap collectCustomTypeRefsFromType typeArgs
@@ -380,20 +321,17 @@ collectClosureIssues (Mono.MonoGraph data) =
         referencedSpecIds =
             Dict.foldl compare
                 (\_ node acc -> Set.union acc (collectSpecIdRefsFromNode node))
-                (Set.empty)
+                Set.empty
                 data.nodes
 
         -- Find undefined references
         undefinedRefs =
             Set.diff referencedSpecIds definedSpecIds
                 |> Set.toList compare
-
-        undefinedIssues =
-            List.map
-                (\specId -> "Referenced SpecId " ++ String.fromInt specId ++ " is not defined in nodes")
-                undefinedRefs
     in
-    undefinedIssues
+    List.map
+        (\specId -> "Referenced SpecId " ++ String.fromInt specId ++ " is not defined in nodes")
+        undefinedRefs
 
 
 {-| Collect SpecId references from a node.
@@ -425,7 +363,7 @@ collectSpecIdRefsFromNode node =
         Mono.MonoCycle defs _ ->
             List.foldl
                 (\( _, expr ) acc -> Set.union acc (collectSpecIdRefsFromExpr expr))
-                (Set.empty)
+                Set.empty
                 defs
 
 
@@ -435,12 +373,12 @@ collectSpecIdRefsFromExpr : Mono.MonoExpr -> EverySet Int Int
 collectSpecIdRefsFromExpr expr =
     case expr of
         Mono.MonoVarGlobal _ specId _ ->
-            Set.insert identity specId (Set.empty)
+            Set.insert identity specId Set.empty
 
         Mono.MonoList _ exprs _ ->
             List.foldl
                 (\e acc -> Set.union acc (collectSpecIdRefsFromExpr e))
-                (Set.empty)
+                Set.empty
                 exprs
 
         Mono.MonoClosure closureInfo bodyExpr _ ->
@@ -458,7 +396,7 @@ collectSpecIdRefsFromExpr expr =
         Mono.MonoTailCall _ args _ ->
             List.foldl
                 (\( _, e ) acc -> Set.union acc (collectSpecIdRefsFromExpr e))
-                (Set.empty)
+                Set.empty
                 args
 
         Mono.MonoIf branches elseExpr _ ->
@@ -481,13 +419,13 @@ collectSpecIdRefsFromExpr expr =
         Mono.MonoCase _ _ _ branches _ ->
             List.foldl
                 (\( _, e ) acc -> Set.union acc (collectSpecIdRefsFromExpr e))
-                (Set.empty)
+                Set.empty
                 branches
 
         Mono.MonoRecordCreate fieldExprs _ _ ->
             List.foldl
                 (\e acc -> Set.union acc (collectSpecIdRefsFromExpr e))
-                (Set.empty)
+                Set.empty
                 fieldExprs
 
         Mono.MonoRecordAccess recordExpr _ _ _ _ ->
@@ -502,7 +440,7 @@ collectSpecIdRefsFromExpr expr =
         Mono.MonoTupleCreate _ elementExprs _ _ ->
             List.foldl
                 (\e acc -> Set.union acc (collectSpecIdRefsFromExpr e))
-                (Set.empty)
+                Set.empty
                 elementExprs
 
         _ ->
@@ -544,16 +482,10 @@ collectRegistryIssues (Mono.MonoGraph data) =
         undefinedRegistrySpecIds =
             Set.diff registrySpecIds definedSpecIds
                 |> Set.toList compare
-
-        undefinedIssues =
-            List.map
-                (\specId -> "Registry contains SpecId " ++ String.fromInt specId ++ " which is not defined in nodes")
-                undefinedRegistrySpecIds
-
-        -- Check that all used SpecIds are in the registry (optional, depends on design)
-        -- For now, we just check that registry SpecIds map to real nodes
     in
-    undefinedIssues
+    List.map
+        (\specId -> "Registry contains SpecId " ++ String.fromInt specId ++ " which is not defined in nodes")
+        undefinedRegistrySpecIds
 
 
 {-| Collect all SpecIds from the specialization registry.

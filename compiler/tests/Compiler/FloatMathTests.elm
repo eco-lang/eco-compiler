@@ -21,7 +21,6 @@ import Compiler.AST.SourceBuilder
         , binopsExpr
         , callExpr
         , floatExpr
-        , ifExpr
         , intExpr
         , makeModuleWithTypedDefsUnionsAliases
         , pVar
@@ -927,7 +926,7 @@ quadraticFormulaTest expectFn _ =
             { name = "testValue"
             , args = []
             , tipe = tType "Float" []
-            , body = callExpr (varExpr "quadraticRoot") [ floatExpr 1.0, floatExpr (-3.0), floatExpr 2.0 ]
+            , body = callExpr (varExpr "quadraticRoot") [ floatExpr 1.0, floatExpr -3.0, floatExpr 2.0 ]
             }
 
         modul =

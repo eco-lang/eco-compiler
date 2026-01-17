@@ -1,7 +1,4 @@
-module Compiler.Generate.MLIR.Lambdas exposing
-    ( processLambdas
-    , processPendingWrappers
-    )
+module Compiler.Generate.MLIR.Lambdas exposing (processLambdas, processPendingWrappers)
 
 {-| Lambda and PAP wrapper processing for the MLIR backend.
 
@@ -20,7 +17,8 @@ import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Types as Types
 import Dict
-import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion(..), MlirType(..))
+import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion, MlirType)
+
 
 
 -- ====== LAMBDA PROCESSING ======
@@ -124,10 +122,6 @@ generateLambdaFunc ctx lambda =
                 lambda.params
 
         -- Merge sibling mappings with captures and params (captures/params take precedence)
-        siblingKeys : List String
-        siblingKeys =
-            Dict.keys lambda.siblingMappings
-
         varMappingsWithSiblings : Dict.Dict String ( String, MlirType )
         varMappingsWithSiblings =
             Dict.union varMappingsWithParams lambda.siblingMappings
@@ -179,20 +173,17 @@ processPendingWrappers ctx =
                 ctxCleared : Ctx.Context
                 ctxCleared =
                     { ctx | pendingWrappers = [] }
-
-                ( ops, ctxAfter ) =
-                    List.foldl
-                        (\wrapper ( accOps, accCtx ) ->
-                            let
-                                ( op, newCtx ) =
-                                    generatePapWrapper accCtx wrapper
-                            in
-                            ( accOps ++ [ op ], newCtx )
-                        )
-                        ( [], ctxCleared )
-                        wrappers
             in
-            ( ops, ctxAfter )
+            List.foldl
+                (\wrapper ( accOps, accCtx ) ->
+                    let
+                        ( op, newCtx ) =
+                            generatePapWrapper accCtx wrapper
+                    in
+                    ( accOps ++ [ op ], newCtx )
+                )
+                ( [], ctxCleared )
+                wrappers
 
 
 {-| Generate a PAP wrapper function.

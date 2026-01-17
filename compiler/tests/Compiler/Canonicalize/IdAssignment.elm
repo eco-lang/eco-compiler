@@ -18,11 +18,10 @@ import Compiler.AST.Source as Src
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
-import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as CanError
 import Compiler.Reporting.Result as Result
-import Data.Map as Dict exposing (Dict)
+import Data.Map as Dict
 import Expect
 import Set
 
@@ -49,7 +48,7 @@ expectUniqueIds : Src.Module -> Expect.Expectation
 expectUniqueIds modul =
     let
         result =
-            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces modul
+            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces modul
     in
     case Result.run result of
         ( _, Err errors ) ->

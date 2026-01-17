@@ -19,7 +19,6 @@ import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
-import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as CanError
 import Compiler.Reporting.Error.Type as TypeError
@@ -121,7 +120,7 @@ expectEquivalentTypeChecking : Src.Module -> Expect.Expectation
 expectEquivalentTypeChecking srcModule =
     let
         result =
-            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces srcModule
+            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
     in
     case Result.run result of
         ( _, Err errors ) ->
@@ -304,7 +303,7 @@ expectEquivalentTypeCheckingFails : Src.Module -> Expect.Expectation
 expectEquivalentTypeCheckingFails srcModule =
     let
         result =
-            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces srcModule
+            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
     in
     case Result.run result of
         ( _, Err errors ) ->

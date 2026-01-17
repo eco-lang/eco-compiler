@@ -2,7 +2,7 @@ module Compiler.PackageCompilation exposing
     ( CompileResult, CompileError(..), PathwayDiscrepancy(..)
     , parseModule
     , compileModule, compileModulesInOrder
-    , monomorphize, generateMLIR
+    , monomorphize
     , errorToString
     , TypeCheckTypedResult, generateMLIRFromResult
     )
@@ -40,7 +40,7 @@ This ensures the standard JS pathway and the MLIR pathway behave consistently.
 
 # Typed Pathway - Monomorphization and MLIR
 
-@docs monomorphize, generateMLIR
+@docs monomorphize
 
 
 # Error Formatting
@@ -507,17 +507,6 @@ monomorphizeWithIfaces ifaces result =
 
         Err errMsg ->
             Err (MonomorphizeError errMsg)
-
-
-{-| Build a GlobalTypeEnv from a canonical module.
--}
-buildGlobalTypeEnv : Can.Module -> TypeEnv.GlobalTypeEnv
-buildGlobalTypeEnv canModule =
-    let
-        moduleTypeEnv =
-            TypeEnv.fromCanonical canModule
-    in
-    Dict.singleton ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv
 
 
 {-| Build a GlobalTypeEnv from both a canonical module and interfaces.

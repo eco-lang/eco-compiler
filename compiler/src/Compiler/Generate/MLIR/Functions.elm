@@ -17,19 +17,14 @@ This module handles generation of all function types:
 -}
 
 import Compiler.AST.Monomorphized as Mono
-import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
-import Compiler.Elm.Package as Pkg
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Expr as Expr
-import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.Generate.MLIR.Names as Names
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Types as Types
-import Data.Map as EveryDict
 import Dict
-import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion(..), MlirType(..), Visibility(..))
-import System.TypeCheck.IO as IO
+import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion, MlirType(..), Visibility(..))
 
 
 
@@ -146,68 +141,6 @@ specIdToFuncName registry specId =
 
 
 -- ====== GENERATE DEFINE ======
-
-
-{-| Debug helper: dump the structure of a MonoExpr showing all let bindings and var references.
--}
-dumpMonoExprStructure : String -> Mono.MonoExpr -> String
-dumpMonoExprStructure indent expr =
-    case expr of
-        Mono.MonoLet def body _ ->
-            let
-                ( defName, defExpr ) =
-                    case def of
-                        Mono.MonoDef name defBody ->
-                            ( "MonoDef " ++ name, defBody )
-
-                        Mono.MonoTailDef name _ defBody ->
-                            ( "MonoTailDef " ++ name, defBody )
-            in
-            indent
-                ++ "MonoLet ("
-                ++ defName
-                ++ ")\n"
-                ++ indent
-                ++ "  def =\n"
-                ++ dumpMonoExprStructure (indent ++ "    ") defExpr
-                ++ "\n"
-                ++ indent
-                ++ "  body =\n"
-                ++ dumpMonoExprStructure (indent ++ "    ") body
-
-        Mono.MonoClosure closureInfo innerBody _ ->
-            let
-                paramNames =
-                    List.map Tuple.first closureInfo.params
-
-                captureNames =
-                    List.map (\( n, _, _ ) -> n) closureInfo.captures
-            in
-            indent
-                ++ "MonoClosure (params=["
-                ++ String.join ", " paramNames
-                ++ "], captures=["
-                ++ String.join ", " captureNames
-                ++ "])\n"
-                ++ dumpMonoExprStructure (indent ++ "  ") innerBody
-
-        Mono.MonoVarLocal name _ ->
-            indent ++ "MonoVarLocal " ++ name
-
-        Mono.MonoVarGlobal _ specId _ ->
-            indent ++ "MonoVarGlobal (specId=" ++ String.fromInt specId ++ ")"
-
-        Mono.MonoCall _ func _ _ ->
-            indent ++ "MonoCall\n" ++ dumpMonoExprStructure (indent ++ "  ") func
-
-        Mono.MonoIf branches final _ ->
-            indent ++ "MonoIf (" ++ String.fromInt (List.length branches) ++ " branches)"
-
-        Mono.MonoCase _ _ _ _ _ ->
-            indent ++ "MonoCase"
-
-        _ ->
-            indent ++ "Other"
 
 
 generateDefine : Ctx.Context -> String -> Mono.MonoExpr -> Mono.MonoType -> ( MlirOp, Ctx.Context )
@@ -654,54 +587,6 @@ generateStubValueFromMlirType ctx resultVar mlirType =
         _ ->
             -- For all other types (EcoValue, etc.), return Unit
             Ops.ecoConstantUnit ctx resultVar
-
-
-{-| Create a dummy value of the given MLIR type.
-Used for case expressions where we need a placeholder result with the correct type
-for the return after the eco.case (which will be replaced by the lowering pass).
--}
-createDummyValue : Ctx.Context -> MlirType -> ( List MlirOp, String, Ctx.Context )
-createDummyValue ctx mlirType =
-    let
-        ( resultVar, ctx1 ) =
-            Ctx.freshVar ctx
-    in
-    case mlirType of
-        I64 ->
-            let
-                ( ctx2, op ) =
-                    Ops.arithConstantInt ctx1 resultVar 0
-            in
-            ( [ op ], resultVar, ctx2 )
-
-        F64 ->
-            let
-                ( ctx2, op ) =
-                    Ops.arithConstantFloat ctx1 resultVar 0.0
-            in
-            ( [ op ], resultVar, ctx2 )
-
-        I1 ->
-            let
-                ( ctx2, op ) =
-                    Ops.arithConstantBool ctx1 resultVar False
-            in
-            ( [ op ], resultVar, ctx2 )
-
-        I16 ->
-            let
-                ( ctx2, op ) =
-                    Ops.arithConstantChar ctx1 resultVar 0
-            in
-            ( [ op ], resultVar, ctx2 )
-
-        _ ->
-            -- For Types.ecoValue and other types, return Unit
-            let
-                ( ctx2, op ) =
-                    Ops.ecoConstantUnit ctx1 resultVar
-            in
-            ( [ op ], resultVar, ctx2 )
 
 
 

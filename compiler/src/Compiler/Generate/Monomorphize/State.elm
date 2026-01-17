@@ -1,11 +1,6 @@
 module Compiler.Generate.Monomorphize.State exposing
-    ( MonoState
-    , WorkItem(..)
-    , Substitution
-    , VarTypes
+    ( MonoState, WorkItem(..), Substitution, VarTypes
     , initState
-    , emptySubstitution
-    , freshLambdaId
     )
 
 {-| State types and utilities for monomorphization.
@@ -21,12 +16,10 @@ the monomorphization process.
 
 # Initialization
 
-@docs initState, emptySubstitution
+@docs initState
 
 
 # Utilities
-
-@docs freshLambdaId
 
 -}
 
@@ -88,21 +81,3 @@ initState currentModule toptNodes globalTypeEnv =
     , globalTypeEnv = globalTypeEnv
     , varTypes = Dict.empty
     }
-
-
-{-| Create an empty substitution.
--}
-emptySubstitution : Substitution
-emptySubstitution =
-    Dict.empty
-
-
-{-| Generate a fresh lambda ID and return the updated state.
--}
-freshLambdaId : MonoState -> ( Mono.LambdaId, MonoState )
-freshLambdaId state =
-    let
-        lambdaId =
-            Mono.AnonymousLambda state.currentModule state.lambdaCounter
-    in
-    ( lambdaId, { state | lambdaCounter = state.lambdaCounter + 1 } )

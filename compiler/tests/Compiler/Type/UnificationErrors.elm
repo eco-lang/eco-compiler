@@ -1,11 +1,9 @@
 module Compiler.Type.UnificationErrors exposing
-    ( expectTypeError
+    ( expectNoTypeErrors
     , expectTypeMismatchError
-    , expectInfiniteTypeError
-    , expectNoTypeErrors
     )
 
-{-| Test logic for invariant TYPE_002: Unification failures become type errors.
+{-| Test logic for invariant TYPE\_002: Unification failures become type errors.
 
 Craft constraints with known conflicting types (e.g., unify Int and String).
 Run solver and assert a Type.Error is produced and the final result surfaces
@@ -19,7 +17,6 @@ import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
-import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as CanError
 import Compiler.Reporting.Error.Type as TypeError
@@ -27,30 +24,9 @@ import Compiler.Reporting.Result as Result
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Error as T
 import Compiler.Type.Solve as Solve
-import Data.Map as Dict exposing (Dict)
+import Data.Map exposing (Dict)
 import Expect
 import System.TypeCheck.IO as IO
-
-
-{-| Expect canonicalization and type checking to produce at least one type error.
--}
-expectTypeError : Src.Module -> Expect.Expectation
-expectTypeError srcModule =
-    case canonicalizeModule srcModule of
-        Err msg ->
-            Expect.fail msg
-
-        Ok modul ->
-            let
-                result =
-                    IO.unsafePerformIO (runTypeCheck modul)
-            in
-            case result of
-                Err _ ->
-                    Expect.pass
-
-                Ok _ ->
-                    Expect.fail "Expected a type error but type checking succeeded"
 
 
 {-| Expect a type mismatch error (BadExpr or BadPattern).
@@ -86,41 +62,6 @@ expectTypeMismatchError srcModule =
 
                 Ok _ ->
                     Expect.fail "Expected a type mismatch error but type checking succeeded"
-
-
-{-| Expect an infinite type error.
--}
-expectInfiniteTypeError : Src.Module -> Expect.Expectation
-expectInfiniteTypeError srcModule =
-    case canonicalizeModule srcModule of
-        Err msg ->
-            Expect.fail msg
-
-        Ok modul ->
-            let
-                result =
-                    IO.unsafePerformIO (runTypeCheck modul)
-            in
-            case result of
-                Err errors ->
-                    let
-                        errorList =
-                            NE.toList errors
-
-                        hasInfinite =
-                            List.any isInfiniteTypeError errorList
-                    in
-                    if hasInfinite then
-                        Expect.pass
-
-                    else
-                        Expect.fail
-                            ("Expected an infinite type error but got: "
-                                ++ (List.map typeErrorToString errorList |> String.join ", ")
-                            )
-
-                Ok _ ->
-                    Expect.fail "Expected an infinite type error but type checking succeeded"
 
 
 {-| Expect type checking to succeed without errors.
@@ -166,25 +107,13 @@ isMismatchError error =
             False
 
 
-{-| Check if an error is an infinite type error.
--}
-isInfiniteTypeError : TypeError.Error -> Bool
-isInfiniteTypeError error =
-    case error of
-        TypeError.InfiniteType _ _ _ ->
-            True
-
-        _ ->
-            False
-
-
 {-| Canonicalize a source module.
 -}
 canonicalizeModule : Src.Module -> Result String Can.Module
 canonicalizeModule srcModule =
     let
         result =
-            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces srcModule
+            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
     in
     case Result.run result of
         ( _, Err errors ) ->
@@ -219,17 +148,17 @@ runTypeCheck modul =
 typeErrorToString : TypeError.Error -> String
 typeErrorToString error =
     case error of
-        TypeError.BadExpr region category actualType expectedType ->
+        TypeError.BadExpr region _ actualType _ ->
             "BadExpr at "
                 ++ regionToString region
                 ++ ": "
                 ++ tTypeToString actualType
                 ++ " vs expected"
 
-        TypeError.BadPattern region pCategory actualType expectedType ->
+        TypeError.BadPattern region _ _ _ ->
             "BadPattern at " ++ regionToString region
 
-        TypeError.InfiniteType region name tType ->
+        TypeError.InfiniteType region name _ ->
             "InfiniteType: " ++ name ++ " at " ++ regionToString region
 
 

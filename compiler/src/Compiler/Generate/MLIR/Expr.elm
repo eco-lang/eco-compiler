@@ -1,8 +1,7 @@
 module Compiler.Generate.MLIR.Expr exposing
-    ( ExprResult, emptyResult
-    , generateExpr, generateList, generateClosure, generateCall, generateTailCall, generateIf, generateLet
-    , generateRecordCreate, generateRecordAccess, generateRecordUpdate, generateTupleCreate, generateUnit
-    , boxToEcoValue, boxToMatchSignatureTyped, coerceResultToType, generateExprListTyped, boxArgsWithMlirTypes
+    ( ExprResult
+    , generateExpr
+    , boxToEcoValue, coerceResultToType, boxArgsWithMlirTypes
     )
 
 {-| Expression generation for the MLIR backend.
@@ -12,27 +11,24 @@ This module handles generation of MLIR code for all Elm expressions.
 
 # Result Type
 
-@docs ExprResult, emptyResult
+@docs ExprResult
 
 
 # Expression Generation
 
-@docs generateExpr, generateList, generateClosure, generateCall, generateTailCall, generateIf, generateLet
+@docs generateExpr
 
 
 # Data Structure Generation
 
-@docs generateRecordCreate, generateRecordAccess, generateRecordUpdate, generateTupleCreate, generateUnit
-
 
 # Boxing and Coercion
 
-@docs boxToEcoValue, boxToMatchSignatureTyped, coerceResultToType, generateExprListTyped, boxArgsWithMlirTypes
+@docs boxToEcoValue, coerceResultToType, boxArgsWithMlirTypes
 
 -}
 
 import Compiler.AST.Monomorphized as Mono
-import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.MLIR.Context as Ctx
@@ -173,15 +169,6 @@ generateExpr ctx expr =
             generateIf ctx branches final
 
         Mono.MonoLet def body _ ->
-            let
-                defName =
-                    case def of
-                        Mono.MonoDef n _ ->
-                            n
-
-                        Mono.MonoTailDef n _ _ ->
-                            n
-            in
             generateLet ctx def body
 
         Mono.MonoDestruct destructor body destType ->
@@ -675,7 +662,7 @@ generateClosure ctx closureInfo body monoType =
         -- Generate expressions and track ACTUAL SSA types, not Mono types
         ( captureOps, captureVarsWithTypes, ctx1 ) =
             List.foldl
-                (\( capName, expr, _ ) ( accOps, accVars, accCtx ) ->
+                (\( _, expr, _ ) ( accOps, accVars, accCtx ) ->
                     let
                         result : ExprResult
                         result =
@@ -1763,7 +1750,7 @@ generateLet ctx def body =
             , ctx = ctxOut
             }
 
-        Mono.MonoTailDef name params funcBody ->
+        Mono.MonoTailDef name params _ ->
             -- For local tail-recursive functions, we need to:
             -- 1. Add the function parameters to varMappings
             -- 2. Add the function name to varMappings (so the let body can call it)

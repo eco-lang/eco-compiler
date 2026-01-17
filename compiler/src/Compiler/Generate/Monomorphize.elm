@@ -25,18 +25,14 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Generate.Monomorphize.Analysis as Analysis
-import Compiler.Generate.Monomorphize.Closure as Closure
-import Compiler.Generate.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Generate.Monomorphize.Specialize as Specialize
 import Compiler.Generate.Monomorphize.State as State exposing (WorkItem(..))
 import Compiler.Generate.Monomorphize.TypeSubst as TypeSubst
-import Compiler.Optimize.Typed.DecisionTree as DT
-import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
-import Data.Set as EverySet exposing (EverySet)
+import Data.Set as EverySet
 import System.TypeCheck.IO as IO
 import Utils.Crash
 
@@ -49,12 +45,6 @@ import Utils.Crash
 -}
 type alias MonoState =
     State.MonoState
-
-
-{-| Work item representing a function specialization to be processed.
--}
-type alias WorkItem =
-    State.WorkItem
 
 
 {-| Check if a MonoType represents a function type.
@@ -366,7 +356,6 @@ processWorklist state =
                                 processWorklist newState
 
 
-
 specializeAccessorGlobal : Name -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
 specializeAccessorGlobal fieldName monoType state =
     case monoType of
@@ -401,50 +390,6 @@ type alias Substitution =
     State.Substitution
 
 
-{-| Mapping of variable names to their MonoTypes, used during specialization.
--}
-type alias VarTypes =
-    State.VarTypes
-
-
-{-| Unify a function call by matching argument types and result type.
--}
-unifyFuncCall :
-    Can.Type
-    -> List Mono.MonoType
-    -> Can.Type
-    -> Substitution
-    -> Substitution
-unifyFuncCall =
-    TypeSubst.unifyFuncCall
-
-
-{-| Unify a canonical type with a monomorphic type to produce a substitution for type variables.
--}
-unify : Can.Type -> Mono.MonoType -> Substitution
-unify =
-    TypeSubst.unify
-
-
-{-| Helper for unification that extends an existing substitution.
--}
-unifyHelp : Can.Type -> Mono.MonoType -> Substitution -> Substitution
-unifyHelp =
-    TypeSubst.unifyHelp
-
-
-unifyArgsOnly : Can.Type -> List Mono.MonoType -> Substitution -> Substitution
-unifyArgsOnly =
-    TypeSubst.unifyArgsOnly
-
-
-{-| Extract parameter types from a MFunction type.
--}
-extractParamTypes : Mono.MonoType -> List Mono.MonoType
-extractParamTypes =
-    TypeSubst.extractParamTypes
-
-
 {-| Apply a type substitution to a canonical type to produce a monomorphic type.
 -}
 applySubst : Substitution -> Can.Type -> Mono.MonoType
@@ -457,164 +402,9 @@ canTypeToMonoType =
     TypeSubst.canTypeToMonoType
 
 
-constraintFromName : Name -> Mono.Constraint
-constraintFromName =
-    TypeSubst.constraintFromName
-
-
 
 -- ========== LAYOUT HELPERS ==========
-
-
-{-| Extract record layout from a monomorphic type.
--}
-getRecordLayout : Mono.MonoType -> Mono.RecordLayout
-getRecordLayout monoType =
-    case monoType of
-        Mono.MRecord layout ->
-            layout
-
-        _ ->
-            { fieldCount = 0
-            , unboxedCount = 0
-            , unboxedBitmap = 0
-            , fields = []
-            }
-
-
-getTupleLayout : Mono.MonoType -> Mono.TupleLayout
-getTupleLayout monoType =
-    case monoType of
-        Mono.MTuple layout ->
-            layout
-
-        _ ->
-            { arity = 0
-            , unboxedBitmap = 0
-            , elements = []
-            }
-
-
-{-| Look up the index and unboxed status of a record field by name.
--}
-lookupFieldIndex : Name -> Mono.MonoType -> ( Int, Bool )
-lookupFieldIndex fieldName monoType =
-    case monoType of
-        Mono.MRecord layout ->
-            List.foldl
-                (\f acc ->
-                    if f.name == fieldName then
-                        ( f.index, f.isUnboxed )
-
-                    else
-                        acc
-                )
-                ( 0, False )
-                layout.fields
-
-        _ ->
-            ( 0, False )
-
-
-{-| Build a function type from a list of arguments and a return type.
--}
-buildFuncType : List ( A.Located Name, Can.Type ) -> Can.Type -> Can.Type
-buildFuncType args returnType =
-    List.foldr
-        (\( _, argType ) acc ->
-            Can.TLambda argType acc
-        )
-        returnType
-        args
-
-
-{-| Build a constructor layout from name, tag, arity, and monomorphic type information.
-The name parameter is used to populate CtorLayout.name for debug printing.
--}
-buildCtorLayoutFromArity : Name.Name -> Int -> Int -> Mono.MonoType -> Mono.CtorLayout
-buildCtorLayoutFromArity ctorName tag arity ctorMonoType =
-    let
-        fieldTypes =
-            extractFieldTypes arity ctorMonoType
-
-        fields =
-            List.indexedMap
-                (\idx ty ->
-                    { name = "field" ++ String.fromInt idx
-                    , index = idx
-                    , monoType = ty
-                    , isUnboxed = Mono.canUnbox ty
-                    }
-                )
-                fieldTypes
-
-        -- Clamp to 32 bits: the runtime Custom.unboxed field is only 32 bits wide.
-        -- Fields at index >= 32 are treated as boxed even if they could be unboxed.
-        unboxedBitmap =
-            List.foldl
-                (\field acc ->
-                    if field.isUnboxed && field.index < 32 then
-                        acc + (2 ^ field.index)
-
-                    else
-                        acc
-                )
-                0
-                fields
-
-        unboxedCount =
-            List.length (List.filter .isUnboxed fields)
-    in
-    { name = ctorName
-    , tag = tag
-    , fields = fields
-    , unboxedCount = unboxedCount
-    , unboxedBitmap = unboxedBitmap
-    }
-
-
-extractFieldTypes : Int -> Mono.MonoType -> List Mono.MonoType
-extractFieldTypes n monoType =
-    if n <= 0 then
-        []
-
-    else
-        case monoType of
-            Mono.MFunction args result ->
-                args ++ extractFieldTypes (n - List.length args) result
-
-            _ ->
-                []
-
-
-
 -- ========== KERNEL ABI TYPE DERIVATION ==========
-
-
-{-| Derive the MonoType for a kernel function's ABI.
-
-Uses the KernelAbi module to determine the correct ABI mode, then applies
-the appropriate conversion. This separates expression result types (fully
-resolved) from kernel ABI types (which may preserve polymorphism).
-
--}
-deriveKernelAbiType : ( String, String ) -> Can.Type -> Substitution -> Mono.MonoType
-deriveKernelAbiType kernelId canFuncType callSubst =
-    case KernelAbi.deriveKernelAbiMode kernelId canFuncType of
-        KernelAbi.UseSubstitution ->
-            -- Monomorphic kernel: apply call-site substitution
-            applySubst callSubst canFuncType
-
-        KernelAbi.PreserveVars ->
-            -- Polymorphic kernel: preserve type vars as CEcoValue
-            KernelAbi.canTypeToMonoType_preserveVars canFuncType
-
-        KernelAbi.NumberBoxed ->
-            -- Number-boxed kernel: treat CNumber as CEcoValue
-            KernelAbi.canTypeToMonoType_numberBoxed canFuncType
-
-
-
 -- ========== GLOBAL CONVERSIONS ==========
 
 

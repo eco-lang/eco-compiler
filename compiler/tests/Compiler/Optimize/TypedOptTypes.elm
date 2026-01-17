@@ -1,9 +1,6 @@
-module Compiler.Optimize.TypedOptTypes exposing
-    ( expectAllExprsHaveTypes
-    , expectTypesWellFormed
-    )
+module Compiler.Optimize.TypedOptTypes exposing (expectAllExprsHaveTypes)
 
-{-| Test logic for invariant TOPT_001: TypedOptimized expressions always carry types.
+{-| Test logic for invariant TOPT\_001: TypedOptimized expressions always carry types.
 
 For each TypedOptimized.Expr variant:
 
@@ -26,7 +23,7 @@ import Expect
 import System.TypeCheck.IO as IO
 
 
-{-| TOPT_001: Verify all expressions have types.
+{-| TOPT\_001: Verify all expressions have types.
 -}
 expectAllExprsHaveTypes : Src.Module -> Expect.Expectation
 expectAllExprsHaveTypes srcModule =
@@ -38,26 +35,6 @@ expectAllExprsHaveTypes srcModule =
             let
                 issues =
                     collectExprTypeIssues result.localGraph
-            in
-            if List.isEmpty issues then
-                Expect.pass
-
-            else
-                Expect.fail (String.join "\n" issues)
-
-
-{-| TOPT_001: Verify all types are well-formed.
--}
-expectTypesWellFormed : Src.Module -> Expect.Expectation
-expectTypesWellFormed srcModule =
-    case TOMono.runToTypedOptimized srcModule of
-        Err msg ->
-            Expect.fail msg
-
-        Ok result ->
-            let
-                issues =
-                    collectWellFormednessIssues result.localGraph
             in
             if List.isEmpty issues then
                 Expect.pass
@@ -102,7 +79,7 @@ globalToString (TOpt.Global home name) =
 checkNodeExprsHaveTypes : String -> TOpt.Node -> List String
 checkNodeExprsHaveTypes context node =
     case node of
-        TOpt.Define expr _ canType ->
+        TOpt.Define expr _ _ ->
             -- The expression should have a type that matches the node's type
             let
                 exprType =
@@ -111,7 +88,7 @@ checkNodeExprsHaveTypes context node =
             checkTypeNotEmpty (context ++ " Define") exprType
                 ++ collectExprNestedTypeIssues context expr
 
-        TOpt.TrackedDefine _ expr _ canType ->
+        TOpt.TrackedDefine _ expr _ _ ->
             let
                 exprType =
                     TOpt.typeOf expr
@@ -119,7 +96,7 @@ checkNodeExprsHaveTypes context node =
             checkTypeNotEmpty (context ++ " TrackedDefine") exprType
                 ++ collectExprNestedTypeIssues context expr
 
-        TOpt.DefineTailFunc _ params expr _ canType ->
+        TOpt.DefineTailFunc _ params expr _ _ ->
             let
                 exprType =
                     TOpt.typeOf expr
@@ -131,11 +108,11 @@ checkNodeExprsHaveTypes context node =
         TOpt.Cycle _ _ defs _ ->
             List.concatMap (\def -> checkDefExprsHaveTypes context def) defs
 
-        TOpt.PortIncoming expr _ canType ->
+        TOpt.PortIncoming expr _ _ ->
             checkTypeNotEmpty (context ++ " PortIncoming") (TOpt.typeOf expr)
                 ++ collectExprNestedTypeIssues context expr
 
-        TOpt.PortOutgoing expr _ canType ->
+        TOpt.PortOutgoing expr _ _ ->
             checkTypeNotEmpty (context ++ " PortOutgoing") (TOpt.typeOf expr)
                 ++ collectExprNestedTypeIssues context expr
 
@@ -148,11 +125,11 @@ checkNodeExprsHaveTypes context node =
 checkDefExprsHaveTypes : String -> TOpt.Def -> List String
 checkDefExprsHaveTypes context def =
     case def of
-        TOpt.Def _ name expr canType ->
+        TOpt.Def _ name expr _ ->
             checkTypeNotEmpty (context ++ " Def " ++ name) (TOpt.typeOf expr)
                 ++ collectExprNestedTypeIssues context expr
 
-        TOpt.TailDef _ name params expr canType ->
+        TOpt.TailDef _ name params expr _ ->
             checkTypeNotEmpty (context ++ " TailDef " ++ name) (TOpt.typeOf expr)
                 ++ List.concatMap (\( _, paramType ) -> checkTypeNotEmpty (context ++ " param") paramType) params
                 ++ collectExprNestedTypeIssues context expr
@@ -244,64 +221,6 @@ checkTypeNotEmpty _ _ =
 -- ============================================================================
 -- TYPE WELL-FORMEDNESS VERIFICATION
 -- ============================================================================
-
-
-{-| Collect well-formedness issues from the local graph.
--}
-collectWellFormednessIssues : TOpt.LocalGraph -> List String
-collectWellFormednessIssues (TOpt.LocalGraph data) =
-    Dict.foldl TOpt.compareGlobal
-        (\global node acc ->
-            let
-                context =
-                    globalToString global
-            in
-            checkNodeTypeWellFormedness context node ++ acc
-        )
-        []
-        data.nodes
-
-
-{-| Check type well-formedness for a node.
--}
-checkNodeTypeWellFormedness : String -> TOpt.Node -> List String
-checkNodeTypeWellFormedness context node =
-    case node of
-        TOpt.Define expr _ canType ->
-            checkTypeWellFormed context canType
-                ++ collectExprTypeWellFormedness context expr
-
-        TOpt.TrackedDefine _ expr _ canType ->
-            checkTypeWellFormed context canType
-                ++ collectExprTypeWellFormedness context expr
-
-        TOpt.DefineTailFunc _ params expr _ canType ->
-            checkTypeWellFormed context canType
-                ++ List.concatMap (\( _, paramType ) -> checkTypeWellFormed (context ++ " param") paramType) params
-                ++ collectExprTypeWellFormedness context expr
-
-        TOpt.Ctor _ _ ctorType ->
-            checkTypeWellFormed context ctorType
-
-        TOpt.Enum _ ctorType ->
-            checkTypeWellFormed context ctorType
-
-        TOpt.Box boxType ->
-            checkTypeWellFormed context boxType
-
-        TOpt.Cycle _ _ defs _ ->
-            List.concatMap (\def -> checkDefTypeWellFormedness context def) defs
-
-        TOpt.PortIncoming expr _ portType ->
-            checkTypeWellFormed context portType
-                ++ collectExprTypeWellFormedness context expr
-
-        TOpt.PortOutgoing expr _ portType ->
-            checkTypeWellFormed context portType
-                ++ collectExprTypeWellFormedness context expr
-
-        _ ->
-            []
 
 
 {-| Check Def type well-formedness.
@@ -413,7 +332,7 @@ checkTypeWellFormed context canType =
             -- Recursively check type arguments
             List.concatMap (checkTypeWellFormed context) args
 
-        Can.TRecord fields ext ->
+        Can.TRecord fields _ ->
             -- Check record field types
             Dict.foldl compare (\_ fieldType acc -> checkFieldTypeWellFormed context fieldType ++ acc) [] fields
 

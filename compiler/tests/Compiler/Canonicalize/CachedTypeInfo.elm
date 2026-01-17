@@ -1,8 +1,6 @@
-module Compiler.Canonicalize.CachedTypeInfo exposing
-    ( expectTypeInfoCached
-    )
+module Compiler.Canonicalize.CachedTypeInfo exposing (expectTypeInfoCached)
 
-{-| Test logic for invariant CANON_006: Cached type info matches source.
+{-| Test logic for invariant CANON\_006: Cached type info matches source.
 
 For each cached type annotation or inferred type:
 
@@ -61,12 +59,8 @@ collectCachedTypeIssues canonical annotations =
     let
         (Can.Module moduleData) =
             canonical
-
-        -- Check each definition has an annotation
-        defIssues =
-            checkDefsHaveAnnotations moduleData.decls annotations
     in
-    defIssues
+    checkDefsHaveAnnotations moduleData.decls annotations
 
 
 {-| Check that all definitions have corresponding annotations.

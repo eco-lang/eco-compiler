@@ -20,7 +20,6 @@ import Compiler.AST.SourceBuilder
         , UnionDef
         , accessExpr
         , binopsExpr
-        , boolExpr
         , callExpr
         , caseExpr
         , ctorExpr
@@ -435,10 +434,12 @@ nestedLetClosures expectFn _ =
             , tipe = tLambda (tType "Int" []) (tType "Int" [])
             , body =
                 letExpr
-                    [ define "outer" []
+                    [ define "outer"
+                        []
                         (lambdaExpr [ pVar "x" ]
                             (letExpr
-                                [ define "inner" []
+                                [ define "inner"
+                                    []
                                     (lambdaExpr [ pVar "y" ]
                                         (binopsExpr
                                             [ ( varExpr "x", "+" )
@@ -1118,7 +1119,8 @@ recursiveClosure expectFn _ =
             , tipe = tLambda (tType "Int" []) (tType "Int" [])
             , body =
                 letExpr
-                    [ define "go" [ pVar "acc", pVar "m" ]
+                    [ define "go"
+                        [ pVar "acc", pVar "m" ]
                         (ifExpr
                             (binopsExpr [ ( varExpr "m", "<=" ) ] (intExpr 0))
                             (varExpr "acc")
@@ -1167,7 +1169,8 @@ closureWithTailRecursion expectFn _ =
                     (tLambda (tType "Int" []) (tType "Int" []))
             , body =
                 letExpr
-                    [ define "go" [ pVar "acc", pVar "m" ]
+                    [ define "go"
+                        [ pVar "acc", pVar "m" ]
                         (ifExpr
                             (binopsExpr [ ( varExpr "m", "<=" ) ] (intExpr 0))
                             (varExpr "acc")

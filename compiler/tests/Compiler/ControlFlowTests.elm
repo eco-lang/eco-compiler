@@ -17,26 +17,17 @@ import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
-        , UnionDef
         , binopsExpr
         , boolExpr
         , callExpr
-        , caseExpr
-        , ctorExpr
         , ifExpr
         , intExpr
-        , lambdaExpr
-        , letExpr
         , listExpr
         , makeModuleWithTypedDefsUnionsAliases
-        , pCons
-        , pCtor
-        , pList
         , pVar
         , strExpr
         , tLambda
         , tType
-        , tVar
         , varExpr
         )
 import Compiler.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
@@ -103,7 +94,7 @@ threeWayIfTest expectFn _ =
             , body =
                 ifExpr
                     (binopsExpr [ ( varExpr "n", "<" ) ] (intExpr 0))
-                    (intExpr (-1))
+                    (intExpr -1)
                     (ifExpr
                         (binopsExpr [ ( varExpr "n", ">" ) ] (intExpr 0))
                         (intExpr 1)
@@ -648,7 +639,7 @@ nestedBooleanExpressionsTest expectFn _ =
             { name = "testValue"
             , args = []
             , tipe = tType "Bool" []
-            , body = callExpr (varExpr "complexCheck") [ intExpr (-1), intExpr (-2) ]
+            , body = callExpr (varExpr "complexCheck") [ intExpr -1, intExpr -2 ]
             }
 
         modul =
@@ -679,7 +670,7 @@ booleanWithNotTest expectFn _ =
             { name = "testValue"
             , args = []
             , tipe = tType "Bool" []
-            , body = callExpr (varExpr "notPositive") [ intExpr (-5) ]
+            , body = callExpr (varExpr "notPositive") [ intExpr -5 ]
             }
 
         modul =
@@ -777,7 +768,7 @@ ifInElseBranchTest expectFn _ =
             { name = "testValue"
             , args = []
             , tipe = tType "Int" []
-            , body = callExpr (varExpr "elseNested") [ intExpr (-1), intExpr 10 ]
+            , body = callExpr (varExpr "elseNested") [ intExpr -1, intExpr 10 ]
             }
 
         modul =
@@ -820,7 +811,7 @@ ifInBothBranchesTest expectFn _ =
             { name = "testValue"
             , args = []
             , tipe = tType "Int" []
-            , body = callExpr (varExpr "bothNested") [ intExpr (-1), intExpr (-2) ]
+            , body = callExpr (varExpr "bothNested") [ intExpr -1, intExpr -2 ]
             }
 
         modul =

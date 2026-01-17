@@ -1,10 +1,8 @@
 module Compiler.Optimize.TypedOptTypesTest exposing (suite)
 
-{-| Test suite for invariant TOPT_001: TypedOptimized expressions always carry types.
-
+{-| Test suite for invariant TOPT\_001: TypedOptimized expressions always carry types.
 -}
 
-import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.AnnotatedTests as AnnotatedTests
 import Compiler.ArrayTest as ArrayTest
@@ -26,7 +24,7 @@ import Compiler.ListTests as ListTests
 import Compiler.LiteralTests as LiteralTests
 import Compiler.MultiDefTests as MultiDefTests
 import Compiler.OperatorTests as OperatorTests
-import Compiler.Optimize.TypedOptTypes exposing (expectAllExprsHaveTypes, expectTypesWellFormed)
+import Compiler.Optimize.TypedOptTypes exposing (expectAllExprsHaveTypes)
 import Compiler.PatternArgTests as PatternArgTests
 import Compiler.PatternMatchingTests as PatternMatchingTests
 import Compiler.RecordTests as RecordTests

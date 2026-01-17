@@ -1,8 +1,6 @@
-module Compiler.Canonicalize.DependencySCC exposing
-    ( expectValidSCCs
-    )
+module Compiler.Canonicalize.DependencySCC exposing (expectValidSCCs)
 
-{-| Test logic for invariant CANON_005: Dependency SCCs are correctly computed.
+{-| Test logic for invariant CANON\_005: Dependency SCCs are correctly computed.
 
 For the SCC analysis of value definitions:
 
@@ -125,29 +123,11 @@ through the dependency graph.
 -}
 checkRecursiveGroup : List Can.Def -> List String
 checkRecursiveGroup defs =
-    let
-        names =
-            List.map getDefName defs
-                |> Set.fromList identity
-    in
-    -- For now, just verify the group is non-empty
     if List.isEmpty defs then
         [ "Empty recursive group" ]
 
     else
         []
-
-
-{-| Get the name from a definition.
--}
-getDefName : Can.Def -> String
-getDefName def =
-    case def of
-        Can.Def (A.At _ name) _ _ ->
-            name
-
-        Can.TypedDef (A.At _ name) _ _ _ _ ->
-            name
 
 
 {-| Collect local variable references from an expression.

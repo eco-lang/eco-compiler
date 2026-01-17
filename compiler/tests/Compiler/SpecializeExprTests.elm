@@ -21,20 +21,12 @@ import Compiler.AST.SourceBuilder
         , callExpr
         , caseExpr
         , ctorExpr
-        , define
         , ifExpr
         , intExpr
-        , lambdaExpr
-        , letExpr
-        , listExpr
-        , makeModule
         , makeModuleWithTypedDefsUnionsAliases
-        , pCons
         , pCtor
         , pInt
-        , pList
         , pVar
-        , qualVarExpr
         , strExpr
         , tLambda
         , tType
@@ -157,13 +149,13 @@ nestedEnumCase expectFn _ =
                 caseExpr (varExpr "c1")
                     [ ( pCtor "Red" []
                       , caseExpr (varExpr "c2")
-                            [ ( pCtor "Red" [], intExpr 0xFF0000 )
-                            , ( pCtor "Green" [], intExpr 0xFFFF00 )
-                            , ( pCtor "Blue" [], intExpr 0xFF00FF )
+                            [ ( pCtor "Red" [], intExpr 0x00FF0000 )
+                            , ( pCtor "Green" [], intExpr 0x00FFFF00 )
+                            , ( pCtor "Blue" [], intExpr 0x00FF00FF )
                             ]
                       )
-                    , ( pCtor "Green" [], intExpr 0x00FF00 )
-                    , ( pCtor "Blue" [], intExpr 0x0000FF )
+                    , ( pCtor "Green" [], intExpr 0xFF00 )
+                    , ( pCtor "Blue" [], intExpr 0xFF )
                     ]
             }
 

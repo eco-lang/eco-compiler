@@ -1,8 +1,4 @@
-module Compiler.Generate.MLIR.TypeTable exposing
-    ( generateTypeTable
-    , TypeKind(..)
-    , PrimKind(..)
-    )
+module Compiler.Generate.MLIR.TypeTable exposing (generateTypeTable, TypeKind(..), PrimKind(..))
 
 {-| Type table generation for debug printing support.
 
@@ -19,7 +15,7 @@ import Compiler.Generate.MLIR.Context as Ctx
 import Data.Map as EveryDict
 import Dict
 import Mlir.Loc as Loc
-import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))
+import Mlir.Mlir exposing (MlirAttr(..), MlirOp)
 
 
 

@@ -5,8 +5,8 @@ module Compiler.Generate.MonoNumericResolution exposing
 
 {-| Test logic for invariants:
 
-  - MONO_002: No CNumber MVar at MLIR codegen entry
-  - MONO_008: Primitive numeric types are fixed in calls
+  - MONO\_002: No CNumber MVar at MLIR codegen entry
+  - MONO\_008: Primitive numeric types are fixed in calls
 
 This module reuses the existing typed optimization pipeline to verify numeric type resolution.
 The key verification is that monomorphization succeeds - which validates that all numeric
@@ -21,7 +21,7 @@ import Data.Map as Dict
 import Expect
 
 
-{-| MONO_002: Verify no CNumber MVars remain at MLIR codegen entry.
+{-| MONO\_002: Verify no CNumber MVars remain at MLIR codegen entry.
 -}
 expectNoNumericPolymorphism : Src.Module -> Expect.Expectation
 expectNoNumericPolymorphism srcModule =
@@ -41,7 +41,7 @@ expectNoNumericPolymorphism srcModule =
                 Expect.fail (String.join "\n" issues)
 
 
-{-| MONO_008: Verify primitive numeric types are fixed in all calls.
+{-| MONO\_008: Verify primitive numeric types are fixed in all calls.
 -}
 expectNumericTypesResolved : Src.Module -> Expect.Expectation
 expectNumericTypesResolved srcModule =
@@ -310,7 +310,7 @@ collectExprCallSiteIssues context expr =
             -- Check that all arguments to tail calls have resolved numeric types
             let
                 argIssues =
-                    List.map
+                    List.concatMap
                         (\( name, argExpr ) ->
                             let
                                 argType =
@@ -319,7 +319,6 @@ collectExprCallSiteIssues context expr =
                             checkNumericTypeResolved (context ++ ", tail call arg " ++ name) argType
                         )
                         args
-                        |> List.concat
             in
             argIssues
                 ++ List.concatMap (\( _, argExpr ) -> collectExprCallSiteIssues context argExpr) args
@@ -376,7 +375,7 @@ collectDefCallSiteIssues context def =
 
 {-| Check if a type that appears in a numeric context is properly resolved.
 
-For MONO_008, numeric types at call sites must be concrete MInt or MFloat,
+For MONO\_008, numeric types at call sites must be concrete MInt or MFloat,
 not polymorphic MVar CNumber.
 
 -}

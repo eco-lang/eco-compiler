@@ -23,7 +23,6 @@ import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
-import Compiler.Elm.Package as Pkg
 import Compiler.Optimize.Erased.DecisionTree as DT
 import Compiler.Optimize.Erased.Module as ErasedOptimize
 import Compiler.Optimize.Typed.DecisionTree as TDT
@@ -50,7 +49,7 @@ expectEquivalentOptimization : Src.Module -> Expect.Expectation
 expectEquivalentOptimization srcModule =
     let
         canonResult =
-            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces srcModule
+            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
     in
     case Result.run canonResult of
         ( _, Err errors ) ->
@@ -173,7 +172,7 @@ runErasedOptimization annotations canModule =
             Err "Erased optimization produced an error"
 
 
-runTypedOptimization : Dict String Name.Name Can.Annotation -> Dict Int Int Can.Type -> Can.Module -> Result String (TOpt.LocalGraph)
+runTypedOptimization : Dict String Name.Name Can.Annotation -> Dict Int Int Can.Type -> Can.Module -> Result String TOpt.LocalGraph
 runTypedOptimization annotations exprTypes canModule =
     let
         -- Run PostSolve to fix Group B types and compute kernel env
@@ -203,7 +202,7 @@ runTypedOptimization annotations exprTypes canModule =
 -- ============================================================================
 
 
-compareLocalGraphs : Opt.LocalGraph -> (TOpt.LocalGraph) -> Maybe String
+compareLocalGraphs : Opt.LocalGraph -> TOpt.LocalGraph -> Maybe String
 compareLocalGraphs (Opt.LocalGraph erasedMain erasedNodes erasedFields) (TOpt.LocalGraph typedData) =
     -- Compare main
     case compareMains erasedMain typedData.main of
@@ -225,7 +224,7 @@ compareLocalGraphs (Opt.LocalGraph erasedMain erasedNodes erasedFields) (TOpt.Lo
                         Just "Fields dictionaries differ"
 
 
-compareMains : Maybe Opt.Main -> Maybe (TOpt.Main) -> Maybe String
+compareMains : Maybe Opt.Main -> Maybe TOpt.Main -> Maybe String
 compareMains erasedMain typedMain =
     case ( erasedMain, typedMain ) of
         ( Nothing, Nothing ) ->
@@ -251,7 +250,7 @@ compareMains erasedMain typedMain =
             Just "Erased has Dynamic main but Typed has Static"
 
 
-compareNodeDicts : Dict (List String) Opt.Global Opt.Node -> Dict (List String) TOpt.Global (TOpt.Node) -> Maybe String
+compareNodeDicts : Dict (List String) Opt.Global Opt.Node -> Dict (List String) TOpt.Global TOpt.Node -> Maybe String
 compareNodeDicts erasedNodes typedNodes =
     let
         erasedKeys =
@@ -308,7 +307,7 @@ compareNodeDicts erasedNodes typedNodes =
 -- ============================================================================
 
 
-compareNodes : Opt.Node -> (TOpt.Node) -> Maybe String
+compareNodes : Opt.Node -> TOpt.Node -> Maybe String
 compareNodes erasedNode typedNode =
     case ( erasedNode, typedNode ) of
         ( Opt.Define erasedExpr erasedDeps, TOpt.Define typedExpr typedDeps _ ) ->
@@ -445,7 +444,7 @@ nodeTypeName node =
             "PortOutgoing"
 
 
-typedNodeTypeName : (TOpt.Node) -> String
+typedNodeTypeName : TOpt.Node -> String
 typedNodeTypeName node =
     case node of
         TOpt.Define _ _ _ ->
@@ -485,7 +484,7 @@ typedNodeTypeName node =
             "PortOutgoing"
 
 
-compareDepsAndExpr : EverySet (List String) Opt.Global -> EverySet (List String) TOpt.Global -> Opt.Expr -> (TOpt.Expr) -> Maybe String
+compareDepsAndExpr : EverySet (List String) Opt.Global -> EverySet (List String) TOpt.Global -> Opt.Expr -> TOpt.Expr -> Maybe String
 compareDepsAndExpr erasedDeps typedDeps erasedExpr typedExpr =
     if not (compareDeps erasedDeps typedDeps) then
         Just "Dependencies mismatch"
@@ -528,7 +527,7 @@ compareEffectsType eff1 eff2 =
 -- ============================================================================
 
 
-compareExprs : Opt.Expr -> (TOpt.Expr) -> Maybe String
+compareExprs : Opt.Expr -> TOpt.Expr -> Maybe String
 compareExprs erasedExpr typedExpr =
     case ( erasedExpr, typedExpr ) of
         ( Opt.Bool r1 b1, TOpt.Bool r2 b2 _ ) ->
@@ -870,7 +869,7 @@ exprTypeName expr =
             "Shader"
 
 
-typedExprTypeName : (TOpt.Expr) -> String
+typedExprTypeName : TOpt.Expr -> String
 typedExprTypeName expr =
     case expr of
         TOpt.Bool _ _ _ ->
@@ -994,7 +993,7 @@ floatsEqual a b =
         a == b
 
 
-compareExprLists : List Opt.Expr -> List (TOpt.Expr) -> Maybe String
+compareExprLists : List Opt.Expr -> List TOpt.Expr -> Maybe String
 compareExprLists erasedList typedList =
     if List.length erasedList /= List.length typedList then
         Just
@@ -1010,7 +1009,7 @@ compareExprLists erasedList typedList =
             |> List.head
 
 
-compareNameExprPairs : List ( Name.Name, Opt.Expr ) -> List ( Name.Name, (TOpt.Expr) ) -> Maybe String
+compareNameExprPairs : List ( Name.Name, Opt.Expr ) -> List ( Name.Name, TOpt.Expr ) -> Maybe String
 compareNameExprPairs erasedPairs typedPairs =
     if List.length erasedPairs /= List.length typedPairs then
         Just "Pairs list length mismatch"
@@ -1029,7 +1028,7 @@ compareNameExprPairs erasedPairs typedPairs =
             |> List.head
 
 
-compareBranchLists : List ( Opt.Expr, Opt.Expr ) -> List ( (TOpt.Expr), (TOpt.Expr) ) -> Maybe String
+compareBranchLists : List ( Opt.Expr, Opt.Expr ) -> List ( TOpt.Expr, TOpt.Expr ) -> Maybe String
 compareBranchLists erasedBranches typedBranches =
     if List.length erasedBranches /= List.length typedBranches then
         Just "Branch list length mismatch"
@@ -1049,7 +1048,7 @@ compareBranchLists erasedBranches typedBranches =
             |> List.head
 
 
-compareJumpLists : List ( Int, Opt.Expr ) -> List ( Int, (TOpt.Expr) ) -> Maybe String
+compareJumpLists : List ( Int, Opt.Expr ) -> List ( Int, TOpt.Expr ) -> Maybe String
 compareJumpLists erasedJumps typedJumps =
     if List.length erasedJumps /= List.length typedJumps then
         Just "Jump list length mismatch"
@@ -1068,7 +1067,7 @@ compareJumpLists erasedJumps typedJumps =
             |> List.head
 
 
-compareFieldDicts : Dict String (A.Located Name.Name) Opt.Expr -> Dict String (A.Located Name.Name) (TOpt.Expr) -> Maybe String
+compareFieldDicts : Dict String (A.Located Name.Name) Opt.Expr -> Dict String (A.Located Name.Name) TOpt.Expr -> Maybe String
 compareFieldDicts erasedFields typedFields =
     let
         locatedToComparable (A.At _ name) =
@@ -1105,7 +1104,7 @@ compareFieldDicts erasedFields typedFields =
         List.filterMap compareField erasedKeys |> List.head
 
 
-compareRecordFields : Dict String Name.Name Opt.Expr -> Dict String Name.Name (TOpt.Expr) -> Maybe String
+compareRecordFields : Dict String Name.Name Opt.Expr -> Dict String Name.Name TOpt.Expr -> Maybe String
 compareRecordFields erasedFields typedFields =
     let
         compareNames a b =
@@ -1144,7 +1143,7 @@ compareLocatedNameLists list1 list2 =
 -- ============================================================================
 
 
-compareDefs : Opt.Def -> (TOpt.Def) -> Maybe String
+compareDefs : Opt.Def -> TOpt.Def -> Maybe String
 compareDefs erasedDef typedDef =
     case ( erasedDef, typedDef ) of
         ( Opt.Def r1 n1 e1, TOpt.Def r2 n2 e2 _ ) ->
@@ -1174,7 +1173,7 @@ compareDefs erasedDef typedDef =
             Just "Def type mismatch (Def vs TailDef)"
 
 
-compareDefLists : List Opt.Def -> List (TOpt.Def) -> Maybe String
+compareDefLists : List Opt.Def -> List TOpt.Def -> Maybe String
 compareDefLists erasedDefs typedDefs =
     if List.length erasedDefs /= List.length typedDefs then
         Just "Def list length mismatch"
@@ -1185,7 +1184,7 @@ compareDefLists erasedDefs typedDefs =
             |> List.head
 
 
-compareDestructors : Opt.Destructor -> (TOpt.Destructor) -> Maybe String
+compareDestructors : Opt.Destructor -> TOpt.Destructor -> Maybe String
 compareDestructors (Opt.Destructor n1 p1) (TOpt.Destructor n2 p2 _) =
     if n1 /= n2 then
         Just ("Destructor name mismatch: " ++ n1 ++ " vs " ++ n2)
@@ -1238,7 +1237,7 @@ comparePaths erasedPath typedPath =
 -- ============================================================================
 
 
-compareDeciders : Opt.Decider Opt.Choice -> TOpt.Decider (TOpt.Choice) -> Maybe String
+compareDeciders : Opt.Decider Opt.Choice -> TOpt.Decider TOpt.Choice -> Maybe String
 compareDeciders erasedDecider typedDecider =
     case ( erasedDecider, typedDecider ) of
         ( Opt.Leaf choice1, TOpt.Leaf choice2 ) ->
@@ -1274,7 +1273,7 @@ compareDeciders erasedDecider typedDecider =
             Just "Decider type mismatch"
 
 
-compareChoices : Opt.Choice -> (TOpt.Choice) -> Maybe String
+compareChoices : Opt.Choice -> TOpt.Choice -> Maybe String
 compareChoices erasedChoice typedChoice =
     case ( erasedChoice, typedChoice ) of
         ( Opt.Inline e1, TOpt.Inline e2 ) ->
@@ -1291,7 +1290,7 @@ compareChoices erasedChoice typedChoice =
             Just "Choice type mismatch (Inline vs Jump)"
 
 
-compareOptionLists : List ( DT.Test, Opt.Decider Opt.Choice ) -> List ( TDT.Test, TOpt.Decider (TOpt.Choice) ) -> Maybe String
+compareOptionLists : List ( DT.Test, Opt.Decider Opt.Choice ) -> List ( TDT.Test, TOpt.Decider TOpt.Choice ) -> Maybe String
 compareOptionLists erasedOptions typedOptions =
     if List.length erasedOptions /= List.length typedOptions then
         Just "Options list length mismatch"

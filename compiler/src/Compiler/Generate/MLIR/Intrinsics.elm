@@ -1,19 +1,11 @@
-module Compiler.Generate.MLIR.Intrinsics exposing
-    ( Intrinsic(..)
-    , kernelIntrinsic
-    , intrinsicResultMlirType
-    , intrinsicOperandTypes
-    , unboxArgsForIntrinsic
-    , unboxToType
-    , generateIntrinsicOp
-    )
+module Compiler.Generate.MLIR.Intrinsics exposing (Intrinsic(..), kernelIntrinsic, intrinsicResultMlirType, unboxArgsForIntrinsic, unboxToType, generateIntrinsicOp)
 
 {-| Intrinsic operations for the MLIR backend.
 
 This module defines intrinsics for core Elm operations that can be
 directly lowered to efficient MLIR operations without kernel calls.
 
-@docs Intrinsic, kernelIntrinsic, intrinsicResultMlirType, intrinsicOperandTypes, unboxArgsForIntrinsic, unboxToType, generateIntrinsicOp
+@docs Intrinsic, kernelIntrinsic, intrinsicResultMlirType, unboxArgsForIntrinsic, unboxToType, generateIntrinsicOp
 
 -}
 

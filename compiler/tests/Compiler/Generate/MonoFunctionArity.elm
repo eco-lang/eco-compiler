@@ -1,8 +1,6 @@
-module Compiler.Generate.MonoFunctionArity exposing
-    ( expectFunctionArityMatches
-    )
+module Compiler.Generate.MonoFunctionArity exposing (expectFunctionArityMatches)
 
-{-| Test logic for invariant MONO_012: Function arity matches parameters and closure info.
+{-| Test logic for invariant MONO\_012: Function arity matches parameters and closure info.
 
 For each function/closure node:
 
@@ -20,7 +18,7 @@ import Data.Map as Dict
 import Expect
 
 
-{-| MONO_012: Verify function arity matches parameters and closure info.
+{-| MONO\_012: Verify function arity matches parameters and closure info.
 -}
 expectFunctionArityMatches : Src.Module -> Expect.Expectation
 expectFunctionArityMatches srcModule =
@@ -137,24 +135,6 @@ getFlattenedArity monoType =
     List.length params
 
 
-{-| Get the top-level arity from a function type (without flattening).
-
-For example, `MFunction [a] (MFunction [b] c)` has top-level arity 1.
-A closure with this type legitimately has 1 param and returns a function.
-
-Used for closure parameter checks where the closure may return another function.
-
--}
-getTopLevelArity : Mono.MonoType -> Int
-getTopLevelArity monoType =
-    case monoType of
-        Mono.MFunction params _ ->
-            List.length params
-
-        _ ->
-            0
-
-
 {-| Check that a type and expression have consistent arity.
 
 For closures, we check the flattened arity since Elm represents multi-param
@@ -221,7 +201,7 @@ collectExprArityIssues context expr =
                 ++ List.concatMap (\( _, e, _ ) -> collectExprArityIssues context e) closureInfo.captures
                 ++ collectExprArityIssues context bodyExpr
 
-        Mono.MonoCall _ fnExpr argExprs monoType ->
+        Mono.MonoCall _ fnExpr argExprs _ ->
             -- Check that call site doesn't over-apply (use flattened arity)
             -- (Partial application is allowed, so under-application is fine)
             let
@@ -291,19 +271,6 @@ collectDefArityIssues context def =
         Mono.MonoDef _ expr ->
             collectExprArityIssues context expr
 
-        Mono.MonoTailDef _ params expr ->
+        Mono.MonoTailDef _ _ expr ->
             -- Check that tail def param count matches expression type
-            let
-                exprType =
-                    Mono.typeOf expr
-
-                paramCount =
-                    List.length params
-
-                typeArity =
-                    getFlattenedArity exprType
-
-                -- For tail defs, the expression should be the body, not a function
-                -- So we just collect issues from the expression
-            in
             collectExprArityIssues context expr

@@ -1,6 +1,6 @@
 module Compiler.AST.TypeEnv exposing
     ( ModuleTypeEnv, GlobalTypeEnv
-    , fromCanonical, fromInterface, fromInterfaces, emptyGlobal, emptyGlobalTypeEnv, mergeGlobalTypeEnv
+    , fromCanonical, fromInterfaces, emptyGlobal, emptyGlobalTypeEnv, mergeGlobalTypeEnv
     , moduleTypeEnvEncoder, moduleTypeEnvDecoder
     , globalTypeEnvEncoder, globalTypeEnvDecoder
     )
@@ -22,7 +22,7 @@ definitions when specializing polymorphic code.
 
 # Builders
 
-@docs fromCanonical, fromInterface, fromInterfaces, emptyGlobal, emptyGlobalTypeEnv, mergeGlobalTypeEnv
+@docs fromCanonical, fromInterfaces, emptyGlobal, emptyGlobalTypeEnv, mergeGlobalTypeEnv
 
 
 # Serialization

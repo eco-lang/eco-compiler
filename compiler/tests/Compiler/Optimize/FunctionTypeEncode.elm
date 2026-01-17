@@ -1,8 +1,6 @@
-module Compiler.Optimize.FunctionTypeEncode exposing
-    ( expectFunctionTypesEncoded
-    )
+module Compiler.Optimize.FunctionTypeEncode exposing (expectFunctionTypesEncoded)
 
-{-| Test logic for invariant TOPT_005: Function expressions encode full function type.
+{-| Test logic for invariant TOPT\_005: Function expressions encode full function type.
 
 For every function expression in TypedOptimized:
 
@@ -87,14 +85,8 @@ checkNodeFunctionTypes context node =
         TOpt.TrackedDefine _ expr _ _ ->
             collectExprFunctionTypeIssues context expr
 
-        TOpt.DefineTailFunc _ params expr _ returnType ->
+        TOpt.DefineTailFunc _ _ expr _ _ ->
             -- The node itself should have a function type matching params -> returnType
-            let
-                expectedType =
-                    buildFunctionType (List.map Tuple.second params) returnType
-
-                -- For DefineTailFunc, we check the body expression
-            in
             collectExprFunctionTypeIssues context expr
 
         TOpt.Cycle _ _ defs _ ->
@@ -132,12 +124,6 @@ collectExprFunctionTypeIssues context expr =
             let
                 paramTypes =
                     List.map Tuple.second params
-
-                bodyType =
-                    TOpt.typeOf bodyExpr
-
-                expectedType =
-                    buildFunctionType paramTypes bodyType
 
                 -- Check that the attached type has the right structure
                 typeIssue =
@@ -207,13 +193,6 @@ collectExprFunctionTypeIssues context expr =
 
         _ ->
             []
-
-
-{-| Build a curried function type from parameter types and result type.
--}
-buildFunctionType : List Can.Type -> Can.Type -> Can.Type
-buildFunctionType paramTypes resultType =
-    List.foldr Can.TLambda resultType paramTypes
 
 
 {-| Check if a function type matches the expected parameter types.

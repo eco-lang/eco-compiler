@@ -3,7 +3,7 @@ module Compiler.Canonicalize.GlobalNames exposing
     , expectGlobalNamesQualifiedCanonical
     )
 
-{-| Test logic for invariant CANON_001: Global names are fully qualified.
+{-| Test logic for invariant CANON\_001: Global names are fully qualified.
 
 For every non-local variable reference (VarForeign, VarKernel, VarCtor, VarOperator,
 VarTopLevel, VarDebug), assert its `home` is an `IO.Canonical` referring to a valid
@@ -16,7 +16,6 @@ import Compiler.AST.Source as Src
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
-import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as CanError
 import Compiler.Reporting.Result as Result
@@ -31,7 +30,7 @@ expectGlobalNamesQualified : Src.Module -> Expect.Expectation
 expectGlobalNamesQualified modul =
     let
         result =
-            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces modul
+            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces modul
     in
     case Result.run result of
         ( _, Err errors ) ->
@@ -322,17 +321,13 @@ validateHome : String -> String -> IO.Canonical -> List String
 validateHome context name home =
     case home of
         IO.Canonical ( author, project ) moduleName ->
-            let
-                issues =
-                    []
-                        |> addIssueIf (String.isEmpty author)
-                            (context ++ " '" ++ name ++ "': empty package author")
-                        |> addIssueIf (String.isEmpty project)
-                            (context ++ " '" ++ name ++ "': empty package project")
-                        |> addIssueIf (String.isEmpty moduleName)
-                            (context ++ " '" ++ name ++ "': empty module name")
-            in
-            issues
+            []
+                |> addIssueIf (String.isEmpty author)
+                    (context ++ " '" ++ name ++ "': empty package author")
+                |> addIssueIf (String.isEmpty project)
+                    (context ++ " '" ++ name ++ "': empty package project")
+                |> addIssueIf (String.isEmpty moduleName)
+                    (context ++ " '" ++ name ++ "': empty module name")
 
 
 {-| Helper to conditionally add an issue.

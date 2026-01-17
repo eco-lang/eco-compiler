@@ -1,12 +1,4 @@
-module Compiler.Generate.MLIR.Patterns exposing
-    ( generateMonoPath
-    , generateDTPath
-    , generateTest
-    , generateChainCondition
-    , testToTagInt
-    , caseKindFromTest
-    , computeFallbackTag
-    )
+module Compiler.Generate.MLIR.Patterns exposing (generateMonoPath, generateDTPath, generateChainCondition, testToTagInt, caseKindFromTest, computeFallbackTag)
 
 {-| Pattern matching and path generation for MLIR code generation.
 
@@ -17,7 +9,7 @@ This module handles:
   - Case kind determination
   - Fallback tag computation
 
-@docs generateMonoPath, generateDTPath, generateTest, generateChainCondition, testToTagInt, caseKindFromTest, computeFallbackTag
+@docs generateMonoPath, generateDTPath, generateChainCondition, testToTagInt, caseKindFromTest, computeFallbackTag
 
 -}
 

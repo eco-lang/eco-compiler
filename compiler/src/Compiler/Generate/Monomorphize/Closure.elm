@@ -1,7 +1,6 @@
 module Compiler.Generate.Monomorphize.Closure exposing
-    ( ensureCallableTopLevel, flattenFunctionType, makeAliasClosure, makeGeneralClosure, makeAliasClosureOverExpr
-    , freshParams, extractRegion
-    , computeClosureCaptures, findFreeLocals, collectDeciderFreeLocals, dedupeNames
+    ( ensureCallableTopLevel
+    , computeClosureCaptures
     )
 
 {-| Closure handling and capture analysis for monomorphization.
@@ -15,17 +14,15 @@ This module handles:
 
 # Closure Creation
 
-@docs ensureCallableTopLevel, flattenFunctionType, makeAliasClosure, makeGeneralClosure, makeAliasClosureOverExpr
+@docs ensureCallableTopLevel
 
 
 # Parameters and Regions
 
-@docs freshParams, extractRegion
-
 
 # Free Variable Analysis
 
-@docs computeClosureCaptures, findFreeLocals, collectDeciderFreeLocals, dedupeNames
+@docs computeClosureCaptures
 
 -}
 

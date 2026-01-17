@@ -1,14 +1,12 @@
 module Compiler.Canonicalize.DuplicateDecls exposing
-    ( expectDuplicateDeclError
+    ( expectDuplicateCtorError
+    , expectDuplicateDeclError
     , expectDuplicateTypeError
-    , expectDuplicateCtorError
-    , expectDuplicateBinopError
-    , expectExportDuplicateError
-    , expectShadowingError
     , expectNoDuplicateErrors
+    , expectShadowingError
     )
 
-{-| Test logic for invariant CANON_003: No duplicate top-level declarations.
+{-| Test logic for invariant CANON\_003: No duplicate top-level declarations.
 
 Generate modules with intentional duplicate value, type, ctor, binop, and export names;
 run canonicalization and assert it produces DuplicateDecl, DuplicateType, DuplicateCtor,
@@ -20,7 +18,6 @@ import Compiler.AST.Source as Src
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
-import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Error.Canonicalize as CanError
 import Compiler.Reporting.Result as Result
 import Expect
@@ -77,40 +74,6 @@ expectDuplicateCtorError expectedName modul =
         modul
 
 
-{-| Expect canonicalization to produce a DuplicateBinop error.
--}
-expectDuplicateBinopError : String -> Src.Module -> Expect.Expectation
-expectDuplicateBinopError expectedName modul =
-    expectSpecificError
-        (\error ->
-            case error of
-                CanError.DuplicateBinop name _ _ ->
-                    name == expectedName
-
-                _ ->
-                    False
-        )
-        ("DuplicateBinop for '" ++ expectedName ++ "'")
-        modul
-
-
-{-| Expect canonicalization to produce an ExportDuplicate error.
--}
-expectExportDuplicateError : String -> Src.Module -> Expect.Expectation
-expectExportDuplicateError expectedName modul =
-    expectSpecificError
-        (\error ->
-            case error of
-                CanError.ExportDuplicate name _ _ ->
-                    name == expectedName
-
-                _ ->
-                    False
-        )
-        ("ExportDuplicate for '" ++ expectedName ++ "'")
-        modul
-
-
 {-| Expect canonicalization to produce a Shadowing error.
 -}
 expectShadowingError : String -> Src.Module -> Expect.Expectation
@@ -134,7 +97,7 @@ expectNoDuplicateErrors : Src.Module -> Expect.Expectation
 expectNoDuplicateErrors modul =
     let
         result =
-            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces modul
+            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces modul
     in
     case Result.run result of
         ( _, Err errors ) ->
@@ -204,7 +167,7 @@ expectSpecificError : (CanError.Error -> Bool) -> String -> Src.Module -> Expect
 expectSpecificError errorPredicate errorDescription modul =
     let
         result =
-            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces modul
+            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces modul
     in
     case Result.run result of
         ( _, Err errors ) ->
@@ -217,7 +180,9 @@ expectSpecificError errorPredicate errorDescription modul =
             in
             if List.isEmpty matchingErrors then
                 Expect.fail
-                    ("Expected " ++ errorDescription ++ " but got: "
+                    ("Expected "
+                        ++ errorDescription
+                        ++ " but got: "
                         ++ String.join ", " (List.map errorToString errorList)
                     )
 

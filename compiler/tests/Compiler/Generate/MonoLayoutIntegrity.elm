@@ -7,10 +7,10 @@ module Compiler.Generate.MonoLayoutIntegrity exposing
 
 {-| Test logic for invariants:
 
-  - MONO_006: Record and tuple layouts capture shape completely
-  - MONO_007: Record access matches layout metadata
-  - MONO_013: Constructor layouts define consistent custom types
-  - MONO_014: Structurally equivalent layouts are canonical
+  - MONO\_006: Record and tuple layouts capture shape completely
+  - MONO\_007: Record access matches layout metadata
+  - MONO\_013: Constructor layouts define consistent custom types
+  - MONO\_014: Structurally equivalent layouts are canonical
 
 This module reuses the existing typed optimization pipeline to verify layout integrity.
 The key verification is that monomorphization succeeds - which validates that layouts
@@ -21,11 +21,11 @@ are properly computed and used.
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.Generate.TypedOptimizedMonomorphize as TOMono
-import Data.Map as Dict exposing (Dict)
+import Data.Map as Dict
 import Expect
 
 
-{-| MONO_006: Verify record and tuple layouts capture shape completely.
+{-| MONO\_006: Verify record and tuple layouts capture shape completely.
 -}
 expectRecordTupleLayoutsComplete : Src.Module -> Expect.Expectation
 expectRecordTupleLayoutsComplete srcModule =
@@ -45,7 +45,7 @@ expectRecordTupleLayoutsComplete srcModule =
                 Expect.fail (String.join "\n" issues)
 
 
-{-| MONO_007: Verify record access matches layout metadata.
+{-| MONO\_007: Verify record access matches layout metadata.
 -}
 expectRecordAccessMatchesLayout : Src.Module -> Expect.Expectation
 expectRecordAccessMatchesLayout srcModule =
@@ -65,7 +65,7 @@ expectRecordAccessMatchesLayout srcModule =
                 Expect.fail (String.join "\n" issues)
 
 
-{-| MONO_013: Verify constructor layouts define consistent custom types.
+{-| MONO\_013: Verify constructor layouts define consistent custom types.
 -}
 expectCtorLayoutsConsistent : Src.Module -> Expect.Expectation
 expectCtorLayoutsConsistent srcModule =
@@ -85,7 +85,7 @@ expectCtorLayoutsConsistent srcModule =
                 Expect.fail (String.join "\n" issues)
 
 
-{-| MONO_014: Verify structurally equivalent layouts are canonical.
+{-| MONO\_014: Verify structurally equivalent layouts are canonical.
 -}
 expectLayoutsCanonical : Src.Module -> Expect.Expectation
 expectLayoutsCanonical srcModule =
@@ -204,7 +204,7 @@ checkTypeLayoutComplete context monoType =
 collectExprLayoutIssues : String -> Mono.MonoExpr -> List String
 collectExprLayoutIssues context expr =
     case expr of
-        Mono.MonoRecordCreate _ layout monoType ->
+        Mono.MonoRecordCreate _ _ monoType ->
             checkTypeLayoutComplete context monoType
 
         Mono.MonoRecordAccess recordExpr _ _ _ monoType ->
@@ -215,7 +215,7 @@ collectExprLayoutIssues context expr =
             checkTypeLayoutComplete context monoType
                 ++ collectExprLayoutIssues context recordExpr
 
-        Mono.MonoTupleCreate _ _ layout monoType ->
+        Mono.MonoTupleCreate _ _ _ monoType ->
             checkTypeLayoutComplete context monoType
 
         Mono.MonoList _ exprs monoType ->
@@ -320,7 +320,7 @@ checkNodeRecordAccess specId node =
 collectExprRecordAccessIssues : String -> Mono.MonoExpr -> List String
 collectExprRecordAccessIssues context expr =
     case expr of
-        Mono.MonoRecordAccess recordExpr fieldName fieldIndex _ monoType ->
+        Mono.MonoRecordAccess recordExpr fieldName fieldIndex _ _ ->
             let
                 recordType =
                     Mono.typeOf recordExpr

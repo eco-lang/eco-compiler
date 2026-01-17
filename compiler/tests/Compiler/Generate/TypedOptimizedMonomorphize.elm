@@ -1,11 +1,10 @@
 module Compiler.Generate.TypedOptimizedMonomorphize exposing
-    ( expectMonomorphization
-    , runToMonoGraph
-    , runToTypedOptimized
-    , runToPostSolve
-    , PostSolveResult
-    , TypeCheckResult
+    ( PostSolveResult
     , TypedOptResult
+    , expectMonomorphization
+    , runToMonoGraph
+    , runToPostSolve
+    , runToTypedOptimized
     )
 
 {-| Test infrastructure for verifying that TypedOptimized code can be monomorphized.
@@ -31,8 +30,8 @@ since the test modules define `testValue` as their primary definition.
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypeEnv as TypeEnv
+import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name
@@ -40,7 +39,6 @@ import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Elm.Package as Pkg
 import Compiler.Generate.Monomorphize as Monomorphize
 import Compiler.Optimize.Typed.KernelTypes as KernelTypes
 import Compiler.Optimize.Typed.Module as TypedOptimize
@@ -63,7 +61,7 @@ expectMonomorphization : Src.Module -> Expect.Expectation
 expectMonomorphization srcModule =
     let
         canonResult =
-            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces srcModule
+            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
     in
     case RResult.run canonResult of
         ( _, Err errors ) ->
@@ -149,7 +147,7 @@ runWithIdsTypeCheck modul =
 -- ============================================================================
 
 
-runTypedOptimization : Dict String Name.Name Can.Annotation -> Dict Int Int Can.Type -> Can.Module -> Result String (TOpt.LocalGraph)
+runTypedOptimization : Dict String Name.Name Can.Annotation -> Dict Int Int Can.Type -> Can.Module -> Result String TOpt.LocalGraph
 runTypedOptimization annotations exprTypes canModule =
     let
         -- Run PostSolve to fix Group B types and compute kernel env
@@ -185,7 +183,7 @@ The LocalGraph contains the module's definitions. We wrap it into a GlobalGraph
 which is the input format for monomorphization.
 
 -}
-localGraphToGlobalGraph : (TOpt.LocalGraph) -> (TOpt.GlobalGraph)
+localGraphToGlobalGraph : TOpt.LocalGraph -> TOpt.GlobalGraph
 localGraphToGlobalGraph localGraph =
     TOpt.addLocalGraph localGraph TOpt.emptyGlobalGraph
 
@@ -199,8 +197,9 @@ localGraphToGlobalGraph localGraph =
 {-| Build a GlobalTypeEnv from a canonical module and test interfaces.
 
 This extracts the union and alias definitions from:
-1. The test module itself (e.g., Array with its Node, Builder types)
-2. All test interfaces (Basics, List, Maybe, JsArray, etc.)
+
+1.  The test module itself (e.g., Array with its Node, Builder types)
+2.  All test interfaces (Basics, List, Maybe, JsArray, etc.)
 
 Both are needed for monomorphization to find all referenced types.
 
@@ -243,7 +242,7 @@ monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
 
 {-| Find any entry point in the global graph (the first defined function).
 -}
-findAnyEntryPoint : Dict (List String) TOpt.Global (TOpt.Node) -> Maybe ( TOpt.Global, Can.Type )
+findAnyEntryPoint : Dict (List String) TOpt.Global TOpt.Node -> Maybe ( TOpt.Global, Can.Type )
 findAnyEntryPoint nodes =
     Dict.foldl TOpt.compareGlobal
         (\global node acc ->
@@ -298,14 +297,6 @@ verifyMonoGraph (Mono.MonoGraph data) =
 -- ============================================================================
 -- PIPELINE HELPERS FOR INVARIANT TESTING
 -- ============================================================================
-
-
-{-| Result of type checking, containing annotations and node types.
--}
-type alias TypeCheckResult =
-    { annotations : Dict String Name.Name Can.Annotation
-    , nodeTypes : Dict Int Int Can.Type
-    }
 
 
 {-| Result of PostSolve, containing fixed node types, kernel env, and canonical module.
@@ -379,7 +370,7 @@ runToPostSolve : Src.Module -> Result String PostSolveResult
 runToPostSolve srcModule =
     let
         canonResult =
-            Canonicalize.canonicalize ("eco", "example") Basic.testIfaces srcModule
+            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
     in
     case RResult.run canonResult of
         ( _, Err errors ) ->

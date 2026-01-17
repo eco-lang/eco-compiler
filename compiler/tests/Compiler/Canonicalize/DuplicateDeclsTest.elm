@@ -1,6 +1,6 @@
 module Compiler.Canonicalize.DuplicateDeclsTest exposing (suite)
 
-{-| Test suite for invariant CANON_003: No duplicate top-level declarations.
+{-| Test suite for invariant CANON\_003: No duplicate top-level declarations.
 
 This module tests that canonicalization properly rejects modules with
 duplicate declarations of various kinds.
@@ -9,16 +9,14 @@ duplicate declarations of various kinds.
 
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as SB
-import Compiler.Canonicalize.DuplicateDecls exposing
-    ( expectDuplicateDeclError
-    , expectDuplicateTypeError
-    , expectDuplicateCtorError
-    , expectExportDuplicateError
-    , expectShadowingError
-    , expectNoDuplicateErrors
-    )
-import Compiler.Reporting.Annotation as A
-import Fuzz
+import Compiler.Canonicalize.DuplicateDecls
+    exposing
+        ( expectDuplicateCtorError
+        , expectDuplicateDeclError
+        , expectDuplicateTypeError
+        , expectNoDuplicateErrors
+        , expectShadowingError
+        )
 import Test exposing (Test)
 
 
