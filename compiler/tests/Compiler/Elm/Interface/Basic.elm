@@ -274,7 +274,122 @@ charInterface =
         }
 
 
-{-| Test environment with Basics, List, Maybe, JsArray, Bitwise, Tuple, String, and Char module interfaces.
+{-| Array module interface - exports the Array type.
+-}
+arrayInterface : I.Interface
+arrayInterface =
+    let
+        -- Array a is an opaque type with one type parameter
+        arrayUnion =
+            Can.Union
+                { vars = [ "a" ]
+                , alts = []
+                , numAlts = 0
+                , opts = Can.Normal
+                }
+    in
+    I.Interface
+        { home = Pkg.core
+        , values = Dict.empty
+        , unions = Dict.singleton identity "Array" (I.ClosedUnion arrayUnion)
+        , aliases = Dict.empty
+        , binops = Dict.empty
+        }
+
+
+{-| Json.Encode module interface - exports the Value type.
+-}
+jsonEncodeInterface : I.Interface
+jsonEncodeInterface =
+    let
+        -- Value is an opaque type with no type parameters
+        valueUnion =
+            Can.Union
+                { vars = []
+                , alts = []
+                , numAlts = 0
+                , opts = Can.Normal
+                }
+    in
+    I.Interface
+        { home = Pkg.json
+        , values = Dict.empty
+        , unions = Dict.singleton identity "Value" (I.ClosedUnion valueUnion)
+        , aliases = Dict.empty
+        , binops = Dict.empty
+        }
+
+
+{-| Json.Decode module interface - exports the Value type.
+-}
+jsonDecodeInterface : I.Interface
+jsonDecodeInterface =
+    let
+        -- Value is an opaque type with no type parameters
+        valueUnion =
+            Can.Union
+                { vars = []
+                , alts = []
+                , numAlts = 0
+                , opts = Can.Normal
+                }
+    in
+    I.Interface
+        { home = Pkg.json
+        , values = Dict.empty
+        , unions = Dict.singleton identity "Value" (I.ClosedUnion valueUnion)
+        , aliases = Dict.empty
+        , binops = Dict.empty
+        }
+
+
+{-| Platform.Cmd module interface - exports the Cmd type.
+-}
+platformCmdInterface : I.Interface
+platformCmdInterface =
+    let
+        -- Cmd msg is an opaque type with one type parameter
+        cmdUnion =
+            Can.Union
+                { vars = [ "msg" ]
+                , alts = []
+                , numAlts = 0
+                , opts = Can.Normal
+                }
+    in
+    I.Interface
+        { home = Pkg.core
+        , values = Dict.empty
+        , unions = Dict.singleton identity "Cmd" (I.ClosedUnion cmdUnion)
+        , aliases = Dict.empty
+        , binops = Dict.empty
+        }
+
+
+{-| Platform.Sub module interface - exports the Sub type.
+-}
+platformSubInterface : I.Interface
+platformSubInterface =
+    let
+        -- Sub msg is an opaque type with one type parameter
+        subUnion =
+            Can.Union
+                { vars = [ "msg" ]
+                , alts = []
+                , numAlts = 0
+                , opts = Can.Normal
+                }
+    in
+    I.Interface
+        { home = Pkg.core
+        , values = Dict.empty
+        , unions = Dict.singleton identity "Sub" (I.ClosedUnion subUnion)
+        , aliases = Dict.empty
+        , binops = Dict.empty
+        }
+
+
+{-| Test environment with Basics, List, Maybe, JsArray, Bitwise, Tuple, String, Char, Platform.Cmd, and Platform.Sub module interfaces.
 -}
 testIfaces : Dict String Name I.Interface
 testIfaces =
@@ -287,6 +402,11 @@ testIfaces =
         , ( "Tuple", TupleInterface.tupleInterface )
         , ( "String", stringInterface )
         , ( "Char", charInterface )
+        , ( "Array", arrayInterface )
+        , ( "Json.Encode", jsonEncodeInterface )
+        , ( "Json.Decode", jsonDecodeInterface )
+        , ( "Platform.Cmd", platformCmdInterface )
+        , ( "Platform.Sub", platformSubInterface )
         ]
 
 

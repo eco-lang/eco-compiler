@@ -31,6 +31,7 @@ import Compiler.MultiDefTests as MultiDefTests
 import Compiler.OperatorTests as OperatorTests
 import Compiler.PatternArgTests as PatternArgTests
 import Compiler.PatternMatchingTests as PatternMatchingTests
+import Compiler.PortEncodingTests as PortEncodingTests
 import Compiler.Type.PostSolve.PostSolveExprTests as PostSolveExprTests
 import Compiler.RecordTests as RecordTests
 import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
@@ -67,6 +68,7 @@ suite =
         , OperatorTests.expectSuite expectMonomorphization "monomorphizes"
         , PatternArgTests.expectSuite expectMonomorphization "monomorphizes"
         , PatternMatchingTests.expectSuite expectMonomorphization "monomorphizes"
+        , PortEncodingTests.expectSuite expectMonomorphization "monomorphizes"
         , PostSolveExprTests.expectSuite expectMonomorphization "monomorphizes"
         , RecordTests.expectSuite expectMonomorphization "monomorphizes"
         , SpecializeAccessorTests.expectSuite expectMonomorphization "monomorphizes"

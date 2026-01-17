@@ -31,6 +31,7 @@ import Compiler.MultiDefTests as MultiDefTests
 import Compiler.OperatorTests as OperatorTests
 import Compiler.PatternArgTests as PatternArgTests
 import Compiler.PatternMatchingTests as PatternMatchingTests
+import Compiler.PortEncodingTests as PortEncodingTests
 import Compiler.Type.PostSolve.PostSolveExprTests as PostSolveExprTests
 import Compiler.RecordTests as RecordTests
 import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
@@ -67,6 +68,7 @@ suite =
         , OperatorTests.expectSuite expectMLIRGeneration "generates MLIR"
         , PatternArgTests.expectSuite expectMLIRGeneration "generates MLIR"
         , PatternMatchingTests.expectSuite expectMLIRGeneration "generates MLIR"
+        , PortEncodingTests.expectSuite expectMLIRGeneration "generates MLIR"
         , PostSolveExprTests.expectSuite expectMLIRGeneration "generates MLIR"
         , RecordTests.expectSuite expectMLIRGeneration "generates MLIR"
         , SpecializeAccessorTests.expectSuite expectMLIRGeneration "generates MLIR"

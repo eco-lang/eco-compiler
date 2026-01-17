@@ -32,6 +32,7 @@ import Compiler.OperatorTests as OperatorTests
 import Compiler.Optimize.OptimizeEquivalent exposing (expectEquivalentOptimization)
 import Compiler.PatternArgTests as PatternArgTests
 import Compiler.PatternMatchingTests as PatternMatchingTests
+import Compiler.PortEncodingTests as PortEncodingTests
 import Compiler.Type.PostSolve.PostSolveExprTests as PostSolveExprTests
 import Compiler.RecordTests as RecordTests
 import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
@@ -68,6 +69,7 @@ suite =
         , OperatorTests.expectSuite expectEquivalentOptimization "optimize equivalently"
         , PatternArgTests.expectSuite expectEquivalentOptimization "optimize equivalently"
         , PatternMatchingTests.expectSuite expectEquivalentOptimization "optimize equivalently"
+        , PortEncodingTests.expectSuite expectEquivalentOptimization "optimize equivalently"
         , PostSolveExprTests.expectSuite expectEquivalentOptimization "optimize equivalently"
         , RecordTests.expectSuite expectEquivalentOptimization "optimize equivalently"
         , SpecializeAccessorTests.expectSuite expectEquivalentOptimization "optimize equivalently"

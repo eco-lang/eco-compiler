@@ -1,5 +1,6 @@
 module Compiler.AST.SourceBuilder exposing
     ( AliasDef
+    , PortDef
     , TypedDef
     , UnionCtor
     , UnionDef
@@ -27,6 +28,8 @@ module Compiler.AST.SourceBuilder exposing
     , makeModuleWithTypedDefs
     , makeModuleWithTypedDefsUnionsAliases
     , makeModuleWithTypedDefsUnionsAliasesExtended
+    , makePortModule
+    , makePortModuleWithTypedDefs
       -- Fuzzers
     , negateExpr
     , pAlias
@@ -42,14 +45,17 @@ module Compiler.AST.SourceBuilder exposing
     , pTuple3
     , pUnit
     , pVar
+    , portDecl
       -- Module builders
     , parensExpr
     , qualVarExpr
     , recordExpr
     , strExpr
       -- Type builders
+    , tCmd
     , tLambda
     , tRecord
+    , tSub
     , tTuple
     , tType
     , tVar
@@ -808,6 +814,175 @@ makeModuleWithTypedDefsUnionsAliasesExtended moduleName defs unions aliases =
         , infixes = []
         , effects = Src.NoEffects
         }
+
+
+
+-- ============================================================================
+-- PORT MODULE BUILDERS
+-- ============================================================================
+
+
+{-| A port definition: name and type.
+
+For outgoing ports (commands), the type should be: `tLambda valueType (tCmd (tVar "msg"))`
+For incoming ports (subscriptions), the type should be: `tLambda (tLambda valueType (tVar "msg")) (tSub (tVar "msg"))`
+
+-}
+type alias PortDef =
+    { name : Name
+    , tipe : Src.Type
+    }
+
+
+{-| Create a Cmd type: `Cmd msg`
+-}
+tCmd : Src.Type -> Src.Type
+tCmd msgType =
+    A.At A.zero (Src.TType A.zero "Cmd" [ c1 msgType ])
+
+
+{-| Create a Sub type: `Sub msg`
+-}
+tSub : Src.Type -> Src.Type
+tSub msgType =
+    A.At A.zero (Src.TType A.zero "Sub" [ c1 msgType ])
+
+
+{-| Create a Source port declaration from a port definition.
+-}
+portDecl : PortDef -> Src.Port
+portDecl def =
+    Src.Port noComments (c2 (A.At A.zero def.name)) def.tipe
+
+
+{-| Create a port module with ports and a single top-level definition.
+-}
+makePortModule : Name -> List PortDef -> Src.Expr -> Src.Module
+makePortModule defName ports expr =
+    let
+        value =
+            Src.Value
+                { comments = noComments
+                , name = c1 (A.At A.zero defName)
+                , args = []
+                , body = c1 expr
+                , tipe = Nothing
+                }
+    in
+    Src.Module
+        { syntaxVersion = SV.Elm
+        , name = Just (A.At A.zero "Test")
+        , exports = A.At A.zero (Src.Open noComments noComments)
+        , docs = Src.NoDocs A.zero []
+        , imports = portModuleImports
+        , values = [ A.At A.zero value ]
+        , unions = []
+        , aliases = []
+        , infixes = []
+        , effects = Src.Ports (List.map portDecl ports)
+        }
+
+
+{-| Create a port module with ports and typed definitions.
+-}
+makePortModuleWithTypedDefs : Name -> List PortDef -> List TypedDef -> Src.Module
+makePortModuleWithTypedDefs moduleName ports defs =
+    let
+        values =
+            List.map
+                (\{ name, args, tipe, body } ->
+                    A.At A.zero
+                        (Src.Value
+                            { comments = noComments
+                            , name = c1 (A.At A.zero name)
+                            , args = List.map c1 args
+                            , body = c1 body
+                            , tipe = Just (c1 (c2 tipe))
+                            }
+                        )
+                )
+                defs
+    in
+    Src.Module
+        { syntaxVersion = SV.Elm
+        , name = Just (A.At A.zero moduleName)
+        , exports = A.At A.zero (Src.Open noComments noComments)
+        , docs = Src.NoDocs A.zero []
+        , imports = portModuleImports
+        , values = values
+        , unions = []
+        , aliases = []
+        , infixes = []
+        , effects = Src.Ports (List.map portDecl ports)
+        }
+
+
+{-| Imports for port modules (includes Json.Encode, Json.Decode, Platform.Cmd, Platform.Sub).
+-}
+portModuleImports : List Src.Import
+portModuleImports =
+    [ basicsImport
+    , maybeImport
+    , listImport
+    , jsArrayImport
+    , stringImport
+    , charImport
+    , arrayImport
+    , jsonEncodeImport
+    , jsonDecodeImport
+    , platformCmdImport
+    , platformSubImport
+    ]
+
+
+{-| Import statement for Array exposing everything.
+-}
+arrayImport : Src.Import
+arrayImport =
+    Src.Import
+        (c1 (A.At A.zero "Array"))
+        Nothing
+        (c2 (Src.Open noComments noComments))
+
+
+{-| Import statement for Json.Encode exposing everything.
+-}
+jsonEncodeImport : Src.Import
+jsonEncodeImport =
+    Src.Import
+        (c1 (A.At A.zero "Json.Encode"))
+        Nothing
+        (c2 (Src.Open noComments noComments))
+
+
+{-| Import statement for Json.Decode exposing everything.
+-}
+jsonDecodeImport : Src.Import
+jsonDecodeImport =
+    Src.Import
+        (c1 (A.At A.zero "Json.Decode"))
+        Nothing
+        (c2 (Src.Open noComments noComments))
+
+
+{-| Import statement for Platform.Cmd exposing Cmd.
+-}
+platformCmdImport : Src.Import
+platformCmdImport =
+    Src.Import
+        (c1 (A.At A.zero "Platform.Cmd"))
+        Nothing
+        (c2 (Src.Open noComments noComments))
+
+
+{-| Import statement for Platform.Sub exposing Sub.
+-}
+platformSubImport : Src.Import
+platformSubImport =
+    Src.Import
+        (c1 (A.At A.zero "Platform.Sub"))
+        Nothing
+        (c2 (Src.Open noComments noComments))
 
 
 

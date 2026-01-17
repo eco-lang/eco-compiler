@@ -29,6 +29,7 @@ import Compiler.OperatorTests as OperatorTests
 import Compiler.Optimize.FunctionTypeEncode exposing (expectFunctionTypesEncoded)
 import Compiler.PatternArgTests as PatternArgTests
 import Compiler.PatternMatchingTests as PatternMatchingTests
+import Compiler.PortEncodingTests as PortEncodingTests
 import Compiler.Type.PostSolve.PostSolveExprTests as PostSolveExprTests
 import Compiler.RecordTests as RecordTests
 import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
@@ -73,6 +74,7 @@ expectSuite expectFn condStr =
         , OperatorTests.expectSuite expectFn condStr
         , PatternArgTests.expectSuite expectFn condStr
         , PatternMatchingTests.expectSuite expectFn condStr
+        , PortEncodingTests.expectSuite expectFn condStr
         , PostSolveExprTests.expectSuite expectFn condStr
         , RecordTests.expectSuite expectFn condStr
         , SpecializeAccessorTests.expectSuite expectFn condStr
