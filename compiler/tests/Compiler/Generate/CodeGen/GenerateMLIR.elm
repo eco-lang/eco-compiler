@@ -189,15 +189,27 @@ localGraphToGlobalGraph localGraph =
 -- ============================================================================
 
 
-{-| Build a GlobalTypeEnv from a canonical module.
+{-| Build a GlobalTypeEnv from a canonical module and test interfaces.
+
+This extracts the union and alias definitions from:
+1. The test module itself (e.g., Array with its Node, Builder types)
+2. All test interfaces (Basics, List, Maybe, JsArray, etc.)
+
+Both are needed for monomorphization to find all referenced types.
+
 -}
 buildGlobalTypeEnv : Can.Module -> TypeEnv.GlobalTypeEnv
 buildGlobalTypeEnv canModule =
     let
         moduleTypeEnv =
             TypeEnv.fromCanonical canModule
+
+        interfaceTypeEnv =
+            TypeEnv.fromInterfaces Basic.testIfaces
     in
-    Dict.singleton ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv
+    TypeEnv.mergeGlobalTypeEnv
+        interfaceTypeEnv
+        (Dict.singleton ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv)
 
 
 
