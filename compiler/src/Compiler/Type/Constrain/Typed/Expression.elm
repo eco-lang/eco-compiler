@@ -968,21 +968,41 @@ constrainCaseWithIdsProg rtv region exprId expr branches expected =
                         -- Record ID with the expected type
                         (case tipe of
                             VarN v ->
+                                -- Type is already a variable, just record it
                                 Prog.opModifyS (NodeIds.recordNodeVar exprId v)
+                                    |> Prog.mapS (\() -> Nothing)
 
                             _ ->
+                                -- Type is concrete; create a flex var and constrain it to equal tipe
                                 Prog.opMkFlexVarS
-                                    |> Prog.andThenS (\v -> Prog.opModifyS (NodeIds.recordNodeVar exprId v))
+                                    |> Prog.andThenS
+                                        (\v ->
+                                            Prog.opModifyS (NodeIds.recordNodeVar exprId v)
+                                                |> Prog.mapS (\() -> Just v)
+                                        )
                         )
                             |> Prog.andThenS
-                                (\() ->
+                                (\maybeCaseVar ->
                                     constrainWithIdsProg rtv expr exprExpect
                                         |> Prog.andThenS
                                             (\exprCon ->
                                                 constrainCaseBranchesWithIdsProg rtv region ptrnType branches bodyExpect Index.first []
                                                     |> Prog.mapS
                                                         (\branchCons ->
-                                                            Type.exists [ ptrnVar ] (CAnd (exprCon :: branchCons))
+                                                            case maybeCaseVar of
+                                                                Nothing ->
+                                                                    -- tipe was VarN, no extra constraint needed
+                                                                    Type.exists [ ptrnVar ] (CAnd (exprCon :: branchCons))
+
+                                                                Just caseVar ->
+                                                                    -- tipe was concrete, add constraint: caseVar = tipe
+                                                                    Type.exists [ ptrnVar, caseVar ]
+                                                                        (CAnd
+                                                                            [ exprCon
+                                                                            , CAnd branchCons
+                                                                            , CEqual region Case (VarN caseVar) (NoExpectation tipe)
+                                                                            ]
+                                                                        )
                                                         )
                                             )
                                 )
