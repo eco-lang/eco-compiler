@@ -406,14 +406,10 @@ addAlias home _ name (Can.Alias _ tipe) ((TOpt.LocalGraph data) as graph) =
                         tipe
                         fieldList
 
-                -- Build argument names with types
-                argNamesWithTypes : List ( A.Located Name.Name, Can.Type )
+                -- Build argument names with types (without A.Located wrapper for Function)
+                argNamesWithTypes : List ( Name.Name, Can.Type )
                 argNamesWithTypes =
-                    List.map
-                        (\( fieldName, fieldType ) ->
-                            ( A.At A.zero fieldName, fieldType )
-                        )
-                        fieldList
+                    fieldList
 
                 -- Build record body: { field1 = field1, field2 = field2, ... }
                 bodyRecord : TOpt.Expr
@@ -429,7 +425,7 @@ addAlias home _ name (Can.Alias _ tipe) ((TOpt.LocalGraph data) as graph) =
 
                 function : TOpt.Expr
                 function =
-                    TOpt.TrackedFunction argNamesWithTypes bodyRecord funcType
+                    TOpt.Function argNamesWithTypes bodyRecord funcType
 
                 node : TOpt.Node
                 node =
@@ -834,14 +830,21 @@ toName def =
 addCycleName : TCan.Def -> EverySet String Name.Name -> EverySet String Name.Name
 addCycleName def names =
     case def of
-        TCan.Def (A.At _ name) _ _ ->
-            -- Add both value and function names to the cycle set
-            -- so that references to recursive functions are properly
-            -- converted to VarCycle
-            EverySet.insert identity name names
+        TCan.Def (A.At _ name) args _ ->
+            -- Only add zero-argument definitions (values) to the cycle set.
+            -- Functions are not tracked since they don't form true cyclic dependencies.
+            if List.isEmpty args then
+                EverySet.insert identity name names
 
-        TCan.TypedDef (A.At _ name) _ _ _ _ ->
-            EverySet.insert identity name names
+            else
+                names
+
+        TCan.TypedDef (A.At _ name) _ args _ _ ->
+            if List.isEmpty args then
+                EverySet.insert identity name names
+
+            else
+                names
 
 
 addLink : IO.Canonical -> TOpt.Node -> TCan.Def -> TypedNodes -> TypedNodes
