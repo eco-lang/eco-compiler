@@ -174,6 +174,16 @@ CGEN_038;MLIR_Codegen;KernelABI;enforced;All calls to the same kernel function n
 
 CGEN_039;MLIR_Codegen;LoweringBoundary;documented;MLIR codegen does not emit eco.allocate eco.allocate_ctor eco.allocate_string or eco.allocate_closure and these allocation ops are introduced only by later lowering from eco.construct and related high level ops;runtime/src/codegen/Ops.td
 
+CGEN_040;MLIR_Codegen;OperandTypes;enforced;For any operation that carries an `_operand_types` attribute, the attribute list length must equal the SSA operand count and each declared operand type must exactly match the corresponding SSA operand type (same order, no boxing/unboxing implied);tests/Compiler/Generate/CodeGen/Invariants.elm and runtime/src/codegen/Ops.td
+
+CGEN_041;MLIR_Codegen;ModuleStructure;enforced;Within a module, all symbol definitions must be unique: no two `func.func` operations may have the same `sym_name` (and, more generally, no two symbol-bearing ops may define the same symbol);tests/Compiler/Generate/CodeGen/Invariants.elm and MLIR func dialect (func.func sym_name)
+
+CGEN_042;MLIR_Codegen;ControlFlow;enforced;Every block in every region emitted by MLIR codegen must end with a terminator operation (e.g. `eco.return`, `eco.jump`, `scf.yield`, `cf.br`, `cf.cond_br`), and each `eco.case` alternative region must be properly terminated (no fallthrough past the end of a region);tests/Compiler/Generate/CodeGen/Invariants.elm and runtime/src/codegen/Ops.td
+
+CGEN_043;MLIR_Codegen;Case;enforced;`eco.case` scrutinee representation and `case_kind` agree: `case_kind="bool"` requires an `i1` scrutinee, `case_kind="int"` requires an `i64` scrutinee, `case_kind="chr"` requires an ECO char scrutinee type, `case_kind="ctor"` requires a boxed `!eco.value` scrutinee, and `case_kind="str"` requires a boxed `!eco.value` scrutinee;runtime/src/codegen/Ops.td and tests/Compiler/Generate/CodeGen/Invariants.elm
+
+CGEN_044;MLIR_Codegen;Calls;enforced;Every `eco.call` callee must resolve to an existing `func.func` symbol in the module (definition or declaration), and calls must not target placeholder/stub implementations when a non-stub implementation is present (i.e. the selected callee must be the intended, non-trivial definition for that logical function);tests/Compiler/Generate/CodeGen/Invariants.elm and runtime/src/codegen/Passes.h
+
 # =============================================================================
 # RUNTIME HEAP PHASE - Memory layout and GC invariants
 # =============================================================================
