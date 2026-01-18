@@ -2004,7 +2004,7 @@ generateChainForBoolADT ctx root path success failure resultTy =
 
         -- eco.case on Bool: tag 1 for True (success), tag 0 for False (failure)
         ( ctx2, caseOp ) =
-            Ops.ecoCase elseRes.ctx boolVar I1 "ctor" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
+            Ops.ecoCase elseRes.ctx boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
     in
     { ops = pathOps ++ [ caseOp ]
     , resultVar = boolVar -- Dummy; control exits via eco.return inside regions
@@ -2043,7 +2043,7 @@ generateChainGeneral ctx root testChain success failure resultTy =
 
         -- eco.case on Bool: tag 1 for True (success), tag 0 for False (failure)
         ( ctx2, caseOp ) =
-            Ops.ecoCase elseRes.ctx condVar I1 "ctor" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
+            Ops.ecoCase elseRes.ctx condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
     in
     { ops = condOps ++ [ caseOp ]
     , resultVar = condVar -- Dummy; control exits via eco.return inside regions
@@ -2116,7 +2116,7 @@ generateBoolFanOut ctx root path edges fallback resultTy =
         -- eco.case on Bool: tag 1 for True, tag 0 for False
         -- Regions: [True region, False region] corresponding to tags [1, 0]
         ( ctx2, caseOp ) =
-            Ops.ecoCase elseRes.ctx boolVar I1 "ctor" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
+            Ops.ecoCase elseRes.ctx boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
     in
     { ops = pathOps ++ [ caseOp ]
     , resultVar = boolVar -- Dummy; control exits via eco.return inside regions

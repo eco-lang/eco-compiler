@@ -1,33 +1,13 @@
 module Compiler.Generate.CodeGen.Invariants exposing
-    ( Violation
-    , walkAllOps
-    , walkOpAndChildren
-    , walkOpsInRegion
-    , walkOpsInBlock
-    , findOpsNamed
-    , findOpsWithPrefix
-    , findFuncOps
-    , getIntAttr
-    , getStringAttr
-    , getArrayAttr
-    , getTypeAttr
-    , getBoolAttr
-    , extractOperandTypes
-    , extractResultTypes
-    , isEcoValueType
-    , isPrimitiveType
-    , checkAll
-    , checkNone
-    , violationsToExpectation
-    , ecoValueType
+    ( Violation, violationsToExpectation
+    , walkAllOps, walkOpAndChildren, walkOpsInRegion, walkOpsInBlock
+    , findOpsNamed, findOpsWithPrefix, findFuncOps
+    , getIntAttr, getStringAttr, getArrayAttr, getTypeAttr, getBoolAttr
+    , extractOperandTypes, extractResultTypes
+    , isEcoValueType, isPrimitiveType, ecoValueType
+    , checkAll, checkNone
     , allBlocks
-    , typesMatch
-    , normalizeType
-    , isValidTerminator
-    , validTerminators
-    , findSymbolOps
-    , buildTypeEnv
-    , TypeEnv
+    , TypeEnv, buildTypeEnv, findSymbolOps, isValidTerminator, typesMatch, validTerminators
     )
 
 {-| Shared infrastructure for MLIR codegen invariant tests.
@@ -294,16 +274,16 @@ extractResultTypes op =
 -}
 ecoValueType : MlirType
 ecoValueType =
-    NamedStruct "!eco.value"
+    NamedStruct "eco.value"
 
 
-{-| Check if a type is !eco.value (handles both "eco.value" and "!eco.value").
+{-| Check if a type is eco.value.
 -}
 isEcoValueType : MlirType -> Bool
 isEcoValueType t =
     case t of
         NamedStruct name ->
-            name == "!eco.value" || name == "eco.value"
+            name == "eco.value"
 
         _ ->
             False
@@ -363,27 +343,11 @@ allBlocks (MlirRegion { entry, blocks }) =
 -- TYPE COMPARISON
 
 
-{-| Normalize a type (handles eco.value naming variations).
--}
-normalizeType : MlirType -> MlirType
-normalizeType t =
-    case t of
-        NamedStruct name ->
-            if name == "eco.value" || name == "!eco.value" then
-                NamedStruct "!eco.value"
-
-            else
-                NamedStruct name
-
-        _ ->
-            t
-
-
 {-| Compare two types with normalization.
 -}
 typesMatch : MlirType -> MlirType -> Bool
 typesMatch t1 t2 =
-    normalizeType t1 == normalizeType t2
+    t1 == t2
 
 
 

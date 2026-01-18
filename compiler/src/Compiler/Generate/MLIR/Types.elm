@@ -41,7 +41,7 @@ import Mlir.Mlir exposing (MlirType(..))
 -}
 ecoValue : MlirType
 ecoValue =
-    NamedStruct "!eco.value"
+    NamedStruct "eco.value"
 
 
 {-| eco.int - unboxed 64-bit signed integer
@@ -181,7 +181,7 @@ decomposeFunctionType monoType =
 isEcoValueType : MlirType -> Bool
 isEcoValueType ty =
     case ty of
-        NamedStruct "!eco.value" ->
+        NamedStruct "eco.value" ->
             True
 
         _ ->

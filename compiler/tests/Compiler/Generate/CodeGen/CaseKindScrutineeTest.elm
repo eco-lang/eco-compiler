@@ -1,6 +1,6 @@
 module Compiler.Generate.CodeGen.CaseKindScrutineeTest exposing (suite)
 
-{-| Tests for CGEN_043: Case Kind Scrutinee Type Agreement invariant.
+{-| Tests for CGEN\_043: Case Kind Scrutinee Type Agreement invariant.
 
 `eco.case` scrutinee representation and `case_kind` must agree:
 
@@ -120,10 +120,10 @@ validateCaseKind caseKind scrutineeType op =
                     ( Just I16, "i16 (ECO char)" )
 
                 "ctor" ->
-                    ( Just (NamedStruct "!eco.value"), "!eco.value" )
+                    ( Just (NamedStruct "eco.value"), "eco.value" )
 
                 "str" ->
-                    ( Just (NamedStruct "!eco.value"), "!eco.value" )
+                    ( Just (NamedStruct "eco.value"), "eco.value" )
 
                 _ ->
                     ( Nothing, "unknown" )

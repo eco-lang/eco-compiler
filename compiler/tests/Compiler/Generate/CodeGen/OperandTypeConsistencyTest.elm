@@ -34,15 +34,15 @@ import Compiler.Generate.CodeGen.Invariants
     exposing
         ( TypeEnv
         , Violation
-        , buildTypeEnv
         , extractOperandTypes
+        , findFuncOps
         , typesMatch
         , violationsToExpectation
-        , walkAllOps
         )
 import Dict
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
+import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))
+import OrderedDict
 import Test exposing (Test)
 
 
@@ -62,20 +62,150 @@ suite =
 
 
 {-| Check operand type consistency invariants.
+
+This checks each function separately with its own scoped TypeEnv,
+since SSA names are local to each function.
+
 -}
 checkOperandTypeConsistency : MlirModule -> List Violation
 checkOperandTypeConsistency mlirModule =
     let
-        typeEnv =
-            buildTypeEnv mlirModule
-
-        allOps =
-            walkAllOps mlirModule
+        funcOps =
+            findFuncOps mlirModule
 
         violations =
-            List.concatMap (checkOp typeEnv) allOps
+            List.concatMap checkFunction funcOps
     in
     violations
+
+
+{-| Check a single function with a locally-scoped TypeEnv.
+-}
+checkFunction : MlirOp -> List Violation
+checkFunction funcOp =
+    let
+        -- Build TypeEnv scoped to this function only
+        localTypeEnv =
+            buildTypeEnvFromOp funcOp
+
+        -- Get all ops within this function
+        allOpsInFunc =
+            walkOpsInOp funcOp
+    in
+    List.concatMap (checkOp localTypeEnv) allOpsInFunc
+
+
+{-| Build a TypeEnv from a single operation and its nested regions.
+-}
+buildTypeEnvFromOp : MlirOp -> TypeEnv
+buildTypeEnvFromOp op =
+    let
+        -- Start with results from this op
+        withResults =
+            List.foldl
+                (\( name, t ) acc -> Dict.insert name t acc)
+                Dict.empty
+                op.results
+
+        -- Recurse into regions
+        withRegions =
+            List.foldl collectFromRegion withResults op.regions
+    in
+    withRegions
+
+
+collectFromRegion : MlirRegion -> TypeEnv -> TypeEnv
+collectFromRegion (MlirRegion { entry, blocks }) env =
+    let
+        -- Add block arguments from entry
+        withEntryArgs =
+            List.foldl
+                (\( name, t ) acc -> Dict.insert name t acc)
+                env
+                entry.args
+
+        -- Add ops from entry block
+        withEntryBody =
+            collectFromOps entry.body withEntryArgs
+
+        -- Add terminator results
+        withEntryTerm =
+            collectFromOp entry.terminator withEntryBody
+
+        -- Process additional blocks
+        withBlocks =
+            List.foldl collectFromBlock withEntryTerm (OrderedDict.values blocks)
+    in
+    withBlocks
+
+
+collectFromBlock : MlirBlock -> TypeEnv -> TypeEnv
+collectFromBlock block env =
+    let
+        withArgs =
+            List.foldl
+                (\( name, t ) acc -> Dict.insert name t acc)
+                env
+                block.args
+
+        withBody =
+            collectFromOps block.body withArgs
+
+        withTerm =
+            collectFromOp block.terminator withBody
+    in
+    withTerm
+
+
+collectFromOps : List MlirOp -> TypeEnv -> TypeEnv
+collectFromOps ops env =
+    List.foldl collectFromOp env ops
+
+
+collectFromOp : MlirOp -> TypeEnv -> TypeEnv
+collectFromOp op env =
+    let
+        -- Add results from this op
+        withResults =
+            List.foldl
+                (\( name, t ) acc -> Dict.insert name t acc)
+                env
+                op.results
+
+        -- Recurse into regions
+        withRegions =
+            List.foldl collectFromRegion withResults op.regions
+    in
+    withRegions
+
+
+{-| Walk all ops within a single op (including nested regions).
+-}
+walkOpsInOp : MlirOp -> List MlirOp
+walkOpsInOp op =
+    List.concatMap walkOpsInRegion op.regions
+
+
+walkOpsInRegion : MlirRegion -> List MlirOp
+walkOpsInRegion (MlirRegion { entry, blocks }) =
+    let
+        entryOps =
+            List.concatMap walkOp entry.body ++ walkOp entry.terminator
+
+        blockOps =
+            List.concatMap walkOpsInBlock (OrderedDict.values blocks)
+    in
+    entryOps ++ blockOps
+
+
+walkOpsInBlock : MlirBlock -> List MlirOp
+walkOpsInBlock block =
+    List.concatMap walkOp block.body ++ walkOp block.terminator
+
+
+walkOp : MlirOp -> List MlirOp
+walkOp op =
+    op :: List.concatMap walkOpsInRegion op.regions
 
 
 checkOp : TypeEnv -> MlirOp -> List Violation
