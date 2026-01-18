@@ -216,10 +216,10 @@ singleResultTest _ =
         record =
             recordExpr [ ( "a", intExpr 2 ) ]
 
-        custom =
-            callExpr (ctorExpr "Just") [ intExpr 3 ]
+        tuple =
+            tupleExpr (intExpr 3) (intExpr 4)
     in
     runInvariantTest
-        (makeModuleWithMaybe "testValue"
-            (tuple3Expr list record custom)
+        (makeModule "testValue"
+            (tuple3Expr list record tuple)
         )
