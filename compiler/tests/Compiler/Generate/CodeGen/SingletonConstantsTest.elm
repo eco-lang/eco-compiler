@@ -54,9 +54,48 @@ suite =
 -- INVARIANT CHECKER
 
 
-knownSingletons : List String
-knownSingletons =
-    [ "Unit", "True", "False", "Nil", "Nothing", "EmptyString", "EmptyRec" ]
+{-| Known singleton kind values (from Ops.td):
+
+  - Unit = 1
+  - EmptyRec = 2
+  - True = 3
+  - False = 4
+  - Nil = 5
+  - Nothing = 6
+  - EmptyString = 7
+
+-}
+knownSingletonKinds : List Int
+knownSingletonKinds =
+    [ 1, 2, 3, 4, 5, 6, 7 ]
+
+
+kindToName : Int -> String
+kindToName kind =
+    case kind of
+        1 ->
+            "Unit"
+
+        2 ->
+            "EmptyRec"
+
+        3 ->
+            "True"
+
+        4 ->
+            "False"
+
+        5 ->
+            "Nil"
+
+        6 ->
+            "Nothing"
+
+        7 ->
+            "EmptyString"
+
+        _ ->
+            "Unknown(" ++ String.fromInt kind ++ ")"
 
 
 {-| Check singleton constant invariants.
@@ -92,7 +131,7 @@ checkConstantKind : MlirOp -> Maybe Violation
 checkConstantKind op =
     let
         maybeKind =
-            getStringAttr "kind" op
+            getIntAttr "kind" op
     in
     case maybeKind of
         Nothing ->
@@ -103,11 +142,11 @@ checkConstantKind op =
                 }
 
         Just kind ->
-            if not (List.member kind knownSingletons) then
+            if not (List.member kind knownSingletonKinds) then
                 Just
                     { opId = op.id
                     , opName = op.name
-                    , message = "eco.constant with unknown kind '" ++ kind ++ "'"
+                    , message = "eco.constant with unknown kind " ++ String.fromInt kind
                     }
 
             else
