@@ -1,162 +1,87 @@
-module Compiler.Generate.CodeGen.DbgTypeIdsTest exposing (suite)
+module Compiler.Generate.CodeGen.DbgTypeIdsTest exposing (suite, expectSuite)
 
-{-| Tests for CGEN_036: Dbg Type IDs Valid invariant.
+{-| Test suite for CGEN_036: Dbg Type IDs Valid invariant.
 
 When `eco.dbg` has `arg_type_ids`, each ID must reference a valid type table entry.
 
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.AST.SourceBuilder
-    exposing
-        ( intExpr
-        , listExpr
-        , makeModule
-        , strExpr
-        , tupleExpr
-        )
-import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
-import Compiler.Generate.CodeGen.Invariants
-    exposing
-        ( Violation
-        , findOpsNamed
-        , getArrayAttr
-        , violationsToExpectation
-        )
+import Compiler.AnnotatedTests as AnnotatedTests
+import Compiler.ArrayTest as ArrayTest
+import Compiler.AsPatternTests as AsPatternTests
+import Compiler.BinopTests as BinopTests
+import Compiler.BitwiseTests as BitwiseTests
+import Compiler.CaseTests as CaseTests
+import Compiler.ClosureTests as ClosureTests
+import Compiler.ControlFlowTests as ControlFlowTests
+import Compiler.DecisionTreeAdvancedTests as DecisionTreeAdvancedTests
+import Compiler.DeepFuzzTests as DeepFuzzTests
+import Compiler.EdgeCaseTests as EdgeCaseTests
+import Compiler.FloatMathTests as FloatMathTests
+import Compiler.FunctionTests as FunctionTests
+import Compiler.Generate.CodeGen.DbgTypeIds exposing (expectDbgTypeIds)
+import Compiler.HigherOrderTests as HigherOrderTests
+import Compiler.LetDestructTests as LetDestructTests
+import Compiler.LetRecTests as LetRecTests
+import Compiler.LetTests as LetTests
+import Compiler.ListTests as ListTests
+import Compiler.LiteralTests as LiteralTests
+import Compiler.MultiDefTests as MultiDefTests
+import Compiler.OperatorTests as OperatorTests
+import Compiler.PatternArgTests as PatternArgTests
+import Compiler.PatternMatchingTests as PatternMatchingTests
+import Compiler.PortEncodingTests as PortEncodingTests
+import Compiler.RecordTests as RecordTests
+import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
+import Compiler.SpecializeConstructorTests as SpecializeConstructorTests
+import Compiler.SpecializeCycleTests as SpecializeCycleTests
+import Compiler.SpecializeExprTests as SpecializeExprTests
+import Compiler.TupleTests as TupleTests
+import Compiler.Type.PostSolve.PostSolveExprTests as PostSolveExprTests
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirAttr(..), MlirModule, MlirOp)
 import Test exposing (Test)
 
 
 suite : Test
 suite =
     Test.describe "CGEN_036: Dbg Type IDs Valid"
-        [ Test.test "Module without debug ops passes" noDebugOpsTest
-        , Test.test "Simple module with list passes" simpleListTest
-        , Test.test "Simple module with tuple passes" simpleTupleTest
+        [ expectSuite expectDbgTypeIds "passes dbg type IDs invariant"
         ]
 
 
-
--- INVARIANT CHECKER
-
-
-{-| Check dbg type IDs invariants.
--}
-checkDbgTypeIds : MlirModule -> List Violation
-checkDbgTypeIds mlirModule =
-    let
-        -- Find type table
-        typeTableOps =
-            List.filter (\op -> op.name == "eco.type_table") mlirModule.body
-
-        maxTypeId =
-            case List.head typeTableOps of
-                Just typeTable ->
-                    case getArrayAttr "types" typeTable of
-                        Just types ->
-                            List.length types - 1
-
-                        Nothing ->
-                            -1
-
-                Nothing ->
-                    -1
-
-        -- Find all eco.dbg ops with arg_type_ids
-        dbgOps =
-            findOpsNamed "eco.dbg" mlirModule
-
-        violations =
-            List.concatMap (checkDbgOp maxTypeId) dbgOps
-    in
-    violations
-
-
-checkDbgOp : Int -> MlirOp -> List Violation
-checkDbgOp maxTypeId op =
-    let
-        maybeTypeIds =
-            getArrayAttr "arg_type_ids" op
-    in
-    case maybeTypeIds of
-        Nothing ->
-            -- No type IDs, OK
-            []
-
-        Just typeIds ->
-            if maxTypeId < 0 then
-                [ { opId = op.id
-                  , opName = op.name
-                  , message = "eco.dbg has arg_type_ids but no eco.type_table in module"
-                  }
-                ]
-
-            else
-                List.indexedMap (checkTypeId op maxTypeId) typeIds
-                    |> List.filterMap identity
-
-
-checkTypeId : MlirOp -> Int -> Int -> MlirAttr -> Maybe Violation
-checkTypeId op maxTypeId index attr =
-    case attr of
-        IntAttr _ typeId ->
-            if typeId < 0 || typeId > maxTypeId then
-                Just
-                    { opId = op.id
-                    , opName = op.name
-                    , message =
-                        "eco.dbg arg_type_ids["
-                            ++ String.fromInt index
-                            ++ "]="
-                            ++ String.fromInt typeId
-                            ++ " out of range [0,"
-                            ++ String.fromInt maxTypeId
-                            ++ "]"
-                    }
-
-            else
-                Nothing
-
-        _ ->
-            Just
-                { opId = op.id
-                , opName = op.name
-                , message = "eco.dbg arg_type_ids[" ++ String.fromInt index ++ "] is not an integer"
-                }
-
-
-
--- TEST HELPER
-
-
-runInvariantTest : Src.Module -> Expectation
-runInvariantTest srcModule =
-    case compileToMlirModule srcModule of
-        Err err ->
-            Expect.fail ("Compilation failed: " ++ err)
-
-        Ok { mlirModule } ->
-            violationsToExpectation (checkDbgTypeIds mlirModule)
-
-
-
--- TEST CASES
-
-
-noDebugOpsTest : () -> Expectation
-noDebugOpsTest _ =
-    -- Simple module without debug
-    runInvariantTest (makeModule "testValue" (intExpr 42))
-
-
-simpleListTest : () -> Expectation
-simpleListTest _ =
-    -- Module with list should have no eco.dbg ops
-    runInvariantTest (makeModule "testValue" (listExpr [ intExpr 1, intExpr 2 ]))
-
-
-simpleTupleTest : () -> Expectation
-simpleTupleTest _ =
-    -- Module with tuple should have no eco.dbg ops
-    runInvariantTest (makeModule "testValue" (tupleExpr (strExpr "hello") (intExpr 42)))
+expectSuite : (Src.Module -> Expectation) -> String -> Test
+expectSuite expectFn condStr =
+    Test.describe ("Dbg type IDs invariant " ++ condStr)
+        [ AnnotatedTests.expectSuite expectFn condStr
+        , ArrayTest.expectSuite expectFn condStr
+        , AsPatternTests.expectSuite expectFn condStr
+        , BinopTests.expectSuite expectFn condStr
+        , BitwiseTests.expectSuite expectFn condStr
+        , CaseTests.expectSuite expectFn condStr
+        , ClosureTests.expectSuite expectFn condStr
+        , ControlFlowTests.expectSuite expectFn condStr
+        , DecisionTreeAdvancedTests.expectSuite expectFn condStr
+        , DeepFuzzTests.expectSuite expectFn condStr
+        , EdgeCaseTests.expectSuite expectFn condStr
+        , FloatMathTests.expectSuite expectFn condStr
+        , FunctionTests.expectSuite expectFn condStr
+        , HigherOrderTests.expectSuite expectFn condStr
+        , LetDestructTests.expectSuite expectFn condStr
+        , LetRecTests.expectSuite expectFn condStr
+        , LetTests.expectSuite expectFn condStr
+        , ListTests.expectSuite expectFn condStr
+        , LiteralTests.expectSuite expectFn condStr
+        , MultiDefTests.expectSuite expectFn condStr
+        , OperatorTests.expectSuite expectFn condStr
+        , PatternArgTests.expectSuite expectFn condStr
+        , PatternMatchingTests.expectSuite expectFn condStr
+        , PortEncodingTests.expectSuite expectFn condStr
+        , PostSolveExprTests.expectSuite expectFn condStr
+        , RecordTests.expectSuite expectFn condStr
+        , SpecializeAccessorTests.expectSuite expectFn condStr
+        , SpecializeConstructorTests.expectSuite expectFn condStr
+        , SpecializeCycleTests.expectSuite expectFn condStr
+        , SpecializeExprTests.expectSuite expectFn condStr
+        , TupleTests.expectSuite expectFn condStr
+        ]

@@ -9,3 +9,4 @@ rag-cli
 settings.json
 .crag.json
 elm-kernel/
+.ccache/

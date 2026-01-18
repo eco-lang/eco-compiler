@@ -1,6 +1,6 @@
-module Compiler.Generate.CodeGen.SymbolUniquenessTest exposing (suite)
+module Compiler.Generate.CodeGen.SymbolUniquenessTest exposing (suite, expectSuite)
 
-{-| Tests for CGEN_041: Symbol Uniqueness invariant.
+{-| Test suite for CGEN_041: Symbol Uniqueness invariant.
 
 Within a module, all symbol definitions must be unique: no two `func.func`
 operations may have the same `sym_name`.
@@ -8,199 +8,81 @@ operations may have the same `sym_name`.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.AST.SourceBuilder
-    exposing
-        ( callExpr
-        , intExpr
-        , lambdaExpr
-        , letExpr
-        , define
-        , listExpr
-        , makeModule
-        , pVar
-        , qualVarExpr
-        , varExpr
-        )
-import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
-import Compiler.Generate.CodeGen.Invariants
-    exposing
-        ( Violation
-        , findSymbolOps
-        , violationsToExpectation
-        )
-import Dict exposing (Dict)
+import Compiler.AnnotatedTests as AnnotatedTests
+import Compiler.ArrayTest as ArrayTest
+import Compiler.AsPatternTests as AsPatternTests
+import Compiler.BinopTests as BinopTests
+import Compiler.BitwiseTests as BitwiseTests
+import Compiler.CaseTests as CaseTests
+import Compiler.ClosureTests as ClosureTests
+import Compiler.ControlFlowTests as ControlFlowTests
+import Compiler.DecisionTreeAdvancedTests as DecisionTreeAdvancedTests
+import Compiler.DeepFuzzTests as DeepFuzzTests
+import Compiler.EdgeCaseTests as EdgeCaseTests
+import Compiler.FloatMathTests as FloatMathTests
+import Compiler.FunctionTests as FunctionTests
+import Compiler.Generate.CodeGen.SymbolUniqueness exposing (expectSymbolUniqueness)
+import Compiler.HigherOrderTests as HigherOrderTests
+import Compiler.LetDestructTests as LetDestructTests
+import Compiler.LetRecTests as LetRecTests
+import Compiler.LetTests as LetTests
+import Compiler.ListTests as ListTests
+import Compiler.LiteralTests as LiteralTests
+import Compiler.MultiDefTests as MultiDefTests
+import Compiler.OperatorTests as OperatorTests
+import Compiler.PatternArgTests as PatternArgTests
+import Compiler.PatternMatchingTests as PatternMatchingTests
+import Compiler.PortEncodingTests as PortEncodingTests
+import Compiler.RecordTests as RecordTests
+import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
+import Compiler.SpecializeConstructorTests as SpecializeConstructorTests
+import Compiler.SpecializeCycleTests as SpecializeCycleTests
+import Compiler.SpecializeExprTests as SpecializeExprTests
+import Compiler.TupleTests as TupleTests
+import Compiler.Type.PostSolve.PostSolveExprTests as PostSolveExprTests
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 import Test exposing (Test)
 
 
 suite : Test
 suite =
     Test.describe "CGEN_041: Symbol Uniqueness"
-        [ Test.test "Simple value bindings have unique names" simpleValuesTest
-        , Test.test "Multiple lambdas have unique names" multipleLambdasTest
-        , Test.test "Nested lets generate unique symbols" nestedLetsTest
-        , Test.test "Functions with negate have unique names" negateTest
+        [ expectSuite expectSymbolUniqueness "passes symbol uniqueness invariant"
         ]
 
 
-
--- INVARIANT CHECKER
-
-
-{-| Check symbol uniqueness invariants.
--}
-checkSymbolUniqueness : MlirModule -> List Violation
-checkSymbolUniqueness mlirModule =
-    let
-        symbolOps =
-            findSymbolOps mlirModule
-
-        -- Group by symbol name
-        grouped =
-            List.foldl
-                (\( name, op ) acc ->
-                    Dict.update name
-                        (\existing ->
-                            case existing of
-                                Nothing ->
-                                    Just [ op ]
-
-                                Just ops ->
-                                    Just (op :: ops)
-                        )
-                        acc
-                )
-                Dict.empty
-                symbolOps
-
-        -- Find duplicates
-        violations =
-            Dict.toList grouped
-                |> List.concatMap checkDuplicates
-    in
-    violations
-
-
-checkDuplicates : ( String, List MlirOp ) -> List Violation
-checkDuplicates ( symName, ops ) =
-    case ops of
-        [] ->
-            []
-
-        [ _ ] ->
-            -- Single definition, OK
-            []
-
-        first :: rest ->
-            -- Multiple definitions - report all but first as duplicates
-            List.map
-                (\op ->
-                    { opId = op.id
-                    , opName = op.name
-                    , message =
-                        "Duplicate symbol '"
-                            ++ symName
-                            ++ "': already defined at "
-                            ++ first.id
-                    }
-                )
-                rest
-
-
-
--- TEST HELPER
-
-
-runInvariantTest : Src.Module -> Expectation
-runInvariantTest srcModule =
-    case compileToMlirModule srcModule of
-        Err err ->
-            Expect.fail ("Compilation failed: " ++ err)
-
-        Ok { mlirModule } ->
-            violationsToExpectation (checkSymbolUniqueness mlirModule)
-
-
-
--- TEST CASES
-
-
-simpleValuesTest : () -> Expectation
-simpleValuesTest _ =
-    -- Multiple distinct value bindings (no parameters)
-    let
-        modul =
-            makeModule "testValue"
-                (letExpr
-                    [ define "a" [] (intExpr 1)
-                    , define "b" [] (intExpr 2)
-                    , define "c" [] (intExpr 3)
-                    ]
-                    (varExpr "a")
-                )
-    in
-    runInvariantTest modul
-
-
-multipleLambdasTest : () -> Expectation
-multipleLambdasTest _ =
-    -- Multiple anonymous functions should each get unique names
-    let
-        modul =
-            makeModule "testValue"
-                (letExpr
-                    [ define "a" []
-                        (callExpr
-                            (callExpr (qualVarExpr "List" "map")
-                                [ lambdaExpr [ pVar "x" ] (varExpr "x") ]
-                            )
-                            [ listExpr [ intExpr 1, intExpr 2 ] ]
-                        )
-                    , define "b" []
-                        (callExpr
-                            (callExpr (qualVarExpr "List" "map")
-                                [ lambdaExpr [ pVar "y" ] (varExpr "y") ]
-                            )
-                            [ listExpr [ intExpr 3, intExpr 4 ] ]
-                        )
-                    ]
-                    (varExpr "a")
-                )
-    in
-    runInvariantTest modul
-
-
-nestedLetsTest : () -> Expectation
-nestedLetsTest _ =
-    -- Nested let expressions should all get unique symbols
-    let
-        modul =
-            makeModule "testValue"
-                (letExpr
-                    [ define "outer" [] (intExpr 1) ]
-                    (letExpr
-                        [ define "inner" [] (intExpr 2) ]
-                        (varExpr "inner")
-                    )
-                )
-    in
-    runInvariantTest modul
-
-
-negateTest : () -> Expectation
-negateTest _ =
-    -- Multiple functions using negate should get unique names
-    let
-        modul =
-            makeModule "testValue"
-                (letExpr
-                    [ define "negA" []
-                        (callExpr (qualVarExpr "Basics" "negate") [ intExpr 1 ])
-                    , define "negB" []
-                        (callExpr (qualVarExpr "Basics" "negate") [ intExpr 2 ])
-                    ]
-                    (varExpr "negA")
-                )
-    in
-    runInvariantTest modul
+expectSuite : (Src.Module -> Expectation) -> String -> Test
+expectSuite expectFn condStr =
+    Test.describe ("Symbol uniqueness invariant " ++ condStr)
+        [ AnnotatedTests.expectSuite expectFn condStr
+        , ArrayTest.expectSuite expectFn condStr
+        , AsPatternTests.expectSuite expectFn condStr
+        , BinopTests.expectSuite expectFn condStr
+        , BitwiseTests.expectSuite expectFn condStr
+        , CaseTests.expectSuite expectFn condStr
+        , ClosureTests.expectSuite expectFn condStr
+        , ControlFlowTests.expectSuite expectFn condStr
+        , DecisionTreeAdvancedTests.expectSuite expectFn condStr
+        , DeepFuzzTests.expectSuite expectFn condStr
+        , EdgeCaseTests.expectSuite expectFn condStr
+        , FloatMathTests.expectSuite expectFn condStr
+        , FunctionTests.expectSuite expectFn condStr
+        , HigherOrderTests.expectSuite expectFn condStr
+        , LetDestructTests.expectSuite expectFn condStr
+        , LetRecTests.expectSuite expectFn condStr
+        , LetTests.expectSuite expectFn condStr
+        , ListTests.expectSuite expectFn condStr
+        , LiteralTests.expectSuite expectFn condStr
+        , MultiDefTests.expectSuite expectFn condStr
+        , OperatorTests.expectSuite expectFn condStr
+        , PatternArgTests.expectSuite expectFn condStr
+        , PatternMatchingTests.expectSuite expectFn condStr
+        , PortEncodingTests.expectSuite expectFn condStr
+        , PostSolveExprTests.expectSuite expectFn condStr
+        , RecordTests.expectSuite expectFn condStr
+        , SpecializeAccessorTests.expectSuite expectFn condStr
+        , SpecializeConstructorTests.expectSuite expectFn condStr
+        , SpecializeCycleTests.expectSuite expectFn condStr
+        , SpecializeExprTests.expectSuite expectFn condStr
+        , TupleTests.expectSuite expectFn condStr
+        ]

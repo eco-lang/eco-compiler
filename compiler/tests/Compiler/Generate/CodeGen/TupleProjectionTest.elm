@@ -1,6 +1,6 @@
-module Compiler.Generate.CodeGen.TupleProjectionTest exposing (suite)
+module Compiler.Generate.CodeGen.TupleProjectionTest exposing (suite, expectSuite)
 
-{-| Tests for CGEN_022: Tuple Projection invariant.
+{-| Test suite for CGEN_022: Tuple Projection invariant.
 
 Tuple destructuring must use `eco.project.tuple2` or `eco.project.tuple3`
 with valid field indices.
@@ -8,241 +8,81 @@ with valid field indices.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.AST.SourceBuilder
-    exposing
-        ( caseExpr
-        , intExpr
-        , makeModule
-        , pTuple
-        , pTuple3
-        , pVar
-        , strExpr
-        , tuple3Expr
-        , tupleExpr
-        , varExpr
-        )
-import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
-import Compiler.Generate.CodeGen.Invariants
-    exposing
-        ( Violation
-        , findOpsNamed
-        , getIntAttr
-        , violationsToExpectation
-        )
+import Compiler.AnnotatedTests as AnnotatedTests
+import Compiler.ArrayTest as ArrayTest
+import Compiler.AsPatternTests as AsPatternTests
+import Compiler.BinopTests as BinopTests
+import Compiler.BitwiseTests as BitwiseTests
+import Compiler.CaseTests as CaseTests
+import Compiler.ClosureTests as ClosureTests
+import Compiler.ControlFlowTests as ControlFlowTests
+import Compiler.DecisionTreeAdvancedTests as DecisionTreeAdvancedTests
+import Compiler.DeepFuzzTests as DeepFuzzTests
+import Compiler.EdgeCaseTests as EdgeCaseTests
+import Compiler.FloatMathTests as FloatMathTests
+import Compiler.FunctionTests as FunctionTests
+import Compiler.Generate.CodeGen.TupleProjection exposing (expectTupleProjection)
+import Compiler.HigherOrderTests as HigherOrderTests
+import Compiler.LetDestructTests as LetDestructTests
+import Compiler.LetRecTests as LetRecTests
+import Compiler.LetTests as LetTests
+import Compiler.ListTests as ListTests
+import Compiler.LiteralTests as LiteralTests
+import Compiler.MultiDefTests as MultiDefTests
+import Compiler.OperatorTests as OperatorTests
+import Compiler.PatternArgTests as PatternArgTests
+import Compiler.PatternMatchingTests as PatternMatchingTests
+import Compiler.PortEncodingTests as PortEncodingTests
+import Compiler.RecordTests as RecordTests
+import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
+import Compiler.SpecializeConstructorTests as SpecializeConstructorTests
+import Compiler.SpecializeCycleTests as SpecializeCycleTests
+import Compiler.SpecializeExprTests as SpecializeExprTests
+import Compiler.TupleTests as TupleTests
+import Compiler.Type.PostSolve.PostSolveExprTests as PostSolveExprTests
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 import Test exposing (Test)
 
 
 suite : Test
 suite =
     Test.describe "CGEN_022: Tuple Projection"
-        [ Test.test "eco.project.tuple2 has field attribute" tuple2FieldAttrTest
-        , Test.test "eco.project.tuple2 field in range [0,1]" tuple2FieldRangeTest
-        , Test.test "eco.project.tuple2 has exactly 1 operand" tuple2OperandCountTest
-        , Test.test "eco.project.tuple2 has exactly 1 result" tuple2ResultCountTest
-        , Test.test "eco.project.tuple3 has field attribute" tuple3FieldAttrTest
-        , Test.test "eco.project.tuple3 field in range [0,2]" tuple3FieldRangeTest
-        , Test.test "Tuple.first uses correct projection" tupleFirstTest
-        , Test.test "Tuple.second uses correct projection" tupleSecondTest
+        [ expectSuite expectTupleProjection "passes tuple projection invariant"
         ]
 
 
-
--- INVARIANT CHECKER
-
-
-{-| Check tuple projection invariants.
--}
-checkTupleProjection : MlirModule -> List Violation
-checkTupleProjection mlirModule =
-    let
-        tuple2Ops =
-            findOpsNamed "eco.project.tuple2" mlirModule
-
-        tuple2Violations =
-            List.filterMap (checkTupleOp 2) tuple2Ops
-
-        tuple3Ops =
-            findOpsNamed "eco.project.tuple3" mlirModule
-
-        tuple3Violations =
-            List.filterMap (checkTupleOp 3) tuple3Ops
-    in
-    tuple2Violations ++ tuple3Violations
-
-
-checkTupleOp : Int -> MlirOp -> Maybe Violation
-checkTupleOp tupleSize op =
-    let
-        maybeField =
-            getIntAttr "field" op
-
-        operandCount =
-            List.length op.operands
-
-        resultCount =
-            List.length op.results
-
-        maxField =
-            tupleSize - 1
-
-        tupleName =
-            "eco.project.tuple" ++ String.fromInt tupleSize
-    in
-    case maybeField of
-        Nothing ->
-            Just
-                { opId = op.id
-                , opName = op.name
-                , message = tupleName ++ " missing field attribute"
-                }
-
-        Just field ->
-            if field < 0 || field > maxField then
-                Just
-                    { opId = op.id
-                    , opName = op.name
-                    , message =
-                        tupleName
-                            ++ " field="
-                            ++ String.fromInt field
-                            ++ " out of range [0,"
-                            ++ String.fromInt maxField
-                            ++ "]"
-                    }
-
-            else if operandCount /= 1 then
-                Just
-                    { opId = op.id
-                    , opName = op.name
-                    , message = tupleName ++ " should have exactly 1 operand, got " ++ String.fromInt operandCount
-                    }
-
-            else if resultCount /= 1 then
-                Just
-                    { opId = op.id
-                    , opName = op.name
-                    , message = tupleName ++ " should have exactly 1 result, got " ++ String.fromInt resultCount
-                    }
-
-            else
-                Nothing
-
-
-
--- TEST HELPER
-
-
-runInvariantTest : Src.Module -> Expectation
-runInvariantTest srcModule =
-    case compileToMlirModule srcModule of
-        Err err ->
-            Expect.fail ("Compilation failed: " ++ err)
-
-        Ok { mlirModule } ->
-            violationsToExpectation (checkTupleProjection mlirModule)
-
-
-
--- TEST CASES
-
-
-tuple2FieldAttrTest : () -> Expectation
-tuple2FieldAttrTest _ =
-    let
-        modul =
-            makeModule "testValue"
-                (caseExpr (tupleExpr (intExpr 1) (intExpr 2))
-                    [ ( pTuple (pVar "a") (pVar "b"), varExpr "a" ) ]
-                )
-    in
-    runInvariantTest modul
-
-
-tuple2FieldRangeTest : () -> Expectation
-tuple2FieldRangeTest _ =
-    let
-        modul =
-            makeModule "testValue"
-                (caseExpr (tupleExpr (intExpr 1) (intExpr 2))
-                    [ ( pTuple (pVar "a") (pVar "b"), varExpr "b" ) ]
-                )
-    in
-    runInvariantTest modul
-
-
-tuple2OperandCountTest : () -> Expectation
-tuple2OperandCountTest _ =
-    -- Use pattern matching to project first element
-    let
-        modul =
-            makeModule "testValue"
-                (caseExpr (tupleExpr (intExpr 10) (intExpr 20))
-                    [ ( pTuple (pVar "first") (pVar "second"), varExpr "first" ) ]
-                )
-    in
-    runInvariantTest modul
-
-
-tuple2ResultCountTest : () -> Expectation
-tuple2ResultCountTest _ =
-    -- Use pattern matching to project second element
-    let
-        modul =
-            makeModule "testValue"
-                (caseExpr (tupleExpr (intExpr 100) (intExpr 200))
-                    [ ( pTuple (pVar "a") (pVar "b"), varExpr "b" ) ]
-                )
-    in
-    runInvariantTest modul
-
-
-tuple3FieldAttrTest : () -> Expectation
-tuple3FieldAttrTest _ =
-    let
-        modul =
-            makeModule "testValue"
-                (caseExpr (tuple3Expr (intExpr 1) (intExpr 2) (intExpr 3))
-                    [ ( pTuple3 (pVar "a") (pVar "b") (pVar "c"), varExpr "a" ) ]
-                )
-    in
-    runInvariantTest modul
-
-
-tuple3FieldRangeTest : () -> Expectation
-tuple3FieldRangeTest _ =
-    let
-        modul =
-            makeModule "testValue"
-                (caseExpr (tuple3Expr (intExpr 1) (intExpr 2) (intExpr 3))
-                    [ ( pTuple3 (pVar "a") (pVar "b") (pVar "c"), varExpr "c" ) ]
-                )
-    in
-    runInvariantTest modul
-
-
-tupleFirstTest : () -> Expectation
-tupleFirstTest _ =
-    -- Pattern matching extracts first element using field=0
-    let
-        modul =
-            makeModule "testValue"
-                (caseExpr (tupleExpr (intExpr 5) (intExpr 6))
-                    [ ( pTuple (pVar "x") (pVar "y"), varExpr "x" ) ]
-                )
-    in
-    runInvariantTest modul
-
-
-tupleSecondTest : () -> Expectation
-tupleSecondTest _ =
-    -- Pattern matching extracts second element using field=1
-    let
-        modul =
-            makeModule "testValue"
-                (caseExpr (tupleExpr (intExpr 7) (intExpr 8))
-                    [ ( pTuple (pVar "x") (pVar "y"), varExpr "y" ) ]
-                )
-    in
-    runInvariantTest modul
+expectSuite : (Src.Module -> Expectation) -> String -> Test
+expectSuite expectFn condStr =
+    Test.describe ("Tuple projection invariant " ++ condStr)
+        [ AnnotatedTests.expectSuite expectFn condStr
+        , ArrayTest.expectSuite expectFn condStr
+        , AsPatternTests.expectSuite expectFn condStr
+        , BinopTests.expectSuite expectFn condStr
+        , BitwiseTests.expectSuite expectFn condStr
+        , CaseTests.expectSuite expectFn condStr
+        , ClosureTests.expectSuite expectFn condStr
+        , ControlFlowTests.expectSuite expectFn condStr
+        , DecisionTreeAdvancedTests.expectSuite expectFn condStr
+        , DeepFuzzTests.expectSuite expectFn condStr
+        , EdgeCaseTests.expectSuite expectFn condStr
+        , FloatMathTests.expectSuite expectFn condStr
+        , FunctionTests.expectSuite expectFn condStr
+        , HigherOrderTests.expectSuite expectFn condStr
+        , LetDestructTests.expectSuite expectFn condStr
+        , LetRecTests.expectSuite expectFn condStr
+        , LetTests.expectSuite expectFn condStr
+        , ListTests.expectSuite expectFn condStr
+        , LiteralTests.expectSuite expectFn condStr
+        , MultiDefTests.expectSuite expectFn condStr
+        , OperatorTests.expectSuite expectFn condStr
+        , PatternArgTests.expectSuite expectFn condStr
+        , PatternMatchingTests.expectSuite expectFn condStr
+        , PortEncodingTests.expectSuite expectFn condStr
+        , PostSolveExprTests.expectSuite expectFn condStr
+        , RecordTests.expectSuite expectFn condStr
+        , SpecializeAccessorTests.expectSuite expectFn condStr
+        , SpecializeConstructorTests.expectSuite expectFn condStr
+        , SpecializeCycleTests.expectSuite expectFn condStr
+        , SpecializeExprTests.expectSuite expectFn condStr
+        , TupleTests.expectSuite expectFn condStr
+        ]

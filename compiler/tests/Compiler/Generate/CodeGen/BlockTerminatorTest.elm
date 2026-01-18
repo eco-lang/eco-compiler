@@ -1,6 +1,6 @@
-module Compiler.Generate.CodeGen.BlockTerminatorTest exposing (suite)
+module Compiler.Generate.CodeGen.BlockTerminatorTest exposing (suite, expectSuite)
 
-{-| Tests for CGEN_042: Block Terminator Presence invariant.
+{-| Test suite for CGEN_042: Block Terminator Presence invariant.
 
 Every block in every region emitted by MLIR codegen must end with a
 terminator operation (e.g. `eco.return`, `eco.jump`, `scf.yield`).
@@ -8,240 +8,81 @@ terminator operation (e.g. `eco.return`, `eco.jump`, `scf.yield`).
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.AST.SourceBuilder
-    exposing
-        ( UnionDef
-        , boolExpr
-        , caseExpr
-        , ctorExpr
-        , ifExpr
-        , intExpr
-        , listExpr
-        , makeModule
-        , makeModuleWithTypedDefsUnionsAliases
-        , pCons
-        , pCtor
-        , pList
-        , pVar
-        , tType
-        , tVar
-        , varExpr
-        )
-import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
-import Compiler.Generate.CodeGen.Invariants
-    exposing
-        ( Violation
-        , allBlocks
-        , findFuncOps
-        , isValidTerminator
-        , violationsToExpectation
-        , walkAllOps
-        )
+import Compiler.AnnotatedTests as AnnotatedTests
+import Compiler.ArrayTest as ArrayTest
+import Compiler.AsPatternTests as AsPatternTests
+import Compiler.BinopTests as BinopTests
+import Compiler.BitwiseTests as BitwiseTests
+import Compiler.CaseTests as CaseTests
+import Compiler.ClosureTests as ClosureTests
+import Compiler.ControlFlowTests as ControlFlowTests
+import Compiler.DecisionTreeAdvancedTests as DecisionTreeAdvancedTests
+import Compiler.DeepFuzzTests as DeepFuzzTests
+import Compiler.EdgeCaseTests as EdgeCaseTests
+import Compiler.FloatMathTests as FloatMathTests
+import Compiler.FunctionTests as FunctionTests
+import Compiler.Generate.CodeGen.BlockTerminator exposing (expectBlockTerminator)
+import Compiler.HigherOrderTests as HigherOrderTests
+import Compiler.LetDestructTests as LetDestructTests
+import Compiler.LetRecTests as LetRecTests
+import Compiler.LetTests as LetTests
+import Compiler.ListTests as ListTests
+import Compiler.LiteralTests as LiteralTests
+import Compiler.MultiDefTests as MultiDefTests
+import Compiler.OperatorTests as OperatorTests
+import Compiler.PatternArgTests as PatternArgTests
+import Compiler.PatternMatchingTests as PatternMatchingTests
+import Compiler.PortEncodingTests as PortEncodingTests
+import Compiler.RecordTests as RecordTests
+import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
+import Compiler.SpecializeConstructorTests as SpecializeConstructorTests
+import Compiler.SpecializeCycleTests as SpecializeCycleTests
+import Compiler.SpecializeExprTests as SpecializeExprTests
+import Compiler.TupleTests as TupleTests
+import Compiler.Type.PostSolve.PostSolveExprTests as PostSolveExprTests
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
 import Test exposing (Test)
 
 
 suite : Test
 suite =
     Test.describe "CGEN_042: Block Terminator Presence"
-        [ Test.test "Simple function has terminator" simpleFunctionTest
-        , Test.test "If-then-else branches have terminators" ifElseTest
-        , Test.test "Case expression branches have terminators" caseExprTest
-        , Test.test "Nested case expressions have terminators" nestedCaseTest
-        , Test.test "List pattern matching has terminators" listPatternTest
+        [ expectSuite expectBlockTerminator "passes block terminator invariant"
         ]
 
 
-
--- INVARIANT CHECKER
-
-
-{-| Check block terminator presence invariants.
--}
-checkBlockTerminators : MlirModule -> List Violation
-checkBlockTerminators mlirModule =
-    let
-        allOps =
-            walkAllOps mlirModule
-
-        violations =
-            List.concatMap checkOpRegions allOps
-    in
-    violations
-
-
-checkOpRegions : MlirOp -> List Violation
-checkOpRegions op =
-    List.indexedMap (checkRegion op) op.regions
-        |> List.concat
-
-
-checkRegion : MlirOp -> Int -> MlirRegion -> List Violation
-checkRegion parentOp regionIdx region =
-    let
-        blocks =
-            allBlocks region
-    in
-    List.indexedMap (checkBlock parentOp regionIdx) blocks
-        |> List.concat
-
-
-checkBlock : MlirOp -> Int -> Int -> MlirBlock -> List Violation
-checkBlock parentOp regionIdx blockIdx block =
-    let
-        terminator =
-            block.terminator
-
-        blockDesc =
-            if blockIdx == 0 then
-                "entry block"
-
-            else
-                "block " ++ String.fromInt blockIdx
-    in
-    if not (isValidTerminator terminator) then
-        [ { opId = parentOp.id
-          , opName = parentOp.name
-          , message =
-                "region "
-                    ++ String.fromInt regionIdx
-                    ++ " "
-                    ++ blockDesc
-                    ++ " terminator '"
-                    ++ terminator.name
-                    ++ "' is not a valid terminator"
-          }
+expectSuite : (Src.Module -> Expectation) -> String -> Test
+expectSuite expectFn condStr =
+    Test.describe ("Block terminator invariant " ++ condStr)
+        [ AnnotatedTests.expectSuite expectFn condStr
+        , ArrayTest.expectSuite expectFn condStr
+        , AsPatternTests.expectSuite expectFn condStr
+        , BinopTests.expectSuite expectFn condStr
+        , BitwiseTests.expectSuite expectFn condStr
+        , CaseTests.expectSuite expectFn condStr
+        , ClosureTests.expectSuite expectFn condStr
+        , ControlFlowTests.expectSuite expectFn condStr
+        , DecisionTreeAdvancedTests.expectSuite expectFn condStr
+        , DeepFuzzTests.expectSuite expectFn condStr
+        , EdgeCaseTests.expectSuite expectFn condStr
+        , FloatMathTests.expectSuite expectFn condStr
+        , FunctionTests.expectSuite expectFn condStr
+        , HigherOrderTests.expectSuite expectFn condStr
+        , LetDestructTests.expectSuite expectFn condStr
+        , LetRecTests.expectSuite expectFn condStr
+        , LetTests.expectSuite expectFn condStr
+        , ListTests.expectSuite expectFn condStr
+        , LiteralTests.expectSuite expectFn condStr
+        , MultiDefTests.expectSuite expectFn condStr
+        , OperatorTests.expectSuite expectFn condStr
+        , PatternArgTests.expectSuite expectFn condStr
+        , PatternMatchingTests.expectSuite expectFn condStr
+        , PortEncodingTests.expectSuite expectFn condStr
+        , PostSolveExprTests.expectSuite expectFn condStr
+        , RecordTests.expectSuite expectFn condStr
+        , SpecializeAccessorTests.expectSuite expectFn condStr
+        , SpecializeConstructorTests.expectSuite expectFn condStr
+        , SpecializeCycleTests.expectSuite expectFn condStr
+        , SpecializeExprTests.expectSuite expectFn condStr
+        , TupleTests.expectSuite expectFn condStr
         ]
-
-    else if terminator.name == "" then
-        [ { opId = parentOp.id
-          , opName = parentOp.name
-          , message =
-                "region "
-                    ++ String.fromInt regionIdx
-                    ++ " "
-                    ++ blockDesc
-                    ++ " has empty/missing terminator"
-          }
-        ]
-
-    else
-        []
-
-
-
--- TEST HELPER
-
-
-{-| Maybe union type for tests.
--}
-maybeUnion : UnionDef
-maybeUnion =
-    { name = "Maybe"
-    , args = [ "a" ]
-    , ctors =
-        [ { name = "Just", args = [ tVar "a" ] }
-        , { name = "Nothing", args = [] }
-        ]
-    }
-
-
-makeModuleWithMaybe : String -> Src.Expr -> Src.Module
-makeModuleWithMaybe name expr =
-    makeModuleWithTypedDefsUnionsAliases "Test"
-        [ { name = name
-          , args = []
-          , tipe = tType "Int" []
-          , body = expr
-          }
-        ]
-        [ maybeUnion ]
-        []
-
-
-runInvariantTest : Src.Module -> Expectation
-runInvariantTest srcModule =
-    case compileToMlirModule srcModule of
-        Err err ->
-            Expect.fail ("Compilation failed: " ++ err)
-
-        Ok { mlirModule } ->
-            violationsToExpectation (checkBlockTerminators mlirModule)
-
-
-
--- TEST CASES
-
-
-simpleFunctionTest : () -> Expectation
-simpleFunctionTest _ =
-    -- Simple function should have eco.return terminator
-    let
-        modul =
-            makeModule "testValue" (intExpr 42)
-    in
-    runInvariantTest modul
-
-
-ifElseTest : () -> Expectation
-ifElseTest _ =
-    -- If-then-else should have terminators in both branches
-    let
-        modul =
-            makeModule "testValue"
-                (ifExpr (boolExpr True)
-                    (intExpr 1)
-                    (intExpr 0)
-                )
-    in
-    runInvariantTest modul
-
-
-caseExprTest : () -> Expectation
-caseExprTest _ =
-    -- Case expression should have terminators in all branches
-    let
-        modul =
-            makeModuleWithMaybe "testValue"
-                (caseExpr (ctorExpr "Nothing")
-                    [ ( pCtor "Just" [ pVar "x" ], varExpr "x" )
-                    , ( pCtor "Nothing" [], intExpr 0 )
-                    ]
-                )
-    in
-    runInvariantTest modul
-
-
-nestedCaseTest : () -> Expectation
-nestedCaseTest _ =
-    -- Nested case expressions should all have terminators
-    let
-        modul =
-            makeModuleWithMaybe "testValue"
-                (caseExpr (ctorExpr "Nothing")
-                    [ ( pCtor "Just" [ pVar "x" ]
-                      , ifExpr (boolExpr True) (varExpr "x") (intExpr 0)
-                      )
-                    , ( pCtor "Nothing" []
-                      , ifExpr (boolExpr False) (intExpr 1) (intExpr 2)
-                      )
-                    ]
-                )
-    in
-    runInvariantTest modul
-
-
-listPatternTest : () -> Expectation
-listPatternTest _ =
-    -- List pattern matching should have terminators
-    let
-        modul =
-            makeModule "testValue"
-                (caseExpr (listExpr [ intExpr 1, intExpr 2 ])
-                    [ ( pCons (pVar "x") (pVar "rest"), varExpr "x" )
-                    , ( pList [], intExpr 0 )
-                    ]
-                )
-    in
-    runInvariantTest modul

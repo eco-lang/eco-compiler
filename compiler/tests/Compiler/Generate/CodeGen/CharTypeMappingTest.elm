@@ -1,6 +1,6 @@
-module Compiler.Generate.CodeGen.CharTypeMappingTest exposing (suite)
+module Compiler.Generate.CodeGen.CharTypeMappingTest exposing (suite, expectSuite)
 
-{-| Tests for CGEN_015: Char Type Mapping invariant.
+{-| Test suite for CGEN_015: Char Type Mapping invariant.
 
 `monoTypeToMlir` must map `MChar` to `i16` (not `i32`),
 and all char constants/ops must use `i16`.
@@ -8,172 +8,81 @@ and all char constants/ops must use `i16`.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.AST.SourceBuilder
-    exposing
-        ( chrExpr
-        , intExpr
-        , listExpr
-        , makeModule
-        , tupleExpr
-        )
-import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
-import Compiler.Generate.CodeGen.Invariants
-    exposing
-        ( Violation
-        , extractOperandTypes
-        , extractResultTypes
-        , findOpsWithPrefix
-        , violationsToExpectation
-        )
+import Compiler.AnnotatedTests as AnnotatedTests
+import Compiler.ArrayTest as ArrayTest
+import Compiler.AsPatternTests as AsPatternTests
+import Compiler.BinopTests as BinopTests
+import Compiler.BitwiseTests as BitwiseTests
+import Compiler.CaseTests as CaseTests
+import Compiler.ClosureTests as ClosureTests
+import Compiler.ControlFlowTests as ControlFlowTests
+import Compiler.DecisionTreeAdvancedTests as DecisionTreeAdvancedTests
+import Compiler.DeepFuzzTests as DeepFuzzTests
+import Compiler.EdgeCaseTests as EdgeCaseTests
+import Compiler.FloatMathTests as FloatMathTests
+import Compiler.FunctionTests as FunctionTests
+import Compiler.Generate.CodeGen.CharTypeMapping exposing (expectCharTypeMapping)
+import Compiler.HigherOrderTests as HigherOrderTests
+import Compiler.LetDestructTests as LetDestructTests
+import Compiler.LetRecTests as LetRecTests
+import Compiler.LetTests as LetTests
+import Compiler.ListTests as ListTests
+import Compiler.LiteralTests as LiteralTests
+import Compiler.MultiDefTests as MultiDefTests
+import Compiler.OperatorTests as OperatorTests
+import Compiler.PatternArgTests as PatternArgTests
+import Compiler.PatternMatchingTests as PatternMatchingTests
+import Compiler.PortEncodingTests as PortEncodingTests
+import Compiler.RecordTests as RecordTests
+import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
+import Compiler.SpecializeConstructorTests as SpecializeConstructorTests
+import Compiler.SpecializeCycleTests as SpecializeCycleTests
+import Compiler.SpecializeExprTests as SpecializeExprTests
+import Compiler.TupleTests as TupleTests
+import Compiler.Type.PostSolve.PostSolveExprTests as PostSolveExprTests
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 import Test exposing (Test)
 
 
 suite : Test
 suite =
     Test.describe "CGEN_015: Char Type Mapping"
-        [ Test.test "Character literal has correct type" charLiteralTest
-        , Test.test "Char in tuple uses i16" charInTupleTest
-        , Test.test "List of chars uses i16" charListTest
-        , Test.test "Multiple char literals use i16" multipleCharsTest
+        [ expectSuite expectCharTypeMapping "passes char type mapping invariant"
         ]
 
 
-
--- INVARIANT CHECKER
-
-
-{-| Check char type mapping invariants.
--}
-checkCharTypeMapping : MlirModule -> List Violation
-checkCharTypeMapping mlirModule =
-    let
-        charOps =
-            findOpsWithPrefix "eco.char." mlirModule
-
-        violations =
-            List.filterMap checkCharOp charOps
-    in
-    violations
-
-
-checkCharOp : MlirOp -> Maybe Violation
-checkCharOp op =
-    case op.name of
-        "eco.char.toInt" ->
-            -- eco.char.toInt: i16 -> i64
-            case extractOperandTypes op of
-                Just (operandType :: _) ->
-                    if operandType /= I16 then
-                        Just
-                            { opId = op.id
-                            , opName = op.name
-                            , message = "eco.char.toInt operand should be i16, got " ++ typeToString operandType
-                            }
-
-                    else
-                        Nothing
-
-                _ ->
-                    Nothing
-
-        "eco.char.fromInt" ->
-            -- eco.char.fromInt: i64 -> i16
-            let
-                resultTypes =
-                    extractResultTypes op
-            in
-            case List.head resultTypes of
-                Just resultType ->
-                    if resultType /= I16 then
-                        Just
-                            { opId = op.id
-                            , opName = op.name
-                            , message = "eco.char.fromInt result should be i16, got " ++ typeToString resultType
-                            }
-
-                    else
-                        Nothing
-
-                Nothing ->
-                    Nothing
-
-        _ ->
-            -- Other char ops should also use i16
-            Nothing
-
-
-typeToString : MlirType -> String
-typeToString t =
-    case t of
-        I1 ->
-            "i1"
-
-        I16 ->
-            "i16"
-
-        I32 ->
-            "i32"
-
-        I64 ->
-            "i64"
-
-        F64 ->
-            "f64"
-
-        NamedStruct name ->
-            name
-
-        FunctionType _ ->
-            "function"
-
-
-
--- TEST HELPER
-
-
-runInvariantTest : Src.Module -> Expectation
-runInvariantTest srcModule =
-    case compileToMlirModule srcModule of
-        Err err ->
-            Expect.fail ("Compilation failed: " ++ err)
-
-        Ok { mlirModule } ->
-            violationsToExpectation (checkCharTypeMapping mlirModule)
-
-
-
--- TEST CASES
-
-
-charLiteralTest : () -> Expectation
-charLiteralTest _ =
-    runInvariantTest (makeModule "testValue" (chrExpr "a"))
-
-
-charInTupleTest : () -> Expectation
-charInTupleTest _ =
-    -- Char in tuple should use i16
-    runInvariantTest
-        (makeModule "testValue"
-            (tupleExpr (chrExpr "x") (intExpr 42))
-        )
-
-
-charListTest : () -> Expectation
-charListTest _ =
-    -- List of chars should use i16
-    runInvariantTest
-        (makeModule "testValue"
-            (listExpr [ chrExpr "h", chrExpr "i" ])
-        )
-
-
-multipleCharsTest : () -> Expectation
-multipleCharsTest _ =
-    -- Multiple char literals in nested structure
-    runInvariantTest
-        (makeModule "testValue"
-            (tupleExpr (chrExpr "A") (chrExpr "B"))
-        )
+expectSuite : (Src.Module -> Expectation) -> String -> Test
+expectSuite expectFn condStr =
+    Test.describe ("Char type mapping invariant " ++ condStr)
+        [ AnnotatedTests.expectSuite expectFn condStr
+        , ArrayTest.expectSuite expectFn condStr
+        , AsPatternTests.expectSuite expectFn condStr
+        , BinopTests.expectSuite expectFn condStr
+        , BitwiseTests.expectSuite expectFn condStr
+        , CaseTests.expectSuite expectFn condStr
+        , ClosureTests.expectSuite expectFn condStr
+        , ControlFlowTests.expectSuite expectFn condStr
+        , DecisionTreeAdvancedTests.expectSuite expectFn condStr
+        , DeepFuzzTests.expectSuite expectFn condStr
+        , EdgeCaseTests.expectSuite expectFn condStr
+        , FloatMathTests.expectSuite expectFn condStr
+        , FunctionTests.expectSuite expectFn condStr
+        , HigherOrderTests.expectSuite expectFn condStr
+        , LetDestructTests.expectSuite expectFn condStr
+        , LetRecTests.expectSuite expectFn condStr
+        , LetTests.expectSuite expectFn condStr
+        , ListTests.expectSuite expectFn condStr
+        , LiteralTests.expectSuite expectFn condStr
+        , MultiDefTests.expectSuite expectFn condStr
+        , OperatorTests.expectSuite expectFn condStr
+        , PatternArgTests.expectSuite expectFn condStr
+        , PatternMatchingTests.expectSuite expectFn condStr
+        , PortEncodingTests.expectSuite expectFn condStr
+        , PostSolveExprTests.expectSuite expectFn condStr
+        , RecordTests.expectSuite expectFn condStr
+        , SpecializeAccessorTests.expectSuite expectFn condStr
+        , SpecializeConstructorTests.expectSuite expectFn condStr
+        , SpecializeCycleTests.expectSuite expectFn condStr
+        , SpecializeExprTests.expectSuite expectFn condStr
+        , TupleTests.expectSuite expectFn condStr
+        ]

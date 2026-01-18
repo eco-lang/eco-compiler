@@ -1,199 +1,87 @@
-module Compiler.Generate.CodeGen.PapExtendResultTest exposing (suite)
+module Compiler.Generate.CodeGen.PapExtendResultTest exposing (suite, expectSuite)
 
-{-| Tests for CGEN_034: PapExtend Result Type invariant.
+{-| Test suite for CGEN_034: PapExtend Result Type invariant.
 
 `eco.papExtend` must produce `!eco.value` result.
 
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.AST.SourceBuilder
-    exposing
-        ( callExpr
-        , intExpr
-        , lambdaExpr
-        , listExpr
-        , makeModule
-        , pVar
-        , qualVarExpr
-        , varExpr
-        )
-import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
-import Compiler.Generate.CodeGen.Invariants
-    exposing
-        ( Violation
-        , findOpsNamed
-        , getIntAttr
-        , isEcoValueType
-        , violationsToExpectation
-        )
+import Compiler.AnnotatedTests as AnnotatedTests
+import Compiler.ArrayTest as ArrayTest
+import Compiler.AsPatternTests as AsPatternTests
+import Compiler.BinopTests as BinopTests
+import Compiler.BitwiseTests as BitwiseTests
+import Compiler.CaseTests as CaseTests
+import Compiler.ClosureTests as ClosureTests
+import Compiler.ControlFlowTests as ControlFlowTests
+import Compiler.DecisionTreeAdvancedTests as DecisionTreeAdvancedTests
+import Compiler.DeepFuzzTests as DeepFuzzTests
+import Compiler.EdgeCaseTests as EdgeCaseTests
+import Compiler.FloatMathTests as FloatMathTests
+import Compiler.FunctionTests as FunctionTests
+import Compiler.Generate.CodeGen.PapExtendResult exposing (expectPapExtendResult)
+import Compiler.HigherOrderTests as HigherOrderTests
+import Compiler.LetDestructTests as LetDestructTests
+import Compiler.LetRecTests as LetRecTests
+import Compiler.LetTests as LetTests
+import Compiler.ListTests as ListTests
+import Compiler.LiteralTests as LiteralTests
+import Compiler.MultiDefTests as MultiDefTests
+import Compiler.OperatorTests as OperatorTests
+import Compiler.PatternArgTests as PatternArgTests
+import Compiler.PatternMatchingTests as PatternMatchingTests
+import Compiler.PortEncodingTests as PortEncodingTests
+import Compiler.RecordTests as RecordTests
+import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
+import Compiler.SpecializeConstructorTests as SpecializeConstructorTests
+import Compiler.SpecializeCycleTests as SpecializeCycleTests
+import Compiler.SpecializeExprTests as SpecializeExprTests
+import Compiler.TupleTests as TupleTests
+import Compiler.Type.PostSolve.PostSolveExprTests as PostSolveExprTests
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 import Test exposing (Test)
 
 
 suite : Test
 suite =
     Test.describe "CGEN_034: PapExtend Result Type"
-        [ Test.test "eco.papExtend has exactly 1 result" singleResultTest
-        , Test.test "eco.papExtend result is !eco.value" resultTypeTest
-        , Test.test "eco.papExtend has remaining_arity attribute" remainingArityTest
-        , Test.test "Closure application uses papExtend" closureApplicationTest
+        [ expectSuite expectPapExtendResult "passes papExtend result invariant"
         ]
 
 
-
--- INVARIANT CHECKER
-
-
-{-| Check papExtend result type invariants.
--}
-checkPapExtendResult : MlirModule -> List Violation
-checkPapExtendResult mlirModule =
-    let
-        papExtendOps =
-            findOpsNamed "eco.papExtend" mlirModule
-
-        violations =
-            List.filterMap checkPapExtendOp papExtendOps
-    in
-    violations
-
-
-checkPapExtendOp : MlirOp -> Maybe Violation
-checkPapExtendOp op =
-    let
-        resultCount =
-            List.length op.results
-
-        maybeRemainingArity =
-            getIntAttr "remaining_arity" op
-    in
-    if resultCount /= 1 then
-        Just
-            { opId = op.id
-            , opName = op.name
-            , message = "eco.papExtend should have exactly 1 result, got " ++ String.fromInt resultCount
-            }
-
-    else
-        case List.head op.results of
-            Nothing ->
-                Nothing
-
-            Just ( _, resultType ) ->
-                if not (isEcoValueType resultType) then
-                    Just
-                        { opId = op.id
-                        , opName = op.name
-                        , message = "eco.papExtend result should be !eco.value, got " ++ typeToString resultType
-                        }
-
-                else
-                    case maybeRemainingArity of
-                        Nothing ->
-                            Just
-                                { opId = op.id
-                                , opName = op.name
-                                , message = "eco.papExtend missing remaining_arity attribute"
-                                }
-
-                        Just _ ->
-                            Nothing
-
-
-typeToString : MlirType -> String
-typeToString t =
-    case t of
-        I1 ->
-            "i1"
-
-        I16 ->
-            "i16"
-
-        I32 ->
-            "i32"
-
-        I64 ->
-            "i64"
-
-        F64 ->
-            "f64"
-
-        NamedStruct name ->
-            name
-
-        FunctionType _ ->
-            "function"
-
-
-
--- TEST HELPER
-
-
-runInvariantTest : Src.Module -> Expectation
-runInvariantTest srcModule =
-    case compileToMlirModule srcModule of
-        Err err ->
-            Expect.fail ("Compilation failed: " ++ err)
-
-        Ok { mlirModule } ->
-            violationsToExpectation (checkPapExtendResult mlirModule)
-
-
-
--- TEST CASES
-
-
-singleResultTest : () -> Expectation
-singleResultTest _ =
-    -- Higher-order function application
-    let
-        modul =
-            makeModule "testValue"
-                (callExpr
-                    (callExpr (qualVarExpr "List" "map")
-                        [ lambdaExpr [ pVar "x" ] (varExpr "x") ]
-                    )
-                    [ listExpr [] ]
-                )
-    in
-    runInvariantTest modul
-
-
-resultTypeTest : () -> Expectation
-resultTypeTest _ =
-    -- Identity function application
-    let
-        modul =
-            makeModule "testValue"
-                (callExpr (lambdaExpr [ pVar "x" ] (varExpr "x")) [ intExpr 5 ])
-    in
-    runInvariantTest modul
-
-
-remainingArityTest : () -> Expectation
-remainingArityTest _ =
-    let
-        modul =
-            makeModule "testValue"
-                (callExpr
-                    (lambdaExpr [ pVar "f", pVar "x" ] (callExpr (varExpr "f") [ varExpr "x" ]))
-                    [ lambdaExpr [ pVar "y" ] (varExpr "y"), intExpr 42 ]
-                )
-    in
-    runInvariantTest modul
-
-
-closureApplicationTest : () -> Expectation
-closureApplicationTest _ =
-    -- Apply a closure
-    let
-        modul =
-            makeModule "testValue"
-                (callExpr
-                    (lambdaExpr [ pVar "a" ] (varExpr "a"))
-                    [ intExpr 100 ]
-                )
-    in
-    runInvariantTest modul
+expectSuite : (Src.Module -> Expectation) -> String -> Test
+expectSuite expectFn condStr =
+    Test.describe ("PapExtend result invariant " ++ condStr)
+        [ AnnotatedTests.expectSuite expectFn condStr
+        , ArrayTest.expectSuite expectFn condStr
+        , AsPatternTests.expectSuite expectFn condStr
+        , BinopTests.expectSuite expectFn condStr
+        , BitwiseTests.expectSuite expectFn condStr
+        , CaseTests.expectSuite expectFn condStr
+        , ClosureTests.expectSuite expectFn condStr
+        , ControlFlowTests.expectSuite expectFn condStr
+        , DecisionTreeAdvancedTests.expectSuite expectFn condStr
+        , DeepFuzzTests.expectSuite expectFn condStr
+        , EdgeCaseTests.expectSuite expectFn condStr
+        , FloatMathTests.expectSuite expectFn condStr
+        , FunctionTests.expectSuite expectFn condStr
+        , HigherOrderTests.expectSuite expectFn condStr
+        , LetDestructTests.expectSuite expectFn condStr
+        , LetRecTests.expectSuite expectFn condStr
+        , LetTests.expectSuite expectFn condStr
+        , ListTests.expectSuite expectFn condStr
+        , LiteralTests.expectSuite expectFn condStr
+        , MultiDefTests.expectSuite expectFn condStr
+        , OperatorTests.expectSuite expectFn condStr
+        , PatternArgTests.expectSuite expectFn condStr
+        , PatternMatchingTests.expectSuite expectFn condStr
+        , PortEncodingTests.expectSuite expectFn condStr
+        , PostSolveExprTests.expectSuite expectFn condStr
+        , RecordTests.expectSuite expectFn condStr
+        , SpecializeAccessorTests.expectSuite expectFn condStr
+        , SpecializeConstructorTests.expectSuite expectFn condStr
+        , SpecializeCycleTests.expectSuite expectFn condStr
+        , SpecializeExprTests.expectSuite expectFn condStr
+        , TupleTests.expectSuite expectFn condStr
+        ]

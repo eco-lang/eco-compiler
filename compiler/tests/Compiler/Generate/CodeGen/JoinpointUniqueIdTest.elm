@@ -1,241 +1,87 @@
-module Compiler.Generate.CodeGen.JoinpointUniqueIdTest exposing (suite)
+module Compiler.Generate.CodeGen.JoinpointUniqueIdTest exposing (suite, expectSuite)
 
-{-| Tests for CGEN_031: Joinpoint ID Uniqueness invariant.
+{-| Test suite for CGEN_031: Joinpoint ID Uniqueness invariant.
 
 Within a single `func.func`, each `eco.joinpoint` id must be unique.
 
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.AST.SourceBuilder
-    exposing
-        ( boolExpr
-        , caseExpr
-        , define
-        , ifExpr
-        , intExpr
-        , letExpr
-        , makeModule
-        , pCtor
-        , varExpr
-        )
-import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
-import Compiler.Generate.CodeGen.Invariants
-    exposing
-        ( Violation
-        , findFuncOps
-        , getIntAttr
-        , getStringAttr
-        , violationsToExpectation
-        )
-import Dict exposing (Dict)
+import Compiler.AnnotatedTests as AnnotatedTests
+import Compiler.ArrayTest as ArrayTest
+import Compiler.AsPatternTests as AsPatternTests
+import Compiler.BinopTests as BinopTests
+import Compiler.BitwiseTests as BitwiseTests
+import Compiler.CaseTests as CaseTests
+import Compiler.ClosureTests as ClosureTests
+import Compiler.ControlFlowTests as ControlFlowTests
+import Compiler.DecisionTreeAdvancedTests as DecisionTreeAdvancedTests
+import Compiler.DeepFuzzTests as DeepFuzzTests
+import Compiler.EdgeCaseTests as EdgeCaseTests
+import Compiler.FloatMathTests as FloatMathTests
+import Compiler.FunctionTests as FunctionTests
+import Compiler.Generate.CodeGen.JoinpointUniqueId exposing (expectJoinpointUniqueId)
+import Compiler.HigherOrderTests as HigherOrderTests
+import Compiler.LetDestructTests as LetDestructTests
+import Compiler.LetRecTests as LetRecTests
+import Compiler.LetTests as LetTests
+import Compiler.ListTests as ListTests
+import Compiler.LiteralTests as LiteralTests
+import Compiler.MultiDefTests as MultiDefTests
+import Compiler.OperatorTests as OperatorTests
+import Compiler.PatternArgTests as PatternArgTests
+import Compiler.PatternMatchingTests as PatternMatchingTests
+import Compiler.PortEncodingTests as PortEncodingTests
+import Compiler.RecordTests as RecordTests
+import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
+import Compiler.SpecializeConstructorTests as SpecializeConstructorTests
+import Compiler.SpecializeCycleTests as SpecializeCycleTests
+import Compiler.SpecializeExprTests as SpecializeExprTests
+import Compiler.TupleTests as TupleTests
+import Compiler.Type.PostSolve.PostSolveExprTests as PostSolveExprTests
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
-import OrderedDict
 import Test exposing (Test)
 
 
 suite : Test
 suite =
     Test.describe "CGEN_031: Joinpoint ID Uniqueness"
-        [ Test.test "eco.joinpoint has id attribute" joinpointHasIdTest
-        , Test.test "Joinpoint ids are unique within function" joinpointIdsUniqueTest
-        , Test.test "Multiple joinpoints have distinct ids" multipleJoinpointsTest
-        , Test.test "Nested cases generate unique joinpoint ids" nestedCasesTest
+        [ expectSuite expectJoinpointUniqueId "passes joinpoint unique id invariant"
         ]
 
 
-
--- INVARIANT CHECKER
-
-
-{-| Check joinpoint ID uniqueness invariants.
--}
-checkJoinpointUniqueness : MlirModule -> List Violation
-checkJoinpointUniqueness mlirModule =
-    let
-        funcOps =
-            findFuncOps mlirModule
-
-        violations =
-            List.concatMap checkFunctionJoinpoints funcOps
-    in
-    violations
-
-
-checkFunctionJoinpoints : MlirOp -> List Violation
-checkFunctionJoinpoints funcOp =
-    let
-        funcName =
-            getStringAttr "sym_name" funcOp |> Maybe.withDefault "unknown"
-
-        joinpoints =
-            findJoinpointsInOp funcOp
-
-        ( violations, _ ) =
-            List.foldl
-                (\jp ( accViolations, seenIds ) ->
-                    let
-                        maybeId =
-                            getIntAttr "id" jp
-                    in
-                    case maybeId of
-                        Nothing ->
-                            ( { opId = jp.id
-                              , opName = jp.name
-                              , message = "eco.joinpoint missing id attribute"
-                              }
-                                :: accViolations
-                            , seenIds
-                            )
-
-                        Just id ->
-                            case Dict.get id seenIds of
-                                Just firstOpId ->
-                                    ( { opId = jp.id
-                                      , opName = jp.name
-                                      , message =
-                                            "Duplicate joinpoint id "
-                                                ++ String.fromInt id
-                                                ++ " in function "
-                                                ++ funcName
-                                                ++ ", first at "
-                                                ++ firstOpId
-                                      }
-                                        :: accViolations
-                                    , seenIds
-                                    )
-
-                                Nothing ->
-                                    ( accViolations
-                                    , Dict.insert id jp.id seenIds
-                                    )
-                )
-                ( [], Dict.empty )
-                joinpoints
-    in
-    violations
-
-
-findJoinpointsInOp : MlirOp -> List MlirOp
-findJoinpointsInOp op =
-    let
-        selfJoinpoints =
-            if op.name == "eco.joinpoint" then
-                [ op ]
-
-            else
-                []
-
-        regionJoinpoints =
-            List.concatMap findJoinpointsInRegion op.regions
-    in
-    selfJoinpoints ++ regionJoinpoints
-
-
-findJoinpointsInRegion : MlirRegion -> List MlirOp
-findJoinpointsInRegion (MlirRegion { entry, blocks }) =
-    let
-        entryJoinpoints =
-            findJoinpointsInBlock entry
-
-        allBlocks =
-            OrderedDict.values blocks
-
-        blockJoinpoints =
-            List.concatMap findJoinpointsInBlock allBlocks
-    in
-    entryJoinpoints ++ blockJoinpoints
-
-
-findJoinpointsInBlock : MlirBlock -> List MlirOp
-findJoinpointsInBlock block =
-    let
-        bodyJoinpoints =
-            List.concatMap findJoinpointsInOp block.body
-
-        terminatorJoinpoints =
-            findJoinpointsInOp block.terminator
-    in
-    bodyJoinpoints ++ terminatorJoinpoints
-
-
-
--- TEST HELPER
-
-
-runInvariantTest : Src.Module -> Expectation
-runInvariantTest srcModule =
-    case compileToMlirModule srcModule of
-        Err err ->
-            Expect.fail ("Compilation failed: " ++ err)
-
-        Ok { mlirModule } ->
-            violationsToExpectation (checkJoinpointUniqueness mlirModule)
-
-
-
--- TEST CASES
-
-
-joinpointHasIdTest : () -> Expectation
-joinpointHasIdTest _ =
-    -- Joinpoints should have id attributes
-    let
-        modul =
-            makeModule "testValue"
-                (ifExpr (boolExpr True) (intExpr 1) (intExpr 1))
-    in
-    runInvariantTest modul
-
-
-joinpointIdsUniqueTest : () -> Expectation
-joinpointIdsUniqueTest _ =
-    -- Two different joinpoints should have different ids
-    let
-        modul =
-            makeModule "testValue"
-                (letExpr
-                    [ define "a" [] (ifExpr (boolExpr True) (intExpr 1) (intExpr 1))
-                    , define "b" [] (ifExpr (boolExpr False) (intExpr 2) (intExpr 2))
-                    ]
-                    (varExpr "a")
-                )
-    in
-    runInvariantTest modul
-
-
-multipleJoinpointsTest : () -> Expectation
-multipleJoinpointsTest _ =
-    -- Multiple case expressions with shared joinpoints
-    let
-        modul =
-            makeModule "testValue"
-                (letExpr
-                    [ define "x" [] (ifExpr (boolExpr True) (intExpr 1) (intExpr 1))
-                    , define "y" [] (ifExpr (boolExpr False) (intExpr 2) (intExpr 2))
-                    , define "z" [] (ifExpr (boolExpr True) (intExpr 3) (intExpr 3))
-                    ]
-                    (varExpr "x")
-                )
-    in
-    runInvariantTest modul
-
-
-nestedCasesTest : () -> Expectation
-nestedCasesTest _ =
-    -- Nested case expressions
-    let
-        modul =
-            makeModule "testValue"
-                (caseExpr (boolExpr True)
-                    [ ( pCtor "True" []
-                      , ifExpr (boolExpr False) (intExpr 1) (intExpr 1)
-                      )
-                    , ( pCtor "False" []
-                      , ifExpr (boolExpr True) (intExpr 2) (intExpr 2)
-                      )
-                    ]
-                )
-    in
-    runInvariantTest modul
+expectSuite : (Src.Module -> Expectation) -> String -> Test
+expectSuite expectFn condStr =
+    Test.describe ("Joinpoint unique id invariant " ++ condStr)
+        [ AnnotatedTests.expectSuite expectFn condStr
+        , ArrayTest.expectSuite expectFn condStr
+        , AsPatternTests.expectSuite expectFn condStr
+        , BinopTests.expectSuite expectFn condStr
+        , BitwiseTests.expectSuite expectFn condStr
+        , CaseTests.expectSuite expectFn condStr
+        , ClosureTests.expectSuite expectFn condStr
+        , ControlFlowTests.expectSuite expectFn condStr
+        , DecisionTreeAdvancedTests.expectSuite expectFn condStr
+        , DeepFuzzTests.expectSuite expectFn condStr
+        , EdgeCaseTests.expectSuite expectFn condStr
+        , FloatMathTests.expectSuite expectFn condStr
+        , FunctionTests.expectSuite expectFn condStr
+        , HigherOrderTests.expectSuite expectFn condStr
+        , LetDestructTests.expectSuite expectFn condStr
+        , LetRecTests.expectSuite expectFn condStr
+        , LetTests.expectSuite expectFn condStr
+        , ListTests.expectSuite expectFn condStr
+        , LiteralTests.expectSuite expectFn condStr
+        , MultiDefTests.expectSuite expectFn condStr
+        , OperatorTests.expectSuite expectFn condStr
+        , PatternArgTests.expectSuite expectFn condStr
+        , PatternMatchingTests.expectSuite expectFn condStr
+        , PortEncodingTests.expectSuite expectFn condStr
+        , PostSolveExprTests.expectSuite expectFn condStr
+        , RecordTests.expectSuite expectFn condStr
+        , SpecializeAccessorTests.expectSuite expectFn condStr
+        , SpecializeConstructorTests.expectSuite expectFn condStr
+        , SpecializeCycleTests.expectSuite expectFn condStr
+        , SpecializeExprTests.expectSuite expectFn condStr
+        , TupleTests.expectSuite expectFn condStr
+        ]

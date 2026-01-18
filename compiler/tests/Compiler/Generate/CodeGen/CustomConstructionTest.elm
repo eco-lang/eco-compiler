@@ -1,6 +1,6 @@
-module Compiler.Generate.CodeGen.CustomConstructionTest exposing (suite)
+module Compiler.Generate.CodeGen.CustomConstructionTest exposing (suite, expectSuite)
 
-{-| Tests for CGEN_020: Custom ADT Construction invariant.
+{-| Test suite for CGEN_020: Custom ADT Construction invariant.
 
 `eco.construct.custom` is only for user-defined custom ADTs.
 Attributes must have valid `tag` and `size`, and `size` must match operand count.
@@ -8,207 +8,81 @@ Attributes must have valid `tag` and `size`, and `size` must match operand count
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.AST.SourceBuilder
-    exposing
-        ( UnionDef
-        , callExpr
-        , ctorExpr
-        , intExpr
-        , makeModuleWithTypedDefsUnionsAliases
-        , strExpr
-        , tType
-        , tVar
-        )
-import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
-import Compiler.Generate.CodeGen.Invariants
-    exposing
-        ( Violation
-        , findOpsNamed
-        , getIntAttr
-        , getStringAttr
-        , violationsToExpectation
-        )
+import Compiler.AnnotatedTests as AnnotatedTests
+import Compiler.ArrayTest as ArrayTest
+import Compiler.AsPatternTests as AsPatternTests
+import Compiler.BinopTests as BinopTests
+import Compiler.BitwiseTests as BitwiseTests
+import Compiler.CaseTests as CaseTests
+import Compiler.ClosureTests as ClosureTests
+import Compiler.ControlFlowTests as ControlFlowTests
+import Compiler.DecisionTreeAdvancedTests as DecisionTreeAdvancedTests
+import Compiler.DeepFuzzTests as DeepFuzzTests
+import Compiler.EdgeCaseTests as EdgeCaseTests
+import Compiler.FloatMathTests as FloatMathTests
+import Compiler.FunctionTests as FunctionTests
+import Compiler.Generate.CodeGen.CustomConstruction exposing (expectCustomConstruction)
+import Compiler.HigherOrderTests as HigherOrderTests
+import Compiler.LetDestructTests as LetDestructTests
+import Compiler.LetRecTests as LetRecTests
+import Compiler.LetTests as LetTests
+import Compiler.ListTests as ListTests
+import Compiler.LiteralTests as LiteralTests
+import Compiler.MultiDefTests as MultiDefTests
+import Compiler.OperatorTests as OperatorTests
+import Compiler.PatternArgTests as PatternArgTests
+import Compiler.PatternMatchingTests as PatternMatchingTests
+import Compiler.PortEncodingTests as PortEncodingTests
+import Compiler.RecordTests as RecordTests
+import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
+import Compiler.SpecializeConstructorTests as SpecializeConstructorTests
+import Compiler.SpecializeCycleTests as SpecializeCycleTests
+import Compiler.SpecializeExprTests as SpecializeExprTests
+import Compiler.TupleTests as TupleTests
+import Compiler.Type.PostSolve.PostSolveExprTests as PostSolveExprTests
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 import Test exposing (Test)
 
 
 suite : Test
 suite =
     Test.describe "CGEN_020: Custom ADT Construction"
-        [ Test.test "Just value uses eco.construct.custom with correct attributes" justValueTest
-        , Test.test "eco.construct.custom has required tag attribute" tagAttributeTest
-        , Test.test "eco.construct.custom has required size attribute" sizeAttributeTest
-        , Test.test "eco.construct.custom size matches operand count" sizeMatchesOperandsTest
-        , Test.test "Built-in type constructors not in eco.construct.custom" builtInNotCustomTest
+        [ expectSuite expectCustomConstruction "passes custom construction invariant"
         ]
 
 
-
--- INVARIANT CHECKER
-
-
-{-| Check custom construction invariants.
--}
-checkCustomConstruction : MlirModule -> List Violation
-checkCustomConstruction mlirModule =
-    let
-        customOps =
-            findOpsNamed "eco.construct.custom" mlirModule
-
-        violations =
-            List.concatMap checkCustomOp customOps
-    in
-    violations
-
-
-checkCustomOp : MlirOp -> List Violation
-checkCustomOp op =
-    let
-        maybeTag =
-            getIntAttr "tag" op
-
-        maybeSize =
-            getIntAttr "size" op
-
-        operandCount =
-            List.length op.operands
-
-        maybeConstructorName =
-            getStringAttr "constructor" op
-    in
-    List.filterMap identity
-        [ -- Check tag attribute exists
-          case maybeTag of
-            Nothing ->
-                Just
-                    { opId = op.id
-                    , opName = op.name
-                    , message = "eco.construct.custom missing tag attribute"
-                    }
-
-            _ ->
-                Nothing
-
-        -- Check size attribute exists
-        , case maybeSize of
-            Nothing ->
-                Just
-                    { opId = op.id
-                    , opName = op.name
-                    , message = "eco.construct.custom missing size attribute"
-                    }
-
-            Just size ->
-                -- Check size matches operand count
-                if size /= operandCount then
-                    Just
-                        { opId = op.id
-                        , opName = op.name
-                        , message =
-                            "eco.construct.custom size="
-                                ++ String.fromInt size
-                                ++ " but operand count="
-                                ++ String.fromInt operandCount
-                        }
-
-                else
-                    Nothing
-
-        -- Check not using custom for built-in list types
-        , case maybeConstructorName of
-            Just name ->
-                if List.member name [ "Cons", "Nil" ] then
-                    Just
-                        { opId = op.id
-                        , opName = op.name
-                        , message = "List constructor '" ++ name ++ "' should use eco.construct.list or eco.constant, not eco.construct.custom"
-                        }
-
-                else
-                    Nothing
-
-            Nothing ->
-                Nothing
+expectSuite : (Src.Module -> Expectation) -> String -> Test
+expectSuite expectFn condStr =
+    Test.describe ("Custom construction invariant " ++ condStr)
+        [ AnnotatedTests.expectSuite expectFn condStr
+        , ArrayTest.expectSuite expectFn condStr
+        , AsPatternTests.expectSuite expectFn condStr
+        , BinopTests.expectSuite expectFn condStr
+        , BitwiseTests.expectSuite expectFn condStr
+        , CaseTests.expectSuite expectFn condStr
+        , ClosureTests.expectSuite expectFn condStr
+        , ControlFlowTests.expectSuite expectFn condStr
+        , DecisionTreeAdvancedTests.expectSuite expectFn condStr
+        , DeepFuzzTests.expectSuite expectFn condStr
+        , EdgeCaseTests.expectSuite expectFn condStr
+        , FloatMathTests.expectSuite expectFn condStr
+        , FunctionTests.expectSuite expectFn condStr
+        , HigherOrderTests.expectSuite expectFn condStr
+        , LetDestructTests.expectSuite expectFn condStr
+        , LetRecTests.expectSuite expectFn condStr
+        , LetTests.expectSuite expectFn condStr
+        , ListTests.expectSuite expectFn condStr
+        , LiteralTests.expectSuite expectFn condStr
+        , MultiDefTests.expectSuite expectFn condStr
+        , OperatorTests.expectSuite expectFn condStr
+        , PatternArgTests.expectSuite expectFn condStr
+        , PatternMatchingTests.expectSuite expectFn condStr
+        , PortEncodingTests.expectSuite expectFn condStr
+        , PostSolveExprTests.expectSuite expectFn condStr
+        , RecordTests.expectSuite expectFn condStr
+        , SpecializeAccessorTests.expectSuite expectFn condStr
+        , SpecializeConstructorTests.expectSuite expectFn condStr
+        , SpecializeCycleTests.expectSuite expectFn condStr
+        , SpecializeExprTests.expectSuite expectFn condStr
+        , TupleTests.expectSuite expectFn condStr
         ]
-
-
-
--- TEST HELPER
-
-
-{-| Maybe union type for tests.
--}
-maybeUnion : UnionDef
-maybeUnion =
-    { name = "Maybe"
-    , args = [ "a" ]
-    , ctors =
-        [ { name = "Just", args = [ tVar "a" ] }
-        , { name = "Nothing", args = [] }
-        ]
-    }
-
-
-{-| Helper to create a module that includes the Maybe type.
--}
-makeModuleWithMaybe : String -> Src.Expr -> Src.Module
-makeModuleWithMaybe name expr =
-    makeModuleWithTypedDefsUnionsAliases "Test"
-        [ { name = name
-          , args = []
-          , tipe = tType "Maybe" [ tType "Int" [] ]
-          , body = expr
-          }
-        ]
-        [ maybeUnion ]
-        []
-
-
-runInvariantTest : Src.Module -> Expectation
-runInvariantTest srcModule =
-    case compileToMlirModule srcModule of
-        Err err ->
-            Expect.fail ("Compilation failed: " ++ err)
-
-        Ok { mlirModule } ->
-            violationsToExpectation (checkCustomConstruction mlirModule)
-
-
-
--- TEST CASES
-
-
-justValueTest : () -> Expectation
-justValueTest _ =
-    runInvariantTest (makeModuleWithMaybe "testValue" (callExpr (ctorExpr "Just") [ intExpr 5 ]))
-
-
-tagAttributeTest : () -> Expectation
-tagAttributeTest _ =
-    -- Any custom ADT usage should have the tag attribute
-    runInvariantTest (makeModuleWithMaybe "testValue" (callExpr (ctorExpr "Just") [ intExpr 1 ]))
-
-
-sizeAttributeTest : () -> Expectation
-sizeAttributeTest _ =
-    -- Any custom ADT usage should have the size attribute
-    runInvariantTest (makeModuleWithMaybe "testValue" (callExpr (ctorExpr "Just") [ intExpr 42 ]))
-
-
-sizeMatchesOperandsTest : () -> Expectation
-sizeMatchesOperandsTest _ =
-    -- Size should match the number of operands
-    runInvariantTest (makeModuleWithMaybe "testValue" (callExpr (ctorExpr "Just") [ intExpr 1 ]))
-
-
-builtInNotCustomTest : () -> Expectation
-builtInNotCustomTest _ =
-    -- Ensure built-in types aren't being constructed with custom ops
-    -- Testing Maybe and List together to verify separation
-    runInvariantTest
-        (makeModuleWithMaybe "testValue"
-            (callExpr (ctorExpr "Just")
-                [ intExpr 1 ]
-            )
-        )

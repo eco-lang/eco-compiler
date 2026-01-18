@@ -1,203 +1,87 @@
-module Compiler.Generate.CodeGen.CaseTagsCountTest exposing (suite)
+module Compiler.Generate.CodeGen.CaseTagsCountTest exposing (suite, expectSuite)
 
-{-| Tests for CGEN_029: Case Tags Count invariant.
+{-| Test suite for CGEN_029: Case Tags Count invariant.
 
 The `eco.case` `tags` array length must equal the number of alternative regions.
 
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.AST.SourceBuilder
-    exposing
-        ( UnionDef
-        , boolExpr
-        , caseExpr
-        , ctorExpr
-        , ifExpr
-        , intExpr
-        , listExpr
-        , makeModule
-        , makeModuleWithTypedDefsUnionsAliases
-        , pCons
-        , pCtor
-        , pList
-        , pVar
-        , tType
-        , tVar
-        , varExpr
-        )
-import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
-import Compiler.Generate.CodeGen.Invariants
-    exposing
-        ( Violation
-        , findOpsNamed
-        , getArrayAttr
-        , violationsToExpectation
-        )
+import Compiler.AnnotatedTests as AnnotatedTests
+import Compiler.ArrayTest as ArrayTest
+import Compiler.AsPatternTests as AsPatternTests
+import Compiler.BinopTests as BinopTests
+import Compiler.BitwiseTests as BitwiseTests
+import Compiler.CaseTests as CaseTests
+import Compiler.ClosureTests as ClosureTests
+import Compiler.ControlFlowTests as ControlFlowTests
+import Compiler.DecisionTreeAdvancedTests as DecisionTreeAdvancedTests
+import Compiler.DeepFuzzTests as DeepFuzzTests
+import Compiler.EdgeCaseTests as EdgeCaseTests
+import Compiler.FloatMathTests as FloatMathTests
+import Compiler.FunctionTests as FunctionTests
+import Compiler.Generate.CodeGen.CaseTagsCount exposing (expectCaseTagsCount)
+import Compiler.HigherOrderTests as HigherOrderTests
+import Compiler.LetDestructTests as LetDestructTests
+import Compiler.LetRecTests as LetRecTests
+import Compiler.LetTests as LetTests
+import Compiler.ListTests as ListTests
+import Compiler.LiteralTests as LiteralTests
+import Compiler.MultiDefTests as MultiDefTests
+import Compiler.OperatorTests as OperatorTests
+import Compiler.PatternArgTests as PatternArgTests
+import Compiler.PatternMatchingTests as PatternMatchingTests
+import Compiler.PortEncodingTests as PortEncodingTests
+import Compiler.RecordTests as RecordTests
+import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
+import Compiler.SpecializeConstructorTests as SpecializeConstructorTests
+import Compiler.SpecializeCycleTests as SpecializeCycleTests
+import Compiler.SpecializeExprTests as SpecializeExprTests
+import Compiler.TupleTests as TupleTests
+import Compiler.Type.PostSolve.PostSolveExprTests as PostSolveExprTests
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 import Test exposing (Test)
 
 
 suite : Test
 suite =
     Test.describe "CGEN_029: Case Tags Count"
-        [ Test.test "Boolean case has 2 tags and 2 regions" booleanCaseTagsTest
-        , Test.test "Maybe case has 2 tags and 2 regions" maybeCaseTagsTest
-        , Test.test "List case has 2 tags and 2 regions" listCaseTagsTest
-        , Test.test "eco.case has tags attribute" hasTagsAttrTest
+        [ expectSuite expectCaseTagsCount "passes case tags count invariant"
         ]
 
 
-
--- INVARIANT CHECKER
-
-
-{-| Check case tags count invariants.
--}
-checkCaseTagsCount : MlirModule -> List Violation
-checkCaseTagsCount mlirModule =
-    let
-        caseOps =
-            findOpsNamed "eco.case" mlirModule
-
-        violations =
-            List.filterMap checkCaseTagsMatch caseOps
-    in
-    violations
-
-
-checkCaseTagsMatch : MlirOp -> Maybe Violation
-checkCaseTagsMatch op =
-    let
-        maybeTagsAttr =
-            getArrayAttr "tags" op
-
-        regionCount =
-            List.length op.regions
-    in
-    case maybeTagsAttr of
-        Nothing ->
-            Just
-                { opId = op.id
-                , opName = op.name
-                , message = "eco.case missing tags attribute"
-                }
-
-        Just tags ->
-            let
-                tagCount =
-                    List.length tags
-            in
-            if tagCount /= regionCount then
-                Just
-                    { opId = op.id
-                    , opName = op.name
-                    , message =
-                        "eco.case tags count ("
-                            ++ String.fromInt tagCount
-                            ++ ") != region count ("
-                            ++ String.fromInt regionCount
-                            ++ ")"
-                    }
-
-            else
-                Nothing
-
-
-
--- TEST HELPER
-
-
-{-| Maybe union type for tests.
--}
-maybeUnion : UnionDef
-maybeUnion =
-    { name = "Maybe"
-    , args = [ "a" ]
-    , ctors =
-        [ { name = "Just", args = [ tVar "a" ] }
-        , { name = "Nothing", args = [] }
+expectSuite : (Src.Module -> Expectation) -> String -> Test
+expectSuite expectFn condStr =
+    Test.describe ("Case tags count invariant " ++ condStr)
+        [ AnnotatedTests.expectSuite expectFn condStr
+        , ArrayTest.expectSuite expectFn condStr
+        , AsPatternTests.expectSuite expectFn condStr
+        , BinopTests.expectSuite expectFn condStr
+        , BitwiseTests.expectSuite expectFn condStr
+        , CaseTests.expectSuite expectFn condStr
+        , ClosureTests.expectSuite expectFn condStr
+        , ControlFlowTests.expectSuite expectFn condStr
+        , DecisionTreeAdvancedTests.expectSuite expectFn condStr
+        , DeepFuzzTests.expectSuite expectFn condStr
+        , EdgeCaseTests.expectSuite expectFn condStr
+        , FloatMathTests.expectSuite expectFn condStr
+        , FunctionTests.expectSuite expectFn condStr
+        , HigherOrderTests.expectSuite expectFn condStr
+        , LetDestructTests.expectSuite expectFn condStr
+        , LetRecTests.expectSuite expectFn condStr
+        , LetTests.expectSuite expectFn condStr
+        , ListTests.expectSuite expectFn condStr
+        , LiteralTests.expectSuite expectFn condStr
+        , MultiDefTests.expectSuite expectFn condStr
+        , OperatorTests.expectSuite expectFn condStr
+        , PatternArgTests.expectSuite expectFn condStr
+        , PatternMatchingTests.expectSuite expectFn condStr
+        , PortEncodingTests.expectSuite expectFn condStr
+        , PostSolveExprTests.expectSuite expectFn condStr
+        , RecordTests.expectSuite expectFn condStr
+        , SpecializeAccessorTests.expectSuite expectFn condStr
+        , SpecializeConstructorTests.expectSuite expectFn condStr
+        , SpecializeCycleTests.expectSuite expectFn condStr
+        , SpecializeExprTests.expectSuite expectFn condStr
+        , TupleTests.expectSuite expectFn condStr
         ]
-    }
-
-
-{-| Helper to create a module that includes the Maybe type.
--}
-makeModuleWithMaybe : String -> Src.Expr -> Src.Module
-makeModuleWithMaybe name expr =
-    makeModuleWithTypedDefsUnionsAliases "Test"
-        [ { name = name
-          , args = []
-          , tipe = tType "Int" []
-          , body = expr
-          }
-        ]
-        [ maybeUnion ]
-        []
-
-
-runInvariantTest : Src.Module -> Expectation
-runInvariantTest srcModule =
-    case compileToMlirModule srcModule of
-        Err err ->
-            Expect.fail ("Compilation failed: " ++ err)
-
-        Ok { mlirModule } ->
-            violationsToExpectation (checkCaseTagsCount mlirModule)
-
-
-
--- TEST CASES
-
-
-booleanCaseTagsTest : () -> Expectation
-booleanCaseTagsTest _ =
-    let
-        modul =
-            makeModule "testValue"
-                (ifExpr (boolExpr True) (intExpr 1) (intExpr 0))
-    in
-    runInvariantTest modul
-
-
-maybeCaseTagsTest : () -> Expectation
-maybeCaseTagsTest _ =
-    let
-        modul =
-            makeModuleWithMaybe "testValue"
-                (caseExpr (ctorExpr "Nothing")
-                    [ ( pCtor "Just" [ pVar "x" ], varExpr "x" )
-                    , ( pCtor "Nothing" [], intExpr 0 )
-                    ]
-                )
-    in
-    runInvariantTest modul
-
-
-listCaseTagsTest : () -> Expectation
-listCaseTagsTest _ =
-    let
-        modul =
-            makeModule "testValue"
-                (caseExpr (listExpr [ intExpr 1 ])
-                    [ ( pCons (pVar "x") (pVar "rest"), varExpr "x" )
-                    , ( pList [], intExpr 0 )
-                    ]
-                )
-    in
-    runInvariantTest modul
-
-
-hasTagsAttrTest : () -> Expectation
-hasTagsAttrTest _ =
-    let
-        modul =
-            makeModule "testValue"
-                (caseExpr (boolExpr True)
-                    [ ( pCtor "True" [], intExpr 1 )
-                    , ( pCtor "False" [], intExpr 0 )
-                    ]
-                )
-    in
-    runInvariantTest modul

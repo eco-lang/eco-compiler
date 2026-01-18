@@ -1,6 +1,6 @@
-module Compiler.Generate.CodeGen.KernelAbiConsistencyTest exposing (suite)
+module Compiler.Generate.CodeGen.KernelAbiConsistencyTest exposing (suite, expectSuite)
 
-{-| Tests for CGEN_038: Kernel ABI Consistency invariant.
+{-| Test suite for CGEN_038: Kernel ABI Consistency invariant.
 
 All calls to the same kernel function must use identical MLIR argument and
 result types.
@@ -8,218 +8,81 @@ result types.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.AST.SourceBuilder
-    exposing
-        ( binopsExpr
-        , floatExpr
-        , intExpr
-        , makeModule
-        , strExpr
-        , tuple3Expr
-        , tupleExpr
-        )
-import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
-import Compiler.Generate.CodeGen.Invariants
-    exposing
-        ( Violation
-        , extractOperandTypes
-        , extractResultTypes
-        , findOpsNamed
-        , getStringAttr
-        , violationsToExpectation
-        )
-import Dict exposing (Dict)
+import Compiler.AnnotatedTests as AnnotatedTests
+import Compiler.ArrayTest as ArrayTest
+import Compiler.AsPatternTests as AsPatternTests
+import Compiler.BinopTests as BinopTests
+import Compiler.BitwiseTests as BitwiseTests
+import Compiler.CaseTests as CaseTests
+import Compiler.ClosureTests as ClosureTests
+import Compiler.ControlFlowTests as ControlFlowTests
+import Compiler.DecisionTreeAdvancedTests as DecisionTreeAdvancedTests
+import Compiler.DeepFuzzTests as DeepFuzzTests
+import Compiler.EdgeCaseTests as EdgeCaseTests
+import Compiler.FloatMathTests as FloatMathTests
+import Compiler.FunctionTests as FunctionTests
+import Compiler.Generate.CodeGen.KernelAbiConsistency exposing (expectKernelAbiConsistency)
+import Compiler.HigherOrderTests as HigherOrderTests
+import Compiler.LetDestructTests as LetDestructTests
+import Compiler.LetRecTests as LetRecTests
+import Compiler.LetTests as LetTests
+import Compiler.ListTests as ListTests
+import Compiler.LiteralTests as LiteralTests
+import Compiler.MultiDefTests as MultiDefTests
+import Compiler.OperatorTests as OperatorTests
+import Compiler.PatternArgTests as PatternArgTests
+import Compiler.PatternMatchingTests as PatternMatchingTests
+import Compiler.PortEncodingTests as PortEncodingTests
+import Compiler.RecordTests as RecordTests
+import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
+import Compiler.SpecializeConstructorTests as SpecializeConstructorTests
+import Compiler.SpecializeCycleTests as SpecializeCycleTests
+import Compiler.SpecializeExprTests as SpecializeExprTests
+import Compiler.TupleTests as TupleTests
+import Compiler.Type.PostSolve.PostSolveExprTests as PostSolveExprTests
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType)
 import Test exposing (Test)
 
 
 suite : Test
 suite =
     Test.describe "CGEN_038: Kernel ABI Consistency"
-        [ Test.test "Multiple calls to same kernel use consistent types" sameKernelConsistentTest
-        , Test.test "Int addition operations consistent" intAdditionConsistentTest
-        , Test.test "String operations consistent" stringOpsConsistentTest
-        , Test.test "Arithmetic operations consistent" arithmeticConsistentTest
+        [ expectSuite expectKernelAbiConsistency "passes kernel ABI consistency invariant"
         ]
 
 
-
--- INVARIANT CHECKER
-
-
-{-| Check kernel ABI consistency invariants.
--}
-checkKernelAbiConsistency : MlirModule -> List Violation
-checkKernelAbiConsistency mlirModule =
-    let
-        callOps =
-            findOpsNamed "eco.call" mlirModule
-
-        -- Group calls by callee name
-        callsByCallee =
-            List.foldl groupCallByCallee Dict.empty callOps
-
-        -- Check consistency within each group
-        violations =
-            Dict.foldl checkCalleeConsistency [] callsByCallee
-    in
-    violations
-
-
-groupCallByCallee : MlirOp -> Dict String (List MlirOp) -> Dict String (List MlirOp)
-groupCallByCallee op dict =
-    case getStringAttr "callee" op of
-        Nothing ->
-            dict
-
-        Just callee ->
-            if isKernelFunction callee then
-                Dict.update callee
-                    (\maybeOps ->
-                        case maybeOps of
-                            Just ops ->
-                                Just (op :: ops)
-
-                            Nothing ->
-                                Just [ op ]
-                    )
-                    dict
-
-            else
-                dict
-
-
-isKernelFunction : String -> Bool
-isKernelFunction name =
-    String.startsWith "eco_" name
-        || String.contains "$kernel$" name
-        || String.startsWith "@eco_" name
-
-
-checkCalleeConsistency : String -> List MlirOp -> List Violation -> List Violation
-checkCalleeConsistency callee calls accViolations =
-    case calls of
-        [] ->
-            accViolations
-
-        [ _ ] ->
-            -- Only one call, trivially consistent
-            accViolations
-
-        first :: rest ->
-            let
-                firstArgTypes =
-                    extractOperandTypes first
-
-                firstResultTypes =
-                    extractResultTypes first
-
-                newViolations =
-                    List.filterMap (checkAgainstFirst callee first firstArgTypes firstResultTypes) rest
-            in
-            newViolations ++ accViolations
-
-
-checkAgainstFirst : String -> MlirOp -> Maybe (List MlirType) -> List MlirType -> MlirOp -> Maybe Violation
-checkAgainstFirst callee firstOp firstArgTypes firstResultTypes otherOp =
-    let
-        otherArgTypes =
-            extractOperandTypes otherOp
-
-        otherResultTypes =
-            extractResultTypes otherOp
-    in
-    if firstArgTypes /= otherArgTypes then
-        Just
-            { opId = otherOp.id
-            , opName = otherOp.name
-            , message =
-                "Kernel '"
-                    ++ callee
-                    ++ "' call has different arg types than previous call at "
-                    ++ firstOp.id
-            }
-
-    else if firstResultTypes /= otherResultTypes then
-        Just
-            { opId = otherOp.id
-            , opName = otherOp.name
-            , message =
-                "Kernel '"
-                    ++ callee
-                    ++ "' call has different result types than previous call at "
-                    ++ firstOp.id
-            }
-
-    else
-        Nothing
-
-
-
--- TEST HELPER
-
-
-runInvariantTest : Src.Module -> Expectation
-runInvariantTest srcModule =
-    case compileToMlirModule srcModule of
-        Err err ->
-            Expect.fail ("Compilation failed: " ++ err)
-
-        Ok { mlirModule } ->
-            violationsToExpectation (checkKernelAbiConsistency mlirModule)
-
-
-
--- TEST CASES
-
-
-sameKernelConsistentTest : () -> Expectation
-sameKernelConsistentTest _ =
-    -- Multiple uses of same kernel
-    let
-        modul =
-            makeModule "testValue"
-                (tupleExpr
-                    (binopsExpr [ ( intExpr 1, "+" ) ] (intExpr 2))
-                    (binopsExpr [ ( intExpr 3, "+" ) ] (intExpr 4))
-                )
-    in
-    runInvariantTest modul
-
-
-intAdditionConsistentTest : () -> Expectation
-intAdditionConsistentTest _ =
-    let
-        modul =
-            makeModule "testValue"
-                (binopsExpr
-                    [ ( intExpr 1, "+" ), ( intExpr 2, "+" ) ]
-                    (intExpr 3)
-                )
-    in
-    runInvariantTest modul
-
-
-stringOpsConsistentTest : () -> Expectation
-stringOpsConsistentTest _ =
-    let
-        modul =
-            makeModule "testValue"
-                (binopsExpr [ ( strExpr "a", "++" ), ( strExpr "b", "++" ) ] (strExpr "c"))
-    in
-    runInvariantTest modul
-
-
-arithmeticConsistentTest : () -> Expectation
-arithmeticConsistentTest _ =
-    let
-        modul =
-            makeModule "testValue"
-                (tuple3Expr
-                    (binopsExpr [ ( intExpr 10, "*" ) ] (intExpr 5))
-                    (binopsExpr [ ( intExpr 20, "*" ) ] (intExpr 3))
-                    (binopsExpr [ ( intExpr 100, "/" ) ] (intExpr 4))
-                )
-    in
-    runInvariantTest modul
+expectSuite : (Src.Module -> Expectation) -> String -> Test
+expectSuite expectFn condStr =
+    Test.describe ("Kernel ABI consistency invariant " ++ condStr)
+        [ AnnotatedTests.expectSuite expectFn condStr
+        , ArrayTest.expectSuite expectFn condStr
+        , AsPatternTests.expectSuite expectFn condStr
+        , BinopTests.expectSuite expectFn condStr
+        , BitwiseTests.expectSuite expectFn condStr
+        , CaseTests.expectSuite expectFn condStr
+        , ClosureTests.expectSuite expectFn condStr
+        , ControlFlowTests.expectSuite expectFn condStr
+        , DecisionTreeAdvancedTests.expectSuite expectFn condStr
+        , DeepFuzzTests.expectSuite expectFn condStr
+        , EdgeCaseTests.expectSuite expectFn condStr
+        , FloatMathTests.expectSuite expectFn condStr
+        , FunctionTests.expectSuite expectFn condStr
+        , HigherOrderTests.expectSuite expectFn condStr
+        , LetDestructTests.expectSuite expectFn condStr
+        , LetRecTests.expectSuite expectFn condStr
+        , LetTests.expectSuite expectFn condStr
+        , ListTests.expectSuite expectFn condStr
+        , LiteralTests.expectSuite expectFn condStr
+        , MultiDefTests.expectSuite expectFn condStr
+        , OperatorTests.expectSuite expectFn condStr
+        , PatternArgTests.expectSuite expectFn condStr
+        , PatternMatchingTests.expectSuite expectFn condStr
+        , PortEncodingTests.expectSuite expectFn condStr
+        , PostSolveExprTests.expectSuite expectFn condStr
+        , RecordTests.expectSuite expectFn condStr
+        , SpecializeAccessorTests.expectSuite expectFn condStr
+        , SpecializeConstructorTests.expectSuite expectFn condStr
+        , SpecializeCycleTests.expectSuite expectFn condStr
+        , SpecializeExprTests.expectSuite expectFn condStr
+        , TupleTests.expectSuite expectFn condStr
+        ]

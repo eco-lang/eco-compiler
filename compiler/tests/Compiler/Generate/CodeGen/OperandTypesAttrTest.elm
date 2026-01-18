@@ -1,222 +1,87 @@
-module Compiler.Generate.CodeGen.OperandTypesAttrTest exposing (suite)
+module Compiler.Generate.CodeGen.OperandTypesAttrTest exposing (suite, expectSuite)
 
-{-| Tests for CGEN_032: Operand Types Attribute invariant.
+{-| Test suite for CGEN_032: Operand Types Attribute invariant.
 
 `_operand_types` is required when an op has operands and must have correct length.
 
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.AST.SourceBuilder
-    exposing
-        ( UnionDef
-        , callExpr
-        , ctorExpr
-        , intExpr
-        , listExpr
-        , makeModule
-        , makeModuleWithTypedDefsUnionsAliases
-        , recordExpr
-        , strExpr
-        , tType
-        , tVar
-        , tuple3Expr
-        , tupleExpr
-        )
-import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
-import Compiler.Generate.CodeGen.Invariants
-    exposing
-        ( Violation
-        , getArrayAttr
-        , violationsToExpectation
-        , walkAllOps
-        )
+import Compiler.AnnotatedTests as AnnotatedTests
+import Compiler.ArrayTest as ArrayTest
+import Compiler.AsPatternTests as AsPatternTests
+import Compiler.BinopTests as BinopTests
+import Compiler.BitwiseTests as BitwiseTests
+import Compiler.CaseTests as CaseTests
+import Compiler.ClosureTests as ClosureTests
+import Compiler.ControlFlowTests as ControlFlowTests
+import Compiler.DecisionTreeAdvancedTests as DecisionTreeAdvancedTests
+import Compiler.DeepFuzzTests as DeepFuzzTests
+import Compiler.EdgeCaseTests as EdgeCaseTests
+import Compiler.FloatMathTests as FloatMathTests
+import Compiler.FunctionTests as FunctionTests
+import Compiler.Generate.CodeGen.OperandTypesAttr exposing (expectOperandTypesAttr)
+import Compiler.HigherOrderTests as HigherOrderTests
+import Compiler.LetDestructTests as LetDestructTests
+import Compiler.LetRecTests as LetRecTests
+import Compiler.LetTests as LetTests
+import Compiler.ListTests as ListTests
+import Compiler.LiteralTests as LiteralTests
+import Compiler.MultiDefTests as MultiDefTests
+import Compiler.OperatorTests as OperatorTests
+import Compiler.PatternArgTests as PatternArgTests
+import Compiler.PatternMatchingTests as PatternMatchingTests
+import Compiler.PortEncodingTests as PortEncodingTests
+import Compiler.RecordTests as RecordTests
+import Compiler.SpecializeAccessorTests as SpecializeAccessorTests
+import Compiler.SpecializeConstructorTests as SpecializeConstructorTests
+import Compiler.SpecializeCycleTests as SpecializeCycleTests
+import Compiler.SpecializeExprTests as SpecializeExprTests
+import Compiler.TupleTests as TupleTests
+import Compiler.Type.PostSolve.PostSolveExprTests as PostSolveExprTests
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 import Test exposing (Test)
 
 
 suite : Test
 suite =
     Test.describe "CGEN_032: Operand Types Attribute"
-        [ Test.test "eco.construct.list has _operand_types" listConstructOperandTypesTest
-        , Test.test "eco.construct.tuple2 has _operand_types" tuple2OperandTypesTest
-        , Test.test "eco.construct.record has _operand_types" recordOperandTypesTest
-        , Test.test "eco.call has _operand_types" callOperandTypesTest
-        , Test.test "_operand_types length matches operand count" operandTypesLengthTest
+        [ expectSuite expectOperandTypesAttr "passes operand types attr invariant"
         ]
 
 
-
--- INVARIANT CHECKER
-
-
-{-| Ops that require _operand_types when they have operands.
--}
-requiredOps : List String
-requiredOps =
-    [ "eco.construct.list"
-    , "eco.construct.tuple2"
-    , "eco.construct.tuple3"
-    , "eco.construct.record"
-    , "eco.construct.custom"
-    , "eco.call"
-    , "eco.papCreate"
-    , "eco.papExtend"
-    , "eco.return"
-    , "eco.box"
-    , "eco.unbox"
-    ]
-
-
-{-| Check operand types attribute invariants.
--}
-checkOperandTypesAttr : MlirModule -> List Violation
-checkOperandTypesAttr mlirModule =
-    let
-        allOps =
-            walkAllOps mlirModule
-
-        targetOps =
-            List.filter (\op -> List.member op.name requiredOps) allOps
-
-        violations =
-            List.filterMap checkOperandTypesOp targetOps
-    in
-    violations
-
-
-checkOperandTypesOp : MlirOp -> Maybe Violation
-checkOperandTypesOp op =
-    let
-        operandCount =
-            List.length op.operands
-
-        maybeOperandTypes =
-            getArrayAttr "_operand_types" op
-    in
-    if operandCount == 0 then
-        -- No operands, attribute not required
-        Nothing
-
-    else
-        case maybeOperandTypes of
-            Nothing ->
-                Just
-                    { opId = op.id
-                    , opName = op.name
-                    , message =
-                        op.name
-                            ++ " has "
-                            ++ String.fromInt operandCount
-                            ++ " operands but missing _operand_types"
-                    }
-
-            Just types ->
-                let
-                    typeCount =
-                        List.length types
-                in
-                if typeCount /= operandCount then
-                    Just
-                        { opId = op.id
-                        , opName = op.name
-                        , message =
-                            op.name
-                                ++ " has "
-                                ++ String.fromInt operandCount
-                                ++ " operands but _operand_types has "
-                                ++ String.fromInt typeCount
-                                ++ " entries"
-                        }
-
-                else
-                    Nothing
-
-
-
--- TEST HELPER
-
-
-{-| Maybe union type for tests.
--}
-maybeUnion : UnionDef
-maybeUnion =
-    { name = "Maybe"
-    , args = [ "a" ]
-    , ctors =
-        [ { name = "Just", args = [ tVar "a" ] }
-        , { name = "Nothing", args = [] }
+expectSuite : (Src.Module -> Expectation) -> String -> Test
+expectSuite expectFn condStr =
+    Test.describe ("Operand types attr invariant " ++ condStr)
+        [ AnnotatedTests.expectSuite expectFn condStr
+        , ArrayTest.expectSuite expectFn condStr
+        , AsPatternTests.expectSuite expectFn condStr
+        , BinopTests.expectSuite expectFn condStr
+        , BitwiseTests.expectSuite expectFn condStr
+        , CaseTests.expectSuite expectFn condStr
+        , ClosureTests.expectSuite expectFn condStr
+        , ControlFlowTests.expectSuite expectFn condStr
+        , DecisionTreeAdvancedTests.expectSuite expectFn condStr
+        , DeepFuzzTests.expectSuite expectFn condStr
+        , EdgeCaseTests.expectSuite expectFn condStr
+        , FloatMathTests.expectSuite expectFn condStr
+        , FunctionTests.expectSuite expectFn condStr
+        , HigherOrderTests.expectSuite expectFn condStr
+        , LetDestructTests.expectSuite expectFn condStr
+        , LetRecTests.expectSuite expectFn condStr
+        , LetTests.expectSuite expectFn condStr
+        , ListTests.expectSuite expectFn condStr
+        , LiteralTests.expectSuite expectFn condStr
+        , MultiDefTests.expectSuite expectFn condStr
+        , OperatorTests.expectSuite expectFn condStr
+        , PatternArgTests.expectSuite expectFn condStr
+        , PatternMatchingTests.expectSuite expectFn condStr
+        , PortEncodingTests.expectSuite expectFn condStr
+        , PostSolveExprTests.expectSuite expectFn condStr
+        , RecordTests.expectSuite expectFn condStr
+        , SpecializeAccessorTests.expectSuite expectFn condStr
+        , SpecializeConstructorTests.expectSuite expectFn condStr
+        , SpecializeCycleTests.expectSuite expectFn condStr
+        , SpecializeExprTests.expectSuite expectFn condStr
+        , TupleTests.expectSuite expectFn condStr
         ]
-    }
-
-
-{-| Helper to create a module that includes the Maybe type.
--}
-makeModuleWithMaybe : String -> Src.Expr -> Src.Module
-makeModuleWithMaybe name expr =
-    makeModuleWithTypedDefsUnionsAliases "Test"
-        [ { name = name
-          , args = []
-          , tipe = tType "Maybe" [ tType "Int" [] ]
-          , body = expr
-          }
-        ]
-        [ maybeUnion ]
-        []
-
-
-runInvariantTest : Src.Module -> Expectation
-runInvariantTest srcModule =
-    case compileToMlirModule srcModule of
-        Err err ->
-            Expect.fail ("Compilation failed: " ++ err)
-
-        Ok { mlirModule } ->
-            violationsToExpectation (checkOperandTypesAttr mlirModule)
-
-
-
--- TEST CASES
-
-
-listConstructOperandTypesTest : () -> Expectation
-listConstructOperandTypesTest _ =
-    runInvariantTest (makeModule "testValue" (listExpr [ intExpr 1, intExpr 2 ]))
-
-
-tuple2OperandTypesTest : () -> Expectation
-tuple2OperandTypesTest _ =
-    runInvariantTest (makeModule "testValue" (tupleExpr (intExpr 1) (intExpr 2)))
-
-
-recordOperandTypesTest : () -> Expectation
-recordOperandTypesTest _ =
-    runInvariantTest
-        (makeModule "testValue"
-            (recordExpr [ ( "x", intExpr 1 ), ( "y", strExpr "hello" ) ])
-        )
-
-
-callOperandTypesTest : () -> Expectation
-callOperandTypesTest _ =
-    runInvariantTest (makeModuleWithMaybe "testValue" (callExpr (ctorExpr "Just") [ intExpr 5 ]))
-
-
-operandTypesLengthTest : () -> Expectation
-operandTypesLengthTest _ =
-    -- Multiple construction ops in one module
-    let
-        list =
-            listExpr [ intExpr 1 ]
-
-        record =
-            recordExpr [ ( "a", intExpr 2 ) ]
-
-        innerTuple =
-            tuple3Expr (intExpr 3) (intExpr 4) (intExpr 5)
-    in
-    runInvariantTest
-        (makeModule "testValue"
-            (tuple3Expr list record innerTuple)
-        )
