@@ -21,6 +21,13 @@ module Compiler.Generate.CodeGen.Invariants exposing
     , violationsToExpectation
     , ecoValueType
     , allBlocks
+    , typesMatch
+    , normalizeType
+    , isValidTerminator
+    , validTerminators
+    , findSymbolOps
+    , buildTypeEnv
+    , TypeEnv
     )
 
 {-| Shared infrastructure for MLIR codegen invariant tests.
@@ -290,13 +297,13 @@ ecoValueType =
     NamedStruct "!eco.value"
 
 
-{-| Check if a type is !eco.value.
+{-| Check if a type is !eco.value (handles both "eco.value" and "!eco.value").
 -}
 isEcoValueType : MlirType -> Bool
 isEcoValueType t =
     case t of
         NamedStruct name ->
-            name == "!eco.value"
+            name == "!eco.value" || name == "eco.value"
 
         _ ->
             False
@@ -350,3 +357,150 @@ checkNone message ops =
 allBlocks : MlirRegion -> List MlirBlock
 allBlocks (MlirRegion { entry, blocks }) =
     entry :: OrderedDict.values blocks
+
+
+
+-- TYPE COMPARISON
+
+
+{-| Normalize a type (handles eco.value naming variations).
+-}
+normalizeType : MlirType -> MlirType
+normalizeType t =
+    case t of
+        NamedStruct name ->
+            if name == "eco.value" || name == "!eco.value" then
+                NamedStruct "!eco.value"
+
+            else
+                NamedStruct name
+
+        _ ->
+            t
+
+
+{-| Compare two types with normalization.
+-}
+typesMatch : MlirType -> MlirType -> Bool
+typesMatch t1 t2 =
+    normalizeType t1 == normalizeType t2
+
+
+
+-- TERMINATOR VALIDATION
+
+
+{-| List of valid terminator operation names.
+-}
+validTerminators : List String
+validTerminators =
+    [ "eco.return"
+    , "eco.jump"
+    , "eco.crash"
+    , "scf.yield"
+    , "cf.br"
+    , "cf.cond_br"
+    , "func.return"
+    ]
+
+
+{-| Check if an operation is a valid terminator.
+-}
+isValidTerminator : MlirOp -> Bool
+isValidTerminator op =
+    List.member op.name validTerminators
+
+
+
+-- SYMBOL FINDING
+
+
+{-| Find all symbol-defining ops at module level with their symbol names.
+-}
+findSymbolOps : MlirModule -> List ( String, MlirOp )
+findSymbolOps mod =
+    List.filterMap
+        (\op ->
+            getStringAttr "sym_name" op
+                |> Maybe.map (\name -> ( name, op ))
+        )
+        mod.body
+
+
+
+-- TYPE ENVIRONMENT
+
+
+{-| A type environment mapping SSA value names to their types.
+-}
+type alias TypeEnv =
+    Dict String MlirType
+
+
+{-| Build a type environment from a module by collecting all result definitions.
+-}
+buildTypeEnv : MlirModule -> TypeEnv
+buildTypeEnv mod =
+    let
+        collectFromOps : List MlirOp -> TypeEnv -> TypeEnv
+        collectFromOps ops env =
+            List.foldl collectFromOp env ops
+
+        collectFromOp : MlirOp -> TypeEnv -> TypeEnv
+        collectFromOp op env =
+            let
+                -- Add results from this op
+                withResults =
+                    List.foldl
+                        (\( name, t ) acc -> Dict.insert name t acc)
+                        env
+                        op.results
+
+                -- Recurse into regions
+                withRegions =
+                    List.foldl collectFromRegion withResults op.regions
+            in
+            withRegions
+
+        collectFromRegion : MlirRegion -> TypeEnv -> TypeEnv
+        collectFromRegion (MlirRegion { entry, blocks }) env =
+            let
+                -- Add block arguments from entry
+                withEntryArgs =
+                    List.foldl
+                        (\( name, t ) acc -> Dict.insert name t acc)
+                        env
+                        entry.args
+
+                -- Add ops from entry block
+                withEntryBody =
+                    collectFromOps entry.body withEntryArgs
+
+                -- Add terminator
+                withEntryTerm =
+                    collectFromOp entry.terminator withEntryBody
+
+                -- Process additional blocks
+                withBlocks =
+                    List.foldl collectFromBlock withEntryTerm (OrderedDict.values blocks)
+            in
+            withBlocks
+
+        collectFromBlock : MlirBlock -> TypeEnv -> TypeEnv
+        collectFromBlock block env =
+            let
+                withArgs =
+                    List.foldl
+                        (\( name, t ) acc -> Dict.insert name t acc)
+                        env
+                        block.args
+
+                withBody =
+                    collectFromOps block.body withArgs
+
+                withTerm =
+                    collectFromOp block.terminator withBody
+            in
+            withTerm
+    in
+    collectFromOps mod.body Dict.empty

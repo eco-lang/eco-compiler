@@ -1,20 +1,23 @@
 module Compiler.Generate.CodeGen.CgenInvariantsTest exposing (suite)
 
-{-| Aggregated test suite for MLIR codegen invariants (CGEN_015 - CGEN_039).
+{-| Aggregated test suite for MLIR codegen invariants (CGEN_015 - CGEN_044).
 
 This module combines all codegen invariant tests:
 
   - Type-specific construction (CGEN_015-020, CGEN_025)
   - Projection operations (CGEN_021-024)
-  - Control flow (CGEN_028-031)
-  - Attribute consistency (CGEN_026, CGEN_027, CGEN_032, CGEN_037)
+  - Control flow (CGEN_028-031, CGEN_042)
+  - Attribute consistency (CGEN_026, CGEN_027, CGEN_032, CGEN_037, CGEN_040, CGEN_043)
   - Closure operations (CGEN_033, CGEN_034)
-  - Module-level (CGEN_035, CGEN_036, CGEN_038, CGEN_039)
+  - Module-level (CGEN_035, CGEN_036, CGEN_038, CGEN_039, CGEN_041, CGEN_044)
 
 See design\_docs/invariants.csv for the full invariant definitions.
 
 -}
 
+import Compiler.Generate.CodeGen.BlockTerminatorTest as BlockTerminatorTest
+import Compiler.Generate.CodeGen.CallTargetValidityTest as CallTargetValidityTest
+import Compiler.Generate.CodeGen.CaseKindScrutineeTest as CaseKindScrutineeTest
 import Compiler.Generate.CodeGen.CaseScrutineeTypeTest as CaseScrutineeTypeTest
 import Compiler.Generate.CodeGen.CaseTagsCountTest as CaseTagsCountTest
 import Compiler.Generate.CodeGen.CaseTerminationTest as CaseTerminationTest
@@ -29,12 +32,14 @@ import Compiler.Generate.CodeGen.KernelAbiConsistencyTest as KernelAbiConsistenc
 import Compiler.Generate.CodeGen.ListConstructionTest as ListConstructionTest
 import Compiler.Generate.CodeGen.ListProjectionTest as ListProjectionTest
 import Compiler.Generate.CodeGen.NoAllocateOpsTest as NoAllocateOpsTest
+import Compiler.Generate.CodeGen.OperandTypeConsistencyTest as OperandTypeConsistencyTest
 import Compiler.Generate.CodeGen.OperandTypesAttrTest as OperandTypesAttrTest
 import Compiler.Generate.CodeGen.PapCreateArityTest as PapCreateArityTest
 import Compiler.Generate.CodeGen.PapExtendResultTest as PapExtendResultTest
 import Compiler.Generate.CodeGen.RecordConstructionTest as RecordConstructionTest
 import Compiler.Generate.CodeGen.RecordProjectionTest as RecordProjectionTest
 import Compiler.Generate.CodeGen.SingletonConstantsTest as SingletonConstantsTest
+import Compiler.Generate.CodeGen.SymbolUniquenessTest as SymbolUniquenessTest
 import Compiler.Generate.CodeGen.TupleConstructionTest as TupleConstructionTest
 import Compiler.Generate.CodeGen.TupleProjectionTest as TupleProjectionTest
 import Compiler.Generate.CodeGen.TypeTableUniquenessTest as TypeTableUniquenessTest
@@ -81,7 +86,7 @@ projectionOperations =
         ]
 
 
-{-| CGEN_028-031: Control flow invariants
+{-| CGEN_028-031, CGEN_042: Control flow invariants
 -}
 controlFlowInvariants : Test
 controlFlowInvariants =
@@ -90,10 +95,11 @@ controlFlowInvariants =
         , CaseTagsCountTest.suite -- CGEN_029
         , JumpTargetTest.suite -- CGEN_030
         , JoinpointUniqueIdTest.suite -- CGEN_031
+        , BlockTerminatorTest.suite -- CGEN_042
         ]
 
 
-{-| CGEN_026-027, CGEN_032, CGEN_037: Attribute consistency invariants
+{-| CGEN_026-027, CGEN_032, CGEN_037, CGEN_040, CGEN_043: Attribute consistency invariants
 -}
 attributeConsistency : Test
 attributeConsistency =
@@ -101,6 +107,8 @@ attributeConsistency =
         [ UnboxedBitmapTest.suite -- CGEN_026, CGEN_027
         , OperandTypesAttrTest.suite -- CGEN_032
         , CaseScrutineeTypeTest.suite -- CGEN_037
+        , OperandTypeConsistencyTest.suite -- CGEN_040
+        , CaseKindScrutineeTest.suite -- CGEN_043
         ]
 
 
@@ -114,7 +122,7 @@ closureOperations =
         ]
 
 
-{-| CGEN_035-036, CGEN_038-039: Module-level invariants
+{-| CGEN_035-036, CGEN_038-039, CGEN_041, CGEN_044: Module-level invariants
 -}
 moduleLevelInvariants : Test
 moduleLevelInvariants =
@@ -123,4 +131,6 @@ moduleLevelInvariants =
         , DbgTypeIdsTest.suite -- CGEN_036
         , KernelAbiConsistencyTest.suite -- CGEN_038
         , NoAllocateOpsTest.suite -- CGEN_039
+        , SymbolUniquenessTest.suite -- CGEN_041
+        , CallTargetValidityTest.suite -- CGEN_044
         ]
