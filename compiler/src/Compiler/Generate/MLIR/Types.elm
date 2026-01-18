@@ -1,9 +1,7 @@
 module Compiler.Generate.MLIR.Types exposing
     ( ecoValue, ecoInt, ecoFloat, ecoChar
-    , monoTypeToMlir
-    , isFunctionType, functionArity, countTotalArity, decomposeFunctionType
-    , isEcoValueType
-    , mlirTypeToString
+    , monoTypeToMlir, mlirTypeToString
+    , isFunctionType, functionArity, countTotalArity, decomposeFunctionType, isEcoValueType
     )
 
 {-| MLIR type definitions and conversions.
@@ -43,7 +41,7 @@ import Mlir.Mlir exposing (MlirType(..))
 -}
 ecoValue : MlirType
 ecoValue =
-    NamedStruct "eco.value"
+    NamedStruct "!eco.value"
 
 
 {-| eco.int - unboxed 64-bit signed integer
@@ -183,7 +181,7 @@ decomposeFunctionType monoType =
 isEcoValueType : MlirType -> Bool
 isEcoValueType ty =
     case ty of
-        NamedStruct "eco.value" ->
+        NamedStruct "!eco.value" ->
             True
 
         _ ->
@@ -211,7 +209,7 @@ mlirTypeToString ty =
             "f64"
 
         NamedStruct s ->
-            "!" ++ s
+            s
 
         FunctionType sig ->
             let
