@@ -406,11 +406,22 @@ Each specialization gets a unique `SpecId`. The pass also computes concrete layo
 
 ### MLIR Generation
 
-Converts MonoGraph to MLIR using the ECO dialect:
+Converts MonoGraph to MLIR using the ECO dialect.
 
+**Architecture**: The codegen is organized into 11 focused modules under `Compiler/Generate/MLIR/`:
+- `Types.elm` - Eco types, MonoType→MlirType conversion
+- `Context.elm` - Context, signatures, type registry
+- `Ops.elm` - MLIR op builders (eco.*, arith.*, scf.*, func.*)
+- `Patterns.elm` - Decision tree path navigation, pattern test generation
+- `Expr.elm` - Expression lowering, call ABI (largest module)
+- `Functions.elm` - Node generation (define, ctor, extern, cycle)
+- `Backend.elm` - Program entry point
+
+**Key responsibilities**:
 - **ECO operations**: `eco.construct.list`, `eco.project.record`, `eco.call`, etc.
 - **Type table**: `eco.type_table` op with type descriptors for debug printing
 - **Closures**: Lambdas hoisted to top-level, captured values tracked
+- **Boxing/unboxing**: Primitives (i64, f64, i16) ↔ `eco.value` conversions
 
 **See**: [MLIR Generation Theory](design_docs/theory/pass_mlir_generation_theory.md), [Type Table Theory](design_docs/theory/pass_type_table_theory.md)
 
@@ -486,3 +497,70 @@ Each pass has comprehensive documentation in [`design_docs/theory/`](design_docs
 | [pass_rc_elimination_theory.md](design_docs/theory/pass_rc_elimination_theory.md) | RC operation removal |
 | [pass_undefined_function_theory.md](design_docs/theory/pass_undefined_function_theory.md) | Missing function stubs |
 | [pass_eco_to_llvm_theory.md](design_docs/theory/pass_eco_to_llvm_theory.md) | Final LLVM lowering |
+
+## Invariant Testing Infrastructure
+
+The compiler backend is validated through a comprehensive invariant testing system that verifies correctness at each compilation phase.
+
+### Invariant Catalog
+
+All compiler invariants are documented in [`design_docs/invariants.csv`](design_docs/invariants.csv), organized by phase:
+
+| Phase | Invariants | Examples |
+|-------|------------|----------|
+| CANON | CANON_001-006 | Name resolution, unique IDs, no duplicates |
+| TYPE | TYPE_001-006 | Constraint generation, unification, occurs check |
+| POST | POST_001-004 | Group B type fixing, kernel type inference |
+| TOPT | TOPT_001-005 | Type carrying, decision trees, annotations preserved |
+| MONO | MONO_001-015 | MonoType completeness, layouts, specialization registry |
+| CGEN | CGEN_001-039 | Boxing rules, SSA consistency, operation attributes |
+
+### MLIR AST Inspection
+
+The test infrastructure inspects the MLIR AST directly in Elm, avoiding MLIR text parsing:
+
+```elm
+type alias MlirOp =
+    { name : String
+    , operands : List String
+    , results : List ( String, MlirType )
+    , attrs : Dict String MlirAttr
+    , regions : List MlirRegion
+    , isTerminator : Bool
+    }
+```
+
+Shared verification logic in `Compiler/Generate/CodeGen/Invariants.elm` provides:
+- `walkAllOps`: Traverse all operations in a module
+- `findOpsNamed`: Find operations by name (e.g., "eco.case")
+- `getAttr`: Extract typed attributes from operations
+- Helpers for checking operand types, result types, and structural properties
+
+### Key Invariants
+
+**CGEN_001 (Boxing)**: MLIR codegen only inserts boxing/unboxing between primitive types and `eco.value`. Mismatches between different primitives (e.g., `i64` vs `f64`) indicate a monomorphization bug.
+
+**CGEN_032 (_operand_types)**: Every operation's `_operand_types` attribute must match the SSA types of its operands. This catches type declaration vs runtime type mismatches.
+
+**CGEN_037 (Case Scrutinee)**: For `case_kind="int"`, the scrutinee must be `i64`; for `case_kind="chr"`, it must be `i16`. The default `eco.value` is only valid for ADT/string matching.
+
+### Test Organization
+
+Tests are in `compiler/tests/Compiler/Generate/CodeGen/`:
+- One test file per invariant (e.g., `CaseKindScrutineeTest.elm`)
+- Corresponding property module (e.g., `CaseKindScrutinee.elm`)
+- `Invariants.elm` provides shared utilities
+
+Tests generate Elm code, compile it through the full pipeline, and verify the resulting `MlirModule` satisfies the invariant.
+
+### The Type Declaration vs Runtime Type Mismatch
+
+A key insight from invariant testing: the primary source of codegen bugs is mismatches between **declared types** (what the code says) and **runtime types** (what values actually are).
+
+| Scenario | Declared | Actual | Result |
+|----------|----------|--------|--------|
+| Case scrutinee for int patterns | `eco.value` | `i64` | Type mismatch error |
+| Heap extraction from ADT | `i64` | `eco.value` | Interpret pointer as int → crash |
+| Unbox primitive in wrong context | `eco.value` | `i64` | Interpret int as pointer → crash |
+
+The fix principle: **projection type must match physical storage**, not semantic type. If a field is stored boxed, project as `eco.value` then unbox; if stored unboxed, project as the primitive type then box if needed.

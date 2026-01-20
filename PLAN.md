@@ -1122,7 +1122,7 @@ Get existing tests running and expand coverage.
 
 ### 4.2 MLIR Code Generation
 
-**Status**: In Progress (Core Complete, Refinements Ongoing)
+**Status**: In Progress (Modularization Complete, Type Mismatch Fixes In Progress)
 
 Implement code generation from Elm AST to eco MLIR dialect.
 
@@ -1139,6 +1139,23 @@ Implement code generation from Elm AST to eco MLIR dialect.
 - [x] Indirect calls
 - [ ] Module system (multi-module builds)
 - [ ] Foreign function interface
+
+**Architecture** *(modularized Jan 15-19, 2026)*:
+The MLIR codegen has been refactored from a monolithic 6296-line file into 11 focused modules:
+```
+compiler/src/Compiler/Generate/MLIR/
+├── Types.elm       # Eco types, MonoType→MlirType conversion (5KB)
+├── Context.elm     # Context, signatures, type registry (15KB)
+├── Ops.elm         # MLIR op builders (eco.*, arith.*, scf.*, func.*) (25KB)
+├── Names.elm       # Symbol naming helpers (1KB)
+├── TypeTable.elm   # eco.type_table generation (16KB)
+├── Intrinsics.elm  # Basics/Bitwise kernel intrinsics (16KB)
+├── Patterns.elm    # Path navigation, test generation (29KB)
+├── Expr.elm        # Expression lowering, call ABI (97KB - largest)
+├── Lambdas.elm     # Lambda/closure processing, PAP wrappers (10KB)
+├── Functions.elm   # Node/function generation (define, ctor, extern, cycle) (22KB)
+└── Backend.elm     # Program entry point, module wiring (4KB)
+```
 
 **Resolved Issues** *(from git log - Dec 2025 to Jan 2026)*:
 
@@ -1158,13 +1175,30 @@ Implement code generation from Elm AST to eco MLIR dialect.
    - Fix: Calling kernel functions with concrete params not eco.value, fixed SSA type mismatches
    - Commits: Multiple fixes (Jan 4-6, 2026) for eco.value vs primitive types
 
+**Known Issues** *(identified Jan 20, 2026)*:
+
+5. **Case Scrutinee Type Mismatch** - ⏳ In Progress
+   - Problem: `generateFanOutGeneral` uses `Types.ecoValue` for all scrutinees, but `case_kind='int'` requires i64
+   - Impact: 34 test failures (19 CaseKindScrutineeTest + 15 OperandTypeConsistencyTest)
+   - Fix: See `plans/fix-case-scrutinee-type.md`
+
+6. **Heap Extraction Type Mismatch** - ⏳ In Progress
+   - Problem: Projections from custom ADTs declare primitive types but return eco.value (boxed)
+   - Impact: 10 test failures in OperandTypeConsistencyTest
+   - Fix: See `plans/fix-heap-extraction-type-mismatch.md`
+
+7. **Tail Recursion Issues** - ⏳ Pending
+   - Problems: Jump target attribute missing; calls target stub instead of real implementation
+   - Impact: 4 test failures (2 JumpTargetTest + 2 CallTargetValidityTest)
+
 **Current E2E Test Status**:
 - Compilation through front-end and back-end to JIT execution working
-- Tests pass at `--fuzz 1` level
+- Elm compiler tests: 61+ passing, 4 failing (48 individual failures)
+- Eco E2E tests: 96 passing, 40 failing (136 total)
 - Parallel test execution with process isolation
 
 **Deliverables**:
-- [x] Code generation modules (`Compiler/Generate/MLIR.elm`, `MLIRMono.elm`)
+- [x] Code generation modules (11 modules in `Compiler/Generate/MLIR/`)
 - [x] MLIR builder utilities (`elm-mlir` package vendored)
 - [x] Case/if control flow using SCF dialect
 - [x] Indirect call support
@@ -1172,20 +1206,38 @@ Implement code generation from Elm AST to eco MLIR dialect.
 
 ### 4.3 Compiler Testing
 
-**Status**: Not Started
+**Status**: In Progress (Invariant Test Infrastructure Complete)
 
 Comprehensive testing for the compiler backend.
 
+**Implementation** *(Jan 14-19, 2026)*:
+- 69 test files in `compiler/tests/Compiler/Generate/CodeGen/`
+- `Invariants.elm` provides shared verification logic for MLIR AST inspection
+- Tests validate CGEN_001 through CGEN_039 invariants from `design_docs/invariants.csv`
+- Property-based testing with elm-test
+
 **Test Categories**:
-- [ ] Unit tests for code generation
-- [ ] Integration tests (Elm → MLIR → LLVM → native)
+- [x] Unit tests for code generation (invariant tests)
+- [x] Integration tests (Elm → MLIR → LLVM → native via E2E tests)
 - [ ] Correctness tests against reference implementation
 - [ ] Performance benchmarks
 - [ ] Regression test suite
 
+**Invariant Test Coverage**:
+| Test File | Invariant | Description |
+|-----------|-----------|-------------|
+| CaseKindScrutineeTest | CGEN_037 | Case scrutinee type matches case_kind |
+| OperandTypeConsistencyTest | CGEN_032 | SSA types match _operand_types declarations |
+| JumpTargetTest | CGEN_030 | eco.jump has required target attribute |
+| CallTargetValidityTest | - | Calls target real functions, not stubs |
+| BlockTerminatorTest | CGEN_028 | Every block has exactly one terminator |
+| ConstructResultTypeTest | CGEN_025 | eco.construct results are eco.value |
+| ... | ... | *(35 additional test files)* |
+
 **Deliverables**:
-- [ ] Test suite infrastructure
-- [ ] Elm test programs
+- [x] Test suite infrastructure (`Invariants.elm`)
+- [x] Elm test programs (69 test files)
+- [x] MLIR AST validation
 - [ ] Expected output validation
 - [ ] Performance baseline
 
@@ -1609,8 +1661,8 @@ Runtime Foundation (§1)
 
 ## Project Status
 
-**Current Phase**: ECO MLIR Dialect & Kernel Infrastructure Complete
-**Last Updated**: 2026-01-07
+**Current Phase**: MLIR CodeGen Modularization Complete, Type Mismatch Bug Fixes In Progress
+**Last Updated**: 2026-01-20
 
 **Completed**:
 - Heap model design (§1.1)
@@ -1676,17 +1728,55 @@ Runtime Foundation (§1)
     - `pass_mlir_generation_theory.md`: MLIR code generation from MonoGraph
   - Updated `THEORY.md` with Compiler Backend Pipeline overview
   - Updated `PLAN.md` with current key files and theory documentation references
+- **MLIR CodeGen Modularization** (Jan 15-19, 2026):
+  - Refactored monolithic 6296-line `MLIR.elm` into 11 focused modules under `Compiler/Generate/MLIR/`:
+    - `Types.elm` - Eco types, MonoType→MlirType conversion
+    - `Context.elm` - Context, signatures, type registry
+    - `Ops.elm` - MLIR op builders (eco.*, arith.*, scf.*, func.*)
+    - `Names.elm` - Symbol naming helpers
+    - `TypeTable.elm` - eco.type_table generation
+    - `Intrinsics.elm` - Basics/Bitwise kernel intrinsics
+    - `Patterns.elm` - Path navigation, test generation
+    - `Expr.elm` - Expression lowering, call ABI (96KB, largest module)
+    - `Lambdas.elm` - Lambda/closure processing, PAP wrappers
+    - `Functions.elm` - Node/function generation
+    - `Backend.elm` - Program entry point, module wiring
+- **Comprehensive Invariant Test Infrastructure** (Jan 14-19, 2026):
+  - Added 69 new test files in `compiler/tests/Compiler/Generate/CodeGen/`
+  - Created `Invariants.elm` shared verification logic for MLIR AST inspection
+  - Tests cover CGEN_001 through CGEN_039 invariants
+  - Test categories: case scrutinee types, operand type consistency, jump targets, call validity, SSA types, construction/projection invariants
+- **Formal Invariants Documentation** (Jan 15-19, 2026):
+  - Created `design_docs/invariants.csv` - comprehensive invariant catalog
+  - Documented invariants across all compiler phases:
+    - CANON_001-006: Canonicalization phase invariants
+    - TYPE_001-006: Type checking phase invariants
+    - POST_001-004: PostSolve phase invariants
+    - TOPT_001-005: Typed optimization invariants
+    - MONO_001-015: Monomorphization invariants
+    - CGEN_001-039: MLIR codegen invariants
+  - Added `design_docs/invariant-test-logic.md` and `design_docs/more-mlir-checks.md`
+- **Test Failure Analysis** (Jan 20, 2026):
+  - Comprehensive analysis of current test failures:
+    - Elm compiler tests: 61+ passing, 4 failing (48 total failures)
+    - Eco E2E tests: 96 passing, 40 failing (136 total)
+  - All failures traced to MLIR CodeGen phase
+  - Root causes identified (see `plans/elm-test-failure-analysis-v2.md`):
+    1. Case scrutinee type mismatch (34 failures): `case_kind='int'` requires i64 but gets eco.value
+    2. Heap extraction type mismatch (10 failures): projections declare primitive types but return eco.value
+    3. Tail recursion issues (4 failures): jump target missing, call targets stub instead of real function
+  - Fix plans created: `fix-case-scrutinee-type.md`, `fix-heap-extraction-type-mismatch.md`
 
 **Next Steps** *(in priority order)*:
-1. **Implement real kernel functions (§2.3)** - priority: Utils, Basics, List, String for self-hosting
-2. **Expand test coverage** - move from `--fuzz 1` to higher fuzz levels
-3. **AOT compilation (§5.1.1)** - produce standalone native binaries (currently JIT only)
-4. **ECO MLIR type system (§3.1.4)** - currently using eco.value as opaque pointer
-5. **LLVM stack map implementation (§1.2.3)** - precise GC root tracing
-6. **Process primitives (§3.1.6)** - for Elm concurrency support
-7. **Rationalize Guida I/O design (§2.1.1)** - clean kernel package API
+1. **Fix case scrutinee type mismatch (§4.2)** - 34 test failures; see `plans/fix-case-scrutinee-type.md`
+2. **Fix heap extraction type mismatch (§4.2)** - 10 test failures; see `plans/fix-heap-extraction-type-mismatch.md`
+3. **Fix tail recursion issues (§4.2)** - 4 test failures (jump target, call target validity)
+4. **Implement real kernel functions (§2.3)** - priority: Utils, Basics, List, String for self-hosting
+5. **Expand test coverage** - move from `--fuzz 1` to higher fuzz levels
+6. **AOT compilation (§5.1.1)** - produce standalone native binaries (currently JIT only)
+7. **LLVM stack map implementation (§1.2.3)** - precise GC root tracing
 
 **Active Workstreams**:
-1. **Elm kernel C++ real implementations (§2.3)** - replace stubs with working code
-2. Wire Guida MLIR output refinements (§4.2) - code generation improvements
-3. Guida I/O refactoring (§2.1) - kernel package design
+1. **MLIR CodeGen type mismatch fixes (§4.2)** - fixing case scrutinee and heap extraction type issues
+2. **Invariant test expansion** - validating fixes via comprehensive invariant tests
+3. **Elm kernel C++ real implementations (§2.3)** - replace stubs with working code

@@ -366,22 +366,38 @@ FUNCTION generateMainEntry(ctx, mainInfo):
 
 ## Implementation Details
 
-### File Location
+### Module Structure
 
-`compiler/src/Compiler/Generate/CodeGen/MLIR.elm` (~2000+ lines)
+The MLIR codegen is organized into 11 modules under `compiler/src/Compiler/Generate/MLIR/`:
+
+| Module | Purpose | Size |
+|--------|---------|------|
+| `Backend.elm` | Program entry point, module wiring | 4KB |
+| `Context.elm` | Context, signatures, type registry | 15KB |
+| `Types.elm` | Eco types, MonoType→MlirType conversion | 5KB |
+| `Ops.elm` | MLIR op builders (eco.*, arith.*, scf.*, func.*) | 25KB |
+| `Names.elm` | Symbol naming helpers | 1KB |
+| `TypeTable.elm` | eco.type_table generation | 16KB |
+| `Intrinsics.elm` | Basics/Bitwise kernel intrinsics | 16KB |
+| `Patterns.elm` | Decision tree path navigation, test generation | 29KB |
+| `Expr.elm` | Expression lowering, call ABI | 97KB |
+| `Lambdas.elm` | Lambda/closure processing, PAP wrappers | 10KB |
+| `Functions.elm` | Node generation (define, ctor, extern, cycle) | 22KB |
 
 ### Key Functions
 
-| Function | Purpose |
-|----------|---------|
-| `generateModule` | Main entry point |
-| `generateNode` | Generate a specialization |
-| `generateExpr` | Generate an expression |
-| `generateCall` | Generate function call |
-| `generateCase` | Generate case expression |
-| `processLambdas` | Hoist pending lambdas |
-| `monoTypeToMlir` | Convert MonoType to MLIR type |
-| `generateTypeTable` | Build type metadata |
+| Module | Function | Purpose |
+|--------|----------|---------|
+| `Backend` | `generateModule` | Main entry point |
+| `Functions` | `generateNode` | Generate a specialization |
+| `Expr` | `generateExpr` | Generate an expression |
+| `Expr` | `generateCall` | Generate function call |
+| `Expr` | `generateFanOut*` | Generate case expressions |
+| `Lambdas` | `processLambdas` | Hoist pending lambdas |
+| `Types` | `monoTypeToMlir` | Convert MonoType to MLIR type |
+| `TypeTable` | `generateTypeTable` | Build type metadata |
+| `Patterns` | `generateDTPath` | Navigate decision tree paths |
+| `Patterns` | `caseKindFromTest` | Determine case operation kind |
 
 ### MLIR Text Emission
 
