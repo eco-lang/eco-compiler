@@ -28,6 +28,11 @@ This module provides:
 
 @docs isFunctionType, functionArity, countTotalArity, decomposeFunctionType, isEcoValueType
 
+
+# Primitive Type Checks
+
+@docs isPrimitiveType, isPrimitiveMonoType
+
 -}
 
 import Compiler.AST.Monomorphized as Mono

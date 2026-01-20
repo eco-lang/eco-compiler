@@ -99,6 +99,16 @@ This module defines the data structures for the monomorphized program
 
 @docs toComparableSpecKey, toComparableMonoType
 
+
+# Path Utilities
+
+@docs getMonoPathType
+
+
+# Debug
+
+@docs monoTypeToDebugString
+
 -}
 
 import Compiler.Data.Name exposing (Name)
