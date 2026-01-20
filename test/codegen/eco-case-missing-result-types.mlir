@@ -6,9 +6,9 @@
 module {
   func.func @missing_result_types(%x: !eco.value) -> !eco.value {
     // CHECK: error: 'eco.case' op requires 'result_types' (caseResultTypes) attribute; eco.case is always an expression form
-    eco.case %x [0] {
+    eco.case %x : !eco.value [0] {
       eco.return %x : !eco.value
-    }
+    } {case_kind = "ctor"}
     func.return %x : !eco.value
   }
 }

@@ -17,7 +17,7 @@ module {
     %nothing = eco.construct.custom() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
 
     // Test 1: Case on Just - should take tag 1 branch and print inner value
-    eco.case %just [0, 1] result_types [!eco.value] {
+    eco.case %just : !eco.value [0, 1] result_types [!eco.value] {
       // Nothing case: return default
       %default = eco.box %c99 : i64 -> !eco.value
       eco.dbg %default : !eco.value
@@ -27,11 +27,11 @@ module {
       %inner = eco.project.custom %just[0] : !eco.value -> !eco.value
       eco.dbg %inner : !eco.value
       eco.return %inner : !eco.value
-    }
+    } {case_kind = "ctor"}
     // CHECK: 42
 
     // Test 2: Case on Nothing - should take tag 0 branch and print default
-    eco.case %nothing [0, 1] result_types [!eco.value] {
+    eco.case %nothing : !eco.value [0, 1] result_types [!eco.value] {
       // Nothing case: return default
       %default = eco.box %c99 : i64 -> !eco.value
       eco.dbg %default : !eco.value
@@ -41,7 +41,7 @@ module {
       %inner = eco.project.custom %nothing[0] : !eco.value -> !eco.value
       eco.dbg %inner : !eco.value
       eco.return %inner : !eco.value
-    }
+    } {case_kind = "ctor"}
     // CHECK: 99
 
     return %c0 : i64

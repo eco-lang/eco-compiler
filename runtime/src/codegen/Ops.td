@@ -116,25 +116,41 @@ class Eco_Op<string mnemonic, list<Trait> traits = []>
 def Eco_CaseOp : Eco_Op<"case", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
-  let summary = "Pattern match on ADT constructor tag";
+  let summary = "Pattern match on a value and branch to alternatives";
   let description = [{
-    Pattern match on an ADT's constructor tag and branch to one of several
-    regions. Each region handles a specific constructor tag.
+    Pattern match on a value and branch to one of several regions.
+    Each region handles a specific tag value.
 
-    The `result_types` attribute specifies the MLIR representation types
-    returned from this case (e.g., `[!eco.value]`, `[]`, `[i64, !eco.value]`).
-    All `eco.return` ops reachable from each alternative must have operand
-    types matching this list.
+    **Scrutinee Types and case_kind (required):**
+    - `!eco.value` + `case_kind="ctor"`: ADT constructor matching (extract tag via eco.get_tag)
+    - `!eco.value` + `case_kind="str"`: String pattern matching
+    - `i1` + `case_kind="bool"`: Boolean fanout (True/False patterns)
+    - `i1` + `case_kind="ctor"`: Boolean from Chain lowering (legacy compatibility)
+    - `i64` + `case_kind="int"`: Integer literal matching (direct comparison)
+    - `i16` + `case_kind="chr"`: Character literal matching (direct comparison)
 
-    Example:
+    The `caseResultTypes` attribute specifies the MLIR result types returned from
+    this case expression. All `eco.return` ops in each alternative must have
+    operand types matching this list.
+
+    Example (ADT matching):
     ```mlir
-    eco.case %scrutinee [0, 1] result_types [!eco.value] {
-      // tag 0 alternative (e.g., Nil)
+    eco.case %scrutinee [0, 1] result_types [!eco.value] { case_kind = "ctor" } {
       eco.return %nil_result : !eco.value
     }, {
-      // tag 1 alternative (e.g., Cons)
       %head = eco.project %scrutinee[0] : !eco.value -> !eco.value
       eco.return %head : !eco.value
+    }
+    ```
+
+    Example (integer matching):
+    ```mlir
+    eco.case %x [0, 1, 2] result_types [!eco.value] { case_kind = "int" } {
+      eco.return %zero_result : !eco.value
+    }, {
+      eco.return %one_result : !eco.value
+    }, {
+      eco.return %two_result : !eco.value
     }
     ```
 
@@ -143,10 +159,10 @@ def Eco_CaseOp : Eco_Op<"case", [
   }];
 
   let arguments = (ins
-    Eco_AnyValue:$scrutinee,                   // Accepts !eco.value or i1 (Bool)
+    Eco_AnyValue:$scrutinee,                   // !eco.value, i1, i16, or i64
     DenseI64ArrayAttr:$tags,
     OptionalAttr<ArrayAttr>:$caseResultTypes,  // Array of TypeAttr for SCF lowering
-    OptionalAttr<StrAttr>:$case_kind           // "ctor", "int", "chr", or "str"
+    StrAttr:$case_kind                         // Required: "ctor", "int", "chr", "str", or "bool"
   );
   let regions = (region VariadicRegion<AnyRegion>:$alternatives);
   let results = (outs);

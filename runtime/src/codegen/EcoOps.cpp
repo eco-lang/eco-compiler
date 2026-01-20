@@ -29,26 +29,65 @@ LogicalResult CaseOp::verify() {
            << getAlternatives().size() << ")";
   }
 
-  // Verify scrutinee type is allowed: !eco.value or i1 (Bool)
+  // Get case_kind attribute - REQUIRED
+  auto caseKindAttr = getCaseKindAttr();
+  if (!caseKindAttr) {
+    return emitOpError("requires 'case_kind' attribute");
+  }
+  StringRef caseKind = caseKindAttr.getValue();
+
+  // Validate case_kind is known
+  if (caseKind != "ctor" && caseKind != "int" &&
+      caseKind != "chr" && caseKind != "str" && caseKind != "bool") {
+    return emitOpError("invalid case_kind '") << caseKind
+           << "'; expected one of 'ctor', 'int', 'chr', 'str', 'bool'";
+  }
+
+  // Validate scrutinee type / case_kind compatibility
   Type scrutineeType = getScrutinee().getType();
-  if (!isa<eco::ValueType>(scrutineeType)) {
-    // For non-eco.value scrutinees, only allow i1 (Bool)
-    if (auto intType = dyn_cast<IntegerType>(scrutineeType)) {
-      if (intType.getWidth() != 1) {
-        return emitOpError("scrutinee must be !eco.value or i1, got ")
-               << scrutineeType;
+
+  if (isa<eco::ValueType>(scrutineeType)) {
+    // !eco.value: allow case_kind in {"ctor", "str"}
+    if (caseKind != "ctor" && caseKind != "str") {
+      return emitOpError("!eco.value scrutinee requires case_kind 'ctor' or 'str', got '")
+             << caseKind << "'";
+    }
+  } else if (auto intType = dyn_cast<IntegerType>(scrutineeType)) {
+    unsigned width = intType.getWidth();
+
+    if (width == 1) {
+      // i1 (Bool): allow case_kind in {"bool", "ctor"}
+      // "ctor" for Chain lowering compatibility, "bool" for Bool fanout
+      if (caseKind != "bool" && caseKind != "ctor") {
+        return emitOpError("i1 scrutinee requires case_kind 'bool' or 'ctor', got '")
+               << caseKind << "'";
       }
-      // For i1 scrutinee, verify tags are only 0 or 1
+      // Validate tags are 0 or 1 for i1
       for (int64_t tag : getTags()) {
         if (tag != 0 && tag != 1) {
           return emitOpError("i1 scrutinee requires tags in {0, 1}, got ")
                  << tag;
         }
       }
+    } else if (width == 64) {
+      // i64 (Int): require case_kind "int"
+      if (caseKind != "int") {
+        return emitOpError("i64 scrutinee requires case_kind 'int', got '")
+               << caseKind << "'";
+      }
+    } else if (width == 16) {
+      // i16 (Char): require case_kind "chr"
+      if (caseKind != "chr") {
+        return emitOpError("i16 scrutinee requires case_kind 'chr', got '")
+               << caseKind << "'";
+      }
     } else {
-      return emitOpError("scrutinee must be !eco.value or i1, got ")
+      return emitOpError("scrutinee must be !eco.value, i1, i16, or i64, got ")
              << scrutineeType;
     }
+  } else {
+    return emitOpError("scrutinee must be !eco.value, i1, i16, or i64, got ")
+           << scrutineeType;
   }
 
   // CGEN_010 invariant: eco.case ALWAYS requires result_types attribute.
@@ -199,9 +238,9 @@ LogicalResult PapCreateOp::verify() {
 // Custom Assembly Format: CaseOp
 //===----------------------------------------------------------------------===//
 
-// Format: eco.case %scrutinee [tag0, tag1, ...] result_types [type0, ...] { region0 }, { region1 }, ...
+// Format: eco.case %scrutinee : type [tag0, tag1, ...] result_types [type0, ...] { region0 }, { region1 }, ...
 void CaseOp::print(OpAsmPrinter &p) {
-  p << " " << getScrutinee() << " [";
+  p << " " << getScrutinee() << " : " << getScrutinee().getType() << " [";
   llvm::interleaveComma(getTags(), p);
   p << "]";
 
@@ -226,7 +265,10 @@ void CaseOp::print(OpAsmPrinter &p) {
 
 ParseResult CaseOp::parse(OpAsmParser &parser, OperationState &result) {
   OpAsmParser::UnresolvedOperand scrutinee;
-  if (parser.parseOperand(scrutinee))
+  Type scrutineeType;
+  if (parser.parseOperand(scrutinee) ||
+      parser.parseColon() ||
+      parser.parseType(scrutineeType))
     return failure();
 
   // Parse [tag0, tag1, ...]
@@ -296,9 +338,8 @@ ParseResult CaseOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
 
-  // Resolve scrutinee operand
-  Type valueType = eco::ValueType::get(parser.getContext());
-  if (parser.resolveOperand(scrutinee, valueType, result.operands))
+  // Resolve scrutinee operand with the parsed type
+  if (parser.resolveOperand(scrutinee, scrutineeType, result.operands))
     return failure();
 
   return success();

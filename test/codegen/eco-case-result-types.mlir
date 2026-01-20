@@ -5,12 +5,12 @@
 
 module {
   func.func @case_expr(%x: !eco.value) -> !eco.value {
-    // CHECK: eco.case %arg0 [0, 1] result_types [!eco.value]
-    eco.case %x [0, 1] result_types [!eco.value] {
+    // CHECK: eco.case %arg0 : !eco.value [0, 1] result_types [!eco.value]
+    eco.case %x : !eco.value [0, 1] result_types [!eco.value] {
       eco.return %x : !eco.value
     }, {
       eco.return %x : !eco.value
-    }
+    } {case_kind = "ctor"}
     func.return %x : !eco.value
   }
 }
