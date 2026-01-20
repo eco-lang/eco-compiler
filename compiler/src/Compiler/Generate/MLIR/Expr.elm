@@ -1988,23 +1988,23 @@ generateChainForBoolADT ctx root path success failure resultTy =
         thenRes =
             generateDecider ctx1 root success resultTy
 
-        thenRegion =
-            mkRegionFromOps thenRes.ops
+        ( thenRegion, ctx1a ) =
+            mkCaseRegionFromDecider thenRes.ctx thenRes.ops resultTy
 
         -- Generate failure branch (False) with eco.return
         -- Fork context: keep ctx1's variable mappings but advance nextVar to avoid SSA conflicts
         ctxForElse =
-            { ctx1 | nextVar = thenRes.ctx.nextVar }
+            { ctx1 | nextVar = ctx1a.nextVar }
 
         elseRes =
             generateDecider ctxForElse root failure resultTy
 
-        elseRegion =
-            mkRegionFromOps elseRes.ops
+        ( elseRegion, ctx1b ) =
+            mkCaseRegionFromDecider elseRes.ctx elseRes.ops resultTy
 
         -- eco.case on Bool: tag 1 for True (success), tag 0 for False (failure)
         ( ctx2, caseOp ) =
-            Ops.ecoCase elseRes.ctx boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
+            Ops.ecoCase ctx1b boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
     in
     { ops = pathOps ++ [ caseOp ]
     , resultVar = boolVar -- Dummy; control exits via eco.return inside regions
@@ -2027,23 +2027,23 @@ generateChainGeneral ctx root testChain success failure resultTy =
         thenRes =
             generateDecider ctx1 root success resultTy
 
-        thenRegion =
-            mkRegionFromOps thenRes.ops
+        ( thenRegion, ctx1a ) =
+            mkCaseRegionFromDecider thenRes.ctx thenRes.ops resultTy
 
         -- Generate failure branch with eco.return
         -- Fork context: keep ctx1's variable mappings but advance nextVar to avoid SSA conflicts
         ctxForElse =
-            { ctx1 | nextVar = thenRes.ctx.nextVar }
+            { ctx1 | nextVar = ctx1a.nextVar }
 
         elseRes =
             generateDecider ctxForElse root failure resultTy
 
-        elseRegion =
-            mkRegionFromOps elseRes.ops
+        ( elseRegion, ctx1b ) =
+            mkCaseRegionFromDecider elseRes.ctx elseRes.ops resultTy
 
         -- eco.case on Bool: tag 1 for True (success), tag 0 for False (failure)
         ( ctx2, caseOp ) =
-            Ops.ecoCase elseRes.ctx condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
+            Ops.ecoCase ctx1b condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
     in
     { ops = condOps ++ [ caseOp ]
     , resultVar = condVar -- Dummy; control exits via eco.return inside regions
@@ -2099,24 +2099,24 @@ generateBoolFanOut ctx root path edges fallback resultTy =
         thenRes =
             generateDecider ctx1 root trueBranch resultTy
 
-        thenRegion =
-            mkRegionFromOps thenRes.ops
+        ( thenRegion, ctx1a ) =
+            mkCaseRegionFromDecider thenRes.ctx thenRes.ops resultTy
 
         -- Generate False branch (tag 0) with eco.return
         -- Fork context: keep ctx1's variable mappings but advance nextVar to avoid SSA conflicts
         ctxForElse =
-            { ctx1 | nextVar = thenRes.ctx.nextVar }
+            { ctx1 | nextVar = ctx1a.nextVar }
 
         elseRes =
             generateDecider ctxForElse root falseBranch resultTy
 
-        elseRegion =
-            mkRegionFromOps elseRes.ops
+        ( elseRegion, ctx1b ) =
+            mkCaseRegionFromDecider elseRes.ctx elseRes.ops resultTy
 
         -- eco.case on Bool: tag 1 for True, tag 0 for False
         -- Regions: [True region, False region] corresponding to tags [1, 0]
         ( ctx2, caseOp ) =
-            Ops.ecoCase elseRes.ctx boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
+            Ops.ecoCase ctx1b boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
     in
     { ops = pathOps ++ [ caseOp ]
     , resultVar = boolVar -- Dummy; control exits via eco.return inside regions
@@ -2191,10 +2191,10 @@ generateFanOutGeneral ctx root path edges fallback resultTy =
                         subRes =
                             generateDecider accCtx root subTree resultTy
 
-                        region =
-                            mkRegionFromOps subRes.ops
+                        ( region, ctxAfterRegion ) =
+                            mkCaseRegionFromDecider subRes.ctx subRes.ops resultTy
                     in
-                    ( accRegions ++ [ region ], subRes.ctx )
+                    ( accRegions ++ [ region ], ctxAfterRegion )
                 )
                 ( [], ctx1 )
                 edges
@@ -2203,8 +2203,8 @@ generateFanOutGeneral ctx root path edges fallback resultTy =
         fallbackRes =
             generateDecider ctx2 root fallback resultTy
 
-        fallbackRegion =
-            mkRegionFromOps fallbackRes.ops
+        ( fallbackRegion, ctx2a ) =
+            mkCaseRegionFromDecider fallbackRes.ctx fallbackRes.ops resultTy
 
         -- Build eco.case with all regions (edges + fallback)
         allRegions =
@@ -2213,7 +2213,7 @@ generateFanOutGeneral ctx root path edges fallback resultTy =
         -- eco.case always uses !eco.value for scrutinee
         -- Pass caseKind to inform runtime how to handle matching
         ( ctx3, caseOp ) =
-            Ops.ecoCase fallbackRes.ctx scrutineeVar Types.ecoValue caseKind tags allRegions [ resultTy ]
+            Ops.ecoCase ctx2a scrutineeVar Types.ecoValue caseKind tags allRegions [ resultTy ]
     in
     -- Return the case op - no dummy construct between case and return!
     -- The lowering pattern expects: eco.case ... eco.return
@@ -2258,6 +2258,41 @@ defaultTerminator =
     , loc = Loc.unknown
     , isTerminator = True
     }
+
+
+{-| Check if an operation is a valid region terminator.
+-}
+isValidTerminator : MlirOp -> Bool
+isValidTerminator op =
+    List.member op.name [ "eco.return", "eco.jump", "eco.crash", "eco.unreachable" ]
+
+
+{-| Create a region from decider ops, ensuring it ends with a valid terminator.
+
+When generateDecider produces ops ending with eco.case (nested case), we need
+to append a dummy eco.return to satisfy MLIR's terminator requirement.
+The dummy return is unreachable at runtime (eco.case branches always exit
+via their own returns), but satisfies the MLIR structure requirement.
+-}
+mkCaseRegionFromDecider : Ctx.Context -> List MlirOp -> MlirType -> ( MlirRegion, Ctx.Context )
+mkCaseRegionFromDecider ctx ops resultTy =
+    case List.reverse ops of
+        [] ->
+            ( mkRegionFromOps [], ctx )
+
+        lastOp :: _ ->
+            if isValidTerminator lastOp then
+                ( mkRegionFromOps ops, ctx )
+
+            else
+                let
+                    ( dummyOps, dummyVar, ctx1 ) =
+                        createDummyValue ctx resultTy
+
+                    ( ctx2, returnOp ) =
+                        Ops.ecoReturn ctx1 dummyVar resultTy
+                in
+                ( mkRegionFromOps (ops ++ dummyOps ++ [ returnOp ]), ctx2 )
 
 
 {-| Generate case expression control flow.
