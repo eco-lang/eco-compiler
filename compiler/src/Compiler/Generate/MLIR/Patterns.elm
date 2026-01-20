@@ -1,4 +1,4 @@
-module Compiler.Generate.MLIR.Patterns exposing (generateMonoPath, generateDTPath, generateChainCondition, testToTagInt, caseKindFromTest, computeFallbackTag)
+module Compiler.Generate.MLIR.Patterns exposing (generateMonoPath, generateDTPath, generateChainCondition, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag)
 
 {-| Pattern matching and path generation for MLIR code generation.
 
@@ -7,9 +7,10 @@ This module handles:
   - Path navigation (MonoPath and DT.Path)
   - Test generation for pattern matching
   - Case kind determination
+  - Scrutinee type determination
   - Fallback tag computation
 
-@docs generateMonoPath, generateDTPath, generateChainCondition, testToTagInt, caseKindFromTest, computeFallbackTag
+@docs generateMonoPath, generateDTPath, generateChainCondition, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag
 
 -}
 
@@ -525,6 +526,27 @@ caseKindFromTest test =
 
         DT.IsTuple ->
             "ctor"
+
+
+{-| Get the MLIR type for the scrutinee based on case_kind.
+
+Int cases need i64 scrutinee, Char cases need i16, all others use eco.value.
+-}
+scrutineeTypeFromCaseKind : String -> MlirType
+scrutineeTypeFromCaseKind caseKind =
+    case caseKind of
+        "int" ->
+            I64
+
+        "chr" ->
+            Types.ecoChar
+
+        "str" ->
+            Types.ecoValue
+
+        -- "ctor" and anything else: boxed ADTs
+        _ ->
+            Types.ecoValue
 
 
 {-| Compute the fallback tag for a fan-out based on the edge tests.

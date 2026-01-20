@@ -69,41 +69,80 @@ checkCaseScrutinee op =
             Nothing
 
         Just (scrutineeType :: _) ->
-            let
-                isBooleanCase =
-                    scrutineeType == I1
+            case maybeCaseKind of
+                Just "int" ->
+                    -- Int cases require i64 scrutinee
+                    if scrutineeType /= I64 then
+                        Just
+                            { opId = op.id
+                            , opName = op.name
+                            , message =
+                                "case_kind='int' requires i64 scrutinee, got "
+                                    ++ typeToString scrutineeType
+                            }
 
-                caseKindRequiresEcoValue =
-                    case maybeCaseKind of
-                        Just kind ->
-                            List.member kind [ "ctor", "int", "chr", "str" ]
+                    else
+                        Nothing
 
-                        Nothing ->
-                            False
-            in
-            if caseKindRequiresEcoValue && not (isEcoValueType scrutineeType) then
-                Just
-                    { opId = op.id
-                    , opName = op.name
-                    , message =
-                        "case_kind="
-                            ++ Maybe.withDefault "?" maybeCaseKind
-                            ++ " requires !eco.value scrutinee, got "
-                            ++ typeToString scrutineeType
-                    }
+                Just "chr" ->
+                    -- Char cases require i16 scrutinee (eco.char)
+                    if scrutineeType /= I16 then
+                        Just
+                            { opId = op.id
+                            , opName = op.name
+                            , message =
+                                "case_kind='chr' requires i16 (ECO char) scrutinee, got "
+                                    ++ typeToString scrutineeType
+                            }
 
-            else if isBooleanCase && caseKindRequiresEcoValue then
-                Just
-                    { opId = op.id
-                    , opName = op.name
-                    , message =
-                        "Boolean case (i1 scrutinee) but case_kind="
-                            ++ Maybe.withDefault "?" maybeCaseKind
-                            ++ " suggests non-boolean"
-                    }
+                    else
+                        Nothing
 
-            else
-                Nothing
+                Just "ctor" ->
+                    -- Constructor cases require eco.value scrutinee
+                    if not (isEcoValueType scrutineeType) then
+                        Just
+                            { opId = op.id
+                            , opName = op.name
+                            , message =
+                                "case_kind='ctor' requires !eco.value scrutinee, got "
+                                    ++ typeToString scrutineeType
+                            }
+
+                    else
+                        Nothing
+
+                Just "str" ->
+                    -- String cases require eco.value scrutinee
+                    if not (isEcoValueType scrutineeType) then
+                        Just
+                            { opId = op.id
+                            , opName = op.name
+                            , message =
+                                "case_kind='str' requires !eco.value scrutinee, got "
+                                    ++ typeToString scrutineeType
+                            }
+
+                    else
+                        Nothing
+
+                Just "bool" ->
+                    -- Boolean cases require i1 scrutinee
+                    if scrutineeType /= I1 then
+                        Just
+                            { opId = op.id
+                            , opName = op.name
+                            , message =
+                                "case_kind='bool' requires i1 scrutinee, got "
+                                    ++ typeToString scrutineeType
+                            }
+
+                    else
+                        Nothing
+
+                _ ->
+                    -- Unknown case_kind, no validation
+                    Nothing
 
 
 typeToString : MlirType -> String

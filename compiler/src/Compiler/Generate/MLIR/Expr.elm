@@ -2154,21 +2154,9 @@ eco.case accepts !eco.value scrutinee; for Bool patterns, generateBoolFanOut use
 generateFanOutGeneral : Ctx.Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
 generateFanOutGeneral ctx root path edges fallback resultTy =
     let
-        -- For ADT patterns, use !eco.value scrutinee (boxed heap pointer)
-        -- The runtime extracts the tag from the boxed value
-        ( pathOps, scrutineeVar, ctx1 ) =
-            Patterns.generateDTPath ctx root path Types.ecoValue
-
-        -- Collect tags from edges
-        edgeTags =
-            List.map (\( test, _ ) -> Patterns.testToTagInt test) edges
-
-        -- Compute the fallback tag (for the fallback region)
+        -- Collect edge tests for case kind and tag computation
         edgeTests =
             List.map Tuple.first edges
-
-        fallbackTag =
-            Patterns.computeFallbackTag edgeTests
 
         -- Determine case kind from the first edge test
         caseKind =
@@ -2178,6 +2166,24 @@ generateFanOutGeneral ctx root path edges fallback resultTy =
 
                 [] ->
                     "ctor"
+
+        -- Derive scrutinee type from case_kind:
+        -- "int" -> i64, "chr" -> i16, others -> eco.value
+        scrutineeType =
+            Patterns.scrutineeTypeFromCaseKind caseKind
+
+        -- Generate path to scrutinee with correct type
+        -- If root is boxed but we need primitive, generateDTPath emits eco.unbox
+        ( pathOps, scrutineeVar, ctx1 ) =
+            Patterns.generateDTPath ctx root path scrutineeType
+
+        -- Collect tags from edges
+        edgeTags =
+            List.map (\( test, _ ) -> Patterns.testToTagInt test) edges
+
+        -- Compute the fallback tag (for the fallback region)
+        fallbackTag =
+            Patterns.computeFallbackTag edgeTests
 
         -- All tags including the fallback
         tags =
@@ -2210,10 +2216,10 @@ generateFanOutGeneral ctx root path edges fallback resultTy =
         allRegions =
             edgeRegions ++ [ fallbackRegion ]
 
-        -- eco.case always uses !eco.value for scrutinee
-        -- Pass caseKind to inform runtime how to handle matching
+        -- Build eco.case with correct scrutinee type
+        -- _operand_types will now match the actual SSA type
         ( ctx3, caseOp ) =
-            Ops.ecoCase ctx2a scrutineeVar Types.ecoValue caseKind tags allRegions [ resultTy ]
+            Ops.ecoCase ctx2a scrutineeVar scrutineeType caseKind tags allRegions [ resultTy ]
     in
     -- Return the case op - no dummy construct between case and return!
     -- The lowering pattern expects: eco.case ... eco.return
