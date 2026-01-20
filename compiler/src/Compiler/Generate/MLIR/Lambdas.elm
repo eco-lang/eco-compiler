@@ -72,27 +72,29 @@ generateLambdaFunc ctx lambda =
         allArgPairs =
             captureArgPairs ++ paramArgPairs
 
-        -- Generate unbox operations for parameters that need primitive types
-        -- and build the varMappings with the unboxed variable names
-        ( unboxOps, varMappingsWithParams, ctxAfterUnbox ) =
+        -- Generate unbox operations for captures AND parameters that need primitive types
+        -- and build the varMappings with the unboxed variable names.
+        -- Both captures and params arrive as !eco.value (boxed calling convention),
+        -- but inside the lambda body we need primitives unboxed to their actual types.
+        ( unboxOps, varMappingsWithArgs, ctxAfterUnbox ) =
             List.foldl
                 (\( name, ty ) ( opsAcc, mappingsAcc, ctxAcc ) ->
                     let
-                        paramMlirType =
+                        mlirType =
                             Types.monoTypeToMlir ty
 
                         boxedVarName =
                             "%" ++ name
                     in
-                    if Types.isEcoValueType paramMlirType then
-                        -- Parameter is already !eco.value, no unboxing needed
+                    if Types.isEcoValueType mlirType then
+                        -- Already !eco.value, no unboxing needed
                         ( opsAcc
                         , Dict.insert name ( boxedVarName, Types.ecoValue ) mappingsAcc
                         , ctxAcc
                         )
 
                     else
-                        -- Need to unbox the parameter
+                        -- Need to unbox to primitive type
                         let
                             ( unboxedVar, ctxU1 ) =
                                 Ctx.freshVar ctxAcc
@@ -103,28 +105,22 @@ generateLambdaFunc ctx lambda =
                             ( ctxU2, unboxOp ) =
                                 Ops.mlirOp ctxU1 "eco.unbox"
                                     |> Ops.opBuilder.withOperands [ boxedVarName ]
-                                    |> Ops.opBuilder.withResults [ ( unboxedVar, paramMlirType ) ]
+                                    |> Ops.opBuilder.withResults [ ( unboxedVar, mlirType ) ]
                                     |> Ops.opBuilder.withAttrs attrs
                                     |> Ops.opBuilder.build
                         in
                         ( opsAcc ++ [ unboxOp ]
-                        , Dict.insert name ( unboxedVar, paramMlirType ) mappingsAcc
+                        , Dict.insert name ( unboxedVar, mlirType ) mappingsAcc
                         , ctxU2
                         )
                 )
-                ( []
-                , List.foldl
-                    (\( name, _ ) acc -> Dict.insert name ( "%" ++ name, Types.ecoValue ) acc)
-                    Dict.empty
-                    lambda.captures
-                , { ctx | nextVar = List.length allArgPairs }
-                )
-                lambda.params
+                ( [], Dict.empty, { ctx | nextVar = List.length allArgPairs } )
+                (lambda.captures ++ lambda.params)
 
         -- Merge sibling mappings with captures and params (captures/params take precedence)
         varMappingsWithSiblings : Dict.Dict String ( String, MlirType )
         varMappingsWithSiblings =
-            Dict.union varMappingsWithParams lambda.siblingMappings
+            Dict.union varMappingsWithArgs lambda.siblingMappings
 
         ctxWithArgs : Ctx.Context
         ctxWithArgs =

@@ -30,6 +30,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
 import Compiler.Generate.Monomorphize.State exposing (MonoState)
 import Compiler.Reporting.Annotation as A
+import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 
 
@@ -286,15 +287,22 @@ computeClosureCaptures params body =
             findFreeLocals boundInitial body
                 |> dedupeNames
 
+        -- Collect a mapping from variable names to their actual types from the body.
+        -- This allows us to use the correct type for each captured variable instead
+        -- of a placeholder MUnit.
+        varTypeMap : Dict String String Mono.MonoType
+        varTypeMap =
+            collectVarTypes body
+
         captureFor name =
             let
-                -- We do not track an environment here; in practice we only
-                -- capture by name and type from the VarLocal uses.
-                -- For now, use a placeholder MUnit when the type is unknown.
-                placeholderType =
-                    Mono.MUnit
+                -- Look up the actual type from the body expression.
+                -- If not found (shouldn't happen for well-typed code), fall back to MUnit.
+                actualType =
+                    Dict.get identity name varTypeMap
+                        |> Maybe.withDefault Mono.MUnit
             in
-            ( name, Mono.MonoVarLocal name placeholderType, False )
+            ( name, Mono.MonoVarLocal name actualType, False )
     in
     List.map captureFor freeNames
 
@@ -504,3 +512,110 @@ dedupeNames names =
         |> List.foldl step ( EverySet.empty, [] )
         |> Tuple.second
         |> List.reverse
+
+
+{-| Collect a mapping from variable names to their types from an expression.
+This walks the expression tree and records the type of each MonoVarLocal encountered.
+-}
+collectVarTypes : Mono.MonoExpr -> Dict String String Mono.MonoType
+collectVarTypes expr =
+    collectVarTypesHelper expr Dict.empty
+
+
+collectVarTypesHelper : Mono.MonoExpr -> Dict String String Mono.MonoType -> Dict String String Mono.MonoType
+collectVarTypesHelper expr acc =
+    case expr of
+        Mono.MonoVarLocal name monoType ->
+            -- Only insert if not already present (keep first occurrence)
+            if Dict.member identity name acc then
+                acc
+
+            else
+                Dict.insert identity name monoType acc
+
+        Mono.MonoClosure closureInfo body _ ->
+            -- Recurse into closure body
+            collectVarTypesHelper body acc
+
+        Mono.MonoLet def body _ ->
+            let
+                accAfterDef =
+                    case def of
+                        Mono.MonoDef _ defExpr ->
+                            collectVarTypesHelper defExpr acc
+
+                        Mono.MonoTailDef _ _ defExpr ->
+                            collectVarTypesHelper defExpr acc
+            in
+            collectVarTypesHelper body accAfterDef
+
+        Mono.MonoIf branches final _ ->
+            let
+                accAfterBranches =
+                    List.foldl
+                        (\( cond, thenExpr ) a ->
+                            collectVarTypesHelper thenExpr (collectVarTypesHelper cond a)
+                        )
+                        acc
+                        branches
+            in
+            collectVarTypesHelper final accAfterBranches
+
+        Mono.MonoCase _ _ decider jumps _ ->
+            let
+                accAfterDecider =
+                    collectDeciderVarTypes decider acc
+
+                accAfterJumps =
+                    List.foldl (\( _, e ) a -> collectVarTypesHelper e a) accAfterDecider jumps
+            in
+            accAfterJumps
+
+        Mono.MonoList _ exprs _ ->
+            List.foldl collectVarTypesHelper acc exprs
+
+        Mono.MonoCall _ func args _ ->
+            List.foldl collectVarTypesHelper (collectVarTypesHelper func acc) args
+
+        Mono.MonoTailCall _ namedExprs _ ->
+            List.foldl (\( _, e ) a -> collectVarTypesHelper e a) acc namedExprs
+
+        Mono.MonoRecordCreate exprs _ _ ->
+            List.foldl collectVarTypesHelper acc exprs
+
+        Mono.MonoRecordAccess record _ _ _ _ ->
+            collectVarTypesHelper record acc
+
+        Mono.MonoRecordUpdate record updates _ _ ->
+            List.foldl (\( _, e ) a -> collectVarTypesHelper e a) (collectVarTypesHelper record acc) updates
+
+        Mono.MonoTupleCreate _ exprs _ _ ->
+            List.foldl collectVarTypesHelper acc exprs
+
+        Mono.MonoDestruct _ body _ ->
+            collectVarTypesHelper body acc
+
+        _ ->
+            acc
+
+
+collectDeciderVarTypes : Mono.Decider Mono.MonoChoice -> Dict String String Mono.MonoType -> Dict String String Mono.MonoType
+collectDeciderVarTypes decider acc =
+    case decider of
+        Mono.Leaf choice ->
+            case choice of
+                Mono.Inline expr ->
+                    collectVarTypesHelper expr acc
+
+                Mono.Jump _ ->
+                    acc
+
+        Mono.Chain _ success failure ->
+            collectDeciderVarTypes failure (collectDeciderVarTypes success acc)
+
+        Mono.FanOut _ edges fallback ->
+            let
+                accAfterEdges =
+                    List.foldl (\( _, d ) a -> collectDeciderVarTypes d a) acc edges
+            in
+            collectDeciderVarTypes fallback accAfterEdges
