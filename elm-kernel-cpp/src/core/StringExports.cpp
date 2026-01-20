@@ -5,6 +5,7 @@
 #include "String.hpp"
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
+#include "allocator/StringOps.hpp"
 #include <vector>
 
 using namespace Elm;
@@ -119,7 +120,9 @@ uint64_t Elm_Kernel_String_toFloat(uint64_t str) {
 }
 
 uint64_t Elm_Kernel_String_fromNumber(uint64_t n) {
-    HPointer result = String::fromNumber(Export::toPtr(n));
+    // The MLIR type signature is (i64) -> !eco.value, meaning we receive
+    // an unboxed integer directly. Convert it to string.
+    HPointer result = StringOps::fromInt(static_cast<int64_t>(n));
     return Export::encode(result);
 }
 

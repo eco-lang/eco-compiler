@@ -164,20 +164,29 @@ generateDefine ctx funcName expr monoType =
                 retTy =
                     Types.monoTypeToMlir monoType
 
-                -- Handle type mismatch between expression result and expected return type.
-                -- Uses symmetric coercion: primitive <-> !eco.value in either direction.
-                ( coerceOps, finalVar, ctxFinal ) =
-                    Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType retTy
-
-                ( ctx1, returnOp ) =
-                    Ops.ecoReturn ctxFinal finalVar retTy
-
                 region : MlirRegion
                 region =
-                    Ops.mkRegion [] (exprResult.ops ++ coerceOps) returnOp
+                    if exprResult.isTerminated then
+                        -- Expression is a control-flow exit (eco.case, eco.jump).
+                        -- The ops already contain the terminator - don't add eco.return.
+                        -- IMPORTANT: Do NOT access exprResult.resultVar here - it is meaningless!
+                        Ops.mkRegionTerminatedByOps [] exprResult.ops
+
+                    else
+                        -- Normal expression - add eco.return with the result value.
+                        let
+                            -- Handle type mismatch between expression result and expected return type.
+                            -- Uses symmetric coercion: primitive <-> !eco.value in either direction.
+                            ( coerceOps, finalVar, ctxFinal ) =
+                                Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType retTy
+
+                            ( _, returnOp ) =
+                                Ops.ecoReturn ctxFinal finalVar retTy
+                        in
+                        Ops.mkRegion [] (exprResult.ops ++ coerceOps) returnOp
 
                 ( ctx2, funcOp ) =
-                    Ops.funcFunc ctx1 funcName [] retTy region
+                    Ops.funcFunc exprResult.ctx funcName [] retTy region
             in
             ( funcOp, ctx2 )
 
@@ -219,20 +228,29 @@ generateClosureFunc ctx funcName closureInfo body monoType =
         returnType =
             Types.monoTypeToMlir extractedReturnType
 
-        -- Handle type mismatch between expression result and expected return type.
-        -- Uses symmetric coercion: primitive <-> !eco.value in either direction.
-        ( coerceOps, finalVar, ctxFinal ) =
-            Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType returnType
-
-        ( ctx1, returnOp ) =
-            Ops.ecoReturn ctxFinal finalVar returnType
-
         region : MlirRegion
         region =
-            Ops.mkRegion argPairs (exprResult.ops ++ coerceOps) returnOp
+            if exprResult.isTerminated then
+                -- Expression is a control-flow exit (eco.case, eco.jump).
+                -- The ops already contain the terminator - don't add eco.return.
+                -- IMPORTANT: Do NOT access exprResult.resultVar here - it is meaningless!
+                Ops.mkRegionTerminatedByOps argPairs exprResult.ops
+
+            else
+                -- Normal expression - add eco.return with the result value.
+                let
+                    -- Handle type mismatch between expression result and expected return type.
+                    -- Uses symmetric coercion: primitive <-> !eco.value in either direction.
+                    ( coerceOps, finalVar, ctxFinal ) =
+                        Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType returnType
+
+                    ( _, returnOp ) =
+                        Ops.ecoReturn ctxFinal finalVar returnType
+                in
+                Ops.mkRegion argPairs (exprResult.ops ++ coerceOps) returnOp
 
         ( ctx2, funcOp ) =
-            Ops.funcFunc ctx1 funcName argPairs returnType region
+            Ops.funcFunc exprResult.ctx funcName argPairs returnType region
     in
     ( funcOp, ctx2 )
 
@@ -271,20 +289,29 @@ generateTailFunc ctx funcName params expr monoType =
         retTy =
             Types.monoTypeToMlir monoType
 
-        -- Handle type mismatch between expression result and expected return type.
-        -- Uses symmetric coercion: primitive <-> !eco.value in either direction.
-        ( coerceOps, finalVar, ctxFinal ) =
-            Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType retTy
-
-        ( ctx1, returnOp ) =
-            Ops.ecoReturn ctxFinal finalVar retTy
-
         region : MlirRegion
         region =
-            Ops.mkRegion argPairs (exprResult.ops ++ coerceOps) returnOp
+            if exprResult.isTerminated then
+                -- Expression is a control-flow exit (eco.case, eco.jump).
+                -- The ops already contain the terminator - don't add eco.return.
+                -- IMPORTANT: Do NOT access exprResult.resultVar here - it is meaningless!
+                Ops.mkRegionTerminatedByOps argPairs exprResult.ops
+
+            else
+                -- Normal expression - add eco.return with the result value.
+                let
+                    -- Handle type mismatch between expression result and expected return type.
+                    -- Uses symmetric coercion: primitive <-> !eco.value in either direction.
+                    ( coerceOps, finalVar, ctxFinal ) =
+                        Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType retTy
+
+                    ( _, returnOp ) =
+                        Ops.ecoReturn ctxFinal finalVar retTy
+                in
+                Ops.mkRegion argPairs (exprResult.ops ++ coerceOps) returnOp
 
         ( ctx2, funcOp ) =
-            Ops.funcFunc ctx1 funcName argPairs retTy region
+            Ops.funcFunc exprResult.ctx funcName argPairs retTy region
     in
     ( funcOp, ctx2 )
 

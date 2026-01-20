@@ -279,6 +279,36 @@ uint32_t eco_get_header_tag(uint64_t obj);
 /// @return The constructor tag
 uint32_t eco_get_custom_ctor(uint64_t obj);
 
+/// Get constructor tag for a value, handling both heap objects and embedded constants.
+/// For heap Custom objects: returns the ctor field (16-bit constructor tag).
+/// For embedded constants: returns the appropriate ctor tag:
+///   - Nothing (kind=6) -> tag=1 (second constructor of Maybe)
+///   - Nil (kind=5) -> tag=0 (first constructor of List)
+///   - Other embedded constants -> tag=0
+/// @param val HPointer (as uint64_t) to the value
+/// @return The constructor tag
+uint32_t eco_get_tag(uint64_t val);
+
+//===----------------------------------------------------------------------===//
+// List Element Access
+//===----------------------------------------------------------------------===//
+
+/// Gets the head of a Cons cell as an unboxed i64.
+/// Handles both boxed and unboxed heads:
+/// - If head is unboxed: returns the value directly from Cons.head
+/// - If head is boxed: resolves the HPointer and loads from ElmInt.value
+/// @param cons HPointer (as uint64_t) to the Cons cell
+/// @return The head value as i64
+int64_t eco_cons_head_i64(uint64_t cons);
+
+/// Gets the head of a Cons cell as an unboxed f64.
+/// Handles both boxed and unboxed heads:
+/// - If head is unboxed: returns the value directly from Cons.head
+/// - If head is boxed: resolves the HPointer and loads from ElmFloat.value
+/// @param cons HPointer (as uint64_t) to the Cons cell
+/// @return The head value as f64
+double eco_cons_head_f64(uint64_t cons);
+
 //===----------------------------------------------------------------------===//
 // Arithmetic Helpers
 //===----------------------------------------------------------------------===//

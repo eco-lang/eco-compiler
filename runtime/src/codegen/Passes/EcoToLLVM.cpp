@@ -63,6 +63,62 @@ struct SelectOpTypeConversion : public OpConversionPattern<arith::SelectOp> {
     }
 };
 
+/// Pattern to type-convert scf.index_switch operations.
+/// This handles the case where scf.index_switch has eco.value result types.
+struct IndexSwitchOpTypeConversion : public OpConversionPattern<scf::IndexSwitchOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(scf::IndexSwitchOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        // Convert result types
+        SmallVector<Type> convertedTypes;
+        if (failed(getTypeConverter()->convertTypes(op.getResultTypes(), convertedTypes)))
+            return failure();
+
+        // If types are already converted, no work to do
+        if (convertedTypes == SmallVector<Type>(op.getResultTypes().begin(), op.getResultTypes().end()))
+            return failure();
+
+        auto loc = op.getLoc();
+
+        // Create new index_switch with converted result types
+        // Note: Use original arg (not adaptor) because scf.index_switch requires index type
+        auto newOp = rewriter.create<scf::IndexSwitchOp>(
+            loc, convertedTypes, op.getArg(), op.getCases(), op.getCases().size());
+
+        // Move the case regions from old op to new op
+        for (auto [oldRegion, newRegion] : llvm::zip(op.getCaseRegions(), newOp.getCaseRegions())) {
+            rewriter.inlineRegionBefore(oldRegion, newRegion, newRegion.end());
+        }
+
+        // Move the default region
+        rewriter.inlineRegionBefore(op.getDefaultRegion(), newOp.getDefaultRegion(),
+                                    newOp.getDefaultRegion().end());
+
+        // Replace uses with converted results
+        rewriter.replaceOp(op, newOp.getResults());
+        return success();
+    }
+};
+
+/// Pattern to type-convert scf.yield operations inside index_switch.
+struct YieldOpTypeConversion : public OpConversionPattern<scf::YieldOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(scf::YieldOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        // Only convert yields inside index_switch
+        if (!op->getParentOfType<scf::IndexSwitchOp>())
+            return failure();
+
+        // If operands are already converted (through adaptor), just create new yield
+        rewriter.replaceOpWithNewOp<scf::YieldOp>(op, adaptor.getOperands());
+        return success();
+    }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -88,16 +144,18 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         ModuleOp module = getOperation();
         auto *ctx = &getContext();
 
+
         // Set up type converter for eco.value -> i64
         EcoTypeConverter typeConverter(ctx);
 
         // Set up conversion target
         ConversionTarget target(*ctx);
         target.addLegalDialect<LLVM::LLVMDialect>();
+        target.addLegalDialect<cf::ControlFlowDialect>();  // CF ops handled by later pass
         target.addLegalOp<ModuleOp>();
 
         // Arith ops are dynamically legal: only if they don't contain eco.value types.
-        // This ensures arith.select (from scf.if lowering) gets type-converted.
+        // This ensures arith.select gets type-converted.
         target.addDynamicallyLegalDialect<arith::ArithDialect>(
             [&](Operation *op) {
                 for (auto operand : op->getOperands()) {
@@ -145,6 +203,34 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // Mark all Eco dialect operations as illegal (to be lowered)
         target.addIllegalDialect<EcoDialect>();
 
+        // Override for CaseOp: temporarily legal when nested under SCF.
+        // This defers CaseOpLowering until SCF regions are converted to CF,
+        // preventing the creation of multiple blocks inside SCF single-block regions.
+        target.addDynamicallyLegalOp<CaseOp>([](CaseOp op) {
+            // If nested under SCF, treat as temporarily legal (don't convert yet)
+            if (op->getParentOfType<scf::IfOp>() ||
+                op->getParentOfType<scf::IndexSwitchOp>()) {
+                return true;
+            }
+            // Otherwise, require conversion (illegal)
+            return false;
+        });
+
+        // Also defer ReturnOp conversion when inside a CaseOp that's inside SCF.
+        // This prevents eco.return from being converted to llvm.return while the
+        // parent eco.case is still temporarily legal (which would cause a verifier error).
+        target.addDynamicallyLegalOp<ReturnOp>([](ReturnOp op) {
+            // Check if we're inside a CaseOp that's inside SCF
+            if (auto caseOp = op->getParentOfType<CaseOp>()) {
+                if (caseOp->getParentOfType<scf::IfOp>() ||
+                    caseOp->getParentOfType<scf::IndexSwitchOp>()) {
+                    return true;  // Legal for now
+                }
+            }
+            // Otherwise, require conversion (illegal)
+            return false;
+        });
+
         // Set up lowering patterns
         RewritePatternSet patterns(ctx);
 
@@ -169,14 +255,44 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // This adds patterns to convert SCF ops' types and marks SCF ops as dynamically legal.
         scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter, patterns, target);
 
-        // Add SCF-to-CF lowering patterns
-        // Since this runs in the same pass as type conversion, SCF ops will have their
-        // types converted before being lowered to CF ops.
+        // Override: SCF must be fully eliminated, not just type-converted.
+        // This ensures SCF-to-CF patterns run to completion.
+        target.addIllegalDialect<scf::SCFDialect>();
+
+        // scf.index_switch is dynamically legal: legal only when its result types
+        // are already converted (not !eco.value). This allows the type conversion
+        // patterns to run first, converting the yield types inside.
+        target.addDynamicallyLegalOp<scf::IndexSwitchOp>([](scf::IndexSwitchOp op) {
+            // Legal if no result types are eco.value
+            for (Type t : op.getResultTypes()) {
+                if (isa<eco::ValueType>(t))
+                    return false;
+            }
+            return true;
+        });
+
+        // scf.yield is dynamically legal based on its operand types
+        target.addDynamicallyLegalOp<scf::YieldOp>([](scf::YieldOp op) {
+            for (Value operand : op.getOperands()) {
+                if (isa<eco::ValueType>(operand.getType()))
+                    return false;
+            }
+            return true;
+        });
+
+        // Add SCF-to-CF lowering patterns (for scf.if, scf.while, etc.)
+        // Note: scf.index_switch is intentionally NOT lowered here.
         populateSCFToControlFlowConversionPatterns(patterns);
 
         // Add arith type conversion pattern for select ops
         // (needed when scf.if is lowered to arith.select with eco.value types)
         patterns.add<SelectOpTypeConversion>(typeConverter, ctx);
+
+        // Add SCF type conversion patterns for index_switch
+        // (needed because scf::populateSCFStructuralTypeConversionsAndLegality
+        // doesn't handle index_switch type conversion)
+        patterns.add<IndexSwitchOpTypeConversion>(typeConverter, ctx);
+        patterns.add<YieldOpTypeConversion>(typeConverter, ctx);
 
         // Add all ECO lowering patterns from modular files
         populateEcoTypePatterns(typeConverter, patterns, runtime);
@@ -189,7 +305,10 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         populateEcoErrorDebugPatterns(typeConverter, patterns, runtime);
 
         // Apply the conversion patterns to the module
-        if (failed(applyPartialConversion(module, target, std::move(patterns))))
+        // Use applyFullConversion to ensure all operations are legalized.
+        // This is important because dynamic legality for CaseOp depends on
+        // structural context that changes during conversion.
+        if (failed(applyFullConversion(module, target, std::move(patterns))))
             signalPassFailure();
 
         // Generate global root initialization function

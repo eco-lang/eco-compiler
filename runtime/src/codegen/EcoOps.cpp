@@ -157,27 +157,30 @@ LogicalResult CaseOp::verify() {
       return emitOpError("alternative block must have a terminator");
     }
 
-    // All alternatives must terminate with eco.return (not eco.jump)
-    auto retOp = dyn_cast<ReturnOp>(terminator);
-    if (!retOp) {
+    // Alternatives must terminate with eco.return or nested eco.case (transitive termination).
+    // eco.jump is not allowed - it would exit the enclosing joinpoint, not the case.
+    if (!isa<ReturnOp>(terminator) && !isa<CaseOp>(terminator)) {
       return emitOpError("alternative ")
-             << altIndex << " must terminate with 'eco.return', got '"
-             << terminator->getName() << "'; eco.jump is not allowed in case alternatives";
+             << altIndex << " must terminate with 'eco.return' or nested 'eco.case', got '"
+             << terminator->getName() << "'";
     }
 
     // Validate eco.return operand types match expectedTypes
-    auto actualTypes = retOp.getOperandTypes();
-    if (actualTypes.size() != expectedTypes.size()) {
-      return emitOpError("alternative ")
-             << altIndex << " eco.return has " << actualTypes.size()
-             << " operands but result_types specifies " << expectedTypes.size();
-    }
-    for (size_t i = 0; i < expectedTypes.size(); ++i) {
-      if (actualTypes[i] != expectedTypes[i]) {
+    // (skip for nested eco.case - transitivity ensures correctness)
+    if (auto retOp = dyn_cast<ReturnOp>(terminator)) {
+      auto actualTypes = retOp.getOperandTypes();
+      if (actualTypes.size() != expectedTypes.size()) {
         return emitOpError("alternative ")
-               << altIndex << " eco.return operand " << i
-               << " has type " << actualTypes[i]
-               << " but result_types specifies " << expectedTypes[i];
+               << altIndex << " eco.return has " << actualTypes.size()
+               << " operands but result_types specifies " << expectedTypes.size();
+      }
+      for (size_t i = 0; i < expectedTypes.size(); ++i) {
+        if (actualTypes[i] != expectedTypes[i]) {
+          return emitOpError("alternative ")
+                 << altIndex << " eco.return operand " << i
+                 << " has type " << actualTypes[i]
+                 << " but result_types specifies " << expectedTypes[i];
+        }
       }
     }
 

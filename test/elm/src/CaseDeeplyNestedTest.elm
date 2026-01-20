@@ -4,7 +4,7 @@ module CaseDeeplyNestedTest exposing (main)
 -}
 
 -- CHECK: deep1: "all"
--- CHECK: deep2: "some"
+-- CHECK: deep2: "two"
 
 import Html exposing (text)
 

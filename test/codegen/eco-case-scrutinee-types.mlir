@@ -4,17 +4,17 @@
 
 module {
   // CHECK: eco.case
-  func.func @ctor_case_valid(%v: !eco.value) -> !eco.value {
+  // eco.case is a terminator, so no func.return after it
+  func.func @ctor_case_valid(%v: !eco.value) {
     eco.case %v : !eco.value [0, 1] result_types [!eco.value] {
       eco.return %v : !eco.value
     }, {
       eco.return %v : !eco.value
     } {case_kind = "ctor"}
-    func.return %v : !eco.value
   }
 
   // CHECK: eco.case
-  func.func @int_case_valid(%x: i64) -> i64 {
+  func.func @int_case_valid(%x: i64) {
     eco.case %x : i64 [0, 1] result_types [i64] {
       %c0 = arith.constant 0 : i64
       eco.return %c0 : i64
@@ -22,37 +22,33 @@ module {
       %c1 = arith.constant 1 : i64
       eco.return %c1 : i64
     } {case_kind = "int"}
-    func.return %x : i64
   }
 
   // CHECK: eco.case
-  func.func @chr_case_valid(%c: i16) -> i16 {
+  func.func @chr_case_valid(%c: i16) {
     eco.case %c : i16 [65, 66] result_types [i16] {
       eco.return %c : i16
     }, {
       eco.return %c : i16
     } {case_kind = "chr"}
-    func.return %c : i16
   }
 
   // CHECK: eco.case
-  func.func @bool_case_valid(%b: i1) -> i1 {
+  func.func @bool_case_valid(%b: i1) {
     eco.case %b : i1 [0, 1] result_types [i1] {
       eco.return %b : i1
     }, {
       eco.return %b : i1
     } {case_kind = "bool"}
-    func.return %b : i1
   }
 
   // CHECK: eco.case
-  func.func @bool_ctor_case_valid(%b: i1) -> i1 {
+  func.func @bool_ctor_case_valid(%b: i1) {
     // i1 with case_kind="ctor" - allowed for Chain lowering compatibility
     eco.case %b : i1 [0, 1] result_types [i1] {
       eco.return %b : i1
     }, {
       eco.return %b : i1
     } {case_kind = "ctor"}
-    func.return %b : i1
   }
 }

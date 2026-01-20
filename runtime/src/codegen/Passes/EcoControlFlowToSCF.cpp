@@ -34,11 +34,19 @@ using namespace ::eco;
 namespace {
 
 //===----------------------------------------------------------------------===//
-// Helper: Check if a case op has all pure-return alternatives
+// Helpers
 //===----------------------------------------------------------------------===//
 
-/// Check if all alternatives in a case op end with eco.return (not eco.jump).
-/// This is required for lowering to scf.if/scf.index_switch.
+/// Check if an operation is nested inside an SCF region.
+static bool isInsideScfRegion(Operation *op) {
+    return op->getParentOfType<scf::IfOp>() ||
+           op->getParentOfType<scf::IndexSwitchOp>() ||
+           op->getParentOfType<scf::WhileOp>();
+}
+
+/// Check if all alternatives in a case op end with eco.return or nested eco.case.
+/// eco.jump is not allowed. This is required for lowering to scf.if/scf.index_switch.
+/// Nested eco.case is handled by cloning as-is; the greedy driver will rewrite them.
 bool hasPureReturnAlternatives(CaseOp op) {
     for (Region &alt : op.getAlternatives()) {
         if (alt.empty())
@@ -49,7 +57,8 @@ bool hasPureReturnAlternatives(CaseOp op) {
             return false;
 
         Operation *term = block.getTerminator();
-        if (!isa<ReturnOp>(term))
+        // Accept eco.return or nested eco.case (transitive termination)
+        if (!isa<ReturnOp>(term) && !isa<CaseOp>(term))
             return false;
     }
     return true;
@@ -158,23 +167,16 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
         // Get result types (may be empty for void cases)
         auto resultTypes = getCaseResultTypes(op);
 
-        // Check for terminal position - this pattern generates control flow that
-        // replaces the case + following terminator. The next op should be either:
-        // - eco.return (for top-level cases or cases inside eco.case alternatives)
-        // - scf.yield (for cases inside scf.if/scf.index_switch regions)
-        Operation *nextOp = op->getNextNode();
-        bool hasValidTerminator = nextOp && (isa<ReturnOp>(nextOp) ||
-                                              isa<scf::YieldOp>(nextOp));
-        if (!hasValidTerminator) {
-            // Either at end of block (unusual) or non-terminator code follows
-            LLVM_DEBUG(llvm::dbgs() << "  -> rejected: invalid nextOp (need eco.return or scf.yield)\n");
-            if (nextOp) {
-                LLVM_DEBUG(llvm::dbgs() << "     nextOp is: " << nextOp->getName() << "\n");
-            } else {
-                LLVM_DEBUG(llvm::dbgs() << "     nextOp is null\n");
-            }
+        // eco.case must BE the block terminator (not followed by anything).
+        // With eco.case as a Terminator op, there's nothing after it.
+        Block *block = op->getBlock();
+        if (&block->back() != op.getOperation()) {
+            LLVM_DEBUG(llvm::dbgs() << "  -> rejected: eco.case is not block terminator\n");
             return failure();
         }
+
+        // Determine if we're inside an SCF region (affects terminator choice)
+        bool insideScf = isInsideScfRegion(op.getOperation());
 
         LLVM_DEBUG(llvm::dbgs() << "  -> MATCHED! Converting to scf.if\n");
 
@@ -251,21 +253,21 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
 
             IRMapping mapping;
 
-            // Clone operations from alt1 into then block
+            // Clone all operations from alt1 into then block.
+            // Convert eco.return to scf.yield.
+            // Clone nested eco.case as-is (greedy driver rewrites it later).
             Region &alt1 = alts[1];
             Block &alt1Block = alt1.front();
 
-            for (Operation &bodyOp : alt1Block.without_terminator()) {
-                rewriter.clone(bodyOp, mapping);
-            }
-
-            // Get the return op and convert to scf.yield
-            if (auto ret = dyn_cast<ReturnOp>(alt1Block.getTerminator())) {
-                SmallVector<Value> yieldOperands;
-                for (Value operand : ret.getOperands()) {
-                    yieldOperands.push_back(mapping.lookupOrDefault(operand));
+            for (Operation &bodyOp : alt1Block.getOperations()) {
+                if (auto ret = dyn_cast<ReturnOp>(&bodyOp)) {
+                    SmallVector<Value> yieldOperands;
+                    for (Value operand : ret.getOperands())
+                        yieldOperands.push_back(mapping.lookupOrDefault(operand));
+                    rewriter.create<scf::YieldOp>(loc, yieldOperands);
+                    break;  // ReturnOp is last
                 }
-                rewriter.create<scf::YieldOp>(loc, yieldOperands);
+                rewriter.clone(bodyOp, mapping);  // includes nested eco.case
             }
         }
 
@@ -287,39 +289,29 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
 
             Region &alt0 = alts[0];
             Block &alt0Block = alt0.front();
-            for (Operation &bodyOp : alt0Block.without_terminator()) {
-                rewriter.clone(bodyOp, mapping);
-            }
 
-            if (auto ret = dyn_cast<ReturnOp>(alt0Block.getTerminator())) {
-                SmallVector<Value> yieldOperands;
-                for (Value operand : ret.getOperands()) {
-                    yieldOperands.push_back(mapping.lookupOrDefault(operand));
+            for (Operation &bodyOp : alt0Block.getOperations()) {
+                if (auto ret = dyn_cast<ReturnOp>(&bodyOp)) {
+                    SmallVector<Value> yieldOperands;
+                    for (Value operand : ret.getOperands())
+                        yieldOperands.push_back(mapping.lookupOrDefault(operand));
+                    rewriter.create<scf::YieldOp>(loc, yieldOperands);
+                    break;  // ReturnOp is last
                 }
-                rewriter.create<scf::YieldOp>(loc, yieldOperands);
+                rewriter.clone(bodyOp, mapping);  // includes nested eco.case
             }
         }
 
-        // After the scf.if, we need to propagate results (if any)
-        // eco.case doesn't produce SSA results, but the eco.return ops inside
-        // each alternative carry result values. After lowering to scf.if,
-        // those values come out as scf.if results, and we need to create a new
-        // terminator to propagate them.
+        // SCF lowering CREATES the final terminator - there was none after eco.case.
+        // Insert eco.return or scf.yield depending on nesting context.
         rewriter.setInsertionPointAfter(ifOp);
-
-        // Erase the terminator that follows the case (we verified it exists above)
-        // and create a new one with the scf.if results.
-        // Handle both eco.return (top-level/nested in eco.case) and scf.yield
-        // (nested in scf.if/scf.index_switch regions).
-        bool wasYield = isa<scf::YieldOp>(nextOp);
-        rewriter.eraseOp(nextOp);
-        if (wasYield) {
+        if (insideScf) {
             rewriter.create<scf::YieldOp>(loc, ifOp.getResults());
         } else {
             rewriter.create<ReturnOp>(loc, ifOp.getResults());
         }
 
-        rewriter.eraseOp(op);
+        rewriter.eraseOp(op);  // Erase the eco.case terminator
         return success();
     }
 };
@@ -365,12 +357,13 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
 
         auto resultTypes = getCaseResultTypes(op);
 
-        // Check for terminal position - nextOp should be eco.return or scf.yield
-        Operation *nextOp = op->getNextNode();
-        bool hasValidTerminator = nextOp && (isa<ReturnOp>(nextOp) ||
-                                              isa<scf::YieldOp>(nextOp));
-        if (!hasValidTerminator)
+        // eco.case must BE the block terminator (not followed by anything).
+        Block *block = op->getBlock();
+        if (&block->back() != op.getOperation())
             return failure();
+
+        // Determine if we're inside an SCF region (affects terminator choice)
+        bool insideScf = isInsideScfRegion(op.getOperation());
 
         auto loc = op.getLoc();
         auto tags = op.getTags();
@@ -383,9 +376,10 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
         auto indexTag = rewriter.create<arith::IndexCastOp>(
             loc, rewriter.getIndexType(), tag);
 
-        // Build case values (excluding first one which becomes default)
+        // Build case values (excluding LAST one which becomes default).
+        // Elm puts wildcards LAST, so the last alternative is the default.
         SmallVector<int64_t> caseValues;
-        for (size_t i = 1; i < tags.size(); ++i) {
+        for (size_t i = 0; i < tags.size() - 1; ++i) {
             caseValues.push_back(tags[i]);
         }
 
@@ -393,63 +387,62 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
         auto switchOp = rewriter.create<scf::IndexSwitchOp>(
             loc, resultTypes, indexTag, caseValues, caseValues.size());
 
-        // Fill in each case region (cases 1..n-1 map to scf cases)
-        for (size_t i = 1; i < alts.size(); ++i) {
-            Region &caseRegion = switchOp.getCaseRegions()[i - 1];
+        // Fill in each case region (alts[0..N-2] map to scf cases)
+        // Clone all ops. Convert eco.return to scf.yield.
+        // Clone nested eco.case as-is (greedy driver rewrites it later).
+        for (size_t i = 0; i < alts.size() - 1; ++i) {
+            Region &caseRegion = switchOp.getCaseRegions()[i];
             Block *caseBlock = &caseRegion.emplaceBlock();
             rewriter.setInsertionPointToStart(caseBlock);
 
             IRMapping mapping;
             Region &alt = alts[i];
             Block &altBlock = alt.front();
-            for (Operation &bodyOp : altBlock.without_terminator()) {
-                rewriter.clone(bodyOp, mapping);
-            }
 
-            // Get yield operands from the eco.return
-            if (auto ret = dyn_cast<ReturnOp>(altBlock.getTerminator())) {
-                SmallVector<Value> yieldOperands;
-                for (Value operand : ret.getOperands()) {
-                    yieldOperands.push_back(mapping.lookupOrDefault(operand));
+            for (Operation &bodyOp : altBlock.getOperations()) {
+                if (auto ret = dyn_cast<ReturnOp>(&bodyOp)) {
+                    SmallVector<Value> yieldOperands;
+                    for (Value operand : ret.getOperands())
+                        yieldOperands.push_back(mapping.lookupOrDefault(operand));
+                    rewriter.create<scf::YieldOp>(loc, yieldOperands);
+                    break;  // ReturnOp is last
                 }
-                rewriter.create<scf::YieldOp>(loc, yieldOperands);
+                rewriter.clone(bodyOp, mapping);  // includes nested eco.case
             }
         }
 
-        // Fill in default region (maps to alt0)
+        // Fill in default region (maps to last alternative - the wildcard)
         {
             Region &defaultRegion = switchOp.getDefaultRegion();
             Block *defaultBlock = &defaultRegion.emplaceBlock();
             rewriter.setInsertionPointToStart(defaultBlock);
 
             IRMapping mapping;
-            Region &alt0 = alts[0];
-            Block &alt0Block = alt0.front();
-            for (Operation &bodyOp : alt0Block.without_terminator()) {
-                rewriter.clone(bodyOp, mapping);
-            }
+            Region &lastAlt = alts[alts.size() - 1];
+            Block &lastAltBlock = lastAlt.front();
 
-            if (auto ret = dyn_cast<ReturnOp>(alt0Block.getTerminator())) {
-                SmallVector<Value> yieldOperands;
-                for (Value operand : ret.getOperands()) {
-                    yieldOperands.push_back(mapping.lookupOrDefault(operand));
+            for (Operation &bodyOp : lastAltBlock.getOperations()) {
+                if (auto ret = dyn_cast<ReturnOp>(&bodyOp)) {
+                    SmallVector<Value> yieldOperands;
+                    for (Value operand : ret.getOperands())
+                        yieldOperands.push_back(mapping.lookupOrDefault(operand));
+                    rewriter.create<scf::YieldOp>(loc, yieldOperands);
+                    break;  // ReturnOp is last
                 }
-                rewriter.create<scf::YieldOp>(loc, yieldOperands);
+                rewriter.clone(bodyOp, mapping);  // includes nested eco.case
             }
         }
 
-        // Erase the terminator that follows and create new one with switch results
-        // Handle both eco.return and scf.yield
+        // SCF lowering CREATES the final terminator - there was none after eco.case.
+        // Insert eco.return or scf.yield depending on nesting context.
         rewriter.setInsertionPointAfter(switchOp);
-        bool wasYield = isa<scf::YieldOp>(nextOp);
-        rewriter.eraseOp(nextOp);
-        if (wasYield) {
+        if (insideScf) {
             rewriter.create<scf::YieldOp>(loc, switchOp.getResults());
         } else {
             rewriter.create<ReturnOp>(loc, switchOp.getResults());
         }
 
-        rewriter.eraseOp(op);
+        rewriter.eraseOp(op);  // Erase the eco.case terminator
         return success();
     }
 };

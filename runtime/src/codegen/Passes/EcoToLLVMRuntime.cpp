@@ -217,6 +217,28 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateResolveHPtr(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_resolve_hptr", funcTy);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateGetTag(OpBuilder &builder) const {
+    // eco_get_tag(value: i64) -> i32
+    // Handles both heap Custom objects and embedded constants (Nothing, Nil).
+    auto funcTy = LLVM::LLVMFunctionType::get(I32_TY, {I64_TY});
+    return getOrCreateFunc(builder, "eco_get_tag", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateConsHeadI64(OpBuilder &builder) const {
+    // eco_cons_head_i64(cons: i64) -> i64
+    // Gets head of Cons cell, handling both boxed and unboxed heads.
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY});
+    return getOrCreateFunc(builder, "eco_cons_head_i64", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateConsHeadF64(OpBuilder &builder) const {
+    // eco_cons_head_f64(cons: i64) -> f64
+    // Gets head of Cons cell, handling both boxed and unboxed heads.
+    auto f64Ty = Float64Type::get(ctx);
+    auto funcTy = LLVM::LLVMFunctionType::get(f64Ty, {I64_TY});
+    return getOrCreateFunc(builder, "eco_cons_head_f64", funcTy);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateCrash(OpBuilder &builder) const {
     // eco_crash(message_val: i64) -> void
     auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I64_TY});

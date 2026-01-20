@@ -11,7 +11,8 @@ module {
   // CHECK: eco.case
   // CHECK-SAME: case_kind = "str"
   // CHECK-SAME: string_patterns = ["foo", "bar"]
-  func.func @string_case_3way(%s: !eco.value) -> !eco.value {
+  // eco.case is a terminator, so no func.return after it
+  func.func @string_case_3way(%s: !eco.value) {
     // 3-way string case: "foo", "bar", default
     eco.case %s : !eco.value [0, 1, 2] result_types [!eco.value] {
       // "foo" branch
@@ -23,13 +24,12 @@ module {
       // default branch
       eco.return %s : !eco.value
     } {case_kind = "str", string_patterns = ["foo", "bar"]}
-    func.return %s : !eco.value
   }
 
   // CHECK: eco.case
   // CHECK-SAME: case_kind = "str"
   // CHECK-SAME: string_patterns = ["hello"]
-  func.func @string_case_2way(%s: !eco.value) -> !eco.value {
+  func.func @string_case_2way(%s: !eco.value) {
     // 2-way string case: "hello", default
     eco.case %s : !eco.value [0, 1] result_types [!eco.value] {
       // "hello" branch
@@ -38,13 +38,12 @@ module {
       // default branch
       eco.return %s : !eco.value
     } {case_kind = "str", string_patterns = ["hello"]}
-    func.return %s : !eco.value
   }
 
   // CHECK: eco.case
   // CHECK-SAME: case_kind = "str"
   // CHECK-SAME: string_patterns = [""]
-  func.func @string_case_empty(%s: !eco.value) -> !eco.value {
+  func.func @string_case_empty(%s: !eco.value) {
     // Empty string pattern
     eco.case %s : !eco.value [0, 1] result_types [!eco.value] {
       // "" (empty string) branch
@@ -53,6 +52,5 @@ module {
       // default branch
       eco.return %s : !eco.value
     } {case_kind = "str", string_patterns = [""]}
-    func.return %s : !eco.value
   }
 }

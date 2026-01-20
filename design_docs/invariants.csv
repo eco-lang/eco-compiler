@@ -33,6 +33,12 @@ TYPE_005;TypeChecking;Generalization;enforced;Let-bound type variables are ranke
 TYPE_006;TypeChecking;Annotations;enforced;User-provided type annotations are canonicalized to Can.Annotation and inserted into the constraint tree the solver then enforces equality between annotated and inferred types so mismatches cause Type.Error values that surface as BadTypes errors rather than being silently ignored;Compiler.Canonicalize.Type|Compiler.Type.Constrain.Erased.Expression|Compiler.Type.Constrain.Typed.Expression|Compiler.Type.Solve
 
 # =============================================================================
+# NITPICK PHASE - Pattern exhaustiveness and other semantic checks
+# =============================================================================
+
+NITPICK_001;Nitpick;Exhaustiveness;enforced;Every case expression is exhaustive after the Nitpick phase meaning all possible values of the scrutinee type are covered by at least one pattern and any missing patterns are reported as InexhaustivePatterns errors so downstream phases can assume case expressions always match exactly one alternative at runtime;Compiler.Nitpick.PatternMatches
+
+# =============================================================================
 # POST-SOLVE PHASE - Fix Group B types and infer kernel function types
 # =============================================================================
 

@@ -130,20 +130,29 @@ generateLambdaFunc ctx lambda =
         exprResult =
             Expr.generateExpr ctxWithArgs lambda.body
 
-        -- Lambda returns use !eco.value (boxed calling convention)
-        -- Box the result if needed
-        ( boxOps, finalResultVar, ctxAfterBox ) =
-            Expr.boxToEcoValue exprResult.ctx exprResult.resultVar exprResult.resultType
-
-        ( ctx1, returnOp ) =
-            Ops.ecoReturn ctxAfterBox finalResultVar Types.ecoValue
-
         region : MlirRegion
         region =
-            Ops.mkRegion allArgPairs (unboxOps ++ exprResult.ops ++ boxOps) returnOp
+            if exprResult.isTerminated then
+                -- Expression is a control-flow exit (eco.case, eco.jump).
+                -- The ops already contain the terminator - don't add eco.return.
+                -- IMPORTANT: Do NOT access exprResult.resultVar here - it is meaningless!
+                Ops.mkRegionTerminatedByOps allArgPairs (unboxOps ++ exprResult.ops)
+
+            else
+                -- Normal expression - add eco.return with the result value.
+                let
+                    -- Lambda returns use !eco.value (boxed calling convention)
+                    -- Box the result if needed
+                    ( boxOps, finalResultVar, ctxAfterBox ) =
+                        Expr.boxToEcoValue exprResult.ctx exprResult.resultVar exprResult.resultType
+
+                    ( _, returnOp ) =
+                        Ops.ecoReturn ctxAfterBox finalResultVar Types.ecoValue
+                in
+                Ops.mkRegion allArgPairs (unboxOps ++ exprResult.ops ++ boxOps) returnOp
 
         ( ctx2, funcOp ) =
-            Ops.funcFunc ctx1 lambda.name allArgPairs Types.ecoValue region
+            Ops.funcFunc exprResult.ctx lambda.name allArgPairs Types.ecoValue region
     in
     ( funcOp, ctx2 )
 

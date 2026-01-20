@@ -114,6 +114,7 @@ class Eco_Op<string mnemonic, list<Trait> traits = []>
 //===----------------------------------------------------------------------===//
 
 def Eco_CaseOp : Eco_Op<"case", [
+    Terminator,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Pattern match on a value and branch to alternatives";
@@ -156,8 +157,13 @@ def Eco_CaseOp : Eco_Op<"case", [
     }
     ```
 
+    eco.case is a control-flow terminator. It does not produce an SSA value;
+    instead, control exits through the eco.return ops inside each alternative
+    (or through nested eco.case terminators for transitive termination).
+
     Regions take no arguments; code inside uses eco.project to extract fields
-    from the scrutinee. Each region must terminate with eco.return or eco.jump.
+    from the scrutinee. Each region must terminate with eco.return or a nested
+    eco.case. eco.jump is not allowed in alternatives.
   }];
 
   let arguments = (ins

@@ -1755,6 +1755,113 @@ extern "C" uint32_t eco_get_custom_ctor(uint64_t obj_hptr) {
     return custom->ctor;
 }
 
+/// Get the constructor tag for a value, handling both heap objects and embedded constants.
+/// For heap Custom objects: returns the ctor field (16-bit constructor tag).
+/// For embedded constants: returns the appropriate ctor tag:
+///   - Nothing (kind=6) -> tag=1 (second constructor of Maybe)
+///   - Nil (kind=5) -> tag=0 (first constructor of List)
+///   - Other embedded constants -> tag=0
+extern "C" uint32_t eco_get_tag(uint64_t val) {
+    HPointer hp;
+    memcpy(&hp, &val, sizeof(hp));
+
+    // Check if this is an embedded constant (constant field != 0).
+    if (hp.constant != 0) {
+        // Map constant kind to ctor tag.
+        // HPointer::ConstantKind values (from Heap.hpp):
+        //   Nothing = 6 -> ctor tag 1
+        //   Nil = 5 -> ctor tag 0
+        //   Others -> ctor tag 0
+        if (hp.constant == 6) {  // Nothing
+            return 1;
+        }
+        return 0;
+    }
+
+    // Heap object: resolve pointer and check header tag.
+    void* obj = Allocator::instance().resolve(hp);
+    if (!obj) return 0;
+
+    // Get the header to check the object type.
+    Header* header = static_cast<Header*>(obj);
+
+    // Handle based on heap object type.
+    switch (header->tag) {
+        case Tag_Cons:
+            // Cons cells represent non-empty lists (constructor index 1).
+            // Nil (empty list) is embedded constant, so any heap Cons is non-empty.
+            return 1;
+        case Tag_Custom:
+            // Custom ADT: read the ctor field.
+            return static_cast<Custom*>(obj)->ctor;
+        default:
+            // Other heap objects don't have constructor tags.
+            return 0;
+    }
+}
+
+//===----------------------------------------------------------------------===//
+// List Element Access
+//===----------------------------------------------------------------------===//
+
+/// Gets the head of a Cons cell as an unboxed i64.
+/// Handles both boxed and unboxed heads.
+extern "C" int64_t eco_cons_head_i64(uint64_t cons) {
+    HPointer hp;
+    memcpy(&hp, &cons, sizeof(hp));
+
+    // Resolve the Cons cell pointer.
+    void* obj = Allocator::instance().resolve(hp);
+    if (!obj) return 0;  // Should not happen for valid Cons
+
+    Cons* consCell = static_cast<Cons*>(obj);
+
+    // Check if head is unboxed (bit 0 of Header.unboxed field).
+    if (consCell->header.unboxed & 1) {
+        // Head is unboxed: return the i64 value directly.
+        return consCell->head.i;
+    } else {
+        // Head is boxed: resolve the HPointer and load from ElmInt.
+        HPointer headHp = consCell->head.p;
+        void* headObj = Allocator::instance().resolve(headHp);
+        if (!headObj) return 0;  // Should not happen
+
+        // ElmInt has layout: [Header:8][value:8]
+        // value is at offset 8.
+        ElmInt* elmInt = static_cast<ElmInt*>(headObj);
+        return elmInt->value;
+    }
+}
+
+/// Gets the head of a Cons cell as an unboxed f64.
+/// Handles both boxed and unboxed heads.
+extern "C" double eco_cons_head_f64(uint64_t cons) {
+    HPointer hp;
+    memcpy(&hp, &cons, sizeof(hp));
+
+    // Resolve the Cons cell pointer.
+    void* obj = Allocator::instance().resolve(hp);
+    if (!obj) return 0.0;  // Should not happen for valid Cons
+
+    Cons* consCell = static_cast<Cons*>(obj);
+
+    // Check if head is unboxed (bit 0 of Header.unboxed field).
+    if (consCell->header.unboxed & 1) {
+        // Head is unboxed: return the f64 value directly.
+        return consCell->head.f;
+    } else {
+        // Head is boxed: resolve the HPointer and load from ElmFloat.
+        HPointer headHp = consCell->head.p;
+        void* headObj = Allocator::instance().resolve(headHp);
+        if (!headObj) return 0.0;  // Should not happen
+
+        // ElmFloat has layout: [Header:8][value:8]
+        // value is at offset 8.
+        ElmFloat* elmFloat = static_cast<ElmFloat*>(headObj);
+        return elmFloat->value;
+    }
+}
+
 //===----------------------------------------------------------------------===//
 // Arithmetic Helpers
 //===----------------------------------------------------------------------===//

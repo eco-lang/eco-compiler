@@ -33,9 +33,12 @@ FUNCTION matchAndRewrite(caseOp):
         RETURN failure  // Non-local exits not supported
 
     resultTypes = getCaseResultTypes(caseOp)
-    nextOp = caseOp.getNextNode()
-    IF nextOp NOT IN [eco.return, scf.yield]:
-        RETURN failure  // Must be in terminal position
+
+    // eco.case must BE the block terminator (not followed by anything)
+    IF caseOp is not last op in block:
+        RETURN failure
+
+    insideScf = isInsideScfRegion(caseOp)
 
     // Compute condition
     IF scrutinee.type == i1:
@@ -49,17 +52,25 @@ FUNCTION matchAndRewrite(caseOp):
     // Create scf.if
     ifOp = scf.if(cond, resultTypes, withElse=true)
 
-    // Clone alt1 into then-region, replacing eco.return with scf.yield
-    CLONE alt1.body INTO ifOp.thenRegion
-    REPLACE eco.return WITH scf.yield
+    // Clone all ops from alt1 into then-region
+    // Convert eco.return to scf.yield; clone nested eco.case as-is
+    FOR EACH op IN alt1.body:
+        IF op IS eco.return:
+            CREATE scf.yield(op.operands)
+            BREAK
+        ELSE:
+            CLONE op  // includes nested eco.case
 
-    // Clone alt0 into else-region
-    CLONE alt0.body INTO ifOp.elseRegion
-    REPLACE eco.return WITH scf.yield
+    // Clone all ops from alt0 into else-region
+    FOR EACH op IN alt0.body:
+        IF op IS eco.return:
+            CREATE scf.yield(op.operands)
+            BREAK
+        ELSE:
+            CLONE op  // includes nested eco.case
 
-    // Replace following terminator with one that uses if results
-    ERASE nextOp
-    IF wasYield:
+    // Insert NEW terminator (there was none after eco.case)
+    IF insideScf:
         CREATE scf.yield(ifOp.results)
     ELSE:
         CREATE eco.return(ifOp.results)
@@ -248,8 +259,9 @@ eco.joinpoint id(%val: !eco.value) {
 ## Non-Handled Cases
 
 Operations NOT converted to SCF (left for CF lowering):
-1. Case ops with `eco.jump` terminators in any alternative
-2. Case ops not in terminal position
-3. Case ops inside joinpoint bodies
-4. Joinpoints without `scf_candidate` attribute
-5. Joinpoints with complex body structure (not simple case dispatch)
+1. Case ops not in terminal position (eco.case must be block terminator)
+2. Case ops inside joinpoint bodies
+3. Joinpoints without `scf_candidate` attribute
+4. Joinpoints with complex body structure (not simple case dispatch)
+
+Note: `eco.jump` in case alternatives is **illegal** per dialect specification.

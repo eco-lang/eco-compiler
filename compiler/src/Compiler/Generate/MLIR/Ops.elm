@@ -2,6 +2,7 @@ module Compiler.Generate.MLIR.Ops exposing
     ( opBuilder
     , mlirOp
     , mkRegion
+    , mkRegionTerminatedByOps
     , funcFunc
     , ecoConstantUnit
     , ecoConstantEmptyRec
@@ -94,6 +95,7 @@ import Mlir.Mlir as Mlir
         , Visibility(..)
         )
 import OrderedDict
+import Utils.Crash exposing (crash)
 
 
 
@@ -664,6 +666,27 @@ mkRegion args body terminator =
         }
 
 
+{-| Build a region from ops that already end with a terminator.
+The last op becomes the region's terminator.
+Use this when the body ends with eco.case or eco.jump.
+-}
+mkRegionTerminatedByOps : List ( String, MlirType ) -> List MlirOp -> MlirRegion
+mkRegionTerminatedByOps args ops =
+    case List.reverse ops of
+        [] ->
+            crash "mkRegionTerminatedByOps: empty ops list - must have terminator"
+
+        terminator :: restReversed ->
+            MlirRegion
+                { entry =
+                    { args = args
+                    , body = List.reverse restReversed
+                    , terminator = terminator
+                    }
+                , blocks = OrderedDict.empty
+                }
+
+
 {-| func.func - define a function
 -}
 funcFunc : Ctx.Context -> String -> List ( String, MlirType ) -> MlirType -> MlirRegion -> ( Ctx.Context, MlirOp )
@@ -719,6 +742,7 @@ ecoCase ctx scrutinee scrutineeType caseKind tags regions resultTypes =
         |> opBuilder.withOperands [ scrutinee ]
         |> opBuilder.withRegions regions
         |> opBuilder.withAttrs attrs
+        |> opBuilder.isTerminator True
         |> opBuilder.build
 
 
@@ -750,6 +774,7 @@ ecoCaseString ctx scrutinee scrutineeType tags stringPatterns regions resultType
         |> opBuilder.withOperands [ scrutinee ]
         |> opBuilder.withRegions regions
         |> opBuilder.withAttrs attrs
+        |> opBuilder.isTerminator True
         |> opBuilder.build
 
 

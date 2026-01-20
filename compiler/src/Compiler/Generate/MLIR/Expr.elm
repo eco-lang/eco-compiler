@@ -58,6 +58,7 @@ type alias ExprResult =
     , resultVar : String
     , resultType : MlirType
     , ctx : Ctx.Context
+    , isTerminated : Bool -- True if ops end with a terminator (eco.case, eco.jump)
     }
 
 
@@ -65,7 +66,7 @@ type alias ExprResult =
 -}
 emptyResult : Ctx.Context -> String -> MlirType -> ExprResult
 emptyResult ctx var ty =
-    { ops = [], resultVar = var, resultType = ty, ctx = ctx }
+    { ops = [], resultVar = var, resultType = ty, ctx = ctx, isTerminated = False }
 
 
 
@@ -212,7 +213,7 @@ generateLiteral ctx lit =
             { ops = [ op ]
             , resultVar = var
             , resultType = I1
-            , ctx = ctx2
+            , ctx = ctx2, isTerminated = False
             }
 
         Mono.LInt value ->
@@ -226,7 +227,7 @@ generateLiteral ctx lit =
             { ops = [ op ]
             , resultVar = var
             , resultType = Types.ecoInt
-            , ctx = ctx2
+            , ctx = ctx2, isTerminated = False
             }
 
         Mono.LFloat value ->
@@ -240,7 +241,7 @@ generateLiteral ctx lit =
             { ops = [ op ]
             , resultVar = var
             , resultType = Types.ecoFloat
-            , ctx = ctx2
+            , ctx = ctx2, isTerminated = False
             }
 
         Mono.LChar value ->
@@ -258,7 +259,7 @@ generateLiteral ctx lit =
             { ops = [ op ]
             , resultVar = var
             , resultType = Types.ecoChar
-            , ctx = ctx2
+            , ctx = ctx2, isTerminated = False
             }
 
         Mono.LStr value ->
@@ -277,7 +278,7 @@ generateLiteral ctx lit =
             { ops = [ op ]
             , resultVar = var
             , resultType = Types.ecoValue
-            , ctx = ctx2
+            , ctx = ctx2, isTerminated = False
             }
 
 
@@ -322,7 +323,7 @@ generateVarGlobal ctx specId monoType =
                 { ops = [ callOp ]
                 , resultVar = var
                 , resultType = resultMlirType
-                , ctx = ctx2
+                , ctx = ctx2, isTerminated = False
                 }
 
             else
@@ -367,7 +368,7 @@ generateVarGlobal ctx specId monoType =
                 { ops = [ papOp ]
                 , resultVar = var
                 , resultType = Types.ecoValue
-                , ctx = ctx3
+                , ctx = ctx3, isTerminated = False
                 }
 
         Nothing ->
@@ -391,7 +392,7 @@ generateVarGlobal ctx specId monoType =
                         { ops = [ callOp ]
                         , resultVar = var
                         , resultType = resultMlirType
-                        , ctx = ctx2
+                        , ctx = ctx2, isTerminated = False
                         }
 
                     else
@@ -412,7 +413,7 @@ generateVarGlobal ctx specId monoType =
                         { ops = [ papOp ]
                         , resultVar = var
                         , resultType = Types.ecoValue
-                        , ctx = ctx2
+                        , ctx = ctx2, isTerminated = False
                         }
 
                 _ ->
@@ -427,7 +428,7 @@ generateVarGlobal ctx specId monoType =
                     { ops = [ callOp ]
                     , resultVar = var
                     , resultType = resultMlirType
-                    , ctx = ctx2
+                    , ctx = ctx2, isTerminated = False
                     }
 
 
@@ -451,7 +452,7 @@ generateVarKernel ctx home name monoType =
             { ops = [ floatOp ]
             , resultVar = var
             , resultType = Types.ecoFloat
-            , ctx = ctx2
+            , ctx = ctx2, isTerminated = False
             }
 
         Just _ ->
@@ -475,7 +476,7 @@ generateVarKernel ctx home name monoType =
                         { ops = [ callOp ]
                         , resultVar = var
                         , resultType = resultMlirType
-                        , ctx = ctx2
+                        , ctx = ctx2, isTerminated = False
                         }
 
                     else
@@ -497,7 +498,7 @@ generateVarKernel ctx home name monoType =
                         { ops = [ papOp ]
                         , resultVar = var
                         , resultType = Types.ecoValue
-                        , ctx = ctx2
+                        , ctx = ctx2, isTerminated = False
                         }
 
                 _ ->
@@ -512,7 +513,7 @@ generateVarKernel ctx home name monoType =
                     { ops = [ callOp ]
                     , resultVar = var
                     , resultType = resultMlirType
-                    , ctx = ctx2
+                    , ctx = ctx2, isTerminated = False
                     }
 
         Nothing ->
@@ -536,7 +537,7 @@ generateVarKernel ctx home name monoType =
                         { ops = [ callOp ]
                         , resultVar = var
                         , resultType = resultMlirType
-                        , ctx = ctx2
+                        , ctx = ctx2, isTerminated = False
                         }
 
                     else
@@ -558,7 +559,7 @@ generateVarKernel ctx home name monoType =
                         { ops = [ papOp ]
                         , resultVar = var
                         , resultType = Types.ecoValue
-                        , ctx = ctx2
+                        , ctx = ctx2, isTerminated = False
                         }
 
                 _ ->
@@ -573,7 +574,7 @@ generateVarKernel ctx home name monoType =
                     { ops = [ callOp ]
                     , resultVar = var
                     , resultType = resultMlirType
-                    , ctx = ctx2
+                    , ctx = ctx2, isTerminated = False
                     }
 
 
@@ -603,7 +604,7 @@ generateList ctx items listType =
             { ops = [ nilOp ]
             , resultVar = var
             , resultType = Types.ecoValue
-            , ctx = ctx2
+            , ctx = ctx2, isTerminated = False
             }
 
         _ ->
@@ -645,7 +646,7 @@ generateList ctx items listType =
             { ops = nilOp :: consOps
             , resultVar = finalVar
             , resultType = Types.ecoValue
-            , ctx = finalCtx
+            , ctx = finalCtx, isTerminated = False
             }
 
 
@@ -730,7 +731,7 @@ generateClosure ctx closureInfo body monoType =
         { ops = captureOps ++ boxOps ++ [ callOp ]
         , resultVar = resultVar
         , resultType = closureResultType
-        , ctx = ctx4
+        , ctx = ctx4, isTerminated = False
         }
 
     else
@@ -771,7 +772,7 @@ generateClosure ctx closureInfo body monoType =
         { ops = captureOps ++ boxOps ++ [ papOp ]
         , resultVar = resultVar
         , resultType = Types.ecoValue
-        , ctx = ctx4
+        , ctx = ctx4, isTerminated = False
         }
 
 
@@ -970,7 +971,7 @@ generateClosureApplication ctx func args resultType =
     { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
     , resultVar = resVar
     , resultType = expectedType
-    , ctx = ctx3
+    , ctx = ctx3, isTerminated = False
     }
 
 
@@ -1030,7 +1031,7 @@ generateSaturatedCall ctx func args resultType =
                             { ops = argOps ++ [ intrinsicOp ]
                             , resultVar = resVar
                             , resultType = intrinsicResultType
-                            , ctx = ctx3
+                            , ctx = ctx3, isTerminated = False
                             }
 
                         Nothing ->
@@ -1062,7 +1063,7 @@ generateSaturatedCall ctx func args resultType =
                                 { ops = argOps ++ boxOps ++ [ callOp ]
                                 , resultVar = resVar
                                 , resultType = callResultType
-                                , ctx = ctx3
+                                , ctx = ctx3, isTerminated = False
                                 }
 
                             else
@@ -1098,7 +1099,7 @@ generateSaturatedCall ctx func args resultType =
                                 { ops = argOps ++ boxOps ++ [ callOp ]
                                 , resultVar = resultVar
                                 , resultType = callResultType
-                                , ctx = ctx3
+                                , ctx = ctx3, isTerminated = False
                                 }
 
                 Nothing ->
@@ -1135,7 +1136,7 @@ generateSaturatedCall ctx func args resultType =
                     { ops = argOps ++ boxOps ++ [ callOp ]
                     , resultVar = resultVar
                     , resultType = callResultType
-                    , ctx = ctx3
+                    , ctx = ctx3, isTerminated = False
                     }
 
         Mono.MonoVarKernel _ home name funcType ->
@@ -1188,7 +1189,7 @@ generateSaturatedCall ctx func args resultType =
                     { ops = argOps ++ unboxBaseOps ++ unboxXOps ++ [ logXOp, logBaseOp, divOp ]
                     , resultVar = resVar
                     , resultType = Types.ecoFloat
-                    , ctx = ctx7
+                    , ctx = ctx7, isTerminated = False
                     }
 
                 ( "Debug", "log", [ ( labelVar, _ ), ( valueVar, valueType ) ] ) ->
@@ -1255,7 +1256,7 @@ generateSaturatedCall ctx func args resultType =
                     { ops = argOps ++ boxOps ++ [ dbgOp ]
                     , resultVar = boxedValueVar -- Return the value (boxed)
                     , resultType = Types.ecoValue
-                    , ctx = ctx2
+                    , ctx = ctx2, isTerminated = False
                     }
 
                 _ ->
@@ -1278,7 +1279,7 @@ generateSaturatedCall ctx func args resultType =
                             { ops = argOps ++ unboxOps ++ [ intrinsicOp ]
                             , resultVar = resVar
                             , resultType = intrinsicResType
-                            , ctx = ctx3
+                            , ctx = ctx3, isTerminated = False
                             }
 
                         Nothing ->
@@ -1312,7 +1313,7 @@ generateSaturatedCall ctx func args resultType =
                             { ops = argOps ++ boxOps ++ [ callOp ]
                             , resultVar = resVar
                             , resultType = resultMlirType
-                            , ctx = ctx3
+                            , ctx = ctx3, isTerminated = False
                             }
 
         Mono.MonoVarLocal name funcType ->
@@ -1386,7 +1387,7 @@ generateSaturatedCall ctx func args resultType =
             { ops = argOps ++ boxOps ++ [ papExtendOp ] ++ unboxOps
             , resultVar = finalVar
             , resultType = expectedType
-            , ctx = ctx4
+            , ctx = ctx4, isTerminated = False
             }
 
         _ ->
@@ -1465,7 +1466,7 @@ generateSaturatedCall ctx func args resultType =
             { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ] ++ unboxOps
             , resultVar = finalVar
             , resultType = expectedType
-            , ctx = ctx4
+            , ctx = ctx4, isTerminated = False
             }
 
 
@@ -1559,17 +1560,14 @@ generateTailCall ctx name args =
                 |> Ops.opBuilder.withAttrs jumpAttrs
                 |> Ops.opBuilder.isTerminator True
                 |> Ops.opBuilder.build
-
-        ( resultVar, ctx3 ) =
-            Ctx.freshVar ctx2
-
-        ( ctx4, unitOp ) =
-            Ops.ecoConstantUnit ctx3 resultVar
     in
-    { ops = argsOps ++ [ jumpOp, unitOp ]
-    , resultVar = resultVar
+    -- eco.jump is a terminator - it does not produce a result value.
+    -- INVARIANT: resultVar is meaningless when isTerminated=True, must not be used.
+    { ops = argsOps ++ [ jumpOp ]
+    , resultVar = "" -- INVARIANT: meaningless when isTerminated=True
     , resultType = Types.ecoValue
-    , ctx = ctx4
+    , ctx = ctx2
+    , isTerminated = True -- eco.jump is a terminator
     }
 
 
@@ -1641,7 +1639,7 @@ generateIf ctx branches final =
             { ops = condRes.ops ++ [ ifOp ]
             , resultVar = ifResultVar
             , resultType = resultMlirType
-            , ctx = ctx3
+            , ctx = ctx3, isTerminated = False
             }
 
 
@@ -1742,11 +1740,19 @@ generateLet ctx def body =
                 ctxOut : Ctx.Context
                 ctxOut =
                     { bodyCtx | currentLetSiblings = outerSiblings }
+
+                -- Propagate isTerminated when:
+                -- 1. The bound expression is terminated (eco.case, eco.jump), AND
+                --    the body is trivial (just returning the let-bound variable, so no body ops)
+                -- 2. OR the body itself is terminated
+                -- In these cases, the case alternatives already contain the correct returns.
+                finalIsTerminated =
+                    (exprResult.isTerminated && List.isEmpty bodyResult.ops) || bodyResult.isTerminated
             in
             { ops = exprResult.ops ++ bodyResult.ops
             , resultVar = bodyResult.resultVar
             , resultType = bodyResult.resultType
-            , ctx = ctxOut
+            , ctx = ctxOut, isTerminated = finalIsTerminated
             }
 
         Mono.MonoTailDef name params _ ->
@@ -1793,7 +1799,7 @@ generateLet ctx def body =
             { ops = bodyResult.ops
             , resultVar = bodyResult.resultVar
             , resultType = bodyResult.resultType
-            , ctx = ctxOut
+            , ctx = ctxOut, isTerminated = bodyResult.isTerminated
             }
 
 
@@ -1837,7 +1843,7 @@ generateDestruct ctx (Mono.MonoDestructor name path monoType) body _ =
     { ops = pathOps ++ bodyResult.ops
     , resultVar = bodyResult.resultVar
     , resultType = bodyResult.resultType
-    , ctx = bodyResult.ctx
+    , ctx = bodyResult.ctx, isTerminated = False
     }
 
 
@@ -1919,24 +1925,31 @@ generateLeaf ctx _ choice resultTy =
             let
                 branchRes =
                     generateExpr ctx branchExpr
-
-                -- Use the ACTUAL SSA type from branchRes, not Mono.typeOf
-                actualTy =
-                    branchRes.resultType
-
-                -- Symmetric boxing/unboxing based on actual vs expected type
-                ( coerceOps, finalVar, ctx1 ) =
-                    coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
-
-                ( ctx2, retOp ) =
-                    Ops.ecoReturn ctx1 finalVar resultTy
             in
-            -- The return op MUST be last so mkRegionFromOps picks it as terminator
-            { ops = branchRes.ops ++ coerceOps ++ [ retOp ]
-            , resultVar = finalVar
-            , resultType = resultTy
-            , ctx = ctx2
-            }
+            -- If the branch expression is already a terminator (e.g., nested case),
+            -- we don't need to add another eco.return - just propagate it.
+            if branchRes.isTerminated then
+                branchRes
+
+            else
+                let
+                    -- Use the ACTUAL SSA type from branchRes, not Mono.typeOf
+                    actualTy =
+                        branchRes.resultType
+
+                    -- Symmetric boxing/unboxing based on actual vs expected type
+                    ( coerceOps, finalVar, ctx1 ) =
+                        coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
+
+                    ( ctx2, retOp ) =
+                        Ops.ecoReturn ctx1 finalVar resultTy
+                in
+                -- The return op MUST be last so mkRegionFromOps picks it as terminator
+                { ops = branchRes.ops ++ coerceOps ++ [ retOp ]
+                , resultVar = finalVar
+                , resultType = resultTy
+                , ctx = ctx2, isTerminated = False
+                }
 
         Mono.Jump _ ->
             -- Jump to a joinpoint - generate eco.jump
@@ -1951,7 +1964,7 @@ generateLeaf ctx _ choice resultTy =
             { ops = dummyOps ++ [ retOp ]
             , resultVar = dummyVar
             , resultType = resultTy
-            , ctx = ctx2
+            , ctx = ctx2, isTerminated = False
             }
 
 
@@ -2008,7 +2021,7 @@ generateChainForBoolADT ctx root path success failure resultTy =
     { ops = pathOps ++ [ caseOp ]
     , resultVar = boolVar -- Dummy; control exits via eco.return inside regions
     , resultType = resultTy
-    , ctx = ctx2
+    , ctx = ctx2, isTerminated = False
     }
 
 
@@ -2047,7 +2060,7 @@ generateChainGeneral ctx root testChain success failure resultTy =
     { ops = condOps ++ [ caseOp ]
     , resultVar = condVar -- Dummy; control exits via eco.return inside regions
     , resultType = resultTy
-    , ctx = ctx2
+    , ctx = ctx2, isTerminated = False
     }
 
 
@@ -2120,7 +2133,7 @@ generateBoolFanOut ctx root path edges fallback resultTy =
     { ops = pathOps ++ [ caseOp ]
     , resultVar = boolVar -- Dummy; control exits via eco.return inside regions
     , resultType = resultTy
-    , ctx = ctx2
+    , ctx = ctx2, isTerminated = False
     }
 
 
@@ -2264,7 +2277,7 @@ generateFanOutGeneral ctx root path edges fallback resultTy =
     { ops = pathOps ++ [ caseOp ]
     , resultVar = scrutineeVar
     , resultType = resultTy
-    , ctx = ctx3
+    , ctx = ctx3, isTerminated = False
     }
 
 
@@ -2274,11 +2287,8 @@ mkRegionFromOps : List MlirOp -> MlirRegion
 mkRegionFromOps ops =
     case List.reverse ops of
         [] ->
-            -- Empty region - shouldn't happen but handle gracefully
-            MlirRegion
-                { entry = { args = [], body = [], terminator = defaultTerminator }
-                , blocks = OrderedDict.empty
-                }
+            -- Empty region - crash, this indicates a codegen bug
+            crash "mkRegionFromOps: empty ops - region must have terminator"
 
         terminator :: restReversed ->
             MlirRegion
@@ -2287,55 +2297,28 @@ mkRegionFromOps ops =
                 }
 
 
-{-| A default terminator for empty regions (unreachable).
--}
-defaultTerminator : MlirOp
-defaultTerminator =
-    { id = "unreachable"
-    , name = "eco.unreachable"
-    , operands = []
-    , regions = []
-    , results = []
-    , successors = []
-    , attrs = Dict.empty
-    , loc = Loc.unknown
-    , isTerminator = True
-    }
-
-
 {-| Check if an operation is a valid region terminator.
 -}
 isValidTerminator : MlirOp -> Bool
 isValidTerminator op =
-    List.member op.name [ "eco.return", "eco.jump", "eco.crash", "eco.unreachable" ]
+    List.member op.name [ "eco.return", "eco.jump", "eco.crash", "eco.case" ]
 
 
-{-| Create a region from decider ops, ensuring it ends with a valid terminator.
-
-When generateDecider produces ops ending with eco.case (nested case), we need
-to append a dummy eco.return to satisfy MLIR's terminator requirement.
-The dummy return is unreachable at runtime (eco.case branches always exit
-via their own returns), but satisfies the MLIR structure requirement.
+{-| Create a region from decider ops. All paths must end with a valid terminator.
+Crashes if invariant violated - indicates codegen bug.
 -}
 mkCaseRegionFromDecider : Ctx.Context -> List MlirOp -> MlirType -> ( MlirRegion, Ctx.Context )
 mkCaseRegionFromDecider ctx ops resultTy =
     case List.reverse ops of
         [] ->
-            ( mkRegionFromOps [], ctx )
+            crash "mkCaseRegionFromDecider: empty ops - decider must produce terminator"
 
         lastOp :: _ ->
             if isValidTerminator lastOp then
                 ( mkRegionFromOps ops, ctx )
 
             else
-                let
-                    ( dummyOps, dummyVar, ctx1 ) =
-                        createDummyValue ctx resultTy
-
-                    ( ctx2, returnOp ) =
-                        Ops.ecoReturn ctx1 dummyVar resultTy
-                in
-                ( mkRegionFromOps (ops ++ dummyOps ++ [ returnOp ]), ctx2 )
+                crash ("mkCaseRegionFromDecider: non-terminator at end: " ++ lastOp.name)
 
 
 {-| Generate case expression control flow.
@@ -2343,8 +2326,13 @@ mkCaseRegionFromDecider ctx ops resultTy =
 This is the main entry point for case expressions. It:
 
 1.  Emits joinpoints for shared branches
-2.  Generates the decision tree control flow
-3.  Returns a dummy ExprResult (since real control exits via eco.return/eco.jump)
+2.  Generates the decision tree control flow (eco.case ops)
+3.  Returns ExprResult with isTerminated=True (eco.case is a terminator)
+
+eco.case is a control-flow exit, not a value-producing expression.
+Control flow exits through eco.return ops inside the alternatives.
+The EcoControlFlowToSCF pass transforms eco.case into scf.if/scf.index_switch
+and inserts the final eco.return after the SCF op.
 
 -}
 generateCase : Ctx.Context -> Name.Name -> Name.Name -> Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> Mono.MonoType -> ExprResult
@@ -2357,27 +2345,19 @@ generateCase ctx _ root decider jumps resultMonoType =
         ( ctx1, joinpointOps ) =
             generateSharedJoinpoints ctx jumps resultMlirType
 
-        -- Create a dummy result value BEFORE the decision tree.
-        -- This is critical for the SCF lowering pattern which expects:
-        --   eco.case ... eco.return
-        -- If we generate the dummy value AFTER eco.case, it breaks the pattern.
-        -- The dummy value is just a placeholder - the lowering pass will replace
-        -- the eco.return with the actual scf.if/scf.index_switch results.
-        ( dummyOps, dummyVar, ctx1b ) =
-            createDummyValue ctx1 resultMlirType
-
-        -- Generate decision tree control flow
+        -- No dummy value! eco.case is a control-flow exit, not a value expression.
+        -- Control leaves through eco.return inside alternatives.
         decisionResult =
-            generateDecider ctx1b root decider resultMlirType
+            generateDecider ctx1 root decider resultMlirType
     in
-    -- Return dummyVar which has the correct resultMlirType.
-    -- The actual control flow exits via eco.return inside the decision tree regions.
-    -- The outer function will add another eco.return using dummyVar, which has the right type.
-    -- The lowering pass will transform eco.case into scf.if/scf.index_switch and handle the returns.
-    { ops = joinpointOps ++ dummyOps ++ decisionResult.ops
-    , resultVar = dummyVar
+    -- eco.case is a terminator - it does not produce a result value.
+    -- Control flow exits through eco.return inside the decision tree regions.
+    -- INVARIANT: resultVar is meaningless when isTerminated=True, must not be used.
+    { ops = joinpointOps ++ decisionResult.ops
+    , resultVar = "" -- INVARIANT: meaningless when isTerminated=True
     , resultType = resultMlirType
     , ctx = decisionResult.ctx
+    , isTerminated = True -- eco.case is a terminator
     }
 
 
@@ -2409,7 +2389,7 @@ generateRecordCreate ctx fields layout =
         { ops = [ emptyRecOp ]
         , resultVar = resultVar
         , resultType = Types.ecoValue
-        , ctx = ctx2
+        , ctx = ctx2, isTerminated = False
         }
 
     else
@@ -2462,7 +2442,7 @@ generateRecordCreate ctx fields layout =
         { ops = fieldsOps ++ boxOps ++ [ constructOp ]
         , resultVar = resultVar
         , resultType = Types.ecoValue
-        , ctx = ctx4
+        , ctx = ctx4, isTerminated = False
         }
 
 
@@ -2491,7 +2471,7 @@ generateRecordAccess ctx record _ index isUnboxed fieldType =
         { ops = recordResult.ops ++ [ projectOp ]
         , resultVar = projectVar
         , resultType = fieldMlirType
-        , ctx = ctx2
+        , ctx = ctx2, isTerminated = False
         }
 
     else if Types.isEcoValueType fieldMlirType then
@@ -2503,7 +2483,7 @@ generateRecordAccess ctx record _ index isUnboxed fieldType =
         { ops = recordResult.ops ++ [ projectOp ]
         , resultVar = projectVar
         , resultType = Types.ecoValue
-        , ctx = ctx2
+        , ctx = ctx2, isTerminated = False
         }
 
     else
@@ -2519,7 +2499,7 @@ generateRecordAccess ctx record _ index isUnboxed fieldType =
         { ops = recordResult.ops ++ [ projectOp ] ++ unboxOps
         , resultVar = unboxedVar
         , resultType = fieldMlirType
-        , ctx = ctx3
+        , ctx = ctx3, isTerminated = False
         }
 
 
@@ -2541,7 +2521,7 @@ generateRecordUpdate ctx record _ _ =
     { ops = recordResult.ops ++ [ constructOp ]
     , resultVar = resultVar
     , resultType = Types.ecoValue
-    , ctx = ctx2
+    , ctx = ctx2, isTerminated = False
     }
 
 
@@ -2621,7 +2601,7 @@ generateTupleCreate ctx elements layout =
     { ops = elemOps ++ boxOps ++ [ constructOp ]
     , resultVar = resultVar
     , resultType = Types.ecoValue
-    , ctx = ctx4
+    , ctx = ctx4, isTerminated = False
     }
 
 
@@ -2644,7 +2624,7 @@ generateUnit ctx =
     { ops = [ unitOp ]
     , resultVar = var
     , resultType = Types.ecoValue
-    , ctx = ctx2
+    , ctx = ctx2, isTerminated = False
     }
 
 

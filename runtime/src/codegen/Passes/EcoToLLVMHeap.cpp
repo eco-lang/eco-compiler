@@ -241,6 +241,8 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
 
 //===----------------------------------------------------------------------===//
 // eco.project.list_head -> load from Cons.head (offset 8)
+// For primitive result types (i64, f64), uses runtime helpers that handle
+// both boxed and unboxed heads transparently.
 //===----------------------------------------------------------------------===//
 
 struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
@@ -255,11 +257,32 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
         auto *ctx = rewriter.getContext();
+        Value input = adaptor.getList();
+
+        // Check the original ECO result type to decide how to extract the head.
+        Type origResultType = op.getResult().getType();
+
+        // For primitive types (i64, f64), use runtime helpers that handle
+        // both boxed and unboxed heads correctly.
+        if (origResultType.isInteger(64)) {
+            auto helperFunc = runtime.getOrCreateConsHeadI64(rewriter);
+            auto call = rewriter.create<LLVM::CallOp>(loc, helperFunc, ValueRange{input});
+            rewriter.replaceOp(op, call.getResult());
+            return success();
+        }
+        if (origResultType.isF64()) {
+            auto helperFunc = runtime.getOrCreateConsHeadF64(rewriter);
+            auto call = rewriter.create<LLVM::CallOp>(loc, helperFunc, ValueRange{input});
+            rewriter.replaceOp(op, call.getResult());
+            return success();
+        }
+
+        // For !eco.value (HPointer), load directly from Cons.head offset.
+        // This handles the case where we want the HPointer itself (boxed or unboxed).
         auto i64Ty = IntegerType::get(ctx, 64);
         auto i8Ty = IntegerType::get(ctx, 8);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-        Value input = adaptor.getList();
         auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
         auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
         Value ptr = resolveCall.getResult();

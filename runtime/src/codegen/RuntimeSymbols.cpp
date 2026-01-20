@@ -199,6 +199,22 @@ void registerRuntimeSymbols(ExecutionEngine &engine) {
                 llvm::orc::ExecutorAddr::fromPtr(&eco_resolve_hptr),
                 llvm::JITSymbolFlags::Exported);
 
+        // Constructor tag extraction (handles both heap objects and embedded constants).
+        symbolMap[interner("eco_get_tag")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_get_tag),
+                llvm::JITSymbolFlags::Exported);
+
+        // List element access (handles both boxed and unboxed heads).
+        symbolMap[interner("eco_cons_head_i64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_cons_head_i64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_cons_head_f64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_cons_head_f64),
+                llvm::JITSymbolFlags::Exported);
+
         // =================================================================
         // Elm Kernel Function Symbols
         // =================================================================
