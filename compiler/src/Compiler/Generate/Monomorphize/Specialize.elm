@@ -31,9 +31,12 @@ into monomorphized form by applying type substitutions.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
+import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
+import Compiler.Generate.Monomorphize.Analysis as Analysis
 import Compiler.Generate.Monomorphize.Closure as Closure
 import Compiler.Generate.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Generate.Monomorphize.State exposing (MonoState, Substitution, VarTypes, WorkItem(..))
@@ -104,6 +107,29 @@ specializeNode ctorName node requestedMonoType state =
 
                 monoArgs =
                     List.map (specializeArg subst) args
+
+                -- Debug: check for "ls" parameter with wrong type
+                _ =
+                    List.filterMap
+                        (\( name, monoType ) ->
+                            if name == "ls" && monoType == Mono.MInt then
+                                Just
+                                    (Utils.Crash.crash
+                                        ("DefineTailFunc: 'ls' got MInt! funcType="
+                                            ++ Debug.toString funcType
+                                            ++ " requestedMonoType="
+                                            ++ Mono.monoTypeToDebugString requestedMonoType
+                                            ++ " args="
+                                            ++ Debug.toString (List.map (\( n, t ) -> ( A.toValue n, Debug.toString t )) args)
+                                            ++ " monoArgs="
+                                            ++ Debug.toString (List.map (\( n, t ) -> ( n, Mono.monoTypeToDebugString t )) monoArgs)
+                                        )
+                                    )
+
+                            else
+                                Nothing
+                        )
+                        monoArgs
 
                 newVarTypes =
                     List.foldl
@@ -246,7 +272,7 @@ specializeCycle _ valueDefs funcDefs requestedMonoType state =
 
         ( False, Just (Mono.Accessor _) ) ->
             -- Accessors are virtual globals and don't participate in cycles
-            Utils.Crash.crash "Specialize" "specializeCycle" "Accessor should not appear in cycles"
+            Utils.Crash.crash "Specialize.specializeCycle: Accessor should not appear in cycles"
 
 
 {-| Specialize a cycle containing only value definitions.
@@ -632,20 +658,36 @@ specializeExpr expr subst state =
                 deriveParamType : Int -> ( Name, Can.Type ) -> ( Name, Mono.MonoType )
                 deriveParamType idx ( name, paramCanType ) =
                     let
+                        -- First try the function type's parameter at this index (more reliable)
+                        funcParamTypeAtIdx =
+                            List.drop idx funcTypeParams |> List.head
+
                         substType =
                             TypeSubst.applySubst subst paramCanType
+
+                        -- Use funcParamType if available AND either:
+                        -- 1. substType is unresolved (MVar), OR
+                        -- 2. paramCanType is a bare type variable (TVar), which might be incorrectly annotated
+                        finalType =
+                            case funcParamTypeAtIdx of
+                                Just funcParamType ->
+                                    case paramCanType of
+                                        Can.TVar _ ->
+                                            -- Param is annotated as just a TVar - likely incorrect, use func type
+                                            funcParamType
+
+                                        _ ->
+                                            case substType of
+                                                Mono.MVar _ _ ->
+                                                    funcParamType
+
+                                                _ ->
+                                                    substType
+
+                                Nothing ->
+                                    substType
                     in
-                    case substType of
-                        Mono.MVar _ _ ->
-                            case List.drop idx funcTypeParams of
-                                funcParamType :: _ ->
-                                    ( name, funcParamType )
-
-                                [] ->
-                                    ( name, substType )
-
-                        _ ->
-                            ( name, substType )
+                    ( name, finalType )
 
                 monoParams =
                     List.indexedMap deriveParamType params
@@ -708,20 +750,36 @@ specializeExpr expr subst state =
                         name =
                             A.toValue locName
 
+                        -- First try the function type's parameter at this index (more reliable)
+                        funcParamTypeAtIdx =
+                            List.drop idx funcTypeParams |> List.head
+
                         substType =
                             TypeSubst.applySubst subst paramCanType
+
+                        -- Use funcParamType if available AND either:
+                        -- 1. substType is unresolved (MVar), OR
+                        -- 2. paramCanType is a bare type variable (TVar), which might be incorrectly annotated
+                        finalType =
+                            case funcParamTypeAtIdx of
+                                Just funcParamType ->
+                                    case paramCanType of
+                                        Can.TVar _ ->
+                                            -- Param is annotated as just a TVar - likely incorrect, use func type
+                                            funcParamType
+
+                                        _ ->
+                                            case substType of
+                                                Mono.MVar _ _ ->
+                                                    funcParamType
+
+                                                _ ->
+                                                    substType
+
+                                Nothing ->
+                                    substType
                     in
-                    case substType of
-                        Mono.MVar _ _ ->
-                            case List.drop idx funcTypeParams of
-                                funcParamType :: _ ->
-                                    ( name, funcParamType )
-
-                                [] ->
-                                    ( name, substType )
-
-                        _ ->
-                            ( name, substType )
+                    ( name, finalType )
 
                 monoParams =
                     List.indexedMap deriveParamType params
@@ -945,7 +1003,7 @@ specializeExpr expr subst state =
                     TypeSubst.applySubst subst canType
 
                 monoDestructor =
-                    specializeDestructor destructor subst state.varTypes
+                    specializeDestructor destructor subst state.varTypes state.globalTypeEnv
 
                 (Mono.MonoDestructor destructorName _ destructorType) =
                     monoDestructor
@@ -1195,10 +1253,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                                     fi.monoType
 
                                 Nothing ->
-                                    Utils.Crash.crash
-                                        "Specialize"
-                                        "resolveProcessedArg"
-                                        ("Field " ++ fieldName ++ " not found in record layout. This is a compiler bug.")
+                                    Utils.Crash.crash ("Specialize.resolveProcessedArg: Field " ++ fieldName ++ " not found in record layout. This is a compiler bug.")
 
                         recordType =
                             Mono.MRecord layout
@@ -1234,10 +1289,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                                     fi.monoType
 
                                 Nothing ->
-                                    Utils.Crash.crash
-                                        "Specialize"
-                                        "resolveProcessedArg"
-                                        ("Field " ++ fieldName ++ " not found in record layout (direct). This is a compiler bug.")
+                                    Utils.Crash.crash ("Specialize.resolveProcessedArg: Field " ++ fieldName ++ " not found in record layout (direct). This is a compiler bug.")
 
                         recordType =
                             Mono.MRecord layout
@@ -1260,10 +1312,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                     ( Mono.MonoVarGlobal region specId accessorMonoType, newState )
 
                 _ ->
-                    Utils.Crash.crash
-                        "Specialize"
-                        "resolveProcessedArg"
-                        "Accessor argument did not receive a record parameter type after monomorphization. This is a compiler bug."
+                    Utils.Crash.crash "Specialize.resolveProcessedArg: Accessor argument did not receive a record parameter type after monomorphization. This is a compiler bug."
 
 
 {-| Resolve a list of processed arguments using the callee's parameter types.
@@ -1458,11 +1507,11 @@ specializeDef def subst state =
             ( Mono.MonoTailDef name monoArgs monoExpr, stateAfter )
 
 
-specializeDestructor : TOpt.Destructor -> Substitution -> VarTypes -> Mono.MonoDestructor
-specializeDestructor (TOpt.Destructor name path canType) subst _ =
+specializeDestructor : TOpt.Destructor -> Substitution -> VarTypes -> TypeEnv.GlobalTypeEnv -> Mono.MonoDestructor
+specializeDestructor (TOpt.Destructor name path canType) subst varTypes globalTypeEnv =
     let
         monoPath =
-            specializePath path
+            specializePath path subst varTypes globalTypeEnv
 
         monoType =
             TypeSubst.applySubst subst canType
@@ -1470,23 +1519,201 @@ specializeDestructor (TOpt.Destructor name path canType) subst _ =
     Mono.MonoDestructor name monoPath monoType
 
 
-specializePath : TOpt.Path -> Mono.MonoPath
-specializePath path =
+{-| Specialize a path, computing the result type at each step.
+
+The path is structured from leaf (root variable) outward, so we:
+
+1.  Find the root and look up its type in VarTypes
+2.  Walk back out through the path, computing types at each step
+
+-}
+specializePath : TOpt.Path -> Substitution -> VarTypes -> TypeEnv.GlobalTypeEnv -> Mono.MonoPath
+specializePath path subst varTypes globalTypeEnv =
     case path of
         TOpt.Index index hint subPath ->
-            Mono.MonoIndex (Index.toMachine index) (hintToKind hint) (specializePath subPath)
+            let
+                monoSubPath =
+                    specializePath subPath subst varTypes globalTypeEnv
+
+                containerType =
+                    Mono.getMonoPathType monoSubPath
+
+                resultType =
+                    computeIndexProjectionType globalTypeEnv hint (Index.toMachine index) containerType
+            in
+            Mono.MonoIndex (Index.toMachine index) (hintToKind hint) resultType monoSubPath
 
         TOpt.ArrayIndex idx subPath ->
-            Mono.MonoIndex idx Mono.CustomContainer (specializePath subPath)
+            let
+                monoSubPath =
+                    specializePath subPath subst varTypes globalTypeEnv
 
-        TOpt.Field _ subPath ->
-            Mono.MonoField 0 (specializePath subPath)
+                containerType =
+                    Mono.getMonoPathType monoSubPath
+
+                -- ArrayIndex is used for array access, element type comes from the array's element type
+                resultType =
+                    computeArrayElementType containerType
+            in
+            Mono.MonoIndex idx (Mono.CustomContainer "") resultType monoSubPath
+
+        TOpt.Field fieldName subPath ->
+            let
+                monoSubPath =
+                    specializePath subPath subst varTypes globalTypeEnv
+
+                recordType =
+                    Mono.getMonoPathType monoSubPath
+
+                ( fieldIndex, resultType ) =
+                    computeFieldProjectionType fieldName recordType
+            in
+            Mono.MonoField fieldIndex resultType monoSubPath
 
         TOpt.Unbox subPath ->
-            Mono.MonoUnbox (specializePath subPath)
+            Mono.MonoUnbox (specializePath subPath subst varTypes globalTypeEnv)
 
         TOpt.Root name ->
-            Mono.MonoRoot name
+            let
+                rootType =
+                    case Dict.get identity name varTypes of
+                        Just ty ->
+                            ty
+
+                        Nothing ->
+                            Utils.Crash.crash ("Specialize.specializePath: Root variable '" ++ name ++ "' not found in VarTypes. This is a compiler bug.")
+            in
+            Mono.MonoRoot name rootType
+
+
+{-| Compute the result type of projecting at an index from a container.
+-}
+computeIndexProjectionType : TypeEnv.GlobalTypeEnv -> TOpt.ContainerHint -> Int -> Mono.MonoType -> Mono.MonoType
+computeIndexProjectionType globalTypeEnv hint index containerType =
+    case hint of
+        TOpt.HintList ->
+            case containerType of
+                Mono.MList elemType ->
+                    elemType
+
+                _ ->
+                    Utils.Crash.crash ("Specialize.computeIndexProjectionType: HintList at index " ++ String.fromInt index ++ " - Expected MList but got: " ++ Mono.monoTypeToDebugString containerType)
+
+        TOpt.HintTuple2 ->
+            computeTupleElementType index containerType
+
+        TOpt.HintTuple3 ->
+            computeTupleElementType index containerType
+
+        TOpt.HintCustom ctorName ->
+            computeCustomFieldType globalTypeEnv ctorName index containerType
+
+
+{-| Compute element type from a tuple at the given index.
+-}
+computeTupleElementType : Int -> Mono.MonoType -> Mono.MonoType
+computeTupleElementType index containerType =
+    case containerType of
+        Mono.MTuple layout ->
+            case List.drop index layout.elements of
+                ( elemType, _ ) :: _ ->
+                    elemType
+
+                [] ->
+                    Utils.Crash.crash ("Specialize.computeTupleElementType: Tuple index " ++ String.fromInt index ++ " out of bounds for tuple with " ++ String.fromInt layout.arity ++ " elements")
+
+        _ ->
+            Utils.Crash.crash ("Specialize.computeTupleElementType: Expected MTuple but got: " ++ Mono.monoTypeToDebugString containerType)
+
+
+{-| Compute field type from a custom type constructor at the given index.
+
+This looks up the union definition to find the constructor's argument types,
+then applies the type variable substitution based on the monomorphized type arguments.
+
+-}
+computeCustomFieldType : TypeEnv.GlobalTypeEnv -> Name -> Int -> Mono.MonoType -> Mono.MonoType
+computeCustomFieldType globalTypeEnv ctorName index containerType =
+    case containerType of
+        Mono.MCustom moduleName typeName typeArgs ->
+            case Analysis.lookupUnion globalTypeEnv moduleName typeName of
+                Nothing ->
+                    Utils.Crash.crash ("Specialize.computeCustomFieldType: Union not found: " ++ typeName)
+
+                Just (Can.Union unionData) ->
+                    case findCtorByName ctorName unionData.alts of
+                        Nothing ->
+                            Utils.Crash.crash ("Specialize.computeCustomFieldType: Constructor '" ++ ctorName ++ "' not found in union " ++ typeName)
+
+                        Just (Can.Ctor ctorData) ->
+                            case List.drop index ctorData.args of
+                                canArgType :: _ ->
+                                    -- Build substitution from union's type vars to concrete type args
+                                    let
+                                        typeVarSubst =
+                                            List.map2 Tuple.pair unionData.vars typeArgs
+                                                |> List.foldl (\( varName, monoArg ) acc -> Dict.insert identity varName monoArg acc) Dict.empty
+                                    in
+                                    TypeSubst.applySubst typeVarSubst canArgType
+
+                                [] ->
+                                    Utils.Crash.crash ("Specialize.computeCustomFieldType: Constructor arg index " ++ String.fromInt index ++ " out of bounds for " ++ ctorName)
+
+        _ ->
+            Utils.Crash.crash ("Specialize.computeCustomFieldType: Expected MCustom for ctor '" ++ ctorName ++ "' index " ++ String.fromInt index ++ " but got: " ++ Mono.monoTypeToDebugString containerType)
+
+
+{-| Find a constructor by name in a list of alternatives.
+-}
+findCtorByName : Name -> List Can.Ctor -> Maybe Can.Ctor
+findCtorByName targetName alts =
+    List.filter (\(Can.Ctor ctorData) -> ctorData.name == targetName) alts
+        |> List.head
+
+
+{-| Compute element type from an array access.
+-}
+computeArrayElementType : Mono.MonoType -> Mono.MonoType
+computeArrayElementType containerType =
+    case containerType of
+        Mono.MCustom _ "Array" [ elemType ] ->
+            elemType
+
+        _ ->
+            Utils.Crash.crash ("Specialize.computeArrayElementType: Expected Array type but got: " ++ Mono.monoTypeToDebugString containerType)
+
+
+{-| Compute the field index and type from a record field access.
+-}
+computeFieldProjectionType : Name -> Mono.MonoType -> ( Int, Mono.MonoType )
+computeFieldProjectionType fieldName recordType =
+    case recordType of
+        Mono.MRecord layout ->
+            case findFieldInLayout fieldName layout.fields 0 of
+                Just ( idx, fieldInfo ) ->
+                    ( idx, fieldInfo.monoType )
+
+                Nothing ->
+                    Utils.Crash.crash ("Specialize.computeFieldProjectionType: Field '" ++ fieldName ++ "' not found in record layout")
+
+        _ ->
+            Utils.Crash.crash ("Specialize.computeFieldProjectionType: Expected MRecord but got: " ++ Mono.monoTypeToDebugString recordType)
+
+
+{-| Find a field by name in a list of field infos, returning its index.
+-}
+findFieldInLayout : Name -> List Mono.FieldInfo -> Int -> Maybe ( Int, Mono.FieldInfo )
+findFieldInLayout targetName fields idx =
+    case fields of
+        [] ->
+            Nothing
+
+        fieldInfo :: rest ->
+            if fieldInfo.name == targetName then
+                Just ( idx, fieldInfo )
+
+            else
+                findFieldInLayout targetName rest (idx + 1)
 
 
 {-| Convert ContainerHint to ContainerKind for monomorphized paths.
@@ -1503,11 +1730,8 @@ hintToKind hint =
         TOpt.HintTuple3 ->
             Mono.Tuple3Container
 
-        TOpt.HintCustom ->
-            Mono.CustomContainer
-
-        TOpt.HintUnknown ->
-            Mono.CustomContainer
+        TOpt.HintCustom ctorName ->
+            Mono.CustomContainer ctorName
 
 
 {-| Specialize a pattern match decider tree.
@@ -1693,7 +1917,14 @@ specializeUpdates updates layout subst state =
 -}
 specializeArg : Substitution -> ( A.Located Name, Can.Type ) -> ( Name, Mono.MonoType )
 specializeArg subst ( locName, canType ) =
-    ( A.toValue locName, TypeSubst.applySubst subst canType )
+    let
+        name =
+            A.toValue locName
+
+        monoType =
+            TypeSubst.applySubst subst canType
+    in
+    ( name, monoType )
 
 
 

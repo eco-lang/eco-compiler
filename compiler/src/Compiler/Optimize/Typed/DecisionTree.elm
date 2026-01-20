@@ -116,7 +116,7 @@ type ContainerHint
     = HintList
     | HintTuple2
     | HintTuple3
-    | HintCustom
+    | HintCustom Name.Name -- Constructor name for layout lookup
     | HintUnknown
 
 
@@ -228,7 +228,7 @@ flatten (( path, A.At region patternInfo ) as pathPattern) otherPathPatterns =
         Can.PAnything ->
             pathPattern :: otherPathPatterns
 
-        Can.PCtor { union, args } ->
+        Can.PCtor { union, name, args } ->
             let
                 (Can.Union unionData) =
                     union
@@ -239,7 +239,7 @@ flatten (( path, A.At region patternInfo ) as pathPattern) otherPathPatterns =
                         flatten ( Unbox path, arg ) otherPathPatterns
 
                     args_ ->
-                        List.foldr flatten otherPathPatterns (subPositions HintCustom path args_)
+                        List.foldr flatten otherPathPatterns (subPositions (HintCustom name) path args_)
 
             else
                 pathPattern :: otherPathPatterns
@@ -262,7 +262,8 @@ flatten (( path, A.At region patternInfo ) as pathPattern) otherPathPatterns =
 
                         _ ->
                             -- Larger tuples are encoded more like custom ADTs
-                            HintCustom
+                            -- Use empty string since tuples don't have constructor names
+                            HintCustom ""
             in
             all
                 |> List.foldl
@@ -479,10 +480,10 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
                                                     start ++ (( Unbox path, arg ) :: end)
 
                                                 else
-                                                    start ++ subPositions HintCustom path args_ ++ end
+                                                    start ++ subPositions (HintCustom name) path args_ ++ end
 
                                             args_ ->
-                                                start ++ subPositions HintCustom path args_ ++ end
+                                                start ++ subPositions (HintCustom name) path args_ ++ end
                                     )
 
                             else
@@ -589,7 +590,8 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
                                     HintTuple3
 
                                 _ ->
-                                    HintCustom
+                                    -- Larger tuples use empty string for constructor name
+                                    HintCustom ""
                     in
                     Just
                         (Branch goal
@@ -783,22 +785,24 @@ smallBranchingFactor branches path =
 -}
 containerHintEncoder : ContainerHint -> Bytes.Encode.Encoder
 containerHintEncoder hint =
-    Bytes.Encode.unsignedInt8 <|
-        case hint of
-            HintList ->
-                0
+    case hint of
+        HintList ->
+            Bytes.Encode.unsignedInt8 0
 
-            HintTuple2 ->
-                1
+        HintTuple2 ->
+            Bytes.Encode.unsignedInt8 1
 
-            HintTuple3 ->
-                2
+        HintTuple3 ->
+            Bytes.Encode.unsignedInt8 2
 
-            HintCustom ->
-                3
+        HintCustom ctorName ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
+                , BE.string ctorName
+                ]
 
-            HintUnknown ->
-                4
+        HintUnknown ->
+            Bytes.Encode.unsignedInt8 4
 
 
 {-| Decode a ContainerHint from bytes.
@@ -819,7 +823,7 @@ containerHintDecoder =
                         Bytes.Decode.succeed HintTuple3
 
                     3 ->
-                        Bytes.Decode.succeed HintCustom
+                        Bytes.Decode.map HintCustom BD.string
 
                     _ ->
                         Bytes.Decode.succeed HintUnknown

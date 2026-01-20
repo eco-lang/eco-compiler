@@ -295,8 +295,7 @@ type ContainerHint
     = HintList
     | HintTuple2
     | HintTuple3
-    | HintCustom
-    | HintUnknown
+    | HintCustom Name  -- Constructor name for layout lookup
 
 
 {-| A path describing how to navigate into a data structure for destructuring.
@@ -1332,23 +1331,21 @@ choiceDecoder =
 
 containerHintEncoder : ContainerHint -> Bytes.Encode.Encoder
 containerHintEncoder hint =
-    Bytes.Encode.unsignedInt8
-        (case hint of
-            HintList ->
-                0
+    case hint of
+        HintList ->
+            Bytes.Encode.unsignedInt8 0
 
-            HintTuple2 ->
-                1
+        HintTuple2 ->
+            Bytes.Encode.unsignedInt8 1
 
-            HintTuple3 ->
-                2
+        HintTuple3 ->
+            Bytes.Encode.unsignedInt8 2
 
-            HintCustom ->
-                3
-
-            HintUnknown ->
-                4
-        )
+        HintCustom ctorName ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 3
+                , BE.string ctorName
+                ]
 
 
 containerHintDecoder : Bytes.Decode.Decoder ContainerHint
@@ -1366,11 +1363,9 @@ containerHintDecoder =
                     2 ->
                         Bytes.Decode.succeed HintTuple3
 
-                    3 ->
-                        Bytes.Decode.succeed HintCustom
-
                     _ ->
-                        Bytes.Decode.succeed HintUnknown
+                        -- Tag 3 = HintCustom with constructor name
+                        Bytes.Decode.map HintCustom BD.string
             )
 
 

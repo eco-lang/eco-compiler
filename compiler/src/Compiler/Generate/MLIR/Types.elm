@@ -2,6 +2,7 @@ module Compiler.Generate.MLIR.Types exposing
     ( ecoValue, ecoInt, ecoFloat, ecoChar
     , monoTypeToMlir, mlirTypeToString
     , isFunctionType, functionArity, countTotalArity, decomposeFunctionType, isEcoValueType
+    , isPrimitiveType, isPrimitiveMonoType
     )
 
 {-| MLIR type definitions and conversions.
@@ -182,6 +183,59 @@ isEcoValueType : MlirType -> Bool
 isEcoValueType ty =
     case ty of
         NamedStruct "eco.value" ->
+            True
+
+        _ ->
+            False
+
+
+{-| Check if an MlirType is a primitive type (i64, f64, or i32 for char/bool).
+Primitive types are stored unboxed in the heap.
+-}
+isPrimitiveType : MlirType -> Bool
+isPrimitiveType ty =
+    case ty of
+        NamedStruct "eco.value" ->
+            False
+
+        NamedStruct _ ->
+            False
+
+        -- int/i64
+        I64 ->
+            True
+
+        -- float/f64
+        F64 ->
+            True
+
+        -- char/bool i32
+        I32 ->
+            True
+
+        -- i1 for booleans
+        I1 ->
+            True
+
+        _ ->
+            False
+
+
+{-| Check if a MonoType is a primitive type (stored unboxed).
+-}
+isPrimitiveMonoType : Mono.MonoType -> Bool
+isPrimitiveMonoType monoType =
+    case monoType of
+        Mono.MInt ->
+            True
+
+        Mono.MFloat ->
+            True
+
+        Mono.MChar ->
+            True
+
+        Mono.MBool ->
             True
 
         _ ->

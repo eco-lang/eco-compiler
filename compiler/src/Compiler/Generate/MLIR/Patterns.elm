@@ -22,7 +22,9 @@ import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.Optimize.Typed.DecisionTree as DT
-import Mlir.Mlir exposing (MlirOp, MlirType(..))
+import Data.Map as EveryDict
+import Dict
+import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))
 
 
 
@@ -34,14 +36,14 @@ import Mlir.Mlir exposing (MlirOp, MlirType(..))
 generateMonoPath : Ctx.Context -> Mono.MonoPath -> MlirType -> ( List MlirOp, String, Ctx.Context )
 generateMonoPath ctx path targetType =
     case path of
-        Mono.MonoRoot name ->
+        Mono.MonoRoot name _ ->
             let
                 ( varName, _ ) =
                     Ctx.lookupVar ctx name
             in
             ( [], varName, ctx )
 
-        Mono.MonoIndex index containerKind subPath ->
+        Mono.MonoIndex index containerKind resultType subPath ->
             let
                 -- Navigate to the container object (always !eco.value)
                 ( subOps, subVar, ctx1 ) =
@@ -52,33 +54,93 @@ generateMonoPath ctx path targetType =
 
                 -- Use type-specific projection ops based on ContainerKind.
                 -- This ensures correct heap layout access for each container type.
-                ( ctx3, projectOp ) =
+                ( projectOps, projectVar, ctx3 ) =
                     case containerKind of
                         Mono.ListContainer ->
                             if index == 0 then
                                 -- List head
-                                Ops.ecoProjectListHead ctx2 resultVar targetType subVar
+                                let
+                                    ( ctx_, op ) =
+                                        Ops.ecoProjectListHead ctx2 resultVar targetType subVar
+                                in
+                                ( [ op ], resultVar, ctx_ )
 
                             else
                                 -- List tail (index 1)
-                                Ops.ecoProjectListTail ctx2 resultVar subVar
+                                let
+                                    ( ctx_, op ) =
+                                        Ops.ecoProjectListTail ctx2 resultVar subVar
+                                in
+                                ( [ op ], resultVar, ctx_ )
 
                         Mono.Tuple2Container ->
-                            Ops.ecoProjectTuple2 ctx2 resultVar index targetType subVar
+                            let
+                                ( ctx_, op ) =
+                                    Ops.ecoProjectTuple2 ctx2 resultVar index targetType subVar
+                            in
+                            ( [ op ], resultVar, ctx_ )
 
                         Mono.Tuple3Container ->
-                            Ops.ecoProjectTuple3 ctx2 resultVar index targetType subVar
+                            let
+                                ( ctx_, op ) =
+                                    Ops.ecoProjectTuple3 ctx2 resultVar index targetType subVar
+                            in
+                            ( [ op ], resultVar, ctx_ )
 
-                        Mono.CustomContainer ->
-                            -- Type-specific projection for custom ADTs
-                            Ops.ecoProjectCustom ctx2 resultVar index targetType subVar
+                        Mono.CustomContainer ctorName ->
+                            -- For custom types, we need to check if the field is stored unboxed
+                            -- by looking up the CtorLayout for this constructor.
+                            let
+                                containerType =
+                                    Mono.getMonoPathType subPath
+
+                                maybeIsUnboxed =
+                                    lookupFieldIsUnboxed ctx2 containerType ctorName index
+                            in
+                            case maybeIsUnboxed of
+                                Just True ->
+                                    -- Field is stored unboxed (as primitive).
+                                    -- Project as primitive type, then box if caller needs eco.value.
+                                    let
+                                        fieldMlirType =
+                                            Types.monoTypeToMlir resultType
+
+                                        ( primitiveVar, ctx3_ ) =
+                                            Ctx.freshVar ctx2
+
+                                        ( ctx4, projectOp ) =
+                                            Ops.ecoProjectCustom ctx3_ primitiveVar index fieldMlirType subVar
+                                    in
+                                    if Types.isEcoValueType targetType then
+                                        -- Caller wants eco.value, need to box the primitive
+                                        let
+                                            ( boxedVar, ctx5 ) =
+                                                Ctx.freshVar ctx4
+
+                                            ( ctx6, boxOp ) =
+                                                boxPrimitive ctx5 boxedVar primitiveVar fieldMlirType
+                                        in
+                                        ( [ projectOp, boxOp ], boxedVar, ctx6 )
+
+                                    else
+                                        -- Caller wants primitive, return directly
+                                        ( [ projectOp ], primitiveVar, ctx4 )
+
+                                _ ->
+                                    -- Field is stored boxed (as eco.value) or no layout found.
+                                    -- Project as eco.value, which is the default behavior.
+                                    let
+                                        ( ctx_, op ) =
+                                            Ops.ecoProjectCustom ctx2 resultVar index targetType subVar
+                                    in
+                                    ( [ op ], resultVar, ctx_ )
             in
-            ( subOps ++ [ projectOp ]
-            , resultVar
+            ( subOps ++ projectOps
+            , projectVar
             , ctx3
             )
 
-        Mono.MonoField index subPath ->
+        Mono.MonoField index resultType subPath ->
             let
                 -- Navigate to the container object (always !eco.value)
                 ( subOps, subVar, ctx1 ) =
@@ -99,19 +161,147 @@ generateMonoPath ctx path targetType =
             )
 
         Mono.MonoUnbox subPath ->
-            -- MonoUnbox is a SEMANTIC operation for single-constructor types.
-            -- It means "unwrap the wrapper to access the inner value".
-            -- This is a NO-OP in MLIR - the wrapped and unwrapped values have
-            -- the same runtime representation (!eco.value).
+            -- MonoUnbox represents unwrapping a single-constructor type (Can.Unbox).
+            -- For types like `Wrapper = Wrap Int`, MonoUnbox extracts the inner value.
             --
-            -- NOTE: This is different from eco.unbox which converts !eco.value
-            -- to a primitive type (i64, f64, etc.). eco.unbox is generated by
-            -- MonoIndex when the targetType is a primitive, NOT by MonoUnbox.
-            --
-            -- By always passing through, we avoid generating incorrect sequences
-            -- like: project -> eco.unbox -> project (where eco.unbox produces i64
-            -- but the next project expects !eco.value).
-            generateMonoPath ctx subPath targetType
+            -- We need to:
+            -- 1. Get the container (wrapper) value
+            -- 2. Look up the unbox type's single constructor layout
+            -- 3. Project field 0 with the appropriate type
+            -- 4. Box/unbox if needed to match targetType
+            let
+                containerType =
+                    Mono.getMonoPathType subPath
+
+                -- Navigate to the container object (always !eco.value)
+                ( subOps, subVar, ctx1 ) =
+                    generateMonoPath ctx subPath Types.ecoValue
+
+                -- Look up the layout for this unbox type
+                typeKey =
+                    Mono.toComparableMonoType containerType
+
+                maybeLayouts =
+                    EveryDict.get identity typeKey ctx1.typeRegistry.ctorLayouts
+            in
+            case maybeLayouts of
+                Just (layout :: _) ->
+                    -- Found layout - check if the single field is unboxed
+                    case layout.fields of
+                        fieldInfo :: _ ->
+                            let
+                                ( resultVar, ctx2 ) =
+                                    Ctx.freshVar ctx1
+
+                                fieldMlirType =
+                                    Types.monoTypeToMlir fieldInfo.monoType
+                            in
+                            if fieldInfo.isUnboxed then
+                                -- Field is stored unboxed (as primitive)
+                                let
+                                    ( ctx3, projectOp ) =
+                                        Ops.ecoProjectCustom ctx2 resultVar 0 fieldMlirType subVar
+                                in
+                                if Types.isEcoValueType targetType then
+                                    -- Caller wants eco.value, need to box
+                                    let
+                                        ( boxedVar, ctx4 ) =
+                                            Ctx.freshVar ctx3
+
+                                        ( ctx5, boxOp ) =
+                                            boxPrimitive ctx4 boxedVar resultVar fieldMlirType
+                                    in
+                                    ( subOps ++ [ projectOp, boxOp ], boxedVar, ctx5 )
+
+                                else
+                                    -- Caller wants primitive, return directly
+                                    ( subOps ++ [ projectOp ], resultVar, ctx3 )
+
+                            else
+                                -- Field is stored boxed (as eco.value)
+                                let
+                                    ( ctx3, projectOp ) =
+                                        Ops.ecoProjectCustom ctx2 resultVar 0 Types.ecoValue subVar
+                                in
+                                if Types.isPrimitiveType targetType then
+                                    -- Caller wants primitive, need to unbox
+                                    let
+                                        ( unboxedVar, ctx4 ) =
+                                            Ctx.freshVar ctx3
+
+                                        attrs =
+                                            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
+
+                                        ( ctx5, unboxOp ) =
+                                            Ops.mlirOp ctx4 "eco.unbox"
+                                                |> Ops.opBuilder.withOperands [ resultVar ]
+                                                |> Ops.opBuilder.withResults [ ( unboxedVar, targetType ) ]
+                                                |> Ops.opBuilder.withAttrs attrs
+                                                |> Ops.opBuilder.build
+                                    in
+                                    ( subOps ++ [ projectOp, unboxOp ], unboxedVar, ctx5 )
+
+                                else
+                                    -- Caller wants eco.value, return directly
+                                    ( subOps ++ [ projectOp ], resultVar, ctx3 )
+
+                        [] ->
+                            -- No fields in layout - fall back to pass-through
+                            ( subOps, subVar, ctx1 )
+
+                _ ->
+                    -- No layout found - fall back to pass-through (treat as eco.value)
+                    -- This preserves backward compatibility for cases where layout isn't available.
+                    ( subOps, subVar, ctx1 )
+
+
+{-| Look up whether a field in a custom type constructor is stored unboxed.
+
+Returns Just True if unboxed, Just False if boxed, Nothing if no layout found.
+
+-}
+lookupFieldIsUnboxed : Ctx.Context -> Mono.MonoType -> Name.Name -> Int -> Maybe Bool
+lookupFieldIsUnboxed ctx containerType ctorName fieldIndex =
+    let
+        typeKey =
+            Mono.toComparableMonoType containerType
+
+        maybeLayouts =
+            EveryDict.get identity typeKey ctx.typeRegistry.ctorLayouts
+    in
+    case maybeLayouts of
+        Nothing ->
+            Nothing
+
+        Just layouts ->
+            -- Find the constructor by name
+            case List.filter (\layout -> layout.name == ctorName) layouts of
+                layout :: _ ->
+                    -- Find the field by index
+                    case List.drop fieldIndex layout.fields of
+                        fieldInfo :: _ ->
+                            Just fieldInfo.isUnboxed
+
+                        [] ->
+                            Nothing
+
+                [] ->
+                    Nothing
+
+
+{-| Box a primitive value into an eco.value.
+-}
+boxPrimitive : Ctx.Context -> String -> String -> MlirType -> ( Ctx.Context, MlirOp )
+boxPrimitive ctx resultVar primitiveVar primType =
+    let
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr primType ])
+    in
+    Ops.mlirOp ctx "eco.box"
+        |> Ops.opBuilder.withOperands [ primitiveVar ]
+        |> Ops.opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
+        |> Ops.opBuilder.withAttrs attrs
+        |> Ops.opBuilder.build
 
 
 
@@ -191,8 +381,11 @@ generateDTPath ctx root dtPath targetType =
                         DT.HintTuple3 ->
                             Ops.ecoProjectTuple3 ctx2 resultVar fieldIndex targetType subVar
 
-                        DT.HintCustom ->
+                        DT.HintCustom _ ->
                             -- Custom ADTs (Maybe, Result, user types, big tuples)
+                            -- Note: We can't use the constructor name for layout lookup here
+                            -- because we don't have access to the container's MonoType.
+                            -- The layout lookup happens in generateMonoPath instead.
                             Ops.ecoProjectCustom ctx2 resultVar fieldIndex targetType subVar
 
                         DT.HintUnknown ->

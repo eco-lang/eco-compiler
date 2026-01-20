@@ -10,6 +10,8 @@ module Compiler.AST.Monomorphized exposing
     , typeOf, canUnbox
     , computeRecordLayout, computeTupleLayout
     , toComparableSpecKey, toComparableMonoType
+    , getMonoPathType
+    , monoTypeToDebugString
     )
 
 {-| Monomorphized AST for backends that can optimize using concrete types.
@@ -448,19 +450,80 @@ type ContainerKind
     = ListContainer
     | Tuple2Container
     | Tuple3Container
-    | CustomContainer
+    | CustomContainer Name  -- Constructor name for layout lookup
 
 
 {-| Path for navigating into a data structure during destructuring.
 
-MonoIndex now carries ContainerKind to enable type-specific projection ops.
+MonoIndex now carries ContainerKind and MonoType to enable type-specific projection ops.
+The MonoType is the RESULT type of evaluating that path segment.
+In generateMonoPath, the container type for a MonoIndex is obtained via getMonoPathType subPath.
 
 -}
 type MonoPath
-    = MonoIndex Int ContainerKind MonoPath
-    | MonoField Int MonoPath
+    = MonoIndex Int ContainerKind MonoType MonoPath  -- MonoType = result type after projection
+    | MonoField Int MonoType MonoPath                 -- MonoType = result type after field access
     | MonoUnbox MonoPath
-    | MonoRoot Name
+    | MonoRoot Name MonoType                          -- MonoType = variable's type
+
+
+{-| Get the result type of evaluating a MonoPath. -}
+getMonoPathType : MonoPath -> MonoType
+getMonoPathType path =
+    case path of
+        MonoRoot _ ty ->
+            ty
+
+        MonoIndex _ _ ty _ ->
+            ty
+
+        MonoField _ ty _ ->
+            ty
+
+        MonoUnbox subPath ->
+            getMonoPathType subPath
+
+
+{-| Convert a MonoType to a simple debug string for error messages.
+-}
+monoTypeToDebugString : MonoType -> String
+monoTypeToDebugString monoType =
+    case monoType of
+        MInt ->
+            "MInt"
+
+        MFloat ->
+            "MFloat"
+
+        MBool ->
+            "MBool"
+
+        MChar ->
+            "MChar"
+
+        MString ->
+            "MString"
+
+        MUnit ->
+            "MUnit"
+
+        MList _ ->
+            "MList ..."
+
+        MTuple _ ->
+            "MTuple ..."
+
+        MRecord _ ->
+            "MRecord ..."
+
+        MCustom _ name _ ->
+            "MCustom " ++ name ++ " ..."
+
+        MFunction _ _ ->
+            "MFunction ..."
+
+        MVar name _ ->
+            "MVar " ++ name
 
 
 {-| Decision tree for pattern matching.

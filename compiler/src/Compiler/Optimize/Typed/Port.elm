@@ -233,7 +233,15 @@ encodeTuple a b cs =
 
         let_ : Name -> Can.Type -> Index.ZeroBased -> TOpt.Expr -> TOpt.Expr
         let_ arg argType index body =
-            TOpt.Destruct (TOpt.Destructor arg (TOpt.Index index TOpt.HintUnknown (TOpt.Root Name.dollar)) argType) body (TOpt.typeOf body)
+            let
+                hint =
+                    if List.isEmpty cs then
+                        TOpt.HintTuple2
+
+                    else
+                        TOpt.HintTuple3
+            in
+            TOpt.Destruct (TOpt.Destructor arg (TOpt.Index index hint (TOpt.Root Name.dollar)) argType) body (TOpt.typeOf body)
 
         letCs_ : Name -> Can.Type -> Int -> TOpt.Expr -> TOpt.Expr
         letCs_ arg argType index body =

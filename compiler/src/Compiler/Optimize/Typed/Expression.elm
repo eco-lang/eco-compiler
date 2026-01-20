@@ -1169,32 +1169,10 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
                                     |> Names.andThen (destructHelp exprTypes (TOpt.Index Index.third TOpt.HintTuple3 newRoot) c)
                             )
 
-        Can.PTuple a b cs ->
-            case path of
-                TOpt.Root _ ->
-                    List.foldl (\( index, arg ) -> Names.andThen (destructHelp exprTypes (TOpt.ArrayIndex index (TOpt.Field "cs" path)) arg))
-                        (destructHelp exprTypes (TOpt.Index Index.first TOpt.HintCustom path) a revDs
-                            |> Names.andThen (destructHelp exprTypes (TOpt.Index Index.second TOpt.HintCustom path) b)
-                        )
-                        (List.indexedMap Tuple.pair cs)
-
-                _ ->
-                    Names.generate
-                        |> Names.andThen
-                            (\name ->
-                                let
-                                    newRoot =
-                                        TOpt.Root name
-
-                                    genType =
-                                        lookupPatternType exprTypes effectivePatId "Expression.destructHelpWithType: PTupleN gen"
-                                in
-                                List.foldl (\( index, arg ) -> Names.andThen (destructHelp exprTypes (TOpt.ArrayIndex index (TOpt.Field "cs" newRoot)) arg))
-                                    (destructHelp exprTypes (TOpt.Index Index.first TOpt.HintCustom newRoot) a (TOpt.Destructor name path genType :: revDs)
-                                        |> Names.andThen (destructHelp exprTypes (TOpt.Index Index.second TOpt.HintCustom newRoot) b)
-                                    )
-                                    (List.indexedMap Tuple.pair cs)
-                            )
+        Can.PTuple _ _ _ ->
+            -- Elm only supports tuples up to size 3 (handled by PTuple2/PTuple3 above).
+            -- This case should never be reached for valid Elm code.
+            Utils.Crash.crash "Expression.destructHelpWithType: PTuple with more than 3 elements is not supported in Elm"
 
         Can.PList [] ->
             Names.pure revDs
@@ -1218,7 +1196,7 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
         Can.PBool _ _ ->
             Names.pure revDs
 
-        Can.PCtor { union, args } ->
+        Can.PCtor { union, name, args } ->
             case args of
                 [ Can.PatternCtorArg _ argType arg ] ->
                     let
@@ -1227,31 +1205,31 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
                     in
                     case unionData.opts of
                         Can.Normal ->
-                            destructHelpWithType exprTypes Nothing (Just argType) (TOpt.Index Index.first TOpt.HintCustom path) arg revDs
+                            destructHelpWithType exprTypes Nothing (Just argType) (TOpt.Index Index.first (TOpt.HintCustom name) path) arg revDs
 
                         Can.Unbox ->
                             destructHelpWithType exprTypes Nothing (Just argType) (TOpt.Unbox path) arg revDs
 
                         Can.Enum ->
-                            destructHelpWithType exprTypes Nothing (Just argType) (TOpt.Index Index.first TOpt.HintCustom path) arg revDs
+                            destructHelpWithType exprTypes Nothing (Just argType) (TOpt.Index Index.first (TOpt.HintCustom name) path) arg revDs
 
                 _ ->
                     case path of
                         TOpt.Root _ ->
-                            List.foldl (\arg -> Names.andThen (\revDs_ -> destructCtorArg exprTypes path revDs_ arg))
+                            List.foldl (\arg -> Names.andThen (\revDs_ -> destructCtorArg exprTypes name path revDs_ arg))
                                 (Names.pure revDs)
                                 args
 
                         _ ->
                             Names.generate
                                 |> Names.andThen
-                                    (\name ->
+                                    (\genName ->
                                         let
                                             genType =
                                                 lookupPatternType exprTypes effectivePatId "Expression.destructHelpWithType: PCtor gen"
                                         in
-                                        List.foldl (\arg -> Names.andThen (\revDs_ -> destructCtorArg exprTypes (TOpt.Root name) revDs_ arg))
-                                            (Names.pure (TOpt.Destructor name path genType :: revDs))
+                                        List.foldl (\arg -> Names.andThen (\revDs_ -> destructCtorArg exprTypes name (TOpt.Root genName) revDs_ arg))
+                                            (Names.pure (TOpt.Destructor genName path genType :: revDs))
                                             args
                                     )
 
@@ -1282,9 +1260,9 @@ destructTwo exprTypes parentPatId hint path a b revDs =
                     )
 
 
-destructCtorArg : ExprTypes -> TOpt.Path -> List TOpt.Destructor -> Can.PatternCtorArg -> Names.Tracker (List TOpt.Destructor)
-destructCtorArg exprTypes path revDs (Can.PatternCtorArg index argType arg) =
-    destructHelpWithType exprTypes Nothing (Just argType) (TOpt.Index index TOpt.HintCustom path) arg revDs
+destructCtorArg : ExprTypes -> Name -> TOpt.Path -> List TOpt.Destructor -> Can.PatternCtorArg -> Names.Tracker (List TOpt.Destructor)
+destructCtorArg exprTypes ctorName path revDs (Can.PatternCtorArg index argType arg) =
+    destructHelpWithType exprTypes Nothing (Just argType) (TOpt.Index index (TOpt.HintCustom ctorName) path) arg revDs
 
 
 {-| Destructure a case pattern into a list of destructors.
