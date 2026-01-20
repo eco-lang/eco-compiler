@@ -30,6 +30,7 @@ This module handles generation of MLIR code for all Elm expressions.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
+import Hex
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Intrinsics as Intrinsics
@@ -249,9 +250,7 @@ generateLiteral ctx lit =
 
                 codepoint : Int
                 codepoint =
-                    String.uncons value
-                        |> Maybe.map (Tuple.first >> Char.toCode)
-                        |> Maybe.withDefault 0
+                    decodeCharLiteral value
 
                 ( ctx2, op ) =
                     Ops.arithConstantChar ctx1 var codepoint
@@ -2609,3 +2608,84 @@ generateUnit ctx =
     , resultType = Types.ecoValue
     , ctx = ctx2
     }
+
+
+
+-- ====== CHARACTER LITERAL DECODING ======
+
+
+{-| Decode a character literal from its JS-escaped string representation.
+
+The parser stores character literals as JS-style escape sequences (e.g., "\\u03BB" for λ).
+This function decodes them back to the actual Unicode code point for MLIR codegen.
+
+-}
+decodeCharLiteral : String -> Int
+decodeCharLiteral value =
+    case String.uncons value of
+        Just ( '\\', rest ) ->
+            decodeEscape rest
+
+        Just ( c, _ ) ->
+            Char.toCode c
+
+        Nothing ->
+            crash "decodeCharLiteral: empty character literal"
+
+
+decodeEscape : String -> Int
+decodeEscape rest =
+    case String.uncons rest of
+        Just ( 'u', hex ) ->
+            decodeUnicodeEscape hex
+
+        Just ( 'n', _ ) ->
+            10
+
+        Just ( 'r', _ ) ->
+            13
+
+        Just ( 't', _ ) ->
+            9
+
+        Just ( '"', _ ) ->
+            34
+
+        Just ( '\'', _ ) ->
+            39
+
+        Just ( '\\', _ ) ->
+            92
+
+        Just ( c, _ ) ->
+            crash ("decodeCharLiteral: unknown escape \\" ++ String.fromChar c)
+
+        Nothing ->
+            crash "decodeCharLiteral: trailing backslash"
+
+
+decodeUnicodeEscape : String -> Int
+decodeUnicodeEscape hex =
+    -- Parse \uXXXX format, handle surrogate pairs
+    case Hex.fromString (String.toLower (String.left 4 hex)) of
+        Ok code ->
+            if code >= 0xD800 && code <= 0xDBFF then
+                -- High surrogate - need to decode pair
+                decodeSurrogatePair code (String.dropLeft 6 hex)
+
+            else
+                code
+
+        Err _ ->
+            crash ("decodeCharLiteral: invalid hex in \\u" ++ String.left 4 hex)
+
+
+decodeSurrogatePair : Int -> String -> Int
+decodeSurrogatePair hi rest =
+    -- rest should be "XXXX" (after "\u" has been dropped)
+    case Hex.fromString (String.toLower (String.left 4 rest)) of
+        Ok lo ->
+            0x00010000 + ((hi - 0xD800) * 0x0400) + (lo - 0xDC00)
+
+        Err _ ->
+            crash "decodeCharLiteral: invalid low surrogate in pair"
