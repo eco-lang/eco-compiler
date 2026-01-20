@@ -94,6 +94,14 @@ bool isCharCase(CaseOp op) {
     return caseKindAttr.getValue() == "chr";
 }
 
+/// Check if this is a string case (case_kind = "str").
+bool isStringCase(CaseOp op) {
+    auto caseKindAttr = op.getCaseKindAttr();
+    if (!caseKindAttr)
+        return false;
+    return caseKindAttr.getValue() == "str";
+}
+
 //===----------------------------------------------------------------------===//
 // Pattern: eco.case with pure returns -> scf.if (2-way case)
 //===----------------------------------------------------------------------===//
@@ -340,9 +348,10 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
         if (hasI1Scrutinee(op))
             return failure();
 
-        // Integer and char cases don't work well with scf.index_switch since their
-        // values may not be sequential. Let them fall through to CF lowering.
-        if (isIntegerCase(op) || isCharCase(op))
+        // Integer, char, and string cases don't work well with scf.index_switch.
+        // Integer/char values may not be sequential; string cases need string
+        // comparison not tag extraction. Let them fall through to CF lowering.
+        if (isIntegerCase(op) || isCharCase(op) || isStringCase(op))
             return failure();
 
         // Skip cases inside joinpoint bodies - the returns inside are "non-local"

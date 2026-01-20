@@ -90,6 +90,31 @@ LogicalResult CaseOp::verify() {
            << scrutineeType;
   }
 
+  // Verify string_patterns for case_kind="str"
+  if (caseKind == "str") {
+    auto patternsAttr = getStringPatternsAttr();
+    if (!patternsAttr) {
+      return emitOpError("case_kind 'str' requires 'string_patterns' attribute");
+    }
+
+    size_t numAlts = getAlternatives().size();
+    size_t numPatterns = patternsAttr.size();
+
+    // string_patterns should have N-1 elements (last alt is default)
+    if (numPatterns + 1 != numAlts) {
+      return emitOpError("string_patterns has ")
+             << numPatterns << " elements but expected " << (numAlts - 1)
+             << " (one per non-default alternative)";
+    }
+
+    // Verify all elements are StringAttr
+    for (Attribute attr : patternsAttr) {
+      if (!isa<StringAttr>(attr)) {
+        return emitOpError("string_patterns must contain only string attributes");
+      }
+    }
+  }
+
   // CGEN_010 invariant: eco.case ALWAYS requires result_types attribute.
   // Elm codegen always produces eco.case with result_types and eco.return terminators.
   // eco.jump is never used as a case alternative terminator.

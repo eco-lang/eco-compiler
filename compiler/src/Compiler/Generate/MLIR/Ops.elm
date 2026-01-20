@@ -33,6 +33,7 @@ module Compiler.Generate.MLIR.Ops exposing
     , ecoUnaryOp
     , ecoBinaryOp
     , ecoCase
+    , ecoCaseString
     , ecoJoinpoint
     , ecoGetTag
     , scfIf
@@ -707,6 +708,37 @@ ecoCase ctx scrutinee scrutineeType caseKind tags regions resultTypes =
                 [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr scrutineeType ] )
                 , ( "tags", ArrayAttr (Just I64) (List.map (\t -> IntAttr Nothing t) tags) )
                 , ( "case_kind", StringAttr caseKind )
+                ]
+
+        attrs =
+            Dict.insert "caseResultTypes"
+                (ArrayAttr Nothing (List.map TypeAttr resultTypes))
+                attrsBase
+    in
+    mlirOp ctx "eco.case"
+        |> opBuilder.withOperands [ scrutinee ]
+        |> opBuilder.withRegions regions
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.case for string pattern matching.
+
+Takes a scrutinee SSA name, scrutinee type, list of tags (positional indices),
+list of string patterns (N-1 for N alternatives, last is default),
+list of regions (one per alternative), and result types.
+Emits an eco.case operation with string_patterns attribute.
+
+-}
+ecoCaseString : Ctx.Context -> String -> MlirType -> List Int -> List String -> List MlirRegion -> List MlirType -> ( Ctx.Context, MlirOp )
+ecoCaseString ctx scrutinee scrutineeType tags stringPatterns regions resultTypes =
+    let
+        attrsBase =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr scrutineeType ] )
+                , ( "tags", ArrayAttr (Just I64) (List.map (\t -> IntAttr Nothing t) tags) )
+                , ( "case_kind", StringAttr "str" )
+                , ( "string_patterns", ArrayAttr Nothing (List.map StringAttr stringPatterns) )
                 ]
 
         attrs =

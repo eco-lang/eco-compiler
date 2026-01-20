@@ -66,6 +66,7 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateFunc(
 #define I32_TY IntegerType::get(ctx, 32)
 #define I16_TY IntegerType::get(ctx, 16)
 #define I8_TY IntegerType::get(ctx, 8)
+#define I1_TY IntegerType::get(ctx, 1)
 #define F64_TY Float64Type::get(ctx)
 #define PTR_TY LLVM::LLVMPointerType::get(ctx)
 #define VOID_TY LLVM::LLVMVoidType::get(ctx)
@@ -238,6 +239,13 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateIntPow(OpBuilder &builder) const {
     // eco_int_pow(base: i64, exp: i64) -> i64
     auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY});
     return getOrCreateFunc(builder, "eco_int_pow", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateUtilsEqual(OpBuilder &builder) const {
+    // Elm_Kernel_Utils_equal(a: i64, b: i64) -> i1
+    // Returns true (i1) if the two Elm values are structurally equal.
+    auto funcTy = LLVM::LLVMFunctionType::get(I1_TY, {I64_TY, I64_TY});
+    return getOrCreateFunc(builder, "Elm_Kernel_Utils_equal", funcTy);
 }
 
 //===----------------------------------------------------------------------===//

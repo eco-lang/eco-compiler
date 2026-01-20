@@ -2147,6 +2147,19 @@ findBoolBranches edges fallback =
     ( findBranch True, findBranch False )
 
 
+{-| Extract string pattern strictly - crash if not IsStr.
+This ensures we never silently drop patterns in string fanouts.
+-}
+extractStringPatternStrict : DT.Test -> String
+extractStringPatternStrict test =
+    case test of
+        DT.IsStr s ->
+            s
+
+        _ ->
+            crash "CGEN: expected DT.IsStr in string fanout, but got non-string test"
+
+
 {-| General case FanOut using eco.case (for non-Bool ADT patterns).
 eco.case accepts !eco.value scrutinee; for Bool patterns, generateBoolFanOut uses i1.
 -}
@@ -2176,17 +2189,37 @@ generateFanOutGeneral ctx root path edges fallback resultTy =
         ( pathOps, scrutineeVar, ctx1 ) =
             Patterns.generateDTPath ctx root path scrutineeType
 
-        -- Collect tags from edges
-        edgeTags =
-            List.map (\( test, _ ) -> Patterns.testToTagInt test) edges
+        -- Handle string cases specially: use positional tags and collect string patterns
+        ( tags, stringPatterns ) =
+            if caseKind == "str" then
+                let
+                    edgeCount =
+                        List.length edges
 
-        -- Compute the fallback tag (for the fallback region)
-        fallbackTag =
-            Patterns.computeFallbackTag edgeTests
+                    altCount =
+                        edgeCount + 1
 
-        -- All tags including the fallback
-        tags =
-            edgeTags ++ [ fallbackTag ]
+                    -- Strictly extract string patterns - crash if any non-IsStr test
+                    patterns =
+                        edges
+                            |> List.map Tuple.first
+                            |> List.map extractStringPatternStrict
+
+                    -- Use positional tags [0, 1, ..., N-1]
+                    sequentialTags =
+                        List.range 0 (altCount - 1)
+                in
+                ( sequentialTags, Just patterns )
+
+            else
+                let
+                    edgeTags =
+                        List.map (\( test, _ ) -> Patterns.testToTagInt test) edges
+
+                    fallbackTag =
+                        Patterns.computeFallbackTag edgeTests
+                in
+                ( edgeTags ++ [ fallbackTag ], Nothing )
 
         -- Generate regions for each edge
         ( edgeRegions, ctx2 ) =
@@ -2216,9 +2249,14 @@ generateFanOutGeneral ctx root path edges fallback resultTy =
             edgeRegions ++ [ fallbackRegion ]
 
         -- Build eco.case with correct scrutinee type
-        -- _operand_types will now match the actual SSA type
+        -- For string cases, use ecoCaseString which includes string_patterns
         ( ctx3, caseOp ) =
-            Ops.ecoCase ctx2a scrutineeVar scrutineeType caseKind tags allRegions [ resultTy ]
+            case stringPatterns of
+                Just patterns ->
+                    Ops.ecoCaseString ctx2a scrutineeVar scrutineeType tags patterns allRegions [ resultTy ]
+
+                Nothing ->
+                    Ops.ecoCase ctx2a scrutineeVar scrutineeType caseKind tags allRegions [ resultTy ]
     in
     -- Return the case op - no dummy construct between case and return!
     -- The lowering pattern expects: eco.case ... eco.return

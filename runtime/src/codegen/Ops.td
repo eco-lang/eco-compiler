@@ -123,7 +123,9 @@ def Eco_CaseOp : Eco_Op<"case", [
 
     **Scrutinee Types and case_kind (required):**
     - `!eco.value` + `case_kind="ctor"`: ADT constructor matching (extract tag via eco.get_tag)
-    - `!eco.value` + `case_kind="str"`: String pattern matching
+    - `!eco.value` + `case_kind="str"`: String pattern matching. Requires `string_patterns`
+      attribute containing N-1 string literals (one per non-default alternative).
+      The last alternative region is the default. Lowering uses string equality chain.
     - `i1` + `case_kind="bool"`: Boolean fanout (True/False patterns)
     - `i1` + `case_kind="ctor"`: Boolean from Chain lowering (legacy compatibility)
     - `i64` + `case_kind="int"`: Integer literal matching (direct comparison)
@@ -162,7 +164,8 @@ def Eco_CaseOp : Eco_Op<"case", [
     Eco_AnyValue:$scrutinee,                   // !eco.value, i1, i16, or i64
     DenseI64ArrayAttr:$tags,
     OptionalAttr<ArrayAttr>:$caseResultTypes,  // Array of TypeAttr for SCF lowering
-    StrAttr:$case_kind                         // Required: "ctor", "int", "chr", "str", or "bool"
+    StrAttr:$case_kind,                        // Required: "ctor", "int", "chr", "str", or "bool"
+    OptionalAttr<ArrayAttr>:$string_patterns   // For case_kind="str": N-1 string literals
   );
   let regions = (region VariadicRegion<AnyRegion>:$alternatives);
   let results = (outs);

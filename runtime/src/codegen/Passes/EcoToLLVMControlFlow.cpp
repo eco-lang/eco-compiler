@@ -246,6 +246,223 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         return success();
     }
 
+    /// Lower string case expressions using equality comparison chain.
+    /// For each string pattern, we call Elm_Kernel_Utils_equal to compare
+    /// the scrutinee against the literal. The last alternative is the default.
+    LogicalResult
+    lowerStringCase(CaseOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto i32Ty = IntegerType::get(ctx, 32);
+        auto i16Ty = IntegerType::get(ctx, 16);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+        Block *currentBlock = op->getBlock();
+        Region *parentRegion = currentBlock->getParent();
+        Block *originalOpBlock = op->getBlock();
+
+        Value scrutinee = adaptor.getScrutinee();
+        auto alternatives = op.getAlternatives();
+
+        // Get string patterns
+        auto stringPatternsAttr = op.getStringPatternsAttr();
+        if (!stringPatternsAttr) {
+            return op.emitOpError("string case missing string_patterns attribute");
+        }
+
+        // Create merge block
+        Block *mergeBlock = rewriter.createBlock(parentRegion);
+        mergeBlock->moveBefore(currentBlock->getNextNode());
+
+        // Create case blocks for each alternative
+        SmallVector<Block *> caseBlocks;
+        for (size_t i = 0; i < alternatives.size(); ++i) {
+            Block *caseBlock = rewriter.createBlock(parentRegion);
+            caseBlock->moveBefore(mergeBlock);
+            caseBlocks.push_back(caseBlock);
+        }
+
+        // Move operations after eco.case to merge block
+        {
+            auto opsToMove = llvm::make_early_inc_range(
+                llvm::make_range(std::next(Block::iterator(op)), originalOpBlock->end()));
+            for (Operation &opToMove : opsToMove) {
+                opToMove.moveBefore(mergeBlock, mergeBlock->end());
+            }
+        }
+
+        // Get the equality function
+        auto equalFunc = runtime.getOrCreateUtilsEqual(rewriter);
+
+        // Generate comparison chain
+        // For each pattern (except the last which is default), create:
+        //   1. Create string literal
+        //   2. Compare with scrutinee
+        //   3. Branch to case block if equal, else continue to next check
+        rewriter.setInsertionPointToEnd(currentBlock);
+
+        size_t numPatterns = stringPatternsAttr.size();
+
+        for (size_t i = 0; i < numPatterns; ++i) {
+            auto patternAttr = cast<StringAttr>(stringPatternsAttr[i]);
+            StringRef pattern = patternAttr.getValue();
+
+            // Create string literal for this pattern
+            Value patternValue;
+            if (pattern.empty()) {
+                // Empty string is an embedded constant
+                int64_t emptyStringVal = static_cast<int64_t>(value_enc::EmptyString) << value_enc::ConstFieldShift;
+                patternValue = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, emptyStringVal);
+            } else {
+                // Create global for non-empty string
+                // Convert UTF-8 to UTF-16
+                std::vector<uint16_t> utf16 = utf8ToUtf16(pattern);
+                size_t length = utf16.size();
+
+                // Create unique global name
+                std::string globalName = "__eco_str_case_" + std::to_string(
+                    reinterpret_cast<uintptr_t>(op.getOperation())) + "_" + std::to_string(i);
+
+                auto arrayTy = LLVM::LLVMArrayType::get(i16Ty, length);
+
+                // Create global with initializer
+                {
+                    OpBuilder::InsertionGuard guard(rewriter);
+                    rewriter.setInsertionPointToStart(runtime.module.getBody());
+
+                    auto globalOp = rewriter.create<LLVM::GlobalOp>(
+                        loc, arrayTy, /*isConstant=*/true, LLVM::Linkage::Internal,
+                        globalName, /*value=*/Attribute{});
+
+                    Block *initBlock = rewriter.createBlock(&globalOp.getInitializerRegion());
+                    rewriter.setInsertionPointToStart(initBlock);
+
+                    SmallVector<int16_t> charValues;
+                    for (uint16_t c : utf16) {
+                        charValues.push_back(static_cast<int16_t>(c));
+                    }
+                    auto denseAttr = DenseElementsAttr::get(
+                        RankedTensorType::get({static_cast<int64_t>(length)}, i16Ty),
+                        ArrayRef<int16_t>(charValues));
+                    auto initValue = rewriter.create<LLVM::ConstantOp>(loc, arrayTy, denseAttr);
+                    rewriter.create<LLVM::ReturnOp>(loc, initValue.getResult());
+                }
+
+                // Get address of global chars array
+                auto addrOf = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, globalName);
+
+                // Call eco_alloc_string_literal(chars, length) -> HPointer
+                auto allocFunc = runtime.getOrCreateAllocStringLiteral(rewriter);
+                auto lengthVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                    static_cast<int32_t>(length));
+                auto allocCall = rewriter.create<LLVM::CallOp>(loc, allocFunc,
+                    ValueRange{addrOf, lengthVal});
+                patternValue = allocCall.getResult();
+            }
+
+            // Call Elm_Kernel_Utils_equal(scrutinee, patternValue) -> i1
+            auto cmpCall = rewriter.create<LLVM::CallOp>(loc, equalFunc,
+                ValueRange{scrutinee, patternValue});
+            Value isEqual = cmpCall.getResult();
+
+            // Save the current block (where comparison was built) before creating new blocks
+            Block *compareBlock = rewriter.getInsertionBlock();
+
+            // Determine the else block
+            Block *elseBlock;
+            if (i + 1 < numPatterns) {
+                // More patterns to check - create a new check block
+                // Note: createBlock changes insertion point, so we saved compareBlock above
+                elseBlock = rewriter.createBlock(parentRegion);
+                elseBlock->moveBefore(mergeBlock);
+            } else {
+                // Last pattern's else goes to default (last alternative)
+                elseBlock = caseBlocks.back();
+            }
+
+            // Branch must be in compareBlock (not elseBlock)
+            rewriter.setInsertionPointToEnd(compareBlock);
+            rewriter.create<cf::CondBranchOp>(loc, isEqual,
+                caseBlocks[i], ValueRange{}, elseBlock, ValueRange{});
+
+            // Continue building from else block for next pattern
+            if (i + 1 < numPatterns) {
+                rewriter.setInsertionPointToEnd(elseBlock);
+            }
+        }
+
+        // If there are no patterns, branch directly to default
+        if (numPatterns == 0) {
+            rewriter.create<cf::BranchOp>(loc, caseBlocks.back());
+        }
+
+        Value originalScrutinee = op->getOperand(0);
+
+        // Check if the merge block only has an eco.return (terminal case position)
+        bool isTerminalCase = false;
+        if (!mergeBlock->empty()) {
+            if (mergeBlock->getOperations().size() == 1 &&
+                isa<ReturnOp>(&mergeBlock->front())) {
+                isTerminalCase = true;
+            }
+        }
+
+        // Inline each alternative region
+        for (size_t i = 0; i < alternatives.size(); ++i) {
+            Region &altRegion = alternatives[i];
+            Block *caseBlock = caseBlocks[i];
+
+            if (altRegion.empty()) {
+                rewriter.setInsertionPointToEnd(caseBlock);
+                if (isTerminalCase) {
+                    if (!mergeBlock->empty()) {
+                        if (auto retOp = dyn_cast<ReturnOp>(&mergeBlock->front())) {
+                            rewriter.clone(*retOp);
+                        }
+                    }
+                } else {
+                    rewriter.create<cf::BranchOp>(loc, mergeBlock);
+                }
+                continue;
+            }
+
+            Block &entryBlock = altRegion.front();
+            rewriter.inlineBlockBefore(&entryBlock, caseBlock, caseBlock->end());
+        }
+
+        // Replace uses of original scrutinee
+        for (Block *caseBlock : caseBlocks) {
+            for (Operation &blockOp : *caseBlock) {
+                blockOp.replaceUsesOfWith(originalScrutinee, scrutinee);
+            }
+        }
+
+        // Fix terminators only for non-terminal cases
+        if (!isTerminalCase) {
+            for (Block *caseBlock : caseBlocks) {
+                if (caseBlock->empty())
+                    continue;
+
+                Operation *term = caseBlock->getTerminator();
+                if (isa<ReturnOp>(term)) {
+                    rewriter.setInsertionPoint(term);
+                    rewriter.create<cf::BranchOp>(loc, mergeBlock);
+                    rewriter.eraseOp(term);
+                }
+            }
+        }
+
+        // Erase the merge block if it's a terminal case
+        if (isTerminalCase) {
+            rewriter.eraseBlock(mergeBlock);
+        }
+
+        rewriter.eraseOp(op);
+        return success();
+    }
+
     LogicalResult
     matchAndRewrite(CaseOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
@@ -268,10 +485,16 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         auto caseKindAttr = op.getCaseKindAttr();
         bool isIntCase = caseKindAttr && caseKindAttr.getValue() == "int";
         bool isChrCase = caseKindAttr && caseKindAttr.getValue() == "chr";
+        bool isStrCase = caseKindAttr && caseKindAttr.getValue() == "str";
 
         // Handle integer/char cases: unbox and switch on actual value
         if (isIntCase || isChrCase) {
             return lowerIntegerOrCharCase(op, adaptor, rewriter, isIntCase);
+        }
+
+        // Handle string cases: compare against string patterns using equality
+        if (isStrCase) {
+            return lowerStringCase(op, adaptor, rewriter);
         }
 
         Value ctorTag;
