@@ -922,57 +922,77 @@ generateClosureApplication ctx func args resultType =
         funcResult =
             generateExpr ctx func
 
-        -- Use generateExprListTyped to get actual SSA types
-        ( argOps, argsWithTypes, ctx1 ) =
-            generateExprListTyped funcResult.ctx args
-
-        -- Box using actual SSA types
-        ( boxOps, boxedVars, ctx1b ) =
-            boxArgsWithMlirTypes ctx1 argsWithTypes
-
-        ( resVar, ctx2 ) =
-            Ctx.freshVar ctx1b
-
-        allOperandNames : List String
-        allOperandNames =
-            funcResult.resultVar :: boxedVars
-
-        allOperandTypes : List MlirType
-        allOperandTypes =
-            List.map (\_ -> Types.ecoValue) allOperandNames
-
-        -- Compute arity from the FUNCTION type, not the result type
-        funcType : Mono.MonoType
-        funcType =
-            Mono.typeOf func
-
-        remainingArity : Int
-        remainingArity =
-            Types.functionArity funcType
-
-        -- papExtend handles both partial and saturated cases
-        papExtendAttrs =
-            Dict.fromList
-                [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
-                , ( "remaining_arity", IntAttr Nothing remainingArity )
-                ]
-
-        ( ctx3, papExtendOp ) =
-            Ops.mlirOp ctx2 "eco.papExtend"
-                |> Ops.opBuilder.withOperands allOperandNames
-                |> Ops.opBuilder.withResults [ ( resVar, Types.ecoValue ) ]
-                |> Ops.opBuilder.withAttrs papExtendAttrs
-                |> Ops.opBuilder.build
-
         -- Result is a closure (!eco.value)
         expectedType =
             Types.monoTypeToMlir resultType
     in
-    { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
-    , resultVar = resVar
-    , resultType = expectedType
-    , ctx = ctx3, isTerminated = False
-    }
+    -- If the function result is not a closure (e.g., a zero-arity thunk was
+    -- already evaluated), and we're calling with no args, just return the value.
+    -- This handles: let f = \() -> 42 in f
+    -- where f is already evaluated to i64, and "calling" with no args is a no-op.
+    if not (Types.isEcoValueType funcResult.resultType) && List.isEmpty args then
+        -- Already evaluated - just return the value, coercing if needed
+        let
+            ( coerceOps, finalVar, ctx1 ) =
+                coerceResultToType funcResult.ctx funcResult.resultVar funcResult.resultType expectedType
+        in
+        { ops = funcResult.ops ++ coerceOps
+        , resultVar = finalVar
+        , resultType = expectedType
+        , ctx = ctx1, isTerminated = False
+        }
+
+    else
+        -- Normal partial application via papExtend
+        let
+            -- Use generateExprListTyped to get actual SSA types
+            ( argOps, argsWithTypes, ctx1 ) =
+                generateExprListTyped funcResult.ctx args
+
+            -- Box using actual SSA types
+            ( boxOps, boxedVars, ctx1b ) =
+                boxArgsWithMlirTypes ctx1 argsWithTypes
+
+            ( resVar, ctx2 ) =
+                Ctx.freshVar ctx1b
+
+            allOperandNames : List String
+            allOperandNames =
+                funcResult.resultVar :: boxedVars
+
+            -- Use actual type for the function operand
+            allOperandTypes : List MlirType
+            allOperandTypes =
+                funcResult.resultType :: List.map (\_ -> Types.ecoValue) boxedVars
+
+            -- Compute arity from the FUNCTION type, not the result type
+            funcType : Mono.MonoType
+            funcType =
+                Mono.typeOf func
+
+            remainingArity : Int
+            remainingArity =
+                Types.functionArity funcType
+
+            -- papExtend handles both partial and saturated cases
+            papExtendAttrs =
+                Dict.fromList
+                    [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
+                    , ( "remaining_arity", IntAttr Nothing remainingArity )
+                    ]
+
+            ( ctx3, papExtendOp ) =
+                Ops.mlirOp ctx2 "eco.papExtend"
+                    |> Ops.opBuilder.withOperands allOperandNames
+                    |> Ops.opBuilder.withResults [ ( resVar, Types.ecoValue ) ]
+                    |> Ops.opBuilder.withAttrs papExtendAttrs
+                    |> Ops.opBuilder.build
+        in
+        { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
+        , resultVar = resVar
+        , resultType = expectedType
+        , ctx = ctx3, isTerminated = False
+        }
 
 
 {-| Generate a saturated function call where all arguments are provided.
@@ -1318,77 +1338,97 @@ generateSaturatedCall ctx func args resultType =
 
         Mono.MonoVarLocal name funcType ->
             let
-                -- Use generateExprListTyped to get actual SSA types
-                ( argOps, argsWithTypes, ctx1 ) =
-                    generateExprListTyped ctx args
-
-                -- Box using actual SSA types
-                ( boxOps, boxedVars, ctx1b ) =
-                    boxArgsWithMlirTypes ctx1 argsWithTypes
-
-                ( resVar, ctx2 ) =
-                    Ctx.freshVar ctx1b
-
-                ( funcVarName, _ ) =
+                ( funcVarName, funcVarType ) =
                     Ctx.lookupVar ctx name
 
-                allOperandNames : List String
-                allOperandNames =
-                    funcVarName :: boxedVars
-
-                allOperandTypes : List MlirType
-                allOperandTypes =
-                    List.map (\_ -> Types.ecoValue) allOperandNames
-
-                -- Compute arity from the FUNCTION type, not the result type
-                remainingArity : Int
-                remainingArity =
-                    Types.functionArity funcType
-
-                -- papExtend handles both partial and saturated cases
-                papExtendAttrs =
-                    Dict.fromList
-                        [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
-                        , ( "remaining_arity", IntAttr Nothing remainingArity )
-                        ]
-
-                ( ctx3, papExtendOp ) =
-                    Ops.mlirOp ctx2 "eco.papExtend"
-                        |> Ops.opBuilder.withOperands allOperandNames
-                        |> Ops.opBuilder.withResults [ ( resVar, Types.ecoValue ) ]
-                        |> Ops.opBuilder.withAttrs papExtendAttrs
-                        |> Ops.opBuilder.build
-
-                -- If the expected result type is primitive, unbox it
                 expectedType =
                     Types.monoTypeToMlir resultType
-
-                ( unboxOps, finalVar, ctx4 ) =
-                    if Types.isEcoValueType expectedType then
-                        ( [], resVar, ctx3 )
-
-                    else
-                        let
-                            ( unboxVar, ctxU ) =
-                                Ctx.freshVar ctx3
-
-                            attrs =
-                                Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
-
-                            ( ctxU2, unboxOp ) =
-                                Ops.mlirOp ctxU "eco.unbox"
-                                    |> Ops.opBuilder.withOperands [ resVar ]
-                                    |> Ops.opBuilder.withResults [ ( unboxVar, expectedType ) ]
-                                    |> Ops.opBuilder.withAttrs attrs
-                                    |> Ops.opBuilder.build
-                        in
-                        ( [ unboxOp ], unboxVar, ctxU2 )
             in
-            { ops = argOps ++ boxOps ++ [ papExtendOp ] ++ unboxOps
-            , resultVar = finalVar
-            , resultType = expectedType
-            , ctx = ctx4, isTerminated = False
-            }
+            -- If the function variable is not a closure (e.g., a zero-arity thunk was
+            -- already evaluated), and we're calling with no args, just return the value.
+            -- This handles: let f = \() -> 42 in f()
+            -- where f is already evaluated to i64, not a closure.
+            if not (Types.isEcoValueType funcVarType) && List.isEmpty args then
+                -- Already evaluated - just return the value, coercing if needed
+                let
+                    ( coerceOps, finalVar, ctx1 ) =
+                        coerceResultToType ctx funcVarName funcVarType expectedType
+                in
+                { ops = coerceOps
+                , resultVar = finalVar
+                , resultType = expectedType
+                , ctx = ctx1, isTerminated = False
+                }
+
+            else
+                -- Normal closure call via papExtend
+                let
+                    -- Use generateExprListTyped to get actual SSA types
+                    ( argOps, argsWithTypes, ctx1 ) =
+                        generateExprListTyped ctx args
+
+                    -- Box using actual SSA types
+                    ( boxOps, boxedVars, ctx1b ) =
+                        boxArgsWithMlirTypes ctx1 argsWithTypes
+
+                    ( resVar, ctx2 ) =
+                        Ctx.freshVar ctx1b
+
+                    allOperandNames : List String
+                    allOperandNames =
+                        funcVarName :: boxedVars
+
+                    -- Use actual SSA type for the function operand
+                    allOperandTypes : List MlirType
+                    allOperandTypes =
+                        funcVarType :: List.map (\_ -> Types.ecoValue) boxedVars
+
+                    -- Compute arity from the FUNCTION type, not the result type
+                    remainingArity : Int
+                    remainingArity =
+                        Types.functionArity funcType
+
+                    -- papExtend handles both partial and saturated cases
+                    papExtendAttrs =
+                        Dict.fromList
+                            [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
+                            , ( "remaining_arity", IntAttr Nothing remainingArity )
+                            ]
+
+                    ( ctx3, papExtendOp ) =
+                        Ops.mlirOp ctx2 "eco.papExtend"
+                            |> Ops.opBuilder.withOperands allOperandNames
+                            |> Ops.opBuilder.withResults [ ( resVar, Types.ecoValue ) ]
+                            |> Ops.opBuilder.withAttrs papExtendAttrs
+                            |> Ops.opBuilder.build
+
+                    -- If the expected result type is primitive, unbox it
+                    ( unboxOps, finalVar, ctx4 ) =
+                        if Types.isEcoValueType expectedType then
+                            ( [], resVar, ctx3 )
+
+                        else
+                            let
+                                ( unboxVar, ctxU ) =
+                                    Ctx.freshVar ctx3
+
+                                attrs =
+                                    Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
+
+                                ( ctxU2, unboxOp ) =
+                                    Ops.mlirOp ctxU "eco.unbox"
+                                        |> Ops.opBuilder.withOperands [ resVar ]
+                                        |> Ops.opBuilder.withResults [ ( unboxVar, expectedType ) ]
+                                        |> Ops.opBuilder.withAttrs attrs
+                                        |> Ops.opBuilder.build
+                            in
+                            ( [ unboxOp ], unboxVar, ctxU2 )
+                in
+                { ops = argOps ++ boxOps ++ [ papExtendOp ] ++ unboxOps
+                , resultVar = finalVar
+                , resultType = expectedType
+                , ctx = ctx4, isTerminated = False
+                }
 
         _ ->
             let
@@ -1396,77 +1436,95 @@ generateSaturatedCall ctx func args resultType =
                 funcResult =
                     generateExpr ctx func
 
-                -- Use generateExprListTyped to get actual SSA types
-                ( argOps, argsWithTypes, ctx1 ) =
-                    generateExprListTyped funcResult.ctx args
-
-                -- Box using actual SSA types
-                ( boxOps, boxedVars, ctx1b ) =
-                    boxArgsWithMlirTypes ctx1 argsWithTypes
-
-                ( resVar, ctx2 ) =
-                    Ctx.freshVar ctx1b
-
-                allOperandNames : List String
-                allOperandNames =
-                    funcResult.resultVar :: boxedVars
-
-                allOperandTypes : List MlirType
-                allOperandTypes =
-                    List.map (\_ -> Types.ecoValue) allOperandNames
-
-                -- Compute arity from the FUNCTION type, not the result type
-                funcType : Mono.MonoType
-                funcType =
-                    Mono.typeOf func
-
-                remainingArity : Int
-                remainingArity =
-                    Types.functionArity funcType
-
-                -- papExtend handles both partial and saturated cases
-                papExtendAttrs =
-                    Dict.fromList
-                        [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
-                        , ( "remaining_arity", IntAttr Nothing remainingArity )
-                        ]
-
-                ( ctx3, papExtendOp ) =
-                    Ops.mlirOp ctx2 "eco.papExtend"
-                        |> Ops.opBuilder.withOperands allOperandNames
-                        |> Ops.opBuilder.withResults [ ( resVar, Types.ecoValue ) ]
-                        |> Ops.opBuilder.withAttrs papExtendAttrs
-                        |> Ops.opBuilder.build
-
-                -- If the expected result type is primitive, unbox it
                 expectedType =
                     Types.monoTypeToMlir resultType
-
-                ( unboxOps, finalVar, ctx4 ) =
-                    if Types.isEcoValueType expectedType then
-                        ( [], resVar, ctx3 )
-
-                    else
-                        let
-                            ( unboxVar, ctxU ) =
-                                Ctx.freshVar ctx3
-
-                            attrs =
-                                Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
-
-                            ( ctxU2, unboxOp ) =
-                                Ops.mlirOp ctxU "eco.unbox"
-                                    |> Ops.opBuilder.withOperands [ resVar ]
-                                    |> Ops.opBuilder.withResults [ ( unboxVar, expectedType ) ]
-                                    |> Ops.opBuilder.withAttrs attrs
-                                    |> Ops.opBuilder.build
-                        in
-                        ( [ unboxOp ], unboxVar, ctxU2 )
             in
-            { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ] ++ unboxOps
-            , resultVar = finalVar
-            , resultType = expectedType
-            , ctx = ctx4, isTerminated = False
+            -- If the function result is not a closure (e.g., a zero-arity thunk was
+            -- already evaluated), and we're calling with no args, just return the value.
+            if not (Types.isEcoValueType funcResult.resultType) && List.isEmpty args then
+                -- Already evaluated - just return the value, coercing if needed
+                let
+                    ( coerceOps, finalVar, ctx1 ) =
+                        coerceResultToType funcResult.ctx funcResult.resultVar funcResult.resultType expectedType
+                in
+                { ops = funcResult.ops ++ coerceOps
+                , resultVar = finalVar
+                , resultType = expectedType
+                , ctx = ctx1, isTerminated = False
+                }
+
+            else
+                -- Normal closure call via papExtend
+                let
+                    -- Use generateExprListTyped to get actual SSA types
+                    ( argOps, argsWithTypes, ctx1 ) =
+                        generateExprListTyped funcResult.ctx args
+
+                    -- Box using actual SSA types
+                    ( boxOps, boxedVars, ctx1b ) =
+                        boxArgsWithMlirTypes ctx1 argsWithTypes
+
+                    ( resVar, ctx2 ) =
+                        Ctx.freshVar ctx1b
+
+                    allOperandNames : List String
+                    allOperandNames =
+                        funcResult.resultVar :: boxedVars
+
+                    -- Use actual type for the function operand
+                    allOperandTypes : List MlirType
+                    allOperandTypes =
+                        funcResult.resultType :: List.map (\_ -> Types.ecoValue) boxedVars
+
+                    -- Compute arity from the FUNCTION type, not the result type
+                    funcType : Mono.MonoType
+                    funcType =
+                        Mono.typeOf func
+
+                    remainingArity : Int
+                    remainingArity =
+                        Types.functionArity funcType
+
+                    -- papExtend handles both partial and saturated cases
+                    papExtendAttrs =
+                        Dict.fromList
+                            [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
+                            , ( "remaining_arity", IntAttr Nothing remainingArity )
+                            ]
+
+                    ( ctx3, papExtendOp ) =
+                        Ops.mlirOp ctx2 "eco.papExtend"
+                            |> Ops.opBuilder.withOperands allOperandNames
+                            |> Ops.opBuilder.withResults [ ( resVar, Types.ecoValue ) ]
+                            |> Ops.opBuilder.withAttrs papExtendAttrs
+                            |> Ops.opBuilder.build
+
+                    -- If the expected result type is primitive, unbox it
+                    ( unboxOps, finalVar, ctx4 ) =
+                        if Types.isEcoValueType expectedType then
+                            ( [], resVar, ctx3 )
+
+                        else
+                            let
+                                ( unboxVar, ctxU ) =
+                                    Ctx.freshVar ctx3
+
+                                attrs =
+                                    Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
+
+                                ( ctxU2, unboxOp ) =
+                                    Ops.mlirOp ctxU "eco.unbox"
+                                        |> Ops.opBuilder.withOperands [ resVar ]
+                                        |> Ops.opBuilder.withResults [ ( unboxVar, expectedType ) ]
+                                        |> Ops.opBuilder.withAttrs attrs
+                                        |> Ops.opBuilder.build
+                            in
+                            ( [ unboxOp ], unboxVar, ctxU2 )
+                in
+                { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ] ++ unboxOps
+                , resultVar = finalVar
+                , resultType = expectedType
+                , ctx = ctx4, isTerminated = False
             }
 
 
