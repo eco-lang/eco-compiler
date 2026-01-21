@@ -45,10 +45,12 @@ module {
 
     // Create PAP with two unboxed captured values
     // arity = 3 (2 captured + 1 remaining)
+    // unboxed_bitmap = 0b11 = 3 (both operands are i64)
     %pap = "eco.papCreate"(%i10, %i20) {
       function = @add_three_ints,
       arity = 3 : i64,
-      num_captured = 2 : i64
+      num_captured = 2 : i64,
+      unboxed_bitmap = 3 : i64
     } : (i64, i64) -> !eco.value
     eco.dbg %pap : !eco.value
     // CHECK: <fn>
@@ -70,7 +72,8 @@ module {
     %pap2 = "eco.papCreate"(%i100, %i200) {
       function = @add_three_ints,
       arity = 3 : i64,
-      num_captured = 2 : i64
+      num_captured = 2 : i64,
+      unboxed_bitmap = 3 : i64
     } : (i64, i64) -> !eco.value
 
     %i50 = arith.constant 50 : i64

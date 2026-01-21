@@ -28,6 +28,7 @@ This module handles generation of MLIR code for all Elm expressions.
 
 -}
 
+import Bitwise
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
 import Hex
@@ -329,51 +330,18 @@ generateVarGlobal ctx specId monoType =
 
             else
                 -- Function-typed global with arity > 0: create a closure (papCreate) with no captures
-                -- Check if any param needs unboxing - if so, we need a boxed wrapper for PAP usage
+                -- With typed closure ABI, we use the actual function name directly (no wrapper needed)
                 let
-                    needsWrapper =
-                        List.any (\ty -> not (Types.isEcoValueType (Types.monoTypeToMlir ty))) sig.paramTypes
-
-                    ( targetName, ctx2 ) =
-                        if needsWrapper then
-                            let
-                                wrapperName =
-                                    funcName ++ "_pap_wrapper"
-                            in
-                            if Set.member wrapperName ctx1.generatedWrappers then
-                                -- Already queued; just reuse the name
-                                ( wrapperName, ctx1 )
-
-                            else
-                                -- First time seeing this wrapper; queue it and mark as generated
-                                let
-                                    wrapper : Ctx.PendingWrapper
-                                    wrapper =
-                                        { wrapperName = wrapperName
-                                        , targetFuncName = funcName
-                                        , paramTypes = sig.paramTypes
-                                        , returnType = sig.returnType
-                                        }
-                                in
-                                ( wrapperName
-                                , { ctx1
-                                    | pendingWrappers = wrapper :: ctx1.pendingWrappers
-                                    , generatedWrappers = Set.insert wrapperName ctx1.generatedWrappers
-                                  }
-                                )
-
-                        else
-                            ( funcName, ctx1 )
-
                     attrs =
                         Dict.fromList
-                            [ ( "function", SymbolRefAttr targetName )
+                            [ ( "function", SymbolRefAttr funcName )
                             , ( "arity", IntAttr Nothing arity )
                             , ( "num_captured", IntAttr Nothing 0 )
+                            , ( "unboxed_bitmap", IntAttr Nothing 0 )  -- No captures, so bitmap is 0
                             ]
 
-                    ( ctx3, papOp ) =
-                        Ops.mlirOp ctx2 "eco.papCreate"
+                    ( ctx2, papOp ) =
+                        Ops.mlirOp ctx1 "eco.papCreate"
                             |> Ops.opBuilder.withResults [ ( var, Types.ecoValue ) ]
                             |> Ops.opBuilder.withAttrs attrs
                             |> Ops.opBuilder.build
@@ -381,7 +349,7 @@ generateVarGlobal ctx specId monoType =
                 { ops = [ papOp ]
                 , resultVar = var
                 , resultType = Types.ecoValue
-                , ctx = ctx3, isTerminated = False
+                , ctx = ctx2, isTerminated = False
                 }
 
         Nothing ->
@@ -415,6 +383,7 @@ generateVarGlobal ctx specId monoType =
                                     [ ( "function", SymbolRefAttr funcName )
                                     , ( "arity", IntAttr Nothing arity )
                                     , ( "num_captured", IntAttr Nothing 0 )
+                                    , ( "unboxed_bitmap", IntAttr Nothing 0 )  -- No captures, so bitmap is 0
                                     ]
 
                             ( ctx2, papOp ) =
@@ -689,12 +658,17 @@ generateClosure ctx closureInfo body monoType =
                 ( [], [], ctx )
                 closureInfo.captures
 
-        -- Box using actual SSA types, not Mono types
-        ( boxOps, boxedCaptureVars, ctx1b ) =
-            boxArgsWithMlirTypes ctx1 captureVarsWithTypes
+        -- No boxing - use captures with their actual types (typed closure ABI)
+        captureVarNames : List String
+        captureVarNames =
+            List.map Tuple.first captureVarsWithTypes
+
+        captureTypesList : List MlirType
+        captureTypesList =
+            List.map Tuple.second captureVarsWithTypes
 
         ( resultVar, ctx2 ) =
-            Ctx.freshVar ctx1b
+            Ctx.freshVar ctx1
 
         numCaptured : Int
         numCaptured =
@@ -707,6 +681,21 @@ generateClosure ctx closureInfo body monoType =
         captureTypes : List ( Name.Name, Mono.MonoType )
         captureTypes =
             List.map (\( name, expr, _ ) -> ( name, Mono.typeOf expr )) closureInfo.captures
+
+        -- Compute unboxed_bitmap from capture types
+        -- Only i64 and f64 are unboxable; all other types are boxed (!eco.value)
+        unboxedBitmap : Int
+        unboxedBitmap =
+            List.indexedMap
+                (\i ( _, mlirTy ) ->
+                    if isUnboxableType mlirTy then
+                        Bitwise.shiftLeftBy i 1
+
+                    else
+                        0
+                )
+                captureVarsWithTypes
+                |> List.foldl Bitwise.or 0
 
         -- Use currentLetSiblings if inside a let-rec group, otherwise fall back to varMappings
         -- This ensures closures in mutually recursive let bindings see all siblings
@@ -724,6 +713,7 @@ generateClosure ctx closureInfo body monoType =
             , captures = captureTypes
             , params = closureInfo.params
             , body = body
+            , returnType = Mono.typeOf body
             , siblingMappings = baseSiblings
             }
     in
@@ -741,26 +731,23 @@ generateClosure ctx closureInfo body monoType =
             ( ctx4, callOp ) =
                 Ops.ecoCallNamed ctx3 resultVar (lambdaIdToString closureInfo.lambdaId) [] closureResultType
         in
-        { ops = captureOps ++ boxOps ++ [ callOp ]
+        { ops = captureOps ++ [ callOp ]
         , resultVar = resultVar
         , resultType = closureResultType
         , ctx = ctx4, isTerminated = False
         }
 
     else
-        -- Non-zero arity: create a PAP with captures
+        -- Non-zero arity: create a PAP with captures (typed closure ABI)
         let
-            captureVarNames : List String
-            captureVarNames =
-                boxedCaptureVars
-
             operandTypesAttr =
                 if List.isEmpty captureVarNames then
                     Dict.empty
 
                 else
+                    -- Use actual capture types (not all !eco.value)
                     Dict.singleton "_operand_types"
-                        (ArrayAttr Nothing (List.map (\_ -> TypeAttr Types.ecoValue) captureVarNames))
+                        (ArrayAttr Nothing (List.map TypeAttr captureTypesList))
 
             papAttrs =
                 Dict.union operandTypesAttr
@@ -768,6 +755,7 @@ generateClosure ctx closureInfo body monoType =
                         [ ( "function", SymbolRefAttr (lambdaIdToString closureInfo.lambdaId) )
                         , ( "arity", IntAttr Nothing arity )
                         , ( "num_captured", IntAttr Nothing numCaptured )
+                        , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
                         ]
                     )
 
@@ -782,7 +770,7 @@ generateClosure ctx closureInfo body monoType =
             ctx4 =
                 { ctx3 | pendingLambdas = pendingLambda :: ctx3.pendingLambdas }
         in
-        { ops = captureOps ++ boxOps ++ [ papOp ]
+        { ops = captureOps ++ [ papOp ]
         , resultVar = resultVar
         , resultType = Types.ecoValue
         , ctx = ctx4, isTerminated = False
@@ -794,6 +782,14 @@ lambdaIdToString lambdaId =
     case lambdaId of
         Mono.AnonymousLambda home uid ->
             Names.canonicalToMLIRName home ++ "_lambda_" ++ String.fromInt uid
+
+
+{-| Check if an MLIR type is unboxable (can be stored as primitive in closures).
+Only i64 and f64 are unboxable; all other types must be boxed (!eco.value).
+-}
+isUnboxableType : MlirType -> Bool
+isUnboxableType mlirTy =
+    mlirTy == Types.ecoInt || mlirTy == Types.ecoFloat
 
 
 
@@ -956,27 +952,46 @@ generateClosureApplication ctx func args resultType =
         }
 
     else
-        -- Normal partial application via papExtend
+        -- Normal partial application via papExtend (typed closure ABI)
         let
             -- Use generateExprListTyped to get actual SSA types
             ( argOps, argsWithTypes, ctx1 ) =
                 generateExprListTyped funcResult.ctx args
 
-            -- Box using actual SSA types
-            ( boxOps, boxedVars, ctx1b ) =
-                boxArgsWithMlirTypes ctx1 argsWithTypes
+            -- No boxing - use args with their actual types (typed closure ABI)
+            argVarNames : List String
+            argVarNames =
+                List.map Tuple.first argsWithTypes
+
+            argTypesList : List MlirType
+            argTypesList =
+                List.map Tuple.second argsWithTypes
 
             ( resVar, ctx2 ) =
-                Ctx.freshVar ctx1b
+                Ctx.freshVar ctx1
 
             allOperandNames : List String
             allOperandNames =
-                funcResult.resultVar :: boxedVars
+                funcResult.resultVar :: argVarNames
 
-            -- Use actual type for the function operand
+            -- Use actual types for all operands (typed closure ABI)
             allOperandTypes : List MlirType
             allOperandTypes =
-                funcResult.resultType :: List.map (\_ -> Types.ecoValue) boxedVars
+                funcResult.resultType :: argTypesList
+
+            -- Compute newargs_unboxed_bitmap from arg types
+            newargsUnboxedBitmap : Int
+            newargsUnboxedBitmap =
+                List.indexedMap
+                    (\i ( _, mlirTy ) ->
+                        if isUnboxableType mlirTy then
+                            Bitwise.shiftLeftBy i 1
+
+                        else
+                            0
+                    )
+                    argsWithTypes
+                    |> List.foldl Bitwise.or 0
 
             -- Compute arity from the FUNCTION type, not the result type
             funcType : Mono.MonoType
@@ -992,6 +1007,7 @@ generateClosureApplication ctx func args resultType =
                 Dict.fromList
                     [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
                     , ( "remaining_arity", IntAttr Nothing remainingArity )
+                    , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
                     ]
 
             ( ctx3, papExtendOp ) =
@@ -1001,7 +1017,7 @@ generateClosureApplication ctx func args resultType =
                     |> Ops.opBuilder.withAttrs papExtendAttrs
                     |> Ops.opBuilder.build
         in
-        { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
+        { ops = funcResult.ops ++ argOps ++ [ papExtendOp ]
         , resultVar = resVar
         , resultType = expectedType
         , ctx = ctx3, isTerminated = False
@@ -1374,27 +1390,45 @@ generateSaturatedCall ctx func args resultType =
                 }
 
             else
-                -- Normal closure call via papExtend
+                -- Normal closure call via papExtend (typed closure ABI)
                 let
                     -- Use generateExprListTyped to get actual SSA types
                     ( argOps, argsWithTypes, ctx1 ) =
                         generateExprListTyped ctx args
 
-                    -- Box using actual SSA types
-                    ( boxOps, boxedVars, ctx1b ) =
-                        boxArgsWithMlirTypes ctx1 argsWithTypes
+                    argVarNames : List String
+                    argVarNames =
+                        List.map Tuple.first argsWithTypes
+
+                    argTypesList : List MlirType
+                    argTypesList =
+                        List.map Tuple.second argsWithTypes
 
                     ( resVar, ctx2 ) =
-                        Ctx.freshVar ctx1b
+                        Ctx.freshVar ctx1
 
                     allOperandNames : List String
                     allOperandNames =
-                        funcVarName :: boxedVars
+                        funcVarName :: argVarNames
 
-                    -- Use actual SSA type for the function operand
+                    -- Use actual SSA types for all operands
                     allOperandTypes : List MlirType
                     allOperandTypes =
-                        funcVarType :: List.map (\_ -> Types.ecoValue) boxedVars
+                        funcVarType :: argTypesList
+
+                    -- Compute unboxed bitmap for new args
+                    newargsUnboxedBitmap : Int
+                    newargsUnboxedBitmap =
+                        List.indexedMap
+                            (\i ( _, mlirTy ) ->
+                                if isUnboxableType mlirTy then
+                                    Bitwise.shiftLeftBy i 1
+
+                                else
+                                    0
+                            )
+                            argsWithTypes
+                            |> List.foldl Bitwise.or 0
 
                     -- Compute arity from the FUNCTION type, not the result type
                     remainingArity : Int
@@ -1406,41 +1440,20 @@ generateSaturatedCall ctx func args resultType =
                         Dict.fromList
                             [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
                             , ( "remaining_arity", IntAttr Nothing remainingArity )
+                            , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
                             ]
 
                     ( ctx3, papExtendOp ) =
                         Ops.mlirOp ctx2 "eco.papExtend"
                             |> Ops.opBuilder.withOperands allOperandNames
-                            |> Ops.opBuilder.withResults [ ( resVar, Types.ecoValue ) ]
+                            |> Ops.opBuilder.withResults [ ( resVar, expectedType ) ]
                             |> Ops.opBuilder.withAttrs papExtendAttrs
                             |> Ops.opBuilder.build
-
-                    -- If the expected result type is primitive, unbox it
-                    ( unboxOps, finalVar, ctx4 ) =
-                        if Types.isEcoValueType expectedType then
-                            ( [], resVar, ctx3 )
-
-                        else
-                            let
-                                ( unboxVar, ctxU ) =
-                                    Ctx.freshVar ctx3
-
-                                attrs =
-                                    Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
-
-                                ( ctxU2, unboxOp ) =
-                                    Ops.mlirOp ctxU "eco.unbox"
-                                        |> Ops.opBuilder.withOperands [ resVar ]
-                                        |> Ops.opBuilder.withResults [ ( unboxVar, expectedType ) ]
-                                        |> Ops.opBuilder.withAttrs attrs
-                                        |> Ops.opBuilder.build
-                            in
-                            ( [ unboxOp ], unboxVar, ctxU2 )
                 in
-                { ops = argOps ++ boxOps ++ [ papExtendOp ] ++ unboxOps
-                , resultVar = finalVar
+                { ops = argOps ++ [ papExtendOp ]
+                , resultVar = resVar
                 , resultType = expectedType
-                , ctx = ctx4, isTerminated = False
+                , ctx = ctx3, isTerminated = False
                 }
 
         _ ->
@@ -1467,27 +1480,45 @@ generateSaturatedCall ctx func args resultType =
                 }
 
             else
-                -- Normal closure call via papExtend
+                -- Normal closure call via papExtend (typed closure ABI)
                 let
                     -- Use generateExprListTyped to get actual SSA types
                     ( argOps, argsWithTypes, ctx1 ) =
                         generateExprListTyped funcResult.ctx args
 
-                    -- Box using actual SSA types
-                    ( boxOps, boxedVars, ctx1b ) =
-                        boxArgsWithMlirTypes ctx1 argsWithTypes
+                    argVarNames : List String
+                    argVarNames =
+                        List.map Tuple.first argsWithTypes
+
+                    argTypesList : List MlirType
+                    argTypesList =
+                        List.map Tuple.second argsWithTypes
 
                     ( resVar, ctx2 ) =
-                        Ctx.freshVar ctx1b
+                        Ctx.freshVar ctx1
 
                     allOperandNames : List String
                     allOperandNames =
-                        funcResult.resultVar :: boxedVars
+                        funcResult.resultVar :: argVarNames
 
-                    -- Use actual type for the function operand
+                    -- Use actual SSA types for all operands
                     allOperandTypes : List MlirType
                     allOperandTypes =
-                        funcResult.resultType :: List.map (\_ -> Types.ecoValue) boxedVars
+                        funcResult.resultType :: argTypesList
+
+                    -- Compute unboxed bitmap for new args
+                    newargsUnboxedBitmap : Int
+                    newargsUnboxedBitmap =
+                        List.indexedMap
+                            (\i ( _, mlirTy ) ->
+                                if isUnboxableType mlirTy then
+                                    Bitwise.shiftLeftBy i 1
+
+                                else
+                                    0
+                            )
+                            argsWithTypes
+                            |> List.foldl Bitwise.or 0
 
                     -- Compute arity from the FUNCTION type, not the result type
                     funcType : Mono.MonoType
@@ -1503,42 +1534,21 @@ generateSaturatedCall ctx func args resultType =
                         Dict.fromList
                             [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
                             , ( "remaining_arity", IntAttr Nothing remainingArity )
+                            , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
                             ]
 
                     ( ctx3, papExtendOp ) =
                         Ops.mlirOp ctx2 "eco.papExtend"
                             |> Ops.opBuilder.withOperands allOperandNames
-                            |> Ops.opBuilder.withResults [ ( resVar, Types.ecoValue ) ]
+                            |> Ops.opBuilder.withResults [ ( resVar, expectedType ) ]
                             |> Ops.opBuilder.withAttrs papExtendAttrs
                             |> Ops.opBuilder.build
-
-                    -- If the expected result type is primitive, unbox it
-                    ( unboxOps, finalVar, ctx4 ) =
-                        if Types.isEcoValueType expectedType then
-                            ( [], resVar, ctx3 )
-
-                        else
-                            let
-                                ( unboxVar, ctxU ) =
-                                    Ctx.freshVar ctx3
-
-                                attrs =
-                                    Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
-
-                                ( ctxU2, unboxOp ) =
-                                    Ops.mlirOp ctxU "eco.unbox"
-                                        |> Ops.opBuilder.withOperands [ resVar ]
-                                        |> Ops.opBuilder.withResults [ ( unboxVar, expectedType ) ]
-                                        |> Ops.opBuilder.withAttrs attrs
-                                        |> Ops.opBuilder.build
-                            in
-                            ( [ unboxOp ], unboxVar, ctxU2 )
                 in
-                { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ] ++ unboxOps
-                , resultVar = finalVar
+                { ops = funcResult.ops ++ argOps ++ [ papExtendOp ]
+                , resultVar = resVar
                 , resultType = expectedType
-                , ctx = ctx4, isTerminated = False
-            }
+                , ctx = ctx3, isTerminated = False
+                }
 
 
 {-| Generate expressions and return their ACTUAL MLIR types (not from Mono.typeOf).

@@ -106,7 +106,7 @@ CGEN_001;MLIR_Codegen;Boxing;enforced;MLIR codegen only inserts boxing and unbox
 
 CGEN_002;MLIR_Codegen;Calls;enforced;generateCall treats calls whose result MonoType is still a function as partial applications and routes them through closure generation and eco.papExtend instead of emitting direct calls;Compiler.Generate.MLIRMono
 
-CGEN_003;MLIR_Codegen;Closures;enforced;generateClosureApplication always boxes captured and applied arguments to eco.value uses remaining arity from the MonoType and emits eco.papExtend with operand_types listing eco.value for all operands;Compiler.Generate.MLIRMono
+CGEN_003;MLIR_Codegen;Closures;enforced;generateClosureApplication stores captured and applied arguments in their actual SSA types (i64 f64 or eco.value) without boxing and emits eco.papCreate with unboxed_bitmap and eco.papExtend with newargs_unboxed_bitmap attributes that track which slots contain unboxed primitives and the runtime merges bitmaps during partial application extension;Compiler.Generate.MLIR.Expr and RuntimeExports.cpp
 
 CGEN_004;MLIR_Codegen;Destruct;enforced;generateDestruct and generateMonoPath always use the destructor MonoType to determine the path target MLIR type and never use the body result type so destruct paths yield their natural type and do not spuriously unbox;Compiler.Generate.MLIRMono
 
@@ -197,6 +197,10 @@ CGEN_046;MLIR_Codegen;ControlFlow;enforced;For every eco.case control reaching i
 CGEN_047;MLIR_Codegen;ControlFlow;enforced;Every decider region that becomes an eco.case alternative has a non-empty op list whose last op is a real terminator (eco.return eco.crash or nested terminator eco.case) and codegen never manufactures trailing dummy eco.return ops for nested cases as hitting a non-terminator tail is a codegen bug;Compiler.Generate.MLIR.Expr
 
 CGEN_048;MLIR_Codegen;ControlFlow;enforced;The EcoControlFlowToSCF pass only matches eco.case when it is the last op in its block (the block terminator) not when it is followed by eco.return or scf.yield and the rewrite replaces the terminator eco.case with scf.if or scf.index_switch plus a new terminator in the same block;runtime/src/codegen/Passes/EcoControlFlowToSCF.cpp
+
+CGEN_049;MLIR_Codegen;Closures;enforced;eco.papCreate and eco.papExtend unboxed_bitmap attributes are limited to 52 bits and total captures plus arity must not exceed 52 and the number of set bits in unboxed_bitmap must equal the count of primitive typed operands so bitmap and operands stay consistent;runtime/src/codegen/EcoOps.cpp and Compiler.Generate.MLIR.Expr
+
+CGEN_050;MLIR_Codegen;Lambdas;enforced;Lambda functions use typed signatures where capture parameters have their actual MonoType mapped to MLIR types and return types match the body expression type rather than always using eco.value so no internal boxing or unboxing is needed for primitive captures and returns;Compiler.Generate.MLIR.Lambdas
 
 # =============================================================================
 # RUNTIME HEAP PHASE - Memory layout and GC invariants

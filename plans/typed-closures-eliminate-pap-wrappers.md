@@ -169,18 +169,18 @@ mlir::LogicalResult PapCreateOp::verify() {
         return emitOpError("unboxed_bitmap exceeds 52-bit capacity");
     }
 
-    // No bits set beyond num_captured
-    uint64_t validMask = (1ULL << numCaptured) - 1;
-    if (bitmap & ~validMask) {
-        return emitOpError("unboxed_bitmap has bits set beyond num_captured");
+    // Closure struct limits - CHECK FIRST to avoid UB in shift below
+    if (numCaptured < 0 || numCaptured > 63) {
+        return emitOpError("num_captured must be in range [0, 63]");
+    }
+    if (arity < 0 || arity > 63) {
+        return emitOpError("arity must be in range [0, 63]");
     }
 
-    // Closure struct limits
-    if (numCaptured > 63) {
-        return emitOpError("num_captured exceeds 6-bit n_values limit (63)");
-    }
-    if (arity > 63) {
-        return emitOpError("arity exceeds 6-bit max_values limit (63)");
+    // No bits set beyond num_captured (safe now that numCaptured is in [0, 63])
+    uint64_t validMask = numCaptured == 0 ? 0ULL : (1ULL << numCaptured) - 1;
+    if (bitmap & ~validMask) {
+        return emitOpError("unboxed_bitmap has bits set beyond num_captured");
     }
 
     // Verify bitmap matches operand types
@@ -213,8 +213,13 @@ mlir::LogicalResult PapExtendOp::verify() {
         return emitOpError("newargs_unboxed_bitmap exceeds 52-bit capacity");
     }
 
-    // No bits set beyond newargs size
-    uint64_t validMask = newargs.empty() ? 0 : (1ULL << newargs.size()) - 1;
+    // Validate newargs size is within safe shift range - CHECK FIRST to avoid UB
+    if (newargs.size() > 63) {
+        return emitOpError("newargs count exceeds 63");
+    }
+
+    // No bits set beyond newargs size (safe now that size is in [0, 63])
+    uint64_t validMask = newargs.empty() ? 0ULL : (1ULL << newargs.size()) - 1;
     if (bitmap & ~validMask) {
         return emitOpError("newargs_unboxed_bitmap has bits set beyond newargs count");
     }
@@ -440,12 +445,12 @@ argTypes = List.map Tuple.second argsWithTypes
 
 **Compute and set `newargs_unboxed_bitmap`**:
 ```elm
--- Compute unboxed bitmap for new args
+-- Compute unboxed bitmap for new args (same predicate as captures)
 newargsUnboxedBitmap : Int
 newargsUnboxedBitmap =
     List.indexedMap
         (\i ( _, mlirTy ) ->
-            if Types.isEcoValueType mlirTy then 0 else Bitwise.shiftLeftBy i 1
+            if isUnboxableType mlirTy then Bitwise.shiftLeftBy i 1 else 0
         )
         argsWithTypes
         |> List.foldl Bitwise.or 0
@@ -495,6 +500,104 @@ Remove (use grep to find exact locations):
 
 Remove (use grep to find exact location):
 - Call to `Lambdas.processPendingWrappers` (grep: `processPendingWrappers`)
+
+#### Step 2.6: Fix saturated closure calls in `generateSaturatedCall`
+
+**File**: `compiler/src/Compiler/Generate/MLIR/Expr.elm`
+
+Two branches in `generateSaturatedCall` currently box all arguments before `eco.papExtend` and then unbox the result if a primitive is expected. These must be updated to use the typed closure ABI.
+
+##### Step 2.6.1: Fix `MonoVarLocal` branch
+
+**Location**: The `else -- Normal closure call via papExtend` block within `Mono.MonoVarLocal name funcType ->`
+
+**Current behavior**:
+- Calls `boxArgsWithMlirTypes` to box all args to `!eco.value`
+- Sets `allOperandTypes` to `funcVarType :: [!eco.value, ...]`
+- `eco.papExtend` result type is always `!eco.value`
+- Post-unboxes if `expectedType` is primitive
+
+**Remove**:
+- Call to `boxArgsWithMlirTypes`
+- Post-`eco.unbox` logic for primitive results
+
+**Change to**:
+```elm
+else
+    -- Normal closure call via papExtend (typed closure ABI)
+    let
+        -- Use generateExprListTyped to get actual SSA types
+        ( argOps, argsWithTypes, ctx1 ) =
+            generateExprListTyped ctx args
+
+        argVarNames : List String
+        argVarNames =
+            List.map Tuple.first argsWithTypes
+
+        argTypesList : List MlirType
+        argTypesList =
+            List.map Tuple.second argsWithTypes
+
+        ( resVar, ctx2 ) =
+            Ctx.freshVar ctx1
+
+        allOperandNames : List String
+        allOperandNames =
+            funcVarName :: argVarNames
+
+        allOperandTypes : List MlirType
+        allOperandTypes =
+            funcVarType :: argTypesList
+
+        newargsUnboxedBitmap : Int
+        newargsUnboxedBitmap =
+            List.indexedMap
+                (\i ( _, mlirTy ) ->
+                    if isUnboxableType mlirTy then
+                        Bitwise.shiftLeftBy i 1
+                    else
+                        0
+                )
+                argsWithTypes
+                |> List.foldl Bitwise.or 0
+
+        remainingArity : Int
+        remainingArity =
+            Types.functionArity funcType
+
+        papExtendAttrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
+                , ( "remaining_arity", IntAttr Nothing remainingArity )
+                , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                ]
+
+        ( ctx3, papExtendOp ) =
+            Ops.mlirOp ctx2 "eco.papExtend"
+                |> Ops.opBuilder.withOperands allOperandNames
+                |> Ops.opBuilder.withResults [ ( resVar, expectedType ) ]
+                |> Ops.opBuilder.withAttrs papExtendAttrs
+                |> Ops.opBuilder.build
+    in
+    { ops = argOps ++ [ papExtendOp ]
+    , resultVar = resVar
+    , resultType = expectedType
+    , ctx = ctx3, isTerminated = False
+    }
+```
+
+##### Step 2.6.2: Fix fallback `funcResult` branch
+
+**Location**: The `else -- Normal closure call via papExtend` block within the final `_ ->` case
+
+**Same transformation** as Step 2.6.1:
+- Remove `boxArgsWithMlirTypes`
+- Set `_operand_types = funcResult.resultType :: argTypesList`
+- Add `newargs_unboxed_bitmap`
+- Set `eco.papExtend` result type to `expectedType`
+- Remove post-`eco.unbox` logic
+
+**Rationale**: This is the actual bug causing `Maybe.map (f 2) (Just 1)` to fail. In monomorphized `Maybe.map<Int,Int>`, the argument type IS known (Int), so passing it unboxed is correct. The typed partial-application path in `generateClosureApplication` already does this correctly; saturated calls through locals/indirects just need to match that pattern.
 
 ---
 
@@ -650,7 +753,7 @@ CGEN_050;MLIR_Codegen;Lambdas;enforced;Lambda func.func definitions use typed pa
 | `runtime/src/codegen/Ops.td` | Add `unboxed_bitmap` to `eco.papCreate`, `newargs_unboxed_bitmap` to `eco.papExtend` |
 | `runtime/src/codegen/EcoOps.cpp` | Update verifier for `eco.papCreate` |
 | `compiler/src/Compiler/Generate/MLIR/Lambdas.elm` | Typed lambda ABI (params, no unbox, typed return); Remove `processPendingWrappers`, `generatePapWrapper` |
-| `compiler/src/Compiler/Generate/MLIR/Expr.elm` | Remove boxing in `generateClosure`, `generateClosureApplication`; Remove wrapper logic in `generateVarGlobal`; Compute/set `unboxed_bitmap` attributes; Add limit checks |
+| `compiler/src/Compiler/Generate/MLIR/Expr.elm` | Remove boxing in `generateClosure`, `generateClosureApplication`; Remove wrapper logic in `generateVarGlobal`; Compute/set `unboxed_bitmap` attributes; Add limit checks; Fix saturated closure calls in `generateSaturatedCall` (`MonoVarLocal` and fallback branches) to use typed `eco.papExtend` |
 | `compiler/src/Compiler/Generate/MLIR/Context.elm` | Remove `PendingWrapper` type and related fields |
 | `compiler/src/Compiler/Generate/MLIR/Backend.elm` | Remove `processPendingWrappers` call |
 | `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp` | Use attribute bitmap; Update `getOrCreateWrapper` for typed wrappers; Pass bitmap to runtime |
@@ -712,7 +815,7 @@ Phase 5 (Documentation)
 
 ## Assumptions
 
-1. All unboxable primitives fit in 64 bits (i64, f64, i16/Char embedded)
+1. All unboxable primitives fit in 64 bits (i64, f64)
 2. Target function signatures available during LLVM lowering (UndefinedFunction pass)
 3. GC correctly handles unboxed bitmap (already works for tuples/records/custom)
 4. Evaluator convention (`void*(*)(void**)`) unchanged; wrappers handle typed calls

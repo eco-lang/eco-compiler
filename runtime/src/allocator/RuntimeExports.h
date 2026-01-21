@@ -168,8 +168,9 @@ uint64_t eco_apply_closure(uint64_t closure, uint64_t* args, uint32_t num_args);
 /// @param closure HPointer (as uint64_t) to the Closure object
 /// @param args Array of new arguments
 /// @param num_newargs Number of new arguments
+/// @param new_unboxed_bitmap Bitmap indicating which new args are unboxed primitives
 /// @return New closure with additional captured values (as HPointer uint64_t)
-uint64_t eco_pap_extend(uint64_t closure, uint64_t* args, uint32_t num_newargs);
+uint64_t eco_pap_extend(uint64_t closure, uint64_t* args, uint32_t num_newargs, uint64_t new_unboxed_bitmap);
 
 /// Calls a fully saturated closure.
 /// Combines captured values with new args and invokes the evaluator.

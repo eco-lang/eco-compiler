@@ -1,5 +1,5 @@
 module Compiler.Generate.MLIR.Context exposing
-    ( Context, FuncSignature, PendingLambda, PendingWrapper, TypeRegistry
+    ( Context, FuncSignature, PendingLambda, TypeRegistry
     , initContext
     , freshVar, freshOpId, lookupVar, addVarMapping
     , getOrCreateTypeIdForMonoType, registerKernelCall
@@ -15,7 +15,7 @@ state during MLIR code generation.
 
 # Types
 
-@docs Context, FuncSignature, PendingLambda, PendingWrapper, TypeRegistry
+@docs Context, FuncSignature, PendingLambda, TypeRegistry
 
 
 # Context Management
@@ -51,7 +51,6 @@ import Compiler.Generate.Mode as Mode
 import Data.Map as EveryDict
 import Dict
 import Mlir.Mlir exposing (MlirType)
-import Set
 import Utils.Crash exposing (crash)
 
 
@@ -115,13 +114,11 @@ type alias Context =
     , mode : Mode.Mode
     , registry : Mono.SpecializationRegistry
     , pendingLambdas : List PendingLambda
-    , pendingWrappers : List PendingWrapper -- Boxed wrappers for PAP targets with unboxed params
     , signatures : Dict.Dict Int FuncSignature -- SpecId -> signature for invariant checking
     , varMappings : Dict.Dict String ( String, MlirType ) -- Let-bound name -> (SSA variable name, MLIR type)
     , currentLetSiblings : Dict.Dict String ( String, MlirType ) -- Sibling mappings for current let-rec group
     , kernelDecls : Dict.Dict String ( List MlirType, MlirType ) -- Kernel function name -> (argTypes, returnType)
     , typeRegistry : TypeRegistry -- Type graph: MonoType -> TypeId for debug printing
-    , generatedWrappers : Set.Set String -- PAP wrapper names already queued (deduplication)
     }
 
 
@@ -143,18 +140,8 @@ type alias PendingLambda =
     , captures : List ( Name.Name, Mono.MonoType )
     , params : List ( Name.Name, Mono.MonoType )
     , body : Mono.MonoExpr
+    , returnType : Mono.MonoType -- Explicit return type for typed ABI
     , siblingMappings : Dict.Dict String ( String, MlirType ) -- For mutually recursive let bindings
-    }
-
-
-{-| A pending wrapper is generated for functions used in PAPs that have unboxed params.
-The wrapper accepts !eco.value params, unboxes them, calls the target, and boxes the result.
--}
-type alias PendingWrapper =
-    { wrapperName : String
-    , targetFuncName : String
-    , paramTypes : List Mono.MonoType
-    , returnType : Mono.MonoType
     }
 
 
@@ -167,7 +154,6 @@ initContext mode registry signatures initialCtorLayouts =
     , mode = mode
     , registry = registry
     , pendingLambdas = []
-    , pendingWrappers = []
     , signatures = signatures
     , varMappings = Dict.empty
     , currentLetSiblings = Dict.empty
@@ -176,7 +162,6 @@ initContext mode registry signatures initialCtorLayouts =
         { emptyTypeRegistry
             | ctorLayouts = initialCtorLayouts
         }
-    , generatedWrappers = Set.empty
     }
 
 

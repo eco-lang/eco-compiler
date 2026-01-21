@@ -259,6 +259,83 @@ LogicalResult PapCreateOp::verify() {
            << arity << ")";
   }
 
+  // Verify closure struct limits (6-bit fields).
+  if (numCaptured > 63) {
+    return emitOpError("num_captured (")
+           << numCaptured
+           << ") exceeds 6-bit n_values limit (63)";
+  }
+  if (arity > 63) {
+    return emitOpError("arity (")
+           << arity
+           << ") exceeds 6-bit max_values limit (63)";
+  }
+
+  // Verify unboxed_bitmap constraints.
+  uint64_t bitmap = getUnboxedBitmap();
+
+  // Bitmap must fit in 52 bits (runtime Closure struct constraint).
+  if (bitmap >= (1ULL << 52)) {
+    return emitOpError("unboxed_bitmap exceeds 52-bit capacity");
+  }
+
+  // No bits should be set beyond num_captured.
+  if (numCaptured > 0) {
+    uint64_t validMask = (1ULL << numCaptured) - 1;
+    if (bitmap & ~validMask) {
+      return emitOpError("unboxed_bitmap has bits set beyond num_captured");
+    }
+  } else if (bitmap != 0) {
+    return emitOpError("unboxed_bitmap must be 0 when num_captured is 0");
+  }
+
+  // Verify bitmap matches operand types.
+  auto captured = getCaptured();
+  for (size_t i = 0; i < captured.size(); ++i) {
+    bool isBitSet = (bitmap >> i) & 1;
+    bool isUnboxedType = !isa<eco::ValueType>(captured[i].getType());
+    if (isBitSet != isUnboxedType) {
+      return emitOpError("unboxed_bitmap bit ")
+             << i << " doesn't match operand type: bit is "
+             << (isBitSet ? "set" : "unset") << " but operand type is "
+             << captured[i].getType();
+    }
+  }
+
+  return success();
+}
+
+LogicalResult PapExtendOp::verify() {
+  uint64_t bitmap = getNewargsUnboxedBitmap();
+  auto newargs = getNewargs();
+
+  // Bitmap must fit in 52 bits (runtime Closure struct constraint).
+  if (bitmap >= (1ULL << 52)) {
+    return emitOpError("newargs_unboxed_bitmap exceeds 52-bit capacity");
+  }
+
+  // No bits should be set beyond newargs size.
+  if (!newargs.empty()) {
+    uint64_t validMask = (1ULL << newargs.size()) - 1;
+    if (bitmap & ~validMask) {
+      return emitOpError("newargs_unboxed_bitmap has bits set beyond newargs count");
+    }
+  } else if (bitmap != 0) {
+    return emitOpError("newargs_unboxed_bitmap must be 0 when there are no newargs");
+  }
+
+  // Verify bitmap matches operand types.
+  for (size_t i = 0; i < newargs.size(); ++i) {
+    bool isBitSet = (bitmap >> i) & 1;
+    bool isUnboxedType = !isa<eco::ValueType>(newargs[i].getType());
+    if (isBitSet != isUnboxedType) {
+      return emitOpError("newargs_unboxed_bitmap bit ")
+             << i << " doesn't match operand type: bit is "
+             << (isBitSet ? "set" : "unset") << " but operand type is "
+             << newargs[i].getType();
+    }
+  }
+
   return success();
 }
 

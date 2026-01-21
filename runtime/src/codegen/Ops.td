@@ -745,12 +745,17 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [Pure]> {
     with some captured arguments. The remaining arity after creation is
     (arity - num_captured).
 
+    The `unboxed_bitmap` attribute indicates which captured values are
+    stored as unboxed primitives (bit N set = capture N is unboxed).
+    This is the source-of-truth; lowering trusts this value.
+
     Example:
     ```mlir
-    // Partially apply `add` with first argument captured
+    // Partially apply `add` with first argument captured as i64
     %add_5 = eco.papCreate @add(%five) {
-      arity = 2 : i32,
-      num_captured = 1 : i32
+      arity = 2 : i64,
+      num_captured = 1 : i64,
+      unboxed_bitmap = 1 : i64  // bit 0 set = capture 0 is unboxed
     } : (i64) -> !eco.value
     ```
   }];
@@ -759,7 +764,8 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [Pure]> {
     Variadic<Eco_AnyValue>:$captured,
     FlatSymbolRefAttr:$function,
     I64Attr:$arity,
-    I64Attr:$num_captured
+    I64Attr:$num_captured,
+    DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap
   );
   let results = (outs Eco_Value:$result);
 
@@ -780,21 +786,30 @@ def Eco_PapExtendOp : Eco_Op<"papExtend"> {
     before this application. This is known statically from Elm's type system.
     If remaining_arity == newargs.size(), this is a saturated call.
 
+    The `newargs_unboxed_bitmap` attribute indicates which new arguments
+    are unboxed primitives (bit N set = newarg N is unboxed).
+    This is the source-of-truth; lowering trusts this value.
+
     Example:
     ```mlir
     // Apply one more argument to a partially applied function (arity 1 remaining)
     // This saturates the closure, so it becomes a direct call
-    %result = eco.papExtend %closure(%arg) {remaining_arity = 1 : i64}
-      : !eco.value, (i64) -> !eco.value
+    %result = eco.papExtend %closure(%arg) {
+      remaining_arity = 1 : i64,
+      newargs_unboxed_bitmap = 1 : i64  // bit 0 set = arg is unboxed
+    } : !eco.value, (i64) -> i64
     ```
   }];
 
   let arguments = (ins
     Eco_Value:$closure,
     Variadic<Eco_AnyValue>:$newargs,
-    I64Attr:$remaining_arity
+    I64Attr:$remaining_arity,
+    DefaultValuedAttr<I64Attr, "0">:$newargs_unboxed_bitmap
   );
   let results = (outs Eco_AnyValue:$result);
+
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//

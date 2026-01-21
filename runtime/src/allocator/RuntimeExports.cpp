@@ -496,7 +496,8 @@ extern "C" uint64_t eco_apply_closure(uint64_t closure_hptr, uint64_t* args, uin
     return 0;
 }
 
-extern "C" uint64_t eco_pap_extend(uint64_t closure_hptr, uint64_t* args, uint32_t num_newargs) {
+extern "C" uint64_t eco_pap_extend(uint64_t closure_hptr, uint64_t* args, uint32_t num_newargs,
+                                   uint64_t new_unboxed_bitmap) {
     void* closure_ptr = hpointerToPtr(closure_hptr);
     if (!closure_ptr) return 0;
 
@@ -530,9 +531,11 @@ extern "C" uint64_t eco_pap_extend(uint64_t closure_hptr, uint64_t* args, uint32
     new_closure->max_values = max_values;
     new_closure->evaluator = old_closure->evaluator;
 
-    // Build the new unboxed bitmap: old bits + new args (assume all new args are boxed).
-    // New args are treated as boxed pointers for GC tracing purposes.
-    new_closure->unboxed = old_unboxed;
+    // Merge unboxed bitmaps: old bits + new bits shifted by old_n_values.
+    // Mask new_unboxed_bitmap to num_newargs bits, then shift into position.
+    uint64_t masked_new_bitmap = new_unboxed_bitmap & ((1ULL << num_newargs) - 1);
+    uint64_t shifted_new_bitmap = masked_new_bitmap << old_n_values;
+    new_closure->unboxed = old_unboxed | shifted_new_bitmap;
 
     // Copy old captured values.
     for (uint32_t i = 0; i < old_n_values; i++) {

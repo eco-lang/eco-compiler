@@ -196,8 +196,8 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateSetUnboxed(OpBuilder &builder) const {
 //===----------------------------------------------------------------------===//
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreatePapExtend(OpBuilder &builder) const {
-    // eco_pap_extend(closure_hptr: i64, args: ptr, num_args: i32) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, PTR_TY, I32_TY});
+    // eco_pap_extend(closure_hptr: i64, args: ptr, num_args: i32, new_unboxed_bitmap: i64) -> i64
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, PTR_TY, I32_TY, I64_TY});
     return getOrCreateFunc(builder, "eco_pap_extend", funcTy);
 }
 

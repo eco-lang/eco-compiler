@@ -1,23 +1,20 @@
-module Compiler.Generate.MLIR.Lambdas exposing (processLambdas, processPendingWrappers)
+module Compiler.Generate.MLIR.Lambdas exposing (processLambdas)
 
-{-| Lambda and PAP wrapper processing for the MLIR backend.
+{-| Lambda processing for the MLIR backend.
 
-This module handles:
+This module handles processing pending lambdas into func.func ops
+with typed ABIs (parameters in their actual types, not all boxed).
 
-  - Processing pending lambdas into func.func ops
-  - Generating PAP wrapper functions for unboxed params
-
-@docs processLambdas, processPendingWrappers
+@docs processLambdas
 
 -}
 
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Expr as Expr
-import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Types as Types
 import Dict
-import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion, MlirType)
+import Mlir.Mlir exposing (MlirOp, MlirRegion, MlirType)
 
 
 
@@ -58,64 +55,46 @@ processLambdas ctx =
 generateLambdaFunc : Ctx.Context -> Ctx.PendingLambda -> ( MlirOp, Ctx.Context )
 generateLambdaFunc ctx lambda =
     let
-        -- All parameters use !eco.value in the signature (boxed calling convention)
+        -- Parameters use their actual MLIR types (typed calling convention)
         captureArgPairs : List ( String, MlirType )
         captureArgPairs =
-            List.map (\( name, _ ) -> ( "%" ++ name, Types.ecoValue )) lambda.captures
+            List.map (\( name, monoTy ) -> ( "%" ++ name, Types.monoTypeToMlir monoTy )) lambda.captures
 
-        -- Use !eco.value for all params in signature - callers pass boxed values
         paramArgPairs : List ( String, MlirType )
         paramArgPairs =
-            List.map (\( name, _ ) -> ( "%" ++ name, Types.ecoValue )) lambda.params
+            List.map (\( name, monoTy ) -> ( "%" ++ name, Types.monoTypeToMlir monoTy )) lambda.params
 
         allArgPairs : List ( String, MlirType )
         allArgPairs =
             captureArgPairs ++ paramArgPairs
 
-        -- Generate unbox operations for captures AND parameters that need primitive types
-        -- and build the varMappings with the unboxed variable names.
-        -- Both captures and params arrive as !eco.value (boxed calling convention),
-        -- but inside the lambda body we need primitives unboxed to their actual types.
-        ( unboxOps, varMappingsWithArgs, ctxAfterUnbox ) =
+        -- Build varMappings directly from typed parameters (no unboxing needed)
+        -- Parameters arrive in their actual types due to typed calling convention.
+        varMappingsWithArgs : Dict.Dict String ( String, MlirType )
+        varMappingsWithArgs =
             List.foldl
-                (\( name, ty ) ( opsAcc, mappingsAcc, ctxAcc ) ->
+                (\( name, monoTy ) acc ->
                     let
                         mlirType =
-                            Types.monoTypeToMlir ty
+                            Types.monoTypeToMlir monoTy
 
-                        boxedVarName =
+                        varName =
                             "%" ++ name
                     in
-                    if Types.isEcoValueType mlirType then
-                        -- Already !eco.value, no unboxing needed
-                        ( opsAcc
-                        , Dict.insert name ( boxedVarName, Types.ecoValue ) mappingsAcc
-                        , ctxAcc
-                        )
-
-                    else
-                        -- Need to unbox to primitive type
-                        let
-                            ( unboxedVar, ctxU1 ) =
-                                Ctx.freshVar ctxAcc
-
-                            attrs =
-                                Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
-
-                            ( ctxU2, unboxOp ) =
-                                Ops.mlirOp ctxU1 "eco.unbox"
-                                    |> Ops.opBuilder.withOperands [ boxedVarName ]
-                                    |> Ops.opBuilder.withResults [ ( unboxedVar, mlirType ) ]
-                                    |> Ops.opBuilder.withAttrs attrs
-                                    |> Ops.opBuilder.build
-                        in
-                        ( opsAcc ++ [ unboxOp ]
-                        , Dict.insert name ( unboxedVar, mlirType ) mappingsAcc
-                        , ctxU2
-                        )
+                    Dict.insert name ( varName, mlirType ) acc
                 )
-                ( [], Dict.empty, { ctx | nextVar = List.length allArgPairs } )
+                Dict.empty
                 (lambda.captures ++ lambda.params)
+
+        -- Initialize nextVar to account for all parameter SSA values
+        nextVarAfterParams : Int
+        nextVarAfterParams =
+            List.length allArgPairs
+
+        -- No unboxOps needed - parameters arrive in their actual types
+        unboxOps : List MlirOp
+        unboxOps =
+            []
 
         -- Merge sibling mappings with captures and params (captures/params take precedence)
         varMappingsWithSiblings : Dict.Dict String ( String, MlirType )
@@ -124,11 +103,16 @@ generateLambdaFunc ctx lambda =
 
         ctxWithArgs : Ctx.Context
         ctxWithArgs =
-            { ctxAfterUnbox | varMappings = varMappingsWithSiblings }
+            { ctx | varMappings = varMappingsWithSiblings, nextVar = nextVarAfterParams }
 
         exprResult : Expr.ExprResult
         exprResult =
             Expr.generateExpr ctxWithArgs lambda.body
+
+        -- Actual return type from the lambda (typed ABI)
+        actualResultType : MlirType
+        actualResultType =
+            Types.monoTypeToMlir lambda.returnType
 
         region : MlirRegion
         region =
@@ -139,147 +123,15 @@ generateLambdaFunc ctx lambda =
                 Ops.mkRegionTerminatedByOps allArgPairs (unboxOps ++ exprResult.ops)
 
             else
-                -- Normal expression - add eco.return with the result value.
+                -- Normal expression - add eco.return with the result value in its actual type.
+                -- No boxing needed with typed ABI.
                 let
-                    -- Lambda returns use !eco.value (boxed calling convention)
-                    -- Box the result if needed
-                    ( boxOps, finalResultVar, ctxAfterBox ) =
-                        Expr.boxToEcoValue exprResult.ctx exprResult.resultVar exprResult.resultType
-
                     ( _, returnOp ) =
-                        Ops.ecoReturn ctxAfterBox finalResultVar Types.ecoValue
+                        Ops.ecoReturn exprResult.ctx exprResult.resultVar actualResultType
                 in
-                Ops.mkRegion allArgPairs (unboxOps ++ exprResult.ops ++ boxOps) returnOp
+                Ops.mkRegion allArgPairs (unboxOps ++ exprResult.ops) returnOp
 
         ( ctx2, funcOp ) =
-            Ops.funcFunc exprResult.ctx lambda.name allArgPairs Types.ecoValue region
+            Ops.funcFunc exprResult.ctx lambda.name allArgPairs actualResultType region
     in
     ( funcOp, ctx2 )
-
-
-
--- ====== PAP WRAPPER FUNCTION GENERATION ======
-
-
-{-| Generate all pending PAP wrapper functions accumulated in the context.
-
-Clears ctx.pendingWrappers and returns the generated func.func ops plus the
-updated context.
-
--}
-processPendingWrappers : Ctx.Context -> ( List MlirOp, Ctx.Context )
-processPendingWrappers ctx =
-    case ctx.pendingWrappers of
-        [] ->
-            ( [], ctx )
-
-        wrappers ->
-            let
-                ctxCleared : Ctx.Context
-                ctxCleared =
-                    { ctx | pendingWrappers = [] }
-            in
-            List.foldl
-                (\wrapper ( accOps, accCtx ) ->
-                    let
-                        ( op, newCtx ) =
-                            generatePapWrapper accCtx wrapper
-                    in
-                    ( accOps ++ [ op ], newCtx )
-                )
-                ( [], ctxCleared )
-                wrappers
-
-
-{-| Generate a PAP wrapper function.
-
-The wrapper has this ABI:
-
-    wrapperName : (!eco.value, !eco.value, ..., !eco.value) -> !eco.value
-
-It:
-
-  - Accepts all arguments boxed (!eco.value)
-  - Unboxes any primitive params according to paramTypes
-  - Calls the underlying target function (targetFuncName) with the correct
-    primitive / boxed types (Types.monoTypeToMlir paramTypes)
-  - Boxes the result back to !eco.value if needed
-
--}
-generatePapWrapper : Ctx.Context -> Ctx.PendingWrapper -> ( MlirOp, Ctx.Context )
-generatePapWrapper ctx wrapper =
-    let
-        paramCount : Int
-        paramCount =
-            List.length wrapper.paramTypes
-
-        -- Wrapper's external signature: all params boxed as !eco.value
-        argNames : List String
-        argNames =
-            List.indexedMap (\i _ -> "%arg" ++ String.fromInt i) wrapper.paramTypes
-
-        argPairs : List ( String, MlirType )
-        argPairs =
-            List.map (\name -> ( name, Types.ecoValue )) argNames
-
-        -- Start body with args in scope; next SSA id after args
-        ctxWithArgs : Ctx.Context
-        ctxWithArgs =
-            { ctx | nextVar = paramCount }
-
-        -- Unbox parameters that need primitive types
-        ( unboxOps, callArgs, ctx1 ) =
-            List.foldl
-                (\( name, monoParamType ) ( opsAcc, argsAcc, ctxAcc ) ->
-                    let
-                        paramMlirTy : MlirType
-                        paramMlirTy =
-                            Types.monoTypeToMlir monoParamType
-                    in
-                    if Types.isEcoValueType paramMlirTy then
-                        -- Parameter is already !eco.value; pass through as-is
-                        ( opsAcc
-                        , argsAcc ++ [ ( name, Types.ecoValue ) ]
-                        , ctxAcc
-                        )
-
-                    else
-                        -- Need to unbox from !eco.value to the primitive type
-                        let
-                            ( moreOps, unboxedVar, ctxAcc1 ) =
-                                Intrinsics.unboxToType ctxAcc name paramMlirTy
-                        in
-                        ( opsAcc ++ moreOps
-                        , argsAcc ++ [ ( unboxedVar, paramMlirTy ) ]
-                        , ctxAcc1
-                        )
-                )
-                ( [], [], ctxWithArgs )
-                (List.map2 Tuple.pair argNames wrapper.paramTypes)
-
-        -- Call the underlying target function with unboxed/boxed params
-        ( rawResultVar, ctx2 ) =
-            Ctx.freshVar ctx1
-
-        targetResultTy : MlirType
-        targetResultTy =
-            Types.monoTypeToMlir wrapper.returnType
-
-        ( ctx3, callOp ) =
-            Ops.ecoCallNamed ctx2 rawResultVar wrapper.targetFuncName callArgs targetResultTy
-
-        -- Wrapper must return !eco.value; box primitive result if needed
-        ( boxOps, finalResultVar, ctx4 ) =
-            Expr.boxToEcoValue ctx3 rawResultVar targetResultTy
-
-        ( ctx5, returnOp ) =
-            Ops.ecoReturn ctx4 finalResultVar Types.ecoValue
-
-        region : MlirRegion
-        region =
-            Ops.mkRegion argPairs (unboxOps ++ [ callOp ] ++ boxOps) returnOp
-
-        ( ctxFinal, funcOp ) =
-            Ops.funcFunc ctx5 wrapper.wrapperName argPairs Types.ecoValue region
-    in
-    ( funcOp, ctxFinal )

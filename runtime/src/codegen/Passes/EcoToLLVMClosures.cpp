@@ -73,10 +73,17 @@ static bool usesArgsArrayConvention(LLVM::LLVMFuncOp func) {
 /// Generate or get a wrapper function that adapts from the runtime's calling
 /// convention (void** args) to the target function's direct argument convention.
 /// If the target already uses the args-array convention, return it directly.
+///
+/// For typed lambdas, this wrapper:
+/// 1. Loads each arg as i64 from the void** array
+/// 2. Bitcasts to the target type (i64->f64 for floats, i64->ptr for pointers)
+/// 3. Calls the typed target function
+/// 4. Bitcasts the result back to i64/ptr for the runtime
 static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp module, StringRef funcName,
                                            int64_t arity, Location loc) {
     auto *ctx = rewriter.getContext();
     auto i64Ty = IntegerType::get(ctx, 64);
+    auto f64Ty = Float64Type::get(ctx);
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
     // Check if target function already uses args-array convention
@@ -93,6 +100,32 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
     // Check if wrapper already exists
     if (auto existingWrapper = module.lookupSymbol<LLVM::LLVMFuncOp>(wrapperName)) {
         return existingWrapper;
+    }
+
+    // Look up target function to get its actual signature
+    // Try func.func first, then LLVM::LLVMFuncOp
+    SmallVector<Type> targetParamTypes;
+    Type targetResultType = i64Ty;  // Default to i64
+
+    if (auto funcFunc = module.lookupSymbol<func::FuncOp>(funcName)) {
+        auto funcType = funcFunc.getFunctionType();
+        for (auto paramType : funcType.getInputs()) {
+            targetParamTypes.push_back(paramType);
+        }
+        if (funcType.getNumResults() > 0) {
+            targetResultType = funcType.getResult(0);
+        }
+    } else if (auto llvmFunc = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName)) {
+        auto funcType = llvmFunc.getFunctionType();
+        for (unsigned i = 0; i < funcType.getNumParams(); ++i) {
+            targetParamTypes.push_back(funcType.getParamType(i));
+        }
+        targetResultType = funcType.getReturnType();
+    } else {
+        // Target function not found - use all-i64 signature
+        for (int64_t i = 0; i < arity; ++i) {
+            targetParamTypes.push_back(i64Ty);
+        }
     }
 
     // Create wrapper function type: void* (*)(void**)
@@ -112,22 +145,62 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
 
     Value argsArray = entryBlock->getArgument(0);
 
-    // Load arguments from the array
+    // Load arguments from the array and convert to target types
     SmallVector<Value> callArgs;
     for (int64_t i = 0; i < arity; ++i) {
         auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, i);
         auto argPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, argsArray, ValueRange{idxConst});
-        auto arg = rewriter.create<LLVM::LoadOp>(loc, i64Ty, argPtr);
-        callArgs.push_back(arg);
+        Value argI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, argPtr);
+
+        // Convert to target type if needed
+        Type targetType = (i < (int64_t)targetParamTypes.size()) ? targetParamTypes[i] : i64Ty;
+        Value convertedArg = argI64;
+
+        if (targetType == f64Ty) {
+            // Bitcast i64 -> f64
+            convertedArg = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, argI64);
+        } else if (isa<LLVM::LLVMPointerType>(targetType)) {
+            // IntToPtr for pointer types
+            convertedArg = rewriter.create<LLVM::IntToPtrOp>(loc, targetType, ValueRange{argI64});
+        } else if (targetType != i64Ty) {
+            // For other integer types, truncate or extend as needed
+            if (auto intTy = dyn_cast<IntegerType>(targetType)) {
+                if (intTy.getWidth() < 64) {
+                    convertedArg = rewriter.create<LLVM::TruncOp>(loc, targetType, argI64);
+                }
+            }
+        }
+        callArgs.push_back(convertedArg);
     }
 
-    // Call the actual function (using symbol reference)
+    // Build the target function type for the call
+    auto targetFuncType = LLVM::LLVMFunctionType::get(targetResultType, targetParamTypes, false);
     auto funcSymbolRef = FlatSymbolRefAttr::get(ctx, funcName);
-    auto callResultTy = LLVM::LLVMFunctionType::get(i64Ty, SmallVector<Type>(arity, i64Ty), false);
-    auto call = rewriter.create<LLVM::CallOp>(loc, callResultTy, funcSymbolRef, callArgs);
+    auto call = rewriter.create<LLVM::CallOp>(loc, targetFuncType, funcSymbolRef, callArgs);
 
-    // Convert i64 result to ptr and return
-    auto resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, call.getResult());
+    // Convert result to ptr for the runtime
+    Value resultValue = call.getResult();
+    Value resultPtr;
+
+    if (targetResultType == f64Ty) {
+        // Bitcast f64 -> i64, then inttoptr
+        Value resultI64 = rewriter.create<LLVM::BitcastOp>(loc, i64Ty, resultValue);
+        resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{resultI64});
+    } else if (isa<LLVM::LLVMPointerType>(targetResultType)) {
+        // Already a pointer
+        resultPtr = resultValue;
+    } else if (auto intTy = dyn_cast<IntegerType>(targetResultType)) {
+        // Integer result - extend to i64 if needed, then inttoptr
+        Value resultI64 = resultValue;
+        if (intTy.getWidth() < 64) {
+            resultI64 = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, resultValue);
+        }
+        resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{resultI64});
+    } else {
+        // Default: assume i64-like, convert to ptr
+        resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{resultValue});
+    }
+
     rewriter.create<LLVM::ReturnOp>(loc, ValueRange{resultPtr});
 
     return wrapperFunc;
@@ -170,14 +243,20 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{closureHPtr});
         Value closurePtr = resolveCall.getResult();
 
-        // Compute unboxed bitmap
-        uint64_t unboxedBitmap = 0;
+        // Use unboxed_bitmap attribute as source-of-truth (verifier ensures consistency)
+        uint64_t unboxedBitmap = op.getUnboxedBitmap();
+
+#ifndef NDEBUG
+        // Optional: verify attribute matches operand types in debug builds
+        uint64_t computedBitmap = 0;
         for (size_t i = 0; i < captured.size(); ++i) {
             Type origType = op.getCaptured()[i].getType();
             if (!isa<ValueType>(origType)) {
-                unboxedBitmap |= (1ULL << i);
+                computedBitmap |= (1ULL << i);
             }
         }
+        assert(computedBitmap == unboxedBitmap && "unboxed_bitmap mismatch with operand types");
+#endif
 
         uint64_t packedValue =
             static_cast<uint64_t>(numCaptured) | (static_cast<uint64_t>(arity) << 6) | (unboxedBitmap << 12);
@@ -278,8 +357,12 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
 
             auto numNewArgsConst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(numNewArgs));
 
-            auto call =
-                rewriter.create<LLVM::CallOp>(loc, helperFunc, ValueRange{closureI64, argsArray, numNewArgsConst});
+            // Get bitmap from attribute (source-of-truth)
+            uint64_t newargsBitmap = op.getNewargsUnboxedBitmap();
+            auto bitmapConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(newargsBitmap));
+
+            auto call = rewriter.create<LLVM::CallOp>(
+                loc, helperFunc, ValueRange{closureI64, argsArray, numNewArgsConst, bitmapConst});
             rewriter.replaceOp(op, call.getResult());
         }
 
