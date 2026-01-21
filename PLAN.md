@@ -927,6 +927,19 @@ Implement a lowering pipeline that transforms eco dialect to LLVM IR.
 - [x] GC safepoint insertion (eco.safepoint → placeholder for stack maps)
 - [x] TCO closure bug fixed (Dec 29, 2025) - closures correctly handled in tail-recursive functions
 - [ ] Tail call optimization (musttail attribute defined, lowering pending)
+- [ ] PAP wrapper elimination (see below)
+
+**PAP Wrapper Elimination Optimization**:
+
+The current MLIR backend uses PAP wrappers to bridge between the uniform boxed function ABI (`!eco.value` args/result) used by closure/PAP machinery and the primitive ABIs of top-level/specialized functions. This optimization would eliminate these wrappers:
+
+- **Runtime support exists**: The closure representation already supports unboxed captured values via an `unboxed` bitmap and `Unboxable values[]` array, so closures don't *have* to be "all boxed".
+- **Why wrappers exist**: PAP wrappers adapt from the boxed ABI to the real primitive ABI when calling specialized functions with primitive parameter/result types.
+- **Lambdas don't need wrappers**: Lambdas are already compiled in the boxed ABI (all params/results `!eco.value`, with internal unboxing), so they can be used as closure evaluators directly.
+- **To eliminate wrappers**: The closure/call pipeline would need to either:
+  1. Call functions directly using their primitive ABI (understanding parameter types and using the closure's `unboxed` bitmap), or
+  2. Compile each function in an evaluator-style ABI that matches the closure runtime
+- **Impact**: PAP wrappers are a convenience layer, not fundamental. Removing them means teaching closure and call lowering to work directly with possibly-unboxed function ABIs.
 
 **Deliverables**:
 - [x] Lowering passes in C++ *(Passes/EcoToLLVM.cpp, Passes/RCElimination.cpp)*
