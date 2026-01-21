@@ -2637,18 +2637,33 @@ generateUnit ctx =
 The parser stores character literals as JS-style escape sequences (e.g., "\\u03BB" for λ).
 This function decodes them back to the actual Unicode code point for MLIR codegen.
 
+Also handles single-character strings (the actual character) for compatibility with
+test code that creates AST nodes directly without going through the parser.
+
 -}
 decodeCharLiteral : String -> Int
 decodeCharLiteral value =
-    case String.uncons value of
-        Just ( '\\', rest ) ->
-            decodeEscape rest
+    -- If it's a single character, just return its code directly.
+    -- This handles both regular chars and the case where tests pass
+    -- the actual character (e.g., a single backslash) instead of escaped form.
+    if String.length value == 1 then
+        case String.uncons value of
+            Just ( c, _ ) ->
+                Char.toCode c
 
-        Just ( c, _ ) ->
-            Char.toCode c
+            Nothing ->
+                crash "decodeCharLiteral: empty character literal"
 
-        Nothing ->
-            crash "decodeCharLiteral: empty character literal"
+    else
+        case String.uncons value of
+            Just ( '\\', rest ) ->
+                decodeEscape rest
+
+            Just ( c, _ ) ->
+                Char.toCode c
+
+            Nothing ->
+                crash "decodeCharLiteral: empty character literal"
 
 
 decodeEscape : String -> Int
