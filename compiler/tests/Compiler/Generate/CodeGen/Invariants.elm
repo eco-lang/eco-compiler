@@ -361,6 +361,7 @@ validTerminators =
     [ "eco.return"
     , "eco.jump"
     , "eco.crash"
+    , "eco.case"
     , "scf.yield"
     , "cf.br"
     , "cf.cond_br"

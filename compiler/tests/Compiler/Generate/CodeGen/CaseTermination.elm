@@ -6,7 +6,7 @@ module Compiler.Generate.CodeGen.CaseTermination exposing
 {-| Test logic for CGEN_028: Case Alternative Termination invariant.
 
 Every `eco.case` alternative region must terminate with `eco.return`,
-`eco.jump`, or `eco.crash`.
+`eco.jump`, `eco.crash`, or another `eco.case` (for nested patterns).
 
 @docs expectCaseTermination, checkCaseTermination
 
@@ -39,7 +39,7 @@ expectCaseTermination srcModule =
 
 validTerminators : List String
 validTerminators =
-    [ "eco.return", "eco.jump", "eco.crash" ]
+    [ "eco.return", "eco.jump", "eco.crash", "eco.case" ]
 
 
 {-| Check case termination invariants.
@@ -101,5 +101,5 @@ checkBlockTermination parentId branchIndex blockName block =
                     ++ blockName
                     ++ " terminates with '"
                     ++ block.terminator.name
-                    ++ "', expected eco.return, eco.jump, or eco.crash"
+                    ++ "', expected eco.return, eco.jump, eco.crash, or eco.case"
             }
