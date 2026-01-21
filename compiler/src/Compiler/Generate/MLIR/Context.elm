@@ -51,6 +51,7 @@ import Compiler.Generate.Mode as Mode
 import Data.Map as EveryDict
 import Dict
 import Mlir.Mlir exposing (MlirType)
+import Set
 import Utils.Crash exposing (crash)
 
 
@@ -120,6 +121,7 @@ type alias Context =
     , currentLetSiblings : Dict.Dict String ( String, MlirType ) -- Sibling mappings for current let-rec group
     , kernelDecls : Dict.Dict String ( List MlirType, MlirType ) -- Kernel function name -> (argTypes, returnType)
     , typeRegistry : TypeRegistry -- Type graph: MonoType -> TypeId for debug printing
+    , generatedWrappers : Set.Set String -- PAP wrapper names already queued (deduplication)
     }
 
 
@@ -174,6 +176,7 @@ initContext mode registry signatures initialCtorLayouts =
         { emptyTypeRegistry
             | ctorLayouts = initialCtorLayouts
         }
+    , generatedWrappers = Set.empty
     }
 
 

@@ -43,6 +43,7 @@ import Dict
 import Mlir.Loc as Loc
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
+import Set
 import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
 
@@ -338,16 +339,28 @@ generateVarGlobal ctx specId monoType =
                             let
                                 wrapperName =
                                     funcName ++ "_pap_wrapper"
-
-                                wrapper : Ctx.PendingWrapper
-                                wrapper =
-                                    { wrapperName = wrapperName
-                                    , targetFuncName = funcName
-                                    , paramTypes = sig.paramTypes
-                                    , returnType = sig.returnType
-                                    }
                             in
-                            ( wrapperName, { ctx1 | pendingWrappers = wrapper :: ctx1.pendingWrappers } )
+                            if Set.member wrapperName ctx1.generatedWrappers then
+                                -- Already queued; just reuse the name
+                                ( wrapperName, ctx1 )
+
+                            else
+                                -- First time seeing this wrapper; queue it and mark as generated
+                                let
+                                    wrapper : Ctx.PendingWrapper
+                                    wrapper =
+                                        { wrapperName = wrapperName
+                                        , targetFuncName = funcName
+                                        , paramTypes = sig.paramTypes
+                                        , returnType = sig.returnType
+                                        }
+                                in
+                                ( wrapperName
+                                , { ctx1
+                                    | pendingWrappers = wrapper :: ctx1.pendingWrappers
+                                    , generatedWrappers = Set.insert wrapperName ctx1.generatedWrappers
+                                  }
+                                )
 
                         else
                             ( funcName, ctx1 )
