@@ -150,7 +150,7 @@ CGEN_026;MLIR_Codegen;UnboxedBitmap;enforced;For eco.construct.tuple2 eco.constr
 
 CGEN_027;MLIR_Codegen;UnboxedBitmap;enforced;For eco.construct.list the head_unboxed attribute is true if and only if the head operand has a primitive MLIR type;runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Ops
 
-CGEN_028;MLIR_Codegen;ControlFlow;enforced;Every eco.case alternative region terminates with eco.return or eco.jump and no alternative falls through without an explicit terminator;runtime/src/codegen/Ops.td
+CGEN_028;MLIR_Codegen;ControlFlow;enforced;Every eco.case alternative region terminates with eco.return eco.crash or a nested terminator eco.case and no alternative falls through without an explicit terminator and eco.jump is not allowed directly in case alternatives;runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Expr
 
 CGEN_029;MLIR_Codegen;ControlFlow;enforced;eco.case tags array length equals the number of alternative regions;runtime/src/codegen/Ops.td
 
@@ -178,11 +178,19 @@ CGEN_040;MLIR_Codegen;OperandTypes;enforced;For any operation that carries an `_
 
 CGEN_041;MLIR_Codegen;ModuleStructure;enforced;Within a module, all symbol definitions must be unique: no two `func.func` operations may have the same `sym_name` (and, more generally, no two symbol-bearing ops may define the same symbol);tests/Compiler/Generate/CodeGen/Invariants.elm and MLIR func dialect (func.func sym_name)
 
-CGEN_042;MLIR_Codegen;ControlFlow;enforced;Every block in every region emitted by MLIR codegen must end with a terminator operation (e.g. `eco.return`, `eco.jump`, `scf.yield`, `cf.br`, `cf.cond_br`), and each `eco.case` alternative region must be properly terminated (no fallthrough past the end of a region);tests/Compiler/Generate/CodeGen/Invariants.elm and runtime/src/codegen/Ops.td
+CGEN_042;MLIR_Codegen;ControlFlow;enforced;Every block in every region emitted by MLIR codegen must end with a terminator operation (e.g. eco.return eco.jump eco.case scf.yield cf.br cf.cond_br) and each eco.case alternative region must be properly terminated with no fallthrough past the end of a region;tests/Compiler/Generate/CodeGen/Invariants.elm and runtime/src/codegen/Ops.td
 
 CGEN_043;MLIR_Codegen;Case;enforced;`eco.case` scrutinee representation and `case_kind` agree: `case_kind="bool"` requires an `i1` scrutinee, `case_kind="int"` requires an `i64` scrutinee, `case_kind="chr"` requires an ECO char scrutinee type, `case_kind="ctor"` requires a boxed `!eco.value` scrutinee, and `case_kind="str"` requires a boxed `!eco.value` scrutinee;runtime/src/codegen/Ops.td and tests/Compiler/Generate/CodeGen/Invariants.elm
 
 CGEN_044;MLIR_Codegen;Calls;enforced;Every `eco.call` callee must resolve to an existing `func.func` symbol in the module (definition or declaration), and calls must not target placeholder/stub implementations when a non-stub implementation is present (i.e. the selected callee must be the intended, non-trivial definition for that logical function);tests/Compiler/Generate/CodeGen/Invariants.elm and runtime/src/codegen/Passes.h
+
+CGEN_045;MLIR_Codegen;ControlFlow;enforced;eco.case is a block terminator so if a block ends with eco.case there are no operations after it in that block and eco.case never appears as a mid-block expression that falls through to subsequent operations;Compiler.Generate.MLIR.Expr and runtime/src/codegen/Ops.td
+
+CGEN_046;MLIR_Codegen;ControlFlow;enforced;For every eco.case control reaching it never falls through to a continuation and all exits happen via eco.return or eco.crash inside its alternatives or via another nested terminator eco.case at the end of an alternative region;Compiler.Generate.MLIR.Expr and runtime/src/codegen/Ops.td
+
+CGEN_047;MLIR_Codegen;ControlFlow;enforced;Every decider region that becomes an eco.case alternative has a non-empty op list whose last op is a real terminator (eco.return eco.crash or nested terminator eco.case) and codegen never manufactures trailing dummy eco.return ops for nested cases as hitting a non-terminator tail is a codegen bug;Compiler.Generate.MLIR.Expr
+
+CGEN_048;MLIR_Codegen;ControlFlow;enforced;The EcoControlFlowToSCF pass only matches eco.case when it is the last op in its block (the block terminator) not when it is followed by eco.return or scf.yield and the rewrite replaces the terminator eco.case with scf.if or scf.index_switch plus a new terminator in the same block;runtime/src/codegen/Passes/EcoControlFlowToSCF.cpp
 
 # =============================================================================
 # RUNTIME HEAP PHASE - Memory layout and GC invariants
