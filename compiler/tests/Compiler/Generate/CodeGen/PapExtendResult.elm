@@ -5,7 +5,12 @@ module Compiler.Generate.CodeGen.PapExtendResult exposing
 
 {-| Test logic for CGEN_034: PapExtend Result Type invariant.
 
-`eco.papExtend` must produce `!eco.value` result.
+`eco.papExtend` must produce a valid result type:
+
+  - `!eco.value` (boxed result)
+  - `i1` (typed primitive result - Bool)
+  - `i64` (typed primitive result)
+  - `f64` (typed primitive result)
 
 @docs expectPapExtendResult, checkPapExtendResult
 
@@ -18,7 +23,6 @@ import Compiler.Generate.CodeGen.Invariants
         ( Violation
         , findOpsNamed
         , getIntAttr
-        , isEcoValueType
         , violationsToExpectation
         )
 import Expect exposing (Expectation)
@@ -73,11 +77,11 @@ checkPapExtendOp op =
                 Nothing
 
             Just ( _, resultType ) ->
-                if not (isEcoValueType resultType) then
+                if not (isValidPapExtendResultType resultType) then
                     Just
                         { opId = op.id
                         , opName = op.name
-                        , message = "eco.papExtend result should be !eco.value, got " ++ typeToString resultType
+                        , message = "eco.papExtend result should be !eco.value, i1, i64, or f64, got " ++ typeToString resultType
                         }
 
                 else
@@ -91,6 +95,28 @@ checkPapExtendOp op =
 
                         Just _ ->
                             Nothing
+
+
+{-| Check if the type is a valid result type for eco.papExtend.
+Valid types are: !eco.value, i1, i64, f64
+-}
+isValidPapExtendResultType : MlirType -> Bool
+isValidPapExtendResultType t =
+    case t of
+        NamedStruct name ->
+            name == "eco.value"
+
+        I1 ->
+            True
+
+        I64 ->
+            True
+
+        F64 ->
+            True
+
+        _ ->
+            False
 
 
 typeToString : MlirType -> String
