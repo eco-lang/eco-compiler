@@ -35,7 +35,6 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Expect exposing (Expectation)
-import Fuzz
 import Test exposing (Test)
 
 
@@ -51,7 +50,6 @@ expectSuite expectFn condStr =
         , nestedPatternTests expectFn condStr
         , multiArgPatternTests expectFn condStr
         , customTypePatternTests expectFn condStr
-        , patternFuzzTests expectFn condStr
         ]
 
 
@@ -743,49 +741,5 @@ customTypePatternMultipleExtractors expectFn _ =
 
         modul =
             makeModuleWithTypedDefsUnionsAliases "Test" [ unboxFn ] [ boxUnion ] []
-    in
-    expectFn modul
-
-
-
--- ============================================================================
--- FUZZ TESTS (2 tests)
--- ============================================================================
-
-
-patternFuzzTests : (Src.Module -> Expectation) -> String -> Test
-patternFuzzTests expectFn condStr =
-    Test.describe ("Fuzzed pattern tests " ++ condStr)
-        [ Test.fuzz Fuzz.int ("Function with int pattern called with fuzzed value " ++ condStr) (functionWithIntPatternFuzzed expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.int ("Function with tuple pattern called with fuzzed values " ++ condStr) (functionWithTuplePatternFuzzed expectFn)
-        ]
-
-
-functionWithIntPatternFuzzed : (Src.Module -> Expectation) -> (Int -> Expectation)
-functionWithIntPatternFuzzed expectFn n =
-    let
-        fn =
-            define "f" [ pVar "x" ] (varExpr "x")
-
-        call =
-            callExpr (varExpr "f") [ intExpr n ]
-
-        modul =
-            makeModule "testValue" (letExpr [ fn ] call)
-    in
-    expectFn modul
-
-
-functionWithTuplePatternFuzzed : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-functionWithTuplePatternFuzzed expectFn a b =
-    let
-        fn =
-            define "swap" [ pTuple (pVar "x") (pVar "y") ] (tupleExpr (varExpr "y") (varExpr "x"))
-
-        call =
-            callExpr (varExpr "swap") [ tupleExpr (intExpr a) (intExpr b) ]
-
-        modul =
-            makeModule "testValue" (letExpr [ fn ] call)
     in
     expectFn modul

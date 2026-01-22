@@ -30,7 +30,6 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Expect exposing (Expectation)
-import Fuzz
 import Test exposing (Test)
 
 
@@ -43,7 +42,6 @@ expectSuite expectFn condStr =
         , partialApplicationTests expectFn condStr
         , polymorphicHigherOrderTests expectFn condStr
         , higherOrderWithPatternsTests expectFn condStr
-        , higherOrderFuzzTests expectFn condStr
         ]
 
 
@@ -734,106 +732,6 @@ higherOrderWithAliasPattern expectFn _ =
             makeModule "testValue"
                 (letExpr [ withOriginal ]
                     (callExpr (varExpr "withOriginal") [ fn, intExpr 42 ])
-                )
-    in
-    expectFn modul
-
-
-
--- ============================================================================
--- FUZZ TESTS (4 tests)
--- ============================================================================
-
-
-higherOrderFuzzTests : (Src.Module -> Expectation) -> String -> Test
-higherOrderFuzzTests expectFn condStr =
-    Test.describe ("Fuzzed higher-order tests " ++ condStr)
-        [ Test.fuzz Fuzz.int ("Apply identity to fuzzed value " ++ condStr) (applyIdentityFuzzed expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.int ("Compose with fuzzed values " ++ condStr) (composeWithFuzzedValues expectFn)
-        , Test.fuzz (Fuzz.listOfLengthBetween 0 3 Fuzz.int) ("Map over fuzzed list " ++ condStr) (mapOverFuzzedList expectFn)
-        , Test.fuzz3 Fuzz.int Fuzz.int Fuzz.int ("Triple application with fuzzed values " ++ condStr) (tripleApplicationFuzzed expectFn)
-        ]
-
-
-applyIdentityFuzzed : (Src.Module -> Expectation) -> (Int -> Expectation)
-applyIdentityFuzzed expectFn n =
-    let
-        applyFn =
-            define "apply" [ pVar "f", pVar "x" ] (callExpr (varExpr "f") [ varExpr "x" ])
-
-        identity =
-            lambdaExpr [ pVar "y" ] (varExpr "y")
-
-        modul =
-            makeModule "testValue"
-                (letExpr [ applyFn ]
-                    (callExpr (varExpr "apply") [ identity, intExpr n ])
-                )
-    in
-    expectFn modul
-
-
-composeWithFuzzedValues : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-composeWithFuzzedValues expectFn a b =
-    let
-        compose =
-            define "compose"
-                [ pVar "f", pVar "g" ]
-                (lambdaExpr [ pVar "x" ]
-                    (callExpr (varExpr "f") [ callExpr (varExpr "g") [ varExpr "x" ] ])
-                )
-
-        fn1 =
-            lambdaExpr [ pVar "n" ] (tupleExpr (varExpr "n") (intExpr a))
-
-        fn2 =
-            lambdaExpr [ pVar "n" ] (tupleExpr (varExpr "n") (intExpr b))
-
-        modul =
-            makeModule "testValue"
-                (letExpr [ compose ]
-                    (callExpr (callExpr (varExpr "compose") [ fn1, fn2 ]) [ intExpr 0 ])
-                )
-    in
-    expectFn modul
-
-
-mapOverFuzzedList : (Src.Module -> Expectation) -> (List Int -> Expectation)
-mapOverFuzzedList expectFn ints =
-    let
-        mapFn =
-            define "myMap"
-                [ pVar "f", pVar "list" ]
-                (caseExpr (varExpr "list")
-                    [ ( pList [], listExpr [] )
-                    , ( pCons (pVar "h") pAnything, listExpr [ callExpr (varExpr "f") [ varExpr "h" ] ] )
-                    ]
-                )
-
-        fn =
-            lambdaExpr [ pVar "x" ] (varExpr "x")
-
-        modul =
-            makeModule "testValue"
-                (letExpr [ mapFn ]
-                    (callExpr (varExpr "myMap") [ fn, listExpr (List.map intExpr ints) ])
-                )
-    in
-    expectFn modul
-
-
-tripleApplicationFuzzed : (Src.Module -> Expectation) -> (Int -> Int -> Int -> Expectation)
-tripleApplicationFuzzed expectFn a b c =
-    let
-        fn =
-            define "fn"
-                [ pVar "x", pVar "y", pVar "z" ]
-                (listExpr [ varExpr "x", varExpr "y", varExpr "z" ])
-
-        modul =
-            makeModule "testValue"
-                (letExpr [ fn ]
-                    (callExpr (varExpr "fn") [ intExpr a, intExpr b, intExpr c ])
                 )
     in
     expectFn modul

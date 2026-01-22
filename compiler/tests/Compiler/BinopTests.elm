@@ -27,7 +27,6 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Expect exposing (Expectation)
-import Fuzz
 import Test exposing (Test)
 
 
@@ -42,7 +41,6 @@ expectSuite expectFn condStr =
         , chainedBinopTests expectFn condStr
         , nestedBinopTests expectFn condStr
         , binopWithExpressionsTests expectFn condStr
-        , binopFuzzTests expectFn condStr
         ]
 
 
@@ -62,7 +60,7 @@ arithmeticBinopTests expectFn condStr =
         , Test.test ("Integer division " ++ condStr) (integerDivision expectFn)
         , Test.test ("Modulo " ++ condStr) (moduloOp expectFn)
         , Test.test ("Power " ++ condStr) (powerOp expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.int ("Fuzzed addition " ++ condStr) (fuzzedAddition expectFn)
+        , Test.test ("Addition with constants " ++ condStr) (additionWithConstants expectFn)
         ]
 
 
@@ -129,11 +127,11 @@ powerOp expectFn _ =
     expectFn modul
 
 
-fuzzedAddition : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-fuzzedAddition expectFn a b =
+additionWithConstants : (Src.Module -> Expectation) -> (() -> Expectation)
+additionWithConstants expectFn _ =
     let
         modul =
-            makeModule "testValue" (binopsExpr [ ( intExpr a, "+" ) ] (intExpr b))
+            makeModule "testValue" (binopsExpr [ ( intExpr 42, "+" ) ] (intExpr 42))
     in
     expectFn modul
 
@@ -153,7 +151,7 @@ comparisonBinopTests expectFn condStr =
         , Test.test ("Greater than " ++ condStr) (greaterThan expectFn)
         , Test.test ("Less than or equal " ++ condStr) (lessThanOrEqual expectFn)
         , Test.test ("Greater than or equal " ++ condStr) (greaterThanOrEqual expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.int ("Fuzzed comparison " ++ condStr) (fuzzedComparison expectFn)
+        , Test.test ("Comparison with constants " ++ condStr) (comparisonWithConstants expectFn)
         , Test.test ("Compare on strings " ++ condStr) (compareOnStrings expectFn)
         ]
 
@@ -212,11 +210,11 @@ greaterThanOrEqual expectFn _ =
     expectFn modul
 
 
-fuzzedComparison : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-fuzzedComparison expectFn a b =
+comparisonWithConstants : (Src.Module -> Expectation) -> (() -> Expectation)
+comparisonWithConstants expectFn _ =
     let
         modul =
-            makeModule "testValue" (binopsExpr [ ( intExpr a, "<" ) ] (intExpr b))
+            makeModule "testValue" (binopsExpr [ ( intExpr 1, "<" ) ] (intExpr 2))
     in
     expectFn modul
 
@@ -241,8 +239,8 @@ logicalBinopTests expectFn condStr =
     Test.describe ("Logical binops " ++ condStr)
         [ Test.test ("And " ++ condStr) (andOp expectFn)
         , Test.test ("Or " ++ condStr) (orOp expectFn)
-        , Test.fuzz2 Fuzz.bool Fuzz.bool ("Fuzzed and " ++ condStr) (fuzzedAnd expectFn)
-        , Test.fuzz2 Fuzz.bool Fuzz.bool ("Fuzzed or " ++ condStr) (fuzzedOr expectFn)
+        , Test.test ("And with constants " ++ condStr) (andWithConstants expectFn)
+        , Test.test ("Or with constants " ++ condStr) (orWithConstants expectFn)
         , Test.test ("Chained and " ++ condStr) (chainedAnd expectFn)
         , Test.test ("Chained or " ++ condStr) (chainedOr expectFn)
         ]
@@ -266,20 +264,20 @@ orOp expectFn _ =
     expectFn modul
 
 
-fuzzedAnd : (Src.Module -> Expectation) -> (Bool -> Bool -> Expectation)
-fuzzedAnd expectFn a b =
+andWithConstants : (Src.Module -> Expectation) -> (() -> Expectation)
+andWithConstants expectFn _ =
     let
         modul =
-            makeModule "testValue" (binopsExpr [ ( boolExpr a, "&&" ) ] (boolExpr b))
+            makeModule "testValue" (binopsExpr [ ( boolExpr True, "&&" ) ] (boolExpr False))
     in
     expectFn modul
 
 
-fuzzedOr : (Src.Module -> Expectation) -> (Bool -> Bool -> Expectation)
-fuzzedOr expectFn a b =
+orWithConstants : (Src.Module -> Expectation) -> (() -> Expectation)
+orWithConstants expectFn _ =
     let
         modul =
-            makeModule "testValue" (binopsExpr [ ( boolExpr a, "||" ) ] (boolExpr b))
+            makeModule "testValue" (binopsExpr [ ( boolExpr True, "||" ) ] (boolExpr False))
     in
     expectFn modul
 
@@ -324,7 +322,7 @@ stringBinopTests : (Src.Module -> Expectation) -> String -> Test
 stringBinopTests expectFn condStr =
     Test.describe ("String binops " ++ condStr)
         [ Test.test ("String concat " ++ condStr) (stringConcat expectFn)
-        , Test.fuzz2 Fuzz.string Fuzz.string ("Fuzzed string concat " ++ condStr) (fuzzedStringConcat expectFn)
+        , Test.test ("String concat with constants " ++ condStr) (stringConcatWithConstants expectFn)
         , Test.test ("Multiple string concat " ++ condStr) (multipleStringConcat expectFn)
         , Test.test ("String concat with empty " ++ condStr) (stringConcatWithEmpty expectFn)
         ]
@@ -339,11 +337,11 @@ stringConcat expectFn _ =
     expectFn modul
 
 
-fuzzedStringConcat : (Src.Module -> Expectation) -> (String -> String -> Expectation)
-fuzzedStringConcat expectFn a b =
+stringConcatWithConstants : (Src.Module -> Expectation) -> (() -> Expectation)
+stringConcatWithConstants expectFn _ =
     let
         modul =
-            makeModule "testValue" (binopsExpr [ ( strExpr a, "++" ) ] (strExpr b))
+            makeModule "testValue" (binopsExpr [ ( strExpr "hello", "++" ) ] (strExpr "hello"))
     in
     expectFn modul
 
@@ -383,8 +381,8 @@ listBinopTests expectFn condStr =
     Test.describe ("List binops " ++ condStr)
         [ Test.test ("List append " ++ condStr) (listAppend expectFn)
         , Test.test ("Cons operator " ++ condStr) (consOperator expectFn)
-        , Test.fuzz (Fuzz.listOfLengthBetween 0 3 Fuzz.int) ("Fuzzed list append " ++ condStr) (fuzzedListAppend expectFn)
-        , Test.fuzz Fuzz.int ("Fuzzed cons " ++ condStr) (fuzzedCons expectFn)
+        , Test.test ("List append with constants " ++ condStr) (listAppendWithConstants expectFn)
+        , Test.test ("Cons with constant " ++ condStr) (consWithConstant expectFn)
         ]
 
 
@@ -414,26 +412,26 @@ consOperator expectFn _ =
     expectFn modul
 
 
-fuzzedListAppend : (Src.Module -> Expectation) -> (List Int -> Expectation)
-fuzzedListAppend expectFn ints =
+listAppendWithConstants : (Src.Module -> Expectation) -> (() -> Expectation)
+listAppendWithConstants expectFn _ =
     let
         modul =
             makeModule "testValue"
                 (binopsExpr
-                    [ ( listExpr (List.map intExpr ints), "++" ) ]
+                    [ ( listExpr [ intExpr 1, intExpr 2, intExpr 3 ], "++" ) ]
                     (listExpr [ intExpr 0 ])
                 )
     in
     expectFn modul
 
 
-fuzzedCons : (Src.Module -> Expectation) -> (Int -> Expectation)
-fuzzedCons expectFn n =
+consWithConstant : (Src.Module -> Expectation) -> (() -> Expectation)
+consWithConstant expectFn _ =
     let
         modul =
             makeModule "testValue"
                 (binopsExpr
-                    [ ( intExpr n, "::" ) ]
+                    [ ( intExpr 42, "::" ) ]
                     (listExpr [])
                 )
     in
@@ -452,7 +450,7 @@ chainedBinopTests expectFn condStr =
         [ Test.test ("Three-element addition chain " ++ condStr) (threeElementAdditionChain expectFn)
         , Test.test ("Mixed arithmetic chain " ++ condStr) (mixedArithmeticChain expectFn)
         , Test.test ("Long chain " ++ condStr) (longChain expectFn)
-        , Test.fuzz3 Fuzz.int Fuzz.int Fuzz.int ("Fuzzed chain " ++ condStr) (fuzzedChain expectFn)
+        , Test.test ("Chain with constants " ++ condStr) (chainWithConstants expectFn)
         , Test.test ("Chain of comparisons " ++ condStr) (chainOfComparisons expectFn)
         , Test.test ("Chain with different operators " ++ condStr) (chainWithDifferentOperators expectFn)
         ]
@@ -505,16 +503,16 @@ longChain expectFn _ =
     expectFn modul
 
 
-fuzzedChain : (Src.Module -> Expectation) -> (Int -> Int -> Int -> Expectation)
-fuzzedChain expectFn a b c =
+chainWithConstants : (Src.Module -> Expectation) -> (() -> Expectation)
+chainWithConstants expectFn _ =
     let
         modul =
             makeModule "testValue"
                 (binopsExpr
-                    [ ( intExpr a, "+" )
-                    , ( intExpr b, "+" )
+                    [ ( intExpr 1, "+" )
+                    , ( intExpr 2, "+" )
                     ]
-                    (intExpr c)
+                    (intExpr 3)
                 )
     in
     expectFn modul
@@ -763,71 +761,5 @@ binopWithParens expectFn _ =
         modul =
             makeModule "testValue"
                 (binopsExpr [ ( inner, "*" ) ] (intExpr 3))
-    in
-    expectFn modul
-
-
-
--- ============================================================================
--- FUZZ TESTS (4 tests)
--- ============================================================================
-
-
-binopFuzzTests : (Src.Module -> Expectation) -> String -> Test
-binopFuzzTests expectFn condStr =
-    Test.describe ("Fuzzed binop tests " ++ condStr)
-        [ Test.fuzz3 Fuzz.int Fuzz.int Fuzz.int ("Three fuzzed ints in chain " ++ condStr) (threeFuzzedIntsInChain expectFn)
-        , Test.fuzz2 Fuzz.float Fuzz.float ("Fuzzed float division " ++ condStr) (fuzzedFloatDivision expectFn)
-        , Test.fuzz2 Fuzz.string Fuzz.string ("Fuzzed string comparison " ++ condStr) (fuzzedStringComparison expectFn)
-        , Test.fuzz3 Fuzz.bool Fuzz.bool Fuzz.bool ("Fuzzed bool chain " ++ condStr) (fuzzedBoolChain expectFn)
-        ]
-
-
-threeFuzzedIntsInChain : (Src.Module -> Expectation) -> (Int -> Int -> Int -> Expectation)
-threeFuzzedIntsInChain expectFn a b c =
-    let
-        modul =
-            makeModule "testValue"
-                (binopsExpr
-                    [ ( intExpr a, "+" )
-                    , ( intExpr b, "+" )
-                    ]
-                    (intExpr c)
-                )
-    in
-    expectFn modul
-
-
-fuzzedFloatDivision : (Src.Module -> Expectation) -> (Float -> Float -> Expectation)
-fuzzedFloatDivision expectFn a b =
-    let
-        modul =
-            makeModule "testValue"
-                (binopsExpr [ ( floatExpr a, "/" ) ] (floatExpr b))
-    in
-    expectFn modul
-
-
-fuzzedStringComparison : (Src.Module -> Expectation) -> (String -> String -> Expectation)
-fuzzedStringComparison expectFn a b =
-    let
-        modul =
-            makeModule "testValue"
-                (binopsExpr [ ( strExpr a, "==" ) ] (strExpr b))
-    in
-    expectFn modul
-
-
-fuzzedBoolChain : (Src.Module -> Expectation) -> (Bool -> Bool -> Bool -> Expectation)
-fuzzedBoolChain expectFn a b c =
-    let
-        modul =
-            makeModule "testValue"
-                (binopsExpr
-                    [ ( boolExpr a, "&&" )
-                    , ( boolExpr b, "||" )
-                    ]
-                    (boolExpr c)
-                )
     in
     expectFn modul

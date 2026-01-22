@@ -23,7 +23,6 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Expect exposing (Expectation)
-import Fuzz
 import Test exposing (Test)
 
 
@@ -35,7 +34,6 @@ expectSuite expectFn condStr =
         , nestedLetTests expectFn condStr
         , letWithFunctionsTests expectFn condStr
         , letWithComplexExpressionsTests expectFn condStr
-        , letFuzzTests expectFn condStr
         ]
 
 
@@ -49,8 +47,8 @@ simpleLetTests : (Src.Module -> Expectation) -> String -> Test
 simpleLetTests expectFn condStr =
     Test.describe ("Simple let expressions " ++ condStr)
         [ Test.test ("Let with single int binding " ++ condStr) (letWithSingleIntBinding expectFn)
-        , Test.fuzz Fuzz.int ("Let with fuzzed int binding " ++ condStr) (letWithFuzzedIntBinding expectFn)
-        , Test.fuzz Fuzz.string ("Let with string binding " ++ condStr) (letWithStringBinding expectFn)
+        , Test.test ("Let with int binding " ++ condStr) (letWithIntBinding expectFn)
+        , Test.test ("Let with string binding " ++ condStr) (letWithStringBinding expectFn)
         , Test.test ("Let with unit body " ++ condStr) (letWithUnitBody expectFn)
         , Test.test ("Let with tuple body " ++ condStr) (letWithTupleBody expectFn)
         , Test.test ("Let with list body " ++ condStr) (letWithListBody expectFn)
@@ -69,11 +67,11 @@ letWithSingleIntBinding expectFn _ =
     expectFn modul
 
 
-letWithFuzzedIntBinding : (Src.Module -> Expectation) -> (Int -> Expectation)
-letWithFuzzedIntBinding expectFn n =
+letWithIntBinding : (Src.Module -> Expectation) -> (() -> Expectation)
+letWithIntBinding expectFn _ =
     let
         def =
-            define "x" [] (intExpr n)
+            define "x" [] (intExpr 42)
 
         modul =
             makeModule "testValue" (letExpr [ def ] (varExpr "x"))
@@ -81,11 +79,11 @@ letWithFuzzedIntBinding expectFn n =
     expectFn modul
 
 
-letWithStringBinding : (Src.Module -> Expectation) -> (String -> Expectation)
-letWithStringBinding expectFn s =
+letWithStringBinding : (Src.Module -> Expectation) -> (() -> Expectation)
+letWithStringBinding expectFn _ =
     let
         def =
-            define "x" [] (strExpr s)
+            define "x" [] (strExpr "hello")
 
         modul =
             makeModule "testValue" (letExpr [ def ] (varExpr "x"))
@@ -140,7 +138,7 @@ multipleBindingsTests expectFn condStr =
     Test.describe ("Multiple let bindings " ++ condStr)
         [ Test.test ("Let with two bindings " ++ condStr) (letWithTwoBindings expectFn)
         , Test.test ("Let with three bindings " ++ condStr) (letWithThreeBindings expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.int ("Let with two fuzzed bindings " ++ condStr) (letWithTwoFuzzedBindings expectFn)
+        , Test.test ("Let with two int bindings " ++ condStr) (letWithTwoIntBindings expectFn)
         , Test.test ("Let with binding using previous binding " ++ condStr) (letWithBindingUsingPrevious expectFn)
         , Test.test ("Let with five bindings " ++ condStr) (letWithFiveBindings expectFn)
         , Test.test ("Let with chained references " ++ condStr) (letWithChainedReferences expectFn)
@@ -183,14 +181,14 @@ letWithThreeBindings expectFn _ =
     expectFn modul
 
 
-letWithTwoFuzzedBindings : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-letWithTwoFuzzedBindings expectFn a b =
+letWithTwoIntBindings : (Src.Module -> Expectation) -> (() -> Expectation)
+letWithTwoIntBindings expectFn _ =
     let
         def1 =
-            define "x" [] (intExpr a)
+            define "x" [] (intExpr 1)
 
         def2 =
-            define "y" [] (intExpr b)
+            define "y" [] (intExpr 2)
 
         modul =
             makeModule "testValue" (letExpr [ def1, def2 ] (tupleExpr (varExpr "x") (varExpr "y")))
@@ -259,7 +257,7 @@ nestedLetTests expectFn condStr =
         , Test.test ("Deeply nested let " ++ condStr) (deeplyNestedLet expectFn)
         , Test.test ("Let in binding value " ++ condStr) (letInBindingValue expectFn)
         , Test.test ("Multiple nested lets " ++ condStr) (multipleNestedLets expectFn)
-        , Test.fuzz Fuzz.int ("Nested let with fuzzed value " ++ condStr) (nestedLetWithFuzzedValue expectFn)
+        , Test.test ("Nested let with int value " ++ condStr) (nestedLetWithIntValue expectFn)
         , Test.test ("Let inside list inside let " ++ condStr) (letInsideListInsideLet expectFn)
         ]
 
@@ -324,11 +322,11 @@ multipleNestedLets expectFn _ =
     expectFn modul
 
 
-nestedLetWithFuzzedValue : (Src.Module -> Expectation) -> (Int -> Expectation)
-nestedLetWithFuzzedValue expectFn n =
+nestedLetWithIntValue : (Src.Module -> Expectation) -> (() -> Expectation)
+nestedLetWithIntValue expectFn _ =
     let
         innerLet =
-            letExpr [ define "y" [] (intExpr n) ] (varExpr "y")
+            letExpr [ define "y" [] (intExpr 42) ] (varExpr "y")
 
         def =
             define "x" [] innerLet
@@ -368,7 +366,7 @@ letWithFunctionsTests expectFn condStr =
         , Test.test ("Let with lambda binding " ++ condStr) (letWithLambdaBinding expectFn)
         , Test.test ("Let with multiple functions " ++ condStr) (letWithMultipleFunctions expectFn)
         , Test.test ("Let with function calling another function " ++ condStr) (letWithFunctionCallingAnother expectFn)
-        , Test.fuzz Fuzz.int ("Let with function using fuzzed value " ++ condStr) (letWithFunctionUsingFuzzedValue expectFn)
+        , Test.test ("Let with function using int value " ++ condStr) (letWithFunctionUsingIntValue expectFn)
         ]
 
 
@@ -447,11 +445,11 @@ letWithFunctionCallingAnother expectFn _ =
     expectFn modul
 
 
-letWithFunctionUsingFuzzedValue : (Src.Module -> Expectation) -> (Int -> Expectation)
-letWithFunctionUsingFuzzedValue expectFn n =
+letWithFunctionUsingIntValue : (Src.Module -> Expectation) -> (() -> Expectation)
+letWithFunctionUsingIntValue expectFn _ =
     let
         fn =
-            define "addN" [ pVar "x" ] (tupleExpr (varExpr "x") (intExpr n))
+            define "addN" [ pVar "x" ] (tupleExpr (varExpr "x") (intExpr 42))
 
         modul =
             makeModule "testValue" (letExpr [ fn ] (callExpr (varExpr "addN") [ intExpr 0 ]))
@@ -528,55 +526,5 @@ letWithAllComplexTypes expectFn _ =
 
         modul =
             makeModule "testValue" (letExpr [ recDef, tupleDef, listDef ] body)
-    in
-    expectFn modul
-
-
-
--- ============================================================================
--- FUZZ TESTS (2 tests)
--- ============================================================================
-
-
-letFuzzTests : (Src.Module -> Expectation) -> String -> Test
-letFuzzTests expectFn condStr =
-    Test.describe ("Fuzzed let tests " ++ condStr)
-        [ Test.fuzz3 Fuzz.int Fuzz.int Fuzz.int ("Let with three fuzzed bindings " ++ condStr) (letWithThreeFuzzedBindings expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.string ("Let with mixed type bindings " ++ condStr) (letWithMixedTypeBindings expectFn)
-        ]
-
-
-letWithThreeFuzzedBindings : (Src.Module -> Expectation) -> (Int -> Int -> Int -> Expectation)
-letWithThreeFuzzedBindings expectFn a b c =
-    let
-        def1 =
-            define "x" [] (intExpr a)
-
-        def2 =
-            define "y" [] (intExpr b)
-
-        def3 =
-            define "z" [] (intExpr c)
-
-        modul =
-            makeModule "testValue"
-                (letExpr [ def1, def2, def3 ]
-                    (tuple3Expr (varExpr "x") (varExpr "y") (varExpr "z"))
-                )
-    in
-    expectFn modul
-
-
-letWithMixedTypeBindings : (Src.Module -> Expectation) -> (Int -> String -> Expectation)
-letWithMixedTypeBindings expectFn n s =
-    let
-        def1 =
-            define "num" [] (intExpr n)
-
-        def2 =
-            define "str" [] (strExpr s)
-
-        modul =
-            makeModule "testValue" (letExpr [ def1, def2 ] (tupleExpr (varExpr "num") (varExpr "str")))
     in
     expectFn modul

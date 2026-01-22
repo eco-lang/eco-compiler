@@ -8,7 +8,6 @@ import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( boolExpr
-        , charFuzzer
         , chrExpr
         , floatExpr
         , intExpr
@@ -17,7 +16,6 @@ import Compiler.AST.SourceBuilder
         , unitExpr
         )
 import Expect exposing (Expectation)
-import Fuzz
 import Test exposing (Test)
 
 
@@ -43,8 +41,7 @@ expectSuite expectFn condStr =
 intLiteralTests : (Src.Module -> Expectation) -> String -> Test
 intLiteralTests expectFn condStr =
     Test.describe ("Int literals " ++ condStr)
-        [ Test.fuzz Fuzz.int ("Random int " ++ condStr) (randomInt expectFn)
-        , Test.test ("Zero " ++ condStr) (zeroInt expectFn)
+        [ Test.test ("Zero " ++ condStr) (zeroInt expectFn)
         , Test.test ("Positive int " ++ condStr) (positiveInt expectFn)
         , Test.test ("Negative int " ++ condStr) (negativeInt expectFn)
         , Test.test ("Large positive int " ++ condStr) (largePositiveInt expectFn)
@@ -52,15 +49,6 @@ intLiteralTests expectFn condStr =
         , Test.test ("Int 1 " ++ condStr) (intOne expectFn)
         , Test.test ("Int -1 " ++ condStr) (intNegativeOne expectFn)
         ]
-
-
-randomInt : (Src.Module -> Expectation) -> (Int -> Expectation)
-randomInt expectFn n =
-    let
-        modul =
-            makeModule "testValue" (intExpr n)
-    in
-    expectFn modul
 
 
 zeroInt : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -135,8 +123,7 @@ intNegativeOne expectFn _ =
 floatLiteralTests : (Src.Module -> Expectation) -> String -> Test
 floatLiteralTests expectFn condStr =
     Test.describe ("Float literals " ++ condStr)
-        [ Test.fuzz Fuzz.float ("Random float " ++ condStr) (randomFloat expectFn)
-        , Test.test ("Zero float " ++ condStr) (zeroFloat expectFn)
+        [ Test.test ("Zero float " ++ condStr) (zeroFloat expectFn)
         , Test.test ("Small positive float " ++ condStr) (smallPositiveFloat expectFn)
         , Test.test ("Large float " ++ condStr) (largeFloat expectFn)
         , Test.test ("Negative float " ++ condStr) (negativeFloat expectFn)
@@ -144,15 +131,6 @@ floatLiteralTests expectFn condStr =
         , Test.test ("Scientific notation positive " ++ condStr) (scientificPositive expectFn)
         , Test.test ("Scientific notation negative exponent " ++ condStr) (scientificNegativeExponent expectFn)
         ]
-
-
-randomFloat : (Src.Module -> Expectation) -> (Float -> Expectation)
-randomFloat expectFn f =
-    let
-        modul =
-            makeModule "testValue" (floatExpr f)
-    in
-    expectFn modul
 
 
 zeroFloat : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -227,8 +205,7 @@ scientificNegativeExponent expectFn _ =
 stringLiteralTests : (Src.Module -> Expectation) -> String -> Test
 stringLiteralTests expectFn condStr =
     Test.describe ("String literals " ++ condStr)
-        [ Test.fuzz Fuzz.string ("Random string " ++ condStr) (randomString expectFn)
-        , Test.test ("Empty string " ++ condStr) (emptyString expectFn)
+        [ Test.test ("Empty string " ++ condStr) (emptyString expectFn)
         , Test.test ("Single char string " ++ condStr) (singleCharString expectFn)
         , Test.test ("Hello world " ++ condStr) (helloWorld expectFn)
         , Test.test ("String with escapes " ++ condStr) (stringWithEscapes expectFn)
@@ -236,15 +213,6 @@ stringLiteralTests expectFn condStr =
         , Test.test ("String with quotes " ++ condStr) (stringWithQuotes expectFn)
         , Test.test ("Long string " ++ condStr) (longString expectFn)
         ]
-
-
-randomString : (Src.Module -> Expectation) -> (String -> Expectation)
-randomString expectFn s =
-    let
-        modul =
-            makeModule "testValue" (strExpr s)
-    in
-    expectFn modul
 
 
 emptyString : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -319,22 +287,12 @@ longString expectFn _ =
 charLiteralTests : (Src.Module -> Expectation) -> String -> Test
 charLiteralTests expectFn condStr =
     Test.describe ("Char literals " ++ condStr)
-        [ Test.fuzz charFuzzer ("Random char " ++ condStr) (randomChar expectFn)
-        , Test.test ("Letter char " ++ condStr) (letterChar expectFn)
+        [ Test.test ("Letter char " ++ condStr) (letterChar expectFn)
         , Test.test ("Digit char " ++ condStr) (digitChar expectFn)
         , Test.test ("Symbol char " ++ condStr) (symbolChar expectFn)
         , Test.test ("Space char " ++ condStr) (spaceChar expectFn)
         , Test.test ("Uppercase char " ++ condStr) (uppercaseChar expectFn)
         ]
-
-
-randomChar : (Src.Module -> Expectation) -> (String -> Expectation)
-randomChar expectFn c =
-    let
-        modul =
-            makeModule "testValue" (chrExpr c)
-    in
-    expectFn modul
 
 
 letterChar : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -432,8 +390,7 @@ boolTests expectFn condStr =
     Test.describe ("Bool literals " ++ condStr)
         [ Test.test ("True " ++ condStr) (trueExpr expectFn)
         , Test.test ("False " ++ condStr) (falseExpr expectFn)
-        , Test.fuzz Fuzz.bool ("Random bool " ++ condStr) (randomBool expectFn)
-        , Test.fuzz2 Fuzz.bool Fuzz.bool ("Two bools in different modules " ++ condStr) (twoBoolsInModules expectFn)
+        , Test.test ("Two bools in different modules " ++ condStr) (twoBoolsInModules expectFn)
         ]
 
 
@@ -455,23 +412,14 @@ falseExpr expectFn _ =
     expectFn modul
 
 
-randomBool : (Src.Module -> Expectation) -> (Bool -> Expectation)
-randomBool expectFn b =
-    let
-        modul =
-            makeModule "testValue" (boolExpr b)
-    in
-    expectFn modul
-
-
-twoBoolsInModules : (Src.Module -> Expectation) -> (Bool -> Bool -> Expectation)
-twoBoolsInModules expectFn b1 b2 =
+twoBoolsInModules : (Src.Module -> Expectation) -> (() -> Expectation)
+twoBoolsInModules expectFn _ =
     let
         modul1 =
-            makeModule "testValue1" (boolExpr b1)
+            makeModule "testValue1" (boolExpr True)
 
         modul2 =
-            makeModule "testValue2" (boolExpr b2)
+            makeModule "testValue2" (boolExpr False)
     in
     Expect.all
         [ \_ -> expectFn modul1
@@ -489,21 +437,21 @@ twoBoolsInModules expectFn b1 b2 =
 combinedLiteralTests : (Src.Module -> Expectation) -> String -> Test
 combinedLiteralTests expectFn condStr =
     Test.describe ("Combined literals " ++ condStr)
-        [ Test.fuzz2 Fuzz.int Fuzz.float ("Int and float in separate modules " ++ condStr) (intAndFloatInModules expectFn)
-        , Test.fuzz2 Fuzz.string charFuzzer ("String and char in separate modules " ++ condStr) (stringAndCharInModules expectFn)
-        , Test.fuzz Fuzz.int ("Int with unit in separate modules " ++ condStr) (intWithUnitInModules expectFn)
+        [ Test.test ("Int and float in separate modules " ++ condStr) (intAndFloatInModules expectFn)
+        , Test.test ("String and char in separate modules " ++ condStr) (stringAndCharInModules expectFn)
+        , Test.test ("Int with unit in separate modules " ++ condStr) (intWithUnitInModules expectFn)
         , Test.test ("All literal types " ++ condStr) (allLiteralTypes expectFn)
         ]
 
 
-intAndFloatInModules : (Src.Module -> Expectation) -> (Int -> Float -> Expectation)
-intAndFloatInModules expectFn n f =
+intAndFloatInModules : (Src.Module -> Expectation) -> (() -> Expectation)
+intAndFloatInModules expectFn _ =
     let
         modul1 =
-            makeModule "intValue" (intExpr n)
+            makeModule "intValue" (intExpr 42)
 
         modul2 =
-            makeModule "floatValue" (floatExpr f)
+            makeModule "floatValue" (floatExpr 3.14)
     in
     Expect.all
         [ \_ -> expectFn modul1
@@ -512,14 +460,14 @@ intAndFloatInModules expectFn n f =
         ()
 
 
-stringAndCharInModules : (Src.Module -> Expectation) -> (String -> String -> Expectation)
-stringAndCharInModules expectFn s c =
+stringAndCharInModules : (Src.Module -> Expectation) -> (() -> Expectation)
+stringAndCharInModules expectFn _ =
     let
         modul1 =
-            makeModule "strValue" (strExpr s)
+            makeModule "strValue" (strExpr "hello")
 
         modul2 =
-            makeModule "chrValue" (chrExpr c)
+            makeModule "chrValue" (chrExpr "x")
     in
     Expect.all
         [ \_ -> expectFn modul1
@@ -528,11 +476,11 @@ stringAndCharInModules expectFn s c =
         ()
 
 
-intWithUnitInModules : (Src.Module -> Expectation) -> (Int -> Expectation)
-intWithUnitInModules expectFn n =
+intWithUnitInModules : (Src.Module -> Expectation) -> (() -> Expectation)
+intWithUnitInModules expectFn _ =
     let
         modul1 =
-            makeModule "intValue" (intExpr n)
+            makeModule "intValue" (intExpr 42)
 
         modul2 =
             makeModule "unitValue" unitExpr

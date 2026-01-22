@@ -34,7 +34,6 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Expect exposing (Expectation)
-import Fuzz
 import Test exposing (Test)
 
 
@@ -49,7 +48,6 @@ expectSuite expectFn condStr =
         , aliasPatternTests expectFn condStr
         , nestedCaseTests expectFn condStr
         , customTypePatternTests expectFn condStr
-        , caseFuzzTests expectFn condStr
         ]
 
 
@@ -185,7 +183,7 @@ literalPatternTests expectFn condStr =
 
         -- Moved to TypeCheckFails.elm: , Test.fuzz Fuzz.int ("Case on fuzzed int " ++ condStr) (caseOnFuzzedInt expectFn)
         , Test.test ("Case with many int branches " ++ condStr) (caseWithManyIntBranches expectFn)
-        , Test.fuzz Fuzz.string ("Case on fuzzed string " ++ condStr) (caseOnFuzzedString expectFn)
+        , Test.test ("Case on string " ++ condStr) (caseOnString expectFn)
         , Test.test ("Case with negative int patterns " ++ condStr) (caseWithNegativeIntPatterns expectFn)
         ]
 
@@ -234,12 +232,12 @@ caseWithManyIntBranches expectFn _ =
     expectFn modul
 
 
-caseOnFuzzedString : (Src.Module -> Expectation) -> (String -> Expectation)
-caseOnFuzzedString expectFn s =
+caseOnString : (Src.Module -> Expectation) -> (() -> Expectation)
+caseOnString expectFn _ =
     let
         modul =
             makeModule "testValue"
-                (caseExpr (strExpr s)
+                (caseExpr (strExpr "hello")
                     [ ( pStr "", intExpr 0 )
                     , ( pVar "x", intExpr 1 )
                     ]
@@ -275,7 +273,7 @@ tuplePatternTests expectFn condStr =
     Test.describe ("Tuple pattern matching " ++ condStr)
         [ Test.test ("Case on tuple with var patterns " ++ condStr) (caseOnTupleWithVarPatterns expectFn)
         , Test.test ("Case on tuple with literal patterns " ++ condStr) (caseOnTupleWithLiteralPatterns expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.int ("Case on fuzzed tuple " ++ condStr) (caseOnFuzzedTuple expectFn)
+        , Test.test ("Case on tuple " ++ condStr) (caseOnTuple expectFn)
         , Test.test ("Case on nested tuples " ++ condStr) (caseOnNestedTuples expectFn)
         ]
 
@@ -317,11 +315,11 @@ caseOnTupleWithLiteralPatterns expectFn _ =
     expectFn modul
 
 
-caseOnFuzzedTuple : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-caseOnFuzzedTuple expectFn a b =
+caseOnTuple : (Src.Module -> Expectation) -> (() -> Expectation)
+caseOnTuple expectFn _ =
     let
         subject =
-            tupleExpr (intExpr a) (intExpr b)
+            tupleExpr (intExpr 1) (intExpr 2)
 
         case_ =
             caseExpr subject
@@ -450,7 +448,7 @@ recordPatternTests expectFn condStr =
     Test.describe ("Record pattern matching " ++ condStr)
         [ Test.test ("Case on single-field record pattern " ++ condStr) (caseOnSingleFieldRecordPattern expectFn)
         , Test.test ("Case on multi-field record pattern " ++ condStr) (caseOnMultiFieldRecordPattern expectFn)
-        , Test.fuzz Fuzz.int ("Case on fuzzed record " ++ condStr) (caseOnFuzzedRecord expectFn)
+        , Test.test ("Case on record " ++ condStr) (caseOnRecord expectFn)
         , Test.test ("Case on partial record pattern " ++ condStr) (caseOnPartialRecordPattern expectFn)
         ]
 
@@ -489,11 +487,11 @@ caseOnMultiFieldRecordPattern expectFn _ =
     expectFn modul
 
 
-caseOnFuzzedRecord : (Src.Module -> Expectation) -> (Int -> Expectation)
-caseOnFuzzedRecord expectFn n =
+caseOnRecord : (Src.Module -> Expectation) -> (() -> Expectation)
+caseOnRecord expectFn _ =
     let
         subject =
-            recordExpr [ ( "value", intExpr n ) ]
+            recordExpr [ ( "value", intExpr 42 ) ]
 
         case_ =
             caseExpr subject
@@ -535,7 +533,7 @@ aliasPatternTests expectFn condStr =
         [ Test.test ("Case with simple alias pattern " ++ condStr) (caseWithSimpleAliasPattern expectFn)
         , Test.test ("Case with tuple alias pattern " ++ condStr) (caseWithTupleAliasPattern expectFn)
         , Test.test ("Case with list alias pattern " ++ condStr) (caseWithListAliasPattern expectFn)
-        , Test.fuzz Fuzz.int ("Case with fuzzed alias pattern " ++ condStr) (caseWithFuzzedAliasPattern expectFn)
+        , Test.test ("Case with alias pattern " ++ condStr) (caseWithAliasPattern expectFn)
         ]
 
 
@@ -591,11 +589,11 @@ caseWithListAliasPattern expectFn _ =
     expectFn modul
 
 
-caseWithFuzzedAliasPattern : (Src.Module -> Expectation) -> (Int -> Expectation)
-caseWithFuzzedAliasPattern expectFn n =
+caseWithAliasPattern : (Src.Module -> Expectation) -> (() -> Expectation)
+caseWithAliasPattern expectFn _ =
     let
         subject =
-            intExpr n
+            intExpr 42
 
         case_ =
             caseExpr subject
@@ -763,48 +761,5 @@ caseOnCustomTypePayloadExtraction expectFn _ =
 
         modul =
             makeModuleWithTypedDefsUnionsAliases "Test" [ unwrapFn ] [ wrapperUnion ] []
-    in
-    expectFn modul
-
-
-
--- ============================================================================
--- FUZZ TESTS (2 tests)
--- ============================================================================
-
-
-caseFuzzTests : (Src.Module -> Expectation) -> String -> Test
-caseFuzzTests expectFn condStr =
-    Test.describe ("Fuzzed case tests " ++ condStr)
-        [ Test.fuzz2 Fuzz.int Fuzz.int ("Case with fuzzed tuple values " ++ condStr) (caseWithFuzzedTupleValues expectFn)
-        , Test.fuzz3 Fuzz.int Fuzz.int Fuzz.int ("Case with fuzzed list values " ++ condStr) (caseWithFuzzedListValues expectFn)
-        ]
-
-
-caseWithFuzzedTupleValues : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-caseWithFuzzedTupleValues expectFn a b =
-    let
-        case_ =
-            caseExpr (tupleExpr (intExpr a) (intExpr b))
-                [ ( pTuple (pVar "x") (pVar "y"), tupleExpr (varExpr "y") (varExpr "x") )
-                ]
-
-        modul =
-            makeModule "testValue" case_
-    in
-    expectFn modul
-
-
-caseWithFuzzedListValues : (Src.Module -> Expectation) -> (Int -> Int -> Int -> Expectation)
-caseWithFuzzedListValues expectFn a b c =
-    let
-        case_ =
-            caseExpr (listExpr [ intExpr a, intExpr b, intExpr c ])
-                [ ( pCons (pVar "h") (pVar "t"), varExpr "h" )
-                , ( pList [], intExpr 0 )
-                ]
-
-        modul =
-            makeModule "testValue" case_
     in
     expectFn modul

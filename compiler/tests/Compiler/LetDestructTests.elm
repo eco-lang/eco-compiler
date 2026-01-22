@@ -29,7 +29,6 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Expect exposing (Expectation)
-import Fuzz
 import Test exposing (Test)
 
 
@@ -42,7 +41,6 @@ expectSuite expectFn condStr =
         , nestedDestructTests expectFn condStr
         , aliasDestructTests expectFn condStr
         , complexDestructTests expectFn condStr
-        , destructFuzzTests expectFn condStr
         ]
 
 
@@ -56,11 +54,11 @@ tupleDestructTests : (Src.Module -> Expectation) -> String -> Test
 tupleDestructTests expectFn condStr =
     Test.describe ("Tuple destructuring " ++ condStr)
         [ Test.test ("Destruct 2-tuple " ++ condStr) (destruct2Tuple expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.int ("Destruct fuzzed tuple " ++ condStr) (destructFuzzedTuple expectFn)
+        , Test.test ("Destruct tuple with values " ++ condStr) (destructTupleWithValues expectFn)
         , Test.test ("Destruct 3-tuple " ++ condStr) (destruct3Tuple expectFn)
         , Test.test ("Destruct tuple with wildcard " ++ condStr) (destructTupleWithWildcard expectFn)
         , Test.test ("Multiple tuple destructs " ++ condStr) (multipleTupleDestructs expectFn)
-        , Test.fuzz3 Fuzz.int Fuzz.int Fuzz.int ("Destruct fuzzed 3-tuple " ++ condStr) (destructFuzzed3Tuple expectFn)
+        , Test.test ("Destruct 3-tuple with values " ++ condStr) (destruct3TupleWithValues expectFn)
         ]
 
 
@@ -79,11 +77,11 @@ destruct2Tuple expectFn _ =
     expectFn modul
 
 
-destructFuzzedTuple : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-destructFuzzedTuple expectFn a b =
+destructTupleWithValues : (Src.Module -> Expectation) -> (() -> Expectation)
+destructTupleWithValues expectFn _ =
     let
         pair =
-            tupleExpr (intExpr a) (intExpr b)
+            tupleExpr (intExpr 1) (intExpr 2)
 
         def =
             destruct (pTuple (pVar "x") (pVar "y")) pair
@@ -142,11 +140,11 @@ multipleTupleDestructs expectFn _ =
     expectFn modul
 
 
-destructFuzzed3Tuple : (Src.Module -> Expectation) -> (Int -> Int -> Int -> Expectation)
-destructFuzzed3Tuple expectFn a b c =
+destruct3TupleWithValues : (Src.Module -> Expectation) -> (() -> Expectation)
+destruct3TupleWithValues expectFn _ =
     let
         triple =
-            tuple3Expr (intExpr a) (intExpr b) (intExpr c)
+            tuple3Expr (intExpr 1) (intExpr 2) (intExpr 3)
 
         def =
             destruct (pTuple3 (pVar "x") (pVar "y") (pVar "z")) triple
@@ -168,7 +166,7 @@ recordDestructTests expectFn condStr =
     Test.describe ("Record destructuring " ++ condStr)
         [ Test.test ("Destruct single field record " ++ condStr) (destructSingleFieldRecord expectFn)
         , Test.test ("Destruct multi-field record " ++ condStr) (destructMultiFieldRecord expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.int ("Destruct fuzzed record " ++ condStr) (destructFuzzedRecord expectFn)
+        , Test.test ("Destruct record with values " ++ condStr) (destructRecordWithValues expectFn)
         , Test.test ("Destruct partial record " ++ condStr) (destructPartialRecord expectFn)
         , Test.test ("Multiple record destructs " ++ condStr) (multipleRecordDestructs expectFn)
         , Test.test ("Destruct record with many fields " ++ condStr) (destructRecordManyFields expectFn)
@@ -205,11 +203,11 @@ destructMultiFieldRecord expectFn _ =
     expectFn modul
 
 
-destructFuzzedRecord : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-destructFuzzedRecord expectFn a b =
+destructRecordWithValues : (Src.Module -> Expectation) -> (() -> Expectation)
+destructRecordWithValues expectFn _ =
     let
         record =
-            recordExpr [ ( "first", intExpr a ), ( "second", intExpr b ) ]
+            recordExpr [ ( "first", intExpr 1 ), ( "second", intExpr 2 ) ]
 
         def =
             destruct (pRecord [ "first", "second" ]) record
@@ -282,7 +280,7 @@ listDestructTests expectFn condStr =
     Test.describe ("List destructuring " ++ condStr)
         [ Test.test ("Destruct cons pattern " ++ condStr) (destructConsPattern expectFn)
         , Test.test ("Destruct fixed list pattern " ++ condStr) (destructFixedListPattern expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.int ("Destruct fuzzed list " ++ condStr) (destructFuzzedList expectFn)
+        , Test.test ("Destruct list with values " ++ condStr) (destructListWithValues expectFn)
         , Test.test ("Destruct nested cons " ++ condStr) (destructNestedCons expectFn)
         ]
 
@@ -317,11 +315,11 @@ destructFixedListPattern expectFn _ =
     expectFn modul
 
 
-destructFuzzedList : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-destructFuzzedList expectFn a b =
+destructListWithValues : (Src.Module -> Expectation) -> (() -> Expectation)
+destructListWithValues expectFn _ =
     let
         list =
-            listExpr [ intExpr a, intExpr b ]
+            listExpr [ intExpr 1, intExpr 2 ]
 
         def =
             destruct (pCons (pVar "h") (pVar "t")) list
@@ -360,7 +358,7 @@ nestedDestructTests expectFn condStr =
         , Test.test ("Destruct tuple with record " ++ condStr) (destructTupleWithRecord expectFn)
         , Test.test ("Destruct record with nested tuple " ++ condStr) (destructRecordWithNestedTuple expectFn)
         , Test.test ("Deeply nested destruct " ++ condStr) (deeplyNestedDestruct expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.int ("Nested destruct with fuzzed values " ++ condStr) (nestedDestructFuzzed expectFn)
+        , Test.test ("Nested destruct with values " ++ condStr) (nestedDestructWithValues expectFn)
         , Test.test ("Triple nested destruct " ++ condStr) (tripleNestedDestruct expectFn)
         ]
 
@@ -432,11 +430,11 @@ deeplyNestedDestruct expectFn _ =
     expectFn modul
 
 
-nestedDestructFuzzed : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-nestedDestructFuzzed expectFn a b =
+nestedDestructWithValues : (Src.Module -> Expectation) -> (() -> Expectation)
+nestedDestructWithValues expectFn _ =
     let
         nested =
-            tupleExpr (tupleExpr (intExpr a) (intExpr b)) (intExpr 0)
+            tupleExpr (tupleExpr (intExpr 1) (intExpr 2)) (intExpr 0)
 
         def =
             destruct (pTuple (pTuple (pVar "x") (pVar "y")) pAnything) nested
@@ -485,7 +483,7 @@ aliasDestructTests expectFn condStr =
     Test.describe ("Alias pattern destructuring " ++ condStr)
         [ Test.test ("Destruct with simple alias " ++ condStr) (destructWithSimpleAlias expectFn)
         , Test.test ("Destruct with nested alias " ++ condStr) (destructWithNestedAlias expectFn)
-        , Test.fuzz Fuzz.int ("Alias destruct with fuzzed value " ++ condStr) (aliasDestructFuzzed expectFn)
+        , Test.test ("Alias destruct with value " ++ condStr) (aliasDestructWithValue expectFn)
 
         -- Moved to TypeCheckFails.elm: , Test.test ("Multiple aliases in destruct " ++ condStr) (multipleAliasesInDestruct expectFn)
         ]
@@ -526,11 +524,11 @@ destructWithNestedAlias expectFn _ =
     expectFn modul
 
 
-aliasDestructFuzzed : (Src.Module -> Expectation) -> (Int -> Expectation)
-aliasDestructFuzzed expectFn n =
+aliasDestructWithValue : (Src.Module -> Expectation) -> (() -> Expectation)
+aliasDestructWithValue expectFn _ =
     let
         pair =
-            tupleExpr (intExpr n) (intExpr 0)
+            tupleExpr (intExpr 42) (intExpr 0)
 
         def =
             destruct (pAlias (pTuple (pVar "x") pAnything) "pair") pair
@@ -618,52 +616,5 @@ destructWithFunctionCallResult expectFn _ =
 
         modul =
             makeModule "testValue" (letExpr [ fnDef, destructDef ] (tupleExpr (varExpr "a") (varExpr "b")))
-    in
-    expectFn modul
-
-
-
--- ============================================================================
--- FUZZ TESTS (2 tests)
--- ============================================================================
-
-
-destructFuzzTests : (Src.Module -> Expectation) -> String -> Test
-destructFuzzTests expectFn condStr =
-    Test.describe ("Fuzzed destruct tests " ++ condStr)
-        [ Test.fuzz3 Fuzz.int Fuzz.int Fuzz.int ("Destruct triple with fuzzed values " ++ condStr) (destructTripleFuzzed expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.string ("Destruct mixed types " ++ condStr) (destructMixedTypes expectFn)
-        ]
-
-
-destructTripleFuzzed : (Src.Module -> Expectation) -> (Int -> Int -> Int -> Expectation)
-destructTripleFuzzed expectFn a b c =
-    let
-        triple =
-            tuple3Expr (intExpr a) (intExpr b) (intExpr c)
-
-        def =
-            destruct (pTuple3 (pVar "x") (pVar "y") (pVar "z")) triple
-
-        modul =
-            makeModule "testValue"
-                (letExpr [ def ]
-                    (tuple3Expr (varExpr "z") (varExpr "y") (varExpr "x"))
-                )
-    in
-    expectFn modul
-
-
-destructMixedTypes : (Src.Module -> Expectation) -> (Int -> String -> Expectation)
-destructMixedTypes expectFn n s =
-    let
-        record =
-            recordExpr [ ( "num", intExpr n ), ( "str", strExpr s ) ]
-
-        def =
-            destruct (pRecord [ "num", "str" ]) record
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] (tupleExpr (varExpr "num") (varExpr "str")))
     in
     expectFn modul

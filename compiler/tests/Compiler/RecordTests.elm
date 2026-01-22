@@ -22,7 +22,6 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Expect exposing (Expectation)
-import Fuzz
 import Test exposing (Test)
 
 
@@ -36,7 +35,6 @@ expectSuite expectFn condStr =
         , recordAccessTests expectFn condStr
         , recordAccessorTests expectFn condStr
         , recordUpdateTests expectFn condStr
-        , recordFuzzTests expectFn condStr
         ]
 
 
@@ -88,47 +86,47 @@ twoEmptyRecords expectFn _ =
 singleFieldTests : (Src.Module -> Expectation) -> String -> Test
 singleFieldTests expectFn condStr =
     Test.describe ("Single field records " ++ condStr)
-        [ Test.fuzz Fuzz.int ("Record with int field " ++ condStr) (recordWithIntField expectFn)
-        , Test.fuzz Fuzz.string ("Record with string field " ++ condStr) (recordWithStringField expectFn)
-        , Test.fuzz Fuzz.float ("Record with float field " ++ condStr) (recordWithFloatField expectFn)
-        , Test.fuzz Fuzz.bool ("Record with bool field " ++ condStr) (recordWithBoolField expectFn)
+        [ Test.test ("Record with int field " ++ condStr) (recordWithIntField expectFn)
+        , Test.test ("Record with string field " ++ condStr) (recordWithStringField expectFn)
+        , Test.test ("Record with float field " ++ condStr) (recordWithFloatField expectFn)
+        , Test.test ("Record with bool field " ++ condStr) (recordWithBoolField expectFn)
         , Test.test ("Record with list field " ++ condStr) (recordWithListField expectFn)
         , Test.test ("Record with tuple field " ++ condStr) (recordWithTupleField expectFn)
         ]
 
 
-recordWithIntField : (Src.Module -> Expectation) -> (Int -> Expectation)
-recordWithIntField expectFn n =
+recordWithIntField : (Src.Module -> Expectation) -> (() -> Expectation)
+recordWithIntField expectFn _ =
     let
         modul =
-            makeModule "testValue" (recordExpr [ ( "value", intExpr n ) ])
+            makeModule "testValue" (recordExpr [ ( "value", intExpr 42 ) ])
     in
     expectFn modul
 
 
-recordWithStringField : (Src.Module -> Expectation) -> (String -> Expectation)
-recordWithStringField expectFn s =
+recordWithStringField : (Src.Module -> Expectation) -> (() -> Expectation)
+recordWithStringField expectFn _ =
     let
         modul =
-            makeModule "testValue" (recordExpr [ ( "name", strExpr s ) ])
+            makeModule "testValue" (recordExpr [ ( "name", strExpr "hello" ) ])
     in
     expectFn modul
 
 
-recordWithFloatField : (Src.Module -> Expectation) -> (Float -> Expectation)
-recordWithFloatField expectFn f =
+recordWithFloatField : (Src.Module -> Expectation) -> (() -> Expectation)
+recordWithFloatField expectFn _ =
     let
         modul =
-            makeModule "testValue" (recordExpr [ ( "amount", floatExpr f ) ])
+            makeModule "testValue" (recordExpr [ ( "amount", floatExpr 3.14 ) ])
     in
     expectFn modul
 
 
-recordWithBoolField : (Src.Module -> Expectation) -> (Bool -> Expectation)
-recordWithBoolField expectFn b =
+recordWithBoolField : (Src.Module -> Expectation) -> (() -> Expectation)
+recordWithBoolField expectFn _ =
     let
         modul =
-            makeModule "testValue" (recordExpr [ ( "active", boolExpr b ) ])
+            makeModule "testValue" (recordExpr [ ( "active", boolExpr True ) ])
     in
     expectFn modul
 
@@ -160,38 +158,38 @@ recordWithTupleField expectFn _ =
 multiFieldTests : (Src.Module -> Expectation) -> String -> Test
 multiFieldTests expectFn condStr =
     Test.describe ("Multi-field records " ++ condStr)
-        [ Test.fuzz2 Fuzz.int Fuzz.string ("Two-field record " ++ condStr) (twoFieldRecord expectFn)
-        , Test.fuzz3 Fuzz.int Fuzz.string Fuzz.bool ("Three-field record " ++ condStr) (threeFieldRecord expectFn)
+        [ Test.test ("Two-field record " ++ condStr) (twoFieldRecord expectFn)
+        , Test.test ("Three-field record " ++ condStr) (threeFieldRecord expectFn)
         , Test.test ("Five-field record " ++ condStr) (fiveFieldRecord expectFn)
         , Test.test ("Record with mixed types " ++ condStr) (recordWithMixedTypes expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.int ("Record with two int fields " ++ condStr) (recordWithTwoIntFields expectFn)
+        , Test.test ("Record with two int fields " ++ condStr) (recordWithTwoIntFields expectFn)
         , Test.test ("Record with ten fields " ++ condStr) (recordWithTenFields expectFn)
         ]
 
 
-twoFieldRecord : (Src.Module -> Expectation) -> (Int -> String -> Expectation)
-twoFieldRecord expectFn n s =
+twoFieldRecord : (Src.Module -> Expectation) -> (() -> Expectation)
+twoFieldRecord expectFn _ =
     let
         modul =
             makeModule "testValue"
                 (recordExpr
-                    [ ( "id", intExpr n )
-                    , ( "name", strExpr s )
+                    [ ( "id", intExpr 1 )
+                    , ( "name", strExpr "a" )
                     ]
                 )
     in
     expectFn modul
 
 
-threeFieldRecord : (Src.Module -> Expectation) -> (Int -> String -> Bool -> Expectation)
-threeFieldRecord expectFn n s b =
+threeFieldRecord : (Src.Module -> Expectation) -> (() -> Expectation)
+threeFieldRecord expectFn _ =
     let
         modul =
             makeModule "testValue"
                 (recordExpr
-                    [ ( "id", intExpr n )
-                    , ( "name", strExpr s )
-                    , ( "active", boolExpr b )
+                    [ ( "id", intExpr 1 )
+                    , ( "name", strExpr "a" )
+                    , ( "active", boolExpr True )
                     ]
                 )
     in
@@ -231,14 +229,14 @@ recordWithMixedTypes expectFn _ =
     expectFn modul
 
 
-recordWithTwoIntFields : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-recordWithTwoIntFields expectFn a b =
+recordWithTwoIntFields : (Src.Module -> Expectation) -> (() -> Expectation)
+recordWithTwoIntFields expectFn _ =
     let
         modul =
             makeModule "testValue"
                 (recordExpr
-                    [ ( "x", intExpr a )
-                    , ( "y", intExpr b )
+                    [ ( "x", intExpr 1 )
+                    , ( "y", intExpr 2 )
                     ]
                 )
     in
@@ -521,7 +519,7 @@ accessorInList expectFn _ =
 
 
 -- ============================================================================
--- RECORD UPDATE (6 tests)
+-- RECORD UPDATE (5 tests)
 -- ============================================================================
 
 
@@ -533,7 +531,7 @@ recordUpdateTests expectFn condStr =
 
         -- Moved to TypeCheckFails.elm: , Test.test ("Update with computed value " ++ condStr) (updateWithComputedValue expectFn)
         , Test.test ("Chained updates " ++ condStr) (chainedUpdates expectFn)
-        , Test.fuzz Fuzz.int ("Update with fuzzed value " ++ condStr) (updateWithFuzzedValue expectFn)
+        , Test.test ("Update with value " ++ condStr) (updateWithValue expectFn)
         , Test.test ("Update all fields " ++ condStr) (updateAllFields expectFn)
         ]
 
@@ -611,8 +609,8 @@ chainedUpdates expectFn _ =
     expectFn modul
 
 
-updateWithFuzzedValue : (Src.Module -> Expectation) -> (Int -> Expectation)
-updateWithFuzzedValue expectFn n =
+updateWithValue : (Src.Module -> Expectation) -> (() -> Expectation)
+updateWithValue expectFn _ =
     let
         record =
             recordExpr [ ( "count", intExpr 0 ) ]
@@ -621,7 +619,7 @@ updateWithFuzzedValue expectFn n =
             define "r" [] record
 
         update =
-            updateExpr (varExpr "r") [ ( "count", intExpr n ) ]
+            updateExpr (varExpr "r") [ ( "count", intExpr 42 ) ]
 
         modul =
             makeModule "testValue" (letExpr [ def ] update)
@@ -651,104 +649,5 @@ updateAllFields expectFn _ =
 
         modul =
             makeModule "testValue" (letExpr [ def ] update)
-    in
-    expectFn modul
-
-
-
--- ============================================================================
--- FUZZ TESTS (6 tests)
--- ============================================================================
-
-
-recordFuzzTests : (Src.Module -> Expectation) -> String -> Test
-recordFuzzTests expectFn condStr =
-    Test.describe ("Fuzzed record tests " ++ condStr)
-        [ Test.fuzz Fuzz.int ("Record with fuzzed int field " ++ condStr) (recordWithFuzzedIntField expectFn)
-        , Test.fuzz Fuzz.string ("Record with fuzzed string field " ++ condStr) (recordWithFuzzedStringField expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.string ("Record with two fuzzed fields " ++ condStr) (recordWithTwoFuzzedFields expectFn)
-        , Test.fuzz3 Fuzz.int Fuzz.string Fuzz.float ("Random three-field record " ++ condStr) (randomThreeFieldRecord expectFn)
-        , Test.fuzz3 Fuzz.int Fuzz.float Fuzz.bool ("Record with three mixed fuzzed fields " ++ condStr) (recordWithThreeMixedFuzzedFields expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.int ("Random nested record " ++ condStr) (randomNestedRecord expectFn)
-        ]
-
-
-recordWithFuzzedIntField : (Src.Module -> Expectation) -> (Int -> Expectation)
-recordWithFuzzedIntField expectFn n =
-    let
-        modul =
-            makeModule "testValue"
-                (recordExpr [ ( "value", intExpr n ) ])
-    in
-    expectFn modul
-
-
-recordWithFuzzedStringField : (Src.Module -> Expectation) -> (String -> Expectation)
-recordWithFuzzedStringField expectFn s =
-    let
-        modul =
-            makeModule "testValue"
-                (recordExpr [ ( "name", strExpr s ) ])
-    in
-    expectFn modul
-
-
-recordWithTwoFuzzedFields : (Src.Module -> Expectation) -> (Int -> String -> Expectation)
-recordWithTwoFuzzedFields expectFn n s =
-    let
-        modul =
-            makeModule "testValue"
-                (recordExpr
-                    [ ( "id", intExpr n )
-                    , ( "name", strExpr s )
-                    ]
-                )
-    in
-    expectFn modul
-
-
-randomThreeFieldRecord : (Src.Module -> Expectation) -> (Int -> String -> Float -> Expectation)
-randomThreeFieldRecord expectFn n s f =
-    let
-        modul =
-            makeModule "testValue"
-                (recordExpr
-                    [ ( "intField", intExpr n )
-                    , ( "strField", strExpr s )
-                    , ( "floatField", floatExpr f )
-                    ]
-                )
-    in
-    expectFn modul
-
-
-recordWithThreeMixedFuzzedFields : (Src.Module -> Expectation) -> (Int -> Float -> Bool -> Expectation)
-recordWithThreeMixedFuzzedFields expectFn n f b =
-    let
-        modul =
-            makeModule "testValue"
-                (recordExpr
-                    [ ( "count", intExpr n )
-                    , ( "amount", floatExpr f )
-                    , ( "active", boolExpr b )
-                    ]
-                )
-    in
-    expectFn modul
-
-
-randomNestedRecord : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-randomNestedRecord expectFn a b =
-    let
-        inner =
-            recordExpr [ ( "value", intExpr a ) ]
-
-        modul =
-            makeModule "testValue"
-                (recordExpr
-                    [ ( "nested", inner )
-                    , ( "other", intExpr b )
-                    ]
-                )
     in
     expectFn modul

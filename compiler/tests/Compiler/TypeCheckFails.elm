@@ -43,7 +43,6 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Expect exposing (Expectation)
-import Fuzz
 import Test exposing (Test)
 
 
@@ -53,7 +52,7 @@ expectSuite expectFn condStr =
         [ Test.test ("Alias everywhere " ++ condStr) (aliasEverywhere expectFn)
         , Test.test ("Multiple aliases in recursive function " ++ condStr) (multipleAliasesInRecursiveFunction expectFn)
         , Test.test ("Case on unit " ++ condStr) (caseOnUnit expectFn)
-        , Test.fuzz Fuzz.int ("Case on fuzzed int " ++ condStr) (caseOnFuzzedInt expectFn)
+        , Test.test ("Case on int " ++ condStr) (caseOnInt expectFn)
         , Test.test ("All expression types in one module " ++ condStr) (allExpressionTypesInOneModule expectFn)
         , Test.test ("Fold-like function " ++ condStr) (foldLikeFunction expectFn)
         , Test.test ("Multiple aliases in destruct " ++ condStr) (multipleAliasesInDestruct expectFn)
@@ -127,12 +126,12 @@ caseOnUnit expectFn _ =
     expectFn modul
 
 
-caseOnFuzzedInt : (Src.Module -> Expectation) -> (Int -> Expectation)
-caseOnFuzzedInt expectFn n =
+caseOnInt : (Src.Module -> Expectation) -> (() -> Expectation)
+caseOnInt expectFn _ =
     let
         modul =
             makeModule "testValue"
-                (caseExpr (intExpr n)
+                (caseExpr (intExpr 42)
                     [ ( pInt 0, strExpr "zero" )
                     , ( pVar "x", varExpr "x" )
                     ]

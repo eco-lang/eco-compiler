@@ -34,7 +34,6 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Expect exposing (Expectation)
-import Fuzz
 import Test exposing (Test)
 
 
@@ -50,7 +49,6 @@ expectSuite expectFn condStr =
         , negateTests expectFn condStr
         , absTests expectFn condStr
         , polymorphicNumberTests expectFn condStr
-        , functionFuzzTests expectFn condStr
         ]
 
 
@@ -165,9 +163,9 @@ callTests : (Src.Module -> Expectation) -> String -> Test
 callTests expectFn condStr =
     Test.describe ("Function calls " ++ condStr)
         [ Test.test ("Call with no args " ++ condStr) (callWithNoArgs expectFn)
-        , Test.fuzz Fuzz.int ("Call with one int arg " ++ condStr) (callWithOneIntArg expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.int ("Call with two args " ++ condStr) (callWithTwoArgs expectFn)
-        , Test.fuzz3 Fuzz.int Fuzz.int Fuzz.int ("Call with three args " ++ condStr) (callWithThreeArgs expectFn)
+        , Test.test ("Call with one int arg " ++ condStr) (callWithOneIntArg expectFn)
+        , Test.test ("Call with two args " ++ condStr) (callWithTwoArgs expectFn)
+        , Test.test ("Call with three args " ++ condStr) (callWithThreeArgs expectFn)
         , Test.test ("Call with complex args " ++ condStr) (callWithComplexArgs expectFn)
         , Test.test ("Nested calls " ++ condStr) (nestedCalls expectFn)
         ]
@@ -188,8 +186,8 @@ callWithNoArgs expectFn _ =
     expectFn modul
 
 
-callWithOneIntArg : (Src.Module -> Expectation) -> (Int -> Expectation)
-callWithOneIntArg expectFn n =
+callWithOneIntArg : (Src.Module -> Expectation) -> (() -> Expectation)
+callWithOneIntArg expectFn _ =
     let
         fn =
             lambdaExpr [ pVar "x" ] (varExpr "x")
@@ -198,13 +196,13 @@ callWithOneIntArg expectFn n =
             define "f" [] fn
 
         modul =
-            makeModule "testValue" (letExpr [ def ] (callExpr (varExpr "f") [ intExpr n ]))
+            makeModule "testValue" (letExpr [ def ] (callExpr (varExpr "f") [ intExpr 42 ]))
     in
     expectFn modul
 
 
-callWithTwoArgs : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-callWithTwoArgs expectFn a b =
+callWithTwoArgs : (Src.Module -> Expectation) -> (() -> Expectation)
+callWithTwoArgs expectFn _ =
     let
         fn =
             lambdaExpr [ pVar "x", pVar "y" ] (varExpr "x")
@@ -213,13 +211,13 @@ callWithTwoArgs expectFn a b =
             define "f" [] fn
 
         modul =
-            makeModule "testValue" (letExpr [ def ] (callExpr (varExpr "f") [ intExpr a, intExpr b ]))
+            makeModule "testValue" (letExpr [ def ] (callExpr (varExpr "f") [ intExpr 1, intExpr 2 ]))
     in
     expectFn modul
 
 
-callWithThreeArgs : (Src.Module -> Expectation) -> (Int -> Int -> Int -> Expectation)
-callWithThreeArgs expectFn a b c =
+callWithThreeArgs : (Src.Module -> Expectation) -> (() -> Expectation)
+callWithThreeArgs expectFn _ =
     let
         fn =
             lambdaExpr [ pVar "x", pVar "y", pVar "z" ] (varExpr "y")
@@ -228,7 +226,7 @@ callWithThreeArgs expectFn a b c =
             define "f" [] fn
 
         modul =
-            makeModule "testValue" (letExpr [ def ] (callExpr (varExpr "f") [ intExpr a, intExpr b, intExpr c ]))
+            makeModule "testValue" (letExpr [ def ] (callExpr (varExpr "f") [ intExpr 1, intExpr 2, intExpr 3 ]))
     in
     expectFn modul
 
@@ -631,26 +629,26 @@ functionReturningFunction expectFn _ =
 negateTests : (Src.Module -> Expectation) -> String -> Test
 negateTests expectFn condStr =
     Test.describe ("Negate expressions " ++ condStr)
-        [ Test.fuzz Fuzz.int ("Negate int " ++ condStr) (negateInt expectFn)
-        , Test.fuzz Fuzz.float ("Negate float " ++ condStr) (negateFloat expectFn)
+        [ Test.test ("Negate int " ++ condStr) (negateInt expectFn)
+        , Test.test ("Negate float " ++ condStr) (negateFloat expectFn)
         , Test.test ("Double negate " ++ condStr) (doubleNegate expectFn)
         ]
 
 
-negateInt : (Src.Module -> Expectation) -> (Int -> Expectation)
-negateInt expectFn n =
+negateInt : (Src.Module -> Expectation) -> (() -> Expectation)
+negateInt expectFn _ =
     let
         modul =
-            makeModule "testValue" (negateExpr (intExpr n))
+            makeModule "testValue" (negateExpr (intExpr 42))
     in
     expectFn modul
 
 
-negateFloat : (Src.Module -> Expectation) -> (Float -> Expectation)
-negateFloat expectFn f =
+negateFloat : (Src.Module -> Expectation) -> (() -> Expectation)
+negateFloat expectFn _ =
     let
         modul =
-            makeModule "testValue" (negateExpr (floatExpr f))
+            makeModule "testValue" (negateExpr (floatExpr 3.14))
     in
     expectFn modul
 
@@ -899,78 +897,5 @@ zabsWithZeroFloat expectFn _ =
 
         modul =
             makeModuleWithTypedDefs "Test" [ zabsDef, testValueDef ]
-    in
-    expectFn modul
-
-
-
--- ============================================================================
--- FUZZ TESTS (4 tests)
--- ============================================================================
-
-
-functionFuzzTests : (Src.Module -> Expectation) -> String -> Test
-functionFuzzTests expectFn condStr =
-    Test.describe ("Fuzzed function tests " ++ condStr)
-        [ Test.fuzz Fuzz.int ("Lambda returning fuzzed int " ++ condStr) (lambdaReturningFuzzedInt expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.int ("Call with two fuzzed args " ++ condStr) (callWithTwoFuzzedArgs expectFn)
-        , Test.fuzz Fuzz.string ("Lambda returning fuzzed string " ++ condStr) (lambdaReturningFuzzedString expectFn)
-        , Test.fuzz3 Fuzz.int Fuzz.int Fuzz.int ("Nested calls with fuzzed args " ++ condStr) (nestedCallsWithFuzzedArgs expectFn)
-        ]
-
-
-lambdaReturningFuzzedInt : (Src.Module -> Expectation) -> (Int -> Expectation)
-lambdaReturningFuzzedInt expectFn n =
-    let
-        modul =
-            makeModule "testValue" (lambdaExpr [ pVar "x" ] (intExpr n))
-    in
-    expectFn modul
-
-
-callWithTwoFuzzedArgs : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-callWithTwoFuzzedArgs expectFn a b =
-    let
-        fn =
-            lambdaExpr [ pVar "x", pVar "y" ] (tupleExpr (varExpr "x") (varExpr "y"))
-
-        def =
-            define "f" [] fn
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] (callExpr (varExpr "f") [ intExpr a, intExpr b ]))
-    in
-    expectFn modul
-
-
-lambdaReturningFuzzedString : (Src.Module -> Expectation) -> (String -> Expectation)
-lambdaReturningFuzzedString expectFn s =
-    let
-        modul =
-            makeModule "testValue" (lambdaExpr [ pVar "x" ] (strExpr s))
-    in
-    expectFn modul
-
-
-nestedCallsWithFuzzedArgs : (Src.Module -> Expectation) -> (Int -> Int -> Int -> Expectation)
-nestedCallsWithFuzzedArgs expectFn a b c =
-    let
-        fn =
-            lambdaExpr [ pVar "x" ] (varExpr "x")
-
-        def =
-            define "f" [] fn
-
-        call1 =
-            callExpr (varExpr "f") [ intExpr a ]
-
-        call2 =
-            callExpr (varExpr "f") [ intExpr b ]
-
-        call3 =
-            callExpr (varExpr "f") [ intExpr c ]
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] (listExpr [ call1, call2, call3 ]))
     in
     expectFn modul

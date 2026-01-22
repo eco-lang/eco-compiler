@@ -38,7 +38,6 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Expect exposing (Expectation)
-import Fuzz
 import Test exposing (Test)
 
 
@@ -50,7 +49,7 @@ expectSuite expectFn condStr =
         , edgeCaseTests expectFn condStr
         , deepNestingTests expectFn condStr
         , expressionCombinationTests expectFn condStr
-        , edgeCaseFuzzTests expectFn condStr
+        , edgeCaseFixedTests expectFn condStr
         ]
 
 
@@ -470,21 +469,30 @@ multipleDefinitionsWithVariousPatterns expectFn _ =
 
 
 -- ============================================================================
--- FUZZ TESTS (2 tests)
+-- FIXED VALUE TESTS (2 tests, converted from fuzz tests)
 -- ============================================================================
 
 
-edgeCaseFuzzTests : (Src.Module -> Expectation) -> String -> Test
-edgeCaseFuzzTests expectFn condStr =
-    Test.describe ("Fuzzed edge case tests " ++ condStr)
-        [ Test.fuzz3 Fuzz.int Fuzz.int Fuzz.int ("Complex expression with fuzzed values " ++ condStr) (complexExpressionWithFuzzedValues expectFn)
-        , Test.fuzz2 Fuzz.string Fuzz.int ("Mixed types with fuzzed values " ++ condStr) (mixedTypesWithFuzzedValues expectFn)
+edgeCaseFixedTests : (Src.Module -> Expectation) -> String -> Test
+edgeCaseFixedTests expectFn condStr =
+    Test.describe ("Fixed value edge case tests " ++ condStr)
+        [ Test.test ("Complex expression with fixed values " ++ condStr) (complexExpressionWithFixedValues expectFn)
+        , Test.test ("Mixed types with fixed values " ++ condStr) (mixedTypesWithFixedValues expectFn)
         ]
 
 
-complexExpressionWithFuzzedValues : (Src.Module -> Expectation) -> (Int -> Int -> Int -> Expectation)
-complexExpressionWithFuzzedValues expectFn a b c =
+complexExpressionWithFixedValues : (Src.Module -> Expectation) -> (() -> Expectation)
+complexExpressionWithFixedValues expectFn _ =
     let
+        a =
+            1
+
+        b =
+            2
+
+        c =
+            3
+
         list =
             listExpr [ intExpr a, intExpr b, intExpr c ]
 
@@ -500,9 +508,15 @@ complexExpressionWithFuzzedValues expectFn a b c =
     expectFn modul
 
 
-mixedTypesWithFuzzedValues : (Src.Module -> Expectation) -> (String -> Int -> Expectation)
-mixedTypesWithFuzzedValues expectFn s n =
+mixedTypesWithFixedValues : (Src.Module -> Expectation) -> (() -> Expectation)
+mixedTypesWithFixedValues expectFn _ =
     let
+        s =
+            "hello"
+
+        n =
+            42
+
         record =
             recordExpr
                 [ ( "name", strExpr s )

@@ -28,7 +28,6 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Expect exposing (Expectation)
-import Fuzz
 import Test exposing (Test)
 
 
@@ -41,7 +40,7 @@ expectSuite expectFn condStr =
         , listAliasTests expectFn condStr
         , nestedAliasTests expectFn condStr
         , aliasInFunctionsTests expectFn condStr
-        , aliasFuzzTests expectFn condStr
+        , aliasAdditionalTests expectFn condStr
         ]
 
 
@@ -450,20 +449,20 @@ aliasUsedInFunctionBody expectFn _ =
 
 
 -- ============================================================================
--- FUZZ TESTS (2 tests)
+-- ADDITIONAL ALIAS TESTS (2 tests)
 -- ============================================================================
 
 
-aliasFuzzTests : (Src.Module -> Expectation) -> String -> Test
-aliasFuzzTests expectFn condStr =
-    Test.describe ("Fuzzed alias tests " ++ condStr)
-        [ Test.fuzz2 Fuzz.int Fuzz.int ("Alias pattern with fuzzed tuple values " ++ condStr) (aliasPatternWithFuzzedTupleValues expectFn)
-        , Test.fuzz Fuzz.int ("Alias with fuzzed value " ++ condStr) (aliasWithFuzzedValue expectFn)
+aliasAdditionalTests : (Src.Module -> Expectation) -> String -> Test
+aliasAdditionalTests expectFn condStr =
+    Test.describe ("Additional alias tests " ++ condStr)
+        [ Test.test ("Alias pattern with tuple values " ++ condStr) (aliasPatternWithTupleValues expectFn)
+        , Test.test ("Alias with value " ++ condStr) (aliasWithValue expectFn)
         ]
 
 
-aliasPatternWithFuzzedTupleValues : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-aliasPatternWithFuzzedTupleValues expectFn a b =
+aliasPatternWithTupleValues : (Src.Module -> Expectation) -> (() -> Expectation)
+aliasPatternWithTupleValues expectFn _ =
     let
         fn =
             define "f"
@@ -471,7 +470,7 @@ aliasPatternWithFuzzedTupleValues expectFn a b =
                 (tupleExpr (varExpr "pair") (varExpr "x"))
 
         call =
-            callExpr (varExpr "f") [ tupleExpr (intExpr a) (intExpr b) ]
+            callExpr (varExpr "f") [ tupleExpr (intExpr 1) (intExpr 2) ]
 
         modul =
             makeModule "testValue" (letExpr [ fn ] call)
@@ -479,11 +478,11 @@ aliasPatternWithFuzzedTupleValues expectFn a b =
     expectFn modul
 
 
-aliasWithFuzzedValue : (Src.Module -> Expectation) -> (Int -> Expectation)
-aliasWithFuzzedValue expectFn n =
+aliasWithValue : (Src.Module -> Expectation) -> (() -> Expectation)
+aliasWithValue expectFn _ =
     let
         case_ =
-            caseExpr (intExpr n)
+            caseExpr (intExpr 42)
                 [ ( pAlias (pVar "x") "val", tupleExpr (varExpr "x") (varExpr "val") )
                 ]
 

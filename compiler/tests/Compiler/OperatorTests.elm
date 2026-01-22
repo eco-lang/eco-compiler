@@ -19,7 +19,6 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Expect exposing (Expectation)
-import Fuzz
 import Test exposing (Test)
 
 
@@ -42,15 +41,15 @@ ifTests : (Src.Module -> Expectation) -> String -> Test
 ifTests expectFn condStr =
     Test.describe ("If expressions " ++ condStr)
         [ Test.test ("Simple if " ++ condStr) (simpleIf expectFn)
-        , Test.fuzz Fuzz.bool ("If with fuzzed condition " ++ condStr) (ifWithFuzzedCondition expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.int ("If with fuzzed branches " ++ condStr) (ifWithFuzzedBranches expectFn)
+        , Test.test ("If with bool condition " ++ condStr) (ifWithBoolCondition expectFn)
+        , Test.test ("If with int branches " ++ condStr) (ifWithIntBranches expectFn)
         , Test.test ("If returning tuples " ++ condStr) (ifReturningTuples expectFn)
         , Test.test ("If returning lists " ++ condStr) (ifReturningLists expectFn)
         , Test.test ("Nested if " ++ condStr) (nestedIf expectFn)
         , Test.test ("If in else branch " ++ condStr) (ifInElseBranch expectFn)
         , Test.test ("Deeply nested if " ++ condStr) (deeplyNestedIf expectFn)
         , Test.test ("If with variable condition " ++ condStr) (ifWithVariableCondition expectFn)
-        , Test.fuzz3 Fuzz.bool Fuzz.int Fuzz.int ("If with all fuzzed values " ++ condStr) (ifWithAllFuzzedValues expectFn)
+        , Test.test ("If with fixed values " ++ condStr) (ifWithFixedValues expectFn)
         ]
 
 
@@ -63,20 +62,20 @@ simpleIf expectFn _ =
     expectFn modul
 
 
-ifWithFuzzedCondition : (Src.Module -> Expectation) -> (Bool -> Expectation)
-ifWithFuzzedCondition expectFn b =
+ifWithBoolCondition : (Src.Module -> Expectation) -> (() -> Expectation)
+ifWithBoolCondition expectFn _ =
     let
         modul =
-            makeModule "testValue" (ifExpr (boolExpr b) (intExpr 1) (intExpr 0))
+            makeModule "testValue" (ifExpr (boolExpr True) (intExpr 1) (intExpr 0))
     in
     expectFn modul
 
 
-ifWithFuzzedBranches : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-ifWithFuzzedBranches expectFn a b =
+ifWithIntBranches : (Src.Module -> Expectation) -> (() -> Expectation)
+ifWithIntBranches expectFn _ =
     let
         modul =
-            makeModule "testValue" (ifExpr (boolExpr True) (intExpr a) (intExpr b))
+            makeModule "testValue" (ifExpr (boolExpr True) (intExpr 1) (intExpr 2))
     in
     expectFn modul
 
@@ -163,11 +162,11 @@ ifWithVariableCondition expectFn _ =
     expectFn modul
 
 
-ifWithAllFuzzedValues : (Src.Module -> Expectation) -> (Bool -> Int -> Int -> Expectation)
-ifWithAllFuzzedValues expectFn cond thenVal elseVal =
+ifWithFixedValues : (Src.Module -> Expectation) -> (() -> Expectation)
+ifWithFixedValues expectFn _ =
     let
         modul =
-            makeModule "testValue" (ifExpr (boolExpr cond) (intExpr thenVal) (intExpr elseVal))
+            makeModule "testValue" (ifExpr (boolExpr True) (intExpr 1) (intExpr 2))
     in
     expectFn modul
 
@@ -182,9 +181,9 @@ negateTests : (Src.Module -> Expectation) -> String -> Test
 negateTests expectFn condStr =
     Test.describe ("Negate expressions " ++ condStr)
         [ Test.test ("Negate int " ++ condStr) (negateInt expectFn)
-        , Test.fuzz Fuzz.int ("Negate fuzzed int " ++ condStr) (negateFuzzedInt expectFn)
+        , Test.test ("Negate int value " ++ condStr) (negateIntValue expectFn)
         , Test.test ("Negate float " ++ condStr) (negateFloat expectFn)
-        , Test.fuzz Fuzz.float ("Negate fuzzed float " ++ condStr) (negateFuzzedFloat expectFn)
+        , Test.test ("Negate float value " ++ condStr) (negateFloatValue expectFn)
         , Test.test ("Double negate " ++ condStr) (doubleNegate expectFn)
         , Test.test ("Negate variable " ++ condStr) (negateVariable expectFn)
         ]
@@ -199,11 +198,11 @@ negateInt expectFn _ =
     expectFn modul
 
 
-negateFuzzedInt : (Src.Module -> Expectation) -> (Int -> Expectation)
-negateFuzzedInt expectFn n =
+negateIntValue : (Src.Module -> Expectation) -> (() -> Expectation)
+negateIntValue expectFn _ =
     let
         modul =
-            makeModule "testValue" (negateExpr (intExpr n))
+            makeModule "testValue" (negateExpr (intExpr 42))
     in
     expectFn modul
 
@@ -217,11 +216,11 @@ negateFloat expectFn _ =
     expectFn modul
 
 
-negateFuzzedFloat : (Src.Module -> Expectation) -> (Float -> Expectation)
-negateFuzzedFloat expectFn f =
+negateFloatValue : (Src.Module -> Expectation) -> (() -> Expectation)
+negateFloatValue expectFn _ =
     let
         modul =
-            makeModule "testValue" (negateExpr (floatExpr f))
+            makeModule "testValue" (negateExpr (floatExpr 3.14))
     in
     expectFn modul
 

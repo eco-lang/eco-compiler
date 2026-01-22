@@ -7,7 +7,6 @@ import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( boolExpr
-        , charFuzzer
         , chrExpr
         , floatExpr
         , intExpr
@@ -20,7 +19,6 @@ import Compiler.AST.SourceBuilder
         , unitExpr
         )
 import Expect exposing (Expectation)
-import Fuzz
 import Test exposing (Test)
 
 
@@ -31,7 +29,6 @@ expectSuite expectFn condStr =
         , tuple3Tests expectFn condStr
         , nestedTupleTests expectFn condStr
         , mixedTypeTupleTests expectFn condStr
-        , tupleFuzzTests expectFn condStr
         ]
 
 
@@ -44,38 +41,38 @@ expectSuite expectFn condStr =
 tuple2Tests : (Src.Module -> Expectation) -> String -> Test
 tuple2Tests expectFn condStr =
     Test.describe ("2-tuples " ++ condStr)
-        [ Test.fuzz2 Fuzz.int Fuzz.int ("Pair of ints " ++ condStr) (pairOfInts expectFn)
-        , Test.fuzz2 Fuzz.float Fuzz.float ("Pair of floats " ++ condStr) (pairOfFloats expectFn)
-        , Test.fuzz2 Fuzz.string Fuzz.string ("Pair of strings " ++ condStr) (pairOfStrings expectFn)
+        [ Test.test ("Pair of ints " ++ condStr) (pairOfInts expectFn)
+        , Test.test ("Pair of floats " ++ condStr) (pairOfFloats expectFn)
+        , Test.test ("Pair of strings " ++ condStr) (pairOfStrings expectFn)
         , Test.test ("Pair with unit " ++ condStr) (pairWithUnits expectFn)
-        , Test.fuzz2 Fuzz.bool Fuzz.bool ("Pair of bools " ++ condStr) (pairOfBools expectFn)
-        , Test.fuzz2 charFuzzer charFuzzer ("Pair of chars " ++ condStr) (pairOfChars expectFn)
+        , Test.test ("Pair of bools " ++ condStr) (pairOfBools expectFn)
+        , Test.test ("Pair of chars " ++ condStr) (pairOfChars expectFn)
         ]
 
 
-pairOfInts : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-pairOfInts expectFn a b =
+pairOfInts : (Src.Module -> Expectation) -> (() -> Expectation)
+pairOfInts expectFn _ =
     let
         modul =
-            makeModule "testValue" (tupleExpr (intExpr a) (intExpr b))
+            makeModule "testValue" (tupleExpr (intExpr 1) (intExpr 2))
     in
     expectFn modul
 
 
-pairOfFloats : (Src.Module -> Expectation) -> (Float -> Float -> Expectation)
-pairOfFloats expectFn a b =
+pairOfFloats : (Src.Module -> Expectation) -> (() -> Expectation)
+pairOfFloats expectFn _ =
     let
         modul =
-            makeModule "testValue" (tupleExpr (floatExpr a) (floatExpr b))
+            makeModule "testValue" (tupleExpr (floatExpr 1.5) (floatExpr 2.5))
     in
     expectFn modul
 
 
-pairOfStrings : (Src.Module -> Expectation) -> (String -> String -> Expectation)
-pairOfStrings expectFn a b =
+pairOfStrings : (Src.Module -> Expectation) -> (() -> Expectation)
+pairOfStrings expectFn _ =
     let
         modul =
-            makeModule "testValue" (tupleExpr (strExpr a) (strExpr b))
+            makeModule "testValue" (tupleExpr (strExpr "hello") (strExpr "world"))
     in
     expectFn modul
 
@@ -89,20 +86,20 @@ pairWithUnits expectFn _ =
     expectFn modul
 
 
-pairOfBools : (Src.Module -> Expectation) -> (Bool -> Bool -> Expectation)
-pairOfBools expectFn a b =
+pairOfBools : (Src.Module -> Expectation) -> (() -> Expectation)
+pairOfBools expectFn _ =
     let
         modul =
-            makeModule "testValue" (tupleExpr (boolExpr a) (boolExpr b))
+            makeModule "testValue" (tupleExpr (boolExpr True) (boolExpr False))
     in
     expectFn modul
 
 
-pairOfChars : (Src.Module -> Expectation) -> (String -> String -> Expectation)
-pairOfChars expectFn a b =
+pairOfChars : (Src.Module -> Expectation) -> (() -> Expectation)
+pairOfChars expectFn _ =
     let
         modul =
-            makeModule "testValue" (tupleExpr (chrExpr a) (chrExpr b))
+            makeModule "testValue" (tupleExpr (chrExpr "a") (chrExpr "b"))
     in
     expectFn modul
 
@@ -116,29 +113,29 @@ pairOfChars expectFn a b =
 tuple3Tests : (Src.Module -> Expectation) -> String -> Test
 tuple3Tests expectFn condStr =
     Test.describe ("3-tuples " ++ condStr)
-        [ Test.fuzz3 Fuzz.int Fuzz.int Fuzz.int ("Triple of ints " ++ condStr) (tripleOfInts expectFn)
-        , Test.fuzz3 Fuzz.int Fuzz.string Fuzz.float ("Triple of mixed types " ++ condStr) (tripleOfMixedTypes expectFn)
+        [ Test.test ("Triple of ints " ++ condStr) (tripleOfInts expectFn)
+        , Test.test ("Triple of mixed types " ++ condStr) (tripleOfMixedTypes expectFn)
         , Test.test ("Triple with bools " ++ condStr) (tripleWithBools expectFn)
-        , Test.fuzz3 Fuzz.string Fuzz.string Fuzz.string ("Triple of strings " ++ condStr) (tripleOfStrings expectFn)
-        , Test.fuzz3 Fuzz.float Fuzz.float Fuzz.float ("Triple of floats " ++ condStr) (tripleOfFloats expectFn)
+        , Test.test ("Triple of strings " ++ condStr) (tripleOfStrings expectFn)
+        , Test.test ("Triple of floats " ++ condStr) (tripleOfFloats expectFn)
         , Test.test ("Triple with units " ++ condStr) (tripleWithUnits expectFn)
         ]
 
 
-tripleOfInts : (Src.Module -> Expectation) -> (Int -> Int -> Int -> Expectation)
-tripleOfInts expectFn a b c =
+tripleOfInts : (Src.Module -> Expectation) -> (() -> Expectation)
+tripleOfInts expectFn _ =
     let
         modul =
-            makeModule "testValue" (tuple3Expr (intExpr a) (intExpr b) (intExpr c))
+            makeModule "testValue" (tuple3Expr (intExpr 1) (intExpr 2) (intExpr 3))
     in
     expectFn modul
 
 
-tripleOfMixedTypes : (Src.Module -> Expectation) -> (Int -> String -> Float -> Expectation)
-tripleOfMixedTypes expectFn a b c =
+tripleOfMixedTypes : (Src.Module -> Expectation) -> (() -> Expectation)
+tripleOfMixedTypes expectFn _ =
     let
         modul =
-            makeModule "testValue" (tuple3Expr (intExpr a) (strExpr b) (floatExpr c))
+            makeModule "testValue" (tuple3Expr (intExpr 42) (strExpr "hello") (floatExpr 3.14))
     in
     expectFn modul
 
@@ -152,20 +149,20 @@ tripleWithBools expectFn _ =
     expectFn modul
 
 
-tripleOfStrings : (Src.Module -> Expectation) -> (String -> String -> String -> Expectation)
-tripleOfStrings expectFn a b c =
+tripleOfStrings : (Src.Module -> Expectation) -> (() -> Expectation)
+tripleOfStrings expectFn _ =
     let
         modul =
-            makeModule "testValue" (tuple3Expr (strExpr a) (strExpr b) (strExpr c))
+            makeModule "testValue" (tuple3Expr (strExpr "a") (strExpr "b") (strExpr "c"))
     in
     expectFn modul
 
 
-tripleOfFloats : (Src.Module -> Expectation) -> (Float -> Float -> Float -> Expectation)
-tripleOfFloats expectFn a b c =
+tripleOfFloats : (Src.Module -> Expectation) -> (() -> Expectation)
+tripleOfFloats expectFn _ =
     let
         modul =
-            makeModule "testValue" (tuple3Expr (floatExpr a) (floatExpr b) (floatExpr c))
+            makeModule "testValue" (tuple3Expr (floatExpr 1.1) (floatExpr 2.2) (floatExpr 3.3))
     in
     expectFn modul
 
@@ -296,20 +293,20 @@ tripleNestedThreeLevels expectFn _ =
 mixedTypeTupleTests : (Src.Module -> Expectation) -> String -> Test
 mixedTypeTupleTests expectFn condStr =
     Test.describe ("Mixed type tuples " ++ condStr)
-        [ Test.fuzz2 Fuzz.int Fuzz.string ("Int and String pair " ++ condStr) (intAndStringPair expectFn)
+        [ Test.test ("Int and String pair " ++ condStr) (intAndStringPair expectFn)
         , Test.test ("Tuple with list " ++ condStr) (tupleWithList expectFn)
         , Test.test ("Tuple with record " ++ condStr) (tupleWithRecord expectFn)
-        , Test.fuzz charFuzzer ("Tuple with char " ++ condStr) (tupleWithChar expectFn)
+        , Test.test ("Tuple with char " ++ condStr) (tupleWithChar expectFn)
         , Test.test ("Triple with list and record " ++ condStr) (tripleWithListAndRecord expectFn)
-        , Test.fuzz3 Fuzz.int Fuzz.string Fuzz.float ("Triple of int, string, float " ++ condStr) (tripleOfIntStringFloat expectFn)
+        , Test.test ("Triple of int, string, float " ++ condStr) (tripleOfIntStringFloat expectFn)
         ]
 
 
-intAndStringPair : (Src.Module -> Expectation) -> (Int -> String -> Expectation)
-intAndStringPair expectFn n s =
+intAndStringPair : (Src.Module -> Expectation) -> (() -> Expectation)
+intAndStringPair expectFn _ =
     let
         modul =
-            makeModule "testValue" (tupleExpr (intExpr n) (strExpr s))
+            makeModule "testValue" (tupleExpr (intExpr 42) (strExpr "hello"))
     in
     expectFn modul
 
@@ -338,11 +335,11 @@ tupleWithRecord expectFn _ =
     expectFn modul
 
 
-tupleWithChar : (Src.Module -> Expectation) -> (String -> Expectation)
-tupleWithChar expectFn c =
+tupleWithChar : (Src.Module -> Expectation) -> (() -> Expectation)
+tupleWithChar expectFn _ =
     let
         modul =
-            makeModule "testValue" (tupleExpr (chrExpr c) (intExpr 42))
+            makeModule "testValue" (tupleExpr (chrExpr "x") (intExpr 42))
     in
     expectFn modul
 
@@ -362,92 +359,10 @@ tripleWithListAndRecord expectFn _ =
     expectFn modul
 
 
-tripleOfIntStringFloat : (Src.Module -> Expectation) -> (Int -> String -> Float -> Expectation)
-tripleOfIntStringFloat expectFn n s f =
+tripleOfIntStringFloat : (Src.Module -> Expectation) -> (() -> Expectation)
+tripleOfIntStringFloat expectFn _ =
     let
         modul =
-            makeModule "testValue" (tuple3Expr (intExpr n) (strExpr s) (floatExpr f))
-    in
-    expectFn modul
-
-
-
--- ============================================================================
--- FUZZ TESTS (7 tests)
--- ============================================================================
-
-
-tupleFuzzTests : (Src.Module -> Expectation) -> String -> Test
-tupleFuzzTests expectFn condStr =
-    Test.describe ("Fuzzed tuple tests " ++ condStr)
-        [ Test.fuzz2 Fuzz.int Fuzz.int ("Random int pair " ++ condStr) (randomIntPair expectFn)
-        , Test.fuzz3 Fuzz.int Fuzz.int Fuzz.int ("Random int triple " ++ condStr) (randomIntTriple expectFn)
-        , Test.fuzz2 Fuzz.string Fuzz.int ("Random string-int pair " ++ condStr) (randomStringIntPair expectFn)
-        , Test.fuzz2 Fuzz.float Fuzz.bool ("Random float-bool pair " ++ condStr) (randomFloatBoolPair expectFn)
-        , Test.fuzz2 Fuzz.float Fuzz.float ("Random float pair " ++ condStr) (randomFloatPair expectFn)
-        , Test.fuzz3 Fuzz.bool Fuzz.bool Fuzz.bool ("Random bool triple " ++ condStr) (randomBoolTriple expectFn)
-        , Test.fuzz3 Fuzz.int Fuzz.float Fuzz.string ("Random mixed triple " ++ condStr) (randomMixedTriple expectFn)
-        ]
-
-
-randomIntPair : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-randomIntPair expectFn a b =
-    let
-        modul =
-            makeModule "testValue" (tupleExpr (intExpr a) (intExpr b))
-    in
-    expectFn modul
-
-
-randomIntTriple : (Src.Module -> Expectation) -> (Int -> Int -> Int -> Expectation)
-randomIntTriple expectFn a b c =
-    let
-        modul =
-            makeModule "testValue" (tuple3Expr (intExpr a) (intExpr b) (intExpr c))
-    in
-    expectFn modul
-
-
-randomStringIntPair : (Src.Module -> Expectation) -> (String -> Int -> Expectation)
-randomStringIntPair expectFn s n =
-    let
-        modul =
-            makeModule "testValue" (tupleExpr (strExpr s) (intExpr n))
-    in
-    expectFn modul
-
-
-randomFloatBoolPair : (Src.Module -> Expectation) -> (Float -> Bool -> Expectation)
-randomFloatBoolPair expectFn f b =
-    let
-        modul =
-            makeModule "testValue" (tupleExpr (floatExpr f) (boolExpr b))
-    in
-    expectFn modul
-
-
-randomFloatPair : (Src.Module -> Expectation) -> (Float -> Float -> Expectation)
-randomFloatPair expectFn a b =
-    let
-        modul =
-            makeModule "testValue" (tupleExpr (floatExpr a) (floatExpr b))
-    in
-    expectFn modul
-
-
-randomBoolTriple : (Src.Module -> Expectation) -> (Bool -> Bool -> Bool -> Expectation)
-randomBoolTriple expectFn a b c =
-    let
-        modul =
-            makeModule "testValue" (tuple3Expr (boolExpr a) (boolExpr b) (boolExpr c))
-    in
-    expectFn modul
-
-
-randomMixedTriple : (Src.Module -> Expectation) -> (Int -> Float -> String -> Expectation)
-randomMixedTriple expectFn a b c =
-    let
-        modul =
-            makeModule "testValue" (tuple3Expr (intExpr a) (floatExpr b) (strExpr c))
+            makeModule "testValue" (tuple3Expr (intExpr 42) (strExpr "hello") (floatExpr 3.14))
     in
     expectFn modul

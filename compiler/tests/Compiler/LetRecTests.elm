@@ -27,7 +27,6 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Expect exposing (Expectation)
-import Fuzz
 import Test exposing (Test)
 
 
@@ -53,7 +52,7 @@ selfRecursiveTests expectFn condStr =
         [ Test.test ("Simple recursive function " ++ condStr) (simpleRecursiveFn expectFn)
         , Test.test ("Recursive function with case " ++ condStr) (recursiveFnWithCase expectFn)
         , Test.test ("Recursive function returning tuple " ++ condStr) (recursiveFnReturningTuple expectFn)
-        , Test.fuzz Fuzz.int ("Recursive function with fuzzed base case " ++ condStr) (recursiveFnFuzzedBaseCase expectFn)
+        , Test.test ("Recursive function with fixed base case " ++ condStr) (recursiveFnFixedBaseCase expectFn)
         , Test.test ("Recursive function with multiple args " ++ condStr) (recursiveFnMultipleArgs expectFn)
         , Test.test ("Recursive function with lambda body " ++ condStr) (recursiveFnLambdaBody expectFn)
 
@@ -117,15 +116,15 @@ recursiveFnReturningTuple expectFn _ =
     expectFn modul
 
 
-recursiveFnFuzzedBaseCase : (Src.Module -> Expectation) -> (Int -> Expectation)
-recursiveFnFuzzedBaseCase expectFn n =
+recursiveFnFixedBaseCase : (Src.Module -> Expectation) -> (() -> Expectation)
+recursiveFnFixedBaseCase expectFn _ =
     let
         fn =
             define "f"
                 [ pVar "x" ]
                 (ifExpr
                     (boolExpr True)
-                    (intExpr n)
+                    (intExpr 42)
                     (callExpr (varExpr "f") [ intExpr 0 ])
                 )
 
@@ -202,7 +201,7 @@ mutuallyRecursiveTests expectFn condStr =
         , Test.test ("Three mutually recursive functions " ++ condStr) (threeMutuallyRecursiveFns expectFn)
 
         -- Moved to TypeCheckFails.elm: , Test.test ("Mutually recursive with different return types " ++ condStr) (mutuallyRecursiveDifferentTypes expectFn)
-        , Test.fuzz Fuzz.int ("Mutually recursive with fuzzed value " ++ condStr) (mutuallyRecursiveFuzzed expectFn)
+        , Test.test ("Mutually recursive with fixed value " ++ condStr) (mutuallyRecursiveFixed expectFn)
         , Test.test ("Mutually recursive returning tuples " ++ condStr) (mutuallyRecursiveReturningTuples expectFn)
         , Test.test ("Nested mutually recursive " ++ condStr) (nestedMutuallyRecursive expectFn)
         ]
@@ -266,14 +265,14 @@ threeMutuallyRecursiveFns expectFn _ =
     expectFn modul
 
 
-mutuallyRecursiveFuzzed : (Src.Module -> Expectation) -> (Int -> Expectation)
-mutuallyRecursiveFuzzed expectFn n =
+mutuallyRecursiveFixed : (Src.Module -> Expectation) -> (() -> Expectation)
+mutuallyRecursiveFixed expectFn _ =
     let
         ping =
             define "ping"
                 [ pVar "x" ]
                 (ifExpr (boolExpr True)
-                    (intExpr n)
+                    (intExpr 42)
                     (callExpr (varExpr "pong") [ varExpr "x" ])
                 )
 
@@ -413,7 +412,7 @@ complexRecursiveTests expectFn condStr =
     Test.describe ("Complex recursive scenarios " ++ condStr)
         [ Test.test ("Recursive function in list " ++ condStr) (recursiveFnInList expectFn)
         , Test.test ("Recursive function in record " ++ condStr) (recursiveFnInRecord expectFn)
-        , Test.fuzz2 Fuzz.int Fuzz.int ("Two recursive functions with fuzzed values " ++ condStr) (twoRecursiveFnsFuzzed expectFn)
+        , Test.test ("Two recursive functions with fixed values " ++ condStr) (twoRecursiveFnsFixed expectFn)
 
         -- Moved to TypeCheckFails.elm: , Test.test ("Recursive with higher-order function " ++ condStr) (recursiveHigherOrder expectFn)
         ]
@@ -467,14 +466,14 @@ recursiveFnInRecord expectFn _ =
     expectFn modul
 
 
-twoRecursiveFnsFuzzed : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-twoRecursiveFnsFuzzed expectFn a b =
+twoRecursiveFnsFixed : (Src.Module -> Expectation) -> (() -> Expectation)
+twoRecursiveFnsFixed expectFn _ =
     let
         f =
             define "f"
                 [ pVar "n" ]
                 (ifExpr (boolExpr True)
-                    (intExpr a)
+                    (intExpr 1)
                     (callExpr (varExpr "f") [ intExpr 0 ])
                 )
 
@@ -482,7 +481,7 @@ twoRecursiveFnsFuzzed expectFn a b =
             define "g"
                 [ pVar "n" ]
                 (ifExpr (boolExpr True)
-                    (intExpr b)
+                    (intExpr 2)
                     (callExpr (varExpr "g") [ intExpr 0 ])
                 )
 

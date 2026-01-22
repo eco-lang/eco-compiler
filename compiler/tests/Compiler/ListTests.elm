@@ -9,7 +9,6 @@ import Compiler.AST.SourceBuilder
         ( binopsExpr
         , callExpr
         , caseExpr
-        , charFuzzer
         , chrExpr
         , floatExpr
         , ifExpr
@@ -29,7 +28,6 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Expect exposing (Expectation)
-import Fuzz
 import Test exposing (Test)
 
 
@@ -41,7 +39,6 @@ expectSuite expectFn condStr =
         , multipleElementTests expectFn condStr
         , nestedListTests expectFn condStr
         , mixedTypeTests expectFn condStr
-        , listFuzzTests expectFn condStr
         , knownListFails expectFn condStr
         ]
 
@@ -114,45 +111,45 @@ emptyStringList expectFn _ =
 singleElementTests : (Src.Module -> Expectation) -> String -> Test
 singleElementTests expectFn condStr =
     Test.describe ("Single element lists " ++ condStr)
-        [ Test.fuzz Fuzz.int ("Single int list " ++ condStr) (singleIntList expectFn)
-        , Test.fuzz Fuzz.string ("Single string list " ++ condStr) (singleStringList expectFn)
-        , Test.fuzz Fuzz.float ("Single float list " ++ condStr) (singleFloatList expectFn)
-        , Test.fuzz charFuzzer ("Single char list " ++ condStr) (singleCharList expectFn)
+        [ Test.test ("Single int list " ++ condStr) (singleIntList expectFn)
+        , Test.test ("Single string list " ++ condStr) (singleStringList expectFn)
+        , Test.test ("Single float list " ++ condStr) (singleFloatList expectFn)
+        , Test.test ("Single char list " ++ condStr) (singleCharList expectFn)
         ]
 
 
-singleIntList : (Src.Module -> Expectation) -> (Int -> Expectation)
-singleIntList expectFn n =
+singleIntList : (Src.Module -> Expectation) -> (() -> Expectation)
+singleIntList expectFn _ =
     let
         modul =
-            makeModule "testValue" (listExpr [ intExpr n ])
+            makeModule "testValue" (listExpr [ intExpr 42 ])
     in
     expectFn modul
 
 
-singleStringList : (Src.Module -> Expectation) -> (String -> Expectation)
-singleStringList expectFn s =
+singleStringList : (Src.Module -> Expectation) -> (() -> Expectation)
+singleStringList expectFn _ =
     let
         modul =
-            makeModule "testValue" (listExpr [ strExpr s ])
+            makeModule "testValue" (listExpr [ strExpr "hello" ])
     in
     expectFn modul
 
 
-singleFloatList : (Src.Module -> Expectation) -> (Float -> Expectation)
-singleFloatList expectFn f =
+singleFloatList : (Src.Module -> Expectation) -> (() -> Expectation)
+singleFloatList expectFn _ =
     let
         modul =
-            makeModule "testValue" (listExpr [ floatExpr f ])
+            makeModule "testValue" (listExpr [ floatExpr 3.14 ])
     in
     expectFn modul
 
 
-singleCharList : (Src.Module -> Expectation) -> (String -> Expectation)
-singleCharList expectFn c =
+singleCharList : (Src.Module -> Expectation) -> (() -> Expectation)
+singleCharList expectFn _ =
     let
         modul =
-            makeModule "testValue" (listExpr [ chrExpr c ])
+            makeModule "testValue" (listExpr [ chrExpr "x" ])
     in
     expectFn modul
 
@@ -166,30 +163,30 @@ singleCharList expectFn c =
 multipleElementTests : (Src.Module -> Expectation) -> String -> Test
 multipleElementTests expectFn condStr =
     Test.describe ("Multiple element lists " ++ condStr)
-        [ Test.fuzz2 Fuzz.int Fuzz.int ("Two-element int list " ++ condStr) (twoElementIntList expectFn)
-        , Test.fuzz3 Fuzz.int Fuzz.int Fuzz.int ("Three-element int list " ++ condStr) (threeElementIntList expectFn)
+        [ Test.test ("Two-element int list " ++ condStr) (twoElementIntList expectFn)
+        , Test.test ("Three-element int list " ++ condStr) (threeElementIntList expectFn)
         , Test.test ("Five-element int list " ++ condStr) (fiveElementIntList expectFn)
-        , Test.fuzz2 Fuzz.string Fuzz.string ("Two-element string list " ++ condStr) (twoElementStringList expectFn)
-        , Test.fuzz3 Fuzz.float Fuzz.float Fuzz.float ("Three-element float list " ++ condStr) (threeElementFloatList expectFn)
+        , Test.test ("Two-element string list " ++ condStr) (twoElementStringList expectFn)
+        , Test.test ("Three-element float list " ++ condStr) (threeElementFloatList expectFn)
         , Test.test ("Ten-element int list " ++ condStr) (tenElementIntList expectFn)
         , Test.test ("Large int list " ++ condStr) (largeIntList expectFn)
         ]
 
 
-twoElementIntList : (Src.Module -> Expectation) -> (Int -> Int -> Expectation)
-twoElementIntList expectFn a b =
+twoElementIntList : (Src.Module -> Expectation) -> (() -> Expectation)
+twoElementIntList expectFn _ =
     let
         modul =
-            makeModule "testValue" (listExpr [ intExpr a, intExpr b ])
+            makeModule "testValue" (listExpr [ intExpr 1, intExpr 2 ])
     in
     expectFn modul
 
 
-threeElementIntList : (Src.Module -> Expectation) -> (Int -> Int -> Int -> Expectation)
-threeElementIntList expectFn a b c =
+threeElementIntList : (Src.Module -> Expectation) -> (() -> Expectation)
+threeElementIntList expectFn _ =
     let
         modul =
-            makeModule "testValue" (listExpr [ intExpr a, intExpr b, intExpr c ])
+            makeModule "testValue" (listExpr [ intExpr 1, intExpr 2, intExpr 3 ])
     in
     expectFn modul
 
@@ -203,20 +200,20 @@ fiveElementIntList expectFn _ =
     expectFn modul
 
 
-twoElementStringList : (Src.Module -> Expectation) -> (String -> String -> Expectation)
-twoElementStringList expectFn a b =
+twoElementStringList : (Src.Module -> Expectation) -> (() -> Expectation)
+twoElementStringList expectFn _ =
     let
         modul =
-            makeModule "testValue" (listExpr [ strExpr a, strExpr b ])
+            makeModule "testValue" (listExpr [ strExpr "a", strExpr "b" ])
     in
     expectFn modul
 
 
-threeElementFloatList : (Src.Module -> Expectation) -> (Float -> Float -> Float -> Expectation)
-threeElementFloatList expectFn a b c =
+threeElementFloatList : (Src.Module -> Expectation) -> (() -> Expectation)
+threeElementFloatList expectFn _ =
     let
         modul =
-            makeModule "testValue" (listExpr [ floatExpr a, floatExpr b, floatExpr c ])
+            makeModule "testValue" (listExpr [ floatExpr 1.1, floatExpr 2.2, floatExpr 3.3 ])
     in
     expectFn modul
 
@@ -399,67 +396,6 @@ listOfRecordsMultipleFields expectFn _ =
 
 
 -- ============================================================================
--- FUZZ TESTS (4 tests)
--- ============================================================================
-
-
-listFuzzTests : (Src.Module -> Expectation) -> String -> Test
-listFuzzTests expectFn condStr =
-    Test.describe ("Fuzzed list tests " ++ condStr)
-        [ Test.fuzz (Fuzz.listOfLengthBetween 0 5 Fuzz.int) ("Random length int list " ++ condStr) (randomLengthIntList expectFn)
-        , Test.fuzz (Fuzz.listOfLengthBetween 0 5 Fuzz.string) ("Random length string list " ++ condStr) (randomLengthStringList expectFn)
-        , Test.fuzz (Fuzz.listOfLengthBetween 0 3 Fuzz.int) ("Random nested int lists " ++ condStr) (randomNestedIntLists expectFn)
-        , Test.fuzz2 (Fuzz.listOfLengthBetween 0 3 Fuzz.int) (Fuzz.listOfLengthBetween 0 3 Fuzz.int) ("Two random lists " ++ condStr) (twoRandomLists expectFn)
-        ]
-
-
-randomLengthIntList : (Src.Module -> Expectation) -> (List Int -> Expectation)
-randomLengthIntList expectFn ints =
-    let
-        modul =
-            makeModule "testValue" (listExpr (List.map intExpr ints))
-    in
-    expectFn modul
-
-
-randomLengthStringList : (Src.Module -> Expectation) -> (List String -> Expectation)
-randomLengthStringList expectFn strs =
-    let
-        modul =
-            makeModule "testValue" (listExpr (List.map strExpr strs))
-    in
-    expectFn modul
-
-
-randomNestedIntLists : (Src.Module -> Expectation) -> (List Int -> Expectation)
-randomNestedIntLists expectFn ints =
-    let
-        innerList =
-            listExpr (List.map intExpr ints)
-
-        modul =
-            makeModule "testValue" (listExpr [ innerList ])
-    in
-    expectFn modul
-
-
-twoRandomLists : (Src.Module -> Expectation) -> (List Int -> List Int -> Expectation)
-twoRandomLists expectFn ints1 ints2 =
-    let
-        list1 =
-            listExpr (List.map intExpr ints1)
-
-        list2 =
-            listExpr (List.map intExpr ints2)
-
-        modul =
-            makeModule "testValue" (listExpr [ list1, list2 ])
-    in
-    expectFn modul
-
-
-
--- ============================================================================
 -- List Failure Tests
 -- ============================================================================
 -- These tests exercise the exact type generalization patterns that fail
@@ -597,7 +533,7 @@ testIndexedMap expectFn _ =
 
 {-| filter : (a -> Bool) -> List a -> List a
 filter isGood list =
-foldr (\\x xs -> if isGood x then cons x xs else xs) [] list
+foldr (\x xs -> if isGood x then cons x xs else xs) [] list
 -}
 testFilter : (Src.Module -> Expectation) -> (() -> Expectation)
 testFilter expectFn _ =

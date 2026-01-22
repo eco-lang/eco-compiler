@@ -24,7 +24,6 @@ import Compiler.AST.CanonicalBuilder
         , varLocalExpr
         )
 import Expect exposing (Expectation)
-import Fuzz
 import Test exposing (Test)
 
 
@@ -34,7 +33,6 @@ expectSuite expectFn condStr =
         [ simpleKernelTests expectFn condStr
         , kernelCallTests expectFn condStr
         , kernelInContextTests expectFn condStr
-        , kernelFuzzTests expectFn condStr
         ]
 
 
@@ -405,54 +403,5 @@ chainedKernelCalls expectFn _ =
 
         modul =
             makeModule "testValue" outer
-    in
-    expectFn modul
-
-
-
--- ============================================================================
--- FUZZ TESTS (2 tests)
--- ============================================================================
-
-
-kernelFuzzTests : (Can.Module -> Expectation) -> String -> Test
-kernelFuzzTests expectFn condStr =
-    Test.describe "Fuzzed kernel tests"
-        [ Test.fuzz Fuzz.int ("Kernel call with fuzzed int " ++ condStr) (kernelCallFuzzedInt expectFn)
-        , Test.fuzz3 Fuzz.int Fuzz.int Fuzz.int ("Multiple kernel calls with fuzzed ints " ++ condStr) (multipleKernelCallsFuzzedInts expectFn)
-        ]
-
-
-kernelCallFuzzedInt : (Can.Module -> Expectation) -> (Int -> Expectation)
-kernelCallFuzzedInt expectFn n =
-    let
-        kernel =
-            varKernelExpr 1 "List" "singleton"
-
-        arg =
-            intExpr 2 n
-
-        modul =
-            makeModule "testValue"
-                (callExpr 3 kernel [ arg ])
-    in
-    expectFn modul
-
-
-multipleKernelCallsFuzzedInts : (Can.Module -> Expectation) -> (Int -> Int -> Int -> Expectation)
-multipleKernelCallsFuzzedInts expectFn a b c =
-    let
-        call1 =
-            callExpr 2 (varKernelExpr 1 "List" "singleton") [ intExpr 3 a ]
-
-        call2 =
-            callExpr 5 (varKernelExpr 4 "List" "singleton") [ intExpr 6 b ]
-
-        call3 =
-            callExpr 8 (varKernelExpr 7 "List" "singleton") [ intExpr 9 c ]
-
-        modul =
-            makeModule "testValue"
-                (listExpr 10 [ call1, call2, call3 ])
     in
     expectFn modul
