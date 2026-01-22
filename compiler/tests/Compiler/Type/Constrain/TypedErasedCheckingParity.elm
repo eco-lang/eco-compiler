@@ -179,13 +179,49 @@ expectEquivalentTypeChecking srcModule =
                             )
 
                 ( Err standardErrors, Err withIdsErrors ) ->
-                    -- Both failed - this is acceptable (they agree)
-                    Expect.fail
-                        ("Unexpected solver failure on both paths.\nStandard errors: "
-                            ++ (NE.toList standardErrors |> List.map typeErrorToString |> String.join "; ")
-                            ++ "\nWithIds errors: "
-                            ++ (NE.toList withIdsErrors |> List.map typeErrorToString |> String.join "; ")
-                        )
+                    -- Both failed - check if they failed for equivalent reasons
+                    let
+                        standardErrorList =
+                            NE.toList standardErrors
+
+                        withIdsErrorList =
+                            NE.toList withIdsErrors
+
+                        standardCount =
+                            List.length standardErrorList
+
+                        withIdsCount =
+                            List.length withIdsErrorList
+                    in
+                    if standardCount /= withIdsCount then
+                        Expect.fail
+                            ("Both paths failed but with different error counts. "
+                                ++ "Standard: "
+                                ++ String.fromInt standardCount
+                                ++ " error(s), WithIds: "
+                                ++ String.fromInt withIdsCount
+                                ++ " error(s)"
+                                ++ "\nStandard errors: "
+                                ++ (List.map typeErrorToString standardErrorList |> String.join "; ")
+                                ++ "\nWithIds errors: "
+                                ++ (List.map typeErrorToString withIdsErrorList |> String.join "; ")
+                            )
+
+                    else
+                        -- Check that errors are equivalent
+                        let
+                            mismatches =
+                                List.map2 compareTypeErrors standardErrorList withIdsErrorList
+                                    |> List.filterMap identity
+                        in
+                        if List.isEmpty mismatches then
+                            Expect.pass
+
+                        else
+                            Expect.fail
+                                ("Both paths failed but with different error reasons:\n"
+                                    ++ String.join "\n" mismatches
+                                )
 
                 ( Ok _, Err withIdsErrors ) ->
                     let
@@ -256,13 +292,49 @@ expectEquivalentTypeCheckingCanonical modul =
                     )
 
         ( Err standardErrors, Err withIdsErrors ) ->
-            -- Both failed - this is acceptable (they agree)
-            Expect.fail
-                ("Unexpected solver failure on both paths.\nStandard errors: "
-                    ++ (NE.toList standardErrors |> List.map typeErrorToString |> String.join "; ")
-                    ++ "\nWithIds errors: "
-                    ++ (NE.toList withIdsErrors |> List.map typeErrorToString |> String.join "; ")
-                )
+            -- Both failed - check if they failed for equivalent reasons
+            let
+                standardErrorList =
+                    NE.toList standardErrors
+
+                withIdsErrorList =
+                    NE.toList withIdsErrors
+
+                standardCount =
+                    List.length standardErrorList
+
+                withIdsCount =
+                    List.length withIdsErrorList
+            in
+            if standardCount /= withIdsCount then
+                Expect.fail
+                    ("Both paths failed but with different error counts. "
+                        ++ "Standard: "
+                        ++ String.fromInt standardCount
+                        ++ " error(s), WithIds: "
+                        ++ String.fromInt withIdsCount
+                        ++ " error(s)"
+                        ++ "\nStandard errors: "
+                        ++ (List.map typeErrorToString standardErrorList |> String.join "; ")
+                        ++ "\nWithIds errors: "
+                        ++ (List.map typeErrorToString withIdsErrorList |> String.join "; ")
+                    )
+
+            else
+                -- Check that errors are equivalent
+                let
+                    mismatches =
+                        List.map2 compareTypeErrors standardErrorList withIdsErrorList
+                            |> List.filterMap identity
+                in
+                if List.isEmpty mismatches then
+                    Expect.pass
+
+                else
+                    Expect.fail
+                        ("Both paths failed but with different error reasons:\n"
+                            ++ String.join "\n" mismatches
+                        )
 
         ( Ok _, Err withIdsErrors ) ->
             let
