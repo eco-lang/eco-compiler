@@ -1,4 +1,4 @@
-module Compiler.ArrayTest exposing (expectSuite)
+module Compiler.ArrayTest exposing (expectSuite, testCases)
 
 {-| Tests for Array functions that expose type variable scoping issues.
 
@@ -37,6 +37,7 @@ import Compiler.AST.SourceBuilder
         , tVar
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Expect exposing (Expectation)
@@ -45,14 +46,30 @@ import Test exposing (Test)
 
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Array type variable scoping " ++ condStr)
-        [ Test.test ("repeat function " ++ condStr) (repeatTest expectFn)
-        , Test.test ("push function " ++ condStr) (pushTest expectFn)
-        , Test.test ("slice function " ++ condStr) (sliceTest expectFn)
-        , Test.test ("fromListHelp function " ++ condStr) (fromListHelpTest expectFn)
-        , Test.test ("append function " ++ condStr) (appendTest expectFn)
-        , Test.test ("sliceLeft function " ++ condStr) (sliceLeftTest expectFn)
-        ]
+    Test.test ("Array type variable scoping " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    arrayCases expectFn
+
+
+
+-- ============================================================================
+-- ARRAY CASES
+-- ============================================================================
+
+
+arrayCases : (Src.Module -> Expectation) -> List TestCase
+arrayCases expectFn =
+    [ { label = "repeat function", run = repeatTest expectFn }
+    , { label = "push function", run = pushTest expectFn }
+    , { label = "slice function", run = sliceTest expectFn }
+    , { label = "fromListHelp function", run = fromListHelpTest expectFn }
+    , { label = "append function", run = appendTest expectFn }
+    , { label = "sliceLeft function", run = sliceLeftTest expectFn }
+    ]
 
 
 

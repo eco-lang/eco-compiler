@@ -1,4 +1,4 @@
-module Compiler.PortEncodingTests exposing (expectSuite)
+module Compiler.PortEncodingTests exposing (expectSuite, testCases)
 
 {-| Test cases for port encoding/decoding.
 
@@ -27,16 +27,23 @@ import Compiler.AST.SourceBuilder
         , tVar
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Port encoding " ++ condStr)
-        [ encoderTests expectFn condStr
-        , decoderTests expectFn condStr
-        , complexPortTests expectFn condStr
+    Test.test ("Port encoding " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    List.concat
+        [ encoderCases expectFn
+        , decoderCases expectFn
+        , complexPortCases expectFn
         ]
 
 
@@ -46,29 +53,28 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-encoderTests : (Src.Module -> Expectation) -> String -> Test
-encoderTests expectFn condStr =
-    Test.describe ("Encoder " ++ condStr)
-        [ Test.test ("Encode Int " ++ condStr) (encodeInt expectFn)
-        , Test.test ("Encode Float " ++ condStr) (encodeFloat expectFn)
-        , Test.test ("Encode Bool " ++ condStr) (encodeBool expectFn)
-        , Test.test ("Encode String " ++ condStr) (encodeString expectFn)
-        , Test.test ("Encode Maybe Int " ++ condStr) (encodeMaybeInt expectFn)
-        , Test.test ("Encode Maybe String " ++ condStr) (encodeMaybeString expectFn)
-        , Test.test ("Encode List Int " ++ condStr) (encodeListInt expectFn)
-        , Test.test ("Encode List String " ++ condStr) (encodeListString expectFn)
-        , Test.test ("Encode Tuple2 " ++ condStr) (encodeTuple2 expectFn)
-        , Test.test ("Encode Tuple3 " ++ condStr) (encodeTuple3 expectFn)
-        , Test.test ("Encode Simple Record " ++ condStr) (encodeSimpleRecord expectFn)
-        , Test.test ("Encode Nested Record " ++ condStr) (encodeNestedRecord expectFn)
-        , Test.test ("Encode Record With List " ++ condStr) (encodeRecordWithList expectFn)
-        , Test.test ("Encode List Of Records " ++ condStr) (encodeListOfRecords expectFn)
-        , Test.test ("Encode Maybe Record " ++ condStr) (encodeMaybeRecord expectFn)
+encoderCases : (Src.Module -> Expectation) -> List TestCase
+encoderCases expectFn =
+    [ { label = "Encode Int", run = encodeInt expectFn }
+    , { label = "Encode Float", run = encodeFloat expectFn }
+    , { label = "Encode Bool", run = encodeBool expectFn }
+    , { label = "Encode String", run = encodeString expectFn }
+    , { label = "Encode Maybe Int", run = encodeMaybeInt expectFn }
+    , { label = "Encode Maybe String", run = encodeMaybeString expectFn }
+    , { label = "Encode List Int", run = encodeListInt expectFn }
+    , { label = "Encode List String", run = encodeListString expectFn }
+    , { label = "Encode Tuple2", run = encodeTuple2 expectFn }
+    , { label = "Encode Tuple3", run = encodeTuple3 expectFn }
+    , { label = "Encode Simple Record", run = encodeSimpleRecord expectFn }
+    , { label = "Encode Nested Record", run = encodeNestedRecord expectFn }
+    , { label = "Encode Record With List", run = encodeRecordWithList expectFn }
+    , { label = "Encode List Of Records", run = encodeListOfRecords expectFn }
+    , { label = "Encode Maybe Record", run = encodeMaybeRecord expectFn }
 
-        -- Note: Json.Value tests require special handling for ambiguous Value type resolution
-        -- from both Json.Encode and Json.Decode. Skipped for now.
-        -- , Test.test ("Encode Json Value " ++ condStr) (encodeJsonValue expectFn)
-        ]
+    -- Note: Json.Value tests require special handling for ambiguous Value type resolution
+    -- from both Json.Encode and Json.Decode. Skipped for now.
+    -- , { label = "Encode Json Value", run = encodeJsonValue expectFn }
+    ]
 
 
 {-| port out : Int -> Cmd msg
@@ -365,27 +371,26 @@ encodeJsonValue expectFn _ =
 -- ============================================================================
 
 
-decoderTests : (Src.Module -> Expectation) -> String -> Test
-decoderTests expectFn condStr =
-    Test.describe ("Decoder " ++ condStr)
-        [ Test.test ("Decode Int " ++ condStr) (decodeInt expectFn)
-        , Test.test ("Decode Float " ++ condStr) (decodeFloat expectFn)
-        , Test.test ("Decode Bool " ++ condStr) (decodeBool expectFn)
-        , Test.test ("Decode String " ++ condStr) (decodeString expectFn)
-        , Test.test ("Decode Maybe Int " ++ condStr) (decodeMaybeInt expectFn)
-        , Test.test ("Decode List Int " ++ condStr) (decodeListInt expectFn)
-        , Test.test ("Decode Tuple2 " ++ condStr) (decodeTuple2 expectFn)
-        , Test.test ("Decode Simple Record " ++ condStr) (decodeSimpleRecord expectFn)
-        , Test.test ("Decode Nested Record " ++ condStr) (decodeNestedRecord expectFn)
-        , Test.test ("Decode Record Multi Field " ++ condStr) (decodeRecordMultiField expectFn)
-        , Test.test ("Decode List Of Records " ++ condStr) (decodeListOfRecords expectFn)
-        , Test.test ("Decode Maybe Record " ++ condStr) (decodeMaybeRecord expectFn)
+decoderCases : (Src.Module -> Expectation) -> List TestCase
+decoderCases expectFn =
+    [ { label = "Decode Int", run = decodeInt expectFn }
+    , { label = "Decode Float", run = decodeFloat expectFn }
+    , { label = "Decode Bool", run = decodeBool expectFn }
+    , { label = "Decode String", run = decodeString expectFn }
+    , { label = "Decode Maybe Int", run = decodeMaybeInt expectFn }
+    , { label = "Decode List Int", run = decodeListInt expectFn }
+    , { label = "Decode Tuple2", run = decodeTuple2 expectFn }
+    , { label = "Decode Simple Record", run = decodeSimpleRecord expectFn }
+    , { label = "Decode Nested Record", run = decodeNestedRecord expectFn }
+    , { label = "Decode Record Multi Field", run = decodeRecordMultiField expectFn }
+    , { label = "Decode List Of Records", run = decodeListOfRecords expectFn }
+    , { label = "Decode Maybe Record", run = decodeMaybeRecord expectFn }
 
-        -- Note: Json.Value tests require special handling for ambiguous Value type resolution
-        -- from both Json.Encode and Json.Decode. Skipped for now.
-        -- , Test.test ("Decode Json Value " ++ condStr) (decodeJsonValue expectFn)
-        , Test.test ("Decode Nested Maybe " ++ condStr) (decodeNestedMaybe expectFn)
-        ]
+    -- Note: Json.Value tests require special handling for ambiguous Value type resolution
+    -- from both Json.Encode and Json.Decode. Skipped for now.
+    -- , { label = "Decode Json Value", run = decodeJsonValue expectFn }
+    , { label = "Decode Nested Maybe", run = decodeNestedMaybe expectFn }
+    ]
 
 
 {-| Helper to create incoming port type: (valueType -> msg) -> Sub msg
@@ -646,15 +651,14 @@ decodeNestedMaybe expectFn _ =
 -- ============================================================================
 
 
-complexPortTests : (Src.Module -> Expectation) -> String -> Test
-complexPortTests expectFn condStr =
-    Test.describe ("Complex port scenarios " ++ condStr)
-        [ Test.test ("Multiple ports " ++ condStr) (multiplePorts expectFn)
-        , Test.test ("Port with Array " ++ condStr) (portWithArray expectFn)
-        , Test.test ("Bidirectional ports " ++ condStr) (bidirectionalPorts expectFn)
-        , Test.test ("Port with deep nesting " ++ condStr) (portWithDeepNesting expectFn)
-        , Test.test ("Port with multiple records " ++ condStr) (portWithMultipleRecords expectFn)
-        ]
+complexPortCases : (Src.Module -> Expectation) -> List TestCase
+complexPortCases expectFn =
+    [ { label = "Multiple ports", run = multiplePorts expectFn }
+    , { label = "Port with Array", run = portWithArray expectFn }
+    , { label = "Bidirectional ports", run = bidirectionalPorts expectFn }
+    , { label = "Port with deep nesting", run = portWithDeepNesting expectFn }
+    , { label = "Port with multiple records", run = portWithMultipleRecords expectFn }
+    ]
 
 
 {-| Multiple outgoing ports in one module

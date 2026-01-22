@@ -1,4 +1,4 @@
-module Compiler.BinopTests exposing (expectSuite)
+module Compiler.BinopTests exposing (expectSuite, testCases)
 
 {-| Tests for binary operator expressions.
 -}
@@ -26,21 +26,28 @@ import Compiler.AST.SourceBuilder
         , tupleExpr
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Binary operator expressions " ++ condStr)
-        [ arithmeticBinopTests expectFn condStr
-        , comparisonBinopTests expectFn condStr
-        , logicalBinopTests expectFn condStr
-        , stringBinopTests expectFn condStr
-        , listBinopTests expectFn condStr
-        , chainedBinopTests expectFn condStr
-        , nestedBinopTests expectFn condStr
-        , binopWithExpressionsTests expectFn condStr
+    Test.test ("Binary operator expressions " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    List.concat
+        [ arithmeticBinopCases expectFn
+        , comparisonBinopCases expectFn
+        , logicalBinopCases expectFn
+        , stringBinopCases expectFn
+        , listBinopCases expectFn
+        , chainedBinopCases expectFn
+        , nestedBinopCases expectFn
+        , binopWithExpressionsCases expectFn
         ]
 
 
@@ -50,18 +57,16 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-arithmeticBinopTests : (Src.Module -> Expectation) -> String -> Test
-arithmeticBinopTests expectFn condStr =
-    Test.describe ("Arithmetic binops " ++ condStr)
-        [ Test.test ("Simple addition " ++ condStr) (simpleAddition expectFn)
-        , Test.test ("Simple subtraction " ++ condStr) (simpleSubtraction expectFn)
-        , Test.test ("Simple multiplication " ++ condStr) (simpleMultiplication expectFn)
-        , Test.test ("Simple division " ++ condStr) (simpleDivision expectFn)
-        , Test.test ("Integer division " ++ condStr) (integerDivision expectFn)
-        , Test.test ("Modulo " ++ condStr) (moduloOp expectFn)
-        , Test.test ("Power " ++ condStr) (powerOp expectFn)
-        , Test.test ("Addition with constants " ++ condStr) (additionWithConstants expectFn)
-        ]
+arithmeticBinopCases : (Src.Module -> Expectation) -> List TestCase
+arithmeticBinopCases expectFn =
+    [ { label = "Simple addition", run = simpleAddition expectFn }
+    , { label = "Simple subtraction", run = simpleSubtraction expectFn }
+    , { label = "Simple multiplication", run = simpleMultiplication expectFn }
+    , { label = "Simple division", run = simpleDivision expectFn }
+    , { label = "Integer division", run = integerDivision expectFn }
+    , { label = "Modulo", run = moduloOp expectFn }
+    , { label = "Power", run = powerOp expectFn }
+    ]
 
 
 simpleAddition : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -142,18 +147,16 @@ additionWithConstants expectFn _ =
 -- ============================================================================
 
 
-comparisonBinopTests : (Src.Module -> Expectation) -> String -> Test
-comparisonBinopTests expectFn condStr =
-    Test.describe ("Comparison binops " ++ condStr)
-        [ Test.test ("Equals " ++ condStr) (equalsOp expectFn)
-        , Test.test ("Not equals " ++ condStr) (notEqualsOp expectFn)
-        , Test.test ("Less than " ++ condStr) (lessThan expectFn)
-        , Test.test ("Greater than " ++ condStr) (greaterThan expectFn)
-        , Test.test ("Less than or equal " ++ condStr) (lessThanOrEqual expectFn)
-        , Test.test ("Greater than or equal " ++ condStr) (greaterThanOrEqual expectFn)
-        , Test.test ("Comparison with constants " ++ condStr) (comparisonWithConstants expectFn)
-        , Test.test ("Compare on strings " ++ condStr) (compareOnStrings expectFn)
-        ]
+comparisonBinopCases : (Src.Module -> Expectation) -> List TestCase
+comparisonBinopCases expectFn =
+    [ { label = "Equals", run = equalsOp expectFn }
+    , { label = "Not equals", run = notEqualsOp expectFn }
+    , { label = "Less than", run = lessThan expectFn }
+    , { label = "Greater than", run = greaterThan expectFn }
+    , { label = "Less than or equal", run = lessThanOrEqual expectFn }
+    , { label = "Greater than or equal", run = greaterThanOrEqual expectFn }
+    , { label = "Compare on strings", run = compareOnStrings expectFn }
+    ]
 
 
 equalsOp : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -234,16 +237,13 @@ compareOnStrings expectFn _ =
 -- ============================================================================
 
 
-logicalBinopTests : (Src.Module -> Expectation) -> String -> Test
-logicalBinopTests expectFn condStr =
-    Test.describe ("Logical binops " ++ condStr)
-        [ Test.test ("And " ++ condStr) (andOp expectFn)
-        , Test.test ("Or " ++ condStr) (orOp expectFn)
-        , Test.test ("And with constants " ++ condStr) (andWithConstants expectFn)
-        , Test.test ("Or with constants " ++ condStr) (orWithConstants expectFn)
-        , Test.test ("Chained and " ++ condStr) (chainedAnd expectFn)
-        , Test.test ("Chained or " ++ condStr) (chainedOr expectFn)
-        ]
+logicalBinopCases : (Src.Module -> Expectation) -> List TestCase
+logicalBinopCases expectFn =
+    [ { label = "And", run = andOp expectFn }
+    , { label = "Or", run = orOp expectFn }
+    , { label = "Chained and", run = chainedAnd expectFn }
+    , { label = "Chained or", run = chainedOr expectFn }
+    ]
 
 
 andOp : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -318,14 +318,12 @@ chainedOr expectFn _ =
 -- ============================================================================
 
 
-stringBinopTests : (Src.Module -> Expectation) -> String -> Test
-stringBinopTests expectFn condStr =
-    Test.describe ("String binops " ++ condStr)
-        [ Test.test ("String concat " ++ condStr) (stringConcat expectFn)
-        , Test.test ("String concat with constants " ++ condStr) (stringConcatWithConstants expectFn)
-        , Test.test ("Multiple string concat " ++ condStr) (multipleStringConcat expectFn)
-        , Test.test ("String concat with empty " ++ condStr) (stringConcatWithEmpty expectFn)
-        ]
+stringBinopCases : (Src.Module -> Expectation) -> List TestCase
+stringBinopCases expectFn =
+    [ { label = "String concat", run = stringConcat expectFn }
+    , { label = "Multiple string concat", run = multipleStringConcat expectFn }
+    , { label = "String concat with empty", run = stringConcatWithEmpty expectFn }
+    ]
 
 
 stringConcat : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -376,14 +374,12 @@ stringConcatWithEmpty expectFn _ =
 -- ============================================================================
 
 
-listBinopTests : (Src.Module -> Expectation) -> String -> Test
-listBinopTests expectFn condStr =
-    Test.describe ("List binops " ++ condStr)
-        [ Test.test ("List append " ++ condStr) (listAppend expectFn)
-        , Test.test ("Cons operator " ++ condStr) (consOperator expectFn)
-        , Test.test ("List append with constants " ++ condStr) (listAppendWithConstants expectFn)
-        , Test.test ("Cons with constant " ++ condStr) (consWithConstant expectFn)
-        ]
+listBinopCases : (Src.Module -> Expectation) -> List TestCase
+listBinopCases expectFn =
+    [ { label = "List append", run = listAppend expectFn }
+    , { label = "Cons operator", run = consOperator expectFn }
+    , { label = "Cons with constant", run = consWithConstant expectFn }
+    ]
 
 
 listAppend : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -444,16 +440,13 @@ consWithConstant expectFn _ =
 -- ============================================================================
 
 
-chainedBinopTests : (Src.Module -> Expectation) -> String -> Test
-chainedBinopTests expectFn condStr =
-    Test.describe ("Chained binops " ++ condStr)
-        [ Test.test ("Three-element addition chain " ++ condStr) (threeElementAdditionChain expectFn)
-        , Test.test ("Mixed arithmetic chain " ++ condStr) (mixedArithmeticChain expectFn)
-        , Test.test ("Long chain " ++ condStr) (longChain expectFn)
-        , Test.test ("Chain with constants " ++ condStr) (chainWithConstants expectFn)
-        , Test.test ("Chain of comparisons " ++ condStr) (chainOfComparisons expectFn)
-        , Test.test ("Chain with different operators " ++ condStr) (chainWithDifferentOperators expectFn)
-        ]
+chainedBinopCases : (Src.Module -> Expectation) -> List TestCase
+chainedBinopCases expectFn =
+    [ { label = "Three-element addition chain", run = threeElementAdditionChain expectFn }
+    , { label = "Mixed arithmetic chain", run = mixedArithmeticChain expectFn }
+    , { label = "Long chain", run = longChain expectFn }
+    , { label = "Chain with different operators", run = chainWithDifferentOperators expectFn }
+    ]
 
 
 threeElementAdditionChain : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -556,16 +549,15 @@ chainWithDifferentOperators expectFn _ =
 -- ============================================================================
 
 
-nestedBinopTests : (Src.Module -> Expectation) -> String -> Test
-nestedBinopTests expectFn condStr =
-    Test.describe ("Nested binops " ++ condStr)
-        [ Test.test ("Binop in tuple " ++ condStr) (binopInTuple expectFn)
-        , Test.test ("Binop in list " ++ condStr) (binopInList expectFn)
-        , Test.test ("Multiple binops in tuple " ++ condStr) (multipleBinopsInTuple expectFn)
-        , Test.test ("Binop with variable operands " ++ condStr) (binopWithVariableOperands expectFn)
-        , Test.test ("Binop with negate " ++ condStr) (binopWithNegate expectFn)
-        , Test.test ("Complex nested binops " ++ condStr) (complexNestedBinops expectFn)
-        ]
+nestedBinopCases : (Src.Module -> Expectation) -> List TestCase
+nestedBinopCases expectFn =
+    [ { label = "Binop in tuple", run = binopInTuple expectFn }
+    , { label = "Binop in list", run = binopInList expectFn }
+    , { label = "Multiple binops in tuple", run = multipleBinopsInTuple expectFn }
+    , { label = "Binop with variable operands", run = binopWithVariableOperands expectFn }
+    , { label = "Binop with negate", run = binopWithNegate expectFn }
+    , { label = "Complex nested binops", run = complexNestedBinops expectFn }
+    ]
 
 
 binopInTuple : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -657,16 +649,14 @@ complexNestedBinops expectFn _ =
 -- ============================================================================
 
 
-binopWithExpressionsTests : (Src.Module -> Expectation) -> String -> Test
-binopWithExpressionsTests expectFn condStr =
-    Test.describe ("Binops with complex expressions " ++ condStr)
-        [ Test.test ("Binop with function call " ++ condStr) (binopWithFunctionCall expectFn)
-        , Test.test ("Binop with lambda " ++ condStr) (binopWithLambda expectFn)
-        , Test.test ("Binop with record access " ++ condStr) (binopWithRecordAccess expectFn)
-        , Test.test ("Binop with if expression " ++ condStr) (binopWithIfExpr expectFn)
-        , Test.test ("Binop inside let body " ++ condStr) (binopInsideLetBody expectFn)
-        , Test.test ("Binop with parens " ++ condStr) (binopWithParens expectFn)
-        ]
+binopWithExpressionsCases : (Src.Module -> Expectation) -> List TestCase
+binopWithExpressionsCases expectFn =
+    [ { label = "Binop with function call", run = binopWithFunctionCall expectFn }
+    , { label = "Binop with record access", run = binopWithRecordAccess expectFn }
+    , { label = "Binop with if expression", run = binopWithIfExpr expectFn }
+    , { label = "Binop inside let body", run = binopInsideLetBody expectFn }
+    , { label = "Binop with parens", run = binopWithParens expectFn }
+    ]
 
 
 binopWithFunctionCall : (Src.Module -> Expectation) -> (() -> Expectation)

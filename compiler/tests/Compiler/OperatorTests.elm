@@ -1,4 +1,4 @@
-module Compiler.OperatorTests exposing (expectSuite)
+module Compiler.OperatorTests exposing (expectSuite, testCases)
 
 {-| Tests for operator expressions and if expressions.
 -}
@@ -18,16 +18,23 @@ import Compiler.AST.SourceBuilder
         , tupleExpr
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Operator and if expressions " ++ condStr)
-        [ ifTests expectFn condStr
-        , negateTests expectFn condStr
-        , combinedTests expectFn condStr
+    Test.test ("Operator and if expressions " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    List.concat
+        [ ifCases expectFn
+        , negateCases expectFn
+        , combinedCases expectFn
         ]
 
 
@@ -37,20 +44,17 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-ifTests : (Src.Module -> Expectation) -> String -> Test
-ifTests expectFn condStr =
-    Test.describe ("If expressions " ++ condStr)
-        [ Test.test ("Simple if " ++ condStr) (simpleIf expectFn)
-        , Test.test ("If with bool condition " ++ condStr) (ifWithBoolCondition expectFn)
-        , Test.test ("If with int branches " ++ condStr) (ifWithIntBranches expectFn)
-        , Test.test ("If returning tuples " ++ condStr) (ifReturningTuples expectFn)
-        , Test.test ("If returning lists " ++ condStr) (ifReturningLists expectFn)
-        , Test.test ("Nested if " ++ condStr) (nestedIf expectFn)
-        , Test.test ("If in else branch " ++ condStr) (ifInElseBranch expectFn)
-        , Test.test ("Deeply nested if " ++ condStr) (deeplyNestedIf expectFn)
-        , Test.test ("If with variable condition " ++ condStr) (ifWithVariableCondition expectFn)
-        , Test.test ("If with fixed values " ++ condStr) (ifWithFixedValues expectFn)
-        ]
+ifCases : (Src.Module -> Expectation) -> List TestCase
+ifCases expectFn =
+    [ { label = "Simple if", run = simpleIf expectFn }
+    , { label = "If with int branches", run = ifWithIntBranches expectFn }
+    , { label = "If returning tuples", run = ifReturningTuples expectFn }
+    , { label = "If returning lists", run = ifReturningLists expectFn }
+    , { label = "Nested if", run = nestedIf expectFn }
+    , { label = "If in else branch", run = ifInElseBranch expectFn }
+    , { label = "Deeply nested if", run = deeplyNestedIf expectFn }
+    , { label = "If with variable condition", run = ifWithVariableCondition expectFn }
+    ]
 
 
 simpleIf : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -177,16 +181,13 @@ ifWithFixedValues expectFn _ =
 -- ============================================================================
 
 
-negateTests : (Src.Module -> Expectation) -> String -> Test
-negateTests expectFn condStr =
-    Test.describe ("Negate expressions " ++ condStr)
-        [ Test.test ("Negate int " ++ condStr) (negateInt expectFn)
-        , Test.test ("Negate int value " ++ condStr) (negateIntValue expectFn)
-        , Test.test ("Negate float " ++ condStr) (negateFloat expectFn)
-        , Test.test ("Negate float value " ++ condStr) (negateFloatValue expectFn)
-        , Test.test ("Double negate " ++ condStr) (doubleNegate expectFn)
-        , Test.test ("Negate variable " ++ condStr) (negateVariable expectFn)
-        ]
+negateCases : (Src.Module -> Expectation) -> List TestCase
+negateCases expectFn =
+    [ { label = "Negate int", run = negateInt expectFn }
+    , { label = "Negate float", run = negateFloat expectFn }
+    , { label = "Double negate", run = doubleNegate expectFn }
+    , { label = "Negate variable", run = negateVariable expectFn }
+    ]
 
 
 negateInt : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -252,14 +253,13 @@ negateVariable expectFn _ =
 -- ============================================================================
 
 
-combinedTests : (Src.Module -> Expectation) -> String -> Test
-combinedTests expectFn condStr =
-    Test.describe ("Combined operator tests " ++ condStr)
-        [ Test.test ("If with negate condition " ++ condStr) (ifWithNegateCondition expectFn)
-        , Test.test ("Negate inside if branches " ++ condStr) (negateInsideIfBranches expectFn)
-        , Test.test ("If inside tuple with negate " ++ condStr) (ifInsideTupleWithNegate expectFn)
-        , Test.test ("Multiple ifs and negates in list " ++ condStr) (multipleIfsAndNegatesInList expectFn)
-        ]
+combinedCases : (Src.Module -> Expectation) -> List TestCase
+combinedCases expectFn =
+    [ { label = "If with negate condition", run = ifWithNegateCondition expectFn }
+    , { label = "Negate inside if branches", run = negateInsideIfBranches expectFn }
+    , { label = "If inside tuple with negate", run = ifInsideTupleWithNegate expectFn }
+    , { label = "Multiple ifs and negates in list", run = multipleIfsAndNegatesInList expectFn }
+    ]
 
 
 ifWithNegateCondition : (Src.Module -> Expectation) -> (() -> Expectation)

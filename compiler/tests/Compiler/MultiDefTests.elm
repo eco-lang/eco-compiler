@@ -1,4 +1,4 @@
-module Compiler.MultiDefTests exposing (expectSuite)
+module Compiler.MultiDefTests exposing (expectSuite, testCases)
 
 {-| Tests for modules with multiple top-level definitions.
 
@@ -10,45 +10,47 @@ the entire module.
 
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder exposing (..)
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Multiple top-level definitions " ++ condStr)
-        [ basicMultiDefTests expectFn condStr
-        , complexMultiDefTests expectFn condStr
-        ]
+    Test.test ("Multiple top-level definitions " ++ condStr) (\() -> bulkCheck (testCases expectFn))
 
 
-basicMultiDefTests : (Src.Module -> Expectation) -> String -> Test
-basicMultiDefTests expectFn condStr =
-    Test.describe ("Basic multi-definition modules " ++ condStr)
-        [ Test.test ("Two identical structure definitions " ++ condStr) (twoIdenticalStructureDefinitions expectFn)
-        , Test.test ("Three simple value definitions " ++ condStr) (threeSimpleValueDefinitions expectFn)
-        , Test.test ("Multiple function definitions with same arity " ++ condStr) (multipleFunctionsSameArity expectFn)
-        , Test.test ("Multiple function definitions with different arities " ++ condStr) (multipleFunctionsDifferentArities expectFn)
-        , Test.test ("Functions that call each other " ++ condStr) (functionsCallEachOther expectFn)
-        , Test.test ("Multiple definitions with let expressions " ++ condStr) (multipleDefsWithLet expectFn)
-        , Test.test ("Multiple definitions with case expressions " ++ condStr) (multipleDefsWithCase expectFn)
-        , Test.test ("Multiple definitions with if expressions " ++ condStr) (multipleDefsWithIf expectFn)
-        , Test.test ("Multiple definitions with lambdas " ++ condStr) (multipleDefsWithLambdas expectFn)
-        , Test.test ("Multiple definitions with records " ++ condStr) (multipleDefsWithRecords expectFn)
-        , Test.test ("Multiple definitions with binary operators " ++ condStr) (multipleDefsWithBinops expectFn)
-        , Test.test ("Large module with many definitions " ++ condStr) (largeModuleManyDefs expectFn)
-        ]
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    basicMultiDefCases expectFn
+        ++ complexMultiDefCases expectFn
 
 
-complexMultiDefTests : (Src.Module -> Expectation) -> String -> Test
-complexMultiDefTests expectFn condStr =
-    Test.describe ("Complex multi-definition scenarios " ++ condStr)
-        [ Test.test ("Definitions with nested lets " ++ condStr) (nestedLetsMultipleDefs expectFn)
-        , Test.test ("Definitions with tuple patterns " ++ condStr) (tuplePatternMultipleDefs expectFn)
-        , Test.test ("Definitions with list patterns " ++ condStr) (listPatternMultipleDefs expectFn)
-        , Test.test ("Definitions with record patterns " ++ condStr) (recordPatternMultipleDefs expectFn)
-        , Test.test ("Mixed expressions and patterns across definitions " ++ condStr) (mixedExpressionsAndPatterns expectFn)
-        ]
+basicMultiDefCases : (Src.Module -> Expectation) -> List TestCase
+basicMultiDefCases expectFn =
+    [ { label = "Two identical structure definitions", run = twoIdenticalStructureDefinitions expectFn }
+    , { label = "Three simple value definitions", run = threeSimpleValueDefinitions expectFn }
+    , { label = "Multiple function definitions with same arity", run = multipleFunctionsSameArity expectFn }
+    , { label = "Multiple function definitions with different arities", run = multipleFunctionsDifferentArities expectFn }
+    , { label = "Functions that call each other", run = functionsCallEachOther expectFn }
+    , { label = "Multiple definitions with let expressions", run = multipleDefsWithLet expectFn }
+    , { label = "Multiple definitions with case expressions", run = multipleDefsWithCase expectFn }
+    , { label = "Multiple definitions with if expressions", run = multipleDefsWithIf expectFn }
+    , { label = "Multiple definitions with lambdas", run = multipleDefsWithLambdas expectFn }
+    , { label = "Multiple definitions with records", run = multipleDefsWithRecords expectFn }
+    , { label = "Multiple definitions with binary operators", run = multipleDefsWithBinops expectFn }
+    , { label = "Large module with many definitions", run = largeModuleManyDefs expectFn }
+    ]
+
+
+complexMultiDefCases : (Src.Module -> Expectation) -> List TestCase
+complexMultiDefCases expectFn =
+    [ { label = "Definitions with nested lets", run = nestedLetsMultipleDefs expectFn }
+    , { label = "Definitions with tuple patterns", run = tuplePatternMultipleDefs expectFn }
+    , { label = "Definitions with list patterns", run = listPatternMultipleDefs expectFn }
+    , { label = "Definitions with record patterns", run = recordPatternMultipleDefs expectFn }
+    , { label = "Mixed expressions and patterns across definitions", run = mixedExpressionsAndPatterns expectFn }
+    ]
 
 
 twoIdenticalStructureDefinitions : (Src.Module -> Expectation) -> (() -> Expectation)

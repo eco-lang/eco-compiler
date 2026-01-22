@@ -1,4 +1,4 @@
-module Compiler.KernelTests exposing (expectSuite)
+module Compiler.KernelTests exposing (expectSuite, testCases)
 
 {-| Tests for VarKernel expressions.
 
@@ -23,16 +23,23 @@ import Compiler.AST.CanonicalBuilder
         , varKernelExpr
         , varLocalExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
 expectSuite : (Can.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe "VarKernel expressions"
-        [ simpleKernelTests expectFn condStr
-        , kernelCallTests expectFn condStr
-        , kernelInContextTests expectFn condStr
+    Test.test ("VarKernel expressions " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Can.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    List.concat
+        [ simpleKernelCases expectFn
+        , kernelCallCases expectFn
+        , kernelInContextCases expectFn
         ]
 
 
@@ -42,18 +49,17 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-simpleKernelTests : (Can.Module -> Expectation) -> String -> Test
-simpleKernelTests expectFn condStr =
-    Test.describe "Simple kernel expressions"
-        [ Test.test ("VarKernel List.batch " ++ condStr) (varKernelListBatch expectFn)
-        , Test.test ("VarKernel Platform.batch " ++ condStr) (varKernelPlatformBatch expectFn)
-        , Test.test ("VarKernel Scheduler.succeed " ++ condStr) (varKernelSchedulerSucceed expectFn)
-        , Test.test ("VarKernel Process.spawn " ++ condStr) (varKernelProcessSpawn expectFn)
-        , Test.test ("VarKernel JsArray.empty " ++ condStr) (varKernelJsArrayEmpty expectFn)
-        , Test.test ("VarKernel Utils.Tuple2 " ++ condStr) (varKernelUtilsTuple2 expectFn)
-        , Test.test ("VarKernel Basics.pi (ConstantFloat intrinsic) " ++ condStr) (varKernelBasicsPi expectFn)
-        , Test.test ("VarKernel Basics.add (intrinsic function arity>0) " ++ condStr) (varKernelBasicsAdd expectFn)
-        ]
+simpleKernelCases : (Can.Module -> Expectation) -> List TestCase
+simpleKernelCases expectFn =
+    [ { label = "VarKernel List.batch", run = varKernelListBatch expectFn }
+    , { label = "VarKernel Platform.batch", run = varKernelPlatformBatch expectFn }
+    , { label = "VarKernel Scheduler.succeed", run = varKernelSchedulerSucceed expectFn }
+    , { label = "VarKernel Process.spawn", run = varKernelProcessSpawn expectFn }
+    , { label = "VarKernel JsArray.empty", run = varKernelJsArrayEmpty expectFn }
+    , { label = "VarKernel Utils.Tuple2", run = varKernelUtilsTuple2 expectFn }
+    , { label = "VarKernel Basics.pi (ConstantFloat intrinsic)", run = varKernelBasicsPi expectFn }
+    , { label = "VarKernel Basics.add (intrinsic function arity>0)", run = varKernelBasicsAdd expectFn }
+    ]
 
 
 varKernelListBatch : (Can.Module -> Expectation) -> (() -> Expectation)
@@ -150,16 +156,15 @@ varKernelBasicsAdd expectFn _ =
 -- ============================================================================
 
 
-kernelCallTests : (Can.Module -> Expectation) -> String -> Test
-kernelCallTests expectFn condStr =
-    Test.describe "Kernel function calls"
-        [ Test.test ("Calling kernel function with int arg " ++ condStr) (kernelCallWithIntArg expectFn)
-        , Test.test ("Calling kernel function with multiple args " ++ condStr) (kernelCallWithMultipleArgs expectFn)
-        , Test.test ("Nested kernel calls " ++ condStr) (nestedKernelCalls expectFn)
-        , Test.test ("Multiple kernel calls in tuple " ++ condStr) (multipleKernelCallsInTuple expectFn)
-        , Test.test ("Kernel function as higher-order argument " ++ condStr) (kernelAsHigherOrderArg expectFn)
-        , Test.test ("Kernel function in list " ++ condStr) (kernelFunctionInList expectFn)
-        ]
+kernelCallCases : (Can.Module -> Expectation) -> List TestCase
+kernelCallCases expectFn =
+    [ { label = "Calling kernel function with int arg", run = kernelCallWithIntArg expectFn }
+    , { label = "Calling kernel function with multiple args", run = kernelCallWithMultipleArgs expectFn }
+    , { label = "Nested kernel calls", run = nestedKernelCalls expectFn }
+    , { label = "Multiple kernel calls in tuple", run = multipleKernelCallsInTuple expectFn }
+    , { label = "Kernel function as higher-order argument", run = kernelAsHigherOrderArg expectFn }
+    , { label = "Kernel function in list", run = kernelFunctionInList expectFn }
+    ]
 
 
 kernelCallWithIntArg : (Can.Module -> Expectation) -> (() -> Expectation)
@@ -285,16 +290,15 @@ kernelFunctionInList expectFn _ =
 -- ============================================================================
 
 
-kernelInContextTests : (Can.Module -> Expectation) -> String -> Test
-kernelInContextTests expectFn condStr =
-    Test.describe "Kernel functions in context"
-        [ Test.test ("Kernel function in lambda body " ++ condStr) (kernelInLambdaBody expectFn)
-        , Test.test ("Kernel function in let binding " ++ condStr) (kernelInLetBinding expectFn)
-        , Test.test ("Multiple kernel functions from same module " ++ condStr) (multipleKernelSameModule expectFn)
-        , Test.test ("Kernel functions from different modules " ++ condStr) (kernelDifferentModules expectFn)
-        , Test.test ("Kernel function with complex args " ++ condStr) (kernelWithComplexArgs expectFn)
-        , Test.test ("Chained kernel calls " ++ condStr) (chainedKernelCalls expectFn)
-        ]
+kernelInContextCases : (Can.Module -> Expectation) -> List TestCase
+kernelInContextCases expectFn =
+    [ { label = "Kernel function in lambda body", run = kernelInLambdaBody expectFn }
+    , { label = "Kernel function in let binding", run = kernelInLetBinding expectFn }
+    , { label = "Multiple kernel functions from same module", run = multipleKernelSameModule expectFn }
+    , { label = "Kernel functions from different modules", run = kernelDifferentModules expectFn }
+    , { label = "Kernel function with complex args", run = kernelWithComplexArgs expectFn }
+    , { label = "Chained kernel calls", run = chainedKernelCalls expectFn }
+    ]
 
 
 kernelInLambdaBody : (Can.Module -> Expectation) -> (() -> Expectation)

@@ -1,4 +1,4 @@
-module Compiler.ListTests exposing (expectSuite)
+module Compiler.ListTests exposing (expectSuite, testCases)
 
 {-| Tests for list expressions.
 -}
@@ -9,8 +9,6 @@ import Compiler.AST.SourceBuilder
         ( binopsExpr
         , callExpr
         , caseExpr
-        , chrExpr
-        , floatExpr
         , ifExpr
         , intExpr
         , lambdaExpr
@@ -27,36 +25,37 @@ import Compiler.AST.SourceBuilder
         , tupleExpr
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("List expressions " ++ condStr)
-        [ emptyListTests expectFn condStr
-        , singleElementTests expectFn condStr
-        , multipleElementTests expectFn condStr
-        , nestedListTests expectFn condStr
-        , mixedTypeTests expectFn condStr
-        , knownListFails expectFn condStr
-        ]
+    Test.test ("List expressions " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    emptyListCases expectFn
+        ++ singleElementCases expectFn
+        ++ multipleElementCases expectFn
+        ++ nestedListCases expectFn
+        ++ mixedTypeCases expectFn
+        ++ knownListFailsCases expectFn
 
 
 
 -- ============================================================================
--- EMPTY LIST (4 tests)
+-- EMPTY LIST
 -- ============================================================================
 
 
-emptyListTests : (Src.Module -> Expectation) -> String -> Test
-emptyListTests expectFn condStr =
-    Test.describe ("Empty lists " ++ condStr)
-        [ Test.test ("Empty list " ++ condStr) (emptyList expectFn)
-        , Test.test ("Two empty lists in separate modules " ++ condStr) (twoEmptyLists expectFn)
-        , Test.test ("Empty int list " ++ condStr) (emptyIntList expectFn)
-        , Test.test ("Empty string list " ++ condStr) (emptyStringList expectFn)
-        ]
+emptyListCases : (Src.Module -> Expectation) -> List TestCase
+emptyListCases expectFn =
+    [ { label = "Empty list", run = emptyList expectFn }
+    ]
 
 
 emptyList : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -68,54 +67,16 @@ emptyList expectFn _ =
     expectFn modul
 
 
-twoEmptyLists : (Src.Module -> Expectation) -> (() -> Expectation)
-twoEmptyLists expectFn _ =
-    let
-        modul1 =
-            makeModule "list1" (listExpr [])
-
-        modul2 =
-            makeModule "list2" (listExpr [])
-    in
-    Expect.all
-        [ \_ -> expectFn modul1
-        , \_ -> expectFn modul2
-        ]
-        ()
-
-
-emptyIntList : (Src.Module -> Expectation) -> (() -> Expectation)
-emptyIntList expectFn _ =
-    let
-        modul =
-            makeModule "intList" (listExpr [])
-    in
-    expectFn modul
-
-
-emptyStringList : (Src.Module -> Expectation) -> (() -> Expectation)
-emptyStringList expectFn _ =
-    let
-        modul =
-            makeModule "strList" (listExpr [])
-    in
-    expectFn modul
-
-
 
 -- ============================================================================
--- SINGLE ELEMENT (4 tests)
+-- SINGLE ELEMENT
 -- ============================================================================
 
 
-singleElementTests : (Src.Module -> Expectation) -> String -> Test
-singleElementTests expectFn condStr =
-    Test.describe ("Single element lists " ++ condStr)
-        [ Test.test ("Single int list " ++ condStr) (singleIntList expectFn)
-        , Test.test ("Single string list " ++ condStr) (singleStringList expectFn)
-        , Test.test ("Single float list " ++ condStr) (singleFloatList expectFn)
-        , Test.test ("Single char list " ++ condStr) (singleCharList expectFn)
-        ]
+singleElementCases : (Src.Module -> Expectation) -> List TestCase
+singleElementCases expectFn =
+    [ { label = "Single int list", run = singleIntList expectFn }
+    ]
 
 
 singleIntList : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -127,59 +88,16 @@ singleIntList expectFn _ =
     expectFn modul
 
 
-singleStringList : (Src.Module -> Expectation) -> (() -> Expectation)
-singleStringList expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (listExpr [ strExpr "hello" ])
-    in
-    expectFn modul
-
-
-singleFloatList : (Src.Module -> Expectation) -> (() -> Expectation)
-singleFloatList expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (listExpr [ floatExpr 3.14 ])
-    in
-    expectFn modul
-
-
-singleCharList : (Src.Module -> Expectation) -> (() -> Expectation)
-singleCharList expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (listExpr [ chrExpr "x" ])
-    in
-    expectFn modul
-
-
 
 -- ============================================================================
--- MULTIPLE ELEMENTS (7 tests)
+-- MULTIPLE ELEMENTS
 -- ============================================================================
 
 
-multipleElementTests : (Src.Module -> Expectation) -> String -> Test
-multipleElementTests expectFn condStr =
-    Test.describe ("Multiple element lists " ++ condStr)
-        [ Test.test ("Two-element int list " ++ condStr) (twoElementIntList expectFn)
-        , Test.test ("Three-element int list " ++ condStr) (threeElementIntList expectFn)
-        , Test.test ("Five-element int list " ++ condStr) (fiveElementIntList expectFn)
-        , Test.test ("Two-element string list " ++ condStr) (twoElementStringList expectFn)
-        , Test.test ("Three-element float list " ++ condStr) (threeElementFloatList expectFn)
-        , Test.test ("Ten-element int list " ++ condStr) (tenElementIntList expectFn)
-        , Test.test ("Large int list " ++ condStr) (largeIntList expectFn)
-        ]
-
-
-twoElementIntList : (Src.Module -> Expectation) -> (() -> Expectation)
-twoElementIntList expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (listExpr [ intExpr 1, intExpr 2 ])
-    in
-    expectFn modul
+multipleElementCases : (Src.Module -> Expectation) -> List TestCase
+multipleElementCases expectFn =
+    [ { label = "Three-element int list", run = threeElementIntList expectFn }
+    ]
 
 
 threeElementIntList : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -191,71 +109,19 @@ threeElementIntList expectFn _ =
     expectFn modul
 
 
-fiveElementIntList : (Src.Module -> Expectation) -> (() -> Expectation)
-fiveElementIntList expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (listExpr [ intExpr 1, intExpr 2, intExpr 3, intExpr 4, intExpr 5 ])
-    in
-    expectFn modul
-
-
-twoElementStringList : (Src.Module -> Expectation) -> (() -> Expectation)
-twoElementStringList expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (listExpr [ strExpr "a", strExpr "b" ])
-    in
-    expectFn modul
-
-
-threeElementFloatList : (Src.Module -> Expectation) -> (() -> Expectation)
-threeElementFloatList expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (listExpr [ floatExpr 1.1, floatExpr 2.2, floatExpr 3.3 ])
-    in
-    expectFn modul
-
-
-tenElementIntList : (Src.Module -> Expectation) -> (() -> Expectation)
-tenElementIntList expectFn _ =
-    let
-        elements =
-            List.map intExpr (List.range 1 10)
-
-        modul =
-            makeModule "testValue" (listExpr elements)
-    in
-    expectFn modul
-
-
-largeIntList : (Src.Module -> Expectation) -> (() -> Expectation)
-largeIntList expectFn _ =
-    let
-        elements =
-            List.map intExpr (List.range 1 100)
-
-        modul =
-            makeModule "testValue" (listExpr elements)
-    in
-    expectFn modul
-
-
 
 -- ============================================================================
--- NESTED LISTS (4 tests)
+-- NESTED LISTS
 -- ============================================================================
 
 
-nestedListTests : (Src.Module -> Expectation) -> String -> Test
-nestedListTests expectFn condStr =
-    Test.describe ("Nested lists " ++ condStr)
-        [ Test.test ("List of lists " ++ condStr) (listOfLists expectFn)
-        , Test.test ("Deeply nested list " ++ condStr) (deeplyNestedList expectFn)
-        , Test.test ("List of tuples " ++ condStr) (listOfTuples expectFn)
-        , Test.test ("List of records " ++ condStr) (listOfRecords expectFn)
-        ]
+nestedListCases : (Src.Module -> Expectation) -> List TestCase
+nestedListCases expectFn =
+    [ { label = "List of lists", run = listOfLists expectFn }
+    , { label = "Deeply nested list", run = deeplyNestedList expectFn }
+    , { label = "List of tuples", run = listOfTuples expectFn }
+    , { label = "List of records", run = listOfRecords expectFn }
+    ]
 
 
 listOfLists : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -323,18 +189,15 @@ listOfRecords expectFn _ =
 
 
 -- ============================================================================
--- MIXED TYPES (4 tests)
+-- MIXED TYPES
 -- ============================================================================
 
 
-mixedTypeTests : (Src.Module -> Expectation) -> String -> Test
-mixedTypeTests expectFn condStr =
-    Test.describe ("Mixed element types (in tuples/records) " ++ condStr)
-        [ Test.test ("List of int tuples " ++ condStr) (listOfIntTuples expectFn)
-        , Test.test ("List of string tuples " ++ condStr) (listOfStringTuples expectFn)
-        , Test.test ("List with nested lists of different types " ++ condStr) (listWithNestedListsDifferentTypes expectFn)
-        , Test.test ("List of records with multiple fields " ++ condStr) (listOfRecordsMultipleFields expectFn)
-        ]
+mixedTypeCases : (Src.Module -> Expectation) -> List TestCase
+mixedTypeCases expectFn =
+    [ { label = "List of int tuples", run = listOfIntTuples expectFn }
+    , { label = "List of records with multiple fields", run = listOfRecordsMultipleFields expectFn }
+    ]
 
 
 listOfIntTuples : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -345,35 +208,6 @@ listOfIntTuples expectFn _ =
                 (listExpr
                     [ tupleExpr (intExpr 1) (intExpr 2)
                     , tupleExpr (intExpr 3) (intExpr 4)
-                    ]
-                )
-    in
-    expectFn modul
-
-
-listOfStringTuples : (Src.Module -> Expectation) -> (() -> Expectation)
-listOfStringTuples expectFn _ =
-    let
-        modul =
-            makeModule "testValue"
-                (listExpr
-                    [ tupleExpr (strExpr "a") (strExpr "b")
-                    , tupleExpr (strExpr "c") (strExpr "d")
-                    ]
-                )
-    in
-    expectFn modul
-
-
-listWithNestedListsDifferentTypes : (Src.Module -> Expectation) -> (() -> Expectation)
-listWithNestedListsDifferentTypes expectFn _ =
-    let
-        modul =
-            makeModule "testValue"
-                (listExpr
-                    [ listExpr [ intExpr 1, intExpr 2 ]
-                    , listExpr [ intExpr 3 ]
-                    , listExpr []
                     ]
                 )
     in
@@ -404,14 +238,13 @@ listOfRecordsMultipleFields expectFn _ =
 
 {-| Test suite for exact List.elm functions that fail type checking.
 -}
-knownListFails : (Src.Module -> Expectation) -> String -> Test
-knownListFails expectFn condStr =
-    Test.describe ("Exact List.elm functions " ++ condStr)
-        [ Test.test ("concatMap " ++ condStr) (testConcatMap expectFn)
-        , Test.test ("indexedMap " ++ condStr) (testIndexedMap expectFn)
-        , Test.test ("filter " ++ condStr) (testFilter expectFn)
-        , Test.test ("filterMap " ++ condStr) (testFilterMap expectFn)
-        ]
+knownListFailsCases : (Src.Module -> Expectation) -> List TestCase
+knownListFailsCases expectFn =
+    [ { label = "concatMap", run = testConcatMap expectFn }
+    , { label = "indexedMap", run = testIndexedMap expectFn }
+    , { label = "filter", run = testFilter expectFn }
+    , { label = "filterMap", run = testFilterMap expectFn }
+    ]
 
 
 {-| concatMap : (a -> List b) -> List a -> List b

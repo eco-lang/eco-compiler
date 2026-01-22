@@ -1,4 +1,4 @@
-module Compiler.RecordTests exposing (expectSuite)
+module Compiler.RecordTests exposing (expectSuite, testCases)
 
 {-| Tests for record expressions: creation, access, update.
 -}
@@ -21,35 +21,38 @@ import Compiler.AST.SourceBuilder
         , updateExpr
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Record expressions " ++ condStr)
-        [ emptyRecordTests expectFn condStr
-        , singleFieldTests expectFn condStr
-        , multiFieldTests expectFn condStr
-        , nestedRecordTests expectFn condStr
-        , recordAccessTests expectFn condStr
-        , recordAccessorTests expectFn condStr
-        , recordUpdateTests expectFn condStr
-        ]
+    Test.test ("Record expressions " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    emptyRecordCases expectFn
+        ++ singleFieldCases expectFn
+        ++ multiFieldCases expectFn
+        ++ nestedRecordCases expectFn
+        ++ recordAccessCases expectFn
+        ++ recordAccessorCases expectFn
+        ++ recordUpdateCases expectFn
 
 
 
 -- ============================================================================
--- EMPTY RECORD (2 tests)
+-- EMPTY RECORD
 -- ============================================================================
 
 
-emptyRecordTests : (Src.Module -> Expectation) -> String -> Test
-emptyRecordTests expectFn condStr =
-    Test.describe "Empty records"
-        [ Test.test ("Empty record " ++ condStr) (emptyRecord expectFn)
-        , Test.test ("Two empty records " ++ condStr) (twoEmptyRecords expectFn)
-        ]
+emptyRecordCases : (Src.Module -> Expectation) -> List TestCase
+emptyRecordCases expectFn =
+    [ { label = "Empty record", run = emptyRecord expectFn }
+    ]
 
 
 emptyRecord : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -61,38 +64,18 @@ emptyRecord expectFn _ =
     expectFn modul
 
 
-twoEmptyRecords : (Src.Module -> Expectation) -> (() -> Expectation)
-twoEmptyRecords expectFn _ =
-    let
-        modul1 =
-            makeModule "rec1" (recordExpr [])
-
-        modul2 =
-            makeModule "rec2" (recordExpr [])
-    in
-    Expect.all
-        [ \_ -> expectFn modul1
-        , \_ -> expectFn modul2
-        ]
-        ()
-
-
 
 -- ============================================================================
--- SINGLE FIELD RECORDS (6 tests)
+-- SINGLE FIELD RECORDS
 -- ============================================================================
 
 
-singleFieldTests : (Src.Module -> Expectation) -> String -> Test
-singleFieldTests expectFn condStr =
-    Test.describe ("Single field records " ++ condStr)
-        [ Test.test ("Record with int field " ++ condStr) (recordWithIntField expectFn)
-        , Test.test ("Record with string field " ++ condStr) (recordWithStringField expectFn)
-        , Test.test ("Record with float field " ++ condStr) (recordWithFloatField expectFn)
-        , Test.test ("Record with bool field " ++ condStr) (recordWithBoolField expectFn)
-        , Test.test ("Record with list field " ++ condStr) (recordWithListField expectFn)
-        , Test.test ("Record with tuple field " ++ condStr) (recordWithTupleField expectFn)
-        ]
+singleFieldCases : (Src.Module -> Expectation) -> List TestCase
+singleFieldCases expectFn =
+    [ { label = "Record with int field", run = recordWithIntField expectFn }
+    , { label = "Record with list field", run = recordWithListField expectFn }
+    , { label = "Record with tuple field", run = recordWithTupleField expectFn }
+    ]
 
 
 recordWithIntField : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -100,33 +83,6 @@ recordWithIntField expectFn _ =
     let
         modul =
             makeModule "testValue" (recordExpr [ ( "value", intExpr 42 ) ])
-    in
-    expectFn modul
-
-
-recordWithStringField : (Src.Module -> Expectation) -> (() -> Expectation)
-recordWithStringField expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (recordExpr [ ( "name", strExpr "hello" ) ])
-    in
-    expectFn modul
-
-
-recordWithFloatField : (Src.Module -> Expectation) -> (() -> Expectation)
-recordWithFloatField expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (recordExpr [ ( "amount", floatExpr 3.14 ) ])
-    in
-    expectFn modul
-
-
-recordWithBoolField : (Src.Module -> Expectation) -> (() -> Expectation)
-recordWithBoolField expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (recordExpr [ ( "active", boolExpr True ) ])
     in
     expectFn modul
 
@@ -151,20 +107,16 @@ recordWithTupleField expectFn _ =
 
 
 -- ============================================================================
--- MULTI-FIELD RECORDS (6 tests)
+-- MULTI-FIELD RECORDS
 -- ============================================================================
 
 
-multiFieldTests : (Src.Module -> Expectation) -> String -> Test
-multiFieldTests expectFn condStr =
-    Test.describe ("Multi-field records " ++ condStr)
-        [ Test.test ("Two-field record " ++ condStr) (twoFieldRecord expectFn)
-        , Test.test ("Three-field record " ++ condStr) (threeFieldRecord expectFn)
-        , Test.test ("Five-field record " ++ condStr) (fiveFieldRecord expectFn)
-        , Test.test ("Record with mixed types " ++ condStr) (recordWithMixedTypes expectFn)
-        , Test.test ("Record with two int fields " ++ condStr) (recordWithTwoIntFields expectFn)
-        , Test.test ("Record with ten fields " ++ condStr) (recordWithTenFields expectFn)
-        ]
+multiFieldCases : (Src.Module -> Expectation) -> List TestCase
+multiFieldCases expectFn =
+    [ { label = "Two-field record", run = twoFieldRecord expectFn }
+    , { label = "Five-field record", run = fiveFieldRecord expectFn }
+    , { label = "Record with mixed types", run = recordWithMixedTypes expectFn }
+    ]
 
 
 twoFieldRecord : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -175,21 +127,6 @@ twoFieldRecord expectFn _ =
                 (recordExpr
                     [ ( "id", intExpr 1 )
                     , ( "name", strExpr "a" )
-                    ]
-                )
-    in
-    expectFn modul
-
-
-threeFieldRecord : (Src.Module -> Expectation) -> (() -> Expectation)
-threeFieldRecord expectFn _ =
-    let
-        modul =
-            makeModule "testValue"
-                (recordExpr
-                    [ ( "id", intExpr 1 )
-                    , ( "name", strExpr "a" )
-                    , ( "active", boolExpr True )
                     ]
                 )
     in
@@ -229,48 +166,18 @@ recordWithMixedTypes expectFn _ =
     expectFn modul
 
 
-recordWithTwoIntFields : (Src.Module -> Expectation) -> (() -> Expectation)
-recordWithTwoIntFields expectFn _ =
-    let
-        modul =
-            makeModule "testValue"
-                (recordExpr
-                    [ ( "x", intExpr 1 )
-                    , ( "y", intExpr 2 )
-                    ]
-                )
-    in
-    expectFn modul
-
-
-recordWithTenFields : (Src.Module -> Expectation) -> (() -> Expectation)
-recordWithTenFields expectFn _ =
-    let
-        fields =
-            List.indexedMap (\i _ -> ( "field" ++ String.fromInt i, intExpr i )) (List.range 0 9)
-
-        modul =
-            makeModule "testValue" (recordExpr fields)
-    in
-    expectFn modul
-
-
 
 -- ============================================================================
--- NESTED RECORDS (6 tests)
+-- NESTED RECORDS
 -- ============================================================================
 
 
-nestedRecordTests : (Src.Module -> Expectation) -> String -> Test
-nestedRecordTests expectFn condStr =
-    Test.describe ("Nested records " ++ condStr)
-        [ Test.test ("Record containing record " ++ condStr) (recordContainingRecord expectFn)
-        , Test.test ("Deeply nested record " ++ condStr) (deeplyNestedRecord expectFn)
-        , Test.test ("Record with list field " ++ condStr) (recordWithListFieldNested expectFn)
-        , Test.test ("Record with tuple field " ++ condStr) (recordWithTupleFieldNested expectFn)
-        , Test.test ("Multiple levels of nesting " ++ condStr) (multipleLevelsOfNesting expectFn)
-        , Test.test ("Record containing list of records " ++ condStr) (recordContainingListOfRecords expectFn)
-        ]
+nestedRecordCases : (Src.Module -> Expectation) -> List TestCase
+nestedRecordCases expectFn =
+    [ { label = "Record containing record", run = recordContainingRecord expectFn }
+    , { label = "Deeply nested record", run = deeplyNestedRecord expectFn }
+    , { label = "Record containing list of records", run = recordContainingListOfRecords expectFn }
+    ]
 
 
 recordContainingRecord : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -305,50 +212,6 @@ deeplyNestedRecord expectFn _ =
     expectFn modul
 
 
-recordWithListFieldNested : (Src.Module -> Expectation) -> (() -> Expectation)
-recordWithListFieldNested expectFn _ =
-    let
-        list =
-            listExpr [ intExpr 1, intExpr 2, intExpr 3 ]
-
-        modul =
-            makeModule "testValue" (recordExpr [ ( "items", list ) ])
-    in
-    expectFn modul
-
-
-recordWithTupleFieldNested : (Src.Module -> Expectation) -> (() -> Expectation)
-recordWithTupleFieldNested expectFn _ =
-    let
-        tuple =
-            tupleExpr (intExpr 1) (strExpr "one")
-
-        modul =
-            makeModule "testValue" (recordExpr [ ( "pair", tuple ) ])
-    in
-    expectFn modul
-
-
-multipleLevelsOfNesting : (Src.Module -> Expectation) -> (() -> Expectation)
-multipleLevelsOfNesting expectFn _ =
-    let
-        deepest =
-            recordExpr [ ( "z", intExpr 1 ) ]
-
-        middle =
-            recordExpr [ ( "y", deepest ), ( "count", intExpr 2 ) ]
-
-        modul =
-            makeModule "testValue"
-                (recordExpr
-                    [ ( "x", middle )
-                    , ( "label", strExpr "outer" )
-                    ]
-                )
-    in
-    expectFn modul
-
-
 recordContainingListOfRecords : (Src.Module -> Expectation) -> (() -> Expectation)
 recordContainingListOfRecords expectFn _ =
     let
@@ -370,18 +233,15 @@ recordContainingListOfRecords expectFn _ =
 
 
 -- ============================================================================
--- RECORD ACCESS (4 tests)
+-- RECORD ACCESS
 -- ============================================================================
 
 
-recordAccessTests : (Src.Module -> Expectation) -> String -> Test
-recordAccessTests expectFn condStr =
-    Test.describe ("Record access " ++ condStr)
-        [ Test.test ("Access single field " ++ condStr) (accessSingleField expectFn)
-        , Test.test ("Access from multi-field record " ++ condStr) (accessFromMultiFieldRecord expectFn)
-        , Test.test ("Chained access " ++ condStr) (chainedAccess expectFn)
-        , Test.test ("Multiple accesses " ++ condStr) (multipleAccesses expectFn)
-        ]
+recordAccessCases : (Src.Module -> Expectation) -> List TestCase
+recordAccessCases expectFn =
+    [ { label = "Access single field", run = accessSingleField expectFn }
+    , { label = "Chained access", run = chainedAccess expectFn }
+    ]
 
 
 accessSingleField : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -395,27 +255,6 @@ accessSingleField expectFn _ =
 
         access =
             accessExpr (varExpr "r") "x"
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] access)
-    in
-    expectFn modul
-
-
-accessFromMultiFieldRecord : (Src.Module -> Expectation) -> (() -> Expectation)
-accessFromMultiFieldRecord expectFn _ =
-    let
-        record =
-            recordExpr
-                [ ( "x", intExpr 10 )
-                , ( "y", intExpr 20 )
-                ]
-
-        def =
-            define "r" [] record
-
-        access =
-            accessExpr (varExpr "r") "y"
 
         modul =
             makeModule "testValue" (letExpr [ def ] access)
@@ -444,41 +283,17 @@ chainedAccess expectFn _ =
     expectFn modul
 
 
-multipleAccesses : (Src.Module -> Expectation) -> (() -> Expectation)
-multipleAccesses expectFn _ =
-    let
-        record =
-            recordExpr
-                [ ( "x", intExpr 1 )
-                , ( "y", intExpr 2 )
-                ]
-
-        def =
-            define "r" [] record
-
-        result =
-            tupleExpr (accessExpr (varExpr "r") "x") (accessExpr (varExpr "r") "y")
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] result)
-    in
-    expectFn modul
-
-
 
 -- ============================================================================
--- RECORD ACCESSOR FUNCTIONS (4 tests)
+-- RECORD ACCESSOR FUNCTIONS
 -- ============================================================================
 
 
-recordAccessorTests : (Src.Module -> Expectation) -> String -> Test
-recordAccessorTests expectFn condStr =
-    Test.describe ("Record accessor functions " ++ condStr)
-        [ Test.test ("Accessor function " ++ condStr) (accessorFunction expectFn)
-        , Test.test ("Different accessor function " ++ condStr) (differentAccessorFunction expectFn)
-        , Test.test ("Multiple accessor functions " ++ condStr) (multipleAccessorFunctions expectFn)
-        , Test.test ("Accessor in list " ++ condStr) (accessorInList expectFn)
-        ]
+recordAccessorCases : (Src.Module -> Expectation) -> List TestCase
+recordAccessorCases expectFn =
+    [ { label = "Accessor function", run = accessorFunction expectFn }
+    , { label = "Multiple accessor functions", run = multipleAccessorFunctions expectFn }
+    ]
 
 
 accessorFunction : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -486,15 +301,6 @@ accessorFunction expectFn _ =
     let
         modul =
             makeModule "testValue" (accessorExpr "x")
-    in
-    expectFn modul
-
-
-differentAccessorFunction : (Src.Module -> Expectation) -> (() -> Expectation)
-differentAccessorFunction expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (accessorExpr "name")
     in
     expectFn modul
 
@@ -508,32 +314,18 @@ multipleAccessorFunctions expectFn _ =
     expectFn modul
 
 
-accessorInList : (Src.Module -> Expectation) -> (() -> Expectation)
-accessorInList expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (listExpr [ accessorExpr "a", accessorExpr "b", accessorExpr "c" ])
-    in
-    expectFn modul
-
-
 
 -- ============================================================================
--- RECORD UPDATE (5 tests)
+-- RECORD UPDATE
 -- ============================================================================
 
 
-recordUpdateTests : (Src.Module -> Expectation) -> String -> Test
-recordUpdateTests expectFn condStr =
-    Test.describe ("Record update " ++ condStr)
-        [ Test.test ("Update single field " ++ condStr) (updateSingleField expectFn)
-        , Test.test ("Update multiple fields " ++ condStr) (updateMultipleFields expectFn)
-
-        -- Moved to TypeCheckFails.elm: , Test.test ("Update with computed value " ++ condStr) (updateWithComputedValue expectFn)
-        , Test.test ("Chained updates " ++ condStr) (chainedUpdates expectFn)
-        , Test.test ("Update with value " ++ condStr) (updateWithValue expectFn)
-        , Test.test ("Update all fields " ++ condStr) (updateAllFields expectFn)
-        ]
+recordUpdateCases : (Src.Module -> Expectation) -> List TestCase
+recordUpdateCases expectFn =
+    [ { label = "Update single field", run = updateSingleField expectFn }
+    , { label = "Update multiple fields", run = updateMultipleFields expectFn }
+    , { label = "Chained updates", run = chainedUpdates expectFn }
+    ]
 
 
 updateSingleField : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -605,49 +397,5 @@ chainedUpdates expectFn _ =
 
         modul =
             makeModule "testValue" (letExpr [ defR, defR2 ] update2)
-    in
-    expectFn modul
-
-
-updateWithValue : (Src.Module -> Expectation) -> (() -> Expectation)
-updateWithValue expectFn _ =
-    let
-        record =
-            recordExpr [ ( "count", intExpr 0 ) ]
-
-        def =
-            define "r" [] record
-
-        update =
-            updateExpr (varExpr "r") [ ( "count", intExpr 42 ) ]
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] update)
-    in
-    expectFn modul
-
-
-updateAllFields : (Src.Module -> Expectation) -> (() -> Expectation)
-updateAllFields expectFn _ =
-    let
-        record =
-            recordExpr
-                [ ( "a", intExpr 1 )
-                , ( "b", intExpr 2 )
-                , ( "c", intExpr 3 )
-                ]
-
-        def =
-            define "r" [] record
-
-        update =
-            updateExpr (varExpr "r")
-                [ ( "a", intExpr 10 )
-                , ( "b", intExpr 20 )
-                , ( "c", intExpr 30 )
-                ]
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] update)
     in
     expectFn modul

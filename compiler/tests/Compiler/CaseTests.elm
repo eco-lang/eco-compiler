@@ -1,4 +1,4 @@
-module Compiler.CaseTests exposing (expectSuite)
+module Compiler.CaseTests exposing (expectSuite, testCases)
 
 {-| Tests for case expressions and pattern matching.
 -}
@@ -33,22 +33,26 @@ import Compiler.AST.SourceBuilder
         , tupleExpr
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Case expressions " ++ condStr)
-        [ simpleCaseTests expectFn condStr
-        , literalPatternTests expectFn condStr
-        , tuplePatternTests expectFn condStr
-        , listPatternTests expectFn condStr
-        , recordPatternTests expectFn condStr
-        , aliasPatternTests expectFn condStr
-        , nestedCaseTests expectFn condStr
-        , customTypePatternTests expectFn condStr
-        ]
+    Test.test ("Case expressions " ++ condStr) (\() -> bulkCheck (testCases expectFn))
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    simpleCaseCases expectFn
+        ++ literalPatternCases expectFn
+        ++ tuplePatternCases expectFn
+        ++ listPatternCases expectFn
+        ++ recordPatternCases expectFn
+        ++ aliasPatternCases expectFn
+        ++ nestedCaseCases expectFn
+        ++ customTypePatternCases expectFn
 
 
 
@@ -57,17 +61,16 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-simpleCaseTests : (Src.Module -> Expectation) -> String -> Test
-simpleCaseTests expectFn condStr =
-    Test.describe ("Simple case expressions " ++ condStr)
-        [ Test.test ("Case on variable with wildcard " ++ condStr) (caseOnVariableWithWildcard expectFn)
-        , Test.test ("Case with single variable pattern " ++ condStr) (caseWithSingleVarPattern expectFn)
-        , Test.test ("Case with two branches " ++ condStr) (caseWithTwoBranches expectFn)
-        , Test.test ("Case with three branches " ++ condStr) (caseWithThreeBranches expectFn)
+simpleCaseCases : (Src.Module -> Expectation) -> List TestCase
+simpleCaseCases expectFn =
+    [ { label = "Case on variable with wildcard", run = caseOnVariableWithWildcard expectFn }
+    , { label = "Case with single variable pattern", run = caseWithSingleVarPattern expectFn }
+    , { label = "Case with two branches", run = caseWithTwoBranches expectFn }
+    , { label = "Case with three branches", run = caseWithThreeBranches expectFn }
 
-        -- Moved to TypeCheckFails.elm: , Test.test ("Case on unit " ++ condStr) (caseOnUnit expectFn)
-        , Test.test ("Case returning complex expression " ++ condStr) (caseReturningComplexExpr expectFn)
-        ]
+    -- Moved to TypeCheckFails.elm: , { label = "Case on unit", run = caseOnUnit expectFn }
+    , { label = "Case returning complex expression", run = caseReturningComplexExpr expectFn }
+    ]
 
 
 caseOnVariableWithWildcard : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -175,17 +178,16 @@ caseReturningComplexExpr expectFn _ =
 -- ============================================================================
 
 
-literalPatternTests : (Src.Module -> Expectation) -> String -> Test
-literalPatternTests expectFn condStr =
-    Test.describe ("Literal pattern matching " ++ condStr)
-        [ Test.test ("Case on int literals " ++ condStr) (caseOnIntLiterals expectFn)
-        , Test.test ("Case on string literals " ++ condStr) (caseOnStringLiterals expectFn)
+literalPatternCases : (Src.Module -> Expectation) -> List TestCase
+literalPatternCases expectFn =
+    [ { label = "Case on int literals", run = caseOnIntLiterals expectFn }
+    , { label = "Case on string literals", run = caseOnStringLiterals expectFn }
 
-        -- Moved to TypeCheckFails.elm: , Test.fuzz Fuzz.int ("Case on fuzzed int " ++ condStr) (caseOnFuzzedInt expectFn)
-        , Test.test ("Case with many int branches " ++ condStr) (caseWithManyIntBranches expectFn)
-        , Test.test ("Case on string " ++ condStr) (caseOnString expectFn)
-        , Test.test ("Case with negative int patterns " ++ condStr) (caseWithNegativeIntPatterns expectFn)
-        ]
+    -- Moved to TypeCheckFails.elm: , { label = "Case on fuzzed int", run = caseOnFuzzedInt expectFn }
+    , { label = "Case with many int branches", run = caseWithManyIntBranches expectFn }
+    , { label = "Case on string", run = caseOnString expectFn }
+    , { label = "Case with negative int patterns", run = caseWithNegativeIntPatterns expectFn }
+    ]
 
 
 caseOnIntLiterals : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -268,14 +270,12 @@ caseWithNegativeIntPatterns expectFn _ =
 -- ============================================================================
 
 
-tuplePatternTests : (Src.Module -> Expectation) -> String -> Test
-tuplePatternTests expectFn condStr =
-    Test.describe ("Tuple pattern matching " ++ condStr)
-        [ Test.test ("Case on tuple with var patterns " ++ condStr) (caseOnTupleWithVarPatterns expectFn)
-        , Test.test ("Case on tuple with literal patterns " ++ condStr) (caseOnTupleWithLiteralPatterns expectFn)
-        , Test.test ("Case on tuple " ++ condStr) (caseOnTuple expectFn)
-        , Test.test ("Case on nested tuples " ++ condStr) (caseOnNestedTuples expectFn)
-        ]
+tuplePatternCases : (Src.Module -> Expectation) -> List TestCase
+tuplePatternCases expectFn =
+    [ { label = "Case on tuple with var patterns", run = caseOnTupleWithVarPatterns expectFn }
+    , { label = "Case on tuple with literal patterns", run = caseOnTupleWithLiteralPatterns expectFn }
+    , { label = "Case on nested tuples", run = caseOnNestedTuples expectFn }
+    ]
 
 
 caseOnTupleWithVarPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -355,14 +355,13 @@ caseOnNestedTuples expectFn _ =
 -- ============================================================================
 
 
-listPatternTests : (Src.Module -> Expectation) -> String -> Test
-listPatternTests expectFn condStr =
-    Test.describe ("List pattern matching " ++ condStr)
-        [ Test.test ("Case on empty list pattern " ++ condStr) (caseOnEmptyListPattern expectFn)
-        , Test.test ("Case on cons pattern " ++ condStr) (caseOnConsPattern expectFn)
-        , Test.test ("Case on fixed-length list pattern " ++ condStr) (caseOnFixedLengthListPattern expectFn)
-        , Test.test ("Case with nested cons patterns " ++ condStr) (caseWithNestedConsPatterns expectFn)
-        ]
+listPatternCases : (Src.Module -> Expectation) -> List TestCase
+listPatternCases expectFn =
+    [ { label = "Case on empty list pattern", run = caseOnEmptyListPattern expectFn }
+    , { label = "Case on cons pattern", run = caseOnConsPattern expectFn }
+    , { label = "Case on fixed-length list pattern", run = caseOnFixedLengthListPattern expectFn }
+    , { label = "Case with nested cons patterns", run = caseWithNestedConsPatterns expectFn }
+    ]
 
 
 caseOnEmptyListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -443,14 +442,12 @@ caseWithNestedConsPatterns expectFn _ =
 -- ============================================================================
 
 
-recordPatternTests : (Src.Module -> Expectation) -> String -> Test
-recordPatternTests expectFn condStr =
-    Test.describe ("Record pattern matching " ++ condStr)
-        [ Test.test ("Case on single-field record pattern " ++ condStr) (caseOnSingleFieldRecordPattern expectFn)
-        , Test.test ("Case on multi-field record pattern " ++ condStr) (caseOnMultiFieldRecordPattern expectFn)
-        , Test.test ("Case on record " ++ condStr) (caseOnRecord expectFn)
-        , Test.test ("Case on partial record pattern " ++ condStr) (caseOnPartialRecordPattern expectFn)
-        ]
+recordPatternCases : (Src.Module -> Expectation) -> List TestCase
+recordPatternCases expectFn =
+    [ { label = "Case on single-field record pattern", run = caseOnSingleFieldRecordPattern expectFn }
+    , { label = "Case on multi-field record pattern", run = caseOnMultiFieldRecordPattern expectFn }
+    , { label = "Case on partial record pattern", run = caseOnPartialRecordPattern expectFn }
+    ]
 
 
 caseOnSingleFieldRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -527,14 +524,12 @@ caseOnPartialRecordPattern expectFn _ =
 -- ============================================================================
 
 
-aliasPatternTests : (Src.Module -> Expectation) -> String -> Test
-aliasPatternTests expectFn condStr =
-    Test.describe ("Alias pattern matching " ++ condStr)
-        [ Test.test ("Case with simple alias pattern " ++ condStr) (caseWithSimpleAliasPattern expectFn)
-        , Test.test ("Case with tuple alias pattern " ++ condStr) (caseWithTupleAliasPattern expectFn)
-        , Test.test ("Case with list alias pattern " ++ condStr) (caseWithListAliasPattern expectFn)
-        , Test.test ("Case with alias pattern " ++ condStr) (caseWithAliasPattern expectFn)
-        ]
+aliasPatternCases : (Src.Module -> Expectation) -> List TestCase
+aliasPatternCases expectFn =
+    [ { label = "Case with simple alias pattern", run = caseWithSimpleAliasPattern expectFn }
+    , { label = "Case with tuple alias pattern", run = caseWithTupleAliasPattern expectFn }
+    , { label = "Case with list alias pattern", run = caseWithListAliasPattern expectFn }
+    ]
 
 
 caseWithSimpleAliasPattern : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -612,12 +607,11 @@ caseWithAliasPattern expectFn _ =
 -- ============================================================================
 
 
-nestedCaseTests : (Src.Module -> Expectation) -> String -> Test
-nestedCaseTests expectFn condStr =
-    Test.describe ("Nested case expressions " ++ condStr)
-        [ Test.test ("Case inside case " ++ condStr) (caseInsideCase expectFn)
-        , Test.test ("Case in branch body " ++ condStr) (caseInBranchBody expectFn)
-        ]
+nestedCaseCases : (Src.Module -> Expectation) -> List TestCase
+nestedCaseCases expectFn =
+    [ { label = "Case inside case", run = caseInsideCase expectFn }
+    , { label = "Case in branch body", run = caseInBranchBody expectFn }
+    ]
 
 
 caseInsideCase : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -666,12 +660,11 @@ caseInBranchBody expectFn _ =
 -- ============================================================================
 
 
-customTypePatternTests : (Src.Module -> Expectation) -> String -> Test
-customTypePatternTests expectFn condStr =
-    Test.describe ("Custom type pattern matching " ++ condStr)
-        [ Test.test ("Case on custom type with multiple constructors " ++ condStr) (caseOnCustomTypeMultipleConstructors expectFn)
-        , Test.test ("Case on custom type with payload extraction " ++ condStr) (caseOnCustomTypePayloadExtraction expectFn)
-        ]
+customTypePatternCases : (Src.Module -> Expectation) -> List TestCase
+customTypePatternCases expectFn =
+    [ { label = "Case on custom type with multiple constructors", run = caseOnCustomTypeMultipleConstructors expectFn }
+    , { label = "Case on custom type with payload extraction", run = caseOnCustomTypePayloadExtraction expectFn }
+    ]
 
 
 {-| Tests case expression on a custom type with multiple constructors.

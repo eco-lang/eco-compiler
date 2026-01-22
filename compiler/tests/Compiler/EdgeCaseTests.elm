@@ -1,4 +1,4 @@
-module Compiler.EdgeCaseTests exposing (expectSuite)
+module Compiler.EdgeCaseTests exposing (expectSuite, testCases)
 
 {-| Tests for edge cases and special constructs.
 These test various edge cases, parens, deep nesting, and complex expression
@@ -37,19 +37,26 @@ import Compiler.AST.SourceBuilder
         , updateExpr
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Edge case and special expression tests " ++ condStr)
-        [ parensTests expectFn condStr
-        , complexExpressionTests expectFn condStr
-        , edgeCaseTests expectFn condStr
-        , deepNestingTests expectFn condStr
-        , expressionCombinationTests expectFn condStr
-        , edgeCaseFixedTests expectFn condStr
+    Test.test ("Edge case and special expression tests " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    List.concat
+        [ parensCases expectFn
+        , complexExpressionCases expectFn
+        , edgeCaseCases expectFn
+        , deepNestingCases expectFn
+        , expressionCombinationCases expectFn
+        , edgeCaseFixedCases expectFn
         ]
 
 
@@ -59,14 +66,13 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-parensTests : (Src.Module -> Expectation) -> String -> Test
-parensTests expectFn condStr =
-    Test.describe ("Parenthesized expressions " ++ condStr)
-        [ Test.test ("Parens around literal " ++ condStr) (parensAroundLiteral expectFn)
-        , Test.test ("Parens around binop " ++ condStr) (parensAroundBinop expectFn)
-        , Test.test ("Nested parens " ++ condStr) (nestedParens expectFn)
-        , Test.test ("Parens around lambda " ++ condStr) (parensAroundLambda expectFn)
-        ]
+parensCases : (Src.Module -> Expectation) -> List TestCase
+parensCases expectFn =
+    [ { label = "Parens around literal", run = parensAroundLiteral expectFn }
+    , { label = "Parens around binop", run = parensAroundBinop expectFn }
+    , { label = "Nested parens", run = nestedParens expectFn }
+    , { label = "Parens around lambda", run = parensAroundLambda expectFn }
+    ]
 
 
 parensAroundLiteral : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -115,16 +121,14 @@ parensAroundLambda expectFn _ =
 -- ============================================================================
 
 
-complexExpressionTests : (Src.Module -> Expectation) -> String -> Test
-complexExpressionTests expectFn condStr =
-    Test.describe ("Complex expression combinations " ++ condStr)
-        [ Test.test ("Record access in binop " ++ condStr) (recordAccessInBinop expectFn)
-        , Test.test ("Nested record updates " ++ condStr) (nestedRecordUpdates expectFn)
-        , Test.test ("Lambda in record update " ++ condStr) (lambdaInRecordUpdate expectFn)
-        , Test.test ("Case in if " ++ condStr) (caseInIf expectFn)
-        , Test.test ("If in case " ++ condStr) (ifInCase expectFn)
-        , Test.test ("Multiple accessors in list " ++ condStr) (multipleAccessorsInList expectFn)
-        ]
+complexExpressionCases : (Src.Module -> Expectation) -> List TestCase
+complexExpressionCases expectFn =
+    [ { label = "Nested record updates", run = nestedRecordUpdates expectFn }
+    , { label = "Lambda in record update", run = lambdaInRecordUpdate expectFn }
+    , { label = "Case in if", run = caseInIf expectFn }
+    , { label = "If in case", run = ifInCase expectFn }
+    , { label = "Multiple accessors in list", run = multipleAccessorsInList expectFn }
+    ]
 
 
 recordAccessInBinop : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -250,14 +254,12 @@ multipleAccessorsInList expectFn _ =
 -- ============================================================================
 
 
-edgeCaseTests : (Src.Module -> Expectation) -> String -> Test
-edgeCaseTests expectFn condStr =
-    Test.describe ("Edge cases " ++ condStr)
-        [ Test.test ("Empty record " ++ condStr) (emptyRecord expectFn)
-        , Test.test ("Empty list " ++ condStr) (emptyListExpr expectFn)
-        , Test.test ("Unit expression " ++ condStr) (unitExpression expectFn)
-        , Test.test ("Lambda with no body complexity " ++ condStr) (lambdaWithNoBodyComplexity expectFn)
-        ]
+edgeCaseCases : (Src.Module -> Expectation) -> List TestCase
+edgeCaseCases expectFn =
+    [ { label = "Empty record", run = emptyRecord expectFn }
+    , { label = "Empty list", run = emptyListExpr expectFn }
+    , { label = "Unit expression", run = unitExpression expectFn }
+    ]
 
 
 emptyRecord : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -302,14 +304,13 @@ lambdaWithNoBodyComplexity expectFn _ =
 -- ============================================================================
 
 
-deepNestingTests : (Src.Module -> Expectation) -> String -> Test
-deepNestingTests expectFn condStr =
-    Test.describe ("Deep nesting " ++ condStr)
-        [ Test.test ("Deeply nested lists " ++ condStr) (deeplyNestedLists expectFn)
-        , Test.test ("Deeply nested tuples " ++ condStr) (deeplyNestedTuples expectFn)
-        , Test.test ("Deeply nested lets " ++ condStr) (deeplyNestedLets expectFn)
-        , Test.test ("Deeply nested records " ++ condStr) (deeplyNestedRecords expectFn)
-        ]
+deepNestingCases : (Src.Module -> Expectation) -> List TestCase
+deepNestingCases expectFn =
+    [ { label = "Deeply nested lists", run = deeplyNestedLists expectFn }
+    , { label = "Deeply nested tuples", run = deeplyNestedTuples expectFn }
+    , { label = "Deeply nested lets", run = deeplyNestedLets expectFn }
+    , { label = "Deeply nested records", run = deeplyNestedRecords expectFn }
+    ]
 
 
 deeplyNestedLists : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -399,14 +400,13 @@ deeplyNestedRecords expectFn _ =
 -- ============================================================================
 
 
-expressionCombinationTests : (Src.Module -> Expectation) -> String -> Test
-expressionCombinationTests expectFn condStr =
-    Test.describe ("Expression combinations " ++ condStr)
-        [ -- Moved to TypeCheckFails.elm: Test.test ("All expression types in one module " ++ condStr) (allExpressionTypesInOneModule expectFn)
-          Test.test ("Multiple pattern types in one function " ++ condStr) (multiplePatternTypesInOneFunction expectFn)
-        , Test.test ("All destruct patterns " ++ condStr) (allDestructPatterns expectFn)
-        , Test.test ("Multiple definitions with various patterns " ++ condStr) (multipleDefinitionsWithVariousPatterns expectFn)
-        ]
+expressionCombinationCases : (Src.Module -> Expectation) -> List TestCase
+expressionCombinationCases expectFn =
+    [ -- Moved to TypeCheckFails.elm: Test.test ("All expression types in one module " ++ condStr) (allExpressionTypesInOneModule expectFn)
+      { label = "Multiple pattern types in one function", run = multiplePatternTypesInOneFunction expectFn }
+    , { label = "All destruct patterns", run = allDestructPatterns expectFn }
+    , { label = "Multiple definitions with various patterns", run = multipleDefinitionsWithVariousPatterns expectFn }
+    ]
 
 
 multiplePatternTypesInOneFunction : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -473,12 +473,11 @@ multipleDefinitionsWithVariousPatterns expectFn _ =
 -- ============================================================================
 
 
-edgeCaseFixedTests : (Src.Module -> Expectation) -> String -> Test
-edgeCaseFixedTests expectFn condStr =
-    Test.describe ("Fixed value edge case tests " ++ condStr)
-        [ Test.test ("Complex expression with fixed values " ++ condStr) (complexExpressionWithFixedValues expectFn)
-        , Test.test ("Mixed types with fixed values " ++ condStr) (mixedTypesWithFixedValues expectFn)
-        ]
+edgeCaseFixedCases : (Src.Module -> Expectation) -> List TestCase
+edgeCaseFixedCases expectFn =
+    [ { label = "Complex expression with fixed values", run = complexExpressionWithFixedValues expectFn }
+    , { label = "Mixed types with fixed values", run = mixedTypesWithFixedValues expectFn }
+    ]
 
 
 complexExpressionWithFixedValues : (Src.Module -> Expectation) -> (() -> Expectation)

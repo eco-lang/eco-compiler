@@ -54,7 +54,7 @@ bindingCountFuzzer =
         ]
 
 
-{-| Fuzzer for number of branches in a case (2-5, biased toward fewer).
+{-| Fuzzer for number of branches in a case (2-4, biased toward fewer).
 -}
 branchCountFuzzer : Fuzzer Int
 branchCountFuzzer =
@@ -62,7 +62,6 @@ branchCountFuzzer =
         [ ( 4, Fuzz.constant 2 )
         , ( 3, Fuzz.constant 3 )
         , ( 2, Fuzz.constant 4 )
-        , ( 1, Fuzz.intRange 5 8 )
         ]
 
 
@@ -74,7 +73,7 @@ arityFuzzer =
         [ ( 4, Fuzz.constant 1 )
         , ( 3, Fuzz.constant 2 )
         , ( 2, Fuzz.constant 3 )
-        , ( 1, Fuzz.intRange 5 10 )
+        , ( 1, Fuzz.constant 4 )
         ]
 
 

@@ -1,4 +1,4 @@
-module Compiler.AnnotatedTests exposing (expectSuite)
+module Compiler.AnnotatedTests exposing (expectSuite, testCases)
 
 {-| Tests for type-annotated definitions with polymorphic type variables.
 
@@ -24,20 +24,24 @@ import Compiler.AST.SourceBuilder
         , tupleExpr
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Annotated definitions " ++ condStr)
-        [ basicAnnotatedTests expectFn condStr
-        , polymorphicTests expectFn condStr
-        , higherOrderAnnotatedTests expectFn condStr
-        , multipleTypeVarTests expectFn condStr
-        , recordTypeTests expectFn condStr
-        , tupleTypeTests expectFn condStr
-        ]
+    Test.test ("Annotated definitions " ++ condStr) (\() -> bulkCheck (testCases expectFn))
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    basicAnnotatedCases expectFn
+        ++ polymorphicCases expectFn
+        ++ higherOrderAnnotatedCases expectFn
+        ++ multipleTypeVarCases expectFn
+        ++ recordTypeCases expectFn
+        ++ tupleTypeCases expectFn
 
 
 
@@ -46,13 +50,12 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-basicAnnotatedTests : (Src.Module -> Expectation) -> String -> Test
-basicAnnotatedTests expectFn condStr =
-    Test.describe ("Basic annotated definitions " ++ condStr)
-        [ Test.test ("Identity with annotation " ++ condStr) (identityAnnotated expectFn)
-        , Test.test ("Const with annotation " ++ condStr) (constAnnotated expectFn)
-        , Test.test ("Bool identity " ++ condStr) (boolIdentity expectFn)
-        ]
+basicAnnotatedCases : (Src.Module -> Expectation) -> List TestCase
+basicAnnotatedCases expectFn =
+    [ { label = "Identity with annotation", run = identityAnnotated expectFn }
+    , { label = "Const with annotation", run = constAnnotated expectFn }
+    , { label = "Bool identity", run = boolIdentity expectFn }
+    ]
 
 
 {-| identity : a -> a
@@ -127,13 +130,11 @@ boolIdentity expectFn _ =
 -- ============================================================================
 
 
-polymorphicTests : (Src.Module -> Expectation) -> String -> Test
-polymorphicTests expectFn condStr =
-    Test.describe ("Polymorphic functions " ++ condStr)
-        [ Test.test ("Apply function " ++ condStr) (applyAnnotated expectFn)
-        , Test.test ("Apply with usage " ++ condStr) (applyWithUsage expectFn)
-        , Test.test ("Flip function " ++ condStr) (flipAnnotated expectFn)
-        ]
+polymorphicCases : (Src.Module -> Expectation) -> List TestCase
+polymorphicCases expectFn =
+    [ { label = "Apply with usage", run = applyWithUsage expectFn }
+    , { label = "Flip function", run = flipAnnotated expectFn }
+    ]
 
 
 {-| apply : (a -> b) -> a -> b
@@ -162,7 +163,7 @@ applyAnnotated expectFn _ =
 {-| apply : (a -> b) -> a -> b
 apply f x = f x
 
-test = apply (\\n -> n) True
+test = apply (\n -> n) True
 
 -}
 applyWithUsage : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -228,13 +229,11 @@ flipAnnotated expectFn _ =
 -- ============================================================================
 
 
-higherOrderAnnotatedTests : (Src.Module -> Expectation) -> String -> Test
-higherOrderAnnotatedTests expectFn condStr =
-    Test.describe ("Higher-order annotated functions " ++ condStr)
-        [ Test.test ("Compose " ++ condStr) (composeAnnotated expectFn)
-        , Test.test ("Compose with usage " ++ condStr) (composeWithUsage expectFn)
-        , Test.test ("On function " ++ condStr) (onAnnotated expectFn)
-        ]
+higherOrderAnnotatedCases : (Src.Module -> Expectation) -> List TestCase
+higherOrderAnnotatedCases expectFn =
+    [ { label = "Compose with usage", run = composeWithUsage expectFn }
+    , { label = "On function", run = onAnnotated expectFn }
+    ]
 
 
 {-| compose : (b -> c) -> (a -> b) -> a -> c
@@ -265,7 +264,7 @@ composeAnnotated expectFn _ =
 {-| compose : (b -> c) -> (a -> b) -> a -> c
 compose f g x = f (g x)
 
-test = compose (\\x -> x) (\\y -> y) True
+test = compose (\x -> x) (\y -> y) True
 
 -}
 composeWithUsage : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -339,14 +338,12 @@ onAnnotated expectFn _ =
 -- ============================================================================
 
 
-multipleTypeVarTests : (Src.Module -> Expectation) -> String -> Test
-multipleTypeVarTests expectFn condStr =
-    Test.describe ("Multiple type variables " ++ condStr)
-        [ Test.test ("Pair function " ++ condStr) (pairAnnotated expectFn)
-        , Test.test ("Wrap in tuple " ++ condStr) (wrapInTupleAnnotated expectFn)
-        , Test.test ("Make pair " ++ condStr) (makePairAnnotated expectFn)
-        , Test.test ("Const tuple " ++ condStr) (constTupleAnnotated expectFn)
-        ]
+multipleTypeVarCases : (Src.Module -> Expectation) -> List TestCase
+multipleTypeVarCases expectFn =
+    [ { label = "Pair function", run = pairAnnotated expectFn }
+    , { label = "Wrap in tuple", run = wrapInTupleAnnotated expectFn }
+    , { label = "Const tuple", run = constTupleAnnotated expectFn }
+    ]
 
 
 {-| pair : a -> b -> ( a, b )
@@ -444,12 +441,11 @@ constTupleAnnotated expectFn _ =
 -- ============================================================================
 
 
-recordTypeTests : (Src.Module -> Expectation) -> String -> Test
-recordTypeTests expectFn condStr =
-    Test.describe ("Record types " ++ condStr)
-        [ Test.test ("Make record " ++ condStr) (makeRecordAnnotated expectFn)
-        , Test.test ("Make record with same type " ++ condStr) (makeRecordSameTypeAnnotated expectFn)
-        ]
+recordTypeCases : (Src.Module -> Expectation) -> List TestCase
+recordTypeCases expectFn =
+    [ { label = "Make record", run = makeRecordAnnotated expectFn }
+    , { label = "Make record with same type", run = makeRecordSameTypeAnnotated expectFn }
+    ]
 
 
 {-| makeXY : a -> b -> { x : a, y : b }
@@ -506,12 +502,10 @@ makeRecordSameTypeAnnotated expectFn _ =
 -- ============================================================================
 
 
-tupleTypeTests : (Src.Module -> Expectation) -> String -> Test
-tupleTypeTests expectFn condStr =
-    Test.describe ("Tuple types " ++ condStr)
-        [ Test.test ("Duplicate " ++ condStr) (duplicateAnnotated expectFn)
-        , Test.test ("Nest tuple " ++ condStr) (nestTupleAnnotated expectFn)
-        ]
+tupleTypeCases : (Src.Module -> Expectation) -> List TestCase
+tupleTypeCases expectFn =
+    [ { label = "Nest tuple", run = nestTupleAnnotated expectFn }
+    ]
 
 
 {-| duplicate : a -> ( a, a )

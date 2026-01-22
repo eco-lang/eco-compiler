@@ -1,4 +1,4 @@
-module Compiler.FloatMathTests exposing (expectSuite, suite)
+module Compiler.FloatMathTests exposing (expectSuite, suite, testCases)
 
 {-| Test cases for Float math operations in MLIR codegen.
 
@@ -29,6 +29,7 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Compiler.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 import Expect exposing (Expectation)
 import Test exposing (Test)
@@ -45,15 +46,21 @@ suite =
 -}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Float math operations " ++ condStr)
-        [ constantTests expectFn condStr
-        , trigTests expectFn condStr
-        , sqrtLogTests expectFn condStr
-        , roundingTests expectFn condStr
-        , comparisonTests expectFn condStr
-        , specialValueTests expectFn condStr
-        , combinedFloatTests expectFn condStr
-        ]
+    Test.test ("Float math operations " ++ condStr) <|
+        \() -> bulkCheck (testCases expectFn)
+
+
+{-| All test cases for Float math operations.
+-}
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    constantCases expectFn
+        ++ trigCases expectFn
+        ++ sqrtLogCases expectFn
+        ++ roundingCases expectFn
+        ++ comparisonCases expectFn
+        ++ specialValueCases expectFn
+        ++ combinedFloatCases expectFn
 
 
 
@@ -62,16 +69,18 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-constantTests : (Src.Module -> Expectation) -> String -> Test
-constantTests expectFn condStr =
-    Test.describe ("Float constants " ++ condStr)
-        [ Test.test "Basics.pi" <|
-            piTest expectFn
-        , Test.test "Basics.e" <|
-            eTest expectFn
-        , Test.test "pi in expression" <|
-            piInExpressionTest expectFn
-        ]
+constantCases : (Src.Module -> Expectation) -> List TestCase
+constantCases expectFn =
+    [ { label = "Basics.pi"
+      , run = piTest expectFn
+      }
+    , { label = "Basics.e"
+      , run = eTest expectFn
+      }
+    , { label = "pi in expression"
+      , run = piInExpressionTest expectFn
+      }
+    ]
 
 
 {-| Test Basics.pi constant.
@@ -165,24 +174,30 @@ piInExpressionTest expectFn _ =
 -- ============================================================================
 
 
-trigTests : (Src.Module -> Expectation) -> String -> Test
-trigTests expectFn condStr =
-    Test.describe ("Trig functions " ++ condStr)
-        [ Test.test "sin" <|
-            sinTest expectFn
-        , Test.test "cos" <|
-            cosTest expectFn
-        , Test.test "tan" <|
-            tanTest expectFn
-        , Test.test "asin" <|
-            asinTest expectFn
-        , Test.test "acos" <|
-            acosTest expectFn
-        , Test.test "atan" <|
-            atanTest expectFn
-        , Test.test "atan2" <|
-            atan2Test expectFn
-        ]
+trigCases : (Src.Module -> Expectation) -> List TestCase
+trigCases expectFn =
+    [ { label = "sin"
+      , run = sinTest expectFn
+      }
+    , { label = "cos"
+      , run = cosTest expectFn
+      }
+    , { label = "tan"
+      , run = tanTest expectFn
+      }
+    , { label = "asin"
+      , run = asinTest expectFn
+      }
+    , { label = "acos"
+      , run = acosTest expectFn
+      }
+    , { label = "atan"
+      , run = atanTest expectFn
+      }
+    , { label = "atan2"
+      , run = atan2Test expectFn
+      }
+    ]
 
 
 {-| Test sin function.
@@ -345,16 +360,18 @@ atan2Test expectFn _ =
 -- ============================================================================
 
 
-sqrtLogTests : (Src.Module -> Expectation) -> String -> Test
-sqrtLogTests expectFn condStr =
-    Test.describe ("Sqrt and log functions " ++ condStr)
-        [ Test.test "sqrt" <|
-            sqrtTest expectFn
-        , Test.test "logBase" <|
-            logBaseTest expectFn
-        , Test.test "sqrt in expression" <|
-            sqrtInExpressionTest expectFn
-        ]
+sqrtLogCases : (Src.Module -> Expectation) -> List TestCase
+sqrtLogCases expectFn =
+    [ { label = "sqrt"
+      , run = sqrtTest expectFn
+      }
+    , { label = "logBase"
+      , run = logBaseTest expectFn
+      }
+    , { label = "sqrt in expression"
+      , run = sqrtInExpressionTest expectFn
+      }
+    ]
 
 
 {-| Test sqrt function.
@@ -458,20 +475,24 @@ sqrtInExpressionTest expectFn _ =
 -- ============================================================================
 
 
-roundingTests : (Src.Module -> Expectation) -> String -> Test
-roundingTests expectFn condStr =
-    Test.describe ("Rounding functions " ++ condStr)
-        [ Test.test "round" <|
-            roundTest expectFn
-        , Test.test "floor" <|
-            floorTest expectFn
-        , Test.test "ceiling" <|
-            ceilingTest expectFn
-        , Test.test "truncate" <|
-            truncateTest expectFn
-        , Test.test "toFloat" <|
-            toFloatTest expectFn
-        ]
+roundingCases : (Src.Module -> Expectation) -> List TestCase
+roundingCases expectFn =
+    [ { label = "round"
+      , run = roundTest expectFn
+      }
+    , { label = "floor"
+      , run = floorTest expectFn
+      }
+    , { label = "ceiling"
+      , run = ceilingTest expectFn
+      }
+    , { label = "truncate"
+      , run = truncateTest expectFn
+      }
+    , { label = "toFloat"
+      , run = toFloatTest expectFn
+      }
+    ]
 
 
 {-| Test round function.
@@ -590,22 +611,27 @@ toFloatTest expectFn _ =
 -- ============================================================================
 
 
-comparisonTests : (Src.Module -> Expectation) -> String -> Test
-comparisonTests expectFn condStr =
-    Test.describe ("Float comparisons " ++ condStr)
-        [ Test.test "Float less than" <|
-            floatLessThanTest expectFn
-        , Test.test "Float less than or equal" <|
-            floatLessEqualTest expectFn
-        , Test.test "Float greater than" <|
-            floatGreaterThanTest expectFn
-        , Test.test "Float greater than or equal" <|
-            floatGreaterEqualTest expectFn
-        , Test.test "Float min" <|
-            floatMinTest expectFn
-        , Test.test "Float max" <|
-            floatMaxTest expectFn
-        ]
+comparisonCases : (Src.Module -> Expectation) -> List TestCase
+comparisonCases expectFn =
+    [ { label = "Float less than"
+      , run = floatLessThanTest expectFn
+      }
+    , { label = "Float less than or equal"
+      , run = floatLessEqualTest expectFn
+      }
+    , { label = "Float greater than"
+      , run = floatGreaterThanTest expectFn
+      }
+    , { label = "Float greater than or equal"
+      , run = floatGreaterEqualTest expectFn
+      }
+    , { label = "Float min"
+      , run = floatMinTest expectFn
+      }
+    , { label = "Float max"
+      , run = floatMaxTest expectFn
+      }
+    ]
 
 
 {-| Test float less than comparison.
@@ -746,14 +772,15 @@ floatMaxTest expectFn _ =
 -- ============================================================================
 
 
-specialValueTests : (Src.Module -> Expectation) -> String -> Test
-specialValueTests expectFn condStr =
-    Test.describe ("Special float values " ++ condStr)
-        [ Test.test "isNaN" <|
-            isNaNTest expectFn
-        , Test.test "isInfinite" <|
-            isInfiniteTest expectFn
-        ]
+specialValueCases : (Src.Module -> Expectation) -> List TestCase
+specialValueCases expectFn =
+    [ { label = "isNaN"
+      , run = isNaNTest expectFn
+      }
+    , { label = "isInfinite"
+      , run = isInfiniteTest expectFn
+      }
+    ]
 
 
 {-| Test isNaN function.
@@ -814,16 +841,18 @@ isInfiniteTest expectFn _ =
 -- ============================================================================
 
 
-combinedFloatTests : (Src.Module -> Expectation) -> String -> Test
-combinedFloatTests expectFn condStr =
-    Test.describe ("Combined float operations " ++ condStr)
-        [ Test.test "sin^2 + cos^2 = 1" <|
-            pythagoreanIdentityTest expectFn
-        , Test.test "Quadratic formula" <|
-            quadraticFormulaTest expectFn
-        , Test.test "Clamp function" <|
-            clampTest expectFn
-        ]
+combinedFloatCases : (Src.Module -> Expectation) -> List TestCase
+combinedFloatCases expectFn =
+    [ { label = "sin^2 + cos^2 = 1"
+      , run = pythagoreanIdentityTest expectFn
+      }
+    , { label = "Quadratic formula"
+      , run = quadraticFormulaTest expectFn
+      }
+    , { label = "Clamp function"
+      , run = clampTest expectFn
+      }
+    ]
 
 
 {-| Test sin^2(x) + cos^2(x) = 1 identity.

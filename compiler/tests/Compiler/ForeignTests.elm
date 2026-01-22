@@ -1,4 +1,4 @@
-module Compiler.ForeignTests exposing (expectSuite)
+module Compiler.ForeignTests exposing (expectSuite, testCases)
 
 {-| Tests for VarForeign expressions.
 
@@ -23,6 +23,7 @@ import Compiler.AST.CanonicalBuilder
         , varLocalExpr
         , varType
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Compiler.Elm.Package as Pkg
 import Expect exposing (Expectation)
 import System.TypeCheck.IO as IO
@@ -31,10 +32,16 @@ import Test exposing (Test)
 
 expectSuite : (Can.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe "VarForeign expressions"
-        [ simpleForeignTests expectFn condStr
-        , foreignCallTests expectFn condStr
-        , polymorphicForeignTests expectFn condStr
+    Test.test ("VarForeign expressions " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Can.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    List.concat
+        [ simpleForeignCases expectFn
+        , foreignCallCases expectFn
+        , polymorphicForeignCases expectFn
         ]
 
 
@@ -44,12 +51,11 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-simpleForeignTests : (Can.Module -> Expectation) -> String -> Test
-simpleForeignTests expectFn condStr =
-    Test.describe "Simple foreign expressions"
-        [ Test.test ("VarForeign identity " ++ condStr) (varForeignIdentity expectFn)
-        , Test.test ("VarForeign const " ++ condStr) (varForeignConst expectFn)
-        ]
+simpleForeignCases : (Can.Module -> Expectation) -> List TestCase
+simpleForeignCases expectFn =
+    [ { label = "VarForeign identity", run = varForeignIdentity expectFn }
+    , { label = "VarForeign const", run = varForeignConst expectFn }
+    ]
 
 
 {-| identity : a -> a
@@ -97,12 +103,11 @@ varForeignConst expectFn _ =
 -- ============================================================================
 
 
-foreignCallTests : (Can.Module -> Expectation) -> String -> Test
-foreignCallTests expectFn condStr =
-    Test.describe "Foreign call expressions"
-        [ Test.test ("Call identity on int " ++ condStr) (callIdentityOnInt expectFn)
-        , Test.test ("Call const on int and int " ++ condStr) (callConstOnIntAndInt expectFn)
-        ]
+foreignCallCases : (Can.Module -> Expectation) -> List TestCase
+foreignCallCases expectFn =
+    [ { label = "Call identity on int", run = callIdentityOnInt expectFn }
+    , { label = "Call const on int and int", run = callConstOnIntAndInt expectFn }
+    ]
 
 
 {-| identity 42
@@ -156,12 +161,11 @@ callConstOnIntAndInt expectFn _ =
 -- ============================================================================
 
 
-polymorphicForeignTests : (Can.Module -> Expectation) -> String -> Test
-polymorphicForeignTests expectFn condStr =
-    Test.describe "Polymorphic foreign expressions"
-        [ Test.test ("Typed def using foreign identity " ++ condStr) (typedDefUsingForeignIdentity expectFn)
-        , Test.test ("Nested foreign calls " ++ condStr) (nestedForeignCalls expectFn)
-        ]
+polymorphicForeignCases : (Can.Module -> Expectation) -> List TestCase
+polymorphicForeignCases expectFn =
+    [ { label = "Typed def using foreign identity", run = typedDefUsingForeignIdentity expectFn }
+    , { label = "Nested foreign calls", run = nestedForeignCalls expectFn }
+    ]
 
 
 {-| apply : (a -> b) -> a -> b

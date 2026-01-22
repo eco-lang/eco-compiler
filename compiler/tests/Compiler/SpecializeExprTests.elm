@@ -1,4 +1,4 @@
-module Compiler.SpecializeExprTests exposing (expectSuite, suite)
+module Compiler.SpecializeExprTests exposing (expectSuite, suite, testCases)
 
 {-| Test cases for specializeExpr branches in Specialize.elm.
 
@@ -33,6 +33,7 @@ import Compiler.AST.SourceBuilder
         , tVar
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Compiler.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 import Expect exposing (Expectation)
 import Test exposing (Test)
@@ -40,20 +41,25 @@ import Test exposing (Test)
 
 suite : Test
 suite =
-    Test.describe "Specialize.elm expression coverage"
-        [ expectSuite expectMonomorphization "monomorphizes expressions"
-        ]
+    Test.test "Specialize.elm expression coverage monomorphizes expressions" <|
+        \_ -> bulkCheck (testCases expectMonomorphization)
 
 
 {-| Test suite that can be used with different expectation functions.
 -}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Expression specialization " ++ condStr)
-        [ enumPatternTests expectFn condStr
-        , debugExprTests expectFn condStr
-        , tailRecursiveTests expectFn condStr
-        , literalBranchTests expectFn condStr
+    Test.test ("Expression specialization " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    List.concat
+        [ enumPatternCases expectFn
+        , debugExprCases expectFn
+        , tailRecursiveCases expectFn
+        , literalBranchCases expectFn
         ]
 
 
@@ -63,16 +69,12 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-enumPatternTests : (Src.Module -> Expectation) -> String -> Test
-enumPatternTests expectFn condStr =
-    Test.describe ("Enum patterns " ++ condStr)
-        [ Test.test "Simple enum case expression" <|
-            simpleEnumCase expectFn
-        , Test.test "Nested enum case" <|
-            nestedEnumCase expectFn
-        , Test.test "Enum with fallback pattern" <|
-            enumWithFallback expectFn
-        ]
+enumPatternCases : (Src.Module -> Expectation) -> List TestCase
+enumPatternCases expectFn =
+    [ { label = "Simple enum case expression", run = simpleEnumCase expectFn }
+    , { label = "Nested enum case", run = nestedEnumCase expectFn }
+    , { label = "Enum with fallback pattern", run = enumWithFallback expectFn }
+    ]
 
 
 {-| Simple enum type with case expression.
@@ -233,12 +235,10 @@ enumWithFallback expectFn _ =
 -- ============================================================================
 
 
-debugExprTests : (Src.Module -> Expectation) -> String -> Test
-debugExprTests expectFn condStr =
-    Test.describe ("Debug expressions " ++ condStr)
-        [ Test.test "Identity function (placeholder for Debug tests)" <|
-            identityFunctionTest expectFn
-        ]
+debugExprCases : (Src.Module -> Expectation) -> List TestCase
+debugExprCases expectFn =
+    [ { label = "Identity function (placeholder for Debug tests)", run = identityFunctionTest expectFn }
+    ]
 
 
 {-| Simple identity function test as placeholder.
@@ -280,16 +280,12 @@ identityFunctionTest expectFn _ =
 -- ============================================================================
 
 
-tailRecursiveTests : (Src.Module -> Expectation) -> String -> Test
-tailRecursiveTests expectFn condStr =
-    Test.describe ("Tail recursive functions " ++ condStr)
-        [ Test.test "Tail recursive sum" <|
-            tailRecursiveSum expectFn
-        , Test.test "Tail recursive with accumulator" <|
-            tailRecursiveWithAccumulator expectFn
-        , Test.test "Non-tail recursive for comparison" <|
-            nonTailRecursive expectFn
-        ]
+tailRecursiveCases : (Src.Module -> Expectation) -> List TestCase
+tailRecursiveCases expectFn =
+    [ { label = "Tail recursive sum", run = tailRecursiveSum expectFn }
+    , { label = "Tail recursive with accumulator", run = tailRecursiveWithAccumulator expectFn }
+    , { label = "Non-tail recursive for comparison", run = nonTailRecursive expectFn }
+    ]
 
 
 {-| Tail recursive sum function.
@@ -437,14 +433,11 @@ nonTailRecursive expectFn _ =
 -- ============================================================================
 
 
-literalBranchTests : (Src.Module -> Expectation) -> String -> Test
-literalBranchTests expectFn condStr =
-    Test.describe ("Literal branches " ++ condStr)
-        [ Test.test "Int literal patterns" <|
-            intLiteralPatterns expectFn
-        , Test.test "String literal patterns" <|
-            stringLiteralPatterns expectFn
-        ]
+literalBranchCases : (Src.Module -> Expectation) -> List TestCase
+literalBranchCases expectFn =
+    [ { label = "Int literal patterns", run = intLiteralPatterns expectFn }
+    , { label = "String literal patterns", run = stringLiteralPatterns expectFn }
+    ]
 
 
 {-| Case expression with int literal patterns.

@@ -1,4 +1,4 @@
-module Compiler.HigherOrderTests exposing (expectSuite)
+module Compiler.HigherOrderTests exposing (expectSuite, testCases)
 
 {-| Tests for higher-order function expressions.
 -}
@@ -29,20 +29,25 @@ import Compiler.AST.SourceBuilder
         , tupleExpr
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Higher-order function tests " ++ condStr)
-        [ functionAsArgumentTests expectFn condStr
-        , functionReturningFunctionTests expectFn condStr
-        , compositionTests expectFn condStr
-        , partialApplicationTests expectFn condStr
-        , polymorphicHigherOrderTests expectFn condStr
-        , higherOrderWithPatternsTests expectFn condStr
-        ]
+    Test.test ("Higher-order function tests " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    functionAsArgumentCases expectFn
+        ++ functionReturningFunctionCases expectFn
+        ++ compositionCases expectFn
+        ++ partialApplicationCases expectFn
+        ++ polymorphicHigherOrderCases expectFn
+        ++ higherOrderWithPatternsCases expectFn
 
 
 
@@ -51,17 +56,16 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-functionAsArgumentTests : (Src.Module -> Expectation) -> String -> Test
-functionAsArgumentTests expectFn condStr =
-    Test.describe ("Function as argument " ++ condStr)
-        [ Test.test ("Pass lambda to function " ++ condStr) (passLambdaToFunction expectFn)
-        , Test.test ("Pass named function to higher-order " ++ condStr) (passNamedFunctionToHigherOrder expectFn)
-        , Test.test ("Map-like function " ++ condStr) (mapLikeFunction expectFn)
-        , Test.test ("Filter-like function " ++ condStr) (filterLikeFunction expectFn)
+functionAsArgumentCases : (Src.Module -> Expectation) -> List TestCase
+functionAsArgumentCases expectFn =
+    [ { label = "Pass lambda to function", run = passLambdaToFunction expectFn }
+    , { label = "Pass named function to higher-order", run = passNamedFunctionToHigherOrder expectFn }
+    , { label = "Map-like function", run = mapLikeFunction expectFn }
+    , { label = "Filter-like function", run = filterLikeFunction expectFn }
 
-        -- Moved to TypeCheckFails.elm: , Test.test ("Fold-like function " ++ condStr) (foldLikeFunction expectFn)
-        , Test.test ("Pass accessor function " ++ condStr) (passAccessorFunction expectFn)
-        ]
+    -- Moved to TypeCheckFails.elm: , { label = "Fold-like function", run = foldLikeFunction expectFn }
+    , { label = "Pass accessor function", run = passAccessorFunction expectFn }
+    ]
 
 
 passLambdaToFunction : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -181,16 +185,15 @@ passAccessorFunction expectFn _ =
 -- ============================================================================
 
 
-functionReturningFunctionTests : (Src.Module -> Expectation) -> String -> Test
-functionReturningFunctionTests expectFn condStr =
-    Test.describe ("Function returning function " ++ condStr)
-        [ Test.test ("Function returning lambda " ++ condStr) (functionReturningLambda expectFn)
-        , Test.test ("Curried function " ++ condStr) (curriedFunction expectFn)
-        , Test.test ("Triple nested function " ++ condStr) (tripleNestedFunction expectFn)
-        , Test.test ("Function factory " ++ condStr) (functionFactory expectFn)
-        , Test.test ("Return lambda based on condition " ++ condStr) (returnLambdaBasedOnCondition expectFn)
-        , Test.test ("Closure over multiple variables " ++ condStr) (closureOverMultipleVariables expectFn)
-        ]
+functionReturningFunctionCases : (Src.Module -> Expectation) -> List TestCase
+functionReturningFunctionCases expectFn =
+    [ { label = "Function returning lambda", run = functionReturningLambda expectFn }
+    , { label = "Curried function", run = curriedFunction expectFn }
+    , { label = "Triple nested function", run = tripleNestedFunction expectFn }
+    , { label = "Function factory", run = functionFactory expectFn }
+    , { label = "Return lambda based on condition", run = returnLambdaBasedOnCondition expectFn }
+    , { label = "Closure over multiple variables", run = closureOverMultipleVariables expectFn }
+    ]
 
 
 functionReturningLambda : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -313,16 +316,14 @@ closureOverMultipleVariables expectFn _ =
 -- ============================================================================
 
 
-compositionTests : (Src.Module -> Expectation) -> String -> Test
-compositionTests expectFn condStr =
-    Test.describe ("Function composition " ++ condStr)
-        [ Test.test ("Manual compose " ++ condStr) (manualCompose expectFn)
-        , Test.test ("Compose two functions " ++ condStr) (composeTwoFunctions expectFn)
-        , Test.test ("Flip function " ++ condStr) (flipFunction expectFn)
-        , Test.test ("Const function " ++ condStr) (constFunction expectFn)
-        , Test.test ("Identity composition " ++ condStr) (identityComposition expectFn)
-        , Test.test ("Pipe-like apply " ++ condStr) (pipeLikeApply expectFn)
-        ]
+compositionCases : (Src.Module -> Expectation) -> List TestCase
+compositionCases expectFn =
+    [ { label = "Compose two functions", run = composeTwoFunctions expectFn }
+    , { label = "Flip function", run = flipFunction expectFn }
+    , { label = "Const function", run = constFunction expectFn }
+    , { label = "Identity composition", run = identityComposition expectFn }
+    , { label = "Pipe-like apply", run = pipeLikeApply expectFn }
+    ]
 
 
 manualCompose : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -459,14 +460,13 @@ pipeLikeApply expectFn _ =
 -- ============================================================================
 
 
-partialApplicationTests : (Src.Module -> Expectation) -> String -> Test
-partialApplicationTests expectFn condStr =
-    Test.describe ("Partial application " ++ condStr)
-        [ Test.test ("Partially applied function stored " ++ condStr) (partiallyAppliedFunctionStored expectFn)
-        , Test.test ("Multiple partial applications " ++ condStr) (multiplePartialApplications expectFn)
-        , Test.test ("Partial application in list " ++ condStr) (partialApplicationInList expectFn)
-        , Test.test ("Partial application in record " ++ condStr) (partialApplicationInRecord expectFn)
-        ]
+partialApplicationCases : (Src.Module -> Expectation) -> List TestCase
+partialApplicationCases expectFn =
+    [ { label = "Partially applied function stored", run = partiallyAppliedFunctionStored expectFn }
+    , { label = "Multiple partial applications", run = multiplePartialApplications expectFn }
+    , { label = "Partial application in list", run = partialApplicationInList expectFn }
+    , { label = "Partial application in record", run = partialApplicationInRecord expectFn }
+    ]
 
 
 partiallyAppliedFunctionStored : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -555,13 +555,12 @@ partialApplicationInRecord expectFn _ =
 -- ============================================================================
 
 
-polymorphicHigherOrderTests : (Src.Module -> Expectation) -> String -> Test
-polymorphicHigherOrderTests expectFn condStr =
-    Test.describe ("Polymorphic higher-order functions " ++ condStr)
-        [ Test.test ("Identity used with different types " ++ condStr) (identityUsedWithDifferentTypes expectFn)
-        , Test.test ("Apply used with different function types " ++ condStr) (applyUsedWithDifferentFunctionTypes expectFn)
-        , Test.test ("Higher-order function preserving polymorphism " ++ condStr) (higherOrderPreservingPolymorphism expectFn)
-        ]
+polymorphicHigherOrderCases : (Src.Module -> Expectation) -> List TestCase
+polymorphicHigherOrderCases expectFn =
+    [ { label = "Identity used with different types", run = identityUsedWithDifferentTypes expectFn }
+    , { label = "Apply used with different function types", run = applyUsedWithDifferentFunctionTypes expectFn }
+    , { label = "Higher-order function preserving polymorphism", run = higherOrderPreservingPolymorphism expectFn }
+    ]
 
 
 identityUsedWithDifferentTypes : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -647,14 +646,13 @@ higherOrderPreservingPolymorphism expectFn _ =
 -- ============================================================================
 
 
-higherOrderWithPatternsTests : (Src.Module -> Expectation) -> String -> Test
-higherOrderWithPatternsTests expectFn condStr =
-    Test.describe ("Higher-order with patterns " ++ condStr)
-        [ Test.test ("Higher-order with tuple pattern " ++ condStr) (higherOrderWithTuplePattern expectFn)
-        , Test.test ("Higher-order with record pattern " ++ condStr) (higherOrderWithRecordPattern expectFn)
-        , Test.test ("Higher-order with list pattern " ++ condStr) (higherOrderWithListPattern expectFn)
-        , Test.test ("Higher-order with alias pattern " ++ condStr) (higherOrderWithAliasPattern expectFn)
-        ]
+higherOrderWithPatternsCases : (Src.Module -> Expectation) -> List TestCase
+higherOrderWithPatternsCases expectFn =
+    [ { label = "Higher-order with tuple pattern", run = higherOrderWithTuplePattern expectFn }
+    , { label = "Higher-order with record pattern", run = higherOrderWithRecordPattern expectFn }
+    , { label = "Higher-order with list pattern", run = higherOrderWithListPattern expectFn }
+    , { label = "Higher-order with alias pattern", run = higherOrderWithAliasPattern expectFn }
+    ]
 
 
 higherOrderWithTuplePattern : (Src.Module -> Expectation) -> (() -> Expectation)

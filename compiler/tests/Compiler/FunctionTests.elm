@@ -1,4 +1,4 @@
-module Compiler.FunctionTests exposing (expectSuite)
+module Compiler.FunctionTests exposing (expectSuite, testCases)
 
 {-| Tests for function expressions: lambdas, calls, partial application.
 -}
@@ -15,7 +15,6 @@ import Compiler.AST.SourceBuilder
         , intExpr
         , lambdaExpr
         , letExpr
-        , listExpr
         , makeModule
         , makeModuleWithDefs
         , makeModuleWithTypedDefs
@@ -25,51 +24,46 @@ import Compiler.AST.SourceBuilder
         , pTuple
         , pVar
         , qualVarExpr
-        , recordExpr
-        , strExpr
-        , tLambda
-        , tType
-        , tVar
         , tupleExpr
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Function expressions " ++ condStr)
-        [ lambdaTests expectFn condStr
-        , callTests expectFn condStr
-        , partialApplicationTests expectFn condStr
-        , nestedFunctionTests expectFn condStr
-        , functionWithPatternsTests expectFn condStr
-        , higherOrderTests expectFn condStr
-        , negateTests expectFn condStr
-        , absTests expectFn condStr
-        , polymorphicNumberTests expectFn condStr
-        ]
+    Test.test ("Function expressions " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    lambdaCases expectFn
+        ++ callCases expectFn
+        ++ partialApplicationCases expectFn
+        ++ nestedFunctionCases expectFn
+        ++ functionWithPatternsCases expectFn
+        ++ higherOrderCases expectFn
+        ++ negateCases expectFn
+        ++ absCases expectFn
+        ++ polymorphicNumberCases expectFn
 
 
 
 -- ============================================================================
--- LAMBDA EXPRESSIONS (8 tests)
+-- LAMBDA EXPRESSIONS
 -- ============================================================================
 
 
-lambdaTests : (Src.Module -> Expectation) -> String -> Test
-lambdaTests expectFn condStr =
-    Test.describe ("Lambda expressions " ++ condStr)
-        [ Test.test ("Identity lambda " ++ condStr) (identityLambda expectFn)
-        , Test.test ("Const lambda " ++ condStr) (constLambda expectFn)
-        , Test.test ("Two-argument lambda " ++ condStr) (twoArgumentLambda expectFn)
-        , Test.test ("Three-argument lambda " ++ condStr) (threeArgumentLambda expectFn)
-        , Test.test ("Lambda returning tuple " ++ condStr) (lambdaReturningTuple expectFn)
-        , Test.test ("Lambda returning record " ++ condStr) (lambdaReturningRecord expectFn)
-        , Test.test ("Lambda returning list " ++ condStr) (lambdaReturningList expectFn)
-        , Test.test ("Lambda with wildcard pattern " ++ condStr) (lambdaWithWildcard expectFn)
-        ]
+lambdaCases : (Src.Module -> Expectation) -> List TestCase
+lambdaCases expectFn =
+    [ { label = "Identity lambda", run = identityLambda expectFn }
+    , { label = "Two-argument lambda", run = twoArgumentLambda expectFn }
+    , { label = "Lambda returning tuple", run = lambdaReturningTuple expectFn }
+    , { label = "Lambda with wildcard pattern", run = lambdaWithWildcard expectFn }
+    ]
 
 
 identityLambda : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -77,15 +71,6 @@ identityLambda expectFn _ =
     let
         modul =
             makeModule "testValue" (lambdaExpr [ pVar "x" ] (varExpr "x"))
-    in
-    expectFn modul
-
-
-constLambda : (Src.Module -> Expectation) -> (() -> Expectation)
-constLambda expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (lambdaExpr [ pVar "x" ] (intExpr 42))
     in
     expectFn modul
 
@@ -99,44 +84,11 @@ twoArgumentLambda expectFn _ =
     expectFn modul
 
 
-threeArgumentLambda : (Src.Module -> Expectation) -> (() -> Expectation)
-threeArgumentLambda expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (lambdaExpr [ pVar "a", pVar "b", pVar "c" ] (varExpr "b"))
-    in
-    expectFn modul
-
-
 lambdaReturningTuple : (Src.Module -> Expectation) -> (() -> Expectation)
 lambdaReturningTuple expectFn _ =
     let
         body =
             tupleExpr (varExpr "x") (varExpr "y")
-
-        modul =
-            makeModule "testValue" (lambdaExpr [ pVar "x", pVar "y" ] body)
-    in
-    expectFn modul
-
-
-lambdaReturningRecord : (Src.Module -> Expectation) -> (() -> Expectation)
-lambdaReturningRecord expectFn _ =
-    let
-        body =
-            recordExpr [ ( "value", varExpr "x" ) ]
-
-        modul =
-            makeModule "testValue" (lambdaExpr [ pVar "x" ] body)
-    in
-    expectFn modul
-
-
-lambdaReturningList : (Src.Module -> Expectation) -> (() -> Expectation)
-lambdaReturningList expectFn _ =
-    let
-        body =
-            listExpr [ varExpr "x", varExpr "y" ]
 
         modul =
             makeModule "testValue" (lambdaExpr [ pVar "x", pVar "y" ] body)
@@ -155,20 +107,17 @@ lambdaWithWildcard expectFn _ =
 
 
 -- ============================================================================
--- FUNCTION CALLS (6 tests)
+-- FUNCTION CALLS
 -- ============================================================================
 
 
-callTests : (Src.Module -> Expectation) -> String -> Test
-callTests expectFn condStr =
-    Test.describe ("Function calls " ++ condStr)
-        [ Test.test ("Call with no args " ++ condStr) (callWithNoArgs expectFn)
-        , Test.test ("Call with one int arg " ++ condStr) (callWithOneIntArg expectFn)
-        , Test.test ("Call with two args " ++ condStr) (callWithTwoArgs expectFn)
-        , Test.test ("Call with three args " ++ condStr) (callWithThreeArgs expectFn)
-        , Test.test ("Call with complex args " ++ condStr) (callWithComplexArgs expectFn)
-        , Test.test ("Nested calls " ++ condStr) (nestedCalls expectFn)
-        ]
+callCases : (Src.Module -> Expectation) -> List TestCase
+callCases expectFn =
+    [ { label = "Call with no args", run = callWithNoArgs expectFn }
+    , { label = "Call with one int arg", run = callWithOneIntArg expectFn }
+    , { label = "Call with two args", run = callWithTwoArgs expectFn }
+    , { label = "Nested calls", run = nestedCalls expectFn }
+    ]
 
 
 callWithNoArgs : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -216,42 +165,6 @@ callWithTwoArgs expectFn _ =
     expectFn modul
 
 
-callWithThreeArgs : (Src.Module -> Expectation) -> (() -> Expectation)
-callWithThreeArgs expectFn _ =
-    let
-        fn =
-            lambdaExpr [ pVar "x", pVar "y", pVar "z" ] (varExpr "y")
-
-        def =
-            define "f" [] fn
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] (callExpr (varExpr "f") [ intExpr 1, intExpr 2, intExpr 3 ]))
-    in
-    expectFn modul
-
-
-callWithComplexArgs : (Src.Module -> Expectation) -> (() -> Expectation)
-callWithComplexArgs expectFn _ =
-    let
-        fn =
-            lambdaExpr [ pVar "x", pVar "y" ] (varExpr "x")
-
-        def =
-            define "f" [] fn
-
-        arg1 =
-            tupleExpr (intExpr 1) (intExpr 2)
-
-        arg2 =
-            listExpr [ strExpr "a", strExpr "b" ]
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] (callExpr (varExpr "f") [ arg1, arg2 ]))
-    in
-    expectFn modul
-
-
 nestedCalls : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedCalls expectFn _ =
     let
@@ -275,18 +188,15 @@ nestedCalls expectFn _ =
 
 
 -- ============================================================================
--- PARTIAL APPLICATION (4 tests)
+-- PARTIAL APPLICATION
 -- ============================================================================
 
 
-partialApplicationTests : (Src.Module -> Expectation) -> String -> Test
-partialApplicationTests expectFn condStr =
-    Test.describe ("Partial application " ++ condStr)
-        [ Test.test ("Partially applied two-arg function " ++ condStr) (partiallyAppliedTwoArg expectFn)
-        , Test.test ("Partially applied three-arg function " ++ condStr) (partiallyAppliedThreeArg expectFn)
-        , Test.test ("Chained partial application " ++ condStr) (chainedPartialApplication expectFn)
-        , Test.test ("Partial application with complex arg " ++ condStr) (partialApplicationWithComplexArg expectFn)
-        ]
+partialApplicationCases : (Src.Module -> Expectation) -> List TestCase
+partialApplicationCases expectFn =
+    [ { label = "Partially applied two-arg function", run = partiallyAppliedTwoArg expectFn }
+    , { label = "Chained partial application", run = chainedPartialApplication expectFn }
+    ]
 
 
 partiallyAppliedTwoArg : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -300,24 +210,6 @@ partiallyAppliedTwoArg expectFn _ =
 
         partial =
             callExpr (varExpr "f") [ intExpr 1 ]
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] partial)
-    in
-    expectFn modul
-
-
-partiallyAppliedThreeArg : (Src.Module -> Expectation) -> (() -> Expectation)
-partiallyAppliedThreeArg expectFn _ =
-    let
-        fn =
-            lambdaExpr [ pVar "a", pVar "b", pVar "c" ] (varExpr "a")
-
-        def =
-            define "f" [] fn
-
-        partial =
-            callExpr (varExpr "f") [ intExpr 1, intExpr 2 ]
 
         modul =
             makeModule "testValue" (letExpr [ def ] partial)
@@ -349,43 +241,18 @@ chainedPartialApplication expectFn _ =
     expectFn modul
 
 
-partialApplicationWithComplexArg : (Src.Module -> Expectation) -> (() -> Expectation)
-partialApplicationWithComplexArg expectFn _ =
-    let
-        fn =
-            lambdaExpr [ pVar "x", pVar "y" ] (varExpr "x")
-
-        def =
-            define "f" [] fn
-
-        complexArg =
-            recordExpr [ ( "value", intExpr 42 ) ]
-
-        partial =
-            callExpr (varExpr "f") [ complexArg ]
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] partial)
-    in
-    expectFn modul
-
-
 
 -- ============================================================================
--- NESTED FUNCTIONS (6 tests)
+-- NESTED FUNCTIONS
 -- ============================================================================
 
 
-nestedFunctionTests : (Src.Module -> Expectation) -> String -> Test
-nestedFunctionTests expectFn condStr =
-    Test.describe ("Nested functions " ++ condStr)
-        [ Test.test ("Lambda returning lambda " ++ condStr) (lambdaReturningLambda expectFn)
-        , Test.test ("Triple nested lambda " ++ condStr) (tripleNestedLambda expectFn)
-        , Test.test ("Lambda inside let inside lambda " ++ condStr) (lambdaInsideLetInsideLambda expectFn)
-        , Test.test ("Multiple lambdas in tuple " ++ condStr) (multipleLambdasInTuple expectFn)
-        , Test.test ("Lambda in list " ++ condStr) (lambdaInList expectFn)
-        , Test.test ("Lambda in record " ++ condStr) (lambdaInRecord expectFn)
-        ]
+nestedFunctionCases : (Src.Module -> Expectation) -> List TestCase
+nestedFunctionCases expectFn =
+    [ { label = "Lambda returning lambda", run = lambdaReturningLambda expectFn }
+    , { label = "Lambda inside let inside lambda", run = lambdaInsideLetInsideLambda expectFn }
+    , { label = "Multiple lambdas in tuple", run = multipleLambdasInTuple expectFn }
+    ]
 
 
 lambdaReturningLambda : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -396,21 +263,6 @@ lambdaReturningLambda expectFn _ =
 
         modul =
             makeModule "testValue" (lambdaExpr [ pVar "x" ] inner)
-    in
-    expectFn modul
-
-
-tripleNestedLambda : (Src.Module -> Expectation) -> (() -> Expectation)
-tripleNestedLambda expectFn _ =
-    let
-        innermost =
-            lambdaExpr [ pVar "z" ] (varExpr "z")
-
-        middle =
-            lambdaExpr [ pVar "y" ] innermost
-
-        modul =
-            makeModule "testValue" (lambdaExpr [ pVar "x" ] middle)
     in
     expectFn modul
 
@@ -448,44 +300,19 @@ multipleLambdasInTuple expectFn _ =
     expectFn modul
 
 
-lambdaInList : (Src.Module -> Expectation) -> (() -> Expectation)
-lambdaInList expectFn _ =
-    let
-        lambda =
-            lambdaExpr [ pVar "x" ] (varExpr "x")
-
-        modul =
-            makeModule "testValue" (listExpr [ lambda ])
-    in
-    expectFn modul
-
-
-lambdaInRecord : (Src.Module -> Expectation) -> (() -> Expectation)
-lambdaInRecord expectFn _ =
-    let
-        lambda =
-            lambdaExpr [ pVar "x" ] (varExpr "x")
-
-        modul =
-            makeModule "testValue" (recordExpr [ ( "fn", lambda ) ])
-    in
-    expectFn modul
-
-
 
 -- ============================================================================
--- FUNCTIONS WITH PATTERNS (4 tests)
+-- FUNCTIONS WITH PATTERNS
 -- ============================================================================
 
 
-functionWithPatternsTests : (Src.Module -> Expectation) -> String -> Test
-functionWithPatternsTests expectFn condStr =
-    Test.describe ("Functions with pattern parameters " ++ condStr)
-        [ Test.test ("Lambda with tuple pattern " ++ condStr) (lambdaWithTuplePattern expectFn)
-        , Test.test ("Lambda with record pattern " ++ condStr) (lambdaWithRecordPattern expectFn)
-        , Test.test ("Lambda with mixed patterns " ++ condStr) (lambdaWithMixedPatterns expectFn)
-        , Test.test ("Top-level function with patterns " ++ condStr) (topLevelFunctionWithPatterns expectFn)
-        ]
+functionWithPatternsCases : (Src.Module -> Expectation) -> List TestCase
+functionWithPatternsCases expectFn =
+    [ { label = "Lambda with tuple pattern", run = lambdaWithTuplePattern expectFn }
+    , { label = "Lambda with record pattern", run = lambdaWithRecordPattern expectFn }
+    , { label = "Lambda with mixed patterns", run = lambdaWithMixedPatterns expectFn }
+    , { label = "Top-level function with patterns", run = topLevelFunctionWithPatterns expectFn }
+    ]
 
 
 lambdaWithTuplePattern : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -547,17 +374,15 @@ topLevelFunctionWithPatterns expectFn _ =
 
 
 -- ============================================================================
--- HIGHER-ORDER FUNCTIONS (3 tests)
+-- HIGHER-ORDER FUNCTIONS
 -- ============================================================================
 
 
-higherOrderTests : (Src.Module -> Expectation) -> String -> Test
-higherOrderTests expectFn condStr =
-    Test.describe ("Higher-order functions " ++ condStr)
-        [ Test.test ("Apply function " ++ condStr) (applyFunction expectFn)
-        , Test.test ("Compose functions " ++ condStr) (composeFunctions expectFn)
-        , Test.test ("Function returning function " ++ condStr) (functionReturningFunction expectFn)
-        ]
+higherOrderCases : (Src.Module -> Expectation) -> List TestCase
+higherOrderCases expectFn =
+    [ { label = "Apply function", run = applyFunction expectFn }
+    , { label = "Compose functions", run = composeFunctions expectFn }
+    ]
 
 
 applyFunction : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -602,37 +427,17 @@ composeFunctions expectFn _ =
     expectFn modul
 
 
-functionReturningFunction : (Src.Module -> Expectation) -> (() -> Expectation)
-functionReturningFunction expectFn _ =
-    let
-        -- makeAdder n = \x -> x (returns a function)
-        makeAdder =
-            lambdaExpr
-                [ pVar "n" ]
-                (lambdaExpr [ pVar "x" ] (varExpr "x"))
-
-        def =
-            define "makeAdder" [] makeAdder
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] (varExpr "makeAdder"))
-    in
-    expectFn modul
-
-
 
 -- ============================================================================
--- NEGATE (3 tests)
+-- NEGATE
 -- ============================================================================
 
 
-negateTests : (Src.Module -> Expectation) -> String -> Test
-negateTests expectFn condStr =
-    Test.describe ("Negate expressions " ++ condStr)
-        [ Test.test ("Negate int " ++ condStr) (negateInt expectFn)
-        , Test.test ("Negate float " ++ condStr) (negateFloat expectFn)
-        , Test.test ("Double negate " ++ condStr) (doubleNegate expectFn)
-        ]
+negateCases : (Src.Module -> Expectation) -> List TestCase
+negateCases expectFn =
+    [ { label = "Negate int", run = negateInt expectFn }
+    , { label = "Double negate", run = doubleNegate expectFn }
+    ]
 
 
 negateInt : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -640,15 +445,6 @@ negateInt expectFn _ =
     let
         modul =
             makeModule "testValue" (negateExpr (intExpr 42))
-    in
-    expectFn modul
-
-
-negateFloat : (Src.Module -> Expectation) -> (() -> Expectation)
-negateFloat expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (negateExpr (floatExpr 3.14))
     in
     expectFn modul
 
@@ -664,20 +460,14 @@ doubleNegate expectFn _ =
 
 
 -- ============================================================================
--- ABS (6 tests)
+-- ABS
 -- ============================================================================
 
 
-absTests : (Src.Module -> Expectation) -> String -> Test
-absTests expectFn condStr =
-    Test.describe ("Abs expressions " ++ condStr)
-        [ Test.test ("Abs positive int " ++ condStr) (absPositiveInt expectFn)
-        , Test.test ("Abs negative int " ++ condStr) (absNegativeInt expectFn)
-        , Test.test ("Abs zero int " ++ condStr) (absZeroInt expectFn)
-        , Test.test ("Abs positive float " ++ condStr) (absPositiveFloat expectFn)
-        , Test.test ("Abs negative float " ++ condStr) (absNegativeFloat expectFn)
-        , Test.test ("Abs zero float " ++ condStr) (absZeroFloat expectFn)
-        ]
+absCases : (Src.Module -> Expectation) -> List TestCase
+absCases expectFn =
+    [ { label = "Abs positive int", run = absPositiveInt expectFn }
+    ]
 
 
 absPositiveInt : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -689,67 +479,20 @@ absPositiveInt expectFn _ =
     expectFn modul
 
 
-absNegativeInt : (Src.Module -> Expectation) -> (() -> Expectation)
-absNegativeInt expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (callExpr (qualVarExpr "Basics" "abs") [ negateExpr (intExpr 5) ])
-    in
-    expectFn modul
-
-
-absZeroInt : (Src.Module -> Expectation) -> (() -> Expectation)
-absZeroInt expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (callExpr (qualVarExpr "Basics" "abs") [ intExpr 0 ])
-    in
-    expectFn modul
-
-
-absPositiveFloat : (Src.Module -> Expectation) -> (() -> Expectation)
-absPositiveFloat expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (callExpr (qualVarExpr "Basics" "abs") [ floatExpr 3.14 ])
-    in
-    expectFn modul
-
-
-absNegativeFloat : (Src.Module -> Expectation) -> (() -> Expectation)
-absNegativeFloat expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (callExpr (qualVarExpr "Basics" "abs") [ negateExpr (floatExpr 3.14) ])
-    in
-    expectFn modul
-
-
-absZeroFloat : (Src.Module -> Expectation) -> (() -> Expectation)
-absZeroFloat expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (callExpr (qualVarExpr "Basics" "abs") [ floatExpr 0.0 ])
-    in
-    expectFn modul
-
-
 
 -- ============================================================================
--- POLYMORPHIC NUMBER FUNCTIONS (3 tests)
+-- POLYMORPHIC NUMBER FUNCTIONS
 -- Tests for polymorphic functions with `number` type variable that contain
 -- Int literals in their body. When called with Float, the Int literals must
 -- be promoted to Float during monomorphization.
 -- ============================================================================
 
 
-polymorphicNumberTests : (Src.Module -> Expectation) -> String -> Test
-polymorphicNumberTests expectFn condStr =
-    Test.describe ("Polymorphic number functions " ++ condStr)
-        [ Test.test ("zabs with Int (baseline) " ++ condStr) (zabsWithInt expectFn)
-        , Test.test ("zabs with Float (Int literal promoted) " ++ condStr) (zabsWithFloat expectFn)
-        , Test.test ("zabs with zero Float " ++ condStr) (zabsWithZeroFloat expectFn)
-        ]
+polymorphicNumberCases : (Src.Module -> Expectation) -> List TestCase
+polymorphicNumberCases expectFn =
+    [ { label = "zabs with Int (baseline)", run = zabsWithInt expectFn }
+    , { label = "zabs with Float (Int literal promoted)", run = zabsWithFloat expectFn }
+    ]
 
 
 {-| Define zabs : number -> number with an Int literal 0 in the body.
@@ -856,46 +599,13 @@ zabsWithFloat expectFn _ =
     expectFn modul
 
 
-{-| Similar to zabsWithFloat but with 0.0 as argument.
+tLambda =
+    Compiler.AST.SourceBuilder.tLambda
 
-    testValue : Float
-    testValue = zabs 0.0
 
-This also triggers Float specialization.
+tVar =
+    Compiler.AST.SourceBuilder.tVar
 
--}
-zabsWithZeroFloat : (Src.Module -> Expectation) -> (() -> Expectation)
-zabsWithZeroFloat expectFn _ =
-    let
-        -- Type: number -> number
-        zabsType =
-            tLambda (tVar "number") (tVar "number")
 
-        -- Body: if n < 0 then -n else n
-        zabsBody =
-            ifExpr
-                (binopsExpr [ ( varExpr "n", "<" ) ] (intExpr 0))
-                (negateExpr (varExpr "n"))
-                (varExpr "n")
-
-        zabsDef : TypedDef
-        zabsDef =
-            { name = "zabs"
-            , args = [ pVar "n" ]
-            , tipe = zabsType
-            , body = zabsBody
-            }
-
-        -- testValue : Float = zabs 0.0
-        testValueDef : TypedDef
-        testValueDef =
-            { name = "testValue"
-            , args = []
-            , tipe = tType "Float" []
-            , body = callExpr (varExpr "zabs") [ floatExpr 0.0 ]
-            }
-
-        modul =
-            makeModuleWithTypedDefs "Test" [ zabsDef, testValueDef ]
-    in
-    expectFn modul
+tType =
+    Compiler.AST.SourceBuilder.tType

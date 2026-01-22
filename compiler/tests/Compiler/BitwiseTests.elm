@@ -1,4 +1,4 @@
-module Compiler.BitwiseTests exposing (expectSuite, suite)
+module Compiler.BitwiseTests exposing (expectSuite, suite, testCases)
 
 {-| Test cases for Bitwise operations in MLIR codegen.
 
@@ -25,6 +25,7 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Compiler.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 import Expect exposing (Expectation)
 import Test exposing (Test)
@@ -37,15 +38,19 @@ suite =
         ]
 
 
-{-| Test suite that can be used with different expectation functions.
--}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Bitwise operations " ++ condStr)
-        [ basicBitwiseTests expectFn condStr
-        , shiftTests expectFn condStr
-        , combinedBitwiseTests expectFn condStr
-        , bitwiseInFunctionsTests expectFn condStr
+    Test.test ("Bitwise operations " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    List.concat
+        [ basicBitwiseCases expectFn
+        , shiftCases expectFn
+        , combinedBitwiseCases expectFn
+        , bitwiseInFunctionsCases expectFn
         ]
 
 
@@ -55,18 +60,13 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-basicBitwiseTests : (Src.Module -> Expectation) -> String -> Test
-basicBitwiseTests expectFn condStr =
-    Test.describe ("Basic bitwise ops " ++ condStr)
-        [ Test.test "Bitwise.and" <|
-            bitwiseAndTest expectFn
-        , Test.test "Bitwise.or" <|
-            bitwiseOrTest expectFn
-        , Test.test "Bitwise.xor" <|
-            bitwiseXorTest expectFn
-        , Test.test "Bitwise.complement" <|
-            bitwiseComplementTest expectFn
-        ]
+basicBitwiseCases : (Src.Module -> Expectation) -> List TestCase
+basicBitwiseCases expectFn =
+    [ { label = "Bitwise.and", run = bitwiseAndTest expectFn }
+    , { label = "Bitwise.or", run = bitwiseOrTest expectFn }
+    , { label = "Bitwise.xor", run = bitwiseXorTest expectFn }
+    , { label = "Bitwise.complement", run = bitwiseComplementTest expectFn }
+    ]
 
 
 {-| Test Bitwise.and operation.
@@ -185,18 +185,13 @@ bitwiseComplementTest expectFn _ =
 -- ============================================================================
 
 
-shiftTests : (Src.Module -> Expectation) -> String -> Test
-shiftTests expectFn condStr =
-    Test.describe ("Shift operations " ++ condStr)
-        [ Test.test "Bitwise.shiftLeftBy" <|
-            shiftLeftByTest expectFn
-        , Test.test "Bitwise.shiftRightBy" <|
-            shiftRightByTest expectFn
-        , Test.test "Bitwise.shiftRightZfBy" <|
-            shiftRightZfByTest expectFn
-        , Test.test "Multiple shifts" <|
-            multipleShiftsTest expectFn
-        ]
+shiftCases : (Src.Module -> Expectation) -> List TestCase
+shiftCases expectFn =
+    [ { label = "Bitwise.shiftLeftBy", run = shiftLeftByTest expectFn }
+    , { label = "Bitwise.shiftRightBy", run = shiftRightByTest expectFn }
+    , { label = "Bitwise.shiftRightZfBy", run = shiftRightZfByTest expectFn }
+    , { label = "Multiple shifts", run = multipleShiftsTest expectFn }
+    ]
 
 
 {-| Test Bitwise.shiftLeftBy operation.
@@ -320,18 +315,13 @@ multipleShiftsTest expectFn _ =
 -- ============================================================================
 
 
-combinedBitwiseTests : (Src.Module -> Expectation) -> String -> Test
-combinedBitwiseTests expectFn condStr =
-    Test.describe ("Combined bitwise ops " ++ condStr)
-        [ Test.test "And with Or" <|
-            andWithOrTest expectFn
-        , Test.test "Xor with complement" <|
-            xorWithComplementTest expectFn
-        , Test.test "Complex bitwise expression" <|
-            complexBitwiseTest expectFn
-        , Test.test "Mask extraction pattern" <|
-            maskExtractionTest expectFn
-        ]
+combinedBitwiseCases : (Src.Module -> Expectation) -> List TestCase
+combinedBitwiseCases expectFn =
+    [ { label = "And with Or", run = andWithOrTest expectFn }
+    , { label = "Xor with complement", run = xorWithComplementTest expectFn }
+    , { label = "Complex bitwise expression", run = complexBitwiseTest expectFn }
+    , { label = "Mask extraction pattern", run = maskExtractionTest expectFn }
+    ]
 
 
 {-| Test Bitwise.and combined with Bitwise.or.
@@ -463,26 +453,17 @@ maskExtractionTest expectFn _ =
 -- ============================================================================
 
 
-bitwiseInFunctionsTests : (Src.Module -> Expectation) -> String -> Test
-bitwiseInFunctionsTests expectFn condStr =
-    Test.describe ("Bitwise in functions " ++ condStr)
-        [ Test.test "setBit function" <|
-            setBitFunctionTest expectFn
-        , Test.test "clearBit function" <|
-            clearBitFunctionTest expectFn
-        , Test.test "toggleBit function" <|
-            toggleBitFunctionTest expectFn
-        , Test.test "testBit function" <|
-            testBitFunctionTest expectFn
-        , Test.test "Bitwise with conditional" <|
-            bitwiseWithConditionalTest expectFn
-        , Test.test "Rotate left pattern" <|
-            rotateLeftTest expectFn
-        , Test.test "Extract byte pattern" <|
-            extractByteTest expectFn
-        , Test.test "Pack bytes pattern" <|
-            packBytesTest expectFn
-        ]
+bitwiseInFunctionsCases : (Src.Module -> Expectation) -> List TestCase
+bitwiseInFunctionsCases expectFn =
+    [ { label = "setBit function", run = setBitFunctionTest expectFn }
+    , { label = "clearBit function", run = clearBitFunctionTest expectFn }
+    , { label = "toggleBit function", run = toggleBitFunctionTest expectFn }
+    , { label = "testBit function", run = testBitFunctionTest expectFn }
+    , { label = "Bitwise with conditional", run = bitwiseWithConditionalTest expectFn }
+    , { label = "Rotate left pattern", run = rotateLeftTest expectFn }
+    , { label = "Extract byte pattern", run = extractByteTest expectFn }
+    , { label = "Pack bytes pattern", run = packBytesTest expectFn }
+    ]
 
 
 {-| Test setBit function using bitwise ops.

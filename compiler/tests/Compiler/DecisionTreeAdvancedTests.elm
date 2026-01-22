@@ -1,4 +1,4 @@
-module Compiler.DecisionTreeAdvancedTests exposing (expectSuite)
+module Compiler.DecisionTreeAdvancedTests exposing (expectSuite, testCases)
 
 {-| Advanced test cases for decision tree compilation and pattern matching.
 
@@ -55,23 +55,30 @@ import Compiler.AST.SourceBuilder
         , unitExpr
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Decision tree advanced " ++ condStr)
-        [ constructorPatternTests expectFn condStr
-        , listPatternTests expectFn condStr
-        , literalPatternTests expectFn condStr
-        , tuplePatternTests expectFn condStr
-        , recordPatternTests expectFn condStr
-        , wildcardAndVarPatternTests expectFn condStr
-        , aliasPatternTests expectFn condStr
-        , nestedPatternTests expectFn condStr
-        , complexDecisionTreeTests expectFn condStr
-        , edgeCasePatternTests expectFn condStr
+    Test.test ("Decision tree advanced " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    List.concat
+        [ constructorPatternCases expectFn
+        , listPatternCases expectFn
+        , literalPatternCases expectFn
+        , tuplePatternCases expectFn
+        , recordPatternCases expectFn
+        , wildcardAndVarPatternCases expectFn
+        , aliasPatternCases expectFn
+        , nestedPatternCases expectFn
+        , complexDecisionTreeCases expectFn
+        , edgeCasePatternCases expectFn
         ]
 
 
@@ -81,18 +88,17 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-constructorPatternTests : (Src.Module -> Expectation) -> String -> Test
-constructorPatternTests expectFn condStr =
-    Test.describe ("Constructor patterns " ++ condStr)
-        [ Test.test ("Single constructor " ++ condStr) (singleConstructorPattern expectFn)
-        , Test.test ("Two constructors " ++ condStr) (twoConstructorPattern expectFn)
-        , Test.test ("Three constructors " ++ condStr) (threeConstructorPattern expectFn)
-        , Test.test ("Constructor with one arg " ++ condStr) (constructorWithOneArg expectFn)
-        , Test.test ("Constructor with multiple args " ++ condStr) (constructorWithMultipleArgs expectFn)
-        , Test.test ("Nested constructor " ++ condStr) (nestedConstructorPattern expectFn)
-        , Test.test ("Maybe Just pattern " ++ condStr) (maybeJustPattern expectFn)
-        , Test.test ("Maybe Nothing pattern " ++ condStr) (maybeNothingPattern expectFn)
-        ]
+constructorPatternCases : (Src.Module -> Expectation) -> List TestCase
+constructorPatternCases expectFn =
+    [ { label = "Single constructor", run = singleConstructorPattern expectFn }
+    , { label = "Two constructors", run = twoConstructorPattern expectFn }
+    , { label = "Three constructors", run = threeConstructorPattern expectFn }
+    , { label = "Constructor with one arg", run = constructorWithOneArg expectFn }
+    , { label = "Constructor with multiple args", run = constructorWithMultipleArgs expectFn }
+    , { label = "Nested constructor", run = nestedConstructorPattern expectFn }
+    , { label = "Maybe Just pattern", run = maybeJustPattern expectFn }
+    , { label = "Maybe Nothing pattern", run = maybeNothingPattern expectFn }
+    ]
 
 
 singleConstructorPattern : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -425,16 +431,13 @@ maybeNothingPattern expectFn _ =
 -- ============================================================================
 
 
-listPatternTests : (Src.Module -> Expectation) -> String -> Test
-listPatternTests expectFn condStr =
-    Test.describe ("List patterns " ++ condStr)
-        [ Test.test ("Empty list pattern " ++ condStr) (emptyListPattern expectFn)
-        , Test.test ("Singleton list pattern " ++ condStr) (singletonListPattern expectFn)
-        , Test.test ("Two element list pattern " ++ condStr) (twoElementListPattern expectFn)
-        , Test.test ("Cons pattern " ++ condStr) (consPattern expectFn)
-        , Test.test ("Multiple cons pattern " ++ condStr) (multipleConsPattern expectFn)
-        , Test.test ("List pattern with fallback " ++ condStr) (listPatternWithFallback expectFn)
-        ]
+listPatternCases : (Src.Module -> Expectation) -> List TestCase
+listPatternCases expectFn =
+    [ { label = "Singleton list pattern", run = singletonListPattern expectFn }
+    , { label = "Two element list pattern", run = twoElementListPattern expectFn }
+    , { label = "Multiple cons pattern", run = multipleConsPattern expectFn }
+    , { label = "List pattern with fallback", run = listPatternWithFallback expectFn }
+    ]
 
 
 emptyListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -643,16 +646,13 @@ listPatternWithFallback expectFn _ =
 -- ============================================================================
 
 
-literalPatternTests : (Src.Module -> Expectation) -> String -> Test
-literalPatternTests expectFn condStr =
-    Test.describe ("Literal patterns " ++ condStr)
-        [ Test.test ("Int literal pattern " ++ condStr) (intLiteralPattern expectFn)
-        , Test.test ("Multiple int patterns " ++ condStr) (multipleIntPatterns expectFn)
-        , Test.test ("String literal pattern " ++ condStr) (stringLiteralPattern expectFn)
-        , Test.test ("Char literal pattern " ++ condStr) (charLiteralPattern expectFn)
-        , Test.test ("Multiple char patterns " ++ condStr) (multipleCharPatterns expectFn)
-        , Test.test ("Unit pattern " ++ condStr) (unitPattern expectFn)
-        ]
+literalPatternCases : (Src.Module -> Expectation) -> List TestCase
+literalPatternCases expectFn =
+    [ { label = "Int literal pattern", run = intLiteralPattern expectFn }
+    , { label = "Multiple int patterns", run = multipleIntPatterns expectFn }
+    , { label = "Multiple char patterns", run = multipleCharPatterns expectFn }
+    , { label = "Unit pattern", run = unitPattern expectFn }
+    ]
 
 
 intLiteralPattern : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -853,14 +853,11 @@ unitPattern expectFn _ =
 -- ============================================================================
 
 
-tuplePatternTests : (Src.Module -> Expectation) -> String -> Test
-tuplePatternTests expectFn condStr =
-    Test.describe ("Tuple patterns " ++ condStr)
-        [ Test.test ("Tuple2 pattern " ++ condStr) (tuple2Pattern expectFn)
-        , Test.test ("Tuple3 pattern " ++ condStr) (tuple3Pattern expectFn)
-        , Test.test ("Nested tuple pattern " ++ condStr) (nestedTuplePattern expectFn)
-        , Test.test ("Tuple with literals " ++ condStr) (tupleWithLiterals expectFn)
-        ]
+tuplePatternCases : (Src.Module -> Expectation) -> List TestCase
+tuplePatternCases expectFn =
+    [ { label = "Tuple3 pattern", run = tuple3Pattern expectFn }
+    , { label = "Tuple with literals", run = tupleWithLiterals expectFn }
+    ]
 
 
 tuple2Pattern : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -991,14 +988,13 @@ tupleWithLiterals expectFn _ =
 -- ============================================================================
 
 
-recordPatternTests : (Src.Module -> Expectation) -> String -> Test
-recordPatternTests expectFn condStr =
-    Test.describe ("Record patterns " ++ condStr)
-        [ Test.test ("Simple record pattern " ++ condStr) (simpleRecordPattern expectFn)
-        , Test.test ("Multi-field record pattern " ++ condStr) (multiFieldRecordPattern expectFn)
-        , Test.test ("Partial record pattern " ++ condStr) (partialRecordPattern expectFn)
-        , Test.test ("Nested record pattern " ++ condStr) (nestedRecordPattern expectFn)
-        ]
+recordPatternCases : (Src.Module -> Expectation) -> List TestCase
+recordPatternCases expectFn =
+    [ { label = "Simple record pattern", run = simpleRecordPattern expectFn }
+    , { label = "Multi-field record pattern", run = multiFieldRecordPattern expectFn }
+    , { label = "Partial record pattern", run = partialRecordPattern expectFn }
+    , { label = "Nested record pattern", run = nestedRecordPattern expectFn }
+    ]
 
 
 simpleRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -1055,14 +1051,13 @@ nestedRecordPattern expectFn _ =
 -- ============================================================================
 
 
-wildcardAndVarPatternTests : (Src.Module -> Expectation) -> String -> Test
-wildcardAndVarPatternTests expectFn condStr =
-    Test.describe ("Wildcard and var patterns " ++ condStr)
-        [ Test.test ("Wildcard pattern " ++ condStr) (wildcardPattern expectFn)
-        , Test.test ("Variable pattern " ++ condStr) (variablePattern expectFn)
-        , Test.test ("Mixed wildcard and var " ++ condStr) (mixedWildcardAndVar expectFn)
-        , Test.test ("All wildcards " ++ condStr) (allWildcards expectFn)
-        ]
+wildcardAndVarPatternCases : (Src.Module -> Expectation) -> List TestCase
+wildcardAndVarPatternCases expectFn =
+    [ { label = "Wildcard pattern", run = wildcardPattern expectFn }
+    , { label = "Variable pattern", run = variablePattern expectFn }
+    , { label = "Mixed wildcard and var", run = mixedWildcardAndVar expectFn }
+    , { label = "All wildcards", run = allWildcards expectFn }
+    ]
 
 
 wildcardPattern : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -1187,13 +1182,12 @@ allWildcards expectFn _ =
 -- ============================================================================
 
 
-aliasPatternTests : (Src.Module -> Expectation) -> String -> Test
-aliasPatternTests expectFn condStr =
-    Test.describe ("Alias patterns " ++ condStr)
-        [ Test.test ("Simple alias pattern " ++ condStr) (simpleAliasPattern expectFn)
-        , Test.test ("Alias with constructor " ++ condStr) (aliasWithConstructor expectFn)
-        , Test.test ("Alias with tuple " ++ condStr) (aliasWithTuple expectFn)
-        ]
+aliasPatternCases : (Src.Module -> Expectation) -> List TestCase
+aliasPatternCases expectFn =
+    [ { label = "Simple alias pattern", run = simpleAliasPattern expectFn }
+    , { label = "Alias with constructor", run = aliasWithConstructor expectFn }
+    , { label = "Alias with tuple", run = aliasWithTuple expectFn }
+    ]
 
 
 simpleAliasPattern : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -1293,14 +1287,13 @@ aliasWithTuple expectFn _ =
 -- ============================================================================
 
 
-nestedPatternTests : (Src.Module -> Expectation) -> String -> Test
-nestedPatternTests expectFn condStr =
-    Test.describe ("Nested patterns " ++ condStr)
-        [ Test.test ("Deeply nested constructor " ++ condStr) (deeplyNestedConstructor expectFn)
-        , Test.test ("List of tuples pattern " ++ condStr) (listOfTuplesPattern expectFn)
-        , Test.test ("Tuple of lists pattern " ++ condStr) (tupleOfListsPattern expectFn)
-        , Test.test ("Constructor with list " ++ condStr) (constructorWithList expectFn)
-        ]
+nestedPatternCases : (Src.Module -> Expectation) -> List TestCase
+nestedPatternCases expectFn =
+    [ { label = "Deeply nested constructor", run = deeplyNestedConstructor expectFn }
+    , { label = "List of tuples pattern", run = listOfTuplesPattern expectFn }
+    , { label = "Tuple of lists pattern", run = tupleOfListsPattern expectFn }
+    , { label = "Constructor with list", run = constructorWithList expectFn }
+    ]
 
 
 deeplyNestedConstructor : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -1463,14 +1456,13 @@ constructorWithList expectFn _ =
 -- ============================================================================
 
 
-complexDecisionTreeTests : (Src.Module -> Expectation) -> String -> Test
-complexDecisionTreeTests expectFn condStr =
-    Test.describe ("Complex decision trees " ++ condStr)
-        [ Test.test ("Multiple fallbacks " ++ condStr) (multipleFallbacks expectFn)
-        , Test.test ("Overlapping patterns " ++ condStr) (overlappingPatterns expectFn)
-        , Test.test ("Many branches " ++ condStr) (manyBranches expectFn)
-        , Test.test ("Deep nesting with fallback " ++ condStr) (deepNestingWithFallback expectFn)
-        ]
+complexDecisionTreeCases : (Src.Module -> Expectation) -> List TestCase
+complexDecisionTreeCases expectFn =
+    [ { label = "Multiple fallbacks", run = multipleFallbacks expectFn }
+    , { label = "Overlapping patterns", run = overlappingPatterns expectFn }
+    , { label = "Many branches", run = manyBranches expectFn }
+    , { label = "Deep nesting with fallback", run = deepNestingWithFallback expectFn }
+    ]
 
 
 multipleFallbacks : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -1641,13 +1633,12 @@ deepNestingWithFallback expectFn _ =
 -- ============================================================================
 
 
-edgeCasePatternTests : (Src.Module -> Expectation) -> String -> Test
-edgeCasePatternTests expectFn condStr =
-    Test.describe ("Edge case patterns " ++ condStr)
-        [ Test.test ("Empty union case " ++ condStr) (emptyUnionCase expectFn)
-        , Test.test ("Single branch case " ++ condStr) (singleBranchCase expectFn)
-        , Test.test ("Redundant wildcard " ++ condStr) (redundantWildcard expectFn)
-        ]
+edgeCasePatternCases : (Src.Module -> Expectation) -> List TestCase
+edgeCasePatternCases expectFn =
+    [ { label = "Empty union case", run = emptyUnionCase expectFn }
+    , { label = "Single branch case", run = singleBranchCase expectFn }
+    , { label = "Redundant wildcard", run = redundantWildcard expectFn }
+    ]
 
 
 emptyUnionCase : (Src.Module -> Expectation) -> (() -> Expectation)

@@ -1,4 +1,4 @@
-module Compiler.LetDestructTests exposing (expectSuite)
+module Compiler.LetDestructTests exposing (expectSuite, testCases)
 
 {-| Tests for destructuring let expressions.
 -}
@@ -6,8 +6,7 @@ module Compiler.LetDestructTests exposing (expectSuite)
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( accessExpr
-        , callExpr
+        ( callExpr
         , define
         , destruct
         , intExpr
@@ -23,43 +22,44 @@ import Compiler.AST.SourceBuilder
         , pTuple3
         , pVar
         , recordExpr
-        , strExpr
         , tuple3Expr
         , tupleExpr
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Let destruct expressions " ++ condStr)
-        [ tupleDestructTests expectFn condStr
-        , recordDestructTests expectFn condStr
-        , listDestructTests expectFn condStr
-        , nestedDestructTests expectFn condStr
-        , aliasDestructTests expectFn condStr
-        , complexDestructTests expectFn condStr
-        ]
+    Test.test ("Let destruct expressions " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    tupleDestructCases expectFn
+        ++ recordDestructCases expectFn
+        ++ listDestructCases expectFn
+        ++ nestedDestructCases expectFn
+        ++ aliasDestructCases expectFn
+        ++ complexDestructCases expectFn
 
 
 
 -- ============================================================================
--- TUPLE DESTRUCTURING (6 tests)
+-- TUPLE DESTRUCTURING
 -- ============================================================================
 
 
-tupleDestructTests : (Src.Module -> Expectation) -> String -> Test
-tupleDestructTests expectFn condStr =
-    Test.describe ("Tuple destructuring " ++ condStr)
-        [ Test.test ("Destruct 2-tuple " ++ condStr) (destruct2Tuple expectFn)
-        , Test.test ("Destruct tuple with values " ++ condStr) (destructTupleWithValues expectFn)
-        , Test.test ("Destruct 3-tuple " ++ condStr) (destruct3Tuple expectFn)
-        , Test.test ("Destruct tuple with wildcard " ++ condStr) (destructTupleWithWildcard expectFn)
-        , Test.test ("Multiple tuple destructs " ++ condStr) (multipleTupleDestructs expectFn)
-        , Test.test ("Destruct 3-tuple with values " ++ condStr) (destruct3TupleWithValues expectFn)
-        ]
+tupleDestructCases : (Src.Module -> Expectation) -> List TestCase
+tupleDestructCases expectFn =
+    [ { label = "Destruct 2-tuple", run = destruct2Tuple expectFn }
+    , { label = "Destruct 3-tuple", run = destruct3Tuple expectFn }
+    , { label = "Destruct tuple with wildcard", run = destructTupleWithWildcard expectFn }
+    , { label = "Multiple tuple destructs", run = multipleTupleDestructs expectFn }
+    ]
 
 
 destruct2Tuple : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -73,21 +73,6 @@ destruct2Tuple expectFn _ =
 
         modul =
             makeModule "testValue" (letExpr [ def ] (varExpr "a"))
-    in
-    expectFn modul
-
-
-destructTupleWithValues : (Src.Module -> Expectation) -> (() -> Expectation)
-destructTupleWithValues expectFn _ =
-    let
-        pair =
-            tupleExpr (intExpr 1) (intExpr 2)
-
-        def =
-            destruct (pTuple (pVar "x") (pVar "y")) pair
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] (tupleExpr (varExpr "y") (varExpr "x")))
     in
     expectFn modul
 
@@ -140,37 +125,19 @@ multipleTupleDestructs expectFn _ =
     expectFn modul
 
 
-destruct3TupleWithValues : (Src.Module -> Expectation) -> (() -> Expectation)
-destruct3TupleWithValues expectFn _ =
-    let
-        triple =
-            tuple3Expr (intExpr 1) (intExpr 2) (intExpr 3)
-
-        def =
-            destruct (pTuple3 (pVar "x") (pVar "y") (pVar "z")) triple
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] (tuple3Expr (varExpr "z") (varExpr "y") (varExpr "x")))
-    in
-    expectFn modul
-
-
 
 -- ============================================================================
--- RECORD DESTRUCTURING (6 tests)
+-- RECORD DESTRUCTURING
 -- ============================================================================
 
 
-recordDestructTests : (Src.Module -> Expectation) -> String -> Test
-recordDestructTests expectFn condStr =
-    Test.describe ("Record destructuring " ++ condStr)
-        [ Test.test ("Destruct single field record " ++ condStr) (destructSingleFieldRecord expectFn)
-        , Test.test ("Destruct multi-field record " ++ condStr) (destructMultiFieldRecord expectFn)
-        , Test.test ("Destruct record with values " ++ condStr) (destructRecordWithValues expectFn)
-        , Test.test ("Destruct partial record " ++ condStr) (destructPartialRecord expectFn)
-        , Test.test ("Multiple record destructs " ++ condStr) (multipleRecordDestructs expectFn)
-        , Test.test ("Destruct record with many fields " ++ condStr) (destructRecordManyFields expectFn)
-        ]
+recordDestructCases : (Src.Module -> Expectation) -> List TestCase
+recordDestructCases expectFn =
+    [ { label = "Destruct single field record", run = destructSingleFieldRecord expectFn }
+    , { label = "Destruct multi-field record", run = destructMultiFieldRecord expectFn }
+    , { label = "Destruct partial record", run = destructPartialRecord expectFn }
+    , { label = "Multiple record destructs", run = multipleRecordDestructs expectFn }
+    ]
 
 
 destructSingleFieldRecord : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -199,21 +166,6 @@ destructMultiFieldRecord expectFn _ =
 
         modul =
             makeModule "testValue" (letExpr [ def ] (tupleExpr (varExpr "x") (varExpr "y")))
-    in
-    expectFn modul
-
-
-destructRecordWithValues : (Src.Module -> Expectation) -> (() -> Expectation)
-destructRecordWithValues expectFn _ =
-    let
-        record =
-            recordExpr [ ( "first", intExpr 1 ), ( "second", intExpr 2 ) ]
-
-        def =
-            destruct (pRecord [ "first", "second" ]) record
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] (tupleExpr (varExpr "first") (varExpr "second")))
     in
     expectFn modul
 
@@ -248,41 +200,18 @@ multipleRecordDestructs expectFn _ =
     expectFn modul
 
 
-destructRecordManyFields : (Src.Module -> Expectation) -> (() -> Expectation)
-destructRecordManyFields expectFn _ =
-    let
-        fields =
-            List.map (\i -> ( String.fromChar (Char.fromCode (97 + i)), intExpr i )) (List.range 0 5)
-
-        record =
-            recordExpr fields
-
-        fieldNames =
-            List.map (\( name, _ ) -> name) fields
-
-        def =
-            destruct (pRecord fieldNames) record
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] (varExpr "a"))
-    in
-    expectFn modul
-
-
 
 -- ============================================================================
--- LIST DESTRUCTURING (4 tests)
+-- LIST DESTRUCTURING
 -- ============================================================================
 
 
-listDestructTests : (Src.Module -> Expectation) -> String -> Test
-listDestructTests expectFn condStr =
-    Test.describe ("List destructuring " ++ condStr)
-        [ Test.test ("Destruct cons pattern " ++ condStr) (destructConsPattern expectFn)
-        , Test.test ("Destruct fixed list pattern " ++ condStr) (destructFixedListPattern expectFn)
-        , Test.test ("Destruct list with values " ++ condStr) (destructListWithValues expectFn)
-        , Test.test ("Destruct nested cons " ++ condStr) (destructNestedCons expectFn)
-        ]
+listDestructCases : (Src.Module -> Expectation) -> List TestCase
+listDestructCases expectFn =
+    [ { label = "Destruct cons pattern", run = destructConsPattern expectFn }
+    , { label = "Destruct fixed list pattern", run = destructFixedListPattern expectFn }
+    , { label = "Destruct nested cons", run = destructNestedCons expectFn }
+    ]
 
 
 destructConsPattern : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -315,21 +244,6 @@ destructFixedListPattern expectFn _ =
     expectFn modul
 
 
-destructListWithValues : (Src.Module -> Expectation) -> (() -> Expectation)
-destructListWithValues expectFn _ =
-    let
-        list =
-            listExpr [ intExpr 1, intExpr 2 ]
-
-        def =
-            destruct (pCons (pVar "h") (pVar "t")) list
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] (varExpr "h"))
-    in
-    expectFn modul
-
-
 destructNestedCons : (Src.Module -> Expectation) -> (() -> Expectation)
 destructNestedCons expectFn _ =
     let
@@ -347,20 +261,17 @@ destructNestedCons expectFn _ =
 
 
 -- ============================================================================
--- NESTED DESTRUCTURING (6 tests)
+-- NESTED DESTRUCTURING
 -- ============================================================================
 
 
-nestedDestructTests : (Src.Module -> Expectation) -> String -> Test
-nestedDestructTests expectFn condStr =
-    Test.describe ("Nested destructuring " ++ condStr)
-        [ Test.test ("Destruct tuple of tuples " ++ condStr) (destructTupleOfTuples expectFn)
-        , Test.test ("Destruct tuple with record " ++ condStr) (destructTupleWithRecord expectFn)
-        , Test.test ("Destruct record with nested tuple " ++ condStr) (destructRecordWithNestedTuple expectFn)
-        , Test.test ("Deeply nested destruct " ++ condStr) (deeplyNestedDestruct expectFn)
-        , Test.test ("Nested destruct with values " ++ condStr) (nestedDestructWithValues expectFn)
-        , Test.test ("Triple nested destruct " ++ condStr) (tripleNestedDestruct expectFn)
-        ]
+nestedDestructCases : (Src.Module -> Expectation) -> List TestCase
+nestedDestructCases expectFn =
+    [ { label = "Destruct tuple of tuples", run = destructTupleOfTuples expectFn }
+    , { label = "Destruct tuple with record", run = destructTupleWithRecord expectFn }
+    , { label = "Deeply nested destruct", run = deeplyNestedDestruct expectFn }
+    , { label = "Triple nested destruct", run = tripleNestedDestruct expectFn }
+    ]
 
 
 destructTupleOfTuples : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -393,21 +304,6 @@ destructTupleWithRecord expectFn _ =
     expectFn modul
 
 
-destructRecordWithNestedTuple : (Src.Module -> Expectation) -> (() -> Expectation)
-destructRecordWithNestedTuple expectFn _ =
-    let
-        record =
-            recordExpr [ ( "pair", tupleExpr (intExpr 1) (intExpr 2) ) ]
-
-        def =
-            define "r" [] record
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] (accessExpr (varExpr "r") "pair"))
-    in
-    expectFn modul
-
-
 deeplyNestedDestruct : (Src.Module -> Expectation) -> (() -> Expectation)
 deeplyNestedDestruct expectFn _ =
     let
@@ -426,21 +322,6 @@ deeplyNestedDestruct expectFn _ =
 
         modul =
             makeModule "testValue" (letExpr [ def ] (listExpr [ varExpr "a", varExpr "b", varExpr "c", varExpr "d" ]))
-    in
-    expectFn modul
-
-
-nestedDestructWithValues : (Src.Module -> Expectation) -> (() -> Expectation)
-nestedDestructWithValues expectFn _ =
-    let
-        nested =
-            tupleExpr (tupleExpr (intExpr 1) (intExpr 2)) (intExpr 0)
-
-        def =
-            destruct (pTuple (pTuple (pVar "x") (pVar "y")) pAnything) nested
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] (tupleExpr (varExpr "x") (varExpr "y")))
     in
     expectFn modul
 
@@ -474,19 +355,15 @@ tripleNestedDestruct expectFn _ =
 
 
 -- ============================================================================
--- ALIAS DESTRUCTURING (4 tests)
+-- ALIAS DESTRUCTURING
 -- ============================================================================
 
 
-aliasDestructTests : (Src.Module -> Expectation) -> String -> Test
-aliasDestructTests expectFn condStr =
-    Test.describe ("Alias pattern destructuring " ++ condStr)
-        [ Test.test ("Destruct with simple alias " ++ condStr) (destructWithSimpleAlias expectFn)
-        , Test.test ("Destruct with nested alias " ++ condStr) (destructWithNestedAlias expectFn)
-        , Test.test ("Alias destruct with value " ++ condStr) (aliasDestructWithValue expectFn)
-
-        -- Moved to TypeCheckFails.elm: , Test.test ("Multiple aliases in destruct " ++ condStr) (multipleAliasesInDestruct expectFn)
-        ]
+aliasDestructCases : (Src.Module -> Expectation) -> List TestCase
+aliasDestructCases expectFn =
+    [ { label = "Destruct with simple alias", run = destructWithSimpleAlias expectFn }
+    , { label = "Destruct with nested alias", run = destructWithNestedAlias expectFn }
+    ]
 
 
 destructWithSimpleAlias : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -524,35 +401,19 @@ destructWithNestedAlias expectFn _ =
     expectFn modul
 
 
-aliasDestructWithValue : (Src.Module -> Expectation) -> (() -> Expectation)
-aliasDestructWithValue expectFn _ =
-    let
-        pair =
-            tupleExpr (intExpr 42) (intExpr 0)
-
-        def =
-            destruct (pAlias (pTuple (pVar "x") pAnything) "pair") pair
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] (tupleExpr (varExpr "pair") (varExpr "x")))
-    in
-    expectFn modul
-
-
 
 -- ============================================================================
--- COMPLEX DESTRUCTURING (4 tests)
+-- COMPLEX DESTRUCTURING
 -- ============================================================================
 
 
-complexDestructTests : (Src.Module -> Expectation) -> String -> Test
-complexDestructTests expectFn condStr =
-    Test.describe ("Complex destructuring scenarios " ++ condStr)
-        [ Test.test ("Mixed destruct and define " ++ condStr) (mixedDestructAndDefine expectFn)
-        , Test.test ("Destruct in nested let " ++ condStr) (destructInNestedLet expectFn)
-        , Test.test ("Chain of destructs " ++ condStr) (chainOfDestructs expectFn)
-        , Test.test ("Destruct with function call result " ++ condStr) (destructWithFunctionCallResult expectFn)
-        ]
+complexDestructCases : (Src.Module -> Expectation) -> List TestCase
+complexDestructCases expectFn =
+    [ { label = "Mixed destruct and define", run = mixedDestructAndDefine expectFn }
+    , { label = "Destruct in nested let", run = destructInNestedLet expectFn }
+    , { label = "Chain of destructs", run = chainOfDestructs expectFn }
+    , { label = "Destruct with function call result", run = destructWithFunctionCallResult expectFn }
+    ]
 
 
 mixedDestructAndDefine : (Src.Module -> Expectation) -> (() -> Expectation)

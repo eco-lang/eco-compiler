@@ -1,4 +1,4 @@
-module Compiler.TypeCheckFails exposing (expectSuite)
+module Compiler.TypeCheckFails exposing (expectSuite, testCases)
 
 {-| Tests for cases where type checking fails in the constrainWithIds path.
 These are test cases that produce type errors in both the standard and
@@ -42,32 +42,38 @@ import Compiler.AST.SourceBuilder
         , updateExpr
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
 
 
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Type check failure tests " ++ condStr)
-        [ Test.test ("Alias everywhere " ++ condStr) (aliasEverywhere expectFn)
-        , Test.test ("Multiple aliases in recursive function " ++ condStr) (multipleAliasesInRecursiveFunction expectFn)
-        , Test.test ("Case on unit " ++ condStr) (caseOnUnit expectFn)
-        , Test.test ("Case on int " ++ condStr) (caseOnInt expectFn)
-        , Test.test ("All expression types in one module " ++ condStr) (allExpressionTypesInOneModule expectFn)
-        , Test.test ("Fold-like function " ++ condStr) (foldLikeFunction expectFn)
-        , Test.test ("Multiple aliases in destruct " ++ condStr) (multipleAliasesInDestruct expectFn)
-        , Test.test ("Deeply recursive function " ++ condStr) (deeplyRecursiveFn expectFn)
-        , Test.test ("Mutually recursive different types " ++ condStr) (mutuallyRecursiveDifferentTypes expectFn)
-        , Test.test ("Recursive with record pattern " ++ condStr) (recursiveWithRecordPattern expectFn)
-        , Test.test ("Recursive higher order " ++ condStr) (recursiveHigherOrder expectFn)
-        , Test.test ("Update with computed value " ++ condStr) (updateWithComputedValue expectFn)
-        ]
+    Test.test ("Type check failure tests " ++ condStr) (\() -> bulkCheck (testCases expectFn))
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    asPatternCases expectFn
+        ++ caseCases expectFn
+        ++ edgeCaseCases expectFn
+        ++ higherOrderCases expectFn
+        ++ letDestructCases expectFn
+        ++ letRecCases expectFn
+        ++ recordCases expectFn
 
 
 
 -- ============================================================================
 -- FROM AsPatternTests.elm
 -- ============================================================================
+
+
+asPatternCases : (Src.Module -> Expectation) -> List TestCase
+asPatternCases expectFn =
+    [ { label = "Alias everywhere", run = aliasEverywhere expectFn }
+    , { label = "Multiple aliases in recursive function", run = multipleAliasesInRecursiveFunction expectFn }
+    ]
 
 
 aliasEverywhere : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -112,6 +118,13 @@ multipleAliasesInRecursiveFunction expectFn _ =
 -- ============================================================================
 
 
+caseCases : (Src.Module -> Expectation) -> List TestCase
+caseCases expectFn =
+    [ { label = "Case on unit", run = caseOnUnit expectFn }
+    , { label = "Case on int", run = caseOnInt expectFn }
+    ]
+
+
 caseOnUnit : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnUnit expectFn _ =
     let
@@ -144,6 +157,12 @@ caseOnInt expectFn _ =
 -- ============================================================================
 -- FROM EdgeCaseTests.elm
 -- ============================================================================
+
+
+edgeCaseCases : (Src.Module -> Expectation) -> List TestCase
+edgeCaseCases expectFn =
+    [ { label = "All expression types in one module", run = allExpressionTypesInOneModule expectFn }
+    ]
 
 
 allExpressionTypesInOneModule : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -199,6 +218,12 @@ allExpressionTypesInOneModule expectFn _ =
 -- ============================================================================
 
 
+higherOrderCases : (Src.Module -> Expectation) -> List TestCase
+higherOrderCases expectFn =
+    [ { label = "Fold-like function", run = foldLikeFunction expectFn }
+    ]
+
+
 foldLikeFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 foldLikeFunction expectFn _ =
     let
@@ -231,6 +256,12 @@ foldLikeFunction expectFn _ =
 -- ============================================================================
 
 
+letDestructCases : (Src.Module -> Expectation) -> List TestCase
+letDestructCases expectFn =
+    [ { label = "Multiple aliases in destruct", run = multipleAliasesInDestruct expectFn }
+    ]
+
+
 multipleAliasesInDestruct : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleAliasesInDestruct expectFn _ =
     let
@@ -261,6 +292,15 @@ multipleAliasesInDestruct expectFn _ =
 -- ============================================================================
 -- FROM LetRecTests.elm
 -- ============================================================================
+
+
+letRecCases : (Src.Module -> Expectation) -> List TestCase
+letRecCases expectFn =
+    [ { label = "Deeply recursive function", run = deeplyRecursiveFn expectFn }
+    , { label = "Mutually recursive different types", run = mutuallyRecursiveDifferentTypes expectFn }
+    , { label = "Recursive with record pattern", run = recursiveWithRecordPattern expectFn }
+    , { label = "Recursive higher order", run = recursiveHigherOrder expectFn }
+    ]
 
 
 deeplyRecursiveFn : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -363,6 +403,12 @@ recursiveHigherOrder expectFn _ =
 -- ============================================================================
 -- FROM RecordTests.elm
 -- ============================================================================
+
+
+recordCases : (Src.Module -> Expectation) -> List TestCase
+recordCases expectFn =
+    [ { label = "Update with computed value", run = updateWithComputedValue expectFn }
+    ]
 
 
 updateWithComputedValue : (Src.Module -> Expectation) -> (() -> Expectation)

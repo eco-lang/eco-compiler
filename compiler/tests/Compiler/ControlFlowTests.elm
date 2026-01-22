@@ -1,4 +1,4 @@
-module Compiler.ControlFlowTests exposing (expectSuite, suite)
+module Compiler.ControlFlowTests exposing (expectSuite, suite, testCases)
 
 {-| Test cases for control flow in MLIR codegen.
 
@@ -30,6 +30,7 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Compiler.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 import Expect exposing (Expectation)
 import Test exposing (Test)
@@ -42,15 +43,19 @@ suite =
         ]
 
 
-{-| Test suite that can be used with different expectation functions.
--}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Control flow " ++ condStr)
-        [ multiWayIfTests expectFn condStr
-        , booleanShortCircuitTests expectFn condStr
-        , complexBooleanTests expectFn condStr
-        , nestedConditionalTests expectFn condStr
+    Test.test ("Control flow " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    List.concat
+        [ multiWayIfCases expectFn
+        , booleanShortCircuitCases expectFn
+        , complexBooleanCases expectFn
+        , nestedConditionalCases expectFn
         ]
 
 
@@ -60,20 +65,14 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-multiWayIfTests : (Src.Module -> Expectation) -> String -> Test
-multiWayIfTests expectFn condStr =
-    Test.describe ("Multi-way if " ++ condStr)
-        [ Test.test "Three-way if" <|
-            threeWayIfTest expectFn
-        , Test.test "Four-way if" <|
-            fourWayIfTest expectFn
-        , Test.test "Five-way if" <|
-            fiveWayIfTest expectFn
-        , Test.test "If with function calls in conditions" <|
-            ifWithFunctionCallsTest expectFn
-        , Test.test "If returning different types of expressions" <|
-            ifReturningExpressionsTest expectFn
-        ]
+multiWayIfCases : (Src.Module -> Expectation) -> List TestCase
+multiWayIfCases expectFn =
+    [ { label = "Three-way if", run = threeWayIfTest expectFn }
+    , { label = "Four-way if", run = fourWayIfTest expectFn }
+    , { label = "Five-way if", run = fiveWayIfTest expectFn }
+    , { label = "If with function calls in conditions", run = ifWithFunctionCallsTest expectFn }
+    , { label = "If returning different types of expressions", run = ifReturningExpressionsTest expectFn }
+    ]
 
 
 {-| Test three-way if expression.
@@ -323,18 +322,13 @@ ifReturningExpressionsTest expectFn _ =
 -- ============================================================================
 
 
-booleanShortCircuitTests : (Src.Module -> Expectation) -> String -> Test
-booleanShortCircuitTests expectFn condStr =
-    Test.describe ("Boolean short-circuit " ++ condStr)
-        [ Test.test "And short-circuit" <|
-            andShortCircuitTest expectFn
-        , Test.test "Or short-circuit" <|
-            orShortCircuitTest expectFn
-        , Test.test "Mixed and/or" <|
-            mixedAndOrTest expectFn
-        , Test.test "Short-circuit with function calls" <|
-            shortCircuitWithFunctionCallsTest expectFn
-        ]
+booleanShortCircuitCases : (Src.Module -> Expectation) -> List TestCase
+booleanShortCircuitCases expectFn =
+    [ { label = "And short-circuit", run = andShortCircuitTest expectFn }
+    , { label = "Or short-circuit", run = orShortCircuitTest expectFn }
+    , { label = "Mixed and/or", run = mixedAndOrTest expectFn }
+    , { label = "Short-circuit with function calls", run = shortCircuitWithFunctionCallsTest expectFn }
+    ]
 
 
 {-| Test && short-circuit evaluation.
@@ -512,18 +506,13 @@ shortCircuitWithFunctionCallsTest expectFn _ =
 -- ============================================================================
 
 
-complexBooleanTests : (Src.Module -> Expectation) -> String -> Test
-complexBooleanTests expectFn condStr =
-    Test.describe ("Complex boolean " ++ condStr)
-        [ Test.test "Triple and" <|
-            tripleAndTest expectFn
-        , Test.test "Triple or" <|
-            tripleOrTest expectFn
-        , Test.test "Nested boolean expressions" <|
-            nestedBooleanExpressionsTest expectFn
-        , Test.test "Boolean with not" <|
-            booleanWithNotTest expectFn
-        ]
+complexBooleanCases : (Src.Module -> Expectation) -> List TestCase
+complexBooleanCases expectFn =
+    [ { label = "Triple and", run = tripleAndTest expectFn }
+    , { label = "Triple or", run = tripleOrTest expectFn }
+    , { label = "Nested boolean expressions", run = nestedBooleanExpressionsTest expectFn }
+    , { label = "Boolean with not", run = booleanWithNotTest expectFn }
+    ]
 
 
 {-| Test triple && expression.
@@ -688,18 +677,13 @@ booleanWithNotTest expectFn _ =
 -- ============================================================================
 
 
-nestedConditionalTests : (Src.Module -> Expectation) -> String -> Test
-nestedConditionalTests expectFn condStr =
-    Test.describe ("Nested conditionals " ++ condStr)
-        [ Test.test "If in if branch" <|
-            ifInIfBranchTest expectFn
-        , Test.test "If in else branch" <|
-            ifInElseBranchTest expectFn
-        , Test.test "If in both branches" <|
-            ifInBothBranchesTest expectFn
-        , Test.test "Deep nesting" <|
-            deepNestingTest expectFn
-        ]
+nestedConditionalCases : (Src.Module -> Expectation) -> List TestCase
+nestedConditionalCases expectFn =
+    [ { label = "If in if branch", run = ifInIfBranchTest expectFn }
+    , { label = "If in else branch", run = ifInElseBranchTest expectFn }
+    , { label = "If in both branches", run = ifInBothBranchesTest expectFn }
+    , { label = "Deep nesting", run = deepNestingTest expectFn }
+    ]
 
 
 {-| Test if in if branch.

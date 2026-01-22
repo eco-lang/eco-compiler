@@ -1,4 +1,4 @@
-module Compiler.PatternMatchingTests exposing (expectSuite, suite)
+module Compiler.PatternMatchingTests exposing (expectSuite, suite, testCases)
 
 {-| Test cases for pattern matching in MLIR codegen.
 
@@ -44,6 +44,7 @@ import Compiler.AST.SourceBuilder
         , tupleExpr
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Compiler.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 import Expect exposing (Expectation)
 import Test exposing (Test)
@@ -60,13 +61,21 @@ suite =
 -}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Pattern matching " ++ condStr)
-        [ charPatternTests expectFn condStr
-        , stringPatternTests expectFn condStr
-        , nestedPatternTests expectFn condStr
-        , fallbackPatternTests expectFn condStr
-        , tuplePatternTests expectFn condStr
-        , listPatternTests expectFn condStr
+    Test.test ("Pattern matching " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+{-| All test cases for pattern matching.
+-}
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    List.concat
+        [ charPatternCases expectFn
+        , stringPatternCases expectFn
+        , nestedPatternCases expectFn
+        , fallbackPatternCases expectFn
+        , tuplePatternCases expectFn
+        , listPatternCases expectFn
         ]
 
 
@@ -76,20 +85,14 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-charPatternTests : (Src.Module -> Expectation) -> String -> Test
-charPatternTests expectFn condStr =
-    Test.describe ("Char patterns " ++ condStr)
-        [ Test.test "Simple char pattern" <|
-            simpleCharPatternTest expectFn
-        , Test.test "Multiple char patterns" <|
-            multipleCharPatternsTest expectFn
-        , Test.test "Char pattern with fallback" <|
-            charPatternWithFallbackTest expectFn
-        , Test.test "Vowel detection" <|
-            vowelDetectionTest expectFn
-        , Test.test "Digit char pattern" <|
-            digitCharPatternTest expectFn
-        ]
+charPatternCases : (Src.Module -> Expectation) -> List TestCase
+charPatternCases expectFn =
+    [ { label = "Simple char pattern", run = simpleCharPatternTest expectFn }
+    , { label = "Multiple char patterns", run = multipleCharPatternsTest expectFn }
+    , { label = "Char pattern with fallback", run = charPatternWithFallbackTest expectFn }
+    , { label = "Vowel detection", run = vowelDetectionTest expectFn }
+    , { label = "Digit char pattern", run = digitCharPatternTest expectFn }
+    ]
 
 
 {-| Test simple char pattern matching.
@@ -292,18 +295,13 @@ digitCharPatternTest expectFn _ =
 -- ============================================================================
 
 
-stringPatternTests : (Src.Module -> Expectation) -> String -> Test
-stringPatternTests expectFn condStr =
-    Test.describe ("String patterns " ++ condStr)
-        [ Test.test "Simple string pattern" <|
-            simpleStringPatternTest expectFn
-        , Test.test "Multiple string patterns" <|
-            multipleStringPatternsTest expectFn
-        , Test.test "Greeting pattern" <|
-            greetingPatternTest expectFn
-        , Test.test "Command pattern" <|
-            commandPatternTest expectFn
-        ]
+stringPatternCases : (Src.Module -> Expectation) -> List TestCase
+stringPatternCases expectFn =
+    [ { label = "Simple string pattern", run = simpleStringPatternTest expectFn }
+    , { label = "Multiple string patterns", run = multipleStringPatternsTest expectFn }
+    , { label = "Greeting pattern", run = greetingPatternTest expectFn }
+    , { label = "Command pattern", run = commandPatternTest expectFn }
+    ]
 
 
 {-| Test simple string pattern.
@@ -465,18 +463,13 @@ commandPatternTest expectFn _ =
 -- ============================================================================
 
 
-nestedPatternTests : (Src.Module -> Expectation) -> String -> Test
-nestedPatternTests expectFn condStr =
-    Test.describe ("Nested patterns " ++ condStr)
-        [ Test.test "Nested constructor pattern" <|
-            nestedConstructorPatternTest expectFn
-        , Test.test "Tree depth with nested patterns" <|
-            treeDepthTest expectFn
-        , Test.test "Double nested pattern" <|
-            doubleNestedPatternTest expectFn
-        , Test.test "Pattern in pattern" <|
-            patternInPatternTest expectFn
-        ]
+nestedPatternCases : (Src.Module -> Expectation) -> List TestCase
+nestedPatternCases expectFn =
+    [ { label = "Nested constructor pattern", run = nestedConstructorPatternTest expectFn }
+    , { label = "Tree depth with nested patterns", run = treeDepthTest expectFn }
+    , { label = "Double nested pattern", run = doubleNestedPatternTest expectFn }
+    , { label = "Pattern in pattern", run = patternInPatternTest expectFn }
+    ]
 
 
 {-| Test nested constructor pattern.
@@ -716,18 +709,13 @@ patternInPatternTest expectFn _ =
 -- ============================================================================
 
 
-fallbackPatternTests : (Src.Module -> Expectation) -> String -> Test
-fallbackPatternTests expectFn condStr =
-    Test.describe ("Fallback patterns " ++ condStr)
-        [ Test.test "Wildcard fallback" <|
-            wildcardFallbackTest expectFn
-        , Test.test "Variable capture fallback" <|
-            variableCaptureFallbackTest expectFn
-        , Test.test "Multiple specific then fallback" <|
-            multipleSpecificThenFallbackTest expectFn
-        , Test.test "Conditional in fallback" <|
-            conditionalInFallbackTest expectFn
-        ]
+fallbackPatternCases : (Src.Module -> Expectation) -> List TestCase
+fallbackPatternCases expectFn =
+    [ { label = "Wildcard fallback", run = wildcardFallbackTest expectFn }
+    , { label = "Variable capture fallback", run = variableCaptureFallbackTest expectFn }
+    , { label = "Multiple specific then fallback", run = multipleSpecificThenFallbackTest expectFn }
+    , { label = "Conditional in fallback", run = conditionalInFallbackTest expectFn }
+    ]
 
 
 {-| Test wildcard fallback pattern.
@@ -908,18 +896,13 @@ conditionalInFallbackTest expectFn _ =
 -- ============================================================================
 
 
-tuplePatternTests : (Src.Module -> Expectation) -> String -> Test
-tuplePatternTests expectFn condStr =
-    Test.describe ("Tuple patterns " ++ condStr)
-        [ Test.test "Simple tuple pattern" <|
-            simpleTuplePatternTest expectFn
-        , Test.test "Tuple with wildcard" <|
-            tupleWithWildcardTest expectFn
-        , Test.test "Nested tuple pattern" <|
-            nestedTuplePatternTest expectFn
-        , Test.test "Triple pattern" <|
-            triplePatternTest expectFn
-        ]
+tuplePatternCases : (Src.Module -> Expectation) -> List TestCase
+tuplePatternCases expectFn =
+    [ { label = "Simple tuple pattern", run = simpleTuplePatternTest expectFn }
+    , { label = "Tuple with wildcard", run = tupleWithWildcardTest expectFn }
+    , { label = "Nested tuple pattern", run = nestedTuplePatternTest expectFn }
+    , { label = "Triple pattern", run = triplePatternTest expectFn }
+    ]
 
 
 {-| Test simple tuple pattern.
@@ -1078,20 +1061,14 @@ triplePatternTest expectFn _ =
 -- ============================================================================
 
 
-listPatternTests : (Src.Module -> Expectation) -> String -> Test
-listPatternTests expectFn condStr =
-    Test.describe ("List patterns " ++ condStr)
-        [ Test.test "Empty list pattern" <|
-            emptyListPatternTest expectFn
-        , Test.test "Single element pattern" <|
-            singleElementPatternTest expectFn
-        , Test.test "Two element pattern" <|
-            twoElementPatternTest expectFn
-        , Test.test "Head tail pattern" <|
-            headTailPatternTest expectFn
-        , Test.test "Nested list pattern" <|
-            nestedListPatternTest expectFn
-        ]
+listPatternCases : (Src.Module -> Expectation) -> List TestCase
+listPatternCases expectFn =
+    [ { label = "Empty list pattern", run = emptyListPatternTest expectFn }
+    , { label = "Single element pattern", run = singleElementPatternTest expectFn }
+    , { label = "Two element pattern", run = twoElementPatternTest expectFn }
+    , { label = "Head tail pattern", run = headTailPatternTest expectFn }
+    , { label = "Nested list pattern", run = nestedListPatternTest expectFn }
+    ]
 
 
 {-| Test empty list pattern.

@@ -1,4 +1,4 @@
-module Compiler.SpecializeConstructorTests exposing (expectSuite, suite)
+module Compiler.SpecializeConstructorTests exposing (expectSuite, suite, testCases)
 
 {-| Test cases for constructor specialization in Specialize.elm.
 
@@ -31,6 +31,7 @@ import Compiler.AST.SourceBuilder
         , tVar
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Compiler.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 import Expect exposing (Expectation)
 import Test exposing (Test)
@@ -47,11 +48,17 @@ suite =
 -}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Constructor specialization " ++ condStr)
-        [ nullaryCtorTests expectFn condStr
-        , unaryCtorTests expectFn condStr
-        , multiFieldCtorTests expectFn condStr
-        , polymorphicCtorTests expectFn condStr
+    Test.test ("Constructor specialization " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    List.concat
+        [ nullaryCtorCases expectFn
+        , unaryCtorCases expectFn
+        , multiFieldCtorCases expectFn
+        , polymorphicCtorCases expectFn
         ]
 
 
@@ -61,14 +68,11 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-nullaryCtorTests : (Src.Module -> Expectation) -> String -> Test
-nullaryCtorTests expectFn condStr =
-    Test.describe ("Nullary constructors " ++ condStr)
-        [ Test.test "Custom enum type" <|
-            customEnumType expectFn
-        , Test.test "Multiple enum constructors in case" <|
-            multipleEnumCtorsInCase expectFn
-        ]
+nullaryCtorCases : (Src.Module -> Expectation) -> List TestCase
+nullaryCtorCases expectFn =
+    [ { label = "Custom enum type", run = customEnumType expectFn }
+    , { label = "Multiple enum constructors in case", run = multipleEnumCtorsInCase expectFn }
+    ]
 
 
 {-| Custom type with only nullary constructors (enum-like).
@@ -175,14 +179,11 @@ multipleEnumCtorsInCase expectFn _ =
 -- ============================================================================
 
 
-unaryCtorTests : (Src.Module -> Expectation) -> String -> Test
-unaryCtorTests expectFn condStr =
-    Test.describe ("Unary constructors " ++ condStr)
-        [ Test.test "Single-field wrapper type" <|
-            singleFieldWrapper expectFn
-        , Test.test "Unary constructor with pattern matching" <|
-            unaryCtorPatternMatch expectFn
-        ]
+unaryCtorCases : (Src.Module -> Expectation) -> List TestCase
+unaryCtorCases expectFn =
+    [ { label = "Single-field wrapper type", run = singleFieldWrapper expectFn }
+    , { label = "Unary constructor with pattern matching", run = unaryCtorPatternMatch expectFn }
+    ]
 
 
 {-| Wrapper type with single field.
@@ -279,14 +280,11 @@ unaryCtorPatternMatch expectFn _ =
 -- ============================================================================
 
 
-multiFieldCtorTests : (Src.Module -> Expectation) -> String -> Test
-multiFieldCtorTests expectFn condStr =
-    Test.describe ("Multi-field constructors " ++ condStr)
-        [ Test.test "Constructor with two fields" <|
-            twoFieldCtor expectFn
-        , Test.test "Constructor with three fields" <|
-            threeFieldCtor expectFn
-        ]
+multiFieldCtorCases : (Src.Module -> Expectation) -> List TestCase
+multiFieldCtorCases expectFn =
+    [ { label = "Constructor with two fields", run = twoFieldCtor expectFn }
+    , { label = "Constructor with three fields", run = threeFieldCtor expectFn }
+    ]
 
 
 {-| Custom type with two-field constructor.
@@ -398,14 +396,11 @@ threeFieldCtor expectFn _ =
 -- ============================================================================
 
 
-polymorphicCtorTests : (Src.Module -> Expectation) -> String -> Test
-polymorphicCtorTests expectFn condStr =
-    Test.describe ("Polymorphic constructors " ++ condStr)
-        [ Test.test "Polymorphic wrapper type" <|
-            polymorphicWrapper expectFn
-        , Test.test "Either-like polymorphic type" <|
-            eitherLikeType expectFn
-        ]
+polymorphicCtorCases : (Src.Module -> Expectation) -> List TestCase
+polymorphicCtorCases expectFn =
+    [ { label = "Polymorphic wrapper type", run = polymorphicWrapper expectFn }
+    , { label = "Either-like polymorphic type", run = eitherLikeType expectFn }
+    ]
 
 
 {-| Polymorphic wrapper type (like Identity).

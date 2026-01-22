@@ -1,4 +1,4 @@
-module Compiler.SpecializeAccessorTests exposing (expectSuite, suite)
+module Compiler.SpecializeAccessorTests exposing (expectSuite, suite, testCases)
 
 {-| Test cases for accessor specialization in Specialize.elm.
 
@@ -36,6 +36,7 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Compiler.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 import Expect exposing (Expectation)
 import Test exposing (Test)
@@ -43,7 +44,7 @@ import Test exposing (Test)
 
 suite : Test
 suite =
-    Test.describe "Specialize.elm accessor coverage (MONO_015)"
+    Test.describe "Accessor specialization coverage"
         [ expectSuite expectMonomorphization "monomorphizes accessors"
         ]
 
@@ -52,12 +53,18 @@ suite =
 -}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Accessor specialization " ++ condStr)
-        [ accessorToMapTests expectFn condStr
-        , accessorToFilterTests expectFn condStr
-        , accessorToFoldTests expectFn condStr
-        , accessorExtensionVariableTests expectFn condStr
-        , accessorPolymorphicTests expectFn condStr
+    Test.test ("Accessor specialization " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    List.concat
+        [ accessorToMapCases expectFn
+        , accessorToFilterCases expectFn
+        , accessorToFoldCases expectFn
+        , accessorExtensionVariableCases expectFn
+        , accessorPolymorphicCases expectFn
         ]
 
 
@@ -67,16 +74,12 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-accessorToMapTests : (Src.Module -> Expectation) -> String -> Test
-accessorToMapTests expectFn condStr =
-    Test.describe ("Accessor to List.map " ++ condStr)
-        [ Test.test "List.map .name records" <|
-            mapAccessorOnRecords expectFn
-        , Test.test "List.map .value on different field type" <|
-            mapAccessorDifferentFieldType expectFn
-        , Test.test "Multiple map with different accessors" <|
-            multipleMapWithDifferentAccessors expectFn
-        ]
+accessorToMapCases : (Src.Module -> Expectation) -> List TestCase
+accessorToMapCases expectFn =
+    [ { label = "List.map .name records", run = mapAccessorOnRecords expectFn }
+    , { label = "List.map .value on different field type", run = mapAccessorDifferentFieldType expectFn }
+    , { label = "Multiple map with different accessors", run = multipleMapWithDifferentAccessors expectFn }
+    ]
 
 
 {-| List.map .name records - basic accessor as function.
@@ -222,14 +225,11 @@ multipleMapWithDifferentAccessors expectFn _ =
 -- ============================================================================
 
 
-accessorToFilterTests : (Src.Module -> Expectation) -> String -> Test
-accessorToFilterTests expectFn condStr =
-    Test.describe ("Accessor in let expressions " ++ condStr)
-        [ Test.test "Accessor assigned to variable" <|
-            accessorAssignedToVariable expectFn
-        , Test.test "Accessor in nested let" <|
-            accessorInNestedLet expectFn
-        ]
+accessorToFilterCases : (Src.Module -> Expectation) -> List TestCase
+accessorToFilterCases expectFn =
+    [ { label = "Accessor assigned to variable", run = accessorAssignedToVariable expectFn }
+    , { label = "Accessor in nested let", run = accessorInNestedLet expectFn }
+    ]
 
 
 {-| Accessor assigned to a variable and then used.
@@ -332,12 +332,10 @@ accessorInNestedLet expectFn _ =
 -- ============================================================================
 
 
-accessorToFoldTests : (Src.Module -> Expectation) -> String -> Test
-accessorToFoldTests expectFn condStr =
-    Test.describe ("Accessor in fold operations " ++ condStr)
-        [ Test.test "Accessor in foldl accumulator" <|
-            accessorInFoldAccumulator expectFn
-        ]
+accessorToFoldCases : (Src.Module -> Expectation) -> List TestCase
+accessorToFoldCases expectFn =
+    [ { label = "Accessor in foldl accumulator", run = accessorInFoldAccumulator expectFn }
+    ]
 
 
 {-| Using accessor in a fold to sum a field.
@@ -397,14 +395,11 @@ accessorInFoldAccumulator expectFn _ =
 -- ============================================================================
 
 
-accessorExtensionVariableTests : (Src.Module -> Expectation) -> String -> Test
-accessorExtensionVariableTests expectFn condStr =
-    Test.describe ("Accessor extension variables (MONO_015) " ++ condStr)
-        [ Test.test "Accessor on record with extra fields" <|
-            accessorOnRecordWithExtraFields expectFn
-        , Test.test "Same accessor on different record types" <|
-            sameAccessorDifferentRecordTypes expectFn
-        ]
+accessorExtensionVariableCases : (Src.Module -> Expectation) -> List TestCase
+accessorExtensionVariableCases expectFn =
+    [ { label = "Accessor on record with extra fields", run = accessorOnRecordWithExtraFields expectFn }
+    , { label = "Same accessor on different record types", run = sameAccessorDifferentRecordTypes expectFn }
+    ]
 
 
 {-| Accessor applied to record with more fields than accessor needs.
@@ -549,12 +544,10 @@ sameAccessorDifferentRecordTypes expectFn _ =
 -- ============================================================================
 
 
-accessorPolymorphicTests : (Src.Module -> Expectation) -> String -> Test
-accessorPolymorphicTests expectFn condStr =
-    Test.describe ("Polymorphic accessor patterns " ++ condStr)
-        [ Test.test "Generic function using accessor" <|
-            genericFunctionUsingAccessor expectFn
-        ]
+accessorPolymorphicCases : (Src.Module -> Expectation) -> List TestCase
+accessorPolymorphicCases expectFn =
+    [ { label = "Generic function using accessor", run = genericFunctionUsingAccessor expectFn }
+    ]
 
 
 {-| Generic function that uses an accessor.

@@ -1,4 +1,4 @@
-module Compiler.SpecializeCycleTests exposing (expectSuite, suite)
+module Compiler.SpecializeCycleTests exposing (expectSuite, suite, testCases)
 
 {-| Test cases for cycle detection and mutual recursion in Specialize.elm.
 
@@ -27,6 +27,7 @@ import Compiler.AST.SourceBuilder
         , pVar
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Compiler.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 import Expect exposing (Expectation)
 import Test exposing (Test)
@@ -43,10 +44,16 @@ suite =
 -}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Specialize cycles " ++ condStr)
-        [ mutualRecursionTests expectFn condStr
-        , cycleWithValuesTests expectFn condStr
-        , multiNodeCycleTests expectFn condStr
+    Test.test ("Specialize cycles " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    List.concat
+        [ mutualRecursionCases expectFn
+        , cycleWithValuesCases expectFn
+        , multiNodeCycleCases expectFn
         ]
 
 
@@ -56,16 +63,12 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-mutualRecursionTests : (Src.Module -> Expectation) -> String -> Test
-mutualRecursionTests expectFn condStr =
-    Test.describe ("Mutual recursion " ++ condStr)
-        [ Test.test "Two mutually recursive functions (isEven/isOdd)" <|
-            twoMutuallyRecursiveFns expectFn
-        , Test.test "Three mutually recursive functions" <|
-            threeMutuallyRecursiveFns expectFn
-        , Test.test "Mutually recursive with different arities" <|
-            mutuallyRecursiveDifferentArities expectFn
-        ]
+mutualRecursionCases : (Src.Module -> Expectation) -> List TestCase
+mutualRecursionCases expectFn =
+    [ { label = "Two mutually recursive functions (isEven/isOdd)", run = twoMutuallyRecursiveFns expectFn }
+    , { label = "Three mutually recursive functions", run = threeMutuallyRecursiveFns expectFn }
+    , { label = "Mutually recursive with different arities", run = mutuallyRecursiveDifferentArities expectFn }
+    ]
 
 
 {-| Classic isEven/isOdd mutual recursion pattern.
@@ -203,14 +206,11 @@ mutuallyRecursiveDifferentArities expectFn _ =
 -- ============================================================================
 
 
-cycleWithValuesTests : (Src.Module -> Expectation) -> String -> Test
-cycleWithValuesTests expectFn condStr =
-    Test.describe ("Cycles with values " ++ condStr)
-        [ Test.test "Value depending on recursive function" <|
-            valueWithRecursiveFunction expectFn
-        , Test.test "Multiple values in recursive binding group" <|
-            multipleValuesWithRecursion expectFn
-        ]
+cycleWithValuesCases : (Src.Module -> Expectation) -> List TestCase
+cycleWithValuesCases expectFn =
+    [ { label = "Value depending on recursive function", run = valueWithRecursiveFunction expectFn }
+    , { label = "Multiple values in recursive binding group", run = multipleValuesWithRecursion expectFn }
+    ]
 
 
 {-| A value that depends on a recursive function.
@@ -289,14 +289,11 @@ multipleValuesWithRecursion expectFn _ =
 -- ============================================================================
 
 
-multiNodeCycleTests : (Src.Module -> Expectation) -> String -> Test
-multiNodeCycleTests expectFn condStr =
-    Test.describe ("Multi-node cycles " ++ condStr)
-        [ Test.test "Cycle with polymorphic functions" <|
-            cycleWithPolymorphicFunctions expectFn
-        , Test.test "Nested cycles" <|
-            nestedCycles expectFn
-        ]
+multiNodeCycleCases : (Src.Module -> Expectation) -> List TestCase
+multiNodeCycleCases expectFn =
+    [ { label = "Cycle with polymorphic functions", run = cycleWithPolymorphicFunctions expectFn }
+    , { label = "Nested cycles", run = nestedCycles expectFn }
+    ]
 
 
 {-| Cycle involving polymorphic functions.

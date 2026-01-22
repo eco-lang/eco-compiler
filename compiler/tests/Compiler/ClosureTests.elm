@@ -1,4 +1,4 @@
-module Compiler.ClosureTests exposing (expectSuite, suite)
+module Compiler.ClosureTests exposing (expectSuite, suite, testCases)
 
 {-| Test cases for closure handling in Monomorphize.
 
@@ -44,6 +44,7 @@ import Compiler.AST.SourceBuilder
         , tupleExpr
         , varExpr
         )
+import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Compiler.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 import Expect exposing (Expectation)
 import Test exposing (Test)
@@ -51,21 +52,26 @@ import Test exposing (Test)
 
 suite : Test
 suite =
-    Test.describe "Closure handling coverage"
-        [ expectSuite expectMonomorphization "monomorphizes closures"
-        ]
+    Test.test "Closure handling coverage monomorphizes closures" <|
+        \_ -> bulkCheck (testCases expectMonomorphization)
 
 
 {-| Test suite that can be used with different expectation functions.
 -}
 expectSuite : (Src.Module -> Expectation) -> String -> Test
 expectSuite expectFn condStr =
-    Test.describe ("Closure handling " ++ condStr)
-        [ simpleClosureTests expectFn condStr
-        , nestedClosureTests expectFn condStr
-        , closureInCaseTests expectFn condStr
-        , closureCapturingTypesTests expectFn condStr
-        , closureWithRecursionTests expectFn condStr
+    Test.test ("Closure handling " ++ condStr) <|
+        \_ -> bulkCheck (testCases expectFn)
+
+
+testCases : (Src.Module -> Expectation) -> List TestCase
+testCases expectFn =
+    List.concat
+        [ simpleClosureCases expectFn
+        , nestedClosureCases expectFn
+        , closureInCaseCases expectFn
+        , closureCapturingTypesCases expectFn
+        , closureWithRecursionCases expectFn
         ]
 
 
@@ -75,20 +81,14 @@ expectSuite expectFn condStr =
 -- ============================================================================
 
 
-simpleClosureTests : (Src.Module -> Expectation) -> String -> Test
-simpleClosureTests expectFn condStr =
-    Test.describe ("Simple closures " ++ condStr)
-        [ Test.test "Closure over single local" <|
-            closureOverSingleLocal expectFn
-        , Test.test "Closure over two locals" <|
-            closureOverTwoLocals expectFn
-        , Test.test "Closure in let binding" <|
-            closureInLetBinding expectFn
-        , Test.test "Closure as return value" <|
-            closureAsReturnValue expectFn
-        , Test.test "Closure applied immediately" <|
-            closureAppliedImmediately expectFn
-        ]
+simpleClosureCases : (Src.Module -> Expectation) -> List TestCase
+simpleClosureCases expectFn =
+    [ { label = "Closure over single local", run = closureOverSingleLocal expectFn }
+    , { label = "Closure over two locals", run = closureOverTwoLocals expectFn }
+    , { label = "Closure in let binding", run = closureInLetBinding expectFn }
+    , { label = "Closure as return value", run = closureAsReturnValue expectFn }
+    , { label = "Closure applied immediately", run = closureAppliedImmediately expectFn }
+    ]
 
 
 {-| Test closure capturing a single local variable.
@@ -300,18 +300,13 @@ closureAppliedImmediately expectFn _ =
 -- ============================================================================
 
 
-nestedClosureTests : (Src.Module -> Expectation) -> String -> Test
-nestedClosureTests expectFn condStr =
-    Test.describe ("Nested closures " ++ condStr)
-        [ Test.test "Double nested closure" <|
-            doubleNestedClosure expectFn
-        , Test.test "Closure returning closure" <|
-            closureReturningClosure expectFn
-        , Test.test "Nested let closures" <|
-            nestedLetClosures expectFn
-        , Test.test "Triple nested closure" <|
-            tripleNestedClosure expectFn
-        ]
+nestedClosureCases : (Src.Module -> Expectation) -> List TestCase
+nestedClosureCases expectFn =
+    [ { label = "Double nested closure", run = doubleNestedClosure expectFn }
+    , { label = "Closure returning closure", run = closureReturningClosure expectFn }
+    , { label = "Nested let closures", run = nestedLetClosures expectFn }
+    , { label = "Triple nested closure", run = tripleNestedClosure expectFn }
+    ]
 
 
 {-| Test double nested closure.
@@ -538,18 +533,13 @@ tripleNestedClosure expectFn _ =
 -- ============================================================================
 
 
-closureInCaseTests : (Src.Module -> Expectation) -> String -> Test
-closureInCaseTests expectFn condStr =
-    Test.describe ("Closures in case " ++ condStr)
-        [ Test.test "Closure in case branch" <|
-            closureInCaseBranch expectFn
-        , Test.test "Different closures per branch" <|
-            differentClosuresPerBranch expectFn
-        , Test.test "Closure capturing scrutinee" <|
-            closureCapturingScrutinee expectFn
-        , Test.test "Closure in Maybe case" <|
-            closureInMaybeCase expectFn
-        ]
+closureInCaseCases : (Src.Module -> Expectation) -> List TestCase
+closureInCaseCases expectFn =
+    [ { label = "Closure in case branch", run = closureInCaseBranch expectFn }
+    , { label = "Different closures per branch", run = differentClosuresPerBranch expectFn }
+    , { label = "Closure capturing scrutinee", run = closureCapturingScrutinee expectFn }
+    , { label = "Closure in Maybe case", run = closureInMaybeCase expectFn }
+    ]
 
 
 {-| Test closure defined in case branch.
@@ -791,18 +781,13 @@ closureInMaybeCase expectFn _ =
 -- ============================================================================
 
 
-closureCapturingTypesTests : (Src.Module -> Expectation) -> String -> Test
-closureCapturingTypesTests expectFn condStr =
-    Test.describe ("Closure capturing types " ++ condStr)
-        [ Test.test "Closure capturing record" <|
-            closureCapturingRecord expectFn
-        , Test.test "Closure capturing tuple" <|
-            closureCapturingTuple expectFn
-        , Test.test "Closure capturing list head" <|
-            closureCapturingListHead expectFn
-        , Test.test "Closure capturing multiple types" <|
-            closureCapturingMultipleTypes expectFn
-        ]
+closureCapturingTypesCases : (Src.Module -> Expectation) -> List TestCase
+closureCapturingTypesCases expectFn =
+    [ { label = "Closure capturing record", run = closureCapturingRecord expectFn }
+    , { label = "Closure capturing tuple", run = closureCapturingTuple expectFn }
+    , { label = "Closure capturing list head", run = closureCapturingListHead expectFn }
+    , { label = "Closure capturing multiple types", run = closureCapturingMultipleTypes expectFn }
+    ]
 
 
 {-| Test closure capturing a record.
@@ -1021,16 +1006,12 @@ closureCapturingMultipleTypes expectFn _ =
 -- ============================================================================
 
 
-closureWithRecursionTests : (Src.Module -> Expectation) -> String -> Test
-closureWithRecursionTests expectFn condStr =
-    Test.describe ("Closures with recursion " ++ condStr)
-        [ Test.test "Closure in recursive function" <|
-            closureInRecursiveFunction expectFn
-        , Test.test "Recursive closure" <|
-            recursiveClosure expectFn
-        , Test.test "Closure with tail recursion" <|
-            closureWithTailRecursion expectFn
-        ]
+closureWithRecursionCases : (Src.Module -> Expectation) -> List TestCase
+closureWithRecursionCases expectFn =
+    [ { label = "Closure in recursive function", run = closureInRecursiveFunction expectFn }
+    , { label = "Recursive closure", run = recursiveClosure expectFn }
+    , { label = "Closure with tail recursion", run = closureWithTailRecursion expectFn }
+    ]
 
 
 {-| Test closure used in recursive function.
