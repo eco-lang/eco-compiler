@@ -36,14 +36,15 @@ expectCallableMonoNodes srcModule =
 
         Ok monoGraph ->
             let
-                issues =
-                    collectCallabilityIssues monoGraph
+                checks =
+                    collectCallabilityChecks monoGraph
             in
-            if List.isEmpty issues then
-                Expect.pass
+            case checks of
+                [] ->
+                    Expect.pass
 
-            else
-                Expect.fail (String.join "\n" issues)
+                _ ->
+                    Expect.all checks ()
 
 
 {-| MONO\_010: Verify MonoGraph is type complete.
@@ -56,14 +57,15 @@ expectMonoGraphComplete srcModule =
 
         Ok monoGraph ->
             let
-                issues =
-                    collectCompletenessIssues monoGraph
+                checks =
+                    collectCompletenessChecks monoGraph
             in
-            if List.isEmpty issues then
-                Expect.pass
+            case checks of
+                [] ->
+                    Expect.pass
 
-            else
-                Expect.fail (String.join "\n" issues)
+                _ ->
+                    Expect.all checks ()
 
 
 {-| MONO\_011: Verify MonoGraph is closed and hygienic.
@@ -76,14 +78,15 @@ expectMonoGraphClosed srcModule =
 
         Ok monoGraph ->
             let
-                issues =
-                    collectClosureIssues monoGraph
+                checks =
+                    collectClosureChecks monoGraph
             in
-            if List.isEmpty issues then
-                Expect.pass
+            case checks of
+                [] ->
+                    Expect.pass
 
-            else
-                Expect.fail (String.join "\n" issues)
+                _ ->
+                    Expect.all checks ()
 
 
 {-| MONO\_005: Verify specialization registry is complete.
@@ -96,14 +99,15 @@ expectSpecRegistryComplete srcModule =
 
         Ok monoGraph ->
             let
-                issues =
-                    collectRegistryIssues monoGraph
+                checks =
+                    collectRegistryChecks monoGraph
             in
-            if List.isEmpty issues then
-                Expect.pass
+            case checks of
+                [] ->
+                    Expect.pass
 
-            else
-                Expect.fail (String.join "\n" issues)
+                _ ->
+                    Expect.all checks ()
 
 
 
@@ -112,10 +116,10 @@ expectSpecRegistryComplete srcModule =
 -- ============================================================================
 
 
-{-| Collect issues with function-typed nodes that aren't callable.
+{-| Collect callability checks for function-typed nodes.
 -}
-collectCallabilityIssues : Mono.MonoGraph -> List String
-collectCallabilityIssues (Mono.MonoGraph data) =
+collectCallabilityChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
+collectCallabilityChecks (Mono.MonoGraph data) =
     Dict.foldl compare
         (\specId node acc -> checkNodeCallability specId node ++ acc)
         []
@@ -124,7 +128,7 @@ collectCallabilityIssues (Mono.MonoGraph data) =
 
 {-| Check if a function-typed node is properly callable.
 -}
-checkNodeCallability : Int -> Mono.MonoNode -> List String
+checkNodeCallability : Int -> Mono.MonoNode -> List (() -> Expect.Expectation)
 checkNodeCallability specId node =
     let
         context =
@@ -140,7 +144,7 @@ checkNodeCallability specId node =
                             []
 
                         _ ->
-                            [ context ++ ": Function-typed MonoDefine doesn't contain a MonoClosure" ]
+                            [ \() -> Expect.fail (context ++ ": Function-typed MonoDefine doesn't contain a MonoClosure") ]
 
                 _ ->
                     -- Non-function types are fine
@@ -153,7 +157,7 @@ checkNodeCallability specId node =
                     []
 
                 _ ->
-                    [ context ++ ": MonoTailFunc has non-function type" ]
+                    [ \() -> Expect.fail (context ++ ": MonoTailFunc has non-function type") ]
 
         Mono.MonoCtor _ _ ->
             -- Constructors are callable by definition
@@ -186,10 +190,10 @@ checkNodeCallability specId node =
 -- ============================================================================
 
 
-{-| Collect issues with type completeness.
+{-| Collect type completeness checks.
 -}
-collectCompletenessIssues : Mono.MonoGraph -> List String
-collectCompletenessIssues (Mono.MonoGraph data) =
+collectCompletenessChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
+collectCompletenessChecks (Mono.MonoGraph data) =
     []
 
 
@@ -308,10 +312,10 @@ collectCustomTypeRefsFromDef def =
 -- ============================================================================
 
 
-{-| Collect issues with graph closure (no dangling references).
+{-| Collect closure checks (no dangling references).
 -}
-collectClosureIssues : Mono.MonoGraph -> List String
-collectClosureIssues (Mono.MonoGraph data) =
+collectClosureChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
+collectClosureChecks (Mono.MonoGraph data) =
     let
         -- Get all defined SpecIds
         definedSpecIds =
@@ -330,7 +334,7 @@ collectClosureIssues (Mono.MonoGraph data) =
                 |> Set.toList compare
     in
     List.map
-        (\specId -> "Referenced SpecId " ++ String.fromInt specId ++ " is not defined in nodes")
+        (\specId -> \() -> Expect.fail ("Referenced SpecId " ++ String.fromInt specId ++ " is not defined in nodes"))
         undefinedRefs
 
 
@@ -465,10 +469,10 @@ collectSpecIdRefsFromDef def =
 -- ============================================================================
 
 
-{-| Collect issues with specialization registry.
+{-| Collect specialization registry checks.
 -}
-collectRegistryIssues : Mono.MonoGraph -> List String
-collectRegistryIssues (Mono.MonoGraph data) =
+collectRegistryChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
+collectRegistryChecks (Mono.MonoGraph data) =
     let
         -- Get all defined SpecIds
         definedSpecIds =
@@ -484,7 +488,7 @@ collectRegistryIssues (Mono.MonoGraph data) =
                 |> Set.toList compare
     in
     List.map
-        (\specId -> "Registry contains SpecId " ++ String.fromInt specId ++ " which is not defined in nodes")
+        (\specId -> \() -> Expect.fail ("Registry contains SpecId " ++ String.fromInt specId ++ " which is not defined in nodes"))
         undefinedRegistrySpecIds
 
 

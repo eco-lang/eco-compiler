@@ -31,14 +31,15 @@ expectNoNumericPolymorphism srcModule =
 
         Ok monoGraph ->
             let
-                issues =
-                    collectCNumberIssues monoGraph
+                checks =
+                    collectCNumberChecks monoGraph
             in
-            if List.isEmpty issues then
-                Expect.pass
+            case checks of
+                [] ->
+                    Expect.pass
 
-            else
-                Expect.fail (String.join "\n" issues)
+                _ ->
+                    Expect.all checks ()
 
 
 {-| MONO\_008: Verify primitive numeric types are fixed in all calls.
@@ -51,14 +52,15 @@ expectNumericTypesResolved srcModule =
 
         Ok monoGraph ->
             let
-                issues =
-                    collectCallSiteNumericIssues monoGraph
+                checks =
+                    collectCallSiteNumericChecks monoGraph
             in
-            if List.isEmpty issues then
-                Expect.pass
+            case checks of
+                [] ->
+                    Expect.pass
 
-            else
-                Expect.fail (String.join "\n" issues)
+                _ ->
+                    Expect.all checks ()
 
 
 
@@ -67,20 +69,20 @@ expectNumericTypesResolved srcModule =
 -- ============================================================================
 
 
-{-| Collect all CNumber constraint issues in the graph.
+{-| Collect all CNumber constraint checks in the graph.
 -}
-collectCNumberIssues : Mono.MonoGraph -> List String
-collectCNumberIssues (Mono.MonoGraph data) =
+collectCNumberChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
+collectCNumberChecks (Mono.MonoGraph data) =
     Dict.foldl compare
-        (\specId node acc -> collectNodeCNumberIssues specId node ++ acc)
+        (\specId node acc -> collectNodeCNumberChecks specId node ++ acc)
         []
         data.nodes
 
 
-{-| Collect CNumber issues from a single MonoNode.
+{-| Collect CNumber checks from a single MonoNode.
 -}
-collectNodeCNumberIssues : Int -> Mono.MonoNode -> List String
-collectNodeCNumberIssues specId node =
+collectNodeCNumberChecks : Int -> Mono.MonoNode -> List (() -> Expect.Expectation)
+collectNodeCNumberChecks specId node =
     let
         context =
             "SpecId " ++ String.fromInt specId
@@ -88,12 +90,12 @@ collectNodeCNumberIssues specId node =
     case node of
         Mono.MonoDefine expr monoType ->
             checkForCNumber context monoType
-                ++ collectExprCNumberIssues context expr
+                ++ collectExprCNumberChecks context expr
 
         Mono.MonoTailFunc params expr monoType ->
             checkForCNumber context monoType
                 ++ List.concatMap (\( _, paramType ) -> checkForCNumber context paramType) params
-                ++ collectExprCNumberIssues context expr
+                ++ collectExprCNumberChecks context expr
 
         Mono.MonoCtor _ monoType ->
             checkForCNumber context monoType
@@ -106,21 +108,21 @@ collectNodeCNumberIssues specId node =
 
         Mono.MonoPortIncoming expr monoType ->
             checkForCNumber context monoType
-                ++ collectExprCNumberIssues context expr
+                ++ collectExprCNumberChecks context expr
 
         Mono.MonoPortOutgoing expr monoType ->
             checkForCNumber context monoType
-                ++ collectExprCNumberIssues context expr
+                ++ collectExprCNumberChecks context expr
 
         Mono.MonoCycle defs monoType ->
             checkForCNumber context monoType
-                ++ List.concatMap (\( _, expr ) -> collectExprCNumberIssues context expr) defs
+                ++ List.concatMap (\( _, expr ) -> collectExprCNumberChecks context expr) defs
 
 
-{-| Collect CNumber issues from a MonoExpr.
+{-| Collect CNumber checks from a MonoExpr.
 -}
-collectExprCNumberIssues : String -> Mono.MonoExpr -> List String
-collectExprCNumberIssues context expr =
+collectExprCNumberChecks : String -> Mono.MonoExpr -> List (() -> Expect.Expectation)
+collectExprCNumberChecks context expr =
     case expr of
         Mono.MonoLiteral _ monoType ->
             checkForCNumber context monoType
@@ -136,84 +138,84 @@ collectExprCNumberIssues context expr =
 
         Mono.MonoList _ exprs monoType ->
             checkForCNumber context monoType
-                ++ List.concatMap (collectExprCNumberIssues context) exprs
+                ++ List.concatMap (collectExprCNumberChecks context) exprs
 
         Mono.MonoClosure closureInfo bodyExpr monoType ->
             checkForCNumber context monoType
                 ++ List.concatMap (\( _, paramType ) -> checkForCNumber context paramType) closureInfo.params
-                ++ List.concatMap (\( _, captureExpr, _ ) -> collectExprCNumberIssues context captureExpr) closureInfo.captures
-                ++ collectExprCNumberIssues context bodyExpr
+                ++ List.concatMap (\( _, captureExpr, _ ) -> collectExprCNumberChecks context captureExpr) closureInfo.captures
+                ++ collectExprCNumberChecks context bodyExpr
 
         Mono.MonoCall _ fnExpr argExprs monoType ->
             checkForCNumber context monoType
-                ++ collectExprCNumberIssues context fnExpr
-                ++ List.concatMap (collectExprCNumberIssues context) argExprs
+                ++ collectExprCNumberChecks context fnExpr
+                ++ List.concatMap (collectExprCNumberChecks context) argExprs
 
         Mono.MonoTailCall _ args monoType ->
             checkForCNumber context monoType
-                ++ List.concatMap (\( _, argExpr ) -> collectExprCNumberIssues context argExpr) args
+                ++ List.concatMap (\( _, argExpr ) -> collectExprCNumberChecks context argExpr) args
 
         Mono.MonoIf branches elseExpr monoType ->
             checkForCNumber context monoType
-                ++ List.concatMap (\( condExpr, thenExpr ) -> collectExprCNumberIssues context condExpr ++ collectExprCNumberIssues context thenExpr) branches
-                ++ collectExprCNumberIssues context elseExpr
+                ++ List.concatMap (\( condExpr, thenExpr ) -> collectExprCNumberChecks context condExpr ++ collectExprCNumberChecks context thenExpr) branches
+                ++ collectExprCNumberChecks context elseExpr
 
         Mono.MonoLet def bodyExpr monoType ->
             checkForCNumber context monoType
-                ++ collectDefCNumberIssues context def
-                ++ collectExprCNumberIssues context bodyExpr
+                ++ collectDefCNumberChecks context def
+                ++ collectExprCNumberChecks context bodyExpr
 
         Mono.MonoDestruct _ valueExpr monoType ->
             checkForCNumber context monoType
-                ++ collectExprCNumberIssues context valueExpr
+                ++ collectExprCNumberChecks context valueExpr
 
         Mono.MonoCase _ _ _ branches monoType ->
             checkForCNumber context monoType
-                ++ List.concatMap (\( _, branchExpr ) -> collectExprCNumberIssues context branchExpr) branches
+                ++ List.concatMap (\( _, branchExpr ) -> collectExprCNumberChecks context branchExpr) branches
 
         Mono.MonoRecordCreate fieldExprs _ monoType ->
             checkForCNumber context monoType
-                ++ List.concatMap (collectExprCNumberIssues context) fieldExprs
+                ++ List.concatMap (collectExprCNumberChecks context) fieldExprs
 
         Mono.MonoRecordAccess recordExpr _ _ _ monoType ->
             checkForCNumber context monoType
-                ++ collectExprCNumberIssues context recordExpr
+                ++ collectExprCNumberChecks context recordExpr
 
         Mono.MonoRecordUpdate recordExpr updates _ monoType ->
             checkForCNumber context monoType
-                ++ collectExprCNumberIssues context recordExpr
-                ++ List.concatMap (\( _, updateExpr ) -> collectExprCNumberIssues context updateExpr) updates
+                ++ collectExprCNumberChecks context recordExpr
+                ++ List.concatMap (\( _, updateExpr ) -> collectExprCNumberChecks context updateExpr) updates
 
         Mono.MonoTupleCreate _ elementExprs _ monoType ->
             checkForCNumber context monoType
-                ++ List.concatMap (collectExprCNumberIssues context) elementExprs
+                ++ List.concatMap (collectExprCNumberChecks context) elementExprs
 
         Mono.MonoUnit ->
             []
 
 
-{-| Collect CNumber issues from a MonoDef.
+{-| Collect CNumber checks from a MonoDef.
 -}
-collectDefCNumberIssues : String -> Mono.MonoDef -> List String
-collectDefCNumberIssues context def =
+collectDefCNumberChecks : String -> Mono.MonoDef -> List (() -> Expect.Expectation)
+collectDefCNumberChecks context def =
     case def of
         Mono.MonoDef _ expr ->
             checkForCNumber context (Mono.typeOf expr)
-                ++ collectExprCNumberIssues context expr
+                ++ collectExprCNumberChecks context expr
 
         Mono.MonoTailDef _ params expr ->
             checkForCNumber context (Mono.typeOf expr)
                 ++ List.concatMap (\( _, paramType ) -> checkForCNumber context paramType) params
-                ++ collectExprCNumberIssues context expr
+                ++ collectExprCNumberChecks context expr
 
 
 {-| Check a MonoType for CNumber constraints.
 -}
-checkForCNumber : String -> Mono.MonoType -> List String
+checkForCNumber : String -> Mono.MonoType -> List (() -> Expect.Expectation)
 checkForCNumber context monoType =
     case monoType of
         Mono.MVar name Mono.CNumber ->
-            [ context ++ ": Unresolved numeric type variable '" ++ name ++ "' with CNumber constraint" ]
+            [ \() -> Expect.fail (context ++ ": Unresolved numeric type variable '" ++ name ++ "' with CNumber constraint") ]
 
         Mono.MVar _ Mono.CEcoValue ->
             []
@@ -238,30 +240,30 @@ checkForCNumber context monoType =
 -- ============================================================================
 
 
-{-| Collect numeric type issues at call sites in the graph.
+{-| Collect numeric type checks at call sites in the graph.
 -}
-collectCallSiteNumericIssues : Mono.MonoGraph -> List String
-collectCallSiteNumericIssues (Mono.MonoGraph data) =
+collectCallSiteNumericChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
+collectCallSiteNumericChecks (Mono.MonoGraph data) =
     Dict.foldl compare
-        (\specId node acc -> collectNodeCallSiteIssues specId node ++ acc)
+        (\specId node acc -> collectNodeCallSiteChecks specId node ++ acc)
         []
         data.nodes
 
 
-{-| Collect call site issues from a single MonoNode.
+{-| Collect call site checks from a single MonoNode.
 -}
-collectNodeCallSiteIssues : Int -> Mono.MonoNode -> List String
-collectNodeCallSiteIssues specId node =
+collectNodeCallSiteChecks : Int -> Mono.MonoNode -> List (() -> Expect.Expectation)
+collectNodeCallSiteChecks specId node =
     let
         context =
             "SpecId " ++ String.fromInt specId
     in
     case node of
         Mono.MonoDefine expr _ ->
-            collectExprCallSiteIssues context expr
+            collectExprCallSiteChecks context expr
 
         Mono.MonoTailFunc _ expr _ ->
-            collectExprCallSiteIssues context expr
+            collectExprCallSiteChecks context expr
 
         Mono.MonoCtor _ _ ->
             []
@@ -273,24 +275,24 @@ collectNodeCallSiteIssues specId node =
             []
 
         Mono.MonoPortIncoming expr _ ->
-            collectExprCallSiteIssues context expr
+            collectExprCallSiteChecks context expr
 
         Mono.MonoPortOutgoing expr _ ->
-            collectExprCallSiteIssues context expr
+            collectExprCallSiteChecks context expr
 
         Mono.MonoCycle defs _ ->
-            List.concatMap (\( _, expr ) -> collectExprCallSiteIssues context expr) defs
+            List.concatMap (\( _, expr ) -> collectExprCallSiteChecks context expr) defs
 
 
-{-| Collect call site issues from a MonoExpr, focusing on MonoCall and MonoTailCall.
+{-| Collect call site checks from a MonoExpr, focusing on MonoCall and MonoTailCall.
 -}
-collectExprCallSiteIssues : String -> Mono.MonoExpr -> List String
-collectExprCallSiteIssues context expr =
+collectExprCallSiteChecks : String -> Mono.MonoExpr -> List (() -> Expect.Expectation)
+collectExprCallSiteChecks context expr =
     case expr of
         Mono.MonoCall _ fnExpr argExprs _ ->
             -- Check that all numeric arguments are concrete MInt or MFloat
             let
-                argIssues =
+                argChecks =
                     List.indexedMap
                         (\idx argExpr ->
                             let
@@ -302,14 +304,14 @@ collectExprCallSiteIssues context expr =
                         argExprs
                         |> List.concat
             in
-            argIssues
-                ++ collectExprCallSiteIssues context fnExpr
-                ++ List.concatMap (collectExprCallSiteIssues context) argExprs
+            argChecks
+                ++ collectExprCallSiteChecks context fnExpr
+                ++ List.concatMap (collectExprCallSiteChecks context) argExprs
 
         Mono.MonoTailCall _ args _ ->
             -- Check that all arguments to tail calls have resolved numeric types
             let
-                argIssues =
+                argChecks =
                     List.concatMap
                         (\( name, argExpr ) ->
                             let
@@ -320,57 +322,57 @@ collectExprCallSiteIssues context expr =
                         )
                         args
             in
-            argIssues
-                ++ List.concatMap (\( _, argExpr ) -> collectExprCallSiteIssues context argExpr) args
+            argChecks
+                ++ List.concatMap (\( _, argExpr ) -> collectExprCallSiteChecks context argExpr) args
 
         Mono.MonoList _ exprs _ ->
-            List.concatMap (collectExprCallSiteIssues context) exprs
+            List.concatMap (collectExprCallSiteChecks context) exprs
 
         Mono.MonoClosure closureInfo bodyExpr _ ->
-            List.concatMap (\( _, captureExpr, _ ) -> collectExprCallSiteIssues context captureExpr) closureInfo.captures
-                ++ collectExprCallSiteIssues context bodyExpr
+            List.concatMap (\( _, captureExpr, _ ) -> collectExprCallSiteChecks context captureExpr) closureInfo.captures
+                ++ collectExprCallSiteChecks context bodyExpr
 
         Mono.MonoIf branches elseExpr _ ->
-            List.concatMap (\( condExpr, thenExpr ) -> collectExprCallSiteIssues context condExpr ++ collectExprCallSiteIssues context thenExpr) branches
-                ++ collectExprCallSiteIssues context elseExpr
+            List.concatMap (\( condExpr, thenExpr ) -> collectExprCallSiteChecks context condExpr ++ collectExprCallSiteChecks context thenExpr) branches
+                ++ collectExprCallSiteChecks context elseExpr
 
         Mono.MonoLet def bodyExpr _ ->
-            collectDefCallSiteIssues context def
-                ++ collectExprCallSiteIssues context bodyExpr
+            collectDefCallSiteChecks context def
+                ++ collectExprCallSiteChecks context bodyExpr
 
         Mono.MonoDestruct _ valueExpr _ ->
-            collectExprCallSiteIssues context valueExpr
+            collectExprCallSiteChecks context valueExpr
 
         Mono.MonoCase _ _ _ branches _ ->
-            List.concatMap (\( _, branchExpr ) -> collectExprCallSiteIssues context branchExpr) branches
+            List.concatMap (\( _, branchExpr ) -> collectExprCallSiteChecks context branchExpr) branches
 
         Mono.MonoRecordCreate fieldExprs _ _ ->
-            List.concatMap (collectExprCallSiteIssues context) fieldExprs
+            List.concatMap (collectExprCallSiteChecks context) fieldExprs
 
         Mono.MonoRecordAccess recordExpr _ _ _ _ ->
-            collectExprCallSiteIssues context recordExpr
+            collectExprCallSiteChecks context recordExpr
 
         Mono.MonoRecordUpdate recordExpr updates _ _ ->
-            collectExprCallSiteIssues context recordExpr
-                ++ List.concatMap (\( _, updateExpr ) -> collectExprCallSiteIssues context updateExpr) updates
+            collectExprCallSiteChecks context recordExpr
+                ++ List.concatMap (\( _, updateExpr ) -> collectExprCallSiteChecks context updateExpr) updates
 
         Mono.MonoTupleCreate _ elementExprs _ _ ->
-            List.concatMap (collectExprCallSiteIssues context) elementExprs
+            List.concatMap (collectExprCallSiteChecks context) elementExprs
 
         _ ->
             []
 
 
-{-| Collect call site issues from a MonoDef.
+{-| Collect call site checks from a MonoDef.
 -}
-collectDefCallSiteIssues : String -> Mono.MonoDef -> List String
-collectDefCallSiteIssues context def =
+collectDefCallSiteChecks : String -> Mono.MonoDef -> List (() -> Expect.Expectation)
+collectDefCallSiteChecks context def =
     case def of
         Mono.MonoDef _ expr ->
-            collectExprCallSiteIssues context expr
+            collectExprCallSiteChecks context expr
 
         Mono.MonoTailDef _ _ expr ->
-            collectExprCallSiteIssues context expr
+            collectExprCallSiteChecks context expr
 
 
 {-| Check if a type that appears in a numeric context is properly resolved.
@@ -379,11 +381,11 @@ For MONO\_008, numeric types at call sites must be concrete MInt or MFloat,
 not polymorphic MVar CNumber.
 
 -}
-checkNumericTypeResolved : String -> Mono.MonoType -> List String
+checkNumericTypeResolved : String -> Mono.MonoType -> List (() -> Expect.Expectation)
 checkNumericTypeResolved context monoType =
     case monoType of
         Mono.MVar name Mono.CNumber ->
-            [ context ++ ": Numeric type variable '" ++ name ++ "' not resolved to MInt or MFloat" ]
+            [ \() -> Expect.fail (context ++ ": Numeric type variable '" ++ name ++ "' not resolved to MInt or MFloat") ]
 
         Mono.MVar _ Mono.CEcoValue ->
             -- CEcoValue is fine - it's not a numeric constraint

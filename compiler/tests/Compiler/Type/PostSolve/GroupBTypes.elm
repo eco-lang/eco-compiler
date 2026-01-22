@@ -26,14 +26,15 @@ expectGroupBTypesValid srcModule =
 
         Ok result ->
             let
-                issues =
-                    collectGroupBTypeIssues result.nodeTypes
+                checks =
+                    collectGroupBTypeChecks result.nodeTypes
             in
-            if List.isEmpty issues then
-                Expect.pass
+            case checks of
+                [] ->
+                    Expect.pass
 
-            else
-                Expect.fail (String.join "\n" issues)
+                _ ->
+                    Expect.all checks ()
 
 
 
@@ -42,14 +43,14 @@ expectGroupBTypesValid srcModule =
 -- ============================================================================
 
 
-{-| Collect issues with Group B types.
+{-| Collect checks for Group B types.
 
 Group B expressions (lists, tuples, records, units, lambdas) should have
 fully structural types after PostSolve, with no unconstrained synthetic variables.
 
 -}
-collectGroupBTypeIssues : Dict.Dict Int Int Can.Type -> List String
-collectGroupBTypeIssues nodeTypes =
+collectGroupBTypeChecks : Dict.Dict Int Int Can.Type -> List (() -> Expect.Expectation)
+collectGroupBTypeChecks nodeTypes =
     Dict.foldl compare
         (\nodeId canType acc ->
             checkTypeForSyntheticVars ("NodeId " ++ String.fromInt nodeId) canType ++ acc
@@ -64,14 +65,14 @@ After PostSolve, types should be fully concrete with no synthetic variables
 (represented as TVar with specific naming patterns).
 
 -}
-checkTypeForSyntheticVars : String -> Can.Type -> List String
+checkTypeForSyntheticVars : String -> Can.Type -> List (() -> Expect.Expectation)
 checkTypeForSyntheticVars context canType =
     case canType of
         Can.TVar name ->
             -- Check if this looks like a synthetic variable
             -- Synthetic variables typically have numeric suffixes or special prefixes
             if isSyntheticVarName name then
-                [ context ++ ": Found synthetic type variable '" ++ name ++ "'" ]
+                [ \() -> Expect.fail (context ++ ": Found synthetic type variable '" ++ name ++ "'") ]
 
             else
                 []
@@ -106,7 +107,7 @@ checkTypeForSyntheticVars context canType =
 
 {-| Check aliased type for synthetic variables.
 -}
-checkAliasedTypeForSyntheticVars : String -> Can.AliasType -> List String
+checkAliasedTypeForSyntheticVars : String -> Can.AliasType -> List (() -> Expect.Expectation)
 checkAliasedTypeForSyntheticVars context aliasType =
     case aliasType of
         Can.Holey canType ->

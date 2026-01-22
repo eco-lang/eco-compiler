@@ -35,14 +35,15 @@ expectRecordTupleLayoutsComplete srcModule =
 
         Ok monoGraph ->
             let
-                issues =
-                    collectLayoutCompletenessIssues monoGraph
+                checks =
+                    collectLayoutCompletenessChecks monoGraph
             in
-            if List.isEmpty issues then
-                Expect.pass
+            case checks of
+                [] ->
+                    Expect.pass
 
-            else
-                Expect.fail (String.join "\n" issues)
+                _ ->
+                    Expect.all checks ()
 
 
 {-| MONO\_007: Verify record access matches layout metadata.
@@ -55,14 +56,15 @@ expectRecordAccessMatchesLayout srcModule =
 
         Ok monoGraph ->
             let
-                issues =
-                    collectRecordAccessIssues monoGraph
+                checks =
+                    collectRecordAccessChecks monoGraph
             in
-            if List.isEmpty issues then
-                Expect.pass
+            case checks of
+                [] ->
+                    Expect.pass
 
-            else
-                Expect.fail (String.join "\n" issues)
+                _ ->
+                    Expect.all checks ()
 
 
 {-| MONO\_013: Verify constructor layouts define consistent custom types.
@@ -75,14 +77,15 @@ expectCtorLayoutsConsistent srcModule =
 
         Ok monoGraph ->
             let
-                issues =
-                    collectCtorLayoutIssues monoGraph
+                checks =
+                    collectCtorLayoutChecks monoGraph
             in
-            if List.isEmpty issues then
-                Expect.pass
+            case checks of
+                [] ->
+                    Expect.pass
 
-            else
-                Expect.fail (String.join "\n" issues)
+                _ ->
+                    Expect.all checks ()
 
 
 {-| MONO\_014: Verify structurally equivalent layouts are canonical.
@@ -95,14 +98,15 @@ expectLayoutsCanonical srcModule =
 
         Ok monoGraph ->
             let
-                issues =
-                    collectCanonicalityIssues monoGraph
+                checks =
+                    collectCanonicalityChecks monoGraph
             in
-            if List.isEmpty issues then
-                Expect.pass
+            case checks of
+                [] ->
+                    Expect.pass
 
-            else
-                Expect.fail (String.join "\n" issues)
+                _ ->
+                    Expect.all checks ()
 
 
 
@@ -111,10 +115,10 @@ expectLayoutsCanonical srcModule =
 -- ============================================================================
 
 
-{-| Collect layout completeness issues.
+{-| Collect layout completeness checks.
 -}
-collectLayoutCompletenessIssues : Mono.MonoGraph -> List String
-collectLayoutCompletenessIssues (Mono.MonoGraph data) =
+collectLayoutCompletenessChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
+collectLayoutCompletenessChecks (Mono.MonoGraph data) =
     -- Traverse all nodes and check that:
     -- 1. Record types have complete RecordLayouts
     -- 2. Tuple types have complete TupleLayouts
@@ -126,7 +130,7 @@ collectLayoutCompletenessIssues (Mono.MonoGraph data) =
 
 {-| Check layout completeness for a single node.
 -}
-checkNodeLayoutCompleteness : Int -> Mono.MonoNode -> List String
+checkNodeLayoutCompleteness : Int -> Mono.MonoNode -> List (() -> Expect.Expectation)
 checkNodeLayoutCompleteness specId node =
     let
         context =
@@ -166,13 +170,13 @@ checkNodeLayoutCompleteness specId node =
 
 {-| Check if a type has complete layout information.
 -}
-checkTypeLayoutComplete : String -> Mono.MonoType -> List String
+checkTypeLayoutComplete : String -> Mono.MonoType -> List (() -> Expect.Expectation)
 checkTypeLayoutComplete context monoType =
     case monoType of
         Mono.MRecord layout ->
             -- Check that layout has valid field count and indices
             if layout.fieldCount < 0 then
-                [ context ++ ": Record layout has negative field count" ]
+                [ \() -> Expect.fail (context ++ ": Record layout has negative field count") ]
 
             else
                 []
@@ -180,7 +184,7 @@ checkTypeLayoutComplete context monoType =
         Mono.MTuple layout ->
             -- Check that tuple layout has valid indices
             if layout.arity < 0 then
-                [ context ++ ": Tuple layout has negative arity" ]
+                [ \() -> Expect.fail (context ++ ": Tuple layout has negative arity") ]
 
             else
                 []
@@ -199,9 +203,9 @@ checkTypeLayoutComplete context monoType =
             []
 
 
-{-| Collect layout issues from expressions.
+{-| Collect layout checks from expressions.
 -}
-collectExprLayoutIssues : String -> Mono.MonoExpr -> List String
+collectExprLayoutIssues : String -> Mono.MonoExpr -> List (() -> Expect.Expectation)
 collectExprLayoutIssues context expr =
     case expr of
         Mono.MonoRecordCreate _ _ monoType ->
@@ -258,9 +262,9 @@ collectExprLayoutIssues context expr =
             checkTypeLayoutComplete context (Mono.typeOf expr)
 
 
-{-| Collect layout issues from a MonoDef.
+{-| Collect layout checks from a MonoDef.
 -}
-collectDefLayoutIssues : String -> Mono.MonoDef -> List String
+collectDefLayoutIssues : String -> Mono.MonoDef -> List (() -> Expect.Expectation)
 collectDefLayoutIssues context def =
     case def of
         Mono.MonoDef _ expr ->
@@ -277,10 +281,10 @@ collectDefLayoutIssues context def =
 -- ============================================================================
 
 
-{-| Collect record access issues.
+{-| Collect record access checks.
 -}
-collectRecordAccessIssues : Mono.MonoGraph -> List String
-collectRecordAccessIssues (Mono.MonoGraph data) =
+collectRecordAccessChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
+collectRecordAccessChecks (Mono.MonoGraph data) =
     Dict.foldl compare
         (\specId node acc -> checkNodeRecordAccess specId node ++ acc)
         []
@@ -289,7 +293,7 @@ collectRecordAccessIssues (Mono.MonoGraph data) =
 
 {-| Check record access consistency for a node.
 -}
-checkNodeRecordAccess : Int -> Mono.MonoNode -> List String
+checkNodeRecordAccess : Int -> Mono.MonoNode -> List (() -> Expect.Expectation)
 checkNodeRecordAccess specId node =
     let
         context =
@@ -315,9 +319,9 @@ checkNodeRecordAccess specId node =
             []
 
 
-{-| Collect record access issues from expressions.
+{-| Collect record access checks from expressions.
 -}
-collectExprRecordAccessIssues : String -> Mono.MonoExpr -> List String
+collectExprRecordAccessIssues : String -> Mono.MonoExpr -> List (() -> Expect.Expectation)
 collectExprRecordAccessIssues context expr =
     case expr of
         Mono.MonoRecordAccess recordExpr fieldName fieldIndex _ _ ->
@@ -325,34 +329,34 @@ collectExprRecordAccessIssues context expr =
                 recordType =
                     Mono.typeOf recordExpr
 
-                issues =
+                checks =
                     case recordType of
                         Mono.MRecord layout ->
                             -- Verify fieldIndex is within bounds
                             if fieldIndex < 0 || fieldIndex >= layout.fieldCount then
-                                [ context ++ ": Record access ." ++ fieldName ++ " has invalid index " ++ String.fromInt fieldIndex ++ " (layout has " ++ String.fromInt layout.fieldCount ++ " fields)" ]
+                                [ \() -> Expect.fail (context ++ ": Record access ." ++ fieldName ++ " has invalid index " ++ String.fromInt fieldIndex ++ " (layout has " ++ String.fromInt layout.fieldCount ++ " fields)") ]
 
                             else
                                 []
 
                         _ ->
-                            [ context ++ ": Record access ." ++ fieldName ++ " on non-record type" ]
+                            [ \() -> Expect.fail (context ++ ": Record access ." ++ fieldName ++ " on non-record type") ]
             in
-            issues ++ collectExprRecordAccessIssues context recordExpr
+            checks ++ collectExprRecordAccessIssues context recordExpr
 
         Mono.MonoRecordUpdate recordExpr updates _ _ ->
             let
                 recordType =
                     Mono.typeOf recordExpr
 
-                issues =
+                checks =
                     case recordType of
                         Mono.MRecord layout ->
                             -- Verify all update indices are valid
                             List.concatMap
                                 (\( idx, _ ) ->
                                     if idx < 0 || idx >= layout.fieldCount then
-                                        [ context ++ ": Record update has invalid index " ++ String.fromInt idx ]
+                                        [ \() -> Expect.fail (context ++ ": Record update has invalid index " ++ String.fromInt idx) ]
 
                                     else
                                         []
@@ -360,9 +364,9 @@ collectExprRecordAccessIssues context expr =
                                 updates
 
                         _ ->
-                            [ context ++ ": Record update on non-record type" ]
+                            [ \() -> Expect.fail (context ++ ": Record update on non-record type") ]
             in
-            issues
+            checks
                 ++ collectExprRecordAccessIssues context recordExpr
                 ++ List.concatMap (\( _, e ) -> collectExprRecordAccessIssues context e) updates
 
@@ -404,9 +408,9 @@ collectExprRecordAccessIssues context expr =
             []
 
 
-{-| Collect record access issues from a MonoDef.
+{-| Collect record access checks from a MonoDef.
 -}
-collectDefRecordAccessIssues : String -> Mono.MonoDef -> List String
+collectDefRecordAccessIssues : String -> Mono.MonoDef -> List (() -> Expect.Expectation)
 collectDefRecordAccessIssues context def =
     case def of
         Mono.MonoDef _ expr ->
@@ -422,10 +426,10 @@ collectDefRecordAccessIssues context def =
 -- ============================================================================
 
 
-{-| Collect constructor layout issues.
+{-| Collect constructor layout checks.
 -}
-collectCtorLayoutIssues : Mono.MonoGraph -> List String
-collectCtorLayoutIssues (Mono.MonoGraph data) =
+collectCtorLayoutChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
+collectCtorLayoutChecks (Mono.MonoGraph data) =
     -- For each entry in ctorLayouts, verify consistency:
     -- - Constructor tags should be sequential (0, 1, 2, ...)
     -- - Field counts should be non-negative
@@ -434,13 +438,13 @@ collectCtorLayoutIssues (Mono.MonoGraph data) =
             List.indexedMap
                 (\idx layout ->
                     if layout.tag /= idx then
-                        "Constructor '" ++ layout.name ++ "' at position " ++ String.fromInt idx ++ " has tag " ++ String.fromInt layout.tag
+                        Just (\() -> Expect.fail ("Constructor '" ++ layout.name ++ "' at position " ++ String.fromInt idx ++ " has tag " ++ String.fromInt layout.tag))
 
                     else
-                        ""
+                        Nothing
                 )
                 ctors
-                |> List.filter (not << String.isEmpty)
+                |> List.filterMap identity
                 |> (++) acc
         )
         []
@@ -453,13 +457,13 @@ collectCtorLayoutIssues (Mono.MonoGraph data) =
 -- ============================================================================
 
 
-{-| Collect layout canonicality issues.
+{-| Collect layout canonicality checks.
 
 Two structurally equivalent layouts should be canonical (share the same representation).
 
 -}
-collectCanonicalityIssues : Mono.MonoGraph -> List String
-collectCanonicalityIssues (Mono.MonoGraph _) =
+collectCanonicalityChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
+collectCanonicalityChecks (Mono.MonoGraph _) =
     -- Layout canonicality is difficult to test directly without access to
     -- the layout identity. For now, we verify the invariant by checking that
     -- the monomorphization completed successfully (which implies layouts are valid).

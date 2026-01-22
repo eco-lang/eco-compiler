@@ -77,6 +77,9 @@ type alias Violation =
 
 
 {-| Convert violations to an Expectation. Empty list passes, otherwise fails.
+
+Uses Expect.all with lazy expectations to avoid accumulating strings in memory.
+
 -}
 violationsToExpectation : List Violation -> Expectation
 violationsToExpectation violations =
@@ -86,10 +89,10 @@ violationsToExpectation violations =
 
         _ ->
             let
-                violationStrings =
-                    List.map formatViolation violations
+                checks =
+                    List.map (\v -> \() -> Expect.fail (formatViolation v)) violations
             in
-            Expect.fail (String.join "\n" violationStrings)
+            Expect.all checks ()
 
 
 formatViolation : Violation -> String

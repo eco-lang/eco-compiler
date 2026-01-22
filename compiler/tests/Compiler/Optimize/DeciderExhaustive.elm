@@ -35,14 +35,15 @@ expectDeciderNoNestedPatterns srcModule =
 
         Ok result ->
             let
-                issues =
-                    collectNestedPatternIssues result.localGraph
+                checks =
+                    collectNestedPatternChecks result.localGraph
             in
-            if List.isEmpty issues then
-                Expect.pass
+            case checks of
+                [] ->
+                    Expect.pass
 
-            else
-                Expect.fail (String.join "\n" issues)
+                _ ->
+                    Expect.all checks ()
 
 
 {-| TOPT_002: Verify decision trees are complete (exhaustive).
@@ -55,14 +56,15 @@ expectDeciderComplete srcModule =
 
         Ok result ->
             let
-                issues =
-                    collectExhaustivenessIssues result.localGraph
+                checks =
+                    collectExhaustivenessChecks result.localGraph
             in
-            if List.isEmpty issues then
-                Expect.pass
+            case checks of
+                [] ->
+                    Expect.pass
 
-            else
-                Expect.fail (String.join "\n" issues)
+                _ ->
+                    Expect.all checks ()
 
 
 
@@ -71,10 +73,10 @@ expectDeciderComplete srcModule =
 -- ============================================================================
 
 
-{-| Collect issues with nested patterns in decision trees.
+{-| Collect nested pattern checks in decision trees.
 -}
-collectNestedPatternIssues : TOpt.LocalGraph -> List String
-collectNestedPatternIssues (TOpt.LocalGraph data) =
+collectNestedPatternChecks : TOpt.LocalGraph -> List (() -> Expect.Expectation)
+collectNestedPatternChecks (TOpt.LocalGraph data) =
     Dict.foldl TOpt.compareGlobal
         (\global node acc ->
             let
@@ -98,7 +100,7 @@ globalToString (TOpt.Global home name) =
 
 {-| Check for nested patterns in a node.
 -}
-checkNodeNestedPatterns : String -> TOpt.Node -> List String
+checkNodeNestedPatterns : String -> TOpt.Node -> List (() -> Expect.Expectation)
 checkNodeNestedPatterns context node =
     case node of
         TOpt.Define expr _ _ ->
@@ -125,7 +127,7 @@ checkNodeNestedPatterns context node =
 
 {-| Check Def for nested patterns.
 -}
-checkDefNestedPatterns : String -> TOpt.Def -> List String
+checkDefNestedPatterns : String -> TOpt.Def -> List (() -> Expect.Expectation)
 checkDefNestedPatterns context def =
     case def of
         TOpt.Def _ name expr _ ->
@@ -135,9 +137,9 @@ checkDefNestedPatterns context def =
             collectExprNestedPatternIssues (context ++ " TailDef " ++ name) expr
 
 
-{-| Collect nested pattern issues from expressions.
+{-| Collect nested pattern checks from expressions.
 -}
-collectExprNestedPatternIssues : String -> TOpt.Expr -> List String
+collectExprNestedPatternIssues : String -> TOpt.Expr -> List (() -> Expect.Expectation)
 collectExprNestedPatternIssues context expr =
     case expr of
         TOpt.Case _ _ decider branches _ ->
@@ -200,7 +202,7 @@ Nested patterns would be indicated by Path values that descend into
 constructor arguments or list elements in a way that requires nested matching.
 
 -}
-checkDeciderNestedPatterns : String -> TOpt.Decider TOpt.Choice -> List String
+checkDeciderNestedPatterns : String -> TOpt.Decider TOpt.Choice -> List (() -> Expect.Expectation)
 checkDeciderNestedPatterns context decider =
     case decider of
         TOpt.Leaf _ ->
@@ -231,7 +233,7 @@ which represents flat destructuring. True nested patterns would require
 complex path operations that don't exist in the flat representation.
 
 -}
-checkPathForNesting : String -> DT.Path -> List String
+checkPathForNesting : String -> DT.Path -> List (() -> Expect.Expectation)
 checkPathForNesting _ _ =
     -- In the TypedOptimized representation, paths are already flattened.
     -- The decision tree compilation process ensures patterns are compiled
@@ -246,10 +248,10 @@ checkPathForNesting _ _ =
 -- ============================================================================
 
 
-{-| Collect exhaustiveness issues from the local graph.
+{-| Collect exhaustiveness checks from the local graph.
 -}
-collectExhaustivenessIssues : TOpt.LocalGraph -> List String
-collectExhaustivenessIssues (TOpt.LocalGraph data) =
+collectExhaustivenessChecks : TOpt.LocalGraph -> List (() -> Expect.Expectation)
+collectExhaustivenessChecks (TOpt.LocalGraph data) =
     Dict.foldl TOpt.compareGlobal
         (\global node acc ->
             let
@@ -264,7 +266,7 @@ collectExhaustivenessIssues (TOpt.LocalGraph data) =
 
 {-| Check exhaustiveness for a node.
 -}
-checkNodeExhaustiveness : String -> TOpt.Node -> List String
+checkNodeExhaustiveness : String -> TOpt.Node -> List (() -> Expect.Expectation)
 checkNodeExhaustiveness context node =
     case node of
         TOpt.Define expr _ _ ->
@@ -291,7 +293,7 @@ checkNodeExhaustiveness context node =
 
 {-| Check Def for exhaustiveness.
 -}
-checkDefExhaustiveness : String -> TOpt.Def -> List String
+checkDefExhaustiveness : String -> TOpt.Def -> List (() -> Expect.Expectation)
 checkDefExhaustiveness context def =
     case def of
         TOpt.Def _ name expr _ ->
@@ -301,9 +303,9 @@ checkDefExhaustiveness context def =
             collectExprExhaustivenessIssues (context ++ " TailDef " ++ name) expr
 
 
-{-| Collect exhaustiveness issues from expressions.
+{-| Collect exhaustiveness checks from expressions.
 -}
-collectExprExhaustivenessIssues : String -> TOpt.Expr -> List String
+collectExprExhaustivenessIssues : String -> TOpt.Expr -> List (() -> Expect.Expectation)
 collectExprExhaustivenessIssues context expr =
     case expr of
         TOpt.Case _ _ decider branches _ ->
@@ -368,7 +370,7 @@ A decision tree is exhaustive if:
   - All paths through the tree lead to a Leaf
 
 -}
-checkDeciderExhaustiveness : String -> TOpt.Decider TOpt.Choice -> List String
+checkDeciderExhaustiveness : String -> TOpt.Decider TOpt.Choice -> List (() -> Expect.Expectation)
 checkDeciderExhaustiveness context decider =
     case decider of
         TOpt.Leaf _ ->

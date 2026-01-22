@@ -33,14 +33,15 @@ expectFunctionTypesEncoded srcModule =
 
         Ok result ->
             let
-                issues =
-                    collectFunctionTypeIssues result.localGraph
+                checks =
+                    collectFunctionTypeChecks result.localGraph
             in
-            if List.isEmpty issues then
-                Expect.pass
+            case checks of
+                [] ->
+                    Expect.pass
 
-            else
-                Expect.fail (String.join "\n" issues)
+                _ ->
+                    Expect.all checks ()
 
 
 
@@ -49,10 +50,10 @@ expectFunctionTypesEncoded srcModule =
 -- ============================================================================
 
 
-{-| Collect function type encoding issues from the local graph.
+{-| Collect function type checks from the local graph.
 -}
-collectFunctionTypeIssues : TOpt.LocalGraph -> List String
-collectFunctionTypeIssues (TOpt.LocalGraph data) =
+collectFunctionTypeChecks : TOpt.LocalGraph -> List (() -> Expect.Expectation)
+collectFunctionTypeChecks (TOpt.LocalGraph data) =
     Dict.foldl TOpt.compareGlobal
         (\global node acc ->
             let
@@ -76,27 +77,27 @@ globalToString (TOpt.Global home name) =
 
 {-| Check function type encoding for a node.
 -}
-checkNodeFunctionTypes : String -> TOpt.Node -> List String
+checkNodeFunctionTypes : String -> TOpt.Node -> List (() -> Expect.Expectation)
 checkNodeFunctionTypes context node =
     case node of
         TOpt.Define expr _ _ ->
-            collectExprFunctionTypeIssues context expr
+            collectExprFunctionTypeChecks context expr
 
         TOpt.TrackedDefine _ expr _ _ ->
-            collectExprFunctionTypeIssues context expr
+            collectExprFunctionTypeChecks context expr
 
         TOpt.DefineTailFunc _ _ expr _ _ ->
             -- The node itself should have a function type matching params -> returnType
-            collectExprFunctionTypeIssues context expr
+            collectExprFunctionTypeChecks context expr
 
         TOpt.Cycle _ _ defs _ ->
             List.concatMap (\def -> checkDefFunctionTypes context def) defs
 
         TOpt.PortIncoming expr _ _ ->
-            collectExprFunctionTypeIssues context expr
+            collectExprFunctionTypeChecks context expr
 
         TOpt.PortOutgoing expr _ _ ->
-            collectExprFunctionTypeIssues context expr
+            collectExprFunctionTypeChecks context expr
 
         _ ->
             []
@@ -104,20 +105,20 @@ checkNodeFunctionTypes context node =
 
 {-| Check Def function types.
 -}
-checkDefFunctionTypes : String -> TOpt.Def -> List String
+checkDefFunctionTypes : String -> TOpt.Def -> List (() -> Expect.Expectation)
 checkDefFunctionTypes context def =
     case def of
         TOpt.Def _ name expr _ ->
-            collectExprFunctionTypeIssues (context ++ " Def " ++ name) expr
+            collectExprFunctionTypeChecks (context ++ " Def " ++ name) expr
 
         TOpt.TailDef _ name _ expr _ ->
-            collectExprFunctionTypeIssues (context ++ " TailDef " ++ name) expr
+            collectExprFunctionTypeChecks (context ++ " TailDef " ++ name) expr
 
 
-{-| Collect function type issues from expressions.
+{-| Collect function type checks from expressions.
 -}
-collectExprFunctionTypeIssues : String -> TOpt.Expr -> List String
-collectExprFunctionTypeIssues context expr =
+collectExprFunctionTypeChecks : String -> TOpt.Expr -> List (() -> Expect.Expectation)
+collectExprFunctionTypeChecks context expr =
     case expr of
         TOpt.Function params bodyExpr fnType ->
             -- The function's attached type should match TLambda chain of params -> body type
@@ -126,70 +127,70 @@ collectExprFunctionTypeIssues context expr =
                     List.map Tuple.second params
 
                 -- Check that the attached type has the right structure
-                typeIssue =
+                typeCheck =
                     if not (functionTypeMatches paramTypes fnType) then
-                        [ context ++ ": Function expression type does not match parameter types" ]
+                        [ \() -> Expect.fail (context ++ ": Function expression type does not match parameter types") ]
 
                     else
                         []
             in
-            typeIssue ++ collectExprFunctionTypeIssues context bodyExpr
+            typeCheck ++ collectExprFunctionTypeChecks context bodyExpr
 
         TOpt.TrackedFunction params bodyExpr fnType ->
             let
                 paramTypes =
                     List.map Tuple.second params
 
-                typeIssue =
+                typeCheck =
                     if not (functionTypeMatches paramTypes fnType) then
-                        [ context ++ ": TrackedFunction expression type does not match parameter types" ]
+                        [ \() -> Expect.fail (context ++ ": TrackedFunction expression type does not match parameter types") ]
 
                     else
                         []
             in
-            typeIssue ++ collectExprFunctionTypeIssues context bodyExpr
+            typeCheck ++ collectExprFunctionTypeChecks context bodyExpr
 
         TOpt.Call _ fnExpr argExprs _ ->
-            collectExprFunctionTypeIssues context fnExpr
-                ++ List.concatMap (collectExprFunctionTypeIssues context) argExprs
+            collectExprFunctionTypeChecks context fnExpr
+                ++ List.concatMap (collectExprFunctionTypeChecks context) argExprs
 
         TOpt.TailCall _ args _ ->
-            List.concatMap (\( _, argExpr ) -> collectExprFunctionTypeIssues context argExpr) args
+            List.concatMap (\( _, argExpr ) -> collectExprFunctionTypeChecks context argExpr) args
 
         TOpt.If branches elseExpr _ ->
-            List.concatMap (\( c, t ) -> collectExprFunctionTypeIssues context c ++ collectExprFunctionTypeIssues context t) branches
-                ++ collectExprFunctionTypeIssues context elseExpr
+            List.concatMap (\( c, t ) -> collectExprFunctionTypeChecks context c ++ collectExprFunctionTypeChecks context t) branches
+                ++ collectExprFunctionTypeChecks context elseExpr
 
         TOpt.Let def bodyExpr _ ->
             checkDefFunctionTypes context def
-                ++ collectExprFunctionTypeIssues context bodyExpr
+                ++ collectExprFunctionTypeChecks context bodyExpr
 
         TOpt.Destruct _ valueExpr _ ->
-            collectExprFunctionTypeIssues context valueExpr
+            collectExprFunctionTypeChecks context valueExpr
 
         TOpt.Case _ _ _ branches _ ->
-            List.concatMap (\( _, branchExpr ) -> collectExprFunctionTypeIssues context branchExpr) branches
+            List.concatMap (\( _, branchExpr ) -> collectExprFunctionTypeChecks context branchExpr) branches
 
         TOpt.List _ exprs _ ->
-            List.concatMap (collectExprFunctionTypeIssues context) exprs
+            List.concatMap (collectExprFunctionTypeChecks context) exprs
 
         TOpt.Access recordExpr _ _ _ ->
-            collectExprFunctionTypeIssues context recordExpr
+            collectExprFunctionTypeChecks context recordExpr
 
         TOpt.Update _ recordExpr updates _ ->
-            collectExprFunctionTypeIssues context recordExpr
-                ++ Dict.foldl A.compareLocated (\_ updateExpr acc -> collectExprFunctionTypeIssues context updateExpr ++ acc) [] updates
+            collectExprFunctionTypeChecks context recordExpr
+                ++ Dict.foldl A.compareLocated (\_ updateExpr acc -> collectExprFunctionTypeChecks context updateExpr ++ acc) [] updates
 
         TOpt.Record fieldExprs _ ->
-            Dict.foldl compare (\_ fieldExpr acc -> collectExprFunctionTypeIssues context fieldExpr ++ acc) [] fieldExprs
+            Dict.foldl compare (\_ fieldExpr acc -> collectExprFunctionTypeChecks context fieldExpr ++ acc) [] fieldExprs
 
         TOpt.TrackedRecord _ fieldExprs _ ->
-            Dict.foldl A.compareLocated (\_ fieldExpr acc -> collectExprFunctionTypeIssues context fieldExpr ++ acc) [] fieldExprs
+            Dict.foldl A.compareLocated (\_ fieldExpr acc -> collectExprFunctionTypeChecks context fieldExpr ++ acc) [] fieldExprs
 
         TOpt.Tuple _ e1 e2 rest _ ->
-            collectExprFunctionTypeIssues context e1
-                ++ collectExprFunctionTypeIssues context e2
-                ++ List.concatMap (collectExprFunctionTypeIssues context) rest
+            collectExprFunctionTypeChecks context e1
+                ++ collectExprFunctionTypeChecks context e2
+                ++ List.concatMap (collectExprFunctionTypeChecks context) rest
 
         _ ->
             []
