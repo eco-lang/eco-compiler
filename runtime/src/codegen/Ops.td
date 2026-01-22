@@ -249,7 +249,7 @@ def Eco_JoinpointOp : Eco_Op<"joinpoint", [
     OptionalAttr<ArrayAttr>:$jpResultTypes  // Array of TypeAttr for SCF lowering
   );
   let regions = (region
-    SizedRegion<1>:$body,
+    AnyRegion:$body,
     AnyRegion:$continuation
   );
   let results = (outs);

@@ -24,7 +24,9 @@ import Compiler.Generate.MLIR.Names as Names
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Types as Types
 import Dict
-import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion, MlirType(..), Visibility(..))
+import Mlir.Loc
+import Mlir.Mlir as Mlir exposing (MlirAttr(..), MlirOp, MlirRegion(..), MlirType(..), Visibility(..))
+import OrderedDict
 
 
 
@@ -262,13 +264,23 @@ generateClosureFunc ctx funcName closureInfo body monoType =
 generateTailFunc : Ctx.Context -> String -> List ( Name.Name, Mono.MonoType ) -> Mono.MonoExpr -> Mono.MonoType -> ( MlirOp, Ctx.Context )
 generateTailFunc ctx funcName params expr monoType =
     let
-        argPairs : List ( String, MlirType )
-        argPairs =
+        -- Function parameters use anonymous names (%arg0, %arg1, ...) to avoid
+        -- collision with joinpoint parameters that the body actually references.
+        funcArgPairs : List ( String, MlirType )
+        funcArgPairs =
+            List.indexedMap
+                (\i ( _, ty ) -> ( "%arg" ++ String.fromInt i, Types.monoTypeToMlir ty ))
+                params
+
+        -- Joinpoint parameters use the original names (%n, %acc, ...) that
+        -- the body expression expects.
+        jpArgPairs : List ( String, MlirType )
+        jpArgPairs =
             List.map
                 (\( name, ty ) -> ( "%" ++ name, Types.monoTypeToMlir ty ))
                 params
 
-        -- Create fresh varMappings with only function parameters
+        -- Create fresh varMappings with only joinpoint parameters
         freshVarMappings : Dict.Dict String ( String, MlirType )
         freshVarMappings =
             List.foldl
@@ -282,38 +294,259 @@ generateTailFunc ctx funcName params expr monoType =
         ctxWithArgs =
             { ctx | nextVar = List.length params, varMappings = freshVarMappings }
 
-        exprResult : Expr.ExprResult
-        exprResult =
-            Expr.generateExpr ctxWithArgs expr
-
         retTy =
             Types.monoTypeToMlir monoType
 
-        region : MlirRegion
-        region =
-            if exprResult.isTerminated then
-                -- Expression is a control-flow exit (eco.case, eco.jump).
-                -- The ops already contain the terminator - don't add eco.return.
-                -- IMPORTANT: Do NOT access exprResult.resultVar here - it is meaningless!
-                Ops.mkRegionTerminatedByOps argPairs exprResult.ops
+        -- Generate multi-block joinpoint body for tail-recursive if-then-else
+        ( jpBodyRegion, ctx1 ) =
+            generateTailRecursiveBody ctxWithArgs expr retTy
+
+        -- Continuation region: required by joinpoint semantics but never reached
+        -- for pure tail-recursive functions. Create a dummy return.
+        ( dummyOps, dummyVar, ctx2 ) =
+            Expr.createDummyValue ctx1 retTy
+
+        ( ctx3, dummyRetOp ) =
+            Ops.ecoReturn ctx2 dummyVar retTy
+
+        contRegion : MlirRegion
+        contRegion =
+            Ops.mkRegion [] dummyOps dummyRetOp
+
+        -- Create the joinpoint (ID 0) with named params that body expects
+        ( ctx4, jpOp ) =
+            Ops.ecoJoinpoint ctx3 0 jpArgPairs jpBodyRegion contRegion [ retTy ]
+
+        -- Initial jump to enter the joinpoint, passing function args
+        argTypes : List MlirType
+        argTypes =
+            List.map Tuple.second funcArgPairs
+
+        initialJumpAttrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr argTypes) )
+                , ( "target", IntAttr Nothing 0 )
+                ]
+
+        ( ctx5, initialJumpOp ) =
+            Ops.mlirOp ctx4 "eco.jump"
+                |> Ops.opBuilder.withOperands (List.map Tuple.first funcArgPairs)
+                |> Ops.opBuilder.withAttrs initialJumpAttrs
+                |> Ops.opBuilder.isTerminator True
+                |> Ops.opBuilder.build
+
+        -- Function body: joinpoint definition + initial jump
+        funcBodyRegion : MlirRegion
+        funcBodyRegion =
+            Ops.mkRegion funcArgPairs [ jpOp ] initialJumpOp
+
+        ( ctx6, funcOp ) =
+            Ops.funcFunc ctx5 funcName funcArgPairs retTy funcBodyRegion
+    in
+    ( funcOp, ctx6 )
+
+
+{-| Generate a multi-block region for a tail-recursive function body.
+For an if-then-else where one branch returns and one branch tail-calls,
+we generate:
+  - Entry block: evaluate condition, cf.cond_br to ^return or ^recurse
+  - ^return block: evaluate return expression, eco.return
+  - ^recurse block: evaluate tail call args, eco.jump 0(...)
+-}
+generateTailRecursiveBody : Ctx.Context -> Mono.MonoExpr -> MlirType -> ( MlirRegion, Ctx.Context )
+generateTailRecursiveBody ctx expr retTy =
+    case expr of
+        Mono.MonoIf [ ( condExpr, thenExpr ) ] elseExpr _ ->
+            -- Single branch if-then-else
+            case ( isTailCall thenExpr, isTailCall elseExpr ) of
+                ( False, True ) ->
+                    -- then = return, else = tail call
+                    -- Condition true -> return, false -> recurse
+                    generateTailRecBody ctx condExpr thenExpr elseExpr retTy True
+
+                ( True, False ) ->
+                    -- then = tail call, else = return
+                    -- Condition true -> recurse, false -> return
+                    generateTailRecBody ctx condExpr elseExpr thenExpr retTy False
+
+                _ ->
+                    -- Both or neither are tail calls - fall back to simple generation
+                    generateSimpleBody ctx expr retTy
+
+        _ ->
+            -- Not a simple if-then-else, fall back
+            generateSimpleBody ctx expr retTy
+
+
+{-| Check if an expression is a tail call.
+-}
+isTailCall : Mono.MonoExpr -> Bool
+isTailCall expr =
+    case expr of
+        Mono.MonoTailCall _ _ _ ->
+            True
+
+        _ ->
+            False
+
+
+{-| Generate the multi-block region for tail recursion.
+condTrueReturns: True if condition=true should return, False if condition=true should recurse
+-}
+generateTailRecBody : Ctx.Context -> Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> MlirType -> Bool -> ( MlirRegion, Ctx.Context )
+generateTailRecBody ctx condExpr returnExpr tailCallExpr retTy condTrueReturns =
+    let
+        -- Generate condition evaluation
+        condResult =
+            Expr.generateExpr ctx condExpr
+
+        condVar =
+            condResult.resultVar
+
+        -- Generate return branch
+        returnResult =
+            Expr.generateExpr condResult.ctx returnExpr
+
+        ( returnCoerceOps, returnFinalVar, returnCtx ) =
+            Expr.coerceResultToType returnResult.ctx returnResult.resultVar returnResult.resultType retTy
+
+        ( returnCtx2, returnOp ) =
+            Ops.ecoReturn returnCtx returnFinalVar retTy
+
+        returnBlockOps =
+            returnResult.ops ++ returnCoerceOps
+
+        -- Generate tail call branch
+        tailCallResult =
+            generateTailCallOps returnCtx2 tailCallExpr
+
+        -- Build the multi-block region
+        -- Entry block: condition ops + cf.cond_br
+        -- ^ret block: return ops + eco.return
+        -- ^rec block: tail call ops + eco.jump
+        ( returnBlockName, recurseBlockName ) =
+            if condTrueReturns then
+                ( "ret", "rec" )
 
             else
-                -- Normal expression - add eco.return with the result value.
-                let
-                    -- Handle type mismatch between expression result and expected return type.
-                    -- Uses symmetric coercion: primitive <-> !eco.value in either direction.
-                    ( coerceOps, finalVar, ctxFinal ) =
-                        Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType retTy
+                ( "rec", "ret" )
 
-                    ( _, returnOp ) =
-                        Ops.ecoReturn ctxFinal finalVar retTy
-                in
-                Ops.mkRegion argPairs (exprResult.ops ++ coerceOps) returnOp
+        -- cf.cond_br branches to trueBlock when condition is true
+        ( branchCtx, branchOp ) =
+            if condTrueReturns then
+                -- true -> return, false -> recurse
+                Ops.cfCondBr tailCallResult.ctx condVar "ret" "rec"
 
-        ( ctx2, funcOp ) =
-            Ops.funcFunc exprResult.ctx funcName argPairs retTy region
+            else
+                -- true -> recurse, false -> return
+                Ops.cfCondBr tailCallResult.ctx condVar "rec" "ret"
+
+        -- Build regions using OrderedDict for additional blocks
+        entryBlock : Mlir.MlirBlock
+        entryBlock =
+            { args = [], body = condResult.ops, terminator = branchOp }
+
+        returnBlock : Mlir.MlirBlock
+        returnBlock =
+            { args = [], body = returnBlockOps, terminator = returnOp }
+
+        recurseBlock : Mlir.MlirBlock
+        recurseBlock =
+            { args = [], body = tailCallResult.ops, terminator = tailCallResult.terminator }
+
+        region : MlirRegion
+        region =
+            MlirRegion
+                { entry = entryBlock
+                , blocks =
+                    OrderedDict.empty
+                        |> OrderedDict.insert "ret" returnBlock
+                        |> OrderedDict.insert "rec" recurseBlock
+                }
     in
-    ( funcOp, ctx2 )
+    ( region, branchCtx )
+
+
+{-| Generate ops for a tail call expression, returning the ops and the eco.jump terminator.
+-}
+generateTailCallOps : Ctx.Context -> Mono.MonoExpr -> { ops : List MlirOp, terminator : MlirOp, ctx : Ctx.Context }
+generateTailCallOps ctx expr =
+    case expr of
+        Mono.MonoTailCall _ args _ ->
+            let
+                -- Generate arguments
+                ( argsOps, argsWithTypes, ctx1 ) =
+                    List.foldl
+                        (\( _, argExpr ) ( accOps, accVars, accCtx ) ->
+                            let
+                                result =
+                                    Expr.generateExpr accCtx argExpr
+                            in
+                            ( accOps ++ result.ops
+                            , accVars ++ [ ( result.resultVar, result.resultType ) ]
+                            , result.ctx
+                            )
+                        )
+                        ( [], [], ctx )
+                        args
+
+                argVarNames =
+                    List.map Tuple.first argsWithTypes
+
+                argVarTypes =
+                    List.map Tuple.second argsWithTypes
+
+                jumpAttrs =
+                    Dict.fromList
+                        [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr argVarTypes) )
+                        , ( "target", IntAttr Nothing 0 )
+                        ]
+
+                ( ctx2, jumpOp ) =
+                    Ops.mlirOp ctx1 "eco.jump"
+                        |> Ops.opBuilder.withOperands argVarNames
+                        |> Ops.opBuilder.withAttrs jumpAttrs
+                        |> Ops.opBuilder.isTerminator True
+                        |> Ops.opBuilder.build
+            in
+            { ops = argsOps, terminator = jumpOp, ctx = ctx2 }
+
+        _ ->
+            -- Should not happen - we checked isTailCall
+            { ops = []
+            , terminator =
+                { name = "error"
+                , id = "error"
+                , operands = []
+                , results = []
+                , attrs = Dict.empty
+                , regions = []
+                , isTerminator = False
+                , loc = Mlir.Loc.unknown
+                , successors = []
+                }
+            , ctx = ctx
+            }
+
+
+{-| Simple body generation for non-standard patterns - falls back to single block with eco.return.
+-}
+generateSimpleBody : Ctx.Context -> Mono.MonoExpr -> MlirType -> ( MlirRegion, Ctx.Context )
+generateSimpleBody ctx expr retTy =
+    let
+        exprResult =
+            Expr.generateExpr ctx expr
+
+        ( coerceOps, finalVar, coerceCtx ) =
+            Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType retTy
+
+        ( returnCtx, returnOp ) =
+            Ops.ecoReturn coerceCtx finalVar retTy
+
+        region =
+            Ops.mkRegion [] (exprResult.ops ++ coerceOps) returnOp
+    in
+    ( region, returnCtx )
 
 
 

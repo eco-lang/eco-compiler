@@ -2,6 +2,7 @@ module Compiler.Generate.MLIR.Expr exposing
     ( ExprResult
     , generateExpr
     , boxToEcoValue, coerceResultToType, boxArgsWithMlirTypes
+    , createDummyValue
     )
 
 {-| Expression generation for the MLIR backend.
@@ -1629,10 +1630,12 @@ generateTailCall ctx name args =
         argVarTypes =
             List.map Tuple.second argsWithTypes
 
+        -- eco.jump target is a joinpoint ID (integer), not a symbol name.
+        -- For tail-recursive functions, the joinpoint ID is 0.
         jumpAttrs =
             Dict.fromList
                 [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr argVarTypes) )
-                , ( "target", StringAttr name )
+                , ( "target", IntAttr Nothing 0 )
                 ]
 
         ( ctx2, jumpOp ) =
@@ -1680,48 +1683,146 @@ generateIf ctx branches final =
                 -- Generate then branch first to get its actual result type
                 thenRes =
                     generateExpr condRes.ctx thenExpr
-
-                -- Use the then branch's actual SSA type as the result type
-                resultMlirType =
-                    thenRes.resultType
-
-                -- Coerce then result to target type if needed
-                ( thenCoerceOps, thenFinalVar, thenFinalCtx ) =
-                    coerceResultToType thenRes.ctx thenRes.resultVar thenRes.resultType resultMlirType
-
-                ( ctx1, thenYieldOp ) =
-                    Ops.scfYield thenFinalCtx thenFinalVar resultMlirType
-
-                thenRegion =
-                    Ops.mkRegion [] (thenRes.ops ++ thenCoerceOps) thenYieldOp
-
-                -- Generate else branch (recursive if or final) with scf.yield
-                elseRes =
-                    generateIf ctx1 restBranches final
-
-                -- Coerce else result to match then branch's type
-                ( elseCoerceOps, elseFinalVar, elseFinalCtx ) =
-                    coerceResultToType elseRes.ctx elseRes.resultVar elseRes.resultType resultMlirType
-
-                ( ctx2, elseYieldOp ) =
-                    Ops.scfYield elseFinalCtx elseFinalVar resultMlirType
-
-                elseRegion =
-                    Ops.mkRegion [] (elseRes.ops ++ elseCoerceOps) elseYieldOp
-
-                -- Allocate result variable for scf.if
-                ( ifResultVar, ctx2b ) =
-                    Ctx.freshVar ctx2
-
-                -- scf.if with i1 condition directly (avoids eco.get_tag on embedded constants)
-                ( ctx3, ifOp ) =
-                    Ops.scfIf ctx2b condVar ifResultVar thenRegion elseRegion resultMlirType
             in
-            { ops = condRes.ops ++ [ ifOp ]
-            , resultVar = ifResultVar
-            , resultType = resultMlirType
-            , ctx = ctx3, isTerminated = False
-            }
+            -- Check if then branch is terminated (e.g., tail call with eco.jump).
+            -- If so, we can't use scf.if which requires both branches to yield.
+            -- Fall back to eco.case which supports terminated regions.
+            if thenRes.isTerminated then
+                generateIfWithTerminatedBranch condRes.ctx condVar thenRes restBranches final condRes.ops
+
+            else
+                -- Then branch produces a value, check else branch
+                let
+                    -- Use the then branch's actual SSA type as the result type
+                    resultMlirType =
+                        thenRes.resultType
+
+                    -- Coerce then result to target type if needed
+                    ( thenCoerceOps, thenFinalVar, thenFinalCtx ) =
+                        coerceResultToType thenRes.ctx thenRes.resultVar thenRes.resultType resultMlirType
+
+                    ( ctx1, thenYieldOp ) =
+                        Ops.scfYield thenFinalCtx thenFinalVar resultMlirType
+
+                    thenRegion =
+                        Ops.mkRegion [] (thenRes.ops ++ thenCoerceOps) thenYieldOp
+
+                    -- Generate else branch (recursive if or final)
+                    elseRes =
+                        generateIf ctx1 restBranches final
+                in
+                if elseRes.isTerminated then
+                    -- Else branch is terminated - use eco.case instead
+                    generateIfWithTerminatedElse condRes.ctx condVar thenRes elseRes resultMlirType condRes.ops
+
+                else
+                    -- Normal case: both branches produce values, use scf.if
+                    let
+                        -- Coerce else result to match then branch's type
+                        ( elseCoerceOps, elseFinalVar, elseFinalCtx ) =
+                            coerceResultToType elseRes.ctx elseRes.resultVar elseRes.resultType resultMlirType
+
+                        ( ctx2, elseYieldOp ) =
+                            Ops.scfYield elseFinalCtx elseFinalVar resultMlirType
+
+                        elseRegion =
+                            Ops.mkRegion [] (elseRes.ops ++ elseCoerceOps) elseYieldOp
+
+                        -- Allocate result variable for scf.if
+                        ( ifResultVar, ctx2b ) =
+                            Ctx.freshVar ctx2
+
+                        -- scf.if with i1 condition directly (avoids eco.get_tag on embedded constants)
+                        ( ctx3, ifOp ) =
+                            Ops.scfIf ctx2b condVar ifResultVar thenRegion elseRegion resultMlirType
+                    in
+                    { ops = condRes.ops ++ [ ifOp ]
+                    , resultVar = ifResultVar
+                    , resultType = resultMlirType
+                    , ctx = ctx3, isTerminated = False
+                    }
+
+
+{-| Generate if-then-else using eco.case when the then branch is terminated.
+-}
+generateIfWithTerminatedBranch : Ctx.Context -> String -> ExprResult -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> Mono.MonoExpr -> List MlirOp -> ExprResult
+generateIfWithTerminatedBranch ctx condVar thenRes restBranches final condOps =
+    let
+        -- Build then region - it already has a terminator
+        thenRegion =
+            mkRegionFromOps thenRes.ops
+
+        -- Generate else branch with proper context (from then result)
+        elseRes =
+            generateIf thenRes.ctx restBranches final
+
+        -- Determine result type from else branch (then is terminated)
+        resultMlirType =
+            if elseRes.isTerminated then
+                Types.ecoValue
+            else
+                elseRes.resultType
+
+        -- Build else region
+        ( elseRegion, ctxAfterElse ) =
+            if elseRes.isTerminated then
+                ( mkRegionFromOps elseRes.ops, elseRes.ctx )
+            else
+                let
+                    ( coerceOps, finalVar, coerceCtx ) =
+                        coerceResultToType elseRes.ctx elseRes.resultVar elseRes.resultType resultMlirType
+
+                    ( retCtx, retOp ) =
+                        Ops.ecoReturn coerceCtx finalVar resultMlirType
+                in
+                ( Ops.mkRegion [] (elseRes.ops ++ coerceOps) retOp, retCtx )
+
+        -- eco.case on i1: tag 1 for True (then), tag 0 for False (else)
+        ( ctxFinal, caseOp ) =
+            Ops.ecoCase ctxAfterElse condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultMlirType ]
+    in
+    -- eco.case is a terminator, so the whole expression is terminated.
+    -- There is no single resultVar - exits happen via eco.return/eco.jump within regions.
+    { ops = condOps ++ [ caseOp ]
+    , resultVar = "" -- No result, eco.case is a terminator
+    , resultType = resultMlirType
+    , ctx = ctxFinal
+    , isTerminated = True -- eco.case is a terminator
+    }
+
+
+{-| Generate if-then-else using eco.case when the else branch is terminated.
+The then branch has already been processed and yields a value.
+-}
+generateIfWithTerminatedElse : Ctx.Context -> String -> ExprResult -> ExprResult -> MlirType -> List MlirOp -> ExprResult
+generateIfWithTerminatedElse ctx condVar thenRes elseRes resultMlirType condOps =
+    let
+        -- Build then region with eco.return (not terminated)
+        ( thenCoerceOps, thenFinalVar, thenCoerceCtx ) =
+            coerceResultToType thenRes.ctx thenRes.resultVar thenRes.resultType resultMlirType
+
+        ( thenRetCtx, thenRetOp ) =
+            Ops.ecoReturn thenCoerceCtx thenFinalVar resultMlirType
+
+        thenRegion =
+            Ops.mkRegion [] (thenRes.ops ++ thenCoerceOps) thenRetOp
+
+        -- Else region already has a terminator
+        elseRegion =
+            mkRegionFromOps elseRes.ops
+
+        -- eco.case on i1: tag 1 for True (then), tag 0 for False (else)
+        ( ctxFinal, caseOp ) =
+            Ops.ecoCase elseRes.ctx condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultMlirType ]
+    in
+    -- eco.case is a terminator, so the whole expression is terminated.
+    -- There is no single resultVar - exits happen via eco.return/eco.jump within regions.
+    { ops = condOps ++ [ caseOp ]
+    , resultVar = "" -- No result, eco.case is a terminator
+    , resultType = resultMlirType
+    , ctx = ctxFinal
+    , isTerminated = True -- eco.case is a terminator
+    }
 
 
 

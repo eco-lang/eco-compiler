@@ -274,7 +274,7 @@ ppOp indent env op =
                 ""
 
             else
-                " [" ++ String.join ", " op.successors ++ "]"
+                "[" ++ String.join ", " op.successors ++ "]"
 
         locStr =
             " " ++ ppLoc op.loc
@@ -286,10 +286,10 @@ ppOp indent env op =
         , "("
         , operandsStr
         , ")"
+        , succStr
         , regionsStr
         , attrsStr
         , sigStr
-        , succStr
         , locStr
         , "\n"
         ]

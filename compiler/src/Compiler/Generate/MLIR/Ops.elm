@@ -39,6 +39,7 @@ module Compiler.Generate.MLIR.Ops exposing
     , ecoGetTag
     , scfIf
     , scfYield
+    , cfCondBr
     )
 
 {-| MLIR operation builders.
@@ -854,6 +855,30 @@ scfYield ctx operand operandType =
     in
     mlirOp ctx "scf.yield"
         |> opBuilder.withOperands [ operand ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.isTerminator True
+        |> opBuilder.build
+
+
+{-| cf.cond\_br - conditional branch to two different blocks.
+Used inside joinpoints for tail-recursive loops where one path returns
+and another path jumps back.
+
+cf.cond\_br %cond, ^trueBlock, ^falseBlock
+
+-}
+cfCondBr : Ctx.Context -> String -> String -> String -> ( Ctx.Context, MlirOp )
+cfCondBr ctx condVar trueBlock falseBlock =
+    let
+        attrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr I1 ] )
+                , ( "operandSegmentSizes", ArrayAttr (Just I32) [ IntAttr (Just I32) 1, IntAttr (Just I32) 0, IntAttr (Just I32) 0 ] )
+                ]
+    in
+    mlirOp ctx "cf.cond_br"
+        |> opBuilder.withOperands [ condVar ]
+        |> opBuilder.withSuccessors [ "^" ++ trueBlock, "^" ++ falseBlock ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.isTerminator True
         |> opBuilder.build
