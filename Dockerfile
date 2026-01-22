@@ -51,7 +51,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Code quality tools
     clang-format clang-tidy \
     # Developer convenience
-    ripgrep fd-find vim-tiny bash-completion man-db jq \
+    ripgrep fd-find vim-tiny bash-completion man-db jq time \
     # Locale support
     locales \
  && rm -rf /var/lib/apt/lists/* \
