@@ -5,7 +5,7 @@ module ListHeadTailTest exposing (main)
 
 -- CHECK: head1: Just 1
 -- CHECK: head2: Nothing
--- CHECK: tail1: Just [2,3]
+-- CHECK: tail1: Just [2, 3]
 -- CHECK: tail2: Nothing
 
 import Html exposing (text)
