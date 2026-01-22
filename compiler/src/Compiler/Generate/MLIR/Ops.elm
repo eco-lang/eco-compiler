@@ -49,7 +49,7 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 # Op Builder Plumbing
 
-@docs opBuilder, mlirOp, mkRegion, funcFunc
+@docs opBuilder, mlirOp, mkRegion, mkRegionTerminatedByOps, funcFunc
 
 
 # Eco Constants
@@ -69,7 +69,7 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 # Eco Operations
 
-@docs ecoCallNamed, ecoReturn, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoJoinpoint, ecoGetTag
+@docs ecoCallNamed, ecoReturn, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoJoinpoint, ecoGetTag
 
 
 # Arith Operations
