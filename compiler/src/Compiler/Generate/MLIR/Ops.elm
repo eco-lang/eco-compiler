@@ -873,7 +873,7 @@ cfCondBr ctx condVar trueBlock falseBlock =
         attrs =
             Dict.fromList
                 [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr I1 ] )
-                , ( "operandSegmentSizes", ArrayAttr (Just I32) [ IntAttr (Just I32) 1, IntAttr (Just I32) 0, IntAttr (Just I32) 0 ] )
+                , ( "operandSegmentSizes", ArrayAttr (Just I32) [ IntAttr Nothing 1, IntAttr Nothing 0, IntAttr Nothing 0 ] )
                 ]
     in
     mlirOp ctx "cf.cond_br"
