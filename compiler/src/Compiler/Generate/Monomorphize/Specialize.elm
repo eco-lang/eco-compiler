@@ -322,7 +322,10 @@ specializeFunctionCycle requestedCanonical requestedName _ funcDefs requestedMon
                     Dict.empty
 
         ( newNodes, stateAfter ) =
-            List.foldl (specializeFunc requestedCanonical sharedSubst) ( state.nodes, state ) funcDefs
+            List.foldl
+                (specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst)
+                ( state.nodes, state )
+                funcDefs
 
         requestedGlobal =
             Mono.Global requestedCanonical requestedName
@@ -340,11 +343,13 @@ specializeFunctionCycle requestedCanonical requestedName _ funcDefs requestedMon
 
 specializeFunc :
     IO.Canonical
+    -> Name
+    -> Mono.MonoType
     -> Substitution
     -> TOpt.Def
     -> ( Dict Int Int Mono.MonoNode, MonoState )
     -> ( Dict Int Int Mono.MonoNode, MonoState )
-specializeFunc requestedCanonical sharedSubst def ( accNodes, accState ) =
+specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst def ( accNodes, accState ) =
     let
         name =
             getDefName def
@@ -355,11 +360,21 @@ specializeFunc requestedCanonical sharedSubst def ( accNodes, accState ) =
         canType =
             getDefCanonicalType def
 
-        monoType =
+        monoTypeFromDef =
             TypeSubst.applySubst sharedSubst canType
 
+        -- For the requested function in this cycle, use the exact MonoType
+        -- from the worklist (requestedMonoType) as the specialization key.
+        -- This ensures the SpecId matches what call sites expect.
+        monoTypeForSpecId =
+            if name == requestedName then
+                requestedMonoType
+
+            else
+                monoTypeFromDef
+
         ( specId, newRegistry ) =
-            Mono.getOrCreateSpecId globalFun monoType Nothing accState.registry
+            Mono.getOrCreateSpecId globalFun monoTypeForSpecId Nothing accState.registry
 
         accState1 =
             { accState | registry = newRegistry }
