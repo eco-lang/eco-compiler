@@ -54,10 +54,26 @@ type alias EmitState =
 7. [Overall Implementation Order](#overall-implementation-order)
 
 ---
----
 
----
----
+## Critical Design Constraint: Stable Accessors Only
+
+**IMPORTANT:** The `Header` struct uses bitfields whose layout is **NOT ABI-stable**. All MLIR lowering code (bf → LLVM) must **NEVER** GEP directly into header fields.
+
+**Clarification:** The `elm_*` runtime helpers in `ElmBytesRuntime.cpp` **are allowed** to access `header.size` directly - that's their purpose. The constraint applies only to generated MLIR/LLVM code.
+
+**Rule:** All `header.size` reads/writes and pointer arithmetic must go through `elm_*` runtime helpers:
+
+| Operation | Use This Helper | NOT This |
+|-----------|-----------------|----------|
+| Get buffer length | `elm_bytebuffer_len(bb)` | `bb->header.size` |
+| Get buffer data pointer | `elm_bytebuffer_data(bb)` | `bb->bytes` or GEP |
+| Get buffer end pointer | `elm_bytebuffer_data(bb) + elm_bytebuffer_len(bb)` | Direct arithmetic |
+| Get string length | Runtime string accessor | `s->header.size` |
+
+This applies to:
+- bf → LLVM lowering (must call helpers, not inline struct access)
+- Runtime ABI implementations (helpers encapsulate layout knowledge)
+- Cursor initialization (compute `(ptr, end)` via helper calls)
 
 ---
 ---
@@ -111,7 +127,10 @@ Native code
 
 ### 1.1 Create `runtime/src/allocator/ElmBytesRuntime.h`
 
-C-ABI header for stable ByteBuffer and UTF-8 accessors:
+**✅ CORRECTION C10: All heap values use `u64` (eco.value) at the C ABI boundary.**
+
+The runtime helpers take/return `u64` for Elm heap objects. Internal pointer conversion
+happens only inside `ElmBytesRuntime.cpp`. This matches `!eco.value` lowering to `i64`.
 
 ```c
 #pragma once
@@ -123,25 +142,60 @@ extern "C" {
 
 typedef uint8_t  u8;
 typedef uint32_t u32;
+typedef uint64_t u64;  // eco.value representation
 
-typedef struct elm_bytebuffer ByteBuffer;
+// ============================================================================
+// ByteBuffer operations (heap values are u64)
+// ============================================================================
 
-// Allocate ByteBuffer with header.size = byteCount (in bytes).
-ByteBuffer* elm_alloc_bytebuffer(u32 byteCount);
+// Allocate ByteBuffer with byteCount bytes. Returns eco.value (u64).
+u64 elm_alloc_bytebuffer(u32 byteCount);
 
-// Return ByteBuffer byte length (header.size).
-u32 elm_bytebuffer_len(ByteBuffer* bb);
+// Return ByteBuffer byte length. Takes eco.value (u64).
+u32 elm_bytebuffer_len(u64 bb);
 
-// Return pointer to first payload byte (bb->bytes).
-u8* elm_bytebuffer_data(ByteBuffer* bb);
+// Return pointer to first payload byte. Takes eco.value (u64).
+// Returns raw pointer (for cursor setup only - not an eco.value).
+u8* elm_bytebuffer_data(u64 bb);
 
-// Return UTF-8 byte width of an ElmString (UTF-16 internally).
-// This computes how many bytes are needed to encode the string as UTF-8.
-u32 elm_utf8_width(void* elmString);
+// ============================================================================
+// String operations (heap values are u64)
+// ============================================================================
 
-// Copy ElmString (UTF-16) as UTF-8 bytes to dst buffer.
-// Returns number of bytes written.
-u32 elm_utf8_copy(void* elmString, u8* dst);
+// Return UTF-8 byte width of an ElmString. Takes eco.value (u64).
+u32 elm_utf8_width(u64 elmString);
+
+// Copy ElmString as UTF-8 bytes to dst buffer. Returns bytes written.
+u32 elm_utf8_copy(u64 elmString, u8* dst);
+
+// ✅ FINAL: Failure signaling for elm_utf8_decode
+//
+// Preferred ABI (if eco.value(0) is guaranteed invalid in your runtime):
+//   - Return 0 on failure (invalid UTF-8), else return a valid eco.value.
+//
+// HARD GATE (must be verified before implementation):
+//   Confirm that eco.value == 0 can never represent a valid Elm heap value.
+//
+// If eco.value(0) could ever be valid, DO NOT use the 0-sentinel.
+// Use this alternative ABI instead:
+//
+//   bool elm_utf8_decode_checked(const u8* src, u32 len, u64* outValue);
+//
+// and expose it to MLIR lowering as:
+//   i1 @elm_utf8_decode_checked(i8* src, i32 len, i64* outValue)
+//
+// (This avoids ambiguous sentinel values.)
+u64 elm_utf8_decode(const u8* src, u32 len);
+
+// ============================================================================
+// Maybe operations (heap values are u64)
+// ============================================================================
+
+// Return Nothing as eco.value (u64).
+u64 elm_maybe_nothing(void);
+
+// Return Just(value) as eco.value (u64).
+u64 elm_maybe_just(u64 value);
 
 #ifdef __cplusplus
 }
@@ -150,107 +204,99 @@ u32 elm_utf8_copy(void* elmString, u8* dst);
 
 ### 1.2 Create `runtime/src/allocator/ElmBytesRuntime.cpp`
 
-Implementation notes:
-- `elm_alloc_bytebuffer` - use existing allocator infrastructure
-- `elm_bytebuffer_len` / `elm_bytebuffer_data` - simple accessors
-- `elm_utf8_width` - **NEW**: iterate UTF-16 chars, compute UTF-8 byte count
-- `elm_utf8_copy` - **NEW**: convert UTF-16 to UTF-8 into destination buffer
+**✅ CORRECTED C17: Header Access Clarification**
 
-**UTF-8 implementation detail:** ElmString is stored as UTF-16 (`u16 chars[]`). Need to:
-- Handle BMP characters (U+0000 to U+FFFF): 1-3 UTF-8 bytes
-- Handle surrogate pairs for non-BMP characters: 4 UTF-8 bytes
+The runtime helpers (`elm_bytebuffer_len`, `elm_bytebuffer_data`, etc.) are the **ONLY** code allowed to access `header.size` and other struct internals directly. This is NOT a contradiction with the "NEVER GEP into headers" rule - that rule applies to **generated MLIR/LLVM code**, not to these C++ helpers.
+
+The purpose of these helpers is to encapsulate layout knowledge so generated code doesn't need it.
+
+**IMPORTANT:** UTF-8 helpers must be **thin wrappers** around existing runtime string infrastructure to avoid baking in layout assumptions. Do NOT iterate over presumed UTF-16 storage directly.
+
+Implementation approach:
+- `elm_alloc_bytebuffer` - use existing allocator infrastructure (encapsulate header setup)
+- `elm_bytebuffer_len` / `elm_bytebuffer_data` - thin accessors **(allowed to access header.size internally)**
+- `elm_utf8_width` - **delegate to existing StringOps** UTF-8 sizing logic
+- `elm_utf8_copy` - **delegate to existing StringOps** UTF-8 encoding logic
 
 ```cpp
+// ✅ CORRECTED C19: All signatures use u64 (eco.value), matching header exactly
+
 #include "ElmBytesRuntime.h"
 #include "Heap.hpp"
 #include "Allocator.hpp"
+#include "StringOps.hpp"  // Use existing string runtime!
+
+// Helper: convert eco.value (u64) to internal pointer
+// This encapsulates the eco.value → pointer conversion in one place
+static inline ByteBuffer* toByteBuffer(u64 val) {
+    return reinterpret_cast<ByteBuffer*>(static_cast<uintptr_t>(val));
+}
+
+static inline ElmString* toElmString(u64 val) {
+    return reinterpret_cast<ElmString*>(static_cast<uintptr_t>(val));
+}
+
+static inline u64 toEcoValue(void* ptr) {
+    return static_cast<u64>(reinterpret_cast<uintptr_t>(ptr));
+}
 
 extern "C" {
 
-ByteBuffer* elm_alloc_bytebuffer(u32 byteCount) {
-    auto& allocator = Allocator::instance();
-    size_t total_size = sizeof(ByteBuffer) + byteCount;
-    total_size = (total_size + 7) & ~7;  // 8-byte align
-    ByteBuffer* bb = static_cast<ByteBuffer*>(
-        allocator.allocate(total_size, Tag_ByteBuffer));
-    bb->header.size = byteCount;
-    return bb;
+u64 elm_alloc_bytebuffer(u32 byteCount) {
+    // Use existing allocator - encapsulate size computation and header setup
+    ByteBuffer* bb = ByteBuffer::allocate(byteCount);
+    return toEcoValue(bb);
 }
 
-u32 elm_bytebuffer_len(ByteBuffer* bb) {
-    return bb->header.size;
+u32 elm_bytebuffer_len(u64 bbVal) {
+    // Convert eco.value to pointer, then access layout
+    ByteBuffer* bb = toByteBuffer(bbVal);
+    return ByteBuffer::length(bb);
 }
 
-u8* elm_bytebuffer_data(ByteBuffer* bb) {
-    return bb->bytes;
+u8* elm_bytebuffer_data(u64 bbVal) {
+    // Convert eco.value to pointer, then access data
+    ByteBuffer* bb = toByteBuffer(bbVal);
+    return ByteBuffer::data(bb);
 }
 
-u32 elm_utf8_width(void* elmString) {
-    ElmString* s = static_cast<ElmString*>(elmString);
-    u32 width = 0;
-    size_t i = 0;
-    while (i < s->header.size) {
-        u16 c = s->chars[i];
-        if (c < 0x80) {
-            width += 1;  // ASCII: 1 byte
-        } else if (c < 0x800) {
-            width += 2;  // 2-byte UTF-8
-        } else if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s->header.size) {
-            // High surrogate - check for low surrogate
-            u16 c2 = s->chars[i + 1];
-            if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
-                width += 4;  // Surrogate pair -> 4-byte UTF-8
-                i++;  // Skip low surrogate
-            } else {
-                width += 3;  // Lone high surrogate (invalid, but encode as-is)
-            }
-        } else {
-            width += 3;  // BMP character: 3-byte UTF-8
-        }
-        i++;
-    }
-    return width;
+u32 elm_utf8_width(u64 strVal) {
+    // DELEGATE to existing StringOps - do NOT manually iterate UTF-16
+    ElmString* str = toElmString(strVal);
+    return StringOps::utf8ByteLength(str);
 }
 
-u32 elm_utf8_copy(void* elmString, u8* dst) {
-    ElmString* s = static_cast<ElmString*>(elmString);
-    u8* start = dst;
-    size_t i = 0;
-    while (i < s->header.size) {
-        u16 c = s->chars[i];
-        if (c < 0x80) {
-            *dst++ = static_cast<u8>(c);
-        } else if (c < 0x800) {
-            *dst++ = static_cast<u8>(0xC0 | (c >> 6));
-            *dst++ = static_cast<u8>(0x80 | (c & 0x3F));
-        } else if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s->header.size) {
-            u16 c2 = s->chars[i + 1];
-            if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
-                // Decode surrogate pair to code point
-                u32 cp = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00);
-                *dst++ = static_cast<u8>(0xF0 | (cp >> 18));
-                *dst++ = static_cast<u8>(0x80 | ((cp >> 12) & 0x3F));
-                *dst++ = static_cast<u8>(0x80 | ((cp >> 6) & 0x3F));
-                *dst++ = static_cast<u8>(0x80 | (cp & 0x3F));
-                i++;  // Skip low surrogate
-            } else {
-                // Lone high surrogate - encode as 3-byte
-                *dst++ = static_cast<u8>(0xE0 | (c >> 12));
-                *dst++ = static_cast<u8>(0x80 | ((c >> 6) & 0x3F));
-                *dst++ = static_cast<u8>(0x80 | (c & 0x3F));
-            }
-        } else {
-            *dst++ = static_cast<u8>(0xE0 | (c >> 12));
-            *dst++ = static_cast<u8>(0x80 | ((c >> 6) & 0x3F));
-            *dst++ = static_cast<u8>(0x80 | (c & 0x3F));
-        }
-        i++;
-    }
-    return static_cast<u32>(dst - start);
+u32 elm_utf8_copy(u64 strVal, u8* dst) {
+    // DELEGATE to existing StringOps - do NOT manually iterate UTF-16
+    ElmString* str = toElmString(strVal);
+    return StringOps::writeUtf8(str, dst);
+}
+
+u64 elm_utf8_decode(const u8* src, u32 len) {
+    // DELEGATE to existing StringOps for UTF-8 → internal string conversion
+    // Returns eco.value (u64) or 0 on failure (see C22 for failure semantics)
+    ElmString* str = StringOps::fromUtf8(src, len);
+    if (!str) return 0;  // Failure sentinel - see C22
+    return toEcoValue(str);
+}
+
+u64 elm_maybe_nothing() {
+    // Return eco.value for Nothing singleton
+    return toEcoValue(Maybe::nothing());
+}
+
+u64 elm_maybe_just(u64 value) {
+    // Wrap value in Just, return eco.value
+    return toEcoValue(Maybe::just(value));
 }
 
 } // extern "C"
 ```
+
+**Implementation Note:** The exact method names (`ByteBuffer::allocate`, `StringOps::utf8ByteLength`, etc.) depend on your existing runtime. The key principle is:
+1. **`ElmBytesRuntime.cpp` is the *only* place allowed to know the ByteBuffer/String header layout**; all generated MLIR/LLVM must call `elm_bytebuffer_len/data` instead of GEPs.
+2. **Never iterate `s->chars[]` directly** - use existing string utilities
+3. These helpers become the **single source of truth** for layout knowledge
 
 ### 1.3 Update `runtime/src/codegen/CMakeLists.txt`
 
@@ -283,6 +329,7 @@ symbolMap[interner("elm_bytebuffer_data")] =
     llvm::orc::ExecutorSymbolDef(
         llvm::orc::ExecutorAddr::fromPtr(&elm_bytebuffer_data),
         llvm::JITSymbolFlags::Exported);
+
 symbolMap[interner("elm_utf8_width")] =
     llvm::orc::ExecutorSymbolDef(
         llvm::orc::ExecutorAddr::fromPtr(&elm_utf8_width),
@@ -290,6 +337,19 @@ symbolMap[interner("elm_utf8_width")] =
 symbolMap[interner("elm_utf8_copy")] =
     llvm::orc::ExecutorSymbolDef(
         llvm::orc::ExecutorAddr::fromPtr(&elm_utf8_copy),
+        llvm::JITSymbolFlags::Exported);
+symbolMap[interner("elm_utf8_decode")] =
+    llvm::orc::ExecutorSymbolDef(
+        llvm::orc::ExecutorAddr::fromPtr(&elm_utf8_decode),
+        llvm::JITSymbolFlags::Exported);
+
+symbolMap[interner("elm_maybe_nothing")] =
+    llvm::orc::ExecutorSymbolDef(
+        llvm::orc::ExecutorAddr::fromPtr(&elm_maybe_nothing),
+        llvm::JITSymbolFlags::Exported);
+symbolMap[interner("elm_maybe_just")] =
+    llvm::orc::ExecutorSymbolDef(
+        llvm::orc::ExecutorAddr::fromPtr(&elm_maybe_just),
         llvm::JITSymbolFlags::Exported);
 ```
 
@@ -311,10 +371,14 @@ Files to create in `runtime/src/codegen/BF/`:
 **Operations (MVP for encoder):**
 - `bf.alloc` - Allocate ByteBuffer
 - `bf.cursor.init` - Create cursor from ByteBuffer*
-- `bf.write.u8/u16_be/u16_le/u32_be/u32_le/f32_be/f64_be`
-- `bf.write.bytes_copy` - Copy ByteBuffer payload
-- `bf.write.utf8` - Copy UTF-8 string bytes
-- `bf.require` - Bounds check (for future decoder support)
+- `bf.write.u8(cur, i64) -> !bf.cur` (uses low 8 bits)
+- `bf.write.u16_be/le(cur, i64) -> !bf.cur` (uses low 16 bits)
+- `bf.write.u32_be/le(cur, i64) -> !bf.cur` (uses low 32 bits)
+- `bf.write.f32_be/le(cur, f64) -> !bf.cur` (casts f64 → f32 then writes bytes)
+- `bf.write.f64_be/le(cur, f64) -> !bf.cur`
+- `bf.write.bytes_copy(cur, !eco.value) -> !bf.cur` - Copy ByteBuffer payload
+- `bf.write.utf8(cur, !eco.value) -> !bf.cur` - Copy UTF-8 string bytes
+- `bf.require` - Bounds check (for decoder support)
 
 ---
 
@@ -323,6 +387,67 @@ Files to create in `runtime/src/codegen/BF/`:
 ### 3.1 Create `runtime/src/codegen/Passes/BFToLLVM.cpp`
 
 **Cursor representation:** `(ptr, end)` as LLVM struct `{ i8*, i8* }`
+
+**⚠️ IMPORTANT: Runtime Call Requirements**
+
+The bf → LLVM lowering emits calls to `elm_*` runtime helpers (e.g., `@elm_utf8_copy`, `@elm_bytebuffer_data`). For these to work:
+
+1. **Symbol Registration** (already covered in Step 1.3) - JIT must know these symbols
+2. **LLVM Call Emission** - Use `LLVM::CallOp` with proper function type
+3. **Extern Declarations** - If EcoToLLVM pass requires explicit extern function declarations, add them to the module:
+
+```cpp
+// ✅ CORRECTED: Runtime functions use i64 for eco.value types
+
+// In BFToLLVM.cpp, ensure extern functions are declared
+void declareRuntimeFunctions(ModuleOp module) {
+    auto builder = OpBuilder::atBlockEnd(module.getBody());
+    auto i64 = builder.getI64Type();  // eco.value is i64
+    auto i32 = builder.getI32Type();
+    auto i8Ptr = LLVM::LLVMPointerType::get(builder.getContext());  // For cursor ptr
+
+    // Helpers that take/return eco.value use i64:
+
+    // extern u32 elm_utf8_copy(i64 elmString, u8* dst)
+    // Takes eco.value (i64) for the string, raw ptr for destination
+    auto utf8CopyType = LLVM::LLVMFunctionType::get(i32, {i64, i8Ptr});
+    builder.create<LLVM::LLVMFuncOp>(module.getLoc(), "elm_utf8_copy", utf8CopyType);
+
+    // extern u8* elm_bytebuffer_data(i64 bb)
+    // Takes eco.value (i64), returns raw ptr (for cursor setup)
+    auto dataType = LLVM::LLVMFunctionType::get(i8Ptr, {i64});
+    builder.create<LLVM::LLVMFuncOp>(module.getLoc(), "elm_bytebuffer_data", dataType);
+
+    // extern u32 elm_bytebuffer_len(i64 bb)
+    auto lenType = LLVM::LLVMFunctionType::get(i32, {i64});
+    builder.create<LLVM::LLVMFuncOp>(module.getLoc(), "elm_bytebuffer_len", lenType);
+
+    // extern i64 elm_alloc_bytebuffer(u32 size)
+    // Returns eco.value (i64) for the new ByteBuffer
+    // ✅ CORRECTED C11: Symbol name matches header (elm_alloc_bytebuffer, not elm_bytebuffer_alloc)
+    auto allocType = LLVM::LLVMFunctionType::get(i64, {i32});
+    builder.create<LLVM::LLVMFuncOp>(module.getLoc(), "elm_alloc_bytebuffer", allocType);
+
+    // extern i64 elm_maybe_nothing()
+    auto nothingType = LLVM::LLVMFunctionType::get(i64, {});
+    builder.create<LLVM::LLVMFuncOp>(module.getLoc(), "elm_maybe_nothing", nothingType);
+
+    // extern i64 elm_maybe_just(i64 value)
+    auto justType = LLVM::LLVMFunctionType::get(i64, {i64});
+    builder.create<LLVM::LLVMFuncOp>(module.getLoc(), "elm_maybe_just", justType);
+
+    // extern i64 elm_utf8_decode(u8* src, u32 len)
+    // Returns eco.value (i64) for ElmString (or tagged null on failure)
+    auto decodeType = LLVM::LLVMFunctionType::get(i64, {i8Ptr, i32});
+    builder.create<LLVM::LLVMFuncOp>(module.getLoc(), "elm_utf8_decode", decodeType);
+
+    // ✅ CORRECTED C11: Removed elm_bytes_slice - use bf.read.bytes which calls
+    // elm_alloc_bytebuffer + memcpy internally. No separate "slice" helper needed.
+}
+```
+
+**Key insight:** The `!bf.cur` type is internal to bf dialect and lowered to `{i8*, i8*}`.
+But `!eco.value` is the boundary type for Elm heap objects and is lowered to `i64`.
 
 Key lowering patterns (same as before, but with UTF-8 details):
 
@@ -421,7 +546,7 @@ This is a PURE AST RECOGNIZER that pattern-matches the monomorphized
 expression tree to identify Bytes.Encode combinator calls.
 -}
 
-import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..), Global(..), SpecKey(..))
+import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..), Global(..))
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.MLIR.BytesFusion.LoopIR as IR exposing (Endianness(..), Op(..), WidthExpr(..))
 import Data.IO as IO exposing (Canonical(..))
@@ -478,8 +603,27 @@ reifyEncoderHelp registry expr =
                     Nothing
 
         -- A let binding - reify the body
-        Mono.MonoLet _ body _ ->
-            reifyEncoderHelp registry body
+        -- ⚠️ CORRECTION 4: This is UNSOUND as written!
+        -- If body is `MonoVarLocal x` referencing the let-bound encoder,
+        -- reifyEncoderHelp will return Nothing (MonoVarLocal is opaque).
+        -- Compiler pipelines often introduce lets, defeating fusion.
+        Mono.MonoLet letDef body _ ->
+            {- HARD GATE (C18):
+               Do not implement MonoLet handling until MonoLet / MonoLetDef is grounded
+               from Compiler/AST/Monomorphized.elm.
+
+               Once grounded, implement environment-based substitution:
+
+                 reifyEncoderWithEnv : Dict Name (List EncoderNode) -> MonoExpr -> Maybe (List EncoderNode)
+
+               Rules:
+               1) If a let binding RHS reifies successfully, extend env with (name -> nodes)
+               2) When encountering MonoVarLocal name, consult env
+               3) Fall back to Nothing if the let introduces non-reifiable structure
+
+               This avoids relying on non-existent fields like def.name/def.body.
+            -}
+            Nothing
 
         -- Variable reference - can't statically analyze
         _ ->
@@ -575,7 +719,7 @@ reifyEncoderList registry listExpr =
 
 Based on MonoExpr structure:
 - `MonoVarGlobal Region SpecId MonoType` references global values including constructors
-- `SpecKey = SpecKey Global MonoType (Maybe LambdaId)`
+- `Mono.lookupSpecKey` returns `Maybe (Global, MonoType, Maybe LambdaId)` (a tuple!)
 - `Global = Global IO.Canonical Name | Accessor Name`
 
 Bytes.BE and Bytes.LE are nullary constructors of Bytes.Endianness.
@@ -586,7 +730,7 @@ reifyEndianness registry expr =
         -- Nullary constructors are represented as MonoVarGlobal
         Mono.MonoVarGlobal _ specId _ ->
             case Mono.lookupSpecKey specId registry of
-                Just (Mono.SpecKey (Mono.Global (IO.Canonical pkg moduleName) name) _ _) ->
+                Just (Mono.Global (IO.Canonical pkg moduleName) name, _, _) ->
                     if pkg == Pkg.bytes && moduleName == "Bytes" then
                         case name of
                             "LE" -> Just LE
@@ -695,6 +839,137 @@ emitWrite curName node =
 Each `bf.write.*` returns a new `!bf.cur`, and we thread that value through the emitter loop.
 This is natural for SSA and avoids needing mutable variable tracking in Context.
 
+---
+
+#### ⚠️ CORRECTION 1: Op Accumulation Order Bug
+
+**Problem:** The code mixes `::` (cons) with `++` (append) when `EmitState.ops` is "accumulated in reverse". This causes incorrect MLIR program order:
+
+```elm
+-- BUGGY:
+ops = writeOp :: (valueResult.ops ++ st.ops)
+-- If valueResult.ops = [a, b] and st.ops = [c, d] (reverse order means d executes first)
+-- Result: [writeOp, a, b, c, d]
+-- After List.reverse: [d, c, b, a, writeOp]  -- WRONG! a,b should come before writeOp
+```
+
+**Fix (Option B - keep reverse invariant):** When splicing in a list, reverse it first:
+```elm
+ops = writeOp :: (List.reverse valueResult.ops ++ st.ops)
+```
+
+Or use **Option A (recommended):** Store ops in forward order, never reverse at end.
+
+---
+
+#### ✅ CORRECTION 2 APPLIED: bf.cur Is a Dialect Type
+
+**Requirement:** `!bf.cur` is a bf dialect type. Only BFToLLVM lowering maps it to `{i8*, i8*}`.
+
+**Implementation:** Add to `Types.elm`:
+```elm
+-- In Compiler/Generate/MLIR/Types.elm:
+
+{-| bf dialect cursor type (!bf.cur)
+    Lowered to {i8*, i8*} (ptr, end) by BFToLLVM pass.
+-}
+bfCur : MlirType
+bfCur =
+    DialectType "bf" "cur"
+```
+
+**Ensure `MlirType` has `DialectType` constructor:**
+```elm
+-- In Mlir/Mlir.elm:
+type MlirType
+    = I1 | I8 | I16 | I32 | I64 | F32 | F64
+    | NamedStruct String
+    | DialectType String String  -- dialectName, typeName (e.g. "bf", "cur")
+    | ...
+```
+
+All code in this plan now uses `Types.bfCur` (representing `!bf.cur`).
+
+---
+
+#### ✅ CORRECTION C4: _operand_types Attrs for arith.* Ops
+
+**Problem:** Raw `arith.addi`/`arith.andi`/`arith.extui` calls need `_operand_types`.
+
+**SOLUTION: Add helpers to `Ops.elm`** (recommended over hand-rolling attrs):
+
+```elm
+-- In Compiler/Generate/MLIR/Ops.elm:
+
+{-| arith.addi with proper _operand_types attr -}
+arithAddI32 : Context -> String -> String -> String -> ( Context, MlirOp )
+arithAddI32 ctx aVar bVar resVar =
+    mlirOp ctx "arith.addi"
+        |> opBuilder.withOperands [ aVar, bVar ]
+        |> opBuilder.withResults [ ( resVar, I32 ) ]
+        |> opBuilder.withAttrs
+            [ ( "_operand_types"
+              , ArrayAttr [ TypeAttr I32, TypeAttr I32 ]
+              )
+            ]
+        |> opBuilder.build
+
+{-| arith.andi for i1 (boolean and) -}
+arithAndI1 : Context -> String -> String -> String -> ( Context, MlirOp )
+arithAndI1 ctx aVar bVar resVar =
+    mlirOp ctx "arith.andi"
+        |> opBuilder.withOperands [ aVar, bVar ]
+        |> opBuilder.withResults [ ( resVar, I1 ) ]
+        |> opBuilder.withAttrs
+            [ ( "_operand_types"
+              , ArrayAttr [ TypeAttr I1, TypeAttr I1 ]
+              )
+            ]
+        |> opBuilder.build
+
+{-| arith.extui (unsigned extend) -}
+arithExtUI : Context -> String -> MlirType -> MlirType -> String -> ( Context, MlirOp )
+arithExtUI ctx srcVar srcTy dstTy resVar =
+    mlirOp ctx "arith.extui"
+        |> opBuilder.withOperands [ srcVar ]
+        |> opBuilder.withResults [ ( resVar, dstTy ) ]
+        |> opBuilder.withAttrs
+            [ ( "_operand_types"
+              , ArrayAttr [ TypeAttr srcTy ]
+              )
+            ]
+        |> opBuilder.build
+```
+
+**Usage in emitters:**
+```elm
+-- Instead of hand-rolling:
+( ctx2, addOp ) = Ops.arithAddI32 ctx1 aVar bVar resVar
+( ctx2, andOp ) = Ops.arithAndI1 ctx1 ok1 ok2 combinedOk
+( ctx2, extOp ) = Ops.arithExtUI ctx1 lenVar I8 I32 lenI32Var
+```
+
+-- arith.andi i1
+Ops.mlirOp ctx "arith.andi"
+    |> Ops.opBuilder.withOperands [ ok1, ok2 ]
+    |> Ops.opBuilder.withResults [ ( combinedOk, I1 ) ]
+    |> Ops.opBuilder.withAttrs [ ( "_operand_types", TypeArrayAttr [ I1, I1 ] ) ]
+    |> Ops.opBuilder.build
+
+-- arith.extui i8 -> i32
+Ops.mlirOp ctx "arith.extui"
+    |> Ops.opBuilder.withOperands [ i8Var ]
+    |> Ops.opBuilder.withResults [ ( i32Var, I32 ) ]
+    |> Ops.opBuilder.withAttrs [ ( "_operand_types", TypeArrayAttr [ I8 ] ) ]
+    |> Ops.opBuilder.build
+```
+
+**BETTER FIX:** Add helpers in `Ops.elm` that include `_operand_types` automatically, similar to existing `arithCmpI`.
+
+Also: Use `withAttrs` (plural) consistently, not `withAttr`.
+
+---
+
 ```elm
 module Compiler.Generate.MLIR.BytesFusion.EmitBF exposing (emitFusedEncoder)
 
@@ -719,7 +994,7 @@ type alias EmitState =
     { ctx : Context
     , cursor : String        -- Current cursor SSA variable
     , bufferVar : String     -- The allocated ByteBuffer* for return
-    , ops : List MlirOp      -- Accumulated ops (in reverse)
+    , ops : List MlirOp      -- ✅ FIXED: Accumulated ops in FORWARD execution order
     }
 
 
@@ -738,13 +1013,39 @@ emitFusedEncoder ctx ops =
         finalState =
             List.foldl emitOp initialState ops
     in
-    { ops = List.reverse finalState.ops
+    { ops = finalState.ops  -- ✅ FIXED: No List.reverse needed (forward order)
     , resultVar = finalState.bufferVar
     , resultType = Types.ecoValue  -- ByteBuffer* as eco.value
     , ctx = finalState.ctx
     , isTerminated = False
     }
 
+{- ⚠️ CORRECTION 5: Bytes Representation Consistency
+
+The plan uses `eco.value` (opaque pointer) for ByteBuffer* returns.
+
+**Design Choice:** All Elm heap values (including ByteBuffer*, String*, List*) flow
+through the uniform `eco.value` representation. This means:
+- bf.alloc returns `eco.value` (not raw LLVM ptr)
+- bf.read.* returns decoded values as `eco.value`
+- No "LLVM pointer islands" where raw ptrs escape into Elm code
+
+**Alternative (NOT used):** Some bytecode VMs keep raw pointers for intermediate
+byte ops, only wrapping at API boundaries. We chose uniform eco.value for simplicity.
+
+If you need raw pointer manipulation, use LLVM extraction inside bf ops before
+returning to Elm-level code.
+-}
+
+
+{- ✅ CORRECTION C3 APPLIED: Forward Order Op Accumulation
+
+**Strategy:** `EmitState.ops` stores ops in **forward execution order**.
+- No `List.reverse` needed at the end
+- Always **append** new ops: `st.ops ++ subOps ++ [ newOp ]`
+
+**The code below uses the CORRECTED forward-order patterns.**
+-}
 
 {-| Emit a single Loop IR operation, threading cursor through SSA.
 -}
@@ -776,14 +1077,14 @@ emitOp op st =
                 ( ctx5, cursorOp ) =
                     Ops.mlirOp ctx4 "bf.cursor.init"
                         |> Ops.opBuilder.withOperands [ allocVar ]
-                        |> Ops.opBuilder.withResults [ ( curVar, NamedStruct "bf.cur" ) ]
+                        |> Ops.opBuilder.withResults [ ( curVar, Types.bfCur ) ]
                         |> Ops.opBuilder.build
             in
             { st
                 | ctx = ctx5
                 , cursor = curVar
                 , bufferVar = allocVar
-                , ops = cursorOp :: allocOp :: (widthOps ++ st.ops)
+                , ops = st.ops ++ widthOps ++ [ allocOp, cursorOp ]  -- ✅ Forward order
             }
 
         WriteU8 _curName valueExpr ->
@@ -848,13 +1149,13 @@ emitWriteOp st valueExpr opName =
         ( ctx2, writeOp ) =
             Ops.mlirOp ctx1 opName
                 |> Ops.opBuilder.withOperands [ st.cursor, valueResult.resultVar ]
-                |> Ops.opBuilder.withResults [ ( newCurVar, NamedStruct "bf.cur" ) ]
+                |> Ops.opBuilder.withResults [ ( newCurVar, Types.bfCur ) ]
                 |> Ops.opBuilder.build
     in
     { st
         | ctx = ctx2
         , cursor = newCurVar  -- Thread new cursor forward
-        , ops = writeOp :: (valueResult.ops ++ st.ops)
+        , ops = st.ops ++ valueResult.ops ++ [ writeOp ]  -- ✅ Forward order
     }
 
 
@@ -869,13 +1170,13 @@ emitWriteCopyOp st srcExpr opName =
         ( ctx2, writeOp ) =
             Ops.mlirOp ctx1 opName
                 |> Ops.opBuilder.withOperands [ st.cursor, srcResult.resultVar ]
-                |> Ops.opBuilder.withResults [ ( newCurVar, NamedStruct "bf.cur" ) ]
+                |> Ops.opBuilder.withResults [ ( newCurVar, Types.bfCur ) ]  -- ✅ Dialect type
                 |> Ops.opBuilder.build
     in
     { st
         | ctx = ctx2
         , cursor = newCurVar
-        , ops = writeOp :: (srcResult.ops ++ st.ops)
+        , ops = st.ops ++ srcResult.ops ++ [ writeOp ]  -- ✅ Forward order
     }
 
 
@@ -1045,7 +1346,7 @@ Create `test/elm/src/BytesEncodeTests.elm` with cases that exercise:
 
 **Resolved:** `Bytes.BE` and `Bytes.LE` are nullary constructors represented as:
 - `MonoVarGlobal Region SpecId MonoType`
-- SpecId resolves via `lookupSpecKey` to `SpecKey (Global (IO.Canonical pkg moduleName) name) _ _`
+- SpecId resolves via `lookupSpecKey` to tuple `(Global (IO.Canonical pkg moduleName) name, _, _)`
 - Pattern match on `pkg == Pkg.bytes && moduleName == "Bytes"` and `name == "BE"` or `"LE"`
 
 See updated `reifyEndianness` implementation in Step 4.2.
@@ -1143,102 +1444,106 @@ Native code returning Maybe a
 
 ## Step 1: Extend Runtime ABI
 
-### 1.1 Add decoder helpers to `ElmBytesRuntime.h`
+### ✅ CORRECTED C20: No Additional Header Changes Needed
+
+**The decoder helpers are already defined in Phase 1's `ElmBytesRuntime.h` with proper `u64` ABI:**
 
 ```c
-// UTF-8 decode: read `len` bytes from src as UTF-8, return ElmString*
-// Returns NULL if invalid UTF-8.
-void* elm_utf8_decode(const u8* src, u32 len);
-
-// Maybe constructors (if not already exposed)
-void* elm_maybe_nothing(void);
-void* elm_maybe_just(void* value);
+// Already in Phase 1 header (u64 eco.value ABI):
+u64 elm_utf8_decode(const u8* src, u32 len);  // Returns eco.value or 0 on failure
+u64 elm_maybe_nothing(void);
+u64 elm_maybe_just(u64 value);
 ```
 
-### 1.2 Implement in `ElmBytesRuntime.cpp`
+**DO NOT add the old `void*` signatures shown below - they are OBSOLETE:**
+```c
+// ❌ OBSOLETE - DO NOT USE:
+// void* elm_utf8_decode(const u8* src, u32 len);
+// void* elm_maybe_nothing(void);
+// void* elm_maybe_just(void* value);
+```
+
+### 1.2 Implementation in `ElmBytesRuntime.cpp`
+
+**✅ CORRECTED C20: Already implemented in Phase 1**
+
+The decoder helpers (`elm_utf8_decode`, `elm_maybe_nothing`, `elm_maybe_just`) are already
+implemented in Phase 1's `ElmBytesRuntime.cpp` with proper `u64` ABI:
 
 ```cpp
-void* elm_utf8_decode(const u8* src, u32 len) {
-    // Convert UTF-8 bytes to ElmString (UTF-16 internal)
-    // 1. Validate UTF-8 and compute UTF-16 length
-    // 2. Allocate ElmString with computed length
-    // 3. Convert UTF-8 → UTF-16 into buffer
-    // 4. Return ElmString* or NULL on invalid UTF-8
-
-    // Implementation sketch:
-    size_t utf16Len = 0;
-    const u8* p = src;
-    const u8* end = src + len;
-
-    // First pass: validate and count UTF-16 code units
-    while (p < end) {
-        u32 cp;
-        if ((*p & 0x80) == 0) {
-            cp = *p++;
-            utf16Len += 1;
-        } else if ((*p & 0xE0) == 0xC0) {
-            if (p + 2 > end) return nullptr;
-            cp = ((*p & 0x1F) << 6) | (*(p+1) & 0x3F);
-            p += 2;
-            utf16Len += 1;
-        } else if ((*p & 0xF0) == 0xE0) {
-            if (p + 3 > end) return nullptr;
-            cp = ((*p & 0x0F) << 12) | ((*(p+1) & 0x3F) << 6) | (*(p+2) & 0x3F);
-            p += 3;
-            utf16Len += 1;
-        } else if ((*p & 0xF8) == 0xF0) {
-            if (p + 4 > end) return nullptr;
-            cp = ((*p & 0x07) << 18) | ((*(p+1) & 0x3F) << 12) |
-                 ((*(p+2) & 0x3F) << 6) | (*(p+3) & 0x3F);
-            p += 4;
-            utf16Len += 2;  // Surrogate pair
-        } else {
-            return nullptr;  // Invalid UTF-8
-        }
-    }
-
-    // Allocate and convert
-    ElmString* s = allocateElmString(utf16Len);
-    // ... second pass to fill s->chars ...
-    return s;
+// Already in Phase 1 implementation (see Step 1.2 of Phase 1):
+u64 elm_utf8_decode(const u8* src, u32 len) {
+    ElmString* str = StringOps::fromUtf8(src, len);
+    if (!str) return 0;  // Failure sentinel
+    return toEcoValue(str);
 }
 
-void* elm_maybe_nothing(void) {
-    // Return the Nothing singleton or allocate Nothing constructor
-    // Depends on how Maybe is represented in your runtime
-    return /* Nothing representation */;
+u64 elm_maybe_nothing() {
+    return toEcoValue(Maybe::nothing());
 }
 
-void* elm_maybe_just(void* value) {
-    // Allocate Just constructor with value
-    return /* Just value representation */;
+u64 elm_maybe_just(u64 value) {
+    return toEcoValue(Maybe::just(value));
 }
 ```
 
-### 1.3 Register new symbols in `RuntimeSymbols.cpp`
+### 1.3 Symbol Registration
 
-```cpp
-symbolMap[interner("elm_utf8_decode")] =
-    llvm::orc::ExecutorSymbolDef(
-        llvm::orc::ExecutorAddr::fromPtr(&elm_utf8_decode),
-        llvm::JITSymbolFlags::Exported);
-symbolMap[interner("elm_maybe_nothing")] =
-    llvm::orc::ExecutorSymbolDef(
-        llvm::orc::ExecutorAddr::fromPtr(&elm_maybe_nothing),
-        llvm::JITSymbolFlags::Exported);
-symbolMap[interner("elm_maybe_just")] =
-    llvm::orc::ExecutorSymbolDef(
-        llvm::orc::ExecutorAddr::fromPtr(&elm_maybe_just),
-        llvm::JITSymbolFlags::Exported);
-```
+**✅ Already done in Phase 1's `RuntimeSymbols.cpp`** - the decoder symbols
+(`elm_utf8_decode`, `elm_maybe_nothing`, `elm_maybe_just`) are registered
+alongside the encoder symbols.
 
 ---
 
 ## Step 2: Extend bf Dialect for Decoding
 
+### ✅ CORRECTION C5 APPLIED: bf Dialect Uses eco.value for Heap Objects
+
+**Design Decision:** All bf ops that produce/consume Elm heap objects use `!eco.value` (lowered to `i64`).
+
+**TableGen type definitions (add to ECODialect.td or BFDialect.td):**
+```tablegen
+// ECO value type - represents tagged Elm heap pointer (lowered to i64)
+// This should already exist in ECODialect; if not, define it:
+def ECO_ValueType : TypeDef<ECODialect, "Value"> {
+  let mnemonic = "value";
+  let summary = "Elm heap value (tagged pointer, lowered to i64)";
+}
+```
+
+**BFToLLVM lowering implications:**
+- `!eco.value` lowers to `i64` (not `i8*`)
+- Runtime helpers take/return `i64` (cast internally if needed)
+- `bf.read.bytes`/`bf.read.utf8` call runtime helpers returning `i64`
+
+**The TableGen below is CORRECTED to use `ECO_ValueType`:**
+
+---
+
 ### 2.1 Add to `BFOps.td`
 
 ```tablegen
+// ✅ FINAL: ECO_ValueType include
+//
+// Use the SAME include style already used by existing ECO TableGen files in this repo.
+// Do not use filesystem paths like "runtime/src/...".
+//
+// REQUIRED GROUNDING TASK:
+//   Find a working include in an existing .td file (e.g. wherever ECO ops/types are defined)
+//   and mirror it here.
+//
+// Typical working include (only if ECO/ is already in the tblgen include dirs):
+include "ECO/ECODialect.td"
+
+// CMake task: Ensure the BF tablegen target has the ECO TableGen include dir
+// in its `-I` list, matching how existing dialects are built.
+
+// If ECO_ValueType doesn't exist yet, add this to ECODialect.td:
+// def ECO_ValueType : TypeDef<ECODialect, "Value"> {
+//   let mnemonic = "value";
+//   let summary = "Elm heap value (tagged pointer, lowered to i64)";
+// }
+
 // Status type for success/failure
 def BF_StatusType : TypeDef<BFDialect, "Status"> {
   let mnemonic = "status";
@@ -1252,58 +1557,135 @@ def BF_RequireOp : Op<BFDialect, "require", [Pure]> {
   let summary = "Check cursor has n bytes remaining";
 }
 
-// Read operations - return (value, newCursor, ok)
+// ✅ FINAL: Scalar type policy
+//
+// Elm-level values:
+// - Elm Int  => i64 at MLIR level
+// - Elm Float => f64 at MLIR level
+//
+// Therefore primitive read ops return Elm-level types (i64/f64), even though
+// they read byte-sized encodings. BFToLLVM performs the byte loads and
+// appropriate extension/bitcast.
+//
+// Caller MUST emit bf.require + fail-fast control flow BEFORE calling these ops.
+
+// Read operations - return (value, newCursor) only
 def BF_ReadU8Op : Op<BFDialect, "read.u8", [Pure]> {
   let arguments = (ins BF_CurType:$cur);
-  let results   = (outs I8:$value, BF_CurType:$newCur, BF_StatusType:$ok);
+  let results   = (outs I64:$value, BF_CurType:$newCur);
+}
+
+def BF_ReadI8Op : Op<BFDialect, "read.i8", [Pure]> {
+  let arguments = (ins BF_CurType:$cur);
+  let results   = (outs I64:$value, BF_CurType:$newCur);
 }
 
 def BF_ReadU16BEOp : Op<BFDialect, "read.u16_be", [Pure]> {
   let arguments = (ins BF_CurType:$cur);
-  let results   = (outs I16:$value, BF_CurType:$newCur, BF_StatusType:$ok);
+  let results   = (outs I64:$value, BF_CurType:$newCur);
 }
-
 def BF_ReadU16LEOp : Op<BFDialect, "read.u16_le", [Pure]> {
   let arguments = (ins BF_CurType:$cur);
-  let results   = (outs I16:$value, BF_CurType:$newCur, BF_StatusType:$ok);
+  let results   = (outs I64:$value, BF_CurType:$newCur);
+}
+
+def BF_ReadI16BEOp : Op<BFDialect, "read.i16_be", [Pure]> {
+  let arguments = (ins BF_CurType:$cur);
+  let results   = (outs I64:$value, BF_CurType:$newCur);
+}
+def BF_ReadI16LEOp : Op<BFDialect, "read.i16_le", [Pure]> {
+  let arguments = (ins BF_CurType:$cur);
+  let results   = (outs I64:$value, BF_CurType:$newCur);
 }
 
 def BF_ReadU32BEOp : Op<BFDialect, "read.u32_be", [Pure]> {
   let arguments = (ins BF_CurType:$cur);
-  let results   = (outs I32:$value, BF_CurType:$newCur, BF_StatusType:$ok);
+  let results   = (outs I64:$value, BF_CurType:$newCur);
 }
-
 def BF_ReadU32LEOp : Op<BFDialect, "read.u32_le", [Pure]> {
   let arguments = (ins BF_CurType:$cur);
-  let results   = (outs I32:$value, BF_CurType:$newCur, BF_StatusType:$ok);
+  let results   = (outs I64:$value, BF_CurType:$newCur);
 }
 
+def BF_ReadI32BEOp : Op<BFDialect, "read.i32_be", [Pure]> {
+  let arguments = (ins BF_CurType:$cur);
+  let results   = (outs I64:$value, BF_CurType:$newCur);
+}
+def BF_ReadI32LEOp : Op<BFDialect, "read.i32_le", [Pure]> {
+  let arguments = (ins BF_CurType:$cur);
+  let results   = (outs I64:$value, BF_CurType:$newCur);
+}
+
+// Float32 encoding returns Elm Float (f64) after extending.
+// Float64 encoding returns Elm Float (f64).
 def BF_ReadF32BEOp : Op<BFDialect, "read.f32_be", [Pure]> {
   let arguments = (ins BF_CurType:$cur);
-  let results   = (outs F32:$value, BF_CurType:$newCur, BF_StatusType:$ok);
+  let results   = (outs F64:$value, BF_CurType:$newCur);
+}
+def BF_ReadF32LEOp : Op<BFDialect, "read.f32_le", [Pure]> {
+  let arguments = (ins BF_CurType:$cur);
+  let results   = (outs F64:$value, BF_CurType:$newCur);
 }
 
 def BF_ReadF64BEOp : Op<BFDialect, "read.f64_be", [Pure]> {
   let arguments = (ins BF_CurType:$cur);
-  let results   = (outs F64:$value, BF_CurType:$newCur, BF_StatusType:$ok);
+  let results   = (outs F64:$value, BF_CurType:$newCur);
+}
+def BF_ReadF64LEOp : Op<BFDialect, "read.f64_le", [Pure]> {
+  let arguments = (ins BF_CurType:$cur);
+  let results   = (outs F64:$value, BF_CurType:$newCur);
 }
 
-// Read N bytes as sub-slice (returns ByteBuffer*)
+// Heap reads (may fail for reasons OTHER than bounds):
+// - Caller MUST guard bounds via bf.require + fail-fast control flow BEFORE calling.
+// - These ops advance cursor by len unconditionally (safe because bounds already verified).
+// - ok indicates non-bounds failure (e.g. invalid UTF-8, allocation failure).
 def BF_ReadBytesOp : Op<BFDialect, "read.bytes", [Pure]> {
   let arguments = (ins BF_CurType:$cur, I32:$len);
-  let results   = (outs LLVM_Pointer:$bytes, BF_CurType:$newCur, BF_StatusType:$ok);
+  let results   = (outs ECO_ValueType:$bytes, BF_CurType:$newCur, BF_StatusType:$ok);
+  let summary   = "Read len bytes into new ByteBuffer; assumes bounds already checked";
 }
 
-// Read N bytes as UTF-8 string (returns ElmString* or NULL)
 def BF_ReadUtf8Op : Op<BFDialect, "read.utf8", [Pure]> {
   let arguments = (ins BF_CurType:$cur, I32:$len);
-  let results   = (outs LLVM_Pointer:$string, BF_CurType:$newCur, BF_StatusType:$ok);
+  let results   = (outs ECO_ValueType:$string, BF_CurType:$newCur, BF_StatusType:$ok);
+  let summary   = "Decode len bytes as UTF-8 string; assumes bounds already checked";
 }
 ```
 
 ---
 
 ## Step 3: Extend bf → LLVM Lowering
+
+### ⚠️ CRITICAL SAFETY REQUIREMENT: Bounds Check BEFORE Load
+
+**PROBLEM:** The naive lowering below performs loads unconditionally, then computes `ok` afterward. This can **segfault** if `ptr >= end`:
+
+```cpp
+// UNSAFE - DO NOT USE:
+Value ok = rewriter.create<LLVM::ICmpOp>(...);  // Check AFTER
+Value value = rewriter.create<LLVM::LoadOp>(...);  // Load happens even if out-of-bounds!
+```
+
+**SOLUTION:** Use the "single fail continuation" strategy:
+
+1. Compiler emits `bf.require(cur, n)` BEFORE each `bf.read.*`
+2. If `ok` is false, branch **immediately** to the fail block
+3. No read occurs unless bounds check passes
+
+**Recommended IR Pattern:**
+```
+%ok = bf.require(%cur, 4)        ; check 4 bytes available
+cf.cond_br %ok, ^read, ^fail     ; branch immediately on failure
+^read:
+  %value, %newCur = bf.read.u32_be(%cur)  ; safe - we checked first
+  ...
+^fail:
+  %nothing = call @elm_maybe_nothing()
+  return %nothing
+```
+
+**Alternative (more complex):** Keep `bf.read.*` returning `(value, newCur, ok)` but lower with control flow so the load happens only in the ok path. Requires block splitting.
 
 ### 3.1 Update `BFToLLVM.cpp` with read patterns
 
@@ -1332,7 +1714,9 @@ struct RequireOpLowering : public ConvertOpToLLVMPattern<bf::RequireOp> {
   }
 };
 
-// bf.read.u8(cur) → (value, newCur, ok)
+// ✅ CORRECTED C21: bf.read.u8(cur) → (value, newCur) - NO ok result
+// Safety is guaranteed by bf.require + branch BEFORE this op.
+// This lowering performs unconditional load - safe because bounds already verified.
 struct ReadU8OpLowering : public ConvertOpToLLVMPattern<bf::ReadU8Op> {
   LogicalResult matchAndRewrite(bf::ReadU8Op op, OpAdaptor adaptor,
                                  ConversionPatternRewriter &rewriter) const override {
@@ -1342,25 +1726,25 @@ struct ReadU8OpLowering : public ConvertOpToLLVMPattern<bf::ReadU8Op> {
     Value ptr = rewriter.create<LLVM::ExtractValueOp>(loc, cur, 0);
     Value end = rewriter.create<LLVM::ExtractValueOp>(loc, cur, 1);
 
-    // Bounds check: ptr + 1 <= end
-    Value one = rewriter.create<LLVM::ConstantOp>(loc, i64Type, 1);
-    Value newPtr = rewriter.create<LLVM::GEPOp>(loc, ptrType, i8Type, ptr, one);
-    Value ok = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ule, newPtr, end);
-
-    // Read value (safe if ok is true, but we always read - check happens after)
+    // Read value - SAFE: bf.require + branch already verified bounds!
     Value value = rewriter.create<LLVM::LoadOp>(loc, i8Type, ptr);
 
-    // Build new cursor
+    // Advance pointer
+    Value one = rewriter.create<LLVM::ConstantOp>(loc, i64Type, 1);
+    Value newPtr = rewriter.create<LLVM::GEPOp>(loc, ptrType, i8Type, ptr, one);
+
+    // Build new cursor (NO ok computation - that's bf.require's job)
     Value newCur = rewriter.create<LLVM::UndefOp>(loc, cursorType);
     newCur = rewriter.create<LLVM::InsertValueOp>(loc, newCur, newPtr, 0);
     newCur = rewriter.create<LLVM::InsertValueOp>(loc, newCur, end, 1);
 
-    rewriter.replaceOp(op, {value, newCur, ok});
+    rewriter.replaceOp(op, {value, newCur});  // ✅ Only 2 results
     return success();
   }
 };
 
-// Multi-byte reads: use byte-wise loads for portability
+// ✅ CORRECTED C21: Multi-byte reads also return (value, newCur) only
+// Byte-wise loads for portability. Safety from bf.require + branch.
 struct ReadU16BEOpLowering : public ConvertOpToLLVMPattern<bf::ReadU16BEOp> {
   LogicalResult matchAndRewrite(bf::ReadU16BEOp op, OpAdaptor adaptor,
                                  ConversionPatternRewriter &rewriter) const override {
@@ -1370,12 +1754,8 @@ struct ReadU16BEOpLowering : public ConvertOpToLLVMPattern<bf::ReadU16BEOp> {
     Value ptr = rewriter.create<LLVM::ExtractValueOp>(loc, cur, 0);
     Value end = rewriter.create<LLVM::ExtractValueOp>(loc, cur, 1);
 
-    // Bounds check: ptr + 2 <= end
-    Value two = rewriter.create<LLVM::ConstantOp>(loc, i64Type, 2);
-    Value newPtr = rewriter.create<LLVM::GEPOp>(loc, ptrType, i8Type, ptr, two);
-    Value ok = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ule, newPtr, end);
-
     // Byte-wise load (big-endian): value = (b0 << 8) | b1
+    // SAFE: bf.require(cur, 2) + branch already verified bounds!
     Value b0 = rewriter.create<LLVM::LoadOp>(loc, i8Type, ptr);
     Value ptr1 = rewriter.create<LLVM::GEPOp>(loc, ptrType, i8Type, ptr,
                    rewriter.create<LLVM::ConstantOp>(loc, i64Type, 1));
@@ -1387,47 +1767,51 @@ struct ReadU16BEOpLowering : public ConvertOpToLLVMPattern<bf::ReadU16BEOp> {
                       rewriter.create<LLVM::ConstantOp>(loc, i16Type, 8));
     Value value = rewriter.create<LLVM::OrOp>(loc, shifted, b1Ext);
 
-    // Build new cursor
+    // Advance pointer
+    Value two = rewriter.create<LLVM::ConstantOp>(loc, i64Type, 2);
+    Value newPtr = rewriter.create<LLVM::GEPOp>(loc, ptrType, i8Type, ptr, two);
+
+    // Build new cursor (NO ok computation)
     Value newCur = rewriter.create<LLVM::UndefOp>(loc, cursorType);
     newCur = rewriter.create<LLVM::InsertValueOp>(loc, newCur, newPtr, 0);
     newCur = rewriter.create<LLVM::InsertValueOp>(loc, newCur, end, 1);
 
-    rewriter.replaceOp(op, {value, newCur, ok});
+    rewriter.replaceOp(op, {value, newCur});  // ✅ Only 2 results
     return success();
   }
 };
 
-// bf.read.utf8(cur, len) → (string, newCur, ok)
+// bf.read.utf8(cur, len32) -> (i64 stringVal, newCur, i1 ok)
+// ASSUMPTION: bounds were already checked by bf.require + fail-fast control flow.
+// ok checks ONLY utf8 decode success (stringVal != 0).
 struct ReadUtf8OpLowering : public ConvertOpToLLVMPattern<bf::ReadUtf8Op> {
   LogicalResult matchAndRewrite(bf::ReadUtf8Op op, OpAdaptor adaptor,
-                                 ConversionPatternRewriter &rewriter) const override {
+                                ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    auto cur = adaptor.getCur();
-    Value len = adaptor.getLen();
+    Value cur = adaptor.getCur();
+    Value len32 = adaptor.getLen();
 
     Value ptr = rewriter.create<LLVM::ExtractValueOp>(loc, cur, 0);
     Value end = rewriter.create<LLVM::ExtractValueOp>(loc, cur, 1);
 
-    // Bounds check
-    Value lenExt = rewriter.create<LLVM::ZExtOp>(loc, i64Type, len);
-    Value newPtr = rewriter.create<LLVM::GEPOp>(loc, ptrType, i8Type, ptr, lenExt);
-    Value boundsOk = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ule, newPtr, end);
+    // newPtr = ptr + len
+    Value len64 = rewriter.create<LLVM::ZExtOp>(loc, i64Type, len32);
+    Value newPtr = rewriter.create<LLVM::GEPOp>(loc, ptrType, i8Type, ptr, len64);
 
-    // Call elm_utf8_decode(ptr, len)
-    Value string = rewriter.create<LLVM::CallOp>(loc, ptrType,
-                     "elm_utf8_decode", ValueRange{ptr, len}).getResult();
+    // stringVal : i64 = call @elm_utf8_decode(ptr, len32)
+    Value stringVal = rewriter.create<LLVM::CallOp>(
+        loc, i64Type, "elm_utf8_decode", ValueRange{ptr, len32}).getResult();
 
-    // ok = boundsOk && string != null
-    Value null = rewriter.create<LLVM::ZeroOp>(loc, ptrType);
-    Value notNull = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ne, string, null);
-    Value ok = rewriter.create<LLVM::AndOp>(loc, boundsOk, notNull);
+    // ok = (stringVal != 0)
+    Value zero64 = rewriter.create<LLVM::ConstantOp>(loc, i64Type, 0);
+    Value ok = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ne, stringVal, zero64);
 
-    // Build new cursor
+    // newCur = { newPtr, end }
     Value newCur = rewriter.create<LLVM::UndefOp>(loc, cursorType);
     newCur = rewriter.create<LLVM::InsertValueOp>(loc, newCur, newPtr, 0);
     newCur = rewriter.create<LLVM::InsertValueOp>(loc, newCur, end, 1);
 
-    rewriter.replaceOp(op, {string, newCur, ok});
+    rewriter.replaceOp(op, {stringVal, newCur, ok});
     return success();
   }
 };
@@ -1445,21 +1829,50 @@ module Compiler.Generate.MLIR.BytesFusion.LoopIR exposing (..)
 -- ... existing encoder types ...
 
 {-| Decoder operations.
+
+Each primitive read produces an Elm-level value (`Int` as i64, `Float` as f64).
+The emitter is responsible for inserting `bf.require` and `scf.if` fail-fast
+control flow around each read.
+
+Bounds checking is handled via nested scf.if in the emitter, not via explicit
+Require/BranchOnFail ops. This removes the need for CF block jumps and makes
+control flow explicit.
 -}
 type DecoderOp
     = InitReadCursor String Mono.MonoExpr  -- cursorName, bytes expression
+    -- Primitive fixed-size reads:
     | ReadU8 String String                  -- cursorName, resultVarName
     | ReadU16 String Endianness String
     | ReadU32 String Endianness String
     | ReadF32 String Endianness String
     | ReadF64 String Endianness String
+    -- Variable-length reads (length from Elm expr):
     | ReadBytes String Mono.MonoExpr String -- cursorName, length expr, resultVarName
     | ReadUtf8 String Mono.MonoExpr String  -- cursorName, length expr, resultVarName
-    | CheckOk String                         -- Branch to fail if not ok
-    | BuildResult Mono.MonoExpr              -- Build the decoded value
+    -- Function application: REQUIRED for map/map2/etc
+    | Apply1 Mono.MonoExpr String String    -- fnExpr, argVar, resultVar
+    | Apply2 Mono.MonoExpr String String String  -- fnExpr, arg1Var, arg2Var, resultVar
+    | Apply3 Mono.MonoExpr String String String String
+    | Apply4 Mono.MonoExpr String String String String String
+    | Apply5 Mono.MonoExpr String String String String String String
+    -- Constant value (for Decode.succeed):
+    | PushValue Mono.MonoExpr String        -- valueExpr, resultVar - push without reading
+    -- Final result:
     | ReturnJust String                      -- Return Just resultVar
     | ReturnNothing                          -- Return Nothing (fail path)
 ```
+
+**⚠️ CRITICAL: Function Application**
+
+The original `BuildResult Mono.MonoExpr` is **insufficient**. It doesn't actually apply `fnExpr` to decoded values!
+
+**Problem:** `Expr.generateExpr` resolves `MonoVarLocal` via `Ctx.lookupVar`. But decoded SSA values are NOT in the Context - they're just MLIR SSA variables.
+
+**Solution:** Add explicit `Apply1`/`Apply2`/etc operations that:
+1. Take the function expression AND the SSA variable names of decoded args
+2. In the emitter, either:
+   - Emit an `eco.call` / `eco.apply` using the SSA vars directly, OR
+   - Bind the SSA vars into Context temporarily so `Expr.generateExpr` can find them
 
 ### 4.2 Create `compiler/src/Compiler/Generate/MLIR/BytesFusion/ReifyDecoder.elm`
 
@@ -1472,7 +1885,7 @@ a normalized decoder structure.
 Phase 2 scope: Simple decoders only (no andThen, no loop).
 -}
 
-import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..), Global(..), SpecKey(..))
+import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..), Global(..))
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.MLIR.BytesFusion.LoopIR as IR exposing (Endianness(..))
 import Data.IO as IO exposing (Canonical(..))
@@ -1511,7 +1924,7 @@ reifyDecoder registry expr =
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
                     case Mono.lookupSpecKey specId registry of
-                        Just (SpecKey (Global (Canonical pkg moduleName) name) _ _) ->
+                        Just (Global (Canonical pkg moduleName) name, _, _) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Decode" then
                                 reifyBytesDecodeCall registry name args
                             else
@@ -1525,8 +1938,23 @@ reifyDecoder registry expr =
                 _ ->
                     Nothing
 
-        Mono.MonoLet _ body _ ->
-            reifyDecoder registry body
+        Mono.MonoLet letDef body _ ->
+            {- HARD GATE (C18):
+               Do not implement MonoLet handling until MonoLet / MonoLetDef is grounded
+               from Compiler/AST/Monomorphized.elm.
+
+               Once grounded, implement environment-based substitution:
+
+                 reifyDecoderWithEnv : Dict Name DecoderNode -> MonoExpr -> Maybe DecoderNode
+
+               Rules:
+               1) If a let binding RHS reifies successfully, extend env with (name -> node)
+               2) When encountering MonoVarLocal name, consult env
+               3) Fall back to Nothing if the let introduces non-reifiable structure
+
+               This avoids relying on non-existent fields like def.name/def.body.
+            -}
+            Nothing
 
         _ ->
             Nothing
@@ -1638,7 +2066,7 @@ reifyEndianness registry expr =
     case expr of
         Mono.MonoVarGlobal _ specId _ ->
             case Mono.lookupSpecKey specId registry of
-                Just (SpecKey (Global (Canonical pkg moduleName) name) _ _) ->
+                Just (Global (Canonical pkg moduleName) name, _, _) ->
                     if pkg == Pkg.bytes && moduleName == "Bytes" then
                         case name of
                             "LE" -> Just LE
@@ -1658,6 +2086,30 @@ reifyEndianness registry expr =
 
 ### 4.3 Create `compiler/src/Compiler/Generate/MLIR/BytesFusion/CompileDecoder.elm`
 
+**⚠️ OP ORDERING BUG WARNING:**
+
+The code below prepends ops with `::` then calls `List.reverse`. This causes:
+```elm
+ops = CheckOk "cur" :: ReadU8 "cur" varName :: st1.ops
+-- After List.reverse: [..., ReadU8, CheckOk]  -- WRONG ORDER!
+```
+
+**CORRECTION:** Either:
+1. Append in forward order (no reverse), or
+2. Cons in REVERSE of desired execution order:
+   ```elm
+   ops = ReadU8 "cur" varName :: Require "cur" 1 :: st1.ops
+   -- After List.reverse: [Require, ReadU8, ...]  -- CORRECT!
+   ```
+
+**Recommended approach with single-fail-continuation:**
+```elm
+ops = ReadU8 "cur" varName :: BranchOnFail "cur" :: Require "cur" 1 :: st1.ops
+-- After reverse: [Require, BranchOnFail, ReadU8, ...]
+```
+
+Where `BranchOnFail` emits `cf.cond_br %ok, ^continue, ^fail` to short-circuit.
+
 ```elm
 module Compiler.Generate.MLIR.BytesFusion.CompileDecoder exposing (compileDecoder)
 
@@ -1676,6 +2128,9 @@ type alias CompileState =
 
 
 {-| Compile decoder to Loop IR.
+
+✅ CORRECTED C13: ops are accumulated in forward execution order.
+No List.reverse needed at the end.
 -}
 compileDecoder : DecoderNode -> List DecoderOp
 compileDecoder node =
@@ -1689,9 +2144,20 @@ compileDecoder node =
         finalState =
             compileNode node initialState
     in
-    List.reverse finalState.ops
+    finalState.ops  -- ✅ Forward order - no reverse
 
 
+{-| Compile a decoder node to Loop IR operations.
+
+✅ SCF-COMPATIBLE: This compiler produces only Read* and Apply* ops.
+Bounds checking is handled by the EMITTER via nested scf.if, NOT here.
+
+Each primitive read just emits the read op. The emitter wraps each in:
+  bf.require(cursor, N) -> ok
+  scf.if ok { read... } else { return Nothing }
+
+Ops are accumulated in forward order using `++` (append).
+-}
 compileNode : DecoderNode -> CompileState -> CompileState
 compileNode node st =
     case node of
@@ -1700,17 +2166,17 @@ compileNode node st =
                 ( varName, st1 ) = freshVar st
             in
             { st1
-                | ops = CheckOk "cur" :: ReadU8 "cur" varName :: st1.ops
+                | ops = st1.ops ++ [ ReadU8 "cur" varName ]
                 , decodedVars = varName :: st1.decodedVars
             }
 
         DS8 ->
-            -- Same as DU8 but result is signed (handled in type)
+            -- Same as DU8 but result is signed (handled in type annotation)
             let
                 ( varName, st1 ) = freshVar st
             in
             { st1
-                | ops = CheckOk "cur" :: ReadU8 "cur" varName :: st1.ops
+                | ops = st1.ops ++ [ ReadU8 "cur" varName ]
                 , decodedVars = varName :: st1.decodedVars
             }
 
@@ -1719,7 +2185,7 @@ compileNode node st =
                 ( varName, st1 ) = freshVar st
             in
             { st1
-                | ops = CheckOk "cur" :: ReadU16 "cur" endian varName :: st1.ops
+                | ops = st1.ops ++ [ ReadU16 "cur" endian varName ]
                 , decodedVars = varName :: st1.decodedVars
             }
 
@@ -1728,7 +2194,7 @@ compileNode node st =
                 ( varName, st1 ) = freshVar st
             in
             { st1
-                | ops = CheckOk "cur" :: ReadU16 "cur" endian varName :: st1.ops
+                | ops = st1.ops ++ [ ReadU16 "cur" endian varName ]
                 , decodedVars = varName :: st1.decodedVars
             }
 
@@ -1737,7 +2203,7 @@ compileNode node st =
                 ( varName, st1 ) = freshVar st
             in
             { st1
-                | ops = CheckOk "cur" :: ReadU32 "cur" endian varName :: st1.ops
+                | ops = st1.ops ++ [ ReadU32 "cur" endian varName ]
                 , decodedVars = varName :: st1.decodedVars
             }
 
@@ -1746,7 +2212,7 @@ compileNode node st =
                 ( varName, st1 ) = freshVar st
             in
             { st1
-                | ops = CheckOk "cur" :: ReadU32 "cur" endian varName :: st1.ops
+                | ops = st1.ops ++ [ ReadU32 "cur" endian varName ]
                 , decodedVars = varName :: st1.decodedVars
             }
 
@@ -1755,7 +2221,7 @@ compileNode node st =
                 ( varName, st1 ) = freshVar st
             in
             { st1
-                | ops = CheckOk "cur" :: ReadF32 "cur" endian varName :: st1.ops
+                | ops = st1.ops ++ [ ReadF32 "cur" endian varName ]
                 , decodedVars = varName :: st1.decodedVars
             }
 
@@ -1764,7 +2230,7 @@ compileNode node st =
                 ( varName, st1 ) = freshVar st
             in
             { st1
-                | ops = CheckOk "cur" :: ReadF64 "cur" endian varName :: st1.ops
+                | ops = st1.ops ++ [ ReadF64 "cur" endian varName ]
                 , decodedVars = varName :: st1.decodedVars
             }
 
@@ -1773,7 +2239,7 @@ compileNode node st =
                 ( varName, st1 ) = freshVar st
             in
             { st1
-                | ops = CheckOk "cur" :: ReadBytes "cur" lenExpr varName :: st1.ops
+                | ops = st1.ops ++ [ ReadBytes "cur" lenExpr varName ]
                 , decodedVars = varName :: st1.decodedVars
             }
 
@@ -1782,69 +2248,99 @@ compileNode node st =
                 ( varName, st1 ) = freshVar st
             in
             { st1
-                | ops = CheckOk "cur" :: ReadUtf8 "cur" lenExpr varName :: st1.ops
+                | ops = st1.ops ++ [ ReadUtf8 "cur" lenExpr varName ]
                 , decodedVars = varName :: st1.decodedVars
             }
 
         DSucceed valueExpr ->
-            { st
-                | ops = BuildResult valueExpr :: st.ops
+            -- Push the constant value onto the stack (no read needed)
+            let
+                ( varName, st1 ) = freshVar st
+            in
+            { st1
+                | ops = st1.ops ++ [ PushValue valueExpr varName ]
+                , decodedVars = varName :: st1.decodedVars
             }
 
         DFail ->
+            -- Immediate failure - emitter will generate ReturnNothing
             { st
-                | ops = ReturnNothing :: st.ops
+                | ops = st.ops ++ [ ReturnNothing ]
             }
 
         DMap fnExpr innerDecoder ->
             let
                 st1 = compileNode innerDecoder st
+                argVar = List.head st1.decodedVars |> Maybe.withDefault "??"
+                ( resultVar, st2 ) = freshVar st1
             in
-            { st1
-                | ops = BuildResult fnExpr :: st1.ops
-                -- fnExpr will be applied to the decoded value
+            { st2
+                | ops = st2.ops ++ [ Apply1 fnExpr argVar resultVar ]
+                , decodedVars = resultVar :: List.drop 1 st2.decodedVars
             }
 
         DMap2 fnExpr d1 d2 ->
             let
                 st1 = compileNode d1 st
                 st2 = compileNode d2 st1
+                arg1Var = List.head (List.drop 1 st2.decodedVars) |> Maybe.withDefault "??"
+                arg2Var = List.head st2.decodedVars |> Maybe.withDefault "??"
+                ( resultVar, st3 ) = freshVar st2
             in
-            { st2
-                | ops = BuildResult fnExpr :: st2.ops
+            { st3
+                | ops = st3.ops ++ [ Apply2 fnExpr arg1Var arg2Var resultVar ]
+                , decodedVars = resultVar :: List.drop 2 st3.decodedVars
             }
 
         DMap3 fnExpr d1 d2 d3 ->
             let
                 st1 = compileNode d1 st
                 st2 = compileNode d2 st1
-                st3 = compileNode d3 st2
+                st3_ = compileNode d3 st2
+                arg1Var = List.head (List.drop 2 st3_.decodedVars) |> Maybe.withDefault "??"
+                arg2Var = List.head (List.drop 1 st3_.decodedVars) |> Maybe.withDefault "??"
+                arg3Var = List.head st3_.decodedVars |> Maybe.withDefault "??"
+                ( resultVar, st4 ) = freshVar st3_
             in
-            { st3
-                | ops = BuildResult fnExpr :: st3.ops
+            { st4
+                | ops = st4.ops ++ [ Apply3 fnExpr arg1Var arg2Var arg3Var resultVar ]
+                , decodedVars = resultVar :: List.drop 3 st4.decodedVars
             }
 
         DMap4 fnExpr d1 d2 d3 d4 ->
             let
                 st1 = compileNode d1 st
                 st2 = compileNode d2 st1
-                st3 = compileNode d3 st2
-                st4 = compileNode d4 st3
+                st3_ = compileNode d3 st2
+                st4_ = compileNode d4 st3_
+                arg1Var = List.head (List.drop 3 st4_.decodedVars) |> Maybe.withDefault "??"
+                arg2Var = List.head (List.drop 2 st4_.decodedVars) |> Maybe.withDefault "??"
+                arg3Var = List.head (List.drop 1 st4_.decodedVars) |> Maybe.withDefault "??"
+                arg4Var = List.head st4_.decodedVars |> Maybe.withDefault "??"
+                ( resultVar, st5 ) = freshVar st4_
             in
-            { st4
-                | ops = BuildResult fnExpr :: st4.ops
+            { st5
+                | ops = st5.ops ++ [ Apply4 fnExpr arg1Var arg2Var arg3Var arg4Var resultVar ]
+                , decodedVars = resultVar :: List.drop 4 st5.decodedVars
             }
 
         DMap5 fnExpr d1 d2 d3 d4 d5 ->
             let
                 st1 = compileNode d1 st
                 st2 = compileNode d2 st1
-                st3 = compileNode d3 st2
-                st4 = compileNode d4 st3
-                st5 = compileNode d5 st4
+                st3_ = compileNode d3 st2
+                st4_ = compileNode d4 st3_
+                st5_ = compileNode d5 st4_
+                arg1Var = List.head (List.drop 4 st5_.decodedVars) |> Maybe.withDefault "??"
+                arg2Var = List.head (List.drop 3 st5_.decodedVars) |> Maybe.withDefault "??"
+                arg3Var = List.head (List.drop 2 st5_.decodedVars) |> Maybe.withDefault "??"
+                arg4Var = List.head (List.drop 1 st5_.decodedVars) |> Maybe.withDefault "??"
+                arg5Var = List.head st5_.decodedVars |> Maybe.withDefault "??"
+                ( resultVar, st6 ) = freshVar st5_
             in
-            { st5
-                | ops = BuildResult fnExpr :: st5.ops
+            { st6
+                | ops = st6.ops ++ [ Apply5 fnExpr arg1Var arg2Var arg3Var arg4Var arg5Var resultVar ]
+                , decodedVars = resultVar :: List.drop 5 st6.decodedVars
             }
 
 
@@ -1857,13 +2353,49 @@ freshVar st =
 
 ### 4.4 Create `compiler/src/Compiler/Generate/MLIR/BytesFusion/EmitBFDecoder.elm`
 
+**✅ SCF-ONLY Emission Strategy (FINAL)**
+
+The emitter uses nested `scf.if` for fail-fast bounds checking. No CF dialect blocks.
+
+**Architecture:**
+- Each read is wrapped in `scf.if` that checks bounds first
+- If bounds check fails, immediately return Nothing
+- If bounds check passes, do the read and continue
+- No `okVar` accumulation - failure is handled immediately
+
+**Generated MLIR Pattern:**
+
+```mlir
+// For decode(map2(f, decodeU8, decodeU16)):
+%ok1 = bf.require(%cur, 1)
+%result = scf.if %ok1 -> !eco.value {
+  %v1, %cur2 = bf.read.u8(%cur)
+  %ok2 = bf.require(%cur2, 2)
+  %inner = scf.if %ok2 -> !eco.value {
+    %v2, %cur3 = bf.read.u16_be(%cur2)
+    %applied = eco.call @apply2(%f, %v1, %v2)
+    %just = call @elm_maybe_just(%applied)
+    scf.yield %just : !eco.value
+  } else {
+    %nothing = call @elm_maybe_nothing()
+    scf.yield %nothing : !eco.value
+  }
+  scf.yield %inner : !eco.value
+} else {
+  %nothing = call @elm_maybe_nothing()
+  scf.yield %nothing : !eco.value
+}
+```
+
+**Elm Implementation:**
+
 ```elm
 module Compiler.Generate.MLIR.BytesFusion.EmitBFDecoder exposing (emitFusedDecoder)
 
-{-| Emit bf dialect MLIR operations for a fused decoder.
+{-| SCF-based decoder emitter with fail-fast bounds checking.
 
-Key difference from encoder: must handle failure path.
-Uses scf.if for branching on ok status.
+Each read is wrapped in scf.if: check bounds, if ok then read+continue, else Nothing.
+No okVar accumulation. Ops are in forward execution order.
 -}
 
 import Compiler.AST.Monomorphized as Mono
@@ -1875,275 +2407,370 @@ import Compiler.Generate.MLIR.Types as Types
 import Mlir.Mlir exposing (MlirOp, MlirType(..), MlirAttr(..))
 
 
-{-| Internal state for decoder emission.
+{-| Emitter state - no okVar, uses nested scf.if instead.
 -}
 type alias EmitState =
     { ctx : Context
     , cursor : String              -- Current cursor SSA variable
-    , bytesVar : String            -- Input bytes variable
-    , ops : List MlirOp            -- Accumulated ops (in reverse)
     , decodedValues : List String  -- Stack of decoded value SSA vars
-    , okVar : String               -- Current ok status
     }
 
 
 {-| Emit a complete fused decoder, returning Maybe a.
+
+Recursively emits nested scf.if for each read op.
 -}
 emitFusedDecoder : Context -> Mono.MonoExpr -> List DecoderOp -> ExprResult
 emitFusedDecoder ctx bytesExpr ops =
     let
-        -- First, generate the bytes expression
+        -- Generate the bytes expression
         bytesResult = Expr.generateExpr ctx bytesExpr
 
         -- Initialize cursor from bytes
         ( curVar, ctx1 ) = Ctx.freshVar bytesResult.ctx
         ( ctx2, initOp ) =
-            Ops.mlirOp ctx1 "bf.cursor.init"
-                |> Ops.opBuilder.withOperands [ bytesResult.resultVar ]
-                |> Ops.opBuilder.withResults [ ( curVar, NamedStruct "bf.cur" ) ]
-                |> Ops.opBuilder.build
+            Ops.bfCursorInit ctx1 bytesResult.resultVar curVar
 
-        initialState =
-            { ctx = ctx2
-            , cursor = curVar
-            , bytesVar = bytesResult.resultVar
-            , ops = initOp :: bytesResult.ops
-            , decodedValues = []
-            , okVar = ""
-            }
-
-        -- Process all decoder ops
-        finalState =
-            List.foldl emitDecoderOp initialState ops
-
-        -- Wrap result in Maybe (emit scf.if for success/failure)
-        ( maybeResult, finalCtx, maybeOps ) =
-            emitMaybeWrapper finalState
+        -- Emit nested scf.if structure for all ops
+        ( resultVar, finalCtx, bodyOps ) =
+            emitOpsNested ctx2 curVar ops []
     in
-    { ops = List.reverse finalState.ops ++ maybeOps
-    , resultVar = maybeResult
-    , resultType = Types.ecoValue  -- Maybe a as eco.value
+    { ops = bytesResult.ops ++ [ initOp ] ++ bodyOps
+    , resultVar = resultVar
+    , resultType = Types.ecoValue
     , ctx = finalCtx
     , isTerminated = False
     }
 
 
-{-| Emit a single decoder operation.
+{-| Emit ops as nested scf.if structure.
+
+For each read op: bf.require -> scf.if ok { read, continue } else { Nothing }
 -}
-emitDecoderOp : DecoderOp -> EmitState -> EmitState
-emitDecoderOp op st =
-    case op of
-        InitReadCursor _ bytesExpr ->
-            -- Already handled in emitFusedDecoder
-            st
+emitOpsNested : Context -> String -> List DecoderOp -> List String -> ( String, Context, List MlirOp )
+emitOpsNested ctx cursor ops decodedVars =
+    case ops of
+        [] ->
+            -- No more ops - return Just with final decoded value
+            emitJustResult ctx decodedVars
 
-        ReadU8 _curName resultVarName ->
-            emitReadOp st "bf.read.u8" I8 resultVarName
+        (ReadU8 _ resultVar) :: rest ->
+            emitReadWithScfIf ctx cursor 1 "bf.read.u8" I8 resultVar rest decodedVars
 
-        ReadU16 _curName endian resultVarName ->
+        (ReadU16 _ endian resultVar) :: rest ->
+            let opName = endianOpName "bf.read.u16" endian
+            in emitReadWithScfIf ctx cursor 2 opName I16 resultVar rest decodedVars
+
+        (ReadU32 _ endian resultVar) :: rest ->
+            let opName = endianOpName "bf.read.u32" endian
+            in emitReadWithScfIf ctx cursor 4 opName I32 resultVar rest decodedVars
+
+        (ReadF32 _ endian resultVar) :: rest ->
+            let opName = endianOpName "bf.read.f32" endian
+            in emitReadWithScfIf ctx cursor 4 opName F32 resultVar rest decodedVars
+
+        (ReadF64 _ endian resultVar) :: rest ->
+            let opName = endianOpName "bf.read.f64" endian
+            in emitReadWithScfIf ctx cursor 8 opName F64 resultVar rest decodedVars
+
+        (ReadBytes _ lenExpr resultVar) :: rest ->
+            emitReadBytesWithScfIf ctx cursor lenExpr resultVar rest decodedVars
+
+        (ReadUtf8 _ lenExpr resultVar) :: rest ->
+            emitReadUtf8WithScfIf ctx cursor lenExpr resultVar rest decodedVars
+
+        (PushValue valueExpr resultVar) :: rest ->
+            -- Decode.succeed: push value without reading
             let
-                opName = case endian of
-                    BE -> "bf.read.u16_be"
-                    LE -> "bf.read.u16_le"
+                valueResult = Expr.generateExpr ctx valueExpr
+                newDecodedVars = valueResult.resultVar :: decodedVars
+                ( resultVar_, ctx2, restOps ) =
+                    emitOpsNested valueResult.ctx cursor rest newDecodedVars
             in
-            emitReadOp st opName I16 resultVarName
+            ( resultVar_, ctx2, valueResult.ops ++ restOps )
 
-        ReadU32 _curName endian resultVarName ->
-            let
-                opName = case endian of
-                    BE -> "bf.read.u32_be"
-                    LE -> "bf.read.u32_le"
-            in
-            emitReadOp st opName I32 resultVarName
+        (Apply1 fnExpr argVar resultVar) :: rest ->
+            emitApplyN ctx cursor [ argVar ] fnExpr resultVar rest decodedVars
 
-        ReadF32 _curName endian resultVarName ->
-            let
-                opName = case endian of
-                    BE -> "bf.read.f32_be"
-                    LE -> "bf.read.f32_le"
-            in
-            emitReadOp st opName F32 resultVarName
+        (Apply2 fnExpr arg1 arg2 resultVar) :: rest ->
+            emitApplyN ctx cursor [ arg1, arg2 ] fnExpr resultVar rest decodedVars
 
-        ReadF64 _curName endian resultVarName ->
-            let
-                opName = case endian of
-                    BE -> "bf.read.f64_be"
-                    LE -> "bf.read.f64_le"
-            in
-            emitReadOp st opName F64 resultVarName
+        (Apply3 fnExpr arg1 arg2 arg3 resultVar) :: rest ->
+            emitApplyN ctx cursor [ arg1, arg2, arg3 ] fnExpr resultVar rest decodedVars
 
-        ReadBytes _curName lenExpr resultVarName ->
-            emitReadBytesOp st lenExpr resultVarName
+        (Apply4 fnExpr arg1 arg2 arg3 arg4 resultVar) :: rest ->
+            emitApplyN ctx cursor [ arg1, arg2, arg3, arg4 ] fnExpr resultVar rest decodedVars
 
-        ReadUtf8 _curName lenExpr resultVarName ->
-            emitReadUtf8Op st lenExpr resultVarName
+        (Apply5 fnExpr arg1 arg2 arg3 arg4 arg5 resultVar) :: rest ->
+            emitApplyN ctx cursor [ arg1, arg2, arg3, arg4, arg5 ] fnExpr resultVar rest decodedVars
 
-        CheckOk _curName ->
-            -- The ok check is embedded in read ops via scf.if
-            -- This op is a marker for control flow
-            st
+        (ReturnJust resultVar) :: _ ->
+            emitJustResult ctx (resultVar :: decodedVars)
 
-        BuildResult valueExpr ->
-            -- Build the result value using decoded values
-            let
-                valueResult = Expr.generateExpr st.ctx valueExpr
-            in
-            { st
-                | ctx = valueResult.ctx
-                , ops = valueResult.ops ++ st.ops
-                , decodedValues = valueResult.resultVar :: st.decodedValues
-            }
+        ReturnNothing :: _ ->
+            emitNothingResult ctx
 
-        ReturnJust resultVarName ->
-            -- Handled in emitMaybeWrapper
-            st
-
-        ReturnNothing ->
-            -- Handled in emitMaybeWrapper
-            st
+        (InitReadCursor _ _) :: rest ->
+            -- Already handled at top level
+            emitOpsNested ctx cursor rest decodedVars
 
 
-{-| Emit a read operation with ok status tracking.
+{-| Emit a read wrapped in scf.if for bounds check.
 -}
-emitReadOp : EmitState -> String -> MlirType -> String -> EmitState
-emitReadOp st opName valueTy resultVarName =
+emitReadWithScfIf : Context -> String -> Int -> String -> MlirType -> String
+                  -> List DecoderOp -> List String
+                  -> ( String, Context, List MlirOp )
+emitReadWithScfIf ctx cursor byteCount opName valueTy resultVar rest decodedVars =
     let
-        ( valueVar, ctx1 ) = Ctx.freshVar st.ctx
-        ( newCurVar, ctx2 ) = Ctx.freshVar ctx1
-        ( okVar, ctx3 ) = Ctx.freshVar ctx2
+        -- bf.require(cursor, byteCount) -> ok : i1
+        ( okVar, ctx1 ) = Ctx.freshVar ctx
+        ( ctx2, requireOp ) = Ops.bfRequire ctx1 cursor byteCount okVar
 
-        ( ctx4, readOp ) =
-            Ops.mlirOp ctx3 opName
-                |> Ops.opBuilder.withOperands [ st.cursor ]
+        -- Then branch: read and continue
+        ( valueVar, ctx3 ) = Ctx.freshVar ctx2
+        ( newCursor, ctx4 ) = Ctx.freshVar ctx3
+        ( ctx5, readOp ) =
+            Ops.mlirOp ctx4 opName
+                |> Ops.opBuilder.withOperands [ cursor ]
                 |> Ops.opBuilder.withResults
                     [ ( valueVar, valueTy )
-                    , ( newCurVar, NamedStruct "bf.cur" )
-                    , ( okVar, I1 )
+                    , ( newCursor, Types.bfCur )
                     ]
                 |> Ops.opBuilder.build
 
-        -- Combine ok with previous ok (short-circuit AND)
-        ( combinedOk, ctx5, andOp ) =
-            if st.okVar == "" then
-                ( okVar, ctx4, [] )
-            else
-                let
-                    ( combinedVar, c1 ) = Ctx.freshVar ctx4
-                    ( c2, op ) =
-                        Ops.mlirOp c1 "arith.andi"
-                            |> Ops.opBuilder.withOperands [ st.okVar, okVar ]
-                            |> Ops.opBuilder.withResults [ ( combinedVar, I1 ) ]
-                            |> Ops.opBuilder.build
-                in
-                ( combinedVar, c2, [ op ] )
+        -- Recursively emit rest with new cursor and decoded value
+        ( innerResult, ctx6, innerOps ) =
+            emitOpsNested ctx5 newCursor rest (valueVar :: decodedVars)
+
+        -- Else branch: return Nothing
+        ( nothingVar, ctx7 ) = Ctx.freshVar ctx6
+        ( ctx8, nothingOp ) = Ops.callRuntime ctx7 "elm_maybe_nothing" [] nothingVar Types.ecoValue
+
+        -- Build scf.if
+        ( scfResult, ctx9 ) = Ctx.freshVar ctx8
+        ( ctx10, scfIfOp ) =
+            Ops.scfIf ctx9 okVar Types.ecoValue
+                { body = [ readOp ] ++ innerOps ++ [ Ops.scfYield innerResult ] }
+                { body = [ nothingOp, Ops.scfYield nothingVar ] }
+                scfResult
     in
-    { st
-        | ctx = ctx5
-        , cursor = newCurVar
-        , ops = andOp ++ [ readOp ] ++ st.ops
-        , decodedValues = valueVar :: st.decodedValues
-        , okVar = combinedOk
-    }
+    ( scfResult, ctx10, [ requireOp, scfIfOp ] )
 
 
-{-| Emit read.bytes operation.
+{-| ✅ HARD REQUIREMENT: Length conversion (Elm Int -> i32)
+
+Bytes.Decode.bytes/string take an Elm Int length. At MLIR level this is i64.
+
+But bf.require and bf.read.{bytes,utf8} take i32 lengths.
+
+Therefore every length expression must be:
+1) evaluated as i64
+2) checked: 0 <= len && len <= 0xFFFF_FFFF
+3) truncated to i32 for bf.require/bf.read
+
+If the check fails, the decoder must return Nothing.
 -}
-emitReadBytesOp : EmitState -> Mono.MonoExpr -> String -> EmitState
-emitReadBytesOp st lenExpr resultVarName =
-    let
-        lenResult = Expr.generateExpr st.ctx lenExpr
-        ( bytesVar, ctx1 ) = Ctx.freshVar lenResult.ctx
-        ( newCurVar, ctx2 ) = Ctx.freshVar ctx1
-        ( okVar, ctx3 ) = Ctx.freshVar ctx2
 
-        ( ctx4, readOp ) =
-            Ops.mlirOp ctx3 "bf.read.bytes"
-                |> Ops.opBuilder.withOperands [ st.cursor, lenResult.resultVar ]
+
+{-| Emit read.bytes with dynamic length and scf.if.
+-}
+emitReadBytesWithScfIf : Context -> String -> Mono.MonoExpr -> String
+                       -> List DecoderOp -> List String
+                       -> ( String, Context, List MlirOp )
+emitReadBytesWithScfIf ctx cursor lenExpr resultVar rest decodedVars =
+    let
+        -- Evaluate length expression (produces i64)
+        lenResult = Expr.generateExpr ctx lenExpr
+
+        -- Convert length from i64 to i32 with bounds check
+        ( len32Var, lenOkVar, ctx1, lenConvOps ) =
+            Ops.convertLenI64ToI32Checked lenResult.ctx lenResult.resultVar
+
+        -- bf.require(cursor, len32) -> ok : i1
+        ( okVar, ctx2 ) = Ctx.freshVar ctx1
+        ( ctx3, requireOp ) = Ops.bfRequireDyn ctx2 cursor len32Var okVar
+
+        -- Combine length ok and bounds ok
+        ( combinedOk, ctx4 ) = Ctx.freshVar ctx3
+        ( ctx5, andOp ) = Ops.arithAndI1 ctx4 lenOkVar okVar combinedOk
+
+        -- Then branch: read.bytes -> (bytes: eco.value, newCur, heapOk: i1)
+        -- Note: heap reads return ok for allocation/decode failures
+        ( bytesVar, ctx6 ) = Ctx.freshVar ctx5
+        ( newCursor, ctx7 ) = Ctx.freshVar ctx6
+        ( heapOk, ctx8 ) = Ctx.freshVar ctx7
+        ( ctx9, readOp ) =
+            Ops.mlirOp ctx8 "bf.read.bytes"
+                |> Ops.opBuilder.withOperands [ cursor, len32Var ]
                 |> Ops.opBuilder.withResults
-                    [ ( bytesVar, Types.ecoValue )
-                    , ( newCurVar, NamedStruct "bf.cur" )
-                    , ( okVar, I1 )
+                    [ ( bytesVar, Types.ecoValue )  -- ✅ heap object stays !eco.value in MLIR
+                    , ( newCursor, Types.bfCur )
+                    , ( heapOk, I1 )
                     ]
                 |> Ops.opBuilder.build
+
+        -- Inner scf.if for heap operation success
+        ( innerResult, ctx7, innerOps ) =
+            emitOpsNested ctx6 newCursor rest (bytesVar :: decodedVars)
+
+        ( nothingVar1, ctx8 ) = Ctx.freshVar ctx7
+        ( ctx9, nothingOp1 ) = Ops.callRuntime ctx8 "elm_maybe_nothing" [] nothingVar1 Types.ecoValue
+
+        ( innerScfResult, ctx10 ) = Ctx.freshVar ctx9
+        ( ctx11, innerScfOp ) =
+            Ops.scfIf ctx10 heapOk Types.ecoValue
+                { body = innerOps ++ [ Ops.scfYield innerResult ] }
+                { body = [ nothingOp1, Ops.scfYield nothingVar1 ] }
+                innerScfResult
+
+        -- Else branch (bounds fail): return Nothing
+        ( nothingVar2, ctx12 ) = Ctx.freshVar ctx11
+        ( ctx13, nothingOp2 ) = Ops.callRuntime ctx12 "elm_maybe_nothing" [] nothingVar2 Types.ecoValue
+
+        -- Outer scf.if for combined (length ok AND bounds ok)
+        ( scfResult, ctx14 ) = Ctx.freshVar ctx13
+        ( ctx15, scfIfOp ) =
+            Ops.scfIf ctx14 combinedOk Types.ecoValue
+                { body = [ readOp, innerScfOp, Ops.scfYield innerScfResult ] }
+                { body = [ nothingOp2, Ops.scfYield nothingVar2 ] }
+                scfResult
     in
-    { st
-        | ctx = ctx4
-        , cursor = newCurVar
-        , ops = readOp :: (lenResult.ops ++ st.ops)
-        , decodedValues = bytesVar :: st.decodedValues
-        , okVar = okVar
-    }
+    ( scfResult, ctx15, lenResult.ops ++ lenConvOps ++ [ requireOp, andOp, scfIfOp ] )
 
 
-{-| Emit read.utf8 operation.
+{-| Emit read.utf8 with dynamic length and scf.if.
 -}
-emitReadUtf8Op : EmitState -> Mono.MonoExpr -> String -> EmitState
-emitReadUtf8Op st lenExpr resultVarName =
+emitReadUtf8WithScfIf : Context -> String -> Mono.MonoExpr -> String
+                      -> List DecoderOp -> List String
+                      -> ( String, Context, List MlirOp )
+emitReadUtf8WithScfIf ctx cursor lenExpr resultVar rest decodedVars =
+    -- Same structure as emitReadBytesWithScfIf but calls bf.read.utf8
     let
-        lenResult = Expr.generateExpr st.ctx lenExpr
-        ( stringVar, ctx1 ) = Ctx.freshVar lenResult.ctx
-        ( newCurVar, ctx2 ) = Ctx.freshVar ctx1
-        ( okVar, ctx3 ) = Ctx.freshVar ctx2
+        -- Evaluate length expression (produces i64)
+        lenResult = Expr.generateExpr ctx lenExpr
 
-        ( ctx4, readOp ) =
-            Ops.mlirOp ctx3 "bf.read.utf8"
-                |> Ops.opBuilder.withOperands [ st.cursor, lenResult.resultVar ]
+        -- Convert length from i64 to i32 with bounds check
+        ( len32Var, lenOkVar, ctx1, lenConvOps ) =
+            Ops.convertLenI64ToI32Checked lenResult.ctx lenResult.resultVar
+
+        -- bf.require(cursor, len32) -> ok : i1
+        ( okVar, ctx2 ) = Ctx.freshVar ctx1
+        ( ctx3, requireOp ) = Ops.bfRequireDyn ctx2 cursor len32Var okVar
+
+        -- Combine length ok and bounds ok
+        ( combinedOk, ctx4 ) = Ctx.freshVar ctx3
+        ( ctx5, andOp ) = Ops.arithAndI1 ctx4 lenOkVar okVar combinedOk
+
+        ( stringVar, ctx6 ) = Ctx.freshVar ctx5
+        ( newCursor, ctx7 ) = Ctx.freshVar ctx6
+        ( heapOk, ctx8 ) = Ctx.freshVar ctx7
+        ( ctx9, readOp ) =
+            Ops.mlirOp ctx8 "bf.read.utf8"
+                |> Ops.opBuilder.withOperands [ cursor, len32Var ]
                 |> Ops.opBuilder.withResults
-                    [ ( stringVar, Types.ecoValue )
-                    , ( newCurVar, NamedStruct "bf.cur" )
-                    , ( okVar, I1 )
+                    [ ( stringVar, Types.ecoValue )  -- ✅ heap object stays !eco.value in MLIR
+                    , ( newCursor, Types.bfCur )
+                    , ( heapOk, I1 )
                     ]
                 |> Ops.opBuilder.build
+
+        ( innerResult, ctx10, innerOps ) =
+            emitOpsNested ctx9 newCursor rest (stringVar :: decodedVars)
+
+        ( nothingVar1, ctx11 ) = Ctx.freshVar ctx10
+        ( ctx12, nothingOp1 ) = Ops.callRuntime ctx11 "elm_maybe_nothing" [] nothingVar1 Types.ecoValue
+
+        ( innerScfResult, ctx13 ) = Ctx.freshVar ctx12
+        ( ctx14, innerScfOp ) =
+            Ops.scfIf ctx13 heapOk Types.ecoValue
+                { body = innerOps ++ [ Ops.scfYield innerResult ] }
+                { body = [ nothingOp1, Ops.scfYield nothingVar1 ] }
+                innerScfResult
+
+        ( nothingVar2, ctx15 ) = Ctx.freshVar ctx14
+        ( ctx16, nothingOp2 ) = Ops.callRuntime ctx15 "elm_maybe_nothing" [] nothingVar2 Types.ecoValue
+
+        ( scfResult, ctx17 ) = Ctx.freshVar ctx16
+        ( ctx18, scfIfOp ) =
+            Ops.scfIf ctx17 combinedOk Types.ecoValue
+                { body = [ readOp, innerScfOp, Ops.scfYield innerScfResult ] }
+                { body = [ nothingOp2, Ops.scfYield nothingVar2 ] }
+                scfResult
     in
-    { st
-        | ctx = ctx4
-        , cursor = newCurVar
-        , ops = readOp :: (lenResult.ops ++ st.ops)
-        , decodedValues = stringVar :: st.decodedValues
-        , okVar = okVar
-    }
+    ( scfResult, ctx18, lenResult.ops ++ lenConvOps ++ [ requireOp, andOp, scfIfOp ] )
 
 
-{-| Emit Maybe wrapper: scf.if(ok) { Just result } else { Nothing }
+{-| Emit function application and continue.
 -}
-emitMaybeWrapper : EmitState -> ( String, Context, List MlirOp )
-emitMaybeWrapper st =
+emitApplyN : Context -> String -> List String -> Mono.MonoExpr -> String
+           -> List DecoderOp -> List String
+           -> ( String, Context, List MlirOp )
+emitApplyN ctx cursor argVars fnExpr resultVar rest decodedVars =
     let
-        -- Get the final decoded value (top of stack)
+        -- Generate the function expression
+        fnResult = Expr.generateExpr ctx fnExpr
+
+        -- Emit eco.apply / eco.call for the function application
+        ( appliedVar, ctx2 ) = Ctx.freshVar fnResult.ctx
+        ( ctx3, applyOps ) =
+            Ops.ecoApply ctx2 fnResult.resultVar argVars appliedVar
+
+        -- Update decoded vars: remove consumed args, add result
+        newDecodedVars = appliedVar :: List.drop (List.length argVars) decodedVars
+
+        -- Continue with rest
+        ( resultVar_, ctx4, restOps ) =
+            emitOpsNested ctx3 cursor rest newDecodedVars
+    in
+    ( resultVar_, ctx4, fnResult.ops ++ applyOps ++ restOps )
+
+
+{-| Emit Just wrapping the final decoded value.
+-}
+emitJustResult : Context -> List String -> ( String, Context, List MlirOp )
+emitJustResult ctx decodedVars =
+    let
         resultVar =
-            case st.decodedValues of
+            case decodedVars of
                 v :: _ -> v
-                [] -> ""  -- Should not happen
+                [] -> ""  -- Error case
 
-        ( justVar, ctx1 ) = Ctx.freshVar st.ctx
-        ( nothingVar, ctx2 ) = Ctx.freshVar ctx1
-        ( maybeVar, ctx3 ) = Ctx.freshVar ctx2
-
-        -- scf.if %ok -> eco.value {
-        --   %just = call @elm_maybe_just(%result)
-        --   scf.yield %just
-        -- } else {
-        --   %nothing = call @elm_maybe_nothing()
-        --   scf.yield %nothing
-        -- }
-        ( ctx4, ifOp ) =
-            Ops.scfIf ctx3 st.okVar Types.ecoValue
-                -- Then block: Just result
-                { body =
-                    [ Ops.callNamed "elm_maybe_just" [ ( resultVar, Types.ecoValue ) ] justVar Types.ecoValue
-                    , Ops.scfYield justVar
-                    ]
-                }
-                -- Else block: Nothing
-                { body =
-                    [ Ops.callNamed "elm_maybe_nothing" [] nothingVar Types.ecoValue
-                    , Ops.scfYield nothingVar
-                    ]
-                }
-                maybeVar
+        ( justVar, ctx1 ) = Ctx.freshVar ctx
+        ( ctx2, justOp ) = Ops.callRuntime ctx1 "elm_maybe_just" [ resultVar ] justVar Types.ecoValue
     in
-    ( maybeVar, ctx4, [ ifOp ] )
+    ( justVar, ctx2, [ justOp ] )
+
+
+{-| Emit Nothing result.
+-}
+emitNothingResult : Context -> ( String, Context, List MlirOp )
+emitNothingResult ctx =
+    let
+        ( nothingVar, ctx1 ) = Ctx.freshVar ctx
+        ( ctx2, nothingOp ) = Ops.callRuntime ctx1 "elm_maybe_nothing" [] nothingVar Types.ecoValue
+    in
+    ( nothingVar, ctx2, [ nothingOp ] )
+
+
+{-| Helper: endian-specific op name.
+-}
+endianOpName : String -> Endianness -> String
+endianOpName base endian =
+    case endian of
+        BE -> base ++ "_be"
+        LE -> base ++ "_le"
 ```
+
+**Required Ops.elm helpers** (assumption - must exist or be created):
+- `Ops.bfRequire : Context -> String -> Int -> String -> ( Context, MlirOp )`
+- `Ops.bfRequireDyn : Context -> String -> String -> String -> ( Context, MlirOp )`
+- `Ops.bfCursorInit : Context -> String -> String -> ( Context, MlirOp )`
+- `Ops.scfIf : Context -> String -> MlirType -> { body : List MlirOp } -> { body : List MlirOp } -> String -> ( Context, MlirOp )`
+- `Ops.scfYield : String -> MlirOp`
+- `Ops.ecoApply : Context -> String -> List String -> String -> ( Context, List MlirOp )`
+- `Ops.callRuntime : Context -> String -> List String -> String -> MlirType -> ( Context, MlirOp )`
+- `Ops.convertLenI64ToI32Checked : Context -> String -> ( String, String, Context, List MlirOp )` - returns `(len32Var, okVar, ctxOut, ops)` with bounds check `0 <= len && len <= 0xFFFF_FFFF`
+- `Ops.arithAndI1 : Context -> String -> String -> String -> ( Context, MlirOp )` - i1 AND operation
 
 ---
 
@@ -2297,9 +2924,15 @@ This affects `elm_maybe_nothing` and `elm_maybe_just` implementation.
 Does the existing `Ops.elm` support emitting `scf.if` with then/else regions?
 If not, this needs to be added.
 
-### 3. Signed vs unsigned integer handling
+### 3. Scalar representation (HARD GATE)
 
-For `signedInt8/16/32`, do we need separate MLIR types or just cast at use site?
+Confirm the MLIR-level representation of Elm `Int` and `Float`. This plan assumes:
+- Elm `Int` lowers to `i64`
+- Elm `Float` lowers to `f64`
+
+Therefore, **bf ops must consume/produce Elm-level scalars (`i64`/`f64`)**, and BFToLLVM must do trunc/extend/bitcasts internally for byte encodings (u8/u16/u32/f32/f64 storage).
+
+If Elm `Int` is not `i64` or Elm `Float` not `f64`, update bf op signatures and all emitter typing accordingly before implementing fusion.
 
 ---
 
@@ -2576,7 +3209,7 @@ reifyAndThenBody registry firstDecoder closureInfo bodyExpr =
     let
         -- Get the lambda parameter name
         paramName =
-            case closureInfo.args of
+            case closureInfo.params of
                 [ ( name, _ ) ] -> name
                 _ -> ""  -- andThen lambda should have exactly 1 param
     in
@@ -2620,7 +3253,7 @@ matchLengthPrefixedPattern registry paramName bodyExpr =
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
                     case Mono.lookupSpecKey specId registry of
-                        Just (SpecKey (Global (Canonical pkg moduleName) name) _ _) ->
+                        Just (Global (Canonical pkg moduleName) name, _, _) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Decode" then
                                 -- Check if arg is just the parameter variable
                                 if isVarReference paramName argExpr then
@@ -2645,6 +3278,10 @@ matchLengthPrefixedPattern registry paramName bodyExpr =
 
 
 {-| Check if expression is a simple variable reference to the given name.
+
+**NOTE:** This check is correct for pattern recognition. However, at emission time,
+the decoded "len" value must become an SSA variable that the emitter can reference.
+This depends on the Phase 2 fix for "decoded SSA vars must be usable" (Apply1/2/etc).
 -}
 isVarReference : String -> Mono.MonoExpr -> Bool
 isVarReference name expr =
@@ -2677,24 +3314,37 @@ decoderToLengthDecoder decoder =
 
 ```elm
 type DecoderOp
-    = -- ... existing ops ...
+    = -- ... existing ops from Phase 2 (ReadU8, ReadUtf8, Apply1-5, PushValue, etc.) ...
 
-    -- NEW: Length-prefixed operations
-    | ReadLengthPrefixedString String LengthReadOp String
-      -- cursorName, how to read length, resultVarName
-    | ReadLengthPrefixedBytes String LengthReadOp String
-      -- cursorName, how to read length, resultVarName
+    -- NEW: Length-reading operations (fixed-size length field)
+    | ReadLen String LengthReadOp String
+      -- cursorName, lengthReadOp, resultVarName (stores length as i32)
+      -- Emitter wraps in scf.if for bounds check (1/2/4 bytes)
+
+    -- NEW: Dynamic-length read operations (length from SSA var)
+    | ReadDynUtf8 String String String
+      -- cursorName, lengthVarName, resultVarName
+      -- Emitter emits: bf.require(cur, len), scf.if ok { bf.read.dyn_utf8 ... }
+
+    | ReadDynBytes String String String
+      -- cursorName, lengthVarName, resultVarName
+      -- Same pattern as ReadDynUtf8
 
 
 {-| How to read the length value.
+
+NOTE: Bounds checking is handled by the emitter via scf.if, not here.
 -}
 type LengthReadOp
-    = ReadLenU8
-    | ReadLenU16BE
-    | ReadLenU16LE
-    | ReadLenU32BE
-    | ReadLenU32LE
+    = ReadLenU8      -- 1 byte, emitter checks bounds for 1 byte
+    | ReadLenU16BE   -- 2 bytes big-endian
+    | ReadLenU16LE   -- 2 bytes little-endian
+    | ReadLenU32BE   -- 4 bytes big-endian
+    | ReadLenU32LE   -- 4 bytes little-endian
 ```
+
+**Note:** The old `ReadLengthPrefixedString/Bytes` ops are REMOVED. They combined
+too much logic. Instead, use the decomposed ops above with explicit require+branch.
 
 ---
 
@@ -2709,23 +3359,39 @@ compileNode node st =
         -- ... existing cases ...
 
         DLengthPrefixedString lenDecoder ->
+            {- SCF-compatible: Just emit ReadLen + ReadDynUtf8.
+               Bounds checking is handled by the emitter via scf.if.
+            -}
             let
-                ( varName, st1 ) = freshVar st
+                ( lenVar, st1 ) = freshVar st
+                ( outVar, st2 ) = freshVar st1
                 lenReadOp = lengthDecoderToReadOp lenDecoder
             in
-            { st1
-                | ops = CheckOk "cur" :: ReadLengthPrefixedString "cur" lenReadOp varName :: st1.ops
-                , decodedVars = varName :: st1.decodedVars
+            { st2
+                | ops =
+                    st2.ops
+                        ++ [ ReadLen "cur" lenReadOp lenVar
+                           , ReadDynUtf8 "cur" lenVar outVar
+                           ]
+                , decodedVars = outVar :: st2.decodedVars
             }
 
         DLengthPrefixedBytes lenDecoder ->
+            {- SCF-compatible: Just emit ReadLen + ReadDynBytes.
+               Bounds checking is handled by the emitter via scf.if.
+            -}
             let
-                ( varName, st1 ) = freshVar st
+                ( lenVar, st1 ) = freshVar st
+                ( outVar, st2 ) = freshVar st1
                 lenReadOp = lengthDecoderToReadOp lenDecoder
             in
-            { st1
-                | ops = CheckOk "cur" :: ReadLengthPrefixedBytes "cur" lenReadOp varName :: st1.ops
-                , decodedVars = varName :: st1.decodedVars
+            { st2
+                | ops =
+                    st2.ops
+                        ++ [ ReadLen "cur" lenReadOp lenVar
+                           , ReadDynBytes "cur" lenVar outVar
+                           ]
+                , decodedVars = outVar :: st2.decodedVars
             }
 
         DAndThen firstDecoder binding bodyDecoder ->
@@ -2737,7 +3403,6 @@ compileNode node st =
                 st2 = compileNode bodyDecoder st1
             in
             st2
-
 
 lengthDecoderToReadOp : LengthDecoder -> LengthReadOp
 lengthDecoderToReadOp ld =
@@ -2763,40 +3428,42 @@ lengthDecoderToReadOp ld =
 For efficiency, add combined length-prefixed ops that avoid intermediate values:
 
 ```tablegen
+// ✅ CORRECTED: All results use ECO_ValueType (eco.value)
+
 // Read length (u32 BE) then that many bytes as UTF-8 string
 def BF_ReadLenStringU32BEOp : Op<BFDialect, "read.len_string_u32be", [Pure]> {
   let arguments = (ins BF_CurType:$cur);
-  let results   = (outs LLVM_Pointer:$string, BF_CurType:$newCur, BF_StatusType:$ok);
+  let results   = (outs ECO_ValueType:$string, BF_CurType:$newCur, BF_StatusType:$ok);
   let summary = "Read u32 BE length, then that many bytes as UTF-8";
 }
 
 // Read length (u16 LE) then that many bytes as UTF-8 string
 def BF_ReadLenStringU16LEOp : Op<BFDialect, "read.len_string_u16le", [Pure]> {
   let arguments = (ins BF_CurType:$cur);
-  let results   = (outs LLVM_Pointer:$string, BF_CurType:$newCur, BF_StatusType:$ok);
+  let results   = (outs ECO_ValueType:$string, BF_CurType:$newCur, BF_StatusType:$ok);
 }
 
 // Similar for bytes...
 def BF_ReadLenBytesU32BEOp : Op<BFDialect, "read.len_bytes_u32be", [Pure]> {
   let arguments = (ins BF_CurType:$cur);
-  let results   = (outs LLVM_Pointer:$bytes, BF_CurType:$newCur, BF_StatusType:$ok);
+  let results   = (outs ECO_ValueType:$bytes, BF_CurType:$newCur, BF_StatusType:$ok);
 }
 
 // ... add variants for u8, u16 BE/LE, u32 BE/LE ...
 ```
 
-**Alternative approach:** Keep ops separate and rely on the lowering to combine them:
+**Alternative approach (recommended):** Keep ops separate and rely on the lowering to combine them:
 
 ```tablegen
 // Use existing read ops + a "read dynamic bytes" op
 def BF_ReadDynBytesOp : Op<BFDialect, "read.dyn_bytes", [Pure]> {
   let arguments = (ins BF_CurType:$cur, I32:$len);
-  let results   = (outs LLVM_Pointer:$bytes, BF_CurType:$newCur, BF_StatusType:$ok);
+  let results   = (outs ECO_ValueType:$bytes, BF_CurType:$newCur, BF_StatusType:$ok);
 }
 
 def BF_ReadDynUtf8Op : Op<BFDialect, "read.dyn_utf8", [Pure]> {
   let arguments = (ins BF_CurType:$cur, I32:$len);
-  let results   = (outs LLVM_Pointer:$string, BF_CurType:$newCur, BF_StatusType:$ok);
+  let results   = (outs ECO_ValueType:$string, BF_CurType:$newCur, BF_StatusType:$ok);
 }
 ```
 
@@ -2811,75 +3478,76 @@ I recommend the **alternative approach** - it's more composable and we already h
 The lowering for length-prefixed is straightforward with the dynamic ops:
 
 ```cpp
-// bf.read.dyn_utf8(cur, len) → (string, newCur, ok)
+// bf.read.dyn_utf8(cur, len) -> (i64 string, newCur, i1 ok)
+// ASSUMPTION: bounds were already checked by bf.require + fail-fast control flow.
 struct ReadDynUtf8OpLowering : public ConvertOpToLLVMPattern<bf::ReadDynUtf8Op> {
   LogicalResult matchAndRewrite(bf::ReadDynUtf8Op op, OpAdaptor adaptor,
                                  ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    auto cur = adaptor.getCur();
-    Value len = adaptor.getLen();
+    Value cur = adaptor.getCur();
+    Value len32 = adaptor.getLen();
 
     Value ptr = rewriter.create<LLVM::ExtractValueOp>(loc, cur, 0);
     Value end = rewriter.create<LLVM::ExtractValueOp>(loc, cur, 1);
 
-    // Bounds check: ptr + len <= end
-    Value lenExt = rewriter.create<LLVM::ZExtOp>(loc, i64Type, len);
-    Value newPtr = rewriter.create<LLVM::GEPOp>(loc, ptrType, i8Type, ptr, lenExt);
-    Value boundsOk = rewriter.create<LLVM::ICmpOp>(
-        loc, LLVM::ICmpPredicate::ule, newPtr, end);
+    // newPtr = ptr + len
+    Value len64 = rewriter.create<LLVM::ZExtOp>(loc, i64Type, len32);
+    Value newPtr = rewriter.create<LLVM::GEPOp>(loc, ptrType, i8Type, ptr, len64);
 
-    // Call elm_utf8_decode(ptr, len) - returns string or NULL
-    Value string = rewriter.create<LLVM::CallOp>(
-        loc, ptrType, "elm_utf8_decode", ValueRange{ptr, len}).getResult();
+    // stringVal : i64 = call @elm_utf8_decode(ptr, len32)
+    Value stringVal = rewriter.create<LLVM::CallOp>(
+        loc, i64Type, "elm_utf8_decode", ValueRange{ptr, len32}).getResult();
 
-    // ok = boundsOk && string != null
-    Value null = rewriter.create<LLVM::ZeroOp>(loc, ptrType);
-    Value notNull = rewriter.create<LLVM::ICmpOp>(
-        loc, LLVM::ICmpPredicate::ne, string, null);
-    Value ok = rewriter.create<LLVM::AndOp>(loc, boundsOk, notNull);
+    // ok = (stringVal != 0)
+    Value zero64 = rewriter.create<LLVM::ConstantOp>(loc, i64Type, 0);
+    Value ok = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ne, stringVal, zero64);
 
     // Build new cursor
     Value newCur = rewriter.create<LLVM::UndefOp>(loc, cursorType);
     newCur = rewriter.create<LLVM::InsertValueOp>(loc, newCur, newPtr, 0);
     newCur = rewriter.create<LLVM::InsertValueOp>(loc, newCur, end, 1);
 
-    rewriter.replaceOp(op, {string, newCur, ok});
+    rewriter.replaceOp(op, {stringVal, newCur, ok});
     return success();
   }
 };
 
-// bf.read.dyn_bytes(cur, len) → (bytes, newCur, ok)
+// bf.read.dyn_bytes(cur, len) -> (i64 bytes, newCur, i1 ok)
+// ASSUMPTION: bounds were already checked by bf.require + fail-fast control flow.
 struct ReadDynBytesOpLowering : public ConvertOpToLLVMPattern<bf::ReadDynBytesOp> {
   LogicalResult matchAndRewrite(bf::ReadDynBytesOp op, OpAdaptor adaptor,
                                  ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    auto cur = adaptor.getCur();
-    Value len = adaptor.getLen();
+    Value cur = adaptor.getCur();
+    Value len32 = adaptor.getLen();
 
     Value ptr = rewriter.create<LLVM::ExtractValueOp>(loc, cur, 0);
     Value end = rewriter.create<LLVM::ExtractValueOp>(loc, cur, 1);
 
-    // Bounds check
-    Value lenExt = rewriter.create<LLVM::ZExtOp>(loc, i64Type, len);
-    Value newPtr = rewriter.create<LLVM::GEPOp>(loc, ptrType, i8Type, ptr, lenExt);
-    Value ok = rewriter.create<LLVM::ICmpOp>(
-        loc, LLVM::ICmpPredicate::ule, newPtr, end);
+    // newPtr = ptr + len
+    Value len64 = rewriter.create<LLVM::ZExtOp>(loc, i64Type, len32);
+    Value newPtr = rewriter.create<LLVM::GEPOp>(loc, ptrType, i8Type, ptr, len64);
 
     // Allocate ByteBuffer and copy
-    Value bytes = rewriter.create<LLVM::CallOp>(
-        loc, ptrType, "elm_alloc_bytebuffer", ValueRange{len}).getResult();
+    // bytesVal : i64 = call @elm_alloc_bytebuffer(len32)
+    Value bytesVal = rewriter.create<LLVM::CallOp>(
+        loc, i64Type, "elm_alloc_bytebuffer", ValueRange{len32}).getResult();
     Value data = rewriter.create<LLVM::CallOp>(
-        loc, ptrType, "elm_bytebuffer_data", ValueRange{bytes}).getResult();
+        loc, ptrType, "elm_bytebuffer_data", ValueRange{bytesVal}).getResult();
 
     // memcpy(data, ptr, len)
-    rewriter.create<LLVM::MemcpyOp>(loc, data, ptr, lenExt, /*isVolatile=*/false);
+    rewriter.create<LLVM::MemcpyOp>(loc, data, ptr, len64, /*isVolatile=*/false);
+
+    // ok = (bytesVal != 0) -- allocation could fail
+    Value zero64 = rewriter.create<LLVM::ConstantOp>(loc, i64Type, 0);
+    Value ok = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ne, bytesVal, zero64);
 
     // Build new cursor
     Value newCur = rewriter.create<LLVM::UndefOp>(loc, cursorType);
     newCur = rewriter.create<LLVM::InsertValueOp>(loc, newCur, newPtr, 0);
     newCur = rewriter.create<LLVM::InsertValueOp>(loc, newCur, end, 1);
 
-    rewriter.replaceOp(op, {bytes, newCur, ok});
+    rewriter.replaceOp(op, {bytesVal, newCur, ok});
     return success();
   }
 };
@@ -2892,19 +3560,74 @@ struct ReadDynBytesOpLowering : public ConvertOpToLLVMPattern<bf::ReadDynBytesOp
 ### 6.1 Update `EmitBFDecoder.elm`
 
 ```elm
+{- ✅ CORRECTED C15: ReadLengthPrefixedString/Bytes ops are REMOVED.
+
+Instead of monolithic ops, use the decomposed pattern:
+1. Require + read length (e.g., bf.read.u32_be)
+2. RequireDyn + read data (e.g., bf.read.dyn_utf8)
+
+This gives proper fail-fast at each step.
+-}
+
 emitDecoderOp : DecoderOp -> EmitState -> EmitState
 emitDecoderOp op st =
     case op of
         -- ... existing cases ...
 
-        ReadLengthPrefixedString _curName lenReadOp resultVarName ->
-            emitLengthPrefixedRead st lenReadOp "bf.read.dyn_utf8"
+        -- ❌ REMOVED: ReadLengthPrefixedString/Bytes
+        -- These monolithic ops are replaced by the decomposed sequence:
+        --   Require "cur" 4 → BranchOnFail "cur"
+        --   ReadU32 "cur" BE "lenVar"
+        --   RequireDyn "cur" "lenVar" → BranchOnFail "cur"
+        --   ReadDynUtf8 "cur" "lenVar" "resultVar"
 
-        ReadLengthPrefixedBytes _curName lenReadOp resultVarName ->
-            emitLengthPrefixedRead st lenReadOp "bf.read.dyn_bytes"
+        -- Dynamic-length reads (length is already computed)
+        ReadDynBytes _curName lenVar resultVarName ->
+            emitReadDynOp st lenVar "bf.read.dyn_bytes" resultVarName
+
+        ReadDynUtf8 _curName lenVar resultVarName ->
+            emitReadDynOp st lenVar "bf.read.dyn_utf8" resultVarName
 
 
-{-| Emit a length-prefixed read: read length, then read that many bytes.
+{- ⚠️⚠️⚠️ CORRECTION C8: SAME SAFETY ISSUE AS C7
+
+**PROBLEM:** This function uses `okLen`, `okData`, and `arith.andi` to accumulate ok flags.
+This has the SAME memory safety issue as C7: the second read (`dynOp`) happens BEFORE
+we check if the first read (`lenOp`) succeeded.
+
+**REQUIRED REWRITE:** Use require+branch before EACH read:
+
+```elm
+emitLengthPrefixedRead st lenReadOp dynReadOpName =
+    -- Step 1: require(byteCount for length field) → branch to fail
+    let
+        lenBytes = case lenReadOp of
+            ReadLenU8 -> 1
+            ReadLenU16BE -> 2
+            ReadLenU16LE -> 2
+            ReadLenU32BE -> 4
+            ReadLenU32LE -> 4
+
+        st1 = emitRequire st lenBytes  -- branches to fail if OOB
+
+        -- Step 2: read length (safe - we checked)
+        st2 = emitReadLen st1 lenReadOp
+
+        -- Step 3: require(lenValue) → branch to fail
+        -- NOTE: lenValue is dynamic! Need bf.require with variable operand
+        st3 = emitRequireDynamic st2 st2.lenVar
+
+        -- Step 4: read data (safe - we checked)
+        st4 = emitReadDynamic st3 dynReadOpName st2.lenVar
+    in
+    st4
+```
+
+**DELETE the `okLen`, `okData`, `arith.andi` pattern below!**
+-}
+
+{-| ⚠️ WARNING: This implementation is MEMORY UNSAFE!
+    See CORRECTION C8 above for the required architecture.
 -}
 emitLengthPrefixedRead : EmitState -> LengthReadOp -> String -> EmitState
 emitLengthPrefixedRead st lenReadOp dynReadOpName =
@@ -2927,7 +3650,7 @@ emitLengthPrefixedRead st lenReadOp dynReadOpName =
                 |> Ops.opBuilder.withOperands [ st.cursor ]
                 |> Ops.opBuilder.withResults
                     [ ( lenVar, lenType )
-                    , ( curAfterLen, NamedStruct "bf.cur" )
+                    , ( curAfterLen, Types.bfCur )
                     , ( okLen, I1 )
                     ]
                 |> Ops.opBuilder.build
@@ -2957,7 +3680,7 @@ emitLengthPrefixedRead st lenReadOp dynReadOpName =
                 |> Ops.opBuilder.withOperands [ curAfterLen, lenI32 ]
                 |> Ops.opBuilder.withResults
                     [ ( resultVar, Types.ecoValue )
-                    , ( newCurVar, NamedStruct "bf.cur" )
+                    , ( newCurVar, Types.bfCur )
                     , ( okData, I1 )
                     ]
                 |> Ops.opBuilder.build
@@ -3216,6 +3939,71 @@ This requires:
 **Prerequisite:** Phase 3 (andThen) must be complete - provides:
 - Lambda body analysis infrastructure
 - Dynamic length read operations
+
+---
+
+## ⚠️⚠️⚠️ HARD GATE: PHASE 4 IS NON-AUTHORITATIVE ⚠️⚠️⚠️
+
+### CORRECTION C9: Phase 4 = Requirements + Investigation Tasks ONLY
+
+**CRITICAL WARNING:** All code blocks in Phase 4 are **HYPOTHETICAL SKETCHES** intended
+as *appendix material* for future reference, NOT implementation-ready code.
+
+**What Phase 4 SHOULD contain:**
+- High-level requirements and goals
+- Investigation tasks to ground assumptions
+- Open questions needing answers before implementation
+
+**What Phase 4 code blocks actually are:**
+- Unverified guesses about MonoExpr representation
+- Unconfirmed assumptions about `scf.while` API
+- Placeholder patterns that may be completely wrong
+
+---
+
+**BEFORE IMPLEMENTING PHASE 4, you MUST:**
+
+1. **Complete Phases 1-3 end-to-end** - proven working, tested
+2. **Ground every assumption:**
+   - How is `\( n, acc ) -> ...` represented in MonoExpr?
+   - What are the SpecIds for `Loop` and `Done` constructors?
+   - Does `Ops.elm` support `scf.while` with condition+body regions?
+   - Does `Ops.elm` support `scf.if` for structured conditionals?
+3. **Rewrite Phase 4 from scratch** based on grounded information
+
+**TREAT ALL CODE BLOCKS BELOW AS:**
+```
+┌─────────────────────────────────────────────────────────────┐
+│  APPENDIX: HYPOTHETICAL CODE - TO BE VERIFIED AND REWRITTEN │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## ⚠️ GROUNDING REQUIREMENTS
+
+Phase 4 is **speculative** - it includes many `Nothing  -- TODO` placeholders and assumes specific MonoExpr shapes without verification.
+
+**Before implementation, you MUST ground:**
+
+1. **Tuple destructuring in Mono** - How is `\( n, acc ) -> ...` represented?
+   - Is it pattern matching in the lambda params?
+   - Or `\state -> let (n, acc) = state in ...`?
+
+2. **Step type representation** - How do `Loop` and `Done` constructors appear in MonoExpr?
+   - Need to identify their SpecIds for pattern matching
+
+3. **scf.while support in Ops.elm** - Does it exist?
+   - `Ops.elm` has `arithCmpI` for predicates, but likely lacks `scf.while` with regions
+   - If not, you must implement region-capable builders first:
+     ```elm
+     scfWhile : Context -> ... -> (Context, MlirOp)
+     -- Must support condition region + body region with yields
+     ```
+
+4. **scf.if support in Ops.elm** - Same question for structured conditionals
+
+**Recommendation:** Before writing loop fusion, add/confirm `scf.if` and `scf.while` support in `Ops.elm`.
 ---
 ---
 
@@ -3528,7 +4316,7 @@ analyzeLoopStep registry closureInfo bodyExpr initialStateExpr =
     let
         -- Get state parameter name and pattern
         stateParam =
-            case closureInfo.args of
+            case closureInfo.params of
                 [ ( name, _ ) ] -> Just name
                 _ -> Nothing
     in
@@ -3936,32 +4724,35 @@ emitCountLoopBody cursorVar itemOps ctx =
 ### 5.1 Add to `ElmBytesRuntime.h`
 
 ```c
+// ✅ CORRECTED C19: List operations use u64 (eco.value), not void*
 // List operations for loop support
-void* elm_list_nil(void);
-void* elm_list_cons(void* head, void* tail);
-void* elm_list_reverse(void* list);
+u64 elm_list_nil(void);
+u64 elm_list_cons(u64 head, u64 tail);
+u64 elm_list_reverse(u64 list);
 ```
 
 ### 5.2 Implement in `ElmBytesRuntime.cpp`
 
 ```cpp
+// ✅ CORRECTED C19: All list helpers use u64 ABI
+
 extern "C" {
 
-void* elm_list_nil(void) {
-    // Return empty list (Nil constructor)
-    return /* Nil representation */;
+u64 elm_list_nil(void) {
+    // Return empty list (Nil constructor) as eco.value
+    return toEcoValue(List::nil());
 }
 
-void* elm_list_cons(void* head, void* tail) {
-    // Allocate Cons cell
+u64 elm_list_cons(u64 headVal, u64 tailVal) {
+    // Allocate Cons cell, convert eco.values to internal pointers
     // Cons { head: head, tail: tail }
-    return /* Cons allocation */;
+    return toEcoValue(List::cons(headVal, tailVal));
 }
 
-void* elm_list_reverse(void* list) {
-    // Reverse list in place or build new reversed list
-    // This should reuse existing ListOps implementation
-    return /* Reversed list */;
+u64 elm_list_reverse(u64 listVal) {
+    // Reverse list - reuse existing ListOps implementation
+    void* list = reinterpret_cast<void*>(static_cast<uintptr_t>(listVal));
+    return toEcoValue(ListOps::reverse(list));
 }
 
 } // extern "C"
@@ -4344,28 +5135,45 @@ This section consolidates all file changes across all four phases.
 
 ## bf Dialect Operations (All Phases)
 
+**✅ CORRECTED C25: Updated to reflect current API surface**
+
 ### Types
-- `!bf.cur` - Cursor type (ptr, end) pair
-- `!bf.status` - i1 ok/fail flag (Phase 2+)
+- `!bf.cur` - Cursor type (ptr, end) pair, lowered to `{i8*, i8*}`
+- `!bf.status` - i1 ok/fail flag (returned by `bf.require` only)
+- `!eco.value` - Elm heap value (lowered to i64)
 
 ### Phase 1 Operations (Write)
-- `bf.alloc` - Allocate ByteBuffer
-- `bf.cursor.init` - Create cursor from ByteBuffer*
-- `bf.write.u8`, `bf.write.u16_be`, `bf.write.u16_le`
-- `bf.write.u32_be`, `bf.write.u32_le`
-- `bf.write.f32_be`, `bf.write.f32_le`, `bf.write.f64_be`, `bf.write.f64_le`
-- `bf.write.bytes_copy`, `bf.write.utf8`
+- `bf.alloc(size) -> !eco.value` - Allocate ByteBuffer
+- `bf.cursor.init(bb) -> !bf.cur` - Create cursor from ByteBuffer
+- `bf.write.u8(cur, val) -> !bf.cur`
+- `bf.write.u16_be/le(cur, val) -> !bf.cur`
+- `bf.write.u32_be/le(cur, val) -> !bf.cur`
+- `bf.write.f32_be/le(cur, val) -> !bf.cur`
+- `bf.write.f64_be/le(cur, val) -> !bf.cur`
+- `bf.write.bytes_copy(cur, bytes) -> !bf.cur`
+- `bf.write.utf8(cur, string) -> !bf.cur`
 
 ### Phase 2 Operations (Read)
-- `bf.require` - Bounds check
-- `bf.read.u8`, `bf.read.u16_be`, `bf.read.u16_le`
-- `bf.read.u32_be`, `bf.read.u32_le`
-- `bf.read.f32_be`, `bf.read.f64_be`
-- `bf.read.bytes`, `bf.read.utf8`
 
-### Phase 3 Operations (Dynamic)
-- `bf.read.dyn_bytes` - Read N bytes where N is runtime value
-- `bf.read.dyn_utf8` - Read N bytes as UTF-8 where N is runtime value
+**Bounds check (returns ok):**
+- `bf.require(cur, n) -> !bf.status` - Check n bytes available
+
+**Primitive reads (NO ok - caller must require+branch first):**
+- `bf.read.u8(cur) -> (i8, !bf.cur)` - ✅ C12/C21 corrected
+- `bf.read.u16_be/le(cur) -> (i16, !bf.cur)`
+- `bf.read.u32_be/le(cur) -> (i32, !bf.cur)`
+- `bf.read.f32_be/le(cur) -> (f32, !bf.cur)`
+- `bf.read.f64_be/le(cur) -> (f64, !bf.cur)`
+
+**Heap reads (may fail for reasons other than bounds):**
+- `bf.read.bytes(cur, len) -> (!eco.value, !bf.cur, !bf.status)`
+- `bf.read.utf8(cur, len) -> (!eco.value, !bf.cur, !bf.status)`
+
+### Phase 3 Operations (Dynamic Length)
+- `bf.read.dyn_bytes(cur, lenVar) -> (!eco.value, !bf.cur, !bf.status)`
+- `bf.read.dyn_utf8(cur, lenVar) -> (!eco.value, !bf.cur, !bf.status)`
+
+**❌ REMOVED (C15): ReadLengthPrefixed* ops are replaced by decomposed require+read sequences.**
 
 ---
 
@@ -4378,6 +5186,10 @@ This section consolidates all file changes across all four phases.
 | 1 | Endianness representation | `Bytes.BE`/`Bytes.LE` are nullary constructors as `MonoVarGlobal`, resolved via `lookupSpecKey` |
 | 2 | Context.setVar for cursors | Not needed - use SSA-threaded cursor in EmitState |
 | 3 | Pkg.bytes identifier | Confirmed at `Package.elm:204` |
+| 4 | `lookupSpecKey` return type | Returns `Maybe (Global, MonoType, Maybe LambdaId)` - a **tuple**, not `SpecKey` constructor |
+| 5 | `MonoLet` constructor | Has 3 args: `MonoLet def body monoType` |
+| 6 | `MonoClosure` parameter access | Use `closureInfo.params`, not `closureInfo.args` |
+| 7 | Header bitfield stability | **NOT ABI-stable** - never GEP into header fields, use runtime accessors |
 
 ## Open Questions
 
@@ -4386,19 +5198,58 @@ This section consolidates all file changes across all four phases.
 
 ### Phase 2
 1. **Maybe representation** - How is `Maybe a` represented at runtime? Is there a `Nothing` singleton?
-2. **scf.if support** - Does `Ops.elm` support emitting `scf.if` with then/else regions?
+2. **scf.if support** - Does `Ops.elm` support emitting `scf.if` with then/else regions? (**CRITICAL for C24 decision**)
 3. **Signed vs unsigned integers** - Do we need separate MLIR types or just cast at use site?
+4. **✅ C22: eco.value 0 validity** - Is 0 a valid eco.value? If so, `elm_utf8_decode` failure signaling needs rethinking.
 
 ### Phase 3
-1. **Lambda closure analysis** - How does `MonoClosure` represent closures? Need to verify parameter extraction.
+1. ~~**Lambda closure analysis**~~ - **RESOLVED:** Use `closureInfo.params` for parameter extraction
 2. **Negative length handling** - Treat as unsigned (matches JS) or fail?
 3. **Maximum length limit** - Should there be a sanity check to prevent OOM?
+4. **✅ C23: ECO TableGen include path** - What is the correct include path for ECO_ValueType in your build system?
 
 ### Phase 4
 1. **List representation** - How are lists represented at runtime?
 2. **scf.while support** - Does `Ops.elm` support emitting `scf.while` with condition/body blocks?
 3. **Step type pattern matching** - How is `Step state a` (Loop/Done) represented in MonoExpr?
 4. **State tuple destructuring** - How does the compiler represent `\( n, acc ) -> ...`?
+
+### ✅ CORRECTED C18: MonoLet Grounding Task (All Phases)
+
+**HARD GATE:** Before implementing ANY MonoLet-related code, you MUST:
+
+1. **Read the actual type definition** in `Compiler/AST/Monomorphized.elm`:
+   ```bash
+   grep -A 20 "type alias MonoLetDef" compiler/src/Compiler/AST/Monomorphized.elm
+   grep -A 5 "MonoLet " compiler/src/Compiler/AST/Monomorphized.elm
+   ```
+
+2. **Verify the MonoLet constructor signature:**
+   - Is it `MonoLet MonoLetDef MonoExpr MonoType`?
+   - Or `MonoLet (List MonoLetDef) MonoExpr MonoType`?
+   - Or something else entirely?
+
+3. **Verify MonoLetDef record fields:**
+   - The plan assumes fields like `def.name`, `def.body`, `def.expr`
+   - VERIFY: What are the ACTUAL field names?
+   - Common patterns: `{ name : Name, args : List Pattern, body : Expr, ... }`
+
+4. **Update all reify* functions** to use correct field access:
+   ```elm
+   -- PLACEHOLDER - replace with actual field names after verification
+   Mono.MonoLet defs body _ ->
+       case body of
+           Mono.MonoVarLocal varName _ ->
+               -- Find the def where ACTUAL_NAME_FIELD == varName
+               -- Then reify ACTUAL_BODY_FIELD
+   ```
+
+5. **Locations that need updating** (search for "def.???"):
+   - `Reify.elm` - encoder reification
+   - `ReifyDecoder.elm` - decoder reification
+   - Any other MonoLet pattern matches
+
+**This grounding step is BLOCKING for implementation.**
 
 ## All Assumptions
 
