@@ -25,6 +25,7 @@
 #include "codegen/CodegenIsolatedTest.hpp"
 #include "bf-codegen/BFCodegenTest.hpp"
 #include "elm/ElmTest.hpp"
+#include "elm-bytes/ElmBytesTest.hpp"
 #include "TestSuite.hpp"
 
 using namespace Elm;
@@ -650,6 +651,9 @@ int main(int argc, char* argv[]) {
     // Returns unique_ptr to ElmParallelTestSuite for parallel execution
     auto elmE2ETests = ElmTest::buildElmTestSuite();
 
+    // Elm Bytes end-to-end tests (test Bytes.Encode/Decode through full pipeline)
+    auto elmBytesTests = ElmBytesTest::buildElmBytesTestSuite();
+
     // Root suite containing all sub-suites.
     Testing::TestSuite suite("All Tests");
     suite.add(std::move(nurseryTests));
@@ -665,6 +669,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(codegenTests));
     suite.add(std::move(bfCodegenTests));
     suite.add(std::move(elmE2ETests));
+    suite.add(std::move(elmBytesTests));
 
     // Handle --list option.
     if (config.list_tests) {
@@ -840,6 +845,7 @@ int main(int argc, char* argv[]) {
 
     // Add accumulated stats from forked Elm test processes.
     combined_stats.combine(ElmTest::getAccumulatedStats());
+    combined_stats.combine(ElmBytesTest::getAccumulatedStats());
 
     combined_stats.print();
 #endif
