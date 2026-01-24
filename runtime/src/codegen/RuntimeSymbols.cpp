@@ -14,6 +14,9 @@
 // Include runtime exports for JIT symbol registration.
 #include "../allocator/RuntimeExports.h"
 
+// Include byte fusion runtime exports for fused Bytes.Encode/Decode operations.
+#include "../allocator/ElmBytesRuntime.h"
+
 // Include kernel exports for JIT symbol registration.
 #include "KernelExports.h"
 
@@ -213,6 +216,54 @@ void registerRuntimeSymbols(ExecutionEngine &engine) {
         symbolMap[interner("eco_cons_head_f64")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_cons_head_f64),
+                llvm::JITSymbolFlags::Exported);
+
+        // =================================================================
+        // ByteFusion Runtime Symbols (for fused Bytes.Encode/Decode)
+        // =================================================================
+
+        // ByteBuffer operations
+        symbolMap[interner("elm_alloc_bytebuffer")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&elm_alloc_bytebuffer),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("elm_bytebuffer_len")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&elm_bytebuffer_len),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("elm_bytebuffer_data")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&elm_bytebuffer_data),
+                llvm::JITSymbolFlags::Exported);
+
+        // UTF-8 string operations
+        symbolMap[interner("elm_utf8_width")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&elm_utf8_width),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("elm_utf8_copy")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&elm_utf8_copy),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("elm_utf8_decode")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&elm_utf8_decode),
+                llvm::JITSymbolFlags::Exported);
+
+        // Maybe operations for decoder results
+        symbolMap[interner("elm_maybe_nothing")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&elm_maybe_nothing),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("elm_maybe_just")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&elm_maybe_just),
+                llvm::JITSymbolFlags::Exported);
+
+        // List operations for fused byte decoders
+        symbolMap[interner("elm_list_reverse")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&elm_list_reverse),
                 llvm::JITSymbolFlags::Exported);
 
         // =================================================================

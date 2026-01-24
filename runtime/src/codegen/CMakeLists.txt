@@ -111,6 +111,72 @@ target_compile_features(obj.EcoDialect PRIVATE cxx_std_17)
 target_compile_options(obj.EcoDialect PRIVATE -Wno-ambiguous-reversed-operator)
 
 #------------------------------------------------------------------------------
+# Generate BF (ByteFusion) dialect from BFOps.td
+#------------------------------------------------------------------------------
+
+# Set output directory for bf dialect generated files
+set(BF_TABLEGEN_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/include/bf)
+file(MAKE_DIRECTORY ${BF_TABLEGEN_OUTPUT_DIR})
+
+set(LLVM_TARGET_DEFINITIONS BF/BFOps.td)
+
+# Generate BF Op class declarations (header file)
+mlir_tablegen(${BF_TABLEGEN_OUTPUT_DIR}/BFOps.h.inc -gen-op-decls)
+
+# Generate BF Op class definitions (implementation file)
+mlir_tablegen(${BF_TABLEGEN_OUTPUT_DIR}/BFOps.cpp.inc -gen-op-defs)
+
+# Generate BF dialect declarations
+mlir_tablegen(${BF_TABLEGEN_OUTPUT_DIR}/BFDialect.h.inc -gen-dialect-decls)
+
+# Generate BF dialect definitions
+mlir_tablegen(${BF_TABLEGEN_OUTPUT_DIR}/BFDialect.cpp.inc -gen-dialect-defs)
+
+# Generate BF type declarations
+mlir_tablegen(${BF_TABLEGEN_OUTPUT_DIR}/BFTypes.h.inc -gen-typedef-decls)
+
+# Generate BF type definitions
+mlir_tablegen(${BF_TABLEGEN_OUTPUT_DIR}/BFTypes.cpp.inc -gen-typedef-defs)
+
+# Generate BF enum attribute declarations
+mlir_tablegen(${BF_TABLEGEN_OUTPUT_DIR}/BFEnums.h.inc -gen-enum-decls)
+
+# Generate BF enum attribute definitions
+mlir_tablegen(${BF_TABLEGEN_OUTPUT_DIR}/BFEnums.cpp.inc -gen-enum-defs)
+
+# Create a target that depends on all generated BF files
+add_public_tablegen_target(BFOpsIncGen)
+
+#------------------------------------------------------------------------------
+# Create BF dialect library
+#------------------------------------------------------------------------------
+
+add_mlir_dialect_library(BFDialect
+    BF/BFDialect.cpp
+    BF/BFOps.cpp
+    BF/BFTypes.cpp
+
+    PARTIAL_SOURCES_INTENDED
+
+    ADDITIONAL_HEADER_DIRS
+    ${CMAKE_CURRENT_BINARY_DIR}/include/bf
+
+    DEPENDS
+    BFOpsIncGen
+
+    LINK_LIBS PUBLIC
+    MLIRIR
+    MLIRSupport
+    MLIRSideEffectInterfaces
+)
+
+# Include directory for BF source headers
+target_include_directories(obj.BFDialect PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/BF)
+
+target_compile_features(obj.BFDialect PRIVATE cxx_std_17)
+target_compile_options(obj.BFDialect PRIVATE -Wno-ambiguous-reversed-operator)
+
+#------------------------------------------------------------------------------
 # Create a library for Eco passes
 #------------------------------------------------------------------------------
 
@@ -130,17 +196,22 @@ add_mlir_library(EcoPasses
     Passes/EcoToLLVMGlobals.cpp
     Passes/EcoToLLVMErrorDebug.cpp
     Passes/EcoToLLVMFunc.cpp
+    # BF (ByteFusion) dialect lowering
+    Passes/BFToLLVM.cpp
 
     PARTIAL_SOURCES_INTENDED
 
     ADDITIONAL_HEADER_DIRS
     ${CMAKE_CURRENT_BINARY_DIR}/include/eco
+    ${CMAKE_CURRENT_BINARY_DIR}/include/bf
 
     DEPENDS
     EcoOpsIncGen
+    BFOpsIncGen
 
     LINK_LIBS PUBLIC
     EcoDialect
+    BFDialect
     MLIRIR
     MLIRSupport
     MLIRPass
@@ -204,6 +275,8 @@ add_llvm_executable(ecoc
     ../allocator/GCStats.cpp
     ../allocator/StringOps.cpp
     ../allocator/ListOps.cpp
+    ../allocator/BytesOps.cpp
+    ../allocator/ElmBytesRuntime.cpp
     PARTIAL_SOURCES_INTENDED
 )
 
@@ -216,6 +289,7 @@ target_include_directories(ecoc PRIVATE
 
 target_link_libraries(ecoc PRIVATE
     EcoDialect
+    BFDialect
     EcoPasses
     ElmKernel
     MLIRIR
@@ -272,16 +346,21 @@ add_mlir_library(EcoRunner
     ../allocator/GCStats.cpp
     ../allocator/StringOps.cpp
     ../allocator/ListOps.cpp
+    ../allocator/BytesOps.cpp
+    ../allocator/ElmBytesRuntime.cpp
     PARTIAL_SOURCES_INTENDED
 
     ADDITIONAL_HEADER_DIRS
     ${CMAKE_CURRENT_BINARY_DIR}/include/eco
+    ${CMAKE_CURRENT_BINARY_DIR}/include/bf
 
     DEPENDS
     EcoOpsIncGen
+    BFOpsIncGen
 
     LINK_LIBS PUBLIC
     EcoDialect
+    BFDialect
     EcoPasses
     ElmKernel
     MLIRIR
@@ -312,6 +391,7 @@ add_mlir_library(EcoRunner
 
 target_include_directories(obj.EcoRunner PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../elm-kernel-cpp/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/BF
 )
 
 target_compile_features(obj.EcoRunner PRIVATE cxx_std_20)

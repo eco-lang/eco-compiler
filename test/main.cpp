@@ -23,6 +23,7 @@
 #include "allocator/BytesOpsTest.hpp"
 #include "allocator/RuntimeExportsTest.hpp"
 #include "codegen/CodegenIsolatedTest.hpp"
+#include "bf-codegen/BFCodegenTest.hpp"
 #include "elm/ElmTest.hpp"
 #include "TestSuite.hpp"
 
@@ -642,6 +643,9 @@ int main(int argc, char* argv[]) {
     // Codegen tests (MLIR lowering and JIT execution) - parallel isolated execution
     auto codegenTests = CodegenIsolatedTest::buildCodegenTestSuite();
 
+    // BF-Codegen tests (ByteFusion dialect tests) - parallel isolated execution
+    auto bfCodegenTests = BFCodegenTest::buildBFCodegenTestSuite();
+
     // Elm end-to-end tests (compile Elm -> MLIR -> JIT)
     // Returns unique_ptr to ElmParallelTestSuite for parallel execution
     auto elmE2ETests = ElmTest::buildElmTestSuite();
@@ -659,6 +663,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(bytesOpsTests));
     suite.add(std::move(runtimeExportsTests));
     suite.add(std::move(codegenTests));
+    suite.add(std::move(bfCodegenTests));
     suite.add(std::move(elmE2ETests));
 
     // Handle --list option.

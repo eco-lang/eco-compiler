@@ -25,6 +25,7 @@
 #include "mlir/Transforms/Passes.h"
 
 #include "EcoDialect.h"
+#include "BF/BFDialect.h"
 
 using namespace mlir;
 
@@ -37,6 +38,7 @@ void registerRequiredDialects(DialectRegistry &registry) {
 
 void loadRequiredDialects(MLIRContext &context) {
     context.getOrLoadDialect<eco::EcoDialect>();
+    context.getOrLoadDialect<bf::BFDialect>();
     context.getOrLoadDialect<func::FuncDialect>();
     context.getOrLoadDialect<cf::ControlFlowDialect>();
     context.getOrLoadDialect<arith::ArithDialect>();
@@ -64,6 +66,7 @@ void buildEcoToLLVMPipeline(PassManager &pm) {
     pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
 
     // Stage 3: Eco -> LLVM Dialect.
+    pm.addPass(eco::createBFToLLVMPass());
     pm.addPass(eco::createEcoToLLVMPass());
     pm.addPass(createSCFToControlFlowPass());
     pm.addPass(createConvertControlFlowToLLVMPass());

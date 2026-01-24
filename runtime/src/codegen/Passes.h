@@ -69,6 +69,13 @@ std::unique_ptr<mlir::Pass> createStringLiteralLoweringPass();
 // Combined pass that runs all eco-to-LLVM lowering.
 std::unique_ptr<mlir::Pass> createEcoToLLVMPass();
 
+// ========== BF (ByteFusion) Dialect Lowering ==========
+
+// Lowers BF dialect operations to LLVM dialect.
+// This includes bf.cursor -> {i8*, i8*} struct conversion and
+// lowering of bf.write.*, bf.alloc, bf.cursor.init etc.
+std::unique_ptr<mlir::Pass> createBFToLLVMPass();
+
 //===----------------------------------------------------------------------===//
 // Pattern Population
 //===----------------------------------------------------------------------===//

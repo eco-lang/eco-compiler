@@ -39,6 +39,8 @@ module Compiler.Generate.MLIR.Ops exposing
     , ecoGetTag
     , scfIf
     , scfYield
+    , scfWhile
+    , scfCondition
     , cfCondBr
     )
 
@@ -855,6 +857,73 @@ scfYield ctx operand operandType =
     in
     mlirOp ctx "scf.yield"
         |> opBuilder.withOperands [ operand ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.isTerminator True
+        |> opBuilder.build
+
+
+{-| scf.while - structured while loop.
+
+Structure:
+    %results = scf.while (%args = %inits) : (ArgTypes) -> ResultTypes {
+        // "before" region - condition computation
+        scf.condition(%cond) %args : ArgTypes
+    } do {
+    ^bb0(%args: ArgTypes):
+        // "after" region - body computation
+        scf.yield %newArgs : ArgTypes
+    }
+
+The before region computes the condition and passes values to either exit or continue.
+The after region computes new values for the next iteration.
+-}
+scfWhile :
+    Ctx.Context
+    -> List ( String, String, MlirType ) -- (resultVar, initVar, type) triples
+    -> MlirRegion -- "before" region (condition), ends with scf.condition
+    -> MlirRegion -- "after" region (body), ends with scf.yield
+    -> ( Ctx.Context, MlirOp )
+scfWhile ctx loopVars beforeRegion afterRegion =
+    let
+        initVars =
+            List.map (\( _, initVar, _ ) -> initVar) loopVars
+
+        results =
+            List.map (\( resultVar, _, t ) -> ( resultVar, t )) loopVars
+
+        argTypes =
+            List.map (\( _, _, t ) -> t) loopVars
+
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing (List.map TypeAttr argTypes))
+    in
+    mlirOp ctx "scf.while"
+        |> opBuilder.withOperands initVars
+        |> opBuilder.withResults results
+        |> opBuilder.withRegions [ beforeRegion, afterRegion ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| scf.condition - terminator for scf.while "before" region.
+
+If condition is true, continues to "after" region with the provided values.
+If condition is false, exits the while loop, returning the provided values as results.
+-}
+scfCondition : Ctx.Context -> String -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
+scfCondition ctx condVar args =
+    let
+        argVars =
+            List.map Tuple.first args
+
+        argTypes =
+            List.map Tuple.second args
+
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing (TypeAttr I1 :: List.map TypeAttr argTypes))
+    in
+    mlirOp ctx "scf.condition"
+        |> opBuilder.withOperands (condVar :: argVars)
         |> opBuilder.withAttrs attrs
         |> opBuilder.isTerminator True
         |> opBuilder.build

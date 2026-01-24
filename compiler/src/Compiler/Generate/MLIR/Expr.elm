@@ -34,6 +34,8 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
 import Hex
 import Compiler.Elm.Package as Pkg
+import Compiler.Generate.MLIR.BytesFusion.Emit as BFEmit
+import Compiler.Generate.MLIR.BytesFusion.Reify as BFReify
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.Generate.MLIR.Names as Names
@@ -1061,133 +1063,315 @@ generateSaturatedCall ctx func args resultType =
 
                         Nothing ->
                             Nothing
+
+                -- Check if this is Bytes.Encode.encode for fusion
+                maybeBytesEncodeArg : Maybe Mono.MonoExpr
+                maybeBytesEncodeArg =
+                    case Mono.lookupSpecKey specId ctx.registry of
+                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
+                            if pkg == Pkg.bytes && moduleName == "Bytes.Encode" && name == "encode" then
+                                case args of
+                                    [ encoderExpr ] ->
+                                        Just encoderExpr
+
+                                    _ ->
+                                        Nothing
+
+                            else
+                                Nothing
+
+                        _ ->
+                            Nothing
+
+                -- Check if this is Bytes.Decode.decode for fusion
+                maybeBytesDecodeArgs : Maybe ( Mono.MonoExpr, Mono.MonoExpr )
+                maybeBytesDecodeArgs =
+                    case Mono.lookupSpecKey specId ctx.registry of
+                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
+                            if pkg == Pkg.bytes && moduleName == "Bytes.Decode" && name == "decode" then
+                                case args of
+                                    [ decoderExpr, bytesExpr ] ->
+                                        Just ( decoderExpr, bytesExpr )
+
+                                    _ ->
+                                        Nothing
+
+                            else
+                                Nothing
+
+                        _ ->
+                            Nothing
             in
-            case maybeCoreInfo of
-                Just ( moduleName, name ) ->
-                    -- This is a core module function - check for intrinsic
-                    case Intrinsics.kernelIntrinsic moduleName name argTypes resultType of
-                        Just intrinsic ->
-                            -- Generate intrinsic operation directly
+            -- Try byte fusion first, then fall back to regular dispatch
+            case maybeBytesEncodeArg of
+                Just encoderExpr ->
+                    -- Attempt to fuse the encoder
+                    case BFReify.reifyEncoder ctx.registry encoderExpr of
+                        Just nodes ->
+                            -- Fusion successful - emit fused byte encoding ops
                             let
-                                ( resVar, ctx2 ) =
-                                    Ctx.freshVar ctx1
+                                loopOps =
+                                    BFReify.nodesToOps nodes
 
-                                ( ctx3, intrinsicOp ) =
-                                    Intrinsics.generateIntrinsicOp ctx2 intrinsic resVar argVars
+                                -- Wrap generateExpr to match ExprCompiler type
+                                exprCompiler : BFEmit.ExprCompiler
+                                exprCompiler monoExpr compilerCtx =
+                                    let
+                                        result =
+                                            generateExpr compilerCtx monoExpr
+                                    in
+                                    { ops = result.ops
+                                    , resultVar = result.resultVar
+                                    , resultType = result.resultType
+                                    , ctx = result.ctx
+                                    }
 
-                                intrinsicResultType =
-                                    Intrinsics.intrinsicResultMlirType intrinsic
+                                ( mlirOps, bufferVar, ctx2 ) =
+                                    BFEmit.emitFusedEncoder exprCompiler ctx1 loopOps
                             in
-                            { ops = argOps ++ [ intrinsicOp ]
-                            , resultVar = resVar
-                            , resultType = intrinsicResultType
-                            , ctx = ctx3, isTerminated = False
+                            { ops = argOps ++ mlirOps
+                            , resultVar = bufferVar
+                            , resultType = Types.ecoValue
+                            , ctx = ctx2
+                            , isTerminated = False
                             }
 
                         Nothing ->
-                            -- No intrinsic match - check if we should use kernel or compiled function
-                            if Ctx.hasKernelImplementation moduleName name then
-                                -- Fall back to kernel call (e.g., negate with boxed values)
-                                let
-                                    sig : Ctx.FuncSignature
-                                    sig =
-                                        Ctx.kernelFuncSignatureFromType funcType
+                            -- Fusion failed - fall back to kernel call
+                            let
+                                sig : Ctx.FuncSignature
+                                sig =
+                                    Ctx.kernelFuncSignatureFromType funcType
 
-                                    -- Use boxToMatchSignatureTyped with actual SSA types
-                                    ( boxOps, argVarPairs, ctx1b ) =
-                                        boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
-
-                                    ( resVar, ctx2 ) =
-                                        Ctx.freshVar ctx1b
-
-                                    kernelName : String
-                                    kernelName =
-                                        "Elm_Kernel_" ++ moduleName ++ "_" ++ name
-
-                                    callResultType =
-                                        Types.monoTypeToMlir sig.returnType
-
-                                    ( ctx3, callOp ) =
-                                        Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs callResultType
-                                in
-                                { ops = argOps ++ boxOps ++ [ callOp ]
-                                , resultVar = resVar
-                                , resultType = callResultType
-                                , ctx = ctx3, isTerminated = False
-                                }
-
-                            else
-                                -- Fall back to compiled function call (e.g., min, max, abs, compare)
-                                let
-                                    funcName : String
-                                    funcName =
-                                        specIdToFuncName ctx.registry specId
-
-                                    maybeSig : Maybe Ctx.FuncSignature
-                                    maybeSig =
-                                        Dict.get specId ctx.signatures
-
-                                    ( boxOps, argVarPairs, ctx1b ) =
-                                        case maybeSig of
-                                            Just sig ->
-                                                -- Use boxToMatchSignatureTyped with actual SSA types
-                                                boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
-
-                                            Nothing ->
-                                                -- No signature: use actual SSA types
-                                                ( [], argsWithTypes, ctx1 )
-
-                                    ( resultVar, ctx2 ) =
-                                        Ctx.freshVar ctx1b
-
-                                    callResultType =
-                                        Types.monoTypeToMlir resultType
-
-                                    ( ctx3, callOp ) =
-                                        Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs callResultType
-                                in
-                                { ops = argOps ++ boxOps ++ [ callOp ]
-                                , resultVar = resultVar
-                                , resultType = callResultType
-                                , ctx = ctx3, isTerminated = False
-                                }
-
-                Nothing ->
-                    -- Regular function call (not a core module)
-                    let
-                        funcName : String
-                        funcName =
-                            specIdToFuncName ctx.registry specId
-
-                        -- Look up the function signature to determine expected parameter types
-                        maybeSig : Maybe Ctx.FuncSignature
-                        maybeSig =
-                            Dict.get specId ctx.signatures
-
-                        -- Use boxToMatchSignatureTyped with actual SSA types
-                        ( boxOps, argVarPairs, ctx1b ) =
-                            case maybeSig of
-                                Just sig ->
+                                ( boxOps, argVarPairs, ctx1b ) =
                                     boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
 
+                                ( resVar, ctx2 ) =
+                                    Ctx.freshVar ctx1b
+
+                                kernelName : String
+                                kernelName =
+                                    "Elm_Kernel_Bytes_Encode_encode"
+
+                                callResultType =
+                                    Types.monoTypeToMlir sig.returnType
+
+                                ( ctx3, callOp ) =
+                                    Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs callResultType
+                            in
+                            { ops = argOps ++ boxOps ++ [ callOp ]
+                            , resultVar = resVar
+                            , resultType = callResultType
+                            , ctx = ctx3
+                            , isTerminated = False
+                            }
+
+                Nothing ->
+                    -- Not a bytes encode call - check for bytes decode fusion
+                    case maybeBytesDecodeArgs of
+                        Just ( decoderExpr, bytesExpr ) ->
+                            -- Attempt to fuse the decoder
+                            case BFReify.reifyDecoder ctx.registry decoderExpr of
+                                Just decoderNode ->
+                                    -- Fusion successful - emit fused byte decoding ops
+                                    let
+                                        -- Get the bytesVar from argsWithTypes (second argument)
+                                        bytesVar : String
+                                        bytesVar =
+                                            case argsWithTypes of
+                                                [ _, ( bVar, _ ) ] ->
+                                                    bVar
+
+                                                _ ->
+                                                    -- Should not happen for valid Decode.decode call
+                                                    "invalid_bytes"
+
+                                        -- Compile decoder node to Loop IR
+                                        ( decoderOps, _ ) =
+                                            BFReify.decoderNodeToOps decoderNode
+
+                                        -- Wrap generateExpr to match ExprCompiler type
+                                        exprCompiler : BFEmit.ExprCompiler
+                                        exprCompiler monoExpr compilerCtx =
+                                            let
+                                                result =
+                                                    generateExpr compilerCtx monoExpr
+                                            in
+                                            { ops = result.ops
+                                            , resultVar = result.resultVar
+                                            , resultType = result.resultType
+                                            , ctx = result.ctx
+                                            }
+
+                                        -- Emit the fused decoder operations
+                                        ( mlirOps, resultVar, ctx2 ) =
+                                            BFEmit.emitFusedDecoder exprCompiler ctx1 bytesVar decoderOps
+                                    in
+                                    { ops = argOps ++ mlirOps
+                                    , resultVar = resultVar
+                                    , resultType = Types.ecoValue
+                                    , ctx = ctx2
+                                    , isTerminated = False
+                                    }
+
                                 Nothing ->
-                                    -- No signature: use actual SSA types
-                                    ( [], argsWithTypes, ctx1 )
+                                    -- Fusion failed - fall back to kernel call
+                                    let
+                                        sig : Ctx.FuncSignature
+                                        sig =
+                                            Ctx.kernelFuncSignatureFromType funcType
 
-                        ( resultVar, ctx2 ) =
-                            Ctx.freshVar ctx1b
+                                        ( boxOps, argVarPairs, ctx1b ) =
+                                            boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
 
-                        callResultType =
-                            Types.monoTypeToMlir resultType
+                                        ( resVar, ctx2 ) =
+                                            Ctx.freshVar ctx1b
 
-                        ( ctx3, callOp ) =
-                            Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs callResultType
-                    in
-                    { ops = argOps ++ boxOps ++ [ callOp ]
-                    , resultVar = resultVar
-                    , resultType = callResultType
-                    , ctx = ctx3, isTerminated = False
-                    }
+                                        kernelName : String
+                                        kernelName =
+                                            "Elm_Kernel_Bytes_Decode_decode"
+
+                                        callResultType =
+                                            Types.monoTypeToMlir sig.returnType
+
+                                        ( ctx3, callOp ) =
+                                            Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs callResultType
+                                    in
+                                    { ops = argOps ++ boxOps ++ [ callOp ]
+                                    , resultVar = resVar
+                                    , resultType = callResultType
+                                    , ctx = ctx3
+                                    , isTerminated = False
+                                    }
+
+                        Nothing ->
+                            -- Not a bytes decode call - check for core intrinsics
+                            case maybeCoreInfo of
+                                Just ( moduleName, name ) ->
+                                    -- This is a core module function - check for intrinsic
+                                    case Intrinsics.kernelIntrinsic moduleName name argTypes resultType of
+                                        Just intrinsic ->
+                                            -- Generate intrinsic operation directly
+                                            let
+                                                ( resVar, ctx2 ) =
+                                                    Ctx.freshVar ctx1
+
+                                                ( ctx3, intrinsicOp ) =
+                                                    Intrinsics.generateIntrinsicOp ctx2 intrinsic resVar argVars
+
+                                                intrinsicResultType =
+                                                    Intrinsics.intrinsicResultMlirType intrinsic
+                                            in
+                                            { ops = argOps ++ [ intrinsicOp ]
+                                            , resultVar = resVar
+                                            , resultType = intrinsicResultType
+                                            , ctx = ctx3, isTerminated = False
+                                            }
+
+                                        Nothing ->
+                                            -- No intrinsic match - check if we should use kernel or compiled function
+                                            if Ctx.hasKernelImplementation moduleName name then
+                                                -- Fall back to kernel call (e.g., negate with boxed values)
+                                                let
+                                                    sig : Ctx.FuncSignature
+                                                    sig =
+                                                        Ctx.kernelFuncSignatureFromType funcType
+
+                                                    -- Use boxToMatchSignatureTyped with actual SSA types
+                                                    ( boxOps, argVarPairs, ctx1b ) =
+                                                        boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
+
+                                                    ( resVar, ctx2 ) =
+                                                        Ctx.freshVar ctx1b
+
+                                                    kernelName : String
+                                                    kernelName =
+                                                        "Elm_Kernel_" ++ moduleName ++ "_" ++ name
+
+                                                    callResultType =
+                                                        Types.monoTypeToMlir sig.returnType
+
+                                                    ( ctx3, callOp ) =
+                                                        Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs callResultType
+                                                in
+                                                { ops = argOps ++ boxOps ++ [ callOp ]
+                                                , resultVar = resVar
+                                                , resultType = callResultType
+                                                , ctx = ctx3, isTerminated = False
+                                                }
+
+                                            else
+                                                -- Fall back to compiled function call (e.g., min, max, abs, compare)
+                                                let
+                                                    funcName : String
+                                                    funcName =
+                                                        specIdToFuncName ctx.registry specId
+
+                                                    maybeSig : Maybe Ctx.FuncSignature
+                                                    maybeSig =
+                                                        Dict.get specId ctx.signatures
+
+                                                    ( boxOps, argVarPairs, ctx1b ) =
+                                                        case maybeSig of
+                                                            Just sig ->
+                                                                -- Use boxToMatchSignatureTyped with actual SSA types
+                                                                boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
+
+                                                            Nothing ->
+                                                                -- No signature: use actual SSA types
+                                                                ( [], argsWithTypes, ctx1 )
+
+                                                    ( resultVar, ctx2 ) =
+                                                        Ctx.freshVar ctx1b
+
+                                                    callResultType =
+                                                        Types.monoTypeToMlir resultType
+
+                                                    ( ctx3, callOp ) =
+                                                        Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs callResultType
+                                                in
+                                                { ops = argOps ++ boxOps ++ [ callOp ]
+                                                , resultVar = resultVar
+                                                , resultType = callResultType
+                                                , ctx = ctx3, isTerminated = False
+                                                }
+
+                                Nothing ->
+                                    -- Regular function call (not a core module)
+                                    let
+                                        funcName : String
+                                        funcName =
+                                            specIdToFuncName ctx.registry specId
+
+                                        -- Look up the function signature to determine expected parameter types
+                                        maybeSig : Maybe Ctx.FuncSignature
+                                        maybeSig =
+                                            Dict.get specId ctx.signatures
+
+                                        -- Use boxToMatchSignatureTyped with actual SSA types
+                                        ( boxOps, argVarPairs, ctx1b ) =
+                                            case maybeSig of
+                                                Just sig ->
+                                                    boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
+
+                                                Nothing ->
+                                                    -- No signature: use actual SSA types
+                                                    ( [], argsWithTypes, ctx1 )
+
+                                        ( resultVar, ctx2 ) =
+                                            Ctx.freshVar ctx1b
+
+                                        callResultType =
+                                            Types.monoTypeToMlir resultType
+
+                                        ( ctx3, callOp ) =
+                                            Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs callResultType
+                                    in
+                                    { ops = argOps ++ boxOps ++ [ callOp ]
+                                    , resultVar = resultVar
+                                    , resultType = callResultType
+                                    , ctx = ctx3, isTerminated = False
+                                    }
 
         Mono.MonoVarKernel _ home name funcType ->
             let
