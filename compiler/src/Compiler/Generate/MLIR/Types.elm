@@ -2,7 +2,7 @@ module Compiler.Generate.MLIR.Types exposing
     ( ecoValue, ecoInt, ecoFloat, ecoChar
     , monoTypeToMlir, mlirTypeToString
     , isFunctionType, functionArity, countTotalArity, decomposeFunctionType, isEcoValueType
-    , isPrimitiveType, isPrimitiveMonoType
+    , isPrimitiveType
     )
 
 {-| MLIR type definitions and conversions.
@@ -31,7 +31,7 @@ This module provides:
 
 # Primitive Type Checks
 
-@docs isPrimitiveType, isPrimitiveMonoType
+@docs isPrimitiveType
 
 -}
 
@@ -210,27 +210,6 @@ isPrimitiveType ty =
             True
 
         I1 ->
-            True
-
-        _ ->
-            False
-
-
-{-| Check if a MonoType is a primitive type (stored unboxed).
--}
-isPrimitiveMonoType : Mono.MonoType -> Bool
-isPrimitiveMonoType monoType =
-    case monoType of
-        Mono.MInt ->
-            True
-
-        Mono.MFloat ->
-            True
-
-        Mono.MChar ->
-            True
-
-        Mono.MBool ->
             True
 
         _ ->
