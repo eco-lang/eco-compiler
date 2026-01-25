@@ -106,7 +106,7 @@ CGEN_001;MLIR_Codegen;Boxing;enforced;MLIR codegen only inserts boxing and unbox
 
 CGEN_002;MLIR_Codegen;Calls;enforced;generateCall treats calls whose result MonoType is still a function as partial applications and routes them through closure generation and eco.papExtend instead of emitting direct calls;Compiler.Generate.MLIRMono
 
-CGEN_003;MLIR_Codegen;Closures;enforced;generateClosureApplication stores captured and applied arguments in their actual SSA types (i64 f64 or eco.value) without boxing and emits eco.papCreate with unboxed_bitmap and eco.papExtend with newargs_unboxed_bitmap attributes that track which slots contain unboxed primitives and the runtime merges bitmaps during partial application extension;Compiler.Generate.MLIR.Expr and RuntimeExports.cpp
+CGEN_003;MLIR_Codegen;Closures;enforced;generateClosureApplication stores captured and applied arguments in their actual heap representation types (i64 f64 i16 or eco.value) without boxing and emits eco.papCreate with unboxed_bitmap and eco.papExtend with newargs_unboxed_bitmap attributes that track which slots contain unboxed primitives and the runtime merges bitmaps during partial application extension;Compiler.Generate.MLIR.Expr and RuntimeExports.cpp
 
 CGEN_004;MLIR_Codegen;Destruct;enforced;generateDestruct and generateMonoPath always use the destructor MonoType to determine the path target MLIR type and never use the body result type so destruct paths yield their natural type and do not spuriously unbox;Compiler.Generate.MLIRMono
 
@@ -124,7 +124,7 @@ CGEN_010;MLIR_Codegen;Case;enforced;Every eco.case in the IR has an explicit res
 
 CGEN_011;MLIR_Codegen;Functions;enforced;Every function referenced by eco.call must have a corresponding func.func definition or declaration in the module so no undefined function symbols escape MLIR codegen and the UndefinedFunction pass validates this invariant by failing the build on any violation;Compiler.Generate.MLIRMono and UndefinedFunction.cpp
 
-CGEN_012;MLIR_Codegen;TypeMapping;enforced;monoTypeToMlir maps primitive MonoTypes to their unboxed MLIR types so MInt becomes i64 and MFloat becomes f64 and MBool becomes i1 and MChar becomes i32 and all other MonoTypes including MVar and compound types become eco.value;Compiler.Generate.CodeGen.MLIR
+CGEN_012;MLIR_Codegen;TypeMapping;enforced;monoTypeToMlir maps primitive MonoTypes to their unboxed MLIR types so MInt becomes i64 and MFloat becomes f64 and MChar becomes i16 and all other MonoTypes including MBool MVar and compound types become eco.value;Compiler.Generate.CodeGen.MLIR
 
 CGEN_013;MLIR_Codegen;Types;documented;At MLIR codegen time any MonoType component that is an MVar with CEcoValue constraint is always lowered to !eco.value so its concrete source type never affects generated layout or calling convention;Compiler.Generate.MLIRMono
 
