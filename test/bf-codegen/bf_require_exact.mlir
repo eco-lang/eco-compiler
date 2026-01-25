@@ -7,7 +7,7 @@ module {
     // Create buffer with exactly 4 bytes
     %size = arith.constant 4 : i32
     %buffer = bf.alloc %size : i64
-    %cursor = bf.decoder.cursor.init %buffer : !bf.cursor
+    %cursor = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
 
     // Require exactly 4 bytes (should succeed)
     %req_bytes = arith.constant 4 : i32

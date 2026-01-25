@@ -7,23 +7,23 @@ module {
     // Create buffer with u32 BE value
     %size = arith.constant 8 : i32
     %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : !bf.cursor
+    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
 
     %orig = arith.constant 0x12345678 : i64
     %cursor1 = bf.write.u32 %cursor0, %orig (be) : !bf.cursor
 
     // Decode
-    %read_cursor0 = bf.decoder.cursor.init %buffer : !bf.cursor
+    %read_cursor0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
     %val, %read_cursor1 = bf.read.u32 %read_cursor0 (be) : i64, !bf.cursor
 
     // Re-encode to new buffer
     %new_buffer = bf.alloc %size : i64
-    %new_cursor0 = bf.cursor.init %new_buffer : !bf.cursor
+    %new_cursor0 = bf.cursor.init %new_buffer : i64 -> !bf.cursor
     %new_cursor1 = bf.write.u32 %new_cursor0, %val (be) : !bf.cursor
 
     // Verify by comparing individual bytes
-    %orig_read0 = bf.decoder.cursor.init %buffer : !bf.cursor
-    %new_read0 = bf.decoder.cursor.init %new_buffer : !bf.cursor
+    %orig_read0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
+    %new_read0 = bf.decoder.cursor.init %new_buffer : i64 -> !bf.cursor
 
     %ob1, %orig_read1 = bf.read.u8 %orig_read0 : i64, !bf.cursor
     %nb1, %new_read1 = bf.read.u8 %new_read0 : i64, !bf.cursor

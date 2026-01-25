@@ -9,11 +9,11 @@ module {
     // Create buffer and write
     %size = arith.constant 8 : i32
     %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : !bf.cursor
+    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
     %cursor1 = bf.write.u32 %cursor0, %val (le) : !bf.cursor
 
     // Read back
-    %read_cursor0 = bf.decoder.cursor.init %buffer : !bf.cursor
+    %read_cursor0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
     %result, %read_cursor1 = bf.read.u32 %read_cursor0 (le) : i64, !bf.cursor
 
     // Verify match

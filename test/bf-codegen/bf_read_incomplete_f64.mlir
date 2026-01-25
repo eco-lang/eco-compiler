@@ -8,7 +8,7 @@ module {
     %size = arith.constant 4 : i32
     %buffer = bf.alloc %size : i64
 
-    %cursor = bf.decoder.cursor.init %buffer : !bf.cursor
+    %cursor = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
 
     // Check if we can read f64 (8 bytes) - should fail
     %needed = arith.constant 8 : i32

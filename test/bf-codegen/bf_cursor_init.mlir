@@ -9,7 +9,7 @@ module {
     %buffer = bf.alloc %size : i64
 
     // Initialize cursor from buffer
-    %cursor = bf.cursor.init %buffer : !bf.cursor
+    %cursor = bf.cursor.init %buffer : i64 -> !bf.cursor
 
     // Extract pointer - should be non-null
     %ptr = bf.cursor.ptr %cursor : i64

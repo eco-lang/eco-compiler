@@ -11,21 +11,21 @@ module {
     // Create destination buffer
     %dst_size = arith.constant 4 : i32
     %dst_buffer = bf.alloc %dst_size : i64
-    %dst_cursor0 = bf.cursor.init %dst_buffer : !bf.cursor
+    %dst_cursor0 = bf.cursor.init %dst_buffer : i64 -> !bf.cursor
 
     // Write a marker first
     %marker = arith.constant 0xFF : i64
     %dst_cursor1 = bf.write.u8 %dst_cursor0, %marker : !bf.cursor
 
     // Copy empty bytes (should not advance cursor)
-    %dst_cursor2 = bf.write.bytes %dst_cursor1, %src_buffer : !bf.cursor
+    %dst_cursor2 = bf.write.bytes %dst_cursor1, %src_buffer : (i64) -> !bf.cursor
 
     // Write another marker
     %marker2 = arith.constant 0xEE : i64
     %dst_cursor3 = bf.write.u8 %dst_cursor2, %marker2 : !bf.cursor
 
     // Read back - should see both markers adjacent
-    %read_cursor0 = bf.decoder.cursor.init %dst_buffer : !bf.cursor
+    %read_cursor0 = bf.decoder.cursor.init %dst_buffer : i64 -> !bf.cursor
     %r1, %read_cursor1 = bf.read.u8 %read_cursor0 : i64, !bf.cursor
     %r2, %read_cursor2 = bf.read.u8 %read_cursor1 : i64, !bf.cursor
 

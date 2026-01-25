@@ -7,7 +7,7 @@ module {
     // Create buffer
     %size = arith.constant 16 : i32
     %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : !bf.cursor
+    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
 
     // Write negative values (stored as unsigned bit patterns)
     %neg1_i8 = arith.constant 255 : i64    // -1 as u8
@@ -20,7 +20,7 @@ module {
     %cursor3 = bf.write.u32 %cursor2, %neg1000_i32 (le) : !bf.cursor
 
     // Read back as signed
-    %read_cursor0 = bf.decoder.cursor.init %buffer : !bf.cursor
+    %read_cursor0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
     %r_i8, %read_cursor1 = bf.read.i8 %read_cursor0 : i64, !bf.cursor
     %r_i16, %read_cursor2 = bf.read.i16 %read_cursor1 (le) : i64, !bf.cursor
     %r_i32, %read_cursor3 = bf.read.i32 %read_cursor2 (le) : i64, !bf.cursor

@@ -9,7 +9,7 @@ module {
     // Group 2: count=3, items [3, 4, 5]
     %size = arith.constant 32 : i32
     %buffer = bf.alloc %size : i64
-    %c0 = bf.cursor.init %buffer : !bf.cursor
+    %c0 = bf.cursor.init %buffer : i64 -> !bf.cursor
 
     // Outer count = 2 (two groups)
     %outer_count = arith.constant 2 : i64
@@ -34,7 +34,7 @@ module {
     %c8 = bf.write.u8 %c7, %g2_v3 : !bf.cursor
 
     // Read back
-    %rc0 = bf.decoder.cursor.init %buffer : !bf.cursor
+    %rc0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
     %r_outer, %rc1 = bf.read.u32 %rc0 (le) : i64, !bf.cursor
 
     // Group 1

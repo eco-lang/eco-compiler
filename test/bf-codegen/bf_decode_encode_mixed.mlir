@@ -7,7 +7,7 @@ module {
     // Create buffer with u8 + u16 + u32
     %size = arith.constant 8 : i32
     %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : !bf.cursor
+    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
 
     %v_u8 = arith.constant 99 : i64
     %cursor1 = bf.write.u8 %cursor0, %v_u8 : !bf.cursor
@@ -17,20 +17,20 @@ module {
     %cursor3 = bf.write.u32 %cursor2, %v_u32 (be) : !bf.cursor
 
     // Decode sequence
-    %read_cursor0 = bf.decoder.cursor.init %buffer : !bf.cursor
+    %read_cursor0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
     %d_u8, %read_cursor1 = bf.read.u8 %read_cursor0 : i64, !bf.cursor
     %d_u16, %read_cursor2 = bf.read.u16 %read_cursor1 (le) : i64, !bf.cursor
     %d_u32, %read_cursor3 = bf.read.u32 %read_cursor2 (be) : i64, !bf.cursor
 
     // Re-encode to new buffer
     %new_buffer = bf.alloc %size : i64
-    %new_cursor0 = bf.cursor.init %new_buffer : !bf.cursor
+    %new_cursor0 = bf.cursor.init %new_buffer : i64 -> !bf.cursor
     %new_cursor1 = bf.write.u8 %new_cursor0, %d_u8 : !bf.cursor
     %new_cursor2 = bf.write.u16 %new_cursor1, %d_u16 (le) : !bf.cursor
     %new_cursor3 = bf.write.u32 %new_cursor2, %d_u32 (be) : !bf.cursor
 
     // Verify by reading back
-    %verify_cursor0 = bf.decoder.cursor.init %new_buffer : !bf.cursor
+    %verify_cursor0 = bf.decoder.cursor.init %new_buffer : i64 -> !bf.cursor
     %r_u8, %verify_cursor1 = bf.read.u8 %verify_cursor0 : i64, !bf.cursor
     %r_u16, %verify_cursor2 = bf.read.u16 %verify_cursor1 (le) : i64, !bf.cursor
     %r_u32, %verify_cursor3 = bf.read.u32 %verify_cursor2 (be) : i64, !bf.cursor

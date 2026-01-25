@@ -7,7 +7,7 @@ module {
     // Create buffer for mixed types
     %size = arith.constant 32 : i32
     %buffer = bf.alloc %size : i64
-    %c0 = bf.cursor.init %buffer : !bf.cursor
+    %c0 = bf.cursor.init %buffer : i64 -> !bf.cursor
 
     // Write: u8, u32, u8, u16, f64
     %v_u8_1 = arith.constant 0xAA : i64
@@ -26,7 +26,7 @@ module {
     %c5 = bf.write.f64 %c4, %v_f64 (le) : !bf.cursor
 
     // Read back with correct threading
-    %rc0 = bf.decoder.cursor.init %buffer : !bf.cursor
+    %rc0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
     %r_u8_1, %rc1 = bf.read.u8 %rc0 : i64, !bf.cursor
     %r_u32, %rc2 = bf.read.u32 %rc1 (le) : i64, !bf.cursor
     %r_u8_2, %rc3 = bf.read.u8 %rc2 : i64, !bf.cursor

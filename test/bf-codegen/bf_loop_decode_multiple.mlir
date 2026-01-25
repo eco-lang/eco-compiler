@@ -7,7 +7,7 @@ module {
     // Create buffer: count (4 bytes) + 5 u8 items
     %size = arith.constant 16 : i32
     %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : !bf.cursor
+    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
 
     // Write count = 5
     %count = arith.constant 5 : i64
@@ -26,7 +26,7 @@ module {
     %cursor6 = bf.write.u8 %cursor5, %v5 : !bf.cursor
 
     // Read count and items
-    %rc0 = bf.decoder.cursor.init %buffer : !bf.cursor
+    %rc0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
     %read_count, %rc1 = bf.read.u32 %rc0 (le) : i64, !bf.cursor
     %r1, %rc2 = bf.read.u8 %rc1 : i64, !bf.cursor
     %r2, %rc3 = bf.read.u8 %rc2 : i64, !bf.cursor

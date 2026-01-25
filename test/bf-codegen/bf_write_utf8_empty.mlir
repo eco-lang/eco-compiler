@@ -8,7 +8,7 @@ module {
   func.func @main() -> i64 {
     // Empty string should have 0 UTF-8 width
     %str = eco.string_literal "" : !eco.value
-    %width = bf.utf8_width %str : i32
+    %width = bf.utf8_width %str : i64 -> i32
     %width64 = arith.extsi %width : i32 to i64
     eco.dbg %width64 : i64
     // CHECK: 0
@@ -16,7 +16,7 @@ module {
     // Allocate buffer and write empty string
     %size = arith.constant 8 : i32
     %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : !bf.cursor
+    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
 
     // Write marker before
     %marker1 = arith.constant 0xAA : i64
@@ -30,7 +30,7 @@ module {
     %cursor3 = bf.write.u8 %cursor2, %marker2 : !bf.cursor
 
     // Read back - markers should be adjacent
-    %read_cursor0 = bf.decoder.cursor.init %buffer : !bf.cursor
+    %read_cursor0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
     %r1, %read_cursor1 = bf.read.u8 %read_cursor0 : i64, !bf.cursor
     %r2, %read_cursor2 = bf.read.u8 %read_cursor1 : i64, !bf.cursor
 

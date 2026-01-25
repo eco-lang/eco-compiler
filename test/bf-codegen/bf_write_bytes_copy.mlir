@@ -7,7 +7,7 @@ module {
     // Create source ByteBuffer with 4 bytes
     %src_size = arith.constant 4 : i32
     %src_buffer = bf.alloc %src_size : i64
-    %src_cursor0 = bf.cursor.init %src_buffer : !bf.cursor
+    %src_cursor0 = bf.cursor.init %src_buffer : i64 -> !bf.cursor
 
     // Fill source with known values
     %v1 = arith.constant 0x11 : i64
@@ -22,12 +22,12 @@ module {
     // Create destination buffer and copy bytes
     %dst_size = arith.constant 8 : i32
     %dst_buffer = bf.alloc %dst_size : i64
-    %dst_cursor0 = bf.cursor.init %dst_buffer : !bf.cursor
+    %dst_cursor0 = bf.cursor.init %dst_buffer : i64 -> !bf.cursor
 
-    %dst_cursor1 = bf.write.bytes %dst_cursor0, %src_buffer : !bf.cursor
+    %dst_cursor1 = bf.write.bytes %dst_cursor0, %src_buffer : (i64) -> !bf.cursor
 
     // Read back from destination
-    %read_cursor0 = bf.decoder.cursor.init %dst_buffer : !bf.cursor
+    %read_cursor0 = bf.decoder.cursor.init %dst_buffer : i64 -> !bf.cursor
     %r1, %read_cursor1 = bf.read.u8 %read_cursor0 : i64, !bf.cursor
     %r2, %read_cursor2 = bf.read.u8 %read_cursor1 : i64, !bf.cursor
     %r3, %read_cursor3 = bf.read.u8 %read_cursor2 : i64, !bf.cursor

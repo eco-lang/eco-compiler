@@ -10,19 +10,19 @@ module {
     // Write as big-endian
     %size = arith.constant 8 : i32
     %be_buf = bf.alloc %size : i64
-    %be_c0 = bf.cursor.init %be_buf : !bf.cursor
+    %be_c0 = bf.cursor.init %be_buf : i64 -> !bf.cursor
     %be_c1 = bf.write.f32 %be_c0, %val (be) : !bf.cursor
 
     // Write as little-endian
     %le_buf = bf.alloc %size : i64
-    %le_c0 = bf.cursor.init %le_buf : !bf.cursor
+    %le_c0 = bf.cursor.init %le_buf : i64 -> !bf.cursor
     %le_c1 = bf.write.f32 %le_c0, %val (le) : !bf.cursor
 
     // Read first byte of each
-    %be_rc0 = bf.decoder.cursor.init %be_buf : !bf.cursor
+    %be_rc0 = bf.decoder.cursor.init %be_buf : i64 -> !bf.cursor
     %be_b1, %be_rc1 = bf.read.u8 %be_rc0 : i64, !bf.cursor
 
-    %le_rc0 = bf.decoder.cursor.init %le_buf : !bf.cursor
+    %le_rc0 = bf.decoder.cursor.init %le_buf : i64 -> !bf.cursor
     %le_b1, %le_rc1 = bf.read.u8 %le_rc0 : i64, !bf.cursor
 
     // BE: first byte is 0x3F (63)

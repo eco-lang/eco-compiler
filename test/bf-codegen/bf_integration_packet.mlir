@@ -8,7 +8,7 @@ module {
     // Encode packet
     %size = arith.constant 32 : i32
     %buffer = bf.alloc %size : i64
-    %c0 = bf.cursor.init %buffer : !bf.cursor
+    %c0 = bf.cursor.init %buffer : i64 -> !bf.cursor
 
     // Write header
     %version = arith.constant 1 : i64
@@ -35,7 +35,7 @@ module {
     %c8 = bf.write.u32 %c7, %checksum (be) : !bf.cursor
 
     // Decode packet
-    %rc0 = bf.decoder.cursor.init %buffer : !bf.cursor
+    %rc0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
     %r_version, %rc1 = bf.read.u8 %rc0 : i64, !bf.cursor
     %r_flags, %rc2 = bf.read.u8 %rc1 : i64, !bf.cursor
     %r_payload_len, %rc3 = bf.read.u16 %rc2 (be) : i64, !bf.cursor

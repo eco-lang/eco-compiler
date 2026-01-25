@@ -7,7 +7,7 @@ module {
     // Allocate buffer for 3 f64 values
     %size = arith.constant 24 : i32
     %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : !bf.cursor
+    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
 
     // Write special values
     %inf = arith.constant 0x7FF0000000000000 : i64
@@ -22,7 +22,7 @@ module {
     %cursor3 = bf.write.f64 %cursor2, %zero_f (le) : !bf.cursor
 
     // Read back
-    %read_cursor0 = bf.decoder.cursor.init %buffer : !bf.cursor
+    %read_cursor0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
     %r0, %read_cursor1 = bf.read.f64 %read_cursor0 (le) : f64, !bf.cursor
     %r1, %read_cursor2 = bf.read.f64 %read_cursor1 (le) : f64, !bf.cursor
     %r2, %read_cursor3 = bf.read.f64 %read_cursor2 (le) : f64, !bf.cursor

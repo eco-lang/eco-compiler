@@ -7,7 +7,7 @@ module {
     // Allocate buffer: 1 + 2 + 4 + 8 = 15 bytes
     %size = arith.constant 15 : i32
     %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : !bf.cursor
+    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
 
     // Write sequence: u8, u16, u32, f64
     %val_u8 = arith.constant 42 : i64
@@ -23,7 +23,7 @@ module {
     %cursor4 = bf.write.f64 %cursor3, %val_f64 (le) : !bf.cursor
 
     // Read back all values
-    %read_cursor0 = bf.decoder.cursor.init %buffer : !bf.cursor
+    %read_cursor0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
     %r_u8, %read_cursor1 = bf.read.u8 %read_cursor0 : i64, !bf.cursor
     %r_u16, %read_cursor2 = bf.read.u16 %read_cursor1 (le) : i64, !bf.cursor
     %r_u32, %read_cursor3 = bf.read.u32 %read_cursor2 (le) : i64, !bf.cursor

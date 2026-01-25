@@ -9,7 +9,7 @@ module {
     %buffer = bf.alloc %size : i64
 
     // Try to decode with bounds check
-    %rc0 = bf.decoder.cursor.init %buffer : !bf.cursor
+    %rc0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
     %needed = arith.constant 1 : i32
     %ok = bf.require %rc0, %needed : i1
 

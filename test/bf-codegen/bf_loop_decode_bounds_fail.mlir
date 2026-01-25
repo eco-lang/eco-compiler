@@ -7,7 +7,7 @@ module {
     // Create buffer with count claiming more items than exist
     %size = arith.constant 8 : i32
     %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : !bf.cursor
+    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
 
     // Write count = 10 (but only provide 2 items)
     %count = arith.constant 10 : i64
@@ -20,7 +20,7 @@ module {
     %cursor3 = bf.write.u8 %cursor2, %v2 : !bf.cursor
 
     // Check bounds after reading count
-    %rc0 = bf.decoder.cursor.init %buffer : !bf.cursor
+    %rc0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
     %read_count, %rc1 = bf.read.u32 %rc0 (le) : i64, !bf.cursor
 
     // Check if we have enough bytes for 10 items

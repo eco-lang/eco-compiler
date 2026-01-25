@@ -7,7 +7,7 @@ module {
     // Allocate buffer for 3 bytes
     %size = arith.constant 3 : i32
     %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : !bf.cursor
+    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
 
     // Write boundary values
     %val0 = arith.constant 0 : i64
@@ -20,7 +20,7 @@ module {
     %cursor3 = bf.write.u8 %cursor2, %val255 : !bf.cursor
 
     // Read back all values
-    %read_cursor0 = bf.decoder.cursor.init %buffer : !bf.cursor
+    %read_cursor0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
     %r0, %read_cursor1 = bf.read.u8 %read_cursor0 : i64, !bf.cursor
     %r1, %read_cursor2 = bf.read.u8 %read_cursor1 : i64, !bf.cursor
     %r2, %read_cursor3 = bf.read.u8 %read_cursor2 : i64, !bf.cursor

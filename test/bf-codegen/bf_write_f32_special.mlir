@@ -7,7 +7,7 @@ module {
     // Allocate buffer for 4 f32 values
     %size = arith.constant 16 : i32
     %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : !bf.cursor
+    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
 
     // Write special values (little-endian)
     %inf = arith.constant 0x7FF0000000000000 : i64  // +Inf as f64 bits
@@ -25,7 +25,7 @@ module {
     %cursor4 = bf.write.f32 %cursor3, %neg_zero (le) : !bf.cursor
 
     // Read back
-    %read_cursor0 = bf.decoder.cursor.init %buffer : !bf.cursor
+    %read_cursor0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
     %r0, %read_cursor1 = bf.read.f32 %read_cursor0 (le) : f64, !bf.cursor
     %r1, %read_cursor2 = bf.read.f32 %read_cursor1 (le) : f64, !bf.cursor
     %r2, %read_cursor3 = bf.read.f32 %read_cursor2 (le) : f64, !bf.cursor
