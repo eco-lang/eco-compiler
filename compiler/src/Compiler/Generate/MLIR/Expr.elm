@@ -1231,13 +1231,11 @@ generateSaturatedCall ctx func args resultType =
 
                                 Nothing ->
                                     -- Fusion failed - fall back to kernel call
+                                    -- Force both arguments to eco.value since the kernel always takes boxed values
                                     let
-                                        sig : Ctx.FuncSignature
-                                        sig =
-                                            Ctx.kernelFuncSignatureFromType funcType
-
+                                        -- Box both arguments to eco.value regardless of their current types
                                         ( boxOps, argVarPairs, ctx1b ) =
-                                            boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
+                                            boxToMatchSignatureTyped ctx1 argsWithTypes [ Mono.MUnit, Mono.MUnit ]
 
                                         ( resVar, ctx2 ) =
                                             Ctx.freshVar ctx1b
@@ -1246,8 +1244,9 @@ generateSaturatedCall ctx func args resultType =
                                         kernelName =
                                             "Elm_Kernel_Bytes_decode"
 
+                                        -- Result is always eco.value (Maybe a)
                                         callResultType =
-                                            Types.monoTypeToMlir sig.returnType
+                                            Types.ecoValue
 
                                         ( ctx3, callOp ) =
                                             Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs callResultType
