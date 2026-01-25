@@ -4,7 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is **eco-runtime**, a generational garbage collector runtime for Elm, written in C++20. It implements a two-generation GC with minor (nursery) and major (old generation) collection strategies optimized for Elm's immutable, purely functional semantics.
+This is **Eco**, an Elm compiler optimizing and runtime system. It consists of:
+
+1. **Compiler** (`compiler/`): An Elm compiler written in Elm that generates MLIR
+2. **Runtime** (`runtime/`): A C++20 code generation backend that lowers the MLIR via LLVM, and a runtime with garbage collection.
+3. **Elm Kernel C++** (`elm-kernel-cpp/`): C++ implementations of Elm's kernel functions
+
+## Invariants
+
+**CRITICAL:** Before modifying any codegen, runtime, or representation-related code, ALWAYS read `design_docs/invariants.csv` and verify changes comply with the relevant invariants:
+
+- **REP_*** invariants define the four representation models (ABI, SSA, Heap, Logical) and their boundaries
+- **CGEN_*** invariants define MLIR codegen rules
+- **HEAP_*** invariants define runtime heap layout and GC rules
+- **FORBID_*** invariants define what NOT to do
+
+Key representation rules:
+- Only Int, Float, and Char are unboxed in heap fields and closures (NOT Bool)
+- Bool is always `!eco.value` in heap/closure storage (True/False are embedded HPointer constants)
+- SSA representation, ABI representation, and Heap representation are independent unless explicitly linked by an invariant
 
 ## Build Commands
 
@@ -28,177 +46,24 @@ cmake --build build --target ecor
 ```
 
 ### Running Tests
+
+Compiler front-end tests with elm-test:
+
 ```bash
-# Run full test suite (default: 100 tests)
-./build/test/test
-
-# Run with specific number of tests
-./build/test/test -n 1000
-
-# Run with specific seed (for reproducibility)
-./build/test/test --seed 42
-
-# Control test complexity with max-size (default: 100)
-./build/test/test --max-size 500
-
-# Filter tests by name
-./build/test/test --filter preserve
-
-# Reproduce a specific failing test
-./build/test/test --reproduce <reproduction_string>
-
-# Run tests multiple times
-./build/test/test --repeat 10
-
-# Enable GC statistics output
-# (requires recompiling with ENABLE_GC_STATS defined)
+cd compiler
+npx elm-test --fuzz 1
 ```
 
-The test suite uses RapidCheck for property-based testing. When a test fails, it will provide a reproduction string that can be used to reliably reproduce the failure.
+Full E2E tests including the backend and runtime:
 
-**Test complexity scaling**: The `--max-size` parameter controls the complexity of generated test inputs. Tests use size-sensitive generators that create larger heap graphs, more GC cycles, and more allocations at higher sizes:
-- `--max-size 1-10`: Minimal tests, ~30s for 10 iterations
-- `--max-size 100`: Default, moderate complexity, ~30s for 10 iterations
-- `--max-size 500`: Thorough testing, ~100s for 10 iterations
-- `--max-size 1000+`: Not recommended (excessive runtime)
+```bash
+# To check after changes to C++ backend:
+cmake --build build --target check
 
-## Core Architecture
+# To check after changes to Elm frontend force a full rebuild of the compiler:
+cmake --build build --target full
 
-### Memory Model
-- **Logical pointers**: 40-bit offsets into a unified heap, allowing 8TB address space
-- **Unified heap**: Single reserved address space (1GB default) split between old generation and thread-local nurseries
-- **Lazy commitment**: Address space reserved upfront, physical memory committed on demand via mmap
-- **Unboxed values**: Primitives (Int, Float, Char) stored inline when possible, not as heap objects
-- **Embedded constants**: Common values (Nil, True, False, Unit) embedded directly in pointer representation
-
-### Garbage Collection Strategy
-
-**Two-generation design** based on generational hypothesis:
-
-1. **Minor GC (NurserySpace)** - `runtime/src/allocator/NurserySpace.cpp`
-   - Thread-local semi-space copying collector (4MB per thread)
-   - Cheney's algorithm for breadth-first evacuation
-   - Bump pointer allocation (fast O(1) path)
-   - Objects promoted to old gen after surviving `PROMOTION_AGE` collections (currently 1)
-   - No synchronization needed on allocation fast path
-
-2. **Major GC (OldGenSpace)** - `runtime/src/allocator/OldGenSpace.cpp`
-   - Mark-and-sweep collector with free-list allocation
-   - Tri-color marking (White/Grey/Black) for incremental/concurrent collection
-   - Uses recursive mutexes for thread safety (allows re-entrant allocation during GC)
-   - Can grow dynamically within reserved address space
-
-**Key optimization**: No write barriers needed because Elm's immutability guarantees no old→young pointers can exist.
-
-### Object Representation
-
-All heap objects defined in `runtime/src/allocator/Heap.hpp`:
-- **64-bit header**: tag (16 bits), color (2 bits), age (2 bits), refcount (28 bits), flags
-- **8-byte alignment**: All objects aligned to 8 bytes for performance
-- **Type hierarchy**: Int, Float, Char, String, Tuple2, Tuple3, Cons (lists), Custom, Record, DynRecord, FieldGroup, Closure, Process, Task
-
-### Forwarding Pointers
-During copying collection, evacuated objects leave behind a 16-byte forwarding pointer structure at their original location to redirect subsequent references. This is critical to Cheney's algorithm implementation.
-
-### Test Infrastructure
-
-Property-based testing with RapidCheck (`test/main.cpp`):
-- **Generators** (`test/allocator/HeapGenerators.hpp`, `test/allocator/HeapGenerators.cpp`): Create random heap graphs with controlled properties
-- **HeapSnapshot** (`test/allocator/HeapSnapshot.hpp`): Captures heap state before/after GC to validate correctness
-- **Three core properties tested**:
-  1. GC preserves all reachable objects (values unchanged)
-  2. GC collects unreachable objects (memory reclaimed)
-  3. Multiple GC cycles maintain correctness (no corruption over time)
-
-When debugging test failures, use the `--reproduce` parameter with the provided reproduction string to get deterministic replay.
-
-### Thread Safety Model
-- **Nurseries**: Thread-local, no synchronization on fast path
-- **Old generation**: Protected by recursive mutexes (allows GC to trigger during GC)
-- **Root set**: Global lock for registration/updates
-- **GarbageCollector singleton**: Single instance manages all spaces
-
-### Statistics System
-
-`runtime/src/allocator/GCStats.hpp` provides comprehensive GC telemetry:
-- **Zero overhead when disabled**: All macros compile to nothing when `ENABLE_GC_STATS` is not defined
-- **Tracks**: Allocations, GC cycles, timing histograms, survival/promotion rates
-- **Output**: Pretty-printed with Unicode bar charts at program end
-
-To enable statistics, define `ENABLE_GC_STATS` before including `GCStats.hpp` or add it as a compile definition.
-
-## Key Files
-
-Allocator source files are in `runtime/src/allocator/`:
-- `Allocator.hpp` / `Allocator.cpp`: GC system interface and implementation
-- `NurserySpace.hpp` / `NurserySpace.cpp`: Minor GC with Cheney's algorithm
-- `OldGenSpace.hpp` / `OldGenSpace.cpp`: Major GC with mark-sweep and incremental compaction
-- `Heap.hpp`: All Elm value type definitions and object layouts
-- `AllocatorCommon.hpp`: Shared types, constants, and utility functions
-- `GCStats.hpp` / `GCStats.cpp`: Statistics tracking and reporting
-
-Test files are in `test/` with allocator-specific tests in `test/allocator/`:
-- `test/main.cpp`: Test runner and command-line interface
-- `test/TestSuite.hpp`: Test framework
-- `test/allocator/HeapGenerators.hpp` / `.cpp`: RapidCheck generators for heap structures
-- `test/allocator/*Test.hpp` / `.cpp`: Component-specific tests
-
-## Important Constants
-
-- `PROMOTION_AGE`: Currently set to 1 in `runtime/src/allocator/Allocator.hpp` - objects promoted after surviving 1 minor GC
-- Default nursery size: 4MB per thread
-- Default heap reservation: 1GB total address space
-- Object alignment: 8 bytes
-
-## Git Workflow
-
-When developing features or fixes, follow this branch-based workflow:
-
-### Starting Work
-
-1. **Create a feature branch** with a descriptive name:
-   ```bash
-   git checkout -b <descriptive-branch-name>
-   ```
-   Name branches after the task: `fix-nursery-overflow`, `add-tlab-support`, `refactor-gc-stats`
-
-2. **Rebase onto master** to ensure you're starting from the latest code:
-   ```bash
-   git rebase master
-   ```
-
-### During Development
-
-- Make incremental changes
-- Test that changes work before committing
-
-### Completing Work
-
-1. **Ask user for confirmation** before committing - do not commit automatically
-2. **Commit with a concise, well-written message** describing the change
-3. **Rebase onto master again** in case it has changed:
-   ```bash
-   git rebase master
-   ```
-4. **Resolve any conflicts** if they occur
-5. **Merge to master**:
-   ```bash
-   git checkout master
-   git merge <branch-name>
-   ```
-
-### Important
-
-- Never commit without user confirmation
-- Never push to remote without user confirmation
-- Keep commit messages concise but descriptive
-- One logical change per commit
-
-## Development Notes
-
-When modifying the GC:
-- Locking must use recursive mutexes because GC can trigger allocation (e.g., when expanding old gen)
-- Object scanning in `scanObject()` must handle all types defined in `Heap.hpp`
-- Size calculation in `objectSize()` must match object layout exactly (8-byte aligned)
-- Forwarding pointers are 16 bytes and must be recognizable by their tag
-- Remember that Elm values are immutable - no write barriers or remembered sets needed
+# To filder and just run a subset of the tests
+TEST_FILTER=elm cmake --build build --target check
+TEST_FILTER=codegen cmake --build build --target check
+```
