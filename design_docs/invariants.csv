@@ -384,3 +384,35 @@ BFOPS_038;BytesFusion_Ops;PerfDeterministicFusion;documented;Fusion success is d
 XPHASE_001;CrossPhase;Layouts;implied;RecordLayout TupleLayout and CtorLayout from the monomorphized IR must agree with eco.construct attributes tag size and unboxed_bitmap and with the Custom and Record C plus plus structs so that MLIR objects match runtime layouts;Compiler.AST.Monomorphized and Compiler.Generate.MLIRMono and Heap.hpp
 
 XPHASE_002;CrossPhase;Types;documented;All !eco.value SSA operands produced by codegen must correspond to valid HPointer values (heap pointers or embedded constants) that satisfy runtime heap alignment and header invariants;THEORY.md and Heap.hpp and Compiler.Generate.MLIRMono
+
+FORBID_REP_001;CrossPhase;ForbiddenAssumptions;enforced;No phase may assume that an SSA operand of primitive MLIR type corresponds to a primitive field in any heap object unless an explicit layout bitmap is consulted;XPHASE_001|REP_HEAP_002
+
+# =============================================================================
+# FORBIDDEN INVARIANTS - What not to do
+# =============================================================================
+
+FORBID_REP_002;CrossPhase;ForbiddenAssumptions;enforced;No phase may assume that a value passed as a primitive at an ABI boundary is stored as a primitive in heap objects or closures;REP_ABI_001|REP_HEAP_001
+
+FORBID_REP_003;CrossPhase;ForbiddenAssumptions;enforced;No phase may assume that SSA operand representation implies ABI calling convention or vice versa except where explicitly specified by REP_ABI invariants;REP_ABI_001|REP_SSA_001
+
+FORBID_HEAP_001;Runtime_Heap;ForbiddenAssumptions;enforced;No code may distinguish heap pointers from constants using address range checks or null tests; only HPointer constant bits and header tags may be used;HEAP_010|HEAP_014
+
+FORBID_HEAP_002;Runtime_Heap;ForbiddenAssumptions;enforced;No code may perform arithmetic on HPointer values except via allocator helpers or runtime APIs;HEAP_008|HEAP_009
+
+FORBID_CLOSURE_001;CrossPhase;ForbiddenAssumptions;enforced;No phase may assume that Bool values are captured, stored, or passed as primitives outside SSA control-flow contexts; Bool must be represented as !eco.value in heap and closures;REP_SSA_001|REP_CLOSURE_001
+
+FORBID_CLOSURE_002;CrossPhase;ForbiddenAssumptions;enforced;No phase may infer closure capture layout from MonoType or source type alone; layout must be derived from SSA operand MLIR types and recorded bitmaps;REP_CLOSURE_001|CGEN_003
+
+FORBID_LAYOUT_001;Runtime_Heap;ForbiddenAssumptions;enforced;No code may assume a heap object’s field layout based solely on its Tag without consulting the corresponding layout metadata;MONO_006|MONO_013|HEAP_019
+
+FORBID_LAYOUT_002;Monomorphization;ForbiddenAssumptions;enforced;No phase may assume that two structurally equal source types share layout unless their RecordLayout or TupleLayout identifiers are equal or explicitly canonicalized;MONO_014
+
+FORBID_OPT_001;TypedOptimization;ForbiddenAssumptions;enforced;No optimization may remove boxing or unboxing operations unless representation equivalence is proven under the active representation model;REP_001|CGEN_001
+
+FORBID_OPT_002;CrossPhase;ForbiddenAssumptions;enforced;No generated code may access heap object internals directly except inside designated runtime helpers;BFOPS_030|HEAP_004
+
+FORBID_CF_001;MLIR_Codegen;ForbiddenAssumptions;enforced;No control-flow construct may assume implicit fallthrough; all exits must be explicit terminators;CGEN_028|CGEN_045
+
+FORBID_DBG_001;Runtime_Heap;ForbiddenAssumptions;enforced;Debug and inspection code must not assume access to raw heap layouts and must use the same tracing logic as GC;HEAP_003|HEAP_019
+
+FORBID_META_001;CrossPhase;ForbiddenAssumptions;enforced;No phase may rely on representation properties that are not explicitly stated in a REP_* invariant;REP_001
