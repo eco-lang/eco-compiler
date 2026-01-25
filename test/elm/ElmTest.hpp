@@ -948,7 +948,7 @@ public:
 
         for (const auto& path : testPaths) {
             std::string filename = std::filesystem::path(path).filename().string();
-            std::string testName = "elm/" + filename;
+            std::string testName = "elm-core/" + filename;
             testEntries_.push_back(std::make_unique<ElmTestEntry>(testName, path));
         }
     }

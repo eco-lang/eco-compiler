@@ -343,7 +343,7 @@ public:
 
         for (const auto& path : testPaths) {
             std::string filename = std::filesystem::path(path).filename().string();
-            std::string testName = "bf-codegen/" + filename;
+            std::string testName = "codegen-bf/" + filename;
             testEntries_.push_back(std::make_unique<BFCodegenTestEntry>(testName, path));
         }
     }

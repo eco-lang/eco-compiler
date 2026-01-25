@@ -306,7 +306,7 @@ inline Testing::UnitTest createCodegenTest(const std::string& testPath) {
     std::string testName = std::filesystem::path(testPath).filename().string();
 
     return Testing::UnitTest(
-        "codegen/" + testName,
+        "codegen-eco/" + testName,
         [testPath]() {
             runCodegenTest(testPath);
         }
