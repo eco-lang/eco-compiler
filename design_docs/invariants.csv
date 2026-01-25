@@ -1,6 +1,35 @@
 id;phase;category;status;description;source
 
 # =============================================================================
+# REPRESENTATION OF DATA TYPES - The Data Type Models in this Compiler
+# =============================================================================
+
+REP_001;CrossPhase;RepresentationModels;enforced;The compiler defines four distinct data representation models: (1) ABI representation for function calls, (2) SSA representation for MLIR operands, (3) Heap representation for runtime objects, and (4) Logical representation for Elm semantics; rules in one representation model do not imply rules in another unless explicitly stated;THEORY.md
+
+REP_ABI_001;CrossPhase;ABI;enforced;At all function call boundaries (kernel or compiled), only Bool, Int, Float, and Char are passed and returned as primitive MLIR types; all other Elm values cross the ABI as !eco.value regardless of their heap field representation;CGEN_012|CGEN_037|CGEN_038
+
+REP_ABI_002;CrossPhase;ABI;documented;ABI representation is independent of heap field representation; a value may be passed as a primitive at the ABI boundary while being stored boxed or unboxed in heap fields according to layout metadata;THEORY.md
+
+REP_SSA_001;CrossPhase;SSA;enforced;SSA operands use primitive MLIR types only for Int, Float, and Char values; all other Elm values are represented as !eco.value, which denotes a heap pointer or an embedded constant; SSA representation is independent of heap field layout and ABI calling conventions;CGEN_012|CGEN_013|XPHASE_002
+
+REP_HEAP_001;Runtime_Heap;Representation;enforced;Heap object field representation is determined solely by layout metadata (RecordLayout, TupleLayout, CtorLayout) produced during monomorphization and is independent of ABI and SSA operand representation;MONO_006|MONO_013|XPHASE_001
+
+REP_HEAP_002;Runtime_Heap;Representation;enforced;Heap objects may contain primitive fields when and only when the corresponding layout bitmap marks the slot as unboxed; GC and debug logic must rely exclusively on the unboxed bitmap in object headers or on constant bits in HPointer values to distinguish pointers from primitives;HEAP_019|HEAP_010|HEAP_014
+
+REP_BOUNDARY_001;CrossPhase;Boundaries;enforced;Projection from heap objects into SSA produces primitive MLIR values exactly when the heap layout bitmap indicates an unboxed field; otherwise projection yields !eco.value;CGEN_005|HEAP_019
+
+REP_BOUNDARY_002;CrossPhase;Boundaries;enforced;Construction of heap objects from SSA values sets unboxed bitmaps based solely on SSA operand MLIR types (Int, Float, Char), and the runtime layout must match the bitmap exactly;CGEN_026|CGEN_027|XPHASE_001
+
+REP_CLOSURE_001;CrossPhase;Closures;enforced;Closure objects capture values using SSA representation rules: only Int, Float, and Char operands are stored as primitive fields and all other values (including Bool) are stored as !eco.value; closure capture layout and unboxed bitmaps must exactly match captured operand MLIR types after this normalization;CGEN_003|CGEN_012|CGEN_049|HEAP_010
+
+REP_CLOSURE_002;CrossPhase;Closures;enforced;Closure application preserves captured value representation: captured primitive fields remain primitive across partial application extension and captured boxed values remain !eco.value, with bitmap merging performed by the runtime;CGEN_003|CGEN_034|CGEN_049
+
+REP_CONSTANT_001;Runtime_Heap;Constants;enforced;Well-known constants such as Unit, True, False, Nil, Nothing, EmptyString, and EmptyRec are represented as HPointer values with nonzero constant bits and are never heap allocated; GC and debug logic must treat such values as non-heap and must not attempt to trace them;HEAP_010|HEAP_014|CGEN_019
+
+REP_CONSTANT_002;CrossPhase;Constants;enforced;SSA values of type !eco.value may denote either heap pointers or embedded constants, and codegen, GC, and runtime helpers must rely on HPointer constant bits rather than pointer range checks to distinguish them;HEAP_010|HEAP_014|XPHASE_002
+
+
+# =============================================================================
 # CANONICALIZATION PHASE - Resolve names, assign IDs, validate scopes
 # =============================================================================
 
@@ -15,6 +44,7 @@ CANON_004;Canonicalization;Imports;enforced;All imports must resolve to valid in
 CANON_005;Canonicalization;Dependencies;enforced;Module-level value definitions are partitioned into strongly connected components via Graph.stronglyConnComp this two-phase cycle detection (using all dependencies vs direct dependencies) ensures that groups used for type inference are valid recursive components and that non-terminating cyclic values are rejected with RecursiveDecl or RecursiveLet errors;Compiler.Canonicalize.Module|Compiler.Reporting.Error.Canonicalize
 
 CANON_006;Canonicalization;Cache;documented;Certain expression and pattern forms cache type information directly in the canonical AST to avoid interface lookups later in particular VarForeign VarCtor VarDebug VarOperator and Binop nodes carry cached Can.Annotation or Can.Type fields and constructor patterns PCtor and PatternCtorArg embed types for inference exhaustiveness checking and optimization;Compiler.AST.Canonical
+
 
 # =============================================================================
 # TYPE CHECKING PHASE - Generate and solve constraints ensure type safety
@@ -32,11 +62,13 @@ TYPE_005;TypeChecking;Generalization;enforced;Let-bound type variables are ranke
 
 TYPE_006;TypeChecking;Annotations;enforced;User-provided type annotations are canonicalized to Can.Annotation and inserted into the constraint tree the solver then enforces equality between annotated and inferred types so mismatches cause Type.Error values that surface as BadTypes errors rather than being silently ignored;Compiler.Canonicalize.Type|Compiler.Type.Constrain.Erased.Expression|Compiler.Type.Constrain.Typed.Expression|Compiler.Type.Solve
 
+
 # =============================================================================
 # NITPICK PHASE - Pattern exhaustiveness and other semantic checks
 # =============================================================================
 
 NITPICK_001;Nitpick;Exhaustiveness;enforced;Every case expression is exhaustive after the Nitpick phase meaning all possible values of the scrutinee type are covered by at least one pattern and any missing patterns are reported as InexhaustivePatterns errors so downstream phases can assume case expressions always match exactly one alternative at runtime;Compiler.Nitpick.PatternMatches
+
 
 # =============================================================================
 # POST-SOLVE PHASE - Fix Group B types and infer kernel function types
@@ -49,6 +81,7 @@ POST_002;PostSolve;KernelTypes;documented;Kernel function types are inferred by 
 POST_003;PostSolve;Completeness;enforced;After PostSolve all non-negative expression IDs in NodeTypes have meaningful concrete types and no unconstrained synthetic type variables remain for non-kernel expressions so the fixed nodeTypes map is guaranteed to be suitable for building TypedCanonical and for downstream typed optimization;Compiler.Type.PostSolve|Compiler.AST.TypedCanonical
 
 POST_004;PostSolve;Determinism;documented;For Group B expressions the structurally computed PostSolve types depend only on the canonical AST structure and the initial solver-produced nodeTypes so given the same canonical module and initial nodeTypes PostSolve deterministically produces the same fixed nodeTypes and kernelEnv;Compiler.Type.PostSolve
+
 
 # =============================================================================
 # TYPED OPTIMIZATION PHASE - Preserve and exploit types in optimized IR
@@ -63,6 +96,7 @@ TOPT_003;TypedOptimization;Annotations;enforced;The typed local graph TOpt.Local
 TOPT_004;TypedOptimization;TypePreservation;documented;Typed optimization is designed to be type-preserving transformations such as inlining dead-code elimination and case-to-decision-tree compilation construct new TOpt.Expr nodes whose attached Can.Type matches the inferred type from TypedCanonical or nodeTypes propagating types via local rules like function type equals argTypes arrow bodyType and call type equals peeled result type of the function;Compiler.Optimize.Typed.Expression|Compiler.AST.TypedOptimized
 
 TOPT_005;TypedOptimization;FunctionTypes;enforced;Function expressions in TypedOptimized carry their full function type as a list of (Name Can.Type) parameter types plus a result Can.Type and the overall expression Can.Type is the corresponding curried TLambda chain enabling accurate arity computation and type-directed specialization in monomorphization;Compiler.AST.TypedOptimized|Compiler.Optimize.Typed.Expression|Compiler.Generate.Monomorphize
+
 
 # =============================================================================
 # MONOMORPHIZATION PHASE - Specialize polymorphic functions to concrete types
@@ -98,6 +132,7 @@ MONO_014;Monomorphization;Layouts;documented;Structurally equivalent record and 
 
 MONO_015;Monomorphization;Accessors;enforced;When an accessor like .name with canonical type { ext | name : T } -> T is passed as a first-class function argument to a call site the accessor extension variable ext must be unified with the full record type inferred from other arguments at that call site so that specialization receives the complete record layout not just the explicitly named fields;Compiler.Generate.Monomorphize.Specialize|Compiler.Generate.Monomorphize.TypeSubst
 
+
 # =============================================================================
 # MLIR CODEGEN PHASE - Generate MLIR from monomorphized IR
 # =============================================================================
@@ -106,19 +141,19 @@ CGEN_001;MLIR_Codegen;Boxing;enforced;MLIR codegen only inserts boxing and unbox
 
 CGEN_002;MLIR_Codegen;Calls;enforced;generateCall treats calls whose result MonoType is still a function as partial applications and routes them through closure generation and eco.papExtend instead of emitting direct calls;Compiler.Generate.MLIRMono
 
-CGEN_003;MLIR_Codegen;Closures;enforced;generateClosureApplication stores captured and applied arguments in their actual heap representation types (i64 f64 i16 or eco.value) without boxing and emits eco.papCreate with unboxed_bitmap and eco.papExtend with newargs_unboxed_bitmap attributes that track which slots contain unboxed primitives and the runtime merges bitmaps during partial application extension;Compiler.Generate.MLIR.Expr and RuntimeExports.cpp
+CGEN_003;MLIR_Codegen;Closures;enforced;generateClosureApplication stores captured and applied arguments according to SSA representation: Int, Float, and Char operands are stored as primitive fields and all other operands are stored as !eco.value; unboxed_bitmap attributes record this SSA-derived layout and are merged during partial application extension;Compiler.Generate.MLIR.Expr and RuntimeExports.cpp
 
 CGEN_004;MLIR_Codegen;Destruct;enforced;generateDestruct and generateMonoPath always use the destructor MonoType to determine the path target MLIR type and never use the body result type so destruct paths yield their natural type and do not spuriously unbox;Compiler.Generate.MLIRMono
 
-CGEN_005;MLIR_Codegen;Projection;enforced;generateMonoPath navigates containers as eco.value and uses eco.project with operand type eco.value and result type equal to the field type with the unboxed attribute set exactly when the result type is not eco.value;Compiler.Generate.MLIRMono
+CGEN_005;MLIR_Codegen;Projection;enforced;generateMonoPath projects heap fields into SSA operands: if the heap layout bitmap marks the field unboxed, the result is a primitive SSA value; otherwise the result is !eco.value;Compiler.Generate.MLIRMono
 
 CGEN_006;MLIR_Codegen;Let;enforced;generateLet binds let names directly to the SSA value and MLIR type of the defining expression without wrapping in eco.construct so variable bindings preserve original boxed or unboxed representation;Compiler.Generate.MLIRMono
 
-CGEN_007;MLIR_Codegen;Signatures;enforced;boxToMatchSignature and boxToMatchSignatureTyped adjust call arguments only for boxed versus unboxed differences so actual SSA types are made to match monoTypeToMlir of expected MonoTypes without changing primitive kinds;Compiler.Generate.MLIRMono
+CGEN_007;MLIR_Codegen;Signatures;enforced;boxToMatchSignature and boxToMatchSignatureTyped adjust call arguments only to satisfy ABI representation rules without changing heap layout or SSA operand representation;Compiler.Generate.MLIRMono
 
 CGEN_008;MLIR_Codegen;Attributes;documented;eco.construct eco.project eco.call and eco.return always carry an _operand_types attribute whose entries exactly match the MLIR SSA operand types used at that call site;Compiler.Generate.MLIRMono
 
-CGEN_009;MLIR_Codegen;Booleans;documented;Boolean constants must be emitted with typed MLIR attributes such as value equals 1 colon i1 so MLIR verifies that the constant value type and result type agree;PLAN.md known issues section
+CGEN_009;MLIR_Codegen;Booleans;documented;Boolean constants may appear as i1 SSA values only in control-flow contexts (case scrutinees) and are otherwise represented as !eco.value constants at ABI, heap, and closure boundaries;PLAN.md known issues section
 
 CGEN_010;MLIR_Codegen;Case;enforced;Every eco.case in the IR has an explicit result_types attribute and all alternatives eco.return terminators match it;Compiler.Generate.MLIRMono
 
@@ -152,9 +187,9 @@ CGEN_024;MLIR_Codegen;Projection;enforced;Custom ADT field access uses eco.proje
 
 CGEN_025;MLIR_Codegen;TypeConsistency;enforced;All eco.construct.* operations produce !eco.value results regardless of whether any fields are stored unboxed;runtime/src/codegen/Ops.td
 
-CGEN_026;MLIR_Codegen;UnboxedBitmap;enforced;For eco.construct.tuple2 eco.construct.tuple3 eco.construct.record and eco.construct.custom the unboxed_bitmap has bit N set if and only if operand N is a primitive MLIR type and not !eco.value;runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Expr and Compiler.Generate.MLIR.Ops
+CGEN_026;MLIR_Codegen;UnboxedBitmap;enforced;For eco.construct.tuple2 eco.construct.tuple3 eco.construct.record and eco.construct.custom the unboxed_bitmap is derived solely from SSA operand MLIR types: a bit is set iff the operand is Int, Float, or Char;runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Expr and Compiler.Generate.MLIR.Ops
 
-CGEN_027;MLIR_Codegen;UnboxedBitmap;enforced;For eco.construct.list the head_unboxed attribute is true if and only if the head operand has a primitive MLIR type;runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Ops
+CGEN_027;MLIR_Codegen;UnboxedBitmap;enforced;For eco.construct.list the head_unboxed attribute is true iff the SSA head operand is Int, Float, or Char;runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Ops
 
 CGEN_028;MLIR_Codegen;ControlFlow;enforced;Every eco.case alternative region terminates with eco.return eco.crash or a nested terminator eco.case and no alternative falls through without an explicit terminator and eco.jump is not allowed directly in case alternatives;runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Expr
 
@@ -202,6 +237,7 @@ CGEN_049;MLIR_Codegen;Closures;enforced;eco.papCreate and eco.papExtend unboxed_
 
 CGEN_050;MLIR_Codegen;Lambdas;enforced;Lambda functions use typed signatures where capture parameters have their actual MonoType mapped to MLIR types and return types match the body expression type rather than always using eco.value so no internal boxing or unboxing is needed for primitive captures and returns;Compiler.Generate.MLIR.Lambdas
 
+
 # =============================================================================
 # RUNTIME HEAP PHASE - Memory layout and GC invariants
 # =============================================================================
@@ -242,7 +278,8 @@ HEAP_017;Runtime_Heap;NoNullPointers;enforced;Elm never produces null pointers s
 
 HEAP_018;Runtime_Heap;NoCyclicValues;enforced;Elm values are always acyclic because Elm is a pure functional language with immutable data and no recursive let bindings so any traversal of a value graph is guaranteed to terminate and runtime operations like debug printing may safely follow nested references without cycle detection;Language semantics
 
-HEAP_019;Runtime_Heap;UnboxedBitmap;enforced;Container heap objects such as Custom Cons and Record store an unboxed bitmap in header.unboxed that indicates which value slots contain unboxed primitives rather than boxed HPointers and allocators must set this bitmap correctly at allocation time so that GC tracing and debug printing can distinguish unboxed primitive bits from boxed pointers;Heap.hpp and RuntimeExports.cpp
+HEAP_019;Runtime_Heap;UnboxedBitmap;enforced;Container heap objects such as Custom Cons and Record store an unboxed bitmap indicating which fields contain primitive runtime values (Int, Float, Char) rather than HPointer references and GC and debug logic must use this bitmap to distinguish pointers from primitives;Heap.hpp and RuntimeExports.cpp
+
 
 # =============================================================================
 # BYTES FUSION REIFICATION PHASE - Static analysis and fusion eligibility
@@ -257,6 +294,7 @@ BFUSE_003;BytesFusion_Reification;LetBindings;enforced;Let-bound encoders and de
 BFUSE_004;BytesFusion_Reification;OrderPreservation;enforced;Reification preserves operation order exactly so the sequence of encode or decode steps in the fused kernel matches the order specified in the source program;Compiler.Generate.MLIR.BytesFusion.Reify
 
 BFUSE_005;BytesFusion_Reification;NoRuntimeInspection;enforced;Reification inspects structure only and never runtime values so fusion decisions are based solely on the static shape of the encoder or decoder AST;Compiler.Generate.MLIR.BytesFusion.Reify
+
 
 # =============================================================================
 # BYTES FUSION OPS PHASE - bf dialect IR and lowering invariants
@@ -338,10 +376,11 @@ BFOPS_037;BytesFusion_Ops;PerfNoInterpreterCalls;enforced;No interpreter calls o
 
 BFOPS_038;BytesFusion_Ops;PerfDeterministicFusion;documented;Fusion success is deterministic and predictable based solely on static structure so identical source programs always produce identical fusion decisions;Compiler.Generate.MLIR.BytesFusion.Reify
 
+
 # =============================================================================
 # CROSS-PHASE INVARIANTS - Constraints spanning multiple phases (always last)
 # =============================================================================
 
 XPHASE_001;CrossPhase;Layouts;implied;RecordLayout TupleLayout and CtorLayout from the monomorphized IR must agree with eco.construct attributes tag size and unboxed_bitmap and with the Custom and Record C plus plus structs so that MLIR objects match runtime layouts;Compiler.AST.Monomorphized and Compiler.Generate.MLIRMono and Heap.hpp
 
-XPHASE_002;CrossPhase;Types;documented;MLIR eco.value pointers and boxed values produced by codegen must correspond to HPointer based heap objects that satisfy the 8 byte alignment and header first invariants of the runtime heap;THEORY.md and Heap.hpp and Compiler.Generate.MLIRMono
+XPHASE_002;CrossPhase;Types;documented;All !eco.value SSA operands produced by codegen must correspond to valid HPointer values (heap pointers or embedded constants) that satisfy runtime heap alignment and header invariants;THEORY.md and Heap.hpp and Compiler.Generate.MLIRMono
