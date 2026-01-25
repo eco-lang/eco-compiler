@@ -2241,7 +2241,7 @@ generateDestruct ctx (Mono.MonoDestructor name path monoType) body _ =
     , resultVar = bodyResult.resultVar
     , resultType = bodyResult.resultType
     , ctx = bodyResult.ctx
-    , isTerminated = False
+    , isTerminated = bodyResult.isTerminated
     }
 
 
