@@ -200,25 +200,15 @@ Primitive types are stored unboxed in the heap.
 isPrimitiveType : MlirType -> Bool
 isPrimitiveType ty =
     case ty of
-        NamedStruct "eco.value" ->
-            False
-
-        NamedStruct _ ->
-            False
-
-        -- int/i64
         I64 ->
             True
 
-        -- float/f64
         F64 ->
             True
 
-        -- char/bool i32
         I32 ->
             True
 
-        -- i1 for booleans
         I1 ->
             True
 

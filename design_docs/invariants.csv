@@ -245,6 +245,100 @@ HEAP_018;Runtime_Heap;NoCyclicValues;enforced;Elm values are always acyclic beca
 HEAP_019;Runtime_Heap;UnboxedBitmap;enforced;Container heap objects such as Custom Cons and Record store an unboxed bitmap in header.unboxed that indicates which value slots contain unboxed primitives rather than boxed HPointers and allocators must set this bitmap correctly at allocation time so that GC tracing and debug printing can distinguish unboxed primitive bits from boxed pointers;Heap.hpp and RuntimeExports.cpp
 
 # =============================================================================
+# BYTES FUSION REIFICATION PHASE - Static analysis and fusion eligibility
+# =============================================================================
+
+BFUSE_001;BytesFusion_Reification;Completeness;enforced;Reification is all-or-nothing and a fused kernel is emitted only when the entire encoder or decoder structure can be statically resolved otherwise the interpreter path is used;Compiler.Generate.MLIR.BytesFusion.Reify
+
+BFUSE_002;BytesFusion_Reification;StaticStructure;enforced;Dynamic encoders and decoders are rejected from fusion and any encoder or decoder whose structure depends on runtime values causes fallback to the interpreter;Compiler.Generate.MLIR.BytesFusion.Reify
+
+BFUSE_003;BytesFusion_Reification;LetBindings;enforced;Let-bound encoders and decoders are reified only if fully resolvable at compile time and partially resolvable let bindings cause the entire fusion to be rejected;Compiler.Generate.MLIR.BytesFusion.Reify
+
+BFUSE_004;BytesFusion_Reification;OrderPreservation;enforced;Reification preserves operation order exactly so the sequence of encode or decode steps in the fused kernel matches the order specified in the source program;Compiler.Generate.MLIR.BytesFusion.Reify
+
+BFUSE_005;BytesFusion_Reification;NoRuntimeInspection;enforced;Reification inspects structure only and never runtime values so fusion decisions are based solely on the static shape of the encoder or decoder AST;Compiler.Generate.MLIR.BytesFusion.Reify
+
+# =============================================================================
+# BYTES FUSION OPS PHASE - bf dialect IR and lowering invariants
+# =============================================================================
+
+BFOPS_001;BytesFusion_Ops;CursorState;enforced;Cursor is the only mutable state in fused byte operations and all state flows through cursor threading with no hidden side channels;runtime/src/codegen/BF/BFOps.td
+
+BFOPS_002;BytesFusion_Ops;CursorSSA;enforced;Cursor is SSA-threaded so every bf operation that modifies cursor state consumes the old cursor and produces a new cursor value;runtime/src/codegen/BF/BFOps.td
+
+BFOPS_003;BytesFusion_Ops;CursorMonotonic;enforced;Cursor pointer movement is monotonic and the pointer only moves forward never backward during encoding or decoding;runtime/src/codegen/Passes/BFToLLVM.cpp
+
+BFOPS_004;BytesFusion_Ops;CursorEndImmutable;enforced;Cursor end pointer never changes during execution and is set once at cursor initialization from buffer allocation;runtime/src/codegen/Passes/BFToLLVM.cpp
+
+BFOPS_005;BytesFusion_Ops;CursorBounds;enforced;Cursor invariant ptr less than or equal to end always holds and any violation indicates a bounds check failure;runtime/src/codegen/Passes/BFToLLVM.cpp
+
+BFOPS_006;BytesFusion_Ops;EncoderWidth;enforced;Width computation is exact and equals the sum of all emitted write widths so buffer allocation matches total write size;Compiler.Generate.MLIR.BytesFusion.Emit
+
+BFOPS_007;BytesFusion_Ops;EncoderSingleAlloc;enforced;Exactly one buffer allocation occurs per encoder invocation and all writes go to that single buffer;Compiler.Generate.MLIR.BytesFusion.Emit
+
+BFOPS_008;BytesFusion_Ops;EncoderNoPostReturn;enforced;No writes occur after the buffer is returned and ReturnBuffer is always the final operation in an encoder;Compiler.Generate.MLIR.BytesFusion.Emit
+
+BFOPS_009;BytesFusion_Ops;EncoderWriteOrder;enforced;Write order is preserved exactly and bytes appear in the output buffer in the same order as the source program specifies;Compiler.Generate.MLIR.BytesFusion.Emit
+
+BFOPS_010;BytesFusion_Ops;EncoderNoBoundsViolation;enforced;Writes never exceed allocated buffer size because width computation guarantees exact allocation;Compiler.Generate.MLIR.BytesFusion.Emit
+
+BFOPS_011;BytesFusion_Ops;EncoderNoIntermediateBuffers;enforced;No intermediate buffers are created during encoding and all writes go directly to the final output buffer;Compiler.Generate.MLIR.BytesFusion.Emit
+
+BFOPS_012;BytesFusion_Ops;DecoderBoundsFirst;enforced;No load occurs without a prior successful bounds check so all reads are proven safe before execution;runtime/src/codegen/Passes/BFToLLVM.cpp
+
+BFOPS_013;BytesFusion_Ops;DecoderStructuralSafety;enforced;Bounds safety is structural and enforced by IR shape so the bf dialect structure guarantees checks precede loads;runtime/src/codegen/BF/BFOps.td
+
+BFOPS_014;BytesFusion_Ops;DecoderFailureTerminal;enforced;Failure is terminal and decoding exits immediately upon any bounds check or semantic failure;runtime/src/codegen/Passes/BFToLLVM.cpp
+
+BFOPS_015;BytesFusion_Ops;DecoderNoCursorAdvanceOnFail;enforced;Cursor does not advance on failure so failed decode attempts leave the cursor at the failure position;runtime/src/codegen/Passes/BFToLLVM.cpp
+
+BFOPS_016;BytesFusion_Ops;DecoderNothingPropagation;enforced;Semantic failures propagate as Nothing through the Maybe result type and never as exceptions or traps;runtime/src/codegen/Passes/BFToLLVM.cpp
+
+BFOPS_017;BytesFusion_Ops;DecoderNoTraps;enforced;Decoder never throws or traps and all error conditions result in Nothing return values;runtime/src/codegen/Passes/BFToLLVM.cpp
+
+BFOPS_018;BytesFusion_Ops;DecoderSemanticEquivalence;enforced;Successful fused decode produces results identical to the interpreter so fusion is purely an optimization;Compiler.Generate.MLIR.BytesFusion.Emit
+
+BFOPS_019;BytesFusion_Ops;IRNoPointers;enforced;Loop IR contains no raw pointers and all buffer access is mediated through cursor abstractions;runtime/src/codegen/BF/BFOps.td
+
+BFOPS_020;BytesFusion_Ops;IRCursorBased;enforced;Loop IR is cursor-based and all read and write positions are expressed as cursor states not pointer arithmetic;runtime/src/codegen/BF/BFOps.td
+
+BFOPS_021;BytesFusion_Ops;IRCursorOpaque;enforced;bf.cursor type is opaque above LLVM lowering and its internal structure is hidden from higher-level IR;runtime/src/codegen/BF/BFTypes.td
+
+BFOPS_022;BytesFusion_Ops;IRNoSideEffects;enforced;bf operations have no side effects except cursor transformation and buffer mutation so they are pure with respect to external state;runtime/src/codegen/BF/BFOps.td
+
+BFOPS_023;BytesFusion_Ops;IRExplicitControlFlow;enforced;Control flow is explicit in IR and all branches and loops are represented as first-class control flow constructs;runtime/src/codegen/BF/BFOps.td
+
+BFOPS_024;BytesFusion_Ops;IRSSAOrder;enforced;Operation order is expressed by SSA dependencies so the IR structure encodes execution order constraints;runtime/src/codegen/BF/BFOps.td
+
+BFOPS_025;BytesFusion_Ops;LoweringCursorStruct;enforced;bf.cursor lowers exactly to LLVM struct containing ptr and end pointer pair with no additional fields;runtime/src/codegen/Passes/BFToLLVM.cpp
+
+BFOPS_026;BytesFusion_Ops;LoweringNoSpeculativeLoads;enforced;No speculative loads are generated and all loads are guarded by prior bounds checks in the CFG;runtime/src/codegen/Passes/BFToLLVM.cpp
+
+BFOPS_027;BytesFusion_Ops;LoweringPointerArithmetic;enforced;Pointer arithmetic in lowered code matches cursor semantics exactly with no off-by-one errors or alignment issues;runtime/src/codegen/Passes/BFToLLVM.cpp
+
+BFOPS_028;BytesFusion_Ops;LoweringEndPointerReuse;enforced;End pointer is computed once at cursor initialization and reused for all bounds checks without recomputation;runtime/src/codegen/Passes/BFToLLVM.cpp
+
+BFOPS_029;BytesFusion_Ops;LoweringBoundsCheckDominance;enforced;Loads are dominated by bounds checks in the CFG so no execution path can reach a load without passing through its guard;runtime/src/codegen/Passes/BFToLLVM.cpp
+
+BFOPS_030;BytesFusion_Ops;ABINoHeaderAccess;enforced;Generated code never accesses runtime heap headers directly and all layout knowledge is encapsulated in runtime helpers;runtime/src/codegen/Passes/BFToLLVM.cpp
+
+BFOPS_031;BytesFusion_Ops;ABIEcoValueCrossing;enforced;All heap objects cross the ABI boundary as eco.value and generated code does not assume internal pointer representations;runtime/src/codegen/Passes/BFToLLVM.cpp and runtime/src/allocator/ElmBytesRuntime.h
+
+BFOPS_032;BytesFusion_Ops;ABIRuntimeHelpers;enforced;Runtime helpers are the only layout-aware code and all ByteBuffer and String structure access goes through elm_bytebuffer_* and elm_utf8_* functions;runtime/src/allocator/ElmBytesRuntime.cpp
+
+BFOPS_033;BytesFusion_Ops;ABIHelperMinimality;documented;Runtime helpers are thin and non-duplicative with each helper performing exactly one layout-aware operation;runtime/src/allocator/ElmBytesRuntime.cpp
+
+BFOPS_034;BytesFusion_Ops;ABIStability;documented;ABI stability is preserved across versions so compiled fused kernels remain compatible with runtime updates;runtime/src/allocator/ElmBytesRuntime.h
+
+BFOPS_035;BytesFusion_Ops;PerfSingleLoop;documented;Fused kernel contains exactly one loop for looped decoders with no nested iteration or recursive calls;Compiler.Generate.MLIR.BytesFusion.Emit
+
+BFOPS_036;BytesFusion_Ops;PerfNoIntermediateAllocs;enforced;No intermediate allocations occur during fused encode or decode and only the final result is heap allocated;Compiler.Generate.MLIR.BytesFusion.Emit
+
+BFOPS_037;BytesFusion_Ops;PerfNoInterpreterCalls;enforced;No interpreter calls occur inside fused kernel and all operations are inlined as native LLVM IR;Compiler.Generate.MLIR.BytesFusion.Emit
+
+BFOPS_038;BytesFusion_Ops;PerfDeterministicFusion;documented;Fusion success is deterministic and predictable based solely on static structure so identical source programs always produce identical fusion decisions;Compiler.Generate.MLIR.BytesFusion.Reify
+
+# =============================================================================
 # CROSS-PHASE INVARIANTS - Constraints spanning multiple phases (always last)
 # =============================================================================
 

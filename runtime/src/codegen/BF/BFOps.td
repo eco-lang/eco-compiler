@@ -95,13 +95,13 @@ def BF_AllocOp : BF_Op<"alloc", [MemoryEffects<[MemWrite]>]> {
   let summary = "Allocate a ByteBuffer of given size";
   let description = [{
     Allocates a ByteBuffer with the specified number of bytes.
-    Returns an eco.value (i64) representing the allocated buffer.
+    Returns an eco.value (heap pointer) to the allocated ByteBuffer.
 
     This calls the runtime helper elm_alloc_bytebuffer(size).
   }];
 
   let arguments = (ins I32:$size);
-  let results = (outs I64:$buffer);
+  let results = (outs AnyType:$buffer);
 
   let assemblyFormat = "$size attr-dict `:` type($buffer)";
 }
@@ -111,19 +111,19 @@ def BF_AllocOp : BF_Op<"alloc", [MemoryEffects<[MemWrite]>]> {
 //===----------------------------------------------------------------------===//
 
 def BF_CursorInitOp : BF_Op<"cursor.init", []> {
-  let summary = "Initialize a cursor from a ByteBuffer";
+  let summary = "Initialize a cursor from a ByteBuffer for encoding";
   let description = [{
     Creates a cursor pointing to the start of a ByteBuffer.
-    The buffer argument is an eco.value (i64).
+    The buffer argument is an eco.value (heap pointer to ByteBuffer).
 
     This calls elm_bytebuffer_data(buffer) to get the data pointer
     and elm_bytebuffer_len(buffer) to compute the end pointer.
   }];
 
-  let arguments = (ins I64:$buffer);
+  let arguments = (ins AnyType:$buffer);
   let results = (outs BF_Cursor:$cursor);
 
-  let assemblyFormat = "$buffer attr-dict `:` type($cursor)";
+  let assemblyFormat = "$buffer attr-dict `:` type($buffer) `->` type($cursor)";
 }
 
 def BF_CursorPtrOp : BF_Op<"cursor.ptr", [Pure]> {
@@ -220,10 +220,10 @@ def BF_WriteBytesOp : BF_Op<"write.bytes", [MemoryEffects<[MemRead, MemWrite]>]>
     Returns a new cursor with advanced position.
   }];
 
-  let arguments = (ins BF_Cursor:$cursor, I64:$bytes);
+  let arguments = (ins BF_Cursor:$cursor, AnyType:$bytes);
   let results = (outs BF_Cursor:$result);
 
-  let assemblyFormat = "$cursor `,` $bytes attr-dict `:` type($result)";
+  let assemblyFormat = "$cursor `,` $bytes attr-dict `:` `(` type($bytes) `)` `->` type($result)";
 }
 
 def BF_WriteUtf8Op : BF_Op<"write.utf8", [MemoryEffects<[MemRead, MemWrite]>]> {
@@ -236,10 +236,10 @@ def BF_WriteUtf8Op : BF_Op<"write.utf8", [MemoryEffects<[MemRead, MemWrite]>]> {
     This calls elm_utf8_copy(string, cursor.ptr) internally.
   }];
 
-  let arguments = (ins BF_Cursor:$cursor, I64:$string);
+  let arguments = (ins BF_Cursor:$cursor, AnyType:$string);
   let results = (outs BF_Cursor:$result);
 
-  let assemblyFormat = "$cursor `,` $string attr-dict `:` type($result)";
+  let assemblyFormat = "$cursor `,` $string attr-dict `:` `(` type($string) `)` `->` type($result)";
 }
 
 //===----------------------------------------------------------------------===//
@@ -255,10 +255,10 @@ def BF_Utf8WidthOp : BF_Op<"utf8_width", [MemoryEffects<[MemRead]>]> {
     This calls elm_utf8_width(string) internally.
   }];
 
-  let arguments = (ins I64:$string);
+  let arguments = (ins AnyType:$string);
   let results = (outs I32:$width);
 
-  let assemblyFormat = "$string attr-dict `:` type($width)";
+  let assemblyFormat = "$string attr-dict `:` type($string) `->` type($width)";
 }
 
 def BF_BytesWidthOp : BF_Op<"bytes_width", [MemoryEffects<[MemRead]>]> {
@@ -270,10 +270,10 @@ def BF_BytesWidthOp : BF_Op<"bytes_width", [MemoryEffects<[MemRead]>]> {
     This calls elm_bytebuffer_len(buffer) internally.
   }];
 
-  let arguments = (ins I64:$buffer);
+  let arguments = (ins AnyType:$buffer);
   let results = (outs I32:$width);
 
-  let assemblyFormat = "$buffer attr-dict `:` type($width)";
+  let assemblyFormat = "$buffer attr-dict `:` type($buffer) `->` type($width)";
 }
 
 //===----------------------------------------------------------------------===//
@@ -467,12 +467,13 @@ def BF_DecoderCursorInitOp : BF_Op<"decoder.cursor.init", []> {
   let summary = "Initialize cursor from Bytes for decoding";
   let description = [{
     Creates a cursor for decoding from a Bytes (ByteBuffer) value.
-    The bytes argument is an eco.value (i64).
+    The bytes argument can be an eco.value or i64 depending on
+    whether it's already been unwrapped.
     This is the decoder counterpart to bf.cursor.init.
   }];
 
-  let arguments = (ins I64:$bytes);
+  let arguments = (ins AnyType:$bytes);
   let results = (outs BF_Cursor:$cursor);
 
-  let assemblyFormat = "$bytes attr-dict `:` type($cursor)";
+  let assemblyFormat = "$bytes attr-dict `:` type($bytes) `->` type($cursor)";
 }

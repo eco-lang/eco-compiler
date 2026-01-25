@@ -383,11 +383,191 @@ ppAttrs attrs =
             " " ++ wrapper
 
 
+{-| Escape a string for MLIR output.
+Converts JavaScript-style \uXXXX escapes to MLIR-compatible \xNN UTF-8 byte escapes.
+Also escapes any non-ASCII characters that may be in the string.
+-}
+escapeForMlir : String -> String
+escapeForMlir s =
+    -- Convert \uXXXX escapes to raw UTF-8 characters
+    -- MLIR accepts raw UTF-8 in string literals
+    convertUnicodeEscapesToUtf8 s
+
+
+{-| Convert \uXXXX escapes to raw UTF-8 characters.
+MLIR accepts raw UTF-8 in string literals.
+-}
+convertUnicodeEscapesToUtf8 : String -> String
+convertUnicodeEscapesToUtf8 s =
+    let
+        go : String -> String -> String
+        go acc remaining =
+            case String.uncons remaining of
+                Nothing ->
+                    acc
+
+                Just ( '\\', rest ) ->
+                    case String.uncons rest of
+                        Just ( 'u', afterU ) ->
+                            -- Try to parse 4 hex digits
+                            let
+                                hex4 =
+                                    String.left 4 afterU
+                            in
+                            if String.length hex4 == 4 then
+                                case parseHex hex4 of
+                                    Just codePoint ->
+                                        let
+                                            -- Convert code point to UTF-8 character
+                                            utf8Char =
+                                                String.fromChar (Char.fromCode codePoint)
+
+                                            afterHex =
+                                                String.dropLeft 4 afterU
+                                        in
+                                        go (acc ++ utf8Char) afterHex
+
+                                    Nothing ->
+                                        -- Not valid hex, keep as-is
+                                        go (acc ++ "\\u") afterU
+
+                            else
+                                -- Not enough chars, keep as-is
+                                go (acc ++ "\\u") afterU
+
+                        Just ( c, afterEscape ) ->
+                            -- Other escape sequence, keep as-is
+                            go (acc ++ "\\" ++ String.fromChar c) afterEscape
+
+                        Nothing ->
+                            acc ++ "\\"
+
+                Just ( c, rest ) ->
+                    go (acc ++ String.fromChar c) rest
+    in
+    go "" s
+
+
+{-| Escape non-ASCII characters to \xNN format.
+-}
+escapeNonAscii : String -> String
+escapeNonAscii s =
+    String.toList s
+        |> List.concatMap
+            (\c ->
+                let
+                    code =
+                        Char.toCode c
+                in
+                if code >= 128 then
+                    -- Encode as UTF-8 bytes
+                    encodeUtf8 code
+                        |> List.map (\b -> "\\x" ++ toHex2 b)
+                        |> List.map String.toList
+                        |> List.concat
+
+                else if code == 0 then
+                    -- Null byte
+                    [ '\\', 'x', '0', '0' ]
+
+                else
+                    [ c ]
+            )
+        |> String.fromList
+
+
+{-| Parse a 4-character hex string to an integer.
+-}
+parseHex : String -> Maybe Int
+parseHex s =
+    String.foldl
+        (\c acc ->
+            case acc of
+                Nothing ->
+                    Nothing
+
+                Just n ->
+                    let
+                        code =
+                            Char.toCode c
+                    in
+                    if code >= 48 && code <= 57 then
+                        -- 0-9
+                        Just (n * 16 + (code - 48))
+
+                    else if code >= 65 && code <= 70 then
+                        -- A-F
+                        Just (n * 16 + (code - 55))
+
+                    else if code >= 97 && code <= 102 then
+                        -- a-f
+                        Just (n * 16 + (code - 87))
+
+                    else
+                        Nothing
+        )
+        (Just 0)
+        s
+
+
+{-| Convert an integer to a 2-digit uppercase hex string.
+-}
+toHex2 : Int -> String
+toHex2 n =
+    let
+        hi =
+            n // 16
+
+        lo =
+            modBy 16 n
+
+        hexChar i =
+            if i < 10 then
+                String.fromChar (Char.fromCode (48 + i))
+
+            else
+                String.fromChar (Char.fromCode (65 + i - 10))
+    in
+    hexChar hi ++ hexChar lo
+
+
+{-| Encode a Unicode code point to UTF-8 bytes.
+-}
+encodeUtf8 : Int -> List Int
+encodeUtf8 code =
+    if code < 128 then
+        [ code ]
+
+    else if code < 2048 then
+        -- 2-byte encoding
+        [ 192 + (code // 64)
+        , 128 + modBy 64 code
+        ]
+
+    else if code < 65536 then
+        -- 3-byte encoding
+        [ 224 + (code // 4096)
+        , 128 + modBy 64 (code // 64)
+        , 128 + modBy 64 code
+        ]
+
+    else
+        -- 4-byte encoding
+        [ 240 + (code // 262144)
+        , 128 + modBy 64 (code // 4096)
+        , 128 + modBy 64 (code // 64)
+        , 128 + modBy 64 code
+        ]
+
+
 ppAttr : MlirAttr -> String
 ppAttr attr =
     case attr of
         StringAttr s ->
-            "\"" ++ s ++ "\""
+            "\"" ++ escapeForMlir s ++ "\""
+
+        IdentifierAttr s ->
+            s
 
         BoolAttr b ->
             if b then

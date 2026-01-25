@@ -138,29 +138,39 @@ emitInitCursor _ widthExpr state =
         ( bufferVar, ctx2 ) =
             Context.freshVar ctx1
 
-        -- Emit bf.alloc
+        -- Add _operand_types for width (I32)
+        allocAttrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr I32 ])
+
+        -- Emit bf.alloc - returns eco.value (heap pointer to ByteBuffer)
         ( ctx3, allocOp ) =
             Ops.mlirOp ctx2 "bf.alloc"
                 |> Ops.opBuilder.withOperands [ widthVar ]
                 |> Ops.opBuilder.withResults [ ( bufferVar, Types.ecoValue ) ]
+                |> Ops.opBuilder.withAttrs allocAttrs
                 |> Ops.opBuilder.build
 
         -- Generate cursor variable name
         ( cursorVar, ctx4 ) =
             Context.freshVar ctx3
 
-        -- Emit bf.cursor.init
+        -- Add _operand_types for eco.value buffer
+        initAttrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
+
+        -- Emit bf.cursor.init - takes eco.value buffer
         ( ctx5, initOp ) =
             Ops.mlirOp ctx4 "bf.cursor.init"
                 |> Ops.opBuilder.withOperands [ bufferVar ]
                 |> Ops.opBuilder.withResults [ ( cursorVar, bfCursorType ) ]
+                |> Ops.opBuilder.withAttrs initAttrs
                 |> Ops.opBuilder.build
     in
     { state
         | ctx = ctx5
         , cursor = cursorVar
         , bufferVar = bufferVar
-        , ops = initOp :: allocOp :: (widthOps ++ state.ops)
+        , ops = initOp :: allocOp :: (List.reverse widthOps ++ state.ops)
     }
 
 
@@ -211,10 +221,15 @@ emitWidthExpr compileExpr expr ctx =
                 ( resultVar, ctx2 ) =
                     Context.freshVar strResult.ctx
 
+                -- Add _operand_types using actual expression result type
+                widthAttrs =
+                    Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr strResult.resultType ])
+
                 ( ctx3, widthOp ) =
                     Ops.mlirOp ctx2 "bf.utf8_width"
                         |> Ops.opBuilder.withOperands [ strResult.resultVar ]
                         |> Ops.opBuilder.withResults [ ( resultVar, I32 ) ]
+                        |> Ops.opBuilder.withAttrs widthAttrs
                         |> Ops.opBuilder.build
             in
             ( strResult.ops ++ [ widthOp ], resultVar, ctx3 )
@@ -228,25 +243,32 @@ emitWidthExpr compileExpr expr ctx =
                 ( resultVar, ctx2 ) =
                     Context.freshVar bytesResult.ctx
 
+                -- Add _operand_types using actual expression result type
+                widthAttrs =
+                    Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr bytesResult.resultType ])
+
                 ( ctx3, widthOp ) =
                     Ops.mlirOp ctx2 "bf.bytes_width"
                         |> Ops.opBuilder.withOperands [ bytesResult.resultVar ]
                         |> Ops.opBuilder.withResults [ ( resultVar, I32 ) ]
+                        |> Ops.opBuilder.withAttrs widthAttrs
                         |> Ops.opBuilder.build
             in
             ( bytesResult.ops ++ [ widthOp ], resultVar, ctx3 )
 
 
-{-| Convert endianness to attribute string.
+{-| Convert endianness to MLIR enum attribute.
+The BF dialect uses I32EnumAttr for endianness: LE=0, BE=1.
+In MLIR generic format, enum attributes are written as typed i32 integers.
 -}
 endianToAttr : Endianness -> MlirAttr
 endianToAttr endian =
     case endian of
         LE ->
-            StringAttr "le"
+            IntAttr (Just I32) 0
 
         BE ->
-            StringAttr "be"
+            IntAttr (Just I32) 1
 
 
 {-| Emit bf.write.u8 operation.
@@ -259,16 +281,24 @@ emitWriteU8 valueExpr state =
         ( newCursor, ctx2 ) =
             Context.freshVar exprResult.ctx
 
+        -- Add _operand_types for cursor and value (using actual expression result type)
+        writeAttrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr exprResult.resultType ])
+
         ( ctx3, writeOp ) =
             Ops.mlirOp ctx2 "bf.write.u8"
                 |> Ops.opBuilder.withOperands [ state.cursor, exprResult.resultVar ]
                 |> Ops.opBuilder.withResults [ ( newCursor, bfCursorType ) ]
+                |> Ops.opBuilder.withAttrs writeAttrs
                 |> Ops.opBuilder.build
     in
     { state
         | ctx = ctx3
         , cursor = newCursor
-        , ops = writeOp :: (exprResult.ops ++ state.ops)
+
+        -- exprResult.ops is in forward order; reverse to match our reverse accumulation
+        , ops = writeOp :: (List.reverse exprResult.ops ++ state.ops)
     }
 
 
@@ -283,17 +313,24 @@ emitWriteU16 endian valueExpr state =
         ( newCursor, ctx2 ) =
             Context.freshVar exprResult.ctx
 
+        -- Add _operand_types for cursor and value (using actual expression result type)
+        writeAttrs =
+            Dict.fromList
+                [ ( "endianness", endianToAttr endian )
+                , ( "_operand_types", ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr exprResult.resultType ] )
+                ]
+
         ( ctx3, writeOp ) =
             Ops.mlirOp ctx2 "bf.write.u16"
                 |> Ops.opBuilder.withOperands [ state.cursor, exprResult.resultVar ]
                 |> Ops.opBuilder.withResults [ ( newCursor, bfCursorType ) ]
-                |> Ops.opBuilder.withAttrs (Dict.singleton "endianness" (endianToAttr endian))
+                |> Ops.opBuilder.withAttrs writeAttrs
                 |> Ops.opBuilder.build
     in
     { state
         | ctx = ctx3
         , cursor = newCursor
-        , ops = writeOp :: (exprResult.ops ++ state.ops)
+        , ops = writeOp :: (List.reverse exprResult.ops ++ state.ops)
     }
 
 
@@ -308,17 +345,24 @@ emitWriteU32 endian valueExpr state =
         ( newCursor, ctx2 ) =
             Context.freshVar exprResult.ctx
 
+        -- Add _operand_types for cursor and value (using actual expression result type)
+        writeAttrs =
+            Dict.fromList
+                [ ( "endianness", endianToAttr endian )
+                , ( "_operand_types", ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr exprResult.resultType ] )
+                ]
+
         ( ctx3, writeOp ) =
             Ops.mlirOp ctx2 "bf.write.u32"
                 |> Ops.opBuilder.withOperands [ state.cursor, exprResult.resultVar ]
                 |> Ops.opBuilder.withResults [ ( newCursor, bfCursorType ) ]
-                |> Ops.opBuilder.withAttrs (Dict.singleton "endianness" (endianToAttr endian))
+                |> Ops.opBuilder.withAttrs writeAttrs
                 |> Ops.opBuilder.build
     in
     { state
         | ctx = ctx3
         , cursor = newCursor
-        , ops = writeOp :: (exprResult.ops ++ state.ops)
+        , ops = writeOp :: (List.reverse exprResult.ops ++ state.ops)
     }
 
 
@@ -333,17 +377,24 @@ emitWriteF32 endian valueExpr state =
         ( newCursor, ctx2 ) =
             Context.freshVar exprResult.ctx
 
+        -- Add _operand_types for cursor and value (using actual expression result type)
+        writeAttrs =
+            Dict.fromList
+                [ ( "endianness", endianToAttr endian )
+                , ( "_operand_types", ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr exprResult.resultType ] )
+                ]
+
         ( ctx3, writeOp ) =
             Ops.mlirOp ctx2 "bf.write.f32"
                 |> Ops.opBuilder.withOperands [ state.cursor, exprResult.resultVar ]
                 |> Ops.opBuilder.withResults [ ( newCursor, bfCursorType ) ]
-                |> Ops.opBuilder.withAttrs (Dict.singleton "endianness" (endianToAttr endian))
+                |> Ops.opBuilder.withAttrs writeAttrs
                 |> Ops.opBuilder.build
     in
     { state
         | ctx = ctx3
         , cursor = newCursor
-        , ops = writeOp :: (exprResult.ops ++ state.ops)
+        , ops = writeOp :: (List.reverse exprResult.ops ++ state.ops)
     }
 
 
@@ -358,17 +409,24 @@ emitWriteF64 endian valueExpr state =
         ( newCursor, ctx2 ) =
             Context.freshVar exprResult.ctx
 
+        -- Add _operand_types for cursor and value (using actual expression result type)
+        writeAttrs =
+            Dict.fromList
+                [ ( "endianness", endianToAttr endian )
+                , ( "_operand_types", ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr exprResult.resultType ] )
+                ]
+
         ( ctx3, writeOp ) =
             Ops.mlirOp ctx2 "bf.write.f64"
                 |> Ops.opBuilder.withOperands [ state.cursor, exprResult.resultVar ]
                 |> Ops.opBuilder.withResults [ ( newCursor, bfCursorType ) ]
-                |> Ops.opBuilder.withAttrs (Dict.singleton "endianness" (endianToAttr endian))
+                |> Ops.opBuilder.withAttrs writeAttrs
                 |> Ops.opBuilder.build
     in
     { state
         | ctx = ctx3
         , cursor = newCursor
-        , ops = writeOp :: (exprResult.ops ++ state.ops)
+        , ops = writeOp :: (List.reverse exprResult.ops ++ state.ops)
     }
 
 
@@ -383,16 +441,22 @@ emitWriteBytes bytesExpr state =
         ( newCursor, ctx2 ) =
             Context.freshVar exprResult.ctx
 
+        -- Add _operand_types for cursor and bytes (using actual expression result type)
+        writeAttrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr exprResult.resultType ])
+
         ( ctx3, writeOp ) =
             Ops.mlirOp ctx2 "bf.write.bytes"
                 |> Ops.opBuilder.withOperands [ state.cursor, exprResult.resultVar ]
                 |> Ops.opBuilder.withResults [ ( newCursor, bfCursorType ) ]
+                |> Ops.opBuilder.withAttrs writeAttrs
                 |> Ops.opBuilder.build
     in
     { state
         | ctx = ctx3
         , cursor = newCursor
-        , ops = writeOp :: (exprResult.ops ++ state.ops)
+        , ops = writeOp :: (List.reverse exprResult.ops ++ state.ops)
     }
 
 
@@ -407,16 +471,22 @@ emitWriteUtf8 strExpr state =
         ( newCursor, ctx2 ) =
             Context.freshVar exprResult.ctx
 
+        -- Add _operand_types for cursor and string (using actual expression result type)
+        writeAttrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr exprResult.resultType ])
+
         ( ctx3, writeOp ) =
             Ops.mlirOp ctx2 "bf.write.utf8"
                 |> Ops.opBuilder.withOperands [ state.cursor, exprResult.resultVar ]
                 |> Ops.opBuilder.withResults [ ( newCursor, bfCursorType ) ]
+                |> Ops.opBuilder.withAttrs writeAttrs
                 |> Ops.opBuilder.build
     in
     { state
         | ctx = ctx3
         , cursor = newCursor
-        , ops = writeOp :: (exprResult.ops ++ state.ops)
+        , ops = writeOp :: (List.reverse exprResult.ops ++ state.ops)
     }
 
 
@@ -436,8 +506,8 @@ type alias DecoderEmitState =
     , decodedVars : List String -- Stack of decoded SSA variable names
     , compileExpr : ExprCompiler -- Callback to compile MonoExpr
     , varMapping : Dict.Dict String String -- placeholder var name → actual SSA var name
+    , varTypes : Dict.Dict String MlirType -- SSA var name → type
     }
-
 
 
 {-| Result of emitting item decoder ops in a loop body.
@@ -457,6 +527,7 @@ Returns (ops, resultVar, context) where resultVar contains Maybe a.
 
 Uses nested scf.if for fail-fast bounds checking: each read is wrapped in
 scf.if that returns Nothing immediately on bounds failure.
+
 -}
 emitFusedDecoder : ExprCompiler -> Context -> String -> List IR.DecoderOp -> ( List MlirOp, String, Context )
 emitFusedDecoder compileExpr ctx bytesVar ops =
@@ -465,10 +536,15 @@ emitFusedDecoder compileExpr ctx bytesVar ops =
         ( cursorVar, ctx1 ) =
             Context.freshVar ctx
 
+        -- Add _operand_types for bytes (eco.value)
+        initAttrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
+
         ( ctx2, initOp ) =
             Ops.mlirOp ctx1 "bf.decoder.cursor.init"
                 |> Ops.opBuilder.withOperands [ bytesVar ]
                 |> Ops.opBuilder.withResults [ ( cursorVar, bfCursorType ) ]
+                |> Ops.opBuilder.withAttrs initAttrs
                 |> Ops.opBuilder.build
 
         initialState =
@@ -478,6 +554,7 @@ emitFusedDecoder compileExpr ctx bytesVar ops =
             , decodedVars = []
             , compileExpr = compileExpr
             , varMapping = Dict.empty
+            , varTypes = Dict.empty
             }
 
         -- Filter out InitReadCursor since we handled it above
@@ -506,21 +583,22 @@ isInitReadCursor op =
 {-| Recursively emit decoder ops with nested scf.if for fail-fast.
 
 Each read operation emits:
-  %ok = bf.require(%cur, N)
-  %result = scf.if %ok -> !eco.value {
-    %value, %newCur = bf.read.*(...)
-    // ... recursive call for remaining ops ...
-    scf.yield %innerResult
-  } else {
-    %nothing = call @elm_maybe_nothing()
-    scf.yield %nothing
-  }
+%ok = bf.require(%cur, N)
+%result = scf.if %ok -> !eco.value {
+%value, %newCur = bf.read.\*(...)
+// ... recursive call for remaining ops ...
+scf.yield %innerResult
+} else {
+%nothing = call @elm\_maybe\_nothing()
+scf.yield %nothing
+}
 
 Non-read ops (Apply, PushValue) are emitted directly without scf.if wrapping.
 
 IMPORTANT: Each op carries a placeholder resultVarName that must be mapped to
 the actual SSA variable created during emission. This mapping is stored in
 state.varMapping and used by ReadBytesVar/ReadUtf8Var to look up length vars.
+
 -}
 emitDecoderOpsNested : List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitDecoderOpsNested ops state =
@@ -633,10 +711,15 @@ emitReadWithNestedScfIf byteCount readOpName maybeEndian resultType placeholderV
         ( okVar, ctx1 ) =
             Context.freshVar ctx0b
 
+        -- Add _operand_types for cursor and byte count
+        requireAttrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr I32 ])
+
         ( ctx2, requireOp ) =
             Ops.mlirOp ctx1 "bf.require"
                 |> Ops.opBuilder.withOperands [ state.cursor, bytesConstVar ]
                 |> Ops.opBuilder.withResults [ ( okVar, I1 ) ]
+                |> Ops.opBuilder.withAttrs requireAttrs
                 |> Ops.opBuilder.build
 
         -- 2. Build the "then" block: do the read and continue recursively
@@ -646,13 +729,19 @@ emitReadWithNestedScfIf byteCount readOpName maybeEndian resultType placeholderV
         ( newCursor, ctx4 ) =
             Context.freshVar ctx3
 
+        -- Always include _operand_types for the cursor input
+        -- Use "endianness" to match BFOps.td definition
         endianAttrs =
+            let
+                baseAttrs =
+                    Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr bfCursorType ])
+            in
             case maybeEndian of
                 Just endian ->
-                    Dict.singleton "endian" (endianToAttr endian)
+                    Dict.insert "endianness" (endianToAttr endian) baseAttrs
 
                 Nothing ->
-                    Dict.empty
+                    baseAttrs
 
         ( ctx5, readOp ) =
             Ops.mlirOp ctx4 readOpName
@@ -668,6 +757,7 @@ emitReadWithNestedScfIf byteCount readOpName maybeEndian resultType placeholderV
                 , cursor = newCursor
                 , decodedVars = valueVar :: state.decodedVars
                 , varMapping = Dict.insert placeholderVar valueVar state.varMapping
+                , varTypes = Dict.insert valueVar resultType state.varTypes
             }
 
         -- Recursively emit remaining ops
@@ -687,10 +777,9 @@ emitReadWithNestedScfIf byteCount readOpName maybeEndian resultType placeholderV
         ( nothingVar, ctx8 ) =
             Context.freshVar ctx7
 
+        -- Use eco.construct.custom with constructor "Nothing", tag 1, size 0
         ( ctx9, nothingOp ) =
-            Ops.mlirOp ctx8 "eco.nothing"
-                |> Ops.opBuilder.withResults [ ( nothingVar, Types.ecoValue ) ]
-                |> Ops.opBuilder.build
+            Ops.ecoConstructCustom ctx8 nothingVar 1 0 0 [] (Just "Nothing")
 
         ( ctx10, elseYieldOp ) =
             Ops.mlirOp ctx9 "scf.yield"
@@ -727,10 +816,16 @@ emitReadBytesNested lenExpr placeholderVar restOps state =
         ( okVar, ctx1 ) =
             Context.freshVar lenResult.ctx
 
+        -- Add _operand_types for cursor and length (eco.value)
+        requireAttrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr Types.ecoValue ])
+
         ( ctx2, requireOp ) =
             Ops.mlirOp ctx1 "bf.require"
                 |> Ops.opBuilder.withOperands [ state.cursor, lenResult.resultVar ]
                 |> Ops.opBuilder.withResults [ ( okVar, I1 ) ]
+                |> Ops.opBuilder.withAttrs requireAttrs
                 |> Ops.opBuilder.build
 
         -- Build then block: read bytes and continue
@@ -740,9 +835,15 @@ emitReadBytesNested lenExpr placeholderVar restOps state =
         ( newCursor, ctx4 ) =
             Context.freshVar ctx3
 
+        -- Add _operand_types for cursor and length
+        readAttrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr Types.ecoValue ])
+
         ( ctx5, readOp ) =
             Ops.mlirOp ctx4 "bf.read.bytes"
                 |> Ops.opBuilder.withOperands [ state.cursor, lenResult.resultVar ]
+                |> Ops.opBuilder.withAttrs readAttrs
                 |> Ops.opBuilder.withResults [ ( bytesVar, Types.ecoValue ), ( newCursor, bfCursorType ) ]
                 |> Ops.opBuilder.build
 
@@ -752,6 +853,7 @@ emitReadBytesNested lenExpr placeholderVar restOps state =
                 , cursor = newCursor
                 , decodedVars = bytesVar :: state.decodedVars
                 , varMapping = Dict.insert placeholderVar bytesVar state.varMapping
+                , varTypes = Dict.insert bytesVar Types.ecoValue state.varTypes
             }
 
         ( thenBodyOps, thenResultVar, ctx6 ) =
@@ -769,10 +871,9 @@ emitReadBytesNested lenExpr placeholderVar restOps state =
         ( nothingVar, ctx8 ) =
             Context.freshVar ctx7
 
+        -- Use eco.construct.custom with constructor "Nothing", tag 1, size 0
         ( ctx9, nothingOp ) =
-            Ops.mlirOp ctx8 "eco.nothing"
-                |> Ops.opBuilder.withResults [ ( nothingVar, Types.ecoValue ) ]
-                |> Ops.opBuilder.build
+            Ops.ecoConstructCustom ctx8 nothingVar 1 0 0 [] (Just "Nothing")
 
         ( ctx10, elseYieldOp ) =
             Ops.mlirOp ctx9 "scf.yield"
@@ -807,10 +908,16 @@ emitReadUtf8Nested lenExpr placeholderVar restOps state =
         ( okVar, ctx1 ) =
             Context.freshVar lenResult.ctx
 
+        -- Add _operand_types for cursor and length (eco.value)
+        requireAttrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr Types.ecoValue ])
+
         ( ctx2, requireOp ) =
             Ops.mlirOp ctx1 "bf.require"
                 |> Ops.opBuilder.withOperands [ state.cursor, lenResult.resultVar ]
                 |> Ops.opBuilder.withResults [ ( okVar, I1 ) ]
+                |> Ops.opBuilder.withAttrs requireAttrs
                 |> Ops.opBuilder.build
 
         ( stringVar, ctx3 ) =
@@ -819,9 +926,15 @@ emitReadUtf8Nested lenExpr placeholderVar restOps state =
         ( newCursor, ctx4 ) =
             Context.freshVar ctx3
 
+        -- Add _operand_types for cursor and length
+        readAttrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr Types.ecoValue ])
+
         ( ctx5, readOp ) =
             Ops.mlirOp ctx4 "bf.read.utf8"
                 |> Ops.opBuilder.withOperands [ state.cursor, lenResult.resultVar ]
+                |> Ops.opBuilder.withAttrs readAttrs
                 |> Ops.opBuilder.withResults [ ( stringVar, Types.ecoValue ), ( newCursor, bfCursorType ) ]
                 |> Ops.opBuilder.build
 
@@ -831,6 +944,7 @@ emitReadUtf8Nested lenExpr placeholderVar restOps state =
                 , cursor = newCursor
                 , decodedVars = stringVar :: state.decodedVars
                 , varMapping = Dict.insert placeholderVar stringVar state.varMapping
+                , varTypes = Dict.insert stringVar Types.ecoValue state.varTypes
             }
 
         ( thenBodyOps, thenResultVar, ctx6 ) =
@@ -847,10 +961,9 @@ emitReadUtf8Nested lenExpr placeholderVar restOps state =
         ( nothingVar, ctx8 ) =
             Context.freshVar ctx7
 
+        -- Use eco.construct.custom with constructor "Nothing", tag 1, size 0
         ( ctx9, nothingOp ) =
-            Ops.mlirOp ctx8 "eco.nothing"
-                |> Ops.opBuilder.withResults [ ( nothingVar, Types.ecoValue ) ]
-                |> Ops.opBuilder.build
+            Ops.ecoConstructCustom ctx8 nothingVar 1 0 0 [] (Just "Nothing")
 
         ( ctx10, elseYieldOp ) =
             Ops.mlirOp ctx9 "scf.yield"
@@ -887,10 +1000,16 @@ emitReadBytesVarNested lenPlaceholderVar resultPlaceholderVar restOps state =
         ( okVar, ctx1 ) =
             Context.freshVar state.ctx
 
+        -- Add _operand_types for cursor and length (eco.value)
+        requireAttrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr Types.ecoValue ])
+
         ( ctx2, requireOp ) =
             Ops.mlirOp ctx1 "bf.require"
                 |> Ops.opBuilder.withOperands [ state.cursor, actualLenVar ]
                 |> Ops.opBuilder.withResults [ ( okVar, I1 ) ]
+                |> Ops.opBuilder.withAttrs requireAttrs
                 |> Ops.opBuilder.build
 
         ( bytesVar, ctx3 ) =
@@ -899,9 +1018,15 @@ emitReadBytesVarNested lenPlaceholderVar resultPlaceholderVar restOps state =
         ( newCursor, ctx4 ) =
             Context.freshVar ctx3
 
+        -- Add _operand_types for cursor and length
+        readAttrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr Types.ecoValue ])
+
         ( ctx5, readOp ) =
             Ops.mlirOp ctx4 "bf.read.bytes"
                 |> Ops.opBuilder.withOperands [ state.cursor, actualLenVar ]
+                |> Ops.opBuilder.withAttrs readAttrs
                 |> Ops.opBuilder.withResults [ ( bytesVar, Types.ecoValue ), ( newCursor, bfCursorType ) ]
                 |> Ops.opBuilder.build
 
@@ -911,6 +1036,7 @@ emitReadBytesVarNested lenPlaceholderVar resultPlaceholderVar restOps state =
                 , cursor = newCursor
                 , decodedVars = bytesVar :: state.decodedVars
                 , varMapping = Dict.insert resultPlaceholderVar bytesVar state.varMapping
+                , varTypes = Dict.insert bytesVar Types.ecoValue state.varTypes
             }
 
         ( thenBodyOps, thenResultVar, ctx6 ) =
@@ -927,10 +1053,9 @@ emitReadBytesVarNested lenPlaceholderVar resultPlaceholderVar restOps state =
         ( nothingVar, ctx8 ) =
             Context.freshVar ctx7
 
+        -- Use eco.construct.custom with constructor "Nothing", tag 1, size 0
         ( ctx9, nothingOp ) =
-            Ops.mlirOp ctx8 "eco.nothing"
-                |> Ops.opBuilder.withResults [ ( nothingVar, Types.ecoValue ) ]
-                |> Ops.opBuilder.build
+            Ops.ecoConstructCustom ctx8 nothingVar 1 0 0 [] (Just "Nothing")
 
         ( ctx10, elseYieldOp ) =
             Ops.mlirOp ctx9 "scf.yield"
@@ -967,10 +1092,16 @@ emitReadUtf8VarNested lenPlaceholderVar resultPlaceholderVar restOps state =
         ( okVar, ctx1 ) =
             Context.freshVar state.ctx
 
+        -- Add _operand_types for cursor and length (eco.value)
+        requireAttrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr Types.ecoValue ])
+
         ( ctx2, requireOp ) =
             Ops.mlirOp ctx1 "bf.require"
                 |> Ops.opBuilder.withOperands [ state.cursor, actualLenVar ]
                 |> Ops.opBuilder.withResults [ ( okVar, I1 ) ]
+                |> Ops.opBuilder.withAttrs requireAttrs
                 |> Ops.opBuilder.build
 
         ( stringVar, ctx3 ) =
@@ -979,9 +1110,15 @@ emitReadUtf8VarNested lenPlaceholderVar resultPlaceholderVar restOps state =
         ( newCursor, ctx4 ) =
             Context.freshVar ctx3
 
+        -- Add _operand_types for cursor and length
+        readAttrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr Types.ecoValue ])
+
         ( ctx5, readOp ) =
             Ops.mlirOp ctx4 "bf.read.utf8"
                 |> Ops.opBuilder.withOperands [ state.cursor, actualLenVar ]
+                |> Ops.opBuilder.withAttrs readAttrs
                 |> Ops.opBuilder.withResults [ ( stringVar, Types.ecoValue ), ( newCursor, bfCursorType ) ]
                 |> Ops.opBuilder.build
 
@@ -991,6 +1128,7 @@ emitReadUtf8VarNested lenPlaceholderVar resultPlaceholderVar restOps state =
                 , cursor = newCursor
                 , decodedVars = stringVar :: state.decodedVars
                 , varMapping = Dict.insert resultPlaceholderVar stringVar state.varMapping
+                , varTypes = Dict.insert stringVar Types.ecoValue state.varTypes
             }
 
         ( thenBodyOps, thenResultVar, ctx6 ) =
@@ -1007,10 +1145,9 @@ emitReadUtf8VarNested lenPlaceholderVar resultPlaceholderVar restOps state =
         ( nothingVar, ctx8 ) =
             Context.freshVar ctx7
 
+        -- Use eco.construct.custom with constructor "Nothing", tag 1, size 0
         ( ctx9, nothingOp ) =
-            Ops.mlirOp ctx8 "eco.nothing"
-                |> Ops.opBuilder.withResults [ ( nothingVar, Types.ecoValue ) ]
-                |> Ops.opBuilder.build
+            Ops.ecoConstructCustom ctx8 nothingVar 1 0 0 [] (Just "Nothing")
 
         ( ctx10, elseYieldOp ) =
             Ops.mlirOp ctx9 "scf.yield"
@@ -1085,6 +1222,7 @@ emitApplyNested _ fnExpr argPlaceholders resultPlaceholder restOps state =
                 | ctx = ctx2
                 , decodedVars = resVar :: state.decodedVars
                 , varMapping = Dict.insert resultPlaceholder resVar state.varMapping
+                , varTypes = Dict.insert resVar Types.ecoValue state.varTypes
             }
 
         ( restBodyOps, resultVar, finalCtx ) =
@@ -1106,6 +1244,7 @@ emitPushValueNested valueExpr placeholderVar restOps state =
                 | ctx = exprResult.ctx
                 , decodedVars = exprResult.resultVar :: state.decodedVars
                 , varMapping = Dict.insert placeholderVar exprResult.resultVar state.varMapping
+                , varTypes = Dict.insert exprResult.resultVar exprResult.resultType state.varTypes
             }
 
         ( restBodyOps, resultVar, finalCtx ) =
@@ -1136,30 +1275,48 @@ emitJustResult state =
                 ( justVar, ctx3 ) =
                     Context.freshVar ctx2
 
+                -- Use eco.construct.custom with constructor "Just", tag 0, size 1
                 ( ctx4, justOp ) =
-                    Ops.mlirOp ctx3 "eco.just"
-                        |> Ops.opBuilder.withOperands [ unitVar ]
-                        |> Ops.opBuilder.withResults [ ( justVar, Types.ecoValue ) ]
-                        |> Ops.opBuilder.build
+                    Ops.ecoConstructCustom ctx3 justVar 0 1 0 [ ( unitVar, Types.ecoValue ) ] (Just "Just")
             in
             ( [ unitOp, justOp ], justVar, ctx4 )
 
 
 {-| Emit Just with a specific variable.
+Primitive types are stored unboxed (with unboxed\_bitmap = 1) to match type registry expectations.
+Non-primitives are stored as eco.value (with unboxed\_bitmap = 0).
 -}
 emitJustResultWithVar : String -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitJustResultWithVar varName state =
     let
-        ( justVar, ctx1 ) =
-            Context.freshVar state.ctx
-
-        ( ctx2, justOp ) =
-            Ops.mlirOp ctx1 "eco.just"
-                |> Ops.opBuilder.withOperands [ varName ]
-                |> Ops.opBuilder.withResults [ ( justVar, Types.ecoValue ) ]
-                |> Ops.opBuilder.build
+        -- Look up the type of the variable
+        varType =
+            Dict.get varName state.varTypes
+                |> Maybe.withDefault Types.ecoValue
     in
-    ( [ justOp ], justVar, ctx2 )
+    if Types.isPrimitiveType varType then
+        -- Primitive types are stored unboxed in Just (matches type registry expectations)
+        let
+            ( justVar, ctx1 ) =
+                Context.freshVar state.ctx
+
+            -- Use eco.construct.custom with constructor "Just", tag 0, size 1, unboxed_bitmap = 1
+            ( ctx2, justOp ) =
+                Ops.ecoConstructCustom ctx1 justVar 0 1 1 [ ( varName, varType ) ] (Just "Just")
+        in
+        ( [ justOp ], justVar, ctx2 )
+
+    else
+        -- Non-primitives are stored boxed (eco.value)
+        let
+            ( justVar, ctx1 ) =
+                Context.freshVar state.ctx
+
+            -- Use eco.construct.custom with constructor "Just", tag 0, size 1, unboxed_bitmap = 0
+            ( ctx2, justOp ) =
+                Ops.ecoConstructCustom ctx1 justVar 0 1 0 [ ( varName, Types.ecoValue ) ] (Just "Just")
+        in
+        ( [ justOp ], justVar, ctx2 )
 
 
 {-| Emit Nothing result (failure case).
@@ -1170,21 +1327,20 @@ emitNothingResult state =
         ( nothingVar, ctx1 ) =
             Context.freshVar state.ctx
 
+        -- Use eco.construct.custom with constructor "Nothing", tag 1, size 0
         ( ctx2, nothingOp ) =
-            Ops.mlirOp ctx1 "eco.nothing"
-                |> Ops.opBuilder.withResults [ ( nothingVar, Types.ecoValue ) ]
-                |> Ops.opBuilder.build
+            Ops.ecoConstructCustom ctx1 nothingVar 1 0 0 [] (Just "Nothing")
     in
     ( [ nothingOp ], nothingVar, ctx2 )
-
 
 
 {-| Emit a count-based decode loop using scf.while.
 
 Loop structure:
-- Loop variables: (counter: i64, cursor: bf.cursor, accumulator: eco.value)
-- Before region: check counter > 0, emit scf.condition
-- After region: decode item, decrement counter, cons to accumulator, yield
+
+  - Loop variables: (counter: i64, cursor: bf.cursor, accumulator: eco.value)
+  - Before region: check counter > 0, emit scf.condition
+  - After region: decode item, decrement counter, cons to accumulator, yield
 
 -}
 emitLoopDecodeListNested : String -> List DecoderOp -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
@@ -1394,6 +1550,7 @@ emitLoopDecodeListNested countVarName itemOps resultPlaceholder restOps state =
                 , cursor = whileCursorResult
                 , decodedVars = reversedListVar :: state.decodedVars
                 , varMapping = Dict.insert resultPlaceholder reversedListVar state.varMapping
+                , varTypes = Dict.insert reversedListVar Types.ecoValue state.varTypes
             }
 
         -- Continue with remaining ops
@@ -1406,11 +1563,13 @@ emitLoopDecodeListNested countVarName itemOps resultPlaceholder restOps state =
 {-| Emit sentinel-terminated loop decode (e.g., null-terminated list).
 
 This generates an scf.while that:
-1. Reads a value
-2. Checks if it equals sentinel
-3. If not sentinel, conses to accumulator and continues
-4. If sentinel, exits loop
-5. Reverses the accumulated list
+
+1.  Reads a value
+2.  Checks if it equals sentinel
+3.  If not sentinel, conses to accumulator and continues
+4.  If sentinel, exits loop
+5.  Reverses the accumulated list
+
 -}
 emitLoopSentinelDecodeListNested : Int -> List DecoderOp -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitLoopSentinelDecodeListNested sentinel itemOps resultPlaceholder restOps state =
@@ -1558,6 +1717,7 @@ emitLoopSentinelDecodeListNested sentinel itemOps resultPlaceholder restOps stat
                 , cursor = whileCursorResult
                 , decodedVars = reversedListVar :: state.decodedVars
                 , varMapping = Dict.insert resultPlaceholder reversedListVar state.varMapping
+                , varTypes = Dict.insert reversedListVar Types.ecoValue state.varTypes
             }
 
         -- Continue with remaining ops
@@ -1656,13 +1816,19 @@ emitSimpleRead byteCount readOpName maybeEndian resultType placeholderVar state 
         ( newCursor, ctx2 ) =
             Context.freshVar ctx1
 
+        -- Always include _operand_types for the cursor input
+        -- Use "endianness" to match BFOps.td definition
         endianAttrs =
+            let
+                baseAttrs =
+                    Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr bfCursorType ])
+            in
             case maybeEndian of
                 Just endian ->
-                    Dict.singleton "endian" (endianToAttr endian)
+                    Dict.insert "endianness" (endianToAttr endian) baseAttrs
 
                 Nothing ->
-                    Dict.empty
+                    baseAttrs
 
         ( ctx3, readOp ) =
             Ops.mlirOp ctx2 readOpName
@@ -1697,7 +1863,6 @@ emitSimpleRead byteCount readOpName maybeEndian resultType placeholderVar state 
     , newCursor = newCursor
     , ctx = ctx5
     }
-
 
 
 {-| Emit read + Apply1 pattern (map) for loop item.
@@ -1887,5 +2052,3 @@ emitItemOpsSequentially ops state =
             , newCursor = restResult.newCursor
             , ctx = restResult.ctx
             }
-
-

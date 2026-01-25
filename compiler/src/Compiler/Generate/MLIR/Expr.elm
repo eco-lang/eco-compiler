@@ -32,7 +32,6 @@ This module handles generation of MLIR code for all Elm expressions.
 import Bitwise
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
-import Hex
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.MLIR.BytesFusion.Emit as BFEmit
 import Compiler.Generate.MLIR.BytesFusion.Reify as BFReify
@@ -44,6 +43,7 @@ import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.Optimize.Typed.DecisionTree as DT
 import Dict
+import Hex
 import Mlir.Loc as Loc
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
@@ -218,7 +218,8 @@ generateLiteral ctx lit =
             { ops = [ op ]
             , resultVar = var
             , resultType = I1
-            , ctx = ctx2, isTerminated = False
+            , ctx = ctx2
+            , isTerminated = False
             }
 
         Mono.LInt value ->
@@ -232,7 +233,8 @@ generateLiteral ctx lit =
             { ops = [ op ]
             , resultVar = var
             , resultType = Types.ecoInt
-            , ctx = ctx2, isTerminated = False
+            , ctx = ctx2
+            , isTerminated = False
             }
 
         Mono.LFloat value ->
@@ -246,7 +248,8 @@ generateLiteral ctx lit =
             { ops = [ op ]
             , resultVar = var
             , resultType = Types.ecoFloat
-            , ctx = ctx2, isTerminated = False
+            , ctx = ctx2
+            , isTerminated = False
             }
 
         Mono.LChar value ->
@@ -264,7 +267,8 @@ generateLiteral ctx lit =
             { ops = [ op ]
             , resultVar = var
             , resultType = Types.ecoChar
-            , ctx = ctx2, isTerminated = False
+            , ctx = ctx2
+            , isTerminated = False
             }
 
         Mono.LStr value ->
@@ -283,7 +287,8 @@ generateLiteral ctx lit =
             { ops = [ op ]
             , resultVar = var
             , resultType = Types.ecoValue
-            , ctx = ctx2, isTerminated = False
+            , ctx = ctx2
+            , isTerminated = False
             }
 
 
@@ -328,7 +333,8 @@ generateVarGlobal ctx specId monoType =
                 { ops = [ callOp ]
                 , resultVar = var
                 , resultType = resultMlirType
-                , ctx = ctx2, isTerminated = False
+                , ctx = ctx2
+                , isTerminated = False
                 }
 
             else
@@ -340,7 +346,7 @@ generateVarGlobal ctx specId monoType =
                             [ ( "function", SymbolRefAttr funcName )
                             , ( "arity", IntAttr Nothing arity )
                             , ( "num_captured", IntAttr Nothing 0 )
-                            , ( "unboxed_bitmap", IntAttr Nothing 0 )  -- No captures, so bitmap is 0
+                            , ( "unboxed_bitmap", IntAttr Nothing 0 ) -- No captures, so bitmap is 0
                             ]
 
                     ( ctx2, papOp ) =
@@ -352,7 +358,8 @@ generateVarGlobal ctx specId monoType =
                 { ops = [ papOp ]
                 , resultVar = var
                 , resultType = Types.ecoValue
-                , ctx = ctx2, isTerminated = False
+                , ctx = ctx2
+                , isTerminated = False
                 }
 
         Nothing ->
@@ -376,7 +383,8 @@ generateVarGlobal ctx specId monoType =
                         { ops = [ callOp ]
                         , resultVar = var
                         , resultType = resultMlirType
-                        , ctx = ctx2, isTerminated = False
+                        , ctx = ctx2
+                        , isTerminated = False
                         }
 
                     else
@@ -386,7 +394,7 @@ generateVarGlobal ctx specId monoType =
                                     [ ( "function", SymbolRefAttr funcName )
                                     , ( "arity", IntAttr Nothing arity )
                                     , ( "num_captured", IntAttr Nothing 0 )
-                                    , ( "unboxed_bitmap", IntAttr Nothing 0 )  -- No captures, so bitmap is 0
+                                    , ( "unboxed_bitmap", IntAttr Nothing 0 ) -- No captures, so bitmap is 0
                                     ]
 
                             ( ctx2, papOp ) =
@@ -398,7 +406,8 @@ generateVarGlobal ctx specId monoType =
                         { ops = [ papOp ]
                         , resultVar = var
                         , resultType = Types.ecoValue
-                        , ctx = ctx2, isTerminated = False
+                        , ctx = ctx2
+                        , isTerminated = False
                         }
 
                 _ ->
@@ -413,7 +422,8 @@ generateVarGlobal ctx specId monoType =
                     { ops = [ callOp ]
                     , resultVar = var
                     , resultType = resultMlirType
-                    , ctx = ctx2, isTerminated = False
+                    , ctx = ctx2
+                    , isTerminated = False
                     }
 
 
@@ -437,7 +447,8 @@ generateVarKernel ctx home name monoType =
             { ops = [ floatOp ]
             , resultVar = var
             , resultType = Types.ecoFloat
-            , ctx = ctx2, isTerminated = False
+            , ctx = ctx2
+            , isTerminated = False
             }
 
         Just _ ->
@@ -461,7 +472,8 @@ generateVarKernel ctx home name monoType =
                         { ops = [ callOp ]
                         , resultVar = var
                         , resultType = resultMlirType
-                        , ctx = ctx2, isTerminated = False
+                        , ctx = ctx2
+                        , isTerminated = False
                         }
 
                     else
@@ -483,7 +495,8 @@ generateVarKernel ctx home name monoType =
                         { ops = [ papOp ]
                         , resultVar = var
                         , resultType = Types.ecoValue
-                        , ctx = ctx2, isTerminated = False
+                        , ctx = ctx2
+                        , isTerminated = False
                         }
 
                 _ ->
@@ -498,7 +511,8 @@ generateVarKernel ctx home name monoType =
                     { ops = [ callOp ]
                     , resultVar = var
                     , resultType = resultMlirType
-                    , ctx = ctx2, isTerminated = False
+                    , ctx = ctx2
+                    , isTerminated = False
                     }
 
         Nothing ->
@@ -522,7 +536,8 @@ generateVarKernel ctx home name monoType =
                         { ops = [ callOp ]
                         , resultVar = var
                         , resultType = resultMlirType
-                        , ctx = ctx2, isTerminated = False
+                        , ctx = ctx2
+                        , isTerminated = False
                         }
 
                     else
@@ -544,7 +559,8 @@ generateVarKernel ctx home name monoType =
                         { ops = [ papOp ]
                         , resultVar = var
                         , resultType = Types.ecoValue
-                        , ctx = ctx2, isTerminated = False
+                        , ctx = ctx2
+                        , isTerminated = False
                         }
 
                 _ ->
@@ -559,7 +575,8 @@ generateVarKernel ctx home name monoType =
                     { ops = [ callOp ]
                     , resultVar = var
                     , resultType = resultMlirType
-                    , ctx = ctx2, isTerminated = False
+                    , ctx = ctx2
+                    , isTerminated = False
                     }
 
 
@@ -589,7 +606,8 @@ generateList ctx items listType =
             { ops = [ nilOp ]
             , resultVar = var
             , resultType = Types.ecoValue
-            , ctx = ctx2, isTerminated = False
+            , ctx = ctx2
+            , isTerminated = False
             }
 
         _ ->
@@ -631,7 +649,8 @@ generateList ctx items listType =
             { ops = nilOp :: consOps
             , resultVar = finalVar
             , resultType = Types.ecoValue
-            , ctx = finalCtx, isTerminated = False
+            , ctx = finalCtx
+            , isTerminated = False
             }
 
 
@@ -691,7 +710,7 @@ generateClosure ctx closureInfo body monoType =
         unboxedBitmap =
             List.indexedMap
                 (\i ( _, mlirTy ) ->
-                    if isUnboxableType mlirTy then
+                    if Types.isPrimitiveType mlirTy then
                         Bitwise.shiftLeftBy i 1
 
                     else
@@ -737,7 +756,8 @@ generateClosure ctx closureInfo body monoType =
         { ops = captureOps ++ [ callOp ]
         , resultVar = resultVar
         , resultType = closureResultType
-        , ctx = ctx4, isTerminated = False
+        , ctx = ctx4
+        , isTerminated = False
         }
 
     else
@@ -776,7 +796,8 @@ generateClosure ctx closureInfo body monoType =
         { ops = captureOps ++ [ papOp ]
         , resultVar = resultVar
         , resultType = Types.ecoValue
-        , ctx = ctx4, isTerminated = False
+        , ctx = ctx4
+        , isTerminated = False
         }
 
 
@@ -785,14 +806,6 @@ lambdaIdToString lambdaId =
     case lambdaId of
         Mono.AnonymousLambda home uid ->
             Names.canonicalToMLIRName home ++ "_lambda_" ++ String.fromInt uid
-
-
-{-| Check if an MLIR type is unboxable (can be stored as primitive in closures).
-Only i64 and f64 are unboxable; all other types must be boxed (!eco.value).
--}
-isUnboxableType : MlirType -> Bool
-isUnboxableType mlirTy =
-    mlirTy == Types.ecoInt || mlirTy == Types.ecoFloat
 
 
 
@@ -951,7 +964,8 @@ generateClosureApplication ctx func args resultType =
         { ops = funcResult.ops ++ coerceOps
         , resultVar = finalVar
         , resultType = expectedType
-        , ctx = ctx1, isTerminated = False
+        , ctx = ctx1
+        , isTerminated = False
         }
 
     else
@@ -987,7 +1001,7 @@ generateClosureApplication ctx func args resultType =
             newargsUnboxedBitmap =
                 List.indexedMap
                     (\i ( _, mlirTy ) ->
-                        if isUnboxableType mlirTy then
+                        if Types.isPrimitiveType mlirTy then
                             Bitwise.shiftLeftBy i 1
 
                         else
@@ -1023,7 +1037,8 @@ generateClosureApplication ctx func args resultType =
         { ops = funcResult.ops ++ argOps ++ [ papExtendOp ]
         , resultVar = resVar
         , resultType = expectedType
-        , ctx = ctx3, isTerminated = False
+        , ctx = ctx3
+        , isTerminated = False
         }
 
 
@@ -1229,7 +1244,7 @@ generateSaturatedCall ctx func args resultType =
 
                                         kernelName : String
                                         kernelName =
-                                            "Elm_Kernel_Bytes_Decode_decode"
+                                            "Elm_Kernel_Bytes_decode"
 
                                         callResultType =
                                             Types.monoTypeToMlir sig.returnType
@@ -1265,7 +1280,8 @@ generateSaturatedCall ctx func args resultType =
                                             { ops = argOps ++ [ intrinsicOp ]
                                             , resultVar = resVar
                                             , resultType = intrinsicResultType
-                                            , ctx = ctx3, isTerminated = False
+                                            , ctx = ctx3
+                                            , isTerminated = False
                                             }
 
                                         Nothing ->
@@ -1297,7 +1313,8 @@ generateSaturatedCall ctx func args resultType =
                                                 { ops = argOps ++ boxOps ++ [ callOp ]
                                                 , resultVar = resVar
                                                 , resultType = callResultType
-                                                , ctx = ctx3, isTerminated = False
+                                                , ctx = ctx3
+                                                , isTerminated = False
                                                 }
 
                                             else
@@ -1333,7 +1350,8 @@ generateSaturatedCall ctx func args resultType =
                                                 { ops = argOps ++ boxOps ++ [ callOp ]
                                                 , resultVar = resultVar
                                                 , resultType = callResultType
-                                                , ctx = ctx3, isTerminated = False
+                                                , ctx = ctx3
+                                                , isTerminated = False
                                                 }
 
                                 Nothing ->
@@ -1370,7 +1388,8 @@ generateSaturatedCall ctx func args resultType =
                                     { ops = argOps ++ boxOps ++ [ callOp ]
                                     , resultVar = resultVar
                                     , resultType = callResultType
-                                    , ctx = ctx3, isTerminated = False
+                                    , ctx = ctx3
+                                    , isTerminated = False
                                     }
 
         Mono.MonoVarKernel _ home name funcType ->
@@ -1423,7 +1442,8 @@ generateSaturatedCall ctx func args resultType =
                     { ops = argOps ++ unboxBaseOps ++ unboxXOps ++ [ logXOp, logBaseOp, divOp ]
                     , resultVar = resVar
                     , resultType = Types.ecoFloat
-                    , ctx = ctx7, isTerminated = False
+                    , ctx = ctx7
+                    , isTerminated = False
                     }
 
                 ( "Debug", "log", [ ( labelVar, _ ), ( valueVar, valueType ) ] ) ->
@@ -1490,7 +1510,8 @@ generateSaturatedCall ctx func args resultType =
                     { ops = argOps ++ boxOps ++ [ dbgOp ]
                     , resultVar = boxedValueVar -- Return the value (boxed)
                     , resultType = Types.ecoValue
-                    , ctx = ctx2, isTerminated = False
+                    , ctx = ctx2
+                    , isTerminated = False
                     }
 
                 _ ->
@@ -1513,7 +1534,8 @@ generateSaturatedCall ctx func args resultType =
                             { ops = argOps ++ unboxOps ++ [ intrinsicOp ]
                             , resultVar = resVar
                             , resultType = intrinsicResType
-                            , ctx = ctx3, isTerminated = False
+                            , ctx = ctx3
+                            , isTerminated = False
                             }
 
                         Nothing ->
@@ -1547,7 +1569,8 @@ generateSaturatedCall ctx func args resultType =
                             { ops = argOps ++ boxOps ++ [ callOp ]
                             , resultVar = resVar
                             , resultType = resultMlirType
-                            , ctx = ctx3, isTerminated = False
+                            , ctx = ctx3
+                            , isTerminated = False
                             }
 
         Mono.MonoVarLocal name funcType ->
@@ -1571,7 +1594,8 @@ generateSaturatedCall ctx func args resultType =
                 { ops = coerceOps
                 , resultVar = finalVar
                 , resultType = expectedType
-                , ctx = ctx1, isTerminated = False
+                , ctx = ctx1
+                , isTerminated = False
                 }
 
             else
@@ -1606,7 +1630,7 @@ generateSaturatedCall ctx func args resultType =
                     newargsUnboxedBitmap =
                         List.indexedMap
                             (\i ( _, mlirTy ) ->
-                                if isUnboxableType mlirTy then
+                                if Types.isPrimitiveType mlirTy then
                                     Bitwise.shiftLeftBy i 1
 
                                 else
@@ -1638,7 +1662,8 @@ generateSaturatedCall ctx func args resultType =
                 { ops = argOps ++ [ papExtendOp ]
                 , resultVar = resVar
                 , resultType = expectedType
-                , ctx = ctx3, isTerminated = False
+                , ctx = ctx3
+                , isTerminated = False
                 }
 
         _ ->
@@ -1661,7 +1686,8 @@ generateSaturatedCall ctx func args resultType =
                 { ops = funcResult.ops ++ coerceOps
                 , resultVar = finalVar
                 , resultType = expectedType
-                , ctx = ctx1, isTerminated = False
+                , ctx = ctx1
+                , isTerminated = False
                 }
 
             else
@@ -1696,7 +1722,7 @@ generateSaturatedCall ctx func args resultType =
                     newargsUnboxedBitmap =
                         List.indexedMap
                             (\i ( _, mlirTy ) ->
-                                if isUnboxableType mlirTy then
+                                if Types.isPrimitiveType mlirTy then
                                     Bitwise.shiftLeftBy i 1
 
                                 else
@@ -1732,7 +1758,8 @@ generateSaturatedCall ctx func args resultType =
                 { ops = funcResult.ops ++ argOps ++ [ papExtendOp ]
                 , resultVar = resVar
                 , resultType = expectedType
-                , ctx = ctx3, isTerminated = False
+                , ctx = ctx3
+                , isTerminated = False
                 }
 
 
@@ -1923,7 +1950,8 @@ generateIf ctx branches final =
                     { ops = condRes.ops ++ [ ifOp ]
                     , resultVar = ifResultVar
                     , resultType = resultMlirType
-                    , ctx = ctx3, isTerminated = False
+                    , ctx = ctx3
+                    , isTerminated = False
                     }
 
 
@@ -1944,6 +1972,7 @@ generateIfWithTerminatedBranch ctx condVar thenRes restBranches final condOps =
         resultMlirType =
             if elseRes.isTerminated then
                 Types.ecoValue
+
             else
                 elseRes.resultType
 
@@ -1951,6 +1980,7 @@ generateIfWithTerminatedBranch ctx condVar thenRes restBranches final condOps =
         ( elseRegion, ctxAfterElse ) =
             if elseRes.isTerminated then
                 ( mkRegionFromOps elseRes.ops, elseRes.ctx )
+
             else
                 let
                     ( coerceOps, finalVar, coerceCtx ) =
@@ -2118,7 +2148,8 @@ generateLet ctx def body =
             { ops = exprResult.ops ++ bodyResult.ops
             , resultVar = bodyResult.resultVar
             , resultType = bodyResult.resultType
-            , ctx = ctxOut, isTerminated = finalIsTerminated
+            , ctx = ctxOut
+            , isTerminated = finalIsTerminated
             }
 
         Mono.MonoTailDef name params _ ->
@@ -2165,7 +2196,8 @@ generateLet ctx def body =
             { ops = bodyResult.ops
             , resultVar = bodyResult.resultVar
             , resultType = bodyResult.resultType
-            , ctx = ctxOut, isTerminated = bodyResult.isTerminated
+            , ctx = ctxOut
+            , isTerminated = bodyResult.isTerminated
             }
 
 
@@ -2209,7 +2241,8 @@ generateDestruct ctx (Mono.MonoDestructor name path monoType) body _ =
     { ops = pathOps ++ bodyResult.ops
     , resultVar = bodyResult.resultVar
     , resultType = bodyResult.resultType
-    , ctx = bodyResult.ctx, isTerminated = False
+    , ctx = bodyResult.ctx
+    , isTerminated = False
     }
 
 
@@ -2232,19 +2265,27 @@ generateSharedJoinpoints ctx jumps resultTy =
                 branchRes =
                     generateExpr accCtx branchExpr
 
-                -- Use the ACTUAL SSA type from branchRes, not Mono.typeOf
-                actualTy =
-                    branchRes.resultType
+                -- Build the joinpoint body region.
+                -- If branchRes is already terminated (e.g., tail call with eco.jump),
+                -- use mkRegionTerminatedByOps without adding extra coercion/return.
+                ( jpRegion, ctx1 ) =
+                    if branchRes.isTerminated then
+                        ( Ops.mkRegionTerminatedByOps [] branchRes.ops, branchRes.ctx )
 
-                -- Symmetric boxing/unboxing based on actual vs expected type
-                ( coerceOps, finalVar, coerceCtx ) =
-                    coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
+                    else
+                        let
+                            -- Use the ACTUAL SSA type from branchRes, not Mono.typeOf
+                            actualTy =
+                                branchRes.resultType
 
-                ( ctx1, retOp ) =
-                    Ops.ecoReturn coerceCtx finalVar resultTy
+                            -- Symmetric boxing/unboxing based on actual vs expected type
+                            ( coerceOps, finalVar, coerceCtx ) =
+                                coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
 
-                jpRegion =
-                    Ops.mkRegion [] (branchRes.ops ++ coerceOps) retOp
+                            ( retCtx, retOp ) =
+                                Ops.ecoReturn coerceCtx finalVar resultTy
+                        in
+                        ( Ops.mkRegion [] (branchRes.ops ++ coerceOps) retOp, retCtx )
 
                 -- Continuation: a dummy region with a return (joinpoint semantics require it)
                 -- Use createDummyValue to generate correct type for resultTy
@@ -2314,7 +2355,8 @@ generateLeaf ctx _ choice resultTy =
                 { ops = branchRes.ops ++ coerceOps ++ [ retOp ]
                 , resultVar = finalVar
                 , resultType = resultTy
-                , ctx = ctx2, isTerminated = False
+                , ctx = ctx2
+                , isTerminated = False
                 }
 
         Mono.Jump _ ->
@@ -2330,7 +2372,8 @@ generateLeaf ctx _ choice resultTy =
             { ops = dummyOps ++ [ retOp ]
             , resultVar = dummyVar
             , resultType = resultTy
-            , ctx = ctx2, isTerminated = False
+            , ctx = ctx2
+            , isTerminated = False
             }
 
 
@@ -2387,7 +2430,8 @@ generateChainForBoolADT ctx root path success failure resultTy =
     { ops = pathOps ++ [ caseOp ]
     , resultVar = boolVar -- Dummy; control exits via eco.return inside regions
     , resultType = resultTy
-    , ctx = ctx2, isTerminated = False
+    , ctx = ctx2
+    , isTerminated = False
     }
 
 
@@ -2426,7 +2470,8 @@ generateChainGeneral ctx root testChain success failure resultTy =
     { ops = condOps ++ [ caseOp ]
     , resultVar = condVar -- Dummy; control exits via eco.return inside regions
     , resultType = resultTy
-    , ctx = ctx2, isTerminated = False
+    , ctx = ctx2
+    , isTerminated = False
     }
 
 
@@ -2499,7 +2544,8 @@ generateBoolFanOut ctx root path edges fallback resultTy =
     { ops = pathOps ++ [ caseOp ]
     , resultVar = boolVar -- Dummy; control exits via eco.return inside regions
     , resultType = resultTy
-    , ctx = ctx2, isTerminated = False
+    , ctx = ctx2
+    , isTerminated = False
     }
 
 
@@ -2643,7 +2689,8 @@ generateFanOutGeneral ctx root path edges fallback resultTy =
     { ops = pathOps ++ [ caseOp ]
     , resultVar = scrutineeVar
     , resultType = resultTy
-    , ctx = ctx3, isTerminated = False
+    , ctx = ctx3
+    , isTerminated = False
     }
 
 
@@ -2697,7 +2744,7 @@ This is the main entry point for case expressions. It:
 
 eco.case is a control-flow exit, not a value-producing expression.
 Control flow exits through eco.return ops inside the alternatives.
-The EcoControlFlowToSCF pass transforms eco.case into scf.if/scf.index_switch
+The EcoControlFlowToSCF pass transforms eco.case into scf.if/scf.index\_switch
 and inserts the final eco.return after the SCF op.
 
 -}
@@ -2755,7 +2802,8 @@ generateRecordCreate ctx fields layout =
         { ops = [ emptyRecOp ]
         , resultVar = resultVar
         , resultType = Types.ecoValue
-        , ctx = ctx2, isTerminated = False
+        , ctx = ctx2
+        , isTerminated = False
         }
 
     else
@@ -2808,7 +2856,8 @@ generateRecordCreate ctx fields layout =
         { ops = fieldsOps ++ boxOps ++ [ constructOp ]
         , resultVar = resultVar
         , resultType = Types.ecoValue
-        , ctx = ctx4, isTerminated = False
+        , ctx = ctx4
+        , isTerminated = False
         }
 
 
@@ -2837,7 +2886,8 @@ generateRecordAccess ctx record _ index isUnboxed fieldType =
         { ops = recordResult.ops ++ [ projectOp ]
         , resultVar = projectVar
         , resultType = fieldMlirType
-        , ctx = ctx2, isTerminated = False
+        , ctx = ctx2
+        , isTerminated = False
         }
 
     else if Types.isEcoValueType fieldMlirType then
@@ -2849,7 +2899,8 @@ generateRecordAccess ctx record _ index isUnboxed fieldType =
         { ops = recordResult.ops ++ [ projectOp ]
         , resultVar = projectVar
         , resultType = Types.ecoValue
-        , ctx = ctx2, isTerminated = False
+        , ctx = ctx2
+        , isTerminated = False
         }
 
     else
@@ -2865,7 +2916,8 @@ generateRecordAccess ctx record _ index isUnboxed fieldType =
         { ops = recordResult.ops ++ [ projectOp ] ++ unboxOps
         , resultVar = unboxedVar
         , resultType = fieldMlirType
-        , ctx = ctx3, isTerminated = False
+        , ctx = ctx3
+        , isTerminated = False
         }
 
 
@@ -2887,7 +2939,8 @@ generateRecordUpdate ctx record _ _ =
     { ops = recordResult.ops ++ [ constructOp ]
     , resultVar = resultVar
     , resultType = Types.ecoValue
-    , ctx = ctx2, isTerminated = False
+    , ctx = ctx2
+    , isTerminated = False
     }
 
 
@@ -2967,7 +3020,8 @@ generateTupleCreate ctx elements layout =
     { ops = elemOps ++ boxOps ++ [ constructOp ]
     , resultVar = resultVar
     , resultType = Types.ecoValue
-    , ctx = ctx4, isTerminated = False
+    , ctx = ctx4
+    , isTerminated = False
     }
 
 
@@ -2990,7 +3044,8 @@ generateUnit ctx =
     { ops = [ unitOp ]
     , resultVar = var
     , resultType = Types.ecoValue
-    , ctx = ctx2, isTerminated = False
+    , ctx = ctx2
+    , isTerminated = False
     }
 
 

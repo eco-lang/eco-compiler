@@ -54,6 +54,7 @@ import OrderedDict exposing (OrderedDict)
 -}
 type MlirAttr
     = StringAttr String
+    | IdentifierAttr String
     | BoolAttr Bool
     | IntAttr (Maybe MlirType) Int
     | TypedFloatAttr Float MlirType

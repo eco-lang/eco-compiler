@@ -536,17 +536,24 @@ generateSimpleBody ctx expr retTy =
     let
         exprResult =
             Expr.generateExpr ctx expr
-
-        ( coerceOps, finalVar, coerceCtx ) =
-            Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType retTy
-
-        ( returnCtx, returnOp ) =
-            Ops.ecoReturn coerceCtx finalVar retTy
-
-        region =
-            Ops.mkRegion [] (exprResult.ops ++ coerceOps) returnOp
     in
-    ( region, returnCtx )
+    -- If the expression is already terminated (e.g., case expression),
+    -- use mkRegionTerminatedByOps without adding extra coercion/return.
+    if exprResult.isTerminated then
+        ( Ops.mkRegionTerminatedByOps [] exprResult.ops, exprResult.ctx )
+
+    else
+        let
+            ( coerceOps, finalVar, coerceCtx ) =
+                Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType retTy
+
+            ( returnCtx, returnOp ) =
+                Ops.ecoReturn coerceCtx finalVar retTy
+
+            region =
+                Ops.mkRegion [] (exprResult.ops ++ coerceOps) returnOp
+        in
+        ( region, returnCtx )
 
 
 

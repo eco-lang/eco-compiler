@@ -460,7 +460,7 @@ type ContainerKind
     = ListContainer
     | Tuple2Container
     | Tuple3Container
-    | CustomContainer Name  -- Constructor name for layout lookup
+    | CustomContainer Name -- Constructor name for layout lookup
 
 
 {-| Path for navigating into a data structure during destructuring.
@@ -471,13 +471,14 @@ In generateMonoPath, the container type for a MonoIndex is obtained via getMonoP
 
 -}
 type MonoPath
-    = MonoIndex Int ContainerKind MonoType MonoPath  -- MonoType = result type after projection
-    | MonoField Int MonoType MonoPath                 -- MonoType = result type after field access
+    = MonoIndex Int ContainerKind MonoType MonoPath -- MonoType = result type after projection
+    | MonoField Int MonoType MonoPath -- MonoType = result type after field access
     | MonoUnbox MonoPath
-    | MonoRoot Name MonoType                          -- MonoType = variable's type
+    | MonoRoot Name MonoType -- MonoType = variable's type
 
 
-{-| Get the result type of evaluating a MonoPath. -}
+{-| Get the result type of evaluating a MonoPath.
+-}
 getMonoPathType : MonoPath -> MonoType
 getMonoPathType path =
     case path of
@@ -629,9 +630,6 @@ canUnbox monoType =
             True
 
         MFloat ->
-            True
-
-        MBool ->
             True
 
         MChar ->

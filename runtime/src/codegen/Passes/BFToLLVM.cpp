@@ -41,9 +41,30 @@ public:
                                                      {ptrType, ptrType});
         });
 
-        // eco.value -> i64 (tagged pointer representation)
+        // Convert eco.value to i64 for BF ops that take/produce eco.value.
+        // At runtime, eco.value is represented as i64.
         addConversion([](eco::ValueType type) -> Type {
             return IntegerType::get(type.getContext(), 64);
+        });
+
+        // Add source materialization for eco.value -> i64 conversion.
+        // This creates unrealized_conversion_cast when we need to convert
+        // an eco.value source to i64.
+        addSourceMaterialization([](OpBuilder &builder, Type resultType,
+                                    ValueRange inputs, Location loc) -> Value {
+            if (inputs.size() != 1)
+                return nullptr;
+            return builder.create<UnrealizedConversionCastOp>(
+                loc, resultType, inputs).getResult(0);
+        });
+
+        // Add target materialization for i64 -> eco.value conversion.
+        addTargetMaterialization([](OpBuilder &builder, Type resultType,
+                                    ValueRange inputs, Location loc) -> Value {
+            if (inputs.size() != 1)
+                return nullptr;
+            return builder.create<UnrealizedConversionCastOp>(
+                loc, resultType, inputs).getResult(0);
         });
     }
 };
@@ -131,6 +152,7 @@ static Value advanceCursor(OpBuilder &builder, Location loc, Value cursor,
 //===----------------------------------------------------------------------===//
 
 /// Lower bf.alloc to call @elm_alloc_bytebuffer.
+/// The runtime returns i64, which we cast to eco.value (the MLIR result type).
 struct AllocOpLowering : public OpConversionPattern<bf::AllocOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -143,8 +165,12 @@ struct AllocOpLowering : public OpConversionPattern<bf::AllocOp> {
         if (!func)
             return failure();
 
+        // Call the runtime function which returns i64.
+        // Since eco.value IS i64 at the LLVM level, the type converter
+        // handles the eco.value -> i64 conversion automatically.
         auto result = rewriter.create<LLVM::CallOp>(
             loc, func, ValueRange{adaptor.getSize()});
+
         rewriter.replaceOp(op, result.getResult());
         return success();
     }
@@ -1028,9 +1054,13 @@ struct BFToLLVMPass : public PassWrapper<BFToLLVMPass, OperationPass<ModuleOp>> 
         ConversionTarget target(*ctx);
         target.addLegalDialect<LLVM::LLVMDialect>();
         target.addIllegalDialect<bf::BFDialect>();
+        // Mark all other ops as legal - they'll be converted by later passes.
+        // This includes eco dialect, func, arith, etc.
+        target.markUnknownOpDynamicallyLegal([](Operation *op) { return true; });
 
         // Populate patterns
         RewritePatternSet patterns(ctx);
+
         patterns.add<
             // Allocation and cursor init
             AllocOpLowering,

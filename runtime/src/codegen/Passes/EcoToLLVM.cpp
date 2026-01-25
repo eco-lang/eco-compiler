@@ -16,6 +16,7 @@
 #include "EcoToLLVMInternal.h"
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
+#include "../BF/BFOps.h"
 #include "../Passes.h"
 
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
@@ -153,6 +154,7 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         target.addLegalDialect<LLVM::LLVMDialect>();
         target.addLegalDialect<cf::ControlFlowDialect>();  // CF ops handled by later pass
         target.addLegalOp<ModuleOp>();
+        target.addLegalOp<UnrealizedConversionCastOp>();  // Resolved by reconcile pass
 
         // Arith ops are dynamically legal: only if they don't contain eco.value types.
         // This ensures arith.select gets type-converted.

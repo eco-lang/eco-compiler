@@ -122,10 +122,17 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
         }
         targetResultType = funcType.getReturnType();
     } else {
-        // Target function not found - use all-i64 signature
+        // Target function not found - create external declaration with all-i64 signature
+        // This handles kernel functions that are provided at link time
         for (int64_t i = 0; i < arity; ++i) {
             targetParamTypes.push_back(i64Ty);
         }
+        // Create the external function declaration
+        OpBuilder::InsertionGuard declGuard(rewriter);
+        rewriter.setInsertionPointToStart(module.getBody());
+        auto targetFuncType = LLVM::LLVMFunctionType::get(targetResultType, targetParamTypes, false);
+        auto externFunc = rewriter.create<LLVM::LLVMFuncOp>(loc, funcName, targetFuncType);
+        externFunc.setLinkage(LLVM::Linkage::External);
     }
 
     // Create wrapper function type: void* (*)(void**)
