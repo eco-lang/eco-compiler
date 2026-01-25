@@ -223,7 +223,7 @@ generateMonoPath ctx path targetType =
                                     ( ctx3, projectOp ) =
                                         Ops.ecoProjectCustom ctx2 resultVar 0 Types.ecoValue subVar
                                 in
-                                if Types.isPrimitiveType targetType then
+                                if Types.isUnboxable targetType then
                                     -- Caller wants primitive, need to unbox
                                     let
                                         ( unboxedVar, ctx4 ) =
@@ -721,9 +721,10 @@ caseKindFromTest test =
             "ctor"
 
 
-{-| Get the MLIR type for the scrutinee based on case_kind.
+{-| Get the MLIR type for the scrutinee based on case\_kind.
 
 Int cases need i64 scrutinee, Char cases need i16, all others use eco.value.
+
 -}
 scrutineeTypeFromCaseKind : String -> MlirType
 scrutineeTypeFromCaseKind caseKind =

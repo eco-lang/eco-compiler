@@ -710,7 +710,7 @@ generateClosure ctx closureInfo body monoType =
         unboxedBitmap =
             List.indexedMap
                 (\i ( _, mlirTy ) ->
-                    if Types.isPrimitiveType mlirTy then
+                    if Types.isUnboxable mlirTy then
                         Bitwise.shiftLeftBy i 1
 
                     else
@@ -1001,7 +1001,7 @@ generateClosureApplication ctx func args resultType =
             newargsUnboxedBitmap =
                 List.indexedMap
                     (\i ( _, mlirTy ) ->
-                        if Types.isPrimitiveType mlirTy then
+                        if Types.isUnboxable mlirTy then
                             Bitwise.shiftLeftBy i 1
 
                         else
@@ -1630,7 +1630,7 @@ generateSaturatedCall ctx func args resultType =
                     newargsUnboxedBitmap =
                         List.indexedMap
                             (\i ( _, mlirTy ) ->
-                                if Types.isPrimitiveType mlirTy then
+                                if Types.isUnboxable mlirTy then
                                     Bitwise.shiftLeftBy i 1
 
                                 else
@@ -1722,7 +1722,7 @@ generateSaturatedCall ctx func args resultType =
                     newargsUnboxedBitmap =
                         List.indexedMap
                             (\i ( _, mlirTy ) ->
-                                if Types.isPrimitiveType mlirTy then
+                                if Types.isUnboxable mlirTy then
                                     Bitwise.shiftLeftBy i 1
 
                                 else

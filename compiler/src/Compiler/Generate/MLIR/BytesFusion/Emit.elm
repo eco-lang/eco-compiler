@@ -1294,7 +1294,7 @@ emitJustResultWithVar varName state =
             Dict.get varName state.varTypes
                 |> Maybe.withDefault Types.ecoValue
     in
-    if Types.isPrimitiveType varType then
+    if Types.isUnboxable varType then
         -- Primitive types are stored unboxed in Just (matches type registry expectations)
         let
             ( justVar, ctx1 ) =

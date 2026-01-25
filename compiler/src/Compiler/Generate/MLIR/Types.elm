@@ -2,7 +2,7 @@ module Compiler.Generate.MLIR.Types exposing
     ( ecoValue, ecoInt, ecoFloat, ecoChar
     , monoTypeToMlir, mlirTypeToString
     , isFunctionType, functionArity, countTotalArity, decomposeFunctionType, isEcoValueType
-    , isPrimitiveType
+    , isUnboxable
     )
 
 {-| MLIR type definitions and conversions.
@@ -31,7 +31,7 @@ This module provides:
 
 # Primitive Type Checks
 
-@docs isPrimitiveType
+@docs isUnboxable
 
 -}
 
@@ -194,11 +194,11 @@ isEcoValueType ty =
             False
 
 
-{-| Check if an MlirType is a primitive type (i64, f64, or i32 for char/bool).
+{-| Check if an MlirType is an unboxable primitive type (i64, f64, or i16 for char).
 Primitive types are stored unboxed in the heap.
 -}
-isPrimitiveType : MlirType -> Bool
-isPrimitiveType ty =
+isUnboxable : MlirType -> Bool
+isUnboxable ty =
     case ty of
         I64 ->
             True
@@ -206,10 +206,7 @@ isPrimitiveType ty =
         F64 ->
             True
 
-        I32 ->
-            True
-
-        I1 ->
+        I16 ->
             True
 
         _ ->
