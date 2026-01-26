@@ -312,7 +312,7 @@ processWorklist state =
                         in
                         processWorklist newState
 
-                    Mono.Global _ _ ->
+                    Mono.Global _ name ->
                         -- Existing logic with monoGlobalToTOpt and toptNodes lookup
                         let
                             toptGlobal =
@@ -335,16 +335,8 @@ processWorklist state =
                                 -- Specialize this node to concrete types.
                                 -- Pass the global's name for constructor name population.
                                 let
-                                    ctorName =
-                                        case global of
-                                            Mono.Global _ name ->
-                                                name
-
-                                            Mono.Accessor _ ->
-                                                ""
-
                                     ( monoNode, stateAfter ) =
-                                        Specialize.specializeNode ctorName toptNode monoType state2
+                                        Specialize.specializeNode name toptNode monoType state2
 
                                     newState =
                                         { stateAfter
