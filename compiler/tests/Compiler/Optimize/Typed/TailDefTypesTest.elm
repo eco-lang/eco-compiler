@@ -147,10 +147,14 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
         ( Nothing, _ ) ->
             Expect.fail "TailDef not found in any Cycle node"
 
-        ( Just ( args, returnType ), Just (Can.Forall _ annType) ) ->
+        ( Just ( args, defType ), Just (Can.Forall _ annType) ) ->
             let
                 ( expectedArgTypes, expectedReturnType ) =
                     splitFunctionType annType
+
+                -- TailDef stores the full function type, extract return type from it
+                ( _, actualReturnType ) =
+                    splitFunctionType defType
 
                 actualArgTypes =
                     List.map (\( _, t ) -> t) args
@@ -177,9 +181,9 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
                         expectedArgTypes
                         |> List.filterMap identity
 
-                -- Check return type
+                -- Check return type (extracted from the stored function type)
                 returnTypeError =
-                    if typesMatch returnType expectedReturnType then
+                    if typesMatch actualReturnType expectedReturnType then
                         Nothing
 
                     else
@@ -187,7 +191,7 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
                             ("Return type mismatch: expected "
                                 ++ typeToString expectedReturnType
                                 ++ ", got "
-                                ++ typeToString returnType
+                                ++ typeToString actualReturnType
                             )
 
                 allErrors =

@@ -229,18 +229,35 @@ addWithIds (A.At region patternInfo) expectation state nodeState0 =
                     |> runPatternProgWithIds
 
             Nothing ->
-                -- Fallback: create a var just for NodeIds tracking (unconstrained)
-                -- PostSolve will need to compute the type from context
+                -- Fallback: create a var and constrain it to the expected type
+                -- This handles cases where expectedType is a concrete type (e.g., AppN "Int")
+                -- rather than a VarN that we could directly record
                 Type.mkFlexVar
                     |> IO.andThen
                         (\patVar ->
                             let
+                                patType : Type
+                                patType =
+                                    Type.VarN patVar
+
+                                -- Constrain patVar to equal the expected type
+                                eqCon : Type.Constraint
+                                eqCon =
+                                    Type.CPattern region (patternToCategory patternInfo.node) patType expectation
+
+                                -- Add the variable and constraint to state
+                                (State headers vars revCons) =
+                                    state
+
+                                stateWithConstraint : State
+                                stateWithConstraint =
+                                    State headers (patVar :: vars) (eqCon :: revCons)
+
                                 nodeState1 : NodeIds.NodeIdState
                                 nodeState1 =
                                     NodeIds.recordNodeVar patternInfo.id patVar nodeState0
                             in
-                            -- Note: we do NOT add patVar to state.vars or add a constraint
-                            addHelpWithIdsProg region patternInfo.node expectation state nodeState1
+                            addHelpWithIdsProg region patternInfo.node expectation stateWithConstraint nodeState1
                                 |> runPatternProgWithIds
                         )
 
@@ -303,17 +320,35 @@ addWithIdsProg (A.At region patternInfo) expectation state nodeState0 =
                 addHelpWithIdsProg region patternInfo.node expectation state nodeState1
 
             Nothing ->
-                -- Fallback: create a var just for NodeIds tracking (unconstrained)
+                -- Fallback: create a var and constrain it to the expected type
+                -- This handles cases where expectedType is a concrete type (e.g., AppN "Int")
+                -- rather than a VarN that we could directly record
                 pMkFlexVar
                     |> pAndThen
                         (\patVar ->
                             let
+                                patType : Type
+                                patType =
+                                    Type.VarN patVar
+
+                                -- Constrain patVar to equal the expected type
+                                eqCon : Type.Constraint
+                                eqCon =
+                                    Type.CPattern region (patternToCategory patternInfo.node) patType expectation
+
+                                -- Add the variable and constraint to state
+                                (State headers vars revCons) =
+                                    state
+
+                                stateWithConstraint : State
+                                stateWithConstraint =
+                                    State headers (patVar :: vars) (eqCon :: revCons)
+
                                 nodeState1 : NodeIds.NodeIdState
                                 nodeState1 =
                                     NodeIds.recordNodeVar patternInfo.id patVar nodeState0
                             in
-                            -- Note: we do NOT add patVar to state.vars or add a constraint
-                            addHelpWithIdsProg region patternInfo.node expectation state nodeState1
+                            addHelpWithIdsProg region patternInfo.node expectation stateWithConstraint nodeState1
                         )
 
 
