@@ -51,7 +51,6 @@ struct GetTagOpLowering : public OpConversionPattern<GetTagOp> {
     matchAndRewrite(GetTagOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto i32Ty = IntegerType::get(rewriter.getContext(), 32);
 
         Value value = adaptor.getValue();
 

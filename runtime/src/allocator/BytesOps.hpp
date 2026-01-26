@@ -229,8 +229,6 @@ inline HPointer decodeSignedInt(void* buf, i64 offset, Width width, Endianness e
         case Width::W32:
             signed_value = static_cast<int32_t>(value);
             break;
-        default:
-            signed_value = static_cast<i64>(value);
     }
 
     return alloc::just(alloc::unboxedInt(signed_value), false);
