@@ -182,6 +182,7 @@ multipleEnumCtorsInCase expectFn _ =
 unaryCtorCases : (Src.Module -> Expectation) -> List TestCase
 unaryCtorCases expectFn =
     [ { label = "Single-field wrapper type", run = singleFieldWrapper expectFn }
+    , { label = "Bool wrapper type", run = boolWrapperType expectFn }
     , { label = "Unary constructor with pattern matching", run = unaryCtorPatternMatch expectFn }
     ]
 
@@ -224,6 +225,68 @@ singleFieldWrapper expectFn _ =
             makeModuleWithTypedDefsUnionsAliases "Test"
                 [ unwrapDef, testValueDef ]
                 [ wrapperUnion ]
+                []
+    in
+    expectFn modul
+
+
+{-| Wrapper type with Bool field.
+Tests that Bool values are correctly represented at ABI boundaries.
+This catches REP_ABI_001 violations where Bool might be passed as i1 instead of !eco.value.
+-}
+boolWrapperType : (Src.Module -> Expectation) -> (() -> Expectation)
+boolWrapperType expectFn _ =
+    let
+        boolWrapperUnion : UnionDef
+        boolWrapperUnion =
+            { name = "BoolWrapper"
+            , args = []
+            , ctors =
+                [ { name = "WrapBool", args = [ tType "Bool" [] ] } ]
+            }
+
+        -- unwrapBool : BoolWrapper -> Bool
+        unwrapBoolDef : TypedDef
+        unwrapBoolDef =
+            { name = "unwrapBool"
+            , args = [ pVar "w" ]
+            , tipe = tLambda (tType "BoolWrapper" []) (tType "Bool" [])
+            , body =
+                caseExpr (varExpr "w")
+                    [ ( pCtor "WrapBool" [ pVar "b" ], varExpr "b" ) ]
+            }
+
+        -- testValue : Int
+        -- Returns 1 if wrapped bool is True, 0 otherwise
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body =
+                callExpr (varExpr "boolToInt")
+                    [ callExpr (varExpr "unwrapBool")
+                        [ callExpr (ctorExpr "WrapBool") [ boolExpr True ] ]
+                    ]
+            }
+
+        -- boolToInt : Bool -> Int
+        boolToIntDef : TypedDef
+        boolToIntDef =
+            { name = "boolToInt"
+            , args = [ pVar "b" ]
+            , tipe = tLambda (tType "Bool" []) (tType "Int" [])
+            , body =
+                caseExpr (varExpr "b")
+                    [ ( pCtor "True" [], intExpr 1 )
+                    , ( pCtor "False" [], intExpr 0 )
+                    ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ boolToIntDef, unwrapBoolDef, testValueDef ]
+                [ boolWrapperUnion ]
                 []
     in
     expectFn modul

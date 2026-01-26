@@ -3,13 +3,28 @@ module Compiler.Generate.CodeGen.UnboxedBitmap exposing
     , checkUnboxedBitmap
     )
 
-{-| Test logic for CGEN_026 and CGEN_027: Unboxed Bitmap Consistency invariants.
+{-| Test logic for heap and closure boundary representation (CGEN_026, CGEN_027, CGEN_003, CGEN_049).
+
+This tests the HEAP and CLOSURE boundaries, NOT the ABI boundary.
+ABI boundary testing (function parameters/returns) is separate.
+
+Per REP_CLOSURE_001 and CGEN_026, at heap/closure boundaries:
+
+  - Only Int (i64), Float (f64), and Char (i16) may be unboxed
+  - Bool must be !eco.value (i1 is a violation)
+  - All other types must be !eco.value
 
 CGEN_026: For container construct ops, bit N of `unboxed_bitmap` must be set
-iff operand N is a primitive type.
+iff operand N is unboxable (Int, Float, Char). Bool operands must be !eco.value.
 
 CGEN_027: For `eco.construct.list`, `head_unboxed` must be true iff head
-operand is primitive.
+operand is unboxable.
+
+CGEN_003: For `eco.papCreate`, bit N of `unboxed_bitmap` must be set iff
+captured operand N is unboxable.
+
+CGEN_049: For `eco.papExtend`, bit N of `newargs_unboxed_bitmap` must be set
+iff new argument operand N is unboxable.
 
 @docs expectUnboxedBitmap, checkUnboxedBitmap
 
@@ -25,7 +40,7 @@ import Compiler.Generate.CodeGen.Invariants
         , findOpsNamed
         , getBoolAttr
         , getIntAttr
-        , isPrimitiveType
+        , isUnboxable
         , violationsToExpectation
         )
 import Expect exposing (Expectation)
@@ -44,11 +59,12 @@ expectUnboxedBitmap srcModule =
             violationsToExpectation (checkUnboxedBitmap mlirModule)
 
 
-{-| Check unboxed bitmap consistency for containers (CGEN_026/027).
+{-| Check unboxed bitmap consistency for containers and PAP ops (CGEN_026/027/003/049).
 -}
 checkUnboxedBitmap : MlirModule -> List Violation
 checkUnboxedBitmap mlirModule =
     let
+        -- Container construct ops (CGEN_026)
         tuple2Ops =
             findOpsNamed "eco.construct.tuple2" mlirModule
 
@@ -67,13 +83,28 @@ checkUnboxedBitmap mlirModule =
         containerViolations =
             List.concatMap checkContainerBitmap targetOps
 
+        -- List construct ops (CGEN_027)
         listOps =
             findOpsNamed "eco.construct.list" mlirModule
 
         listViolations =
             List.filterMap checkListHeadUnboxed listOps
+
+        -- PAP create ops (CGEN_003)
+        papCreateOps =
+            findOpsNamed "eco.papCreate" mlirModule
+
+        papCreateViolations =
+            List.concatMap checkPapCreateBitmap papCreateOps
+
+        -- PAP extend ops (CGEN_049)
+        papExtendOps =
+            findOpsNamed "eco.papExtend" mlirModule
+
+        papExtendViolations =
+            List.concatMap checkPapExtendBitmap papExtendOps
     in
-    containerViolations ++ listViolations
+    containerViolations ++ listViolations ++ papCreateViolations ++ papExtendViolations
 
 
 checkContainerBitmap : MlirOp -> List Violation
@@ -100,10 +131,21 @@ checkBitmapBit op bitmap index operandType =
         bitIsSet =
             Bitwise.and bitmap (Bitwise.shiftLeftBy index 1) /= 0
 
-        typeIsPrimitive =
-            isPrimitiveType operandType
+        typeIsUnboxable =
+            isUnboxable operandType
     in
-    if bitIsSet && not typeIsPrimitive then
+    -- Bool (i1) is always a violation at heap/closure boundaries
+    if operandType == I1 then
+        Just
+            { opId = op.id
+            , opName = op.name
+            , message =
+                "operand "
+                    ++ String.fromInt index
+                    ++ " is i1 (Bool) but must be !eco.value at heap boundary"
+            }
+
+    else if bitIsSet && not typeIsUnboxable then
         Just
             { opId = op.id
             , opName = op.name
@@ -112,10 +154,10 @@ checkBitmapBit op bitmap index operandType =
                     ++ String.fromInt index
                     ++ " is set but operand type is "
                     ++ typeToString operandType
-                    ++ ", expected primitive"
+                    ++ ", expected unboxable (i64, f64, i16)"
             }
 
-    else if not bitIsSet && typeIsPrimitive then
+    else if not bitIsSet && typeIsUnboxable then
         Just
             { opId = op.id
             , opName = op.name
@@ -149,20 +191,29 @@ checkListHeadUnboxed op =
 
         Just (headType :: _) ->
             let
-                headIsPrimitive =
-                    isPrimitiveType headType
+                headIsUnboxable =
+                    isUnboxable headType
             in
-            if headUnboxed && not headIsPrimitive then
+            -- Bool (i1) is always a violation at heap/closure boundaries
+            if headType == I1 then
+                Just
+                    { opId = op.id
+                    , opName = op.name
+                    , message =
+                        "list head is i1 (Bool) but must be !eco.value at heap boundary"
+                    }
+
+            else if headUnboxed && not headIsUnboxable then
                 Just
                     { opId = op.id
                     , opName = op.name
                     , message =
                         "head_unboxed=true but head type is "
                             ++ typeToString headType
-                            ++ ", expected primitive"
+                            ++ ", expected unboxable (i64, f64, i16)"
                     }
 
-            else if not headUnboxed && headIsPrimitive then
+            else if not headUnboxed && headIsUnboxable then
                 Just
                     { opId = op.id
                     , opName = op.name
@@ -174,6 +225,155 @@ checkListHeadUnboxed op =
 
             else
                 Nothing
+
+
+{-| Check eco.papCreate unboxed\_bitmap against captured operand types (CGEN\_003).
+
+For papCreate, all operands are captured values and unboxed\_bitmap applies to all of them.
+
+-}
+checkPapCreateBitmap : MlirOp -> List Violation
+checkPapCreateBitmap op =
+    let
+        unboxedBitmap =
+            getIntAttr "unboxed_bitmap" op |> Maybe.withDefault 0
+
+        maybeOperandTypes =
+            extractOperandTypes op
+    in
+    case maybeOperandTypes of
+        Nothing ->
+            []
+
+        Just operandTypes ->
+            List.indexedMap (checkPapCreateBit op unboxedBitmap) operandTypes
+                |> List.filterMap identity
+
+
+checkPapCreateBit : MlirOp -> Int -> Int -> MlirType -> Maybe Violation
+checkPapCreateBit op bitmap index operandType =
+    let
+        bitIsSet =
+            Bitwise.and bitmap (Bitwise.shiftLeftBy index 1) /= 0
+
+        typeIsUnboxable =
+            isUnboxable operandType
+    in
+    -- Bool (i1) is always a violation at closure boundaries
+    if operandType == I1 then
+        Just
+            { opId = op.id
+            , opName = op.name
+            , message =
+                "captured operand "
+                    ++ String.fromInt index
+                    ++ " is i1 (Bool) but must be !eco.value at closure boundary"
+            }
+
+    else if bitIsSet && not typeIsUnboxable then
+        Just
+            { opId = op.id
+            , opName = op.name
+            , message =
+                "unboxed_bitmap bit "
+                    ++ String.fromInt index
+                    ++ " is set but captured operand type is "
+                    ++ typeToString operandType
+                    ++ ", expected unboxable (i64, f64, i16)"
+            }
+
+    else if not bitIsSet && typeIsUnboxable then
+        Just
+            { opId = op.id
+            , opName = op.name
+            , message =
+                "unboxed_bitmap bit "
+                    ++ String.fromInt index
+                    ++ " is clear but captured operand type is "
+                    ++ typeToString operandType
+                    ++ ", expected !eco.value"
+            }
+
+    else
+        Nothing
+
+
+{-| Check eco.papExtend newargs\_unboxed\_bitmap against new argument operand types (CGEN\_049).
+
+For papExtend, operand 0 is the PAP being extended, and operands 1+ are the new arguments.
+The newargs\_unboxed\_bitmap applies to operands starting at index 1.
+
+-}
+checkPapExtendBitmap : MlirOp -> List Violation
+checkPapExtendBitmap op =
+    let
+        newargsBitmap =
+            getIntAttr "newargs_unboxed_bitmap" op |> Maybe.withDefault 0
+
+        maybeOperandTypes =
+            extractOperandTypes op
+    in
+    case maybeOperandTypes of
+        Nothing ->
+            []
+
+        Just operandTypes ->
+            -- Skip operand 0 (the PAP), check operands 1+ as new args
+            case List.tail operandTypes of
+                Nothing ->
+                    []
+
+                Just newArgTypes ->
+                    List.indexedMap (checkPapExtendBit op newargsBitmap) newArgTypes
+                        |> List.filterMap identity
+
+
+checkPapExtendBit : MlirOp -> Int -> Int -> MlirType -> Maybe Violation
+checkPapExtendBit op bitmap index operandType =
+    let
+        bitIsSet =
+            Bitwise.and bitmap (Bitwise.shiftLeftBy index 1) /= 0
+
+        typeIsUnboxable =
+            isUnboxable operandType
+    in
+    -- Bool (i1) is always a violation at closure boundaries
+    if operandType == I1 then
+        Just
+            { opId = op.id
+            , opName = op.name
+            , message =
+                "new arg operand "
+                    ++ String.fromInt index
+                    ++ " is i1 (Bool) but must be !eco.value at closure boundary"
+            }
+
+    else if bitIsSet && not typeIsUnboxable then
+        Just
+            { opId = op.id
+            , opName = op.name
+            , message =
+                "newargs_unboxed_bitmap bit "
+                    ++ String.fromInt index
+                    ++ " is set but new arg operand type is "
+                    ++ typeToString operandType
+                    ++ ", expected unboxable (i64, f64, i16)"
+            }
+
+    else if not bitIsSet && typeIsUnboxable then
+        Just
+            { opId = op.id
+            , opName = op.name
+            , message =
+                "newargs_unboxed_bitmap bit "
+                    ++ String.fromInt index
+                    ++ " is clear but new arg operand type is "
+                    ++ typeToString operandType
+                    ++ ", expected !eco.value"
+            }
+
+    else
+        Nothing
 
 
 typeToString : MlirType -> String

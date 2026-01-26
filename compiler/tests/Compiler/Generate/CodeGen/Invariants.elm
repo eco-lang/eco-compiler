@@ -4,7 +4,7 @@ module Compiler.Generate.CodeGen.Invariants exposing
     , findOpsNamed, findOpsWithPrefix, findFuncOps
     , getIntAttr, getStringAttr, getArrayAttr, getTypeAttr, getBoolAttr
     , extractOperandTypes, extractResultTypes
-    , isEcoValueType, isPrimitiveType, ecoValueType
+    , isEcoValueType, isUnboxable, isEcoPrimitive, ecoValueType
     , checkAll, checkNone
     , allBlocks
     , TypeEnv, buildTypeEnv, findSymbolOps, isValidTerminator, typesMatch, validTerminators
@@ -292,10 +292,34 @@ isEcoValueType t =
             False
 
 
-{-| Check if a type is a primitive (i1, i16, i64, f64).
+{-| Check if a type is unboxable for heap storage (i16, i64, f64).
+
+Per CGEN_026, only Int (i64), Float (f64), and Char (i16) are unboxable.
+Bool (i1) is NOT unboxable - it must be stored as !eco.value in heap objects.
 -}
-isPrimitiveType : MlirType -> Bool
-isPrimitiveType t =
+isUnboxable : MlirType -> Bool
+isUnboxable t =
+    case t of
+        I16 ->
+            True
+
+        I64 ->
+            True
+
+        F64 ->
+            True
+
+        _ ->
+            False
+
+
+{-| Check if a type is an eco MLIR primitive (i1, i16, i64, f64).
+
+This includes Bool (i1), which is a valid primitive for SSA operations
+like eco.unbox results, but cannot be stored unboxed in heap objects.
+-}
+isEcoPrimitive : MlirType -> Bool
+isEcoPrimitive t =
     case t of
         I1 ->
             True

@@ -25,7 +25,7 @@ import Compiler.Generate.CodeGen.Invariants
         , Violation
         , findFuncOps
         , isEcoValueType
-        , isPrimitiveType
+        , isEcoPrimitive
         , violationsToExpectation
         , walkOpsInRegion
         )
@@ -98,7 +98,7 @@ checkUnboxOp typeEnv op =
                                             ++ typeToString operandType
                                     }
 
-                            else if not (isPrimitiveType resultType) then
+                            else if not (isEcoPrimitive resultType) then
                                 Just
                                     { opId = op.id
                                     , opName = op.name
