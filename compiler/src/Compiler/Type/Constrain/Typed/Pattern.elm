@@ -229,9 +229,9 @@ addWithIds (A.At region patternInfo) expectation state nodeState0 =
                     |> runPatternProgWithIds
 
             Nothing ->
-                -- Fallback: create a var and constrain it to the expected type
-                -- This handles cases where expectedType is a concrete type (e.g., AppN "Int")
-                -- rather than a VarN that we could directly record
+                -- Concrete type path: expectedType is a concrete type (e.g., AppN "Int")
+                -- rather than a VarN that we could directly record.
+                -- Create a fresh variable and constrain it to equal the expected type.
                 Type.mkFlexVar
                     |> IO.andThen
                         (\patVar ->
@@ -320,9 +320,9 @@ addWithIdsProg (A.At region patternInfo) expectation state nodeState0 =
                 addHelpWithIdsProg region patternInfo.node expectation state nodeState1
 
             Nothing ->
-                -- Fallback: create a var and constrain it to the expected type
-                -- This handles cases where expectedType is a concrete type (e.g., AppN "Int")
-                -- rather than a VarN that we could directly record
+                -- Concrete type path: expectedType is a concrete type (e.g., AppN "Int")
+                -- rather than a VarN that we could directly record.
+                -- Create a fresh variable and constrain it to equal the expected type.
                 pMkFlexVar
                     |> pAndThen
                         (\patVar ->
