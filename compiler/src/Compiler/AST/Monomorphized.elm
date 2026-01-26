@@ -7,7 +7,7 @@ module Compiler.AST.Monomorphized exposing
     , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
     , Decider(..), MonoChoice(..)
     , ContainerKind(..)
-    , typeOf, canUnbox
+    , typeOf
     , computeRecordLayout, computeTupleLayout
     , toComparableSpecKey, toComparableMonoType
     , getMonoPathType
@@ -621,7 +621,11 @@ typeOf expr =
             MUnit
 
 
-{-| Determine whether a type can be unboxed (stored inline without heap allocation).
+{-| Internal helper: Determine whether a type can be unboxed.
+
+Note: The canonical version of this function is in Compiler.Generate.MLIR.Types.
+This private copy exists to avoid circular dependencies.
+
 -}
 canUnbox : MonoType -> Bool
 canUnbox monoType =

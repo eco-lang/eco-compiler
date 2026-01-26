@@ -58,11 +58,11 @@ generateLambdaFunc ctx lambda =
         -- Parameters use their actual MLIR types (typed calling convention)
         captureArgPairs : List ( String, MlirType )
         captureArgPairs =
-            List.map (\( name, monoTy ) -> ( "%" ++ name, Types.monoTypeToMlir monoTy )) lambda.captures
+            List.map (\( name, monoTy ) -> ( "%" ++ name, Types.monoTypeToAbi monoTy )) lambda.captures
 
         paramArgPairs : List ( String, MlirType )
         paramArgPairs =
-            List.map (\( name, monoTy ) -> ( "%" ++ name, Types.monoTypeToMlir monoTy )) lambda.params
+            List.map (\( name, monoTy ) -> ( "%" ++ name, Types.monoTypeToAbi monoTy )) lambda.params
 
         allArgPairs : List ( String, MlirType )
         allArgPairs =
@@ -76,7 +76,7 @@ generateLambdaFunc ctx lambda =
                 (\( name, monoTy ) acc ->
                     let
                         mlirType =
-                            Types.monoTypeToMlir monoTy
+                            Types.monoTypeToAbi monoTy
 
                         varName =
                             "%" ++ name
@@ -112,7 +112,7 @@ generateLambdaFunc ctx lambda =
         -- Actual return type from the lambda (typed ABI)
         actualResultType : MlirType
         actualResultType =
-            Types.monoTypeToMlir lambda.returnType
+            Types.monoTypeToAbi lambda.returnType
 
         region : MlirRegion
         region =

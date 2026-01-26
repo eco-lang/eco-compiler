@@ -1,6 +1,7 @@
 module Compiler.Generate.MLIR.Types exposing
     ( ecoValue, ecoInt, ecoFloat, ecoChar
-    , monoTypeToMlir, mlirTypeToString
+    , canUnbox, monoTypeToAbi, monoTypeToOperand
+    , mlirTypeToString
     , isFunctionType, functionArity, countTotalArity, decomposeFunctionType, isEcoValueType
     , isUnboxable
     )
@@ -10,7 +11,7 @@ module Compiler.Generate.MLIR.Types exposing
 This module provides:
 
   - Eco dialect primitive types (ecoValue, ecoInt, ecoFloat, ecoChar)
-  - MonoType to MlirType conversion
+  - MonoType to MlirType conversion for different contexts
   - Function type utilities
 
 
@@ -19,9 +20,17 @@ This module provides:
 @docs ecoValue, ecoInt, ecoFloat, ecoChar
 
 
-# Type Conversion
+# Type Conversion by Context
 
-@docs monoTypeToMlir, mlirTypeToString
+These functions implement the invariant rules for type representation in different contexts.
+See design\_docs/invariants.csv for REP\_ABI\_001, REP\_CLOSURE\_001, REP\_SSA\_001, CGEN\_012.
+
+@docs canUnbox, monoTypeToAbi, monoTypeToOperand
+
+
+# Type String Conversion
+
+@docs mlirTypeToString
 
 
 # Function Type Utilities
@@ -72,13 +81,100 @@ ecoChar =
 
 
 
--- ====== CONVERT MONOTYPE TO MLIR TYPE ======
+-- ============================================================================
+-- TYPE CONVERSION BY CONTEXT (Invariant Implementation)
+-- ============================================================================
+--
+-- These three functions implement the invariant rules for type representation:
+--
+--   canUnbox        : Heap/Closure boundary - which MonoTypes can be stored unboxed
+--   monoTypeToAbi   : ABI/Closure boundary - function params, returns, closure captures
+--   monoTypeToOperand : SSA operand context - internal operations where i1 is valid
+--
+-- Key rule: Only Int, Float, and Char are unboxable. Bool is NEVER unboxable.
+-- Bool may be i1 in SSA operand context but must be !eco.value at ABI/Heap/Closure.
+--
+-- See: REP_ABI_001, REP_CLOSURE_001, REP_SSA_001, CGEN_012, CGEN_026
+-- ============================================================================
 
 
-{-| Convert a MonoType to an MLIR type.
+{-| Check if a MonoType can be stored unboxed in heap objects and closures.
+
+**Implements**: CGEN\_026, REP\_CLOSURE\_001 (Heap and Closure boundaries)
+
+Only Int, Float, and Char can be unboxed. Bool is NOT unboxable - it must be
+stored as !eco.value in heap objects and closures.
+
 -}
-monoTypeToMlir : Mono.MonoType -> MlirType
-monoTypeToMlir monoType =
+canUnbox : Mono.MonoType -> Bool
+canUnbox monoType =
+    case monoType of
+        Mono.MInt ->
+            True
+
+        Mono.MFloat ->
+            True
+
+        Mono.MChar ->
+            True
+
+        _ ->
+            False
+
+
+{-| Convert a MonoType to MLIR type for ABI and Closure boundaries.
+
+**Implements**: REP\_ABI\_001, REP\_CLOSURE\_001, CGEN\_012 (ABI and Closure boundaries)
+
+Use this for:
+
+  - Function parameter types
+  - Function return types
+  - Closure capture types
+  - papCreate/papExtend operand types
+
+At these boundaries, only Int (i64), Float (f64), and Char (i16) use primitive
+MLIR types. All other types INCLUDING Bool use !eco.value.
+
+-}
+monoTypeToAbi : Mono.MonoType -> MlirType
+monoTypeToAbi monoType =
+    case monoType of
+        Mono.MInt ->
+            ecoInt
+
+        Mono.MFloat ->
+            ecoFloat
+
+        Mono.MChar ->
+            ecoChar
+
+        Mono.MVar _ Mono.CNumber ->
+            -- Constrained number variables are i64 at ABI
+            I64
+
+        _ ->
+            -- Everything else is !eco.value at ABI, including Bool
+            ecoValue
+
+
+{-| Convert a MonoType to MLIR type for SSA operand context.
+
+**Implements**: REP\_SSA\_001 (SSA operand context)
+
+Use this for internal SSA operations where Bool may be represented as i1,
+such as:
+
+  - Case scrutinee values
+  - If condition values
+  - Intermediate values in control flow
+
+In SSA context, Bool becomes i1 because it's used for control flow decisions.
+This is the ONLY context where i1 is valid for Bool.
+
+-}
+monoTypeToOperand : Mono.MonoType -> MlirType
+monoTypeToOperand monoType =
     case monoType of
         Mono.MInt ->
             ecoInt
@@ -120,7 +216,6 @@ monoTypeToMlir monoType =
 
                 Mono.CEcoValue ->
                     ecoValue
-
 
 
 -- ====== FUNCTION TYPE UTILITIES ======

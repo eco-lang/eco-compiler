@@ -325,7 +325,7 @@ generateVarGlobal ctx specId monoType =
                 -- papCreate requires arity > 0 (num_captured < arity invariant).
                 let
                     resultMlirType =
-                        Types.monoTypeToMlir sig.returnType
+                        Types.monoTypeToAbi sig.returnType
 
                     ( ctx2, callOp ) =
                         Ops.ecoCallNamed ctx1 var funcName [] resultMlirType
@@ -375,7 +375,7 @@ generateVarGlobal ctx specId monoType =
                     if arity == 0 then
                         let
                             resultMlirType =
-                                Types.monoTypeToMlir monoType
+                                Types.monoTypeToAbi monoType
 
                             ( ctx2, callOp ) =
                                 Ops.ecoCallNamed ctx1 var funcName [] resultMlirType
@@ -414,7 +414,7 @@ generateVarGlobal ctx specId monoType =
                     -- Non-function type: call the function directly (e.g., zero-arg constructors)
                     let
                         resultMlirType =
-                            Types.monoTypeToMlir monoType
+                            Types.monoTypeToAbi monoType
 
                         ( ctx2, callOp ) =
                             Ops.ecoCallNamed ctx1 var funcName [] resultMlirType
@@ -464,7 +464,7 @@ generateVarKernel ctx home name monoType =
                         -- Zero-arity function (thunk): call directly
                         let
                             resultMlirType =
-                                Types.monoTypeToMlir monoType
+                                Types.monoTypeToAbi monoType
 
                             ( ctx2, callOp ) =
                                 Ops.ecoCallNamed ctx1 var kernelName [] resultMlirType
@@ -503,7 +503,7 @@ generateVarKernel ctx home name monoType =
                     -- Non-function type: call directly
                     let
                         resultMlirType =
-                            Types.monoTypeToMlir monoType
+                            Types.monoTypeToAbi monoType
 
                         ( ctx2, callOp ) =
                             Ops.ecoCallNamed ctx1 var kernelName [] resultMlirType
@@ -528,7 +528,7 @@ generateVarKernel ctx home name monoType =
                         -- Zero-arity function (thunk): call directly
                         let
                             resultMlirType =
-                                Types.monoTypeToMlir monoType
+                                Types.monoTypeToAbi monoType
 
                             ( ctx2, callOp ) =
                                 Ops.ecoCallNamed ctx1 var kernelName [] resultMlirType
@@ -567,7 +567,7 @@ generateVarKernel ctx home name monoType =
                     -- Non-function type: call the kernel directly
                     let
                         resultMlirType =
-                            Types.monoTypeToMlir monoType
+                            Types.monoTypeToAbi monoType
 
                         ( ctx2, callOp ) =
                             Ops.ecoCallNamed ctx1 var kernelName [] resultMlirType
@@ -748,7 +748,7 @@ generateClosure ctx closureInfo body monoType =
                 { ctx2 | pendingLambdas = pendingLambda :: ctx2.pendingLambdas }
 
             closureResultType =
-                Types.monoTypeToMlir monoType
+                Types.monoTypeToAbi monoType
 
             ( ctx4, callOp ) =
                 Ops.ecoCallNamed ctx3 resultVar (lambdaIdToString closureInfo.lambdaId) [] closureResultType
@@ -855,7 +855,7 @@ boxToMatchSignatureTyped ctx actualArgs expectedTypes =
         helper ( ( var, actualTy ), expectedTy ) ( opsAcc, pairsAcc, ctxAcc ) =
             let
                 expectedMlirTy =
-                    Types.monoTypeToMlir expectedTy
+                    Types.monoTypeToAbi expectedTy
             in
             if expectedMlirTy == actualTy then
                 ( opsAcc, pairsAcc ++ [ ( var, actualTy ) ], ctxAcc )
@@ -949,7 +949,7 @@ generateClosureApplication ctx func args resultType =
 
         -- Result is a closure (!eco.value)
         expectedType =
-            Types.monoTypeToMlir resultType
+            Types.monoTypeToAbi resultType
     in
     -- If the function result is not a closure (e.g., a zero-arity thunk was
     -- already evaluated), and we're calling with no args, just return the value.
@@ -975,28 +975,32 @@ generateClosureApplication ctx func args resultType =
             ( argOps, argsWithTypes, ctx1 ) =
                 generateExprListTyped funcResult.ctx args
 
-            -- No boxing - use args with their actual types (typed closure ABI)
+            -- Box non-unboxable primitives (i1) to !eco.value for closure boundary
+            -- Per REP_CLOSURE_001: Bool must be !eco.value at closure boundaries
+            ( boxOps, boxedArgsWithTypes, ctx1b ) =
+                boxArgsForClosureBoundary ctx1 argsWithTypes
+
             argVarNames : List String
             argVarNames =
-                List.map Tuple.first argsWithTypes
+                List.map Tuple.first boxedArgsWithTypes
 
             argTypesList : List MlirType
             argTypesList =
-                List.map Tuple.second argsWithTypes
+                List.map Tuple.second boxedArgsWithTypes
 
             ( resVar, ctx2 ) =
-                Ctx.freshVar ctx1
+                Ctx.freshVar ctx1b
 
             allOperandNames : List String
             allOperandNames =
                 funcResult.resultVar :: argVarNames
 
-            -- Use actual types for all operands (typed closure ABI)
+            -- Use boxed types for all operands (closure ABI)
             allOperandTypes : List MlirType
             allOperandTypes =
                 funcResult.resultType :: argTypesList
 
-            -- Compute newargs_unboxed_bitmap from arg types
+            -- Compute newargs_unboxed_bitmap from boxed arg types
             newargsUnboxedBitmap : Int
             newargsUnboxedBitmap =
                 List.indexedMap
@@ -1007,7 +1011,7 @@ generateClosureApplication ctx func args resultType =
                         else
                             0
                     )
-                    argsWithTypes
+                    boxedArgsWithTypes
                     |> List.foldl Bitwise.or 0
 
             -- Compute arity from the FUNCTION type, not the result type
@@ -1034,12 +1038,39 @@ generateClosureApplication ctx func args resultType =
                     |> Ops.opBuilder.withAttrs papExtendAttrs
                     |> Ops.opBuilder.build
         in
-        { ops = funcResult.ops ++ argOps ++ [ papExtendOp ]
+        { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
         , resultVar = resVar
         , resultType = expectedType
         , ctx = ctx3
         , isTerminated = False
         }
+
+
+{-| Box arguments for closure boundary.
+
+Per REP\_CLOSURE\_001, Bool (i1) must be !eco.value at closure boundaries.
+This function boxes any i1 values to !eco.value, leaving unboxable primitives
+(i64, f64, i16) and already-boxed values unchanged.
+
+-}
+boxArgsForClosureBoundary : Ctx.Context -> List ( String, MlirType ) -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
+boxArgsForClosureBoundary ctx argsWithTypes =
+    List.foldl
+        (\( var, mlirTy ) ( opsAcc, argsAcc, ctxAcc ) ->
+            if mlirTy == I1 then
+                -- Bool (i1) must be boxed to !eco.value at closure boundary
+                let
+                    ( boxOps, boxedVar, ctx1 ) =
+                        boxToEcoValue ctxAcc var mlirTy
+                in
+                ( opsAcc ++ boxOps, argsAcc ++ [ ( boxedVar, Types.ecoValue ) ], ctx1 )
+
+            else
+                -- Unboxable primitives (i64, f64, i16) stay as-is; !eco.value stays as-is
+                ( opsAcc, argsAcc ++ [ ( var, mlirTy ) ], ctxAcc )
+        )
+        ( [], [], ctx )
+        argsWithTypes
 
 
 {-| Generate a saturated function call where all arguments are provided.
@@ -1169,7 +1200,7 @@ generateSaturatedCall ctx func args resultType =
                                     "Elm_Kernel_Bytes_Encode_encode"
 
                                 callResultType =
-                                    Types.monoTypeToMlir sig.returnType
+                                    Types.monoTypeToAbi sig.returnType
 
                                 ( ctx3, callOp ) =
                                     Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs callResultType
@@ -1304,7 +1335,7 @@ generateSaturatedCall ctx func args resultType =
                                                         "Elm_Kernel_" ++ moduleName ++ "_" ++ name
 
                                                     callResultType =
-                                                        Types.monoTypeToMlir sig.returnType
+                                                        Types.monoTypeToAbi sig.returnType
 
                                                     ( ctx3, callOp ) =
                                                         Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs callResultType
@@ -1341,7 +1372,7 @@ generateSaturatedCall ctx func args resultType =
                                                         Ctx.freshVar ctx1b
 
                                                     callResultType =
-                                                        Types.monoTypeToMlir resultType
+                                                        Types.monoTypeToAbi resultType
 
                                                     ( ctx3, callOp ) =
                                                         Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs callResultType
@@ -1379,7 +1410,7 @@ generateSaturatedCall ctx func args resultType =
                                             Ctx.freshVar ctx1b
 
                                         callResultType =
-                                            Types.monoTypeToMlir resultType
+                                            Types.monoTypeToAbi resultType
 
                                         ( ctx3, callOp ) =
                                             Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs callResultType
@@ -1540,7 +1571,7 @@ generateSaturatedCall ctx func args resultType =
                         Nothing ->
                             -- Generic kernel ABI path derived solely from MonoType.
                             -- Polymorphic kernels have MVar in their funcType, which
-                            -- Types.monoTypeToMlir maps to !eco.value, so they naturally
+                            -- Types.monoTypeToAbi maps to !eco.value, so they naturally
                             -- get all-boxed ABI without name-based checks.
                             let
                                 elmSig : Ctx.FuncSignature
@@ -1560,7 +1591,7 @@ generateSaturatedCall ctx func args resultType =
 
                                 resultMlirType : MlirType
                                 resultMlirType =
-                                    Types.monoTypeToMlir elmSig.returnType
+                                    Types.monoTypeToAbi elmSig.returnType
 
                                 ( ctx3, callOp ) =
                                     Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs resultMlirType
@@ -1578,7 +1609,7 @@ generateSaturatedCall ctx func args resultType =
                     Ctx.lookupVar ctx name
 
                 expectedType =
-                    Types.monoTypeToMlir resultType
+                    Types.monoTypeToAbi resultType
             in
             -- If the function variable is not a closure (e.g., a zero-arity thunk was
             -- already evaluated), and we're calling with no args, just return the value.
@@ -1604,27 +1635,32 @@ generateSaturatedCall ctx func args resultType =
                     ( argOps, argsWithTypes, ctx1 ) =
                         generateExprListTyped ctx args
 
+                    -- Box non-unboxable primitives (i1) to !eco.value for closure boundary
+                    -- Per REP_CLOSURE_001: Bool must be !eco.value at closure boundaries
+                    ( boxOps, boxedArgsWithTypes, ctx1b ) =
+                        boxArgsForClosureBoundary ctx1 argsWithTypes
+
                     argVarNames : List String
                     argVarNames =
-                        List.map Tuple.first argsWithTypes
+                        List.map Tuple.first boxedArgsWithTypes
 
                     argTypesList : List MlirType
                     argTypesList =
-                        List.map Tuple.second argsWithTypes
+                        List.map Tuple.second boxedArgsWithTypes
 
                     ( resVar, ctx2 ) =
-                        Ctx.freshVar ctx1
+                        Ctx.freshVar ctx1b
 
                     allOperandNames : List String
                     allOperandNames =
                         funcVarName :: argVarNames
 
-                    -- Use actual SSA types for all operands
+                    -- Use boxed types for all operands (closure ABI)
                     allOperandTypes : List MlirType
                     allOperandTypes =
                         funcVarType :: argTypesList
 
-                    -- Compute unboxed bitmap for new args
+                    -- Compute newargs_unboxed_bitmap from boxed arg types
                     newargsUnboxedBitmap : Int
                     newargsUnboxedBitmap =
                         List.indexedMap
@@ -1635,7 +1671,7 @@ generateSaturatedCall ctx func args resultType =
                                 else
                                     0
                             )
-                            argsWithTypes
+                            boxedArgsWithTypes
                             |> List.foldl Bitwise.or 0
 
                     -- Compute arity from the FUNCTION type, not the result type
@@ -1658,7 +1694,7 @@ generateSaturatedCall ctx func args resultType =
                             |> Ops.opBuilder.withAttrs papExtendAttrs
                             |> Ops.opBuilder.build
                 in
-                { ops = argOps ++ [ papExtendOp ]
+                { ops = argOps ++ boxOps ++ [ papExtendOp ]
                 , resultVar = resVar
                 , resultType = expectedType
                 , ctx = ctx3
@@ -1672,7 +1708,7 @@ generateSaturatedCall ctx func args resultType =
                     generateExpr ctx func
 
                 expectedType =
-                    Types.monoTypeToMlir resultType
+                    Types.monoTypeToAbi resultType
             in
             -- If the function result is not a closure (e.g., a zero-arity thunk was
             -- already evaluated), and we're calling with no args, just return the value.
@@ -1696,27 +1732,32 @@ generateSaturatedCall ctx func args resultType =
                     ( argOps, argsWithTypes, ctx1 ) =
                         generateExprListTyped funcResult.ctx args
 
+                    -- Box non-unboxable primitives (i1) to !eco.value for closure boundary
+                    -- Per REP_CLOSURE_001: Bool must be !eco.value at closure boundaries
+                    ( boxOps, boxedArgsWithTypes, ctx1b ) =
+                        boxArgsForClosureBoundary ctx1 argsWithTypes
+
                     argVarNames : List String
                     argVarNames =
-                        List.map Tuple.first argsWithTypes
+                        List.map Tuple.first boxedArgsWithTypes
 
                     argTypesList : List MlirType
                     argTypesList =
-                        List.map Tuple.second argsWithTypes
+                        List.map Tuple.second boxedArgsWithTypes
 
                     ( resVar, ctx2 ) =
-                        Ctx.freshVar ctx1
+                        Ctx.freshVar ctx1b
 
                     allOperandNames : List String
                     allOperandNames =
                         funcResult.resultVar :: argVarNames
 
-                    -- Use actual SSA types for all operands
+                    -- Use boxed types for all operands (closure ABI)
                     allOperandTypes : List MlirType
                     allOperandTypes =
                         funcResult.resultType :: argTypesList
 
-                    -- Compute unboxed bitmap for new args
+                    -- Compute newargs_unboxed_bitmap from boxed arg types
                     newargsUnboxedBitmap : Int
                     newargsUnboxedBitmap =
                         List.indexedMap
@@ -1727,7 +1768,7 @@ generateSaturatedCall ctx func args resultType =
                                 else
                                     0
                             )
-                            argsWithTypes
+                            boxedArgsWithTypes
                             |> List.foldl Bitwise.or 0
 
                     -- Compute arity from the FUNCTION type, not the result type
@@ -1754,7 +1795,7 @@ generateSaturatedCall ctx func args resultType =
                             |> Ops.opBuilder.withAttrs papExtendAttrs
                             |> Ops.opBuilder.build
                 in
-                { ops = funcResult.ops ++ argOps ++ [ papExtendOp ]
+                { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
                 , resultVar = resVar
                 , resultType = expectedType
                 , ctx = ctx3
@@ -2166,7 +2207,7 @@ generateLet ctx def body =
                 ctxWithParams =
                     List.foldl
                         (\( paramName, paramType ) acc ->
-                            Ctx.addVarMapping paramName ("%" ++ paramName) (Types.monoTypeToMlir paramType) acc
+                            Ctx.addVarMapping paramName ("%" ++ paramName) (Types.monoTypeToAbi paramType) acc
                         )
                         ctxWithPlaceholders
                         params
@@ -2219,7 +2260,7 @@ generateDestruct ctx (Mono.MonoDestructor name path monoType) body _ =
         -- The path should produce its natural type, and the body handles any needed
         -- boxing/unboxing based on how it uses the destructed value.
         destructorMlirType =
-            Types.monoTypeToMlir monoType
+            Types.monoTypeToAbi monoType
 
         -- Always use the destructor's type for path generation
         targetType =
@@ -2751,7 +2792,7 @@ generateCase : Ctx.Context -> Name.Name -> Name.Name -> Mono.Decider Mono.MonoCh
 generateCase ctx _ root decider jumps resultMonoType =
     let
         resultMlirType =
-            Types.monoTypeToMlir resultMonoType
+            Types.monoTypeToAbi resultMonoType
 
         -- Emit joinpoints for shared branches
         ( ctx1, joinpointOps ) =
@@ -2839,7 +2880,7 @@ generateRecordCreate ctx fields layout =
                     (\v field ->
                         ( v
                         , if field.isUnboxed then
-                            Types.monoTypeToMlir field.monoType
+                            Types.monoTypeToAbi field.monoType
 
                           else
                             Types.ecoValue
@@ -2874,7 +2915,7 @@ generateRecordAccess ctx record _ index isUnboxed fieldType =
 
         -- Determine the MLIR type for the field
         fieldMlirType =
-            Types.monoTypeToMlir fieldType
+            Types.monoTypeToAbi fieldType
     in
     if isUnboxed then
         -- Field is stored unboxed - project directly to the primitive type
@@ -2991,7 +3032,7 @@ generateTupleCreate ctx elements layout =
                 (\v ( elemType, isUnboxed ) ->
                     ( v
                     , if isUnboxed then
-                        Types.monoTypeToMlir elemType
+                        Types.monoTypeToAbi elemType
 
                       else
                         Types.ecoValue

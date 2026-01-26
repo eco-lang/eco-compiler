@@ -103,7 +103,7 @@ generateMonoPath ctx path targetType =
                                     -- Project as primitive type, then box if caller needs eco.value.
                                     let
                                         fieldMlirType =
-                                            Types.monoTypeToMlir resultType
+                                            Types.monoTypeToAbi resultType
 
                                         ( primitiveVar, ctx3_ ) =
                                             Ctx.freshVar ctx2
@@ -194,7 +194,7 @@ generateMonoPath ctx path targetType =
                                     Ctx.freshVar ctx1
 
                                 fieldMlirType =
-                                    Types.monoTypeToMlir fieldInfo.monoType
+                                    Types.monoTypeToAbi fieldInfo.monoType
                             in
                             if fieldInfo.isUnboxed then
                                 -- Field is stored unboxed (as primitive)

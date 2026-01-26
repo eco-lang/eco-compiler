@@ -164,7 +164,7 @@ generateDefine ctx funcName expr monoType =
                     Expr.generateExpr ctxFreshScope expr
 
                 retTy =
-                    Types.monoTypeToMlir monoType
+                    Types.monoTypeToAbi monoType
 
                 region : MlirRegion
                 region =
@@ -199,7 +199,7 @@ generateClosureFunc ctx funcName closureInfo body monoType =
         argPairs : List ( String, MlirType )
         argPairs =
             List.map
-                (\( name, ty ) -> ( "%" ++ name, Types.monoTypeToMlir ty ))
+                (\( name, ty ) -> ( "%" ++ name, Types.monoTypeToAbi ty ))
                 closureInfo.params
 
         -- Create fresh varMappings with only function parameters
@@ -207,7 +207,7 @@ generateClosureFunc ctx funcName closureInfo body monoType =
         freshVarMappings =
             List.foldl
                 (\( name, ty ) acc ->
-                    Dict.insert name ( "%" ++ name, Types.monoTypeToMlir ty ) acc
+                    Dict.insert name ( "%" ++ name, Types.monoTypeToAbi ty ) acc
                 )
                 Dict.empty
                 closureInfo.params
@@ -228,7 +228,7 @@ generateClosureFunc ctx funcName closureInfo body monoType =
 
         returnType : MlirType
         returnType =
-            Types.monoTypeToMlir extractedReturnType
+            Types.monoTypeToAbi extractedReturnType
 
         region : MlirRegion
         region =
@@ -269,7 +269,7 @@ generateTailFunc ctx funcName params expr monoType =
         funcArgPairs : List ( String, MlirType )
         funcArgPairs =
             List.indexedMap
-                (\i ( _, ty ) -> ( "%arg" ++ String.fromInt i, Types.monoTypeToMlir ty ))
+                (\i ( _, ty ) -> ( "%arg" ++ String.fromInt i, Types.monoTypeToAbi ty ))
                 params
 
         -- Joinpoint parameters use the original names (%n, %acc, ...) that
@@ -277,7 +277,7 @@ generateTailFunc ctx funcName params expr monoType =
         jpArgPairs : List ( String, MlirType )
         jpArgPairs =
             List.map
-                (\( name, ty ) -> ( "%" ++ name, Types.monoTypeToMlir ty ))
+                (\( name, ty ) -> ( "%" ++ name, Types.monoTypeToAbi ty ))
                 params
 
         -- Create fresh varMappings with only joinpoint parameters
@@ -285,7 +285,7 @@ generateTailFunc ctx funcName params expr monoType =
         freshVarMappings =
             List.foldl
                 (\( name, ty ) acc ->
-                    Dict.insert name ( "%" ++ name, Types.monoTypeToMlir ty ) acc
+                    Dict.insert name ( "%" ++ name, Types.monoTypeToAbi ty ) acc
                 )
                 Dict.empty
                 params
@@ -306,7 +306,7 @@ generateTailFunc ctx funcName params expr monoType =
                     monoType
 
         retTy =
-            Types.monoTypeToMlir actualReturnType
+            Types.monoTypeToAbi actualReturnType
 
         -- Generate multi-block joinpoint body for tail-recursive if-then-else
         ( jpBodyRegion, ctx1 ) =
@@ -631,7 +631,7 @@ generateCtor ctx funcName ctorLayout monoType =
                 List.map
                     (\field ->
                         if field.isUnboxed then
-                            Types.monoTypeToMlir field.monoType
+                            Types.monoTypeToAbi field.monoType
 
                         else
                             Types.ecoValue
@@ -716,11 +716,11 @@ generateExtern ctx funcName monoType =
         -- Convert to MLIR types
         argMlirTypes : List MlirType
         argMlirTypes =
-            List.map Types.monoTypeToMlir argMonoTypes
+            List.map Types.monoTypeToAbi argMonoTypes
 
         resultMlirType : MlirType
         resultMlirType =
-            Types.monoTypeToMlir resultMonoType
+            Types.monoTypeToAbi resultMonoType
 
         -- Create block argument pairs (arg0, arg1, etc.)
         argPairs : List ( String, MlirType )
@@ -919,6 +919,6 @@ generateCycle ctx funcName definitions monoType =
             Ops.mkRegion [] (defOps ++ boxOps ++ [ cycleOp ]) returnOp
 
         ( ctx4, funcOp ) =
-            Ops.funcFunc ctx3 funcName [] (Types.monoTypeToMlir monoType) region
+            Ops.funcFunc ctx3 funcName [] (Types.monoTypeToAbi monoType) region
     in
     ( funcOp, ctx4 )

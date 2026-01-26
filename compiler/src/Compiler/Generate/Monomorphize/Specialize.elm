@@ -36,6 +36,7 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.Generate.MLIR.Types as Types
 import Compiler.Generate.Monomorphize.Analysis as Analysis
 import Compiler.Generate.Monomorphize.Closure as Closure
 import Compiler.Generate.Monomorphize.KernelAbi as KernelAbi
@@ -1957,7 +1958,7 @@ buildCtorLayoutFromArity ctorName tag arity ctorMonoType =
                     { name = "field" ++ String.fromInt idx
                     , index = idx
                     , monoType = ty
-                    , isUnboxed = Mono.canUnbox ty
+                    , isUnboxed = Types.canUnbox ty
                     }
                 )
                 fieldTypes

@@ -23,6 +23,7 @@ The monomorphization algorithm works as follows:
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
+import Compiler.Generate.MLIR.Types as Types
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
@@ -455,7 +456,7 @@ buildCtorLayoutFromUnion subst (Can.Ctor ctorData) =
                     { name = "field" ++ String.fromInt idx
                     , index = idx
                     , monoType = ty
-                    , isUnboxed = Mono.canUnbox ty
+                    , isUnboxed = Types.canUnbox ty
                     }
                 )
                 monoFieldTypes
