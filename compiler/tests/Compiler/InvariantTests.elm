@@ -42,7 +42,9 @@ import Compiler.Optimize.AnnotationsPreservedTest as AnnotationsPreservedTest
 import Compiler.Optimize.DeciderExhaustiveTest as DeciderExhaustiveTest
 import Compiler.Optimize.FunctionTypeEncodeTest as FunctionTypeEncodeTest
 import Compiler.Optimize.OptimizeEquivalentTest as OptimizeEquivalentTest
+import Compiler.Optimize.Typed.TailDefTypesTest as TailDefTypesTest
 import Compiler.Optimize.TypedOptTypesTest as TypedOptTypesTest
+import Compiler.Generate.Monomorphize.TailFuncSpecializationTest as TailFuncSpecializationTest
 import Compiler.Type.AnnotationEnforcementTest as AnnotationEnforcementTest
 import Compiler.Type.Constrain.TypedErasedCheckingParityTest as TypedErasedCheckingParityTest
 import Compiler.Type.OccursCheckTest as OccursCheckTest
@@ -107,6 +109,7 @@ typedOptimizationInvariants =
         , AnnotationsPreservedTest.suite -- TOPT_003
         , OptimizeEquivalentTest.suite -- TOPT_004
         , FunctionTypeEncodeTest.suite -- TOPT_005
+        , TailDefTypesTest.suite -- TOPT_TAILDEF_001: TailDef arg/return types match annotation
         ]
 
 
@@ -128,6 +131,7 @@ monomorphizationInvariants =
         , SpecializeConstructorTests.suite -- Constructor specialization
         , SpecializeAccessorTests.suite -- MONO_015: Accessor extension variable unification
         , SpecializeExprTests.suite -- Expression branch coverage
+        , TailFuncSpecializationTest.suite -- MONO_TAILFUNC_001: MonoTailFunc types match annotation
 
         -- MLIR and Monomorphize coverage tests
         , BitwiseTests.suite -- MLIR.Intrinsics.bitwiseIntrinsic
