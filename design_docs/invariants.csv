@@ -6,7 +6,7 @@ id;phase;category;status;description;source
 
 REP_001;CrossPhase;RepresentationModels;enforced;The compiler defines four distinct data representation models: (1) ABI representation for function calls, (2) SSA representation for MLIR operands, (3) Heap representation for runtime objects, and (4) Logical representation for Elm semantics; rules in one representation model do not imply rules in another unless explicitly stated;THEORY.md
 
-REP_ABI_001;CrossPhase;ABI;enforced;At all function call boundaries (kernel or compiled), only Bool, Int, Float, and Char are passed and returned as primitive MLIR types; all other Elm values cross the ABI as !eco.value regardless of their heap field representation;CGEN_012|CGEN_037|CGEN_038
+REP_ABI_001;CrossPhase;ABI;enforced;At all function call boundaries (kernel or compiled), only Int, Float, and Char are passed and returned as primitive MLIR types; all other Elm values including Bool cross the ABI as !eco.value regardless of their heap field representation;CGEN_012|CGEN_037|CGEN_038
 
 REP_ABI_002;CrossPhase;ABI;documented;ABI representation is independent of heap field representation; a value may be passed as a primitive at the ABI boundary while being stored boxed or unboxed in heap fields according to layout metadata;THEORY.md
 
