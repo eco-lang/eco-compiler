@@ -275,7 +275,7 @@ toKernelGlobal shortName =
 -}
 type Def
     = Def A.Region Name Expr Can.Type -- name, body, type of the definition
-    | TailDef A.Region Name (List ( A.Located Name, Can.Type )) Expr Can.Type -- name, typed args, body, return type
+    | TailDef A.Region Name (List ( A.Located Name, Can.Type )) Expr Can.Type -- name, typed args, body, type of the definition
 
 
 {-| Destructuring pattern that extracts a value from a data structure.
@@ -295,7 +295,7 @@ type ContainerHint
     = HintList
     | HintTuple2
     | HintTuple3
-    | HintCustom Name  -- Constructor name for layout lookup
+    | HintCustom Name -- Constructor name for layout lookup
 
 
 {-| A path describing how to navigate into a data structure for destructuring.
