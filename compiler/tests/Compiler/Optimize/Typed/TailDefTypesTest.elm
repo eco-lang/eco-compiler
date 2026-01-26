@@ -4,7 +4,7 @@ module Compiler.Optimize.Typed.TailDefTypesTest exposing (suite)
 
 This test verifies that for tail-recursive functions with type annotations:
 
-1.  Each argument's `Can.Type` in `TailDef`/`DefineTailFunc` equals the corresponding
+1.  Each argument's `Can.Type` in `TailDef` equals the corresponding
     parameter type from the annotation.
 2.  The "return type" field is the **result type** of the annotation, not the whole function type.
 
@@ -38,11 +38,9 @@ import Test exposing (Test)
 
 suite : Test
 suite =
-    Test.describe "TailDef / DefineTailFunc type invariants (TOPT_TAILDEF_001)"
+    Test.describe "TailDef type invariants (TOPT_TAILDEF_001)"
         [ Test.test "TailDef args and return type match annotation for sumHelper (Int -> Int -> Int)" <|
             \_ -> checkSumHelper
-        , Test.test "DefineTailFunc node has correct types" <|
-            \_ -> checkDefineTailFuncNode
         ]
 
 
@@ -101,17 +99,6 @@ checkSumHelper =
             checkTailDefTypes "sumHelper" localGraph annotations
 
 
-{-| Check that DefineTailFunc node has correct types.
--}
-checkDefineTailFuncNode : Expectation
-checkDefineTailFuncNode =
-    case Pipeline.runToTypedOptimized sumHelperModule of
-        Err msg ->
-            Expect.fail ("Pipeline failed: " ++ msg)
-
-        Ok { localGraph } ->
-            checkDefineTailFuncTypes "sumHelper" localGraph
-
 
 
 -- ============================================================================
@@ -158,8 +145,7 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
     in
     case ( maybeTailDef, maybeAnnotation ) of
         ( Nothing, _ ) ->
-            -- TailDef might be in DefineTailFunc instead - that's also valid
-            Expect.pass
+            Expect.fail "TailDef not found in any Cycle node"
 
         ( Just ( args, returnType ), Just (Can.Forall _ annType) ) ->
             let
@@ -210,104 +196,6 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
             if not argTypesMatch then
                 Expect.fail
                     ("Arg count mismatch: expected "
-                        ++ String.fromInt (List.length expectedArgTypes)
-                        ++ ", got "
-                        ++ String.fromInt (List.length actualArgTypes)
-                    )
-
-            else if List.isEmpty allErrors then
-                Expect.pass
-
-            else
-                Expect.fail (String.join "; " allErrors)
-
-        ( Just _, Nothing ) ->
-            Expect.fail ("No annotation found for " ++ funcName)
-
-
-{-| Check DefineTailFunc node types.
--}
-checkDefineTailFuncTypes : String -> TOpt.LocalGraph -> Expectation
-checkDefineTailFuncTypes funcName (TOpt.LocalGraph data) =
-    let
-        -- Find DefineTailFunc node
-        maybeNode =
-            Dict.toList TOpt.compareGlobal data.nodes
-                |> List.filterMap
-                    (\( TOpt.Global _ name, node ) ->
-                        if name == funcName then
-                            case node of
-                                TOpt.DefineTailFunc _ args _ _ returnType ->
-                                    Just ( args, returnType )
-
-                                _ ->
-                                    Nothing
-
-                        else
-                            Nothing
-                    )
-                |> List.head
-
-        -- Get annotation
-        maybeAnnotation =
-            Dict.get identity funcName data.annotations
-    in
-    case ( maybeNode, maybeAnnotation ) of
-        ( Nothing, _ ) ->
-            -- The function might be in a Cycle node instead
-            Expect.pass
-
-        ( Just ( args, returnType ), Just (Can.Forall _ annType) ) ->
-            let
-                ( expectedArgTypes, expectedReturnType ) =
-                    splitFunctionType annType
-
-                actualArgTypes =
-                    List.map (\( _, t ) -> t) args
-
-                -- Check arg count
-                argCountMatch =
-                    List.length actualArgTypes == List.length expectedArgTypes
-
-                -- Check each argument type
-                argTypeErrors =
-                    List.map2
-                        (\actual expected ->
-                            if typesMatch actual expected then
-                                Nothing
-
-                            else
-                                Just
-                                    ("DefineTailFunc arg type mismatch: expected "
-                                        ++ typeToString expected
-                                        ++ ", got "
-                                        ++ typeToString actual
-                                    )
-                        )
-                        actualArgTypes
-                        expectedArgTypes
-                        |> List.filterMap identity
-
-                -- Check return type - this is where Bug 2 manifests
-                returnTypeError =
-                    if typesMatch returnType expectedReturnType then
-                        Nothing
-
-                    else
-                        Just
-                            ("DefineTailFunc return type mismatch: expected "
-                                ++ typeToString expectedReturnType
-                                ++ ", got "
-                                ++ typeToString returnType
-                                ++ " (Bug 2: full function type instead of return type)"
-                            )
-
-                allErrors =
-                    argTypeErrors ++ Maybe.withDefault [] (Maybe.map List.singleton returnTypeError)
-            in
-            if not argCountMatch then
-                Expect.fail
-                    ("DefineTailFunc arg count mismatch: expected "
                         ++ String.fromInt (List.length expectedArgTypes)
                         ++ ", got "
                         ++ String.fromInt (List.length actualArgTypes)

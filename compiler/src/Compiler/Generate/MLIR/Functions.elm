@@ -294,8 +294,19 @@ generateTailFunc ctx funcName params expr monoType =
         ctxWithArgs =
             { ctx | nextVar = List.length params, varMappings = freshVarMappings }
 
+        -- monoType is the full function type (MFunction args returnType)
+        -- Extract the actual return type from it
+        actualReturnType =
+            case monoType of
+                Mono.MFunction _ ret ->
+                    ret
+
+                _ ->
+                    -- Shouldn't happen per MONO_004 invariant
+                    monoType
+
         retTy =
-            Types.monoTypeToMlir monoType
+            Types.monoTypeToMlir actualReturnType
 
         -- Generate multi-block joinpoint body for tail-recursive if-then-else
         ( jpBodyRegion, ctx1 ) =

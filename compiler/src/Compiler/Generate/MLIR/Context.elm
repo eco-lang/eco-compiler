@@ -399,9 +399,21 @@ extractNodeSignature node =
                         }
 
         Mono.MonoTailFunc params _ monoType ->
+            -- monoType is the full function type (MFunction args returnType)
+            -- Extract the actual return type from it
+            let
+                returnType =
+                    case monoType of
+                        Mono.MFunction _ ret ->
+                            ret
+
+                        _ ->
+                            -- Shouldn't happen per MONO_004 invariant
+                            monoType
+            in
             Just
                 { paramTypes = List.map Tuple.second params
-                , returnType = monoType
+                , returnType = returnType
                 }
 
         Mono.MonoCtor ctorLayout monoType ->

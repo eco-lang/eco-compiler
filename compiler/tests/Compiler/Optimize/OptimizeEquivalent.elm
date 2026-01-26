@@ -320,16 +320,6 @@ compareNodes erasedNode typedNode =
             else
                 compareDepsAndExpr erasedDeps typedDeps erasedExpr typedExpr
 
-        ( Opt.DefineTailFunc region1 erasedArgs erasedExpr erasedDeps, TOpt.DefineTailFunc region2 typedArgs typedExpr typedDeps _ ) ->
-            if region1 /= region2 then
-                Just "DefineTailFunc region mismatch"
-
-            else if not (compareLocatedNameLists erasedArgs (List.map Tuple.first typedArgs)) then
-                Just "DefineTailFunc args mismatch"
-
-            else
-                compareDepsAndExpr erasedDeps typedDeps erasedExpr typedExpr
-
         ( Opt.Ctor idx1 arity1, TOpt.Ctor idx2 arity2 _ ) ->
             if idx1 /= idx2 then
                 Just "Ctor index mismatch"
@@ -413,9 +403,6 @@ nodeTypeName node =
         Opt.TrackedDefine _ _ _ ->
             "TrackedDefine"
 
-        Opt.DefineTailFunc _ _ _ _ ->
-            "DefineTailFunc"
-
         Opt.Ctor _ _ ->
             "Ctor"
 
@@ -452,9 +439,6 @@ typedNodeTypeName node =
 
         TOpt.TrackedDefine _ _ _ _ ->
             "TrackedDefine"
-
-        TOpt.DefineTailFunc _ _ _ _ _ ->
-            "DefineTailFunc"
 
         TOpt.Ctor _ _ _ ->
             "Ctor"

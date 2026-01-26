@@ -86,10 +86,6 @@ checkNodeFunctionTypes context node =
         TOpt.TrackedDefine _ expr _ _ ->
             collectExprFunctionTypeChecks context expr
 
-        TOpt.DefineTailFunc _ _ expr _ _ ->
-            -- The node itself should have a function type matching params -> returnType
-            collectExprFunctionTypeChecks context expr
-
         TOpt.Cycle _ _ defs _ ->
             List.concatMap (\def -> checkDefFunctionTypes context def) defs
 

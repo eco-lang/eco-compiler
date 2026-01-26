@@ -96,15 +96,6 @@ checkNodeExprsHaveTypes context node =
             checkTypeNotEmpty (context ++ " TrackedDefine") exprType
                 ++ collectExprNestedTypeIssues context expr
 
-        TOpt.DefineTailFunc _ params expr _ _ ->
-            let
-                exprType =
-                    TOpt.typeOf expr
-            in
-            checkTypeNotEmpty (context ++ " DefineTailFunc") exprType
-                ++ List.concatMap (\( _, paramType ) -> checkTypeNotEmpty (context ++ " param") paramType) params
-                ++ collectExprNestedTypeIssues context expr
-
         TOpt.Cycle _ _ defs _ ->
             List.concatMap (\def -> checkDefExprsHaveTypes context def) defs
 

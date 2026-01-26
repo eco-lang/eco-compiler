@@ -41,9 +41,6 @@ nodeHasDebug node =
         Opt.TrackedDefine _ expr _ ->
             hasDebug expr
 
-        Opt.DefineTailFunc _ _ expr _ ->
-            hasDebug expr
-
         Opt.Ctor _ _ ->
             False
 

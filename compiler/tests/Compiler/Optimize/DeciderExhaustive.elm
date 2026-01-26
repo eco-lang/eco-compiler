@@ -109,9 +109,6 @@ checkNodeNestedPatterns context node =
         TOpt.TrackedDefine _ expr _ _ ->
             collectExprNestedPatternIssues context expr
 
-        TOpt.DefineTailFunc _ _ expr _ _ ->
-            collectExprNestedPatternIssues context expr
-
         TOpt.Cycle _ _ defs _ ->
             List.concatMap (\def -> checkDefNestedPatterns context def) defs
 
@@ -273,9 +270,6 @@ checkNodeExhaustiveness context node =
             collectExprExhaustivenessIssues context expr
 
         TOpt.TrackedDefine _ expr _ _ ->
-            collectExprExhaustivenessIssues context expr
-
-        TOpt.DefineTailFunc _ _ expr _ _ ->
             collectExprExhaustivenessIssues context expr
 
         TOpt.Cycle _ _ defs _ ->

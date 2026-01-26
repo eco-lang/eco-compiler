@@ -138,11 +138,10 @@ checkMonoTailFuncArity =
 
 {-| Check MonoTailFunc types against expected values.
 
-For sumHelper : Int -> Int -> Int:
+For sumHelper : Int -> Int -> Int, we expect:
 
-  - Expected arg types: [MInt, MInt]
-  - Expected return type: MInt
-  - Expected full type: MFunction [MInt, MInt] MInt
+  - MonoTailFunc with 2 arguments (acc: MInt, n: MInt)
+  - MonoType field: MFunction [MInt, MInt] MInt (the full function type per MONO_004)
 
 -}
 checkMonoTailFuncType : String -> Mono.MonoGraph -> Expectation
@@ -154,8 +153,8 @@ checkMonoTailFuncType funcName (Mono.MonoGraph data) =
                 |> List.filterMap
                     (\( _, node ) ->
                         case node of
-                            Mono.MonoTailFunc args _ returnType ->
-                                Just ( args, returnType )
+                            Mono.MonoTailFunc args _ monoType ->
+                                Just ( args, monoType )
 
                             _ ->
                                 Nothing
@@ -165,7 +164,7 @@ checkMonoTailFuncType funcName (Mono.MonoGraph data) =
         [] ->
             Expect.fail ("No MonoTailFunc node found for " ++ funcName)
 
-        ( args, returnType ) :: _ ->
+        ( args, monoType ) :: _ ->
             let
                 actualArgTypes =
                     List.map Tuple.second args
@@ -174,8 +173,9 @@ checkMonoTailFuncType funcName (Mono.MonoGraph data) =
                 expectedArgTypes =
                     [ Mono.MInt, Mono.MInt ]
 
-                expectedReturnType =
-                    Mono.MInt
+                -- Per MONO_004, MonoTailFunc stores the full function type
+                expectedMonoType =
+                    Mono.MFunction [ Mono.MInt, Mono.MInt ] Mono.MInt
 
                 -- Check argument types
                 argTypeErrors =
@@ -204,22 +204,21 @@ checkMonoTailFuncType funcName (Mono.MonoGraph data) =
                             expectedArgTypes
                             |> List.filterMap identity
 
-                -- Check return type - this is where Bug 2 manifests at mono level
-                returnTypeError =
-                    if monoTypesMatch returnType expectedReturnType then
+                -- Check MonoType field (full function type per MONO_004)
+                monoTypeError =
+                    if monoTypesMatch monoType expectedMonoType then
                         Nothing
 
                     else
                         Just
-                            ("Return type mismatch: expected "
-                                ++ monoTypeToString expectedReturnType
+                            ("MonoType mismatch: expected "
+                                ++ monoTypeToString expectedMonoType
                                 ++ ", got "
-                                ++ monoTypeToString returnType
-                                ++ " (Bug 2: nested MFunction instead of MInt)"
+                                ++ monoTypeToString monoType
                             )
 
                 allErrors =
-                    argTypeErrors ++ Maybe.withDefault [] (Maybe.map List.singleton returnTypeError)
+                    argTypeErrors ++ Maybe.withDefault [] (Maybe.map List.singleton monoTypeError)
             in
             if List.isEmpty allErrors then
                 Expect.pass

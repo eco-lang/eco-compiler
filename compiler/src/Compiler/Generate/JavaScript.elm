@@ -401,14 +401,6 @@ addGlobalHelp mode graph ((Opt.Global home _) as global) state =
             addStmt (addDeps deps state)
                 (trackedVar region global (Expr.generate mode home expr))
 
-        Opt.DefineTailFunc region argNames body deps ->
-            let
-                (Opt.Global _ name) =
-                    global
-            in
-            addStmt (addDeps deps state)
-                (trackedVar region global (Expr.generateTailDef mode home name argNames body))
-
         Opt.Ctor index arity ->
             addStmt state
                 (var global (Expr.generateCtor mode global index arity))

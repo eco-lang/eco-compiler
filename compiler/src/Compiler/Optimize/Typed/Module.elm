@@ -148,9 +148,6 @@ finalizeNode node =
         TOpt.TrackedDefine region expr deps itype ->
             TOpt.TrackedDefine region (finalizeExpr expr) deps (fin itype)
 
-        TOpt.DefineTailFunc region args body deps itype ->
-            TOpt.DefineTailFunc region (List.map finalizeArg args) (finalizeExpr body) deps (fin itype)
-
         TOpt.Ctor index arity tipe ->
             TOpt.Ctor index arity (fin tipe)
 

@@ -374,7 +374,6 @@ type Main
 type Node
     = Define Expr (EverySet (List String) Global) Can.Type -- body, deps, type
     | TrackedDefine A.Region Expr (EverySet (List String) Global) Can.Type
-    | DefineTailFunc A.Region (List ( A.Located Name, Can.Type )) Expr (EverySet (List String) Global) Can.Type -- typed args, body, deps, return type
     | Ctor Index.ZeroBased Int Can.Type -- index, arity, constructor type
     | Enum Index.ZeroBased Can.Type
     | Box Can.Type
@@ -544,16 +543,6 @@ nodeEncoder node =
                 , Can.typeEncoder tipe
                 ]
 
-        DefineTailFunc region argNames body deps tipe ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 2
-                , A.regionEncoder region
-                , BE.list typedLocatedNameEncoder argNames
-                , exprEncoder body
-                , BE.everySet compareGlobal globalEncoder deps
-                , Can.typeEncoder tipe
-                ]
-
         Ctor index arity tipe ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 3
@@ -635,14 +624,6 @@ nodeDecoder =
                     1 ->
                         Bytes.Decode.map4 TrackedDefine
                             A.regionDecoder
-                            exprDecoder
-                            (BD.everySet toComparableGlobal globalDecoder)
-                            Can.typeDecoder
-
-                    2 ->
-                        Bytes.Decode.map5 DefineTailFunc
-                            A.regionDecoder
-                            (BD.list typedLocatedNameDecoder)
                             exprDecoder
                             (BD.everySet toComparableGlobal globalDecoder)
                             Can.typeDecoder

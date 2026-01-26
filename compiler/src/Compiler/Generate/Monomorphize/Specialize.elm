@@ -97,70 +97,6 @@ specializeNode ctorName node requestedMonoType state =
             in
             ( Mono.MonoDefine monoExpr requestedMonoType, state2 )
 
-        TOpt.DefineTailFunc _ args body _ returnType ->
-            let
-                funcType =
-                    buildFuncType args returnType
-
-                subst =
-                    TypeSubst.unify funcType requestedMonoType
-
-                monoArgs =
-                    List.map (specializeArg subst) args
-
-                -- Debug: check for "ls" parameter with wrong type
-                _ =
-                    List.filterMap
-                        (\( name, monoType ) ->
-                            if name == "ls" && monoType == Mono.MInt then
-                                Just
-                                    (Utils.Crash.crash
-                                        ("DefineTailFunc: 'ls' got MInt! funcType="
-                                            ++ Debug.toString funcType
-                                            ++ " requestedMonoType="
-                                            ++ Mono.monoTypeToDebugString requestedMonoType
-                                            ++ " args="
-                                            ++ Debug.toString (List.map (\( n, t ) -> ( A.toValue n, Debug.toString t )) args)
-                                            ++ " monoArgs="
-                                            ++ Debug.toString (List.map (\( n, t ) -> ( n, Mono.monoTypeToDebugString t )) monoArgs)
-                                        )
-                                    )
-
-                            else
-                                Nothing
-                        )
-                        monoArgs
-
-                newVarTypes =
-                    List.foldl
-                        (\( name, monoParamType ) vt -> Dict.insert identity name monoParamType vt)
-                        state.varTypes
-                        monoArgs
-
-                stateWithParams =
-                    { state | varTypes = newVarTypes }
-
-                augmentedSubst =
-                    List.foldl
-                        (\( ( _, canParamType ), ( _, monoParamType ) ) s ->
-                            case canParamType of
-                                Can.TVar varName ->
-                                    Dict.insert identity varName monoParamType s
-
-                                _ ->
-                                    s
-                        )
-                        subst
-                        (List.map2 Tuple.pair args monoArgs)
-
-                ( monoBody, state1 ) =
-                    specializeExpr body augmentedSubst stateWithParams
-
-                monoReturnType =
-                    TypeSubst.applySubst subst returnType
-            in
-            ( Mono.MonoTailFunc monoArgs monoBody monoReturnType, state1 )
-
         TOpt.Ctor index arity canType ->
             let
                 subst =
@@ -538,9 +474,6 @@ specializeExpr expr subst state =
 
                                 Just (TOpt.TrackedDefine _ _ _ defCanType) ->
                                     TypeSubst.applySubst subst defCanType
-
-                                Just (TOpt.DefineTailFunc _ args _ _ returnType) ->
-                                    TypeSubst.applySubst subst (buildFuncType args returnType)
 
                                 Just (TOpt.Enum _ enumCanType) ->
                                     TypeSubst.applySubst subst enumCanType
