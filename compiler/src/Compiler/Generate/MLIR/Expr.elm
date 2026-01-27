@@ -2276,36 +2276,34 @@ generateLet ctx def body =
 generateDestruct : Ctx.Context -> Mono.MonoDestructor -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateDestruct ctx (Mono.MonoDestructor name path monoType) body _ =
     let
-        -- DEBUG: Log the destructor's monoType to verify it's concrete
-        _ =
-            Debug.log "generateDestruct" { name = name, monoType = monoType }
+        -- Use the path's actual result type for generating the destructor.
+        -- The path's MonoIndex/MonoField/etc. nodes carry the correctly-specialized
+        -- result type (e.g., MInt), whereas the destructor's monoType may be an
+        -- unsubstituted type variable (MVar) due to type variable name mismatches
+        -- between the function signature and the type definition.
+        --
+        -- For example, in Result.andThen:
+        --   - Function signature uses type vars: a, b, x
+        --   - Result type definition uses: error, value  
+        --   - The destructor's monoType may be MVar "value" (not in substitution)
+        --   - But the path's resultType is correctly MInt
+        --
+        -- By using the path's type, we ensure correct primitive types are used.
+        pathResultType =
+            Mono.getMonoPathType path
 
-        -- The destructor's monoType represents the type of the value at the end of the path.
-        -- This is the type we should use for path generation.
-        --
-        -- IMPORTANT: Do NOT use destType to determine the path's target type!
-        -- destType is the type of the overall body expression, not the destructed value.
-        -- For example, when destructing a list element and the body returns an Int,
-        -- destType would be MInt, but the destructed value is still a list (!eco.value).
-        -- Using destType would incorrectly cause unboxing of lists to i64.
-        --
-        -- The path should produce its natural type, and the body handles any needed
-        -- boxing/unboxing based on how it uses the destructed value.
+        -- Convert to MLIR type
         destructorMlirType =
-            Types.monoTypeToAbi monoType
+            Types.monoTypeToAbi pathResultType
 
-        -- DEBUG: Log the computed MLIR type
-        _ =
-            Debug.log "generateDestruct destructorMlirType" destructorMlirType
-
-        -- Always use the destructor's type for path generation
+        -- Use the path's type for path generation
         targetType =
             destructorMlirType
 
         ( pathOps, pathVar, ctx1 ) =
             Patterns.generateMonoPath ctx path targetType
 
-        -- Use mapping instead of eco.construct wrapper
+        -- Use mapping with the path's type
         ctx2 : Ctx.Context
         ctx2 =
             Ctx.addVarMapping name pathVar targetType ctx1

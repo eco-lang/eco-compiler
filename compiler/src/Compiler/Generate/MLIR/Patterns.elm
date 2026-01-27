@@ -58,12 +58,35 @@ generateMonoPath ctx path targetType =
                     case containerKind of
                         Mono.ListContainer ->
                             if index == 0 then
-                                -- List head
+                                -- List head - always stored as boxed !eco.value in heap
                                 let
-                                    ( ctx_, op ) =
-                                        Ops.ecoProjectListHead ctx2 resultVar targetType subVar
+                                    _ =
+                                        Debug.log "generateMonoPath ListContainer head" ( "targetType", targetType )
                                 in
-                                ( [ op ], resultVar, ctx_ )
+                                if Types.isEcoValueType targetType then
+                                    -- Caller wants eco.value, project directly
+                                    let
+                                        ( ctx_, op ) =
+                                            Ops.ecoProjectListHead ctx2 resultVar Types.ecoValue subVar
+                                    in
+                                    ( [ op ], resultVar, ctx_ )
+
+                                else
+                                    -- Caller wants primitive, project as eco.value then unbox
+                                    let
+                                        ( boxedVar, ctxA ) =
+                                            Ctx.freshVar ctx2
+
+                                        ( ctxB, projectOp ) =
+                                            Ops.ecoProjectListHead ctxA boxedVar Types.ecoValue subVar
+
+                                        ( unboxOps, unboxedVar, ctxC ) =
+                                            Intrinsics.unboxToType ctxB boxedVar targetType
+
+                                        _ =
+                                            Debug.log "generateMonoPath unbox result" { boxedVar = boxedVar, unboxedVar = unboxedVar, numOps = List.length unboxOps }
+                                    in
+                                    ( projectOp :: unboxOps, unboxedVar, ctxC )
 
                             else
                                 -- List tail (index 1)
@@ -96,17 +119,6 @@ generateMonoPath ctx path targetType =
 
                                 maybeIsUnboxed =
                                     lookupFieldIsUnboxed ctx2 containerType ctorName index
-
-                                -- DEBUG: Log all the relevant types
-                                _ =
-                                    Debug.log "generateMonoPath CustomContainer"
-                                        { ctorName = ctorName
-                                        , index = index
-                                        , containerType = containerType
-                                        , resultType = resultType
-                                        , targetType = targetType
-                                        , maybeIsUnboxed = maybeIsUnboxed
-                                        }
                             in
                             case maybeIsUnboxed of
                                 Just True ->
@@ -115,14 +127,6 @@ generateMonoPath ctx path targetType =
                                     let
                                         fieldMlirType =
                                             Types.monoTypeToAbi resultType
-
-                                        -- DEBUG: Log the fieldMlirType and targetType comparison
-                                        _ =
-                                            Debug.log "generateMonoPath Just True branch"
-                                                { fieldMlirType = fieldMlirType
-                                                , targetType = targetType
-                                                , isEcoValueTargetType = Types.isEcoValueType targetType
-                                                }
 
                                         ( primitiveVar, ctx3_ ) =
                                             Ctx.freshVar ctx2
@@ -391,35 +395,79 @@ generateDTPath ctx root dtPath targetType =
 
                 -- Use type-specific projection ops based on ContainerHint.
                 -- This ensures correct heap layout access for each container type.
-                ( ctx3, projectOp ) =
+                ( projectOps, projectVar, ctx3 ) =
                     case hint of
                         DT.HintList ->
                             if fieldIndex == 0 then
-                                -- List head
-                                Ops.ecoProjectListHead ctx2 resultVar targetType subVar
+                                -- List head - always stored as boxed !eco.value in heap
+                                let
+                                    _ =
+                                        Debug.log "generateDTPath HintList head" { targetType = targetType }
+                                in
+                                if Types.isEcoValueType targetType then
+                                    -- Caller wants eco.value, project directly
+                                    let
+                                        ( ctxL, op ) =
+                                            Ops.ecoProjectListHead ctx2 resultVar Types.ecoValue subVar
+                                    in
+                                    ( [ op ], resultVar, ctxL )
+
+                                else
+                                    -- Caller wants primitive, project as eco.value then unbox
+                                    let
+                                        ( boxedVar, ctxL1 ) =
+                                            Ctx.freshVar ctx2
+
+                                        ( ctxL2, projectOp ) =
+                                            Ops.ecoProjectListHead ctxL1 boxedVar Types.ecoValue subVar
+
+                                        ( unboxOps, unboxedVar, ctxL3 ) =
+                                            Intrinsics.unboxToType ctxL2 boxedVar targetType
+                                    in
+                                    ( projectOp :: unboxOps, unboxedVar, ctxL3 )
 
                             else
                                 -- List tail (index 1)
-                                Ops.ecoProjectListTail ctx2 resultVar subVar
+                                let
+                                    ( ctxL, op ) =
+                                        Ops.ecoProjectListTail ctx2 resultVar subVar
+                                in
+                                ( [ op ], resultVar, ctxL )
 
                         DT.HintTuple2 ->
-                            Ops.ecoProjectTuple2 ctx2 resultVar fieldIndex targetType subVar
+                            let
+                                ( ctxT, op ) =
+                                    Ops.ecoProjectTuple2 ctx2 resultVar fieldIndex targetType subVar
+                            in
+                            ( [ op ], resultVar, ctxT )
 
                         DT.HintTuple3 ->
-                            Ops.ecoProjectTuple3 ctx2 resultVar fieldIndex targetType subVar
+                            let
+                                ( ctxT, op ) =
+                                    Ops.ecoProjectTuple3 ctx2 resultVar fieldIndex targetType subVar
+                            in
+                            ( [ op ], resultVar, ctxT )
 
                         DT.HintCustom _ ->
                             -- Custom ADTs (Maybe, Result, user types, big tuples)
                             -- Note: We can't use the constructor name for layout lookup here
                             -- because we don't have access to the container's MonoType.
                             -- The layout lookup happens in generateMonoPath instead.
-                            Ops.ecoProjectCustom ctx2 resultVar fieldIndex targetType subVar
+                            let
+                                ( ctxC, op ) =
+                                    Ops.ecoProjectCustom ctx2 resultVar fieldIndex targetType subVar
+                            in
+                            ( [ op ], resultVar, ctxC )
 
                         DT.HintUnknown ->
                             -- Fallback: treat like custom
-                            Ops.ecoProjectCustom ctx2 resultVar fieldIndex targetType subVar
+                            let
+                                ( ctxU, op ) =
+                                    Ops.ecoProjectCustom ctx2 resultVar fieldIndex targetType subVar
+                            in
+                            ( [ op ], resultVar, ctxU )
             in
-            ( subOps ++ [ projectOp ], resultVar, ctx3 )
+            ( subOps ++ projectOps, projectVar, ctx3 )
 
         DT.Unbox subPath ->
             -- DT.Unbox is a SEMANTIC operation for single-constructor types.
