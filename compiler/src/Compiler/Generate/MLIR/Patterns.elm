@@ -96,6 +96,17 @@ generateMonoPath ctx path targetType =
 
                                 maybeIsUnboxed =
                                     lookupFieldIsUnboxed ctx2 containerType ctorName index
+
+                                -- DEBUG: Log all the relevant types
+                                _ =
+                                    Debug.log "generateMonoPath CustomContainer"
+                                        { ctorName = ctorName
+                                        , index = index
+                                        , containerType = containerType
+                                        , resultType = resultType
+                                        , targetType = targetType
+                                        , maybeIsUnboxed = maybeIsUnboxed
+                                        }
                             in
                             case maybeIsUnboxed of
                                 Just True ->
@@ -104,6 +115,14 @@ generateMonoPath ctx path targetType =
                                     let
                                         fieldMlirType =
                                             Types.monoTypeToAbi resultType
+
+                                        -- DEBUG: Log the fieldMlirType and targetType comparison
+                                        _ =
+                                            Debug.log "generateMonoPath Just True branch"
+                                                { fieldMlirType = fieldMlirType
+                                                , targetType = targetType
+                                                , isEcoValueTargetType = Types.isEcoValueType targetType
+                                                }
 
                                         ( primitiveVar, ctx3_ ) =
                                             Ctx.freshVar ctx2

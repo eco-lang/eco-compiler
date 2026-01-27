@@ -137,7 +137,7 @@ CGEN_001;MLIR_Codegen;Boxing;enforced;MLIR codegen only inserts boxing and unbox
 
 CGEN_002;MLIR_Codegen;Calls;enforced;generateCall treats calls whose result MonoType is still a function as partial applications and routes them through closure generation and eco.papExtend instead of emitting direct calls;Compiler.Generate.MLIRMono
 
-CGEN_003;MLIR_Codegen;Closures;enforced;generateClosureApplication stores captured and applied arguments according to SSA representation: immediate operands are stored in unboxed fields and all other operands are stored as !eco.value; unboxed_bitmap attributes record this SSA-derived layout and are merged during partial application extension;Compiler.Generate.MLIR.Expr and RuntimeExports.cpp
+CGEN_003;MLIR_Codegen;Closures;enforced;Closure partial application and application ops (eco.papCreate, eco.papExtend) compute their unboxed bitmaps solely from SSA operand MLIR types after closure-boundary normalization: only unboxable primitives (i64, f64, i16) are marked unboxed and all other operands (including Bool/i1) are treated as !eco.value, and the _operand_types, unboxed_bitmap, and newargs_unboxed_bitmap attributes must exactly match the SSA operand types and layout used by the runtime;Compiler.Generate.MLIR.Expr|RuntimeExports.cpp
 
 CGEN_004;MLIR_Codegen;Destruct;enforced;generateDestruct and generateMonoPath always use the destructor MonoType to determine the path target MLIR type and never use the body result type so destruct paths yield their natural type and do not spuriously unbox;Compiler.Generate.MLIRMono
 

@@ -2276,6 +2276,10 @@ generateLet ctx def body =
 generateDestruct : Ctx.Context -> Mono.MonoDestructor -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateDestruct ctx (Mono.MonoDestructor name path monoType) body _ =
     let
+        -- DEBUG: Log the destructor's monoType to verify it's concrete
+        _ =
+            Debug.log "generateDestruct" { name = name, monoType = monoType }
+
         -- The destructor's monoType represents the type of the value at the end of the path.
         -- This is the type we should use for path generation.
         --
@@ -2289,6 +2293,10 @@ generateDestruct ctx (Mono.MonoDestructor name path monoType) body _ =
         -- boxing/unboxing based on how it uses the destructed value.
         destructorMlirType =
             Types.monoTypeToAbi monoType
+
+        -- DEBUG: Log the computed MLIR type
+        _ =
+            Debug.log "generateDestruct destructorMlirType" destructorMlirType
 
         -- Always use the destructor's type for path generation
         targetType =
