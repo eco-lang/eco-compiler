@@ -17,8 +17,10 @@ import Compiler.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import Compiler.Generate.CodeGen.Invariants
     exposing
         ( Violation
+        , extractOperandTypes
         , findFuncOps
         , getIntAttr
+        , typesMatch
         , violationsToExpectation
         )
 import Dict exposing (Dict)
@@ -203,4 +205,81 @@ checkJumpTarget joinpointMap jumpOp =
                             }
 
                     else
-                        Nothing
+                        -- Also check that argument types match (CGEN_030)
+                        checkJumpArgTypes jumpOp targetId expectedArgs
+
+
+{-| Check that jump argument types match joinpoint parameter types.
+-}
+checkJumpArgTypes : MlirOp -> Int -> List ( String, Mlir.Mlir.MlirType ) -> Maybe Violation
+checkJumpArgTypes jumpOp targetId expectedArgs =
+    case extractOperandTypes jumpOp of
+        Nothing ->
+            -- No _operand_types attribute - skip type checking here,
+            -- CGEN_040 will catch missing attributes
+            Nothing
+
+        Just jumpArgTypes ->
+            let
+                expectedTypes =
+                    List.map Tuple.second expectedArgs
+
+                mismatches =
+                    List.indexedMap
+                        (\i ( jumpType, expectedType ) ->
+                            if typesMatch jumpType expectedType then
+                                Nothing
+
+                            else
+                                Just
+                                    { index = i
+                                    , jumpType = jumpType
+                                    , expectedType = expectedType
+                                    }
+                        )
+                        (List.map2 Tuple.pair jumpArgTypes expectedTypes)
+                        |> List.filterMap identity
+            in
+            case mismatches of
+                [] ->
+                    Nothing
+
+                first :: _ ->
+                    Just
+                        { opId = jumpOp.id
+                        , opName = jumpOp.name
+                        , message =
+                            "eco.jump arg "
+                                ++ String.fromInt first.index
+                                ++ " has type "
+                                ++ typeToString first.jumpType
+                                ++ " but joinpoint "
+                                ++ String.fromInt targetId
+                                ++ " expects "
+                                ++ typeToString first.expectedType
+                        }
+
+
+typeToString : Mlir.Mlir.MlirType -> String
+typeToString t =
+    case t of
+        Mlir.Mlir.I1 ->
+            "i1"
+
+        Mlir.Mlir.I16 ->
+            "i16"
+
+        Mlir.Mlir.I32 ->
+            "i32"
+
+        Mlir.Mlir.I64 ->
+            "i64"
+
+        Mlir.Mlir.F64 ->
+            "f64"
+
+        Mlir.Mlir.NamedStruct name ->
+            name
+
+        Mlir.Mlir.FunctionType _ ->
+            "function"

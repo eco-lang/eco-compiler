@@ -59,10 +59,6 @@ generateMonoPath ctx path targetType =
                         Mono.ListContainer ->
                             if index == 0 then
                                 -- List head - always stored as boxed !eco.value in heap
-                                let
-                                    _ =
-                                        Debug.log "generateMonoPath ListContainer head" ( "targetType", targetType )
-                                in
                                 if Types.isEcoValueType targetType then
                                     -- Caller wants eco.value, project directly
                                     let
@@ -82,9 +78,6 @@ generateMonoPath ctx path targetType =
 
                                         ( unboxOps, unboxedVar, ctxC ) =
                                             Intrinsics.unboxToType ctxB boxedVar targetType
-
-                                        _ =
-                                            Debug.log "generateMonoPath unbox result" { boxedVar = boxedVar, unboxedVar = unboxedVar, numOps = List.length unboxOps }
                                     in
                                     ( projectOp :: unboxOps, unboxedVar, ctxC )
 
@@ -399,11 +392,6 @@ generateDTPath ctx root dtPath targetType =
                     case hint of
                         DT.HintList ->
                             if fieldIndex == 0 then
-                                -- List head - always stored as boxed !eco.value in heap
-                                let
-                                    _ =
-                                        Debug.log "generateDTPath HintList head" { targetType = targetType }
-                                in
                                 if Types.isEcoValueType targetType then
                                     -- Caller wants eco.value, project directly
                                     let
