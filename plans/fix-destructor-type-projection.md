@@ -8,89 +8,64 @@ When `Result.andThen half (Ok 42)` is executed:
 3. The boxed HPointer is passed to `papExtend` and stored in the closure
 4. The wrapper passes the HPointer to `half(i64)`, which treats it as an integer → wrong result
 
-## Root Cause
+## Root Cause (VERIFIED)
 
-In `generateDestruct`, the `targetType` for path generation comes from:
-```elm
-destructorMlirType = Types.monoTypeToAbi monoType
+### Investigation Results
+
+Debug output from `specializeDestructor`:
+```
+canType = TVar "value"
+subst = { a -> Result String Int, b -> MInt, x -> MString }
+monoType = MVar "value" CEcoValue
 ```
 
-The hypothesis is that `monoType` in the `MonoDestructor` is a type variable (`MVar`) rather than the concrete type (`MInt`), causing `monoTypeToAbi` to return `!eco.value`.
+**The problem**: The `canType` in the `TOpt.Destructor` is `TVar "value"` (from the Result type definition: `type Result error value = Ok value | Err error`), but the substitution map has type variables `a`, `b`, `x` (from the function signature: `andThen : (a -> Result x b) -> Result x a -> Result x b`).
 
-However, the design document claims `specializeDestructor` should already produce concrete types via `TypeSubst.applySubst`. This needs verification.
+### Type Variable Name Mismatch
 
-## Implementation Plan
+The type flows as follows:
+1. During canonicalization, `PatternCtorArg` stores the generic type from the constructor definition (`TVar "value"`)
+2. During type inference, the type checker unifies types but uses variables from the function context (`a`, `b`, `x`)
+3. During monomorphization, `TypeSubst.applySubst` looks up `"value"` in the substitution but only finds `"a"`, `"b"`, `"x"`
+4. Since `"value"` is not in the substitution, it becomes `MVar "value" CEcoValue`
+5. `monoTypeToAbi (MVar _ CEcoValue)` returns `!eco.value`, causing boxing
 
-### Phase 1: Verification (No Code Changes)
+### Source of the Bug
 
-#### Step 1.1: Verify destructor types in specialized MLIR
+**File**: `compiler/src/Compiler/Optimize/Typed/Expression.elm`
+**Function**: `destructCtorArg`
 
-Add debug output to confirm what `monoType` the destructor actually has in the failing test case.
+```elm
+destructCtorArg exprTypes ctorName path revDs (Can.PatternCtorArg index argType arg) =
+    destructHelpWithType exprTypes Nothing (Just argType) ...
+```
 
-**File**: `compiler/src/Compiler/Generate/MLIR/Expr.elm`
-**Location**: `generateDestruct` function
+The function passes `argType` (the generic type from the constructor definition) instead of looking up the actual inferred type from `exprTypes`.
 
-Temporarily add a `Debug.log` to print:
-- The destructor name
-- The destructor's `monoType`
-- The computed `destructorMlirType`
+## The Fix
 
-**Expected**: If the design is correct, `monoType` should be `MInt`, not `MVar`.
-**If unexpected**: The bug is in monomorphization/specialization, not MLIR generation.
+In `destructCtorArg`, instead of using `argType` from `PatternCtorArg`, look up the pattern's actual inferred type from `exprTypes` using the pattern's ID:
 
-#### Step 1.2: Verify MonoPath resultType
+```elm
+destructCtorArg exprTypes ctorName path revDs (Can.PatternCtorArg index _argType arg) =
+    let
+        -- Get the actual inferred type from the pattern, not the generic type from constructor
+        patternId = (A.toValue arg).id
+        actualType =
+            case Dict.get identity patternId exprTypes of
+                Just t -> Just t
+                Nothing -> Nothing  -- Fall back to no type hint
+    in
+    destructHelpWithType exprTypes Nothing actualType (TOpt.Index index (TOpt.HintCustom ctorName) path) arg revDs
+```
 
-Check that `MonoPath` carries the concrete type for the `Ok` field.
+This ensures the destructor gets the concrete type (`Int`) instead of the generic type variable (`value`).
 
-**File**: `compiler/src/Compiler/Generate/MLIR/Patterns.elm`
-**Location**: `generateMonoPath`, `CustomContainer` case
+## Files to Modify
 
-Add debug output to print:
-- `containerType`
-- `resultType` from the `MonoIndex`
-- `maybeIsUnboxed` result from layout lookup
+1. `compiler/src/Compiler/Optimize/Typed/Expression.elm` - `destructCtorArg` function
 
-**Expected**: `resultType` should be `MInt`, `maybeIsUnboxed` should be `Just True`.
-
-#### Step 1.3: Verify CtorLayout registration
-
-Confirm that `Result String Int`'s `Ok` constructor is registered with the correct layout.
-
-Check `ctx.typeRegistry.ctorShapes` contains the expected entry.
-
-### Phase 2: Determine Fix Location
-
-Based on Phase 1 results:
-
-#### Scenario A: Destructor `monoType` is already `MInt`
-
-The bug is in `generateMonoPath` - specifically, the logic at lines 114-127 that decides whether to box based on `targetType`.
-
-**Fix**: The path generation should use `resultType` from `MonoIndex` (which is `MInt`) to determine projection type, not `targetType` from the caller.
-
-#### Scenario B: Destructor `monoType` is `MVar` (type variable)
-
-The bug is in monomorphization - `specializeDestructor` is not fully substituting type variables.
-
-**Fix**: Debug `specializeDestructor` in `Specialize.elm` to understand why substitution isn't working.
-
-### Phase 3: Implementation
-
-#### If Scenario A (likely based on MLIR output showing `-> i64`):
-
-The MLIR shows `eco.project.custom ... -> i64`, meaning the projection IS producing `i64`. The boxing happens AFTER projection in `generateMonoPath` because `targetType` is `!eco.value`.
-
-**The Fix**: In `generateMonoPath`, when we know the field is unboxed (`Just True`), we should:
-1. Project as the primitive type (already happening)
-2. Only box if the **destructor's MonoType** requires it, not based on caller's `targetType`
-
-But wait - `generateMonoPath` doesn't have access to the destructor's MonoType directly. It receives `targetType` from the caller.
-
-**Actual Fix Location**: `generateDestruct` passes `targetType = Types.monoTypeToAbi monoType`. If `monoType` is `MInt`, then `targetType` would be `I64`, and no boxing would occur.
-
-So the real question is: **why is `monoType` not `MInt`?**
-
-### Phase 4: Testing
+## Testing
 
 1. Run the failing test:
    ```bash
@@ -107,24 +82,8 @@ So the real question is: **why is `monoType` not `MInt`?**
    cd compiler && npx elm-test --fuzz 1
    ```
 
-## Questions Before Implementation
-
-1. **Q1**: Can you confirm whether adding `Debug.log` statements to the Elm compiler is acceptable for debugging, or should I use a different approach?
-
-2. **Q2**: The design document suggests the destructor's `monoType` should already be concrete (`MInt`). But based on the MLIR output showing boxing, it seems like it might be a type variable. Should I verify this hypothesis first, or proceed directly with the fix assuming the design is correct?
-
-3. **Q3**: If the issue is in monomorphization (Scenario B), that would be a more significant change. Is there a known issue with `specializeDestructor` not fully substituting type variables in certain contexts (like higher-order function callbacks)?
-
-## Files to Modify
-
-Depending on investigation results:
-
-- `compiler/src/Compiler/Generate/MLIR/Expr.elm` - `generateDestruct` function
-- Possibly `compiler/src/Compiler/Generate/Monomorphize/Specialize.elm` - if substitution is incomplete
-- `design_docs/invariants.csv` - update CGEN_003 for typed closure ABI (optional)
-
 ## Risk Assessment
 
-- **Low risk**: The fix is localized to destructor type handling
-- **Medium complexity**: Need to trace through monomorphization to understand type flow
+- **Low risk**: The fix is localized to a single function
+- **Low complexity**: Simple change to use inferred types instead of generic types
 - **Testing coverage**: Existing test suite should catch regressions
