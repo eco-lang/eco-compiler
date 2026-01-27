@@ -1,4 +1,152 @@
-### Canonicalization phase
+# Invariant Test Logic
+
+This document describes the test logic for each invariant defined in `invariants.csv`.
+The invariants.csv file is the definitive source of truth for invariant definitions.
+
+---
+
+## Representation Model Invariants (REP_*)
+
+--
+name: Four distinct representation models
+phase: cross-phase
+invariants: REP_001
+ir: All IR representations
+logic: Document and verify that ABI, SSA, Heap, and Logical representations are treated independently:
+  * ABI: function call boundaries
+  * SSA: MLIR operands
+  * Heap: runtime object fields
+  * Logical: Elm semantics
+  Assert no code assumes rules from one model apply to another without explicit invariant reference.
+inputs: Code review and cross-phase tests
+oracle: Representation decisions are always justified by the correct model's invariants.
+--
+--
+name: ABI boundary uses only Int, Float, Char as primitives
+phase: cross-phase
+invariants: REP_ABI_001
+ir: Function signatures at call boundaries
+logic: For all function call boundaries (kernel and compiled):
+  * Assert only Int (i64), Float (f64), and Char (i16) are passed/returned as primitive MLIR types.
+  * Assert Bool and all other Elm values cross as !eco.value.
+inputs: MLIR function signatures and call sites
+oracle: No Bool (i1) or other non-{Int,Float,Char} primitives at ABI boundaries.
+--
+--
+name: ABI and heap representations are independent
+phase: cross-phase
+invariants: REP_ABI_002
+ir: ABI signatures vs heap layouts
+logic: Verify that ABI representation does not imply heap field representation:
+  * A value passed as i64 at ABI may be stored boxed or unboxed in heap fields.
+  * Layout metadata (not ABI) determines heap storage.
+inputs: Programs with mixed representations
+oracle: No code path assumes ABI type implies heap layout.
+--
+--
+name: SSA operand types for primitives
+phase: cross-phase
+invariants: REP_SSA_001
+ir: MLIR SSA operands
+logic: Assert SSA operands use immediate types (i64, f64, i16, i1) only for Int, Float, Char values:
+  * All other Elm values are !eco.value in SSA.
+  * SSA representation is independent of heap layout and ABI.
+inputs: Generated MLIR modules
+oracle: Only Int/Float/Char have immediate SSA types; all others are !eco.value.
+--
+--
+name: Heap layout determined by layout metadata
+phase: runtime heap
+invariants: REP_HEAP_001
+ir: Heap objects and layout structures
+logic: Verify heap field representation is determined solely by RecordLayout, TupleLayout, CtorLayout:
+  * Layout metadata is produced during monomorphization.
+  * Heap layout is independent of ABI and SSA representation.
+inputs: Monomorphized layouts and runtime heap objects
+oracle: Heap layouts match metadata; no implicit assumptions from other representations.
+--
+--
+name: Heap unboxing determined by bitmap
+phase: runtime heap
+invariants: REP_HEAP_002
+ir: Heap objects with unboxed fields
+logic: For heap objects with unboxed fields:
+  * Unboxing occurs only when layout bitmap marks the slot as unboxed.
+  * GC and debug logic rely exclusively on unboxed bitmap or HPointer constant bits.
+inputs: Runtime heap tests with mixed boxed/unboxed fields
+oracle: Bitmap is the sole source of truth for field boxing status.
+--
+--
+name: Projection from heap yields correct SSA types
+phase: cross-phase
+invariants: REP_BOUNDARY_001
+ir: eco.project ops
+logic: For projection from heap objects into SSA:
+  * If heap layout bitmap indicates unboxed field → produce immediate MLIR operand.
+  * Otherwise → produce !eco.value.
+inputs: MLIR with projection ops
+oracle: Projection result types match heap layout bitmap.
+--
+--
+name: Construction sets bitmaps from SSA types
+phase: cross-phase
+invariants: REP_BOUNDARY_002
+ir: eco.construct ops
+logic: For construction of heap objects from SSA values:
+  * Unboxed bitmaps are set based solely on SSA operand MLIR types (i64, f64, i16).
+  * Runtime layout must match the bitmap exactly.
+inputs: MLIR construct ops and runtime layouts
+oracle: Bitmap matches SSA operand types; runtime layout is consistent.
+--
+--
+name: Closure capture follows SSA rules with Bool normalization
+phase: cross-phase
+invariants: REP_CLOSURE_001
+ir: Closure capture and PAP ops
+logic: Closure objects capture values using SSA representation rules:
+  * Only immediate operands (i64, f64, i16) are stored in unboxed fields.
+  * Bool (i1) and all other values are stored as !eco.value.
+  * Unboxed bitmaps must exactly match captured operand MLIR types after normalization.
+inputs: MLIR with eco.papCreate and closure capture
+oracle: No i1 in closure capture; bitmaps match normalized SSA types.
+--
+--
+name: Closure application preserves captured representation
+phase: cross-phase
+invariants: REP_CLOSURE_002
+ir: eco.papExtend ops
+logic: Verify captured value representation is preserved across partial application:
+  * Captured unboxed fields remain unboxed.
+  * Captured boxed values remain !eco.value.
+  * Bitmap merging is performed by runtime.
+inputs: MLIR with partial applications
+oracle: No representation change during closure extension.
+--
+--
+name: Well-known constants are embedded HPointers
+phase: runtime heap
+invariants: REP_CONSTANT_001
+ir: Unit, True, False, Nil, Nothing, EmptyString, EmptyRec
+logic: Verify these constants:
+  * Are represented as HPointer values with nonzero constant bits.
+  * Are never heap allocated.
+  * GC and debug logic treat them as non-heap.
+inputs: Runtime constant handling
+oracle: Constants are embedded; no heap allocation for them.
+--
+--
+name: eco.value may be heap pointer or embedded constant
+phase: cross-phase
+invariants: REP_CONSTANT_002
+ir: !eco.value SSA values
+logic: Verify codegen, GC, and runtime rely on HPointer constant bits (not pointer range checks) to distinguish heap pointers from embedded constants.
+inputs: Runtime pointer classification
+oracle: HPointer constant bits are the sole discriminator.
+--
+
+---
+
+## Canonicalization Phase (CANON_*)
 
 --
 name: Global names are fully qualified
@@ -14,7 +162,7 @@ name: Expression IDs are unique and non-negative
 phase: canonicalization
 invariants: CANON_002
 ir: Canonical AST
-logic: Walk all expressions and patterns, collect `ExprInfo.id` values into a map; assert all IDs are ≥ 0 and no duplicates exist. Also assert that constructors that bypass ID allocation (if any) only produce negative placeholder IDs.
+logic: Walk all expressions and patterns, collect `ExprInfo.id` values into a map; assert all IDs are >= 0 and no duplicates exist. Also assert that constructors that bypass ID allocation (if any) only produce negative placeholder IDs.
 inputs: Canonicalized modules
 oracle: No missing or duplicate non-negative IDs; all construction sites observed to call `Ids.allocId` in instrumentation builds.
 --
@@ -22,7 +170,7 @@ oracle: No missing or duplicate non-negative IDs; all construction sites observe
 name: No duplicate top-level declarations
 phase: canonicalization
 invariants: CANON_003
-ir: Source module → Canonicalization errors
+ir: Source module -> Canonicalization errors
 logic: Generate modules with intentional duplicate value, type, ctor, binop, and export names; run canonicalization and assert it produces `DuplicateDecl`, `DuplicateType`, `DuplicateCtor`, `DuplicateBinop`, or `ExportDuplicate` errors as appropriate. Also generate nested scopes with shadowing to ensure `Shadowing` errors are emitted and correctly localized.
 inputs: Source IR modules
 oracle: Specific error constructors occur for each duplicate scenario; no module with duplicates canonicalizes successfully.
@@ -31,7 +179,7 @@ oracle: Specific error constructors occur for each duplicate scenario; no module
 name: Imports resolve to valid interfaces
 phase: canonicalization
 invariants: CANON_004
-ir: Source module → Canonicalization errors
+ir: Source module -> Canonicalization errors
 logic: Build interface maps with/without specific modules and exposed symbols. Run `Foreign.createInitialEnv` and canonicalization; verify that:
   * Valid imports resolve and populate the environment.
   * Missing modules yield `ImportNotFound`.
@@ -63,14 +211,16 @@ logic: For nodes VarForeign, VarCtor, VarDebug, VarOperator, and Binop, and patt
 inputs: Canonical AST from real and synthetic modules
 oracle: No mismatch between cached types and environment-derived types; missing caches fail the test.
 --
+
 ---
-### Type checking phase
+
+## Type Checking Phase (TYPE_*)
 
 --
 name: Constraints cover all reachable declarations
 phase: type checking
 invariants: TYPE_001
-ir: Canonical module → Constraint tree
+ir: Canonical module -> Constraint tree
 logic: Traverse canonical declarations, effects, expressions, and patterns; mark reachable nodes. After constraint generation (erased and typed), traverse the constraint tree and mark nodes back. Assert every reachable node has corresponding constraints.
 inputs: Canonical modules (large plus synthetic edge cases)
 oracle: No reachable AST node is missing from constraints; dead/unreachable parts may be exempt by design and documented.
@@ -79,7 +229,7 @@ oracle: No reachable AST node is missing from constraints; dead/unreachable part
 name: Unification failures become type errors
 phase: type checking
 invariants: TYPE_002
-ir: Constraints → Solver result
+ir: Constraints -> Solver result
 logic: Craft constraints with known conflicting types (e.g., unify Int and String). Run solver and:
   * Assert union-find still satisfies consistency invariants (no inconsistent parents).
   * Assert a `Type.Error` is produced and the final result surfaces as `BadTypes`.
@@ -92,7 +242,7 @@ name: NodeTypes map covers all non-negative IDs
 phase: type checking
 invariants: TYPE_003
 ir: NodeTypes / ExprTypes map
-logic: After `Solve.runWithIds`, compute the set of all expression/pattern IDs ≥ 0 that were recorded via NodeIds during constraint generation. Assert:
+logic: After `Solve.runWithIds`, compute the set of all expression/pattern IDs >= 0 that were recorded via NodeIds during constraint generation. Assert:
   * Each such ID exists in NodeTypes with a canonical type.
   * Negative placeholder IDs are absent.
 inputs: Type-checked modules with varied size and nested patterns
@@ -131,8 +281,27 @@ logic: For expressions with explicit annotations:
 inputs: Annotated source IR programs
 oracle: All valid annotations succeed; all intentional mismatches are rejected with precise error location.
 --
+
 ---
-### Post-solve phase
+
+## Nitpick Phase (NITPICK_*)
+
+--
+name: Case expressions are exhaustive
+phase: nitpick
+invariants: NITPICK_001
+ir: Canonical case expressions
+logic: After Nitpick phase:
+  * Assert all possible values of scrutinee type are covered by at least one pattern.
+  * Generate cases with missing patterns; verify `InexhaustivePatterns` errors are reported.
+  * Downstream phases can assume case expressions always match exactly one alternative.
+inputs: Canonical modules with case expressions
+oracle: Missing patterns are reported; exhaustive cases pass.
+--
+
+---
+
+## Post-Solve Phase (POST_*)
 
 --
 name: Group B expressions get structural types
@@ -141,9 +310,9 @@ invariants: POST_001
 ir: PostSolve NodeTypes
 logic: Identify Group B expressions (lists, tuples, records, units, lambdas) whose pre-PostSolve solver types include unconstrained synthetic variables. After PostSolve:
   * Assert those entries are replaced with concrete `Can.Type` structures.
-  * Reconstruct the type structurally from subexpression types and compare to PostSolve’s result.
+  * Reconstruct the type structurally from subexpression types and compare to PostSolve's result.
 inputs: TypedCanonical + pre-/post-PostSolve NodeTypes snapshots
-oracle: No Group B expression retains an unconstrained synthetic var; recomputed structural type matches PostSolve’s.
+oracle: No Group B expression retains an unconstrained synthetic var; recomputed structural type matches PostSolve's.
 --
 --
 name: Kernel function types inferred from usage
@@ -163,7 +332,7 @@ invariants: POST_003
 ir: Fixed NodeTypes
 logic: Scan NodeTypes for non-kernel expressions after PostSolve:
   * Assert all types contain no unconstrained synthetic vars.
-  * For any placeholder kind that remain by design (kernel-related), assert they’re limited to kernel expressions.
+  * For any placeholder kind that remain by design (kernel-related), assert they're limited to kernel expressions.
 inputs: PostSolve NodeTypes maps from many modules
 oracle: NodeTypes is fully concrete for non-kernel expressions; any remaining synthetic variables are flagged as a violation.
 --
@@ -178,8 +347,10 @@ logic: Given the same canonical module and initial solver-produced NodeTypes:
 inputs: Saved canonical + pre-PostSolve NodeTypes; replay tests
 oracle: No nondeterminism in PostSolve outputs; hashed summaries remain stable across runs.
 --
+
 ---
-### Typed optimization phase
+
+## Typed Optimization Phase (TOPT_*)
 
 --
 name: TypedOptimized expressions always carry types
@@ -233,12 +404,14 @@ ir: TypedOptimized function expressions
 logic: For every function expression in TypedOptimized:
   * Extract its parameter `(Name, Can.Type)` list and result `Can.Type`.
   * Compute the corresponding curried TLambda chain.
-  * Assert that the expression’s own attached `Can.Type` equals that TLambda type.
+  * Assert that the expression's own attached `Can.Type` equals that TLambda type.
 inputs: TypedOptimized modules with varied arities and partial applications
 oracle: Function types are internally consistent; arity and parameter/result types always match the TLambda-encoded type.
 --
+
 ---
-### Monomorphization phase
+
+## Monomorphization Phase (MONO_*)
 
 --
 name: MonoType encodes fully elaborated runtime shapes
@@ -294,7 +467,7 @@ logic: For each entry in `SpecializationRegistry` (keyed by Global + MonoType + 
   * Assert each `SpecId` used in `MonoVarGlobal` refers to an existing `MonoNode`.
   * Assert there are no registry entries that are never referenced.
 inputs: Monomorphized graphs with heavy polymorphism
-oracle: 1–1 mapping between specializations and nodes; no missing or orphan specs.
+oracle: 1-1 mapping between specializations and nodes; no missing or orphan specs.
 --
 --
 name: Record and tuple layouts capture shape completely
@@ -302,7 +475,7 @@ phase: monomorphization
 invariants: MONO_006
 ir: RecordLayout, TupleLayout
 logic: For every record/tuple type:
-  * Inspect the associated layout’s `fieldCount`, `indices`, and `unboxedBitmap`.
+  * Inspect the associated layout's `fieldCount`, `indices`, and `unboxedBitmap`.
   * Reconstruct the logical field order and unboxing decisions from source types and compare.
 inputs: Monomorphized graphs and layouts
 oracle: Layout metadata matches the exact logical record/tuple structure; indices and unboxing flags are correct.
@@ -313,8 +486,8 @@ phase: monomorphization
 invariants: MONO_007
 ir: MonoRecordAccess / MonoRecordUpdate
 logic: For each record field access/update:
-  * Use the record value’s MonoType to find its `RecordLayout`.
-  * Verify the field index and `isUnboxed` flag used in the IR matches the layout’s metadata.
+  * Use the record value's MonoType to find its `RecordLayout`.
+  * Verify the field index and `isUnboxed` flag used in the IR matches the layout's metadata.
 inputs: Monomorphized graphs
 oracle: No mismatch between record access operations and layout definitions.
 --
@@ -360,7 +533,7 @@ ir: MonoGraph
 logic: For each local/global variable and specialization:
   * Check every `MonoVarLocal` resolves to a binder in scope.
   * Check every `MonoVarGlobal` and `SpecId` refer to existing MonoNodes.
-  * Detect unreachable `SpecId`s and ensure they’re either optimized away or flagged.
+  * Detect unreachable `SpecId`s and ensure they're either optimized away or flagged.
 inputs: Monomorphized graphs including randomized stress graphs
 oracle: No dangling references, no undefined globals, no unreachable specs in the registry.
 --
@@ -370,8 +543,8 @@ phase: monomorphization
 invariants: MONO_012
 ir: MonoNodes with function types
 logic: For each function/closure node:
-  * Compare the function MonoType’s arity with the parameter list length and closure bindings.
-  * Verify each call site’s argument count matches the function’s MonoType (allowing partial application where supported).
+  * Compare the function MonoType's arity with the parameter list length and closure bindings.
+  * Verify each call site's argument count matches the function's MonoType (allowing partial application where supported).
 inputs: Monomorphized graphs with varied arities and partial applications
 oracle: All call sites are well-formed w.r.t. MonoType; no over/under-application.
 --
@@ -397,8 +570,21 @@ logic: Search for record/tuple types that are structurally equivalent (same fiel
 inputs: Monomorphized graphs with many similar record/tuple types
 oracle: No spurious duplication of equivalent layouts; layout metadata is canonicalized.
 --
+--
+name: Accessor extension variables are unified with full record type
+phase: monomorphization
+invariants: MONO_015
+ir: Accessor function specializations
+logic: When an accessor like `.name` with canonical type `{ ext | name : T } -> T` is passed as a first-class function:
+  * Assert the extension variable `ext` is unified with the full record type from the call site.
+  * Verify specialization receives the complete record layout, not just explicitly named fields.
+inputs: Programs passing accessors as first-class functions
+oracle: Accessor specializations have complete record layouts; no partial layouts.
+--
+
 ---
-### MLIR codegen phase
+
+## MLIR Codegen Phase (CGEN_*)
 
 --
 name: Boxing only between primitives and eco.value
@@ -406,10 +592,10 @@ phase: MLIR codegen
 invariants: CGEN_001
 ir: Generated MLIR for boxing/unboxing
 logic: Inspect MLIR for boxing/unboxing operations:
-  * Assert they only convert between primitive MLIR types (i64, f64, etc.) and `!eco.value`.
-  * Any conversion between mismatched primitives (e.g., i64 ↔ f64) is reported as a monomorphization bug for test purposes.
+  * Assert they only convert between primitive MLIR types (i64, f64, i16) and `!eco.value`.
+  * Any conversion between mismatched primitives (e.g., i64 <-> f64) is reported as a monomorphization bug for test purposes.
 inputs: MLIR from a variety of programs, especially numeric ones
-oracle: All boxing/unboxing edges are primitive ↔ eco.value; no primitive ↔ different-primitive patches.
+oracle: All boxing/unboxing edges are primitive <-> eco.value; no primitive <-> different-primitive patches.
 --
 --
 name: Partial applications routed through closure generation
@@ -423,15 +609,18 @@ inputs: Programs with many partial applications
 oracle: No direct calls producing function-typed results; all partials go through closure machinery.
 --
 --
-name: Closure application uses eco.value and eco.papExtend
+name: Closure ops compute unboxed bitmaps from SSA types
 phase: MLIR codegen
 invariants: CGEN_003
-ir: MLIR closure application ops
-logic: Check `generateClosureApplication` output:
-  * All captured and applied arguments are boxed to `!eco.value`.
-  * `eco.papExtend` is emitted with `_operand_types` listing `!eco.value` for all operands.
+ir: eco.papCreate, eco.papExtend ops
+logic: For closure partial application and application ops:
+  * Compute unboxed bitmaps solely from SSA operand MLIR types after closure-boundary normalization.
+  * Only unboxable primitives (i64, f64, i16) are marked unboxed.
+  * Bool (i1) and all other operands must be treated as !eco.value.
+  * Assert `_operand_types`, `unboxed_bitmap`, and `newargs_unboxed_bitmap` exactly match SSA operand types and layout.
 inputs: Monomorphized programs using closures
-oracle: No non-eco.value operand in closure applications; remaining arity matches MonoType.
+oracle: Bitmaps match SSA types; no i1 in closure captures; attributes consistent with runtime expectations.
+tests: compiler/tests/Compiler/Generate/CodeGen/UnboxedBitmapTest.elm
 --
 --
 name: Destruct paths follow destructor MonoType
@@ -439,22 +628,22 @@ phase: MLIR codegen
 invariants: CGEN_004
 ir: MLIR destruct and eco.project usage
 logic: For each destruct operation:
-  * Confirm `generateDestruct` and `generateMonoPath` use the destructor’s MonoType to determine the path target MLIR type.
+  * Confirm `generateDestruct` and `generateMonoPath` use the destructor's MonoType to determine the path target MLIR type.
   * Assert they do not use the body result type in that computation.
 inputs: Programs with complex destructuring
 oracle: Destruct results have their natural type; no unintended unboxing or type mismatch.
+tests: NOT YET IMPLEMENTED
 --
 --
-name: eco.project matches container and field types
+name: Heap projection respects layout bitmap
 phase: MLIR codegen
 invariants: CGEN_005
-ir: eco.project ops
-logic: For each `eco.project`:
-  * Assert the operand type is `!eco.value`.
-  * Assert the result type equals the field’s MLIR type derived from MonoType.
-  * Verify `unboxed` attribute is set exactly when the result type is not `!eco.value`.
+ir: generateMonoPath and eco.project ops
+logic: For generateMonoPath projecting heap fields into SSA operands:
+  * If the heap layout bitmap marks the field unboxed -> result is immediate SSA operand.
+  * Otherwise -> result is !eco.value.
 inputs: MLIR with record/tuple/custom field projections
-oracle: eco.project attributes and types are consistent; no incorrect unboxing.
+oracle: eco.project results match heap layout bitmap; no incorrect unboxing.
 --
 --
 name: Let bindings preserve representation
@@ -475,7 +664,7 @@ ir: MLIR calls and boxing helpers
 logic: For calls where `boxToMatchSignature` / `boxToMatchSignatureTyped` are invoked:
   * Compare actual SSA operand types with `monoTypeToMlir` of expected MonoTypes.
   * Ensure the only adjustments are between boxed (`!eco.value`) and corresponding unboxed primitives.
-  * No primitive kind changes (i64 ↔ f64) are introduced.
+  * No primitive kind changes (i64 <-> f64) are introduced.
 inputs: MLIR with mixed boxed/unboxed call arguments
 oracle: Adjustments are limited to boxing; primitive kinds stay identical.
 --
@@ -490,17 +679,18 @@ logic: For each of these ops:
   * Assert exact one-to-one type equality and order.
 inputs: Generated MLIR modules
 oracle: No divergence between operand types and recorded attributes.
+tests: compiler/tests/Compiler/Generate/CodeGen/OperandTypesAttrTest.elm
 --
 --
-name: Boolean constants use typed i1 attributes
+name: Boolean constants use !eco.value except in control-flow
 phase: MLIR codegen
 invariants: CGEN_009
-ir: MLIR boolean constants
-logic: Scan MLIR for boolean-typed SSA values:
-  * Assert constants are emitted with attributes like `value = 0 : i1` or `1 : i1`.
-  * Verify MLIR verifier accepts these and rejects any mismatched constant types.
-inputs: MLIR with many boolean operations and constants
-oracle: All boolean constants are well-typed i1 values; no untyped or mismatched constants.
+ir: MLIR boolean values
+logic: Boolean constants:
+  * May appear as i1 immediate SSA operands only in control-flow contexts (case scrutinees).
+  * Are otherwise represented as !eco.value constants at ABI, heap, and closure boundaries.
+inputs: MLIR with boolean operations and constants
+oracle: i1 only in control-flow; !eco.value elsewhere for Bool.
 --
 --
 name: eco.case result_types and returns agree
@@ -528,18 +718,18 @@ oracle: No undefined function symbols; mismatches are caught and fail tests.
 name: monoTypeToMlir primitive mapping is correct
 phase: MLIR codegen
 invariants: CGEN_012
-ir: MonoType → MLIR type mapping
+ir: MonoType -> MLIR type mapping
 logic: For each MonoType:
-  * Check that `MInt → i64`, `MFloat → f64`, `MBool → i1`, `MChar → i32`.
-  * Assert all other MonoTypes map to `!eco.value`.
+  * Check that `MInt -> i64`, `MFloat -> f64`, `MChar -> i16`.
+  * Assert all other MonoTypes (including MBool, MVar, compound types) map to `!eco.value`.
 inputs: Synthetic MonoTypes and integrated MLIR outputs
-oracle: Mapping table is complete and consistent; no primitive maps to eco.value or wrong MLIR primitive.
+oracle: Mapping table is complete and consistent; no primitive maps to wrong MLIR type.
 --
 --
 name: CEcoValue MVars always lower to eco.value
 phase: MLIR codegen
 invariants: CGEN_013
-ir: MonoType containing MVar(CEcoValue) → MLIR types
+ir: MonoType containing MVar(CEcoValue) -> MLIR types
 logic: Identify all MonoType components that are `MVar` with `CEcoValue`:
   * Confirm that their MLIR type is always `!eco.value` in every use.
 inputs: MLIR modules derived from CEcoValue-heavy code
@@ -556,8 +746,428 @@ logic: For union constructors and matches:
 inputs: MLIR and MonoGraph snapshots
 oracle: All constructor metadata is sourced from MonoGraph; GlobalTypeEnv reads for unions are absent or unused.
 --
+--
+name: MChar maps to i16
+phase: MLIR codegen
+invariants: CGEN_015
+ir: Char values in MLIR
+logic: Assert monoTypeToMlir maps MChar to i16 (Eco_Char), not i32:
+  * All codegen char constants and ops must use i16.
+inputs: MLIR with char operations
+oracle: No i32 for char values; all use i16.
+tests: compiler/tests/Compiler/Generate/CodeGen/CharTypeMappingTest.elm
+--
+--
+name: List construction uses eco.construct.list
+phase: MLIR codegen
+invariants: CGEN_016
+ir: List construction ops
+logic: List values are constructed:
+  * With eco.construct.list for Cons cells.
+  * With eco.constant Nil for empty lists.
+  * Never with eco.construct.custom.
+inputs: MLIR with list operations
+oracle: No eco.construct.custom for lists.
+tests: compiler/tests/Compiler/Generate/CodeGen/ListConstructionTest.elm
+--
+--
+name: Tuple construction uses dedicated ops
+phase: MLIR codegen
+invariants: CGEN_017
+ir: Tuple construction ops
+logic: Tuples are constructed:
+  * With eco.construct.tuple2 for 2-tuples.
+  * With eco.construct.tuple3 for 3-tuples.
+  * Never with eco.construct.custom.
+inputs: MLIR with tuple operations
+oracle: No eco.construct.custom for tuples.
+tests: compiler/tests/Compiler/Generate/CodeGen/TupleConstructionTest.elm
+--
+--
+name: Record construction uses eco.construct.record or eco.constant
+phase: MLIR codegen
+invariants: CGEN_018
+ir: Record construction ops
+logic: Records are constructed:
+  * With eco.construct.record when field_count is nonzero.
+  * With eco.constant EmptyRec for empty records (never heap allocated).
+inputs: MLIR with record operations
+oracle: Empty records are constants; non-empty use eco.construct.record.
+tests: compiler/tests/Compiler/Generate/CodeGen/RecordConstructionTest.elm
+--
+--
+name: Well-known singletons use eco.constant
+phase: MLIR codegen
+invariants: CGEN_019
+ir: Unit, True, False, Nil, Nothing, EmptyString, EmptyRec
+logic: These values are always created via eco.constant:
+  * Never via eco.construct or allocation.
+inputs: MLIR with singleton values
+oracle: All singletons are eco.constant.
+tests: compiler/tests/Compiler/Generate/CodeGen/SingletonConstantsTest.elm
+--
+--
+name: eco.construct.custom matches CtorLayout
+phase: MLIR codegen
+invariants: CGEN_020
+ir: eco.construct.custom ops
+logic: eco.construct.custom is used only for user-defined custom ADTs:
+  * Its tag, size, and unboxed_bitmap attributes match CtorLayout from MonoGraph.ctorLayouts.
+  * Operand count matches layout.
+inputs: MLIR with custom type construction
+oracle: Attributes match layout; no mismatched construction.
+tests: compiler/tests/Compiler/Generate/CodeGen/CustomConstructionTest.elm
+--
+--
+name: List destructuring uses dedicated projection ops
+phase: MLIR codegen
+invariants: CGEN_021
+ir: List projection ops
+logic: List destructuring uses:
+  * eco.project.list_head and eco.project.list_tail only.
+  * Never eco.project.custom or tuple or record projection ops.
+inputs: MLIR with list destructuring
+oracle: Only list-specific projection ops for lists.
+tests: compiler/tests/Compiler/Generate/CodeGen/ListProjectionTest.elm
+--
+--
+name: Tuple destructuring uses dedicated projection ops
+phase: MLIR codegen
+invariants: CGEN_022
+ir: Tuple projection ops
+logic: Tuple destructuring uses:
+  * eco.project.tuple2 or eco.project.tuple3 with field index in range.
+  * Never eco.project.custom or eco.project.record.
+inputs: MLIR with tuple destructuring
+oracle: Only tuple-specific projection ops for tuples.
+tests: compiler/tests/Compiler/Generate/CodeGen/TupleProjectionTest.elm
+--
+--
+name: Record field access uses eco.project.record
+phase: MLIR codegen
+invariants: CGEN_023
+ir: Record projection ops
+logic: Record field access uses:
+  * eco.project.record with field_index in range.
+  * Never eco.project.custom.
+inputs: MLIR with record field access
+oracle: Only record projection ops for records.
+tests: compiler/tests/Compiler/Generate/CodeGen/RecordProjectionTest.elm
+--
+--
+name: Custom ADT field access uses eco.project.custom
+phase: MLIR codegen
+invariants: CGEN_024
+ir: Custom projection ops
+logic: Custom ADT field access uses:
+  * eco.project.custom with field_index in range.
+  * No other projection op is used for custom ADT fields.
+inputs: MLIR with custom type destructuring
+oracle: Only eco.project.custom for custom types.
+tests: compiler/tests/Compiler/Generate/CodeGen/CustomProjectionTest.elm
+--
+--
+name: All construct ops produce !eco.value
+phase: MLIR codegen
+invariants: CGEN_025
+ir: eco.construct.* ops
+logic: All eco.construct.* operations produce !eco.value results:
+  * Regardless of whether any fields are stored unboxed.
+inputs: MLIR with construction ops
+oracle: Result type is always !eco.value.
+tests: compiler/tests/Compiler/Generate/CodeGen/ConstructResultTypeTest.elm
+--
+--
+name: Container construct unboxed_bitmap matches SSA types
+phase: MLIR codegen
+invariants: CGEN_026
+ir: eco.construct.tuple2, eco.construct.tuple3, eco.construct.record, eco.construct.custom
+logic: For these ops, the unboxed_bitmap is derived solely from SSA operand MLIR types:
+  * A bit is set iff the operand MLIR type is i64, f64, or i16.
+inputs: MLIR with container construction
+oracle: Bitmap bits match operand types exactly.
+tests: compiler/tests/Compiler/Generate/CodeGen/UnboxedBitmapTest.elm
+--
+--
+name: List construct head_unboxed matches SSA type
+phase: MLIR codegen
+invariants: CGEN_027
+ir: eco.construct.list ops
+logic: For eco.construct.list:
+  * head_unboxed is true iff the SSA head operand MLIR type is i64, f64, or i16.
+inputs: MLIR with list construction
+oracle: head_unboxed matches head operand type.
+tests: compiler/tests/Compiler/Generate/CodeGen/UnboxedBitmapTest.elm
+--
+--
+name: eco.case alternatives terminate properly
+phase: MLIR codegen
+invariants: CGEN_028
+ir: eco.case ops
+logic: Every eco.case alternative region:
+  * Terminates with eco.return, eco.crash, or a nested terminator eco.case.
+  * No alternative falls through without an explicit terminator.
+  * eco.jump is not allowed directly in case alternatives.
+inputs: MLIR with case expressions
+oracle: All alternatives are properly terminated.
+tests: compiler/tests/Compiler/Generate/CodeGen/CaseTerminationTest.elm
+--
+--
+name: eco.case tags array length matches alternatives
+phase: MLIR codegen
+invariants: CGEN_029
+ir: eco.case ops
+logic: eco.case tags array length equals the number of alternative regions.
+inputs: MLIR with case expressions
+oracle: Tag count matches alternative count.
+tests: compiler/tests/Compiler/Generate/CodeGen/CaseTagsCountTest.elm
+--
+--
+name: eco.jump targets valid joinpoints
+phase: MLIR codegen
+invariants: CGEN_030
+ir: eco.jump and eco.joinpoint ops
+logic: eco.jump target refers to:
+  * A lexically enclosing eco.joinpoint with matching id.
+  * Jump argument types match the joinpoint block argument types.
+inputs: MLIR with joinpoints
+oracle: All jumps target valid joinpoints with matching types.
+tests: compiler/tests/Compiler/Generate/CodeGen/JumpTargetTest.elm
+--
+--
+name: Joinpoint IDs are unique within func.func
+phase: MLIR codegen
+invariants: CGEN_031
+ir: eco.joinpoint ops
+logic: Within a single func.func:
+  * Each eco.joinpoint id is unique.
+  * No duplicate IDs that could cause ambiguity during lowering.
+inputs: MLIR with multiple joinpoints
+oracle: All joinpoint IDs are unique within their function.
+tests: compiler/tests/Compiler/Generate/CodeGen/JoinpointUniqueIdTest.elm
+--
+--
+name: _operand_types required when operands present
+phase: MLIR codegen
+invariants: CGEN_032
+ir: Ops with operands
+logic: _operand_types is required and must match SSA operand types:
+  * When an op has one or more operands.
+  * May be omitted for zero-operand ops.
+inputs: MLIR ops
+oracle: _operand_types present and correct when operands exist.
+tests: compiler/tests/Compiler/Generate/CodeGen/OperandTypesAttrTest.elm
+--
+--
+name: eco.papCreate has valid arity and captures
+phase: MLIR codegen
+invariants: CGEN_033
+ir: eco.papCreate ops
+logic: eco.papCreate requires:
+  * arity > 0
+  * num_captured equals the number of captured operands
+  * num_captured < arity
+inputs: MLIR with closure creation
+oracle: Arity and capture constraints satisfied.
+tests: compiler/tests/Compiler/Generate/CodeGen/PapCreateArityTest.elm
+--
+--
+name: eco.papExtend produces !eco.value result
+phase: MLIR codegen
+invariants: CGEN_034
+ir: eco.papExtend ops
+logic: MLIR codegen emits eco.papExtend with !eco.value result type:
+  * Produces immediate results only by inserting eco.unbox after papExtend when expected result type is immediate.
+inputs: MLIR with closure application
+oracle: papExtend always returns !eco.value; unboxing is explicit.
+tests: compiler/tests/Compiler/Generate/CodeGen/PapExtendResultTest.elm
+--
+--
+name: Single eco.type_table per module
+phase: MLIR codegen
+invariants: CGEN_035
+ir: Module structure
+logic: Each module has at most one eco.type_table op at module scope.
+inputs: MLIR modules
+oracle: No duplicate type tables.
+tests: compiler/tests/Compiler/Generate/CodeGen/TypeTableUniquenessTest.elm
+--
+--
+name: eco.dbg type IDs reference valid type table entries
+phase: MLIR codegen
+invariants: CGEN_036
+ir: eco.dbg ops
+logic: When eco.dbg carries arg_type_ids:
+  * Each referenced type id must refer to a valid entry in the module eco.type_table.
+inputs: MLIR with debug info
+oracle: All type IDs are valid.
+tests: compiler/tests/Compiler/Generate/CodeGen/DbgTypeIdsTest.elm
+--
+--
+name: eco.case scrutinee type matches case_kind
+phase: MLIR codegen
+invariants: CGEN_037, CGEN_043
+ir: eco.case ops
+logic: Scrutinee representation and case_kind agree:
+  * case_kind="bool" requires i1 scrutinee.
+  * case_kind="int" requires i64 scrutinee.
+  * case_kind="chr" requires i16 (ECO char) scrutinee.
+  * case_kind="ctor" requires !eco.value scrutinee.
+  * case_kind="str" requires !eco.value scrutinee.
+inputs: MLIR with various case kinds
+oracle: Scrutinee type matches case_kind.
+tests: compiler/tests/Compiler/Generate/CodeGen/CaseScrutineeTypeTest.elm, compiler/tests/Compiler/Generate/CodeGen/CaseKindScrutineeTest.elm
+--
+--
+name: Kernel calls use consistent types across module
+phase: MLIR codegen
+invariants: CGEN_038
+ir: Calls to kernel functions
+logic: All calls to the same kernel function name:
+  * Use exactly the same MLIR argument and result types across the whole module.
+  * Any mismatch is a codegen bug.
+inputs: MLIR with kernel calls
+oracle: Kernel call types are consistent.
+tests: compiler/tests/Compiler/Generate/CodeGen/KernelAbiConsistencyTest.elm
+--
+--
+name: MLIR codegen does not emit allocation ops directly
+phase: MLIR codegen
+invariants: CGEN_039
+ir: MLIR from codegen
+logic: MLIR codegen does not emit:
+  * eco.allocate, eco.allocate_ctor, eco.allocate_string, eco.allocate_closure.
+  * These allocation ops are introduced only by later lowering from eco.construct and related ops.
+inputs: MLIR before lowering
+oracle: No allocation ops in codegen output.
+tests: compiler/tests/Compiler/Generate/CodeGen/NoAllocateOpsTest.elm
+--
+--
+name: _operand_types attribute list matches SSA operand count and types
+phase: MLIR codegen
+invariants: CGEN_040
+ir: Ops with _operand_types
+logic: For any operation with _operand_types:
+  * Attribute list length equals SSA operand count.
+  * Each declared type exactly matches the corresponding SSA operand type (same order).
+inputs: MLIR ops
+oracle: Perfect correspondence between attribute and SSA types.
+tests: compiler/tests/Compiler/Generate/CodeGen/OperandTypeConsistencyTest.elm
+--
+--
+name: Symbol definitions are unique within module
+phase: MLIR codegen
+invariants: CGEN_041
+ir: Module symbol definitions
+logic: Within a module:
+  * No two func.func operations may have the same sym_name.
+  * No two symbol-bearing ops may define the same symbol.
+inputs: MLIR modules
+oracle: All symbol definitions are unique.
+tests: compiler/tests/Compiler/Generate/CodeGen/SymbolUniquenessTest.elm
+--
+--
+name: All blocks end with terminators
+phase: MLIR codegen
+invariants: CGEN_042
+ir: MLIR blocks
+logic: Every block in every region:
+  * Must end with a terminator operation (eco.return, eco.jump, eco.case, scf.yield, cf.br, cf.cond_br, etc.).
+  * Each eco.case alternative region must be properly terminated with no fallthrough.
+inputs: MLIR from codegen
+oracle: All blocks are properly terminated.
+tests: compiler/tests/Compiler/Generate/CodeGen/BlockTerminatorTest.elm
+--
+--
+name: eco.call targets exist and are non-stub
+phase: MLIR codegen
+invariants: CGEN_044
+ir: eco.call and func.func ops
+logic: Every eco.call callee must:
+  * Resolve to an existing func.func symbol in the module (definition or declaration).
+  * Not target placeholder/stub implementations when a non-stub implementation is present.
+inputs: MLIR with calls
+oracle: All calls target valid, non-stub functions.
+tests: compiler/tests/Compiler/Generate/CodeGen/CallTargetValidityTest.elm
+--
+--
+name: eco.case is a block terminator
+phase: MLIR codegen
+invariants: CGEN_045
+ir: eco.case ops
+logic: eco.case is a block terminator:
+  * If a block ends with eco.case, there are no operations after it in that block.
+  * eco.case never appears as a mid-block expression that falls through.
+inputs: MLIR with case expressions
+oracle: eco.case always terminates its block.
+tests: compiler/tests/Compiler/Generate/CodeGen/CaseTerminationTest.elm
+--
+--
+name: eco.case exits only via alternatives
+phase: MLIR codegen
+invariants: CGEN_046
+ir: eco.case ops
+logic: For every eco.case:
+  * Control reaching it never falls through to a continuation.
+  * All exits happen via eco.return or eco.crash inside alternatives, or via nested terminator eco.case.
+inputs: MLIR with case expressions
+oracle: No fallthrough from eco.case.
+tests: compiler/tests/Compiler/Generate/CodeGen/CaseTerminationTest.elm
+--
+--
+name: Decider regions have real terminators
+phase: MLIR codegen
+invariants: CGEN_047
+ir: eco.case alternative regions
+logic: Every decider region that becomes an eco.case alternative:
+  * Has a non-empty op list whose last op is a real terminator (eco.return, eco.crash, or nested terminator eco.case).
+  * Codegen never manufactures trailing dummy eco.return ops for nested cases.
+  * Hitting a non-terminator tail is a codegen bug.
+inputs: MLIR with nested cases
+oracle: All alternative regions have real terminators.
+tests: compiler/tests/Compiler/Generate/CodeGen/CaseTerminationTest.elm
+--
+--
+name: EcoControlFlowToSCF matches only terminator eco.case
+phase: MLIR codegen
+invariants: CGEN_048
+ir: eco.case lowering
+logic: The EcoControlFlowToSCF pass:
+  * Only matches eco.case when it is the last op in its block (block terminator).
+  * Does not match when followed by eco.return or scf.yield.
+  * Replaces terminator eco.case with scf.if or scf.index_switch plus a new terminator.
+inputs: MLIR during lowering
+oracle: Pass only matches terminator eco.case.
+--
+--
+name: PAP bitmaps limited to 52 bits
+phase: MLIR codegen
+invariants: CGEN_049
+ir: eco.papCreate and eco.papExtend ops
+logic: For PAP ops:
+  * unboxed_bitmap attributes are limited to 52 bits.
+  * Total captures plus arity must not exceed 52.
+  * Number of set bits in unboxed_bitmap equals count of immediate MLIR operand typed operands.
+inputs: MLIR with closures
+oracle: Bitmap constraints satisfied; bits match operand types.
+tests: compiler/tests/Compiler/Generate/CodeGen/UnboxedBitmapTest.elm
+--
+--
+name: Lambda functions use typed signatures
+phase: MLIR codegen
+invariants: CGEN_050
+ir: Lambda function signatures
+logic: Lambda functions:
+  * Use typed signatures where capture parameters have actual MonoType mapped to MLIR types.
+  * Return types match the body expression type rather than always using eco.value.
+  * No internal boxing or unboxing is needed for immediate captures and returns.
+inputs: MLIR with lambdas
+oracle: Lambda signatures are typed; no unnecessary boxing.
+--
+
 ---
-### Runtime heap phase
+
+## Runtime Heap Phase (HEAP_*)
 
 --
 name: Heap objects start with 8-byte header and tag
@@ -612,7 +1222,7 @@ logic: Construct long-lived data and new allocations:
   * During GC, scan for pointers from old generation to nursery.
   * Assert none exist; if any found, test fails.
 inputs: Generational heap runtime tests
-oracle: Heap graph never has old→young edges, matching Elm immutability assumptions.
+oracle: Heap graph never has old->young edges, matching Elm immutability assumptions.
 --
 --
 name: Forwarding pointers are GC-only
@@ -683,7 +1293,7 @@ inputs: GC-heavy runtime tests
 oracle: Minor GCs are allowed at any allocation point and may move all nursery objects.
 --
 --
-name: isInHeap’s bounds check is heap_base + heap_reserved
+name: isInHeap's bounds check is heap_base + heap_reserved
 phase: runtime heap
 invariants: HEAP_012
 ir: isInHeap implementation
@@ -700,7 +1310,7 @@ invariants: HEAP_013
 ir: Allocation and object layout
 logic: For each allocation:
   * Check that the Tag passed to `Allocator::allocate` matches the struct written at that address.
-  * GC’s `getObjectSize` and tracing for that tag must successfully interpret the memory.
+  * GC's `getObjectSize` and tracing for that tag must successfully interpret the memory.
 inputs: Tagged allocations across all heap object types
 oracle: No mismatch between header.tag and in-memory structure; mismatches cause explicit failures.
 --
@@ -772,23 +1382,85 @@ logic: For `Custom`, `Cons`, `Record` objects:
 inputs: Runtime allocations with mixed boxed/unboxed fields
 oracle: Bitmap and actual contents match; GC and utilities behave correctly.
 --
+
 ---
-### Cross-phase invariants
+
+## Bytes Fusion Reification Phase (BFUSE_*)
+
+--
+name: Reification is all-or-nothing
+phase: bytes fusion
+invariants: BFUSE_001
+ir: Fused kernels
+logic: A fused kernel is emitted only when the entire encoder or decoder structure can be statically resolved:
+  * Otherwise the interpreter path is used.
+inputs: Programs with encoders/decoders
+oracle: Partial fusion never occurs.
+--
+--
+name: Dynamic encoders/decoders rejected from fusion
+phase: bytes fusion
+invariants: BFUSE_002
+ir: Fusion decisions
+logic: Any encoder or decoder whose structure depends on runtime values causes fallback to interpreter.
+inputs: Programs with dynamic encoding
+oracle: Runtime-dependent structures are not fused.
+--
+--
+name: Let-bound encoders/decoders must be fully resolvable
+phase: bytes fusion
+invariants: BFUSE_003
+ir: Let bindings with encoders
+logic: Let-bound encoders and decoders are reified only if fully resolvable at compile time:
+  * Partially resolvable let bindings cause the entire fusion to be rejected.
+inputs: Programs with let-bound encoders
+oracle: Partial resolution causes fallback.
+--
+--
+name: Reification preserves operation order
+phase: bytes fusion
+invariants: BFUSE_004
+ir: Fused kernel operation sequence
+logic: The sequence of encode or decode steps in the fused kernel matches the order specified in the source program.
+inputs: Multi-step encoders/decoders
+oracle: Order is preserved exactly.
+--
+--
+name: Reification inspects only static structure
+phase: bytes fusion
+invariants: BFUSE_005
+ir: Fusion analysis
+logic: Reification inspects structure only, never runtime values:
+  * Fusion decisions are based solely on static shape of encoder/decoder AST.
+inputs: Programs with encoders
+oracle: No runtime value inspection in fusion decisions.
+--
+
+---
+
+## Bytes Fusion Ops Phase (BFOPS_*)
+
+Note: See invariants.csv for the full list of BFOPS invariants (BFOPS_001 through BFOPS_038).
+These cover cursor state, SSA threading, encoder/decoder bounds checking, lowering, and ABI rules.
+
+---
+
+## Cross-Phase Invariants (XPHASE_*)
 
 --
 name: Layout consistency across MonoGraph, MLIR, and runtime
-phase: cross-phase (monomorphization → MLIR → runtime)
+phase: cross-phase (monomorphization -> MLIR -> runtime)
 invariants: XPHASE_001
 ir: RecordLayout, TupleLayout, CtorLayout, eco.construct attrs, C++ structs
 logic: For records/tuples/custom types:
-  * Compare `RecordLayout` / `TupleLayout` / `CtorLayout` to eco.construct’s `tag`, `size`, and `unboxed_bitmap`.
+  * Compare `RecordLayout` / `TupleLayout` / `CtorLayout` to eco.construct's `tag`, `size`, and `unboxed_bitmap`.
   * Check generated MLIR objects match the C++ `Custom` and `Record` struct layouts at runtime via allocation/inspection.
 inputs: MonoGraph, generated MLIR, running heap
 oracle: Exact agreement on field counts, ordering, sizes, and unboxing between all three layers.
 --
 --
 name: eco.value pointers obey runtime heap invariants
-phase: cross-phase (codegen → runtime)
+phase: cross-phase (codegen -> runtime)
 invariants: XPHASE_002
 ir: MLIR `!eco.value`, HPointer-based heap
 logic: For all boxed values from MLIR:
@@ -796,4 +1468,95 @@ logic: For all boxed values from MLIR:
   * Confirm MLIR never produces boxed values that violate heap invariants (misaligned or missing header).
 inputs: End-to-end programs with heavy boxing/unboxing and GC
 oracle: Every eco.value corresponds to a well-formed heap object; heap and IR representations remain consistent.
+--
+
+---
+
+## Forbidden Invariants (FORBID_*)
+
+These invariants specify what NOT to do. Each defines an assumption that must NOT be made.
+
+--
+name: No SSA-to-heap-layout assumption
+phase: cross-phase
+invariants: FORBID_REP_001
+logic: No phase may assume that an SSA operand of immediate MLIR operand type corresponds to an unboxed field in any heap object unless an explicit layout bitmap is consulted.
+--
+--
+name: No ABI-to-heap-layout assumption
+phase: cross-phase
+invariants: FORBID_REP_002
+logic: No phase may assume that a value passed as a pass-by-value MLIR type at an ABI boundary is stored as an unboxed field in heap objects or closures.
+--
+--
+name: No SSA-ABI assumption
+phase: cross-phase
+invariants: FORBID_REP_003
+logic: No phase may assume that SSA operand representation implies ABI calling convention or vice versa except where explicitly specified by REP_ABI invariants.
+--
+--
+name: No pointer range checks for constants
+phase: runtime heap
+invariants: FORBID_HEAP_001
+logic: No code may distinguish heap pointers from constants using address range checks or null tests; only HPointer constant bits and header tags may be used.
+--
+--
+name: No HPointer arithmetic except via helpers
+phase: runtime heap
+invariants: FORBID_HEAP_002
+logic: No code may perform arithmetic on HPointer values except via allocator helpers or runtime APIs.
+--
+--
+name: Bool must be !eco.value in heap and closures
+phase: cross-phase
+invariants: FORBID_CLOSURE_001
+logic: No phase may assume that Bool values are captured, stored, or passed as immediate operands outside SSA control-flow contexts; Bool must be represented as !eco.value in heap and closures.
+--
+--
+name: Closure layout from SSA types only
+phase: cross-phase
+invariants: FORBID_CLOSURE_002
+logic: No phase may infer closure capture layout from MonoType or source type alone; layout must be derived from SSA operand MLIR types and recorded bitmaps.
+--
+--
+name: No Tag-only layout assumption
+phase: runtime heap
+invariants: FORBID_LAYOUT_001
+logic: No code may assume a heap object's field layout based solely on its Tag without consulting the corresponding layout metadata.
+--
+--
+name: No implicit layout sharing
+phase: monomorphization
+invariants: FORBID_LAYOUT_002
+logic: No phase may assume that two structurally equal source types share layout unless their RecordLayout or TupleLayout identifiers are equal or explicitly canonicalized.
+--
+--
+name: No boxing removal without proof
+phase: typed optimization
+invariants: FORBID_OPT_001
+logic: No optimization may remove boxing or unboxing operations unless representation equivalence is proven under the active representation model.
+--
+--
+name: No direct heap access in generated code
+phase: cross-phase
+invariants: FORBID_OPT_002
+logic: No generated code may access heap object internals directly except inside designated runtime helpers.
+--
+--
+name: No implicit control-flow fallthrough
+phase: MLIR codegen
+invariants: FORBID_CF_001
+logic: No control-flow construct may assume implicit fallthrough; all exits must be explicit terminators.
+--
+--
+name: Debug code uses same tracing as GC
+phase: runtime heap
+invariants: FORBID_DBG_001
+logic: Debug and inspection code must not assume access to raw heap layouts and must use the same tracing logic as GC.
+--
+--
+name: No unstated representation assumptions
+phase: cross-phase
+invariants: FORBID_META_001
+logic: No phase may rely on representation properties that are not explicitly stated in a REP_* invariant.
 --
