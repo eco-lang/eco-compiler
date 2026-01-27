@@ -123,13 +123,16 @@ generateLambdaFunc ctx lambda =
                 Ops.mkRegionTerminatedByOps allArgPairs (unboxOps ++ exprResult.ops)
 
             else
-                -- Normal expression - add eco.return with the result value in its actual type.
-                -- No boxing needed with typed ABI.
+                -- Normal expression - coerce result to ABI return type if needed, then add eco.return.
+                -- This handles cases like Bool where SSA type is i1 but ABI return type is eco.value.
                 let
+                    ( coerceOps, finalVar, coerceCtx ) =
+                        Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType actualResultType
+
                     ( _, returnOp ) =
-                        Ops.ecoReturn exprResult.ctx exprResult.resultVar actualResultType
+                        Ops.ecoReturn coerceCtx finalVar actualResultType
                 in
-                Ops.mkRegion allArgPairs (unboxOps ++ exprResult.ops) returnOp
+                Ops.mkRegion allArgPairs (unboxOps ++ exprResult.ops ++ coerceOps) returnOp
 
         ( ctx2, funcOp ) =
             Ops.funcFunc exprResult.ctx lambda.name allArgPairs actualResultType region

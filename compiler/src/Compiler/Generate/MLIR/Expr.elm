@@ -1310,17 +1310,21 @@ generateSaturatedCall ctx func args resultType =
                                     case Intrinsics.kernelIntrinsic moduleName name argTypes resultType of
                                         Just intrinsic ->
                                             -- Generate intrinsic operation directly
+                                            -- First unbox arguments if needed (e.g., eco.value -> i1 for Bool)
                                             let
+                                                ( unboxOps, unboxedArgVars, ctx1b ) =
+                                                    Intrinsics.unboxArgsForIntrinsic ctx1 argsWithTypes intrinsic
+
                                                 ( resVar, ctx2 ) =
-                                                    Ctx.freshVar ctx1
+                                                    Ctx.freshVar ctx1b
 
                                                 ( ctx3, intrinsicOp ) =
-                                                    Intrinsics.generateIntrinsicOp ctx2 intrinsic resVar argVars
+                                                    Intrinsics.generateIntrinsicOp ctx2 intrinsic resVar unboxedArgVars
 
                                                 intrinsicResultType =
                                                     Intrinsics.intrinsicResultMlirType intrinsic
                                             in
-                                            { ops = argOps ++ [ intrinsicOp ]
+                                            { ops = argOps ++ unboxOps ++ [ intrinsicOp ]
                                             , resultVar = resVar
                                             , resultType = intrinsicResultType
                                             , ctx = ctx3
@@ -1937,22 +1941,33 @@ generateIf ctx branches final =
 
         ( condExpr, thenExpr ) :: restBranches ->
             let
-                -- Evaluate condition to Bool (produces i1)
+                -- Evaluate condition to Bool
                 condRes =
                     generateExpr ctx condExpr
 
-                condVar =
-                    condRes.resultVar
+                -- Ensure condition is i1 for scf.if/eco.case
+                -- If the condition is eco.value (e.g., from a function call returning Bool),
+                -- we need to unbox it to i1
+                ( condUnboxOps, condVar, condCtx ) =
+                    if Types.isEcoValueType condRes.resultType then
+                        Intrinsics.unboxToType condRes.ctx condRes.resultVar I1
+
+                    else
+                        ( [], condRes.resultVar, condRes.ctx )
+
+                -- All condition ops including any unboxing
+                condOpsAll =
+                    condRes.ops ++ condUnboxOps
 
                 -- Generate then branch first to get its actual result type
                 thenRes =
-                    generateExpr condRes.ctx thenExpr
+                    generateExpr condCtx thenExpr
             in
             -- Check if then branch is terminated (e.g., tail call with eco.jump).
             -- If so, we can't use scf.if which requires both branches to yield.
             -- Fall back to eco.case which supports terminated regions.
             if thenRes.isTerminated then
-                generateIfWithTerminatedBranch condRes.ctx condVar thenRes restBranches final condRes.ops
+                generateIfWithTerminatedBranch condCtx condVar thenRes restBranches final condOpsAll
 
             else
                 -- Then branch produces a value, check else branch
@@ -2000,7 +2015,7 @@ generateIf ctx branches final =
                         ( ctx3, ifOp ) =
                             Ops.scfIf ctx2b condVar ifResultVar thenRegion elseRegion resultMlirType
                     in
-                    { ops = condRes.ops ++ [ ifOp ]
+                    { ops = condOpsAll ++ [ ifOp ]
                     , resultVar = ifResultVar
                     , resultType = resultMlirType
                     , ctx = ctx3
