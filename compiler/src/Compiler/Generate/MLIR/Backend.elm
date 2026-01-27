@@ -46,7 +46,7 @@ backend =
 {-| Generate an MlirModule directly, for use in invariant testing.
 -}
 generateMlirModule : Mode.Mode -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> MlirModule
-generateMlirModule mode _ (Mono.MonoGraph { nodes, main, registry, ctorLayouts }) =
+generateMlirModule mode _ (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
     let
         signatures : Dict.Dict Int Ctx.FuncSignature
         signatures =
@@ -54,7 +54,7 @@ generateMlirModule mode _ (Mono.MonoGraph { nodes, main, registry, ctorLayouts }
 
         ctx : Ctx.Context
         ctx =
-            Ctx.initContext mode registry signatures ctorLayouts
+            Ctx.initContext mode registry signatures ctorShapes
 
         ( ops, ctxAfterNodes ) =
             EveryDict.foldl compare
@@ -71,7 +71,7 @@ generateMlirModule mode _ (Mono.MonoGraph { nodes, main, registry, ctorLayouts }
         ( lambdaOps, finalCtx ) =
             Lambdas.processLambdas ctxAfterNodes
 
-        -- ctorLayouts are already complete from MonoGraph - no fill step needed
+        -- ctorShapes are already complete from MonoGraph - no fill step needed
         mainOps : List MlirOp
         mainOps =
             case main of

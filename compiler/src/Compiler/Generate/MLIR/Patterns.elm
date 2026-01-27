@@ -177,16 +177,20 @@ generateMonoPath ctx path targetType =
                 ( subOps, subVar, ctx1 ) =
                     generateMonoPath ctx subPath Types.ecoValue
 
-                -- Look up the layout for this unbox type
+                -- Look up the shape for this unbox type
                 typeKey =
                     Mono.toComparableMonoType containerType
 
-                maybeLayouts =
-                    EveryDict.get identity typeKey ctx1.typeRegistry.ctorLayouts
+                maybeShapes =
+                    EveryDict.get identity typeKey ctx1.typeRegistry.ctorShapes
             in
-            case maybeLayouts of
-                Just (layout :: _) ->
-                    -- Found layout - check if the single field is unboxed
+            case maybeShapes of
+                Just (shape :: _) ->
+                    -- Found shape - compute layout and check if the single field is unboxed
+                    let
+                        layout =
+                            Types.computeCtorLayout shape
+                    in
                     case layout.fields of
                         fieldInfo :: _ ->
                             let
@@ -266,18 +270,22 @@ lookupFieldIsUnboxed ctx containerType ctorName fieldIndex =
         typeKey =
             Mono.toComparableMonoType containerType
 
-        maybeLayouts =
-            EveryDict.get identity typeKey ctx.typeRegistry.ctorLayouts
+        maybeShapes =
+            EveryDict.get identity typeKey ctx.typeRegistry.ctorShapes
     in
-    case maybeLayouts of
+    case maybeShapes of
         Nothing ->
             Nothing
 
-        Just layouts ->
+        Just shapes ->
             -- Find the constructor by name
-            case List.filter (\layout -> layout.name == ctorName) layouts of
-                layout :: _ ->
-                    -- Find the field by index
+            case List.filter (\shape -> shape.name == ctorName) shapes of
+                shape :: _ ->
+                    -- Compute layout and find the field by index
+                    let
+                        layout =
+                            Types.computeCtorLayout shape
+                    in
                     case List.drop fieldIndex layout.fields of
                         fieldInfo :: _ ->
                             Just fieldInfo.isUnboxed

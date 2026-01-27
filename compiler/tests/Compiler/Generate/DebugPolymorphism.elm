@@ -154,17 +154,17 @@ collectExprDebugIssues context expr =
         Mono.MonoCase _ _ _ branches _ ->
             List.concatMap (\( _, e ) -> collectExprDebugIssues context e) branches
 
-        Mono.MonoRecordCreate fieldExprs _ _ ->
+        Mono.MonoRecordCreate fieldExprs _ ->
             List.concatMap (collectExprDebugIssues context) fieldExprs
 
         Mono.MonoRecordAccess recordExpr _ _ _ _ ->
             collectExprDebugIssues context recordExpr
 
-        Mono.MonoRecordUpdate recordExpr updates _ _ ->
+        Mono.MonoRecordUpdate recordExpr updates _ ->
             collectExprDebugIssues context recordExpr
                 ++ List.concatMap (\( _, e ) -> collectExprDebugIssues context e) updates
 
-        Mono.MonoTupleCreate _ elementExprs _ _ ->
+        Mono.MonoTupleCreate _ elementExprs _ ->
             List.concatMap (collectExprDebugIssues context) elementExprs
 
         _ ->

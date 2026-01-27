@@ -151,7 +151,7 @@ collectExprTypeIssues context expr =
             checkMonoType context monoType
                 ++ List.concatMap (\( _, branchExpr ) -> collectExprTypeIssues context branchExpr) branches
 
-        Mono.MonoRecordCreate fieldExprs _ monoType ->
+        Mono.MonoRecordCreate fieldExprs monoType ->
             checkMonoType context monoType
                 ++ List.concatMap (collectExprTypeIssues context) fieldExprs
 
@@ -159,12 +159,12 @@ collectExprTypeIssues context expr =
             checkMonoType context monoType
                 ++ collectExprTypeIssues context recordExpr
 
-        Mono.MonoRecordUpdate recordExpr updates _ monoType ->
+        Mono.MonoRecordUpdate recordExpr updates monoType ->
             checkMonoType context monoType
                 ++ collectExprTypeIssues context recordExpr
                 ++ List.concatMap (\( _, updateExpr ) -> collectExprTypeIssues context updateExpr) updates
 
-        Mono.MonoTupleCreate _ elementExprs _ monoType ->
+        Mono.MonoTupleCreate _ elementExprs monoType ->
             checkMonoType context monoType
                 ++ List.concatMap (collectExprTypeIssues context) elementExprs
 

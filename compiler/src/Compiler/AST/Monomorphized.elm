@@ -1,6 +1,6 @@
 module Compiler.AST.Monomorphized exposing
     ( MonoType(..), Literal(..), Constraint(..)
-    , RecordLayout, FieldInfo, CtorLayout, TupleLayout
+    , CtorShape
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry, emptyRegistry, getOrCreateSpecId, lookupSpecKey
     , MonoGraph(..), MainInfo(..), MonoNode(..)
@@ -8,7 +8,6 @@ module Compiler.AST.Monomorphized exposing
     , Decider(..), MonoChoice(..)
     , ContainerKind(..)
     , typeOf
-    , computeRecordLayout, computeTupleLayout
     , toComparableSpecKey, toComparableMonoType
     , getMonoPathType
     , monoTypeToDebugString
@@ -50,11 +49,6 @@ This module defines the data structures for the monomorphized program
 @docs MonoType, Literal, Constraint
 
 
-# Runtime Layouts
-
-@docs RecordLayout, FieldInfo, CtorLayout, TupleLayout
-
-
 # Lambda Sets
 
 @docs LambdaId
@@ -87,12 +81,7 @@ This module defines the data structures for the monomorphized program
 
 # Type Utilities
 
-@docs typeOf, canUnbox
-
-
-# Layout Computation
-
-@docs computeRecordLayout, computeTupleLayout
+@docs typeOf
 
 
 # Comparison and Ordering
@@ -166,8 +155,8 @@ type MonoType
     | MString
     | MUnit
     | MList MonoType
-    | MTuple TupleLayout
-    | MRecord RecordLayout
+    | MTuple (List MonoType) -- Element types (layout computed at codegen)
+    | MRecord (Dict String Name MonoType) -- Field name -> type (layout computed at codegen)
     | MCustom IO.Canonical Name (List MonoType)
     | MFunction (List MonoType) MonoType
     | MVar Name Constraint
@@ -201,52 +190,6 @@ that must be fully specialized before code generation.
 type Constraint
     = CEcoValue
     | CNumber
-
-
-
--- ============================================================================
--- ====== LAYOUTS ======
--- ============================================================================
-
-
-{-| Runtime layout information for records, including field order and unboxing.
--}
-type alias RecordLayout =
-    { fieldCount : Int
-    , unboxedCount : Int
-    , unboxedBitmap : Int
-    , fields : List FieldInfo
-    }
-
-
-{-| Information about a single field in a record or constructor.
--}
-type alias FieldInfo =
-    { name : Name
-    , index : Int
-    , monoType : MonoType
-    , isUnboxed : Bool
-    }
-
-
-{-| Runtime layout information for a single constructor variant.
--}
-type alias CtorLayout =
-    { name : Name
-    , tag : Int
-    , fields : List FieldInfo
-    , unboxedCount : Int
-    , unboxedBitmap : Int
-    }
-
-
-{-| Runtime layout information for tuples.
--}
-type alias TupleLayout =
-    { arity : Int
-    , unboxedBitmap : Int
-    , elements : List ( MonoType, Bool ) -- (type, isUnboxed)
-    }
 
 
 
@@ -340,6 +283,26 @@ lookupSpecKey specId registry =
 
 
 -- ============================================================================
+-- ====== CONSTRUCTOR SHAPES ======
+-- ============================================================================
+
+
+{-| Backend-agnostic constructor shape: name, tag, field types.
+
+This captures the semantic structure without layout-specific details like
+field indices and unboxing bitmaps. The CtorLayout is computed from this
+shape during code generation.
+
+-}
+type alias CtorShape =
+    { name : Name
+    , tag : Int
+    , fieldTypes : List MonoType
+    }
+
+
+
+-- ============================================================================
 -- ====== MONO GRAPH ======
 -- ============================================================================
 
@@ -351,7 +314,7 @@ type MonoGraph
         { nodes : Dict Int Int MonoNode
         , main : Maybe MainInfo
         , registry : SpecializationRegistry
-        , ctorLayouts : Dict (List String) (List String) (List CtorLayout)
+        , ctorShapes : Dict (List String) (List String) (List CtorShape)
         }
 
 
@@ -376,7 +339,7 @@ type MainInfo
 type MonoNode
     = MonoDefine MonoExpr MonoType
     | MonoTailFunc (List ( Name, MonoType )) MonoExpr MonoType
-    | MonoCtor CtorLayout MonoType
+    | MonoCtor CtorShape MonoType -- Layout computed from shape at codegen
     | MonoEnum Int MonoType
     | MonoExtern MonoType
     | MonoPortIncoming MonoExpr MonoType
@@ -405,10 +368,10 @@ type MonoExpr
     | MonoLet MonoDef MonoExpr MonoType
     | MonoDestruct MonoDestructor MonoExpr MonoType
     | MonoCase Name Name (Decider MonoChoice) (List ( Int, MonoExpr )) MonoType
-    | MonoRecordCreate (List MonoExpr) RecordLayout MonoType
-    | MonoRecordAccess MonoExpr Name Int Bool MonoType
-    | MonoRecordUpdate MonoExpr (List ( Int, MonoExpr )) RecordLayout MonoType
-    | MonoTupleCreate Region (List MonoExpr) TupleLayout MonoType
+    | MonoRecordCreate (List MonoExpr) MonoType -- Layout computed at codegen from MonoType
+    | MonoRecordAccess MonoExpr Name Int Bool MonoType -- Index/isUnboxed precomputed (TODO: compute at codegen)
+    | MonoRecordUpdate MonoExpr (List ( Int, MonoExpr )) MonoType -- Layout computed at codegen
+    | MonoTupleCreate Region (List MonoExpr) MonoType -- Layout computed at codegen
     | MonoUnit
 
 
@@ -605,108 +568,20 @@ typeOf expr =
         MonoCase _ _ _ _ t ->
             t
 
-        MonoRecordCreate _ _ t ->
+        MonoRecordCreate _ t ->
             t
 
         MonoRecordAccess _ _ _ _ t ->
             t
 
-        MonoRecordUpdate _ _ _ t ->
+        MonoRecordUpdate _ _ t ->
             t
 
-        MonoTupleCreate _ _ _ t ->
+        MonoTupleCreate _ _ t ->
             t
 
         MonoUnit ->
             MUnit
-
-
--- ============================================================================
--- ====== LAYOUT COMPUTATION ======
--- ============================================================================
-
-
-{-| Compute runtime layout for a record type, ordering fields to place unboxed values first.
-
-The `canUnbox` parameter determines which types can be stored unboxed.
-Pass `Types.canUnbox` from Compiler.Generate.MLIR.Types.
-
--}
-computeRecordLayout : (MonoType -> Bool) -> Dict String Name MonoType -> RecordLayout
-computeRecordLayout canUnbox fields =
-    let
-        allFields =
-            Dict.toList compare fields
-
-        ( unboxedFields, boxedFields ) =
-            List.partition (\( _, ty ) -> canUnbox ty) allFields
-
-        sortedUnboxed =
-            List.sortBy Tuple.first unboxedFields
-
-        sortedBoxed =
-            List.sortBy Tuple.first boxedFields
-
-        orderedFields =
-            sortedUnboxed ++ sortedBoxed
-
-        indexedFields =
-            List.indexedMap
-                (\idx ( name, ty ) ->
-                    { name = name
-                    , index = idx
-                    , monoType = ty
-                    , isUnboxed = canUnbox ty
-                    }
-                )
-                orderedFields
-
-        unboxedCount =
-            List.length sortedUnboxed
-
-        unboxedBitmap =
-            if unboxedCount == 0 then
-                0
-
-            else
-                (2 ^ unboxedCount) - 1
-    in
-    { fieldCount = List.length orderedFields
-    , unboxedCount = unboxedCount
-    , unboxedBitmap = unboxedBitmap
-    , fields = indexedFields
-    }
-
-
-{-| Compute runtime layout for a tuple type.
-
-The `canUnbox` parameter determines which types can be stored unboxed.
-Pass `Types.canUnbox` from Compiler.Generate.MLIR.Types.
-
--}
-computeTupleLayout : (MonoType -> Bool) -> List MonoType -> TupleLayout
-computeTupleLayout canUnbox types =
-    let
-        elements =
-            List.map (\t -> ( t, canUnbox t )) types
-
-        unboxedBitmap =
-            List.indexedMap
-                (\i ( _, isUnboxed ) ->
-                    if isUnboxed then
-                        2 ^ i
-
-                    else
-                        0
-                )
-                elements
-                |> List.sum
-    in
-    { arity = List.length types
-    , unboxedBitmap = unboxedBitmap
-    , elements = elements
-    }
-
 
 
 -- ============================================================================
@@ -752,11 +627,11 @@ toComparableMonoType monoType =
         MList inner ->
             "List" :: toComparableMonoType inner
 
-        MTuple layout ->
-            "Tuple" :: String.fromInt layout.arity :: List.concatMap (Tuple.first >> toComparableMonoType) layout.elements
+        MTuple elementTypes ->
+            "Tuple" :: String.fromInt (List.length elementTypes) :: List.concatMap toComparableMonoType elementTypes
 
-        MRecord layout ->
-            "Record" :: List.concatMap (\f -> f.name :: toComparableMonoType f.monoType) layout.fields
+        MRecord fields ->
+            "Record" :: List.concatMap (\( name, ty ) -> name :: toComparableMonoType ty) (Dict.toList compare fields)
 
         MCustom canonical name args ->
             "Custom" :: ModuleName.toComparableCanonical canonical ++ [ name ] ++ List.concatMap toComparableMonoType args

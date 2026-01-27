@@ -173,18 +173,19 @@ checkNodeLayoutCompleteness specId node =
 checkTypeLayoutComplete : String -> Mono.MonoType -> List (() -> Expect.Expectation)
 checkTypeLayoutComplete context monoType =
     case monoType of
-        Mono.MRecord layout ->
-            -- Check that layout has valid field count and indices
-            if layout.fieldCount < 0 then
-                [ \() -> Expect.fail (context ++ ": Record layout has negative field count") ]
+        Mono.MRecord fields ->
+            -- Check that record has valid shape
+            -- Since MRecord is now a Dict, we just verify it's well-formed
+            if Dict.size fields < 0 then
+                [ \() -> Expect.fail (context ++ ": Record has negative field count") ]
 
             else
                 []
 
-        Mono.MTuple layout ->
-            -- Check that tuple layout has valid indices
-            if layout.arity < 0 then
-                [ \() -> Expect.fail (context ++ ": Tuple layout has negative arity") ]
+        Mono.MTuple elementTypes ->
+            -- Check that tuple has valid shape
+            if List.length elementTypes < 0 then
+                [ \() -> Expect.fail (context ++ ": Tuple has negative element count") ]
 
             else
                 []
@@ -208,18 +209,18 @@ checkTypeLayoutComplete context monoType =
 collectExprLayoutIssues : String -> Mono.MonoExpr -> List (() -> Expect.Expectation)
 collectExprLayoutIssues context expr =
     case expr of
-        Mono.MonoRecordCreate _ _ monoType ->
+        Mono.MonoRecordCreate _ monoType ->
             checkTypeLayoutComplete context monoType
 
         Mono.MonoRecordAccess recordExpr _ _ _ monoType ->
             checkTypeLayoutComplete context monoType
                 ++ collectExprLayoutIssues context recordExpr
 
-        Mono.MonoRecordUpdate recordExpr _ _ monoType ->
+        Mono.MonoRecordUpdate recordExpr _ monoType ->
             checkTypeLayoutComplete context monoType
                 ++ collectExprLayoutIssues context recordExpr
 
-        Mono.MonoTupleCreate _ _ _ monoType ->
+        Mono.MonoTupleCreate _ _ monoType ->
             checkTypeLayoutComplete context monoType
 
         Mono.MonoList _ exprs monoType ->
@@ -331,10 +332,14 @@ collectExprRecordAccessIssues context expr =
 
                 checks =
                     case recordType of
-                        Mono.MRecord layout ->
+                        Mono.MRecord fields ->
                             -- Verify fieldIndex is within bounds
-                            if fieldIndex < 0 || fieldIndex >= layout.fieldCount then
-                                [ \() -> Expect.fail (context ++ ": Record access ." ++ fieldName ++ " has invalid index " ++ String.fromInt fieldIndex ++ " (layout has " ++ String.fromInt layout.fieldCount ++ " fields)") ]
+                            let
+                                fieldCount =
+                                    Dict.size fields
+                            in
+                            if fieldIndex < 0 || fieldIndex >= fieldCount then
+                                [ \() -> Expect.fail (context ++ ": Record access ." ++ fieldName ++ " has invalid index " ++ String.fromInt fieldIndex ++ " (record has " ++ String.fromInt fieldCount ++ " fields)") ]
 
                             else
                                 []
@@ -344,18 +349,22 @@ collectExprRecordAccessIssues context expr =
             in
             checks ++ collectExprRecordAccessIssues context recordExpr
 
-        Mono.MonoRecordUpdate recordExpr updates _ _ ->
+        Mono.MonoRecordUpdate recordExpr updates _ ->
             let
                 recordType =
                     Mono.typeOf recordExpr
 
                 checks =
                     case recordType of
-                        Mono.MRecord layout ->
+                        Mono.MRecord fields ->
                             -- Verify all update indices are valid
+                            let
+                                fieldCount =
+                                    Dict.size fields
+                            in
                             List.concatMap
                                 (\( idx, _ ) ->
-                                    if idx < 0 || idx >= layout.fieldCount then
+                                    if idx < 0 || idx >= fieldCount then
                                         [ \() -> Expect.fail (context ++ ": Record update has invalid index " ++ String.fromInt idx) ]
 
                                     else
@@ -398,10 +407,10 @@ collectExprRecordAccessIssues context expr =
         Mono.MonoCase _ _ _ branches _ ->
             List.concatMap (\( _, e ) -> collectExprRecordAccessIssues context e) branches
 
-        Mono.MonoRecordCreate fieldExprs _ _ ->
+        Mono.MonoRecordCreate fieldExprs _ ->
             List.concatMap (collectExprRecordAccessIssues context) fieldExprs
 
-        Mono.MonoTupleCreate _ elementExprs _ _ ->
+        Mono.MonoTupleCreate _ elementExprs _ ->
             List.concatMap (collectExprRecordAccessIssues context) elementExprs
 
         _ ->
@@ -426,19 +435,19 @@ collectDefRecordAccessIssues context def =
 -- ============================================================================
 
 
-{-| Collect constructor layout checks.
+{-| Collect constructor shape checks.
 -}
 collectCtorLayoutChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
 collectCtorLayoutChecks (Mono.MonoGraph data) =
-    -- For each entry in ctorLayouts, verify consistency:
+    -- For each entry in ctorShapes, verify consistency:
     -- - Constructor tags should be sequential (0, 1, 2, ...)
     -- - Field counts should be non-negative
     Dict.foldl compare
         (\_ ctors acc ->
             List.indexedMap
-                (\idx layout ->
-                    if layout.tag /= idx then
-                        Just (\() -> Expect.fail ("Constructor '" ++ layout.name ++ "' at position " ++ String.fromInt idx ++ " has tag " ++ String.fromInt layout.tag))
+                (\idx shape ->
+                    if shape.tag /= idx then
+                        Just (\() -> Expect.fail ("Constructor at position " ++ String.fromInt idx ++ " has tag " ++ String.fromInt shape.tag))
 
                     else
                         Nothing
@@ -448,7 +457,7 @@ collectCtorLayoutChecks (Mono.MonoGraph data) =
                 |> (++) acc
         )
         []
-        data.ctorLayouts
+        data.ctorShapes
 
 
 

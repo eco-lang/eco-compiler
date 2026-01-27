@@ -272,7 +272,7 @@ collectCustomTypeRefsFromExpr expr =
             collectCustomTypeRefsFromType monoType
                 ++ List.concatMap (\( _, e ) -> collectCustomTypeRefsFromExpr e) branches
 
-        Mono.MonoRecordCreate fieldExprs _ monoType ->
+        Mono.MonoRecordCreate fieldExprs monoType ->
             collectCustomTypeRefsFromType monoType
                 ++ List.concatMap collectCustomTypeRefsFromExpr fieldExprs
 
@@ -280,12 +280,12 @@ collectCustomTypeRefsFromExpr expr =
             collectCustomTypeRefsFromType monoType
                 ++ collectCustomTypeRefsFromExpr recordExpr
 
-        Mono.MonoRecordUpdate recordExpr updates _ monoType ->
+        Mono.MonoRecordUpdate recordExpr updates monoType ->
             collectCustomTypeRefsFromType monoType
                 ++ collectCustomTypeRefsFromExpr recordExpr
                 ++ List.concatMap (\( _, e ) -> collectCustomTypeRefsFromExpr e) updates
 
-        Mono.MonoTupleCreate _ elementExprs _ monoType ->
+        Mono.MonoTupleCreate _ elementExprs monoType ->
             collectCustomTypeRefsFromType monoType
                 ++ List.concatMap collectCustomTypeRefsFromExpr elementExprs
 
@@ -426,7 +426,7 @@ collectSpecIdRefsFromExpr expr =
                 Set.empty
                 branches
 
-        Mono.MonoRecordCreate fieldExprs _ _ ->
+        Mono.MonoRecordCreate fieldExprs _ ->
             List.foldl
                 (\e acc -> Set.union acc (collectSpecIdRefsFromExpr e))
                 Set.empty
@@ -435,13 +435,13 @@ collectSpecIdRefsFromExpr expr =
         Mono.MonoRecordAccess recordExpr _ _ _ _ ->
             collectSpecIdRefsFromExpr recordExpr
 
-        Mono.MonoRecordUpdate recordExpr updates _ _ ->
+        Mono.MonoRecordUpdate recordExpr updates _ ->
             List.foldl
                 (\( _, e ) acc -> Set.union acc (collectSpecIdRefsFromExpr e))
                 (collectSpecIdRefsFromExpr recordExpr)
                 updates
 
-        Mono.MonoTupleCreate _ elementExprs _ _ ->
+        Mono.MonoTupleCreate _ elementExprs _ ->
             List.foldl
                 (\e acc -> Set.union acc (collectSpecIdRefsFromExpr e))
                 Set.empty

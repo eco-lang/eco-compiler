@@ -42,6 +42,7 @@ import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.Optimize.Typed.DecisionTree as DT
+import Data.Map as EveryDict
 import Dict
 import Hex
 import Mlir.Loc as Loc
@@ -184,17 +185,29 @@ generateExpr ctx expr =
         Mono.MonoCase scrutinee1 scrutinee2 decider jumps resultType ->
             generateCase ctx scrutinee1 scrutinee2 decider jumps resultType
 
-        Mono.MonoRecordCreate fields layout _ ->
-            generateRecordCreate ctx fields layout
+        Mono.MonoRecordCreate fields monoType ->
+            let
+                layout =
+                    Types.computeRecordLayout (getRecordFields monoType)
+            in
+            generateRecordCreate ctx fields layout monoType
 
         Mono.MonoRecordAccess record fieldName index isUnboxed fieldType ->
             generateRecordAccess ctx record fieldName index isUnboxed fieldType
 
-        Mono.MonoRecordUpdate record updates layout _ ->
-            generateRecordUpdate ctx record updates layout
+        Mono.MonoRecordUpdate record updates monoType ->
+            let
+                layout =
+                    Types.computeRecordLayout (getRecordFields monoType)
+            in
+            generateRecordUpdate ctx record updates layout monoType
 
-        Mono.MonoTupleCreate _ elements layout _ ->
-            generateTupleCreate ctx elements layout
+        Mono.MonoTupleCreate region elements monoType ->
+            let
+                layout =
+                    Types.computeTupleLayout (getTupleElements monoType)
+            in
+            generateTupleCreate ctx elements layout monoType
 
         Mono.MonoUnit ->
             generateUnit ctx
@@ -2820,13 +2833,10 @@ generateCase ctx _ root decider jumps resultMonoType =
 
 {-| Generate MLIR code to create a record.
 -}
-generateRecordCreate : Ctx.Context -> List Mono.MonoExpr -> Mono.RecordLayout -> ExprResult
-generateRecordCreate ctx fields layout =
+generateRecordCreate : Ctx.Context -> List Mono.MonoExpr -> Types.RecordLayout -> Mono.MonoType -> ExprResult
+generateRecordCreate ctx fields layout recordType =
     -- Register the record type for the type graph
     let
-        recordType =
-            Mono.MRecord layout
-
         ( _, ctxWithType ) =
             Ctx.getOrCreateTypeIdForMonoType recordType ctx
     in
@@ -2963,8 +2973,8 @@ generateRecordAccess ctx record _ index isUnboxed fieldType =
 
 {-| Generate MLIR code to update record fields.
 -}
-generateRecordUpdate : Ctx.Context -> Mono.MonoExpr -> List ( Int, Mono.MonoExpr ) -> Mono.RecordLayout -> ExprResult
-generateRecordUpdate ctx record _ _ =
+generateRecordUpdate : Ctx.Context -> Mono.MonoExpr -> List ( Int, Mono.MonoExpr ) -> Types.RecordLayout -> Mono.MonoType -> ExprResult
+generateRecordUpdate ctx record _ _ _ =
     let
         recordResult : ExprResult
         recordResult =
@@ -2990,13 +3000,10 @@ generateRecordUpdate ctx record _ _ =
 
 {-| Generate MLIR code to create a tuple.
 -}
-generateTupleCreate : Ctx.Context -> List Mono.MonoExpr -> Mono.TupleLayout -> ExprResult
-generateTupleCreate ctx elements layout =
+generateTupleCreate : Ctx.Context -> List Mono.MonoExpr -> Types.TupleLayout -> Mono.MonoType -> ExprResult
+generateTupleCreate ctx elements layout tupleType =
     -- Register the tuple type for the type graph
     let
-        tupleType =
-            Mono.MTuple layout
-
         ( _, ctxWithType ) =
             Ctx.getOrCreateTypeIdForMonoType tupleType ctx
 
@@ -3183,3 +3190,31 @@ decodeSurrogatePair hi rest =
 
         Err _ ->
             crash "decodeCharLiteral: invalid low surrogate in pair"
+
+
+
+-- ====== SHAPE HELPERS ======
+
+
+{-| Extract record fields Dict from a MonoType.
+-}
+getRecordFields : Mono.MonoType -> EveryDict.Dict String Name.Name Mono.MonoType
+getRecordFields monoType =
+    case monoType of
+        Mono.MRecord fields ->
+            fields
+
+        _ ->
+            EveryDict.empty
+
+
+{-| Extract tuple element types from a MonoType.
+-}
+getTupleElements : Mono.MonoType -> List Mono.MonoType
+getTupleElements monoType =
+    case monoType of
+        Mono.MTuple elements ->
+            elements
+
+        _ ->
+            []

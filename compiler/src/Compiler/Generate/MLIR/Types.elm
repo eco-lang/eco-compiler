@@ -4,6 +4,8 @@ module Compiler.Generate.MLIR.Types exposing
     , mlirTypeToString
     , isFunctionType, functionArity, countTotalArity, decomposeFunctionType, isEcoValueType
     , isUnboxable
+    , RecordLayout, FieldInfo, TupleLayout, CtorLayout
+    , computeRecordLayout, computeTupleLayout, computeCtorLayout
     )
 
 {-| MLIR type definitions and conversions.
@@ -13,6 +15,7 @@ This module provides:
   - Eco dialect primitive types (ecoValue, ecoInt, ecoFloat, ecoChar)
   - MonoType to MlirType conversion for different contexts
   - Function type utilities
+  - Runtime layout types and computation (for codegen)
 
 
 # Eco Dialect Types
@@ -42,9 +45,24 @@ See design\_docs/invariants.csv for REP\_ABI\_001, REP\_CLOSURE\_001, REP\_SSA\_
 
 @docs isUnboxable
 
+
+# Runtime Layouts
+
+Layout types are codegen-specific (they contain unboxing decisions).
+These are computed from MonoType shapes during code generation.
+
+@docs RecordLayout, FieldInfo, TupleLayout, CtorLayout
+
+
+# Layout Computation
+
+@docs computeRecordLayout, computeTupleLayout, computeCtorLayout
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
+import Compiler.Data.Name exposing (Name)
+import Data.Map as Dict exposing (Dict)
 import Mlir.Mlir exposing (MlirType(..))
 
 
@@ -340,3 +358,186 @@ mlirTypeToString ty =
                     sig.results |> List.map mlirTypeToString |> String.join ", "
             in
             "(" ++ ins ++ ") -> (" ++ outs ++ ")"
+
+
+
+-- ============================================================================
+-- ====== RUNTIME LAYOUTS ======
+-- ============================================================================
+--
+-- These types represent codegen-specific layout information that is computed
+-- from MonoType shapes. They contain unboxing decisions and field ordering
+-- that depend on the target backend's representation rules.
+-- ============================================================================
+
+
+{-| Runtime layout information for records, including field order and unboxing.
+-}
+type alias RecordLayout =
+    { fieldCount : Int
+    , unboxedCount : Int
+    , unboxedBitmap : Int
+    , fields : List FieldInfo
+    }
+
+
+{-| Information about a single field in a record or constructor.
+-}
+type alias FieldInfo =
+    { name : Name
+    , index : Int
+    , monoType : Mono.MonoType
+    , isUnboxed : Bool
+    }
+
+
+{-| Runtime layout information for a single constructor variant.
+-}
+type alias CtorLayout =
+    { name : Name
+    , tag : Int
+    , fields : List FieldInfo
+    , unboxedCount : Int
+    , unboxedBitmap : Int
+    }
+
+
+{-| Runtime layout information for tuples.
+-}
+type alias TupleLayout =
+    { arity : Int
+    , unboxedBitmap : Int
+    , elements : List ( Mono.MonoType, Bool ) -- (type, isUnboxed)
+    }
+
+
+
+-- ============================================================================
+-- ====== LAYOUT COMPUTATION ======
+-- ============================================================================
+
+
+{-| Compute runtime layout for a record type, ordering fields to place unboxed values first.
+
+This is called during code generation to compute the layout from a record's
+field dictionary (stored in MRecord MonoType).
+
+-}
+computeRecordLayout : Dict String Name Mono.MonoType -> RecordLayout
+computeRecordLayout fields =
+    let
+        allFields =
+            Dict.toList compare fields
+
+        ( unboxedFields, boxedFields ) =
+            List.partition (\( _, ty ) -> canUnbox ty) allFields
+
+        sortedUnboxed =
+            List.sortBy Tuple.first unboxedFields
+
+        sortedBoxed =
+            List.sortBy Tuple.first boxedFields
+
+        orderedFields =
+            sortedUnboxed ++ sortedBoxed
+
+        indexedFields =
+            List.indexedMap
+                (\idx ( name, ty ) ->
+                    { name = name
+                    , index = idx
+                    , monoType = ty
+                    , isUnboxed = canUnbox ty
+                    }
+                )
+                orderedFields
+
+        unboxedCount =
+            List.length sortedUnboxed
+
+        unboxedBitmap =
+            if unboxedCount == 0 then
+                0
+
+            else
+                (2 ^ unboxedCount) - 1
+    in
+    { fieldCount = List.length orderedFields
+    , unboxedCount = unboxedCount
+    , unboxedBitmap = unboxedBitmap
+    , fields = indexedFields
+    }
+
+
+{-| Compute runtime layout for a tuple type.
+
+This is called during code generation to compute the layout from a tuple's
+element type list (stored in MTuple MonoType).
+
+-}
+computeTupleLayout : List Mono.MonoType -> TupleLayout
+computeTupleLayout types =
+    let
+        elements =
+            List.map (\t -> ( t, canUnbox t )) types
+
+        unboxedBitmap =
+            List.indexedMap
+                (\i ( _, isUnboxed ) ->
+                    if isUnboxed then
+                        2 ^ i
+
+                    else
+                        0
+                )
+                elements
+                |> List.sum
+    in
+    { arity = List.length types
+    , unboxedBitmap = unboxedBitmap
+    , elements = elements
+    }
+
+
+{-| Compute runtime layout for a constructor from its shape.
+
+This is called during code generation to compute the layout from a
+constructor's CtorShape (stored in MonoGraph.ctorShapes).
+
+-}
+computeCtorLayout : Mono.CtorShape -> CtorLayout
+computeCtorLayout shape =
+    let
+        fields =
+            List.indexedMap
+                (\idx ty ->
+                    { name = "field" ++ String.fromInt idx
+                    , index = idx
+                    , monoType = ty
+                    , isUnboxed = canUnbox ty
+                    }
+                )
+                shape.fieldTypes
+
+        -- Clamp to 32 bits: the runtime Custom.unboxed field is only 32 bits wide.
+        unboxedBitmap =
+            List.foldl
+                (\field a ->
+                    if field.isUnboxed && field.index < 32 then
+                        a + (2 ^ field.index)
+
+                    else
+                        a
+                )
+                0
+                fields
+
+        unboxedCount =
+            List.length (List.filter .isUnboxed fields)
+    in
+    { name = shape.name
+    , tag = shape.tag
+    , fields = fields
+    , unboxedCount = unboxedCount
+    , unboxedBitmap = unboxedBitmap
+    }

@@ -129,7 +129,7 @@ type alias TypeRegistry =
     { nextTypeId : Int
     , typeIds : Dict.Dict (List String) Int -- comparable key -> TypeId
     , typeInfos : List ( Int, Mono.MonoType ) -- List of (TypeId, MonoType) for building type table
-    , ctorLayouts : EveryDict.Dict (List String) (List String) (List Mono.CtorLayout) -- type key -> ctor layouts for custom types
+    , ctorShapes : EveryDict.Dict (List String) (List String) (List Mono.CtorShape) -- type key -> ctor shapes for custom types
     }
 
 
@@ -147,8 +147,8 @@ type alias PendingLambda =
 
 {-| Initialize a code generation context.
 -}
-initContext : Mode.Mode -> Mono.SpecializationRegistry -> Dict.Dict Int FuncSignature -> EveryDict.Dict (List String) (List String) (List Mono.CtorLayout) -> Context
-initContext mode registry signatures initialCtorLayouts =
+initContext : Mode.Mode -> Mono.SpecializationRegistry -> Dict.Dict Int FuncSignature -> EveryDict.Dict (List String) (List String) (List Mono.CtorShape) -> Context
+initContext mode registry signatures initialCtorShapes =
     { nextVar = 0
     , nextOpId = 0
     , mode = mode
@@ -160,7 +160,7 @@ initContext mode registry signatures initialCtorLayouts =
     , kernelDecls = Dict.empty
     , typeRegistry =
         { emptyTypeRegistry
-            | ctorLayouts = initialCtorLayouts
+            | ctorShapes = initialCtorShapes
         }
     }
 
@@ -172,7 +172,7 @@ emptyTypeRegistry =
     { nextTypeId = 0
     , typeIds = Dict.empty
     , typeInfos = []
-    , ctorLayouts = EveryDict.empty
+    , ctorShapes = EveryDict.empty
     }
 
 
@@ -209,7 +209,7 @@ getOrCreateTypeIdForMonoType monoType ctx =
                     { nextTypeId = typeId + 1
                     , typeIds = Dict.insert key typeId regAfterNested.typeIds
                     , typeInfos = ( typeId, monoType ) :: regAfterNested.typeInfos
-                    , ctorLayouts = regAfterNested.ctorLayouts
+                    , ctorShapes = regAfterNested.ctorShapes
                     }
             in
             ( typeId, { ctxWithNested | typeRegistry = newReg } )
@@ -225,23 +225,23 @@ registerNestedTypes monoType ctx =
             -- Register element type
             Tuple.second (getOrCreateTypeIdForMonoType elemType ctx)
 
-        Mono.MTuple layout ->
+        Mono.MTuple elementTypes ->
             -- Register all element types
             List.foldl
-                (\( elemType, _ ) accCtx ->
+                (\elemType accCtx ->
                     Tuple.second (getOrCreateTypeIdForMonoType elemType accCtx)
                 )
                 ctx
-                layout.elements
+                elementTypes
 
-        Mono.MRecord layout ->
+        Mono.MRecord fields ->
             -- Register all field types
             List.foldl
-                (\fieldInfo accCtx ->
-                    Tuple.second (getOrCreateTypeIdForMonoType fieldInfo.monoType accCtx)
+                (\fieldType accCtx ->
+                    Tuple.second (getOrCreateTypeIdForMonoType fieldType accCtx)
                 )
                 ctx
-                layout.fields
+                (EveryDict.values compare fields)
 
         Mono.MCustom _ _ args ->
             -- Register all type argument types
@@ -416,10 +416,10 @@ extractNodeSignature node =
                 , returnType = returnType
                 }
 
-        Mono.MonoCtor ctorLayout monoType ->
-            -- Constructor - params are the fields
+        Mono.MonoCtor ctorShape monoType ->
+            -- Constructor - params are the field types
             Just
-                { paramTypes = List.map .monoType ctorLayout.fields
+                { paramTypes = ctorShape.fieldTypes
                 , returnType = monoType
                 }
 

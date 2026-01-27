@@ -120,52 +120,40 @@ unifyHelp canType monoType subst =
                 _ ->
                     subst
 
-        ( Can.TRecord fields maybeExtension, Mono.MRecord layout ) ->
+        ( Can.TRecord fields maybeExtension, Mono.MRecord monoFields ) ->
             let
                 -- First unify matching fields
                 substWithFields =
-                    List.foldl
-                        (\fieldInfo s ->
-                            case Dict.get identity fieldInfo.name fields of
+                    Dict.foldl compare
+                        (\fieldName monoFieldType s ->
+                            case Dict.get identity fieldName fields of
                                 Just (Can.FieldType _ fieldType) ->
-                                    unifyHelp fieldType fieldInfo.monoType s
+                                    unifyHelp fieldType monoFieldType s
 
                                 Nothing ->
                                     s
                         )
                         subst
-                        layout.fields
+                        monoFields
             in
             case maybeExtension of
                 Just extName ->
                     let
-                        -- Fields in layout that are not in the canonical record
+                        -- Fields in monoFields that are not in the canonical record
                         remainingFields =
-                            List.filter
-                                (\f -> Dict.get identity f.name fields == Nothing)
-                                layout.fields
-
-                        -- Create a record type with the remaining fields
-                        remainingLayout =
-                            Mono.computeRecordLayout Types.canUnbox
-                                (List.foldl
-                                    (\f d -> Dict.insert identity f.name f.monoType d)
-                                    Dict.empty
-                                    remainingFields
-                                )
+                            Dict.filter
+                                (\fieldName _ -> Dict.get identity fieldName fields == Nothing)
+                                monoFields
                     in
-                    Dict.insert identity extName (Mono.MRecord remainingLayout) substWithFields
+                    Dict.insert identity extName (Mono.MRecord remainingFields) substWithFields
 
                 Nothing ->
                     substWithFields
 
-        ( Can.TTuple a b rest, Mono.MTuple layout ) ->
+        ( Can.TTuple a b rest, Mono.MTuple monoTypes ) ->
             let
                 canTypes =
                     a :: b :: rest
-
-                monoTypes =
-                    List.map Tuple.first layout.elements
             in
             List.foldl
                 (\( canT, monoT ) s ->
@@ -328,11 +316,9 @@ applySubst subst canType =
                     case maybeExtension of
                         Just extName ->
                             case Dict.get identity extName subst of
-                                Just (Mono.MRecord baseLayout) ->
-                                    List.foldl
-                                        (\f d -> Dict.insert identity f.name f.monoType d)
-                                        Dict.empty
-                                        baseLayout.fields
+                                Just (Mono.MRecord baseFieldsDict) ->
+                                    -- MRecord now directly contains the fields dict
+                                    baseFieldsDict
 
                                 _ ->
                                     Dict.empty
@@ -347,21 +333,15 @@ applySubst subst canType =
                 -- Merge: extension fields override base fields
                 monoFields =
                     Dict.union extensionFields baseFields
-
-                layout =
-                    Mono.computeRecordLayout Types.canUnbox monoFields
             in
-            Mono.MRecord layout
+            Mono.MRecord monoFields
 
         Can.TTuple a b rest ->
             let
                 monoTypes =
                     List.map (applySubst subst) (a :: b :: rest)
-
-                layout =
-                    Mono.computeTupleLayout Types.canUnbox monoTypes
             in
-            Mono.MTuple layout
+            Mono.MTuple monoTypes
 
         Can.TUnit ->
             Mono.MUnit

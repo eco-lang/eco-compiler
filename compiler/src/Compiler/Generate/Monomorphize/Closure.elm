@@ -247,16 +247,16 @@ extractRegion expr =
         Mono.MonoCase _ _ _ _ _ ->
             A.zero
 
-        Mono.MonoRecordCreate _ _ _ ->
+        Mono.MonoRecordCreate _ _ ->
             A.zero
 
         Mono.MonoRecordAccess record _ _ _ _ ->
             extractRegion record
 
-        Mono.MonoRecordUpdate record _ _ _ ->
+        Mono.MonoRecordUpdate record _ _ ->
             extractRegion record
 
-        Mono.MonoTupleCreate region _ _ _ ->
+        Mono.MonoTupleCreate region _ _ ->
             region
 
         Mono.MonoUnit ->
@@ -422,17 +422,17 @@ findFreeLocals bound expr =
         Mono.MonoTailCall _ namedExprs _ ->
             List.concatMap (\( _, e ) -> findFreeLocals bound e) namedExprs
 
-        Mono.MonoRecordCreate exprs _ _ ->
+        Mono.MonoRecordCreate exprs _ ->
             List.concatMap (findFreeLocals bound) exprs
 
         Mono.MonoRecordAccess record _ _ _ _ ->
             findFreeLocals bound record
 
-        Mono.MonoRecordUpdate record updates _ _ ->
+        Mono.MonoRecordUpdate record updates _ ->
             findFreeLocals bound record
                 ++ List.concatMap (\( _, e ) -> findFreeLocals bound e) updates
 
-        Mono.MonoTupleCreate _ exprs _ _ ->
+        Mono.MonoTupleCreate _ exprs _ ->
             List.concatMap (findFreeLocals bound) exprs
 
         _ ->
@@ -580,16 +580,16 @@ collectVarTypesHelper expr acc =
         Mono.MonoTailCall _ namedExprs _ ->
             List.foldl (\( _, e ) a -> collectVarTypesHelper e a) acc namedExprs
 
-        Mono.MonoRecordCreate exprs _ _ ->
+        Mono.MonoRecordCreate exprs _ ->
             List.foldl collectVarTypesHelper acc exprs
 
         Mono.MonoRecordAccess record _ _ _ _ ->
             collectVarTypesHelper record acc
 
-        Mono.MonoRecordUpdate record updates _ _ ->
+        Mono.MonoRecordUpdate record updates _ ->
             List.foldl (\( _, e ) a -> collectVarTypesHelper e a) (collectVarTypesHelper record acc) updates
 
-        Mono.MonoTupleCreate _ exprs _ _ ->
+        Mono.MonoTupleCreate _ exprs _ ->
             List.foldl collectVarTypesHelper acc exprs
 
         Mono.MonoDestruct _ body _ ->

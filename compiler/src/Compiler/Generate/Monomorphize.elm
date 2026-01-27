@@ -196,17 +196,17 @@ monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes =
                 mainInfo =
                     Maybe.map Mono.StaticMain mainSpecId
 
-                -- Compute complete ctor layouts for all custom types
-                ctorLayouts : Dict (List String) (List String) (List Mono.CtorLayout)
-                ctorLayouts =
-                    computeCtorLayoutsForGraph finalState.globalTypeEnv finalState.nodes
+                -- Compute complete ctor shapes for all custom types
+                ctorShapes : Dict (List String) (List String) (List Mono.CtorShape)
+                ctorShapes =
+                    computeCtorShapesForGraph finalState.globalTypeEnv finalState.nodes
             in
             Ok
                 (Mono.MonoGraph
                     { nodes = finalState.nodes
                     , registry = finalState.registry
                     , main = mainInfo
-                    , ctorLayouts = ctorLayouts
+                    , ctorShapes = ctorShapes
                     }
                 )
 
@@ -352,16 +352,16 @@ processWorklist state =
 specializeAccessorGlobal : Name -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
 specializeAccessorGlobal fieldName monoType state =
     case monoType of
-        Mono.MFunction [ Mono.MRecord layout ] fieldType ->
+        Mono.MFunction [ Mono.MRecord fields ] fieldType ->
             let
+                recordType =
+                    Mono.MRecord fields
+
                 ( fieldIndex, isUnboxed ) =
-                    Specialize.lookupFieldIndex fieldName (Mono.MRecord layout)
+                    Specialize.lookupFieldIndex fieldName recordType
 
                 paramName =
                     "record"
-
-                recordType =
-                    Mono.MRecord layout
 
                 bodyExpr =
                     Mono.MonoRecordAccess
@@ -424,11 +424,11 @@ monoGlobalToTOpt global =
 -- ========== CTOR LAYOUT COMPUTATION ==========
 
 
-{-| Build complete CtorLayouts for all constructors in a union.
+{-| Build complete CtorShapes for all constructors in a union.
 Uses the existing applySubst to convert Can.Type to MonoType.
 -}
-buildCompleteCtorLayouts : List Name -> List Mono.MonoType -> List Can.Ctor -> List Mono.CtorLayout
-buildCompleteCtorLayouts vars monoArgs alts =
+buildCompleteCtorShapes : List Name -> List Mono.MonoType -> List Can.Ctor -> List Mono.CtorShape
+buildCompleteCtorShapes vars monoArgs alts =
     let
         -- Build substitution from type vars to mono args
         subst : Substitution
@@ -436,66 +436,34 @@ buildCompleteCtorLayouts vars monoArgs alts =
             List.map2 Tuple.pair vars monoArgs
                 |> Dict.fromList identity
     in
-    List.map (buildCtorLayoutFromUnion subst) alts
+    List.map (buildCtorShapeFromUnion subst) alts
 
 
-{-| Build a CtorLayout from a Can.Ctor using the given substitution.
+{-| Build a CtorShape from a Can.Ctor using the given substitution.
 -}
-buildCtorLayoutFromUnion : Substitution -> Can.Ctor -> Mono.CtorLayout
-buildCtorLayoutFromUnion subst (Can.Ctor ctorData) =
+buildCtorShapeFromUnion : Substitution -> Can.Ctor -> Mono.CtorShape
+buildCtorShapeFromUnion subst (Can.Ctor ctorData) =
     let
         -- Use existing applySubst to monomorphize each argument type
         monoFieldTypes : List Mono.MonoType
         monoFieldTypes =
             List.map (applySubst subst) ctorData.args
-
-        fields : List Mono.FieldInfo
-        fields =
-            List.indexedMap
-                (\idx ty ->
-                    { name = "field" ++ String.fromInt idx
-                    , index = idx
-                    , monoType = ty
-                    , isUnboxed = Types.canUnbox ty
-                    }
-                )
-                monoFieldTypes
-
-        -- Clamp to 32 bits: the runtime Custom.unboxed field is only 32 bits wide.
-        unboxedBitmap : Int
-        unboxedBitmap =
-            List.foldl
-                (\field a ->
-                    if field.isUnboxed && field.index < 32 then
-                        a + (2 ^ field.index)
-
-                    else
-                        a
-                )
-                0
-                fields
-
-        unboxedCount : Int
-        unboxedCount =
-            List.length (List.filter .isUnboxed fields)
     in
     { name = ctorData.name
     , tag = Index.toMachine ctorData.index
-    , fields = fields
-    , unboxedCount = unboxedCount
-    , unboxedBitmap = unboxedBitmap
+    , fieldTypes = monoFieldTypes
     }
 
 
-{-| Compute complete ctor layouts for all custom types in the graph.
-For each MCustom, looks up the union definition and builds layouts for ALL constructors,
+{-| Compute complete ctor shapes for all custom types in the graph.
+For each MCustom, looks up the union definition and builds shapes for ALL constructors,
 even those not directly used in code.
 -}
-computeCtorLayoutsForGraph :
+computeCtorShapesForGraph :
     TypeEnv.GlobalTypeEnv
     -> Dict Int Int Mono.MonoNode
-    -> Dict (List String) (List String) (List Mono.CtorLayout)
-computeCtorLayoutsForGraph globalTypeEnv nodes =
+    -> Dict (List String) (List String) (List Mono.CtorShape)
+computeCtorShapesForGraph globalTypeEnv nodes =
     let
         customTypes =
             Analysis.collectAllCustomTypes nodes
@@ -511,7 +479,7 @@ computeCtorLayoutsForGraph globalTypeEnv nodes =
                         Nothing ->
                             -- Canonical Union not found for custom constructor.
                             Utils.Crash.crash
-                                ("Missing union for ctor layout: "
+                                ("Missing union for ctor shape: "
                                     ++ (ModuleName.toComparableCanonical canonical
                                             ++ [ typeName ]
                                             |> String.join " "
@@ -521,7 +489,7 @@ computeCtorLayoutsForGraph globalTypeEnv nodes =
                         Just (Can.Union unionData) ->
                             let
                                 completeCtors =
-                                    buildCompleteCtorLayouts unionData.vars monoArgs unionData.alts
+                                    buildCompleteCtorShapes unionData.vars monoArgs unionData.alts
                             in
                             Dict.insert identity key completeCtors acc
 

@@ -246,17 +246,17 @@ collectExprArityIssues context expr =
         Mono.MonoCase _ _ _ branches _ ->
             List.concatMap (\( _, e ) -> collectExprArityIssues context e) branches
 
-        Mono.MonoRecordCreate fieldExprs _ _ ->
+        Mono.MonoRecordCreate fieldExprs _ ->
             List.concatMap (collectExprArityIssues context) fieldExprs
 
         Mono.MonoRecordAccess recordExpr _ _ _ _ ->
             collectExprArityIssues context recordExpr
 
-        Mono.MonoRecordUpdate recordExpr updates _ _ ->
+        Mono.MonoRecordUpdate recordExpr updates _ ->
             collectExprArityIssues context recordExpr
                 ++ List.concatMap (\( _, e ) -> collectExprArityIssues context e) updates
 
-        Mono.MonoTupleCreate _ elementExprs _ _ ->
+        Mono.MonoTupleCreate _ elementExprs _ ->
             List.concatMap (collectExprArityIssues context) elementExprs
 
         _ ->

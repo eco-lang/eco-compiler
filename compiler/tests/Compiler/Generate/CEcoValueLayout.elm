@@ -81,9 +81,9 @@ checkNodeCEcoValueLayout specId node =
                 ++ List.concatMap (\( _, t ) -> checkCEcoValueInLayoutPosition context t) params
                 ++ collectExprCEcoValueIssues context expr
 
-        Mono.MonoCtor ctorLayout monoType ->
+        Mono.MonoCtor ctorShape monoType ->
             -- Constructor fields must not have unresolved CEcoValue in layout positions
-            checkCtorLayoutCEcoValue context ctorLayout
+            checkCtorShapeCEcoValue context ctorShape
                 ++ checkCEcoValueInLayoutPosition context monoType
 
         Mono.MonoEnum _ monoType ->
@@ -123,19 +123,20 @@ checkCEcoValueInLayoutPosition context monoType =
             -- List element type can be CEcoValue (boxed reference)
             checkCEcoValueInLayoutPosition context elemType
 
-        Mono.MRecord layout ->
+        Mono.MRecord fields ->
             -- Record fields should not directly be CEcoValue in unboxed positions
-            -- (For now, we just check the layout is valid)
-            if layout.fieldCount < 0 then
-                [ context ++ ": Record layout has invalid field count" ]
+            -- (For now, we just check the shape is valid)
+            if Dict.isEmpty fields then
+                -- Empty records are fine (Unit-like)
+                []
 
             else
                 []
 
-        Mono.MTuple layout ->
+        Mono.MTuple elementTypes ->
             -- Tuple elements should not directly be CEcoValue in unboxed positions
-            if layout.arity < 0 then
-                [ context ++ ": Tuple layout has invalid arity" ]
+            if List.length elementTypes < 0 then
+                [ context ++ ": Tuple has invalid element count" ]
 
             else
                 []
@@ -153,14 +154,14 @@ checkCEcoValueInLayoutPosition context monoType =
             []
 
 
-{-| Check constructor layout for CEcoValue issues.
+{-| Check constructor shape for CEcoValue issues.
 -}
-checkCtorLayoutCEcoValue : String -> Mono.CtorLayout -> List String
-checkCtorLayoutCEcoValue context layout =
-    -- Check that unboxed fields don't have CEcoValue (they need concrete types)
-    -- For now, just verify the layout is well-formed
-    if layout.unboxedCount < 0 then
-        [ context ++ ": Constructor '" ++ layout.name ++ "' has invalid unboxed count" ]
+checkCtorShapeCEcoValue : String -> Mono.CtorShape -> List String
+checkCtorShapeCEcoValue context shape =
+    -- Check that field types don't have CEcoValue (they need concrete types)
+    -- For now, just verify the shape is well-formed
+    if List.length shape.fieldTypes < 0 then
+        [ context ++ ": Constructor has invalid field count" ]
 
     else
         []
@@ -201,17 +202,17 @@ collectExprCEcoValueIssues context expr =
         Mono.MonoCase _ _ _ branches _ ->
             List.concatMap (\( _, e ) -> collectExprCEcoValueIssues context e) branches
 
-        Mono.MonoRecordCreate fieldExprs _ _ ->
+        Mono.MonoRecordCreate fieldExprs _ ->
             List.concatMap (collectExprCEcoValueIssues context) fieldExprs
 
         Mono.MonoRecordAccess recordExpr _ _ _ _ ->
             collectExprCEcoValueIssues context recordExpr
 
-        Mono.MonoRecordUpdate recordExpr updates _ _ ->
+        Mono.MonoRecordUpdate recordExpr updates _ ->
             collectExprCEcoValueIssues context recordExpr
                 ++ List.concatMap (\( _, e ) -> collectExprCEcoValueIssues context e) updates
 
-        Mono.MonoTupleCreate _ elementExprs _ _ ->
+        Mono.MonoTupleCreate _ elementExprs _ ->
             List.concatMap (collectExprCEcoValueIssues context) elementExprs
 
         _ ->

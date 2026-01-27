@@ -12,6 +12,7 @@ for runtime debug printing with arg\_type\_ids.
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
 import Compiler.Generate.MLIR.Context as Ctx
+import Compiler.Generate.MLIR.Types as Types
 import Data.Map as EveryDict
 import Dict
 import Mlir.Loc as Loc
@@ -115,7 +116,7 @@ type alias TypeTableAccum =
     , nextFuncArgIndex : Int
     , typeAttrs : List MlirAttr
     , typeIds : Dict.Dict (List String) Int -- MonoType comparable key -> TypeId
-    , ctorLayouts : EveryDict.Dict (List String) (List String) (List Mono.CtorLayout) -- type key -> ctor layouts
+    , ctorShapes : EveryDict.Dict (List String) (List String) (List Mono.CtorShape) -- type key -> ctor shapes
     }
 
 
@@ -144,7 +145,7 @@ generateTypeTable ctx =
             , nextFuncArgIndex = 0
             , typeAttrs = [] -- List of type descriptor attrs (reversed)
             , typeIds = ctx.typeRegistry.typeIds -- For looking up nested type IDs
-            , ctorLayouts = ctx.typeRegistry.ctorLayouts -- For custom type constructors
+            , ctorShapes = ctx.typeRegistry.ctorShapes -- For custom type constructors
             }
 
         -- Process each type and build all arrays
@@ -233,11 +234,11 @@ processType ( typeId, monoType ) accum =
         Mono.MList elemType ->
             addListType typeId elemType accum
 
-        Mono.MTuple layout ->
-            addTupleType typeId layout accum
+        Mono.MTuple elementTypes ->
+            addTupleType typeId (Types.computeTupleLayout elementTypes) accum
 
-        Mono.MRecord layout ->
-            addRecordType typeId layout accum
+        Mono.MRecord fields ->
+            addRecordType typeId (Types.computeRecordLayout fields) accum
 
         Mono.MCustom _ typeName _ ->
             addCustomType typeId typeName monoType accum
@@ -323,7 +324,7 @@ addListType typeId elemType accum =
 
 {-| Add a tuple type descriptor.
 -}
-addTupleType : Int -> Mono.TupleLayout -> TypeTableAccum -> TypeTableAccum
+addTupleType : Int -> Types.TupleLayout -> TypeTableAccum -> TypeTableAccum
 addTupleType typeId layout accum =
     let
         firstField =
@@ -368,7 +369,7 @@ addTupleType typeId layout accum =
 
 {-| Add a record type descriptor.
 -}
-addRecordType : Int -> Mono.RecordLayout -> TypeTableAccum -> TypeTableAccum
+addRecordType : Int -> Types.RecordLayout -> TypeTableAccum -> TypeTableAccum
 addRecordType typeId layout accum =
     let
         firstField =
@@ -418,12 +419,12 @@ addRecordType typeId layout accum =
 addCustomType : Int -> Name.Name -> Mono.MonoType -> TypeTableAccum -> TypeTableAccum
 addCustomType typeId typeName monoType accum =
     let
-        -- Look up constructor layouts
+        -- Look up constructor shapes and compute layouts
         key =
             Mono.toComparableMonoType monoType
 
-        ctorLayouts =
-            EveryDict.get identity key accum.ctorLayouts
+        ctorShapes =
+            EveryDict.get identity key accum.ctorShapes
                 |> Maybe.withDefault []
                 |> List.sortBy .tag
 
@@ -431,11 +432,11 @@ addCustomType typeId typeName monoType accum =
             accum.nextCtorIndex
 
         ctorCount =
-            List.length ctorLayouts
+            List.length ctorShapes
 
         -- Add each constructor and its fields
         accumWithCtors =
-            List.foldl addCtorInfo accum ctorLayouts
+            List.foldl addCtorInfo accum ctorShapes
 
         typeAttr =
             ArrayAttr Nothing
@@ -450,9 +451,13 @@ addCustomType typeId typeName monoType accum =
 
 {-| Add constructor info for a single constructor.
 -}
-addCtorInfo : Mono.CtorLayout -> TypeTableAccum -> TypeTableAccum
-addCtorInfo ctorLayout accum =
+addCtorInfo : Mono.CtorShape -> TypeTableAccum -> TypeTableAccum
+addCtorInfo ctorShape accum =
     let
+        -- Compute layout from shape
+        ctorLayout =
+            Types.computeCtorLayout ctorShape
+
         -- Add constructor name to string table
         ( nameIndex, accWithName ) =
             getOrCreateStringIndex (Name.toElmString ctorLayout.name) accum

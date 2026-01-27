@@ -228,14 +228,14 @@ canTypeToMonoType_preserveVars canType =
                 monoFields =
                     Dict.map (\_ (Can.FieldType _ t) -> canTypeToMonoType_preserveVars t) fields
             in
-            Mono.MRecord (Mono.computeRecordLayout Types.canUnbox monoFields)
+            Mono.MRecord monoFields
 
         Can.TTuple a b rest ->
             let
                 monoTypes =
                     List.map canTypeToMonoType_preserveVars (a :: b :: rest)
             in
-            Mono.MTuple (Mono.computeTupleLayout Types.canUnbox monoTypes)
+            Mono.MTuple monoTypes
 
         Can.TUnit ->
             Mono.MUnit
@@ -273,14 +273,14 @@ canTypeToMonoType_numberBoxed canType =
                 monoFields =
                     Dict.map (\_ (Can.FieldType _ t) -> canTypeToMonoType_numberBoxed t) fields
             in
-            Mono.MRecord (Mono.computeRecordLayout Types.canUnbox monoFields)
+            Mono.MRecord monoFields
 
         Can.TTuple a b rest ->
             let
                 monoTypes =
                     List.map canTypeToMonoType_numberBoxed (a :: b :: rest)
             in
-            Mono.MTuple (Mono.computeTupleLayout Types.canUnbox monoTypes)
+            Mono.MTuple monoTypes
 
         Can.TUnit ->
             Mono.MUnit

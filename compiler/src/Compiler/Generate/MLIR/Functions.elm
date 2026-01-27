@@ -83,8 +83,11 @@ generateNode ctx specId node =
         Mono.MonoTailFunc params expr monoType ->
             generateTailFunc ctx funcName params expr monoType
 
-        Mono.MonoCtor ctorLayout monoType ->
+        Mono.MonoCtor ctorShape monoType ->
             let
+                ctorLayout =
+                    Types.computeCtorLayout ctorShape
+
                 ( ctx1, op ) =
                     generateCtor ctx funcName ctorLayout monoType
             in
@@ -571,7 +574,7 @@ generateSimpleBody ctx expr retTy =
 -- ====== GENERATE CTOR ======
 
 
-generateCtor : Ctx.Context -> String -> Mono.CtorLayout -> Mono.MonoType -> ( Ctx.Context, MlirOp )
+generateCtor : Ctx.Context -> String -> Types.CtorLayout -> Mono.MonoType -> ( Ctx.Context, MlirOp )
 generateCtor ctx funcName ctorLayout monoType =
     -- Register the custom type and its constructor for the type graph
     let

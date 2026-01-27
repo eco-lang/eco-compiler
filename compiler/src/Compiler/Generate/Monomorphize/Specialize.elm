@@ -109,13 +109,13 @@ specializeNode ctorName node requestedMonoType state =
                 tag =
                     Index.toMachine index
 
-                layout =
-                    buildCtorLayoutFromArity ctorName tag arity ctorMonoType
+                shape =
+                    buildCtorShapeFromArity ctorName tag arity ctorMonoType
 
                 ctorResultType =
                     extractCtorResultType arity requestedMonoType
             in
-            ( Mono.MonoCtor layout ctorResultType, state )
+            ( Mono.MonoCtor shape ctorResultType, state )
 
         TOpt.Enum tag canType ->
             let
@@ -1048,7 +1048,7 @@ specializeExpr expr subst state =
                 ( monoUpdates, state2 ) =
                     specializeUpdates updates layout subst state1
             in
-            ( Mono.MonoRecordUpdate monoRecord monoUpdates layout monoType, state2 )
+            ( Mono.MonoRecordUpdate monoRecord monoUpdates monoType, state2 )
 
         TOpt.Record fields canType ->
             let
@@ -1061,7 +1061,7 @@ specializeExpr expr subst state =
                 ( monoFields, stateAfter ) =
                     specializeRecordFields fields layout subst state
             in
-            ( Mono.MonoRecordCreate monoFields layout monoType, stateAfter )
+            ( Mono.MonoRecordCreate monoFields monoType, stateAfter )
 
         TOpt.TrackedRecord _ fields canType ->
             let
@@ -1074,7 +1074,7 @@ specializeExpr expr subst state =
                 ( monoFields, stateAfter ) =
                     specializeTrackedRecordFields fields layout subst state
             in
-            ( Mono.MonoRecordCreate monoFields layout monoType, stateAfter )
+            ( Mono.MonoRecordCreate monoFields monoType, stateAfter )
 
         TOpt.Unit _ ->
             ( Mono.MonoUnit, state )
@@ -1099,7 +1099,7 @@ specializeExpr expr subst state =
                 allExprs =
                     monoA :: monoB :: monoRest
             in
-            ( Mono.MonoTupleCreate region allExprs layout monoType, state3 )
+            ( Mono.MonoTupleCreate region allExprs monoType, state3 )
 
         TOpt.Shader _ _ _ _ ->
             ( Mono.MonoUnit, state )
@@ -1188,24 +1188,20 @@ resolveProcessedArg processedArg maybeParamType subst state =
 
         PendingAccessor region fieldName _ ->
             case maybeParamType of
-                Just (Mono.MFunction [ Mono.MRecord layout ] _) ->
+                Just (Mono.MFunction [ Mono.MRecord fields ] _) ->
                     -- The parameter type is a function from record to something.
                     -- Derive accessor's MonoType from the full record layout.
                     let
-                        maybeFieldInfo =
-                            List.filter (\f -> f.name == fieldName) layout.fields
-                                |> List.head
-
                         fieldType =
-                            case maybeFieldInfo of
-                                Just fi ->
-                                    fi.monoType
+                            case Dict.get identity fieldName fields of
+                                Just ft ->
+                                    ft
 
                                 Nothing ->
-                                    Utils.Crash.crash ("Specialize.resolveProcessedArg: Field " ++ fieldName ++ " not found in record layout. This is a compiler bug.")
+                                    Utils.Crash.crash ("Specialize.resolveProcessedArg: Field " ++ fieldName ++ " not found in record. This is a compiler bug.")
 
                         recordType =
-                            Mono.MRecord layout
+                            Mono.MRecord fields
 
                         accessorMonoType =
                             Mono.MFunction [ recordType ] fieldType
@@ -1224,24 +1220,20 @@ resolveProcessedArg processedArg maybeParamType subst state =
                     in
                     ( Mono.MonoVarGlobal region specId accessorMonoType, newState )
 
-                Just (Mono.MRecord layout) ->
+                Just (Mono.MRecord fields) ->
                     -- The parameter type is directly a record (accessor applied to record).
                     -- This case handles when the accessor IS the function being called.
                     let
-                        maybeFieldInfo =
-                            List.filter (\f -> f.name == fieldName) layout.fields
-                                |> List.head
-
                         fieldType =
-                            case maybeFieldInfo of
-                                Just fi ->
-                                    fi.monoType
+                            case Dict.get identity fieldName fields of
+                                Just ft ->
+                                    ft
 
                                 Nothing ->
-                                    Utils.Crash.crash ("Specialize.resolveProcessedArg: Field " ++ fieldName ++ " not found in record layout (direct). This is a compiler bug.")
+                                    Utils.Crash.crash ("Specialize.resolveProcessedArg: Field " ++ fieldName ++ " not found in record (direct). This is a compiler bug.")
 
                         recordType =
-                            Mono.MRecord layout
+                            Mono.MRecord fields
 
                         accessorMonoType =
                             Mono.MFunction [ recordType ] fieldType
@@ -1563,13 +1555,13 @@ computeIndexProjectionType globalTypeEnv hint index containerType =
 computeTupleElementType : Int -> Mono.MonoType -> Mono.MonoType
 computeTupleElementType index containerType =
     case containerType of
-        Mono.MTuple layout ->
-            case List.drop index layout.elements of
-                ( elemType, _ ) :: _ ->
+        Mono.MTuple elementTypes ->
+            case List.drop index elementTypes of
+                elemType :: _ ->
                     elemType
 
                 [] ->
-                    Utils.Crash.crash ("Specialize.computeTupleElementType: Tuple index " ++ String.fromInt index ++ " out of bounds for tuple with " ++ String.fromInt layout.arity ++ " elements")
+                    Utils.Crash.crash ("Specialize.computeTupleElementType: Tuple index " ++ String.fromInt index ++ " out of bounds for tuple with " ++ String.fromInt (List.length elementTypes) ++ " elements")
 
         _ ->
             Utils.Crash.crash ("Specialize.computeTupleElementType: Expected MTuple but got: " ++ Mono.monoTypeToDebugString containerType)
@@ -1637,10 +1629,14 @@ computeArrayElementType containerType =
 computeFieldProjectionType : Name -> Mono.MonoType -> ( Int, Mono.MonoType )
 computeFieldProjectionType fieldName recordType =
     case recordType of
-        Mono.MRecord layout ->
-            case findFieldInLayout fieldName layout.fields 0 of
-                Just ( idx, fieldInfo ) ->
-                    ( idx, fieldInfo.monoType )
+        Mono.MRecord fields ->
+            let
+                layout =
+                    Types.computeRecordLayout fields
+            in
+            case findFieldInLayout fieldName layout.fields of
+                Just fieldInfo ->
+                    ( fieldInfo.index, fieldInfo.monoType )
 
                 Nothing ->
                     Utils.Crash.crash ("Specialize.computeFieldProjectionType: Field '" ++ fieldName ++ "' not found in record layout")
@@ -1649,20 +1645,20 @@ computeFieldProjectionType fieldName recordType =
             Utils.Crash.crash ("Specialize.computeFieldProjectionType: Expected MRecord but got: " ++ Mono.monoTypeToDebugString recordType)
 
 
-{-| Find a field by name in a list of field infos, returning its index.
+{-| Find a field by name in a list of field infos.
 -}
-findFieldInLayout : Name -> List Mono.FieldInfo -> Int -> Maybe ( Int, Mono.FieldInfo )
-findFieldInLayout targetName fields idx =
+findFieldInLayout : Name -> List Types.FieldInfo -> Maybe Types.FieldInfo
+findFieldInLayout targetName fields =
     case fields of
         [] ->
             Nothing
 
         fieldInfo :: rest ->
             if fieldInfo.name == targetName then
-                Just ( idx, fieldInfo )
+                Just fieldInfo
 
             else
-                findFieldInLayout targetName rest (idx + 1)
+                findFieldInLayout targetName rest
 
 
 {-| Convert ContainerHint to ContainerKind for monomorphized paths.
@@ -1784,7 +1780,7 @@ specializeJumps jumps subst state =
         jumps
 
 
-specializeRecordFields : Dict String Name TOpt.Expr -> Mono.RecordLayout -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
+specializeRecordFields : Dict String Name TOpt.Expr -> Types.RecordLayout -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
 specializeRecordFields fields layout subst state =
     let
         fieldsByName =
@@ -1807,7 +1803,7 @@ specializeRecordFields fields layout subst state =
         layout.fields
 
 
-specializeTrackedRecordFields : Dict String (A.Located Name) TOpt.Expr -> Mono.RecordLayout -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
+specializeTrackedRecordFields : Dict String (A.Located Name) TOpt.Expr -> Types.RecordLayout -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
 specializeTrackedRecordFields fields layout subst state =
     let
         fieldsByName =
@@ -1833,7 +1829,7 @@ specializeTrackedRecordFields fields layout subst state =
         layout.fields
 
 
-specializeUpdates : Dict String (A.Located Name) TOpt.Expr -> Mono.RecordLayout -> Substitution -> MonoState -> ( List ( Int, Mono.MonoExpr ), MonoState )
+specializeUpdates : Dict String (A.Located Name) TOpt.Expr -> Types.RecordLayout -> Substitution -> MonoState -> ( List ( Int, Mono.MonoExpr ), MonoState )
 specializeUpdates updates layout subst state =
     Dict.foldl A.compareLocated
         (\locName expr ( acc, st ) ->
@@ -1882,11 +1878,11 @@ specializeArg subst ( locName, canType ) =
 
 {-| Extract record layout from a monomorphic type.
 -}
-getRecordLayout : Mono.MonoType -> Mono.RecordLayout
+getRecordLayout : Mono.MonoType -> Types.RecordLayout
 getRecordLayout monoType =
     case monoType of
-        Mono.MRecord layout ->
-            layout
+        Mono.MRecord fields ->
+            Types.computeRecordLayout fields
 
         _ ->
             { fieldCount = 0
@@ -1898,11 +1894,11 @@ getRecordLayout monoType =
 
 {-| Extract the tuple layout from a tuple MonoType.
 -}
-getTupleLayout : Mono.MonoType -> Mono.TupleLayout
+getTupleLayout : Mono.MonoType -> Types.TupleLayout
 getTupleLayout monoType =
     case monoType of
-        Mono.MTuple layout ->
-            layout
+        Mono.MTuple elementTypes ->
+            Types.computeTupleLayout elementTypes
 
         _ ->
             { arity = 0
@@ -1916,7 +1912,11 @@ getTupleLayout monoType =
 lookupFieldIndex : Name -> Mono.MonoType -> ( Int, Bool )
 lookupFieldIndex fieldName monoType =
     case monoType of
-        Mono.MRecord layout ->
+        Mono.MRecord fields ->
+            let
+                layout =
+                    Types.computeRecordLayout fields
+            in
             List.foldl
                 (\f acc ->
                     if f.name == fieldName then
@@ -1944,45 +1944,17 @@ buildFuncType args returnType =
         args
 
 
-{-| Build a constructor layout from name, tag, arity, and monomorphic type information.
+{-| Build a constructor shape from name, tag, arity, and monomorphic type information.
 -}
-buildCtorLayoutFromArity : Name.Name -> Int -> Int -> Mono.MonoType -> Mono.CtorLayout
-buildCtorLayoutFromArity ctorName tag arity ctorMonoType =
+buildCtorShapeFromArity : Name.Name -> Int -> Int -> Mono.MonoType -> Mono.CtorShape
+buildCtorShapeFromArity ctorName tag arity ctorMonoType =
     let
         fieldTypes =
             extractFieldTypes arity ctorMonoType
-
-        fields =
-            List.indexedMap
-                (\idx ty ->
-                    { name = "field" ++ String.fromInt idx
-                    , index = idx
-                    , monoType = ty
-                    , isUnboxed = Types.canUnbox ty
-                    }
-                )
-                fieldTypes
-
-        unboxedBitmap =
-            List.foldl
-                (\field acc ->
-                    if field.isUnboxed && field.index < 32 then
-                        acc + (2 ^ field.index)
-
-                    else
-                        acc
-                )
-                0
-                fields
-
-        unboxedCount =
-            List.length (List.filter .isUnboxed fields)
     in
     { name = ctorName
     , tag = tag
-    , unboxedBitmap = unboxedBitmap
-    , unboxedCount = unboxedCount
-    , fields = fields
+    , fieldTypes = fieldTypes
     }
 
 

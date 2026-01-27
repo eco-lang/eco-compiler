@@ -863,7 +863,7 @@ extractSentinelFromCondition condExpr =
 extractCountFromInitialState : Mono.MonoExpr -> Maybe CountSource
 extractCountFromInitialState expr =
     case expr of
-        Mono.MonoTupleCreate _ [ countExpr, listExpr ] _ _ ->
+        Mono.MonoTupleCreate _ [ countExpr, listExpr ] _ ->
             -- Check that listExpr is an empty list
             case listExpr of
                 Mono.MonoList _ [] _ ->

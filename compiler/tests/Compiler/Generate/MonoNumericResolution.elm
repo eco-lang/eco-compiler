@@ -173,7 +173,7 @@ collectExprCNumberChecks context expr =
             checkForCNumber context monoType
                 ++ List.concatMap (\( _, branchExpr ) -> collectExprCNumberChecks context branchExpr) branches
 
-        Mono.MonoRecordCreate fieldExprs _ monoType ->
+        Mono.MonoRecordCreate fieldExprs monoType ->
             checkForCNumber context monoType
                 ++ List.concatMap (collectExprCNumberChecks context) fieldExprs
 
@@ -181,12 +181,12 @@ collectExprCNumberChecks context expr =
             checkForCNumber context monoType
                 ++ collectExprCNumberChecks context recordExpr
 
-        Mono.MonoRecordUpdate recordExpr updates _ monoType ->
+        Mono.MonoRecordUpdate recordExpr updates monoType ->
             checkForCNumber context monoType
                 ++ collectExprCNumberChecks context recordExpr
                 ++ List.concatMap (\( _, updateExpr ) -> collectExprCNumberChecks context updateExpr) updates
 
-        Mono.MonoTupleCreate _ elementExprs _ monoType ->
+        Mono.MonoTupleCreate _ elementExprs monoType ->
             checkForCNumber context monoType
                 ++ List.concatMap (collectExprCNumberChecks context) elementExprs
 
@@ -346,17 +346,17 @@ collectExprCallSiteChecks context expr =
         Mono.MonoCase _ _ _ branches _ ->
             List.concatMap (\( _, branchExpr ) -> collectExprCallSiteChecks context branchExpr) branches
 
-        Mono.MonoRecordCreate fieldExprs _ _ ->
+        Mono.MonoRecordCreate fieldExprs _ ->
             List.concatMap (collectExprCallSiteChecks context) fieldExprs
 
         Mono.MonoRecordAccess recordExpr _ _ _ _ ->
             collectExprCallSiteChecks context recordExpr
 
-        Mono.MonoRecordUpdate recordExpr updates _ _ ->
+        Mono.MonoRecordUpdate recordExpr updates _ ->
             collectExprCallSiteChecks context recordExpr
                 ++ List.concatMap (\( _, updateExpr ) -> collectExprCallSiteChecks context updateExpr) updates
 
-        Mono.MonoTupleCreate _ elementExprs _ _ ->
+        Mono.MonoTupleCreate _ elementExprs _ ->
             List.concatMap (collectExprCallSiteChecks context) elementExprs
 
         _ ->

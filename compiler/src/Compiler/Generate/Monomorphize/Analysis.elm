@@ -54,11 +54,11 @@ collectCustomTypesFromMonoType monoType acc =
         Mono.MList elem ->
             collectCustomTypesFromMonoType elem acc
 
-        Mono.MTuple layout ->
-            List.foldl (\( ty, _ ) -> collectCustomTypesFromMonoType ty) acc layout.elements
+        Mono.MTuple elementTypes ->
+            List.foldl collectCustomTypesFromMonoType acc elementTypes
 
-        Mono.MRecord layout ->
-            List.foldl (\field -> collectCustomTypesFromMonoType field.monoType) acc layout.fields
+        Mono.MRecord fields ->
+            List.foldl collectCustomTypesFromMonoType acc (Dict.values compare fields)
 
         Mono.MFunction argTypes resultType ->
             List.foldl collectCustomTypesFromMonoType
@@ -152,31 +152,55 @@ collectCustomTypesFromExpr expr acc =
             in
             List.foldl (\( _, e ) a -> collectCustomTypesFromExpr e a) deciderAcc jumps
 
-        Mono.MonoRecordCreate exprs layout _ ->
+        Mono.MonoRecordCreate exprs monoType ->
             let
-                layoutAcc =
-                    List.foldl (\field a -> collectCustomTypesFromMonoType field.monoType a) accWithType layout.fields
+                fieldTypes =
+                    case monoType of
+                        Mono.MRecord fields ->
+                            Dict.values compare fields
+
+                        _ ->
+                            []
+
+                fieldAcc =
+                    List.foldl collectCustomTypesFromMonoType accWithType fieldTypes
             in
-            List.foldl collectCustomTypesFromExpr layoutAcc exprs
+            List.foldl collectCustomTypesFromExpr fieldAcc exprs
 
         Mono.MonoRecordAccess record _ _ _ _ ->
             collectCustomTypesFromExpr record accWithType
 
-        Mono.MonoRecordUpdate record updates layout _ ->
+        Mono.MonoRecordUpdate record updates monoType ->
             let
-                layoutAcc =
-                    List.foldl (\field a -> collectCustomTypesFromMonoType field.monoType a) accWithType layout.fields
+                fieldTypes =
+                    case monoType of
+                        Mono.MRecord fields ->
+                            Dict.values compare fields
+
+                        _ ->
+                            []
+
+                fieldAcc =
+                    List.foldl collectCustomTypesFromMonoType accWithType fieldTypes
             in
             List.foldl (\( _, e ) a -> collectCustomTypesFromExpr e a)
-                (collectCustomTypesFromExpr record layoutAcc)
+                (collectCustomTypesFromExpr record fieldAcc)
                 updates
 
-        Mono.MonoTupleCreate _ exprs layout _ ->
+        Mono.MonoTupleCreate _ exprs monoType ->
             let
-                layoutAcc =
-                    List.foldl (\( ty, _ ) a -> collectCustomTypesFromMonoType ty a) accWithType layout.elements
+                elemTypes =
+                    case monoType of
+                        Mono.MTuple types ->
+                            types
+
+                        _ ->
+                            []
+
+                elemAcc =
+                    List.foldl collectCustomTypesFromMonoType accWithType elemTypes
             in
-            List.foldl collectCustomTypesFromExpr layoutAcc exprs
+            List.foldl collectCustomTypesFromExpr elemAcc exprs
 
         Mono.MonoUnit ->
             accWithType
@@ -225,10 +249,10 @@ collectAllCustomTypes nodes =
                     collectCustomTypesFromExpr expr
                         (collectCustomTypesFromMonoType monoType accWithParams)
 
-                Mono.MonoCtor layout monoType ->
-                    List.foldl (\field a -> collectCustomTypesFromMonoType field.monoType a)
+                Mono.MonoCtor shape monoType ->
+                    List.foldl collectCustomTypesFromMonoType
                         (collectCustomTypesFromMonoType monoType acc)
-                        layout.fields
+                        shape.fieldTypes
 
                 Mono.MonoEnum _ monoType ->
                     collectCustomTypesFromMonoType monoType acc
