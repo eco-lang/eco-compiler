@@ -581,6 +581,23 @@ logic: When an accessor like `.name` with canonical type `{ ext | name : T } -> 
 inputs: Programs passing accessors as first-class functions
 oracle: Accessor specializations have complete record layouts; no partial layouts.
 --
+--
+name: Wrapper closures generate curried calls
+phase: monomorphization
+invariants: MONO_016
+ir: MonoClosure wrapper expressions
+logic: When creating uncurried wrapper closures for functions that return functions:
+  * Get the callee expression's type and determine how many arguments it accepts at the first application level.
+  * If the callee accepts fewer arguments than the wrapper provides, generate nested MonoCall expressions.
+  * Each MonoCall must pass only the number of arguments the callee type accepts at that level.
+  * The result of each intermediate call becomes the callee for subsequent arguments.
+  * Example: For `f : A -> B -> C -> D` called with `(a, b, c)` where `f` is `MFunction [A] (MFunction [B, C] D)`:
+    - First call: `call(f, [a])` returns `MFunction [B, C] D`
+    - Second call: `call(result, [b, c])` returns `D`
+inputs: Monomorphized wrappers for higher-order functions; functions returning functions
+oracle: No MonoCall passes more arguments than its callee type accepts; nested calls respect curried structure.
+tests: compiler/tests/Compiler/Generate/Monomorphize/WrapperCurriedCallsTest.elm
+--
 
 ---
 
