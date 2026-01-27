@@ -1535,7 +1535,13 @@ computeIndexProjectionType globalTypeEnv hint index containerType =
         TOpt.HintList ->
             case containerType of
                 Mono.MList elemType ->
-                    elemType
+                    if index == 0 then
+                        -- Index 0 is head: returns the element type
+                        elemType
+
+                    else
+                        -- Index 1 is tail: returns the list type itself
+                        containerType
 
                 _ ->
                     Utils.Crash.crash ("Specialize.computeIndexProjectionType: HintList at index " ++ String.fromInt index ++ " - Expected MList but got: " ++ Mono.monoTypeToDebugString containerType)
