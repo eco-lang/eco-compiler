@@ -621,38 +621,19 @@ typeOf expr =
             MUnit
 
 
-{-| Internal helper: Determine whether a type can be unboxed.
-
-Note: The canonical version of this function is in Compiler.Generate.MLIR.Types.
-This private copy exists to avoid circular dependencies.
-
--}
-canUnbox : MonoType -> Bool
-canUnbox monoType =
-    case monoType of
-        MInt ->
-            True
-
-        MFloat ->
-            True
-
-        MChar ->
-            True
-
-        _ ->
-            False
-
-
-
 -- ============================================================================
 -- ====== LAYOUT COMPUTATION ======
 -- ============================================================================
 
 
 {-| Compute runtime layout for a record type, ordering fields to place unboxed values first.
+
+The `canUnbox` parameter determines which types can be stored unboxed.
+Pass `Types.canUnbox` from Compiler.Generate.MLIR.Types.
+
 -}
-computeRecordLayout : Dict String Name MonoType -> RecordLayout
-computeRecordLayout fields =
+computeRecordLayout : (MonoType -> Bool) -> Dict String Name MonoType -> RecordLayout
+computeRecordLayout canUnbox fields =
     let
         allFields =
             Dict.toList compare fields
@@ -698,9 +679,13 @@ computeRecordLayout fields =
 
 
 {-| Compute runtime layout for a tuple type.
+
+The `canUnbox` parameter determines which types can be stored unboxed.
+Pass `Types.canUnbox` from Compiler.Generate.MLIR.Types.
+
 -}
-computeTupleLayout : List MonoType -> TupleLayout
-computeTupleLayout types =
+computeTupleLayout : (MonoType -> Bool) -> List MonoType -> TupleLayout
+computeTupleLayout canUnbox types =
     let
         elements =
             List.map (\t -> ( t, canUnbox t )) types

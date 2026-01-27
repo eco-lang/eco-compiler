@@ -217,7 +217,7 @@ generateLiteral ctx lit =
             in
             { ops = [ op ]
             , resultVar = var
-            , resultType = I1
+            , resultType = Types.monoTypeToOperand Mono.MBool
             , ctx = ctx2
             , isTerminated = False
             }

@@ -35,6 +35,7 @@ Three cases:
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Generate.MLIR.Types as Types
 import Data.Map as Dict
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
@@ -227,14 +228,14 @@ canTypeToMonoType_preserveVars canType =
                 monoFields =
                     Dict.map (\_ (Can.FieldType _ t) -> canTypeToMonoType_preserveVars t) fields
             in
-            Mono.MRecord (Mono.computeRecordLayout monoFields)
+            Mono.MRecord (Mono.computeRecordLayout Types.canUnbox monoFields)
 
         Can.TTuple a b rest ->
             let
                 monoTypes =
                     List.map canTypeToMonoType_preserveVars (a :: b :: rest)
             in
-            Mono.MTuple (Mono.computeTupleLayout monoTypes)
+            Mono.MTuple (Mono.computeTupleLayout Types.canUnbox monoTypes)
 
         Can.TUnit ->
             Mono.MUnit
@@ -272,14 +273,14 @@ canTypeToMonoType_numberBoxed canType =
                 monoFields =
                     Dict.map (\_ (Can.FieldType _ t) -> canTypeToMonoType_numberBoxed t) fields
             in
-            Mono.MRecord (Mono.computeRecordLayout monoFields)
+            Mono.MRecord (Mono.computeRecordLayout Types.canUnbox monoFields)
 
         Can.TTuple a b rest ->
             let
                 monoTypes =
                     List.map canTypeToMonoType_numberBoxed (a :: b :: rest)
             in
-            Mono.MTuple (Mono.computeTupleLayout monoTypes)
+            Mono.MTuple (Mono.computeTupleLayout Types.canUnbox monoTypes)
 
         Can.TUnit ->
             Mono.MUnit

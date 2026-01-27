@@ -29,6 +29,7 @@ by applying type variable substitutions.
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Generate.MLIR.Types as Types
 import Compiler.Generate.Monomorphize.State exposing (Substitution)
 import Data.Map as Dict
 import System.TypeCheck.IO as IO
@@ -146,7 +147,7 @@ unifyHelp canType monoType subst =
 
                         -- Create a record type with the remaining fields
                         remainingLayout =
-                            Mono.computeRecordLayout
+                            Mono.computeRecordLayout Types.canUnbox
                                 (List.foldl
                                     (\f d -> Dict.insert identity f.name f.monoType d)
                                     Dict.empty
@@ -348,7 +349,7 @@ applySubst subst canType =
                     Dict.union extensionFields baseFields
 
                 layout =
-                    Mono.computeRecordLayout monoFields
+                    Mono.computeRecordLayout Types.canUnbox monoFields
             in
             Mono.MRecord layout
 
@@ -358,7 +359,7 @@ applySubst subst canType =
                     List.map (applySubst subst) (a :: b :: rest)
 
                 layout =
-                    Mono.computeTupleLayout monoTypes
+                    Mono.computeTupleLayout Types.canUnbox monoTypes
             in
             Mono.MTuple layout
 
