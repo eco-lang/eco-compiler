@@ -80,7 +80,7 @@ static bool usesArgsArrayConvention(LLVM::LLVMFuncOp func) {
 /// 3. Calls the typed target function
 /// 4. Bitcasts the result back to i64/ptr for the runtime
 static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp module, StringRef funcName,
-                                           int64_t arity, Location loc) {
+                                           int64_t arity, Location loc, const TypeConverter *typeConverter) {
     auto *ctx = rewriter.getContext();
     auto i64Ty = IntegerType::get(ctx, 64);
     auto f64Ty = Float64Type::get(ctx);
@@ -110,10 +110,15 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
     if (auto funcFunc = module.lookupSymbol<func::FuncOp>(funcName)) {
         auto funcType = funcFunc.getFunctionType();
         for (auto paramType : funcType.getInputs()) {
-            targetParamTypes.push_back(paramType);
+            // Convert through type converter to handle !eco.value -> i64
+            Type convertedType = typeConverter ? typeConverter->convertType(paramType) : paramType;
+            targetParamTypes.push_back(convertedType ? convertedType : paramType);
         }
         if (funcType.getNumResults() > 0) {
-            targetResultType = funcType.getResult(0);
+            Type resultType = funcType.getResult(0);
+            // Convert through type converter to handle !eco.value -> i64
+            Type convertedResult = typeConverter ? typeConverter->convertType(resultType) : resultType;
+            targetResultType = convertedResult ? convertedResult : resultType;
         }
     } else if (auto llvmFunc = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName)) {
         auto funcType = llvmFunc.getFunctionType();
@@ -238,7 +243,7 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         // Get wrapper function that adapts calling convention
         auto funcSymbol = op.getFunction();
         auto module = op->getParentOfType<ModuleOp>();
-        auto wrapperFunc = getOrCreateWrapper(rewriter, module, funcSymbol, arity, loc);
+        auto wrapperFunc = getOrCreateWrapper(rewriter, module, funcSymbol, arity, loc, getTypeConverter());
         Value funcPtr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, wrapperFunc.getSymName());
 
         // Allocate closure with max_values = arity, n_values = 0
