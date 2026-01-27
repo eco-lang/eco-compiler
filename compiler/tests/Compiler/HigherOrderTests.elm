@@ -6,10 +6,14 @@ module Compiler.HigherOrderTests exposing (expectSuite, testCases)
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( accessorExpr
+        ( TypedDef
+        , UnionDef
+        , accessorExpr
+        , binopsExpr
         , boolExpr
         , callExpr
         , caseExpr
+        , ctorExpr
         , define
         , ifExpr
         , intExpr
@@ -17,15 +21,19 @@ import Compiler.AST.SourceBuilder
         , letExpr
         , listExpr
         , makeModule
+        , makeModuleWithTypedDefsUnionsAliases
         , pAlias
         , pAnything
         , pCons
+        , pCtor
         , pList
         , pRecord
         , pTuple
         , pVar
         , recordExpr
         , strExpr
+        , tLambda
+        , tType
         , tupleExpr
         , varExpr
         )
@@ -48,6 +56,7 @@ testCases expectFn =
         ++ partialApplicationCases expectFn
         ++ polymorphicHigherOrderCases expectFn
         ++ higherOrderWithPatternsCases expectFn
+        ++ caseReturningFunctionCases expectFn
 
 
 
@@ -731,5 +740,218 @@ higherOrderWithAliasPattern expectFn _ =
                 (letExpr [ withOriginal ]
                     (callExpr (varExpr "withOriginal") [ fn, intExpr 42 ])
                 )
+    in
+    expectFn modul
+
+
+
+-- ============================================================================
+-- CASE RETURNING FUNCTION (MONO_016) (2 tests)
+-- ============================================================================
+
+
+caseReturningFunctionCases : (Src.Module -> Expectation) -> List TestCase
+caseReturningFunctionCases expectFn =
+    [ { label = "Case returns curried binary operator", run = caseReturnsCurriedBinaryOp expectFn }
+    , { label = "Case returns curried ternary function", run = caseReturnsCurriedTernaryFn expectFn }
+    ]
+
+
+{-| Tests MONO\_016: Wrapper closures must generate curried calls.
+
+This test creates a function that returns a curried function based on
+case matching on a custom type. When a higher-order function receives
+this function as an argument, the wrapper closure must generate nested
+MonoCall expressions respecting the curried structure.
+
+    type Op = Add | Sub | Mul
+
+    getOp : Op -> Int -> Int -> Int
+    getOp op =
+        case op of
+            Add -> \a b -> a + b
+            Sub -> \a b -> a - b
+            Mul -> \a b -> a \* b
+
+    -- This forces wrapper closure creation for getOp
+    applyOp : (Op -> Int -> Int -> Int) -> Op -> Int -> Int -> Int
+    applyOp f op a b = f op a b
+
+    testValue = applyOp getOp Add 3 4
+
+-}
+caseReturnsCurriedBinaryOp : (Src.Module -> Expectation) -> (() -> Expectation)
+caseReturnsCurriedBinaryOp expectFn _ =
+    let
+        -- Define the Op union type
+        opUnion : UnionDef
+        opUnion =
+            { name = "Op"
+            , args = []
+            , ctors =
+                [ { name = "Add", args = [] }
+                , { name = "Sub", args = [] }
+                , { name = "Mul", args = [] }
+                ]
+            }
+
+        -- Define getOp : Op -> Int -> Int -> Int
+        getOpFn : TypedDef
+        getOpFn =
+            { name = "getOp"
+            , args = [ pVar "op" ]
+            , tipe = tLambda (tType "Op" []) (tLambda (tType "Int" []) (tLambda (tType "Int" []) (tType "Int" [])))
+            , body =
+                caseExpr (varExpr "op")
+                    [ ( pCtor "Add" []
+                      , lambdaExpr [ pVar "a", pVar "b" ]
+                            (binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "b"))
+                      )
+                    , ( pCtor "Sub" []
+                      , lambdaExpr [ pVar "a", pVar "b" ]
+                            (binopsExpr [ ( varExpr "a", "-" ) ] (varExpr "b"))
+                      )
+                    , ( pCtor "Mul" []
+                      , lambdaExpr [ pVar "a", pVar "b" ]
+                            (binopsExpr [ ( varExpr "a", "*" ) ] (varExpr "b"))
+                      )
+                    ]
+            }
+
+        -- applyOp : (Op -> Int -> Int -> Int) -> Op -> Int -> Int -> Int
+        -- applyOp f op a b = f op a b
+        applyOpFn : TypedDef
+        applyOpFn =
+            { name = "applyOp"
+            , args = [ pVar "f", pVar "op", pVar "a", pVar "b" ]
+            , tipe =
+                tLambda
+                    (tLambda (tType "Op" []) (tLambda (tType "Int" []) (tLambda (tType "Int" []) (tType "Int" []))))
+                    (tLambda (tType "Op" [])
+                        (tLambda (tType "Int" [])
+                            (tLambda (tType "Int" []) (tType "Int" []))
+                        )
+                    )
+            , body =
+                callExpr (varExpr "f")
+                    [ varExpr "op", varExpr "a", varExpr "b" ]
+            }
+
+        -- testValue = applyOp getOp Add 3 4
+        testValueFn : TypedDef
+        testValueFn =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body =
+                callExpr (varExpr "applyOp")
+                    [ varExpr "getOp", ctorExpr "Add", intExpr 3, intExpr 4 ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test" [ getOpFn, applyOpFn, testValueFn ] [ opUnion ] []
+    in
+    expectFn modul
+
+
+{-| Tests MONO\_016 with a ternary curried function passed to a higher-order function.
+
+    type Mode = First | Second | Third
+
+    choose : Mode -> Int -> Int -> Int -> Int
+    choose mode =
+        case mode of
+            First -> \a b c -> a
+            Second -> \a b c -> b
+            Third -> \a b c -> c
+
+    -- Forces wrapper closure creation for choose
+    applyChoice : (Mode -> Int -> Int -> Int -> Int) -> Mode -> Int -> Int -> Int -> Int
+    applyChoice f mode a b c = f mode a b c
+
+    testValue = applyChoice choose First 10 20 30
+
+-}
+caseReturnsCurriedTernaryFn : (Src.Module -> Expectation) -> (() -> Expectation)
+caseReturnsCurriedTernaryFn expectFn _ =
+    let
+        -- Define the Mode union type
+        modeUnion : UnionDef
+        modeUnion =
+            { name = "Mode"
+            , args = []
+            , ctors =
+                [ { name = "First", args = [] }
+                , { name = "Second", args = [] }
+                , { name = "Third", args = [] }
+                ]
+            }
+
+        -- Define choose : Mode -> Int -> Int -> Int -> Int
+        chooseFn : TypedDef
+        chooseFn =
+            { name = "choose"
+            , args = [ pVar "mode" ]
+            , tipe =
+                tLambda (tType "Mode" [])
+                    (tLambda (tType "Int" [])
+                        (tLambda (tType "Int" [])
+                            (tLambda (tType "Int" []) (tType "Int" []))
+                        )
+                    )
+            , body =
+                caseExpr (varExpr "mode")
+                    [ ( pCtor "First" []
+                      , lambdaExpr [ pVar "a", pVar "b", pVar "c" ] (varExpr "a")
+                      )
+                    , ( pCtor "Second" []
+                      , lambdaExpr [ pVar "a", pVar "b", pVar "c" ] (varExpr "b")
+                      )
+                    , ( pCtor "Third" []
+                      , lambdaExpr [ pVar "a", pVar "b", pVar "c" ] (varExpr "c")
+                      )
+                    ]
+            }
+
+        -- applyChoice : (Mode -> Int -> Int -> Int -> Int) -> Mode -> Int -> Int -> Int -> Int
+        -- applyChoice f mode a b c = f mode a b c
+        applyChoiceFn : TypedDef
+        applyChoiceFn =
+            { name = "applyChoice"
+            , args = [ pVar "f", pVar "mode", pVar "a", pVar "b", pVar "c" ]
+            , tipe =
+                tLambda
+                    (tLambda (tType "Mode" [])
+                        (tLambda (tType "Int" [])
+                            (tLambda (tType "Int" [])
+                                (tLambda (tType "Int" []) (tType "Int" []))
+                            )
+                        )
+                    )
+                    (tLambda (tType "Mode" [])
+                        (tLambda (tType "Int" [])
+                            (tLambda (tType "Int" [])
+                                (tLambda (tType "Int" []) (tType "Int" []))
+                            )
+                        )
+                    )
+            , body =
+                callExpr (varExpr "f")
+                    [ varExpr "mode", varExpr "a", varExpr "b", varExpr "c" ]
+            }
+
+        -- testValue = applyChoice choose First 10 20 30
+        testValueFn : TypedDef
+        testValueFn =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body =
+                callExpr (varExpr "applyChoice")
+                    [ varExpr "choose", ctorExpr "First", intExpr 10, intExpr 20, intExpr 30 ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test" [ chooseFn, applyChoiceFn, testValueFn ] [ modeUnion ] []
     in
     expectFn modul

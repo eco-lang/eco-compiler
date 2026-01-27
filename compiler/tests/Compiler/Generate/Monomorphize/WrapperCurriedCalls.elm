@@ -127,39 +127,67 @@ getFirstLevelArity monoType =
 {-| Check if a MonoCall violates curried call structure.
 
 A violation occurs when a MonoCall passes more arguments than its callee
-accepts at the first application level.
+can actually accept. For closures, we check the actual parameter count
+(not the type, which may be flattened). This catches the bug in
+makeGeneralClosure where a wrapper tries to pass all flattened arguments
+to a closure that only accepts a subset.
 
 -}
 checkMonoCallCurried : String -> Mono.MonoExpr -> List Mono.MonoExpr -> List Violation
 checkMonoCallCurried context fnExpr argExprs =
     let
-        fnType =
-            Mono.typeOf fnExpr
-
-        firstLevelArity =
-            getFirstLevelArity fnType
-
         argCount =
             List.length argExprs
+
+        -- For closures, check actual parameter count (structure)
+        -- For other expressions, fall back to type-based arity
+        actualArity =
+            case fnExpr of
+                Mono.MonoClosure closureInfo _ _ ->
+                    List.length closureInfo.params
+
+                _ ->
+                    getFirstLevelArity (Mono.typeOf fnExpr)
     in
-    -- A function type with arity 0 means it's not a function (e.g., already evaluated)
-    -- so we only check when firstLevelArity > 0
-    if firstLevelArity > 0 && argCount > firstLevelArity then
+    -- A function with arity 0 means it's not a function (e.g., already evaluated)
+    -- so we only check when actualArity > 0
+    if actualArity > 0 && argCount > actualArity then
         [ { context = context
           , message =
                 "MonoCall passes "
                     ++ String.fromInt argCount
-                    ++ " arguments but callee type "
-                    ++ monoTypeToString fnType
+                    ++ " arguments but callee "
+                    ++ describeCallee fnExpr
                     ++ " accepts only "
-                    ++ String.fromInt firstLevelArity
-                    ++ " at first application level. "
-                    ++ "Wrapper should generate nested calls for curried functions."
+                    ++ String.fromInt actualArity
+                    ++ ". Wrapper should generate nested calls for curried functions."
           }
         ]
 
     else
         []
+
+
+{-| Describe the callee for error messages.
+-}
+describeCallee : Mono.MonoExpr -> String
+describeCallee expr =
+    case expr of
+        Mono.MonoClosure closureInfo _ closureType ->
+            "closure (params: "
+                ++ String.fromInt (List.length closureInfo.params)
+                ++ ", type: "
+                ++ monoTypeToString closureType
+                ++ ")"
+
+        Mono.MonoVarGlobal _ specId t ->
+            "global " ++ String.fromInt specId ++ " : " ++ monoTypeToString t
+
+        Mono.MonoVarLocal name t ->
+            "local " ++ name ++ " : " ++ monoTypeToString t
+
+        _ ->
+            "expression of type " ++ monoTypeToString (Mono.typeOf expr)
 
 
 {-| Collect curried call issues from expressions.
