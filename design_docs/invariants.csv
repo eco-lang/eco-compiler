@@ -233,6 +233,10 @@ CGEN_049;MLIR_Codegen;Closures;enforced;eco.papCreate and eco.papExtend unboxed_
 
 CGEN_050;MLIR_Codegen;Lambdas;enforced;Lambda functions use typed signatures where capture parameters have their actual MonoType mapped to MLIR types and return types match the body expression type rather than always using eco.value so no internal boxing or unboxing is needed for immediate captures and returns;Compiler.Generate.MLIR.Lambdas
 
+CGEN_051;MLIR_Codegen;Closures;enforced;eco.papCreate arity attribute must equal the number of parameters that its referenced function symbol accepts so partial applications track the correct total arity;Compiler.Generate.MLIR.Expr
+
+CGEN_052;MLIR_Codegen;Closures;enforced;eco.papExtend remaining_arity must equal the source PAP arity minus the number of new arguments being added and must be non-negative so the runtime can correctly determine whether the application is partial or saturated;Compiler.Generate.MLIR.Expr
+
 
 # =============================================================================
 # RUNTIME HEAP PHASE - Memory layout and GC invariants

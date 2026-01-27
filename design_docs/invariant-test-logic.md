@@ -983,6 +983,33 @@ oracle: papExtend always returns !eco.value; unboxing is explicit.
 tests: compiler/tests/Compiler/Generate/CodeGen/PapExtendResultTest.elm
 --
 --
+name: eco.papCreate arity matches function parameter count
+phase: MLIR codegen
+invariants: CGEN_051
+ir: eco.papCreate ops
+logic: eco.papCreate arity attribute must equal the number of parameters of the referenced function:
+  * Build a map from function symbol names to their parameter counts.
+  * For each eco.papCreate, look up the function and verify arity matches param count.
+  * External kernel functions without definitions are skipped.
+inputs: MLIR with closure creation
+oracle: papCreate arity equals referenced function parameter count.
+tests: compiler/tests/Compiler/Generate/CodeGen/PapArityConsistencyTest.elm
+--
+--
+name: eco.papExtend remaining_arity matches calculation
+phase: MLIR codegen
+invariants: CGEN_052
+ir: eco.papExtend ops
+logic: eco.papExtend remaining_arity must equal source_arity minus num_new_args:
+  * Track PAP arities from eco.papCreate results.
+  * For each eco.papExtend, look up source PAP arity.
+  * Verify: remaining_arity = source_arity - (operand_count - 1).
+  * Verify: remaining_arity >= 0.
+inputs: MLIR with closure application
+oracle: remaining_arity correctly computed; no over-application.
+tests: compiler/tests/Compiler/Generate/CodeGen/PapExtendArityTest.elm
+--
+--
 name: Single eco.type_table per module
 phase: MLIR codegen
 invariants: CGEN_035
