@@ -1,10 +1,12 @@
 module Compiler.Generate.MLIR.Context exposing
     ( Context, FuncSignature, PendingLambda, TypeRegistry
+    , CallModel(..)
     , initContext
     , freshVar, freshOpId, lookupVar, addVarMapping
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType
     , isTypeVar, hasKernelImplementation
+    , isFlattenedExternalSpec
     )
 
 {-| MLIR code generation context.
@@ -58,16 +60,29 @@ import Utils.Crash exposing (crash)
 -- ====== CONTEXT ======
 
 
-{-| Function signature for invariant checking: param types and return type
+{-| Call model for a function: determines arity calculation strategy.
+
+  - FlattenedExternal: External/kernel functions use total ABI arity (all params at once)
+  - StageCurried: User closures use stage arity (one stage at a time per MONO\_016)
+
+-}
+type CallModel
+    = FlattenedExternal
+    | StageCurried
+
+
+{-| Function signature for invariant checking: param types, return type, and call model.
 -}
 type alias FuncSignature =
     { paramTypes : List Mono.MonoType
     , returnType : Mono.MonoType
+    , callModel : CallModel
     }
 
 
 {-| Derive a FuncSignature from a monomorphic function type.
 Used for kernel functions where we derive the ABI from the Elm type.
+Kernels use flattened ABI (all params at once).
 -}
 kernelFuncSignatureFromType : Mono.MonoType -> FuncSignature
 kernelFuncSignatureFromType funcType =
@@ -77,6 +92,7 @@ kernelFuncSignatureFromType funcType =
     in
     { paramTypes = argTypes
     , returnType = retType
+    , callModel = FlattenedExternal
     }
 
 
@@ -104,6 +120,18 @@ match for concrete Int, Float, or Bool argument types.
 hasKernelImplementation : String -> String -> Bool
 hasKernelImplementation _ _ =
     False
+
+
+{-| Check if a SpecId refers to a flattened external function.
+-}
+isFlattenedExternalSpec : Int -> Context -> Bool
+isFlattenedExternalSpec specId ctx =
+    case Dict.get specId ctx.signatures of
+        Just sig ->
+            sig.callModel == FlattenedExternal
+
+        Nothing ->
+            False
 
 
 {-| MLIR code generation context holding state during code generation.
@@ -375,20 +403,28 @@ registerKernelCall ctx name callSiteArgTypes callSiteReturnType =
 -- ====== SIGNATURE EXTRACTION (for invariant checking)
 
 
-{-| Extract the function signature (param types, return type) from a MonoNode.
+{-| Extract the function signature (param types, return type, call model) from a MonoNode.
 Returns Nothing for nodes that aren't callable functions.
+
+Call model determines arity calculation:
+
+  - FlattenedExternal: MonoExtern nodes use total ABI arity (decomposeFunctionType)
+  - StageCurried: User-defined closures use stage arity (closureInfo.params)
+
 -}
 extractNodeSignature : Mono.MonoNode -> Maybe FuncSignature
 extractNodeSignature node =
     case node of
         Mono.MonoDefine expr monoType ->
             -- For defines, check if the expression is a closure
+            -- User-defined functions are stage-curried per MONO_016
             case expr of
                 Mono.MonoClosure closureInfo body _ ->
-                    -- Function with params
+                    -- Function with params (stage-curried)
                     Just
                         { paramTypes = List.map Tuple.second closureInfo.params
                         , returnType = Mono.typeOf body
+                        , callModel = StageCurried
                         }
 
                 _ ->
@@ -396,11 +432,13 @@ extractNodeSignature node =
                     Just
                         { paramTypes = []
                         , returnType = monoType
+                        , callModel = StageCurried
                         }
 
         Mono.MonoTailFunc params _ monoType ->
             -- monoType is the full function type (MFunction args returnType)
             -- Extract the actual return type from it
+            -- Tail functions are stage-curried
             let
                 returnType =
                     case monoType of
@@ -414,13 +452,16 @@ extractNodeSignature node =
             Just
                 { paramTypes = List.map Tuple.second params
                 , returnType = returnType
+                , callModel = StageCurried
                 }
 
         Mono.MonoCtor ctorShape monoType ->
             -- Constructor - params are the field types
+            -- Constructors are called with all args at once (flattened)
             Just
                 { paramTypes = ctorShape.fieldTypes
                 , returnType = monoType
+                , callModel = FlattenedExternal
                 }
 
         Mono.MonoEnum _ monoType ->
@@ -428,11 +469,13 @@ extractNodeSignature node =
             Just
                 { paramTypes = []
                 , returnType = monoType
+                , callModel = FlattenedExternal
                 }
 
         Mono.MonoExtern monoType ->
             -- External value or function.
-            -- If it's a function type, decompose it to get arguments + result.
+            -- If it's a function type, decompose it to get ALL arguments + result.
+            -- External functions are NOT stage-curried; they use flattened parameter lists.
             case monoType of
                 Mono.MFunction _ _ ->
                     let
@@ -442,6 +485,7 @@ extractNodeSignature node =
                     Just
                         { paramTypes = argMonoTypes
                         , returnType = resultMonoType
+                        , callModel = FlattenedExternal
                         }
 
                 -- Non-function externs are not callable; no signature.
@@ -449,37 +493,44 @@ extractNodeSignature node =
                     Nothing
 
         Mono.MonoPortIncoming expr monoType ->
+            -- Ports with closures are stage-curried
             case expr of
                 Mono.MonoClosure closureInfo body _ ->
                     Just
                         { paramTypes = List.map Tuple.second closureInfo.params
                         , returnType = Mono.typeOf body
+                        , callModel = StageCurried
                         }
 
                 _ ->
                     Just
                         { paramTypes = []
                         , returnType = monoType
+                        , callModel = StageCurried
                         }
 
         Mono.MonoPortOutgoing expr monoType ->
+            -- Ports with closures are stage-curried
             case expr of
                 Mono.MonoClosure closureInfo body _ ->
                     Just
                         { paramTypes = List.map Tuple.second closureInfo.params
                         , returnType = Mono.typeOf body
+                        , callModel = StageCurried
                         }
 
                 _ ->
                     Just
                         { paramTypes = []
                         , returnType = monoType
+                        , callModel = StageCurried
                         }
 
         Mono.MonoCycle _ monoType ->
             Just
                 { paramTypes = []
                 , returnType = monoType
+                , callModel = StageCurried
                 }
 
 

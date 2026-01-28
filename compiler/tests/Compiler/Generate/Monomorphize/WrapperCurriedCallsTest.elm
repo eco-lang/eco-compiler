@@ -1,10 +1,10 @@
 module Compiler.Generate.Monomorphize.WrapperCurriedCallsTest exposing (suite)
 
-{-| Test suite for MONO\_016: Wrapper closures generate curried calls.
+{-| Test suite for MONO\_016: Stage arity invariant for closures.
 
-When creating uncurried wrapper closures for functions that return functions,
-the wrapper must generate nested MonoCall expressions that respect the original
-curried parameter structure.
+For every MonoClosure whose MonoType is an MFunction, the length of
+closureInfo.params must equal the length of the outermost MFunction
+argument list (i.e., stage arity).
 
 -}
 
@@ -15,6 +15,6 @@ import Test exposing (Test)
 
 suite : Test
 suite =
-    Test.describe "MONO_016: Wrapper closures generate curried calls"
-        [ StandardTestSuites.expectSuite expectWrapperCurriedCalls "generates curried wrapper calls"
+    Test.describe "MONO_016: Stage arity invariant"
+        [ StandardTestSuites.expectSuite expectWrapperCurriedCalls "stage arity matches params"
         ]

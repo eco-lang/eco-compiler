@@ -254,14 +254,7 @@ applySubst subst canType =
                 resultMono =
                     applySubst subst to
             in
-            case resultMono of
-                Mono.MFunction restArgs ret ->
-                    -- Flatten curried chain: prepend this arg to existing function args
-                    Mono.MFunction (argMono :: restArgs) ret
-
-                _ ->
-                    -- Base case: single argument function
-                    Mono.MFunction [ argMono ] resultMono
+            Mono.MFunction [ argMono ] resultMono
 
         Can.TType canonical name args ->
             let

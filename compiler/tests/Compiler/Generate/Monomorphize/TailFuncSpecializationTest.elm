@@ -10,8 +10,8 @@ This test verifies that for tail-recursive functions:
 2.  The MonoTailFunc node's argument count and return type match
     the expected monomorphized function type.
 
-This catches the bug where the "return type" field is actually the full
-function type, causing incorrect MonoType construction.
+Note: Under the stage-aware design, MFunction types are nested (one per TLambda),
+not flattened. For `Int -> Int -> Int`, we get `MFunction [MInt] (MFunction [MInt] MInt)`.
 
 -}
 
@@ -40,7 +40,7 @@ import Test exposing (Test)
 suite : Test
 suite =
     Test.describe "MonoTailFunc specialization type invariants (MONO_TAILFUNC_001)"
-        [ Test.test "sumHelper MonoTailFunc has MFunction [MInt, MInt] MInt" <|
+        [ Test.test "sumHelper MonoTailFunc has nested MFunction [MInt] (MFunction [MInt] MInt)" <|
             \_ -> checkSumHelperMono
         , Test.test "MonoTailFunc arg count matches expected arity" <|
             \_ -> checkMonoTailFuncArity
@@ -62,7 +62,7 @@ suite =
         else
             sumHelper (acc + n) (n - 1)
 
-Expected MonoType: MFunction [MInt, MInt] MInt
+Expected MonoType: MFunction [MInt] (MFunction [MInt] MInt)
 
 -}
 sumHelperModule : Src.Module
@@ -105,7 +105,7 @@ For sumHelper : Int -> Int -> Int, we expect:
 
   - MonoTailFunc with 2 arguments (acc: MInt, n: MInt)
   - Return type: MInt
-  - Overall function type: MFunction [MInt, MInt] MInt
+  - Overall function type: MFunction [MInt] (MFunction [MInt] MInt)
 
 -}
 checkSumHelperMono : Expectation
@@ -141,7 +141,7 @@ checkMonoTailFuncArity =
 For sumHelper : Int -> Int -> Int, we expect:
 
   - MonoTailFunc with 2 arguments (acc: MInt, n: MInt)
-  - MonoType field: MFunction [MInt, MInt] MInt (the full function type per MONO_004)
+  - MonoType field: MFunction [MInt] (MFunction [MInt] MInt) (nested per stage-aware design)
 
 -}
 checkMonoTailFuncType : String -> Mono.MonoGraph -> Expectation
@@ -173,9 +173,9 @@ checkMonoTailFuncType funcName (Mono.MonoGraph data) =
                 expectedArgTypes =
                     [ Mono.MInt, Mono.MInt ]
 
-                -- Per MONO_004, MonoTailFunc stores the full function type
+                -- Under stage-aware design, Int -> Int -> Int becomes nested MFunction
                 expectedMonoType =
-                    Mono.MFunction [ Mono.MInt, Mono.MInt ] Mono.MInt
+                    Mono.MFunction [ Mono.MInt ] (Mono.MFunction [ Mono.MInt ] Mono.MInt)
 
                 -- Check argument types
                 argTypeErrors =

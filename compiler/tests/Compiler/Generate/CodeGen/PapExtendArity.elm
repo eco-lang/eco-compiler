@@ -5,13 +5,15 @@ module Compiler.Generate.CodeGen.PapExtendArity exposing
 
 {-| Test logic for CGEN_052: PapExtend remaining\_arity calculation invariant.
 
-`eco.papExtend` remaining\_arity must satisfy:
+`eco.papExtend` remaining\_arity must equal the source PAP's remaining arity
+(before this application), satisfying:
 
-  - `remaining_arity = source_pap_arity - num_new_args`
-  - `remaining_arity >= 0`
+  - For `eco.papCreate`: remaining = arity - num\_captured
+  - For chained `eco.papExtend`: remaining comes from source PAP's remaining
+  - `remaining_arity >= num_new_args` (no over-application)
 
-This test tracks PAP arities from `eco.papCreate` ops and verifies that
-`eco.papExtend` uses the correct remaining\_arity based on the source PAP.
+This test tracks PAP remaining arities from `eco.papCreate` ops and verifies that
+each `eco.papExtend` uses the correct remaining\_arity matching its source PAP.
 
 @docs expectPapExtendArity, checkPapExtendArity
 
@@ -32,7 +34,7 @@ import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp)
 
 
-{-| Verify that papExtend remaining\_arity invariants hold for a source module.
+{-| Verify that papExtend remaining\_arity equals the source PAP's remaining arity.
 -}
 expectPapExtendArity : Src.Module -> Expectation
 expectPapExtendArity srcModule =
@@ -68,12 +70,14 @@ checkPapExtendArity mlirModule =
     violations
 
 
-{-| Build a map from SSA value names to their PAP arities.
+{-| Build a map from SSA value names to their PAP remaining arities.
 
-This collects arities from:
+This collects remaining arities from:
 
-1.  eco.papCreate - the arity attribute
-2.  eco.papExtend - the remaining\_arity becomes the new PAP's arity
+1.  eco.papCreate - remaining = arity - num\_captured (per dialect semantics)
+2.  eco.papExtend - remaining = remaining\_arity - num\_new\_args
+
+The map tracks how many arguments are still expected for each PAP value.
 
 -}
 buildPapArityMap : MlirModule -> Dict String Int
@@ -86,22 +90,32 @@ buildPapArityMap mlirModule =
         processOp : MlirOp -> Dict String Int -> Dict String Int
         processOp op map =
             if op.name == "eco.papCreate" then
-                -- eco.papCreate result has arity from the arity attribute
-                case ( List.head op.results, getIntAttr "arity" op ) of
-                    ( Just ( resultName, _ ), Just arity ) ->
-                        Dict.insert resultName arity map
+                -- eco.papCreate: remaining = arity - num_captured
+                case ( List.head op.results, getIntAttr "arity" op, getIntAttr "num_captured" op ) of
+                    ( Just ( resultName, _ ), Just arity, Just numCaptured ) ->
+                        let
+                            remaining =
+                                arity - numCaptured
+                        in
+                        Dict.insert resultName remaining map
 
                     _ ->
                         map
 
             else if op.name == "eco.papExtend" then
-                -- eco.papExtend result has arity from remaining_arity
-                -- (which becomes the new PAP's effective arity)
+                -- eco.papExtend: result remaining = remaining_arity - numNewArgs
                 case ( List.head op.results, getIntAttr "remaining_arity" op ) of
                     ( Just ( resultName, _ ), Just remainingArity ) ->
-                        -- Only add if remaining_arity > 0 (still a PAP)
-                        if remainingArity > 0 then
-                            Dict.insert resultName remainingArity map
+                        let
+                            numNewArgs =
+                                List.length op.operands - 1
+
+                            resultRemaining =
+                                remainingArity - numNewArgs
+                        in
+                        -- Only add if still a PAP (remaining > 0)
+                        if resultRemaining > 0 then
+                            Dict.insert resultName resultRemaining map
 
                         else
                             map
@@ -169,33 +183,27 @@ checkPapExtendOp papArityMap op =
                                 -- The runtime will catch actual errors.
                                 Nothing
 
-                            Just sourceArity ->
-                                let
-                                    expectedRemainingArity =
-                                        sourceArity - numNewArgs
-                                in
-                                if remainingArity /= expectedRemainingArity then
+                            Just sourceRemaining ->
+                                -- remaining_arity attribute should equal source PAP's remaining arity
+                                -- (this is the closure's remaining arity *before* this application)
+                                if remainingArity /= sourceRemaining then
                                     Just
                                         { opId = op.id
                                         , opName = op.name
                                         , message =
                                             "eco.papExtend remaining_arity="
                                                 ++ String.fromInt remainingArity
-                                                ++ " but should be source_arity("
-                                                ++ String.fromInt sourceArity
-                                                ++ ") - num_new_args("
-                                                ++ String.fromInt numNewArgs
-                                                ++ ") = "
-                                                ++ String.fromInt expectedRemainingArity
+                                                ++ " but source PAP has remaining="
+                                                ++ String.fromInt sourceRemaining
                                         }
 
-                                else if expectedRemainingArity < 0 then
+                                else if remainingArity < numNewArgs then
                                     Just
                                         { opId = op.id
                                         , opName = op.name
                                         , message =
-                                            "eco.papExtend over-applies: source_arity="
-                                                ++ String.fromInt sourceArity
+                                            "eco.papExtend over-applies: remaining_arity="
+                                                ++ String.fromInt remainingArity
                                                 ++ " but num_new_args="
                                                 ++ String.fromInt numNewArgs
                                         }

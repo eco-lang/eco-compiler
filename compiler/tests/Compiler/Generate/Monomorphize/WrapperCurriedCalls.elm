@@ -3,12 +3,15 @@ module Compiler.Generate.Monomorphize.WrapperCurriedCalls exposing
     , checkWrapperCurriedCalls
     )
 
-{-| Test logic for MONO\_016: Wrapper closures generate curried calls.
+{-| Test logic for MONO\_016: Stage arity invariant for closures.
 
-When creating uncurried wrapper closures for functions that return functions,
-the wrapper must generate nested MonoCall expressions that respect the original
-curried parameter structure. Each MonoCall must pass only the number of arguments
-the callee accepts at that application level.
+For every MonoClosure whose MonoType is an MFunction, the length of
+closureInfo.params must equal the length of the outermost MFunction
+argument list (i.e., stage arity).
+
+Simple directly-nested lambda chains are uncurried into a single flat
+MFunction stage, while lambdas separated by let or case preserve nested
+MFunction structure with each stage closure matching its outermost arg count.
 
 @docs expectWrapperCurriedCalls, checkWrapperCurriedCalls
 
@@ -29,7 +32,7 @@ type alias Violation =
     }
 
 
-{-| MONO\_016: Verify wrapper closures generate curried calls.
+{-| MONO\_016: Verify stage arity invariant for closures.
 -}
 expectWrapperCurriedCalls : Src.Module -> Expectation
 expectWrapperCurriedCalls srcModule =
@@ -49,12 +52,12 @@ expectWrapperCurriedCalls srcModule =
                 Expect.fail (formatViolations violations)
 
 
-{-| Check wrapper curried calls consistency in the MonoGraph.
+{-| Check stage arity invariant for all closures in the MonoGraph.
 -}
 checkWrapperCurriedCalls : Mono.MonoGraph -> List Violation
 checkWrapperCurriedCalls (Mono.MonoGraph data) =
     Dict.foldl compare
-        (\specId node acc -> checkNodeCurriedCalls specId node ++ acc)
+        (\specId node acc -> checkNodeStageArity specId node ++ acc)
         []
         data.nodes
 
@@ -70,52 +73,42 @@ formatViolations violations =
 
 
 -- ============================================================================
--- CURRIED CALL VERIFICATION
+-- STAGE ARITY VERIFICATION
 -- ============================================================================
 
 
-{-| Check curried call structure for a single MonoNode.
+{-| Check stage arity for closures in a single MonoNode.
 -}
-checkNodeCurriedCalls : Int -> Mono.MonoNode -> List Violation
-checkNodeCurriedCalls specId node =
+checkNodeStageArity : Int -> Mono.MonoNode -> List Violation
+checkNodeStageArity specId node =
     let
         context =
             "SpecId " ++ String.fromInt specId
     in
     case node of
         Mono.MonoDefine expr _ ->
-            collectExprCurriedCallIssues context expr
+            collectExprStageArityIssues context expr
 
         Mono.MonoTailFunc _ expr _ ->
-            collectExprCurriedCallIssues context expr
+            collectExprStageArityIssues context expr
 
         Mono.MonoPortIncoming expr _ ->
-            collectExprCurriedCallIssues context expr
+            collectExprStageArityIssues context expr
 
         Mono.MonoPortOutgoing expr _ ->
-            collectExprCurriedCallIssues context expr
+            collectExprStageArityIssues context expr
 
         Mono.MonoCycle defs _ ->
-            List.concatMap (\( _, e ) -> collectExprCurriedCallIssues context e) defs
+            List.concatMap (\( _, e ) -> collectExprStageArityIssues context e) defs
 
         _ ->
             []
 
 
-{-| Get the first-level arity from a function type.
-
-This returns the number of arguments the function accepts at the FIRST
-application level, NOT the flattened arity.
-
-For example:
-
-  - `MFunction [A] (MFunction [B, C] D)` returns 1 (just A)
-  - `MFunction [A, B] C` returns 2 (A and B)
-  - `MInt` returns 0 (not a function)
-
+{-| Get the stage arity from a function type (outermost MFunction arg count).
 -}
-getFirstLevelArity : Mono.MonoType -> Int
-getFirstLevelArity monoType =
+stageArity : Mono.MonoType -> Int
+stageArity monoType =
     case monoType of
         Mono.MFunction params _ ->
             List.length params
@@ -124,134 +117,106 @@ getFirstLevelArity monoType =
             0
 
 
-{-| Check if a MonoCall violates curried call structure.
+{-| Check if a MonoClosure violates the stage arity invariant.
 
-A violation occurs when a MonoCall passes more arguments than its callee
-can actually accept. For closures, we check the actual parameter count
-(not the type, which may be flattened). This catches the bug in
-makeGeneralClosure where a wrapper tries to pass all flattened arguments
-to a closure that only accepts a subset.
+MONO\_016: For every MonoClosure whose MonoType is an MFunction,
+closureInfo.params length must equal the outermost MFunction argument count.
 
 -}
-checkMonoCallCurried : String -> Mono.MonoExpr -> List Mono.MonoExpr -> List Violation
-checkMonoCallCurried context fnExpr argExprs =
+checkClosureStageArity : String -> Mono.ClosureInfo -> Mono.MonoType -> List Violation
+checkClosureStageArity context closureInfo monoType =
     let
-        argCount =
-            List.length argExprs
+        paramCount =
+            List.length closureInfo.params
 
-        -- For closures, check actual parameter count (structure)
-        -- For other expressions, fall back to type-based arity
-        actualArity =
-            case fnExpr of
-                Mono.MonoClosure closureInfo _ _ ->
-                    List.length closureInfo.params
-
-                _ ->
-                    getFirstLevelArity (Mono.typeOf fnExpr)
+        expectedArity =
+            stageArity monoType
     in
-    -- A function with arity 0 means it's not a function (e.g., already evaluated)
-    -- so we only check when actualArity > 0
-    if actualArity > 0 && argCount > actualArity then
-        [ { context = context
-          , message =
-                "MonoCall passes "
-                    ++ String.fromInt argCount
-                    ++ " arguments but callee "
-                    ++ describeCallee fnExpr
-                    ++ " accepts only "
-                    ++ String.fromInt actualArity
-                    ++ ". Wrapper should generate nested calls for curried functions."
-          }
-        ]
+    case monoType of
+        Mono.MFunction _ _ ->
+            if paramCount /= expectedArity then
+                [ { context = context
+                  , message =
+                        "MonoClosure has "
+                            ++ String.fromInt paramCount
+                            ++ " params but type "
+                            ++ monoTypeToString monoType
+                            ++ " has stage arity "
+                            ++ String.fromInt expectedArity
+                            ++ ". Params and stage arity must match."
+                  }
+                ]
 
-    else
-        []
-
-
-{-| Describe the callee for error messages.
--}
-describeCallee : Mono.MonoExpr -> String
-describeCallee expr =
-    case expr of
-        Mono.MonoClosure closureInfo _ closureType ->
-            "closure (params: "
-                ++ String.fromInt (List.length closureInfo.params)
-                ++ ", type: "
-                ++ monoTypeToString closureType
-                ++ ")"
-
-        Mono.MonoVarGlobal _ specId t ->
-            "global " ++ String.fromInt specId ++ " : " ++ monoTypeToString t
-
-        Mono.MonoVarLocal name t ->
-            "local " ++ name ++ " : " ++ monoTypeToString t
+            else
+                []
 
         _ ->
-            "expression of type " ++ monoTypeToString (Mono.typeOf expr)
+            -- Non-function closures are fine (e.g., thunks returning values)
+            []
 
 
-{-| Collect curried call issues from expressions.
+{-| Collect stage arity issues from expressions.
 -}
-collectExprCurriedCallIssues : String -> Mono.MonoExpr -> List Violation
-collectExprCurriedCallIssues context expr =
+collectExprStageArityIssues : String -> Mono.MonoExpr -> List Violation
+collectExprStageArityIssues context expr =
     case expr of
-        Mono.MonoClosure closureInfo bodyExpr _ ->
-            List.concatMap (\( _, e, _ ) -> collectExprCurriedCallIssues context e) closureInfo.captures
-                ++ collectExprCurriedCallIssues context bodyExpr
+        Mono.MonoClosure closureInfo bodyExpr closureType ->
+            -- Check this closure for stage arity violation
+            checkClosureStageArity context closureInfo closureType
+                ++ List.concatMap (\( _, e, _ ) -> collectExprStageArityIssues context e) closureInfo.captures
+                ++ collectExprStageArityIssues context bodyExpr
 
         Mono.MonoCall _ fnExpr argExprs _ ->
-            -- Check this call for curried structure violations
-            checkMonoCallCurried context fnExpr argExprs
-                ++ collectExprCurriedCallIssues context fnExpr
-                ++ List.concatMap (collectExprCurriedCallIssues context) argExprs
+            collectExprStageArityIssues context fnExpr
+                ++ List.concatMap (collectExprStageArityIssues context) argExprs
 
         Mono.MonoTailCall _ args _ ->
-            List.concatMap (\( _, e ) -> collectExprCurriedCallIssues context e) args
+            List.concatMap (\( _, e ) -> collectExprStageArityIssues context e) args
 
         Mono.MonoList _ exprs _ ->
-            List.concatMap (collectExprCurriedCallIssues context) exprs
+            List.concatMap (collectExprStageArityIssues context) exprs
 
         Mono.MonoIf branches elseExpr _ ->
-            List.concatMap (\( c, t ) -> collectExprCurriedCallIssues context c ++ collectExprCurriedCallIssues context t) branches
-                ++ collectExprCurriedCallIssues context elseExpr
+            List.concatMap (\( c, t ) -> collectExprStageArityIssues context c ++ collectExprStageArityIssues context t) branches
+                ++ collectExprStageArityIssues context elseExpr
 
         Mono.MonoLet def bodyExpr _ ->
-            collectDefCurriedCallIssues context def
-                ++ collectExprCurriedCallIssues context bodyExpr
+            collectDefStageArityIssues context def
+                ++ collectExprStageArityIssues context bodyExpr
 
         Mono.MonoDestruct _ valueExpr _ ->
-            collectExprCurriedCallIssues context valueExpr
+            collectExprStageArityIssues context valueExpr
 
         Mono.MonoCase _ _ _ branches _ ->
-            List.concatMap (\( _, e ) -> collectExprCurriedCallIssues context e) branches
+            List.concatMap (\( _, e ) -> collectExprStageArityIssues context e) branches
 
         Mono.MonoRecordCreate fieldExprs _ ->
-            List.concatMap (collectExprCurriedCallIssues context) fieldExprs
+            List.concatMap (collectExprStageArityIssues context) fieldExprs
 
         Mono.MonoRecordUpdate recordExpr updates _ ->
-            collectExprCurriedCallIssues context recordExpr
-                ++ List.concatMap (\( _, e ) -> collectExprCurriedCallIssues context e) updates
+            collectExprStageArityIssues context recordExpr
+                ++ List.concatMap (\( _, e ) -> collectExprStageArityIssues context e) updates
 
         Mono.MonoRecordAccess recordExpr _ _ _ _ ->
-            collectExprCurriedCallIssues context recordExpr
+            collectExprStageArityIssues context recordExpr
 
         Mono.MonoTupleCreate _ exprs _ ->
-            List.concatMap (collectExprCurriedCallIssues context) exprs
+            List.concatMap (collectExprStageArityIssues context) exprs
 
         _ ->
             []
 
 
-{-| Collect curried call issues from a definition.
+{-| Collect stage arity issues from a definition.
 -}
-collectDefCurriedCallIssues : String -> Mono.MonoDef -> List Violation
-collectDefCurriedCallIssues context def =
+collectDefStageArityIssues : String -> Mono.MonoDef -> List Violation
+collectDefStageArityIssues context def =
     case def of
         Mono.MonoDef _ expr ->
-            collectExprCurriedCallIssues context expr
+            collectExprStageArityIssues context expr
 
         Mono.MonoTailDef _ _ body ->
-            collectExprCurriedCallIssues context body
+            collectExprStageArityIssues context body
 
 
 

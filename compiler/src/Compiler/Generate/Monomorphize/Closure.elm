@@ -28,6 +28,7 @@ This module handles:
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
+import Compiler.Generate.MLIR.Types as Types
 import Compiler.Generate.Monomorphize.State exposing (MonoState)
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
@@ -45,41 +46,59 @@ ensureCallableTopLevel expr monoType state =
     case monoType of
         Mono.MFunction _ _ ->
             let
-                ( argTypes, retType ) =
-                    flattenFunctionType monoType
+                -- MONO_016: Use stage arity (first MFunction params only)
+                stageArgTypes =
+                    Types.stageParamTypes monoType
+
+                stageRetType =
+                    Types.stageReturnType monoType
+
+                stageArity =
+                    List.length stageArgTypes
             in
             case expr of
                 Mono.MonoClosure closureInfo _ _ ->
-                    if List.length closureInfo.params >= List.length argTypes then
+                    -- MONO_016: Check against stage arity, not flattened arity
+                    -- Closures from specializeLambda have exactly stage params
+                    if List.length closureInfo.params >= stageArity then
                         ( expr, state )
 
                     else
                         -- Under-parameterized closure: wrap it in an alias closure
-                        makeAliasClosureOverExpr expr argTypes retType monoType state
+                        -- (Use stage-aware wrapper)
+                        makeAliasClosureOverExpr expr stageArgTypes stageRetType monoType state
 
                 Mono.MonoVarGlobal region specId _ ->
+                    -- MONO_016: Create stage-aware closure wrapper
                     makeAliasClosure
                         (Mono.MonoVarGlobal region specId monoType)
                         region
-                        argTypes
-                        retType
+                        stageArgTypes
+                        stageRetType
                         monoType
                         state
 
                 Mono.MonoVarKernel region home name kernelAbiType ->
-                    -- IMPORTANT: Keep the original kernel ABI type, don't replace with monoType.
-                    -- The kernel ABI type was derived by deriveKernelAbiType and must remain
-                    -- consistent across all call sites (polymorphic kernels use boxed ABI).
+                    -- MONO_016: Create stage-aware closure wrapper
+                    -- Use kernel ABI type for params (ABI stability)
+                    let
+                        kernelStageArgTypes =
+                            Types.stageParamTypes kernelAbiType
+
+                        kernelStageRetType =
+                            Types.stageReturnType kernelAbiType
+                    in
                     makeAliasClosure
                         (Mono.MonoVarKernel region home name kernelAbiType)
                         region
-                        argTypes
-                        retType
-                        monoType
+                        kernelStageArgTypes
+                        kernelStageRetType
+                        kernelAbiType
                         state
 
                 _ ->
-                    makeGeneralClosure expr argTypes retType monoType state
+                    -- MONO_016: Create stage-aware closure wrapper
+                    makeGeneralClosure expr stageArgTypes stageRetType monoType state
 
         _ ->
             ( expr, state )

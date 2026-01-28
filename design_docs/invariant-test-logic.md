@@ -1015,17 +1015,20 @@ oracle: papCreate arity equals referenced function parameter count.
 tests: compiler/tests/Compiler/Generate/CodeGen/PapArityConsistencyTest.elm
 --
 --
-name: eco.papExtend remaining_arity matches calculation
+name: eco.papExtend remaining_arity matches source PAP remaining
 phase: MLIR codegen
 invariants: CGEN_052
 ir: eco.papExtend ops
-logic: eco.papExtend remaining_arity must equal source_arity minus num_new_args:
-  * Track PAP arities from eco.papCreate results.
-  * For each eco.papExtend, look up source PAP arity.
-  * Verify: remaining_arity = source_arity - (operand_count - 1).
-  * Verify: remaining_arity >= 0.
+logic: eco.papExtend remaining_arity must equal the source PAP's remaining arity (before application):
+  * Track a map papRemaining from result SSA value → remaining:
+    - For eco.papCreate: papRemaining = arity - num_captured (from op attrs).
+    - For eco.papExtend: if result still a PAP, papRemaining = remaining_arity - num_new_args.
+  * For each eco.papExtend %closure(%args...) { remaining_arity = R }:
+    - Look up sourceRemaining = papRemaining[%closure].
+    - Require R == sourceRemaining (the source's remaining before this application).
+  * Verify: remaining_arity >= num_new_args (no over-application).
 inputs: MLIR with closure application
-oracle: remaining_arity correctly computed; no over-application.
+oracle: remaining_arity equals source PAP's remaining; no over-application.
 tests: compiler/tests/Compiler/Generate/CodeGen/PapExtendArityTest.elm
 --
 --

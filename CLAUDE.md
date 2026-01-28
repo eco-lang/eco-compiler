@@ -47,11 +47,11 @@ cmake --build build --target ecor
 
 ### Running Tests
 
-Compiler front-end tests with elm-test:
+Compiler front-end tests with elm-test-rs:
 
 ```bash
 cd compiler
-npx elm-test --fuzz 1
+npx elm-test-rs --fuzz 1
 ```
 
 Full E2E tests including the backend and runtime:

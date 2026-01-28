@@ -2,7 +2,8 @@ module Compiler.Generate.MLIR.Types exposing
     ( ecoValue, ecoInt, ecoFloat, ecoChar
     , canUnbox, monoTypeToAbi, monoTypeToOperand
     , mlirTypeToString
-    , isFunctionType, functionArity, countTotalArity, decomposeFunctionType, isEcoValueType
+    , isFunctionType, functionArity, countTotalArity, decomposeFunctionType
+    , stageParamTypes, stageArity, stageReturnType, isEcoValueType
     , isUnboxable
     , RecordLayout, FieldInfo, TupleLayout, CtorLayout
     , computeRecordLayout, computeTupleLayout, computeCtorLayout
@@ -273,6 +274,39 @@ countTotalArity monoType =
 
         _ ->
             0
+
+
+{-| Stage parameter types: outermost MFunction argument list. -}
+stageParamTypes : Mono.MonoType -> List Mono.MonoType
+stageParamTypes monoType =
+    case monoType of
+        Mono.MFunction argTypes _ ->
+            argTypes
+
+        _ ->
+            []
+
+
+{-| Stage arity: number of arguments expected in the current stage. -}
+stageArity : Mono.MonoType -> Int
+stageArity monoType =
+    List.length (stageParamTypes monoType)
+
+
+{-| Stage return type: the result type after applying the current stage's arguments.
+
+For `MFunction [a, b] (MFunction [c] d)`, this returns `MFunction [c] d`.
+For non-function types, returns the type itself.
+
+-}
+stageReturnType : Mono.MonoType -> Mono.MonoType
+stageReturnType monoType =
+    case monoType of
+        Mono.MFunction _ result ->
+            result
+
+        other ->
+            other
 
 
 {-| Decompose a function type into its flattened arguments and final result.

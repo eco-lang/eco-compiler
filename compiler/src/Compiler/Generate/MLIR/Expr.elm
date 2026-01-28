@@ -385,51 +385,13 @@ generateVarGlobal ctx specId monoType =
 
         Nothing ->
             -- No signature found - fall back to monoType-based logic
-            -- This should only happen for primitives or special cases
+            -- This should only happen for constants, not functions.
             case monoType of
                 Mono.MFunction _ _ ->
-                    let
-                        arity : Int
-                        arity =
-                            Types.countTotalArity monoType
-                    in
-                    if arity == 0 then
-                        let
-                            resultMlirType =
-                                Types.monoTypeToAbi monoType
-
-                            ( ctx2, callOp ) =
-                                Ops.ecoCallNamed ctx1 var funcName [] resultMlirType
-                        in
-                        { ops = [ callOp ]
-                        , resultVar = var
-                        , resultType = resultMlirType
-                        , ctx = ctx2
-                        , isTerminated = False
-                        }
-
-                    else
-                        let
-                            attrs =
-                                Dict.fromList
-                                    [ ( "function", SymbolRefAttr funcName )
-                                    , ( "arity", IntAttr Nothing arity )
-                                    , ( "num_captured", IntAttr Nothing 0 )
-                                    , ( "unboxed_bitmap", IntAttr Nothing 0 ) -- No captures, so bitmap is 0
-                                    ]
-
-                            ( ctx2, papOp ) =
-                                Ops.mlirOp ctx1 "eco.papCreate"
-                                    |> Ops.opBuilder.withResults [ ( var, Types.ecoValue ) ]
-                                    |> Ops.opBuilder.withAttrs attrs
-                                    |> Ops.opBuilder.build
-                        in
-                        { ops = [ papOp ]
-                        , resultVar = var
-                        , resultType = Types.ecoValue
-                        , ctx = ctx2
-                        , isTerminated = False
-                        }
+                    Utils.Crash.crash
+                        ("generateVarGlobal: missing FuncSignature for function-typed global "
+                            ++ specIdToFuncName ctx.registry specId
+                        )
 
                 _ ->
                     -- Non-function type: call the function directly (e.g., zero-arg constructors)
@@ -476,6 +438,7 @@ generateVarKernel ctx home name monoType =
             -- Other intrinsic matched with zero args - but check if it's function-typed
             case monoType of
                 Mono.MFunction _ _ ->
+                    -- Kernels use total ABI arity (flattened), not stage arity
                     let
                         arity : Int
                         arity =
@@ -540,6 +503,7 @@ generateVarKernel ctx home name monoType =
             -- No intrinsic match - check if this is a function type
             case monoType of
                 Mono.MFunction _ _ ->
+                    -- Kernels use total ABI arity (flattened), not stage arity
                     let
                         arity : Int
                         arity =
@@ -958,113 +922,292 @@ generateCall ctx func args resultType =
         generateSaturatedCall ctx func args resultType
 
 
+{-| Result of applying arguments by stages.
+-}
+type alias ApplyByStagesResult =
+    { ops : List MlirOp
+    , resultVar : String
+    , resultType : MlirType
+    , ctx : Ctx.Context
+    }
+
+
+{-| Apply arguments to a closure by stages, emitting a chain of papExtend operations.
+
+Each papExtend applies only the arguments for one stage of the curried function type.
+For example, a function with type `MFunction [a] (MFunction [b] c)` will emit two
+papExtend operations: one applying `a`, then one applying `b`.
+
+This implements the stage-curried closure model required by MONO\_016 and CGEN\_052.
+
+-}
+applyByStages :
+    Ctx.Context
+    -> String -- funcVar: the closure variable
+    -> MlirType -- funcMlirType: the closure's MLIR type
+    -> Mono.MonoType -- funcMonoType: the function's MonoType (stage-curried)
+    -> List ( String, MlirType ) -- args: remaining (var, mlirType) pairs to apply
+    -> List MlirOp -- accumulated ops
+    -> ApplyByStagesResult
+applyByStages ctx funcVar funcMlirType funcMonoType args accOps =
+    case args of
+        [] ->
+            -- Base case: no more args to apply
+            { ops = accOps, resultVar = funcVar, resultType = funcMlirType, ctx = ctx }
+
+        _ ->
+            let
+                stageN =
+                    Types.stageArity funcMonoType
+
+                stageRetType =
+                    Types.stageReturnType funcMonoType
+
+                resultMlirType =
+                    Types.monoTypeToAbi stageRetType
+            in
+            if stageN == 0 then
+                -- Defensive: zero-arity stage shouldn't happen with remaining args
+                -- (zero-arity functions use direct calls, not PAPs)
+                -- Return current value (treat as fully applied)
+                { ops = accOps, resultVar = funcVar, resultType = funcMlirType, ctx = ctx }
+
+            else
+                let
+                    batch =
+                        List.take stageN args
+
+                    rest =
+                        List.drop stageN args
+
+                    -- Compute bitmap for this batch only
+                    newargsUnboxedBitmap =
+                        List.indexedMap
+                            (\i ( _, mlirTy ) ->
+                                if Types.isUnboxable mlirTy then
+                                    Bitwise.shiftLeftBy i 1
+
+                                else
+                                    0
+                            )
+                            batch
+                            |> List.foldl Bitwise.or 0
+
+                    ( resVar, ctx1 ) =
+                        Ctx.freshVar ctx
+
+                    allOperandNames =
+                        funcVar :: List.map Tuple.first batch
+
+                    allOperandTypes =
+                        funcMlirType :: List.map Tuple.second batch
+
+                    papExtendAttrs =
+                        Dict.fromList
+                            [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
+                            , ( "remaining_arity", IntAttr Nothing stageN )
+                            , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                            ]
+
+                    ( ctx2, papExtendOp ) =
+                        Ops.mlirOp ctx1 "eco.papExtend"
+                            |> Ops.opBuilder.withOperands allOperandNames
+                            |> Ops.opBuilder.withResults [ ( resVar, resultMlirType ) ]
+                            |> Ops.opBuilder.withAttrs papExtendAttrs
+                            |> Ops.opBuilder.build
+                in
+                -- Recurse with the result closure and remaining args
+                applyByStages ctx2 resVar resultMlirType stageRetType rest (accOps ++ [ papExtendOp ])
+
+
+{-| Determine the call model for a callee expression.
+-}
+callModelForCallee : Ctx.Context -> Mono.MonoExpr -> Ctx.CallModel
+callModelForCallee ctx funcExpr =
+    case funcExpr of
+        Mono.MonoVarGlobal _ specId _ ->
+            -- Look up whether this global is a MonoExtern
+            if Ctx.isFlattenedExternalSpec specId ctx then
+                Ctx.FlattenedExternal
+
+            else
+                Ctx.StageCurried
+
+        Mono.MonoVarKernel _ _ _ _ ->
+            -- Kernels are always flattened
+            Ctx.FlattenedExternal
+
+        _ ->
+            -- Local vars, closures, other expressions: stage-curried
+            Ctx.StageCurried
+
+
+{-| Partial-apply a flattened external function (MonoExtern or kernel).
+
+Uses total ABI arity for remaining\_arity, not stage arity.
+
+-}
+generateFlattenedPartialApplication :
+    Ctx.Context
+    -> Mono.MonoExpr -- func (MonoVarGlobal to MonoExtern, or MonoVarKernel)
+    -> List Mono.MonoExpr -- args
+    -> Mono.MonoType -- resultType (post-application)
+    -> ExprResult
+generateFlattenedPartialApplication ctx func args resultType =
+    let
+        -- 1. Generate the function value (creates PAP with total arity)
+        funcResult : ExprResult
+        funcResult =
+            generateExpr ctx func
+
+        -- 2. Generate argument expressions
+        ( argOps, argsWithTypes, ctx1 ) =
+            generateExprListTyped funcResult.ctx args
+
+        -- 3. Box for closure boundary
+        ( boxOps, boxedArgsWithTypes, ctx1b ) =
+            boxArgsForClosureBoundary ctx1 argsWithTypes
+
+        -- 4. Get total ABI arity from signature
+        totalArity : Int
+        totalArity =
+            case func of
+                Mono.MonoVarGlobal _ specId _ ->
+                    case Dict.get specId ctx.signatures of
+                        Just sig ->
+                            List.length sig.paramTypes
+
+                        Nothing ->
+                            -- Fallback (shouldn't happen)
+                            Types.countTotalArity (Mono.typeOf func)
+
+                Mono.MonoVarKernel _ _ _ kernelType ->
+                    let
+                        sig =
+                            Ctx.kernelFuncSignatureFromType kernelType
+                    in
+                    List.length sig.paramTypes
+
+                _ ->
+                    Types.countTotalArity (Mono.typeOf func)
+
+        -- 5. Build eco.papExtend with total arity
+        ( resVar, ctx2 ) =
+            Ctx.freshVar ctx1b
+
+        allOperandNames =
+            funcResult.resultVar :: List.map Tuple.first boxedArgsWithTypes
+
+        allOperandTypes =
+            funcResult.resultType :: List.map Tuple.second boxedArgsWithTypes
+
+        newargsUnboxedBitmap =
+            List.indexedMap
+                (\i ( _, mlirTy ) ->
+                    if Types.isUnboxable mlirTy then
+                        Bitwise.shiftLeftBy i 1
+
+                    else
+                        0
+                )
+                boxedArgsWithTypes
+                |> List.foldl Bitwise.or 0
+
+        papExtendAttrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
+                , ( "remaining_arity", IntAttr Nothing totalArity )
+                , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                ]
+
+        resultMlirType =
+            Types.monoTypeToAbi resultType
+
+        ( ctx3, papExtendOp ) =
+            Ops.mlirOp ctx2 "eco.papExtend"
+                |> Ops.opBuilder.withOperands allOperandNames
+                |> Ops.opBuilder.withResults [ ( resVar, resultMlirType ) ]
+                |> Ops.opBuilder.withAttrs papExtendAttrs
+                |> Ops.opBuilder.build
+    in
+    { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
+    , resultVar = resVar
+    , resultType = resultMlirType
+    , ctx = ctx3
+    , isTerminated = False
+    }
+
+
 {-| Generate a partial application where the result is still a closure.
 This creates a closure via papExtend rather than attempting a direct call.
 -}
 generateClosureApplication : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateClosureApplication ctx func args resultType =
     let
-        funcResult : ExprResult
-        funcResult =
-            generateExpr ctx func
-
-        -- Result is a closure (!eco.value)
-        expectedType =
-            Types.monoTypeToAbi resultType
+        callModel =
+            callModelForCallee ctx func
     in
-    -- If the function result is not a closure (e.g., a zero-arity thunk was
-    -- already evaluated), and we're calling with no args, just return the value.
-    -- This handles: let f = \() -> 42 in f
-    -- where f is already evaluated to i64, and "calling" with no args is a no-op.
-    if not (Types.isEcoValueType funcResult.resultType) && List.isEmpty args then
-        -- Already evaluated - just return the value, coercing if needed
-        let
-            ( coerceOps, finalVar, ctx1 ) =
-                coerceResultToType funcResult.ctx funcResult.resultVar funcResult.resultType expectedType
-        in
-        { ops = funcResult.ops ++ coerceOps
-        , resultVar = finalVar
-        , resultType = expectedType
-        , ctx = ctx1
-        , isTerminated = False
-        }
+    case callModel of
+        Ctx.FlattenedExternal ->
+            -- External/kernel: use total ABI arity
+            generateFlattenedPartialApplication ctx func args resultType
 
-    else
-        -- Normal partial application via papExtend (typed closure ABI)
-        let
-            -- Use generateExprListTyped to get actual SSA types
-            ( argOps, argsWithTypes, ctx1 ) =
-                generateExprListTyped funcResult.ctx args
+        Ctx.StageCurried ->
+            -- User closure: use stage-curried applyByStages
+            let
+                funcResult : ExprResult
+                funcResult =
+                    generateExpr ctx func
 
-            -- Box non-unboxable primitives (i1) to !eco.value for closure boundary
-            -- Per REP_CLOSURE_001: Bool must be !eco.value at closure boundaries
-            ( boxOps, boxedArgsWithTypes, ctx1b ) =
-                boxArgsForClosureBoundary ctx1 argsWithTypes
+                -- Result is a closure (!eco.value)
+                expectedType =
+                    Types.monoTypeToAbi resultType
+            in
+            -- If the function result is not a closure (e.g., a zero-arity thunk was
+            -- already evaluated), and we're calling with no args, just return the value.
+            -- This handles: let f = \() -> 42 in f
+            -- where f is already evaluated to i64, and "calling" with no args is a no-op.
+            if not (Types.isEcoValueType funcResult.resultType) && List.isEmpty args then
+                -- Already evaluated - just return the value, coercing if needed
+                let
+                    ( coerceOps, finalVar, ctx1 ) =
+                        coerceResultToType funcResult.ctx funcResult.resultVar funcResult.resultType expectedType
+                in
+                { ops = funcResult.ops ++ coerceOps
+                , resultVar = finalVar
+                , resultType = expectedType
+                , ctx = ctx1
+                , isTerminated = False
+                }
 
-            argVarNames : List String
-            argVarNames =
-                List.map Tuple.first boxedArgsWithTypes
+            else
+                -- Normal partial application via papExtend (typed closure ABI)
+                -- Apply arguments by stages to handle stage-curried closures (CGEN_052)
+                let
+                    -- Use generateExprListTyped to get actual SSA types
+                    ( argOps, argsWithTypes, ctx1 ) =
+                        generateExprListTyped funcResult.ctx args
 
-            argTypesList : List MlirType
-            argTypesList =
-                List.map Tuple.second boxedArgsWithTypes
+                    -- Box non-unboxable primitives (i1) to !eco.value for closure boundary
+                    -- Per REP_CLOSURE_001: Bool must be !eco.value at closure boundaries
+                    ( boxOps, boxedArgsWithTypes, ctx1b ) =
+                        boxArgsForClosureBoundary ctx1 argsWithTypes
 
-            ( resVar, ctx2 ) =
-                Ctx.freshVar ctx1b
+                    -- Get the function's MonoType for stage-aware application
+                    funcType : Mono.MonoType
+                    funcType =
+                        Mono.typeOf func
 
-            allOperandNames : List String
-            allOperandNames =
-                funcResult.resultVar :: argVarNames
-
-            -- Use boxed types for all operands (closure ABI)
-            allOperandTypes : List MlirType
-            allOperandTypes =
-                funcResult.resultType :: argTypesList
-
-            -- Compute newargs_unboxed_bitmap from boxed arg types
-            newargsUnboxedBitmap : Int
-            newargsUnboxedBitmap =
-                List.indexedMap
-                    (\i ( _, mlirTy ) ->
-                        if Types.isUnboxable mlirTy then
-                            Bitwise.shiftLeftBy i 1
-
-                        else
-                            0
-                    )
-                    boxedArgsWithTypes
-                    |> List.foldl Bitwise.or 0
-
-            -- Compute arity from the FUNCTION type, not the result type
-            funcType : Mono.MonoType
-            funcType =
-                Mono.typeOf func
-
-            remainingArity : Int
-            remainingArity =
-                Types.functionArity funcType
-
-            -- papExtend handles both partial and saturated cases
-            papExtendAttrs =
-                Dict.fromList
-                    [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
-                    , ( "remaining_arity", IntAttr Nothing remainingArity )
-                    , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
-                    ]
-
-            ( ctx3, papExtendOp ) =
-                Ops.mlirOp ctx2 "eco.papExtend"
-                    |> Ops.opBuilder.withOperands allOperandNames
-                    |> Ops.opBuilder.withResults [ ( resVar, Types.ecoValue ) ]
-                    |> Ops.opBuilder.withAttrs papExtendAttrs
-                    |> Ops.opBuilder.build
-        in
-        { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
-        , resultVar = resVar
-        , resultType = expectedType
-        , ctx = ctx3
-        , isTerminated = False
-        }
+                    -- Apply arguments by stages, emitting a chain of papExtend operations
+                    papResult =
+                        applyByStages ctx1b funcResult.resultVar funcResult.resultType funcType boxedArgsWithTypes []
+                in
+                { ops = funcResult.ops ++ argOps ++ boxOps ++ papResult.ops
+                , resultVar = papResult.resultVar
+                , resultType = papResult.resultType
+                , ctx = papResult.ctx
+                , isTerminated = False
+                }
 
 
 {-| Box arguments for closure boundary.
@@ -1655,6 +1798,7 @@ generateSaturatedCall ctx func args resultType =
 
             else
                 -- Normal closure call via papExtend (typed closure ABI)
+                -- Apply arguments by stages to handle stage-curried closures (CGEN_052)
                 let
                     -- Use generateExprListTyped to get actual SSA types
                     ( argOps, argsWithTypes, ctx1 ) =
@@ -1665,64 +1809,14 @@ generateSaturatedCall ctx func args resultType =
                     ( boxOps, boxedArgsWithTypes, ctx1b ) =
                         boxArgsForClosureBoundary ctx1 argsWithTypes
 
-                    argVarNames : List String
-                    argVarNames =
-                        List.map Tuple.first boxedArgsWithTypes
-
-                    argTypesList : List MlirType
-                    argTypesList =
-                        List.map Tuple.second boxedArgsWithTypes
-
-                    ( resVar, ctx2 ) =
-                        Ctx.freshVar ctx1b
-
-                    allOperandNames : List String
-                    allOperandNames =
-                        funcVarName :: argVarNames
-
-                    -- Use boxed types for all operands (closure ABI)
-                    allOperandTypes : List MlirType
-                    allOperandTypes =
-                        funcVarType :: argTypesList
-
-                    -- Compute newargs_unboxed_bitmap from boxed arg types
-                    newargsUnboxedBitmap : Int
-                    newargsUnboxedBitmap =
-                        List.indexedMap
-                            (\i ( _, mlirTy ) ->
-                                if Types.isUnboxable mlirTy then
-                                    Bitwise.shiftLeftBy i 1
-
-                                else
-                                    0
-                            )
-                            boxedArgsWithTypes
-                            |> List.foldl Bitwise.or 0
-
-                    -- Compute arity from the FUNCTION type, not the result type
-                    remainingArity : Int
-                    remainingArity =
-                        Types.functionArity funcType
-
-                    -- papExtend handles both partial and saturated cases
-                    papExtendAttrs =
-                        Dict.fromList
-                            [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
-                            , ( "remaining_arity", IntAttr Nothing remainingArity )
-                            , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
-                            ]
-
-                    ( ctx3, papExtendOp ) =
-                        Ops.mlirOp ctx2 "eco.papExtend"
-                            |> Ops.opBuilder.withOperands allOperandNames
-                            |> Ops.opBuilder.withResults [ ( resVar, expectedType ) ]
-                            |> Ops.opBuilder.withAttrs papExtendAttrs
-                            |> Ops.opBuilder.build
+                    -- Apply arguments by stages, emitting a chain of papExtend operations
+                    papResult =
+                        applyByStages ctx1b funcVarName funcVarType funcType boxedArgsWithTypes []
                 in
-                { ops = argOps ++ boxOps ++ [ papExtendOp ]
-                , resultVar = resVar
-                , resultType = expectedType
-                , ctx = ctx3
+                { ops = argOps ++ boxOps ++ papResult.ops
+                , resultVar = papResult.resultVar
+                , resultType = papResult.resultType
+                , ctx = papResult.ctx
                 , isTerminated = False
                 }
 
@@ -1752,6 +1846,7 @@ generateSaturatedCall ctx func args resultType =
 
             else
                 -- Normal closure call via papExtend (typed closure ABI)
+                -- Apply arguments by stages to handle stage-curried closures (CGEN_052)
                 let
                     -- Use generateExprListTyped to get actual SSA types
                     ( argOps, argsWithTypes, ctx1 ) =
@@ -1762,68 +1857,19 @@ generateSaturatedCall ctx func args resultType =
                     ( boxOps, boxedArgsWithTypes, ctx1b ) =
                         boxArgsForClosureBoundary ctx1 argsWithTypes
 
-                    argVarNames : List String
-                    argVarNames =
-                        List.map Tuple.first boxedArgsWithTypes
-
-                    argTypesList : List MlirType
-                    argTypesList =
-                        List.map Tuple.second boxedArgsWithTypes
-
-                    ( resVar, ctx2 ) =
-                        Ctx.freshVar ctx1b
-
-                    allOperandNames : List String
-                    allOperandNames =
-                        funcResult.resultVar :: argVarNames
-
-                    -- Use boxed types for all operands (closure ABI)
-                    allOperandTypes : List MlirType
-                    allOperandTypes =
-                        funcResult.resultType :: argTypesList
-
-                    -- Compute newargs_unboxed_bitmap from boxed arg types
-                    newargsUnboxedBitmap : Int
-                    newargsUnboxedBitmap =
-                        List.indexedMap
-                            (\i ( _, mlirTy ) ->
-                                if Types.isUnboxable mlirTy then
-                                    Bitwise.shiftLeftBy i 1
-
-                                else
-                                    0
-                            )
-                            boxedArgsWithTypes
-                            |> List.foldl Bitwise.or 0
-
-                    -- Compute arity from the FUNCTION type, not the result type
+                    -- Get the function's MonoType for stage-aware application
                     funcType : Mono.MonoType
                     funcType =
                         Mono.typeOf func
 
-                    remainingArity : Int
-                    remainingArity =
-                        Types.functionArity funcType
-
-                    -- papExtend handles both partial and saturated cases
-                    papExtendAttrs =
-                        Dict.fromList
-                            [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
-                            , ( "remaining_arity", IntAttr Nothing remainingArity )
-                            , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
-                            ]
-
-                    ( ctx3, papExtendOp ) =
-                        Ops.mlirOp ctx2 "eco.papExtend"
-                            |> Ops.opBuilder.withOperands allOperandNames
-                            |> Ops.opBuilder.withResults [ ( resVar, expectedType ) ]
-                            |> Ops.opBuilder.withAttrs papExtendAttrs
-                            |> Ops.opBuilder.build
+                    -- Apply arguments by stages, emitting a chain of papExtend operations
+                    papResult =
+                        applyByStages ctx1b funcResult.resultVar funcResult.resultType funcType boxedArgsWithTypes []
                 in
-                { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
-                , resultVar = resVar
-                , resultType = expectedType
-                , ctx = ctx3
+                { ops = funcResult.ops ++ argOps ++ boxOps ++ papResult.ops
+                , resultVar = papResult.resultVar
+                , resultType = papResult.resultType
+                , ctx = papResult.ctx
                 , isTerminated = False
                 }
 
@@ -2299,7 +2345,7 @@ generateDestruct ctx (Mono.MonoDestructor name path monoType) body _ =
         --
         -- For example, in Result.andThen:
         --   - Function signature uses type vars: a, b, x
-        --   - Result type definition uses: error, value  
+        --   - Result type definition uses: error, value
         --   - The destructor's monoType may be MVar "value" (not in substitution)
         --   - But the path's resultType is correctly MInt
         --

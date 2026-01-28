@@ -123,7 +123,8 @@ flattenFunctionType monoType =
 This computes the flattened arity by peeling nested MFunction layers.
 For example, `MFunction [a] (MFunction [b] c)` has flattened arity 2.
 
-Used for call site checks to prevent over-application.
+Used for MonoTailFunc checks (tail functions have all params flattened)
+and call site checks to prevent over-application.
 
 -}
 getFlattenedArity : Mono.MonoType -> Int
@@ -135,16 +136,31 @@ getFlattenedArity monoType =
     List.length params
 
 
+{-| Get the stage arity (outermost MFunction argument count) from a function type.
+
+For example, `MFunction [a] (MFunction [b] c)` has stage arity 1.
+
+Used for MonoClosure checks per MONO\_016: closureInfo.params length must
+equal the stage arity, not the flattened arity.
+
+-}
+getStageArity : Mono.MonoType -> Int
+getStageArity monoType =
+    case monoType of
+        Mono.MFunction params _ ->
+            List.length params
+
+        _ ->
+            0
+
+
 {-| Check that a type and expression have consistent arity.
 
-For closures, we check the flattened arity since Elm represents multi-param
-functions as single closures with flattened params (e.g., `\x y -> expr`
-becomes one closure with params=[x,y] and type `a -> b -> c`).
+For closures, MONO\_016 requires that closureInfo.params length equals the
+stage arity (outermost MFunction argument count), not the flattened arity.
 
-NOTE: Explicitly nested lambdas like `\x -> \y -> expr` (as opposed to `\x y -> expr`)
-create separate closures, each with their own params. For such closures, the
-body is itself a closure, and the outer closure's params will be fewer than
-the flattened arity. This is valid - we only fail if params > flattened arity.
+Each closure takes exactly one "stage" of arguments. Nested lambdas like
+`\x -> \y -> expr` create separate closures, each with their own stage.
 
 -}
 checkTypeExprArityConsistency : String -> Mono.MonoType -> Mono.MonoExpr -> List String
@@ -155,13 +171,12 @@ checkTypeExprArityConsistency context monoType expr =
                 paramCount =
                     List.length closureInfo.params
 
-                typeArity =
-                    getFlattenedArity monoType
+                stageArity =
+                    getStageArity monoType
             in
-            -- Closure can have fewer params than flattened arity (returns a function),
-            -- but should never have MORE params than the type allows
-            if paramCount > typeArity then
-                [ context ++ ": Closure has " ++ String.fromInt paramCount ++ " params but definition type has arity " ++ String.fromInt typeArity ]
+            -- MONO_016: Closure params must exactly match stage arity
+            if paramCount /= stageArity then
+                [ context ++ ": Closure has " ++ String.fromInt paramCount ++ " params but type has stage arity " ++ String.fromInt stageArity ++ " (MONO_016 violation)" ]
 
             else
                 []
@@ -172,7 +187,7 @@ checkTypeExprArityConsistency context monoType expr =
 
 {-| Collect arity issues from expressions.
 
-For closures: check that params don't exceed flattened arity.
+For closures: MONO\_016 requires params == stage arity (exact match).
 For calls: check that args don't exceed flattened arity (prevent over-application).
 
 -}
@@ -180,19 +195,17 @@ collectExprArityIssues : String -> Mono.MonoExpr -> List String
 collectExprArityIssues context expr =
     case expr of
         Mono.MonoClosure closureInfo bodyExpr monoType ->
-            -- Check closure parameter count vs closure's flattened function type.
-            -- A closure can have fewer params than flattened arity if it returns a function,
-            -- but it should never have MORE params than the type allows.
+            -- MONO_016: Closure params must exactly match stage arity
             let
                 paramCount =
                     List.length closureInfo.params
 
-                typeArity =
-                    getFlattenedArity monoType
+                stageArity =
+                    getStageArity monoType
 
                 closureIssue =
-                    if paramCount > typeArity then
-                        [ context ++ ": Closure expression has " ++ String.fromInt paramCount ++ " params but its type has arity " ++ String.fromInt typeArity ]
+                    if paramCount /= stageArity then
+                        [ context ++ ": Closure expression has " ++ String.fromInt paramCount ++ " params but its type has stage arity " ++ String.fromInt stageArity ++ " (MONO_016 violation)" ]
 
                     else
                         []

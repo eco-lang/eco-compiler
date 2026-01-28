@@ -63,6 +63,310 @@ type ProcessedArg
 
 
 
+-- ========== LAMBDA PEELING ==========
+
+
+{-| Peel nested Function/TrackedFunction expressions into a flat parameter list.
+
+This helper recursively descends through nested lambda expressions, collecting
+all parameters into a single list. It handles both Function and TrackedFunction
+variants uniformly, converting TrackedFunction's Located names to plain names.
+
+Returns (allParams, finalBody) where:
+
+  - allParams: All parameters from the entire lambda chain, in order
+  - finalBody: The first non-function expression encountered
+
+-}
+peelFunctionChain : TOpt.Expr -> ( List ( Name, Can.Type ), TOpt.Expr )
+peelFunctionChain expr =
+    case expr of
+        TOpt.Function params body _ ->
+            let
+                ( moreParams, finalBody ) =
+                    peelFunctionChain body
+            in
+            ( params ++ moreParams, finalBody )
+
+        TOpt.TrackedFunction params body _ ->
+            let
+                -- Convert Located names to plain names
+                plainParams =
+                    List.map (\( locName, ty ) -> ( A.toValue locName, ty )) params
+
+                ( moreParams, finalBody ) =
+                    peelFunctionChain body
+            in
+            ( plainParams ++ moreParams, finalBody )
+
+        _ ->
+            ( [], expr )
+
+
+{-| Peel exactly n parameters from a lambda chain, returning them and the remaining body.
+Unlike peelFunctionChain which peels ALL lambdas, this stops after n params.
+
+For example, with n=1 on `\x -> \y -> body`:
+  Returns ([(x, Int)], \y -> body)
+
+This is needed for wrapper closures per MONO_016: only the first stage params
+should be extracted, leaving inner lambdas as the closure body.
+-}
+peelNParams : Int -> TOpt.Expr -> ( List ( Name, Can.Type ), TOpt.Expr )
+peelNParams n expr =
+    if n <= 0 then
+        ( [], expr )
+    else
+        case expr of
+            TOpt.Function params body _ ->
+                let
+                    paramsLen = List.length params
+                in
+                if paramsLen >= n then
+                    -- Take only first n params, body is the rest
+                    ( List.take n params, rebuildLambdaChain (List.drop n params) body )
+                else
+                    -- Take all params from this level, continue peeling
+                    let
+                        ( moreParams, finalBody ) =
+                            peelNParams (n - paramsLen) body
+                    in
+                    ( params ++ moreParams, finalBody )
+
+            TOpt.TrackedFunction params body _ ->
+                let
+                    plainParams =
+                        List.map (\( locName, ty ) -> ( A.toValue locName, ty )) params
+
+                    paramsLen = List.length plainParams
+                in
+                if paramsLen >= n then
+                    ( List.take n plainParams, rebuildTrackedLambdaChain (List.drop n params) body )
+                else
+                    let
+                        ( moreParams, finalBody ) =
+                            peelNParams (n - paramsLen) body
+                    in
+                    ( plainParams ++ moreParams, finalBody )
+
+            _ ->
+                ( [], expr )
+
+
+{-| Rebuild a lambda chain from remaining params.
+Used when peelNParams takes some but not all params from a Function node.
+-}
+rebuildLambdaChain : List ( Name, Can.Type ) -> TOpt.Expr -> TOpt.Expr
+rebuildLambdaChain params body =
+    case params of
+        [] ->
+            body
+
+        _ ->
+            let
+                -- Build nested TLambda type: p1 -> p2 -> ... -> bodyType
+                bodyType =
+                    TOpt.typeOf body
+
+                funcType =
+                    List.foldr (\( _, paramType ) acc -> Can.TLambda paramType acc) bodyType params
+            in
+            TOpt.Function params body funcType
+
+
+{-| Rebuild a tracked lambda chain from remaining params.
+-}
+rebuildTrackedLambdaChain : List ( A.Located Name, Can.Type ) -> TOpt.Expr -> TOpt.Expr
+rebuildTrackedLambdaChain params body =
+    case params of
+        [] ->
+            body
+
+        _ ->
+            let
+                -- Build nested TLambda type: p1 -> p2 -> ... -> bodyType
+                bodyType =
+                    TOpt.typeOf body
+
+                funcType =
+                    List.foldr (\( _, paramType ) acc -> Can.TLambda paramType acc) bodyType params
+            in
+            TOpt.TrackedFunction params body funcType
+
+
+{-| Drop n arguments from a nested MFunction chain, returning the remaining type.
+For example, dropNArgs 2 (MFunction [a] (MFunction [b] (MFunction [c] ret)))
+returns MFunction [c] ret.
+-}
+dropNArgs : Int -> Mono.MonoType -> Mono.MonoType
+dropNArgs n monoType =
+    if n <= 0 then
+        monoType
+    else
+        case monoType of
+            Mono.MFunction args result ->
+                let
+                    argsLen = List.length args
+                in
+                if n >= argsLen then
+                    dropNArgs (n - argsLen) result
+                else
+                    -- Partial consumption of this stage's args
+                    Mono.MFunction (List.drop n args) result
+
+            _ ->
+                monoType
+
+
+{-| Specialize a lambda expression (Function or TrackedFunction) by peeling
+nested lambdas into a single MonoClosure.
+
+This is the core Option A transformation: nested lambdas become a single
+uncurried closure. Partial application is represented only via PAPs downstream.
+
+-}
+specializeLambda :
+    TOpt.Expr
+    -> Can.Type
+    -> Substitution
+    -> MonoState
+    -> ( Mono.MonoExpr, MonoState )
+specializeLambda lambdaExpr canType subst state =
+    let
+        -- Stage-aware MonoType (nested MFunction chain, no flattening)
+        -- Per MONO_016: closures must ALWAYS preserve stage structure
+        monoType0 : Mono.MonoType
+        monoType0 =
+            TypeSubst.applySubst subst canType
+
+        -- Stage arity: number of params in the FIRST stage of monoType0 only
+        -- Per MONO_016: closure params must match stage arity, not flattened arity
+        outerStageArity : Int
+        outerStageArity =
+            Types.stageArity monoType0
+
+        -- Get all syntactic params from the lambda chain
+        ( allParams, innerBody ) =
+            peelFunctionChain lambdaExpr
+
+        -- MONO_016: Determine effective params
+        -- If monoType0 is not a function (stageArity = 0), use all params to avoid infinite recursion
+        -- Otherwise use exactly the first stage's worth of params
+        ( effectiveParams, effectiveBodyExpr ) =
+            if outerStageArity == 0 then
+                -- Non-function type (e.g., MVar) - use all params to avoid infinite recursion
+                ( allParams, innerBody )
+            else
+                -- Normal case: peel exactly outerStageArity params
+                peelNParams outerStageArity lambdaExpr
+
+        -- Effective param types depend on whether we're using flattened or stage params
+        effectiveParamTypes : List Mono.MonoType
+        effectiveParamTypes =
+            if outerStageArity == 0 then
+                -- Non-function type - derive types from canonical params
+                List.map (\( _, paramCanType ) -> TypeSubst.applySubst subst paramCanType) allParams
+            else
+                -- Normal case: use stage param types
+                Types.stageParamTypes monoType0
+
+        -- Effective MonoType
+        -- For non-function types, build the type from params
+        -- For function types, keep the nested structure per MONO_016
+        effectiveMonoType : Mono.MonoType
+        effectiveMonoType =
+            if outerStageArity == 0 then
+                -- Build function type from params
+                let
+                    returnType =
+                        TypeSubst.applySubst subst (TOpt.typeOf innerBody)
+                in
+                Mono.MFunction effectiveParamTypes returnType
+            else
+                monoType0
+
+    in
+    -- Now build Mono params, body, captures as before, but using effectiveMonoType
+    let
+        deriveParamType : Int -> ( Name, Can.Type ) -> ( Name, Mono.MonoType )
+        deriveParamType idx ( name, paramCanType ) =
+            let
+                funcParamTypeAtIdx =
+                    List.drop idx effectiveParamTypes |> List.head
+
+                substType =
+                    TypeSubst.applySubst subst paramCanType
+
+                finalType =
+                    case funcParamTypeAtIdx of
+                        Just funcParamType ->
+                            case paramCanType of
+                                Can.TVar _ ->
+                                    funcParamType
+
+                                _ ->
+                                    case substType of
+                                        Mono.MVar _ _ ->
+                                            funcParamType
+
+                                        _ ->
+                                            substType
+
+                        Nothing ->
+                            substType
+            in
+            ( name, finalType )
+
+        monoParams : List ( Name, Mono.MonoType )
+        monoParams =
+            List.indexedMap deriveParamType effectiveParams
+
+        lambdaId =
+            Mono.AnonymousLambda state.currentModule state.lambdaCounter
+
+        newVarTypes =
+            List.foldl
+                (\( name, monoParamType ) vt ->
+                    Dict.insert identity name monoParamType vt
+                )
+                state.varTypes
+                monoParams
+
+        stateWithLambda =
+            { state
+                | lambdaCounter = state.lambdaCounter + 1
+                , varTypes = newVarTypes
+            }
+
+        augmentedSubst =
+            List.foldl
+                (\( ( _, paramCanType ), ( _, monoParamType ) ) s ->
+                    case paramCanType of
+                        Can.TVar varName ->
+                            Dict.insert identity varName monoParamType s
+
+                        _ ->
+                            s
+                )
+                subst
+                (List.map2 Tuple.pair effectiveParams monoParams)
+
+        ( monoBody, stateAfter ) =
+            specializeExpr effectiveBodyExpr augmentedSubst stateWithLambda
+
+        captures =
+            Closure.computeClosureCaptures monoParams monoBody
+
+        closureInfo =
+            { lambdaId = lambdaId
+            , captures = captures
+            , params = monoParams
+            }
+    in
+    ( Mono.MonoClosure closureInfo monoBody effectiveMonoType, stateAfter )
+
+
+
 -- ========== NODE SPECIALIZATION ==========
 
 
@@ -597,185 +901,10 @@ specializeExpr expr subst state =
             ( Mono.MonoList region monoExprs monoType, stateAfter )
 
         TOpt.Function params body canType ->
-            let
-                monoType =
-                    TypeSubst.applySubst subst canType
-
-                funcTypeParams =
-                    TypeSubst.extractParamTypes monoType
-
-                deriveParamType : Int -> ( Name, Can.Type ) -> ( Name, Mono.MonoType )
-                deriveParamType idx ( name, paramCanType ) =
-                    let
-                        -- First try the function type's parameter at this index (more reliable)
-                        funcParamTypeAtIdx =
-                            List.drop idx funcTypeParams |> List.head
-
-                        substType =
-                            TypeSubst.applySubst subst paramCanType
-
-                        -- Use funcParamType if available AND either:
-                        -- 1. substType is unresolved (MVar), OR
-                        -- 2. paramCanType is a bare type variable (TVar), which might be incorrectly annotated
-                        finalType =
-                            case funcParamTypeAtIdx of
-                                Just funcParamType ->
-                                    case paramCanType of
-                                        Can.TVar _ ->
-                                            -- Param is annotated as just a TVar - likely incorrect, use func type
-                                            funcParamType
-
-                                        _ ->
-                                            case substType of
-                                                Mono.MVar _ _ ->
-                                                    funcParamType
-
-                                                _ ->
-                                                    substType
-
-                                Nothing ->
-                                    substType
-                    in
-                    ( name, finalType )
-
-                monoParams =
-                    List.indexedMap deriveParamType params
-
-                lambdaId =
-                    Mono.AnonymousLambda state.currentModule state.lambdaCounter
-
-                newVarTypes =
-                    List.foldl
-                        (\( name, monoParamType ) vt ->
-                            Dict.insert identity name monoParamType vt
-                        )
-                        state.varTypes
-                        monoParams
-
-                stateWithLambda =
-                    { state
-                        | lambdaCounter = state.lambdaCounter + 1
-                        , varTypes = newVarTypes
-                    }
-
-                augmentedSubst =
-                    List.foldl
-                        (\( ( _, paramCanType ), ( _, monoParamType ) ) s ->
-                            case paramCanType of
-                                Can.TVar varName ->
-                                    Dict.insert identity varName monoParamType s
-
-                                _ ->
-                                    s
-                        )
-                        subst
-                        (List.map2 Tuple.pair params monoParams)
-
-                ( monoBody, stateAfter ) =
-                    specializeExpr body augmentedSubst stateWithLambda
-
-                captures =
-                    Closure.computeClosureCaptures monoParams monoBody
-
-                closureInfo =
-                    { lambdaId = lambdaId
-                    , captures = captures
-                    , params = monoParams
-                    }
-            in
-            ( Mono.MonoClosure closureInfo monoBody monoType, stateAfter )
+            specializeLambda (TOpt.Function params body canType) canType subst state
 
         TOpt.TrackedFunction params body canType ->
-            let
-                monoType =
-                    TypeSubst.applySubst subst canType
-
-                funcTypeParams =
-                    TypeSubst.extractParamTypes monoType
-
-                deriveParamType : Int -> ( A.Located Name, Can.Type ) -> ( Name, Mono.MonoType )
-                deriveParamType idx ( locName, paramCanType ) =
-                    let
-                        name =
-                            A.toValue locName
-
-                        -- First try the function type's parameter at this index (more reliable)
-                        funcParamTypeAtIdx =
-                            List.drop idx funcTypeParams |> List.head
-
-                        substType =
-                            TypeSubst.applySubst subst paramCanType
-
-                        -- Use funcParamType if available AND either:
-                        -- 1. substType is unresolved (MVar), OR
-                        -- 2. paramCanType is a bare type variable (TVar), which might be incorrectly annotated
-                        finalType =
-                            case funcParamTypeAtIdx of
-                                Just funcParamType ->
-                                    case paramCanType of
-                                        Can.TVar _ ->
-                                            -- Param is annotated as just a TVar - likely incorrect, use func type
-                                            funcParamType
-
-                                        _ ->
-                                            case substType of
-                                                Mono.MVar _ _ ->
-                                                    funcParamType
-
-                                                _ ->
-                                                    substType
-
-                                Nothing ->
-                                    substType
-                    in
-                    ( name, finalType )
-
-                monoParams =
-                    List.indexedMap deriveParamType params
-
-                lambdaId =
-                    Mono.AnonymousLambda state.currentModule state.lambdaCounter
-
-                newVarTypes =
-                    List.foldl
-                        (\( name, monoParamType ) vt ->
-                            Dict.insert identity name monoParamType vt
-                        )
-                        state.varTypes
-                        monoParams
-
-                stateWithLambda =
-                    { state
-                        | lambdaCounter = state.lambdaCounter + 1
-                        , varTypes = newVarTypes
-                    }
-
-                augmentedSubst =
-                    List.foldl
-                        (\( ( _, paramCanType ), ( _, monoParamType ) ) s ->
-                            case paramCanType of
-                                Can.TVar varName ->
-                                    Dict.insert identity varName monoParamType s
-
-                                _ ->
-                                    s
-                        )
-                        subst
-                        (List.map2 Tuple.pair params monoParams)
-
-                ( monoBody, stateAfter ) =
-                    specializeExpr body augmentedSubst stateWithLambda
-
-                captures =
-                    Closure.computeClosureCaptures monoParams monoBody
-
-                closureInfo =
-                    { lambdaId = lambdaId
-                    , captures = captures
-                    , params = monoParams
-                    }
-            in
-            ( Mono.MonoClosure closureInfo monoBody monoType, stateAfter )
+            specializeLambda (TOpt.TrackedFunction params body canType) canType subst state
 
         TOpt.Call region func args canType ->
             -- Two-phase argument processing: defer accessor specialization until after
