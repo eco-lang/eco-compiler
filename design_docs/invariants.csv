@@ -128,7 +128,7 @@ MONO_014;Monomorphization;Layouts;documented;Structurally equivalent record and 
 
 MONO_015;Monomorphization;Accessors;enforced;When an accessor like .name with canonical type { ext | name : T } -> T is passed as a first-class function argument to a call site the accessor extension variable ext must be unified with the full record type inferred from other arguments at that call site so that specialization receives the complete record layout not just the explicitly named fields;Compiler.Generate.Monomorphize.Specialize|Compiler.Generate.Monomorphize.TypeSubst
 
-MONO_016;Monomorphization;Wrappers;enforced;When creating uncurried wrapper closures for functions that return functions the wrapper must generate nested MonoCall expressions that respect the original curried parameter structure so each MonoCall passes only the number of arguments the callee accepts at that application level and the result of each call is used as the callee for subsequent arguments;Compiler.Generate.Monomorphize.Closure
+MONO_016;Monomorphization;Closures;enforced;For every MonoClosure with type MFunction the number of params (List.length closureInfo.params) must equal Types.countTotalArity of its monoType. No MonoClosure may have fewer params than the total arity of its MonoType. This invariant ensures nested lambdas are flattened into a single uncurried closure;Compiler.Generate.Monomorphize.Specialize|Compiler.Generate.Monomorphize.Closure
 
 
 # =============================================================================
