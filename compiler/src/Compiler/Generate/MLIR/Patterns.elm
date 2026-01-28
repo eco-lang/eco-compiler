@@ -176,9 +176,10 @@ generateMonoPath ctx path targetType =
             , ctx3
             )
 
-        Mono.MonoUnbox subPath ->
+        Mono.MonoUnbox resultType subPath ->
             -- MonoUnbox represents unwrapping a single-constructor type (Can.Unbox).
             -- For types like `Wrapper = Wrap Int`, MonoUnbox extracts the inner value.
+            -- The resultType is the type of the inner value (the single field's type).
             --
             -- We need to:
             -- 1. Get the container (wrapper) value
@@ -313,6 +314,96 @@ lookupFieldIsUnboxed ctx containerType ctorName fieldIndex =
                     Nothing
 
 
+{-| Look up field layout info by constructor name only.
+
+This searches through all ctorShapes entries to find a constructor with the given name.
+For non-polymorphic types, this will find a unique match.
+For polymorphic types, there may be multiple instantiations with the same constructor name
+but different field layouts - in that case, we return the first match (which may not be correct).
+
+This is a pragmatic workaround for decision tree paths (DT.Path) which don't carry MonoType
+information. The proper fix would be to augment the decision tree with type information
+during monomorphization.
+
+Returns Just (isUnboxed, fieldMonoType) if found, Nothing otherwise.
+
+-}
+lookupFieldInfoByCtorName : Ctx.Context -> Name.Name -> Int -> Maybe ( Bool, Mono.MonoType )
+lookupFieldInfoByCtorName ctx ctorName fieldIndex =
+    let
+        allShapeLists =
+            EveryDict.values compare ctx.typeRegistry.ctorShapes
+
+        allShapes =
+            List.concatMap identity allShapeLists
+
+        -- Flatten all shapes and find matching constructor
+        matchingShape =
+            allShapes
+                |> List.filter (\shape -> shape.name == ctorName)
+                |> List.head
+    in
+    case matchingShape of
+        Nothing ->
+            Nothing
+
+        Just shape ->
+            let
+                layout =
+                    Types.computeCtorLayout shape
+            in
+            case List.drop fieldIndex layout.fields of
+                fieldInfo :: _ ->
+                    Just ( fieldInfo.isUnboxed, fieldInfo.monoType )
+
+                [] ->
+                    Nothing
+
+
+{-| Find if there's a single-constructor single-field type with an unboxed field.
+
+This is used by DT.Unbox handling to determine if the inner field is stored unboxed.
+Returns Just (fieldMonoType, isUnboxed) if found, Nothing otherwise.
+
+-}
+findSingleCtorUnboxedField : Ctx.Context -> Maybe ( Mono.MonoType, Bool )
+findSingleCtorUnboxedField ctx =
+    let
+        allShapeLists =
+            EveryDict.values compare ctx.typeRegistry.ctorShapes
+
+        -- Find types with exactly one constructor
+        singleCtorShapes =
+            allShapeLists
+                |> List.filter (\shapes -> List.length shapes == 1)
+                |> List.filterMap List.head
+                |> List.filter (\shape -> List.length shape.fieldTypes == 1)
+
+        -- Check if any has an unboxed field
+        findUnboxed shapes =
+            case shapes of
+                [] ->
+                    Nothing
+
+                shape :: rest ->
+                    let
+                        layout =
+                            Types.computeCtorLayout shape
+                    in
+                    case layout.fields of
+                        fieldInfo :: _ ->
+                            if fieldInfo.isUnboxed then
+                                Just ( fieldInfo.monoType, True )
+
+                            else
+                                findUnboxed rest
+
+                        [] ->
+                            findUnboxed rest
+    in
+    findUnboxed singleCtorShapes
+
+
 {-| Box a primitive value into an eco.value.
 -}
 boxPrimitive : Ctx.Context -> String -> String -> MlirType -> ( Ctx.Context, MlirOp )
@@ -436,16 +527,46 @@ generateDTPath ctx root dtPath targetType =
                             in
                             ( [ op ], resultVar, ctxT )
 
-                        DT.HintCustom _ ->
+                        DT.HintCustom ctorName ->
                             -- Custom ADTs (Maybe, Result, user types, big tuples)
-                            -- Note: We can't use the constructor name for layout lookup here
-                            -- because we don't have access to the container's MonoType.
-                            -- The layout lookup happens in generateMonoPath instead.
-                            let
-                                ( ctxC, op ) =
-                                    Ops.ecoProjectCustom ctx2 resultVar fieldIndex targetType subVar
-                            in
-                            ( [ op ], resultVar, ctxC )
+                            -- Look up field layout by constructor name to determine if field is unboxed.
+                            case lookupFieldInfoByCtorName ctx2 ctorName fieldIndex of
+                                Just ( True, fieldMonoType ) ->
+                                    -- Field is stored unboxed (as primitive).
+                                    -- Project as primitive type, then box if caller needs eco.value.
+                                    let
+                                        fieldMlirType =
+                                            Types.monoTypeToAbi fieldMonoType
+
+                                        ( primitiveVar, ctx3_ ) =
+                                            Ctx.freshVar ctx2
+
+                                        ( ctx4, projectOp ) =
+                                            Ops.ecoProjectCustom ctx3_ primitiveVar fieldIndex fieldMlirType subVar
+                                    in
+                                    if Types.isEcoValueType targetType then
+                                        -- Caller wants eco.value, need to box the primitive
+                                        let
+                                            ( boxedVar, ctx5 ) =
+                                                Ctx.freshVar ctx4
+
+                                            ( ctx6, boxOp ) =
+                                                boxPrimitive ctx5 boxedVar primitiveVar fieldMlirType
+                                        in
+                                        ( [ projectOp, boxOp ], boxedVar, ctx6 )
+
+                                    else
+                                        -- Caller wants primitive, return directly
+                                        ( [ projectOp ], primitiveVar, ctx4 )
+
+                                _ ->
+                                    -- Field is stored boxed (as eco.value) or no layout found.
+                                    -- Project as eco.value, which is the default behavior.
+                                    let
+                                        ( ctxC, op ) =
+                                            Ops.ecoProjectCustom ctx2 resultVar fieldIndex targetType subVar
+                                    in
+                                    ( [ op ], resultVar, ctxC )
 
                         DT.HintUnknown ->
                             -- Fallback: treat like custom
@@ -458,19 +579,89 @@ generateDTPath ctx root dtPath targetType =
             ( subOps ++ projectOps, projectVar, ctx3 )
 
         DT.Unbox subPath ->
-            -- DT.Unbox is a SEMANTIC operation for single-constructor types.
-            -- It means "unwrap the wrapper to access the inner value".
-            -- This is a NO-OP in MLIR - the wrapped and unwrapped values have
-            -- the same runtime representation (!eco.value).
+            -- DT.Unbox represents unwrapping a single-constructor type to access its single field.
+            -- This is used for types like `Wrapper = Wrap Int` when pattern matching `Wrap x`.
             --
-            -- NOTE: This is different from eco.unbox which converts !eco.value
-            -- to a primitive type (i64, f64, etc.). eco.unbox is generated by
-            -- DT.Index when the targetType is a primitive, NOT by DT.Unbox.
+            -- We need to:
+            -- 1. Get the container (wrapper) value by navigating subPath
+            -- 2. Project field 0 to extract the inner value
+            -- 3. If the field is stored unboxed, project as primitive; box if needed
+            -- 4. If the field is stored boxed, project as eco.value; unbox if needed
             --
-            -- By always passing through, we avoid generating incorrect sequences
-            -- like: project -> eco.unbox -> project (where eco.unbox produces i64
-            -- but the next project expects !eco.value).
-            generateDTPath ctx root subPath targetType
+            -- The challenge is that DT.Path doesn't carry MonoType information.
+            -- We search through ctorShapes for single-constructor single-field types
+            -- that might have unboxed fields.
+            let
+                -- Navigate to the container object (always !eco.value)
+                ( subOps, subVar, ctx1 ) =
+                    generateDTPath ctx root subPath Types.ecoValue
+
+                ( resultVar, ctx2 ) =
+                    Ctx.freshVar ctx1
+
+                -- Look for single-field single-constructor types with unboxed fields
+                maybeUnboxedFieldInfo =
+                    findSingleCtorUnboxedField ctx2
+
+                ( projectOps, projectVar, ctx3 ) =
+                    case maybeUnboxedFieldInfo of
+                        Just ( fieldMonoType, True ) ->
+                            -- Found a single-constructor type with an unboxed single field
+                            let
+                                fieldMlirType =
+                                    Types.monoTypeToAbi fieldMonoType
+
+                                ( primitiveVar, ctxP1 ) =
+                                    Ctx.freshVar ctx2
+
+                                ( ctxP2, projectOp ) =
+                                    Ops.ecoProjectCustom ctxP1 primitiveVar 0 fieldMlirType subVar
+                            in
+                            if Types.isEcoValueType targetType then
+                                -- Caller wants eco.value, need to box the primitive
+                                let
+                                    ( boxedVar, ctxP3 ) =
+                                        Ctx.freshVar ctxP2
+
+                                    ( ctxP4, boxOp ) =
+                                        boxPrimitive ctxP3 boxedVar primitiveVar fieldMlirType
+                                in
+                                ( [ projectOp, boxOp ], boxedVar, ctxP4 )
+
+                            else
+                                -- Caller wants primitive, return directly
+                                ( [ projectOp ], primitiveVar, ctxP2 )
+
+                        _ ->
+                            -- Either no single-ctor type found or field is boxed
+                            -- Project field 0 as eco.value, then unbox if needed
+                            let
+                                ( ctxP1, projectOp ) =
+                                    Ops.ecoProjectCustom ctx2 resultVar 0 Types.ecoValue subVar
+                            in
+                            if Types.isUnboxable targetType then
+                                -- Caller wants primitive, need to unbox
+                                let
+                                    ( unboxedVar, ctxP2 ) =
+                                        Ctx.freshVar ctxP1
+
+                                    attrs =
+                                        Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
+
+                                    ( ctxP3, unboxOp ) =
+                                        Ops.mlirOp ctxP2 "eco.unbox"
+                                            |> Ops.opBuilder.withOperands [ resultVar ]
+                                            |> Ops.opBuilder.withResults [ ( unboxedVar, targetType ) ]
+                                            |> Ops.opBuilder.withAttrs attrs
+                                            |> Ops.opBuilder.build
+                                in
+                                ( [ projectOp, unboxOp ], unboxedVar, ctxP3 )
+
+                            else
+                                -- Caller wants eco.value, return directly
+                                ( [ projectOp ], resultVar, ctxP1 )
+            in
+            ( subOps ++ projectOps, projectVar, ctx3 )
 
 
 {-| Generate MLIR ops to evaluate a DT.Test, returning a boolean result.

@@ -1512,7 +1512,18 @@ specializePath path subst varTypes globalTypeEnv =
             Mono.MonoField fieldIndex resultType monoSubPath
 
         TOpt.Unbox subPath ->
-            Mono.MonoUnbox (specializePath subPath subst varTypes globalTypeEnv)
+            let
+                monoSubPath =
+                    specializePath subPath subst varTypes globalTypeEnv
+
+                containerType =
+                    Mono.getMonoPathType monoSubPath
+
+                -- Compute the result type by looking up the single field type of the container
+                resultType =
+                    computeUnboxResultType globalTypeEnv containerType
+            in
+            Mono.MonoUnbox resultType monoSubPath
 
         TOpt.Root name ->
             let
@@ -1616,6 +1627,44 @@ findCtorByName : Name -> List Can.Ctor -> Maybe Can.Ctor
 findCtorByName targetName alts =
     List.filter (\(Can.Ctor ctorData) -> ctorData.name == targetName) alts
         |> List.head
+
+
+{-| Compute the result type of unwrapping a single-constructor type.
+
+For Unbox paths, we need to find the single field type of the container.
+The container must be a single-constructor type (Can.Unbox option).
+
+-}
+computeUnboxResultType : TypeEnv.GlobalTypeEnv -> Mono.MonoType -> Mono.MonoType
+computeUnboxResultType globalTypeEnv containerType =
+    case containerType of
+        Mono.MCustom moduleName typeName typeArgs ->
+            case Analysis.lookupUnion globalTypeEnv moduleName typeName of
+                Nothing ->
+                    Utils.Crash.crash ("Specialize.computeUnboxResultType: Union not found: " ++ typeName)
+
+                Just (Can.Union unionData) ->
+                    -- Unbox is used for single-constructor types with a single field
+                    case unionData.alts of
+                        [ Can.Ctor ctorData ] ->
+                            case ctorData.args of
+                                [ canArgType ] ->
+                                    -- Build substitution from union's type vars to concrete type args
+                                    let
+                                        typeVarSubst =
+                                            List.map2 Tuple.pair unionData.vars typeArgs
+                                                |> List.foldl (\( varName, monoArg ) acc -> Dict.insert identity varName monoArg acc) Dict.empty
+                                    in
+                                    TypeSubst.applySubst typeVarSubst canArgType
+
+                                _ ->
+                                    Utils.Crash.crash ("Specialize.computeUnboxResultType: Expected single-arg constructor but got " ++ String.fromInt (List.length ctorData.args) ++ " args for " ++ typeName)
+
+                        _ ->
+                            Utils.Crash.crash ("Specialize.computeUnboxResultType: Expected single-constructor type but got " ++ String.fromInt (List.length unionData.alts) ++ " constructors for " ++ typeName)
+
+        _ ->
+            Utils.Crash.crash ("Specialize.computeUnboxResultType: Expected MCustom but got: " ++ Mono.monoTypeToDebugString containerType)
 
 
 {-| Compute element type from an array access.

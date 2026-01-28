@@ -69,6 +69,28 @@ collectCustomTypesFromMonoType monoType acc =
             acc
 
 
+{-| Collect custom types from a MonoPath.
+The path contains intermediate container types that need their shapes computed.
+-}
+collectCustomTypesFromPath : Mono.MonoPath -> EverySet.EverySet (List String) Mono.MonoType -> EverySet.EverySet (List String) Mono.MonoType
+collectCustomTypesFromPath path acc =
+    case path of
+        Mono.MonoRoot _ rootType ->
+            collectCustomTypesFromMonoType rootType acc
+
+        Mono.MonoIndex _ _ resultType subPath ->
+            collectCustomTypesFromPath subPath
+                (collectCustomTypesFromMonoType resultType acc)
+
+        Mono.MonoField _ resultType subPath ->
+            collectCustomTypesFromPath subPath
+                (collectCustomTypesFromMonoType resultType acc)
+
+        Mono.MonoUnbox resultType subPath ->
+            collectCustomTypesFromPath subPath
+                (collectCustomTypesFromMonoType resultType acc)
+
+
 {-| Collect all MCustom types from a MonoExpr and its sub-expressions.
 -}
 collectCustomTypesFromExpr : Mono.MonoExpr -> EverySet (List String) Mono.MonoType -> EverySet (List String) Mono.MonoType
@@ -141,9 +163,11 @@ collectCustomTypesFromExpr expr acc =
             in
             collectCustomTypesFromExpr body defAcc
 
-        Mono.MonoDestruct (Mono.MonoDestructor _ _ destructType) body _ ->
+        Mono.MonoDestruct (Mono.MonoDestructor _ path destructType) body _ ->
             collectCustomTypesFromExpr body
-                (collectCustomTypesFromMonoType destructType accWithType)
+                (collectCustomTypesFromPath path
+                    (collectCustomTypesFromMonoType destructType accWithType)
+                )
 
         Mono.MonoCase _ _ decider jumps _ ->
             let

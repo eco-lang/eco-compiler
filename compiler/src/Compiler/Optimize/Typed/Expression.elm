@@ -1198,20 +1198,38 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
 
         Can.PCtor { union, name, args } ->
             case args of
-                [ Can.PatternCtorArg _ argType arg ] ->
+                [ Can.PatternCtorArg _ _ arg ] ->
                     let
                         (Can.Union unionData) =
                             union
+
+                        -- Look up the inferred type from exprTypes instead of using argType
+                        patternId =
+                            (A.toValue arg).id
+
+                        actualType =
+                            case Dict.get identity patternId exprTypes of
+                                Just t ->
+                                    Just t
+
+                                Nothing ->
+                                    Utils.Crash.crash
+                                        ("destructHelpWithType PCtor singleton: Pattern ID "
+                                            ++ String.fromInt patternId
+                                            ++ " not found in exprTypes for constructor "
+                                            ++ name
+                                            ++ ". This is a compiler bug."
+                                        )
                     in
                     case unionData.opts of
                         Can.Normal ->
-                            destructHelpWithType exprTypes Nothing (Just argType) (TOpt.Index Index.first (TOpt.HintCustom name) path) arg revDs
+                            destructHelpWithType exprTypes Nothing actualType (TOpt.Index Index.first (TOpt.HintCustom name) path) arg revDs
 
                         Can.Unbox ->
-                            destructHelpWithType exprTypes Nothing (Just argType) (TOpt.Unbox path) arg revDs
+                            destructHelpWithType exprTypes Nothing actualType (TOpt.Unbox path) arg revDs
 
                         Can.Enum ->
-                            destructHelpWithType exprTypes Nothing (Just argType) (TOpt.Index Index.first (TOpt.HintCustom name) path) arg revDs
+                            destructHelpWithType exprTypes Nothing actualType (TOpt.Index Index.first (TOpt.HintCustom name) path) arg revDs
 
                 _ ->
                     case path of
@@ -1261,8 +1279,28 @@ destructTwo exprTypes parentPatId hint path a b revDs =
 
 
 destructCtorArg : ExprTypes -> Name -> TOpt.Path -> List TOpt.Destructor -> Can.PatternCtorArg -> Names.Tracker (List TOpt.Destructor)
-destructCtorArg exprTypes ctorName path revDs (Can.PatternCtorArg index argType arg) =
-    destructHelpWithType exprTypes Nothing (Just argType) (TOpt.Index index (TOpt.HintCustom ctorName) path) arg revDs
+destructCtorArg exprTypes ctorName path revDs (Can.PatternCtorArg index _ arg) =
+    let
+        patternId =
+            (A.toValue arg).id
+
+        actualType =
+            case Dict.get identity patternId exprTypes of
+                Just t ->
+                    Just t
+
+                Nothing ->
+                    -- Pattern IDs from canonicalization must be in exprTypes.
+                    -- If missing, this indicates a compiler bug in earlier phases.
+                    Utils.Crash.crash
+                        ("destructCtorArg: Pattern ID "
+                            ++ String.fromInt patternId
+                            ++ " not found in exprTypes for constructor "
+                            ++ ctorName
+                            ++ ". This is a compiler bug."
+                        )
+    in
+    destructHelpWithType exprTypes Nothing actualType (TOpt.Index index (TOpt.HintCustom ctorName) path) arg revDs
 
 
 {-| Destructure a case pattern into a list of destructors.
