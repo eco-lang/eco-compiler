@@ -319,7 +319,7 @@ collectCallsFromDef def =
 -}
 inlineThreshold : Int
 inlineThreshold =
-    2  -- Safe threshold
+    3
 
 
 {-| Maximum number of inlines per function to prevent explosion.
@@ -1472,18 +1472,49 @@ getInlinableBody node =
             -- Check if the define's expression is a closure
             case expr of
                 MonoClosure info body _ ->
-                    -- Extract the closure's params and body
-                    Just ( info.params, body )
+                    -- Don't inline closures with Case body.
+                    -- MonoCase becomes eco.case in MLIR, which is a terminator (no result value).
+                    -- Inlining Case into expression positions breaks MLIR generation.
+                    if isCase body then
+                        Nothing
+
+                    else
+                        Just ( info.params, body )
 
                 _ ->
                     -- Simple define with no parameters (e.g., constants)
-                    Just ( [], expr )
+                    -- Don't inline if it's a Case expression
+                    if isCase expr then
+                        Nothing
+
+                    else
+                        Just ( [], expr )
 
         MonoTailFunc params expr _ ->
-            Just ( params, expr )
+            -- Don't inline tail functions with Case body
+            if isCase expr then
+                Nothing
+
+            else
+                Just ( params, expr )
 
         _ ->
             Nothing
+
+
+{-| Check if an expression is a MonoCase.
+Cases cannot be inlined into expression positions because eco.case is a
+terminator in MLIR - it doesn't produce a result value, control exits
+through eco.return inside the case branches.
+-}
+isCase : MonoExpr -> Bool
+isCase expr =
+    case expr of
+        MonoCase _ _ _ _ _ ->
+            True
+
+        _ ->
+            False
 
 
 createBindingsForInline : RewriteCtx -> List ( Name, Mono.MonoType ) -> List MonoExpr -> ( List Binding, RewriteCtx )
