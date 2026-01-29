@@ -18,6 +18,7 @@ import Compiler.Generate.MLIR.Functions as Functions
 import Compiler.Generate.MLIR.Lambdas as Lambdas
 import Compiler.Generate.MLIR.TypeTable as TypeTable
 import Compiler.Generate.Mode as Mode
+import Compiler.Optimize.MonoInlineSimplify as MonoInlineSimplify
 import Data.Map as EveryDict
 import Dict
 import Mlir.Loc as Loc
@@ -46,8 +47,12 @@ backend =
 {-| Generate an MlirModule directly, for use in invariant testing.
 -}
 generateMlirModule : Mode.Mode -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> MlirModule
-generateMlirModule mode _ (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
+generateMlirModule mode typeEnv monoGraph0 =
     let
+        -- Run the Mono IR optimizer before MLIR generation
+        ( Mono.MonoGraph { nodes, main, registry, ctorShapes }, _ ) =
+            MonoInlineSimplify.optimize mode typeEnv monoGraph0
+
         signatures : Dict.Dict Int Ctx.FuncSignature
         signatures =
             Ctx.buildSignatures nodes
