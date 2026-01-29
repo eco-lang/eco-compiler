@@ -52,6 +52,9 @@ void buildEcoToEcoPipeline(PassManager &pm) {
     // pm.addPass(eco::createConstructLoweringPass());
     pm.addPass(eco::createRCEliminationPass());
 
+    // PAP simplification: fuse closures, convert saturated PAPs to direct calls
+    pm.addPass(eco::createEcoPAPSimplifyPass());
+
     // Generate external declarations for undefined functions (kernel functions, etc.)
     pm.addPass(eco::createUndefinedFunctionPass());
 }

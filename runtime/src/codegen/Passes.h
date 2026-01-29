@@ -36,6 +36,12 @@ std::unique_ptr<mlir::Pass> createRCEliminationPass();
 // Fails the build if any undefined functions are found.
 std::unique_ptr<mlir::Pass> createUndefinedFunctionPass();
 
+// Optimizes partial application patterns:
+// - Converts saturated papCreate+papExtend to direct calls (P1)
+// - Fuses papExtend chains (P2)
+// - Enables DCE of unused closures (P3)
+std::unique_ptr<mlir::Pass> createEcoPAPSimplifyPass();
+
 // ========== Stage 2: Eco -> Standard MLIR (func/cf/arith) ==========
 
 // Analyzes and classifies joinpoints for SCF lowering eligibility.

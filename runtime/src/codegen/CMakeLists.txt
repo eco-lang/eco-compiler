@@ -182,6 +182,7 @@ target_compile_options(obj.BFDialect PRIVATE -Wno-ambiguous-reversed-operator)
 
 add_mlir_library(EcoPasses
     Passes/RCElimination.cpp
+    Passes/EcoPAPSimplify.cpp
     Passes/JoinpointNormalization.cpp
     Passes/EcoControlFlowToSCF.cpp
     Passes/UndefinedFunction.cpp
