@@ -710,15 +710,17 @@ inputs: MLIR with boolean operations and constants
 oracle: i1 only in control-flow; !eco.value elsewhere for Bool.
 --
 --
-name: eco.case result_types and returns agree
+name: eco.case is SSA value-producing with eco.yield
 phase: MLIR codegen
 invariants: CGEN_010
 ir: eco.case ops
 logic: For each `eco.case`:
-  * Inspect its `result_types` attribute.
-  * Verify every `eco.return` in its alternatives uses exactly that result type list (including order and MLIR types).
+  * Verify it has explicit MLIR result types on the op itself (not via result_types/caseResultTypes attribute).
+  * Verify every alternative region terminates with `eco.yield`.
+  * Verify each `eco.yield` operand arity and types exactly match the eco.case result types.
 inputs: MLIR for pattern matches and cases
-oracle: All branches of a case are type-consistent and agree with `result_types`.
+oracle: All eco.case ops produce SSA values; all alternatives end with eco.yield matching result types.
+tests: compiler/tests/Compiler/Generate/CodeGen/CaseTerminationTest.elm
 --
 --
 name: All eco.call targets exist as func.func
@@ -917,16 +919,16 @@ oracle: head_unboxed matches head operand type.
 tests: compiler/tests/Compiler/Generate/CodeGen/UnboxedBitmapTest.elm
 --
 --
-name: eco.case alternatives terminate properly
+name: eco.case alternatives terminate with eco.yield
 phase: MLIR codegen
 invariants: CGEN_028
 ir: eco.case ops
 logic: Every eco.case alternative region:
-  * Terminates with eco.return, eco.crash, or a nested terminator eco.case.
-  * No alternative falls through without an explicit terminator.
-  * eco.jump is not allowed directly in case alternatives.
+  * Terminates with eco.yield only.
+  * eco.return, eco.jump, eco.crash, and eco.unreachable are forbidden inside eco.case alternatives.
+  * No alternative falls through past the end of a region.
 inputs: MLIR with case expressions
-oracle: All alternatives are properly terminated.
+oracle: All alternatives terminate with eco.yield; no other terminators allowed.
 tests: compiler/tests/Compiler/Generate/CodeGen/CaseTerminationTest.elm
 --
 --
@@ -1027,6 +1029,33 @@ oracle: remaining_arity correctly computed; no over-application.
 tests: compiler/tests/Compiler/Generate/CodeGen/PapExtendArityTest.elm
 --
 --
+name: eco.yield only in eco.case alternatives
+phase: MLIR codegen
+invariants: CGEN_053
+ir: eco.yield ops
+logic: eco.yield may only appear as the terminator of an eco.case alternative region:
+  * eco.yield is forbidden in function bodies.
+  * eco.yield is forbidden in joinpoint bodies.
+  * eco.yield is forbidden in SCF regions.
+  * If eco.yield appears outside an eco.case alternative, it is a codegen bug.
+inputs: MLIR with eco.yield ops
+oracle: All eco.yield ops are inside eco.case alternative regions.
+tests: compiler/tests/Compiler/Generate/CodeGen/CaseTerminationTest.elm
+--
+--
+name: eco.return forbidden in eco.case alternatives
+phase: MLIR codegen
+invariants: CGEN_054
+ir: eco.case alternative regions
+logic: eco.return is forbidden inside eco.case alternative regions:
+  * eco.yield is the only legal case-alternative terminator.
+  * This prevents accidental non-local exits from within a value-producing case.
+  * eco.return appearing in a case alternative is a codegen bug.
+inputs: MLIR with case expressions
+oracle: No eco.return ops inside eco.case alternatives.
+tests: compiler/tests/Compiler/Generate/CodeGen/CaseTerminationTest.elm
+--
+--
 name: Single eco.type_table per module
 phase: MLIR codegen
 invariants: CGEN_035
@@ -1116,8 +1145,9 @@ phase: MLIR codegen
 invariants: CGEN_042
 ir: MLIR blocks
 logic: Every block in every region:
-  * Must end with a terminator operation (eco.return, eco.jump, eco.case, scf.yield, cf.br, cf.cond_br, etc.).
-  * Each eco.case alternative region must be properly terminated with no fallthrough.
+  * Must end with a terminator operation (eco.return, eco.jump, eco.crash, eco.unreachable, eco.yield, scf.yield, cf.br, cf.cond_br, etc.).
+  * Note: eco.case is NOT a terminator; it is a value-producing expression.
+  * Each eco.case alternative region must be properly terminated with eco.yield with no fallthrough.
 inputs: MLIR from codegen
 oracle: All blocks are properly terminated.
 tests: compiler/tests/Compiler/Generate/CodeGen/BlockTerminatorTest.elm
@@ -1135,53 +1165,53 @@ oracle: All calls target valid, non-stub functions.
 tests: compiler/tests/Compiler/Generate/CodeGen/CallTargetValidityTest.elm
 --
 --
-name: eco.case is a block terminator
+name: eco.case is NOT a block terminator (value-producing)
 phase: MLIR codegen
 invariants: CGEN_045
 ir: eco.case ops
-logic: eco.case is a block terminator:
-  * If a block ends with eco.case, there are no operations after it in that block.
-  * eco.case never appears as a mid-block expression that falls through.
+logic: eco.case is NOT a block terminator:
+  * eco.case may appear mid-block as a value-producing expression op.
+  * Its result SSA values may be used by subsequent operations in the same block.
+  * eco.case produces values, it does not terminate control flow.
 inputs: MLIR with case expressions
-oracle: eco.case always terminates its block.
-tests: compiler/tests/Compiler/Generate/CodeGen/CaseTerminationTest.elm
+oracle: eco.case ops produce SSA values and may be followed by other operations.
 --
 --
-name: eco.case exits only via alternatives
+name: eco.case produces results via eco.yield
 phase: MLIR codegen
 invariants: CGEN_046
 ir: eco.case ops
 logic: For every eco.case:
-  * Control reaching it never falls through to a continuation.
-  * All exits happen via eco.return or eco.crash inside alternatives, or via nested terminator eco.case.
+  * It always produces its results via eco.yield in exactly one selected alternative.
+  * Control continues in the enclosing block after the eco.case operation.
+  * eco.case has no implicit control-flow exits.
 inputs: MLIR with case expressions
-oracle: No fallthrough from eco.case.
-tests: compiler/tests/Compiler/Generate/CodeGen/CaseTerminationTest.elm
+oracle: eco.case always produces values; control flows to next op in block.
 --
 --
-name: Decider regions have real terminators
+name: Decider regions must end with eco.yield
 phase: MLIR codegen
 invariants: CGEN_047
 ir: eco.case alternative regions
 logic: Every decider region that becomes an eco.case alternative:
-  * Has a non-empty op list whose last op is a real terminator (eco.return, eco.crash, or nested terminator eco.case).
-  * Codegen never manufactures trailing dummy eco.return ops for nested cases.
-  * Hitting a non-terminator tail is a codegen bug.
+  * Has a non-empty op list whose last op is eco.yield.
+  * Codegen never manufactures dummy eco.return terminators to "patch" unterminated decider regions.
+  * Hitting a non-eco.yield tail in a case alternative is a codegen bug.
 inputs: MLIR with nested cases
-oracle: All alternative regions have real terminators.
+oracle: All alternative regions end with eco.yield.
 tests: compiler/tests/Compiler/Generate/CodeGen/CaseTerminationTest.elm
 --
 --
-name: EcoControlFlowToSCF matches only terminator eco.case
+name: EcoControlFlowToSCF matches value-producing eco.case
 phase: MLIR codegen
 invariants: CGEN_048
 ir: eco.case lowering
 logic: The EcoControlFlowToSCF pass:
-  * Only matches eco.case when it is the last op in its block (block terminator).
-  * Does not match when followed by eco.return or scf.yield.
-  * Replaces terminator eco.case with scf.if or scf.index_switch plus a new terminator.
+  * Matches value-producing eco.case regardless of its position in a block.
+  * Rewrites it to scf.if or scf.index_switch by translating eco.yield terminators to scf.yield.
+  * Replaces the original eco.case results with the SCF op results.
 inputs: MLIR during lowering
-oracle: Pass only matches terminator eco.case.
+oracle: Pass correctly converts eco.case to SCF ops with eco.yield -> scf.yield translation.
 --
 --
 name: PAP bitmaps limited to 52 bits
@@ -1590,7 +1620,10 @@ logic: No generated code may access heap object internals directly except inside
 name: No implicit control-flow fallthrough
 phase: MLIR codegen
 invariants: FORBID_CF_001
-logic: No control-flow construct may assume implicit fallthrough; all exits must be explicit terminators.
+logic: No control-flow construct may assume implicit fallthrough:
+  * All region exits must be explicit terminators.
+  * All eco.case alternatives must explicitly terminate with eco.yield.
+  * Relying on fallthrough behavior is forbidden.
 --
 --
 name: Debug code uses same tracing as GC

@@ -114,13 +114,14 @@ class Eco_Op<string mnemonic, list<Trait> traits = []>
 //===----------------------------------------------------------------------===//
 
 def Eco_CaseOp : Eco_Op<"case", [
-    Terminator,
-    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+    RecursiveMemoryEffects,
+    SingleBlockImplicitTerminator<"YieldOp">
 ]> {
-  let summary = "Pattern match on a value and branch to alternatives";
+  let summary = "Pattern match on a value and produce results";
   let description = [{
-    Pattern match on a value and branch to one of several regions.
-    Each region handles a specific tag value.
+    Pattern match on a value and execute one of several alternative regions,
+    producing SSA results. Each region handles a specific tag value and must
+    terminate with eco.yield whose operand types match this op's result types.
 
     **Scrutinee Types and case_kind (required):**
     - `!eco.value` + `case_kind="ctor"`: ADT constructor matching (extract tag via eco.get_tag)
@@ -132,49 +133,44 @@ def Eco_CaseOp : Eco_Op<"case", [
     - `i64` + `case_kind="int"`: Integer literal matching (direct comparison)
     - `i16` + `case_kind="chr"`: Character literal matching (direct comparison)
 
-    The `caseResultTypes` attribute specifies the MLIR result types returned from
-    this case expression. All `eco.return` ops in each alternative must have
-    operand types matching this list.
+    eco.case is a value-producing expression op, NOT a terminator. It produces
+    SSA results that can be used by subsequent operations. Each alternative
+    region must terminate with eco.yield (not eco.return).
 
     Example (ADT matching):
     ```mlir
-    eco.case %scrutinee [0, 1] result_types [!eco.value] { case_kind = "ctor" } {
-      eco.return %nil_result : !eco.value
+    %result = eco.case %scrutinee [0, 1] -> (!eco.value) { case_kind = "ctor" } {
+      eco.yield %nil_result : !eco.value
     }, {
-      %head = eco.project %scrutinee[0] : !eco.value -> !eco.value
-      eco.return %head : !eco.value
+      %head = eco.project.list_head %scrutinee : !eco.value -> !eco.value
+      eco.yield %head : !eco.value
     }
     ```
 
     Example (integer matching):
     ```mlir
-    eco.case %x [0, 1, 2] result_types [!eco.value] { case_kind = "int" } {
-      eco.return %zero_result : !eco.value
+    %result = eco.case %x [0, 1, 2] -> (!eco.value) { case_kind = "int" } {
+      eco.yield %zero_result : !eco.value
     }, {
-      eco.return %one_result : !eco.value
+      eco.yield %one_result : !eco.value
     }, {
-      eco.return %two_result : !eco.value
+      eco.yield %two_result : !eco.value
     }
     ```
 
-    eco.case is a control-flow terminator. It does not produce an SSA value;
-    instead, control exits through the eco.return ops inside each alternative
-    (or through nested eco.case terminators for transitive termination).
-
     Regions take no arguments; code inside uses eco.project to extract fields
-    from the scrutinee. Each region must terminate with eco.return or a nested
-    eco.case. eco.jump is not allowed in alternatives.
+    from the scrutinee. Each region must terminate with eco.yield. eco.return,
+    eco.jump, eco.crash are forbidden inside eco.case alternatives.
   }];
 
   let arguments = (ins
     Eco_AnyValue:$scrutinee,                   // !eco.value, i1, i16, or i64
     DenseI64ArrayAttr:$tags,
-    OptionalAttr<ArrayAttr>:$caseResultTypes,  // Array of TypeAttr for SCF lowering
     StrAttr:$case_kind,                        // Required: "ctor", "int", "chr", "str", or "bool"
     OptionalAttr<ArrayAttr>:$string_patterns   // For case_kind="str": N-1 string literals
   );
-  let regions = (region VariadicRegion<AnyRegion>:$alternatives);
-  let results = (outs);
+  let regions = (region VariadicRegion<SizedRegion<1>>:$alternatives);
+  let results = (outs Variadic<Eco_AnyValue>:$results);
 
   let hasVerifier = 1;
   let hasCustomAssemblyFormat = 1;
@@ -185,10 +181,16 @@ def Eco_ReturnOp : Eco_Op<"return", [
     Terminator,
     ReturnLike
 ]> {
-  let summary = "Return from Eco function or region";
+  let summary = "Return from Eco function or joinpoint body";
   let description = [{
-    Return from an Eco function with optional result values. Also used
-    to terminate regions in eco.case and eco.joinpoint.
+    Return from an Eco function or joinpoint body with optional result values.
+
+    eco.return is used ONLY for:
+    - Function body returns (terminating a func.func body)
+    - Joinpoint body exits (exiting from eco.joinpoint body region)
+
+    eco.return is NOT valid inside eco.case alternatives. Use eco.yield instead
+    to terminate case alternatives.
 
     Example:
     ```mlir
@@ -207,6 +209,39 @@ def Eco_ReturnOp : Eco_Op<"return", [
   ];
 
   let assemblyFormat = "($results^ `:` type($results))? attr-dict";
+}
+
+def Eco_YieldOp : Eco_Op<"yield", [
+    Pure,
+    Terminator,
+    HasParent<"::eco::CaseOp">
+]> {
+  let summary = "Yield values from eco.case alternative";
+  let description = [{
+    Terminates an alternative region in eco.case, yielding values back to the
+    parent case expression. The number and types of yielded values must match
+    the result types declared by the parent eco.case.
+
+    eco.yield is ONLY valid inside eco.case alternatives. For function returns,
+    use eco.return.
+
+    Example:
+    ```mlir
+    %result = eco.case %scrutinee [0, 1] -> (!eco.value) { case_kind = "ctor" } {
+      eco.yield %nil_result : !eco.value
+    }, {
+      %head = eco.project.list_head %scrutinee : !eco.value -> !eco.value
+      eco.yield %head : !eco.value
+    }
+    ```
+  }];
+
+  let arguments = (ins Variadic<Eco_AnyValue>:$values);
+  let results = (outs);
+
+  let assemblyFormat = "($values^ `:` type($values))? attr-dict";
+
+  let hasVerifier = 1;
 }
 
 def Eco_JoinpointOp : Eco_Op<"joinpoint", [

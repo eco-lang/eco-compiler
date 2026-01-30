@@ -382,13 +382,16 @@ typesMatch t1 t2 =
 
 
 {-| List of valid terminator operation names.
+
+Note: eco.case is NOT a terminator - it is a value-producing expression.
+eco.yield is only valid inside eco.case alternatives.
 -}
 validTerminators : List String
 validTerminators =
     [ "eco.return"
     , "eco.jump"
     , "eco.crash"
-    , "eco.case"
+    , "eco.yield"
     , "scf.yield"
     , "cf.br"
     , "cf.cond_br"

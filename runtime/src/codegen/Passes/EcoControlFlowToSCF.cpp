@@ -44,10 +44,10 @@ static bool isInsideScfRegion(Operation *op) {
            op->getParentOfType<scf::WhileOp>();
 }
 
-/// Check if all alternatives in a case op end with eco.return or nested eco.case.
-/// eco.jump is not allowed. This is required for lowering to scf.if/scf.index_switch.
-/// Nested eco.case is handled by cloning as-is; the greedy driver will rewrite them.
-bool hasPureReturnAlternatives(CaseOp op) {
+/// Check if all alternatives in a case op end with eco.yield.
+/// eco.case alternatives must terminate with eco.yield (not eco.return).
+/// This is required for lowering to scf.if/scf.index_switch.
+bool hasPureYieldAlternatives(CaseOp op) {
     for (Region &alt : op.getAlternatives()) {
         if (alt.empty())
             return false;
@@ -57,25 +57,17 @@ bool hasPureReturnAlternatives(CaseOp op) {
             return false;
 
         Operation *term = block.getTerminator();
-        // Accept eco.return or nested eco.case (transitive termination)
-        if (!isa<ReturnOp>(term) && !isa<CaseOp>(term))
+        // All alternatives must end with eco.yield
+        if (!isa<YieldOp>(term))
             return false;
     }
     return true;
 }
 
-/// Get the result types from eco.case's result_types attribute.
-/// Returns empty vector if attribute is not present.
+/// Get the result types from eco.case's explicit results.
+/// eco.case is now a value-producing expression with explicit result types.
 SmallVector<Type> getCaseResultTypes(CaseOp op) {
-    SmallVector<Type> types;
-    if (auto resultTypesAttr = op.getCaseResultTypes()) {
-        for (Attribute attr : *resultTypesAttr) {
-            if (auto typeAttr = dyn_cast<TypeAttr>(attr)) {
-                types.push_back(typeAttr.getValue());
-            }
-        }
-    }
-    return types;
+    return SmallVector<Type>(op.getResultTypes().begin(), op.getResultTypes().end());
 }
 
 /// Check if the case op has an i1 (Bool) scrutinee.
@@ -112,22 +104,22 @@ bool isStringCase(CaseOp op) {
 }
 
 //===----------------------------------------------------------------------===//
-// Pattern: eco.case with pure returns -> scf.if (2-way case)
+// Pattern: eco.case with pure yields -> scf.if (2-way case)
 //===----------------------------------------------------------------------===//
 
-/// Lowers eco.case with exactly 2 alternatives (both pure returns) to scf.if.
+/// Lowers eco.case with exactly 2 alternatives (both ending with eco.yield) to scf.if.
 ///
-/// eco.case %scrutinee [tag0, tag1] result_types [T0, ...] {
-///   ... eco.return %v0 : T0
+/// %result = eco.case %scrutinee [tag0, tag1] -> (T0) { case_kind = "ctor" } {
+///   ... eco.yield %v0 : T0
 /// }, {
-///   ... eco.return %v1 : T0
+///   ... eco.yield %v1 : T0
 /// }
 ///
 /// becomes:
 ///
 /// %tag = eco.get_tag %scrutinee : !eco.value -> i32
 /// %cond = arith.cmpi eq, %tag, %c_tag1_i32 : i32
-/// %results = scf.if %cond -> (T0, ...) {
+/// %result = scf.if %cond -> (T0) {
 ///   ... scf.yield %v1 : T0
 /// } else {
 ///   ... scf.yield %v0 : T0
@@ -147,15 +139,14 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
             return failure();
         }
 
-        // All alternatives must end with eco.return
-        if (!hasPureReturnAlternatives(op)) {
-            LLVM_DEBUG(llvm::dbgs() << "  -> rejected: not all alternatives end with eco.return\n");
+        // All alternatives must end with eco.yield
+        if (!hasPureYieldAlternatives(op)) {
+            LLVM_DEBUG(llvm::dbgs() << "  -> rejected: not all alternatives end with eco.yield\n");
             return failure();
         }
 
-        // Skip cases inside joinpoint bodies - the returns inside are "non-local"
-        // exits from the joinpoint, which scf.if can't model. These should be
-        // handled by CF lowering or joinpoint-specific patterns.
+        // Skip cases inside joinpoint bodies - these may have different control
+        // flow requirements and should be handled by joinpoint-specific patterns.
         if (op->getParentOfType<JoinpointOp>())
             return failure();
 
@@ -164,19 +155,8 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
         // should be lowered to nested SCF operations. The greedy pattern rewriter
         // will apply patterns until fixpoint, handling nested structures correctly.
 
-        // Get result types (may be empty for void cases)
+        // Get result types from eco.case's explicit results
         auto resultTypes = getCaseResultTypes(op);
-
-        // eco.case must BE the block terminator (not followed by anything).
-        // With eco.case as a Terminator op, there's nothing after it.
-        Block *block = op->getBlock();
-        if (&block->back() != op.getOperation()) {
-            LLVM_DEBUG(llvm::dbgs() << "  -> rejected: eco.case is not block terminator\n");
-            return failure();
-        }
-
-        // Determine if we're inside an SCF region (affects terminator choice)
-        bool insideScf = isInsideScfRegion(op.getOperation());
 
         LLVM_DEBUG(llvm::dbgs() << "  -> MATCHED! Converting to scf.if\n");
 
@@ -199,26 +179,42 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
                 cond = rewriter.create<arith::XOrIOp>(loc, op.getScrutinee(), trueConst);
             }
         } else if (isIntegerCase(op)) {
-            // For integer case: unbox the scrutinee and compare directly
+            // For integer case: compare directly (unbox if needed)
             auto i64Ty = rewriter.getI64Type();
-            auto unboxed = rewriter.create<UnboxOp>(loc, i64Ty, op.getScrutinee());
+            Value scrutinee = op.getScrutinee();
+            Value intVal;
+            if (scrutinee.getType() == i64Ty) {
+                // Already unboxed i64
+                intVal = scrutinee;
+            } else {
+                // Boxed eco.value - unbox to i64
+                intVal = rewriter.create<UnboxOp>(loc, i64Ty, scrutinee);
+            }
 
             // Create comparison: value == tags[1] (second alternative)
             // We compare against tag1 so "true" branch is alt1, "else" is alt0
             auto tagConstant = rewriter.create<arith::ConstantOp>(
                 loc, rewriter.getI64IntegerAttr(tags[1]));
             cond = rewriter.create<arith::CmpIOp>(
-                loc, arith::CmpIPredicate::eq, unboxed, tagConstant);
+                loc, arith::CmpIPredicate::eq, intVal, tagConstant);
         } else if (isCharCase(op)) {
-            // For char case: unbox the scrutinee to i16 and compare directly
+            // For char case: compare directly (unbox if needed)
             auto i16Ty = rewriter.getIntegerType(16);
-            auto unboxed = rewriter.create<UnboxOp>(loc, i16Ty, op.getScrutinee());
+            Value scrutinee = op.getScrutinee();
+            Value charVal;
+            if (scrutinee.getType() == i16Ty) {
+                // Already unboxed i16
+                charVal = scrutinee;
+            } else {
+                // Boxed eco.value - unbox to i16
+                charVal = rewriter.create<UnboxOp>(loc, i16Ty, scrutinee);
+            }
 
             // Create comparison: value == tags[1] (second alternative)
             auto tagConstant = rewriter.create<arith::ConstantOp>(
                 loc, rewriter.getIntegerAttr(i16Ty, tags[1]));
             cond = rewriter.create<arith::CmpIOp>(
-                loc, arith::CmpIPredicate::eq, unboxed, tagConstant);
+                loc, arith::CmpIPredicate::eq, charVal, tagConstant);
         } else {
             // For eco.value scrutinee (ADT constructor): extract tag and compare
             auto tag = rewriter.create<GetTagOp>(loc, rewriter.getI32Type(),
@@ -254,18 +250,18 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
             IRMapping mapping;
 
             // Clone all operations from alt1 into then block.
-            // Convert eco.return to scf.yield.
+            // Convert eco.yield to scf.yield.
             // Clone nested eco.case as-is (greedy driver rewrites it later).
             Region &alt1 = alts[1];
             Block &alt1Block = alt1.front();
 
             for (Operation &bodyOp : alt1Block.getOperations()) {
-                if (auto ret = dyn_cast<ReturnOp>(&bodyOp)) {
+                if (auto yieldOp = dyn_cast<YieldOp>(&bodyOp)) {
                     SmallVector<Value> yieldOperands;
-                    for (Value operand : ret.getOperands())
+                    for (Value operand : yieldOp.getOperands())
                         yieldOperands.push_back(mapping.lookupOrDefault(operand));
                     rewriter.create<scf::YieldOp>(loc, yieldOperands);
-                    break;  // ReturnOp is last
+                    break;  // YieldOp is last
                 }
                 rewriter.clone(bodyOp, mapping);  // includes nested eco.case
             }
@@ -291,36 +287,29 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
             Block &alt0Block = alt0.front();
 
             for (Operation &bodyOp : alt0Block.getOperations()) {
-                if (auto ret = dyn_cast<ReturnOp>(&bodyOp)) {
+                if (auto yieldOp = dyn_cast<YieldOp>(&bodyOp)) {
                     SmallVector<Value> yieldOperands;
-                    for (Value operand : ret.getOperands())
+                    for (Value operand : yieldOp.getOperands())
                         yieldOperands.push_back(mapping.lookupOrDefault(operand));
                     rewriter.create<scf::YieldOp>(loc, yieldOperands);
-                    break;  // ReturnOp is last
+                    break;  // YieldOp is last
                 }
                 rewriter.clone(bodyOp, mapping);  // includes nested eco.case
             }
         }
 
-        // SCF lowering CREATES the final terminator - there was none after eco.case.
-        // Insert eco.return or scf.yield depending on nesting context.
-        rewriter.setInsertionPointAfter(ifOp);
-        if (insideScf) {
-            rewriter.create<scf::YieldOp>(loc, ifOp.getResults());
-        } else {
-            rewriter.create<ReturnOp>(loc, ifOp.getResults());
-        }
-
-        rewriter.eraseOp(op);  // Erase the eco.case terminator
+        // eco.case is now a value-producing expression. Replace its uses with
+        // the scf.if results and erase the original eco.case.
+        rewriter.replaceOp(op, ifOp.getResults());
         return success();
     }
 };
 
 //===----------------------------------------------------------------------===//
-// Pattern: eco.case with pure returns -> scf.index_switch (multi-way case)
+// Pattern: eco.case with pure yields -> scf.index_switch (multi-way case)
 //===----------------------------------------------------------------------===//
 
-/// Lowers eco.case with >2 alternatives (all pure returns) to scf.index_switch.
+/// Lowers eco.case with >2 alternatives (all ending with eco.yield) to scf.index_switch.
 struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
     using OpRewritePattern::OpRewritePattern;
 
@@ -332,22 +321,31 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
         if (alts.size() <= 2)
             return failure();
 
-        // All alternatives must end with eco.return
-        if (!hasPureReturnAlternatives(op))
+        // All alternatives must end with eco.yield
+        if (!hasPureYieldAlternatives(op))
             return failure();
 
         // i1 scrutinee should use the 2-way pattern (scf.if), not index_switch
         if (hasI1Scrutinee(op))
             return failure();
 
-        // Integer, char, and string cases don't work well with scf.index_switch.
-        // Integer/char values may not be sequential; string cases need string
-        // comparison not tag extraction. Let them fall through to CF lowering.
-        if (isIntegerCase(op) || isCharCase(op) || isStringCase(op))
+        // String cases need comparison chain, not index_switch
+        if (isStringCase(op))
             return failure();
 
-        // Skip cases inside joinpoint bodies - the returns inside are "non-local"
-        // exits from the joinpoint, which scf.index_switch can't model.
+        // Int cases: only use index_switch if all tags are non-negative
+        // (negative values can't be cast to index type safely)
+        if (isIntegerCase(op)) {
+            ArrayRef<int64_t> tags = op.getTags();
+            for (int64_t tag : tags) {
+                if (tag < 0)
+                    return failure();  // Fall through to comparison chain pattern
+            }
+        }
+        // Char cases: always OK (Unicode codepoints are non-negative)
+
+        // Skip cases inside joinpoint bodies - these may have different control
+        // flow requirements and should be handled by joinpoint-specific patterns.
         if (op->getParentOfType<JoinpointOp>())
             return failure();
 
@@ -357,24 +355,47 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
 
         auto resultTypes = getCaseResultTypes(op);
 
-        // eco.case must BE the block terminator (not followed by anything).
-        Block *block = op->getBlock();
-        if (&block->back() != op.getOperation())
-            return failure();
-
-        // Determine if we're inside an SCF region (affects terminator choice)
-        bool insideScf = isInsideScfRegion(op.getOperation());
-
         auto loc = op.getLoc();
         auto tags = op.getTags();
 
-        // Create eco.get_tag to extract the constructor tag
-        auto tag = rewriter.create<GetTagOp>(loc, rewriter.getI32Type(),
-                                             op.getScrutinee());
+        // Compute the index selector based on case kind
+        Value indexTag;
+        Value scrutinee = op.getScrutinee();
+        Type scrutineeType = scrutinee.getType();
 
-        // Convert tag to index type for scf.index_switch
-        auto indexTag = rewriter.create<arith::IndexCastOp>(
-            loc, rewriter.getIndexType(), tag);
+        if (isCharCase(op)) {
+            // Char case: need i16 value, then cast to index
+            auto i16Ty = rewriter.getIntegerType(16);
+            Value charVal;
+            if (scrutineeType == i16Ty) {
+                // Already unboxed i16
+                charVal = scrutinee;
+            } else {
+                // Boxed eco.value - unbox to i16
+                charVal = rewriter.create<UnboxOp>(loc, i16Ty, scrutinee);
+            }
+            indexTag = rewriter.create<arith::IndexCastOp>(
+                loc, rewriter.getIndexType(), charVal);
+        } else if (isIntegerCase(op)) {
+            // Int case: need i64 value, then cast to index
+            auto i64Ty = rewriter.getI64Type();
+            Value intVal;
+            if (scrutineeType == i64Ty) {
+                // Already unboxed i64
+                intVal = scrutinee;
+            } else {
+                // Boxed eco.value - unbox to i64
+                intVal = rewriter.create<UnboxOp>(loc, i64Ty, scrutinee);
+            }
+            indexTag = rewriter.create<arith::IndexCastOp>(
+                loc, rewriter.getIndexType(), intVal);
+        } else {
+            // ADT case: extract constructor tag and cast to index
+            auto tag = rewriter.create<GetTagOp>(loc, rewriter.getI32Type(),
+                                                 scrutinee);
+            indexTag = rewriter.create<arith::IndexCastOp>(
+                loc, rewriter.getIndexType(), tag);
+        }
 
         // Build case values (excluding LAST one which becomes default).
         // Elm puts wildcards LAST, so the last alternative is the default.
@@ -388,7 +409,7 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
             loc, resultTypes, indexTag, caseValues, caseValues.size());
 
         // Fill in each case region (alts[0..N-2] map to scf cases)
-        // Clone all ops. Convert eco.return to scf.yield.
+        // Clone all ops. Convert eco.yield to scf.yield.
         // Clone nested eco.case as-is (greedy driver rewrites it later).
         for (size_t i = 0; i < alts.size() - 1; ++i) {
             Region &caseRegion = switchOp.getCaseRegions()[i];
@@ -400,12 +421,12 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
             Block &altBlock = alt.front();
 
             for (Operation &bodyOp : altBlock.getOperations()) {
-                if (auto ret = dyn_cast<ReturnOp>(&bodyOp)) {
+                if (auto yieldOp = dyn_cast<YieldOp>(&bodyOp)) {
                     SmallVector<Value> yieldOperands;
-                    for (Value operand : ret.getOperands())
+                    for (Value operand : yieldOp.getOperands())
                         yieldOperands.push_back(mapping.lookupOrDefault(operand));
                     rewriter.create<scf::YieldOp>(loc, yieldOperands);
-                    break;  // ReturnOp is last
+                    break;  // YieldOp is last
                 }
                 rewriter.clone(bodyOp, mapping);  // includes nested eco.case
             }
@@ -422,28 +443,187 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
             Block &lastAltBlock = lastAlt.front();
 
             for (Operation &bodyOp : lastAltBlock.getOperations()) {
-                if (auto ret = dyn_cast<ReturnOp>(&bodyOp)) {
+                if (auto yieldOp = dyn_cast<YieldOp>(&bodyOp)) {
                     SmallVector<Value> yieldOperands;
-                    for (Value operand : ret.getOperands())
+                    for (Value operand : yieldOp.getOperands())
                         yieldOperands.push_back(mapping.lookupOrDefault(operand));
                     rewriter.create<scf::YieldOp>(loc, yieldOperands);
-                    break;  // ReturnOp is last
+                    break;  // YieldOp is last
                 }
                 rewriter.clone(bodyOp, mapping);  // includes nested eco.case
             }
         }
 
-        // SCF lowering CREATES the final terminator - there was none after eco.case.
-        // Insert eco.return or scf.yield depending on nesting context.
-        rewriter.setInsertionPointAfter(switchOp);
-        if (insideScf) {
-            rewriter.create<scf::YieldOp>(loc, switchOp.getResults());
+        // eco.case is now a value-producing expression. Replace its uses with
+        // the scf.index_switch results and erase the original eco.case.
+        rewriter.replaceOp(op, switchOp.getResults());
+        return success();
+    }
+};
+
+//===----------------------------------------------------------------------===//
+// Pattern: eco.case -> nested scf.if chain (for string/negative-int cases)
+//===----------------------------------------------------------------------===//
+
+/// Helper to clone an alternative's body, converting eco.yield to scf.yield.
+static void cloneAlternativeWithScfYield(Region &alt, PatternRewriter &rewriter,
+                                         Location loc, IRMapping &mapping) {
+    Block &altBlock = alt.front();
+    for (Operation &bodyOp : altBlock.getOperations()) {
+        if (auto yieldOp = dyn_cast<YieldOp>(&bodyOp)) {
+            SmallVector<Value> yieldOperands;
+            for (Value operand : yieldOp.getOperands())
+                yieldOperands.push_back(mapping.lookupOrDefault(operand));
+            rewriter.create<scf::YieldOp>(loc, yieldOperands);
+            break;  // YieldOp is last
+        }
+        Operation *cloned = rewriter.clone(bodyOp, mapping);
+        for (auto [oldRes, newRes] : llvm::zip(bodyOp.getResults(), cloned->getResults()))
+            mapping.map(oldRes, newRes);
+    }
+}
+
+/// Lowers eco.case to nested scf.if chain for int cases with negative tags.
+/// Each alternative (except the last default) becomes an equality comparison:
+/// if (val == tag) { alt } else { next check... }
+///
+/// Note: String cases are NOT handled here - they require runtime string
+/// comparison which is only available at the LLVM lowering level.
+struct CaseToScfIfChainPattern : public OpRewritePattern<CaseOp> {
+    using OpRewritePattern::OpRewritePattern;
+
+    LogicalResult matchAndRewrite(CaseOp op,
+                                  PatternRewriter &rewriter) const override {
+        auto alts = op.getAlternatives();
+
+        // Need >2 alternatives (2-way handled by CaseToScfIfPattern)
+        if (alts.size() <= 2)
+            return failure();
+
+        // Only handle int cases with negative tags
+        // (String cases are handled by CF lowering since they need runtime calls)
+        if (!isIntegerCase(op))
+            return failure();
+
+        bool hasNegativeTag = false;
+        for (int64_t tag : op.getTags()) {
+            if (tag < 0) {
+                hasNegativeTag = true;
+                break;
+            }
+        }
+        if (!hasNegativeTag)
+            return failure();  // Non-negative int cases use index_switch
+
+        // All alternatives must end with eco.yield
+        if (!hasPureYieldAlternatives(op))
+            return failure();
+
+        // Skip cases inside joinpoint bodies
+        if (op->getParentOfType<JoinpointOp>())
+            return failure();
+
+        auto loc = op.getLoc();
+        auto resultTypes = getCaseResultTypes(op);
+
+        return lowerIntCaseToIfChain(op, rewriter, loc, resultTypes);
+    }
+
+private:
+    /// Build nested scf.if chain for int case with negative tags.
+    LogicalResult lowerIntCaseToIfChain(CaseOp op, PatternRewriter &rewriter,
+                                        Location loc,
+                                        SmallVector<Type> &resultTypes) const {
+        auto alts = op.getAlternatives();
+        auto tags = op.getTags();
+        auto i64Ty = rewriter.getI64Type();
+
+        // Get or unbox scrutinee to i64
+        Value scrutinee = op.getScrutinee();
+        Value unboxed;
+        if (scrutinee.getType() == i64Ty) {
+            // Already unboxed i64
+            unboxed = scrutinee;
         } else {
-            rewriter.create<ReturnOp>(loc, switchOp.getResults());
+            // Boxed eco.value - unbox to i64
+            unboxed = rewriter.create<UnboxOp>(loc, i64Ty, scrutinee);
         }
 
-        rewriter.eraseOp(op);  // Erase the eco.case terminator
+        // Build chain from back to front: last alternative is default (else)
+        // Work backwards: start with default, then wrap each preceding alt
+        size_t numAlts = alts.size();
+
+        // Start with the default (last) alternative - this becomes innermost else
+        // We'll build this as we construct the chain
+        Value result = buildIntIfChain(rewriter, loc, unboxed, tags, alts,
+                                       resultTypes, 0, numAlts);
+
+        rewriter.replaceOp(op, result);
         return success();
+    }
+
+    /// Recursively build the if-chain for int cases.
+    /// altIdx is the current alternative being processed.
+    Value buildIntIfChain(PatternRewriter &rewriter, Location loc,
+                          Value unboxed, ArrayRef<int64_t> tags,
+                          MutableArrayRef<Region> alts,
+                          SmallVector<Type> &resultTypes,
+                          size_t altIdx, size_t numAlts) const {
+        // Base case: last alternative is the default (no condition check)
+        if (altIdx == numAlts - 1) {
+            // Create a dummy scf.if that always takes the then branch,
+            // or just inline the default. For simplicity, wrap in scf.if with true.
+            auto trueConst = rewriter.create<arith::ConstantOp>(
+                loc, rewriter.getI1Type(), rewriter.getBoolAttr(true));
+            auto ifOp = rewriter.create<scf::IfOp>(loc, resultTypes, trueConst,
+                                                   /*withElseRegion=*/false);
+            // Fill then region with default alternative
+            {
+                Block *thenBlock = &ifOp.getThenRegion().front();
+                rewriter.setInsertionPointToStart(thenBlock);
+                IRMapping mapping;
+                cloneAlternativeWithScfYield(alts[altIdx], rewriter, loc, mapping);
+            }
+            return ifOp.getResult(0);
+        }
+
+        // Create comparison: unboxed == tags[altIdx]
+        auto tagConst = rewriter.create<arith::ConstantOp>(
+            loc, rewriter.getI64IntegerAttr(tags[altIdx]));
+        auto cond = rewriter.create<arith::CmpIOp>(
+            loc, arith::CmpIPredicate::eq, unboxed, tagConst);
+
+        // Create scf.if
+        auto ifOp = rewriter.create<scf::IfOp>(loc, resultTypes, cond,
+                                               /*withElseRegion=*/true);
+
+        // Fill then region with current alternative
+        {
+            Block *thenBlock = &ifOp.getThenRegion().front();
+            // Remove default yield if present
+            if (!thenBlock->empty()) {
+                if (auto existingYield = dyn_cast<scf::YieldOp>(thenBlock->getTerminator()))
+                    rewriter.eraseOp(existingYield);
+            }
+            rewriter.setInsertionPointToStart(thenBlock);
+            IRMapping mapping;
+            cloneAlternativeWithScfYield(alts[altIdx], rewriter, loc, mapping);
+        }
+
+        // Fill else region with recursive chain
+        {
+            Block *elseBlock = &ifOp.getElseRegion().front();
+            if (!elseBlock->empty()) {
+                if (auto existingYield = dyn_cast<scf::YieldOp>(elseBlock->getTerminator()))
+                    rewriter.eraseOp(existingYield);
+            }
+            rewriter.setInsertionPointToStart(elseBlock);
+            Value innerResult = buildIntIfChain(rewriter, loc, unboxed, tags, alts,
+                                                resultTypes, altIdx + 1, numAlts);
+            rewriter.create<scf::YieldOp>(loc, innerResult);
+        }
+
+        return ifOp.getResult(0);
     }
 };
 
@@ -710,9 +890,11 @@ struct EcoControlFlowToSCFPass
         // Add patterns in priority order:
         // 1. Joinpoint patterns first (higher benefit to consume case+joinpoint together)
         // 2. Then case patterns for remaining cases
+        // 3. If-chain pattern last (fallback for int cases with negative tags)
         patterns.add<JoinpointToScfWhilePattern>(ctx, /*benefit=*/10);
         patterns.add<CaseToScfIfPattern>(ctx, /*benefit=*/5);
         patterns.add<CaseToScfIndexSwitchPattern>(ctx, /*benefit=*/5);
+        patterns.add<CaseToScfIfChainPattern>(ctx, /*benefit=*/4);
 
         // Apply patterns greedily (with folding disabled to prevent DCE)
         GreedyRewriteConfig config;

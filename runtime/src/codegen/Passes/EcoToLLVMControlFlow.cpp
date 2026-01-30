@@ -133,9 +133,20 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         ArrayRef<int64_t> tags = op.getTags();
         auto alternatives = op.getAlternatives();
 
-        // Create merge block
+        // Create merge block with arguments for value-producing cases
         Block *mergeBlock = rewriter.createBlock(parentRegion);
         mergeBlock->moveBefore(currentBlock->getNextNode());
+
+        // If eco.case produces results, add block arguments to merge block
+        bool isValueProducing = op.getNumResults() > 0;
+        SmallVector<Type> resultTypes;
+        if (isValueProducing) {
+            for (Type t : op.getResultTypes()) {
+                Type converted = getTypeConverter()->convertType(t);
+                resultTypes.push_back(converted);
+                mergeBlock->addArgument(converted, loc);
+            }
+        }
 
         // Create case blocks for each alternative
         SmallVector<Block *> caseBlocks;
@@ -227,29 +238,50 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             }
         }
 
-        // Fix terminators only for non-terminal cases
-        if (!isTerminalCase) {
+        // Fix terminators: handle both eco.return and eco.yield
+        // For value-producing cases (with eco.yield), convert to branch with arguments
+        if (!isTerminalCase || isValueProducing) {
             for (Block *caseBlock : caseBlocks) {
                 if (caseBlock->empty())
                     continue;
 
                 Operation *term = caseBlock->getTerminator();
-                if (isa<ReturnOp>(term)) {
+                if (auto yieldOp = dyn_cast<YieldOp>(term)) {
+                    // eco.yield -> cf.branch with yielded values as arguments
+                    rewriter.setInsertionPoint(term);
+                    SmallVector<Value> branchArgs;
+                    for (Value v : yieldOp.getOperands()) {
+                        // Convert type if needed
+                        Type converted = getTypeConverter()->convertType(v.getType());
+                        if (converted != v.getType()) {
+                            v = rewriter.create<UnrealizedConversionCastOp>(
+                                loc, converted, v).getResult(0);
+                        }
+                        branchArgs.push_back(v);
+                    }
+                    rewriter.create<cf::BranchOp>(loc, mergeBlock, branchArgs);
+                    rewriter.eraseOp(term);
+                } else if (isa<ReturnOp>(term)) {
                     rewriter.setInsertionPoint(term);
                     rewriter.create<cf::BranchOp>(loc, mergeBlock);
                     rewriter.eraseOp(term);
                 }
             }
         }
-        // For terminal cases, keep eco.return ops which will be converted
-        // to func.return by the ReturnOpLowering pattern.
+        // For terminal cases without results, keep eco.return ops which will be
+        // converted to func.return by the ReturnOpLowering pattern.
 
-        // Erase the merge block if it's a terminal case (no code needs to follow)
-        if (isTerminalCase) {
+        // Erase the merge block if it's a terminal case with no results
+        if (isTerminalCase && !isValueProducing) {
             rewriter.eraseBlock(mergeBlock);
         }
 
-        rewriter.eraseOp(op);
+        // Replace uses of eco.case results with merge block arguments
+        if (isValueProducing) {
+            rewriter.replaceOp(op, mergeBlock->getArguments());
+        } else {
+            rewriter.eraseOp(op);
+        }
         return success();
     }
 
@@ -279,9 +311,20 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             return op.emitOpError("string case missing string_patterns attribute");
         }
 
-        // Create merge block
+        // Create merge block with arguments for value-producing cases
         Block *mergeBlock = rewriter.createBlock(parentRegion);
         mergeBlock->moveBefore(currentBlock->getNextNode());
+
+        // If eco.case produces results, add block arguments to merge block
+        bool isValueProducing = op.getNumResults() > 0;
+        SmallVector<Type> resultTypes;
+        if (isValueProducing) {
+            for (Type t : op.getResultTypes()) {
+                Type converted = getTypeConverter()->convertType(t);
+                resultTypes.push_back(converted);
+                mergeBlock->addArgument(converted, loc);
+            }
+        }
 
         // Create case blocks for each alternative
         SmallVector<Block *> caseBlocks;
@@ -446,14 +489,30 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             }
         }
 
-        // Fix terminators only for non-terminal cases
-        if (!isTerminalCase) {
+        // Fix terminators: handle both eco.return and eco.yield
+        // For value-producing cases (with eco.yield), convert to branch with arguments
+        if (!isTerminalCase || isValueProducing) {
             for (Block *caseBlock : caseBlocks) {
                 if (caseBlock->empty())
                     continue;
 
                 Operation *term = caseBlock->getTerminator();
-                if (isa<ReturnOp>(term)) {
+                if (auto yieldOp = dyn_cast<YieldOp>(term)) {
+                    // eco.yield -> cf.branch with yielded values as arguments
+                    rewriter.setInsertionPoint(term);
+                    SmallVector<Value> branchArgs;
+                    for (Value v : yieldOp.getOperands()) {
+                        // Convert type if needed
+                        Type converted = getTypeConverter()->convertType(v.getType());
+                        if (converted != v.getType()) {
+                            v = rewriter.create<UnrealizedConversionCastOp>(
+                                loc, converted, v).getResult(0);
+                        }
+                        branchArgs.push_back(v);
+                    }
+                    rewriter.create<cf::BranchOp>(loc, mergeBlock, branchArgs);
+                    rewriter.eraseOp(term);
+                } else if (isa<ReturnOp>(term)) {
                     rewriter.setInsertionPoint(term);
                     rewriter.create<cf::BranchOp>(loc, mergeBlock);
                     rewriter.eraseOp(term);
@@ -461,12 +520,17 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             }
         }
 
-        // Erase the merge block if it's a terminal case
-        if (isTerminalCase) {
+        // Erase the merge block if it's a terminal case with no results
+        if (isTerminalCase && !isValueProducing) {
             rewriter.eraseBlock(mergeBlock);
         }
 
-        rewriter.eraseOp(op);
+        // Replace uses of eco.case results with merge block arguments
+        if (isValueProducing) {
+            rewriter.replaceOp(op, mergeBlock->getArguments());
+        } else {
+            rewriter.eraseOp(op);
+        }
         return success();
     }
 
@@ -569,8 +633,20 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
 
         Block *originalOpBlock = op->getBlock();
 
+        // Create merge block with arguments for value-producing cases
         Block *mergeBlock = rewriter.createBlock(parentRegion);
         mergeBlock->moveBefore(currentBlock->getNextNode());
+
+        // If eco.case produces results, add block arguments to merge block
+        bool isValueProducing = op.getNumResults() > 0;
+        SmallVector<Type> resultTypes;
+        if (isValueProducing) {
+            for (Type t : op.getResultTypes()) {
+                Type converted = getTypeConverter()->convertType(t);
+                resultTypes.push_back(converted);
+                mergeBlock->addArgument(converted, loc);
+            }
+        }
 
         ArrayRef<int64_t> tags = op.getTags();
         auto alternatives = op.getAlternatives();
@@ -655,32 +731,53 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             }
         }
 
-        // Fix terminators only for non-terminal cases
-        if (!isTerminalCase) {
+        // Fix terminators: handle both eco.return and eco.yield
+        // For value-producing cases (with eco.yield), convert to branch with arguments
+        if (!isTerminalCase || isValueProducing) {
             for (Block *caseBlock : caseBlocks) {
                 if (caseBlock->empty())
                     continue;
 
                 Operation *term = caseBlock->getTerminator();
-                if (isa<ReturnOp>(term)) {
+                if (auto yieldOp = dyn_cast<YieldOp>(term)) {
+                    // eco.yield -> cf.branch with yielded values as arguments
+                    rewriter.setInsertionPoint(term);
+                    SmallVector<Value> branchArgs;
+                    for (Value v : yieldOp.getOperands()) {
+                        // Convert type if needed
+                        Type converted = getTypeConverter()->convertType(v.getType());
+                        if (converted != v.getType()) {
+                            v = rewriter.create<UnrealizedConversionCastOp>(
+                                loc, converted, v).getResult(0);
+                        }
+                        branchArgs.push_back(v);
+                    }
+                    rewriter.create<cf::BranchOp>(loc, mergeBlock, branchArgs);
+                    rewriter.eraseOp(term);
+                } else if (isa<ReturnOp>(term)) {
                     rewriter.setInsertionPoint(term);
                     rewriter.create<cf::BranchOp>(loc, mergeBlock);
                     rewriter.eraseOp(term);
                 }
             }
         }
-        // For terminal cases, keep eco.return ops which will be converted
-        // to func.return by the ReturnOpLowering pattern.
+        // For terminal cases without results, keep eco.return ops which will be
+        // converted to func.return by the ReturnOpLowering pattern.
 
-        // For terminal cases with empty mergeBlock, add llvm.unreachable.
+        // For terminal cases with empty mergeBlock and no results, add llvm.unreachable.
         // We can't erase mergeBlock because cf.switch references it as default.
         // Since Elm case expressions are exhaustive, this default is unreachable.
-        if (isTerminalCase && mergeBlock->empty()) {
+        if (isTerminalCase && !isValueProducing && mergeBlock->empty()) {
             rewriter.setInsertionPointToEnd(mergeBlock);
             rewriter.create<LLVM::UnreachableOp>(loc);
         }
 
-        rewriter.eraseOp(op);
+        // Replace uses of eco.case results with merge block arguments
+        if (isValueProducing) {
+            rewriter.replaceOp(op, mergeBlock->getArguments());
+        } else {
+            rewriter.eraseOp(op);
+        }
         return success();
     }
 };
@@ -844,6 +941,25 @@ struct JoinpointOpLowering : public OpConversionPattern<JoinpointOp> {
     }
 };
 
+//===----------------------------------------------------------------------===//
+// YieldOp Safety Net (should have been lowered by SCF pass)
+//===----------------------------------------------------------------------===//
+
+/// Safety net pattern: emits a clear error if eco.yield survives to LLVM lowering.
+/// eco.yield should always be lowered to scf.yield by EcoControlFlowToSCF, or
+/// converted to cf.branch by CaseOpLowering. If it reaches here, something is wrong.
+struct YieldOpLowering : public OpConversionPattern<YieldOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(YieldOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        return op.emitError("eco.yield should have been lowered by EcoControlFlowToSCF "
+                           "or converted by CaseOpLowering; this indicates a missing "
+                           "pattern for the parent eco.case");
+    }
+};
+
 struct JumpOpLowering : public OpConversionPattern<JumpOp> {
     EcoCFContext &cfCtx;
 
@@ -884,6 +1000,7 @@ void eco::detail::populateEcoControlFlowPatterns(
     patterns.add<ReturnOpLowering>(typeConverter, ctx);
     patterns.add<GetTagOpLowering>(typeConverter, ctx, runtime);
     patterns.add<CaseOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<YieldOpLowering>(typeConverter, ctx);  // Safety net for unlowered yields
     patterns.add<JoinpointOpLowering>(typeConverter, ctx, cfCtx);
     patterns.add<JumpOpLowering>(typeConverter, ctx, cfCtx);
 }

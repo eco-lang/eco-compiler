@@ -24,6 +24,7 @@ module Compiler.Generate.MLIR.Ops exposing
     , ecoProjectCustom
     , ecoCallNamed
     , ecoReturn
+    , ecoYield
     , ecoStringLiteral
     , arithConstantInt
     , arithConstantInt32
@@ -480,7 +481,7 @@ ecoCallNamed ctx resultVar funcName operands returnType =
         |> opBuilder.build
 
 
-{-| eco.return - return a value
+{-| eco.return - return a value from a function or joinpoint body
 -}
 ecoReturn : Ctx.Context -> String -> MlirType -> ( Ctx.Context, MlirOp )
 ecoReturn ctx operand operandType =
@@ -489,6 +490,21 @@ ecoReturn ctx operand operandType =
             Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr operandType ])
     in
     mlirOp ctx "eco.return"
+        |> opBuilder.withOperands [ operand ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.isTerminator True
+        |> opBuilder.build
+
+
+{-| eco.yield - yield a value from an eco.case alternative region
+-}
+ecoYield : Ctx.Context -> String -> MlirType -> ( Ctx.Context, MlirOp )
+ecoYield ctx operand operandType =
+    let
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr operandType ])
+    in
+    mlirOp ctx "eco.yield"
         |> opBuilder.withOperands [ operand ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.isTerminator True
@@ -719,65 +735,61 @@ funcFunc ctx funcName args returnType bodyRegion =
 -- ====== CONTROL FLOW ======
 
 
-{-| eco.case - pattern matching control flow
+{-| eco.case - pattern matching expression that produces SSA results
 
-Takes a scrutinee SSA name, scrutinee type, case kind ("ctor", "int", "chr", "str"),
-list of tags, list of regions (one per alternative), and result types.
-Emits an eco.case operation.
+Takes a result variable name, scrutinee SSA name, scrutinee type, case kind ("ctor", "int", "chr", "str"),
+list of tags, list of regions (one per alternative), and result type.
+Emits an eco.case operation that produces an SSA result value.
+
+eco.case is NOT a terminator - it's a value-producing expression.
+Each alternative region must terminate with eco.yield.
 
 -}
-ecoCase : Ctx.Context -> String -> MlirType -> String -> List Int -> List MlirRegion -> List MlirType -> ( Ctx.Context, MlirOp )
-ecoCase ctx scrutinee scrutineeType caseKind tags regions resultTypes =
+ecoCase : Ctx.Context -> String -> String -> MlirType -> String -> List Int -> List MlirRegion -> MlirType -> ( Ctx.Context, MlirOp )
+ecoCase ctx resultVar scrutinee scrutineeType caseKind tags regions resultType =
     let
-        attrsBase =
+        attrs =
             Dict.fromList
                 [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr scrutineeType ] )
                 , ( "tags", ArrayAttr (Just I64) (List.map (\t -> IntAttr Nothing t) tags) )
                 , ( "case_kind", StringAttr caseKind )
                 ]
-
-        attrs =
-            Dict.insert "caseResultTypes"
-                (ArrayAttr Nothing (List.map TypeAttr resultTypes))
-                attrsBase
     in
     mlirOp ctx "eco.case"
         |> opBuilder.withOperands [ scrutinee ]
+        |> opBuilder.withResults [ ( resultVar, resultType ) ]
         |> opBuilder.withRegions regions
         |> opBuilder.withAttrs attrs
-        |> opBuilder.isTerminator True
         |> opBuilder.build
 
 
 {-| eco.case for string pattern matching.
 
-Takes a scrutinee SSA name, scrutinee type, list of tags (positional indices),
+Takes a result variable name, scrutinee SSA name, scrutinee type, list of tags (positional indices),
 list of string patterns (N-1 for N alternatives, last is default),
-list of regions (one per alternative), and result types.
+list of regions (one per alternative), and result type.
 Emits an eco.case operation with string_patterns attribute.
 
+eco.case is NOT a terminator - it's a value-producing expression.
+Each alternative region must terminate with eco.yield.
+
 -}
-ecoCaseString : Ctx.Context -> String -> MlirType -> List Int -> List String -> List MlirRegion -> List MlirType -> ( Ctx.Context, MlirOp )
-ecoCaseString ctx scrutinee scrutineeType tags stringPatterns regions resultTypes =
+ecoCaseString : Ctx.Context -> String -> String -> MlirType -> List Int -> List String -> List MlirRegion -> MlirType -> ( Ctx.Context, MlirOp )
+ecoCaseString ctx resultVar scrutinee scrutineeType tags stringPatterns regions resultType =
     let
-        attrsBase =
+        attrs =
             Dict.fromList
                 [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr scrutineeType ] )
                 , ( "tags", ArrayAttr (Just I64) (List.map (\t -> IntAttr Nothing t) tags) )
                 , ( "case_kind", StringAttr "str" )
                 , ( "string_patterns", ArrayAttr Nothing (List.map StringAttr stringPatterns) )
                 ]
-
-        attrs =
-            Dict.insert "caseResultTypes"
-                (ArrayAttr Nothing (List.map TypeAttr resultTypes))
-                attrsBase
     in
     mlirOp ctx "eco.case"
         |> opBuilder.withOperands [ scrutinee ]
+        |> opBuilder.withResults [ ( resultVar, resultType ) ]
         |> opBuilder.withRegions regions
         |> opBuilder.withAttrs attrs
-        |> opBuilder.isTerminator True
         |> opBuilder.build
 
 

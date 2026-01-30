@@ -115,31 +115,14 @@ LogicalResult CaseOp::verify() {
     }
   }
 
-  // CGEN_010 invariant: eco.case ALWAYS requires result_types attribute.
-  // Elm codegen always produces eco.case with result_types and eco.return terminators.
-  // eco.jump is never used as a case alternative terminator.
-  auto caseResultTypesAttr = getCaseResultTypes();
-  if (!caseResultTypesAttr) {
-    return emitOpError("requires 'result_types' (caseResultTypes) attribute; "
-                       "eco.case is always an expression form");
+  // CGEN_010 invariant: eco.case is SSA value-producing with explicit result types.
+  // eco.case must have at least one result (no void cases).
+  auto resultTypes = getResultTypes();
+  if (resultTypes.empty()) {
+    return emitOpError("must have at least one result type; void cases are not supported");
   }
 
-  // Extract expected result types
-  SmallVector<Type> expectedTypes;
-  for (Attribute attr : *caseResultTypesAttr) {
-    if (auto typeAttr = dyn_cast<TypeAttr>(attr)) {
-      expectedTypes.push_back(typeAttr.getValue());
-    } else {
-      return emitOpError("result_types must contain TypeAttr elements");
-    }
-  }
-
-  // eco.case must have at least one result type (no void cases)
-  if (expectedTypes.empty()) {
-    return emitOpError("result_types must not be empty; void cases are not supported");
-  }
-
-  // Verify that each region has exactly one block with eco.return terminator.
+  // Verify that each region has exactly one block with eco.yield terminator.
   size_t altIndex = 0;
   for (auto &region : getAlternatives()) {
     if (region.empty()) {
@@ -157,30 +140,28 @@ LogicalResult CaseOp::verify() {
       return emitOpError("alternative block must have a terminator");
     }
 
-    // Alternatives must terminate with eco.return or nested eco.case (transitive termination).
-    // eco.jump is not allowed - it would exit the enclosing joinpoint, not the case.
-    if (!isa<ReturnOp>(terminator) && !isa<CaseOp>(terminator)) {
+    // CGEN_028: Alternatives must terminate with eco.yield only.
+    // eco.return, eco.jump, eco.crash are forbidden inside eco.case alternatives.
+    if (!isa<YieldOp>(terminator)) {
       return emitOpError("alternative ")
-             << altIndex << " must terminate with 'eco.return' or nested 'eco.case', got '"
+             << altIndex << " must terminate with 'eco.yield', got '"
              << terminator->getName() << "'";
     }
 
-    // Validate eco.return operand types match expectedTypes
-    // (skip for nested eco.case - transitivity ensures correctness)
-    if (auto retOp = dyn_cast<ReturnOp>(terminator)) {
-      auto actualTypes = retOp.getOperandTypes();
-      if (actualTypes.size() != expectedTypes.size()) {
+    // Validate eco.yield operand types match case result types
+    auto yieldOp = cast<YieldOp>(terminator);
+    auto yieldTypes = yieldOp.getOperandTypes();
+    if (yieldTypes.size() != resultTypes.size()) {
+      return emitOpError("alternative ")
+             << altIndex << " eco.yield has " << yieldTypes.size()
+             << " operands but eco.case has " << resultTypes.size() << " results";
+    }
+    for (size_t i = 0; i < resultTypes.size(); ++i) {
+      if (yieldTypes[i] != resultTypes[i]) {
         return emitOpError("alternative ")
-               << altIndex << " eco.return has " << actualTypes.size()
-               << " operands but result_types specifies " << expectedTypes.size();
-      }
-      for (size_t i = 0; i < expectedTypes.size(); ++i) {
-        if (actualTypes[i] != expectedTypes[i]) {
-          return emitOpError("alternative ")
-                 << altIndex << " eco.return operand " << i
-                 << " has type " << actualTypes[i]
-                 << " but result_types specifies " << expectedTypes[i];
-        }
+               << altIndex << " eco.yield operand " << i
+               << " has type " << yieldTypes[i]
+               << " but eco.case result " << i << " has type " << resultTypes[i];
       }
     }
 
@@ -190,14 +171,35 @@ LogicalResult CaseOp::verify() {
   return success();
 }
 
-// Implement MemoryEffectsOpInterface for CaseOp
-// Mark the operation as having side effects to prevent DCE from removing it
-// before pattern lowering has a chance to run.
-void CaseOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
-  // Add a write effect to prevent DCE (case expressions have observable behavior)
-  effects.emplace_back(MemoryEffects::Write::get());
+LogicalResult YieldOp::verify() {
+  // CGEN_053: eco.yield may only appear inside eco.case alternative regions.
+  // HasParent<"::eco::CaseOp"> trait handles this, but we double-check.
+  auto parentCaseOp = (*this)->getParentOfType<CaseOp>();
+  if (!parentCaseOp) {
+    return emitOpError("must be inside an eco.case alternative region");
+  }
+
+  // Verify yield types match parent case result types
+  auto caseResultTypes = parentCaseOp.getResultTypes();
+  auto yieldTypes = getOperandTypes();
+
+  if (yieldTypes.size() != caseResultTypes.size()) {
+    return emitOpError("has ") << yieldTypes.size()
+           << " operands but parent eco.case has "
+           << caseResultTypes.size() << " results";
+  }
+
+  for (size_t i = 0; i < caseResultTypes.size(); ++i) {
+    if (yieldTypes[i] != caseResultTypes[i]) {
+      return emitOpError("operand ") << i << " has type " << yieldTypes[i]
+             << " but parent eco.case result " << i
+             << " has type " << caseResultTypes[i];
+    }
+  }
+
+  return success();
 }
+
 
 LogicalResult JoinpointOp::verify() {
   // Verify that the body region is not empty.
@@ -343,21 +345,21 @@ LogicalResult PapExtendOp::verify() {
 // Custom Assembly Format: CaseOp
 //===----------------------------------------------------------------------===//
 
-// Format: eco.case %scrutinee : type [tag0, tag1, ...] result_types [type0, ...] { region0 }, { region1 }, ...
+// Format: eco.case %scrutinee : type [tag0, tag1, ...] -> (result_type0, ...) { attr-dict } { region0 }, { region1 }, ...
 void CaseOp::print(OpAsmPrinter &p) {
   p << " " << getScrutinee() << " : " << getScrutinee().getType() << " [";
   llvm::interleaveComma(getTags(), p);
   p << "]";
 
-  // Print result_types if present
-  if (auto resultTypes = getCaseResultTypes()) {
-    p << " result_types [";
-    llvm::interleaveComma(*resultTypes, p, [&](Attribute attr) {
-      p << cast<TypeAttr>(attr).getValue();
-    });
-    p << "]";
-  }
+  // Print result types: -> (type0, type1, ...)
+  p << " -> (";
+  llvm::interleaveComma(getResultTypes(), p);
+  p << ")";
 
+  // Print attr-dict (excluding "tags" which is already printed)
+  p.printOptionalAttrDict((*this)->getAttrs(), {"tags"});
+
+  // Print regions
   for (Region &region : getAlternatives()) {
     p << " ";
     p.printRegion(region, /*printEntryBlockArgs=*/false,
@@ -365,7 +367,6 @@ void CaseOp::print(OpAsmPrinter &p) {
     if (&region != &getAlternatives().back())
       p << ",";
   }
-  p.printOptionalAttrDict((*this)->getAttrs(), {"tags", "caseResultTypes"});
 }
 
 ParseResult CaseOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -397,34 +398,34 @@ ParseResult CaseOp::parse(OpAsmParser &parser, OperationState &result) {
 
   result.addAttribute("tags", parser.getBuilder().getDenseI64ArrayAttr(tags));
 
-  // Parse optional result_types [type0, type1, ...] (can be empty [])
-  if (succeeded(parser.parseOptionalKeyword("result_types"))) {
-    if (parser.parseLSquare())
+  // Parse result types: -> (type0, type1, ...)
+  SmallVector<Type> resultTypes;
+  if (parser.parseArrow() || parser.parseLParen())
+    return failure();
+
+  // Handle empty result list case: -> ()
+  if (failed(parser.parseOptionalRParen())) {
+    Type firstType;
+    if (parser.parseType(firstType))
       return failure();
+    resultTypes.push_back(firstType);
 
-    SmallVector<Attribute> resultTypeAttrs;
-    // Handle empty list case: result_types []
-    if (failed(parser.parseOptionalRSquare())) {
-      // Non-empty list: parse first type, then optional comma-separated types
-      Type firstType;
-      if (parser.parseType(firstType))
+    while (succeeded(parser.parseOptionalComma())) {
+      Type nextType;
+      if (parser.parseType(nextType))
         return failure();
-      resultTypeAttrs.push_back(TypeAttr::get(firstType));
-
-      while (succeeded(parser.parseOptionalComma())) {
-        Type nextType;
-        if (parser.parseType(nextType))
-          return failure();
-        resultTypeAttrs.push_back(TypeAttr::get(nextType));
-      }
-
-      if (parser.parseRSquare())
-        return failure();
+      resultTypes.push_back(nextType);
     }
 
-    result.addAttribute("caseResultTypes",
-                        parser.getBuilder().getArrayAttr(resultTypeAttrs));
+    if (parser.parseRParen())
+      return failure();
   }
+
+  result.addTypes(resultTypes);
+
+  // Parse optional attr-dict
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
 
   // Parse each region
   for (size_t i = 0; i < tags.size(); ++i) {
@@ -438,10 +439,6 @@ ParseResult CaseOp::parse(OpAsmParser &parser, OperationState &result) {
         return failure();
     }
   }
-
-  // Parse optional attr-dict
-  if (parser.parseOptionalAttrDict(result.attributes))
-    return failure();
 
   // Resolve scrutinee operand with the parsed type
   if (parser.resolveOperand(scrutinee, scrutineeType, result.operands))

@@ -6,7 +6,10 @@ module Compiler.Generate.CodeGen.BlockTerminator exposing
 {-| Test logic for CGEN_042: Block Terminator Presence invariant.
 
 Every block in every region emitted by MLIR codegen must end with a
-terminator operation (e.g. `eco.return`, `eco.jump`, `scf.yield`).
+terminator operation (e.g. `eco.return`, `eco.jump`, `eco.yield`, `scf.yield`).
+
+Note: `eco.case` is NOT a terminator - it is a value-producing expression.
+`eco.yield` is used to terminate eco.case alternative regions.
 
 @docs expectBlockTerminator, checkBlockTerminators
 

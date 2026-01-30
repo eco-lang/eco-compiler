@@ -2028,7 +2028,7 @@ generateIf ctx branches final =
 generateIfWithTerminatedBranch : Ctx.Context -> String -> ExprResult -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> Mono.MonoExpr -> List MlirOp -> ExprResult
 generateIfWithTerminatedBranch ctx condVar thenRes restBranches final condOps =
     let
-        -- Build then region - it already has a terminator
+        -- Build then region - it already has a terminator (should be eco.yield)
         thenRegion =
             mkRegionFromOps thenRes.ops
 
@@ -2054,22 +2054,26 @@ generateIfWithTerminatedBranch ctx condVar thenRes restBranches final condOps =
                     ( coerceOps, finalVar, coerceCtx ) =
                         coerceResultToType elseRes.ctx elseRes.resultVar elseRes.resultType resultMlirType
 
-                    ( retCtx, retOp ) =
-                        Ops.ecoReturn coerceCtx finalVar resultMlirType
+                    -- Use eco.yield for case alternatives
+                    ( yieldCtx, yieldOp ) =
+                        Ops.ecoYield coerceCtx finalVar resultMlirType
                 in
-                ( Ops.mkRegion [] (elseRes.ops ++ coerceOps) retOp, retCtx )
+                ( Ops.mkRegion [] (elseRes.ops ++ coerceOps) yieldOp, yieldCtx )
+
+        -- Allocate result variable for eco.case
+        ( caseResultVar, ctxWithResult ) =
+            Ctx.freshVar ctxAfterElse
 
         -- eco.case on i1: tag 1 for True (then), tag 0 for False (else)
         ( ctxFinal, caseOp ) =
-            Ops.ecoCase ctxAfterElse condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultMlirType ]
+            Ops.ecoCase ctxWithResult caseResultVar condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultMlirType
     in
-    -- eco.case is a terminator, so the whole expression is terminated.
-    -- There is no single resultVar - exits happen via eco.return/eco.jump within regions.
+    -- eco.case produces an SSA result
     { ops = condOps ++ [ caseOp ]
-    , resultVar = "" -- No result, eco.case is a terminator
+    , resultVar = caseResultVar
     , resultType = resultMlirType
     , ctx = ctxFinal
-    , isTerminated = True -- eco.case is a terminator
+    , isTerminated = False
     }
 
 
@@ -2079,31 +2083,34 @@ The then branch has already been processed and yields a value.
 generateIfWithTerminatedElse : Ctx.Context -> String -> ExprResult -> ExprResult -> MlirType -> List MlirOp -> ExprResult
 generateIfWithTerminatedElse ctx condVar thenRes elseRes resultMlirType condOps =
     let
-        -- Build then region with eco.return (not terminated)
+        -- Build then region with eco.yield (not terminated)
         ( thenCoerceOps, thenFinalVar, thenCoerceCtx ) =
             coerceResultToType thenRes.ctx thenRes.resultVar thenRes.resultType resultMlirType
 
-        ( thenRetCtx, thenRetOp ) =
-            Ops.ecoReturn thenCoerceCtx thenFinalVar resultMlirType
+        ( thenYieldCtx, thenYieldOp ) =
+            Ops.ecoYield thenCoerceCtx thenFinalVar resultMlirType
 
         thenRegion =
-            Ops.mkRegion [] (thenRes.ops ++ thenCoerceOps) thenRetOp
+            Ops.mkRegion [] (thenRes.ops ++ thenCoerceOps) thenYieldOp
 
-        -- Else region already has a terminator
+        -- Else region already has a terminator (should be eco.yield)
         elseRegion =
             mkRegionFromOps elseRes.ops
 
+        -- Allocate result variable for eco.case
+        ( caseResultVar, ctxWithResult ) =
+            Ctx.freshVar elseRes.ctx
+
         -- eco.case on i1: tag 1 for True (then), tag 0 for False (else)
         ( ctxFinal, caseOp ) =
-            Ops.ecoCase elseRes.ctx condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultMlirType ]
+            Ops.ecoCase ctxWithResult caseResultVar condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultMlirType
     in
-    -- eco.case is a terminator, so the whole expression is terminated.
-    -- There is no single resultVar - exits happen via eco.return/eco.jump within regions.
+    -- eco.case produces an SSA result
     { ops = condOps ++ [ caseOp ]
-    , resultVar = "" -- No result, eco.case is a terminator
+    , resultVar = caseResultVar
     , resultType = resultMlirType
     , ctx = ctxFinal
-    , isTerminated = True -- eco.case is a terminator
+    , isTerminated = False
     }
 
 
@@ -2397,18 +2404,19 @@ generateDecider ctx root decider resultTy =
 
 
 {-| Generate code for a Leaf node in the decision tree.
+Generates eco.yield to terminate case alternatives.
 -}
 generateLeaf : Ctx.Context -> Name.Name -> Mono.MonoChoice -> MlirType -> ExprResult
 generateLeaf ctx _ choice resultTy =
     case choice of
         Mono.Inline branchExpr ->
-            -- Evaluate the branch expression and return it
+            -- Evaluate the branch expression and yield it
             let
                 branchRes =
                     generateExpr ctx branchExpr
             in
-            -- If the branch expression is already a terminator (e.g., nested case),
-            -- we don't need to add another eco.return - just propagate it.
+            -- If the branch expression is already terminated with eco.yield,
+            -- just propagate it.
             if branchRes.isTerminated then
                 branchRes
 
@@ -2422,15 +2430,16 @@ generateLeaf ctx _ choice resultTy =
                     ( coerceOps, finalVar, ctx1 ) =
                         coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
 
-                    ( ctx2, retOp ) =
-                        Ops.ecoReturn ctx1 finalVar resultTy
+                    -- Use eco.yield for case alternatives (not eco.return)
+                    ( ctx2, yieldOp ) =
+                        Ops.ecoYield ctx1 finalVar resultTy
                 in
-                -- The return op MUST be last so mkRegionFromOps picks it as terminator
-                { ops = branchRes.ops ++ coerceOps ++ [ retOp ]
+                -- The yield op MUST be last so mkRegionFromOps picks it as terminator
+                { ops = branchRes.ops ++ coerceOps ++ [ yieldOp ]
                 , resultVar = finalVar
                 , resultType = resultTy
                 , ctx = ctx2
-                , isTerminated = False
+                , isTerminated = True
                 }
 
         Mono.Jump _ ->
@@ -2440,14 +2449,15 @@ generateLeaf ctx _ choice resultTy =
                 ( dummyOps, dummyVar, ctx1 ) =
                     createDummyValue ctx resultTy
 
-                ( ctx2, retOp ) =
-                    Ops.ecoReturn ctx1 dummyVar resultTy
+                -- Use eco.yield for case alternatives (not eco.return)
+                ( ctx2, yieldOp ) =
+                    Ops.ecoYield ctx1 dummyVar resultTy
             in
-            { ops = dummyOps ++ [ retOp ]
+            { ops = dummyOps ++ [ yieldOp ]
             , resultVar = dummyVar
             , resultType = resultTy
             , ctx = ctx2
-            , isTerminated = False
+            , isTerminated = True
             }
 
 
@@ -2479,14 +2489,14 @@ generateChainForBoolADT ctx root path success failure resultTy =
         ( pathOps, boolVar, ctx1 ) =
             Patterns.generateDTPath ctx root path I1
 
-        -- Generate success branch (True) with eco.return
+        -- Generate success branch (True) with eco.yield
         thenRes =
             generateDecider ctx1 root success resultTy
 
         ( thenRegion, ctx1a ) =
-            mkCaseRegionFromDecider thenRes.ctx thenRes.ops resultTy
+            mkCaseRegionFromDecider thenRes resultTy
 
-        -- Generate failure branch (False) with eco.return
+        -- Generate failure branch (False) with eco.yield
         -- Fork context: keep ctx1's variable mappings but advance nextVar to avoid SSA conflicts
         ctxForElse =
             { ctx1 | nextVar = ctx1a.nextVar }
@@ -2495,14 +2505,18 @@ generateChainForBoolADT ctx root path success failure resultTy =
             generateDecider ctxForElse root failure resultTy
 
         ( elseRegion, ctx1b ) =
-            mkCaseRegionFromDecider elseRes.ctx elseRes.ops resultTy
+            mkCaseRegionFromDecider elseRes resultTy
+
+        -- Allocate result variable for eco.case
+        ( caseResultVar, ctxWithResult ) =
+            Ctx.freshVar ctx1b
 
         -- eco.case on Bool: tag 1 for True (success), tag 0 for False (failure)
         ( ctx2, caseOp ) =
-            Ops.ecoCase ctx1b boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
+            Ops.ecoCase ctxWithResult caseResultVar boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultTy
     in
     { ops = pathOps ++ [ caseOp ]
-    , resultVar = boolVar -- Dummy; control exits via eco.return inside regions
+    , resultVar = caseResultVar
     , resultType = resultTy
     , ctx = ctx2
     , isTerminated = False
@@ -2519,14 +2533,14 @@ generateChainGeneral ctx root testChain success failure resultTy =
         ( condOps, condVar, ctx1 ) =
             Patterns.generateChainCondition ctx root testChain
 
-        -- Generate success branch with eco.return
+        -- Generate success branch with eco.yield
         thenRes =
             generateDecider ctx1 root success resultTy
 
         ( thenRegion, ctx1a ) =
-            mkCaseRegionFromDecider thenRes.ctx thenRes.ops resultTy
+            mkCaseRegionFromDecider thenRes resultTy
 
-        -- Generate failure branch with eco.return
+        -- Generate failure branch with eco.yield
         -- Fork context: keep ctx1's variable mappings but advance nextVar to avoid SSA conflicts
         ctxForElse =
             { ctx1 | nextVar = ctx1a.nextVar }
@@ -2535,14 +2549,18 @@ generateChainGeneral ctx root testChain success failure resultTy =
             generateDecider ctxForElse root failure resultTy
 
         ( elseRegion, ctx1b ) =
-            mkCaseRegionFromDecider elseRes.ctx elseRes.ops resultTy
+            mkCaseRegionFromDecider elseRes resultTy
+
+        -- Allocate result variable for eco.case
+        ( caseResultVar, ctxWithResult ) =
+            Ctx.freshVar ctx1b
 
         -- eco.case on Bool: tag 1 for True (success), tag 0 for False (failure)
         ( ctx2, caseOp ) =
-            Ops.ecoCase ctx1b condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
+            Ops.ecoCase ctxWithResult caseResultVar condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultTy
     in
     { ops = condOps ++ [ caseOp ]
-    , resultVar = condVar -- Dummy; control exits via eco.return inside regions
+    , resultVar = caseResultVar
     , resultType = resultTy
     , ctx = ctx2
     , isTerminated = False
@@ -2592,14 +2610,14 @@ generateBoolFanOut ctx root path edges fallback resultTy =
         ( trueBranch, falseBranch ) =
             findBoolBranches edges fallback
 
-        -- Generate True branch (tag 1) with eco.return
+        -- Generate True branch (tag 1) with eco.yield
         thenRes =
             generateDecider ctx1 root trueBranch resultTy
 
         ( thenRegion, ctx1a ) =
-            mkCaseRegionFromDecider thenRes.ctx thenRes.ops resultTy
+            mkCaseRegionFromDecider thenRes resultTy
 
-        -- Generate False branch (tag 0) with eco.return
+        -- Generate False branch (tag 0) with eco.yield
         -- Fork context: keep ctx1's variable mappings but advance nextVar to avoid SSA conflicts
         ctxForElse =
             { ctx1 | nextVar = ctx1a.nextVar }
@@ -2608,15 +2626,19 @@ generateBoolFanOut ctx root path edges fallback resultTy =
             generateDecider ctxForElse root falseBranch resultTy
 
         ( elseRegion, ctx1b ) =
-            mkCaseRegionFromDecider elseRes.ctx elseRes.ops resultTy
+            mkCaseRegionFromDecider elseRes resultTy
+
+        -- Allocate result variable for eco.case
+        ( caseResultVar, ctxWithResult ) =
+            Ctx.freshVar ctx1b
 
         -- eco.case on Bool: tag 1 for True, tag 0 for False
         -- Regions: [True region, False region] corresponding to tags [1, 0]
         ( ctx2, caseOp ) =
-            Ops.ecoCase ctx1b boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] [ resultTy ]
+            Ops.ecoCase ctxWithResult caseResultVar boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultTy
     in
     { ops = pathOps ++ [ caseOp ]
-    , resultVar = boolVar -- Dummy; control exits via eco.return inside regions
+    , resultVar = caseResultVar
     , resultType = resultTy
     , ctx = ctx2
     , isTerminated = False
@@ -2729,7 +2751,7 @@ generateFanOutGeneral ctx root path edges fallback resultTy =
                             generateDecider accCtx root subTree resultTy
 
                         ( region, ctxAfterRegion ) =
-                            mkCaseRegionFromDecider subRes.ctx subRes.ops resultTy
+                            mkCaseRegionFromDecider subRes resultTy
                     in
                     ( accRegions ++ [ region ], ctxAfterRegion )
                 )
@@ -2741,27 +2763,29 @@ generateFanOutGeneral ctx root path edges fallback resultTy =
             generateDecider ctx2 root fallback resultTy
 
         ( fallbackRegion, ctx2a ) =
-            mkCaseRegionFromDecider fallbackRes.ctx fallbackRes.ops resultTy
+            mkCaseRegionFromDecider fallbackRes resultTy
 
         -- Build eco.case with all regions (edges + fallback)
         allRegions =
             edgeRegions ++ [ fallbackRegion ]
+
+        -- Allocate result variable for eco.case
+        ( caseResultVar, ctxWithResult ) =
+            Ctx.freshVar ctx2a
 
         -- Build eco.case with correct scrutinee type
         -- For string cases, use ecoCaseString which includes string_patterns
         ( ctx3, caseOp ) =
             case stringPatterns of
                 Just patterns ->
-                    Ops.ecoCaseString ctx2a scrutineeVar scrutineeType tags patterns allRegions [ resultTy ]
+                    Ops.ecoCaseString ctxWithResult caseResultVar scrutineeVar scrutineeType tags patterns allRegions resultTy
 
                 Nothing ->
-                    Ops.ecoCase ctx2a scrutineeVar scrutineeType caseKind tags allRegions [ resultTy ]
+                    Ops.ecoCase ctxWithResult caseResultVar scrutineeVar scrutineeType caseKind tags allRegions resultTy
     in
-    -- Return the case op - no dummy construct between case and return!
-    -- The lowering pattern expects: eco.case ... eco.return
-    -- Use scrutineeVar as placeholder resultVar - the lowering will replace everything
+    -- eco.case produces an SSA result
     { ops = pathOps ++ [ caseOp ]
-    , resultVar = scrutineeVar
+    , resultVar = caseResultVar
     , resultType = resultTy
     , ctx = ctx3
     , isTerminated = False
@@ -2788,24 +2812,51 @@ mkRegionFromOps ops =
 -}
 isValidTerminator : MlirOp -> Bool
 isValidTerminator op =
-    List.member op.name [ "eco.return", "eco.jump", "eco.crash", "eco.case" ]
+    List.member op.name [ "eco.return", "eco.jump", "eco.crash" ]
 
 
-{-| Create a region from decider ops. All paths must end with a valid terminator.
-Crashes if invariant violated - indicates codegen bug.
+{-| Check if an op is a valid terminator for eco.case alternative regions.
+eco.case alternatives must terminate with eco.yield (not eco.return).
 -}
-mkCaseRegionFromDecider : Ctx.Context -> List MlirOp -> MlirType -> ( MlirRegion, Ctx.Context )
-mkCaseRegionFromDecider ctx ops resultTy =
-    case List.reverse ops of
+isValidCaseTerminator : MlirOp -> Bool
+isValidCaseTerminator op =
+    op.name == "eco.yield"
+
+
+{-| Create a region from an ExprResult for eco.case alternatives.
+
+This is the single choke-point that ensures all case alternatives end with eco.yield.
+If the ExprResult is already terminated (ends with eco.yield), use it directly.
+Otherwise, wrap the value-producing expression with eco.yield.
+
+This handles:
+- Leaf expressions that already have eco.yield
+- Nested eco.case (value-producing) that needs wrapping
+- Any other value-producing expression
+-}
+mkCaseRegionFromDecider : ExprResult -> MlirType -> ( MlirRegion, Ctx.Context )
+mkCaseRegionFromDecider exprRes resultTy =
+    case List.reverse exprRes.ops of
         [] ->
-            crash "mkCaseRegionFromDecider: empty ops - decider must produce terminator"
+            crash "mkCaseRegionFromDecider: empty ops - decider must produce ops"
 
         lastOp :: _ ->
-            if isValidTerminator lastOp then
-                ( mkRegionFromOps ops, ctx )
+            if isValidCaseTerminator lastOp then
+                -- Already terminated with eco.yield, use as-is
+                ( mkRegionFromOps exprRes.ops, exprRes.ctx )
 
             else
-                crash ("mkCaseRegionFromDecider: non-terminator at end: " ++ lastOp.name)
+                -- Value-producing expression (e.g., nested eco.case) - wrap with eco.yield
+                let
+                    -- Coerce result to expected type if needed
+                    ( coerceOps, finalVar, ctx1 ) =
+                        coerceResultToType exprRes.ctx exprRes.resultVar exprRes.resultType resultTy
+
+                    -- Emit eco.yield to terminate the alternative
+                    ( ctx2, yieldOp ) =
+                        Ops.ecoYield ctx1 finalVar resultTy
+                in
+                ( mkRegionFromOps (exprRes.ops ++ coerceOps ++ [ yieldOp ]), ctx2 )
 
 
 {-| Generate case expression control flow.
@@ -2814,12 +2865,11 @@ This is the main entry point for case expressions. It:
 
 1.  Emits joinpoints for shared branches
 2.  Generates the decision tree control flow (eco.case ops)
-3.  Returns ExprResult with isTerminated=True (eco.case is a terminator)
+3.  Returns ExprResult with the case result (eco.case is value-producing)
 
-eco.case is a control-flow exit, not a value-producing expression.
-Control flow exits through eco.return ops inside the alternatives.
-The EcoControlFlowToSCF pass transforms eco.case into scf.if/scf.index\_switch
-and inserts the final eco.return after the SCF op.
+eco.case is a value-producing expression that yields results via eco.yield
+inside each alternative. The EcoControlFlowToSCF pass transforms eco.case
+into scf.if/scf.index\_switch.
 
 -}
 generateCase : Ctx.Context -> Name.Name -> Name.Name -> Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> Mono.MonoType -> ExprResult
@@ -2832,19 +2882,16 @@ generateCase ctx _ root decider jumps resultMonoType =
         ( ctx1, joinpointOps ) =
             generateSharedJoinpoints ctx jumps resultMlirType
 
-        -- No dummy value! eco.case is a control-flow exit, not a value expression.
-        -- Control leaves through eco.return inside alternatives.
+        -- eco.case is now a value-producing expression
         decisionResult =
             generateDecider ctx1 root decider resultMlirType
     in
-    -- eco.case is a terminator - it does not produce a result value.
-    -- Control flow exits through eco.return inside the decision tree regions.
-    -- INVARIANT: resultVar is meaningless when isTerminated=True, must not be used.
+    -- eco.case produces an SSA result through eco.yield in alternatives
     { ops = joinpointOps ++ decisionResult.ops
-    , resultVar = "" -- INVARIANT: meaningless when isTerminated=True
+    , resultVar = decisionResult.resultVar
     , resultType = resultMlirType
     , ctx = decisionResult.ctx
-    , isTerminated = True -- eco.case is a terminator
+    , isTerminated = False
     }
 
 
