@@ -73,7 +73,7 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 # Eco Operations
 
-@docs ecoCallNamed, ecoReturn, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoJoinpoint, ecoGetTag
+@docs ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoJoinpoint, ecoGetTag
 
 
 # Arith Operations
@@ -83,7 +83,12 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 # SCF Operations
 
-@docs scfIf, scfYield
+@docs scfIf, scfYield, scfWhile, scfCondition
+
+
+# CF Operations
+
+@docs cfCondBr
 
 -}
 

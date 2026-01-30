@@ -61,7 +61,7 @@ This module defines the data structures for the monomorphized program
 
 # Program Graph
 
-@docs MonoGraph, MainInfo, MonoNode
+@docs MonoGraph, MainInfo, MonoNode, CtorShape
 
 
 # Expressions

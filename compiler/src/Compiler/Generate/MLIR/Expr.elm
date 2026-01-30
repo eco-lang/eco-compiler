@@ -27,6 +27,11 @@ This module handles generation of MLIR code for all Elm expressions.
 
 @docs boxToEcoValue, coerceResultToType, boxArgsWithMlirTypes
 
+
+# Utilities
+
+@docs createDummyValue
+
 -}
 
 import Bitwise
@@ -92,6 +97,9 @@ specIdToFuncName registry specId =
             "unknown_$_" ++ String.fromInt specId
 
 
+{-| Create a dummy value of the given MLIR type. Used when a value of a
+specific type is needed but the actual value is irrelevant (e.g., unreachable code paths).
+-}
 createDummyValue : Ctx.Context -> MlirType -> ( List MlirOp, String, Ctx.Context )
 createDummyValue ctx mlirType =
     let
