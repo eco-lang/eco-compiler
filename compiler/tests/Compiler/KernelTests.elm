@@ -298,6 +298,8 @@ kernelInContextCases expectFn =
     , { label = "Kernel functions from different modules", run = kernelDifferentModules expectFn }
     , { label = "Kernel function with complex args", run = kernelWithComplexArgs expectFn }
     , { label = "Chained kernel calls", run = chainedKernelCalls expectFn }
+    , { label = "Kernel alias direct call", run = kernelAliasDirectCall expectFn }
+    , { label = "Kernel alias transitive call", run = kernelAliasTransitiveCall expectFn }
     ]
 
 
@@ -407,5 +409,64 @@ chainedKernelCalls expectFn _ =
 
         modul =
             makeModule "testValue" outer
+    in
+    expectFn modul
+
+
+{-| Tests that a local alias to a kernel function uses flattened call model.
+let f = Elm.Kernel.List.singleton in f 42
+The call through 'f' should use flattened external arity (all args at once),
+not stage-curried arity.
+-}
+kernelAliasDirectCall : (Can.Module -> Expectation) -> (() -> Expectation)
+kernelAliasDirectCall expectFn _ =
+    let
+        -- f = Elm.Kernel.List.singleton
+        kernelFn =
+            varKernelExpr 2 "List" "singleton"
+
+        fDef =
+            makeDef "f" [] kernelFn
+
+        -- f 42
+        body =
+            callExpr 4 (varLocalExpr 5 "f") [ intExpr 6 42 ]
+
+        modul =
+            makeModule "testValue"
+                (letExpr 1 fDef body)
+    in
+    expectFn modul
+
+
+{-| Tests transitive propagation of kernel call model through alias chains.
+let f = Elm.Kernel.List.singleton in let g = f in g 42
+The call through 'g' should inherit 'f's flattened external call model.
+-}
+kernelAliasTransitiveCall : (Can.Module -> Expectation) -> (() -> Expectation)
+kernelAliasTransitiveCall expectFn _ =
+    let
+        -- f = Elm.Kernel.List.singleton
+        kernelFn =
+            varKernelExpr 2 "List" "singleton"
+
+        fDef =
+            makeDef "f" [] kernelFn
+
+        -- g = f
+        gDef =
+            makeDef "g" [] (varLocalExpr 4 "f")
+
+        -- g 42
+        innerBody =
+            callExpr 6 (varLocalExpr 7 "g") [ intExpr 8 42 ]
+
+        -- let g = f in g 42
+        innerLet =
+            letExpr 3 gDef innerBody
+
+        modul =
+            makeModule "testValue"
+                (letExpr 1 fDef innerLet)
     in
     expectFn modul

@@ -706,7 +706,7 @@ generateClosure ctx closureInfo body monoType =
 
         -- Use currentLetSiblings if inside a let-rec group, otherwise fall back to varMappings
         -- This ensures closures in mutually recursive let bindings see all siblings
-        baseSiblings : Dict.Dict String ( String, MlirType )
+        baseSiblings : Dict.Dict String Ctx.VarInfo
         baseSiblings =
             if Dict.isEmpty ctx.currentLetSiblings then
                 ctx.varMappings
@@ -1002,10 +1002,16 @@ applyByStages ctx funcVar funcMlirType funcMonoType args accOps =
                     allOperandTypes =
                         funcMlirType :: List.map Tuple.second batch
 
+                    batchSize =
+                        List.length batch
+
+                    remainingArity =
+                        stageN - batchSize
+
                     papExtendAttrs =
                         Dict.fromList
                             [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
-                            , ( "remaining_arity", IntAttr Nothing stageN )
+                            , ( "remaining_arity", IntAttr Nothing remainingArity )
                             , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
                             ]
 
@@ -1018,6 +1024,35 @@ applyByStages ctx funcVar funcMlirType funcMonoType args accOps =
                 in
                 -- Recurse with the result closure and remaining args
                 applyByStages ctx2 resVar resultMlirType stageRetType rest (accOps ++ [ papExtendOp ])
+
+
+{-| Determine the call model for an expression being bound to a variable.
+This propagates call model through aliases transitively.
+Used in generateLet to decide what Maybe CallModel to store for a new local binding.
+-}
+callModelForExpr : Ctx.Context -> Mono.MonoExpr -> Maybe Ctx.CallModel
+callModelForExpr ctx expr =
+    case expr of
+        Mono.MonoVarGlobal _ specId _ ->
+            if Ctx.isFlattenedExternalSpec specId ctx then
+                Just Ctx.FlattenedExternal
+
+            else
+                Just Ctx.StageCurried
+
+        Mono.MonoVarKernel _ _ _ _ ->
+            Just Ctx.FlattenedExternal
+
+        Mono.MonoVarLocal name _ ->
+            -- Inherit whatever the binding decided (may be FlattenedExternal or StageCurried)
+            Ctx.lookupVarCallModel ctx name
+
+        Mono.MonoClosure _ _ _ ->
+            Just Ctx.StageCurried
+
+        _ ->
+            -- Non-function (or unknown) expression
+            Nothing
 
 
 {-| Determine the call model for a callee expression.
@@ -1037,8 +1072,18 @@ callModelForCallee ctx funcExpr =
             -- Kernels are always flattened
             Ctx.FlattenedExternal
 
+        Mono.MonoVarLocal name _ ->
+            -- Check if this local inherited a call model from its binding
+            case Ctx.lookupVarCallModel ctx name of
+                Just model ->
+                    model
+
+                Nothing ->
+                    -- Function parameters and non-annotated locals default to user-closure semantics
+                    Ctx.StageCurried
+
         _ ->
-            -- Local vars, closures, other expressions: stage-curried
+            -- Arbitrary expressions default to stage-curried closure model
             Ctx.StageCurried
 
 
@@ -1113,10 +1158,16 @@ generateFlattenedPartialApplication ctx func args resultType =
                 boxedArgsWithTypes
                 |> List.foldl Bitwise.or 0
 
+        numArgsApplied =
+            List.length args
+
+        remainingArity =
+            totalArity - numArgsApplied
+
         papExtendAttrs =
             Dict.fromList
                 [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
-                , ( "remaining_arity", IntAttr Nothing totalArity )
+                , ( "remaining_arity", IntAttr Nothing remainingArity )
                 , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
                 ]
 
@@ -1776,49 +1827,59 @@ generateSaturatedCall ctx func args resultType =
                 ( funcVarName, funcVarType ) =
                     Ctx.lookupVar ctx name
 
+                callModel =
+                    callModelForCallee ctx func
+
                 expectedType =
                     Types.monoTypeToAbi resultType
             in
-            -- If the function variable is not a closure (e.g., a zero-arity thunk was
-            -- already evaluated), and we're calling with no args, just return the value.
-            -- This handles: let f = \() -> 42 in f()
-            -- where f is already evaluated to i64, not a closure.
-            if not (Types.isEcoValueType funcVarType) && List.isEmpty args then
-                -- Already evaluated - just return the value, coercing if needed
-                let
-                    ( coerceOps, finalVar, ctx1 ) =
-                        coerceResultToType ctx funcVarName funcVarType expectedType
-                in
-                { ops = coerceOps
-                , resultVar = finalVar
-                , resultType = expectedType
-                , ctx = ctx1
-                , isTerminated = False
-                }
+            case callModel of
+                Ctx.FlattenedExternal ->
+                    -- Local alias of a flattened external (e.g. let f = List.map in f x xs)
+                    -- Reuse the flattened external machinery
+                    generateFlattenedPartialApplication ctx func args resultType
 
-            else
-                -- Normal closure call via papExtend (typed closure ABI)
-                -- Apply arguments by stages to handle stage-curried closures (CGEN_052)
-                let
-                    -- Use generateExprListTyped to get actual SSA types
-                    ( argOps, argsWithTypes, ctx1 ) =
-                        generateExprListTyped ctx args
+                Ctx.StageCurried ->
+                    -- If the function variable is not a closure (e.g., a zero-arity thunk was
+                    -- already evaluated), and we're calling with no args, just return the value.
+                    -- This handles: let f = \() -> 42 in f()
+                    -- where f is already evaluated to i64, not a closure.
+                    if not (Types.isEcoValueType funcVarType) && List.isEmpty args then
+                        -- Already evaluated - just return the value, coercing if needed
+                        let
+                            ( coerceOps, finalVar, ctx1 ) =
+                                coerceResultToType ctx funcVarName funcVarType expectedType
+                        in
+                        { ops = coerceOps
+                        , resultVar = finalVar
+                        , resultType = expectedType
+                        , ctx = ctx1
+                        , isTerminated = False
+                        }
 
-                    -- Box non-unboxable primitives (i1) to !eco.value for closure boundary
-                    -- Per REP_CLOSURE_001: Bool must be !eco.value at closure boundaries
-                    ( boxOps, boxedArgsWithTypes, ctx1b ) =
-                        boxArgsForClosureBoundary ctx1 argsWithTypes
+                    else
+                        -- Normal closure call via papExtend (typed closure ABI)
+                        -- Apply arguments by stages to handle stage-curried closures (CGEN_052)
+                        let
+                            -- Use generateExprListTyped to get actual SSA types
+                            ( argOps, argsWithTypes, ctx1 ) =
+                                generateExprListTyped ctx args
 
-                    -- Apply arguments by stages, emitting a chain of papExtend operations
-                    papResult =
-                        applyByStages ctx1b funcVarName funcVarType funcType boxedArgsWithTypes []
-                in
-                { ops = argOps ++ boxOps ++ papResult.ops
-                , resultVar = papResult.resultVar
-                , resultType = papResult.resultType
-                , ctx = papResult.ctx
-                , isTerminated = False
-                }
+                            -- Box non-unboxable primitives (i1) to !eco.value for closure boundary
+                            -- Per REP_CLOSURE_001: Bool must be !eco.value at closure boundaries
+                            ( boxOps, boxedArgsWithTypes, ctx1b ) =
+                                boxArgsForClosureBoundary ctx1 argsWithTypes
+
+                            -- Apply arguments by stages, emitting a chain of papExtend operations
+                            papResult =
+                                applyByStages ctx1b funcVarName funcVarType funcType boxedArgsWithTypes []
+                        in
+                        { ops = argOps ++ boxOps ++ papResult.ops
+                        , resultVar = papResult.resultVar
+                        , resultType = papResult.resultType
+                        , ctx = papResult.ctx
+                        , isTerminated = False
+                        }
 
         _ ->
             let
@@ -2209,7 +2270,7 @@ addPlaceholderMappings names ctx =
                     acc
 
                 Nothing ->
-                    Ctx.addVarMapping name ("%" ++ name) Types.ecoValue acc
+                    Ctx.addVarMapping name ("%" ++ name) Types.ecoValue Nothing acc
         )
         ctx
         names
@@ -2246,12 +2307,17 @@ generateLet ctx def body =
                 exprResult =
                     generateExpr ctxWithPlaceholders expr
 
+                -- Extract call model from the bound expression for transitive propagation
+                exprCallModel : Maybe Ctx.CallModel
+                exprCallModel =
+                    callModelForExpr ctxWithPlaceholders expr
+
                 -- Instead of creating an eco.construct wrapper, just add a mapping
                 -- from the let-bound name to the expression's result variable.
                 -- This preserves the original type and avoids boxing issues.
                 ctx1 : Ctx.Context
                 ctx1 =
-                    Ctx.addVarMapping name exprResult.resultVar exprResult.resultType exprResult.ctx
+                    Ctx.addVarMapping name exprResult.resultVar exprResult.resultType exprCallModel exprResult.ctx
 
                 bodyResult : ExprResult
                 bodyResult =
@@ -2293,21 +2359,22 @@ generateLet ctx def body =
             -- For now, we just add the function to varMappings as a closure reference.
             let
                 -- Add parameters to varMappings (use ctxWithPlaceholders for mutual recursion)
+                -- Parameters are plain values, no call model
                 ctxWithParams =
                     List.foldl
                         (\( paramName, paramType ) acc ->
-                            Ctx.addVarMapping paramName ("%" ++ paramName) (Types.monoTypeToAbi paramType) acc
+                            Ctx.addVarMapping paramName ("%" ++ paramName) (Types.monoTypeToAbi paramType) Nothing acc
                         )
                         ctxWithPlaceholders
                         params
 
-                -- Add the function name to varMappings (as a placeholder)
-                -- The function is referenced as itself - when called, it executes the body
+                -- Add the function name to varMappings
+                -- Local tail funcs are stage-curried
                 funcMlirType =
                     Types.ecoValue
 
                 ctxWithFunc =
-                    Ctx.addVarMapping name ("%" ++ name) funcMlirType ctxWithParams
+                    Ctx.addVarMapping name ("%" ++ name) funcMlirType (Just Ctx.StageCurried) ctxWithParams
 
                 -- Generate the let body (which calls the function)
                 bodyResult =
@@ -2365,9 +2432,10 @@ generateDestruct ctx (Mono.MonoDestructor name path monoType) body _ =
             Patterns.generateMonoPath ctx path targetType
 
         -- Use mapping with the path's type
+        -- Destructured bindings are values, no call model
         ctx2 : Ctx.Context
         ctx2 =
-            Ctx.addVarMapping name pathVar targetType ctx1
+            Ctx.addVarMapping name pathVar targetType Nothing ctx1
 
         bodyResult : ExprResult
         bodyResult =

@@ -1,12 +1,11 @@
 module Compiler.Generate.MLIR.Context exposing
     ( Context, FuncSignature, PendingLambda, TypeRegistry
-    , CallModel(..)
     , initContext
     , freshVar, freshOpId, lookupVar, addVarMapping
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType
     , isTypeVar, hasKernelImplementation
-    , isFlattenedExternalSpec
+    , CallModel(..), VarInfo, isFlattenedExternalSpec, lookupVarCallModel
     )
 
 {-| MLIR code generation context.
@@ -134,6 +133,15 @@ isFlattenedExternalSpec specId ctx =
             False
 
 
+{-| Variable info for tracking SSA variables with their types and call models.
+-}
+type alias VarInfo =
+    { ssaVar : String
+    , mlirType : MlirType
+    , callModel : Maybe CallModel -- Nothing for non-function values
+    }
+
+
 {-| MLIR code generation context holding state during code generation.
 -}
 type alias Context =
@@ -143,8 +151,8 @@ type alias Context =
     , registry : Mono.SpecializationRegistry
     , pendingLambdas : List PendingLambda
     , signatures : Dict.Dict Int FuncSignature -- SpecId -> signature for invariant checking
-    , varMappings : Dict.Dict String ( String, MlirType ) -- Let-bound name -> (SSA variable name, MLIR type)
-    , currentLetSiblings : Dict.Dict String ( String, MlirType ) -- Sibling mappings for current let-rec group
+    , varMappings : Dict.Dict String VarInfo -- Let-bound name -> variable info with call model
+    , currentLetSiblings : Dict.Dict String VarInfo -- Sibling mappings for current let-rec group
     , kernelDecls : Dict.Dict String ( List MlirType, MlirType ) -- Kernel function name -> (argTypes, returnType)
     , typeRegistry : TypeRegistry -- Type graph: MonoType -> TypeId for debug printing
     }
@@ -169,7 +177,7 @@ type alias PendingLambda =
     , params : List ( Name.Name, Mono.MonoType )
     , body : Mono.MonoExpr
     , returnType : Mono.MonoType -- Explicit return type for typed ABI
-    , siblingMappings : Dict.Dict String ( String, MlirType ) -- For mutually recursive let bindings
+    , siblingMappings : Dict.Dict String VarInfo -- For mutually recursive let bindings
     }
 
 
@@ -342,18 +350,39 @@ Returns both the SSA variable name and its MLIR type.
 lookupVar : Context -> String -> ( String, MlirType )
 lookupVar ctx name =
     case Dict.get name ctx.varMappings of
-        Just ( ssaVar, mlirTy ) ->
-            ( ssaVar, mlirTy )
+        Just info ->
+            ( info.ssaVar, info.mlirType )
 
         Nothing ->
-            ( "%" ++ name, Types.ecoValue )
+            crash ("lookupVar: unbound variable " ++ name)
 
 
-{-| Add a variable mapping from a let-bound name to its SSA variable and type.
+{-| Look up the call model for a let-bound variable.
+Returns Nothing if the variable is not found or has no call model.
 -}
-addVarMapping : String -> String -> MlirType -> Context -> Context
-addVarMapping name ssaVar mlirTy ctx =
-    { ctx | varMappings = Dict.insert name ( ssaVar, mlirTy ) ctx.varMappings }
+lookupVarCallModel : Context -> String -> Maybe CallModel
+lookupVarCallModel ctx name =
+    case Dict.get name ctx.varMappings of
+        Just info ->
+            info.callModel
+
+        Nothing ->
+            Nothing
+
+
+{-| Add a variable mapping from a let-bound name to its SSA variable, type, and call model.
+-}
+addVarMapping : String -> String -> MlirType -> Maybe CallModel -> Context -> Context
+addVarMapping name ssaVar mlirTy maybeCallModel ctx =
+    let
+        info : VarInfo
+        info =
+            { ssaVar = ssaVar
+            , mlirType = mlirTy
+            , callModel = maybeCallModel
+            }
+    in
+    { ctx | varMappings = Dict.insert name info ctx.varMappings }
 
 
 

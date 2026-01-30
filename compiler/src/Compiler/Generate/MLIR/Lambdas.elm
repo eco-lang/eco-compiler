@@ -70,7 +70,8 @@ generateLambdaFunc ctx lambda =
 
         -- Build varMappings directly from typed parameters (no unboxing needed)
         -- Parameters arrive in their actual types due to typed calling convention.
-        varMappingsWithArgs : Dict.Dict String ( String, MlirType )
+        -- Parameters are plain values, no call model.
+        varMappingsWithArgs : Dict.Dict String Ctx.VarInfo
         varMappingsWithArgs =
             List.foldl
                 (\( name, monoTy ) acc ->
@@ -81,7 +82,12 @@ generateLambdaFunc ctx lambda =
                         varName =
                             "%" ++ name
                     in
-                    Dict.insert name ( varName, mlirType ) acc
+                    Dict.insert name
+                        { ssaVar = varName
+                        , mlirType = mlirType
+                        , callModel = Nothing
+                        }
+                        acc
                 )
                 Dict.empty
                 (lambda.captures ++ lambda.params)
@@ -97,7 +103,7 @@ generateLambdaFunc ctx lambda =
             []
 
         -- Merge sibling mappings with captures and params (captures/params take precedence)
-        varMappingsWithSiblings : Dict.Dict String ( String, MlirType )
+        varMappingsWithSiblings : Dict.Dict String Ctx.VarInfo
         varMappingsWithSiblings =
             Dict.union varMappingsWithArgs lambda.siblingMappings
 

@@ -1317,7 +1317,9 @@ substitute oldName newName varType expr =
                     else
                         rootName
             in
-            MonoCase unused newRootName decider
+            MonoCase unused
+                newRootName
+                decider
                 (List.map (\( idx, e ) -> ( idx, substitute oldName newName varType e )) branches)
                 resultType
 
@@ -1933,7 +1935,12 @@ countUsages name expr =
 
         MonoTailCall funcName args _ ->
             -- Count if this is a tail call to the variable
-            (if funcName == name then 1 else 0)
+            (if funcName == name then
+                1
+
+             else
+                0
+            )
                 + List.sum (List.map (\( _, e ) -> countUsages name e) args)
 
         MonoIf branches final _ ->
@@ -1963,7 +1970,11 @@ countUsages name expr =
             -- MonoCase has two Names: first is unused, second is the root variable
             let
                 rootUsage =
-                    if rootName == name then 1 else 0
+                    if rootName == name then
+                        1
+
+                    else
+                        0
             in
             rootUsage + List.sum (List.map (\( _, e ) -> countUsages name e) branches)
 
@@ -2084,7 +2095,9 @@ inlineVar name replacement expr =
             MonoDestruct destructor (inlineVar name replacement inner) resultType
 
         MonoCase scrutName scrutType decider branches resultType ->
-            MonoCase scrutName scrutType decider
+            MonoCase scrutName
+                scrutType
+                decider
                 (List.map (\( idx, e ) -> ( idx, inlineVar name replacement e )) branches)
                 resultType
 
@@ -2162,7 +2175,9 @@ dce expr =
             MonoDestruct destructor (dce inner) resultType
 
         MonoCase scrutName scrutType decider branches resultType ->
-            MonoCase scrutName scrutType decider
+            MonoCase scrutName
+                scrutType
+                decider
                 (List.map (\( idx, e ) -> ( idx, dce e )) branches)
                 resultType
 

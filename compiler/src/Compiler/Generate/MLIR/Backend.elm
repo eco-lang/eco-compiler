@@ -50,8 +50,10 @@ generateMlirModule : Mode.Mode -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Mli
 generateMlirModule mode typeEnv monoGraph0 =
     let
         -- Run the Mono IR optimizer before MLIR generation
-        ( Mono.MonoGraph { nodes, main, registry, ctorShapes }, _ ) =
-            MonoInlineSimplify.optimize mode typeEnv monoGraph0
+        --( Mono.MonoGraph { nodes, main, registry, ctorShapes }, _ ) =
+        --    MonoInlineSimplify.optimize mode typeEnv monoGraph0
+        (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
+            monoGraph0
 
         signatures : Dict.Dict Int Ctx.FuncSignature
         signatures =

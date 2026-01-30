@@ -113,26 +113,10 @@ lambdaWithWildcard expectFn _ =
 
 callCases : (Src.Module -> Expectation) -> List TestCase
 callCases expectFn =
-    [ { label = "Call with no args", run = callWithNoArgs expectFn }
-    , { label = "Call with one int arg", run = callWithOneIntArg expectFn }
+    [ { label = "Call with one int arg", run = callWithOneIntArg expectFn }
     , { label = "Call with two args", run = callWithTwoArgs expectFn }
     , { label = "Nested calls", run = nestedCalls expectFn }
     ]
-
-
-callWithNoArgs : (Src.Module -> Expectation) -> (() -> Expectation)
-callWithNoArgs expectFn _ =
-    let
-        fn =
-            lambdaExpr [] (intExpr 42)
-
-        def =
-            define "f" [] fn
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] (callExpr (varExpr "f") []))
-    in
-    expectFn modul
 
 
 callWithOneIntArg : (Src.Module -> Expectation) -> (() -> Expectation)

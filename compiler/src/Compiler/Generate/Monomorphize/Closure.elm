@@ -33,6 +33,7 @@ import Compiler.Generate.Monomorphize.State exposing (MonoState)
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
+import Utils.Crash
 
 
 
@@ -64,9 +65,15 @@ ensureCallableTopLevel expr monoType state =
                         ( expr, state )
 
                     else
-                        -- Under-parameterized closure: wrap it in an alias closure
-                        -- (Use stage-aware wrapper)
-                        makeAliasClosureOverExpr expr stageArgTypes stageRetType monoType state
+                        Utils.Crash.crash
+                            ("ensureCallableTopLevel: under-parameterized closure for type "
+                                ++ Debug.toString monoType
+                                ++ " (have "
+                                ++ String.fromInt (List.length closureInfo.params)
+                                ++ " params, expected stage arity "
+                                ++ String.fromInt stageArity
+                                ++ "). This should not happen; fix monomorphization."
+                            )
 
                 Mono.MonoVarGlobal region specId _ ->
                     -- MONO_016: Create stage-aware closure wrapper
@@ -79,21 +86,23 @@ ensureCallableTopLevel expr monoType state =
                         state
 
                 Mono.MonoVarKernel region home name kernelAbiType ->
-                    -- MONO_016: Create stage-aware closure wrapper
-                    -- Use kernel ABI type for params (ABI stability)
+                    -- Kernels use flattened ABI (all params at once), not stage-curried.
+                    -- Create a fully flattened alias closure that calls the kernel with all args.
                     let
-                        kernelStageArgTypes =
-                            Types.stageParamTypes kernelAbiType
+                        ( kernelFlatArgTypes, kernelFlatRetType ) =
+                            flattenFunctionType kernelAbiType
 
-                        kernelStageRetType =
-                            Types.stageReturnType kernelAbiType
+                        -- Build a flattened function type for the wrapper so callers
+                        -- see the correct arity and apply all args at once.
+                        flattenedFuncType =
+                            Mono.MFunction kernelFlatArgTypes kernelFlatRetType
                     in
                     makeAliasClosure
                         (Mono.MonoVarKernel region home name kernelAbiType)
                         region
-                        kernelStageArgTypes
-                        kernelStageRetType
-                        kernelAbiType
+                        kernelFlatArgTypes
+                        kernelFlatRetType
+                        flattenedFuncType
                         state
 
                 _ ->
@@ -147,9 +156,15 @@ makeAliasClosure calleeExpr region argTypes retType funcType state =
         callExpr =
             Mono.MonoCall region calleeExpr paramExprs retType
 
+        -- Compute captures from the call expression.
+        -- For MonoVarGlobal/MonoVarKernel callees this will be empty,
+        -- but we compute defensively for future-proofing.
+        captures =
+            computeClosureCaptures params callExpr
+
         closureInfo =
             { lambdaId = lambdaId
-            , captures = []
+            , captures = captures
             , params = params
             }
 
@@ -188,9 +203,15 @@ makeGeneralClosure expr argTypes retType funcType state =
         callExpr =
             Mono.MonoCall region expr paramExprs retType
 
+        -- Compute captures: find free locals in the call expression
+        -- that are not bound by the closure's own params.
+        -- This is critical when `expr` references outer variables.
+        captures =
+            computeClosureCaptures params callExpr
+
         closureInfo =
             { lambdaId = lambdaId
-            , captures = []
+            , captures = captures
             , params = params
             }
 
